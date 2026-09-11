@@ -54,7 +54,9 @@ pub struct ScanOptions {
 ///
 /// `options.excluded` lists directories never walked. `options.cancel`, checked before each
 /// entry, lets a scan be stopped early: it returns with `cancelled: true` and never marks,
-/// purges or prunes anything, since anything unreached is unknown, not missing.
+/// purges or prunes anything, since anything unreached is unknown, not missing. It also
+/// leaves the watched folder's online/offline state unchanged, since deciding that needs
+/// the empty-root guard below, which needs a complete walk.
 pub fn scan_watched(
     lib: &Library,
     watched: &WatchedFolder,
@@ -175,7 +177,10 @@ pub fn scan_watched(
     flush_changed(lib, &mut changed_batch, &mut report, &mut seen, progress)?;
 
     if cancelled {
-        // We stopped early, so everything we didn't reach is unknown, not missing.
+        // We stopped early, so everything we didn't reach is unknown, not missing. Leave
+        // online/offline as it was too: that decision needs the empty-root guard below,
+        // which needs a complete walk, so a cancelled scan of an unmounted mount point
+        // must not get marked online.
         progress(&seen);
         return Ok(ScanReport {
             cancelled: true,
@@ -569,5 +574,24 @@ mod tests {
         assert_eq!((report.marked_missing, report.purged), (0, 0));
         let id = lib.known_items(watched.id).unwrap()[&key(&b)].id;
         assert_eq!(lib.item(id).unwrap().unwrap().missing_since, None);
+    }
+
+    #[test]
+    fn cancelled_scan_leaves_online_state_unchanged() {
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        write_file(&root, "a.jpg", &jpeg_bytes(8, 8));
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
+        scan(&lib, &watched, 1);
+        lib.set_watched_online(watched.id, false).unwrap();
+
+        let options = ScanOptions::default();
+        options
+            .cancel
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        let report = scan_watched(&lib, &watched, 2, &options, &mut |_| {}).unwrap();
+
+        assert!(report.cancelled);
+        assert!(!lib.watched_folders().unwrap()[0].online);
     }
 }
