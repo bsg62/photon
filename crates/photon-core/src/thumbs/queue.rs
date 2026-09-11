@@ -17,6 +17,11 @@ struct State {
     visible: Vec<i64>,
     next_seq: u64,
     in_flight: HashSet<i64>,
+    /// Number of live `wait_for` callers per id. An id someone is waiting on is never
+    /// demoted: it may have scrolled out of the strictly-visible span while its request
+    /// was still in the queue, and demoting it would park it behind the whole background
+    /// backlog until the waiter times out.
+    waiters: HashMap<i64, usize>,
     closed: bool,
 }
 
@@ -38,6 +43,9 @@ impl State {
     }
 
     fn demote(&mut self, id: i64, priority: Priority) {
+        if self.waiters.contains_key(&id) {
+            return;
+        }
         if let Some(&(current, seq)) = self.entries.get(&id)
             && current < priority
         {
@@ -95,7 +103,7 @@ impl ThumbQueue {
         self.changed.notify_all();
     }
 
-    /// Blocks until a job is available. Every `Some` must be followed by `done()`.
+    /// Blocks until a job is available. Every `Some(id)` must be followed by `done(id)`.
     pub fn pop_blocking(&self) -> Option<i64> {
         let mut state = self.state.lock();
         loop {
@@ -125,18 +133,30 @@ impl ThumbQueue {
 
     /// Blocks until `id` is neither queued nor being processed, the queue closes, or
     /// `deadline` passes. Returns false only on timeout.
+    ///
+    /// While waiting, `id` is protected from demotion (see `State::waiters`); the
+    /// protection is dropped on every exit path, including the timeout, so a later
+    /// `set_visible` demotes the id normally once nobody is waiting for it.
     pub fn wait_for(&self, id: i64, deadline: std::time::Instant) -> bool {
         let mut state = self.state.lock();
-        loop {
+        *state.waiters.entry(id).or_insert(0) += 1;
+        let done = loop {
             let busy = state.entries.contains_key(&id) || state.in_flight.contains(&id);
             if state.closed || !busy {
-                return true;
+                break true;
             }
             if self.changed.wait_until(&mut state, deadline).timed_out() {
                 let busy = state.entries.contains_key(&id) || state.in_flight.contains(&id);
-                return !busy;
+                break !busy;
+            }
+        };
+        if let std::collections::hash_map::Entry::Occupied(mut waiters) = state.waiters.entry(id) {
+            *waiters.get_mut() -= 1;
+            if *waiters.get() == 0 {
+                waiters.remove();
             }
         }
+        done
     }
 
     pub fn len(&self) -> usize {
@@ -157,6 +177,12 @@ impl ThumbQueue {
 mod tests {
     use super::*;
     use std::sync::Arc;
+
+    impl ThumbQueue {
+        fn has_waiter(&self, id: i64) -> bool {
+            self.state.lock().waiters.contains_key(&id)
+        }
+    }
 
     fn drain(q: &ThumbQueue) -> Vec<i64> {
         let mut out = Vec::new();
@@ -267,5 +293,46 @@ mod tests {
     #[test]
     fn wait_for_unknown_id_returns_immediately() {
         assert!(ThumbQueue::new().wait_for(7, Instant::now()));
+    }
+
+    /// A tile that scrolls out of the visible span while its request is still queued must
+    /// keep its priority: demoting it would park it behind the whole background backlog
+    /// and the waiting request would time out.
+    #[test]
+    fn set_visible_does_not_demote_an_id_with_a_waiter() {
+        let q = Arc::new(ThumbQueue::new());
+        q.push_many(&[8, 9], Priority::Background);
+        q.set_visible(&[1]);
+        let waiter = {
+            let q = q.clone();
+            std::thread::spawn(move || q.wait_for(1, Instant::now() + Duration::from_secs(5)))
+        };
+        // Wait until the waiter is actually registered, then scroll 1 off screen.
+        while !q.has_waiter(1) {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        q.set_visible(&[2]);
+
+        assert_eq!(drain(&q), [1, 2, 8, 9]);
+        assert!(waiter.join().unwrap());
+    }
+
+    #[test]
+    fn demotion_works_again_once_the_waiter_has_left() {
+        let q = Arc::new(ThumbQueue::new());
+        q.push(9, Priority::Background);
+        q.set_visible(&[1]);
+        let waiter = {
+            let q = q.clone();
+            std::thread::spawn(move || q.wait_for(1, Instant::now() + Duration::from_millis(50)))
+        };
+        assert!(
+            !waiter.join().unwrap(),
+            "the waiter times out while 1 is queued"
+        );
+        assert!(!q.has_waiter(1));
+
+        q.set_visible(&[2]);
+        assert_eq!(drain(&q), [2, 9, 1]);
     }
 }

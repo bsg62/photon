@@ -1,6 +1,8 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   import { mediaUrl, type GridEntry } from '../lib/api';
   import { TILE } from '../lib/layout';
+  import { library } from '../lib/library.svelte';
 
   let {
     entry,
@@ -37,6 +39,21 @@
       clearTimeout(retryTimer);
       retryTimer = undefined;
     };
+  });
+
+  // A tile can break for reasons that later go away: a thumbnail that was still queued
+  // when the tile scrolled out answers 503, and both attempts can fall in that window.
+  // Nothing else resets it (`key` doesn't change when the thumbnail becomes ready, and
+  // the component isn't remounted), so retry whenever the library moves on. Only a broken
+  // tile is touched: resetting a loading or loaded one would flicker.
+  // `status` is written here, so it is read through `untrack` — the effect depends on
+  // `pageTick` alone and cannot re-trigger itself.
+  $effect(() => {
+    void library.pageTick;
+    if (untrack(() => status) === 'broken') {
+      status = 'loading';
+      attempt = 0;
+    }
   });
 
   function onerror() {
