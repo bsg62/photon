@@ -267,7 +267,7 @@ impl Library {
     pub fn grid_entries(&self) -> Result<Vec<GridEntry>> {
         let conn = self.reader();
         let mut stmt = conn.prepare(&format!(
-            "SELECT i.id, i.folder_id, i.taken_at, i.width, i.height, i.orientation, i.kind
+            "SELECT i.id, i.folder_id, i.taken_at, i.width, i.height, i.orientation, i.kind, i.path, i.size, i.mtime_ms
              FROM items i JOIN folders f ON f.id = i.folder_id
              WHERE i.missing_since IS NULL {GRID_ORDER}"
         ))?;
@@ -284,6 +284,7 @@ impl Library {
                         w as f32 / h as f32
                     },
                     kind: MediaKind::from_db(r.get(6)?).unwrap_or(MediaKind::Image),
+                    thumb_key: fingerprint(&r.get::<_, String>(7)?, r.get(8)?, r.get(9)?),
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -499,6 +500,8 @@ mod tests {
         assert_eq!(entries[1].aspect, 300.0 / 400.0);
         assert_eq!(entries[2].aspect, 1.0);
         assert_eq!(entries[0].folder_id, a);
+        let expected = lib.item(ids[2]).unwrap().unwrap().fingerprint();
+        assert_eq!(entries[0].thumb_key, expected);
     }
 
     #[test]
