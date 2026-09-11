@@ -33,7 +33,8 @@
 2. **Compare with existing folders.** Comparison is by path component, and ignores case on macOS and Windows (`cfg(any(target_os = "macos", windows))`).
    - An exact duplicate returns the existing watched folder, as it does today.
    - If the new path is an ancestor or a descendant of an existing watched folder, the call fails with `Error::FolderOverlap { existing: String }`.
-3. **Check the exclusion list.** If the path is equal to, inside, or an ancestor of any `excluded` path (the thumbnail cache directory and the database directory), the call fails with `Error::FolderExcluded { path: String }`.
+3. **Check the exclusion list.** If the path is equal to or inside any `excluded` path (the thumbnail cache directory and the database directory), the call fails with `Error::FolderExcluded { path: String }`.
+   - A folder that *contains* an excluded path is allowed, for example the home folder or a whole drive. The scanner skips the excluded part (§2.2).
 
 Tests that use folders which don't exist must create them in temporary directories.
 
@@ -192,9 +193,9 @@ URL shape: Linux and macOS use `photon://localhost/...`, and Windows uses `http:
 
 - **Command errors** show as a dismissible toast. Folder errors name the folder they clash with.
 - **Protocol errors:**
-  - the tile or viewer shows a broken state;
-  - a `503` gets one automatic retry after 2s;
-  - a `422` never retries.
+  - the tile or viewer shows a broken state.
+  - A grid tile retries a failed image once after 2s, then shows the broken state. An `<img>` element can't see the status code, so it can't tell a `503` from a `422`, and one extra request for a failed item is cheap.
+  - The viewer never retries an item whose `thumbState` is `failed`.
 - **An unreachable folder** goes offline: its tree entry and tiles are dimmed, and nothing is deleted. This is the Plan 1 behaviour.
 - **A library that fails to open** (for example, a schema from a newer photon) shows a blocking error dialog and exits. It never overwrites the database.
 
