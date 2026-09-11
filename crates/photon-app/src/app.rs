@@ -83,26 +83,35 @@ pub fn run() {
                 }
                 Err(err) => {
                     tracing::error!(%err, "could not open the photon library");
-                    // `blocking_show` must not run on the main thread (it blocks until the
-                    // user dismisses the dialog, and the main thread runs the event loop
-                    // that draws it). Returning `Err` here stops `setup` before the window
-                    // is shown, so the app never gets to a state where every command fails
-                    // with "state not managed".
-                    let handle = app.handle().clone();
-                    let message = format!(
-                        "photon could not open its library:\n\n{err}\n\nNothing was changed."
-                    );
-                    std::thread::spawn(move || {
-                        handle
-                            .dialog()
-                            .message(message)
-                            .kind(MessageDialogKind::Error)
-                            .title("photon")
-                            .blocking_show();
-                    })
-                    .join()
-                    .expect("dialog thread panicked");
-                    Err(Box::new(err))
+                    // `setup` runs on the main thread (inside Tauri's event-loop `Ready`
+                    // callback: tauri-2.11.5/src/app.rs:1424 calls `setup(&mut self)`
+                    // from `make_run_event_loop_callback`, which the event loop invokes on
+                    // its own thread). `blocking_show` can't be used here: it blocks the
+                    // calling thread on a channel that only resolves once the dialog has
+                    // actually been shown, but showing it requires `run_on_main_thread`
+                    // (tauri-plugin-dialog-2.7.3/src/desktop.rs:213-228) to run a queued
+                    // closure on that same main thread's event loop - so blocking this
+                    // thread on it would deadlock the whole app before any window ever
+                    // appears. The non-blocking `show` (with its callback) is the only
+                    // option here; it hands off to the main thread's event loop instead of
+                    // blocking it.
+                    //
+                    // The window Tauri configured (`tauri.conf.json`'s `app.windows`) already
+                    // exists by the time this hook runs, so hide it first - otherwise an
+                    // empty, non-functional window would sit behind the dialog.
+                    if let Some(window) = app.get_webview_window("main")
+                        && let Err(err) = window.hide()
+                    {
+                        tracing::warn!(%err, "could not hide the main window");
+                    }
+                    app.dialog()
+                        .message(format!(
+                            "photon could not open its library:\n\n{err}\n\nNothing was changed."
+                        ))
+                        .kind(MessageDialogKind::Error)
+                        .title("photon")
+                        .show(|_| std::process::exit(1));
+                    Ok(())
                 }
             }
         })
@@ -122,6 +131,10 @@ pub fn run() {
         ])
         .build(tauri::generate_context!())
     {
+        // `build` never runs `setup` - it only assembles the app and its windows. Errors
+        // here are things like a broken bundle/context, not a failed `Engine::open`
+        // (that failure is handled inside `setup` above, once the event loop actually
+        // starts and calls it). This match only ever sees a genuine `build` failure.
         Ok(app) => app.run(|app, event| {
             if let RunEvent::Exit = event
                 && let Some(engine) = app.try_state::<Arc<Engine>>()
