@@ -1,0 +1,373 @@
+use crate::{
+    Result,
+    library::{Library, NewItem, WatchedFolder},
+    media::MediaKind,
+    metadata::read_image_meta,
+};
+use std::{
+    collections::HashMap,
+    fs::Metadata,
+    path::{Path, PathBuf},
+    time::UNIX_EPOCH,
+};
+use walkdir::{DirEntry, WalkDir};
+
+const BATCH: usize = 500;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ScanProgress {
+    pub files_seen: u64,
+    pub added: u64,
+    pub changed: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ScanReport {
+    pub offline: bool,
+    pub added: u64,
+    pub changed: u64,
+    pub unchanged: u64,
+    pub marked_missing: u64,
+    pub purged: u64,
+}
+
+/// Brings the library in line with what is on disk under `watched`.
+/// Never modifies files; only reads directory listings, metadata and EXIF.
+pub fn scan_watched(
+    lib: &Library,
+    watched: &WatchedFolder,
+    scan_id: i64,
+    progress: &mut dyn FnMut(&ScanProgress),
+) -> Result<ScanReport> {
+    let root = Path::new(&watched.path);
+    if !root.is_dir() {
+        lib.set_watched_online(watched.id, false)?;
+        return Ok(ScanReport {
+            offline: true,
+            ..ScanReport::default()
+        });
+    }
+    lib.set_watched_online(watched.id, true)?;
+
+    let mut known = lib.known_items(watched.id)?;
+    let mut folder_ids: HashMap<PathBuf, i64> = HashMap::new();
+    let mut report = ScanReport::default();
+    let mut seen = ScanProgress::default();
+    let mut new_batch: Vec<NewItem> = Vec::new();
+    let mut changed_batch: Vec<(i64, NewItem)> = Vec::new();
+
+    let walker = WalkDir::new(root)
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(|e| e.depth() == 0 || !is_hidden(e));
+    for entry in walker {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(err) => {
+                tracing::warn!(%err, "skipping unreadable entry");
+                continue;
+            }
+        };
+        let path = entry.path();
+        let Some(path_str) = path.to_str() else {
+            tracing::warn!(?path, "skipping non-UTF-8 path");
+            continue;
+        };
+
+        if entry.file_type().is_dir() {
+            let parent = if entry.depth() == 0 {
+                None
+            } else {
+                path.parent().and_then(|p| folder_ids.get(p)).copied()
+            };
+            let id = lib.upsert_folder(watched.id, parent, path_str, scan_id)?;
+            folder_ids.insert(path.to_path_buf(), id);
+            continue;
+        }
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let Some(kind) = MediaKind::from_path(path) else {
+            continue;
+        };
+        let Some(&folder_id) = path.parent().and_then(|p| folder_ids.get(p)) else {
+            continue;
+        };
+        let md = match entry.metadata() {
+            Ok(md) => md,
+            Err(err) => {
+                tracing::warn!(%err, ?path, "skipping file without metadata");
+                continue;
+            }
+        };
+        let (size, mtime_ms) = (md.len() as i64, mtime_ms(&md));
+        seen.files_seen += 1;
+
+        match known.remove(path_str) {
+            Some(k) if k.size == size && k.mtime_ms == mtime_ms && !k.missing => {
+                report.unchanged += 1
+            }
+            Some(k) => changed_batch.push((
+                k.id,
+                describe(&entry, path_str, folder_id, kind, size, mtime_ms),
+            )),
+            None => new_batch.push(describe(&entry, path_str, folder_id, kind, size, mtime_ms)),
+        }
+
+        if new_batch.len() >= BATCH {
+            flush_new(lib, &mut new_batch, &mut report, &mut seen, progress)?;
+        }
+        if changed_batch.len() >= BATCH {
+            flush_changed(lib, &mut changed_batch, &mut report, &mut seen, progress)?;
+        }
+    }
+    flush_new(lib, &mut new_batch, &mut report, &mut seen, progress)?;
+    flush_changed(lib, &mut changed_batch, &mut report, &mut seen, progress)?;
+
+    // Anything left in `known` was not found on this (reachable) scan: soft-delete it,
+    // or purge it if it was already missing last time.
+    let (mut to_mark, mut to_purge) = (Vec::new(), Vec::new());
+    for k in known.into_values() {
+        if k.missing {
+            to_purge.push(k.id)
+        } else {
+            to_mark.push(k.id)
+        }
+    }
+    lib.mark_missing(&to_mark, scan_id)?;
+    lib.purge_items(&to_purge)?;
+    lib.prune_folders(watched.id, scan_id)?;
+    report.marked_missing = to_mark.len() as u64;
+    report.purged = to_purge.len() as u64;
+
+    progress(&seen);
+    Ok(report)
+}
+
+fn describe(
+    entry: &DirEntry,
+    path: &str,
+    folder_id: i64,
+    kind: MediaKind,
+    size: i64,
+    mtime_ms: i64,
+) -> NewItem {
+    let meta = read_image_meta(entry.path());
+    NewItem {
+        folder_id,
+        path: path.to_string(),
+        file_name: entry.file_name().to_string_lossy().into_owned(),
+        kind,
+        size,
+        mtime_ms,
+        width: meta.width,
+        height: meta.height,
+        orientation: meta.orientation,
+        taken_at: meta.taken_at.unwrap_or(mtime_ms.div_euclid(1000)),
+    }
+}
+
+fn flush_new(
+    lib: &Library,
+    batch: &mut Vec<NewItem>,
+    report: &mut ScanReport,
+    seen: &mut ScanProgress,
+    progress: &mut dyn FnMut(&ScanProgress),
+) -> Result<()> {
+    if batch.is_empty() {
+        return Ok(());
+    }
+    lib.insert_items(batch)?;
+    report.added += batch.len() as u64;
+    seen.added = report.added;
+    batch.clear();
+    progress(seen);
+    Ok(())
+}
+
+fn flush_changed(
+    lib: &Library,
+    batch: &mut Vec<(i64, NewItem)>,
+    report: &mut ScanReport,
+    seen: &mut ScanProgress,
+    progress: &mut dyn FnMut(&ScanProgress),
+) -> Result<()> {
+    if batch.is_empty() {
+        return Ok(());
+    }
+    lib.update_items(batch)?;
+    report.changed += batch.len() as u64;
+    seen.changed = report.changed;
+    batch.clear();
+    progress(seen);
+    Ok(())
+}
+
+fn is_hidden(entry: &DirEntry) -> bool {
+    entry
+        .file_name()
+        .to_str()
+        .is_some_and(|name| name.starts_with('.'))
+}
+
+fn mtime_ms(md: &Metadata) -> i64 {
+    md.modified()
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::testutil::{jpeg_bytes, jpeg_with_exif, png_bytes, temp_library, write_file};
+    use std::fs;
+
+    fn scan(lib: &Library, watched: &WatchedFolder, scan_id: i64) -> ScanReport {
+        scan_watched(lib, watched, scan_id, &mut |_| {}).unwrap()
+    }
+
+    fn key(path: &Path) -> String {
+        path.to_str().unwrap().to_string()
+    }
+
+    #[test]
+    fn indexes_supported_files_and_folders() {
+        let (dir, lib) = temp_library();
+        let root = dir.path().join("photos");
+        let a = write_file(
+            &root,
+            "a.jpg",
+            &jpeg_with_exif(4, 2, 6, "2024:06:15 12:30:45"),
+        );
+        write_file(&root, "2024/b.png", &png_bytes(3, 3));
+        write_file(&root, "notes.txt", b"ignored");
+        write_file(&root, ".hidden/c.jpg", &jpeg_bytes(8, 8));
+        write_file(&root, ".d.jpg", &jpeg_bytes(8, 8));
+        let watched = lib.add_watched_folder(&root).unwrap();
+
+        let mut last = None;
+        let report = scan_watched(&lib, &watched, 1, &mut |p| last = Some(*p)).unwrap();
+        assert_eq!(
+            (report.added, report.changed, report.offline),
+            (2, 0, false)
+        );
+        assert_eq!(last.unwrap().files_seen, 2);
+
+        let known = lib.known_items(watched.id).unwrap();
+        assert_eq!(known.len(), 2);
+        let item = lib.item(known[&key(&a)].id).unwrap().unwrap();
+        assert_eq!(
+            (item.orientation, item.taken_at, item.width),
+            (6, 1_718_454_645, 4)
+        );
+
+        let names: Vec<String> = lib.folders().unwrap().into_iter().map(|f| f.name).collect();
+        assert_eq!(names, ["photos", "2024"]);
+        let sub = &lib.folders().unwrap()[1];
+        assert_eq!(sub.parent_id, Some(lib.folders().unwrap()[0].id));
+    }
+
+    #[test]
+    fn capture_date_falls_back_to_mtime() {
+        let (dir, lib) = temp_library();
+        let root = dir.path().join("photos");
+        let p = write_file(&root, "a.png", &png_bytes(2, 2));
+        let watched = lib.add_watched_folder(&root).unwrap();
+        scan(&lib, &watched, 1);
+        let mtime_s = fs::metadata(&p)
+            .unwrap()
+            .modified()
+            .unwrap()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let id = lib.known_items(watched.id).unwrap()[&key(&p)].id;
+        assert_eq!(lib.item(id).unwrap().unwrap().taken_at, mtime_s);
+    }
+
+    #[test]
+    fn rescans_detect_unchanged_and_changed_files() {
+        let (dir, lib) = temp_library();
+        let root = dir.path().join("photos");
+        write_file(&root, "a.jpg", &jpeg_bytes(8, 8));
+        let b = write_file(&root, "b.jpg", &jpeg_bytes(8, 8));
+        let watched = lib.add_watched_folder(&root).unwrap();
+        scan(&lib, &watched, 1);
+
+        write_file(&root, "b.jpg", &jpeg_bytes(64, 64));
+        let report = scan(&lib, &watched, 2);
+        assert_eq!((report.added, report.changed, report.unchanged), (0, 1, 1));
+        let id = lib.known_items(watched.id).unwrap()[&key(&b)].id;
+        assert_eq!(lib.item(id).unwrap().unwrap().width, 64);
+    }
+
+    #[test]
+    fn missing_files_are_soft_deleted_then_purged() {
+        let (dir, lib) = temp_library();
+        let root = dir.path().join("photos");
+        let gone = write_file(&root, "trip/a.jpg", &jpeg_bytes(8, 8));
+        write_file(&root, "b.jpg", &jpeg_bytes(8, 8));
+        let watched = lib.add_watched_folder(&root).unwrap();
+        scan(&lib, &watched, 1);
+        let id = lib.known_items(watched.id).unwrap()[&key(&gone)].id;
+
+        fs::remove_dir_all(root.join("trip")).unwrap();
+        let report = scan(&lib, &watched, 2);
+        assert_eq!((report.marked_missing, report.purged), (1, 0));
+        assert_eq!(lib.item(id).unwrap().unwrap().missing_since, Some(2));
+        assert_eq!(
+            lib.folders().unwrap().len(),
+            2,
+            "folder kept while it holds a soft-deleted item"
+        );
+
+        let report = scan(&lib, &watched, 3);
+        assert_eq!((report.marked_missing, report.purged), (0, 1));
+        assert!(lib.item(id).unwrap().is_none());
+        assert_eq!(lib.folders().unwrap().len(), 1, "empty folder pruned");
+    }
+
+    #[test]
+    fn reappearing_files_are_restored() {
+        let (dir, lib) = temp_library();
+        let root = dir.path().join("photos");
+        let a = write_file(&root, "a.jpg", &jpeg_bytes(8, 8));
+        let bytes = fs::read(&a).unwrap();
+        let watched = lib.add_watched_folder(&root).unwrap();
+        scan(&lib, &watched, 1);
+        fs::remove_file(&a).unwrap();
+        scan(&lib, &watched, 2);
+        fs::write(&a, bytes).unwrap();
+        let report = scan(&lib, &watched, 3);
+        assert_eq!(report.changed, 1);
+        let id = lib.known_items(watched.id).unwrap()[&key(&a)].id;
+        assert_eq!(lib.item(id).unwrap().unwrap().missing_since, None);
+    }
+
+    #[test]
+    fn unreachable_folder_goes_offline_and_keeps_items() {
+        let (dir, lib) = temp_library();
+        let root = dir.path().join("photos");
+        write_file(&root, "a.jpg", &jpeg_bytes(8, 8));
+        let watched = lib.add_watched_folder(&root).unwrap();
+        scan(&lib, &watched, 1);
+
+        fs::rename(&root, dir.path().join("unplugged")).unwrap();
+        let report = scan(&lib, &watched, 2);
+        assert!(report.offline);
+        assert!(!lib.watched_folders().unwrap()[0].online);
+        assert_eq!(lib.known_items(watched.id).unwrap().len(), 1);
+        assert!(
+            lib.known_items(watched.id)
+                .unwrap()
+                .values()
+                .all(|k| !k.missing)
+        );
+
+        fs::rename(dir.path().join("unplugged"), &root).unwrap();
+        assert!(!scan(&lib, &watched, 3).offline);
+        assert!(lib.watched_folders().unwrap()[0].online);
+    }
+}
