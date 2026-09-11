@@ -20,20 +20,39 @@ export class LibraryStore {
   private pages = new PageCache<GridEntry>((o, c) => api.gridRows(o, c), () => void this.refresh());
   private unlisten: UnlistenFn[] = [];
   private nextToast = 0;
+  private initPromise: Promise<void> | null = null;
+  /** Bumped by `dispose()` so an in-flight `init()` can tell it was cancelled. */
+  private generation = 0;
 
-  async init(): Promise<void> {
-    this.unlisten = await Promise.all([
-      events.onLibraryChanged(() => void this.refresh()),
-      events.onFolderStatus(() => void this.refreshFolders()),
-      events.onScanProgress((e) => {
-        this.scans[e.watchedId] = e;
-        if (e.done) void this.refreshFolders();
-      }),
-    ]);
-    await Promise.all([this.refresh(), this.refreshFolders()]);
+  /** Idempotent and safe to call again (root remount, HMR): a second call while
+   *  already initialised/initialising is a no-op, and never leaves more than the
+   *  three event subscriptions registered here. */
+  init(): Promise<void> {
+    if (this.initPromise) return this.initPromise;
+    const generation = ++this.generation;
+    this.initPromise = (async () => {
+      const unlisten = await Promise.all([
+        events.onLibraryChanged(() => void this.refresh().catch(this.reportError)),
+        events.onFolderStatus(() => void this.refreshFolders().catch(this.reportError)),
+        events.onScanProgress((e) => {
+          this.scans[e.watchedId] = e;
+          if (e.done) void this.refreshFolders().catch(this.reportError);
+        }),
+      ]);
+      if (generation !== this.generation) {
+        // dispose() ran while we were subscribing: undo it instead of leaking.
+        for (const u of unlisten) u();
+        return;
+      }
+      this.unlisten = unlisten;
+      await Promise.all([this.refresh(), this.refreshFolders()]);
+    })();
+    return this.initPromise;
   }
 
   dispose(): void {
+    this.generation++;
+    this.initPromise = null;
     for (const u of this.unlisten) u();
     this.unlisten = [];
   }
