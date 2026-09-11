@@ -8,6 +8,10 @@ use std::{
     collections::HashMap,
     fs::Metadata,
     path::{Path, PathBuf},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::UNIX_EPOCH,
 };
 use walkdir::{DirEntry, WalkDir};
@@ -29,6 +33,16 @@ pub struct ScanReport {
     pub unchanged: u64,
     pub marked_missing: u64,
     pub purged: u64,
+    pub cancelled: bool,
+}
+
+/// Per-scan settings.
+#[derive(Clone, Debug, Default)]
+pub struct ScanOptions {
+    /// Directories never walked, e.g. photon's own cache and database folders.
+    pub excluded: Vec<PathBuf>,
+    /// Checked before each entry; once set, the scan stops without marking anything missing.
+    pub cancel: Arc<AtomicBool>,
 }
 
 /// Brings the library in line with what is on disk under `watched`.
@@ -37,10 +51,15 @@ pub struct ScanReport {
 /// `scan_id` marks the folders seen by this scan, so folders from older scans can be
 /// pruned. It must increase monotonically per watched folder; use [`crate::now_ms`].
 /// `scan_watched` must not run concurrently on the same or overlapping watched folders.
+///
+/// `options.excluded` lists directories never walked. `options.cancel`, checked before each
+/// entry, lets a scan be stopped early: it returns with `cancelled: true` and never marks,
+/// purges or prunes anything, since anything unreached is unknown, not missing.
 pub fn scan_watched(
     lib: &Library,
     watched: &WatchedFolder,
     scan_id: i64,
+    options: &ScanOptions,
     progress: &mut dyn FnMut(&ScanProgress),
 ) -> Result<ScanReport> {
     let root = Path::new(&watched.path);
@@ -66,12 +85,23 @@ pub fn scan_watched(
     // Set when an error gives no path, or points at the root itself: we can no longer
     // tell which `known` entries are safe to touch, so skip mark/purge/prune entirely.
     let mut skip_mark_purge = false;
+    let mut cancelled = false;
 
     let walker = WalkDir::new(root)
         .follow_links(false)
         .into_iter()
-        .filter_entry(|e| e.depth() == 0 || !is_hidden(e));
+        .filter_entry(|e| {
+            (e.depth() == 0 || !is_hidden(e))
+                && !options
+                    .excluded
+                    .iter()
+                    .any(|x| crate::paths::is_within(e.path(), x))
+        });
     for entry in walker {
+        if options.cancel.load(Ordering::Relaxed) {
+            cancelled = true;
+            break;
+        }
         let entry = match entry {
             Ok(entry) => entry,
             Err(err) => {
@@ -143,6 +173,15 @@ pub fn scan_watched(
     }
     flush_new(lib, &mut new_batch, &mut report, &mut seen, progress)?;
     flush_changed(lib, &mut changed_batch, &mut report, &mut seen, progress)?;
+
+    if cancelled {
+        // We stopped early, so everything we didn't reach is unknown, not missing.
+        progress(&seen);
+        return Ok(ScanReport {
+            cancelled: true,
+            ..report
+        });
+    }
 
     if skip_mark_purge {
         // We couldn't tell what happened to the rest of the tree; don't guess.
@@ -276,7 +315,7 @@ mod tests {
     use std::fs;
 
     fn scan(lib: &Library, watched: &WatchedFolder, scan_id: i64) -> ScanReport {
-        scan_watched(lib, watched, scan_id, &mut |_| {}).unwrap()
+        scan_watched(lib, watched, scan_id, &ScanOptions::default(), &mut |_| {}).unwrap()
     }
 
     fn key(path: &Path) -> String {
@@ -307,7 +346,10 @@ mod tests {
         let watched = lib.add_watched_folder(&root, &[]).unwrap();
 
         let mut last = None;
-        let report = scan_watched(&lib, &watched, 1, &mut |p| last = Some(*p)).unwrap();
+        let report = scan_watched(&lib, &watched, 1, &ScanOptions::default(), &mut |p| {
+            last = Some(*p)
+        })
+        .unwrap();
         assert_eq!(
             (report.added, report.changed, report.offline),
             (2, 0, false)
@@ -488,6 +530,44 @@ mod tests {
 
         fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
 
+        assert_eq!(lib.item(id).unwrap().unwrap().missing_since, None);
+    }
+
+    #[test]
+    fn excluded_subtrees_are_not_indexed() {
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        write_file(&root, "a.jpg", &jpeg_bytes(8, 8));
+        write_file(&root, "cache/b.jpg", &jpeg_bytes(8, 8));
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
+        let options = ScanOptions {
+            excluded: vec![root.join("cache")],
+            ..ScanOptions::default()
+        };
+        let report = scan_watched(&lib, &watched, 1, &options, &mut |_| {}).unwrap();
+        assert_eq!(report.added, 1);
+        assert!(lib.folders().unwrap().iter().all(|f| f.name != "cache"));
+    }
+
+    #[test]
+    fn cancelled_scan_leaves_unseen_items_alone() {
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        write_file(&root, "a.jpg", &jpeg_bytes(8, 8));
+        let b = write_file(&root, "b.jpg", &jpeg_bytes(8, 8));
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
+        scan(&lib, &watched, 1);
+        fs::remove_file(&b).unwrap();
+
+        let options = ScanOptions::default();
+        options
+            .cancel
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        let report = scan_watched(&lib, &watched, 2, &options, &mut |_| {}).unwrap();
+
+        assert!(report.cancelled);
+        assert_eq!((report.marked_missing, report.purged), (0, 0));
+        let id = lib.known_items(watched.id).unwrap()[&key(&b)].id;
         assert_eq!(lib.item(id).unwrap().unwrap().missing_since, None);
     }
 }
