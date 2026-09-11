@@ -4,6 +4,7 @@ pub mod commands;
 pub mod engine;
 pub mod error;
 pub mod events;
+pub mod protocol;
 
 #[cfg(test)]
 mod testutil;
