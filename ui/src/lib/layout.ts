@@ -48,7 +48,7 @@ export function totalHeight(rows: Row[]): number {
   return last ? last.top + last.height : 0;
 }
 
-/** Index of the last row whose top is at or above `y`. */
+/** Index of the last row whose top is at or below `y` (the row containing `y`). */
 export function rowIndexAt(rows: Row[], y: number): number {
   let lo = 0;
   let hi = rows.length - 1;
