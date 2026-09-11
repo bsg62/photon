@@ -33,6 +33,10 @@ pub struct ScanReport {
 
 /// Brings the library in line with what is on disk under `watched`.
 /// Never modifies files; only reads directory listings, metadata and EXIF.
+///
+/// `scan_id` marks the folders seen by this scan, so folders from older scans can be
+/// pruned. It must increase monotonically per watched folder; use [`crate::now_ms`].
+/// `scan_watched` must not run concurrently on the same or overlapping watched folders.
 pub fn scan_watched(
     lib: &Library,
     watched: &WatchedFolder,
@@ -47,7 +51,8 @@ pub fn scan_watched(
             ..ScanReport::default()
         });
     }
-    lib.set_watched_online(watched.id, true)?;
+    // Online/offline is decided once, below, after the empty-root guard, so the folder
+    // doesn't flicker online and back.
 
     let mut known = lib.known_items(watched.id)?;
     let mut folder_ids: HashMap<PathBuf, i64> = HashMap::new();
@@ -141,6 +146,7 @@ pub fn scan_watched(
 
     if skip_mark_purge {
         // We couldn't tell what happened to the rest of the tree; don't guess.
+        lib.set_watched_online(watched.id, true)?;
         progress(&seen);
         return Ok(report);
     }
@@ -162,6 +168,7 @@ pub fn scan_watched(
             ..ScanReport::default()
         });
     }
+    lib.set_watched_online(watched.id, true)?;
 
     // Anything left in `known` was not found on this (reachable) scan: soft-delete it,
     // or purge it if it was already missing last time.
@@ -173,8 +180,9 @@ pub fn scan_watched(
             to_mark.push(k.id)
         }
     }
+    let now = crate::now_ms();
     for chunk in to_mark.chunks(BATCH) {
-        lib.mark_missing(chunk, scan_id)?;
+        lib.mark_missing(chunk, now)?;
     }
     for chunk in to_purge.chunks(BATCH) {
         lib.purge_items(chunk)?;
@@ -357,9 +365,14 @@ mod tests {
         let id = lib.known_items(watched.id).unwrap()[&key(&gone)].id;
 
         fs::remove_dir_all(root.join("trip")).unwrap();
+        let before = crate::now_ms();
         let report = scan(&lib, &watched, 2);
         assert_eq!((report.marked_missing, report.purged), (1, 0));
-        assert_eq!(lib.item(id).unwrap().unwrap().missing_since, Some(2));
+        let since = lib.item(id).unwrap().unwrap().missing_since;
+        assert!(
+            since.is_some_and(|t| t >= before),
+            "missing_since is a timestamp, got {since:?}"
+        );
         assert_eq!(
             lib.folders().unwrap().len(),
             2,
@@ -377,15 +390,22 @@ mod tests {
         let (dir, lib) = temp_library();
         let root = dir.path().join("photos");
         let a = write_file(&root, "a.jpg", &jpeg_bytes(8, 8));
+        // Keeps the root non-empty so scan 2 doesn't hit the empty-root offline guard.
+        write_file(&root, "keep.jpg", &jpeg_bytes(8, 8));
         let bytes = fs::read(&a).unwrap();
         let watched = lib.add_watched_folder(&root).unwrap();
         scan(&lib, &watched, 1);
+        let id = lib.known_items(watched.id).unwrap()[&key(&a)].id;
+
         fs::remove_file(&a).unwrap();
-        scan(&lib, &watched, 2);
+        let report = scan(&lib, &watched, 2);
+        assert_eq!((report.offline, report.marked_missing), (false, 1));
+        assert!(lib.item(id).unwrap().unwrap().missing_since.is_some());
+
         fs::write(&a, bytes).unwrap();
         let report = scan(&lib, &watched, 3);
-        assert_eq!(report.changed, 1);
-        let id = lib.known_items(watched.id).unwrap()[&key(&a)].id;
+        assert_eq!((report.changed, report.purged), (1, 0));
+        assert_eq!(lib.known_items(watched.id).unwrap()[&key(&a)].id, id);
         assert_eq!(lib.item(id).unwrap().unwrap().missing_since, None);
     }
 
