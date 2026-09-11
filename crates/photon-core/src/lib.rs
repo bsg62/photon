@@ -5,6 +5,7 @@ pub mod error;
 pub mod library;
 pub mod media;
 pub mod metadata;
+pub mod thumbs;
 
 #[cfg(test)]
 mod testutil;
