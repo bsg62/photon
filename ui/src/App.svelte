@@ -6,8 +6,10 @@
   import Grid from './components/Grid.svelte';
   import StatusBar from './components/StatusBar.svelte';
   import Toasts from './components/Toasts.svelte';
+  import Viewer from './components/Viewer.svelte';
 
   let grid: ReturnType<typeof Grid> | undefined = $state();
+  let viewerAt = $state<number | null>(null);
 
   onMount(() => {
     library.init().catch(library.reportError);
@@ -16,6 +18,14 @@
 
   function open(offset: number) {
     library.selected = offset;
+    viewerAt = offset;
+  }
+
+  function closeViewer(at: number) {
+    viewerAt = null;
+    library.selected = at;
+    grid?.scrollToOffset(at, 'nearest');
+    grid?.focus();
   }
 
   async function jump(folderId: number) {
@@ -27,12 +37,13 @@
 </script>
 
 <div class="app">
-  <aside class="sidebar"><FolderTree onjump={jump} /></aside>
-  <main class="content">
+  <aside class="sidebar" inert={viewerAt !== null}><FolderTree onjump={jump} /></aside>
+  <main class="content" inert={viewerAt !== null}>
     <Grid bind:this={grid} onopen={open} />
   </main>
   <div class="statusbar"><StatusBar /></div>
 </div>
+{#if viewerAt !== null}<Viewer offset={viewerAt} onclose={closeViewer} />{/if}
 <Toasts />
 
 <style>
