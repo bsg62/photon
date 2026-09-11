@@ -68,12 +68,19 @@ impl ThumbCache {
     }
 
     /// Removes thumbnails whose fingerprint is not in `live`. Returns the number of files removed.
+    ///
+    /// GC is best-effort: an unreadable directory entry is logged and skipped rather than
+    /// aborting the whole walk.
     pub fn collect_garbage(&self, live: &HashSet<u64>) -> Result<usize> {
         let mut removed = 0;
-        for entry in walkdir::WalkDir::new(&self.root)
-            .into_iter()
-            .filter_map(|e| e.ok())
-        {
+        for entry in walkdir::WalkDir::new(&self.root).into_iter() {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(err) => {
+                    tracing::warn!(%err, "skipping unreadable cache entry");
+                    continue;
+                }
+            };
             let path = entry.path();
             if path.extension().and_then(|e| e.to_str()) != Some("webp") {
                 continue;
