@@ -1,0 +1,26 @@
+[package]
+name = "photon-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "gif", "webp"] }
+kamadak-exif = "0.6.1"
+parking_lot = "0.12.5"
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+serde = { version = "1.0.229", features = ["derive"] }
+tempfile = "3.27.0"
+thiserror = "2.0.20"
+tracing = "0.1.44"
+walkdir = "2.5.0"
+webp = "0.3.1"
+xxhash-rust = { version = "0.8.18", features = ["xxh3"] }
+
+[dev-dependencies]
+criterion = "0.8.2"
+serde_json = "1"
+
+[[bench]]
+name = "grid"
+harness = false
