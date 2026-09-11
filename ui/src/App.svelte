@@ -1,6 +1,8 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { api } from './lib/api';
   import { library } from './lib/library.svelte';
+  import FolderTree from './components/FolderTree.svelte';
   import Grid from './components/Grid.svelte';
   import StatusBar from './components/StatusBar.svelte';
   import Toasts from './components/Toasts.svelte';
@@ -15,10 +17,17 @@
   function open(offset: number) {
     library.selected = offset;
   }
+
+  async function jump(folderId: number) {
+    const offset = await api.gridOffsetOfFolder(folderId).catch(() => null);
+    if (offset === null) return;
+    library.selected = offset;
+    grid?.scrollToOffset(offset, 'start');
+  }
 </script>
 
 <div class="app">
-  <aside class="sidebar"></aside>
+  <aside class="sidebar"><FolderTree onjump={jump} /></aside>
   <main class="content">
     <Grid bind:this={grid} onopen={open} />
   </main>
