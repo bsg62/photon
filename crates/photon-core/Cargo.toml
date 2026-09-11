@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+dunce = "1.0.5"
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "gif", "webp"] }
 kamadak-exif = "0.6.1"
 parking_lot = "0.12.5"

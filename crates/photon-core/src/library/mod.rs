@@ -54,8 +54,10 @@ fn configure(conn: &Connection) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Error, testutil::temp_library};
-    use std::path::Path;
+    use crate::{
+        Error,
+        testutil::{temp_library, watch},
+    };
 
     #[test]
     fn open_creates_schema_and_is_idempotent() {
@@ -100,11 +102,11 @@ mod tests {
     #[test]
     fn watched_folder_lifecycle() {
         let (_dir, lib) = temp_library();
-        let a = lib.add_watched_folder(Path::new("/photos/a")).unwrap();
-        let again = lib.add_watched_folder(Path::new("/photos/a")).unwrap();
+        let a = watch(&lib, "/photos/a");
+        let again = watch(&lib, "/photos/a");
         assert_eq!(a, again);
         assert!(a.online);
-        let b = lib.add_watched_folder(Path::new("/photos/b")).unwrap();
+        let b = watch(&lib, "/photos/b");
 
         lib.set_watched_online(b.id, false).unwrap();
         let all = lib.watched_folders().unwrap();

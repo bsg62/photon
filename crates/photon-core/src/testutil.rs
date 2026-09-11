@@ -16,11 +16,17 @@ pub fn temp_library() -> (TempDir, Library) {
 
 /// Registers `path` as a watched folder with a root folder row. Returns (watched_id, folder_id).
 pub fn seed_folder(lib: &Library, path: &Path) -> (i64, i64) {
-    let watched = lib.add_watched_folder(path).unwrap();
+    let watched = watch(lib, path.to_str().unwrap());
     let folder = lib
         .upsert_folder(watched.id, None, path.to_str().unwrap(), 1)
         .unwrap();
     (watched.id, folder)
+}
+
+/// Inserts a watched-folder row for a synthetic path, without the filesystem validation
+/// `Library::add_watched_folder` performs.
+pub fn watch(lib: &Library, path: &str) -> crate::library::WatchedFolder {
+    lib.register_watched_folder(path).unwrap()
 }
 
 pub fn new_item(folder_id: i64, path: &str, taken_at: i64) -> NewItem {

@@ -16,6 +16,12 @@ pub enum Error {
     NotFound(i64),
     #[error("thumbnail generation failed: {0}")]
     ThumbFailed(String),
+    #[error("folder not found: {0:?}")]
+    FolderNotFound(PathBuf),
+    #[error("folder overlaps the watched folder {existing}")]
+    FolderOverlap { existing: String },
+    #[error("{path} is used by photon itself and cannot be watched")]
+    FolderExcluded { path: String },
 }
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;

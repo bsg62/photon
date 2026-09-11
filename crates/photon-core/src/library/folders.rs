@@ -1,10 +1,12 @@
 use super::Library;
+use crate::paths;
 use crate::{Error, Result};
 use rusqlite::{Row, params};
 use serde::Serialize;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct WatchedFolder {
     pub id: i64,
     pub path: String,
@@ -12,19 +14,52 @@ pub struct WatchedFolder {
 }
 
 impl Library {
-    /// Registers a folder to watch. Adding the same path twice returns the existing entry.
-    pub fn add_watched_folder(&self, path: &Path) -> Result<WatchedFolder> {
-        let path_str = path
+    /// Registers a folder to watch after validating it. The path is canonicalised, and adding
+    /// an already watched folder returns the existing entry. A folder that contains or sits
+    /// inside another watched folder is refused, as is anything equal to or inside
+    /// photon's own directories in `excluded`.
+    pub fn add_watched_folder(&self, path: &Path, excluded: &[PathBuf]) -> Result<WatchedFolder> {
+        let canonical =
+            dunce::canonicalize(path).map_err(|_| Error::FolderNotFound(path.to_path_buf()))?;
+        if !canonical.is_dir() {
+            return Err(Error::FolderNotFound(path.to_path_buf()));
+        }
+        for ex in excluded {
+            let ex = dunce::canonicalize(ex).unwrap_or_else(|_| ex.clone());
+            if paths::is_within(&canonical, &ex) {
+                return Err(Error::FolderExcluded {
+                    path: ex.display().to_string(),
+                });
+            }
+        }
+        for existing in self.watched_folders()? {
+            let existing_path = Path::new(&existing.path);
+            if paths::same_path(&canonical, existing_path) {
+                return Ok(existing);
+            }
+            if paths::overlaps(&canonical, existing_path) {
+                return Err(Error::FolderOverlap {
+                    existing: existing.path,
+                });
+            }
+        }
+        let path_str = canonical
             .to_str()
-            .ok_or_else(|| Error::NonUtf8Path(path.to_path_buf()))?;
+            .ok_or_else(|| Error::NonUtf8Path(canonical.clone()))?;
+        self.register_watched_folder(path_str)
+    }
+
+    /// Inserts a watched-folder row as given, without validation. Used by
+    /// `add_watched_folder` and by tests that work with synthetic paths.
+    pub(crate) fn register_watched_folder(&self, path: &str) -> Result<WatchedFolder> {
         let conn = self.writer();
         conn.execute(
             "INSERT OR IGNORE INTO watched_folders (path) VALUES (?1)",
-            params![path_str],
+            params![path],
         )?;
         let watched = conn.query_row(
             "SELECT id, path, online FROM watched_folders WHERE path = ?1",
-            params![path_str],
+            params![path],
             row_to_watched,
         )?;
         Ok(watched)
@@ -65,6 +100,7 @@ fn row_to_watched(row: &Row<'_>) -> rusqlite::Result<WatchedFolder> {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Folder {
     pub id: i64,
     pub watched_id: i64,
@@ -149,12 +185,105 @@ pub(crate) fn sort_key(path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testutil::{new_item, temp_library};
+    use crate::Error;
+    use crate::testutil::{new_item, temp_library, watch};
+    use std::path::PathBuf;
+
+    /// Creates each directory under `root` and returns its canonical path.
+    fn dirs(root: &Path, names: &[&str]) -> Vec<PathBuf> {
+        names
+            .iter()
+            .map(|name| {
+                let path = name
+                    .split('/')
+                    .fold(root.to_path_buf(), |p, part| p.join(part));
+                std::fs::create_dir_all(&path).unwrap();
+                dunce::canonicalize(path).unwrap()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn add_watched_folder_canonicalises_and_dedupes() {
+        let (dir, lib) = temp_library();
+        let d = dirs(dir.path(), &["photos"]);
+        let a = lib
+            .add_watched_folder(&dir.path().join("photos").join("."), &[])
+            .unwrap();
+        assert_eq!(Path::new(&a.path), d[0].as_path());
+        assert_eq!(lib.add_watched_folder(&d[0], &[]).unwrap(), a);
+        assert_eq!(lib.watched_folders().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn add_watched_folder_rejects_missing_and_overlapping_folders() {
+        let (dir, lib) = temp_library();
+        let d = dirs(dir.path(), &["photos/2024", "other"]);
+        let photos = d[0].parent().unwrap().to_path_buf();
+        lib.add_watched_folder(&photos, &[]).unwrap();
+
+        assert!(matches!(
+            lib.add_watched_folder(&d[0], &[]),
+            Err(Error::FolderOverlap { .. })
+        ));
+        assert!(matches!(
+            lib.add_watched_folder(dir.path(), &[]),
+            Err(Error::FolderOverlap { .. })
+        ));
+        assert!(lib.add_watched_folder(&d[1], &[]).is_ok());
+        assert!(matches!(
+            lib.add_watched_folder(&dir.path().join("missing"), &[]),
+            Err(Error::FolderNotFound(_))
+        ));
+    }
+
+    #[test]
+    fn add_watched_folder_rejects_photons_own_directories() {
+        let (dir, lib) = temp_library();
+        let d = dirs(dir.path(), &["cache/thumbs"]);
+        let cache = d[0].parent().unwrap().to_path_buf();
+        let excluded = [cache.clone()];
+        assert!(matches!(
+            lib.add_watched_folder(&cache, &excluded),
+            Err(Error::FolderExcluded { .. })
+        ));
+        assert!(matches!(
+            lib.add_watched_folder(&d[0], &excluded),
+            Err(Error::FolderExcluded { .. })
+        ));
+        // A folder containing an excluded one is fine: the scanner skips the excluded part.
+        assert!(lib.add_watched_folder(dir.path(), &excluded).is_ok());
+    }
+
+    #[cfg(any(target_os = "macos", windows))]
+    #[test]
+    fn duplicate_detection_ignores_case() {
+        let (dir, lib) = temp_library();
+        let d = dirs(dir.path(), &["Photos"]);
+        let a = lib.add_watched_folder(&d[0], &[]).unwrap();
+        let again = lib
+            .add_watched_folder(&dir.path().join("PHOTOS"), &[])
+            .unwrap();
+        assert_eq!(again.id, a.id);
+    }
+
+    #[test]
+    fn folders_serialise_as_camel_case() {
+        let folder = Folder {
+            id: 1,
+            watched_id: 2,
+            parent_id: None,
+            path: "p".into(),
+            name: "p".into(),
+        };
+        let json = serde_json::to_string(&folder).unwrap();
+        assert!(json.contains("\"watchedId\":2") && json.contains("\"parentId\":null"));
+    }
 
     #[test]
     fn upsert_folder_is_idempotent_and_tracks_parent() {
         let (_dir, lib) = temp_library();
-        let w = lib.add_watched_folder(Path::new("/photos")).unwrap();
+        let w = watch(&lib, "/photos");
         let root = lib.upsert_folder(w.id, None, "/photos", 1).unwrap();
         let child = lib
             .upsert_folder(w.id, Some(root), "/photos/2024", 1)
@@ -182,7 +311,7 @@ mod tests {
     #[test]
     fn folders_are_listed_in_tree_order() {
         let (_dir, lib) = temp_library();
-        let w = lib.add_watched_folder(Path::new("/p")).unwrap();
+        let w = watch(&lib, "/p");
         let root = lib.upsert_folder(w.id, None, "/p", 1).unwrap();
         lib.upsert_folder(w.id, Some(root), "/p/a b", 1).unwrap();
         let a = lib.upsert_folder(w.id, Some(root), "/p/a", 1).unwrap();
@@ -209,7 +338,7 @@ mod tests {
     #[test]
     fn prune_removes_only_unseen_empty_leaf_folders() {
         let (_dir, lib) = temp_library();
-        let w = lib.add_watched_folder(Path::new("/p")).unwrap();
+        let w = watch(&lib, "/p");
         let root = lib.upsert_folder(w.id, None, "/p", 1).unwrap();
         lib.upsert_folder(w.id, Some(root), "/p/gone", 1).unwrap();
         let kept = lib.upsert_folder(w.id, Some(root), "/p/kept", 1).unwrap();

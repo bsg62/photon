@@ -10,7 +10,8 @@ use std::{hint::black_box, path::Path};
 fn synthetic_library(dir: &Path, folders: usize, per_folder: usize) -> Library {
     let lib = Library::open(&dir.join("bench.db")).unwrap();
     let root = dir.join("photos");
-    let watched = lib.add_watched_folder(&root).unwrap();
+    std::fs::create_dir_all(&root).unwrap();
+    let watched = lib.add_watched_folder(&root, &[]).unwrap();
     let root_id = lib
         .upsert_folder(watched.id, None, root.to_str().unwrap(), 1)
         .unwrap();

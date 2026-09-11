@@ -18,7 +18,7 @@ fn main() -> photon_core::Result<()> {
     };
 
     let lib = Arc::new(Library::open(&PathBuf::from(db))?);
-    let watched = lib.add_watched_folder(&PathBuf::from(folder))?;
+    let watched = lib.add_watched_folder(&PathBuf::from(folder), &[PathBuf::from(&cache)])?;
 
     let started = Instant::now();
     let report = scan_watched(&lib, &watched, now_ms(), &mut |p| {
@@ -37,7 +37,7 @@ fn main() -> photon_core::Result<()> {
 
     let service = ThumbService::start(
         lib.clone(),
-        Arc::new(ThumbCache::new(cache)),
+        Arc::new(ThumbCache::new(cache.clone())),
         default_workers(),
     );
     let started = Instant::now();

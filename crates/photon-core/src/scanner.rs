@@ -283,10 +283,18 @@ mod tests {
         path.to_str().unwrap().to_string()
     }
 
+    /// The watched root, canonicalised the way `add_watched_folder` will store it (on macOS
+    /// the temp dir lives behind the /var → /private/var symlink).
+    fn photos_root(dir: &tempfile::TempDir) -> std::path::PathBuf {
+        let root = dir.path().join("photos");
+        std::fs::create_dir_all(&root).unwrap();
+        dunce::canonicalize(root).unwrap()
+    }
+
     #[test]
     fn indexes_supported_files_and_folders() {
         let (dir, lib) = temp_library();
-        let root = dir.path().join("photos");
+        let root = photos_root(&dir);
         let a = write_file(
             &root,
             "a.jpg",
@@ -296,7 +304,7 @@ mod tests {
         write_file(&root, "notes.txt", b"ignored");
         write_file(&root, ".hidden/c.jpg", &jpeg_bytes(8, 8));
         write_file(&root, ".d.jpg", &jpeg_bytes(8, 8));
-        let watched = lib.add_watched_folder(&root).unwrap();
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
 
         let mut last = None;
         let report = scan_watched(&lib, &watched, 1, &mut |p| last = Some(*p)).unwrap();
@@ -323,9 +331,9 @@ mod tests {
     #[test]
     fn capture_date_falls_back_to_mtime() {
         let (dir, lib) = temp_library();
-        let root = dir.path().join("photos");
+        let root = photos_root(&dir);
         let p = write_file(&root, "a.png", &png_bytes(2, 2));
-        let watched = lib.add_watched_folder(&root).unwrap();
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
         scan(&lib, &watched, 1);
         let mtime_s = fs::metadata(&p)
             .unwrap()
@@ -341,10 +349,10 @@ mod tests {
     #[test]
     fn rescans_detect_unchanged_and_changed_files() {
         let (dir, lib) = temp_library();
-        let root = dir.path().join("photos");
+        let root = photos_root(&dir);
         write_file(&root, "a.jpg", &jpeg_bytes(8, 8));
         let b = write_file(&root, "b.jpg", &jpeg_bytes(8, 8));
-        let watched = lib.add_watched_folder(&root).unwrap();
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
         scan(&lib, &watched, 1);
 
         write_file(&root, "b.jpg", &jpeg_bytes(64, 64));
@@ -357,10 +365,10 @@ mod tests {
     #[test]
     fn missing_files_are_soft_deleted_then_purged() {
         let (dir, lib) = temp_library();
-        let root = dir.path().join("photos");
+        let root = photos_root(&dir);
         let gone = write_file(&root, "trip/a.jpg", &jpeg_bytes(8, 8));
         write_file(&root, "b.jpg", &jpeg_bytes(8, 8));
-        let watched = lib.add_watched_folder(&root).unwrap();
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
         scan(&lib, &watched, 1);
         let id = lib.known_items(watched.id).unwrap()[&key(&gone)].id;
 
@@ -388,12 +396,12 @@ mod tests {
     #[test]
     fn reappearing_files_are_restored() {
         let (dir, lib) = temp_library();
-        let root = dir.path().join("photos");
+        let root = photos_root(&dir);
         let a = write_file(&root, "a.jpg", &jpeg_bytes(8, 8));
         // Keeps the root non-empty so scan 2 doesn't hit the empty-root offline guard.
         write_file(&root, "keep.jpg", &jpeg_bytes(8, 8));
         let bytes = fs::read(&a).unwrap();
-        let watched = lib.add_watched_folder(&root).unwrap();
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
         scan(&lib, &watched, 1);
         let id = lib.known_items(watched.id).unwrap()[&key(&a)].id;
 
@@ -412,9 +420,9 @@ mod tests {
     #[test]
     fn unreachable_folder_goes_offline_and_keeps_items() {
         let (dir, lib) = temp_library();
-        let root = dir.path().join("photos");
+        let root = photos_root(&dir);
         write_file(&root, "a.jpg", &jpeg_bytes(8, 8));
-        let watched = lib.add_watched_folder(&root).unwrap();
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
         scan(&lib, &watched, 1);
 
         fs::rename(&root, dir.path().join("unplugged")).unwrap();
@@ -437,9 +445,9 @@ mod tests {
     #[test]
     fn empty_reachable_root_is_treated_as_offline() {
         let (dir, lib) = temp_library();
-        let root = dir.path().join("photos");
+        let root = photos_root(&dir);
         write_file(&root, "a.jpg", &jpeg_bytes(8, 8));
-        let watched = lib.add_watched_folder(&root).unwrap();
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
         scan(&lib, &watched, 1);
 
         fs::remove_file(root.join("a.jpg")).unwrap();
@@ -460,10 +468,10 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
 
         let (dir, lib) = temp_library();
-        let root = dir.path().join("photos");
+        let root = photos_root(&dir);
         let locked = root.join("locked");
         let a = write_file(&root, "locked/a.jpg", &jpeg_bytes(8, 8));
-        let watched = lib.add_watched_folder(&root).unwrap();
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
         scan(&lib, &watched, 1);
         let id = lib.known_items(watched.id).unwrap()[&key(&a)].id;
 
