@@ -116,7 +116,15 @@ impl Drop for ThumbService {
     }
 }
 
-/// Generates thumbnails for one item. Decode failures are recorded on the item, not returned.
+/// Generates thumbnails for one item.
+///
+/// A decode (render) failure means the source file itself is bad: it's recorded as
+/// `Failed` on the item, not returned, so the worker doesn't retry it. A cache write
+/// (store) failure means the destination is unwritable (full disk, permissions): it's
+/// propagated as `Err` and the item is left `Pending` so it's retried later.
+///
+/// State writes go through `set_thumb_state_if_unchanged` so a rescan that replaces this
+/// item mid-decode (resetting it to `Pending`) can't be clobbered by a stale result.
 fn process(lib: &Library, cache: &ThumbCache, id: i64) -> Result<()> {
     let Some(item) = lib.item(id)? else {
         return Ok(());
@@ -125,14 +133,21 @@ fn process(lib: &Library, cache: &ThumbCache, id: i64) -> Result<()> {
         return Ok(());
     }
     let fp = item.fingerprint();
-    if !cache.is_complete(fp)
-        && let Err(err) = cache.generate(Path::new(&item.path), item.orientation, fp)
-    {
-        lib.set_thumb_state(id, ThumbState::Failed, Some(&err.to_string()))?;
-        return Ok(());
+    if !cache.is_complete(fp) {
+        match cache.render(Path::new(&item.path), item.orientation) {
+            Ok((preview, grid)) => cache.store(fp, &preview, &grid)?,
+            Err(err) => {
+                lib.set_thumb_state_if_unchanged(
+                    &item,
+                    ThumbState::Failed,
+                    Some(&err.to_string()),
+                )?;
+                return Ok(());
+            }
+        }
     }
     if item.thumb_state != ThumbState::Ready {
-        lib.set_thumb_state(id, ThumbState::Ready, None)?;
+        lib.set_thumb_state_if_unchanged(&item, ThumbState::Ready, None)?;
     }
     Ok(())
 }
@@ -224,6 +239,27 @@ mod tests {
             service.get_or_generate(9_999, ThumbSize::Grid),
             Err(Error::NotFound(9_999))
         ));
+    }
+
+    #[test]
+    fn store_failure_leaves_item_pending() {
+        let dir = tempfile::tempdir().unwrap();
+        let lib = Arc::new(Library::open(&dir.path().join("library.db")).unwrap());
+        let photos = dir.path().join("photos");
+        let (_, folder) = seed_folder(&lib, &photos);
+        let path = write_file(&photos, "a.jpg", &jpeg_bytes(64, 32));
+        let ids = lib
+            .insert_items(&[new_item(folder, path.to_str().unwrap(), 0)])
+            .unwrap();
+        // The cache root is a regular file, so `create_dir_all` inside `store` fails: a
+        // stand-in for a full disk or a permissions problem, distinct from a bad source file.
+        let cache_root = dir.path().join("cache");
+        std::fs::write(&cache_root, b"not a directory").unwrap();
+        let cache = Arc::new(ThumbCache::new(cache_root));
+        let service = ThumbService::start(lib.clone(), cache, 1);
+
+        assert!(service.get_or_generate(ids[0], ThumbSize::Grid).is_err());
+        assert_eq!(state(&lib, ids[0]), ThumbState::Pending);
     }
 
     #[test]

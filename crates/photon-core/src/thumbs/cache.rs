@@ -60,10 +60,27 @@ impl ThumbCache {
 
     /// Decodes `source` once and writes the preview and grid thumbnails.
     pub fn generate(&self, source: &Path, orientation: u8, fp: u64) -> Result<()> {
+        let (preview, grid) = self.render(source, orientation)?;
+        self.store(fp, &preview, &grid)
+    }
+
+    /// Decodes `source` and produces the preview and grid images, without touching disk.
+    /// Failures here mean the source file itself is unreadable/corrupt.
+    pub(crate) fn render(
+        &self,
+        source: &Path,
+        orientation: u8,
+    ) -> Result<(DynamicImage, DynamicImage)> {
         let preview = decode_oriented(source, orientation, ThumbSize::Preview.max_edge())?;
         let grid = shrink(&preview, ThumbSize::Grid.max_edge());
-        write_webp(&preview, &self.path_for(fp, ThumbSize::Preview))?;
-        write_webp(&grid, &self.path_for(fp, ThumbSize::Grid))?;
+        Ok((preview, grid))
+    }
+
+    /// Writes already-rendered thumbnails to the cache. Failures here mean the cache
+    /// destination itself is unwritable (full disk, permissions), not that the source is bad.
+    pub(crate) fn store(&self, fp: u64, preview: &DynamicImage, grid: &DynamicImage) -> Result<()> {
+        write_webp(preview, &self.path_for(fp, ThumbSize::Preview))?;
+        write_webp(grid, &self.path_for(fp, ThumbSize::Grid))?;
         Ok(())
     }
 

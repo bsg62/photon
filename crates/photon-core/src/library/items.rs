@@ -207,6 +207,30 @@ impl Library {
         Ok(())
     }
 
+    /// Like `set_thumb_state`, but only if the row still matches `item` (path/size/mtime).
+    /// Returns `false` without writing if the item changed since it was read, so a worker
+    /// processing a stale snapshot can't clobber a rescan's reset to `Pending`.
+    pub fn set_thumb_state_if_unchanged(
+        &self,
+        item: &Item,
+        state: ThumbState,
+        error: Option<&str>,
+    ) -> Result<bool> {
+        let changed = self.writer().execute(
+            "UPDATE items SET thumb_state = ?2, thumb_error = ?3
+             WHERE id = ?1 AND path = ?4 AND size = ?5 AND mtime_ms = ?6",
+            params![
+                item.id,
+                state.to_db(),
+                error,
+                item.path,
+                item.size,
+                item.mtime_ms
+            ],
+        )?;
+        Ok(changed > 0)
+    }
+
     /// Items still waiting for thumbnails, in grid order.
     pub fn pending_thumb_ids(&self) -> Result<Vec<i64>> {
         let conn = self.reader();
@@ -316,6 +340,32 @@ mod tests {
         let item = lib.item(id).unwrap().unwrap();
         assert_eq!(item.thumb_state, ThumbState::Failed);
         assert_eq!(item.thumb_error.as_deref(), Some("corrupt"));
+    }
+
+    #[test]
+    fn guarded_thumb_state_write_skips_stale_snapshots() {
+        let (_dir, lib) = temp_library();
+        let (_, folder) = seed_folder(&lib, Path::new("/p"));
+        let id = lib
+            .insert_items(&[new_item(folder, "/p/a.jpg", 1)])
+            .unwrap()[0];
+        let stale = lib.item(id).unwrap().unwrap();
+
+        let changed = NewItem {
+            size: 999,
+            ..new_item(folder, "/p/a.jpg", 1)
+        };
+        lib.update_items(&[(id, changed)]).unwrap();
+
+        let ok = lib
+            .set_thumb_state_if_unchanged(&stale, ThumbState::Failed, Some("stale"))
+            .unwrap();
+        assert!(!ok);
+
+        let item = lib.item(id).unwrap().unwrap();
+        assert_eq!(item.size, 999);
+        assert_eq!(item.thumb_state, ThumbState::Pending);
+        assert_eq!(item.thumb_error, None);
     }
 
     #[test]
