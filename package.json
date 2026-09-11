@@ -1,0 +1,14 @@
+{
+  "name": "photon",
+  "private": true,
+  "workspaces": ["ui"],
+  "scripts": {
+    "tauri": "tauri",
+    "dev": "tauri dev",
+    "test": "npm run -w ui test",
+    "check": "npm run -w ui check"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.11.4"
+  }
+}
