@@ -601,6 +601,7 @@ dependencies = [
  "parking_lot",
  "rusqlite",
  "serde",
+ "serde_json",
  "tempfile",
  "thiserror",
  "tracing",

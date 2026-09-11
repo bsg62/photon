@@ -1,6 +1,8 @@
 use super::Library;
 use crate::Result;
+use crate::grid::GridEntry;
 use crate::media::{MediaKind, ThumbState, fingerprint};
+use crate::metadata::oriented_dims;
 use rusqlite::{OptionalExtension, Row, params};
 use std::collections::{HashMap, HashSet};
 
@@ -255,6 +257,33 @@ impl Library {
             .collect::<rusqlite::Result<HashSet<u64>>>()?;
         Ok(set)
     }
+
+    /// Every visible item in grid order: folder tree order, then capture time, then name.
+    pub fn grid_entries(&self) -> Result<Vec<GridEntry>> {
+        let conn = self.reader();
+        let mut stmt = conn.prepare(&format!(
+            "SELECT i.id, i.folder_id, i.taken_at, i.width, i.height, i.orientation, i.kind
+             FROM items i JOIN folders f ON f.id = i.folder_id
+             WHERE i.missing_since IS NULL {GRID_ORDER}"
+        ))?;
+        let rows = stmt
+            .query_map([], |r| {
+                let (w, h) = oriented_dims(r.get(3)?, r.get(4)?, r.get(5)?);
+                Ok(GridEntry {
+                    id: r.get(0)?,
+                    folder_id: r.get(1)?,
+                    taken_at: r.get(2)?,
+                    aspect: if w == 0 || h == 0 {
+                        1.0
+                    } else {
+                        w as f32 / h as f32
+                    },
+                    kind: MediaKind::from_db(r.get(6)?).unwrap_or(MediaKind::Image),
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
 }
 
 #[cfg(test)]
@@ -387,6 +416,40 @@ mod tests {
         lib.set_thumb_state(a1, ThumbState::Ready, None).unwrap();
         lib.mark_missing(&[b1], 99).unwrap();
         assert_eq!(lib.pending_thumb_ids().unwrap(), [a2]);
+    }
+
+    #[test]
+    fn grid_entries_are_ordered_oriented_and_skip_missing() {
+        let (_dir, lib) = temp_library();
+        let (watched, root) = seed_folder(&lib, Path::new("/p"));
+        let b = lib.upsert_folder(watched, Some(root), "/p/b", 1).unwrap();
+        let a = lib.upsert_folder(watched, Some(root), "/p/a", 1).unwrap();
+        let rotated = NewItem {
+            orientation: 6,
+            ..new_item(a, "/p/a/2.jpg", 5)
+        };
+        let unknown = NewItem {
+            width: 0,
+            height: 0,
+            ..new_item(b, "/p/b/1.jpg", 1)
+        };
+        let ids = lib
+            .insert_items(&[
+                unknown,
+                rotated,
+                new_item(a, "/p/a/1.jpg", 2),
+                new_item(a, "/p/a/3.jpg", 9),
+            ])
+            .unwrap();
+        lib.mark_missing(&[ids[3]], 1).unwrap();
+
+        let entries = lib.grid_entries().unwrap();
+        let order: Vec<i64> = entries.iter().map(|e| e.id).collect();
+        assert_eq!(order, [ids[2], ids[1], ids[0]]);
+        assert_eq!(entries[0].aspect, 400.0 / 300.0);
+        assert_eq!(entries[1].aspect, 300.0 / 400.0);
+        assert_eq!(entries[2].aspect, 1.0);
+        assert_eq!(entries[0].folder_id, a);
     }
 
     #[test]
