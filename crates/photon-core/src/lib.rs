@@ -3,6 +3,7 @@
 pub mod error;
 pub mod library;
 pub mod media;
+pub mod metadata;
 
 #[cfg(test)]
 mod testutil;
