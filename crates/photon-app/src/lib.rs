@@ -1,16 +1,14 @@
 //! photon-app: the Tauri shell around photon-core.
 
+mod app;
 pub mod commands;
 pub mod engine;
 pub mod error;
 pub mod events;
+mod ipc;
 pub mod protocol;
 
 #[cfg(test)]
 mod testutil;
 
-pub fn run() {
-    tauri::Builder::default()
-        .run(tauri::generate_context!())
-        .expect("error while running photon");
-}
+pub use app::run;
