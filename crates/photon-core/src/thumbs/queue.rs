@@ -1,5 +1,5 @@
 use parking_lot::{Condvar, Mutex};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 /// Lower sorts first: visible grid cells beat viewer neighbours beat background fill.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -16,12 +16,15 @@ struct State {
     entries: HashMap<i64, (Priority, u64)>,
     visible: Vec<i64>,
     next_seq: u64,
-    active: usize,
+    in_flight: HashSet<i64>,
     closed: bool,
 }
 
 impl State {
     fn push(&mut self, id: i64, priority: Priority) {
+        if self.in_flight.contains(&id) {
+            return;
+        }
         if let Some(&(current, seq)) = self.entries.get(&id) {
             if current <= priority {
                 return;
@@ -100,24 +103,39 @@ impl ThumbQueue {
                 return None;
             }
             if let Some(id) = state.pop() {
-                state.active += 1;
+                state.in_flight.insert(id);
                 return Some(id);
             }
             self.changed.wait(&mut state);
         }
     }
 
-    pub fn done(&self) {
-        let mut state = self.state.lock();
-        state.active = state.active.saturating_sub(1);
-        drop(state);
+    /// Marks the popped job `id` finished and wakes idle-waiters and `wait_for` callers.
+    pub fn done(&self, id: i64) {
+        self.state.lock().in_flight.remove(&id);
         self.changed.notify_all();
     }
 
     pub fn wait_idle(&self) {
         let mut state = self.state.lock();
-        while !state.closed && !(state.order.is_empty() && state.active == 0) {
+        while !state.closed && !(state.order.is_empty() && state.in_flight.is_empty()) {
             self.changed.wait(&mut state);
+        }
+    }
+
+    /// Blocks until `id` is neither queued nor being processed, the queue closes, or
+    /// `deadline` passes. Returns false only on timeout.
+    pub fn wait_for(&self, id: i64, deadline: std::time::Instant) -> bool {
+        let mut state = self.state.lock();
+        loop {
+            let busy = state.entries.contains_key(&id) || state.in_flight.contains(&id);
+            if state.closed || !busy {
+                return true;
+            }
+            if self.changed.wait_until(&mut state, deadline).timed_out() {
+                let busy = state.entries.contains_key(&id) || state.in_flight.contains(&id);
+                return !busy;
+            }
         }
     }
 
@@ -143,8 +161,9 @@ mod tests {
     fn drain(q: &ThumbQueue) -> Vec<i64> {
         let mut out = Vec::new();
         while !q.is_empty() {
-            out.push(q.pop_blocking().unwrap());
-            q.done();
+            let id = q.pop_blocking().unwrap();
+            out.push(id);
+            q.done(id);
         }
         out
     }
@@ -199,12 +218,54 @@ mod tests {
             std::thread::spawn(move || {
                 let id = q.pop_blocking().unwrap();
                 std::thread::sleep(std::time::Duration::from_millis(50));
-                q.done();
+                q.done(id);
                 id
             })
         };
         q.wait_idle();
         assert!(q.is_empty());
         assert_eq!(worker.join().unwrap(), 1);
+    }
+
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn push_skips_items_in_flight() {
+        let q = ThumbQueue::new();
+        q.push(1, Priority::Background);
+        let id = q.pop_blocking().unwrap();
+        q.push(1, Priority::Visible);
+        assert!(q.is_empty());
+        q.done(id);
+        q.push(1, Priority::Visible);
+        assert_eq!(q.len(), 1);
+    }
+
+    #[test]
+    fn wait_for_returns_once_the_job_finishes() {
+        let q = Arc::new(ThumbQueue::new());
+        q.push(1, Priority::Visible);
+        let worker = {
+            let q = q.clone();
+            std::thread::spawn(move || {
+                let id = q.pop_blocking().unwrap();
+                std::thread::sleep(Duration::from_millis(50));
+                q.done(id);
+            })
+        };
+        assert!(q.wait_for(1, Instant::now() + Duration::from_secs(5)));
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn wait_for_times_out_while_queued() {
+        let q = ThumbQueue::new();
+        q.push(1, Priority::Visible);
+        assert!(!q.wait_for(1, Instant::now() + Duration::from_millis(50)));
+    }
+
+    #[test]
+    fn wait_for_unknown_id_returns_immediately() {
+        assert!(ThumbQueue::new().wait_for(7, Instant::now()));
     }
 }
