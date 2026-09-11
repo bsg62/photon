@@ -20,7 +20,11 @@
     (async () => {
       await library.ensure(at, at + 1);
       const entry = library.entry(at);
-      if (!entry || cancelled) return;
+      if (cancelled) return;
+      if (!entry) {
+        error = 'This photo is no longer available.';
+        return;
+      }
       const it = await api.viewerItem(entry.id);
       if (cancelled) return;
       item = it;
@@ -49,17 +53,20 @@
   });
 
   function onkeydown(e: KeyboardEvent) {
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      onclose(current);
+      return;
+    }
     const last = library.info.len - 1;
+    if (last < 0) return;
     const next =
       e.key === 'ArrowLeft' ? Math.max(0, current - 1)
       : e.key === 'ArrowRight' ? Math.min(last, current + 1)
       : e.key === 'Home' ? 0
       : e.key === 'End' ? last
       : null;
-    if (e.key === 'Escape') {
-      e.preventDefault();
-      onclose(current);
-    } else if (next !== null) {
+    if (next !== null) {
       e.preventDefault();
       current = next;
     }
