@@ -55,6 +55,12 @@ pub fn scan_watched(
     let mut seen = ScanProgress::default();
     let mut new_batch: Vec<NewItem> = Vec::new();
     let mut changed_batch: Vec<(i64, NewItem)> = Vec::new();
+    // Subtrees we could not fully walk: anything `known` claims to live under one of
+    // these might still exist, so it must not be marked missing or purged this scan.
+    let mut incomplete_prefixes: Vec<PathBuf> = Vec::new();
+    // Set when an error gives no path, or points at the root itself: we can no longer
+    // tell which `known` entries are safe to touch, so skip mark/purge/prune entirely.
+    let mut skip_mark_purge = false;
 
     let walker = WalkDir::new(root)
         .follow_links(false)
@@ -64,6 +70,10 @@ pub fn scan_watched(
         let entry = match entry {
             Ok(entry) => entry,
             Err(err) => {
+                match err.path() {
+                    Some(p) if p != root => incomplete_prefixes.push(p.to_path_buf()),
+                    _ => skip_mark_purge = true,
+                }
                 tracing::warn!(%err, "skipping unreadable entry");
                 continue;
             }
@@ -91,11 +101,16 @@ pub fn scan_watched(
             continue;
         };
         let Some(&folder_id) = path.parent().and_then(|p| folder_ids.get(p)) else {
+            // Unknown parent folder: leave any existing record alone rather than treat
+            // the file as missing.
+            known.remove(path_str);
             continue;
         };
         let md = match entry.metadata() {
             Ok(md) => md,
             Err(err) => {
+                // Couldn't stat it, but it clearly still exists: leave it untouched.
+                known.remove(path_str);
                 tracing::warn!(%err, ?path, "skipping file without metadata");
                 continue;
             }
@@ -124,6 +139,30 @@ pub fn scan_watched(
     flush_new(lib, &mut new_batch, &mut report, &mut seen, progress)?;
     flush_changed(lib, &mut changed_batch, &mut report, &mut seen, progress)?;
 
+    if skip_mark_purge {
+        // We couldn't tell what happened to the rest of the tree; don't guess.
+        progress(&seen);
+        return Ok(report);
+    }
+
+    // Drop anything under a subtree we couldn't fully walk: it might still be there.
+    known.retain(|path_str, _| {
+        !incomplete_prefixes
+            .iter()
+            .any(|prefix| Path::new(path_str).starts_with(prefix))
+    });
+
+    // A reachable but empty root usually means an unmounted volume left its mount
+    // point behind, not that every known file vanished at once.
+    if seen.files_seen == 0 && known.values().any(|k| !k.missing) {
+        lib.set_watched_online(watched.id, false)?;
+        progress(&seen);
+        return Ok(ScanReport {
+            offline: true,
+            ..ScanReport::default()
+        });
+    }
+
     // Anything left in `known` was not found on this (reachable) scan: soft-delete it,
     // or purge it if it was already missing last time.
     let (mut to_mark, mut to_purge) = (Vec::new(), Vec::new());
@@ -134,8 +173,12 @@ pub fn scan_watched(
             to_mark.push(k.id)
         }
     }
-    lib.mark_missing(&to_mark, scan_id)?;
-    lib.purge_items(&to_purge)?;
+    for chunk in to_mark.chunks(BATCH) {
+        lib.mark_missing(chunk, scan_id)?;
+    }
+    for chunk in to_purge.chunks(BATCH) {
+        lib.purge_items(chunk)?;
+    }
     lib.prune_folders(watched.id, scan_id)?;
     report.marked_missing = to_mark.len() as u64;
     report.purged = to_purge.len() as u64;
@@ -369,5 +412,54 @@ mod tests {
         fs::rename(dir.path().join("unplugged"), &root).unwrap();
         assert!(!scan(&lib, &watched, 3).offline);
         assert!(lib.watched_folders().unwrap()[0].online);
+    }
+
+    #[test]
+    fn empty_reachable_root_is_treated_as_offline() {
+        let (dir, lib) = temp_library();
+        let root = dir.path().join("photos");
+        write_file(&root, "a.jpg", &jpeg_bytes(8, 8));
+        let watched = lib.add_watched_folder(&root).unwrap();
+        scan(&lib, &watched, 1);
+
+        fs::remove_file(root.join("a.jpg")).unwrap();
+        let report = scan(&lib, &watched, 2);
+        assert!(report.offline);
+        assert!(!lib.watched_folders().unwrap()[0].online);
+        assert!(
+            lib.known_items(watched.id)
+                .unwrap()
+                .values()
+                .all(|k| !k.missing)
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn unreadable_subdirectory_does_not_purge_its_contents() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let (dir, lib) = temp_library();
+        let root = dir.path().join("photos");
+        let locked = root.join("locked");
+        let a = write_file(&root, "locked/a.jpg", &jpeg_bytes(8, 8));
+        let watched = lib.add_watched_folder(&root).unwrap();
+        scan(&lib, &watched, 1);
+        let id = lib.known_items(watched.id).unwrap()[&key(&a)].id;
+
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+        if fs::read_dir(&locked).is_ok() {
+            // Running with elevated privileges (e.g. as root): permission bits aren't
+            // enforced, so this test can't exercise the unreadable-directory path.
+            fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+            return;
+        }
+
+        scan(&lib, &watched, 2);
+        scan(&lib, &watched, 3);
+
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+
+        assert_eq!(lib.item(id).unwrap().unwrap().missing_since, None);
     }
 }

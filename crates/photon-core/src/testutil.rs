@@ -99,7 +99,9 @@ pub fn jpeg_with_exif(w: u32, h: u32, orientation: u16, datetime: &str) -> Vec<u
 }
 
 pub fn write_file(dir: &Path, rel: &str, bytes: &[u8]) -> PathBuf {
-    let path = dir.join(rel);
+    let path = rel
+        .split('/')
+        .fold(dir.to_path_buf(), |p, part| p.join(part));
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(&path, bytes).unwrap();
     path
