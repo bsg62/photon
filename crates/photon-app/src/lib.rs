@@ -1,6 +1,8 @@
 //! photon-app: the Tauri shell around photon-core.
 
+pub mod commands;
 pub mod engine;
+pub mod error;
 pub mod events;
 
 #[cfg(test)]
