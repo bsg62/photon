@@ -1,6 +1,12 @@
 use super::{Priority, ThumbCache, ThumbQueue, ThumbSize};
-use crate::{Error, Result, library::Library, media::ThumbState};
+use crate::{
+    Error, Result,
+    library::{Item, Library},
+    media::ThumbState,
+};
+use image::DynamicImage;
 use std::{
+    panic::{AssertUnwindSafe, catch_unwind},
     path::{Path, PathBuf},
     sync::Arc,
     thread::JoinHandle,
@@ -19,6 +25,19 @@ pub struct ThumbService {
     cache: Arc<ThumbCache>,
     queue: Arc<ThumbQueue>,
     workers: Vec<JoinHandle<()>>,
+    render: RenderFn,
+}
+
+/// Decodes a source file into (preview, grid) images. A seam so tests can inject a
+/// misbehaving decoder; production always uses [`ThumbCache::render`].
+type RenderFn = fn(&ThumbCache, &Path, u8) -> Result<(DynamicImage, DynamicImage)>;
+
+fn default_render(
+    cache: &ThumbCache,
+    source: &Path,
+    orientation: u8,
+) -> Result<(DynamicImage, DynamicImage)> {
+    cache.render(source, orientation)
 }
 
 /// Guarantees `queue.done()` runs exactly once per popped job, even if the job panics.
@@ -32,6 +51,15 @@ impl Drop for DoneGuard<'_> {
 
 impl ThumbService {
     pub fn start(lib: Arc<Library>, cache: Arc<ThumbCache>, workers: usize) -> Self {
+        Self::start_with(lib, cache, workers, default_render)
+    }
+
+    fn start_with(
+        lib: Arc<Library>,
+        cache: Arc<ThumbCache>,
+        workers: usize,
+        render: RenderFn,
+    ) -> Self {
         let queue = Arc::new(ThumbQueue::new());
         let workers = (0..workers.max(1))
             .map(|i| {
@@ -41,7 +69,7 @@ impl ThumbService {
                     .spawn(move || {
                         while let Some(id) = queue.pop_blocking() {
                             let _guard = DoneGuard(&queue);
-                            if let Err(err) = process(&lib, &cache, id) {
+                            if let Err(err) = process(&lib, &cache, id, render) {
                                 tracing::warn!(id, %err, "thumbnail job failed");
                             }
                         }
@@ -54,6 +82,7 @@ impl ThumbService {
             cache,
             queue,
             workers,
+            render,
         }
     }
 
@@ -82,7 +111,7 @@ impl ThumbService {
         if path.is_file() {
             return Ok(path);
         }
-        process(&self.lib, &self.cache, id)?;
+        process(&self.lib, &self.cache, id, self.render)?;
         if path.is_file() {
             return Ok(path);
         }
@@ -116,40 +145,61 @@ impl Drop for ThumbService {
     }
 }
 
+const PANIC_MESSAGE: &str = "decoder panicked";
+
 /// Generates thumbnails for one item.
 ///
-/// A decode (render) failure means the source file itself is bad: it's recorded as
-/// `Failed` on the item, not returned, so the worker doesn't retry it. A cache write
-/// (store) failure means the destination is unwritable (full disk, permissions): it's
-/// propagated as `Err` and the item is left `Pending` so it's retried later.
+/// A decode failure means the source file itself is bad: it's recorded as `Failed` on
+/// the item, not returned, so the worker doesn't retry it. Anything else (the source
+/// can't be opened because its drive is unplugged or it's being replaced, or the cache
+/// is unwritable) is propagated as `Err` and the item is left `Pending` for a later retry.
+///
+/// A panicking decoder is contained: the item is recorded as `Failed` ("decoder
+/// panicked") and `Err(ThumbFailed)` is returned, so neither a worker thread nor an
+/// on-demand caller goes down with it.
 ///
 /// State writes go through `set_thumb_state_if_unchanged` so a rescan that replaces this
 /// item mid-decode (resetting it to `Pending`) can't be clobbered by a stale result.
-fn process(lib: &Library, cache: &ThumbCache, id: i64) -> Result<()> {
+fn process(lib: &Library, cache: &ThumbCache, id: i64, render: RenderFn) -> Result<()> {
     let Some(item) = lib.item(id)? else {
         return Ok(());
     };
     if item.missing_since.is_some() || item.thumb_state == ThumbState::Failed {
         return Ok(());
     }
+    match catch_unwind(AssertUnwindSafe(|| process_item(lib, cache, &item, render))) {
+        Ok(result) => result,
+        Err(_) => {
+            tracing::error!(id, path = %item.path, "thumbnail decoder panicked");
+            lib.set_thumb_state_if_unchanged(&item, ThumbState::Failed, Some(PANIC_MESSAGE))?;
+            Err(Error::ThumbFailed(PANIC_MESSAGE.into()))
+        }
+    }
+}
+
+fn process_item(lib: &Library, cache: &ThumbCache, item: &Item, render: RenderFn) -> Result<()> {
     let fp = item.fingerprint();
     if !cache.is_complete(fp) {
-        match cache.render(Path::new(&item.path), item.orientation) {
+        match render(cache, Path::new(&item.path), item.orientation) {
             Ok((preview, grid)) => cache.store(fp, &preview, &grid)?,
+            Err(err) if !is_source_defect(&err) => return Err(err),
             Err(err) => {
-                lib.set_thumb_state_if_unchanged(
-                    &item,
-                    ThumbState::Failed,
-                    Some(&err.to_string()),
-                )?;
+                lib.set_thumb_state_if_unchanged(item, ThumbState::Failed, Some(&err.to_string()))?;
                 return Ok(());
             }
         }
     }
     if item.thumb_state != ThumbState::Ready {
-        lib.set_thumb_state_if_unchanged(&item, ThumbState::Ready, None)?;
+        lib.set_thumb_state_if_unchanged(item, ThumbState::Ready, None)?;
     }
     Ok(())
+}
+
+/// Whether a render error means the source file itself is bad (so the item is `Failed`).
+/// I/O errors, including those surfaced by the decoder, mean the file couldn't be read
+/// right now (offline drive, permissions, mid-replace) and must not be recorded.
+fn is_source_defect(err: &Error) -> bool {
+    matches!(err, Error::Image(e) if !matches!(e, image::ImageError::IoError(_)))
 }
 
 #[cfg(test)]
@@ -260,6 +310,78 @@ mod tests {
 
         assert!(service.get_or_generate(ids[0], ThumbSize::Grid).is_err());
         assert_eq!(state(&lib, ids[0]), ThumbState::Pending);
+    }
+
+    #[test]
+    fn missing_source_file_leaves_item_pending() {
+        let (dir, lib, cache, ids) = setup(&[("a.jpg", jpeg_bytes(64, 32))]);
+        // Drive unplugged / file being replaced: the source can't be opened at all.
+        std::fs::remove_file(dir.path().join("photos").join("a.jpg")).unwrap();
+        let service = ThumbService::start(lib.clone(), cache, 1);
+
+        assert!(matches!(
+            service.get_or_generate(ids[0], ThumbSize::Grid),
+            Err(Error::Io(_))
+        ));
+        assert_eq!(state(&lib, ids[0]), ThumbState::Pending);
+
+        service.enqueue_pending().unwrap();
+        service.wait_idle();
+        assert_eq!(state(&lib, ids[0]), ThumbState::Pending);
+        assert_eq!(lib.pending_thumb_ids().unwrap(), ids);
+    }
+
+    #[test]
+    fn only_decode_errors_mark_failed() {
+        let io = || std::io::Error::other("unplugged");
+        assert!(is_source_defect(&Error::Image(
+            image::ImageError::Unsupported(image::error::UnsupportedError::from(
+                image::error::ImageFormatHint::Unknown
+            ))
+        )));
+        assert!(!is_source_defect(&Error::Image(
+            image::ImageError::IoError(io())
+        )));
+        assert!(!is_source_defect(&Error::Io(io())));
+    }
+
+    fn panicking_render(
+        cache: &ThumbCache,
+        source: &Path,
+        orientation: u8,
+    ) -> Result<(DynamicImage, DynamicImage)> {
+        if source.to_string_lossy().contains("panic") {
+            panic!("simulated decoder bug");
+        }
+        cache.render(source, orientation)
+    }
+
+    #[test]
+    fn panicking_job_is_failed_and_worker_survives() {
+        let (_dir, lib, cache, ids) = setup(&[
+            ("a_panic.jpg", jpeg_bytes(64, 32)),
+            ("b_ok.jpg", jpeg_bytes(64, 32)),
+        ]);
+        let service = ThumbService::start_with(lib.clone(), cache, 1, panicking_render);
+        // Grid order puts a_panic.jpg first, so the single worker hits the panic first.
+        service.enqueue_pending().unwrap();
+        service.wait_idle();
+
+        let bad = lib.item(ids[0]).unwrap().unwrap();
+        assert_eq!(bad.thumb_state, ThumbState::Failed);
+        assert_eq!(bad.thumb_error.as_deref(), Some("decoder panicked"));
+        assert_eq!(state(&lib, ids[1]), ThumbState::Ready);
+    }
+
+    #[test]
+    fn get_or_generate_contains_decoder_panics() {
+        let (_dir, lib, cache, ids) = setup(&[("panic.jpg", jpeg_bytes(64, 32))]);
+        let service = ThumbService::start_with(lib.clone(), cache, 1, panicking_render);
+        assert!(matches!(
+            service.get_or_generate(ids[0], ThumbSize::Grid),
+            Err(Error::ThumbFailed(_))
+        ));
+        assert_eq!(state(&lib, ids[0]), ThumbState::Failed);
     }
 
     #[test]

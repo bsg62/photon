@@ -86,8 +86,8 @@ impl ThumbCache {
 
     /// Removes thumbnails whose fingerprint is not in `live`. Returns the number of files removed.
     ///
-    /// GC is best-effort: an unreadable directory entry is logged and skipped rather than
-    /// aborting the whole walk.
+    /// GC is best-effort: an unreadable directory entry or a file that can't be removed
+    /// (e.g. held open on Windows) is logged and skipped rather than aborting the walk.
     pub fn collect_garbage(&self, live: &HashSet<u64>) -> Result<usize> {
         let mut removed = 0;
         for entry in walkdir::WalkDir::new(&self.root).into_iter() {
@@ -110,8 +110,10 @@ impl ThumbCache {
                 continue;
             };
             if !live.contains(&fp) {
-                fs::remove_file(path)?;
-                removed += 1;
+                match fs::remove_file(path) {
+                    Ok(()) => removed += 1,
+                    Err(err) => tracing::warn!(%err, ?path, "could not remove stale thumbnail"),
+                }
             }
         }
         Ok(removed)
@@ -127,6 +129,10 @@ fn shrink(img: &DynamicImage, max_edge: u32) -> DynamicImage {
 }
 
 /// Writes through a temp file + rename so readers never see a half-written thumbnail.
+///
+/// Paths are content-addressed, so an existing file already holds the same thumbnail:
+/// it's kept rather than replaced, which also avoids failing on Windows when that file
+/// is open.
 fn write_webp(img: &DynamicImage, dest: &Path) -> Result<()> {
     let rgba = img.to_rgba8();
     let data =
@@ -135,8 +141,11 @@ fn write_webp(img: &DynamicImage, dest: &Path) -> Result<()> {
     fs::create_dir_all(dir)?;
     let mut tmp = tempfile::NamedTempFile::new_in(dir)?;
     tmp.write_all(&data)?;
-    tmp.persist(dest).map_err(|e| e.error)?;
-    Ok(())
+    match tmp.persist_noclobber(dest) {
+        Ok(_) => Ok(()),
+        Err(e) if e.error.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+        Err(e) => Err(e.error.into()),
+    }
 }
 
 #[cfg(test)]
@@ -197,6 +206,46 @@ mod tests {
         assert!(cache.generate(&src, 1, 9).is_err());
         assert!(!cache.is_complete(9));
         assert!(!cache.path_for(9, ThumbSize::Grid).exists());
+    }
+
+    #[test]
+    fn regenerating_an_existing_thumbnail_succeeds() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = write_file(dir.path(), "src.jpg", &jpeg_bytes(64, 64));
+        let cache = ThumbCache::new(dir.path().join("cache"));
+        cache.generate(&src, 1, 5).unwrap();
+        // Keep a handle open, as a viewer would; Windows can't replace an open file.
+        let _open = fs::File::open(cache.path_for(5, ThumbSize::Grid)).unwrap();
+        cache.generate(&src, 1, 5).unwrap();
+        assert!(cache.is_complete(5));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn garbage_collection_skips_files_it_cannot_remove() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let src = write_file(dir.path(), "src.jpg", &jpeg_bytes(64, 64));
+        let cache = ThumbCache::new(dir.path().join("cache"));
+        let (locked_fp, free_fp) = (0x0000_0000_0000_0001, 0xff00_0000_0000_0001);
+        cache.generate(&src, 1, locked_fp).unwrap();
+        cache.generate(&src, 1, free_fp).unwrap();
+        let locked = cache.path_for(locked_fp, ThumbSize::Grid);
+        let shard = locked.parent().unwrap();
+        fs::set_permissions(shard, fs::Permissions::from_mode(0o555)).unwrap();
+        if fs::remove_file(&locked).is_ok() {
+            // Elevated privileges ignore permission bits; nothing to exercise here.
+            fs::set_permissions(shard, fs::Permissions::from_mode(0o755)).unwrap();
+            return;
+        }
+
+        let removed = cache.collect_garbage(&HashSet::new());
+        fs::set_permissions(shard, fs::Permissions::from_mode(0o755)).unwrap();
+
+        assert_eq!(removed.unwrap(), 3, "everything but the locked file");
+        assert!(locked.is_file());
+        assert!(!cache.path_for(free_fp, ThumbSize::Grid).exists());
     }
 
     #[test]
