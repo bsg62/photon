@@ -145,6 +145,7 @@
 
 {#if menu}
   {@const target = menu.target}
+  {@const watchedId = target.kind === 'folder' ? target.folder.watchedId : target.watched.id}
   <div
     class="menu"
     role="menu"
@@ -154,7 +155,14 @@
     style:top="{menu.y}px"
     onkeydown={onMenuKeydown}
   >
-    <button role="menuitem" onclick={() => rescan(target)}>Rescan</button>
+    <!-- `rescan_folder` is a no-op while a scan of that folder is running, and reports
+         nothing back, so don't offer it. -->
+    <button
+      role="menuitem"
+      disabled={library.isScanning(watchedId)}
+      title={library.isScanning(watchedId) ? 'This folder is being scanned' : undefined}
+      onclick={() => rescan(target)}>Rescan</button
+    >
     {#if target.kind === 'folder'}
       <button role="menuitem" onclick={() => reveal(target.folder)}>Reveal in file manager</button>
     {/if}
@@ -203,6 +211,7 @@
     box-shadow: 0 6px 24px #0008;
   }
   .menu button { padding: 6px 10px; border: 0; background: none; text-align: left; cursor: pointer; border-radius: 4px; }
-  .menu button:hover { background: #ffffff14; }
+  .menu button:hover:not(:disabled) { background: #ffffff14; }
+  .menu button:disabled { color: var(--muted); cursor: default; }
   .menu .danger { color: var(--danger); }
 </style>

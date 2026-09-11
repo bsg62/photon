@@ -17,7 +17,7 @@ export class LibraryStore {
 
   private folderById = $derived(new Map(this.folders.folders.map((f) => [f.id, f])));
   private onlineByWatched = $derived(new Map(this.folders.watched.map((w) => [w.id, w.online])));
-  private pages = new PageCache<GridEntry>((o, c) => api.gridRows(o, c), () => void this.refresh());
+  private pages = new PageCache<GridEntry>((o, c) => api.gridRows(o, c), () => void this.refresh().catch(this.reportError));
   private unlisten: UnlistenFn[] = [];
   private nextToast = 0;
   private initPromise: Promise<void> | null = null;
