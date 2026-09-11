@@ -172,12 +172,19 @@ impl Engine {
         true
     }
 
-    /// Cancels the folder's scan, if any, and waits for it to stop.
+    /// Cancels the folder's scan, if any, and blocks until it has actually stopped.
     ///
     /// The entry stays in `scans` (so `start_scan`, `is_scanning` and `wait_for_scans` all
     /// keep seeing it as running) until the scan thread itself removes it, right after
-    /// `run_scan` returns or panics; this only sets the cancel flag, takes the join handle
-    /// and waits for the thread to actually finish.
+    /// `run_scan` returns or panics.
+    ///
+    /// `cancel_scan` always means "cancelled and stopped" to every caller, however many
+    /// call it concurrently for the same id: whichever call gets the join handle first
+    /// joins it directly, and every other concurrent call instead polls (never holding
+    /// `scans` while it sleeps) until the entry is gone. Without this, a second caller
+    /// (e.g. `remove_folder` racing `shutdown`, or two `remove_folder` calls) would return
+    /// while the scan is still writing, letting its next `refresh_grid` put back rows from
+    /// a folder that has since been deleted.
     pub fn cancel_scan(&self, watched_id: i64) {
         let handle = {
             let mut scans = self.scans.lock();
@@ -189,8 +196,15 @@ impl Engine {
                 None => return,
             }
         };
-        if let Some(handle) = handle {
-            let _ = handle.join();
+        match handle {
+            Some(handle) => {
+                let _ = handle.join();
+            }
+            None => {
+                while self.scans.lock().contains_key(&watched_id) {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+            }
         }
     }
 
@@ -473,5 +487,29 @@ mod tests {
         assert!(!f.engine.start_scan(watched));
 
         f.engine.wait_for_scans();
+    }
+
+    /// Deterministic regardless of interleaving: `cancel_scan`'s contract is "cancelled
+    /// and stopped" for every caller, so once both threads' calls have returned, the scan
+    /// is guaranteed gone, whichever of the two actually joined the scan thread.
+    #[test]
+    fn cancel_scan_from_two_threads_at_once_both_see_it_stopped() {
+        let files = many_jpegs(300);
+        let named: Vec<(&str, &[u8])> = files
+            .iter()
+            .map(|(n, d)| (n.as_str(), d.as_slice()))
+            .collect();
+        let f = fixture(&named);
+        let watched = f.engine.add_folder(&f.photos).unwrap();
+        let id = watched.id;
+
+        let e1 = f.engine.clone();
+        let e2 = f.engine.clone();
+        let t1 = std::thread::spawn(move || e1.cancel_scan(id));
+        let t2 = std::thread::spawn(move || e2.cancel_scan(id));
+        t1.join().unwrap();
+        t2.join().unwrap();
+
+        assert!(!f.engine.is_scanning(id));
     }
 }
