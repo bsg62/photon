@@ -1,5 +1,19 @@
-//! Tauri command wrappers. Each runs on the async runtime (`async` attribute), so
-//! blocking work such as waiting for a cancelled scan never stalls the UI thread.
+//! Tauri command wrappers.
+//!
+//! Every command carries the `#[tauri::command(async)]` attribute, which never blocks
+//! the UI thread: that thread only dispatches the request and returns. But for a plain
+//! (non-`async`) function, that attribute runs the command body synchronously inside a
+//! future spawned onto Tauri's small Tokio *worker* pool, not a dedicated blocking pool
+//! (`tauri::async_runtime::spawn_blocking` is never called on this path) - so a command
+//! that genuinely blocks would occupy one of those few worker threads for its whole
+//! duration, and enough of them in flight would stall every other command's dispatch.
+//!
+//! Most commands here are short database or lock operations, so that's fine as plain
+//! functions. `add_folder` (whose `dunce::canonicalize` can hang on a dead network
+//! mount) and `remove_folder` (which joins a scan thread) can genuinely block for a
+//! while, so they're `async fn`s that hand their blocking body to
+//! `tauri::async_runtime::spawn_blocking`, which *does* run on Tauri's dedicated
+//! blocking pool.
 
 use crate::{commands, engine::Engine, error::AppError};
 use photon_core::library::WatchedFolder;
@@ -14,13 +28,19 @@ pub fn list_folders(engine: Eng<'_>) -> Result<commands::FolderList, AppError> {
 }
 
 #[tauri::command(async)]
-pub fn add_folder(engine: Eng<'_>, path: String) -> Result<WatchedFolder, AppError> {
-    commands::add_folder(engine.inner(), &path)
+pub async fn add_folder(engine: Eng<'_>, path: String) -> Result<WatchedFolder, AppError> {
+    let engine = engine.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || commands::add_folder(&engine, &path))
+        .await
+        .map_err(AppError::internal)?
 }
 
 #[tauri::command(async)]
-pub fn remove_folder(engine: Eng<'_>, watched_id: i64) -> Result<(), AppError> {
-    commands::remove_folder(&engine, watched_id)
+pub async fn remove_folder(engine: Eng<'_>, watched_id: i64) -> Result<(), AppError> {
+    let engine = engine.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || commands::remove_folder(&engine, watched_id))
+        .await
+        .map_err(AppError::internal)?
 }
 
 #[tauri::command(async)]

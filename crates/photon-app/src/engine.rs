@@ -52,6 +52,9 @@ pub struct Engine {
     /// Set once by `shutdown`. Once true, no new scan starts and the startup thread stops
     /// at its next checkpoint.
     shutting_down: AtomicBool,
+    /// The handle of the thread spawned by `startup`, if any is still outstanding.
+    /// `wait_for_startup` takes it and joins it, and is safe to call more than once.
+    startup: Mutex<Option<JoinHandle<()>>>,
 }
 
 impl Engine {
@@ -75,6 +78,7 @@ impl Engine {
             scans: Mutex::new(HashMap::new()),
             next_token: AtomicU64::new(0),
             shutting_down: AtomicBool::new(false),
+            startup: Mutex::new(None),
         }))
     }
 
@@ -225,9 +229,9 @@ impl Engine {
     /// Checks `shutting_down` before each step, and before garbage collection, so a
     /// `shutdown` racing start-up stops it promptly instead of letting it run to
     /// completion.
-    pub fn startup(self: &Arc<Self>, pictures: Option<PathBuf>) -> JoinHandle<()> {
+    pub fn startup(self: &Arc<Self>, pictures: Option<PathBuf>) {
         let engine = Arc::clone(self);
-        std::thread::Builder::new()
+        let handle = std::thread::Builder::new()
             .name("photon-startup".into())
             .spawn(move || {
                 let shutting_down = || engine.shutting_down.load(Ordering::SeqCst);
@@ -267,12 +271,24 @@ impl Engine {
                     Err(err) => tracing::warn!(%err, "thumbnail garbage collection failed"),
                 }
             })
-            .expect("failed to spawn startup thread")
+            .expect("failed to spawn startup thread");
+        *self.startup.lock() = Some(handle);
     }
 
-    /// Stops new scans from starting, then cancels every running scan, looping until none
-    /// are left (a scan or `startup` racing this can still insert one after the first
-    /// pass). Thumbnail workers stop when the engine is dropped.
+    /// Blocks until the thread spawned by `startup` has finished, if it hasn't already.
+    /// Safe to call more than once (and safe to call when `startup` was never called).
+    pub fn wait_for_startup(&self) {
+        let handle = self.startup.lock().take();
+        if let Some(handle) = handle {
+            let _ = handle.join();
+        }
+    }
+
+    /// Stops new scans from starting, cancels every running scan (looping until none are
+    /// left, since a scan or `startup` racing this can still insert one after the first
+    /// pass), closes the thumbnail queue so its workers finish their current job and stop,
+    /// then waits for the startup thread to finish (it checks `shutting_down` at each of
+    /// its own checkpoints, so this doesn't wait for it to run to completion).
     pub fn shutdown(&self) {
         self.shutting_down.store(true, Ordering::SeqCst);
         loop {
@@ -284,6 +300,8 @@ impl Engine {
                 self.cancel_scan(id);
             }
         }
+        self.thumbs.close();
+        self.wait_for_startup();
     }
 
     fn run_scan(&self, watched: &WatchedFolder, cancel: Arc<AtomicBool>) {
@@ -411,13 +429,15 @@ mod tests {
     fn startup_adds_pictures_only_to_an_empty_library() {
         let img = jpeg(16, 16);
         let f = fixture(&[("a.jpg", &img)]);
-        f.engine.startup(Some(f.photos.clone())).join().unwrap();
+        f.engine.startup(Some(f.photos.clone()));
+        f.engine.wait_for_startup();
         assert_eq!(f.engine.lib.watched_folders().unwrap().len(), 1);
         assert_eq!(f.engine.grid().1.len(), 1);
 
         let other = f.dir.path().join("other");
         std::fs::create_dir_all(&other).unwrap();
-        f.engine.startup(Some(other)).join().unwrap();
+        f.engine.startup(Some(other));
+        f.engine.wait_for_startup();
         assert_eq!(f.engine.lib.watched_folders().unwrap().len(), 1);
     }
 
@@ -427,6 +447,24 @@ mod tests {
         f.engine.cancel_scan(42);
         f.engine.shutdown();
         assert!(!f.engine.is_scanning(42));
+    }
+
+    #[test]
+    fn wait_for_startup_without_startup_is_a_no_op() {
+        let f = fixture(&[]);
+        f.engine.wait_for_startup();
+        f.engine.wait_for_startup();
+    }
+
+    #[test]
+    fn shutdown_joins_the_startup_thread_and_is_idempotent() {
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a.jpg", &img)]);
+        f.engine.startup(Some(f.photos.clone()));
+        f.engine.shutdown();
+        assert!(f.engine.startup.lock().is_none());
+        // Calling shutdown (and thus wait_for_startup) again must not hang or panic.
+        f.engine.shutdown();
     }
 
     /// Many tiny files so the scan (and thus `remove_folder`'s cancellation) has real work

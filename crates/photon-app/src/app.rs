@@ -11,6 +11,12 @@ use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, RunEvent};
 use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 
+/// Event names emitted to the webview. The UI (Task 12) listens for these exact
+/// strings, so a typo here would break it silently.
+pub const LIBRARY_CHANGED: &str = "library-changed";
+pub const SCAN_PROGRESS: &str = "scan-progress";
+pub const FOLDER_STATUS: &str = "folder-status";
+
 struct TauriEvents(AppHandle);
 
 impl TauriEvents {
@@ -23,13 +29,13 @@ impl TauriEvents {
 
 impl Events for TauriEvents {
     fn library_changed(&self, e: LibraryChanged) {
-        self.emit("library-changed", e);
+        self.emit(LIBRARY_CHANGED, e);
     }
     fn scan_progress(&self, e: ScanProgressEvent) {
-        self.emit("scan-progress", e);
+        self.emit(SCAN_PROGRESS, e);
     }
     fn folder_status(&self, e: FolderStatus) {
-        self.emit("folder-status", e);
+        self.emit(FOLDER_STATUS, e);
     }
 }
 
@@ -40,7 +46,7 @@ pub fn run() {
         )
         .init();
 
-    tauri::Builder::default()
+    match tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .register_asynchronous_uri_scheme_protocol("photon", |ctx, request, responder| {
@@ -73,19 +79,32 @@ pub fn run() {
                     let pictures = paths.picture_dir().ok();
                     app.manage(engine.clone());
                     engine.startup(pictures);
+                    Ok(())
                 }
                 Err(err) => {
                     tracing::error!(%err, "could not open the photon library");
-                    app.dialog()
-                        .message(format!(
-                            "photon could not open its library:\n\n{err}\n\nNothing was changed."
-                        ))
-                        .kind(MessageDialogKind::Error)
-                        .title("photon")
-                        .show(|_| std::process::exit(1));
+                    // `blocking_show` must not run on the main thread (it blocks until the
+                    // user dismisses the dialog, and the main thread runs the event loop
+                    // that draws it). Returning `Err` here stops `setup` before the window
+                    // is shown, so the app never gets to a state where every command fails
+                    // with "state not managed".
+                    let handle = app.handle().clone();
+                    let message = format!(
+                        "photon could not open its library:\n\n{err}\n\nNothing was changed."
+                    );
+                    std::thread::spawn(move || {
+                        handle
+                            .dialog()
+                            .message(message)
+                            .kind(MessageDialogKind::Error)
+                            .title("photon")
+                            .blocking_show();
+                    })
+                    .join()
+                    .expect("dialog thread panicked");
+                    Err(Box::new(err))
                 }
             }
-            Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             ipc::list_folders,
@@ -102,12 +121,30 @@ pub fn run() {
             ipc::reveal_folder,
         ])
         .build(tauri::generate_context!())
-        .expect("error while building photon")
-        .run(|app, event| {
+    {
+        Ok(app) => app.run(|app, event| {
             if let RunEvent::Exit = event
                 && let Some(engine) = app.try_state::<Arc<Engine>>()
             {
                 engine.shutdown();
             }
-        });
+        }),
+        Err(err) => {
+            tracing::error!(%err, "could not build photon");
+            eprintln!("photon could not start: {err}");
+            std::process::exit(1);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn event_names_match_what_the_ui_listens_for() {
+        assert_eq!(LIBRARY_CHANGED, "library-changed");
+        assert_eq!(SCAN_PROGRESS, "scan-progress");
+        assert_eq!(FOLDER_STATUS, "folder-status");
+    }
 }

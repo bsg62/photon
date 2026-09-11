@@ -102,6 +102,12 @@ impl ThumbService {
         self.queue.push_many(ids, priority);
     }
 
+    /// Closes the queue so every worker finishes its current job and then stops.
+    /// Does not join the workers itself; `Drop` still does that.
+    pub fn close(&self) {
+        self.queue.close();
+    }
+
     /// Returns the cached thumbnail, generating it on the calling thread if needed.
     pub fn get_or_generate(&self, id: i64, size: ThumbSize) -> Result<PathBuf> {
         let item = self.lib.item(id)?.ok_or(Error::NotFound(id))?;
