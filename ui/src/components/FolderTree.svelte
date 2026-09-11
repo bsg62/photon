@@ -1,10 +1,12 @@
 <script lang="ts">
   import { ask, open } from '@tauri-apps/plugin-dialog';
-  import { api, type Folder } from '../lib/api';
+  import { api, type Folder, type WatchedFolder } from '../lib/api';
   import { library } from '../lib/library.svelte';
 
   let { onjump }: { onjump: (folderId: number) => void } = $props();
 
+  // Assumes the backend lists parents before children and never reports a cycle;
+  // a folder whose parent hasn't arrived yet (or a cycle) silently drops its subtree.
   const children = $derived.by(() => {
     const map = new Map<number | null, Folder[]>();
     for (const f of library.folders.folders) {
@@ -15,9 +17,31 @@
     return map;
   });
 
-  let menu = $state<{ x: number; y: number; folder: Folder } | null>(null);
+  /** A watched folder with no root `Folder` row yet: `scan_watched` returns before
+   *  calling `upsert_folder` when the root is offline or hasn't been scanned, so
+   *  such a folder would otherwise be invisible and unmanageable. */
+  const watchedOnly = $derived.by(() => {
+    const rootsByWatched = new Set(
+      library.folders.folders.filter((f) => f.parentId === null).map((f) => f.watchedId),
+    );
+    return library.folders.watched.filter((w) => !rootsByWatched.has(w.id));
+  });
+
+  type MenuTarget = { kind: 'folder'; folder: Folder } | { kind: 'watched'; watched: WatchedFolder };
+
+  let menu = $state<{ x: number; y: number; target: MenuTarget } | null>(null);
+  let menuEl = $state<HTMLDivElement | undefined>();
+
+  $effect(() => {
+    if (menu) menuEl?.focus();
+  });
 
   const watchedOf = (f: Folder) => library.folders.watched.find((w) => w.id === f.watchedId);
+
+  function lastSegment(path: string): string {
+    const parts = path.split(/[/\\]/).filter(Boolean);
+    return parts[parts.length - 1] ?? path;
+  }
 
   async function addFolder() {
     const path = await open({ directory: true, multiple: false, title: 'Add a folder to photon' });
@@ -30,9 +54,10 @@
     }
   }
 
-  async function rescan(f: Folder) {
+  async function rescan(target: MenuTarget) {
     menu = null;
-    await api.rescanFolder(f.watchedId).catch(library.reportError);
+    const watchedId = target.kind === 'folder' ? target.folder.watchedId : target.watched.id;
+    await api.rescanFolder(watchedId).catch(library.reportError);
   }
 
   async function reveal(f: Folder) {
@@ -40,22 +65,26 @@
     await api.revealFolder(f.id).catch(library.reportError);
   }
 
-  async function remove(f: Folder) {
+  async function remove(target: MenuTarget) {
     menu = null;
-    const watched = watchedOf(f);
+    const watched = target.kind === 'folder' ? watchedOf(target.folder) : target.watched;
     if (!watched) return;
-    const confirmed = await ask(`Remove “${watched.path}” from photon? Your files stay where they are.`, {
-      title: 'Remove folder',
-      kind: 'warning',
-    });
-    if (!confirmed) return;
-    await api.removeFolder(watched.id).catch(library.reportError);
-    await library.refreshFolders();
+    try {
+      const confirmed = await ask(`Remove “${watched.path}” from photon? Your files stay where they are.`, {
+        title: 'Remove folder',
+        kind: 'warning',
+      });
+      if (!confirmed) return;
+      await api.removeFolder(watched.id).catch(library.reportError);
+      await library.refreshFolders();
+    } catch (e) {
+      library.reportError(e);
+    }
   }
 
-  function openMenu(e: MouseEvent, folder: Folder) {
+  function openMenu(e: MouseEvent, target: MenuTarget) {
     e.preventDefault();
-    menu = { x: e.clientX, y: e.clientY, folder };
+    menu = { x: e.clientX, y: e.clientY, target };
   }
 
   function closeMenu() {
@@ -82,7 +111,7 @@
       style:padding-left="{8 + depth * 14}px"
       title={f.path}
       onclick={() => onjump(f.id)}
-      oncontextmenu={(e) => openMenu(e, f)}
+      oncontextmenu={(e) => openMenu(e, { kind: 'folder', folder: f })}
     >
       <span class="name">{f.name}</span>
       {#if depth === 0 && library.isScanning(f.watchedId)}
@@ -98,18 +127,39 @@
     {@render node(root, 0)}
   {/each}
 
+  {#each watchedOnly as w (w.id)}
+    <button
+      class="node offline"
+      title={w.path}
+      onclick={() => {}}
+      oncontextmenu={(e) => openMenu(e, { kind: 'watched', watched: w })}
+    >
+      <span class="name">{lastSegment(w.path)}</span>
+    </button>
+  {/each}
+
   {#if library.folders.watched.length === 0}
     <p class="empty">No folders yet.</p>
   {/if}
 </nav>
 
 {#if menu}
-  {@const f = menu.folder}
-  <div class="menu" role="menu" tabindex="-1" style:left="{menu.x}px" style:top="{menu.y}px" onkeydown={onMenuKeydown}>
-    <button role="menuitem" onclick={() => rescan(f)}>Rescan</button>
-    <button role="menuitem" onclick={() => reveal(f)}>Reveal in file manager</button>
-    {#if f.parentId === null}
-      <button role="menuitem" class="danger" onclick={() => remove(f)}>Remove from photon</button>
+  {@const target = menu.target}
+  <div
+    class="menu"
+    role="menu"
+    tabindex="-1"
+    bind:this={menuEl}
+    style:left="{menu.x}px"
+    style:top="{menu.y}px"
+    onkeydown={onMenuKeydown}
+  >
+    <button role="menuitem" onclick={() => rescan(target)}>Rescan</button>
+    {#if target.kind === 'folder'}
+      <button role="menuitem" onclick={() => reveal(target.folder)}>Reveal in file manager</button>
+    {/if}
+    {#if target.kind === 'watched' || target.folder.parentId === null}
+      <button role="menuitem" class="danger" onclick={() => remove(target)}>Remove from photon</button>
     {/if}
   </div>
 {/if}
