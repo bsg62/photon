@@ -4,6 +4,12 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 
+[features]
+# Enabled by `tauri build`. Without it `tauri::is_dev()` is true, so a plain
+# `cargo build --release` produces a binary that embeds no frontend and tries to load the
+# dev server instead: a blank window with no error.
+custom-protocol = ["tauri/custom-protocol"]
+
 [build-dependencies]
 tauri-build = { version = "2.6.3", features = [] }
 

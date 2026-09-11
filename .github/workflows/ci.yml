@@ -29,6 +29,27 @@ jobs:
       - run: cargo test --workspace
       - run: cargo bench -p photon-core --bench grid --no-run
 
+  # Builds the release path (frontend embedded, `tauri::is_dev()` false), which the debug
+  # builds above never exercise. Ubuntu only; bundling/packaging is Plan 3.
+  release-build:
+    name: release build (ubuntu)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Linux webview dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libsoup-3.0-dev librsvg2-dev libxdo-dev libssl-dev
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: npm ci
+      - run: npm run -w ui build
+      - run: npm run tauri build -- --no-bundle
+
   ui:
     runs-on: ubuntu-latest
     steps:

@@ -64,6 +64,10 @@ impl Engine {
         let cache = Arc::new(ThumbCache::new(config.cache_dir.clone()));
         let thumbs = ThumbService::start(lib.clone(), cache, config.workers);
         let mut excluded = vec![config.cache_dir.clone()];
+        // The cache root too, not just the thumbnail directory inside it.
+        if let Some(cache_root) = config.cache_dir.parent() {
+            excluded.push(cache_root.to_path_buf());
+        }
         if let Some(data_dir) = config.db_path.parent() {
             excluded.push(data_dir.to_path_buf());
         }
@@ -400,9 +404,14 @@ mod tests {
     fn add_folder_refuses_photons_own_directories() {
         let f = fixture(&[]);
         let cache = f.dir.path().join("cache").join("thumbs");
+        let cache_root = f.dir.path().join("cache");
         let data = f.dir.path().join("data");
         assert!(matches!(
             f.engine.add_folder(&cache),
+            Err(photon_core::Error::FolderExcluded { .. })
+        ));
+        assert!(matches!(
+            f.engine.add_folder(&cache_root),
             Err(photon_core::Error::FolderExcluded { .. })
         ));
         assert!(matches!(
