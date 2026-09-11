@@ -19,20 +19,28 @@
   const RETRY_MS = 2000;
   let status = $state<'loading' | 'loaded' | 'broken'>('loading');
   let attempt = $state(0);
+  let retryTimer: ReturnType<typeof setTimeout> | undefined;
   const key = $derived(entry ? `${entry.id}/${entry.thumbKey}` : '');
   const src = $derived(
     entry ? mediaUrl(`thumb/${entry.id}/grid/${entry.thumbKey}`) + (attempt ? `?retry=${attempt}` : '') : undefined,
   );
 
-  // A different item or file version starts fresh.
+  // A different item or file version starts fresh. Tiles are keyed by grid offset, not
+  // photo id, so the entry can change under a live tile (e.g. a scan renumbers the
+  // grid) without unmounting: a pending retry from the old photo must not fire against
+  // the new one, so cancel it whenever `key` changes or the tile unmounts.
   $effect(() => {
     void key;
     status = 'loading';
     attempt = 0;
+    return () => {
+      clearTimeout(retryTimer);
+      retryTimer = undefined;
+    };
   });
 
   function onerror() {
-    if (attempt === 0) setTimeout(() => (attempt = 1), RETRY_MS);
+    if (attempt === 0) retryTimer = setTimeout(() => (attempt = 1), RETRY_MS);
     else status = 'broken';
   }
 </script>

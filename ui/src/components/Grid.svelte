@@ -50,6 +50,10 @@
   export function scrollToOffset(offset: number, align: 'start' | 'nearest' = 'start') {
     const i = rowOfItem(rows, offset);
     if (i < 0 || !viewport) return;
+    // Before the first layout pass `height` is still 0 (e.g. Task 14 jumping to a
+    // folder right after mount): 'nearest' would then over-scroll by a row, so wait
+    // for a real viewport height. 'start' doesn't depend on `height` and stays exact.
+    if (align === 'nearest' && height === 0) return;
     const row = rows[i];
     if (align === 'start') {
       const header = rows[i - 1];
