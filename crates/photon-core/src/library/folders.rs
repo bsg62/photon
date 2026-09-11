@@ -118,11 +118,12 @@ impl Library {
         }
     }
 
-    /// All folders in tree order (parents before children, siblings alphabetical).
+    /// All folders in tree order (parents before children, siblings alphabetical; `path`
+    /// breaks ties between names that differ only in case).
     pub fn folders(&self) -> Result<Vec<Folder>> {
         let conn = self.reader();
         let mut stmt = conn.prepare(
-            "SELECT id, watched_id, parent_id, path, name FROM folders ORDER BY sort_key",
+            "SELECT id, watched_id, parent_id, path, name FROM folders ORDER BY sort_key, path",
         )?;
         let rows = stmt
             .query_map([], |r| {
@@ -189,6 +190,20 @@ mod tests {
 
         let names: Vec<String> = lib.folders().unwrap().into_iter().map(|f| f.name).collect();
         assert_eq!(names, ["p", "a", "z", "a b"]);
+    }
+
+    #[test]
+    fn folders_have_a_parent_index() {
+        let (_dir, lib) = temp_library();
+        let found: i64 = lib
+            .reader()
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type = 'index' AND name = 'folders_parent'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(found, 1);
     }
 
     #[test]

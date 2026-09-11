@@ -18,6 +18,7 @@ CREATE TABLE folders (
     seen_scan  INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX folders_watched ON folders(watched_id);
+CREATE INDEX folders_parent ON folders(parent_id);
 CREATE TABLE items (
     id            INTEGER PRIMARY KEY,
     folder_id     INTEGER NOT NULL REFERENCES folders(id) ON DELETE CASCADE,

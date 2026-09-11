@@ -54,7 +54,9 @@ impl Item {
 }
 
 /// Grid order, shared by every query that walks items the way the grid shows them.
-pub(crate) const GRID_ORDER: &str = "ORDER BY f.sort_key, i.taken_at, i.file_name";
+/// `f.path` breaks sort_key ties (e.g. `/p/A` vs `/p/a` on a case-sensitive filesystem)
+/// so each folder's items stay contiguous.
+pub(crate) const GRID_ORDER: &str = "ORDER BY f.sort_key, f.path, i.taken_at, i.file_name";
 
 fn row_to_item(r: &Row<'_>) -> rusqlite::Result<Item> {
     Ok(Item {
@@ -233,12 +235,15 @@ impl Library {
         Ok(changed > 0)
     }
 
-    /// Items still waiting for thumbnails, in grid order.
+    /// Items still waiting for thumbnails, in grid order. Items under an offline watched
+    /// folder are skipped: their files can't be read until the folder comes back.
     pub fn pending_thumb_ids(&self) -> Result<Vec<i64>> {
         let conn = self.reader();
         let mut stmt = conn.prepare(&format!(
-            "SELECT i.id FROM items i JOIN folders f ON f.id = i.folder_id
-             WHERE i.thumb_state = 0 AND i.missing_since IS NULL {GRID_ORDER}"
+            "SELECT i.id FROM items i
+             JOIN folders f ON f.id = i.folder_id
+             JOIN watched_folders w ON w.id = f.watched_id
+             WHERE i.thumb_state = 0 AND i.missing_since IS NULL AND w.online = 1 {GRID_ORDER}"
         ))?;
         let ids = stmt
             .query_map([], |r| r.get(0))?
@@ -416,6 +421,50 @@ mod tests {
         lib.set_thumb_state(a1, ThumbState::Ready, None).unwrap();
         lib.mark_missing(&[b1], 99).unwrap();
         assert_eq!(lib.pending_thumb_ids().unwrap(), [a2]);
+    }
+
+    #[test]
+    fn pending_ids_skip_offline_watched_folders() {
+        let (_dir, lib) = temp_library();
+        let (on_w, on_f) = seed_folder(&lib, Path::new("/on"));
+        let (off_w, off_f) = seed_folder(&lib, Path::new("/off"));
+        let ids = lib
+            .insert_items(&[
+                new_item(on_f, "/on/a.jpg", 1),
+                new_item(off_f, "/off/b.jpg", 1),
+            ])
+            .unwrap();
+        lib.set_watched_online(off_w, false).unwrap();
+        assert_eq!(lib.pending_thumb_ids().unwrap(), [ids[0]]);
+        lib.set_watched_online(off_w, true).unwrap();
+        lib.set_watched_online(on_w, false).unwrap();
+        assert_eq!(lib.pending_thumb_ids().unwrap(), [ids[1]]);
+    }
+
+    #[test]
+    fn folders_colliding_on_sort_key_stay_contiguous() {
+        let (_dir, lib) = temp_library();
+        let (watched, root) = seed_folder(&lib, Path::new("/p"));
+        // Case-sensitive filesystems allow both; they share a case-insensitive sort_key.
+        let lower = lib.upsert_folder(watched, Some(root), "/p/a", 1).unwrap();
+        let upper = lib.upsert_folder(watched, Some(root), "/p/A", 1).unwrap();
+        lib.insert_items(&[
+            new_item(lower, "/p/a/1.jpg", 1),
+            new_item(upper, "/p/A/2.jpg", 2),
+            new_item(lower, "/p/a/3.jpg", 3),
+            new_item(upper, "/p/A/4.jpg", 4),
+        ])
+        .unwrap();
+
+        let folders: Vec<i64> = lib
+            .grid_entries()
+            .unwrap()
+            .iter()
+            .map(|e| e.folder_id)
+            .collect();
+        assert_eq!(folders, [upper, upper, lower, lower]);
+        let listed: Vec<i64> = lib.folders().unwrap().iter().map(|f| f.id).collect();
+        assert_eq!(listed, [root, upper, lower]);
     }
 
     #[test]
