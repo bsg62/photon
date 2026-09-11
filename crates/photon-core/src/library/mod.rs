@@ -1,7 +1,9 @@
 mod folders;
+mod items;
 mod schema;
 
-pub use folders::WatchedFolder;
+pub use folders::{Folder, WatchedFolder};
+pub use items::{Item, KnownItem, NewItem};
 
 use crate::Result;
 use parking_lot::{Mutex, MutexGuard};
