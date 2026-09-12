@@ -176,9 +176,11 @@ personal identity — so the warnings read as an expected consequence rather tha
 - **The watcher follow-ups** each get a test that is demonstrated to fail with the change
   reverted: a dying watcher emits `folder-status` with the degraded flag, and a no-change
   scan still enqueues pending render work.
-- **CI itself is unchanged** except for its stale comment — `release-build`'s note says
-  packaging is Plan 3. The unbundled ubuntu release build stays: it is the fast signal,
-  and the release workflow does not run on pull requests.
+- **CI gained a version gate** — a Linux-guarded step on every pull request and push to
+  `main` runs `cargo run -p xtask -- versions` and `-- metadata`, so version drift
+  fails on the pull request rather than after a release tag exists. The unbundled ubuntu
+  release build stays: it is the fast signal, and the release workflow does not run on
+  pull requests. The stale comment in `release-build`'s note about Plan 3 was corrected.
 
 ## 8. Success criteria
 

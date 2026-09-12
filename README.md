@@ -71,7 +71,7 @@ publishing it.
 - [ ] Ctrl/Cmd+Shift+R and "Reveal in file manager" open the system file manager at the file.
 - [ ] A library that cannot be opened (for example a corrupt database, or one written by a newer photon) shows an error dialog and photon exits, with no empty window sitting behind it.
 - [ ] A watched folder whose drive is offline and which has never been scanned still appears in the sidebar as a dimmed row, and can still be rescanned or removed from there.
-- [ ] A release build (`npm run tauri build`) starts and shows the library — not a blank window.
+- [ ] A release build (see Development above) starts and shows the library — not a blank window.
 - [ ] If a scan removes photos while the viewer is open, the viewer shows "This photo is no longer available" rather than a blank frame, and Escape still returns to the grid.
 - [ ] Copying a photo into a watched folder makes it appear in the grid within a few seconds, with no manual rescan.
 - [ ] Deleting a photo on disk removes it from the grid.
