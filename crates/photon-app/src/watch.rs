@@ -37,12 +37,9 @@ pub struct WatcherService {
     /// borrowing `self`, which a `'static` thread can't do.
     pending: Arc<Mutex<HashMap<i64, PathBuf>>>,
     /// Roots the OS would not let us watch; rescanned periodically instead, and dropped
-    /// once re-registering their watch succeeds.
-    ///
-    /// Nothing outside this service reads it yet: it will surface through
-    /// `FolderStatus { degraded }` once that lands (a later task), so for now it's kept
-    /// only so the ticker thread's clone stays backed by the same list this service holds.
-    #[allow(dead_code)]
+    /// once re-registering their watch succeeds. Read by `is_degraded`, which
+    /// `Engine::run_scan` consults so the `folder-status` event tells the UI when live
+    /// updates for a folder are limited.
     degraded: Arc<Mutex<Vec<i64>>>,
     /// The OS watcher, shared with the ticker thread so it can retry registering a
     /// degraded root, or restart the whole subsystem if it failed to start at all. `None`
@@ -121,6 +118,51 @@ impl WatcherService {
 
     pub fn pending_len(&self) -> usize {
         self.pending.lock().len()
+    }
+
+    /// True while `id`'s watch couldn't be registered with the OS, so it's relying on
+    /// periodic rescans instead of live filesystem events.
+    pub fn is_degraded(&self, id: i64) -> bool {
+        self.degraded.lock().contains(&id)
+    }
+
+    /// Registers a watch for a folder added after the service started (`Engine::add_folder`
+    /// calls this), so it gets live updates immediately instead of waiting for a restart.
+    /// Falls back to `degraded` exactly like start-time registration when it fails, or when
+    /// there's currently no live OS watcher to register with at all.
+    pub fn watch_added(&self, id: i64, path: &Path) {
+        let outcome = self
+            .watcher
+            .lock()
+            .as_mut()
+            .map(|watcher| watcher.watch_root(path));
+        let mut degraded = self.degraded.lock();
+        match outcome {
+            Some(Ok(())) => {
+                degraded.retain(|x| *x != id);
+            }
+            Some(Err(err)) => {
+                tracing::warn!(
+                    watched_id = id,
+                    path = %path.display(),
+                    error = %err.message,
+                    "could not watch new folder; falling back to periodic rescans"
+                );
+                mark_degraded(&mut degraded, id);
+            }
+            None => mark_degraded(&mut degraded, id),
+        }
+    }
+
+    /// Unregisters a folder's watch when it's removed (`Engine::remove_folder` calls this),
+    /// so it stops delivering events for a folder photon no longer tracks, and drops any
+    /// stale `degraded`/pending-follow-up entry for it.
+    pub fn watch_removed(&self, id: i64, path: &Path) {
+        if let Some(watcher) = self.watcher.lock().as_mut() {
+            watcher.unwatch_root(path);
+        }
+        self.degraded.lock().retain(|x| *x != id);
+        self.pending.lock().remove(&id);
     }
 
     /// The directory currently queued as `id`'s follow-up, if any. Test-only: production
@@ -347,13 +389,17 @@ fn try_drain(engine: &Arc<Engine>, pending: &Mutex<HashMap<i64, PathBuf>>) {
 /// existing retry path takes over) — otherwise it would stay on this far more expensive
 /// periodic rescan forever even after a watch could have been installed once and then kept
 /// it live.
+///
+/// `degraded` is updated for this root *before* `start_scan` is called for it, not batched
+/// until after the loop: `start_scan`'s eventual `FolderStatus` event reads `degraded` when
+/// the scan finishes, so clearing it only afterwards would let that event still claim live
+/// updates are limited for a root that has already recovered.
 fn rescan_offline_roots(
     engine: &Arc<Engine>,
     degraded: &Mutex<Vec<i64>>,
     watcher: &Mutex<Option<Watcher>>,
 ) {
     let watched = engine.lib.watched_folders().unwrap_or_default();
-    let mut newly_degraded = Vec::new();
     for w in watched.into_iter().filter(|w| !w.online) {
         if Path::new(&w.path).is_dir() {
             // Locked only for this one call, not across the loop: `watch_root` can block
@@ -362,23 +408,23 @@ fn rescan_offline_roots(
                 .lock()
                 .as_mut()
                 .map(|watcher| watcher.watch_root(Path::new(&w.path)));
-            if let Some(Err(err)) = outcome {
-                tracing::warn!(
-                    watched_id = w.id,
-                    path = %w.path,
-                    error = %err.message,
-                    "root is back but could not be watched; falling back to periodic rescans"
-                );
-                newly_degraded.push(w.id);
+            match outcome {
+                Some(Ok(())) => {
+                    degraded.lock().retain(|id| *id != w.id);
+                }
+                Some(Err(err)) => {
+                    tracing::warn!(
+                        watched_id = w.id,
+                        path = %w.path,
+                        error = %err.message,
+                        "root is back but could not be watched; falling back to periodic rescans"
+                    );
+                    mark_degraded(&mut degraded.lock(), w.id);
+                }
+                None => {}
             }
         }
         engine.start_scan(w);
-    }
-    if !newly_degraded.is_empty() {
-        let mut degraded = degraded.lock();
-        for id in newly_degraded {
-            mark_degraded(&mut degraded, id);
-        }
     }
 }
 
@@ -408,6 +454,10 @@ fn retry_watcher_startup(
 /// success, so it goes back to live updates) and always full-rescans it, since a watch that
 /// only just started can't have seen whatever changed while it was unregistered. A root
 /// whose registration still fails stays in `degraded` for the next tick.
+///
+/// `degraded` is cleared for a recovered root *before* `start_scan` is called for it, for
+/// the same reason as in `rescan_offline_roots`: otherwise the scan's own `FolderStatus`
+/// event could still report it degraded.
 fn rescan_degraded_roots(
     engine: &Arc<Engine>,
     degraded: &Mutex<Vec<i64>>,
@@ -418,11 +468,9 @@ fn rescan_degraded_roots(
         return;
     }
     let watched = engine.lib.watched_folders().unwrap_or_default();
-    let mut no_longer_watched = Vec::new();
-    let mut recovered = Vec::new();
     for id in ids {
         let Some(folder) = watched.iter().find(|w| w.id == id) else {
-            no_longer_watched.push(id);
+            degraded.lock().retain(|x| *x != id);
             continue;
         };
         // Locked only for this one call, not across the loop or across `start_scan`: see
@@ -432,7 +480,9 @@ fn rescan_degraded_roots(
             .as_mut()
             .map(|watcher| watcher.watch_root(Path::new(&folder.path)));
         match outcome {
-            Some(Ok(())) => recovered.push(id),
+            Some(Ok(())) => {
+                degraded.lock().retain(|x| *x != id);
+            }
             Some(Err(err)) => tracing::debug!(
                 watched_id = folder.id,
                 path = %folder.path,
@@ -442,10 +492,6 @@ fn rescan_degraded_roots(
             None => {}
         }
         engine.start_scan(folder.clone());
-    }
-    if !no_longer_watched.is_empty() || !recovered.is_empty() {
-        let mut degraded = degraded.lock();
-        degraded.retain(|id| !no_longer_watched.contains(id) && !recovered.contains(id));
     }
 }
 
@@ -690,5 +736,122 @@ mod tests {
         service.handle_batch(vec![f.dir.path().join("elsewhere")]);
         assert_eq!(service.pending_len(), 0);
         service.stop();
+    }
+
+    /// A folder added after the service has already started must get a live watch
+    /// installed immediately (`Engine::add_folder` calls `WatcherService::watch_added`),
+    /// not just on the next full restart. Verified end to end through the real
+    /// `folder-status` event: if `watch_added`'s registration succeeded, the event the
+    /// finishing scan emits says the folder isn't degraded.
+    #[test]
+    fn a_folder_added_after_start_gets_a_live_watch() {
+        let f = fixture(&[]);
+        f.engine.start_watcher();
+
+        let other = f.dir.path().join("other");
+        std::fs::create_dir_all(&other).unwrap();
+        let watched = f.engine.add_folder(&other).unwrap();
+        f.engine.wait_for_scans();
+
+        assert!(
+            f.events.all().iter().any(|e| matches!(
+                e,
+                crate::events::Recorded::Folder(crate::events::FolderStatus {
+                    watched_id,
+                    degraded: false,
+                    ..
+                }) if *watched_id == watched.id
+            )),
+            "the new root's watch registered successfully, so it isn't degraded"
+        );
+
+        f.engine.stop_watcher();
+    }
+
+    /// Removing a folder must unregister its watch and forget any degraded/pending state
+    /// for it, so a stale entry can't outlive the folder it described.
+    #[test]
+    fn removing_a_folder_forgets_its_degraded_and_pending_state() {
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a.jpg", &img)]);
+        let watched = f.add_photos();
+        f.engine.start_watcher();
+        let service = f.engine.watcher_service().unwrap();
+
+        mark_degraded(&mut service.degraded.lock(), watched.id);
+        service.pending.lock().insert(watched.id, f.photos.clone());
+
+        f.engine.remove_folder(watched.id).unwrap();
+
+        assert!(!service.is_degraded(watched.id));
+        assert_eq!(service.pending_len(), 0);
+        f.engine.stop_watcher();
+    }
+
+    /// A root that recovers through the 30-second offline poll must not have its own
+    /// recovery rescan still call it degraded: without clearing `degraded` before
+    /// `start_scan` runs (rather than batching the clear until after the whole loop), the
+    /// `folder-status` event that scan emits would still say live updates are limited, for
+    /// up to five more minutes until the next `DEGRADED_RESCAN` tick.
+    #[test]
+    fn a_root_recovering_via_the_offline_poll_is_not_reported_degraded_by_its_own_rescan() {
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a.jpg", &img)]);
+        let watched = f.add_photos();
+        f.engine.start_watcher();
+        let service = f.engine.watcher_service().unwrap();
+
+        // Simulate a root that's both offline and was left marked degraded by an earlier
+        // failed registration, whose directory has since reappeared.
+        f.engine.lib.set_watched_online(watched.id, false).unwrap();
+        mark_degraded(&mut service.degraded.lock(), watched.id);
+        let before = f.events.all().len();
+
+        rescan_offline_roots(&f.engine, &service.degraded, &service.watcher);
+        f.engine.wait_for_scans();
+
+        // Only the events from this recovery rescan onward: `add_photos` already recorded
+        // an earlier (unrelated) `degraded: false` status, before `service.degraded` was
+        // ever touched, which would make a plain `.any(...)` over every recorded event pass
+        // regardless of whether this rescan's own status report is correct.
+        let after = f.events.all()[before..].to_vec();
+        assert!(
+            after.iter().any(|e| matches!(
+                e,
+                crate::events::Recorded::Folder(crate::events::FolderStatus {
+                    watched_id,
+                    degraded: false,
+                    ..
+                }) if *watched_id == watched.id
+            )),
+            "the root's own recovery rescan must report it as no longer degraded"
+        );
+
+        f.engine.stop_watcher();
+    }
+
+    /// Real filesystem events are timing-dependent, so this is excluded from CI, matching
+    /// the same convention as `photon_core::watcher::fs`'s ignored test.
+    /// Run it locally with: cargo test -p photon-app -- --ignored copying_a_photo
+    #[test]
+    #[ignore]
+    fn copying_a_photo_into_a_folder_added_after_start_appears_without_a_restart() {
+        let f = fixture(&[]);
+        f.engine.start_watcher();
+
+        let other = f.dir.path().join("other");
+        std::fs::create_dir_all(&other).unwrap();
+        f.engine.add_folder(&other).unwrap();
+        f.engine.wait_for_scans();
+
+        std::fs::write(other.join("new.jpg"), jpeg(16, 16)).unwrap();
+
+        let start = Instant::now();
+        while f.engine.grid().1.is_empty() && start.elapsed() < Duration::from_secs(10) {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+
+        assert_eq!(f.engine.grid().1.len(), 1);
+        f.engine.stop_watcher();
     }
 }

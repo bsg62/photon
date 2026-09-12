@@ -33,7 +33,7 @@ export interface ScanProgressEvent {
   done: boolean;
   cancelled: boolean;
 }
-export interface FolderStatus { watchedId: number; online: boolean }
+export interface FolderStatus { watchedId: number; online: boolean; degraded: boolean }
 export interface LibraryChanged { version: number; len: number }
 export interface AppError { kind: string; message: string }
 

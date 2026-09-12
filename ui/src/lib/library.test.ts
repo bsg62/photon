@@ -74,7 +74,7 @@ describe('LibraryStore', () => {
     await store.init();
 
     vi.mocked(api.listFolders).mockRejectedValueOnce(new Error('folders-fail'));
-    handlers.folderStatus({ watchedId: 1, online: false });
+    handlers.folderStatus({ watchedId: 1, online: false, degraded: false });
     await Promise.resolve();
     await Promise.resolve();
     expect(store.errors.some((t) => t.message === 'folders-fail')).toBe(true);
@@ -84,6 +84,26 @@ describe('LibraryStore', () => {
     await Promise.resolve();
     await Promise.resolve();
     expect(store.errors.some((t) => t.message === 'scan-done-fail')).toBe(true);
+  });
+
+  it('tracks anyDegraded from folder-status events, per watched id', async () => {
+    const store = new LibraryStore();
+    await store.init();
+
+    expect(store.anyDegraded).toBe(false);
+
+    handlers.folderStatus({ watchedId: 1, online: true, degraded: true });
+    await Promise.resolve();
+    expect(store.anyDegraded).toBe(true);
+
+    // id 1 is still degraded
+    handlers.folderStatus({ watchedId: 2, online: true, degraded: false });
+    await Promise.resolve();
+    expect(store.anyDegraded).toBe(true);
+
+    handlers.folderStatus({ watchedId: 1, online: true, degraded: false });
+    await Promise.resolve();
+    expect(store.anyDegraded).toBe(false);
   });
 
   it('is idempotent: a second init() call never registers more than the three subscriptions', async () => {

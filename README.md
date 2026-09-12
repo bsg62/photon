@@ -40,3 +40,17 @@ Run this before each release, on each OS:
 - [ ] A watched folder whose drive is offline and which has never been scanned still appears in the sidebar as a dimmed row, and can still be rescanned or removed from there.
 - [ ] A release build (`npm run tauri build`) starts and shows the library — not a blank window.
 - [ ] If a scan removes photos while the viewer is open, the viewer shows "This photo is no longer available" rather than a blank frame, and Escape still returns to the grid.
+- [ ] Copying a photo into a watched folder makes it appear in the grid within a few seconds, with no manual rescan.
+- [ ] Deleting a photo on disk removes it from the grid.
+- [ ] Renaming a folder on disk moves its photos in the tree within a few seconds.
+- [ ] Unplugging a watched drive dims it; plugging it back in restores it within about a minute, unattended.
+- [ ] On a library large enough to exhaust the system's watch limit, the status bar says live updates are limited rather than silently missing changes.
+
+## How watching works
+
+photon watches each watched folder recursively for filesystem changes. When something
+changes, it waits 2 seconds for things to settle, then rescans just the directories that
+changed rather than the whole folder. If the OS won't grant a watch (for example the
+system's watch-descriptor limit is exhausted), that folder falls back to a full rescan
+every 5 minutes instead, and the status bar shows "Live updates limited" while any folder
+is in that state.

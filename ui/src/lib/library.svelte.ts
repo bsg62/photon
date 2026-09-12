@@ -9,6 +9,9 @@ export class LibraryStore {
   info = $state<GridInfo>({ version: -1, len: 0, sections: [] });
   folders = $state<FolderList>({ watched: [], folders: [] });
   scans = $state<Record<number, ScanProgressEvent>>({});
+  /** Watched folder ids the OS won't let photon watch live, from the most recent
+   *  `folder-status` event for each: they fall back to periodic rescans instead. */
+  degraded = $state<Record<number, boolean>>({});
   /** Selected grid offset. */
   selected = $state<number | null>(null);
   /** Bumped whenever pages arrive, so `entry()` readers re-run. */
@@ -33,7 +36,10 @@ export class LibraryStore {
     this.initPromise = (async () => {
       const unlisten = await Promise.all([
         events.onLibraryChanged(() => void this.refresh().catch(this.reportError)),
-        events.onFolderStatus(() => void this.refreshFolders().catch(this.reportError)),
+        events.onFolderStatus((e) => {
+          this.degraded[e.watchedId] = e.degraded;
+          void this.refreshFolders().catch(this.reportError);
+        }),
         events.onScanProgress((e) => {
           this.scans[e.watchedId] = e;
           if (e.done) void this.refreshFolders().catch(this.reportError);
@@ -55,6 +61,7 @@ export class LibraryStore {
     this.initPromise = null;
     for (const u of this.unlisten) u();
     this.unlisten = [];
+    this.degraded = {};
   }
 
   async refresh(): Promise<void> {
@@ -91,6 +98,12 @@ export class LibraryStore {
   isScanning(watchedId: number): boolean {
     const scan = this.scans[watchedId];
     return !!scan && !scan.done;
+  }
+
+  /** True while any watched folder is relying on periodic rescans instead of live
+   *  filesystem events, so the status bar can say live updates are limited. */
+  get anyDegraded(): boolean {
+    return Object.values(this.degraded).some(Boolean);
   }
 
   reportError = (e: unknown): void => {
