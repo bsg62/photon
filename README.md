@@ -22,8 +22,10 @@ Signing certificates cost money and are tied to a personal identity, so photon's
 are unsigned. Every system says so in its own way, and none of it means the download is
 broken:
 
-- **macOS** refuses to open an app from an unidentified developer. Right-click photon in
-  Applications and choose **Open**, then confirm. You only do this once.
+- **macOS** refuses to open an app from an unidentified developer. Open **System Settings →
+  Privacy & Security**, scroll down to the message naming photon, and choose **Open Anyway**,
+  then confirm. (On macOS 14 and earlier you can instead right-click photon in Applications and
+  choose **Open**.) You only need to do this once.
 - **Windows** shows "Windows protected your PC". Choose **More info**, then **Run anyway**.
 - **Linux** shows nothing; the AppImage just needs its executable bit.
 

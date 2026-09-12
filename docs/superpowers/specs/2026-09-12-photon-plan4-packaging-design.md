@@ -154,7 +154,8 @@ A release that half-worked should look half-worked.
 does to someone:
 
 - **macOS** refuses to open the app from an unidentified developer. The documented path is
-  right-click → Open, or clearing the quarantine attribute. This is expected, not a bug.
+  System Settings → Privacy & Security → Open Anyway (right-click → Open still works on macOS 14
+  and earlier). This is expected, not a bug.
 - **Windows** SmartScreen shows "Windows protected your PC" with a "More info" → "Run
   anyway" path.
 - **Linux** has no equivalent gate. The AppImage needs its executable bit; the `.deb`
