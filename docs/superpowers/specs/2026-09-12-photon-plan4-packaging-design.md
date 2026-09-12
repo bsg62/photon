@@ -82,7 +82,9 @@ request; building installers for three platforms is minutes of work that has no 
 each push.
 
 **Triggers:** a `v*` tag, plus `workflow_dispatch` so a release can be rehearsed without
-tagging. A dispatch run builds and uploads artifacts but creates no Release.
+tagging. A dispatch run builds and uploads artifacts but creates no Release. Changes to
+`release.yml` itself also build and verify on the pull request, without publishing — a
+tag-only workflow cannot be verified before the tag that needs it.
 
 **Jobs**, all of them after `version-check`, with `fail-fast: false` so one platform's
 failure still leaves the others' artifacts to inspect:
