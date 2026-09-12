@@ -1,7 +1,7 @@
 //! Path comparison for watched-folder rules: component-wise, and case-insensitive on
 //! the platforms whose default filesystems are (macOS, Windows).
 
-use std::path::{Component, Path};
+use std::path::{Component, Path, PathBuf};
 
 fn keys(path: &Path) -> Vec<String> {
     path.components()
@@ -29,6 +29,19 @@ pub(crate) fn is_within(child: &Path, parent: &Path) -> bool {
 
 pub(crate) fn overlaps(a: &Path, b: &Path) -> bool {
     is_within(a, b) || is_within(b, a)
+}
+
+/// The nearest common ancestor of `a` and `b`, compared component-wise using the same case
+/// rules as [`is_within`]. Neither path need be an ancestor of the other; the result is
+/// their longest shared path prefix (which may be the root, or even empty on Windows if
+/// they don't share a prefix at all).
+pub(crate) fn common_ancestor(a: &Path, b: &Path) -> PathBuf {
+    let (ka, kb) = (keys(a), keys(b));
+    let shared = ka.iter().zip(kb.iter()).take_while(|(x, y)| x == y).count();
+    a.components()
+        .filter(|c| !matches!(c, Component::CurDir))
+        .take(shared)
+        .collect()
 }
 
 #[cfg(test)]
@@ -60,5 +73,25 @@ mod tests {
     fn comparison_is_case_sensitive_elsewhere() {
         assert!(!same_path(Path::new("/A"), Path::new("/a")));
         assert!(!is_within(Path::new("/Photos/2024"), Path::new("/photos")));
+    }
+
+    #[test]
+    fn common_ancestor_of_siblings_is_their_parent() {
+        assert_eq!(
+            common_ancestor(Path::new("/p/a"), Path::new("/p/b")),
+            Path::new("/p")
+        );
+        assert_eq!(
+            common_ancestor(Path::new("/p/a/deep"), Path::new("/p/b/deeper")),
+            Path::new("/p")
+        );
+    }
+
+    #[test]
+    fn common_ancestor_of_an_ancestor_and_its_descendant_is_the_ancestor() {
+        assert_eq!(
+            common_ancestor(Path::new("/p/a"), Path::new("/p/a/b")),
+            Path::new("/p/a")
+        );
     }
 }

@@ -1,5 +1,5 @@
-use crate::paths::is_within;
-use std::path::PathBuf;
+use crate::paths::{common_ancestor, is_within};
+use std::path::{Path, PathBuf};
 
 /// A watched folder, as the watcher sees it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -44,6 +44,30 @@ pub fn plan_scans(
         kept.push((id, dir));
     }
     kept
+}
+
+/// Merges two pending subtree-scan requests for the same watched folder into one directory
+/// that covers both.
+///
+/// When one request is an ancestor of the other (or they're equal), keeps the ancestor:
+/// scanning it already covers the descendant. Otherwise, since a single request can't cover
+/// two unrelated branches, falls back to their nearest common ancestor — clamped to `root`
+/// (the watched folder's own path) in case it somehow comes out shallower, so the merged
+/// request never rises above the folder actually being watched. `root` itself is always a
+/// valid answer: it simply becomes a full rescan of the folder.
+pub fn merge_pending(existing: &Path, new: &Path, root: &Path) -> PathBuf {
+    if is_within(new, existing) {
+        return existing.to_path_buf();
+    }
+    if is_within(existing, new) {
+        return new.to_path_buf();
+    }
+    let merged = common_ancestor(existing, new);
+    if is_within(&merged, root) {
+        merged
+    } else {
+        root.to_path_buf()
+    }
 }
 
 #[cfg(test)]
@@ -129,6 +153,39 @@ mod tests {
         assert_eq!(
             plan_scans(&dirs, &roots(), &[]),
             vec![(1, PathBuf::from("/photos"))]
+        );
+    }
+
+    #[test]
+    fn merge_pending_keeps_the_ancestor_of_a_nested_pair() {
+        let root = PathBuf::from("/photos");
+        assert_eq!(
+            merge_pending(Path::new("/photos/a"), Path::new("/photos/a/deep"), &root),
+            PathBuf::from("/photos/a")
+        );
+        assert_eq!(
+            merge_pending(Path::new("/photos/a/deep"), Path::new("/photos/a"), &root),
+            PathBuf::from("/photos/a")
+        );
+    }
+
+    #[test]
+    fn merge_pending_of_siblings_is_their_common_ancestor() {
+        let root = PathBuf::from("/photos");
+        assert_eq!(
+            merge_pending(Path::new("/photos/a"), Path::new("/photos/b"), &root),
+            PathBuf::from("/photos")
+        );
+    }
+
+    #[test]
+    fn merge_pending_never_rises_above_the_watched_root() {
+        // Two directories that share no prefix beneath the root: the merge is clamped to
+        // the root itself rather than the (nonsensical, or empty) raw common ancestor.
+        let root = PathBuf::from("/photos");
+        assert_eq!(
+            merge_pending(Path::new("/photos/a"), Path::new("/elsewhere/b"), &root),
+            PathBuf::from("/photos")
         );
     }
 }
