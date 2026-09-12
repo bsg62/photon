@@ -2,13 +2,14 @@
 //! background scans. Plain Rust, so it can be tested without a webview.
 
 use crate::events::{Events, FolderStatus, LibraryChanged, ScanProgressEvent};
+use crate::watch::WatcherService;
 use parking_lot::{Mutex, RwLock};
 use photon_core::{
     Result,
     grid::GridIndex,
     library::{Library, WatchedFolder},
     now_ms,
-    scanner::{ScanOptions, ScanProgress, scan_watched},
+    scanner::{ScanOptions, ScanProgress, scan_subtree, scan_watched},
     thumbs::{ThumbCache, ThumbService},
 };
 use std::{
@@ -55,6 +56,16 @@ pub struct Engine {
     /// The handle of the thread spawned by `startup`, if any is still outstanding.
     /// `wait_for_startup` takes it and joins it, and is safe to call more than once.
     startup: Mutex<Option<JoinHandle<()>>>,
+    /// The running watcher service, if one has been started. `start_watcher` and
+    /// `stop_watcher` both take this lock for their whole check-then-act, so a `shutdown`
+    /// racing `startup`'s call to `start_watcher` can never miss stopping a service that
+    /// gets created just after it looked, nor leave one running past `shutdown`.
+    ///
+    /// Held as a strong `Arc`, even though the service itself holds an `Arc<Engine>` back:
+    /// that cycle is deliberately broken by `stop_watcher`, which always `take`s the slot
+    /// (dropping this `Arc`) before or as part of stopping it, so it never outlives an
+    /// explicit stop.
+    watcher: Mutex<Option<Arc<WatcherService>>>,
 }
 
 impl Engine {
@@ -83,6 +94,7 @@ impl Engine {
             next_token: AtomicU64::new(0),
             shutting_down: AtomicBool::new(false),
             startup: Mutex::new(None),
+            watcher: Mutex::new(None),
         }))
     }
 
@@ -115,23 +127,111 @@ impl Engine {
         Ok(())
     }
 
-    /// Validates and watches `path`, then starts its first scan.
+    /// Validates and watches `path`, registers it with the running watcher service (if
+    /// any), and starts its first scan.
+    ///
+    /// Without this, a folder added after the service starts would never install an OS
+    /// watch: it would sit silently unwatched until the next full app restart.
     pub fn add_folder(self: &Arc<Self>, path: &Path) -> Result<WatchedFolder> {
         let watched = self.lib.add_watched_folder(path, &self.excluded)?;
+        if let Some(service) = self.watcher_service() {
+            service.watch_added(watched.id, Path::new(&watched.path));
+        }
         self.start_scan(watched.clone());
         Ok(watched)
     }
 
-    /// Stops any scan of the folder, forgets it and everything under it, and refreshes the grid.
+    /// Stops any scan of the folder, forgets it and everything under it, unregisters its
+    /// watch with the running watcher service (if any), and refreshes the grid.
     pub fn remove_folder(&self, watched_id: i64) -> Result<()> {
         self.cancel_scan(watched_id);
+        let path = self
+            .lib
+            .watched_folders()?
+            .into_iter()
+            .find(|w| w.id == watched_id)
+            .map(|w| w.path);
         self.lib.remove_watched_folder(watched_id)?;
+        if let (Some(service), Some(path)) = (self.watcher_service(), path) {
+            service.watch_removed(watched_id, Path::new(&path));
+        }
         self.refresh_grid()
+    }
+
+    /// A clone of the running watcher service's handle, if one is currently running.
+    /// `pub(crate)` (rather than private) so tests in `watch.rs` can reach the exact
+    /// service instance `add_folder`/`remove_folder`/`run_scan` use.
+    pub(crate) fn watcher_service(&self) -> Option<Arc<WatcherService>> {
+        self.watcher.lock().clone()
+    }
+
+    /// Starts the watcher service unless one is already running or the engine is shutting
+    /// down. Held under `watcher`'s lock for the whole check-then-create so a `shutdown`
+    /// racing this can never miss the service this call is about to store.
+    pub fn start_watcher(self: &Arc<Self>) {
+        let mut slot = self.watcher.lock();
+        if slot.is_none() && !self.shutting_down.load(Ordering::SeqCst) {
+            *slot = Some(Arc::new(WatcherService::start(self)));
+        }
+    }
+
+    /// Stops the watcher service if one is running. Idempotent, and safe to call even if
+    /// `start_watcher` never ran.
+    ///
+    /// `take`s the slot (and so releases `watcher`'s lock) before calling `stop`, which
+    /// blocks joining the service's threads: holding the lock across that would block
+    /// `add_folder`/`remove_folder`/`run_scan` for as long as `stop` takes.
+    pub fn stop_watcher(&self) {
+        let service = self.watcher.lock().take();
+        if let Some(service) = service {
+            service.stop();
+        }
+    }
+
+    /// Emits the current `folder-status` for one folder without scanning it, so a state
+    /// change no scan will report still reaches the UI promptly.
+    ///
+    /// `degraded` is passed in rather than read back from the running watcher service: the
+    /// caller is usually that service, still being constructed inside `start_watcher` (which
+    /// holds `watcher`'s lock), so asking the engine for it would deadlock.
+    pub(crate) fn emit_folder_status(&self, watched_id: i64, degraded: bool) {
+        let folder = self
+            .lib
+            .watched_folders()
+            .ok()
+            .and_then(|all| all.into_iter().find(|w| w.id == watched_id));
+        if let Some(folder) = folder {
+            self.emit_status(&folder, degraded);
+        }
+    }
+
+    fn emit_status(&self, folder: &WatchedFolder, degraded: bool) {
+        self.events.folder_status(FolderStatus {
+            watched_id: folder.id,
+            online: folder.online,
+            degraded,
+        });
+    }
+
+    /// Starts a full background scan unless one is already running for this folder.
+    pub fn start_scan(self: &Arc<Self>, watched: WatchedFolder) -> bool {
+        self.start_scan_inner(watched, None)
+    }
+
+    /// Starts a scan of one directory beneath `watched`. It takes the same per-folder slot
+    /// as a full scan, so a folder never has two scans running, and the watcher's work is
+    /// cancelled by `remove_folder` and `shutdown` exactly like a manual rescan.
+    pub fn start_subtree_scan(self: &Arc<Self>, watched: WatchedFolder, dir: PathBuf) -> bool {
+        self.start_scan_inner(watched, Some(dir))
     }
 
     /// Starts a background scan unless one is already running for this folder, or the
     /// engine is shutting down.
-    pub fn start_scan(self: &Arc<Self>, watched: WatchedFolder) -> bool {
+    fn start_scan_inner(
+        self: &Arc<Self>,
+        watched: WatchedFolder,
+        subtree: Option<PathBuf>,
+    ) -> bool {
         let mut scans = self.scans.lock();
         if self.shutting_down.load(Ordering::SeqCst) || scans.contains_key(&watched.id) {
             return false;
@@ -166,7 +266,7 @@ impl Engine {
                     id,
                     token,
                 };
-                engine.run_scan(&watched, thread_cancel);
+                engine.run_scan(&watched, subtree, thread_cancel);
             })
             .expect("failed to spawn scan thread");
         scans.insert(
@@ -270,6 +370,9 @@ impl Engine {
                 if shutting_down() {
                     return;
                 }
+                // Every folder's first scan has now run, so live watching won't race a
+                // startup scan for the same directory.
+                engine.start_watcher();
                 match engine.thumbs.collect_garbage() {
                     Ok(removed) => tracing::info!(removed, "thumbnail garbage collected"),
                     Err(err) => tracing::warn!(%err, "thumbnail garbage collection failed"),
@@ -304,11 +407,14 @@ impl Engine {
                 self.cancel_scan(id);
             }
         }
+        // Before the thumbnail queue closes, so no watcher-driven scan can start (and try
+        // to enqueue thumbnails) as the workers go away.
+        self.stop_watcher();
         self.thumbs.close();
         self.wait_for_startup();
     }
 
-    fn run_scan(&self, watched: &WatchedFolder, cancel: Arc<AtomicBool>) {
+    fn run_scan(&self, watched: &WatchedFolder, subtree: Option<PathBuf>, cancel: Arc<AtomicBool>) {
         let options = ScanOptions {
             excluded: self.excluded.clone(),
             cancel,
@@ -317,7 +423,7 @@ impl Engine {
         let mut last_refresh = Instant::now();
         let mut refreshed_total = 0;
         let mut last_progress: Option<Instant> = None;
-        let result = scan_watched(&self.lib, watched, now_ms(), &options, &mut |p| {
+        let mut on_progress = |p: &ScanProgress| {
             last = *p;
             let total = p.added + p.changed;
             if total != refreshed_total && last_refresh.elapsed() >= THROTTLE {
@@ -335,7 +441,18 @@ impl Engine {
                     .scan_progress(ScanProgressEvent::new(watched.id, p, false, false));
                 last_progress = Some(Instant::now());
             }
-        });
+        };
+        let result = match &subtree {
+            Some(dir) => scan_subtree(
+                &self.lib,
+                watched,
+                dir,
+                now_ms(),
+                &options,
+                &mut on_progress,
+            ),
+            None => scan_watched(&self.lib, watched, now_ms(), &options, &mut on_progress),
+        };
         let cancelled = match &result {
             Ok(report) => report.cancelled,
             Err(err) => {
@@ -343,22 +460,39 @@ impl Engine {
                 false
             }
         };
-        if let Err(err) = self.refresh_grid() {
-            tracing::warn!(%err, "grid refresh failed");
-        }
-        if let Err(err) = self.thumbs.enqueue_pending() {
-            tracing::warn!(%err, "could not queue pending thumbnails");
-        }
-        if let Some(folder) = self
+        let folder = self
             .lib
             .watched_folders()
             .ok()
-            .and_then(|all| all.into_iter().find(|w| w.id == watched.id))
-        {
-            self.events.folder_status(FolderStatus {
-                watched_id: folder.id,
-                online: folder.online,
-            });
+            .and_then(|all| all.into_iter().find(|w| w.id == watched.id));
+        // A scan that changed nothing must not rebuild the grid: `refresh_grid` reads every
+        // grid row, rebuilds the whole index and makes the UI refetch. An offline root is
+        // rescanned every 30 seconds for as long as its drive stays unplugged, and each of
+        // those scans finds nothing — doing the full rebuild anyway would burn a table scan
+        // and a UI refresh twice a minute, indefinitely, on a library of any size.
+        //
+        // The online flag flipping counts as a change even when no row was touched: it
+        // decides which folders the thumbnail queue will work on, so the queue has to be
+        // re-primed when a drive comes back.
+        let touched_rows = match &result {
+            Ok(report) => report.added + report.changed + report.marked_missing + report.purged > 0,
+            // A scan that failed partway may still have committed earlier batches.
+            Err(_) => true,
+        };
+        let online_changed = folder.as_ref().is_some_and(|f| f.online != watched.online);
+        if touched_rows || online_changed {
+            if let Err(err) = self.refresh_grid() {
+                tracing::warn!(%err, "grid refresh failed");
+            }
+            if let Err(err) = self.thumbs.enqueue_pending() {
+                tracing::warn!(%err, "could not queue pending thumbnails");
+            }
+        }
+        if let Some(folder) = folder {
+            let degraded = self
+                .watcher_service()
+                .is_some_and(|service| service.is_degraded(folder.id));
+            self.emit_status(&folder, degraded);
         }
         self.events
             .scan_progress(ScanProgressEvent::new(watched.id, &last, true, cancelled));
@@ -385,9 +519,48 @@ mod tests {
             Recorded::Scan(s) if s.watched_id == watched.id && s.done && !s.cancelled && s.added == 2)));
         assert!(events.contains(&Recorded::Folder(FolderStatus {
             watched_id: watched.id,
-            online: true
+            online: true,
+            degraded: false,
         })));
         assert!(!f.engine.is_scanning(watched.id));
+    }
+
+    /// An offline root is rescanned every 30 seconds for as long as its drive stays
+    /// unplugged, and each of those scans finds nothing. Refreshing anyway would rebuild the
+    /// whole grid index from a full `grid_entries()` query and make the UI refetch, twice a
+    /// minute, indefinitely.
+    #[test]
+    fn a_scan_that_changes_nothing_does_not_rebuild_the_grid() {
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a.jpg", &img)]);
+        let watched = f.add_photos();
+
+        // The first poll after the drive goes away flips the folder offline, which is a
+        // real change and legitimately refreshes.
+        std::fs::remove_dir_all(&f.photos).unwrap();
+        f.engine.start_scan(watched.clone());
+        f.engine.wait_for_scans();
+        let version = f.engine.grid().0;
+
+        // The second finds exactly what the first did: nothing added, changed, marked or
+        // purged, and the folder already offline.
+        let offline = f
+            .engine
+            .lib
+            .watched_folders()
+            .unwrap()
+            .into_iter()
+            .find(|w| w.id == watched.id)
+            .unwrap();
+        assert!(!offline.online);
+        f.engine.start_scan(offline);
+        f.engine.wait_for_scans();
+
+        assert_eq!(
+            f.engine.grid().0,
+            version,
+            "a scan that changed nothing must not rebuild the grid"
+        );
     }
 
     #[test]

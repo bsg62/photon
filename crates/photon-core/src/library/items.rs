@@ -189,6 +189,41 @@ impl Library {
         Ok(rows)
     }
 
+    /// Every item in `dir`'s folder and all folders beneath it, keyed by path, including
+    /// soft-deleted ones. Membership comes from the folder tree rather than a path-prefix
+    /// match, so `%` and `_` in a filename need no escaping and a directory with no folder
+    /// row simply yields nothing.
+    pub fn known_items_under(
+        &self,
+        watched_id: i64,
+        dir: &str,
+    ) -> Result<HashMap<String, KnownItem>> {
+        let conn = self.reader();
+        let mut stmt = conn.prepare(
+            "WITH RECURSIVE sub(id) AS (
+                 SELECT id FROM folders WHERE watched_id = ?1 AND path = ?2
+                 UNION ALL
+                 SELECT f.id FROM folders f JOIN sub ON f.parent_id = sub.id
+             )
+             SELECT i.path, i.id, i.size, i.mtime_ms, i.missing_since IS NOT NULL
+             FROM items i WHERE i.folder_id IN (SELECT id FROM sub)",
+        )?;
+        let rows = stmt
+            .query_map(params![watched_id, dir], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    KnownItem {
+                        id: r.get(1)?,
+                        size: r.get(2)?,
+                        mtime_ms: r.get(3)?,
+                        missing: r.get(4)?,
+                    },
+                ))
+            })?
+            .collect::<rusqlite::Result<HashMap<_, _>>>()?;
+        Ok(rows)
+    }
+
     pub fn item(&self, id: i64) -> Result<Option<Item>> {
         let item = self
             .reader()
@@ -502,6 +537,46 @@ mod tests {
         assert_eq!(entries[0].folder_id, a);
         let expected = lib.item(ids[2]).unwrap().unwrap().fingerprint();
         assert_eq!(entries[0].thumb_key, expected);
+    }
+
+    #[test]
+    fn known_items_under_covers_only_that_subtree() {
+        let (_dir, lib) = temp_library();
+        let (watched, root) = seed_folder(&lib, Path::new("/p"));
+        let a = lib.upsert_folder(watched, Some(root), "/p/a", 1).unwrap();
+        let deep = lib.upsert_folder(watched, Some(a), "/p/a/deep", 1).unwrap();
+        let b = lib.upsert_folder(watched, Some(root), "/p/b", 1).unwrap();
+        lib.insert_items(&[
+            new_item(root, "/p/top.jpg", 1),
+            new_item(a, "/p/a/one.jpg", 2),
+            new_item(deep, "/p/a/deep/two.jpg", 3),
+            new_item(b, "/p/b/three.jpg", 4),
+        ])
+        .unwrap();
+
+        let under_a = lib.known_items_under(watched, "/p/a").unwrap();
+        let mut paths: Vec<&str> = under_a.keys().map(String::as_str).collect();
+        paths.sort();
+        assert_eq!(paths, ["/p/a/deep/two.jpg", "/p/a/one.jpg"]);
+
+        assert_eq!(lib.known_items_under(watched, "/p").unwrap().len(), 4);
+        assert!(
+            lib.known_items_under(watched, "/p/missing")
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn known_items_under_includes_soft_deleted_items() {
+        let (_dir, lib) = temp_library();
+        let (watched, root) = seed_folder(&lib, Path::new("/p"));
+        let a = lib.upsert_folder(watched, Some(root), "/p/a", 1).unwrap();
+        let ids = lib.insert_items(&[new_item(a, "/p/a/one.jpg", 1)]).unwrap();
+        lib.mark_missing(&ids, 99).unwrap();
+
+        let under = lib.known_items_under(watched, "/p/a").unwrap();
+        assert!(under["/p/a/one.jpg"].missing);
     }
 
     #[test]

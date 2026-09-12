@@ -1,6 +1,6 @@
 use crate::{
     Result,
-    library::{Library, NewItem, WatchedFolder},
+    library::{KnownItem, Library, NewItem, WatchedFolder},
     media::MediaKind,
     metadata::read_image_meta,
 };
@@ -77,15 +77,266 @@ pub fn scan_watched(
 
     let mut known = lib.known_items(watched.id)?;
     let mut folder_ids: HashMap<PathBuf, i64> = HashMap::new();
+
+    let WalkOutcome {
+        report,
+        seen,
+        incomplete_prefixes,
+        skip_mark_purge,
+        cancelled,
+    } = walk_tree(
+        lib,
+        watched.id,
+        root,
+        None,
+        &mut known,
+        &mut folder_ids,
+        scan_id,
+        options,
+        progress,
+    )?;
+
+    if cancelled {
+        // We stopped early, so everything we didn't reach is unknown, not missing. Leave
+        // online/offline as it was too: that decision needs the empty-root guard below,
+        // which needs a complete walk, so a cancelled scan of an unmounted mount point
+        // must not get marked online.
+        progress(&seen);
+        return Ok(ScanReport {
+            cancelled: true,
+            ..report
+        });
+    }
+
+    if skip_mark_purge {
+        // We couldn't tell what happened to the rest of the tree; don't guess.
+        lib.set_watched_online(watched.id, true)?;
+        progress(&seen);
+        return Ok(report);
+    }
+
+    // Drop anything under a subtree we couldn't fully walk: it might still be there.
+    known.retain(|path_str, _| {
+        !incomplete_prefixes
+            .iter()
+            .any(|prefix| Path::new(path_str).starts_with(prefix))
+    });
+
+    // A reachable but empty root usually means an unmounted volume left its mount
+    // point behind, not that every known file vanished at once.
+    if seen.files_seen == 0 && known.values().any(|k| !k.missing) {
+        lib.set_watched_online(watched.id, false)?;
+        progress(&seen);
+        return Ok(ScanReport {
+            offline: true,
+            ..ScanReport::default()
+        });
+    }
+    lib.set_watched_online(watched.id, true)?;
+
+    // Anything left in `known` was not found on this (reachable) scan: soft-delete it,
+    // or purge it if it was already missing last time.
+    let (marked, purged) = finish_mark_purge(lib, known)?;
+    lib.prune_folders(watched.id, scan_id)?;
+
+    progress(&seen);
+    Ok(ScanReport {
+        marked_missing: marked,
+        purged,
+        ..report
+    })
+}
+
+/// Brings one directory and everything beneath it in line with what is on disk.
+///
+/// Everything this touches is restricted to that subtree: the walk, the known-items set it
+/// diffs against, what it marks or purges, and which folders it prunes. `scan_watched`'s
+/// diff compares against every item under the watched root, so aiming that logic at one
+/// directory would make the rest of the library look deleted.
+///
+/// Differences from [`scan_watched`], both deliberate:
+/// - it never changes the watched folder's online flag, except when the watched root itself
+///   has gone, which it reports exactly as `scan_watched` does;
+/// - it has no empty-directory guard. An empty root means an unmounted volume; an empty
+///   subdirectory means its files really were deleted.
+///
+/// A `dir` that no longer exists is not an error: the nearest ancestor that still exists is
+/// scanned instead, which is what makes a deleted folder disappear from the library.
+pub fn scan_subtree(
+    lib: &Library,
+    watched: &WatchedFolder,
+    dir: &Path,
+    scan_id: i64,
+    options: &ScanOptions,
+    progress: &mut dyn FnMut(&ScanProgress),
+) -> Result<ScanReport> {
+    let root = Path::new(&watched.path);
+    if !root.is_dir() {
+        lib.set_watched_online(watched.id, false)?;
+        return Ok(ScanReport {
+            offline: true,
+            ..ScanReport::default()
+        });
+    }
+    // A deleted directory is scanned through its nearest living ancestor, so the parent's
+    // walk sees it gone, marks its items missing and eventually prunes it. This walk-up
+    // happens on the raw, non-canonical path: `is_within` and `same_path` compare
+    // component-wise and case-insensitively on macOS/Windows, but a plain `Path::is_dir`
+    // check works fine either way, and canonicalizing first would fail outright on a path
+    // that no longer exists.
+    //
+    // The climb stops at the watched root: a `dir` that isn't under it is rejected below
+    // anyway, and without this guard an ineligible path would stat its way up to the
+    // filesystem root first, leaving the whole safety argument resting on that single
+    // downstream check. Callers hand this an existing directory's canonical path (the
+    // watcher canonicalizes each event directory before mapping it to a root), so the
+    // component-wise comparison agrees with `root` for every path that can reach here.
+    let mut target = dir.to_path_buf();
+    while !target.is_dir() {
+        match target.parent() {
+            Some(parent) if crate::paths::is_within(parent, root) => target = parent.to_path_buf(),
+            _ => break,
+        }
+    }
+    // Only now, with an existing directory in hand, canonicalize it so the membership and
+    // delegation checks below - and the byte-exact `known_items_under` /
+    // `prune_folders_under` / `strip_prefix` calls further down - agree with `root`, which
+    // `add_watched_folder` stored canonicalized. Skipping this would let a `dir` that only
+    // differs from `root` in case, or that contains `..`, slip past `is_within` and then
+    // corrupt the folder tree once `strip_prefix` disagrees with it.
+    let target = dunce::canonicalize(&target).unwrap_or(target);
+
+    if !crate::paths::is_within(&target, root) {
+        tracing::warn!(?dir, watched = %watched.path, "ignoring a subtree outside its watched folder");
+        return Ok(ScanReport::default());
+    }
+    if crate::paths::same_path(&target, root) {
+        return scan_watched(lib, watched, scan_id, options, progress);
+    }
+    // `is_within` compares component-wise and case-insensitively on macOS/Windows, while
+    // `strip_prefix` is byte-exact; now that both `target` and `root` are canonicalized they
+    // should always agree, but if they somehow didn't, silently defaulting the relative path
+    // to empty would attach `target` to the wrong parent instead of failing loudly.
+    let Ok(relative) = target.strip_prefix(root) else {
+        tracing::warn!(?dir, ?target, watched = %watched.path, "canonicalized subtree unexpectedly does not lie under its watched folder");
+        return Ok(ScanReport::default());
+    };
+
+    let target_str = target
+        .to_str()
+        .ok_or_else(|| crate::Error::NonUtf8Path(target.clone()))?;
+    let mut known = lib.known_items_under(watched.id, target_str)?;
+    let (mut folder_ids, parent_id) = seed_ancestors(lib, watched, relative, scan_id)?;
+
+    let outcome = walk_tree(
+        lib,
+        watched.id,
+        &target,
+        parent_id,
+        &mut known,
+        &mut folder_ids,
+        scan_id,
+        options,
+        progress,
+    )?;
+
+    if outcome.cancelled {
+        progress(&outcome.seen);
+        return Ok(ScanReport {
+            cancelled: true,
+            ..outcome.report
+        });
+    }
+    if outcome.skip_mark_purge {
+        progress(&outcome.seen);
+        return Ok(outcome.report);
+    }
+
+    known.retain(|path_str, _| {
+        !outcome
+            .incomplete_prefixes
+            .iter()
+            .any(|prefix| Path::new(path_str).starts_with(prefix))
+    });
+
+    let mut report = outcome.report;
+    let (marked, purged) = finish_mark_purge(lib, known)?;
+    lib.prune_folders_under(watched.id, scan_id, target_str)?;
+    report.marked_missing = marked;
+    report.purged = purged;
+
+    progress(&outcome.seen);
+    Ok(report)
+}
+
+/// Upserts the folder rows from the watched root down to the target's parent, so the walk
+/// can attach the target to its real parent rather than treating it as a root. `relative` is
+/// the target's path relative to the watched root (i.e. `target.strip_prefix(root)`).
+/// Returns the ids it created, and the id of the target's parent.
+fn seed_ancestors(
+    lib: &Library,
+    watched: &WatchedFolder,
+    relative: &Path,
+    scan_id: i64,
+) -> Result<(HashMap<PathBuf, i64>, Option<i64>)> {
+    let root = Path::new(&watched.path);
+    let root_str = root
+        .to_str()
+        .ok_or_else(|| crate::Error::NonUtf8Path(root.to_path_buf()))?;
+    let mut ids = HashMap::new();
+    let mut parent = Some(lib.upsert_folder(watched.id, None, root_str, scan_id)?);
+    ids.insert(root.to_path_buf(), parent.expect("just inserted"));
+
+    let mut components: Vec<_> = relative.components().collect();
+    components.pop(); // `target` itself is upserted by the walk.
+    let mut current = root.to_path_buf();
+    for component in components {
+        current = current.join(component);
+        let current_str = current
+            .to_str()
+            .ok_or_else(|| crate::Error::NonUtf8Path(current.clone()))?;
+        let id = lib.upsert_folder(watched.id, parent, current_str, scan_id)?;
+        ids.insert(current.clone(), id);
+        parent = Some(id);
+    }
+    Ok((ids, parent))
+}
+
+/// The result of walking a subtree: what was found, and whether the walk was complete
+/// enough to safely mark or purge anything afterwards.
+struct WalkOutcome {
+    report: ScanReport,
+    seen: ScanProgress,
+    /// Subtrees we could not fully walk: anything `known` claims to live under one of
+    /// these might still exist, so it must not be marked missing or purged this scan.
+    incomplete_prefixes: Vec<PathBuf>,
+    /// Set when an error gives no path, or points at the root itself: the caller can no
+    /// longer tell which `known` entries are safe to touch, so it must skip mark/purge/prune
+    /// entirely.
+    skip_mark_purge: bool,
+    cancelled: bool,
+}
+
+/// Walks `root`, upserting folders and files into the library and removing matches from
+/// `known` as they're found. Does not mark, purge or prune anything, or touch the watched
+/// folder's online state; the caller decides that from the returned [`WalkOutcome`].
+#[allow(clippy::too_many_arguments)]
+fn walk_tree(
+    lib: &Library,
+    watched_id: i64,
+    root: &Path,
+    root_parent_id: Option<i64>,
+    known: &mut HashMap<String, KnownItem>,
+    folder_ids: &mut HashMap<PathBuf, i64>,
+    scan_id: i64,
+    options: &ScanOptions,
+    progress: &mut dyn FnMut(&ScanProgress),
+) -> Result<WalkOutcome> {
     let mut report = ScanReport::default();
     let mut seen = ScanProgress::default();
     let mut new_batch: Vec<NewItem> = Vec::new();
     let mut changed_batch: Vec<(i64, NewItem)> = Vec::new();
-    // Subtrees we could not fully walk: anything `known` claims to live under one of
-    // these might still exist, so it must not be marked missing or purged this scan.
     let mut incomplete_prefixes: Vec<PathBuf> = Vec::new();
-    // Set when an error gives no path, or points at the root itself: we can no longer
-    // tell which `known` entries are safe to touch, so skip mark/purge/prune entirely.
     let mut skip_mark_purge = false;
     let mut cancelled = false;
 
@@ -123,11 +374,11 @@ pub fn scan_watched(
 
         if entry.file_type().is_dir() {
             let parent = if entry.depth() == 0 {
-                None
+                root_parent_id
             } else {
                 path.parent().and_then(|p| folder_ids.get(p)).copied()
             };
-            let id = lib.upsert_folder(watched.id, parent, path_str, scan_id)?;
+            let id = lib.upsert_folder(watched_id, parent, path_str, scan_id)?;
             folder_ids.insert(path.to_path_buf(), id);
             continue;
         }
@@ -176,46 +427,18 @@ pub fn scan_watched(
     flush_new(lib, &mut new_batch, &mut report, &mut seen, progress)?;
     flush_changed(lib, &mut changed_batch, &mut report, &mut seen, progress)?;
 
-    if cancelled {
-        // We stopped early, so everything we didn't reach is unknown, not missing. Leave
-        // online/offline as it was too: that decision needs the empty-root guard below,
-        // which needs a complete walk, so a cancelled scan of an unmounted mount point
-        // must not get marked online.
-        progress(&seen);
-        return Ok(ScanReport {
-            cancelled: true,
-            ..report
-        });
-    }
+    Ok(WalkOutcome {
+        report,
+        seen,
+        incomplete_prefixes,
+        skip_mark_purge,
+        cancelled,
+    })
+}
 
-    if skip_mark_purge {
-        // We couldn't tell what happened to the rest of the tree; don't guess.
-        lib.set_watched_online(watched.id, true)?;
-        progress(&seen);
-        return Ok(report);
-    }
-
-    // Drop anything under a subtree we couldn't fully walk: it might still be there.
-    known.retain(|path_str, _| {
-        !incomplete_prefixes
-            .iter()
-            .any(|prefix| Path::new(path_str).starts_with(prefix))
-    });
-
-    // A reachable but empty root usually means an unmounted volume left its mount
-    // point behind, not that every known file vanished at once.
-    if seen.files_seen == 0 && known.values().any(|k| !k.missing) {
-        lib.set_watched_online(watched.id, false)?;
-        progress(&seen);
-        return Ok(ScanReport {
-            offline: true,
-            ..ScanReport::default()
-        });
-    }
-    lib.set_watched_online(watched.id, true)?;
-
-    // Anything left in `known` was not found on this (reachable) scan: soft-delete it,
-    // or purge it if it was already missing last time.
+/// Soft-deletes what this walk didn't find, and purges what was already missing.
+/// Both are chunked at `BATCH` rows per transaction.
+fn finish_mark_purge(lib: &Library, known: HashMap<String, KnownItem>) -> Result<(u64, u64)> {
     let (mut to_mark, mut to_purge) = (Vec::new(), Vec::new());
     for k in known.into_values() {
         if k.missing {
@@ -231,12 +454,7 @@ pub fn scan_watched(
     for chunk in to_purge.chunks(BATCH) {
         lib.purge_items(chunk)?;
     }
-    lib.prune_folders(watched.id, scan_id)?;
-    report.marked_missing = to_mark.len() as u64;
-    report.purged = to_purge.len() as u64;
-
-    progress(&seen);
-    Ok(report)
+    Ok((to_mark.len() as u64, to_purge.len() as u64))
 }
 
 fn describe(
@@ -574,6 +792,175 @@ mod tests {
         assert_eq!((report.marked_missing, report.purged), (0, 0));
         let id = lib.known_items(watched.id).unwrap()[&key(&b)].id;
         assert_eq!(lib.item(id).unwrap().unwrap().missing_since, None);
+    }
+
+    fn scan_sub(lib: &Library, watched: &WatchedFolder, dir: &Path, scan_id: i64) -> ScanReport {
+        scan_subtree(
+            lib,
+            watched,
+            dir,
+            scan_id,
+            &ScanOptions::default(),
+            &mut |_| {},
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn subtree_scan_leaves_everything_outside_alone() {
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        let keep = write_file(&root, "b/keep.jpg", &jpeg_bytes(8, 8));
+        write_file(&root, "a/one.jpg", &jpeg_bytes(8, 8));
+        // An empty sibling: `prune_folders` (the unscoped version) would delete it once it's
+        // no longer the newest scan, so this is the only thing distinguishing a correct call
+        // to `prune_folders_under` from an accidental call to `prune_folders`.
+        std::fs::create_dir_all(root.join("c")).unwrap();
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
+        scan(&lib, &watched, 1);
+        assert!(lib.folders().unwrap().iter().any(|f| f.name == "c"));
+
+        // Delete a file in the *other* folder; scanning /a must not notice or touch it.
+        fs::remove_file(&keep).unwrap();
+        let report = scan_sub(&lib, &watched, &root.join("a"), 2);
+
+        assert_eq!((report.marked_missing, report.purged), (0, 0));
+        let id = lib.known_items(watched.id).unwrap()[&key(&keep)].id;
+        assert_eq!(lib.item(id).unwrap().unwrap().missing_since, None);
+        assert!(
+            lib.folders().unwrap().iter().any(|f| f.name == "c"),
+            "an empty sibling folder must survive a subtree scan of a different subtree"
+        );
+    }
+
+    #[test]
+    fn subtree_scan_finds_additions_and_removals_inside_it() {
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        let gone = write_file(&root, "a/one.jpg", &jpeg_bytes(8, 8));
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
+        scan(&lib, &watched, 1);
+        let id = lib.known_items(watched.id).unwrap()[&key(&gone)].id;
+
+        write_file(&root, "a/two.jpg", &jpeg_bytes(8, 8));
+        fs::remove_file(&gone).unwrap();
+        let report = scan_sub(&lib, &watched, &root.join("a"), 2);
+        assert_eq!((report.added, report.marked_missing), (1, 1));
+        assert!(lib.item(id).unwrap().unwrap().missing_since.is_some());
+
+        // A second subtree scan purges it, as a full scan would.
+        let report = scan_sub(&lib, &watched, &root.join("a"), 3);
+        assert_eq!(report.purged, 1);
+        assert!(lib.item(id).unwrap().is_none());
+    }
+
+    #[test]
+    fn subtree_scan_of_a_deleted_directory_uses_its_nearest_living_ancestor() {
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        write_file(&root, "a/sub/one.jpg", &jpeg_bytes(8, 8));
+        write_file(&root, "a/keep.jpg", &jpeg_bytes(8, 8));
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
+        scan(&lib, &watched, 1);
+
+        fs::remove_dir_all(root.join("a").join("sub")).unwrap();
+        let report = scan_sub(&lib, &watched, &root.join("a").join("sub"), 2);
+
+        assert_eq!(report.marked_missing, 1);
+        assert_eq!(report.unchanged, 1, "the surviving sibling was walked");
+        scan_sub(&lib, &watched, &root.join("a").join("sub"), 3);
+        assert!(lib.folders().unwrap().iter().all(|f| f.name != "sub"));
+    }
+
+    #[test]
+    fn subtree_scan_of_an_empty_directory_does_not_report_offline() {
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        let only = write_file(&root, "a/one.jpg", &jpeg_bytes(8, 8));
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
+        scan(&lib, &watched, 1);
+
+        // Emptying a subdirectory is a real deletion, not an unmounted volume.
+        fs::remove_file(&only).unwrap();
+        let report = scan_sub(&lib, &watched, &root.join("a"), 2);
+        assert!(!report.offline);
+        assert_eq!(report.marked_missing, 1);
+        assert!(lib.watched_folders().unwrap()[0].online);
+    }
+
+    #[test]
+    fn subtree_scan_delegates_to_a_full_scan_at_the_root() {
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        write_file(&root, "a/one.jpg", &jpeg_bytes(8, 8));
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
+        // Starts false so the assertion below is non-vacuous: `online` defaults to true on
+        // insert, so without this a broken `same_path` match (running the subtree path with
+        // `target == root` instead of delegating) would still leave it true.
+        lib.set_watched_online(watched.id, false).unwrap();
+        let report = scan_sub(&lib, &watched, &root, 1);
+        assert_eq!(report.added, 1);
+        // `scan_subtree` never sets the online flag true on any path but this delegation, so
+        // this is what actually proves `scan_watched` ran, rather than `report.added == 1`
+        // merely surviving a broken `same_path` match.
+        assert!(lib.watched_folders().unwrap()[0].online);
+    }
+
+    #[test]
+    fn subtree_scan_refuses_a_directory_outside_the_watched_folder() {
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        write_file(&root, "a/one.jpg", &jpeg_bytes(8, 8));
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
+        scan(&lib, &watched, 1);
+
+        let outside = dir.path().join("elsewhere");
+        std::fs::create_dir_all(&outside).unwrap();
+        let report = scan_sub(&lib, &watched, &outside, 2);
+        assert_eq!(report, ScanReport::default());
+        assert_eq!(lib.known_items(watched.id).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn subtree_scan_skips_excluded_directories_and_honours_cancel() {
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        write_file(&root, "a/one.jpg", &jpeg_bytes(8, 8));
+        write_file(&root, "a/cache/two.jpg", &jpeg_bytes(8, 8));
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
+
+        let excluded = ScanOptions {
+            excluded: vec![root.join("a").join("cache")],
+            ..ScanOptions::default()
+        };
+        let report =
+            scan_subtree(&lib, &watched, &root.join("a"), 1, &excluded, &mut |_| {}).unwrap();
+        assert_eq!(report.added, 1);
+
+        let cancelled = ScanOptions::default();
+        cancelled
+            .cancel
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        let report =
+            scan_subtree(&lib, &watched, &root.join("a"), 2, &cancelled, &mut |_| {}).unwrap();
+        assert!(report.cancelled);
+        assert_eq!(report.marked_missing, 0);
+    }
+
+    #[test]
+    fn subtree_scan_of_a_vanished_watched_root_reports_offline() {
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        write_file(&root, "a/one.jpg", &jpeg_bytes(8, 8));
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
+        scan(&lib, &watched, 1);
+
+        // The one place `scan_subtree` writes `online = false`.
+        fs::rename(&root, dir.path().join("unplugged")).unwrap();
+        let report = scan_sub(&lib, &watched, &root.join("a"), 2);
+        assert!(report.offline);
+        assert!(!lib.watched_folders().unwrap()[0].online);
+        assert_eq!(lib.known_items(watched.id).unwrap().len(), 1);
     }
 
     #[test]

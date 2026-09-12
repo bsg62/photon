@@ -9,6 +9,7 @@ pub mod metadata;
 pub(crate) mod paths;
 pub mod scanner;
 pub mod thumbs;
+pub mod watcher;
 
 #[cfg(test)]
 mod testutil;

@@ -6,10 +6,15 @@
       .filter((w) => library.isScanning(w.id))
       .map((w) => `Scanning ${w.path.split(/[\\/]/).pop()}… ${library.scans[w.id].filesSeen.toLocaleString()} files`),
   );
+  const notices = $derived(
+    library.anyDegraded
+      ? ['Live updates limited — photon will re-check these folders periodically.', ...scanning]
+      : scanning,
+  );
 </script>
 
 <footer class="status">
-  <span>{scanning.join(' · ')}</span>
+  <span>{notices.join(' · ')}</span>
   <span>{library.info.len.toLocaleString()} photos</span>
 </footer>
 

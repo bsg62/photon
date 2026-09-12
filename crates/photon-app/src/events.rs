@@ -39,6 +39,9 @@ impl ScanProgressEvent {
 pub struct FolderStatus {
     pub watched_id: i64,
     pub online: bool,
+    /// True while the OS wouldn't let photon watch this folder, so it's relying on
+    /// periodic rescans instead of live filesystem events.
+    pub degraded: bool,
 }
 
 pub trait Events: Send + Sync + 'static {
