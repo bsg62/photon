@@ -63,8 +63,13 @@ jobs:
           # strings and the bundler copies them through. Extract the binary and look at what it
           # genuinely links against, so a new transitive .so cannot slip in undeclared.
           dpkg-deb -x "$deb" "$RUNNER_TEMP/debroot"
-          bin="$RUNNER_TEMP/debroot/usr/bin/photon"
-          test -x "$bin" || { echo "::error::no executable at usr/bin/photon inside the deb"; exit 1; }
+          # Locate the binary rather than assuming its name: it takes the crate name
+          # (photon-app), not productName (photon), and that could change.
+          bin_rel=$(dpkg-deb -c "$deb" | awk '{print $NF}' | sed 's|^\./||' | grep -E '^usr/bin/[^/]+$' | head -1) || true
+          test -n "$bin_rel" || { echo "::error::the deb contains no file under usr/bin/"; dpkg-deb -c "$deb"; exit 1; }
+          bin="$RUNNER_TEMP/debroot/$bin_rel"
+          echo "binary inside the deb: $bin_rel"
+          test -x "$bin" || { echo "::error::$bin_rel inside the deb is not executable"; exit 1; }
           echo "--- ldd $bin"
           ldd "$bin" || true
           if ldd "$bin" | grep -q "not found"; then
