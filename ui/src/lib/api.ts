@@ -9,7 +9,9 @@ export { mediaUrl } from './url';
 export interface WatchedFolder { id: number; path: string; online: boolean }
 export interface Folder { id: number; watchedId: number; parentId: number | null; path: string; name: string }
 export interface FolderList { watched: WatchedFolder[]; folders: Folder[] }
-export interface Section { folderId: number; offset: number; count: number }
+/** `takenAtMax` is the capture time of the folder's newest photo, in SECONDS (multiply by
+ *  1000 for a JS Date). The sidebar groups folders by the year it falls in. */
+export interface Section { folderId: number; offset: number; count: number; takenAtMax: number }
 export interface GridEntry { id: number; folderId: number; takenAt: number; aspect: number; kind: 'image'; thumbKey: string }
 export interface GridInfo { version: number; len: number; sections: Section[] }
 export interface GridRows { version: number; rows: GridEntry[] }

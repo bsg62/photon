@@ -33,6 +33,9 @@ pub struct Section {
     pub folder_id: i64,
     pub offset: usize,
     pub count: usize,
+    /// Capture time of the folder's newest photo, in seconds. The sidebar groups folders by
+    /// the year this falls in, resolved in the viewer's local time rather than UTC.
+    pub taken_at_max: i64,
 }
 
 /// Ordered in-memory index the UI pages through by position.
@@ -51,11 +54,18 @@ impl GridIndex {
         for (index, entry) in entries.iter().enumerate() {
             positions.insert(entry.id, index);
             match sections.last_mut() {
-                Some(section) if section.folder_id == entry.folder_id => section.count += 1,
+                Some(section) if section.folder_id == entry.folder_id => {
+                    section.count += 1;
+                    // A real max, not "the run's last entry": entries are ordered by folder
+                    // and then by capture date, but nothing here fixes the direction, and
+                    // assuming it would silently file a folder under the wrong year.
+                    section.taken_at_max = section.taken_at_max.max(entry.taken_at);
+                }
                 _ => sections.push(Section {
                     folder_id: entry.folder_id,
                     offset: index,
                     count: 1,
+                    taken_at_max: entry.taken_at,
                 }),
             }
         }
@@ -128,6 +138,15 @@ mod tests {
         }
     }
 
+    /// `entry` ties `taken_at` to `id`, which makes every run coincidentally ascending.
+    /// This one sets the capture time independently.
+    fn entry_at(id: i64, folder_id: i64, taken_at: i64) -> GridEntry {
+        GridEntry {
+            taken_at,
+            ..entry(id, folder_id)
+        }
+    }
+
     fn sample() -> GridIndex {
         GridIndex::build(vec![
             entry(1, 10),
@@ -148,17 +167,20 @@ mod tests {
                 Section {
                     folder_id: 10,
                     offset: 0,
-                    count: 2
+                    count: 2,
+                    taken_at_max: 2
                 },
                 Section {
                     folder_id: 20,
                     offset: 2,
-                    count: 1
+                    count: 1,
+                    taken_at_max: 3
                 },
                 Section {
                     folder_id: 30,
                     offset: 3,
-                    count: 2
+                    count: 2,
+                    taken_at_max: 5
                 },
             ]
         );
@@ -186,15 +208,30 @@ mod tests {
         assert!(grid.neighbours(99, 2).is_empty());
     }
 
+    /// The newest photo decides a folder's year, so the section has to take a max over its
+    /// whole run. Taking the run's last entry passes only while the sort direction happens
+    /// to cooperate, which nothing guarantees.
+    #[test]
+    fn a_sections_newest_photo_need_not_be_its_last_entry() {
+        let grid = GridIndex::build(vec![
+            entry_at(1, 10, 900),
+            entry_at(2, 10, 100),
+            entry_at(3, 20, 50),
+        ]);
+        assert_eq!(grid.sections()[0].taken_at_max, 900);
+        assert_eq!(grid.sections()[1].taken_at_max, 50);
+    }
+
     #[test]
     fn serialises_as_camel_case() {
         let json = serde_json::to_string(&Section {
             folder_id: 1,
             offset: 2,
             count: 3,
+            taken_at_max: 4,
         })
         .unwrap();
-        assert_eq!(json, r#"{"folderId":1,"offset":2,"count":3}"#);
+        assert_eq!(json, r#"{"folderId":1,"offset":2,"count":3,"takenAtMax":4}"#);
         let json = serde_json::to_string(&entry(7, 1)).unwrap();
         assert_eq!(
             json,

@@ -1,31 +1,22 @@
 <script lang="ts">
   import { ask, open } from '@tauri-apps/plugin-dialog';
   import { api, type Folder, type WatchedFolder } from '../lib/api';
+  import { folderRows, groupByYear } from '../lib/folders';
   import { library } from '../lib/library.svelte';
 
   let { onjump }: { onjump: (folderId: number) => void } = $props();
 
-  // Assumes the backend lists parents before children and never reports a cycle;
-  // a folder whose parent hasn't arrived yet (or a cycle) silently drops its subtree.
-  const children = $derived.by(() => {
-    const map = new Map<number | null, Folder[]>();
-    for (const f of library.folders.folders) {
-      const list = map.get(f.parentId) ?? [];
-      list.push(f);
-      map.set(f.parentId, list);
-    }
-    return map;
-  });
+  /** Folders that actually hold photos, grouped by the year of their newest one.
+   *
+   *  Drawn from the grid's sections rather than the folder table: a section exists only for
+   *  a folder with items, which is what keeps empty intermediate folders out of the list. */
+  const years = $derived(groupByYear(folderRows(library.info.sections, library.folders.folders)));
 
-  /** A watched folder with no root `Folder` row yet: `scan_watched` returns before
-   *  calling `upsert_folder` when the root is offline or hasn't been scanned, so
-   *  such a folder would otherwise be invisible and unmanageable. */
-  const watchedOnly = $derived.by(() => {
-    const rootsByWatched = new Set(
-      library.folders.folders.filter((f) => f.parentId === null).map((f) => f.watchedId),
-    );
-    return library.folders.watched.filter((w) => !rootsByWatched.has(w.id));
-  });
+  /** Watched roots stay pinned above the year groups. They are the only place to rescan or
+   *  remove a folder, and a root whose photos all live in subfolders — or whose drive is
+   *  offline, or which has never been scanned — has no section of its own, so it would
+   *  otherwise vanish along with any way to manage it. */
+  const roots = $derived(library.folders.watched);
 
   type MenuTarget = { kind: 'folder'; folder: Folder } | { kind: 'watched'; watched: WatchedFolder };
 
@@ -36,7 +27,19 @@
     if (menu) menuEl?.focus();
   });
 
-  const watchedOf = (f: Folder) => library.folders.watched.find((w) => w.id === f.watchedId);
+  /** Rebuilt only when the folder list changes: `folderById` is called for every row's title
+   *  and again from the context menu, so a linear scan per row would be quadratic in a
+   *  sidebar holding hundreds of folders. */
+  const foldersById = $derived(new Map(library.folders.folders.map((f) => [f.id, f])));
+  const folderById = (id: number) => foldersById.get(id);
+
+  /** Jumps to a watched root's own folder row when it has one. A root whose drive is offline
+   *  or which has never been scanned has no row — and so nothing to scroll to — which is why
+   *  this can't simply pass the watched id. */
+  function jumpToRoot(w: WatchedFolder) {
+    const root = library.folders.folders.find((f) => f.watchedId === w.id && f.parentId === null);
+    if (root) onjump(root.id);
+  }
 
   function lastSegment(path: string): string {
     const parts = path.split(/[/\\]/).filter(Boolean);
@@ -67,7 +70,10 @@
 
   async function remove(target: MenuTarget) {
     menu = null;
-    const watched = target.kind === 'folder' ? watchedOf(target.folder) : target.watched;
+    const watched =
+      target.kind === 'folder'
+        ? library.folders.watched.find((w) => w.id === target.folder.watchedId)
+        : target.watched;
     if (!watched) return;
     try {
       const confirmed = await ask(`Remove “${watched.path}” from photon? Your files stay where they are.`, {
@@ -94,6 +100,13 @@
   function onMenuKeydown(e: KeyboardEvent) {
     if (e.key === 'Escape') closeMenu();
   }
+
+  /** A folder row's context menu still offers Rescan and Reveal, which act on the watched
+   *  folder it belongs to. Removing stays on the roots above. */
+  function folderMenu(e: MouseEvent, folderId: number) {
+    const folder = folderById(folderId);
+    if (folder) openMenu(e, { kind: 'folder', folder });
+  }
 </script>
 
 <svelte:window onclick={closeMenu} onkeydown={(e) => e.key === 'Escape' && closeMenu()} />
@@ -103,39 +116,34 @@
     <button class="add" onclick={addFolder}>Add folder…</button>
   </div>
 
-  {#snippet node(f: Folder, depth: number)}
-    {@const watched = watchedOf(f)}
+  {#each roots as w (w.id)}
     <button
-      class="node"
-      class:offline={watched && !watched.online}
-      style:padding-left="{8 + depth * 14}px"
-      title={f.path}
-      onclick={() => onjump(f.id)}
-      oncontextmenu={(e) => openMenu(e, { kind: 'folder', folder: f })}
-    >
-      <span class="name">{f.name}</span>
-      {#if depth === 0 && library.isScanning(f.watchedId)}
-        <span class="spinner" aria-label="Scanning"></span>
-      {/if}
-    </button>
-    {#each children.get(f.id) ?? [] as child (child.id)}
-      {@render node(child, depth + 1)}
-    {/each}
-  {/snippet}
-
-  {#each children.get(null) ?? [] as root (root.id)}
-    {@render node(root, 0)}
-  {/each}
-
-  {#each watchedOnly as w (w.id)}
-    <button
-      class="node offline"
+      class="root"
+      class:offline={!w.online}
       title={w.path}
-      onclick={() => {}}
+      onclick={() => jumpToRoot(w)}
       oncontextmenu={(e) => openMenu(e, { kind: 'watched', watched: w })}
     >
       <span class="name">{lastSegment(w.path)}</span>
+      {#if library.isScanning(w.id)}
+        <span class="spinner" aria-label="Scanning"></span>
+      {/if}
     </button>
+  {/each}
+
+  {#each years as group (group.year)}
+    <h2 class="year">{group.year}</h2>
+    {#each group.rows as row (row.folderId)}
+      <button
+        class="node"
+        title={folderById(row.folderId)?.path}
+        onclick={() => onjump(row.folderId)}
+        oncontextmenu={(e) => folderMenu(e, row.folderId)}
+      >
+        <span class="name">{row.name}</span>
+        <span class="count">({row.count})</span>
+      </button>
+    {/each}
   {/each}
 
   {#if library.folders.watched.length === 0}
@@ -166,7 +174,7 @@
     {#if target.kind === 'folder'}
       <button role="menuitem" onclick={() => reveal(target.folder)}>Reveal in file manager</button>
     {/if}
-    {#if target.kind === 'watched' || target.folder.parentId === null}
+    {#if target.kind === 'watched'}
       <button role="menuitem" class="danger" onclick={() => remove(target)}>Remove from photon</button>
     {/if}
   </div>
@@ -176,6 +184,7 @@
   .tree { display: flex; flex-direction: column; padding-bottom: 12px; }
   .toolbar { padding: 8px; }
   .add { width: 100%; padding: 6px; border: 1px solid #fff2; border-radius: 4px; background: var(--panel-2); cursor: pointer; }
+  .root,
   .node {
     display: flex;
     align-items: center;
@@ -186,9 +195,20 @@
     text-align: left;
     cursor: pointer;
   }
-  .node:hover { background: #ffffff0d; }
-  .node.offline { opacity: 0.45; }
+  .root { font-weight: 600; }
+  .node { padding-left: 18px; }
+  .root:hover, .node:hover { background: #ffffff0d; }
+  .root.offline { opacity: 0.45; }
+  .year {
+    margin: 10px 0 2px;
+    padding: 0 8px;
+    color: var(--muted);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+  }
   .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .count { color: var(--muted); font-size: 11px; }
   .spinner {
     width: 10px;
     height: 10px;
