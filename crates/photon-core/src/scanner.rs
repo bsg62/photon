@@ -147,6 +147,138 @@ pub fn scan_watched(
     })
 }
 
+/// Brings one directory and everything beneath it in line with what is on disk.
+///
+/// Everything this touches is restricted to that subtree: the walk, the known-items set it
+/// diffs against, what it marks or purges, and which folders it prunes. `scan_watched`'s
+/// diff compares against every item under the watched root, so aiming that logic at one
+/// directory would make the rest of the library look deleted.
+///
+/// Differences from [`scan_watched`], both deliberate:
+/// - it never changes the watched folder's online flag, except when the watched root itself
+///   has gone, which it reports exactly as `scan_watched` does;
+/// - it has no empty-directory guard. An empty root means an unmounted volume; an empty
+///   subdirectory means its files really were deleted.
+///
+/// A `dir` that no longer exists is not an error: the nearest ancestor that still exists is
+/// scanned instead, which is what makes a deleted folder disappear from the library.
+pub fn scan_subtree(
+    lib: &Library,
+    watched: &WatchedFolder,
+    dir: &Path,
+    scan_id: i64,
+    options: &ScanOptions,
+    progress: &mut dyn FnMut(&ScanProgress),
+) -> Result<ScanReport> {
+    let root = Path::new(&watched.path);
+    if !root.is_dir() {
+        lib.set_watched_online(watched.id, false)?;
+        return Ok(ScanReport {
+            offline: true,
+            ..ScanReport::default()
+        });
+    }
+    if !crate::paths::is_within(dir, root) {
+        tracing::warn!(?dir, watched = %watched.path, "ignoring a subtree outside its watched folder");
+        return Ok(ScanReport::default());
+    }
+
+    // A deleted directory is scanned through its nearest living ancestor, so the parent's
+    // walk sees it gone, marks its items missing and eventually prunes it.
+    let mut target = dir.to_path_buf();
+    while !target.is_dir() {
+        match target.parent() {
+            Some(parent) if crate::paths::is_within(parent, root) => target = parent.to_path_buf(),
+            _ => {
+                target = root.to_path_buf();
+                break;
+            }
+        }
+    }
+    if crate::paths::same_path(&target, root) {
+        return scan_watched(lib, watched, scan_id, options, progress);
+    }
+
+    let target_str = target
+        .to_str()
+        .ok_or_else(|| crate::Error::NonUtf8Path(target.clone()))?;
+    let mut known = lib.known_items_under(watched.id, target_str)?;
+    let (mut folder_ids, parent_id) = seed_ancestors(lib, watched, &target, scan_id)?;
+
+    let outcome = walk_tree(
+        lib,
+        watched.id,
+        &target,
+        parent_id,
+        &mut known,
+        &mut folder_ids,
+        scan_id,
+        options,
+        progress,
+    )?;
+
+    if outcome.cancelled {
+        progress(&outcome.seen);
+        return Ok(ScanReport {
+            cancelled: true,
+            ..outcome.report
+        });
+    }
+    if outcome.skip_mark_purge {
+        progress(&outcome.seen);
+        return Ok(outcome.report);
+    }
+
+    known.retain(|path_str, _| {
+        !outcome
+            .incomplete_prefixes
+            .iter()
+            .any(|prefix| Path::new(path_str).starts_with(prefix))
+    });
+
+    let mut report = outcome.report;
+    let (marked, purged) = finish_mark_purge(lib, known)?;
+    lib.prune_folders_under(watched.id, scan_id, target_str)?;
+    report.marked_missing = marked;
+    report.purged = purged;
+
+    progress(&outcome.seen);
+    Ok(report)
+}
+
+/// Upserts the folder rows from the watched root down to `target`'s parent, so the walk can
+/// attach `target` to its real parent rather than treating it as a root. Returns the ids it
+/// created, and the id of `target`'s parent.
+fn seed_ancestors(
+    lib: &Library,
+    watched: &WatchedFolder,
+    target: &Path,
+    scan_id: i64,
+) -> Result<(HashMap<PathBuf, i64>, Option<i64>)> {
+    let root = Path::new(&watched.path);
+    let root_str = root
+        .to_str()
+        .ok_or_else(|| crate::Error::NonUtf8Path(root.to_path_buf()))?;
+    let mut ids = HashMap::new();
+    let mut parent = Some(lib.upsert_folder(watched.id, None, root_str, scan_id)?);
+    ids.insert(root.to_path_buf(), parent.expect("just inserted"));
+
+    let relative = target.strip_prefix(root).unwrap_or(Path::new(""));
+    let mut components: Vec<_> = relative.components().collect();
+    components.pop(); // `target` itself is upserted by the walk.
+    let mut current = root.to_path_buf();
+    for component in components {
+        current = current.join(component);
+        let current_str = current
+            .to_str()
+            .ok_or_else(|| crate::Error::NonUtf8Path(current.clone()))?;
+        let id = lib.upsert_folder(watched.id, parent, current_str, scan_id)?;
+        ids.insert(current.clone(), id);
+        parent = Some(id);
+    }
+    Ok((ids, parent))
+}
+
 /// The result of walking a subtree: what was found, and whether the walk was complete
 /// enough to safely mark or purge anything afterwards.
 struct WalkOutcome {
@@ -637,6 +769,142 @@ mod tests {
         assert_eq!((report.marked_missing, report.purged), (0, 0));
         let id = lib.known_items(watched.id).unwrap()[&key(&b)].id;
         assert_eq!(lib.item(id).unwrap().unwrap().missing_since, None);
+    }
+
+    fn scan_sub(lib: &Library, watched: &WatchedFolder, dir: &Path, scan_id: i64) -> ScanReport {
+        scan_subtree(
+            lib,
+            watched,
+            dir,
+            scan_id,
+            &ScanOptions::default(),
+            &mut |_| {},
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn subtree_scan_leaves_everything_outside_alone() {
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        let keep = write_file(&root, "b/keep.jpg", &jpeg_bytes(8, 8));
+        write_file(&root, "a/one.jpg", &jpeg_bytes(8, 8));
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
+        scan(&lib, &watched, 1);
+
+        // Delete a file in the *other* folder; scanning /a must not notice or touch it.
+        fs::remove_file(&keep).unwrap();
+        let report = scan_sub(&lib, &watched, &root.join("a"), 2);
+
+        assert_eq!((report.marked_missing, report.purged), (0, 0));
+        let id = lib.known_items(watched.id).unwrap()[&key(&keep)].id;
+        assert_eq!(lib.item(id).unwrap().unwrap().missing_since, None);
+    }
+
+    #[test]
+    fn subtree_scan_finds_additions_and_removals_inside_it() {
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        let gone = write_file(&root, "a/one.jpg", &jpeg_bytes(8, 8));
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
+        scan(&lib, &watched, 1);
+        let id = lib.known_items(watched.id).unwrap()[&key(&gone)].id;
+
+        write_file(&root, "a/two.jpg", &jpeg_bytes(8, 8));
+        fs::remove_file(&gone).unwrap();
+        let report = scan_sub(&lib, &watched, &root.join("a"), 2);
+        assert_eq!((report.added, report.marked_missing), (1, 1));
+        assert!(lib.item(id).unwrap().unwrap().missing_since.is_some());
+
+        // A second subtree scan purges it, as a full scan would.
+        let report = scan_sub(&lib, &watched, &root.join("a"), 3);
+        assert_eq!(report.purged, 1);
+        assert!(lib.item(id).unwrap().is_none());
+    }
+
+    #[test]
+    fn subtree_scan_of_a_deleted_directory_uses_its_nearest_living_ancestor() {
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        write_file(&root, "a/sub/one.jpg", &jpeg_bytes(8, 8));
+        write_file(&root, "a/keep.jpg", &jpeg_bytes(8, 8));
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
+        scan(&lib, &watched, 1);
+
+        fs::remove_dir_all(root.join("a").join("sub")).unwrap();
+        let report = scan_sub(&lib, &watched, &root.join("a").join("sub"), 2);
+
+        assert_eq!(report.marked_missing, 1);
+        assert_eq!(report.unchanged, 1, "the surviving sibling was walked");
+        scan_sub(&lib, &watched, &root.join("a").join("sub"), 3);
+        assert!(lib.folders().unwrap().iter().all(|f| f.name != "sub"));
+    }
+
+    #[test]
+    fn subtree_scan_of_an_empty_directory_does_not_report_offline() {
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        let only = write_file(&root, "a/one.jpg", &jpeg_bytes(8, 8));
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
+        scan(&lib, &watched, 1);
+
+        // Emptying a subdirectory is a real deletion, not an unmounted volume.
+        fs::remove_file(&only).unwrap();
+        let report = scan_sub(&lib, &watched, &root.join("a"), 2);
+        assert!(!report.offline);
+        assert_eq!(report.marked_missing, 1);
+        assert!(lib.watched_folders().unwrap()[0].online);
+    }
+
+    #[test]
+    fn subtree_scan_delegates_to_a_full_scan_at_the_root() {
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        write_file(&root, "a/one.jpg", &jpeg_bytes(8, 8));
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
+        let report = scan_sub(&lib, &watched, &root, 1);
+        assert_eq!(report.added, 1);
+    }
+
+    #[test]
+    fn subtree_scan_refuses_a_directory_outside_the_watched_folder() {
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        write_file(&root, "a/one.jpg", &jpeg_bytes(8, 8));
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
+        scan(&lib, &watched, 1);
+
+        let outside = dir.path().join("elsewhere");
+        std::fs::create_dir_all(&outside).unwrap();
+        let report = scan_sub(&lib, &watched, &outside, 2);
+        assert_eq!(report, ScanReport::default());
+        assert_eq!(lib.known_items(watched.id).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn subtree_scan_skips_excluded_directories_and_honours_cancel() {
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        write_file(&root, "a/one.jpg", &jpeg_bytes(8, 8));
+        write_file(&root, "a/cache/two.jpg", &jpeg_bytes(8, 8));
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
+
+        let excluded = ScanOptions {
+            excluded: vec![root.join("a").join("cache")],
+            ..ScanOptions::default()
+        };
+        let report =
+            scan_subtree(&lib, &watched, &root.join("a"), 1, &excluded, &mut |_| {}).unwrap();
+        assert_eq!(report.added, 1);
+
+        let cancelled = ScanOptions::default();
+        cancelled
+            .cancel
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        let report =
+            scan_subtree(&lib, &watched, &root.join("a"), 2, &cancelled, &mut |_| {}).unwrap();
+        assert!(report.cancelled);
+        assert_eq!(report.marked_missing, 0);
     }
 
     #[test]
