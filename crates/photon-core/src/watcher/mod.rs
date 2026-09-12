@@ -7,4 +7,4 @@ mod fs;
 mod policy;
 
 pub use fs::{WatchError, Watcher};
-pub use policy::{WatchedRoot, merge_pending, plan_scans};
+pub use policy::{MAX_PENDING_DIRS, WatchedRoot, insert_pending, plan_scans, roots_affected_by};

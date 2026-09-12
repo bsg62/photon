@@ -1,5 +1,13 @@
-use crate::paths::{common_ancestor, is_within};
+use crate::paths::is_within;
 use std::path::{Path, PathBuf};
+
+/// How many directories may wait as pending follow-ups for one watched folder before the
+/// whole set collapses into a single rescan of that folder's root.
+///
+/// Small on purpose: the set exists so no change is dropped while a folder's scan slot is
+/// busy, not as a queue. Beyond a handful of unrelated branches, one walk of the root is
+/// cheaper than many overlapping subtree walks anyway.
+pub const MAX_PENDING_DIRS: usize = 8;
 
 /// A watched folder, as the watcher sees it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -46,28 +54,46 @@ pub fn plan_scans(
     kept
 }
 
-/// Merges two pending subtree-scan requests for the same watched folder into one directory
-/// that covers both.
+/// Adds `dir` to `set`, the directories still waiting for a subtree scan of one watched
+/// folder (`root`), so that between them they still cover every queued change.
 ///
-/// When one request is an ancestor of the other (or they're equal), keeps the ancestor:
-/// scanning it already covers the descendant. Otherwise, since a single request can't cover
-/// two unrelated branches, falls back to their nearest common ancestor — clamped to `root`
-/// (the watched folder's own path) in case it somehow comes out shallower, so the merged
-/// request never rises above the folder actually being watched. `root` itself is always a
-/// valid answer: it simply becomes a full rescan of the folder.
-pub fn merge_pending(existing: &Path, new: &Path, root: &Path) -> PathBuf {
-    if is_within(new, existing) {
-        return existing.to_path_buf();
+/// A directory an already-queued ancestor covers is dropped (that one walk covers both), and
+/// queued descendants of `dir` collapse into it for the same reason. Unrelated branches are
+/// kept side by side rather than merged into their common ancestor: two sibling directories
+/// directly under `root` have `root` itself as their common ancestor, and a subtree scan of
+/// the root delegates to a full rescan — so merging would turn a bulk import touching a
+/// couple of top-level directories into repeated full rescans of the folder.
+///
+/// The set is bounded at [`MAX_PENDING_DIRS`]: past that, tracking the individual branches
+/// stops paying for itself, so the whole set collapses to `root` — one full rescan, which
+/// covers everything queued and cannot drop a change.
+pub fn insert_pending(set: &mut Vec<PathBuf>, dir: &Path, root: &Path) {
+    if set.iter().any(|queued| is_within(dir, queued)) {
+        return;
     }
-    if is_within(existing, new) {
-        return new.to_path_buf();
+    set.retain(|queued| !is_within(queued, dir));
+    set.push(dir.to_path_buf());
+    if set.len() > MAX_PENDING_DIRS {
+        set.clear();
+        set.push(root.to_path_buf());
     }
-    let merged = common_ancestor(existing, new);
-    if is_within(&merged, root) {
-        merged
-    } else {
-        root.to_path_buf()
-    }
+}
+
+/// The watched folders whose live updates can no longer be trusted after the OS reported
+/// `errors` on an established watch.
+///
+/// An error carrying a path degrades the roots that contain it. An error with no path (an
+/// event-queue overflow, say) says only that events were lost somewhere, so every root is
+/// degraded: claiming otherwise would leave a folder silently missing changes.
+pub fn roots_affected_by(errors: &[crate::watcher::WatchError], roots: &[WatchedRoot]) -> Vec<i64> {
+    let all_affected = errors.iter().any(|err| {
+        err.path.as_os_str().is_empty() || !roots.iter().any(|r| is_within(&err.path, &r.path))
+    });
+    roots
+        .iter()
+        .filter(|root| all_affected || errors.iter().any(|err| is_within(&err.path, &root.path)))
+        .map(|root| root.watched_id)
+        .collect()
 }
 
 #[cfg(test)]
@@ -156,36 +182,96 @@ mod tests {
         );
     }
 
-    #[test]
-    fn merge_pending_keeps_the_ancestor_of_a_nested_pair() {
+    fn pending(dirs: &[&str]) -> Vec<PathBuf> {
         let root = PathBuf::from("/photos");
+        let mut set = Vec::new();
+        for dir in dirs {
+            insert_pending(&mut set, Path::new(dir), &root);
+        }
+        set
+    }
+
+    #[test]
+    fn insert_pending_keeps_only_the_ancestor_of_a_nested_pair() {
         assert_eq!(
-            merge_pending(Path::new("/photos/a"), Path::new("/photos/a/deep"), &root),
-            PathBuf::from("/photos/a")
+            pending(&["/photos/a", "/photos/a/deep"]),
+            vec![PathBuf::from("/photos/a")]
         );
         assert_eq!(
-            merge_pending(Path::new("/photos/a/deep"), Path::new("/photos/a"), &root),
-            PathBuf::from("/photos/a")
+            pending(&["/photos/a/deep", "/photos/a"]),
+            vec![PathBuf::from("/photos/a")],
+            "a newly queued ancestor absorbs the descendants already queued"
         );
     }
 
     #[test]
-    fn merge_pending_of_siblings_is_their_common_ancestor() {
-        let root = PathBuf::from("/photos");
+    fn insert_pending_keeps_siblings_side_by_side() {
+        // The whole point of the bounded set: merging these two into their common ancestor
+        // would be the watched root, whose subtree scan is a full rescan of the folder.
         assert_eq!(
-            merge_pending(Path::new("/photos/a"), Path::new("/photos/b"), &root),
-            PathBuf::from("/photos")
+            pending(&["/photos/a", "/photos/b"]),
+            vec![PathBuf::from("/photos/a"), PathBuf::from("/photos/b")]
         );
     }
 
     #[test]
-    fn merge_pending_never_rises_above_the_watched_root() {
-        // Two directories that share no prefix beneath the root: the merge is clamped to
-        // the root itself rather than the (nonsensical, or empty) raw common ancestor.
-        let root = PathBuf::from("/photos");
+    fn insert_pending_collapses_to_the_root_only_on_overflow() {
+        let eight: Vec<String> = (0..MAX_PENDING_DIRS)
+            .map(|i| format!("/photos/{i}"))
+            .collect();
+        let refs: Vec<&str> = eight.iter().map(String::as_str).collect();
         assert_eq!(
-            merge_pending(Path::new("/photos/a"), Path::new("/elsewhere/b"), &root),
-            PathBuf::from("/photos")
+            pending(&refs).len(),
+            MAX_PENDING_DIRS,
+            "exactly at the bound, nothing collapses"
         );
+
+        let mut set = pending(&refs);
+        insert_pending(&mut set, Path::new("/photos/extra"), Path::new("/photos"));
+        assert_eq!(
+            set,
+            vec![PathBuf::from("/photos")],
+            "one past the bound, the set becomes a single full rescan of the folder"
+        );
+
+        // The collapsed set stays collapsed rather than growing again: the root covers
+        // everything that could arrive afterwards.
+        insert_pending(&mut set, Path::new("/photos/a/deep"), Path::new("/photos"));
+        assert_eq!(set, vec![PathBuf::from("/photos")]);
+    }
+
+    #[test]
+    fn insert_pending_ignores_a_directory_already_covered() {
+        assert_eq!(
+            pending(&["/photos/a", "/photos/a", "/photos/a/deep/deeper"]),
+            vec![PathBuf::from("/photos/a")]
+        );
+    }
+
+    fn failure(path: &str) -> crate::watcher::WatchError {
+        crate::watcher::WatchError {
+            path: PathBuf::from(path),
+            message: "boom".into(),
+        }
+    }
+
+    #[test]
+    fn an_error_inside_one_root_degrades_only_that_root() {
+        assert_eq!(
+            roots_affected_by(&[failure("/photos/a")], &roots()),
+            vec![1]
+        );
+    }
+
+    #[test]
+    fn a_pathless_or_unknown_error_degrades_every_root() {
+        // No path at all (e.g. an event-queue overflow): events were lost, but not where.
+        assert_eq!(roots_affected_by(&[failure("")], &roots()), vec![1, 2]);
+        // A path under no watched root tells us just as little.
+        assert_eq!(
+            roots_affected_by(&[failure("/elsewhere/x")], &roots()),
+            vec![1, 2]
+        );
+        assert!(roots_affected_by(&[], &roots()).is_empty());
     }
 }

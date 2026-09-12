@@ -188,6 +188,31 @@ impl Engine {
         }
     }
 
+    /// Emits the current `folder-status` for one folder without scanning it, so a state
+    /// change no scan will report still reaches the UI promptly.
+    ///
+    /// `degraded` is passed in rather than read back from the running watcher service: the
+    /// caller is usually that service, still being constructed inside `start_watcher` (which
+    /// holds `watcher`'s lock), so asking the engine for it would deadlock.
+    pub(crate) fn emit_folder_status(&self, watched_id: i64, degraded: bool) {
+        let folder = self
+            .lib
+            .watched_folders()
+            .ok()
+            .and_then(|all| all.into_iter().find(|w| w.id == watched_id));
+        if let Some(folder) = folder {
+            self.emit_status(&folder, degraded);
+        }
+    }
+
+    fn emit_status(&self, folder: &WatchedFolder, degraded: bool) {
+        self.events.folder_status(FolderStatus {
+            watched_id: folder.id,
+            online: folder.online,
+            degraded,
+        });
+    }
+
     /// Starts a full background scan unless one is already running for this folder.
     pub fn start_scan(self: &Arc<Self>, watched: WatchedFolder) -> bool {
         self.start_scan_inner(watched, None)
@@ -435,26 +460,39 @@ impl Engine {
                 false
             }
         };
-        if let Err(err) = self.refresh_grid() {
-            tracing::warn!(%err, "grid refresh failed");
-        }
-        if let Err(err) = self.thumbs.enqueue_pending() {
-            tracing::warn!(%err, "could not queue pending thumbnails");
-        }
-        if let Some(folder) = self
+        let folder = self
             .lib
             .watched_folders()
             .ok()
-            .and_then(|all| all.into_iter().find(|w| w.id == watched.id))
-        {
+            .and_then(|all| all.into_iter().find(|w| w.id == watched.id));
+        // A scan that changed nothing must not rebuild the grid: `refresh_grid` reads every
+        // grid row, rebuilds the whole index and makes the UI refetch. An offline root is
+        // rescanned every 30 seconds for as long as its drive stays unplugged, and each of
+        // those scans finds nothing — doing the full rebuild anyway would burn a table scan
+        // and a UI refresh twice a minute, indefinitely, on a library of any size.
+        //
+        // The online flag flipping counts as a change even when no row was touched: it
+        // decides which folders the thumbnail queue will work on, so the queue has to be
+        // re-primed when a drive comes back.
+        let touched_rows = match &result {
+            Ok(report) => report.added + report.changed + report.marked_missing + report.purged > 0,
+            // A scan that failed partway may still have committed earlier batches.
+            Err(_) => true,
+        };
+        let online_changed = folder.as_ref().is_some_and(|f| f.online != watched.online);
+        if touched_rows || online_changed {
+            if let Err(err) = self.refresh_grid() {
+                tracing::warn!(%err, "grid refresh failed");
+            }
+            if let Err(err) = self.thumbs.enqueue_pending() {
+                tracing::warn!(%err, "could not queue pending thumbnails");
+            }
+        }
+        if let Some(folder) = folder {
             let degraded = self
                 .watcher_service()
                 .is_some_and(|service| service.is_degraded(folder.id));
-            self.events.folder_status(FolderStatus {
-                watched_id: folder.id,
-                online: folder.online,
-                degraded,
-            });
+            self.emit_status(&folder, degraded);
         }
         self.events
             .scan_progress(ScanProgressEvent::new(watched.id, &last, true, cancelled));
@@ -485,6 +523,44 @@ mod tests {
             degraded: false,
         })));
         assert!(!f.engine.is_scanning(watched.id));
+    }
+
+    /// An offline root is rescanned every 30 seconds for as long as its drive stays
+    /// unplugged, and each of those scans finds nothing. Refreshing anyway would rebuild the
+    /// whole grid index from a full `grid_entries()` query and make the UI refetch, twice a
+    /// minute, indefinitely.
+    #[test]
+    fn a_scan_that_changes_nothing_does_not_rebuild_the_grid() {
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a.jpg", &img)]);
+        let watched = f.add_photos();
+
+        // The first poll after the drive goes away flips the folder offline, which is a
+        // real change and legitimately refreshes.
+        std::fs::remove_dir_all(&f.photos).unwrap();
+        f.engine.start_scan(watched.clone());
+        f.engine.wait_for_scans();
+        let version = f.engine.grid().0;
+
+        // The second finds exactly what the first did: nothing added, changed, marked or
+        // purged, and the folder already offline.
+        let offline = f
+            .engine
+            .lib
+            .watched_folders()
+            .unwrap()
+            .into_iter()
+            .find(|w| w.id == watched.id)
+            .unwrap();
+        assert!(!offline.online);
+        f.engine.start_scan(offline);
+        f.engine.wait_for_scans();
+
+        assert_eq!(
+            f.engine.grid().0,
+            version,
+            "a scan that changed nothing must not rebuild the grid"
+        );
     }
 
     #[test]

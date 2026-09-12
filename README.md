@@ -45,6 +45,8 @@ Run this before each release, on each OS:
 - [ ] Renaming a folder on disk moves its photos in the tree within a few seconds.
 - [ ] Unplugging a watched drive dims it; plugging it back in restores it within about a minute, unattended.
 - [ ] On a library large enough to exhaust the system's watch limit, the status bar says live updates are limited rather than silently missing changes.
+- [ ] A folder added with "Add folder…" while photon is running picks up changes on disk within a few seconds, with no restart.
+- [ ] Once a folder whose live updates were limited recovers, the status bar stops saying so without a restart.
 
 ## How watching works
 

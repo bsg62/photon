@@ -184,11 +184,18 @@ pub fn scan_subtree(
     // component-wise and case-insensitively on macOS/Windows, but a plain `Path::is_dir`
     // check works fine either way, and canonicalizing first would fail outright on a path
     // that no longer exists.
+    //
+    // The climb stops at the watched root: a `dir` that isn't under it is rejected below
+    // anyway, and without this guard an ineligible path would stat its way up to the
+    // filesystem root first, leaving the whole safety argument resting on that single
+    // downstream check. Callers hand this an existing directory's canonical path (the
+    // watcher canonicalizes each event directory before mapping it to a root), so the
+    // component-wise comparison agrees with `root` for every path that can reach here.
     let mut target = dir.to_path_buf();
     while !target.is_dir() {
         match target.parent() {
-            Some(parent) => target = parent.to_path_buf(),
-            None => break,
+            Some(parent) if crate::paths::is_within(parent, root) => target = parent.to_path_buf(),
+            _ => break,
         }
     }
     // Only now, with an existing directory in hand, canonicalize it so the membership and

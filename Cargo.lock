@@ -2956,6 +2956,7 @@ dependencies = [
 name = "photon-app"
 version = "0.1.0"
 dependencies = [
+ "dunce",
  "image",
  "parking_lot",
  "photon-core",
