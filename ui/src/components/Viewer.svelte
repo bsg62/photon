@@ -121,6 +121,10 @@
     // The zoom slider and the close button sit on the same surface: a press on either is
     // theirs, not the start of a pan.
     if ((e.target as HTMLElement).closest('.zoom, .close')) return;
+    // Left button only. Without this every button panned, which is why the right button
+    // looked like the pan control: the left one was being swallowed by the browser's native
+    // image drag before the pointer stream could produce a move.
+    if (e.button !== 0) return;
     if (zoom === MIN_ZOOM) return;
     dragging = true;
     dragFrom = { x: e.clientX, y: e.clientY, panX: pan.x, panY: pan.y };
@@ -173,9 +177,9 @@
       style="transform: translate({pan.x}px, {pan.y}px) scale({zoom})"
       bind:this={stage}
     >
-      <img class="preview" src={mediaUrl(`thumb/${item.id}/preview/${item.thumbKey}`)} alt="" class:hidden={!!fullSrc} />
+      <img class="preview" src={mediaUrl(`thumb/${item.id}/preview/${item.thumbKey}`)} alt="" draggable="false" class:hidden={!!fullSrc} />
       {#if fullSrc}
-        <img class="full" src={fullSrc} alt={item.fileName} />
+        <img class="full" src={fullSrc} alt={item.fileName} draggable="false" />
       {/if}
     </div>
   {/if}
@@ -202,7 +206,10 @@
   .stage { position: absolute; inset: 0; transform-origin: center; will-change: transform; }
   .grabbable { cursor: grab; }
   .grabbing { cursor: grabbing; }
-  img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; image-orientation: from-image; }
+  /* `draggable="false"` covers the drag itself; these stop WebKit — which is the webview on
+     both Linux and macOS — from starting its own image drag or selecting the image instead
+     of panning. */
+  img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; image-orientation: from-image; user-select: none; -webkit-user-drag: none; }
   .hidden { visibility: hidden; }
   .caption { position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%); padding: 4px 10px; background: #0009; border-radius: 4px; color: var(--muted); font-size: 12px; }
   .zoom { position: absolute; bottom: 12px; right: 12px; display: flex; align-items: center; gap: 8px; padding: 4px 10px; background: #0009; border-radius: 4px; }
