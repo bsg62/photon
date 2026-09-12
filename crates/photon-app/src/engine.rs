@@ -480,13 +480,17 @@ impl Engine {
             Err(_) => true,
         };
         let online_changed = folder.as_ref().is_some_and(|f| f.online != watched.online);
-        if touched_rows || online_changed {
-            if let Err(err) = self.refresh_grid() {
-                tracing::warn!(%err, "grid refresh failed");
-            }
-            if let Err(err) = self.thumbs.enqueue_pending() {
-                tracing::warn!(%err, "could not queue pending thumbnails");
-            }
+        if (touched_rows || online_changed)
+            && let Err(err) = self.refresh_grid()
+        {
+            tracing::warn!(%err, "grid refresh failed");
+        }
+        // Outside the guard: `refresh_grid` is the expensive half (it reads every grid row
+        // and makes the UI refetch), but re-queueing pending thumbnails is cheap and is the
+        // only thing that retries an item whose render failed transiently. Leaving it inside
+        // meant such an item waited for an unrelated change, or a restart.
+        if let Err(err) = self.thumbs.enqueue_pending() {
+            tracing::warn!(%err, "could not queue pending thumbnails");
         }
         if let Some(folder) = folder {
             let degraded = self
@@ -504,6 +508,43 @@ mod tests {
     use super::*;
     use crate::events::Recorded;
     use crate::testutil::{fixture, jpeg};
+    use photon_core::media::ThumbState;
+
+    #[test]
+    fn a_scan_that_changed_nothing_still_re_primes_pending_thumbnails() {
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a/one.jpg", &img)]);
+        let watched = f.add_photos();
+        f.engine.wait_for_scans();
+
+        // Simulate a render that failed transiently: the item is pending again, but a
+        // rescan finds nothing changed on disk.
+        let id = f.ids()[0];
+        f.engine
+            .lib
+            .set_thumb_state(id, ThumbState::Pending, None)
+            .unwrap();
+
+        assert!(f.engine.start_scan(watched.clone()));
+        f.engine.wait_for_scans();
+
+        // Checking `queued() > 0` right after `wait_for_scans` is racy in practice: the
+        // cache for this item is already complete from the first scan, so re-processing it
+        // is a single fast DB update that the lone worker thread routinely finishes before
+        // this assertion runs (the same worker sits parked in a blocking pop, and
+        // `wait_for_scans`'s own polling loop hands it ample time). `wait_idle` makes the
+        // check deterministic: it blocks until the worker has drained the queue, so by the
+        // time we look, retrying has either happened (state back to `Ready`) or the item was
+        // never re-queued at all (state stuck at `Pending`).
+        f.engine.thumbs.wait_idle();
+        let item = f.engine.lib.item(id).unwrap().unwrap();
+        assert_eq!(
+            item.thumb_state,
+            ThumbState::Ready,
+            "a no-change scan must still queue pending thumbnails; otherwise a transient \
+             render failure is never retried without restarting photon"
+        );
+    }
 
     #[test]
     fn add_folder_scans_and_publishes_the_grid() {

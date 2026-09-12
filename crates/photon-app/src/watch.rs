@@ -270,8 +270,19 @@ fn watcher_died(
     watcher.lock().take();
     let watched = engine.lib.watched_folders().unwrap_or_default();
     let mut degraded = degraded.lock();
-    for w in watched.iter().filter(|w| w.online) {
-        mark_degraded(&mut degraded, w.id);
+    let newly: Vec<i64> = watched
+        .iter()
+        .filter(|w| w.online)
+        .map(|w| {
+            mark_degraded(&mut degraded, w.id);
+            w.id
+        })
+        .collect();
+    drop(degraded);
+    // Tell the UI now. `folder-status` is otherwise only emitted at the tail of a scan, so
+    // without this the status bar claims live updates are fine until the five-minute tick.
+    for id in newly {
+        engine.emit_folder_status(id, true);
     }
 }
 
@@ -296,8 +307,12 @@ fn degrade_failed_roots(engine: &Arc<Engine>, degraded: &Mutex<Vec<i64>>, failur
         return;
     }
     let mut degraded = degraded.lock();
+    for id in &affected {
+        mark_degraded(&mut degraded, *id);
+    }
+    drop(degraded);
     for id in affected {
-        mark_degraded(&mut degraded, id);
+        engine.emit_folder_status(id, true);
     }
 }
 
@@ -618,8 +633,44 @@ fn rescan_degraded_roots(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::events::Recorded;
     use crate::testutil::{fixture, jpeg};
     use photon_core::watcher::MAX_PENDING_DIRS;
+
+    #[test]
+    fn a_dead_watcher_tells_the_ui_its_folders_are_degraded() {
+        let f = fixture(&[]);
+        let watched = f.add_photos();
+        let degraded = Mutex::new(Vec::new());
+        let slot: Mutex<Option<Watcher>> = Mutex::new(None);
+
+        watcher_died(&f.engine, &degraded, &slot);
+
+        assert_eq!(
+            degraded.lock().clone(),
+            vec![watched.id],
+            "the root is degraded"
+        );
+        let told = last_degraded(&f, watched.id);
+        assert!(
+            told,
+            "a dead watcher must emit folder-status immediately; without it the status bar \
+             claims live updates work until the next five-minute tick"
+        );
+    }
+
+    /// True if the last `folder-status` recorded for `id` reported degraded.
+    fn last_degraded(f: &crate::testutil::Fixture, id: i64) -> bool {
+        f.events
+            .all()
+            .iter()
+            .filter_map(|e| match e {
+                Recorded::Folder(s) if s.watched_id == id => Some(s.degraded),
+                _ => None,
+            })
+            .next_back()
+            .unwrap_or(false)
+    }
 
     #[test]
     fn an_event_in_a_watched_folder_scans_that_subtree() {
