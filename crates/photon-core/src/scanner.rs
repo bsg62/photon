@@ -887,6 +887,10 @@ mod tests {
         let root = photos_root(&dir);
         write_file(&root, "a/one.jpg", &jpeg_bytes(8, 8));
         let watched = lib.add_watched_folder(&root, &[]).unwrap();
+        // Starts false so the assertion below is non-vacuous: `online` defaults to true on
+        // insert, so without this a broken `same_path` match (running the subtree path with
+        // `target == root` instead of delegating) would still leave it true.
+        lib.set_watched_online(watched.id, false).unwrap();
         let report = scan_sub(&lib, &watched, &root, 1);
         assert_eq!(report.added, 1);
         // `scan_subtree` never sets the online flag true on any path but this delegation, so
