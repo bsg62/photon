@@ -6,7 +6,8 @@
 mod checks;
 
 use checks::{
-    Versions, check_versions, parse_cargo_version, parse_pkg_version, parse_tauri_version,
+    Versions, check_metadata, check_versions, parse_cargo_version, parse_pkg_version,
+    parse_tauri_version,
 };
 use std::{path::Path, process::ExitCode};
 
@@ -16,8 +17,9 @@ fn main() -> ExitCode {
     let tag = tag_arg(&args);
     match command {
         Some("versions") => run_versions(tag.as_deref()),
+        Some("metadata") => run_metadata(),
         other => {
-            eprintln!("unknown command {other:?}; expected `versions`");
+            eprintln!("unknown command {other:?}; expected `versions` or `metadata`");
             ExitCode::FAILURE
         }
     }
@@ -69,6 +71,47 @@ fn run_versions(tag: Option<&str>) -> ExitCode {
         }
         Err(problems) => {
             eprintln!("version check failed:");
+            for p in &problems {
+                eprintln!("  - {p}");
+            }
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn run_metadata() -> ExitCode {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("xtask lives at <root>/crates/xtask")
+        .to_path_buf();
+
+    let cargo_toml = match std::fs::read_to_string(root.join("Cargo.toml")) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("cannot read Cargo.toml: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let conf_path = root
+        .join("crates")
+        .join("photon-app")
+        .join("tauri.conf.json");
+    let tauri_conf = match std::fs::read_to_string(&conf_path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("cannot read tauri.conf.json: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    match check_metadata(&cargo_toml, &tauri_conf, root.join("LICENSE").is_file()) {
+        Ok(()) => {
+            println!("metadata check passed");
+            ExitCode::SUCCESS
+        }
+        Err(problems) => {
+            eprintln!("metadata check failed:");
             for p in &problems {
                 eprintln!("  - {p}");
             }

@@ -6,3 +6,7 @@ members = ["crates/photon-core", "crates/photon-app", "crates/xtask"]
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.88"
+license = "MIT"
+description = "A fast, local photo manager for Linux, macOS and Windows."
+repository = "https://github.com/bsg62/photon"
+authors = ["David Henning"]
