@@ -100,10 +100,14 @@ export class LibraryStore {
     return !!scan && !scan.done;
   }
 
-  /** True while any watched folder is relying on periodic rescans instead of live
-   *  filesystem events, so the status bar can say live updates are limited. */
+  /** True while any *currently watched* folder is relying on periodic rescans instead of
+   *  live filesystem events, so the status bar can say live updates are limited.
+   *
+   *  Filtered against `folders.watched` rather than read straight off `degraded`: removing
+   *  a folder emits no `folder-status` event (only a grid refresh), so a stale `true` entry
+   *  for its id would otherwise survive the removal and the notice would never clear. */
   get anyDegraded(): boolean {
-    return Object.values(this.degraded).some(Boolean);
+    return this.folders.watched.some((w) => this.degraded[w.id]);
   }
 
   reportError = (e: unknown): void => {

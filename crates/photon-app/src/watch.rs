@@ -738,15 +738,26 @@ mod tests {
         service.stop();
     }
 
-    /// A folder added after the service has already started must get a live watch
-    /// installed immediately (`Engine::add_folder` calls `WatcherService::watch_added`),
-    /// not just on the next full restart. Verified end to end through the real
-    /// `folder-status` event: if `watch_added`'s registration succeeded, the event the
-    /// finishing scan emits says the folder isn't degraded.
+    /// A folder added after the service has already started must get a watch registration
+    /// *attempted* immediately (`Engine::add_folder` calls `WatcherService::watch_added`),
+    /// not just on the next full restart.
+    ///
+    /// A happy-path assertion here (registration succeeds, so the folder isn't degraded)
+    /// would hold whether or not `add_folder` ever calls `watch_added` at all, since a
+    /// brand new id starts out not-degraded regardless: `degraded` only ever becomes true
+    /// via an explicit failed registration. So instead this forces that registration to
+    /// fail (by taking the OS watcher out of the service before adding the folder, so
+    /// `watch_added` finds nothing to register with) and asserts the folder ends up
+    /// degraded - something that can only happen if `add_folder` actually invoked
+    /// `watch_added`.
     #[test]
-    fn a_folder_added_after_start_gets_a_live_watch() {
+    fn a_folder_added_after_start_has_its_watch_registration_attempted() {
         let f = fixture(&[]);
         f.engine.start_watcher();
+        let service = f.engine.watcher_service().unwrap();
+
+        // Simulate the OS watcher subsystem being down when the new folder is added.
+        service.watcher.lock().take();
 
         let other = f.dir.path().join("other");
         std::fs::create_dir_all(&other).unwrap();
@@ -754,15 +765,19 @@ mod tests {
         f.engine.wait_for_scans();
 
         assert!(
+            service.is_degraded(watched.id),
+            "watch_added must have been called and found no watcher to register with"
+        );
+        assert!(
             f.events.all().iter().any(|e| matches!(
                 e,
                 crate::events::Recorded::Folder(crate::events::FolderStatus {
                     watched_id,
-                    degraded: false,
+                    degraded: true,
                     ..
                 }) if *watched_id == watched.id
             )),
-            "the new root's watch registered successfully, so it isn't degraded"
+            "the finishing scan's status event must reflect the failed registration"
         );
 
         f.engine.stop_watcher();

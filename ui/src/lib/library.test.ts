@@ -86,23 +86,49 @@ describe('LibraryStore', () => {
     expect(store.errors.some((t) => t.message === 'scan-done-fail')).toBe(true);
   });
 
-  it('tracks anyDegraded from folder-status events, per watched id', async () => {
+  it('tracks anyDegraded from folder-status events, filtered to currently-watched ids', async () => {
+    vi.mocked(api.listFolders).mockResolvedValue({
+      watched: [
+        { id: 1, path: '/a', online: true },
+        { id: 2, path: '/b', online: true },
+      ],
+      folders: [],
+    });
     const store = new LibraryStore();
     await store.init();
 
     expect(store.anyDegraded).toBe(false);
 
     handlers.folderStatus({ watchedId: 1, online: true, degraded: true });
-    await Promise.resolve();
     expect(store.anyDegraded).toBe(true);
 
-    // id 1 is still degraded
+    // id 2 is unrelated and still fine
     handlers.folderStatus({ watchedId: 2, online: true, degraded: false });
-    await Promise.resolve();
     expect(store.anyDegraded).toBe(true);
 
     handlers.folderStatus({ watchedId: 1, online: true, degraded: false });
-    await Promise.resolve();
+    expect(store.anyDegraded).toBe(false);
+  });
+
+  it('stops reporting a folder as degraded once it is removed, even though removal emits no folder-status event', async () => {
+    vi.mocked(api.listFolders).mockResolvedValue({
+      watched: [{ id: 1, path: '/a', online: true }],
+      folders: [],
+    });
+    const store = new LibraryStore();
+    await store.init();
+
+    handlers.folderStatus({ watchedId: 1, online: true, degraded: true });
+    expect(store.anyDegraded).toBe(true);
+
+    // Engine::remove_folder emits no folder-status event for the removed id - only a
+    // later folder-list refresh (triggered here directly, as `refreshFolders` normally
+    // would be after a library-changed/scan-progress event) reflects the removal. Without
+    // filtering `anyDegraded` against the current watched list, the stale `true` entry for
+    // id 1 would make this notice never clear.
+    vi.mocked(api.listFolders).mockResolvedValue({ watched: [], folders: [] });
+    await store.refreshFolders();
+
     expect(store.anyDegraded).toBe(false);
   });
 
