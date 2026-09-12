@@ -26,13 +26,30 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": ["appimage", "deb", "dmg", "msi"],
+    "license": "MIT",
+    "licenseFile": "../../LICENSE",
+    "copyright": "Copyright (c) 2026 David Henning",
+    "publisher": "David Henning",
+    "homepage": "https://github.com/bsg62/photon",
+    "shortDescription": "A fast, local photo manager.",
+    "longDescription": "photon is a fast, local photo manager and a spiritual successor to Picasa 3. It watches folders in place and never moves or changes your files.",
+    "category": "Photography",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "linux": {
+      "deb": {
+        "depends": ["libwebkit2gtk-4.1-0", "libsoup-3.0-0"],
+        "section": "graphics"
+      }
+    },
+    "macOS": {
+      "minimumSystemVersion": "10.15"
+    }
   }
 }

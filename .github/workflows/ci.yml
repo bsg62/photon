@@ -27,10 +27,17 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
+      # Reads the three real version files (xtask's unit tests only cover string literals),
+      # so drift fails on the pull request rather than after a release tag already exists.
+      - if: runner.os == 'Linux'
+        run: |
+          cargo run -p xtask -- versions
+          cargo run -p xtask -- metadata
       - run: cargo bench -p photon-core --bench grid --no-run
 
   # Builds the release path (frontend embedded, `tauri::is_dev()` false), which the debug
-  # builds above never exercise. Ubuntu only; bundling/packaging is Plan 3.
+  # builds above never exercise. Ubuntu only and unbundled: installers are built by
+  # release.yml, which runs on tags rather than on every pull request.
   release-build:
     name: release build (ubuntu)
     runs-on: ubuntu-latest

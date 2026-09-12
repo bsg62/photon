@@ -327,6 +327,43 @@ impl Engine {
         }
     }
 
+    /// Test-only: occupies a folder's scan slot without actually running a scan, so a test
+    /// that needs "this folder has a scan in progress" gets that deterministically instead
+    /// of racing a real one to completion. The fixtures used in these tests are one or two
+    /// tiny JPEGs, so a real scan started via `start_scan` can finish before the next line
+    /// of the test runs - especially on a fast CI runner - at which point the slot is
+    /// already free and the behaviour under test never happens. Since this occupies the
+    /// slot without spawning anything, there is nothing that can finish early.
+    ///
+    /// Mirrors `start_scan_inner`'s bookkeeping - same `scans` map, a freshly issued token -
+    /// but spawns no thread, so the entry's `handle` is `None`. `wait_for_scans` only polls
+    /// the map for emptiness and never joins a handle, so that's safe by itself; what isn't
+    /// safe is holding the returned guard across a call to `wait_for_scans`, since nothing
+    /// will ever remove the entry and the wait would spin forever. Callers must drop the
+    /// guard first.
+    #[cfg(test)]
+    pub(crate) fn occupy_scan_slot_for_test(self: &Arc<Self>, watched_id: i64) -> TestScanSlot {
+        let mut scans = self.scans.lock();
+        assert!(
+            !scans.contains_key(&watched_id),
+            "occupy_scan_slot_for_test: a scan is already running for {watched_id}"
+        );
+        let token = self.next_token.fetch_add(1, Ordering::Relaxed);
+        scans.insert(
+            watched_id,
+            RunningScan {
+                token,
+                cancel: Arc::new(AtomicBool::new(false)),
+                handle: None,
+            },
+        );
+        TestScanSlot {
+            engine: Arc::clone(self),
+            id: watched_id,
+            token,
+        }
+    }
+
     /// Background start-up work: watch `pictures` if the library is empty, queue pending
     /// thumbnails, rescan every folder, then collect thumbnail garbage.
     ///
@@ -480,13 +517,17 @@ impl Engine {
             Err(_) => true,
         };
         let online_changed = folder.as_ref().is_some_and(|f| f.online != watched.online);
-        if touched_rows || online_changed {
-            if let Err(err) = self.refresh_grid() {
-                tracing::warn!(%err, "grid refresh failed");
-            }
-            if let Err(err) = self.thumbs.enqueue_pending() {
-                tracing::warn!(%err, "could not queue pending thumbnails");
-            }
+        if (touched_rows || online_changed)
+            && let Err(err) = self.refresh_grid()
+        {
+            tracing::warn!(%err, "grid refresh failed");
+        }
+        // Outside the guard: `refresh_grid` is the expensive half (it reads every grid row
+        // and makes the UI refetch), but re-queueing pending thumbnails is cheap and is the
+        // only thing that retries an item whose render failed transiently. Leaving it inside
+        // meant such an item waited for an unrelated change, or a restart.
+        if let Err(err) = self.thumbs.enqueue_pending() {
+            tracing::warn!(%err, "could not queue pending thumbnails");
         }
         if let Some(folder) = folder {
             let degraded = self
@@ -499,11 +540,69 @@ impl Engine {
     }
 }
 
+/// RAII guard returned by `occupy_scan_slot_for_test`. Releases the slot on drop, mirroring
+/// `start_scan_inner`'s own `RemoveOnDrop`: it removes the entry only if the token still
+/// matches, so a guard dropped late (e.g. after a test panics and unwinds past it) can never
+/// evict a real, unrelated scan that later claimed the same folder id.
+#[cfg(test)]
+pub(crate) struct TestScanSlot {
+    engine: Arc<Engine>,
+    id: i64,
+    token: u64,
+}
+
+#[cfg(test)]
+impl Drop for TestScanSlot {
+    fn drop(&mut self) {
+        let mut scans = self.engine.scans.lock();
+        if scans.get(&self.id).is_some_and(|r| r.token == self.token) {
+            scans.remove(&self.id);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::events::Recorded;
     use crate::testutil::{fixture, jpeg};
+    use photon_core::media::ThumbState;
+
+    #[test]
+    fn a_scan_that_changed_nothing_still_re_primes_pending_thumbnails() {
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a/one.jpg", &img)]);
+        let watched = f.add_photos();
+        f.engine.wait_for_scans();
+
+        // Simulate a render that failed transiently: the item is pending again, but a
+        // rescan finds nothing changed on disk.
+        let id = f.ids()[0];
+        f.engine
+            .lib
+            .set_thumb_state(id, ThumbState::Pending, None)
+            .unwrap();
+
+        assert!(f.engine.start_scan(watched.clone()));
+        f.engine.wait_for_scans();
+
+        // Checking `queued() > 0` right after `wait_for_scans` is racy in practice: the
+        // cache for this item is already complete from the first scan, so re-processing it
+        // is a single fast DB update that the lone worker thread routinely finishes before
+        // this assertion runs (the same worker sits parked in a blocking pop, and
+        // `wait_for_scans`'s own polling loop hands it ample time). `wait_idle` makes the
+        // check deterministic: it blocks until the worker has drained the queue, so by the
+        // time we look, retrying has either happened (state back to `Ready`) or the item was
+        // never re-queued at all (state stuck at `Pending`).
+        f.engine.thumbs.wait_idle();
+        let item = f.engine.lib.item(id).unwrap().unwrap();
+        assert_eq!(
+            item.thumb_state,
+            ThumbState::Ready,
+            "a no-change scan must still queue pending thumbnails; otherwise a transient \
+             render failure is never retried without restarting photon"
+        );
+    }
 
     #[test]
     fn add_folder_scans_and_publishes_the_grid() {

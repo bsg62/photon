@@ -270,8 +270,19 @@ fn watcher_died(
     watcher.lock().take();
     let watched = engine.lib.watched_folders().unwrap_or_default();
     let mut degraded = degraded.lock();
-    for w in watched.iter().filter(|w| w.online) {
-        mark_degraded(&mut degraded, w.id);
+    let newly: Vec<i64> = watched
+        .iter()
+        .filter(|w| w.online)
+        .map(|w| {
+            mark_degraded(&mut degraded, w.id);
+            w.id
+        })
+        .collect();
+    drop(degraded);
+    // Tell the UI now. `folder-status` is otherwise only emitted at the tail of a scan, so
+    // without this the status bar claims live updates are fine until the five-minute tick.
+    for id in newly {
+        engine.emit_folder_status(id, true);
     }
 }
 
@@ -296,8 +307,12 @@ fn degrade_failed_roots(engine: &Arc<Engine>, degraded: &Mutex<Vec<i64>>, failur
         return;
     }
     let mut degraded = degraded.lock();
+    for id in &affected {
+        mark_degraded(&mut degraded, *id);
+    }
+    drop(degraded);
     for id in affected {
-        mark_degraded(&mut degraded, id);
+        engine.emit_folder_status(id, true);
     }
 }
 
@@ -618,8 +633,44 @@ fn rescan_degraded_roots(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::events::Recorded;
     use crate::testutil::{fixture, jpeg};
     use photon_core::watcher::MAX_PENDING_DIRS;
+
+    #[test]
+    fn a_dead_watcher_tells_the_ui_its_folders_are_degraded() {
+        let f = fixture(&[]);
+        let watched = f.add_photos();
+        let degraded = Mutex::new(Vec::new());
+        let slot: Mutex<Option<Watcher>> = Mutex::new(None);
+
+        watcher_died(&f.engine, &degraded, &slot);
+
+        assert_eq!(
+            degraded.lock().clone(),
+            vec![watched.id],
+            "the root is degraded"
+        );
+        let told = last_degraded(&f, watched.id);
+        assert!(
+            told,
+            "a dead watcher must emit folder-status immediately; without it the status bar \
+             claims live updates work until the next five-minute tick"
+        );
+    }
+
+    /// True if the last `folder-status` recorded for `id` reported degraded.
+    fn last_degraded(f: &crate::testutil::Fixture, id: i64) -> bool {
+        f.events
+            .all()
+            .iter()
+            .filter_map(|e| match e {
+                Recorded::Folder(s) if s.watched_id == id => Some(s.degraded),
+                _ => None,
+            })
+            .next_back()
+            .unwrap_or(false)
+    }
 
     #[test]
     fn an_event_in_a_watched_folder_scans_that_subtree() {
@@ -659,11 +710,15 @@ mod tests {
         let watched = f.add_photos();
         let service = WatcherService::start(&f.engine);
 
-        // Occupy the folder's scan slot, then deliver an event for it.
-        let blocker = f.engine.clone();
-        assert!(blocker.start_scan(watched.clone()));
+        // Occupy the folder's scan slot, then deliver an event for it. A real scan (via
+        // `start_scan`) would race this: the fixture is a single tiny JPEG, so it can finish
+        // before `handle_batch` runs, freeing the slot before the event has a chance to find
+        // it occupied. `occupy_scan_slot_for_test` makes the slot occupied a guarantee rather
+        // than a hope.
+        let slot = f.engine.occupy_scan_slot_for_test(watched.id);
         service.handle_batch(vec![f.photos.join("a")]);
         assert_eq!(service.pending_len(), 1);
+        drop(slot);
 
         f.engine.wait_for_scans();
         service.drain_pending();
@@ -682,8 +737,11 @@ mod tests {
         // Occupy the folder's scan slot, then deliver events for two sibling directories.
         // Neither is an ancestor of the other, so a naive "keep one, drop the other" policy
         // would silently lose whichever branch's changes aren't queued.
-        let blocker = f.engine.clone();
-        assert!(blocker.start_scan(watched.clone()));
+        //
+        // `occupy_scan_slot_for_test` holds the slot deterministically instead of racing a
+        // real scan of these tiny fixtures to completion (a real scan can finish, and free
+        // the slot, before both `handle_batch` calls below run).
+        let slot = f.engine.occupy_scan_slot_for_test(watched.id);
         service.handle_batch(vec![f.photos.join("a")]);
         service.handle_batch(vec![f.photos.join("b")]);
 
@@ -696,6 +754,7 @@ mod tests {
             "both branches stay queued: collapsing siblings into their common ancestor would \
              be the watched root, whose subtree scan is a full rescan of the whole folder"
         );
+        drop(slot);
 
         f.engine.wait_for_scans();
         service.drain_pending();
@@ -724,8 +783,10 @@ mod tests {
         let watched = f.add_photos();
         let service = WatcherService::start(&f.engine);
 
-        let blocker = f.engine.clone();
-        assert!(blocker.start_scan(watched.clone()));
+        // Occupy the folder's scan slot deterministically: with this many tiny fixtures a
+        // real scan could still finish, and free the slot, before the loop below delivers
+        // every event.
+        let slot = f.engine.occupy_scan_slot_for_test(watched.id);
         for i in 0..=MAX_PENDING_DIRS {
             service.handle_batch(vec![f.photos.join(format!("d{i}"))]);
         }
@@ -735,6 +796,7 @@ mod tests {
             Some(vec![PathBuf::from(&watched.path)]),
             "one directory past the bound, the set becomes a single rescan of the root"
         );
+        drop(slot);
 
         f.engine.wait_for_scans();
         service.drain_pending();
