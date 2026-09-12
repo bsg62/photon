@@ -178,32 +178,48 @@ pub fn scan_subtree(
             ..ScanReport::default()
         });
     }
-    if !crate::paths::is_within(dir, root) {
-        tracing::warn!(?dir, watched = %watched.path, "ignoring a subtree outside its watched folder");
-        return Ok(ScanReport::default());
-    }
-
     // A deleted directory is scanned through its nearest living ancestor, so the parent's
-    // walk sees it gone, marks its items missing and eventually prunes it.
+    // walk sees it gone, marks its items missing and eventually prunes it. This walk-up
+    // happens on the raw, non-canonical path: `is_within` and `same_path` compare
+    // component-wise and case-insensitively on macOS/Windows, but a plain `Path::is_dir`
+    // check works fine either way, and canonicalizing first would fail outright on a path
+    // that no longer exists.
     let mut target = dir.to_path_buf();
     while !target.is_dir() {
         match target.parent() {
-            Some(parent) if crate::paths::is_within(parent, root) => target = parent.to_path_buf(),
-            _ => {
-                target = root.to_path_buf();
-                break;
-            }
+            Some(parent) => target = parent.to_path_buf(),
+            None => break,
         }
+    }
+    // Only now, with an existing directory in hand, canonicalize it so the membership and
+    // delegation checks below - and the byte-exact `known_items_under` /
+    // `prune_folders_under` / `strip_prefix` calls further down - agree with `root`, which
+    // `add_watched_folder` stored canonicalized. Skipping this would let a `dir` that only
+    // differs from `root` in case, or that contains `..`, slip past `is_within` and then
+    // corrupt the folder tree once `strip_prefix` disagrees with it.
+    let target = dunce::canonicalize(&target).unwrap_or(target);
+
+    if !crate::paths::is_within(&target, root) {
+        tracing::warn!(?dir, watched = %watched.path, "ignoring a subtree outside its watched folder");
+        return Ok(ScanReport::default());
     }
     if crate::paths::same_path(&target, root) {
         return scan_watched(lib, watched, scan_id, options, progress);
     }
+    // `is_within` compares component-wise and case-insensitively on macOS/Windows, while
+    // `strip_prefix` is byte-exact; now that both `target` and `root` are canonicalized they
+    // should always agree, but if they somehow didn't, silently defaulting the relative path
+    // to empty would attach `target` to the wrong parent instead of failing loudly.
+    let Ok(relative) = target.strip_prefix(root) else {
+        tracing::warn!(?dir, ?target, watched = %watched.path, "canonicalized subtree unexpectedly does not lie under its watched folder");
+        return Ok(ScanReport::default());
+    };
 
     let target_str = target
         .to_str()
         .ok_or_else(|| crate::Error::NonUtf8Path(target.clone()))?;
     let mut known = lib.known_items_under(watched.id, target_str)?;
-    let (mut folder_ids, parent_id) = seed_ancestors(lib, watched, &target, scan_id)?;
+    let (mut folder_ids, parent_id) = seed_ancestors(lib, watched, relative, scan_id)?;
 
     let outcome = walk_tree(
         lib,
@@ -246,13 +262,14 @@ pub fn scan_subtree(
     Ok(report)
 }
 
-/// Upserts the folder rows from the watched root down to `target`'s parent, so the walk can
-/// attach `target` to its real parent rather than treating it as a root. Returns the ids it
-/// created, and the id of `target`'s parent.
+/// Upserts the folder rows from the watched root down to the target's parent, so the walk
+/// can attach the target to its real parent rather than treating it as a root. `relative` is
+/// the target's path relative to the watched root (i.e. `target.strip_prefix(root)`).
+/// Returns the ids it created, and the id of the target's parent.
 fn seed_ancestors(
     lib: &Library,
     watched: &WatchedFolder,
-    target: &Path,
+    relative: &Path,
     scan_id: i64,
 ) -> Result<(HashMap<PathBuf, i64>, Option<i64>)> {
     let root = Path::new(&watched.path);
@@ -263,7 +280,6 @@ fn seed_ancestors(
     let mut parent = Some(lib.upsert_folder(watched.id, None, root_str, scan_id)?);
     ids.insert(root.to_path_buf(), parent.expect("just inserted"));
 
-    let relative = target.strip_prefix(root).unwrap_or(Path::new(""));
     let mut components: Vec<_> = relative.components().collect();
     components.pop(); // `target` itself is upserted by the walk.
     let mut current = root.to_path_buf();
@@ -789,8 +805,13 @@ mod tests {
         let root = photos_root(&dir);
         let keep = write_file(&root, "b/keep.jpg", &jpeg_bytes(8, 8));
         write_file(&root, "a/one.jpg", &jpeg_bytes(8, 8));
+        // An empty sibling: `prune_folders` (the unscoped version) would delete it once it's
+        // no longer the newest scan, so this is the only thing distinguishing a correct call
+        // to `prune_folders_under` from an accidental call to `prune_folders`.
+        std::fs::create_dir_all(root.join("c")).unwrap();
         let watched = lib.add_watched_folder(&root, &[]).unwrap();
         scan(&lib, &watched, 1);
+        assert!(lib.folders().unwrap().iter().any(|f| f.name == "c"));
 
         // Delete a file in the *other* folder; scanning /a must not notice or touch it.
         fs::remove_file(&keep).unwrap();
@@ -799,6 +820,10 @@ mod tests {
         assert_eq!((report.marked_missing, report.purged), (0, 0));
         let id = lib.known_items(watched.id).unwrap()[&key(&keep)].id;
         assert_eq!(lib.item(id).unwrap().unwrap().missing_since, None);
+        assert!(
+            lib.folders().unwrap().iter().any(|f| f.name == "c"),
+            "an empty sibling folder must survive a subtree scan of a different subtree"
+        );
     }
 
     #[test]
@@ -864,6 +889,10 @@ mod tests {
         let watched = lib.add_watched_folder(&root, &[]).unwrap();
         let report = scan_sub(&lib, &watched, &root, 1);
         assert_eq!(report.added, 1);
+        // `scan_subtree` never sets the online flag true on any path but this delegation, so
+        // this is what actually proves `scan_watched` ran, rather than `report.added == 1`
+        // merely surviving a broken `same_path` match.
+        assert!(lib.watched_folders().unwrap()[0].online);
     }
 
     #[test]
@@ -905,6 +934,22 @@ mod tests {
             scan_subtree(&lib, &watched, &root.join("a"), 2, &cancelled, &mut |_| {}).unwrap();
         assert!(report.cancelled);
         assert_eq!(report.marked_missing, 0);
+    }
+
+    #[test]
+    fn subtree_scan_of_a_vanished_watched_root_reports_offline() {
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        write_file(&root, "a/one.jpg", &jpeg_bytes(8, 8));
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
+        scan(&lib, &watched, 1);
+
+        // The one place `scan_subtree` writes `online = false`.
+        fs::rename(&root, dir.path().join("unplugged")).unwrap();
+        let report = scan_sub(&lib, &watched, &root.join("a"), 2);
+        assert!(report.offline);
+        assert!(!lib.watched_folders().unwrap()[0].online);
+        assert_eq!(lib.known_items(watched.id).unwrap().len(), 1);
     }
 
     #[test]
