@@ -8,6 +8,8 @@ rust-version.workspace = true
 dunce = "1.0.5"
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "gif", "webp"] }
 kamadak-exif = "0.6.1"
+notify = "8.2.0"
+notify-debouncer-full = "0.7.0"
 parking_lot = "0.12.5"
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 serde = { version = "1.0.229", features = ["derive"] }
