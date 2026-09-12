@@ -2,6 +2,7 @@
   import { untrack } from 'svelte';
   import { api, errorMessage, mediaUrl, type ViewerItem } from '../lib/api';
   import { library } from '../lib/library.svelte';
+  import { MAX_ZOOM, MIN_ZOOM, clampPan, clampZoom, positionInFolder, wheelStep } from '../lib/nav';
 
   let { offset, onclose }: { offset: number; onclose: (offset: number) => void } = $props();
 
@@ -10,6 +11,28 @@
   let item = $state<ViewerItem | null>(null);
   let fullSrc = $state<string | null>(null);
   let error = $state<string | null>(null);
+  let zoom = $state(MIN_ZOOM);
+  let pan = $state({ x: 0, y: 0 });
+  let dragging = $state(false);
+  let stage = $state<HTMLDivElement | null>(null);
+  /** Deliberately not `$state`: nothing renders from a partial wheel total, and making it
+   *  reactive would re-run effects on every wheel event of a flick. */
+  let wheelTotal = 0;
+  let dragFrom = { x: 0, y: 0, panX: 0, panY: 0 };
+
+  /** Photos are numbered within their own folder, not across the library, so the count
+   *  matches what the file manager shows for that directory. */
+  const position = $derived(positionInFolder(library.info.sections, current));
+
+  function viewport(): { width: number; height: number } {
+    return { width: stage?.clientWidth ?? 0, height: stage?.clientHeight ?? 0 };
+  }
+
+  function goto(next: number) {
+    const last = library.info.len - 1;
+    if (last < 0) return;
+    current = Math.min(last, Math.max(0, next));
+  }
 
   $effect(() => {
     const at = current;
@@ -17,6 +40,10 @@
     item = null;
     fullSrc = null;
     error = null;
+    // Every photo opens fitted to the window: arriving at the next one already at 400% and
+    // panned into a corner leaves you lost.
+    zoom = MIN_ZOOM;
+    pan = { x: 0, y: 0 };
     (async () => {
       await library.ensure(at, at + 1);
       const entry = library.entry(at);
@@ -58,41 +85,129 @@
       onclose(current);
       return;
     }
+    // While the zoom slider has focus the arrow keys belong to it, which is how a range
+    // input is expected to behave. Navigation stays available everywhere else.
+    if (e.target instanceof HTMLInputElement) return;
     const last = library.info.len - 1;
     if (last < 0) return;
     const next =
-      e.key === 'ArrowLeft' ? Math.max(0, current - 1)
-      : e.key === 'ArrowRight' ? Math.min(last, current + 1)
+      e.key === 'ArrowLeft' ? current - 1
+      : e.key === 'ArrowRight' ? current + 1
       : e.key === 'Home' ? 0
       : e.key === 'End' ? last
       : null;
     if (next !== null) {
       e.preventDefault();
-      current = next;
+      goto(next);
     }
+  }
+
+  function onwheel(e: WheelEvent) {
+    e.preventDefault();
+    const stepped = wheelStep(wheelTotal, e.deltaY);
+    wheelTotal = stepped.accumulated;
+    if (stepped.step !== 0) goto(current + stepped.step);
+  }
+
+  function onzoom(e: Event & { currentTarget: HTMLInputElement }) {
+    zoom = clampZoom(Number(e.currentTarget.value));
+    const { width, height } = viewport();
+    // Zooming back out shrinks how far the photo may travel, so a pan that was legal at 4x
+    // has to be pulled back in rather than left hanging off the edge.
+    pan = clampPan(pan.x, pan.y, zoom, width, height);
+  }
+
+  function onpointerdown(e: PointerEvent) {
+    // The zoom slider and the close button sit on the same surface: a press on either is
+    // theirs, not the start of a pan.
+    if ((e.target as HTMLElement).closest('.zoom, .close')) return;
+    if (zoom === MIN_ZOOM) return;
+    dragging = true;
+    dragFrom = { x: e.clientX, y: e.clientY, panX: pan.x, panY: pan.y };
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+  }
+
+  function onpointermove(e: PointerEvent) {
+    if (!dragging) return;
+    const { width, height } = viewport();
+    pan = clampPan(
+      dragFrom.panX + (e.clientX - dragFrom.x),
+      dragFrom.panY + (e.clientY - dragFrom.y),
+      zoom,
+      width,
+      height,
+    );
+  }
+
+  function onpointerup(e: PointerEvent) {
+    if (!dragging) return;
+    dragging = false;
+    const el = e.currentTarget as HTMLElement;
+    if (el.hasPointerCapture(e.pointerId)) el.releasePointerCapture(e.pointerId);
   }
 </script>
 
 <svelte:window {onkeydown} />
 
-<div class="viewer" role="dialog" aria-modal="true" aria-label="Photo viewer">
+<!-- The pan handlers live here rather than on the stage below: this element already carries
+     a role, and dragging anywhere in the viewer is easier to hit than the photo alone. -->
+<div
+  class="viewer"
+  role="dialog"
+  aria-modal="true"
+  aria-label="Photo viewer"
+  tabindex="-1"
+  {onwheel}
+  {onpointerdown}
+  {onpointermove}
+  {onpointerup}
+  onpointercancel={onpointerup}
+>
   {#if error}
     <p class="error">{error}</p>
   {:else if item}
-    <img class="preview" src={mediaUrl(`thumb/${item.id}/preview/${item.thumbKey}`)} alt="" class:hidden={!!fullSrc} />
-    {#if fullSrc}
-      <img class="full" src={fullSrc} alt={item.fileName} />
-    {/if}
+    <div
+      class="stage"
+      class:grabbable={zoom > MIN_ZOOM}
+      class:grabbing={dragging}
+      style="transform: translate({pan.x}px, {pan.y}px) scale({zoom})"
+      bind:this={stage}
+    >
+      <img class="preview" src={mediaUrl(`thumb/${item.id}/preview/${item.thumbKey}`)} alt="" class:hidden={!!fullSrc} />
+      {#if fullSrc}
+        <img class="full" src={fullSrc} alt={item.fileName} />
+      {/if}
+    </div>
   {/if}
-  <div class="caption">{item?.fileName ?? ''} · {current + 1} / {library.info.len}</div>
+  <div class="caption">
+    {item?.fileName ?? ''}{#if position.count} · {position.index} / {position.count}{/if}
+  </div>
+  <div class="zoom">
+    <input
+      type="range"
+      min={MIN_ZOOM}
+      max={MAX_ZOOM}
+      step="0.05"
+      value={zoom}
+      oninput={onzoom}
+      aria-label="Zoom"
+    />
+    <span class="level">{Math.round(zoom * 100)}%</span>
+  </div>
   <button class="close" onclick={() => onclose(current)} aria-label="Close viewer">✕</button>
 </div>
 
 <style>
-  .viewer { position: fixed; inset: 0; z-index: 20; display: grid; place-items: center; background: #000; }
+  .viewer { position: fixed; inset: 0; z-index: 20; display: grid; place-items: center; background: #000; overflow: hidden; }
+  .stage { position: absolute; inset: 0; transform-origin: center; will-change: transform; }
+  .grabbable { cursor: grab; }
+  .grabbing { cursor: grabbing; }
   img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; image-orientation: from-image; }
   .hidden { visibility: hidden; }
   .caption { position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%); padding: 4px 10px; background: #0009; border-radius: 4px; color: var(--muted); font-size: 12px; }
+  .zoom { position: absolute; bottom: 12px; right: 12px; display: flex; align-items: center; gap: 8px; padding: 4px 10px; background: #0009; border-radius: 4px; }
+  .zoom input { width: 120px; }
+  .level { color: var(--muted); font-size: 12px; min-width: 38px; text-align: right; }
   .close { position: absolute; top: 12px; right: 12px; width: 32px; height: 32px; border: 0; border-radius: 50%; background: #0009; cursor: pointer; }
   .error { color: var(--muted); }
 </style>
