@@ -231,7 +231,10 @@ mod tests {
             taken_at_max: 4,
         })
         .unwrap();
-        assert_eq!(json, r#"{"folderId":1,"offset":2,"count":3,"takenAtMax":4}"#);
+        assert_eq!(
+            json,
+            r#"{"folderId":1,"offset":2,"count":3,"takenAtMax":4}"#
+        );
         let json = serde_json::to_string(&entry(7, 1)).unwrap();
         assert_eq!(
             json,
