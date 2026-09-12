@@ -8,6 +8,10 @@ use std::{
     collections::HashMap,
     fs::Metadata,
     path::{Path, PathBuf},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::UNIX_EPOCH,
 };
 use walkdir::{DirEntry, WalkDir};
@@ -29,6 +33,16 @@ pub struct ScanReport {
     pub unchanged: u64,
     pub marked_missing: u64,
     pub purged: u64,
+    pub cancelled: bool,
+}
+
+/// Per-scan settings.
+#[derive(Clone, Debug, Default)]
+pub struct ScanOptions {
+    /// Directories never walked, e.g. photon's own cache and database folders.
+    pub excluded: Vec<PathBuf>,
+    /// Checked before each entry; once set, the scan stops without marking anything missing.
+    pub cancel: Arc<AtomicBool>,
 }
 
 /// Brings the library in line with what is on disk under `watched`.
@@ -37,10 +51,17 @@ pub struct ScanReport {
 /// `scan_id` marks the folders seen by this scan, so folders from older scans can be
 /// pruned. It must increase monotonically per watched folder; use [`crate::now_ms`].
 /// `scan_watched` must not run concurrently on the same or overlapping watched folders.
+///
+/// `options.excluded` lists directories never walked. `options.cancel`, checked before each
+/// entry, lets a scan be stopped early: it returns with `cancelled: true` and never marks,
+/// purges or prunes anything, since anything unreached is unknown, not missing. It also
+/// leaves the watched folder's online/offline state unchanged, since deciding that needs
+/// the empty-root guard below, which needs a complete walk.
 pub fn scan_watched(
     lib: &Library,
     watched: &WatchedFolder,
     scan_id: i64,
+    options: &ScanOptions,
     progress: &mut dyn FnMut(&ScanProgress),
 ) -> Result<ScanReport> {
     let root = Path::new(&watched.path);
@@ -66,12 +87,23 @@ pub fn scan_watched(
     // Set when an error gives no path, or points at the root itself: we can no longer
     // tell which `known` entries are safe to touch, so skip mark/purge/prune entirely.
     let mut skip_mark_purge = false;
+    let mut cancelled = false;
 
     let walker = WalkDir::new(root)
         .follow_links(false)
         .into_iter()
-        .filter_entry(|e| e.depth() == 0 || !is_hidden(e));
+        .filter_entry(|e| {
+            (e.depth() == 0 || !is_hidden(e))
+                && !options
+                    .excluded
+                    .iter()
+                    .any(|x| crate::paths::is_within(e.path(), x))
+        });
     for entry in walker {
+        if options.cancel.load(Ordering::Relaxed) {
+            cancelled = true;
+            break;
+        }
         let entry = match entry {
             Ok(entry) => entry,
             Err(err) => {
@@ -143,6 +175,18 @@ pub fn scan_watched(
     }
     flush_new(lib, &mut new_batch, &mut report, &mut seen, progress)?;
     flush_changed(lib, &mut changed_batch, &mut report, &mut seen, progress)?;
+
+    if cancelled {
+        // We stopped early, so everything we didn't reach is unknown, not missing. Leave
+        // online/offline as it was too: that decision needs the empty-root guard below,
+        // which needs a complete walk, so a cancelled scan of an unmounted mount point
+        // must not get marked online.
+        progress(&seen);
+        return Ok(ScanReport {
+            cancelled: true,
+            ..report
+        });
+    }
 
     if skip_mark_purge {
         // We couldn't tell what happened to the rest of the tree; don't guess.
@@ -276,17 +320,25 @@ mod tests {
     use std::fs;
 
     fn scan(lib: &Library, watched: &WatchedFolder, scan_id: i64) -> ScanReport {
-        scan_watched(lib, watched, scan_id, &mut |_| {}).unwrap()
+        scan_watched(lib, watched, scan_id, &ScanOptions::default(), &mut |_| {}).unwrap()
     }
 
     fn key(path: &Path) -> String {
         path.to_str().unwrap().to_string()
     }
 
+    /// The watched root, canonicalised the way `add_watched_folder` will store it (on macOS
+    /// the temp dir lives behind the /var → /private/var symlink).
+    fn photos_root(dir: &tempfile::TempDir) -> std::path::PathBuf {
+        let root = dir.path().join("photos");
+        std::fs::create_dir_all(&root).unwrap();
+        dunce::canonicalize(root).unwrap()
+    }
+
     #[test]
     fn indexes_supported_files_and_folders() {
         let (dir, lib) = temp_library();
-        let root = dir.path().join("photos");
+        let root = photos_root(&dir);
         let a = write_file(
             &root,
             "a.jpg",
@@ -296,10 +348,13 @@ mod tests {
         write_file(&root, "notes.txt", b"ignored");
         write_file(&root, ".hidden/c.jpg", &jpeg_bytes(8, 8));
         write_file(&root, ".d.jpg", &jpeg_bytes(8, 8));
-        let watched = lib.add_watched_folder(&root).unwrap();
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
 
         let mut last = None;
-        let report = scan_watched(&lib, &watched, 1, &mut |p| last = Some(*p)).unwrap();
+        let report = scan_watched(&lib, &watched, 1, &ScanOptions::default(), &mut |p| {
+            last = Some(*p)
+        })
+        .unwrap();
         assert_eq!(
             (report.added, report.changed, report.offline),
             (2, 0, false)
@@ -323,9 +378,9 @@ mod tests {
     #[test]
     fn capture_date_falls_back_to_mtime() {
         let (dir, lib) = temp_library();
-        let root = dir.path().join("photos");
+        let root = photos_root(&dir);
         let p = write_file(&root, "a.png", &png_bytes(2, 2));
-        let watched = lib.add_watched_folder(&root).unwrap();
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
         scan(&lib, &watched, 1);
         let mtime_s = fs::metadata(&p)
             .unwrap()
@@ -341,10 +396,10 @@ mod tests {
     #[test]
     fn rescans_detect_unchanged_and_changed_files() {
         let (dir, lib) = temp_library();
-        let root = dir.path().join("photos");
+        let root = photos_root(&dir);
         write_file(&root, "a.jpg", &jpeg_bytes(8, 8));
         let b = write_file(&root, "b.jpg", &jpeg_bytes(8, 8));
-        let watched = lib.add_watched_folder(&root).unwrap();
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
         scan(&lib, &watched, 1);
 
         write_file(&root, "b.jpg", &jpeg_bytes(64, 64));
@@ -357,10 +412,10 @@ mod tests {
     #[test]
     fn missing_files_are_soft_deleted_then_purged() {
         let (dir, lib) = temp_library();
-        let root = dir.path().join("photos");
+        let root = photos_root(&dir);
         let gone = write_file(&root, "trip/a.jpg", &jpeg_bytes(8, 8));
         write_file(&root, "b.jpg", &jpeg_bytes(8, 8));
-        let watched = lib.add_watched_folder(&root).unwrap();
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
         scan(&lib, &watched, 1);
         let id = lib.known_items(watched.id).unwrap()[&key(&gone)].id;
 
@@ -388,12 +443,12 @@ mod tests {
     #[test]
     fn reappearing_files_are_restored() {
         let (dir, lib) = temp_library();
-        let root = dir.path().join("photos");
+        let root = photos_root(&dir);
         let a = write_file(&root, "a.jpg", &jpeg_bytes(8, 8));
         // Keeps the root non-empty so scan 2 doesn't hit the empty-root offline guard.
         write_file(&root, "keep.jpg", &jpeg_bytes(8, 8));
         let bytes = fs::read(&a).unwrap();
-        let watched = lib.add_watched_folder(&root).unwrap();
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
         scan(&lib, &watched, 1);
         let id = lib.known_items(watched.id).unwrap()[&key(&a)].id;
 
@@ -412,9 +467,9 @@ mod tests {
     #[test]
     fn unreachable_folder_goes_offline_and_keeps_items() {
         let (dir, lib) = temp_library();
-        let root = dir.path().join("photos");
+        let root = photos_root(&dir);
         write_file(&root, "a.jpg", &jpeg_bytes(8, 8));
-        let watched = lib.add_watched_folder(&root).unwrap();
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
         scan(&lib, &watched, 1);
 
         fs::rename(&root, dir.path().join("unplugged")).unwrap();
@@ -437,9 +492,9 @@ mod tests {
     #[test]
     fn empty_reachable_root_is_treated_as_offline() {
         let (dir, lib) = temp_library();
-        let root = dir.path().join("photos");
+        let root = photos_root(&dir);
         write_file(&root, "a.jpg", &jpeg_bytes(8, 8));
-        let watched = lib.add_watched_folder(&root).unwrap();
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
         scan(&lib, &watched, 1);
 
         fs::remove_file(root.join("a.jpg")).unwrap();
@@ -460,10 +515,10 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
 
         let (dir, lib) = temp_library();
-        let root = dir.path().join("photos");
+        let root = photos_root(&dir);
         let locked = root.join("locked");
         let a = write_file(&root, "locked/a.jpg", &jpeg_bytes(8, 8));
-        let watched = lib.add_watched_folder(&root).unwrap();
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
         scan(&lib, &watched, 1);
         let id = lib.known_items(watched.id).unwrap()[&key(&a)].id;
 
@@ -481,5 +536,62 @@ mod tests {
         fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
 
         assert_eq!(lib.item(id).unwrap().unwrap().missing_since, None);
+    }
+
+    #[test]
+    fn excluded_subtrees_are_not_indexed() {
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        write_file(&root, "a.jpg", &jpeg_bytes(8, 8));
+        write_file(&root, "cache/b.jpg", &jpeg_bytes(8, 8));
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
+        let options = ScanOptions {
+            excluded: vec![root.join("cache")],
+            ..ScanOptions::default()
+        };
+        let report = scan_watched(&lib, &watched, 1, &options, &mut |_| {}).unwrap();
+        assert_eq!(report.added, 1);
+        assert!(lib.folders().unwrap().iter().all(|f| f.name != "cache"));
+    }
+
+    #[test]
+    fn cancelled_scan_leaves_unseen_items_alone() {
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        write_file(&root, "a.jpg", &jpeg_bytes(8, 8));
+        let b = write_file(&root, "b.jpg", &jpeg_bytes(8, 8));
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
+        scan(&lib, &watched, 1);
+        fs::remove_file(&b).unwrap();
+
+        let options = ScanOptions::default();
+        options
+            .cancel
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        let report = scan_watched(&lib, &watched, 2, &options, &mut |_| {}).unwrap();
+
+        assert!(report.cancelled);
+        assert_eq!((report.marked_missing, report.purged), (0, 0));
+        let id = lib.known_items(watched.id).unwrap()[&key(&b)].id;
+        assert_eq!(lib.item(id).unwrap().unwrap().missing_since, None);
+    }
+
+    #[test]
+    fn cancelled_scan_leaves_online_state_unchanged() {
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        write_file(&root, "a.jpg", &jpeg_bytes(8, 8));
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
+        scan(&lib, &watched, 1);
+        lib.set_watched_online(watched.id, false).unwrap();
+
+        let options = ScanOptions::default();
+        options
+            .cancel
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        let report = scan_watched(&lib, &watched, 2, &options, &mut |_| {}).unwrap();
+
+        assert!(report.cancelled);
+        assert!(!lib.watched_folders().unwrap()[0].online);
     }
 }

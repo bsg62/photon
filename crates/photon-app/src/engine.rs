@@ -1,0 +1,562 @@
+//! The running library: photon-core services plus the current grid snapshot and the
+//! background scans. Plain Rust, so it can be tested without a webview.
+
+use crate::events::{Events, FolderStatus, LibraryChanged, ScanProgressEvent};
+use parking_lot::{Mutex, RwLock};
+use photon_core::{
+    Result,
+    grid::GridIndex,
+    library::{Library, WatchedFolder},
+    now_ms,
+    scanner::{ScanOptions, ScanProgress, scan_watched},
+    thumbs::{ThumbCache, ThumbService},
+};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+    },
+    thread::JoinHandle,
+    time::{Duration, Instant},
+};
+
+/// Minimum time between grid rebuilds and between progress events during one scan.
+const THROTTLE: Duration = Duration::from_millis(250);
+
+pub struct EngineConfig {
+    pub db_path: PathBuf,
+    pub cache_dir: PathBuf,
+    pub workers: usize,
+}
+
+struct RunningScan {
+    token: u64,
+    cancel: Arc<AtomicBool>,
+    handle: Option<JoinHandle<()>>,
+}
+
+pub struct Engine {
+    pub lib: Arc<Library>,
+    pub thumbs: ThumbService,
+    excluded: Vec<PathBuf>,
+    grid: RwLock<(u64, Arc<GridIndex>)>,
+    /// Serialises `refresh_grid` end to end (read, publish, emit), so two concurrent
+    /// refreshes can't publish a stale snapshot under a newer version or emit events out
+    /// of order.
+    refresh: Mutex<()>,
+    events: Arc<dyn Events>,
+    scans: Mutex<HashMap<i64, RunningScan>>,
+    next_token: AtomicU64,
+    /// Set once by `shutdown`. Once true, no new scan starts and the startup thread stops
+    /// at its next checkpoint.
+    shutting_down: AtomicBool,
+    /// The handle of the thread spawned by `startup`, if any is still outstanding.
+    /// `wait_for_startup` takes it and joins it, and is safe to call more than once.
+    startup: Mutex<Option<JoinHandle<()>>>,
+}
+
+impl Engine {
+    pub fn open(config: EngineConfig, events: Arc<dyn Events>) -> Result<Arc<Self>> {
+        std::fs::create_dir_all(&config.cache_dir)?;
+        let lib = Arc::new(Library::open(&config.db_path)?);
+        let cache = Arc::new(ThumbCache::new(config.cache_dir.clone()));
+        let thumbs = ThumbService::start(lib.clone(), cache, config.workers);
+        let mut excluded = vec![config.cache_dir.clone()];
+        // The cache root too, not just the thumbnail directory inside it.
+        if let Some(cache_root) = config.cache_dir.parent() {
+            excluded.push(cache_root.to_path_buf());
+        }
+        if let Some(data_dir) = config.db_path.parent() {
+            excluded.push(data_dir.to_path_buf());
+        }
+        let grid = Arc::new(GridIndex::build(lib.grid_entries()?));
+        Ok(Arc::new(Self {
+            lib,
+            thumbs,
+            excluded,
+            grid: RwLock::new((0, grid)),
+            refresh: Mutex::new(()),
+            events,
+            scans: Mutex::new(HashMap::new()),
+            next_token: AtomicU64::new(0),
+            shutting_down: AtomicBool::new(false),
+            startup: Mutex::new(None),
+        }))
+    }
+
+    /// photon's own directories, never watched or scanned.
+    pub fn excluded(&self) -> &[PathBuf] {
+        &self.excluded
+    }
+
+    /// The current grid and its version. The version increases with every rebuild.
+    pub fn grid(&self) -> (u64, Arc<GridIndex>) {
+        let grid = self.grid.read();
+        (grid.0, grid.1.clone())
+    }
+
+    /// Rebuilds the grid from the database and tells the UI.
+    ///
+    /// Holds `refresh` across the read, the publish and the event so concurrent refreshes
+    /// (e.g. two scans, or a scan racing `remove_folder`) can't publish a stale snapshot
+    /// under a newer version number or emit `library_changed` out of order.
+    pub fn refresh_grid(&self) -> Result<()> {
+        let _serialize = self.refresh.lock();
+        let index = Arc::new(GridIndex::build(self.lib.grid_entries()?));
+        let (version, len) = {
+            let mut grid = self.grid.write();
+            grid.0 += 1;
+            grid.1 = index;
+            (grid.0, grid.1.len())
+        };
+        self.events.library_changed(LibraryChanged { version, len });
+        Ok(())
+    }
+
+    /// Validates and watches `path`, then starts its first scan.
+    pub fn add_folder(self: &Arc<Self>, path: &Path) -> Result<WatchedFolder> {
+        let watched = self.lib.add_watched_folder(path, &self.excluded)?;
+        self.start_scan(watched.clone());
+        Ok(watched)
+    }
+
+    /// Stops any scan of the folder, forgets it and everything under it, and refreshes the grid.
+    pub fn remove_folder(&self, watched_id: i64) -> Result<()> {
+        self.cancel_scan(watched_id);
+        self.lib.remove_watched_folder(watched_id)?;
+        self.refresh_grid()
+    }
+
+    /// Starts a background scan unless one is already running for this folder, or the
+    /// engine is shutting down.
+    pub fn start_scan(self: &Arc<Self>, watched: WatchedFolder) -> bool {
+        let mut scans = self.scans.lock();
+        if self.shutting_down.load(Ordering::SeqCst) || scans.contains_key(&watched.id) {
+            return false;
+        }
+        let token = self.next_token.fetch_add(1, Ordering::Relaxed);
+        let cancel = Arc::new(AtomicBool::new(false));
+        let engine = Arc::clone(self);
+        let thread_cancel = cancel.clone();
+        let id = watched.id;
+        // Removes this scan's entry from `scans`, but only if it's still the same scan
+        // (matched by `token`), and only once the thread is actually finished: this runs
+        // on normal return *and* on panic, so a panicking scan can never strand its entry
+        // and leave `is_scanning`/`wait_for_scans` stuck forever.
+        struct RemoveOnDrop {
+            engine: Arc<Engine>,
+            id: i64,
+            token: u64,
+        }
+        impl Drop for RemoveOnDrop {
+            fn drop(&mut self) {
+                let mut scans = self.engine.scans.lock();
+                if scans.get(&self.id).is_some_and(|r| r.token == self.token) {
+                    scans.remove(&self.id);
+                }
+            }
+        }
+        let handle = std::thread::Builder::new()
+            .name(format!("photon-scan-{id}"))
+            .spawn(move || {
+                let _remove_on_drop = RemoveOnDrop {
+                    engine: engine.clone(),
+                    id,
+                    token,
+                };
+                engine.run_scan(&watched, thread_cancel);
+            })
+            .expect("failed to spawn scan thread");
+        scans.insert(
+            id,
+            RunningScan {
+                token,
+                cancel,
+                handle: Some(handle),
+            },
+        );
+        true
+    }
+
+    /// Cancels the folder's scan, if any, and blocks until it has actually stopped.
+    ///
+    /// The entry stays in `scans` (so `start_scan`, `is_scanning` and `wait_for_scans` all
+    /// keep seeing it as running) until the scan thread itself removes it, right after
+    /// `run_scan` returns or panics.
+    ///
+    /// `cancel_scan` always means "cancelled and stopped" to every caller, however many
+    /// call it concurrently for the same id: whichever call gets the join handle first
+    /// joins it directly, and every other concurrent call instead polls (never holding
+    /// `scans` while it sleeps) until the entry is gone. Without this, a second caller
+    /// (e.g. `remove_folder` racing `shutdown`, or two `remove_folder` calls) would return
+    /// while the scan is still writing, letting its next `refresh_grid` put back rows from
+    /// a folder that has since been deleted.
+    pub fn cancel_scan(&self, watched_id: i64) {
+        let handle = {
+            let mut scans = self.scans.lock();
+            match scans.get_mut(&watched_id) {
+                Some(running) => {
+                    running.cancel.store(true, Ordering::Relaxed);
+                    running.handle.take()
+                }
+                None => return,
+            }
+        };
+        match handle {
+            Some(handle) => {
+                let _ = handle.join();
+            }
+            None => {
+                while self.scans.lock().contains_key(&watched_id) {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+            }
+        }
+    }
+
+    pub fn is_scanning(&self, watched_id: i64) -> bool {
+        self.scans.lock().contains_key(&watched_id)
+    }
+
+    /// Blocks until no scan is running.
+    pub fn wait_for_scans(&self) {
+        while !self.scans.lock().is_empty() {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    /// Background start-up work: watch `pictures` if the library is empty, queue pending
+    /// thumbnails, rescan every folder, then collect thumbnail garbage.
+    ///
+    /// Checks `shutting_down` before each step, and before garbage collection, so a
+    /// `shutdown` racing start-up stops it promptly instead of letting it run to
+    /// completion.
+    pub fn startup(self: &Arc<Self>, pictures: Option<PathBuf>) {
+        let engine = Arc::clone(self);
+        let handle = std::thread::Builder::new()
+            .name("photon-startup".into())
+            .spawn(move || {
+                let shutting_down = || engine.shutting_down.load(Ordering::SeqCst);
+                if shutting_down() {
+                    return;
+                }
+                match engine.lib.watched_folders() {
+                    Ok(watched) if watched.is_empty() => {
+                        if let Some(pictures) = pictures.filter(|p| p.is_dir())
+                            && let Err(err) =
+                                engine.lib.add_watched_folder(&pictures, &engine.excluded)
+                        {
+                            tracing::warn!(%err, "could not watch the Pictures folder");
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(err) => tracing::warn!(%err, "could not list watched folders"),
+                }
+                if shutting_down() {
+                    return;
+                }
+                if let Err(err) = engine.thumbs.enqueue_pending() {
+                    tracing::warn!(%err, "could not queue pending thumbnails");
+                }
+                for watched in engine.lib.watched_folders().unwrap_or_default() {
+                    if shutting_down() {
+                        break;
+                    }
+                    engine.start_scan(watched);
+                }
+                engine.wait_for_scans();
+                if shutting_down() {
+                    return;
+                }
+                match engine.thumbs.collect_garbage() {
+                    Ok(removed) => tracing::info!(removed, "thumbnail garbage collected"),
+                    Err(err) => tracing::warn!(%err, "thumbnail garbage collection failed"),
+                }
+            })
+            .expect("failed to spawn startup thread");
+        *self.startup.lock() = Some(handle);
+    }
+
+    /// Blocks until the thread spawned by `startup` has finished, if it hasn't already.
+    /// Safe to call more than once (and safe to call when `startup` was never called).
+    pub fn wait_for_startup(&self) {
+        let handle = self.startup.lock().take();
+        if let Some(handle) = handle {
+            let _ = handle.join();
+        }
+    }
+
+    /// Stops new scans from starting, cancels every running scan (looping until none are
+    /// left, since a scan or `startup` racing this can still insert one after the first
+    /// pass), closes the thumbnail queue so its workers finish their current job and stop,
+    /// then waits for the startup thread to finish (it checks `shutting_down` at each of
+    /// its own checkpoints, so this doesn't wait for it to run to completion).
+    pub fn shutdown(&self) {
+        self.shutting_down.store(true, Ordering::SeqCst);
+        loop {
+            let ids: Vec<i64> = self.scans.lock().keys().copied().collect();
+            if ids.is_empty() {
+                break;
+            }
+            for id in ids {
+                self.cancel_scan(id);
+            }
+        }
+        self.thumbs.close();
+        self.wait_for_startup();
+    }
+
+    fn run_scan(&self, watched: &WatchedFolder, cancel: Arc<AtomicBool>) {
+        let options = ScanOptions {
+            excluded: self.excluded.clone(),
+            cancel,
+        };
+        let mut last = ScanProgress::default();
+        let mut last_refresh = Instant::now();
+        let mut refreshed_total = 0;
+        let mut last_progress: Option<Instant> = None;
+        let result = scan_watched(&self.lib, watched, now_ms(), &options, &mut |p| {
+            last = *p;
+            let total = p.added + p.changed;
+            if total != refreshed_total && last_refresh.elapsed() >= THROTTLE {
+                if let Err(err) = self.refresh_grid() {
+                    tracing::warn!(%err, "grid refresh failed");
+                }
+                if let Err(err) = self.thumbs.enqueue_pending() {
+                    tracing::warn!(%err, "could not queue pending thumbnails");
+                }
+                last_refresh = Instant::now();
+                refreshed_total = total;
+            }
+            if last_progress.is_none_or(|t| t.elapsed() >= THROTTLE) {
+                self.events
+                    .scan_progress(ScanProgressEvent::new(watched.id, p, false, false));
+                last_progress = Some(Instant::now());
+            }
+        });
+        let cancelled = match &result {
+            Ok(report) => report.cancelled,
+            Err(err) => {
+                tracing::warn!(watched_id = watched.id, %err, "scan failed");
+                false
+            }
+        };
+        if let Err(err) = self.refresh_grid() {
+            tracing::warn!(%err, "grid refresh failed");
+        }
+        if let Err(err) = self.thumbs.enqueue_pending() {
+            tracing::warn!(%err, "could not queue pending thumbnails");
+        }
+        if let Some(folder) = self
+            .lib
+            .watched_folders()
+            .ok()
+            .and_then(|all| all.into_iter().find(|w| w.id == watched.id))
+        {
+            self.events.folder_status(FolderStatus {
+                watched_id: folder.id,
+                online: folder.online,
+            });
+        }
+        self.events
+            .scan_progress(ScanProgressEvent::new(watched.id, &last, true, cancelled));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::events::Recorded;
+    use crate::testutil::{fixture, jpeg};
+
+    #[test]
+    fn add_folder_scans_and_publishes_the_grid() {
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a.jpg", &img), ("b.jpg", &img)]);
+        let watched = f.add_photos();
+        let (version, grid) = f.engine.grid();
+        assert_eq!(grid.len(), 2);
+        assert!(version >= 1);
+        let events = f.events.all();
+        assert!(events.contains(&Recorded::Library(LibraryChanged { version, len: 2 })));
+        assert!(events.iter().any(|e| matches!(e,
+            Recorded::Scan(s) if s.watched_id == watched.id && s.done && !s.cancelled && s.added == 2)));
+        assert!(events.contains(&Recorded::Folder(FolderStatus {
+            watched_id: watched.id,
+            online: true
+        })));
+        assert!(!f.engine.is_scanning(watched.id));
+    }
+
+    #[test]
+    fn open_loads_the_existing_grid_without_scanning() {
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a.jpg", &img)]);
+        f.add_photos();
+        let reopened =
+            Engine::open(f.config(), Arc::new(crate::events::Recorder::default())).unwrap();
+        assert_eq!(reopened.grid().1.len(), 1);
+    }
+
+    #[test]
+    fn add_folder_refuses_photons_own_directories() {
+        let f = fixture(&[]);
+        let cache = f.dir.path().join("cache").join("thumbs");
+        let cache_root = f.dir.path().join("cache");
+        let data = f.dir.path().join("data");
+        assert!(matches!(
+            f.engine.add_folder(&cache),
+            Err(photon_core::Error::FolderExcluded { .. })
+        ));
+        assert!(matches!(
+            f.engine.add_folder(&cache_root),
+            Err(photon_core::Error::FolderExcluded { .. })
+        ));
+        assert!(matches!(
+            f.engine.add_folder(&data),
+            Err(photon_core::Error::FolderExcluded { .. })
+        ));
+    }
+
+    #[test]
+    fn remove_folder_clears_its_items_from_the_grid() {
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a.jpg", &img)]);
+        let watched = f.add_photos();
+        f.engine.remove_folder(watched.id).unwrap();
+        assert_eq!(f.engine.grid().1.len(), 0);
+        assert!(f.engine.lib.watched_folders().unwrap().is_empty());
+        assert!(matches!(
+            f.events.all().last(),
+            Some(Recorded::Library(LibraryChanged { len: 0, .. }))
+        ));
+    }
+
+    #[test]
+    fn startup_adds_pictures_only_to_an_empty_library() {
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a.jpg", &img)]);
+        f.engine.startup(Some(f.photos.clone()));
+        f.engine.wait_for_startup();
+        assert_eq!(f.engine.lib.watched_folders().unwrap().len(), 1);
+        assert_eq!(f.engine.grid().1.len(), 1);
+
+        let other = f.dir.path().join("other");
+        std::fs::create_dir_all(&other).unwrap();
+        f.engine.startup(Some(other));
+        f.engine.wait_for_startup();
+        assert_eq!(f.engine.lib.watched_folders().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn cancelling_an_idle_folder_is_a_no_op() {
+        let f = fixture(&[]);
+        f.engine.cancel_scan(42);
+        f.engine.shutdown();
+        assert!(!f.engine.is_scanning(42));
+    }
+
+    #[test]
+    fn wait_for_startup_without_startup_is_a_no_op() {
+        let f = fixture(&[]);
+        f.engine.wait_for_startup();
+        f.engine.wait_for_startup();
+    }
+
+    #[test]
+    fn shutdown_joins_the_startup_thread_and_is_idempotent() {
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a.jpg", &img)]);
+        f.engine.startup(Some(f.photos.clone()));
+        f.engine.shutdown();
+        assert!(f.engine.startup.lock().is_none());
+        // Calling shutdown (and thus wait_for_startup) again must not hang or panic.
+        f.engine.shutdown();
+    }
+
+    /// Many tiny files so the scan (and thus `remove_folder`'s cancellation) has real work
+    /// to do; `remove_folder` calls `cancel_scan`, which blocks until the scan thread has
+    /// actually finished, so the assertions below hold regardless of how far the scan got.
+    fn many_jpegs(n: usize) -> Vec<(String, Vec<u8>)> {
+        let img = jpeg(4, 4);
+        (0..n).map(|i| (format!("{i}.jpg"), img.clone())).collect()
+    }
+
+    #[test]
+    fn remove_folder_while_scanning_leaves_no_stale_state() {
+        let files = many_jpegs(300);
+        let named: Vec<(&str, &[u8])> = files
+            .iter()
+            .map(|(n, d)| (n.as_str(), d.as_slice()))
+            .collect();
+        let f = fixture(&named);
+        let watched = f.engine.add_folder(&f.photos).unwrap();
+
+        f.engine.remove_folder(watched.id).unwrap();
+
+        assert_eq!(f.engine.grid().1.len(), 0);
+        assert!(f.engine.lib.watched_folders().unwrap().is_empty());
+        assert!(!f.engine.is_scanning(watched.id));
+    }
+
+    #[test]
+    fn start_scan_after_shutdown_returns_false() {
+        let f = fixture(&[]);
+        let watched = f
+            .engine
+            .lib
+            .add_watched_folder(&f.photos, f.engine.excluded())
+            .unwrap();
+        f.engine.shutdown();
+        assert!(!f.engine.start_scan(watched));
+    }
+
+    /// `start_scan` inserts the running-scan entry before it returns, under the same lock
+    /// as the "already running" check, so the second call below is guaranteed to see it -
+    /// no dependency on scan timing.
+    #[test]
+    fn start_scan_twice_while_running_returns_false_the_second_time() {
+        let files = many_jpegs(300);
+        let named: Vec<(&str, &[u8])> = files
+            .iter()
+            .map(|(n, d)| (n.as_str(), d.as_slice()))
+            .collect();
+        let f = fixture(&named);
+        let watched = f
+            .engine
+            .lib
+            .add_watched_folder(&f.photos, f.engine.excluded())
+            .unwrap();
+
+        assert!(f.engine.start_scan(watched.clone()));
+        assert!(!f.engine.start_scan(watched));
+
+        f.engine.wait_for_scans();
+    }
+
+    /// Deterministic regardless of interleaving: `cancel_scan`'s contract is "cancelled
+    /// and stopped" for every caller, so once both threads' calls have returned, the scan
+    /// is guaranteed gone, whichever of the two actually joined the scan thread.
+    #[test]
+    fn cancel_scan_from_two_threads_at_once_both_see_it_stopped() {
+        let files = many_jpegs(300);
+        let named: Vec<(&str, &[u8])> = files
+            .iter()
+            .map(|(n, d)| (n.as_str(), d.as_slice()))
+            .collect();
+        let f = fixture(&named);
+        let watched = f.engine.add_folder(&f.photos).unwrap();
+        let id = watched.id;
+
+        let e1 = f.engine.clone();
+        let e2 = f.engine.clone();
+        let t1 = std::thread::spawn(move || e1.cancel_scan(id));
+        let t2 = std::thread::spawn(move || e2.cancel_scan(id));
+        t1.join().unwrap();
+        t2.join().unwrap();
+
+        assert!(!f.engine.is_scanning(id));
+    }
+}

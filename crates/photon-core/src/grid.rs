@@ -1,6 +1,15 @@
 use crate::media::MediaKind;
-use serde::Serialize;
+use serde::{Serialize, Serializer};
 use std::collections::HashMap;
+
+/// A u64 as 16 lowercase hex characters: exact in JavaScript, unlike a JSON number.
+pub fn hex_key(value: u64) -> String {
+    format!("{value:016x}")
+}
+
+fn serialize_hex<S: Serializer>(value: &u64, serializer: S) -> Result<S::Ok, S::Error> {
+    serializer.serialize_str(&hex_key(*value))
+}
 
 /// One cell of the library grid. Small and `Copy`: 100k of them stay in memory.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
@@ -12,6 +21,9 @@ pub struct GridEntry {
     /// Displayed width / height (orientation applied); 1.0 when unknown.
     pub aspect: f32,
     pub kind: MediaKind,
+    /// Fingerprint of the file version. Part of thumbnail URLs, so they can be cached forever.
+    #[serde(serialize_with = "serialize_hex")]
+    pub thumb_key: u64,
 }
 
 /// A run of consecutive grid entries from one folder, shown under one header.
@@ -112,6 +124,7 @@ mod tests {
             taken_at: id,
             aspect: 1.5,
             kind: MediaKind::Image,
+            thumb_key: 42,
         }
     }
 
@@ -185,7 +198,7 @@ mod tests {
         let json = serde_json::to_string(&entry(7, 1)).unwrap();
         assert_eq!(
             json,
-            r#"{"id":7,"folderId":1,"takenAt":7,"aspect":1.5,"kind":"image"}"#
+            r#"{"id":7,"folderId":1,"takenAt":7,"aspect":1.5,"kind":"image","thumbKey":"000000000000002a"}"#
         );
     }
 }
