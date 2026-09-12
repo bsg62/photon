@@ -1,6 +1,6 @@
 use crate::{
     Result,
-    library::{Library, NewItem, WatchedFolder},
+    library::{KnownItem, Library, NewItem, WatchedFolder},
     media::MediaKind,
     metadata::read_image_meta,
 };
@@ -77,15 +77,111 @@ pub fn scan_watched(
 
     let mut known = lib.known_items(watched.id)?;
     let mut folder_ids: HashMap<PathBuf, i64> = HashMap::new();
+
+    let WalkOutcome {
+        report,
+        seen,
+        incomplete_prefixes,
+        skip_mark_purge,
+        cancelled,
+    } = walk_tree(
+        lib,
+        watched.id,
+        root,
+        None,
+        &mut known,
+        &mut folder_ids,
+        scan_id,
+        options,
+        progress,
+    )?;
+
+    if cancelled {
+        // We stopped early, so everything we didn't reach is unknown, not missing. Leave
+        // online/offline as it was too: that decision needs the empty-root guard below,
+        // which needs a complete walk, so a cancelled scan of an unmounted mount point
+        // must not get marked online.
+        progress(&seen);
+        return Ok(ScanReport {
+            cancelled: true,
+            ..report
+        });
+    }
+
+    if skip_mark_purge {
+        // We couldn't tell what happened to the rest of the tree; don't guess.
+        lib.set_watched_online(watched.id, true)?;
+        progress(&seen);
+        return Ok(report);
+    }
+
+    // Drop anything under a subtree we couldn't fully walk: it might still be there.
+    known.retain(|path_str, _| {
+        !incomplete_prefixes
+            .iter()
+            .any(|prefix| Path::new(path_str).starts_with(prefix))
+    });
+
+    // A reachable but empty root usually means an unmounted volume left its mount
+    // point behind, not that every known file vanished at once.
+    if seen.files_seen == 0 && known.values().any(|k| !k.missing) {
+        lib.set_watched_online(watched.id, false)?;
+        progress(&seen);
+        return Ok(ScanReport {
+            offline: true,
+            ..ScanReport::default()
+        });
+    }
+    lib.set_watched_online(watched.id, true)?;
+
+    // Anything left in `known` was not found on this (reachable) scan: soft-delete it,
+    // or purge it if it was already missing last time.
+    let (marked, purged) = finish_mark_purge(lib, known)?;
+    lib.prune_folders(watched.id, scan_id)?;
+
+    progress(&seen);
+    Ok(ScanReport {
+        marked_missing: marked,
+        purged,
+        ..report
+    })
+}
+
+/// The result of walking a subtree: what was found, and whether the walk was complete
+/// enough to safely mark or purge anything afterwards.
+struct WalkOutcome {
+    report: ScanReport,
+    seen: ScanProgress,
+    /// Subtrees we could not fully walk: anything `known` claims to live under one of
+    /// these might still exist, so it must not be marked missing or purged this scan.
+    incomplete_prefixes: Vec<PathBuf>,
+    /// Set when an error gives no path, or points at the root itself: the caller can no
+    /// longer tell which `known` entries are safe to touch, so it must skip mark/purge/prune
+    /// entirely.
+    skip_mark_purge: bool,
+    cancelled: bool,
+}
+
+/// Walks `root`, upserting folders and files into the library and removing matches from
+/// `known` as they're found. Does not mark, purge or prune anything, or touch the watched
+/// folder's online state; the caller decides that from the returned [`WalkOutcome`].
+#[allow(clippy::too_many_arguments)]
+fn walk_tree(
+    lib: &Library,
+    watched_id: i64,
+    root: &Path,
+    root_parent_id: Option<i64>,
+    known: &mut HashMap<String, KnownItem>,
+    folder_ids: &mut HashMap<PathBuf, i64>,
+    scan_id: i64,
+    options: &ScanOptions,
+    progress: &mut dyn FnMut(&ScanProgress),
+) -> Result<WalkOutcome> {
     let mut report = ScanReport::default();
     let mut seen = ScanProgress::default();
     let mut new_batch: Vec<NewItem> = Vec::new();
     let mut changed_batch: Vec<(i64, NewItem)> = Vec::new();
-    // Subtrees we could not fully walk: anything `known` claims to live under one of
-    // these might still exist, so it must not be marked missing or purged this scan.
     let mut incomplete_prefixes: Vec<PathBuf> = Vec::new();
-    // Set when an error gives no path, or points at the root itself: we can no longer
-    // tell which `known` entries are safe to touch, so skip mark/purge/prune entirely.
     let mut skip_mark_purge = false;
     let mut cancelled = false;
 
@@ -123,11 +219,11 @@ pub fn scan_watched(
 
         if entry.file_type().is_dir() {
             let parent = if entry.depth() == 0 {
-                None
+                root_parent_id
             } else {
                 path.parent().and_then(|p| folder_ids.get(p)).copied()
             };
-            let id = lib.upsert_folder(watched.id, parent, path_str, scan_id)?;
+            let id = lib.upsert_folder(watched_id, parent, path_str, scan_id)?;
             folder_ids.insert(path.to_path_buf(), id);
             continue;
         }
@@ -176,46 +272,18 @@ pub fn scan_watched(
     flush_new(lib, &mut new_batch, &mut report, &mut seen, progress)?;
     flush_changed(lib, &mut changed_batch, &mut report, &mut seen, progress)?;
 
-    if cancelled {
-        // We stopped early, so everything we didn't reach is unknown, not missing. Leave
-        // online/offline as it was too: that decision needs the empty-root guard below,
-        // which needs a complete walk, so a cancelled scan of an unmounted mount point
-        // must not get marked online.
-        progress(&seen);
-        return Ok(ScanReport {
-            cancelled: true,
-            ..report
-        });
-    }
+    Ok(WalkOutcome {
+        report,
+        seen,
+        incomplete_prefixes,
+        skip_mark_purge,
+        cancelled,
+    })
+}
 
-    if skip_mark_purge {
-        // We couldn't tell what happened to the rest of the tree; don't guess.
-        lib.set_watched_online(watched.id, true)?;
-        progress(&seen);
-        return Ok(report);
-    }
-
-    // Drop anything under a subtree we couldn't fully walk: it might still be there.
-    known.retain(|path_str, _| {
-        !incomplete_prefixes
-            .iter()
-            .any(|prefix| Path::new(path_str).starts_with(prefix))
-    });
-
-    // A reachable but empty root usually means an unmounted volume left its mount
-    // point behind, not that every known file vanished at once.
-    if seen.files_seen == 0 && known.values().any(|k| !k.missing) {
-        lib.set_watched_online(watched.id, false)?;
-        progress(&seen);
-        return Ok(ScanReport {
-            offline: true,
-            ..ScanReport::default()
-        });
-    }
-    lib.set_watched_online(watched.id, true)?;
-
-    // Anything left in `known` was not found on this (reachable) scan: soft-delete it,
-    // or purge it if it was already missing last time.
+/// Soft-deletes what this walk didn't find, and purges what was already missing.
+/// Both are chunked at `BATCH` rows per transaction.
+fn finish_mark_purge(lib: &Library, known: HashMap<String, KnownItem>) -> Result<(u64, u64)> {
     let (mut to_mark, mut to_purge) = (Vec::new(), Vec::new());
     for k in known.into_values() {
         if k.missing {
@@ -231,12 +299,7 @@ pub fn scan_watched(
     for chunk in to_purge.chunks(BATCH) {
         lib.purge_items(chunk)?;
     }
-    lib.prune_folders(watched.id, scan_id)?;
-    report.marked_missing = to_mark.len() as u64;
-    report.purged = to_purge.len() as u64;
-
-    progress(&seen);
-    Ok(report)
+    Ok((to_mark.len() as u64, to_purge.len() as u64))
 }
 
 fn describe(
