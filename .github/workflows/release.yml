@@ -207,8 +207,13 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
+          # `--generate-notes` has GitHub list the pull requests merged since the previous
+          # tag. The API prepends an explicit `--notes` body to the generated section and an
+          # explicit `--title` wins over the generated one, so the security warning still
+          # comes first and the release is still called "photon vX.Y.Z".
           gh release create "$TAG" \
             --draft \
+            --generate-notes \
             --title "photon $TAG" \
             --notes "Unsigned installers. See the README for the security warnings each OS shows, and how to get past them." \
             artifacts/*
