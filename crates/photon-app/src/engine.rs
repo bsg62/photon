@@ -327,6 +327,43 @@ impl Engine {
         }
     }
 
+    /// Test-only: occupies a folder's scan slot without actually running a scan, so a test
+    /// that needs "this folder has a scan in progress" gets that deterministically instead
+    /// of racing a real one to completion. The fixtures used in these tests are one or two
+    /// tiny JPEGs, so a real scan started via `start_scan` can finish before the next line
+    /// of the test runs - especially on a fast CI runner - at which point the slot is
+    /// already free and the behaviour under test never happens. Since this occupies the
+    /// slot without spawning anything, there is nothing that can finish early.
+    ///
+    /// Mirrors `start_scan_inner`'s bookkeeping - same `scans` map, a freshly issued token -
+    /// but spawns no thread, so the entry's `handle` is `None`. `wait_for_scans` only polls
+    /// the map for emptiness and never joins a handle, so that's safe by itself; what isn't
+    /// safe is holding the returned guard across a call to `wait_for_scans`, since nothing
+    /// will ever remove the entry and the wait would spin forever. Callers must drop the
+    /// guard first.
+    #[cfg(test)]
+    pub(crate) fn occupy_scan_slot_for_test(self: &Arc<Self>, watched_id: i64) -> TestScanSlot {
+        let mut scans = self.scans.lock();
+        assert!(
+            !scans.contains_key(&watched_id),
+            "occupy_scan_slot_for_test: a scan is already running for {watched_id}"
+        );
+        let token = self.next_token.fetch_add(1, Ordering::Relaxed);
+        scans.insert(
+            watched_id,
+            RunningScan {
+                token,
+                cancel: Arc::new(AtomicBool::new(false)),
+                handle: None,
+            },
+        );
+        TestScanSlot {
+            engine: Arc::clone(self),
+            id: watched_id,
+            token,
+        }
+    }
+
     /// Background start-up work: watch `pictures` if the library is empty, queue pending
     /// thumbnails, rescan every folder, then collect thumbnail garbage.
     ///
@@ -500,6 +537,27 @@ impl Engine {
         }
         self.events
             .scan_progress(ScanProgressEvent::new(watched.id, &last, true, cancelled));
+    }
+}
+
+/// RAII guard returned by `occupy_scan_slot_for_test`. Releases the slot on drop, mirroring
+/// `start_scan_inner`'s own `RemoveOnDrop`: it removes the entry only if the token still
+/// matches, so a guard dropped late (e.g. after a test panics and unwinds past it) can never
+/// evict a real, unrelated scan that later claimed the same folder id.
+#[cfg(test)]
+pub(crate) struct TestScanSlot {
+    engine: Arc<Engine>,
+    id: i64,
+    token: u64,
+}
+
+#[cfg(test)]
+impl Drop for TestScanSlot {
+    fn drop(&mut self) {
+        let mut scans = self.engine.scans.lock();
+        if scans.get(&self.id).is_some_and(|r| r.token == self.token) {
+            scans.remove(&self.id);
+        }
     }
 }
 

@@ -710,11 +710,15 @@ mod tests {
         let watched = f.add_photos();
         let service = WatcherService::start(&f.engine);
 
-        // Occupy the folder's scan slot, then deliver an event for it.
-        let blocker = f.engine.clone();
-        assert!(blocker.start_scan(watched.clone()));
+        // Occupy the folder's scan slot, then deliver an event for it. A real scan (via
+        // `start_scan`) would race this: the fixture is a single tiny JPEG, so it can finish
+        // before `handle_batch` runs, freeing the slot before the event has a chance to find
+        // it occupied. `occupy_scan_slot_for_test` makes the slot occupied a guarantee rather
+        // than a hope.
+        let slot = f.engine.occupy_scan_slot_for_test(watched.id);
         service.handle_batch(vec![f.photos.join("a")]);
         assert_eq!(service.pending_len(), 1);
+        drop(slot);
 
         f.engine.wait_for_scans();
         service.drain_pending();
@@ -733,8 +737,11 @@ mod tests {
         // Occupy the folder's scan slot, then deliver events for two sibling directories.
         // Neither is an ancestor of the other, so a naive "keep one, drop the other" policy
         // would silently lose whichever branch's changes aren't queued.
-        let blocker = f.engine.clone();
-        assert!(blocker.start_scan(watched.clone()));
+        //
+        // `occupy_scan_slot_for_test` holds the slot deterministically instead of racing a
+        // real scan of these tiny fixtures to completion (a real scan can finish, and free
+        // the slot, before both `handle_batch` calls below run).
+        let slot = f.engine.occupy_scan_slot_for_test(watched.id);
         service.handle_batch(vec![f.photos.join("a")]);
         service.handle_batch(vec![f.photos.join("b")]);
 
@@ -747,6 +754,7 @@ mod tests {
             "both branches stay queued: collapsing siblings into their common ancestor would \
              be the watched root, whose subtree scan is a full rescan of the whole folder"
         );
+        drop(slot);
 
         f.engine.wait_for_scans();
         service.drain_pending();
@@ -775,8 +783,10 @@ mod tests {
         let watched = f.add_photos();
         let service = WatcherService::start(&f.engine);
 
-        let blocker = f.engine.clone();
-        assert!(blocker.start_scan(watched.clone()));
+        // Occupy the folder's scan slot deterministically: with this many tiny fixtures a
+        // real scan could still finish, and free the slot, before the loop below delivers
+        // every event.
+        let slot = f.engine.occupy_scan_slot_for_test(watched.id);
         for i in 0..=MAX_PENDING_DIRS {
             service.handle_batch(vec![f.photos.join(format!("d{i}"))]);
         }
@@ -786,6 +796,7 @@ mod tests {
             Some(vec![PathBuf::from(&watched.path)]),
             "one directory past the bound, the set becomes a single rescan of the root"
         );
+        drop(slot);
 
         f.engine.wait_for_scans();
         service.drain_pending();
