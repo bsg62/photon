@@ -185,7 +185,20 @@ jobs:
         run: |
           set -euo pipefail
           cd artifacts
+          # The Linux job uploads two globs from different directories, so its artifact keeps
+          # them under `deb/` and `appimage/`, while the single-glob macOS and Windows
+          # artifacts arrive flat. Flatten before going further: `sha256sum` and
+          # `gh release create` both take files, and choke on a directory.
+          find . -mindepth 2 -type f -exec mv -t . {} +
+          find . -mindepth 1 -type d -delete
           ls -la
+          # Publishing an incomplete release is worse than publishing late, and unlike a
+          # draft it cannot be quietly corrected once people have the link.
+          for ext in deb AppImage msi; do
+            ls ./*."$ext" >/dev/null || { echo "::error::no .$ext artifact to publish"; exit 1; }
+          done
+          test "$(ls ./*.dmg | wc -l)" -eq 2 \
+            || { echo "::error::expected two .dmg artifacts, one per macOS architecture"; exit 1; }
           sha256sum * > SHA256SUMS
           cat SHA256SUMS
       - name: Draft release
