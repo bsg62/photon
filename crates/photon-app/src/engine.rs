@@ -8,7 +8,7 @@ use photon_core::{
     grid::GridIndex,
     library::{Library, WatchedFolder},
     now_ms,
-    scanner::{ScanOptions, ScanProgress, scan_watched},
+    scanner::{ScanOptions, ScanProgress, scan_subtree, scan_watched},
     thumbs::{ThumbCache, ThumbService},
 };
 use std::{
@@ -129,9 +129,25 @@ impl Engine {
         self.refresh_grid()
     }
 
+    /// Starts a full background scan unless one is already running for this folder.
+    pub fn start_scan(self: &Arc<Self>, watched: WatchedFolder) -> bool {
+        self.start_scan_inner(watched, None)
+    }
+
+    /// Starts a scan of one directory beneath `watched`. It takes the same per-folder slot
+    /// as a full scan, so a folder never has two scans running, and the watcher's work is
+    /// cancelled by `remove_folder` and `shutdown` exactly like a manual rescan.
+    pub fn start_subtree_scan(self: &Arc<Self>, watched: WatchedFolder, dir: PathBuf) -> bool {
+        self.start_scan_inner(watched, Some(dir))
+    }
+
     /// Starts a background scan unless one is already running for this folder, or the
     /// engine is shutting down.
-    pub fn start_scan(self: &Arc<Self>, watched: WatchedFolder) -> bool {
+    fn start_scan_inner(
+        self: &Arc<Self>,
+        watched: WatchedFolder,
+        subtree: Option<PathBuf>,
+    ) -> bool {
         let mut scans = self.scans.lock();
         if self.shutting_down.load(Ordering::SeqCst) || scans.contains_key(&watched.id) {
             return false;
@@ -166,7 +182,7 @@ impl Engine {
                     id,
                     token,
                 };
-                engine.run_scan(&watched, thread_cancel);
+                engine.run_scan(&watched, subtree, thread_cancel);
             })
             .expect("failed to spawn scan thread");
         scans.insert(
@@ -308,7 +324,7 @@ impl Engine {
         self.wait_for_startup();
     }
 
-    fn run_scan(&self, watched: &WatchedFolder, cancel: Arc<AtomicBool>) {
+    fn run_scan(&self, watched: &WatchedFolder, subtree: Option<PathBuf>, cancel: Arc<AtomicBool>) {
         let options = ScanOptions {
             excluded: self.excluded.clone(),
             cancel,
@@ -317,7 +333,7 @@ impl Engine {
         let mut last_refresh = Instant::now();
         let mut refreshed_total = 0;
         let mut last_progress: Option<Instant> = None;
-        let result = scan_watched(&self.lib, watched, now_ms(), &options, &mut |p| {
+        let mut on_progress = |p: &ScanProgress| {
             last = *p;
             let total = p.added + p.changed;
             if total != refreshed_total && last_refresh.elapsed() >= THROTTLE {
@@ -335,7 +351,18 @@ impl Engine {
                     .scan_progress(ScanProgressEvent::new(watched.id, p, false, false));
                 last_progress = Some(Instant::now());
             }
-        });
+        };
+        let result = match &subtree {
+            Some(dir) => scan_subtree(
+                &self.lib,
+                watched,
+                dir,
+                now_ms(),
+                &options,
+                &mut on_progress,
+            ),
+            None => scan_watched(&self.lib, watched, now_ms(), &options, &mut on_progress),
+        };
         let cancelled = match &result {
             Ok(report) => report.cancelled,
             Err(err) => {
