@@ -30,7 +30,8 @@ jobs:
       - run: cargo bench -p photon-core --bench grid --no-run
 
   # Builds the release path (frontend embedded, `tauri::is_dev()` false), which the debug
-  # builds above never exercise. Ubuntu only; bundling/packaging is Plan 3.
+  # builds above never exercise. Ubuntu only and unbundled: installers are built by
+  # release.yml, which runs on tags rather than on every pull request.
   release-build:
     name: release build (ubuntu)
     runs-on: ubuntu-latest
