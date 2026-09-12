@@ -154,6 +154,31 @@ impl Library {
         }
     }
 
+    /// `prune_folders`, restricted to `dir` and everything beneath it. A subtree scan must
+    /// never prune folders it did not walk.
+    pub fn prune_folders_under(&self, watched_id: i64, scan_id: i64, dir: &str) -> Result<usize> {
+        let conn = self.writer();
+        let mut total = 0;
+        loop {
+            let removed = conn.execute(
+                "WITH RECURSIVE sub(id) AS (
+                     SELECT id FROM folders WHERE watched_id = ?1 AND path = ?3
+                     UNION ALL
+                     SELECT f.id FROM folders f JOIN sub ON f.parent_id = sub.id
+                 )
+                 DELETE FROM folders
+                 WHERE id IN (SELECT id FROM sub) AND seen_scan < ?2
+                   AND NOT EXISTS (SELECT 1 FROM items WHERE items.folder_id = folders.id)
+                   AND NOT EXISTS (SELECT 1 FROM folders c WHERE c.parent_id = folders.id)",
+                params![watched_id, scan_id, dir],
+            )?;
+            if removed == 0 {
+                return Ok(total);
+            }
+            total += removed;
+        }
+    }
+
     /// All folders in tree order (parents before children, siblings alphabetical; `path`
     /// breaks ties between names that differ only in case).
     pub fn folders(&self) -> Result<Vec<Folder>> {
@@ -358,5 +383,40 @@ mod tests {
 
         let paths: Vec<String> = lib.folders().unwrap().into_iter().map(|f| f.path).collect();
         assert_eq!(paths, ["/p", "/p/kept", "/p/parent", "/p/parent/child"]);
+    }
+
+    #[test]
+    fn prune_folders_under_stays_inside_the_subtree() {
+        let (_dir, lib) = temp_library();
+        let w = watch(&lib, "/p");
+        let root = lib.upsert_folder(w.id, None, "/p", 1).unwrap();
+        let a = lib.upsert_folder(w.id, Some(root), "/p/a", 1).unwrap();
+        lib.upsert_folder(w.id, Some(a), "/p/a/gone", 1).unwrap();
+        lib.upsert_folder(w.id, Some(root), "/p/b", 1).unwrap();
+        lib.upsert_folder(w.id, Some(root), "/p/c-stale", 1)
+            .unwrap();
+
+        // A later scan of /p/a only saw /p/a itself.
+        lib.upsert_folder(w.id, Some(root), "/p/a", 2).unwrap();
+        assert_eq!(lib.prune_folders_under(w.id, 2, "/p/a").unwrap(), 1);
+
+        let paths: Vec<String> = lib.folders().unwrap().into_iter().map(|f| f.path).collect();
+        assert_eq!(paths, ["/p", "/p/a", "/p/b", "/p/c-stale"]);
+    }
+
+    #[test]
+    fn prune_folders_under_removes_an_empty_chain() {
+        let (_dir, lib) = temp_library();
+        let w = watch(&lib, "/p");
+        let root = lib.upsert_folder(w.id, None, "/p", 1).unwrap();
+        let a = lib.upsert_folder(w.id, Some(root), "/p/a", 1).unwrap();
+        let mid = lib.upsert_folder(w.id, Some(a), "/p/a/mid", 1).unwrap();
+        lib.upsert_folder(w.id, Some(mid), "/p/a/mid/leaf", 1)
+            .unwrap();
+
+        lib.upsert_folder(w.id, Some(root), "/p/a", 2).unwrap();
+        assert_eq!(lib.prune_folders_under(w.id, 2, "/p/a").unwrap(), 2);
+        let paths: Vec<String> = lib.folders().unwrap().into_iter().map(|f| f.path).collect();
+        assert_eq!(paths, ["/p", "/p/a"]);
     }
 }
