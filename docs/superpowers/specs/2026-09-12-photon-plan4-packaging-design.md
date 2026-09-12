@@ -72,8 +72,8 @@ A `version-check` job runs first and fails the release when:
 2. the triggering tag is not exactly `v<that version>`.
 
 Two version numbers drifting apart is the classic packaging bug, and it is cheap to
-prevent. The check is a script in `scripts/`, so it can be run locally before tagging
-rather than only discovered in CI.
+prevent. The check is the `xtask` crate (`cargo run -p xtask -- versions`), so it can be run
+locally before tagging rather than only discovered in CI.
 
 ## 4. The release workflow
 
@@ -118,8 +118,10 @@ is stated rather than papered over.
 **What CI proves, and will:**
 
 - every expected artifact exists at its expected path and is non-empty;
-- the `.deb`'s declared dependencies (`dpkg-deb --field`) cover what the binary actually
-  links against (`ldd` on the extracted binary);
+- the packaged binary resolves every library it links, and genuinely links the webkit2gtk-4.1 and
+  libsoup-3 the `.deb` declares. This runs on a runner that has the build dependencies installed,
+  so it proves the declaration matches the binary — not that a clean machine can satisfy it. The
+  `.deb` install on a clean Ubuntu stays a human checklist item.
 - the AppImage is executable and its embedded desktop entry names photon;
 - the `.msi` and `.dmg` carry the expected version string;
 - `SHA256SUMS` matches the uploaded files.

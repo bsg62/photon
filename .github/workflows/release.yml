@@ -56,6 +56,31 @@ jobs:
             echo "$depends" | grep -q "$lib" || { echo "::error::deb does not depend on $lib"; exit 1; }
           done
           dpkg-deb --field "$deb" Description | grep -q . || { echo "::error::deb description is empty"; exit 1; }
+          ver=$(node -p "require('./crates/photon-app/tauri.conf.json').version")
+          dpkg-deb --field "$deb" Version | grep -q "$ver" \
+            || { echo "::error::deb Version does not carry $ver"; exit 1; }
+          # The declared Depends is near-tautological on its own: xtask already enforces those
+          # strings and the bundler copies them through. Extract the binary and look at what it
+          # genuinely links against, so a new transitive .so cannot slip in undeclared.
+          dpkg-deb -x "$deb" "$RUNNER_TEMP/debroot"
+          bin="$RUNNER_TEMP/debroot/usr/bin/photon"
+          test -x "$bin" || { echo "::error::no executable at usr/bin/photon inside the deb"; exit 1; }
+          echo "--- ldd $bin"
+          ldd "$bin" || true
+          if ldd "$bin" | grep -q "not found"; then
+            echo "::error::the packaged binary has unresolved libraries:"
+            ldd "$bin" | grep "not found"
+            exit 1
+          fi
+          # The two libraries the .deb declares must be ones the binary actually links.
+          for lib in libwebkit2gtk-4.1 libsoup-3.0; do
+            ldd "$bin" | grep -q "$lib" || { echo "::error::binary does not link $lib, but the deb declares it"; exit 1; }
+          done
+          # Spec §5: the embedded desktop entry must name photon, or the app lands in the
+          # applications menu under the wrong name — currently only caught by a human, after install.
+          ( cd "$RUNNER_TEMP" && "$GITHUB_WORKSPACE/$app" --appimage-extract >/dev/null )
+          grep -qi '^Name=.*photon' "$RUNNER_TEMP"/squashfs-root/*.desktop \
+            || { echo "::error::the AppImage's desktop entry does not name photon"; exit 1; }
       - uses: actions/upload-artifact@v5
         with:
           name: photon-linux

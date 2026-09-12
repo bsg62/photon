@@ -48,9 +48,13 @@ npm run dev        # runs the app with hot reload
 npm test           # UI unit tests
 npm run check      # svelte-check
 cargo test --workspace
+cargo run -p xtask -- versions   # the three version files agree
+cargo run -p xtask -- metadata   # licence and installer metadata are complete
 ```
 
-Build a release bundle for this OS with `npm run tauri build`.
+Build a release bundle for this OS with explicit host-appropriate bundles, e.g. on Linux
+`npm run tauri build -- --bundles deb,appimage` (the release workflow selects the right
+targets per platform: `dmg` on macOS, `msi` on Windows).
 
 ## Manual smoke checklist
 
