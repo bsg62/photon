@@ -1,4 +1,14 @@
-import { api, errorMessage, events, type Folder, type FolderList, type GridEntry, type GridInfo, type ScanProgressEvent } from './api';
+import {
+  api,
+  errorMessage,
+  events,
+  type Folder,
+  type FolderList,
+  type GridEntry,
+  type GridInfo,
+  type GridView,
+  type ScanProgressEvent,
+} from './api';
 import { PageCache } from './pages';
 import type { UnlistenFn } from '@tauri-apps/api/event';
 
@@ -6,7 +16,7 @@ export interface Toast { id: number; message: string }
 
 /** App-wide reactive state: the grid snapshot, the folder tree, scan status and selection. */
 export class LibraryStore {
-  info = $state<GridInfo>({ version: -1, len: 0, sections: [] });
+  info = $state<GridInfo>({ version: -1, len: 0, sections: [], starredCount: 0, view: 'all' });
   folders = $state<FolderList>({ watched: [], folders: [] });
   scans = $state<Record<number, ScanProgressEvent>>({});
   /** Watched folder ids the OS won't let photon watch live, from the most recent
@@ -75,6 +85,17 @@ export class LibraryStore {
 
   async refreshFolders(): Promise<void> {
     this.folders = await api.listFolders();
+  }
+
+  /** Switches which photos the grid shows. The backend rebuilds its index, so the grid is
+   *  reloaded from scratch rather than patched. */
+  async setView(view: GridView): Promise<void> {
+    try {
+      await api.setGridView(view);
+      await this.refresh();
+    } catch (e) {
+      this.reportError(e);
+    }
   }
 
   async ensure(start: number, end: number): Promise<void> {

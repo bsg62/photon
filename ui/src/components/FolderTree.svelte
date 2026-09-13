@@ -116,6 +116,16 @@
     <button class="add" onclick={addFolder}>Add folder…</button>
   </div>
 
+  <button
+    class="root starred"
+    class:active={library.info.view === 'starred'}
+    onclick={() => library.setView('starred')}
+    title="Photos rated in another program"
+  >
+    <span class="name">★ Starred</span>
+    <span class="count">({library.info.starredCount})</span>
+  </button>
+
   {#each roots as w (w.id)}
     <button
       class="root"
@@ -137,7 +147,10 @@
       <button
         class="node"
         title={folderById(row.folderId)?.path}
-        onclick={() => onjump(row.folderId)}
+        onclick={() => {
+          if (library.info.view === 'starred') library.setView('all');
+          onjump(row.folderId);
+        }}
         oncontextmenu={(e) => folderMenu(e, row.folderId)}
       >
         <span class="name">{row.name}</span>
@@ -199,6 +212,7 @@
   .node { padding-left: 18px; }
   .root:hover, .node:hover { background: #ffffff0d; }
   .root.offline { opacity: 0.45; }
+  .starred.active { background: #ffffff14; }
   .year {
     margin: 10px 0 2px;
     padding: 0 8px;

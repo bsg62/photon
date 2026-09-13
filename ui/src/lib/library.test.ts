@@ -52,7 +52,7 @@ describe('LibraryStore', () => {
     vi.clearAllMocks();
     for (const k of Object.keys(handlers)) delete handlers[k];
     for (const k of Object.keys(unlistenCounts)) delete unlistenCounts[k];
-    vi.mocked(api.gridInfo).mockResolvedValue({ version: 1, len: 0, sections: [] });
+    vi.mocked(api.gridInfo).mockResolvedValue({ version: 1, len: 0, sections: [], starredCount: 0, view: 'all' });
     vi.mocked(api.listFolders).mockResolvedValue({ watched: [], folders: [] });
   });
 
@@ -147,7 +147,13 @@ describe('LibraryStore', () => {
   });
 
   it('unsubscribes cleanly when dispose() runs before init() finishes subscribing', async () => {
-    const gridInfoGate = deferred<{ version: number; len: number; sections: never[] }>();
+    const gridInfoGate = deferred<{
+      version: number;
+      len: number;
+      sections: never[];
+      starredCount: number;
+      view: 'all';
+    }>();
     vi.mocked(api.gridInfo).mockReturnValueOnce(gridInfoGate.promise);
 
     // Control when onLibraryChanged resolves so dispose() can race init().
@@ -161,7 +167,7 @@ describe('LibraryStore', () => {
     const initPromise = store.init();
     store.dispose();
     listenGate.resolve();
-    gridInfoGate.resolve({ version: 1, len: 0, sections: [] });
+    gridInfoGate.resolve({ version: 1, len: 0, sections: [], starredCount: 0, view: 'all' });
     await initPromise;
 
     expect(unlistenCounts.libraryChanged).toBe(1);
