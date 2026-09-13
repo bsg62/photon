@@ -149,26 +149,48 @@ impl Engine {
     /// Switches which photos the grid shows and rebuilds the index. Rebuilding is the same
     /// work startup already does; a second index kept in sync would be a large new surface
     /// for staleness bugs to speed up something already fast and rarely done.
+    ///
+    /// Rolls `view`/`search_query` back to their previous values if the rebuild fails, so a
+    /// failed refresh can never leave `GridInfo` (the UI's one source of truth, spec §5)
+    /// reporting a view/query the grid was never actually rebuilt for. Without the
+    /// rollback the bad state is sticky: every later `refresh_grid` — including the scan
+    /// and watcher paths — re-reads the same failing query/view and fails again, and the
+    /// empty state can't rescue it either, since `len` still reflects the old, unrelated
+    /// result set.
     pub fn set_view(&self, view: GridView) -> Result<()> {
+        let previous = (*self.view.read(), self.search_query.read().clone());
         // A query left behind would reappear the next time Search is entered.
         if view != GridView::Search {
             self.search_query.write().clear();
         }
         *self.view.write() = view;
-        self.refresh_grid()
+        if let Err(err) = self.refresh_grid() {
+            *self.view.write() = previous.0;
+            *self.search_query.write() = previous.1;
+            return Err(err);
+        }
+        Ok(())
     }
 
     /// Searches for `query`, or returns to the full library when it is blank.
     ///
     /// An empty query is not a search: matching nothing would show an empty grid, and
     /// matching everything would be the All view under a different name (spec §4).
+    ///
+    /// Rolls back on a failed refresh; see `set_view`'s doc comment for why.
     pub fn set_search_query(&self, query: &str) -> Result<()> {
         if query.trim().is_empty() {
             return self.set_view(GridView::All);
         }
+        let previous = (*self.view.read(), self.search_query.read().clone());
         *self.search_query.write() = query.to_string();
         *self.view.write() = GridView::Search;
-        self.refresh_grid()
+        if let Err(err) = self.refresh_grid() {
+            *self.view.write() = previous.0;
+            *self.search_query.write() = previous.1;
+            return Err(err);
+        }
+        Ok(())
     }
 
     /// Validates and watches `path`, registers it with the running watcher service (if
@@ -928,9 +950,10 @@ mod tests {
 
         f.engine.set_search_query("beach").unwrap();
 
-        assert_eq!(f.engine.view(), GridView::Search);
-        assert_eq!(f.engine.search_query(), "beach");
-        assert_eq!(f.engine.grid().1.len(), 1);
+        let info = crate::commands::grid_info(&f.engine);
+        assert_eq!(info.view, GridView::Search);
+        assert_eq!(info.search_query, "beach");
+        assert_eq!(info.len, 1);
     }
 
     #[test]
@@ -946,9 +969,10 @@ mod tests {
         f.engine.set_search_query("beach").unwrap();
         f.engine.set_search_query("   ").unwrap();
 
-        assert_eq!(f.engine.view(), GridView::All);
-        assert_eq!(f.engine.search_query(), "");
-        assert_eq!(f.engine.grid().1.len(), 2, "the whole library is back");
+        let info = crate::commands::grid_info(&f.engine);
+        assert_eq!(info.view, GridView::All);
+        assert_eq!(info.search_query, "");
+        assert_eq!(info.len, 2, "the whole library is back");
     }
 
     #[test]
@@ -963,6 +987,6 @@ mod tests {
         f.engine.set_search_query("beach").unwrap();
         f.engine.set_view(GridView::Starred).unwrap();
 
-        assert_eq!(f.engine.search_query(), "");
+        assert_eq!(crate::commands::grid_info(&f.engine).search_query, "");
     }
 }
