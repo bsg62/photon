@@ -119,8 +119,9 @@ impl Engine {
     /// under a newer version number or emit `library_changed` out of order.
     pub fn refresh_grid(&self) -> Result<()> {
         let _serialize = self.refresh.lock();
+        // Task 2 replaces the empty string with the engine's real search query.
         let index = Arc::new(GridIndex::build(
-            self.lib.grid_entries_for(*self.view.read())?,
+            self.lib.entries_for(*self.view.read(), "")?,
         ));
         let (version, len) = {
             let mut grid = self.grid.write();
