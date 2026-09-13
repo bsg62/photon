@@ -56,9 +56,28 @@ impl Item {
 }
 
 /// Grid order, shared by every query that walks items the way the grid shows them.
-/// `f.path` breaks sort_key ties (e.g. `/p/A` vs `/p/a` on a case-sensitive filesystem)
-/// so each folder's items stay contiguous.
-pub(crate) const GRID_ORDER: &str = "ORDER BY f.sort_key, f.path, i.taken_at, i.file_name";
+///
+/// Folders run newest first by the date of their **oldest** photo, then each folder's photos
+/// run oldest to newest. That is the same axis the sidebar groups by, so the list beside the
+/// grid is an index of it rather than a second, unrelated ordering — before this the grid ran
+/// alphabetically by path while the sidebar ran by year, and scrolling one bore no relation
+/// to reading the other.
+///
+/// The window function is evaluated after `WHERE`, so in the Starred and Search views a
+/// folder is placed by its oldest *matching* photo. That is deliberate: the sidebar's sections
+/// come from the same filtered index (`commands::grid_info` reads `grid.sections()`), so the
+/// two agree in every view.
+///
+/// `f.path` still breaks ties — two folders whose oldest photos share a timestamp would
+/// otherwise interleave, the same hazard `sort_key` collisions used to pose.
+///
+/// The window function costs real time and the number is recorded rather than glossed:
+/// `startup_grid_100k` went from ~50ms to ~89ms, an 80% regression on a synthetic 100k-item
+/// library. The budget it answers to is one second, so it stays roughly an order of
+/// magnitude inside it, and `grid_rows_page` is unchanged. If that headroom ever matters,
+/// the fix is to materialise each folder's oldest photo rather than to go back to sorting
+/// the grid on a different axis from the sidebar.
+pub(crate) const GRID_ORDER: &str = "ORDER BY MIN(i.taken_at) OVER (PARTITION BY i.folder_id) DESC, f.path, i.taken_at, i.file_name";
 
 /// The grid's columns, in the order `map_grid_row` reads them. Both query paths select
 /// this same prefix so one mapping serves both.
@@ -377,7 +396,8 @@ impl Library {
         Ok(set)
     }
 
-    /// Every visible item in grid order: folder tree order, then capture time, then name.
+    /// Every visible item in grid order: newest folder first by its oldest photo, then each
+    /// folder's photos oldest to newest.
     pub fn grid_entries(&self) -> Result<Vec<GridEntry>> {
         self.entries_for(GridView::All, "")
     }
@@ -644,6 +664,9 @@ mod tests {
             ])
             .unwrap();
         let (b1, a2, a1) = (ids[0], ids[1], ids[2]);
+        // Grid order, which the thumbnail queue follows so tiles render roughly in the order
+        // they will be scrolled past. Folder `a` starts at 2 and `b` at 1, so `a` — the newer
+        // folder by its oldest photo — comes first, and within it 2 before 5.
         assert_eq!(lib.pending_thumb_ids().unwrap(), [a1, a2, b1]);
 
         lib.set_thumb_state(a1, ThumbState::Ready, None).unwrap();
@@ -670,15 +693,51 @@ mod tests {
     }
 
     #[test]
-    fn folders_colliding_on_sort_key_stay_contiguous() {
+    fn folders_run_newest_first_by_their_oldest_photo_not_alphabetically() {
+        // THE test for the grid's ordering. Path order and date order are made to disagree:
+        // `alpha` sorts first by name but holds the older photos, so under the old
+        // `ORDER BY f.sort_key` rule it led the grid while the sidebar — grouped by year,
+        // newest first — listed `zulu` above it. Scrolling the grid then bore no relation to
+        // reading the list beside it.
+        //
+        // Every other ordering test in this file happens to produce the same sequence under
+        // both rules, so without this one the whole change is unpinned: reverting
+        // `GRID_ORDER` to the path form leaves the suite green.
         let (_dir, lib) = temp_library();
         let (watched, root) = seed_folder(&lib, Path::new("/p"));
-        // Case-sensitive filesystems allow both; they share a case-insensitive sort_key.
+        let alpha = lib
+            .upsert_folder(watched, Some(root), "/p/alpha", 1)
+            .unwrap();
+        let zulu = lib
+            .upsert_folder(watched, Some(root), "/p/zulu", 1)
+            .unwrap();
+        let ids = lib
+            .insert_items(&[
+                new_item(alpha, "/p/alpha/old.jpg", 1_000),
+                new_item(zulu, "/p/zulu/new.jpg", 9_000),
+            ])
+            .unwrap();
+        let (alpha_old, zulu_new) = (ids[0], ids[1]);
+
+        let order: Vec<i64> = lib.grid_entries().unwrap().iter().map(|e| e.id).collect();
+        assert_eq!(
+            order,
+            [zulu_new, alpha_old],
+            "the folder whose oldest photo is newer comes first, regardless of its name"
+        );
+    }
+
+    #[test]
+    fn folders_starting_on_the_same_photo_date_stay_contiguous() {
+        let (_dir, lib) = temp_library();
+        let (watched, root) = seed_folder(&lib, Path::new("/p"));
+        // Both folders' oldest photo is at 1, so the primary sort key ties and only `f.path`
+        // keeps their photos from interleaving. Case-sensitive filesystems allow both names.
         let lower = lib.upsert_folder(watched, Some(root), "/p/a", 1).unwrap();
         let upper = lib.upsert_folder(watched, Some(root), "/p/A", 1).unwrap();
         lib.insert_items(&[
             new_item(lower, "/p/a/1.jpg", 1),
-            new_item(upper, "/p/A/2.jpg", 2),
+            new_item(upper, "/p/A/2.jpg", 1),
             new_item(lower, "/p/a/3.jpg", 3),
             new_item(upper, "/p/A/4.jpg", 4),
         ])
@@ -690,7 +749,11 @@ mod tests {
             .iter()
             .map(|e| e.folder_id)
             .collect();
-        assert_eq!(folders, [upper, upper, lower, lower]);
+        assert_eq!(
+            folders,
+            [upper, upper, lower, lower],
+            "a tie on the folder's oldest photo must not interleave two folders' photos"
+        );
         let listed: Vec<i64> = lib.folders().unwrap().iter().map(|f| f.id).collect();
         assert_eq!(listed, [root, upper, lower]);
     }
@@ -722,6 +785,8 @@ mod tests {
 
         let entries = lib.grid_entries().unwrap();
         let order: Vec<i64> = entries.iter().map(|e| e.id).collect();
+        // Folder `a`'s oldest live photo is at 2 and `b`'s at 1, so `a` leads; within `a`,
+        // 2 before 5. The missing item at 9 is excluded and so cannot decide `a`'s position.
         assert_eq!(order, [ids[2], ids[1], ids[0]]);
         assert_eq!(entries[0].aspect, 400.0 / 300.0);
         assert_eq!(entries[1].aspect, 300.0 / 400.0);

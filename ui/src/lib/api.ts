@@ -9,9 +9,10 @@ export { mediaUrl } from './url';
 export interface WatchedFolder { id: number; path: string; online: boolean }
 export interface Folder { id: number; watchedId: number; parentId: number | null; path: string; name: string }
 export interface FolderList { watched: WatchedFolder[]; folders: Folder[] }
-/** `takenAtMax` is the capture time of the folder's newest photo, in SECONDS (multiply by
- *  1000 for a JS Date). The sidebar groups folders by the year it falls in. */
-export interface Section { folderId: number; offset: number; count: number; takenAtMax: number }
+/** `takenAtMin` is the capture time of the folder's OLDEST photo, in SECONDS (multiply by
+ *  1000 for a JS Date). The sidebar groups folders by the year it falls in. Oldest rather
+ *  than newest, to match Picasa. */
+export interface Section { folderId: number; offset: number; count: number; takenAtMin: number }
 export interface GridEntry { id: number; folderId: number; takenAt: number; aspect: number; kind: 'image'; thumbKey: string; starred: boolean }
 export type GridView = 'all' | 'starred' | 'search';
 export interface GridInfo { version: number; len: number; sections: Section[]; starredCount: number; view: GridView; searchQuery: string }
