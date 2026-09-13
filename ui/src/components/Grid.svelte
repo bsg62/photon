@@ -104,8 +104,8 @@
   {#if library.info.len === 0}
     <p class="empty">
       {#if library.info.view === 'starred'}
-        No starred photos. photon reads stars from Picasa's `.picasa.ini` beside your photos
-        — it never sets them.
+        No starred photos. photon reads stars from the Picasa.ini beside your photos — it
+        never sets them.
       {:else if library.info.view === 'search'}
         No photos match “{library.info.searchQuery}”
       {:else}
