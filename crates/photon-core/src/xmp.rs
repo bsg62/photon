@@ -64,7 +64,14 @@ pub fn rating_from_xml(xml: &str) -> Option<u8> {
                 in_rating = false;
             }
             Ok(Event::Text(t)) if in_rating => {
-                // Same reasoning: no unescaping needed for a purely numeric value.
+                // Whitespace between the tag and its digits is not a failed parse: real XMP
+                // is usually pretty-printed, so `<xmp:Rating>\n4\n</xmp:Rating>` arrives as
+                // an indentation text node first. Clearing the flag on it would skip the
+                // digit that follows and silently miss the rating.
+                if t.as_ref().trim().is_empty() {
+                    continue;
+                }
+                // Same reasoning as the attribute: no unescaping needed for a numeric value.
                 if let Some(rating) = parse_rating(t.as_ref()) {
                     return Some(rating);
                 }
@@ -154,6 +161,32 @@ mod tests {
     }
 
     #[test]
+    fn a_rating_split_across_text_events_is_still_read() {
+        // A comment (or CDATA, or a processing instruction) splits the text run, so the
+        // indentation arrives as its own Text event and the digits as a second one. Without
+        // skipping the blank one, its failed parse clears the "inside a rating" flag and the
+        // number that follows is never looked at — a silent miss of a rating that is there.
+        //
+        // This is the test that pins the guard: reverting it yields None instead of Some(4).
+        assert_eq!(
+            rating_from_xml("<xmp:Rating>\n<!-- c -->4</xmp:Rating>"),
+            Some(4)
+        );
+    }
+
+    #[test]
+    fn a_pretty_printed_rating_element_is_read() {
+        // Coverage, not proof: quick-xml emits one Text event for a contiguous run and
+        // `parse_rating` already trims, so indented XMP was read correctly before the guard
+        // above existed and is read correctly without it. Pinned because it is the shape
+        // real files actually take.
+        assert_eq!(
+            rating_from_xml("<xmp:Rating>\n      4\n    </xmp:Rating>"),
+            Some(4)
+        );
+    }
+
+    #[test]
     fn an_unrelated_element_after_an_empty_rating_tag_is_not_misread_as_the_rating() {
         // `<xmp:Rating/>` sets `in_rating`; without clearing it on the next Start for a
         // different element, the Urgency text below would be misread as the rating.
@@ -184,8 +217,12 @@ mod tests {
         // The packet is truncated (e.g. a partially-written or corrupted file): the start
         // marker is found but `text.find(PACKET_END)` never matches, so `?` bails to None.
         let dir = tempfile::tempdir().unwrap();
+        // The rating sits on the start tag on purpose: without it, an implementation that
+        // treated truncation as "scan to the end of the buffer" would also return None here
+        // and the test could not tell the two apart. With it, correct code still returns
+        // None — the packet is incomplete — while that regression would return Some(4).
         let mut bytes = PACKET_START.to_vec();
-        bytes.extend_from_slice(br#" xmlns:x="adobe:ns:meta/"><rdf:RDF>"#);
+        bytes.extend_from_slice(br#" xmlns:x="adobe:ns:meta/" xmp:Rating="4"><rdf:RDF>"#);
         let path = write_file(dir.path(), "truncated.jpg", &bytes);
         assert_eq!(read_rating(&path), None);
     }
