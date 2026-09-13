@@ -6,7 +6,7 @@ use crate::watch::WatcherService;
 use parking_lot::{Mutex, RwLock};
 use photon_core::{
     Result,
-    grid::GridIndex,
+    grid::{GridIndex, GridView},
     library::{Library, WatchedFolder},
     now_ms,
     scanner::{ScanOptions, ScanProgress, scan_subtree, scan_watched},
@@ -43,6 +43,8 @@ pub struct Engine {
     pub thumbs: ThumbService,
     excluded: Vec<PathBuf>,
     grid: RwLock<(u64, Arc<GridIndex>)>,
+    /// Which set of photos the grid currently shows.
+    view: RwLock<GridView>,
     /// Serialises `refresh_grid` end to end (read, publish, emit), so two concurrent
     /// refreshes can't publish a stale snapshot under a newer version or emit events out
     /// of order.
@@ -88,6 +90,7 @@ impl Engine {
             thumbs,
             excluded,
             grid: RwLock::new((0, grid)),
+            view: RwLock::new(GridView::All),
             refresh: Mutex::new(()),
             events,
             scans: Mutex::new(HashMap::new()),
@@ -116,7 +119,9 @@ impl Engine {
     /// under a newer version number or emit `library_changed` out of order.
     pub fn refresh_grid(&self) -> Result<()> {
         let _serialize = self.refresh.lock();
-        let index = Arc::new(GridIndex::build(self.lib.grid_entries()?));
+        let index = Arc::new(GridIndex::build(
+            self.lib.grid_entries_for(*self.view.read())?,
+        ));
         let (version, len) = {
             let mut grid = self.grid.write();
             grid.0 += 1;
@@ -125,6 +130,18 @@ impl Engine {
         };
         self.events.library_changed(LibraryChanged { version, len });
         Ok(())
+    }
+
+    pub fn view(&self) -> GridView {
+        *self.view.read()
+    }
+
+    /// Switches which photos the grid shows and rebuilds the index. Rebuilding is the same
+    /// work startup already does; a second index kept in sync would be a large new surface
+    /// for staleness bugs to speed up something already fast and rarely done.
+    pub fn set_view(&self, view: GridView) -> Result<()> {
+        *self.view.write() = view;
+        self.refresh_grid()
     }
 
     /// Validates and watches `path`, registers it with the running watcher service (if
@@ -830,5 +847,47 @@ mod tests {
         t2.join().unwrap();
 
         assert!(!f.engine.is_scanning(id));
+    }
+
+    #[test]
+    fn switching_to_the_starred_view_rebuilds_the_grid_with_only_starred_photos() {
+        use photon_core::grid::GridView;
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a/one.jpg", &img), ("a/two.jpg", &img)]);
+        f.add_photos();
+        f.engine.wait_for_scans();
+        let ids = f.ids();
+        // Star one of them the way a scan would, then rebuild the index for the new view.
+        let item = f.engine.lib.item(ids[0]).unwrap().unwrap();
+        f.engine
+            .lib
+            .update_items(&[(
+                ids[0],
+                photon_core::library::NewItem {
+                    folder_id: item.folder_id,
+                    path: item.path.clone(),
+                    file_name: "one.jpg".into(),
+                    kind: photon_core::media::MediaKind::Image,
+                    size: item.size,
+                    mtime_ms: item.mtime_ms,
+                    width: 16,
+                    height: 16,
+                    orientation: 1,
+                    taken_at: 1,
+                    rating: Some(2),
+                },
+            )])
+            .unwrap();
+
+        f.engine.set_view(GridView::Starred).unwrap();
+        assert_eq!(f.engine.grid().1.len(), 1);
+        assert_eq!(f.engine.view(), GridView::Starred);
+
+        f.engine.set_view(GridView::All).unwrap();
+        assert_eq!(
+            f.engine.grid().1.len(),
+            2,
+            "switching back restores the full set"
+        );
     }
 }

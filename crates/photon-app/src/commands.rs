@@ -4,7 +4,7 @@
 use crate::{engine::Engine, error::AppError};
 use photon_core::{
     Error,
-    grid::{GridEntry, Section, hex_key},
+    grid::{GridEntry, GridView, Section, hex_key},
     library::{Folder, WatchedFolder},
     media::ThumbState,
     thumbs::Priority,
@@ -33,6 +33,8 @@ pub struct GridInfo {
     pub version: u64,
     pub len: usize,
     pub sections: Vec<Section>,
+    pub starred_count: usize,
+    pub view: GridView,
 }
 
 #[derive(Debug, Serialize)]
@@ -93,7 +95,14 @@ pub fn grid_info(engine: &Engine) -> GridInfo {
         version,
         len: grid.len(),
         sections: grid.sections().to_vec(),
+        starred_count: engine.lib.starred_count().unwrap_or(0),
+        view: engine.view(),
     }
+}
+
+pub fn set_grid_view(engine: &Engine, view: GridView) -> CmdResult<()> {
+    engine.set_view(view)?;
+    Ok(())
 }
 
 pub fn grid_rows(engine: &Engine, offset: usize, count: usize) -> GridRows {

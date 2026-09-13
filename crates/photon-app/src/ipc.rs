@@ -64,6 +64,11 @@ pub fn grid_offset_of_folder(engine: Eng<'_>, folder_id: i64) -> Option<usize> {
 }
 
 #[tauri::command(async)]
+pub fn set_grid_view(engine: Eng<'_>, view: photon_core::grid::GridView) -> Result<(), AppError> {
+    commands::set_grid_view(&engine, view)
+}
+
+#[tauri::command(async)]
 pub fn set_visible(engine: Eng<'_>, ids: Vec<i64>) {
     commands::set_visible(&engine, &ids)
 }

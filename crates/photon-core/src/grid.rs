@@ -1,6 +1,15 @@
 use crate::media::MediaKind;
-use serde::{Serialize, Serializer};
+use serde::{Deserialize, Serialize, Serializer};
 use std::collections::HashMap;
+
+/// Which set of photos the grid shows.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum GridView {
+    #[default]
+    All,
+    Starred,
+}
 
 /// A u64 as 16 lowercase hex characters: exact in JavaScript, unlike a JSON number.
 pub fn hex_key(value: u64) -> String {

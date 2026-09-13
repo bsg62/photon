@@ -1,6 +1,6 @@
 use super::Library;
 use crate::Result;
-use crate::grid::GridEntry;
+use crate::grid::{GridEntry, GridView};
 use crate::media::{MediaKind, ThumbState, fingerprint};
 use crate::metadata::oriented_dims;
 use rusqlite::{OptionalExtension, Row, params};
@@ -304,11 +304,21 @@ impl Library {
 
     /// Every visible item in grid order: folder tree order, then capture time, then name.
     pub fn grid_entries(&self) -> Result<Vec<GridEntry>> {
+        self.grid_entries_for(GridView::All)
+    }
+
+    /// The grid's rows for one view. `Starred` filters to `rating >= 1`, which the
+    /// `items_starred` partial index serves.
+    pub fn grid_entries_for(&self, view: GridView) -> Result<Vec<GridEntry>> {
+        let filter = match view {
+            GridView::All => "",
+            GridView::Starred => "AND i.rating >= 1",
+        };
         let conn = self.reader();
         let mut stmt = conn.prepare(&format!(
             "SELECT i.id, i.folder_id, i.taken_at, i.width, i.height, i.orientation, i.kind, i.path, i.size, i.mtime_ms, i.rating
              FROM items i JOIN folders f ON f.id = i.folder_id
-             WHERE i.missing_since IS NULL {GRID_ORDER}"
+             WHERE i.missing_since IS NULL {filter} {GRID_ORDER}"
         ))?;
         let rows = stmt
             .query_map([], |r| {
@@ -701,5 +711,61 @@ mod tests {
         lib.update_items(&[(ids[0], rated(folder, "/p/a.jpg", 1, 5))])
             .unwrap();
         assert_eq!(lib.starred_count().unwrap(), 1);
+    }
+
+    #[test]
+    fn the_starred_view_contains_exactly_the_starred_photos() {
+        let (_dir, lib) = temp_library();
+        let (_watched, folder) = seed_folder(&lib, Path::new("/p"));
+        let ids = lib
+            .insert_items(&[
+                new_item(folder, "/p/a.jpg", 1),
+                new_item(folder, "/p/b.jpg", 2),
+                new_item(folder, "/p/c.jpg", 3),
+            ])
+            .unwrap();
+        lib.update_items(&[
+            (
+                ids[0],
+                NewItem {
+                    rating: Some(0),
+                    ..new_item(folder, "/p/a.jpg", 1)
+                },
+            ),
+            (
+                ids[1],
+                NewItem {
+                    rating: Some(1),
+                    ..new_item(folder, "/p/b.jpg", 2)
+                },
+            ),
+            (
+                ids[2],
+                NewItem {
+                    rating: Some(5),
+                    ..new_item(folder, "/p/c.jpg", 3)
+                },
+            ),
+        ])
+        .unwrap();
+
+        let all: Vec<i64> = lib
+            .grid_entries_for(GridView::All)
+            .unwrap()
+            .iter()
+            .map(|e| e.id)
+            .collect();
+        let starred: Vec<i64> = lib
+            .grid_entries_for(GridView::Starred)
+            .unwrap()
+            .iter()
+            .map(|e| e.id)
+            .collect();
+        assert_eq!(all, ids);
+        assert_eq!(
+            starred,
+            vec![ids[1], ids[2]],
+            "unrated and zero-rated are excluded"
+        );
     }
 }
