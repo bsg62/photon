@@ -95,6 +95,8 @@ A text input sits in the sidebar toolbar, above the Starred row.
 
 - **A failed search query**: propagates, and is surfaced through the store's existing error path. The index is rebuilt and published only on success, so a failed query leaves the previous results on screen alongside the error rather than replacing them.
 
+  **The engine's declared view and query roll back too.** Without that, a failed rebuild would leave the engine reporting `Search` with the new query while the grid still held the old photos — and §5 makes `GridInfo.search_query` the single source of truth the UI renders from, so the box would show a query whose results are not on screen. Two further consequences make it worse than a momentary glitch: the state is *sticky*, because every later rebuild (a scan, the watcher) re-reads the same failing query and fails again, so the grid never updates until the user changes something; and the empty state cannot rescue it, because `len` is still the previous non-zero count, so "No photos match" never renders and the full library is displayed beneath a search box containing the query. The rollback is what keeps §5's "one source of truth" true when §6's path is taken.
+
   This deliberately does **not** follow `starred_count`, which logs and falls back to `0`. That fallback is right for a sidebar count, where a wrong number degrades benignly. It is wrong for the grid: an empty result is indistinguishable from "nothing matched", so a broken query would look like a successful search for something absent — the confusion §5's empty state exists to prevent.
 - **No matches**: not an error. §5's empty state.
 - Nothing else here can fail: there is no new I/O, no new file access, and no migration.
