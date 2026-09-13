@@ -9,7 +9,9 @@ pub struct ImageMeta {
     pub orientation: u8,
     /// Capture time as naive local time interpreted as UTC seconds.
     pub taken_at: Option<i64>,
-    /// `Some(0..=5)` once the file has been read; `None` only if it could not be opened.
+    /// Always `None`: ratings come from Picasa's per-directory INI, applied by the scanner
+    /// after the walk (see `scanner::apply_picasa_stars`), not from anything in the file
+    /// itself. Kept on the struct because `NewItem` still carries the column.
     pub rating: Option<u8>,
 }
 
@@ -23,9 +25,6 @@ pub fn read_image_meta(path: &Path) -> ImageMeta {
         taken_at: None,
         rating: None,
     };
-    // Zero rather than None when there is no packet: the file was read and had nothing to
-    // say. None is reserved for rows no scan has ever looked at.
-    meta.rating = Some(crate::xmp::read_rating(path).unwrap_or(0));
     if let Some(exif) = read_exif(path) {
         if let Some(o) = exif
             .get_field(exif::Tag::Orientation, exif::In::PRIMARY)
@@ -107,23 +106,6 @@ mod tests {
     use crate::testutil::{jpeg_with_exif, png_bytes, write_file};
 
     #[test]
-    fn reads_the_xmp_rating_alongside_exif() {
-        use crate::testutil::jpeg_with_xmp;
-        let dir = tempfile::tempdir().unwrap();
-        let path = write_file(dir.path(), "star.jpg", &jpeg_with_xmp(4, 2, 3));
-        assert_eq!(read_image_meta(&path).rating, Some(3));
-    }
-
-    #[test]
-    fn a_photo_without_xmp_reads_as_unrated_rather_than_unread() {
-        // Zero, not None: the file was read and had nothing to say. None means "never
-        // looked at", which after a scan would be a lie.
-        let dir = tempfile::tempdir().unwrap();
-        let path = write_file(dir.path(), "plain.png", &png_bytes(3, 5));
-        assert_eq!(read_image_meta(&path).rating, Some(0));
-    }
-
-    #[test]
     fn converts_naive_datetime_to_unix_seconds() {
         assert_eq!(naive_to_unix(1970, 1, 1, 0, 0, 0), 0);
         assert_eq!(naive_to_unix(2000, 3, 1, 0, 0, 0), 951_868_800);
@@ -145,7 +127,7 @@ mod tests {
                 height: 2,
                 orientation: 6,
                 taken_at: Some(1_718_454_645),
-                rating: Some(0)
+                rating: None
             }
         );
     }
@@ -161,7 +143,7 @@ mod tests {
                 height: 5,
                 orientation: 1,
                 taken_at: None,
-                rating: Some(0)
+                rating: None
             }
         );
     }
@@ -177,7 +159,7 @@ mod tests {
                 height: 0,
                 orientation: 1,
                 taken_at: None,
-                rating: Some(0)
+                rating: None
             }
         );
     }
