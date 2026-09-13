@@ -98,14 +98,26 @@ export class LibraryStore {
     }
   }
 
+  /** Chains each `setSearchQuery` call onto the previous one, so two calls issued close
+   *  together (for example a debounced search followed by Escape clearing it) apply to the
+   *  backend in the order they were issued rather than in whatever order their IPC round
+   *  trips happen to finish. `cancel()` on the debouncer only stops a call that hasn't fired
+   *  yet — a call already dispatched cannot be cancelled, so ordering has to be guaranteed
+   *  here instead. */
+  private searchQueryChain: Promise<void> = Promise.resolve();
+
   /** Searches for `query`. A blank query returns the backend to the All view. */
-  async setSearchQuery(query: string): Promise<void> {
-    try {
-      await api.setSearchQuery(query);
-      await this.refresh();
-    } catch (e) {
-      this.reportError(e);
-    }
+  setSearchQuery(query: string): Promise<void> {
+    const next = this.searchQueryChain.then(async () => {
+      try {
+        await api.setSearchQuery(query);
+        await this.refresh();
+      } catch (e) {
+        this.reportError(e);
+      }
+    });
+    this.searchQueryChain = next;
+    return next;
   }
 
   async ensure(start: number, end: number): Promise<void> {

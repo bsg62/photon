@@ -13,26 +13,41 @@
    *  `library.info.searchQuery` on the next tick is what keeps it from re-triggering on its
    *  own write and looping. */
   let lastBackendQuery = library.info.searchQuery;
+  /** The query most recently sent to the backend. A backend value equal to this is our own
+   *  echo, not an external change (a folder click, Starred, or another instance clearing
+   *  it) — adopting it into `query` would overwrite what the user has typed since, because
+   *  the echo always arrives a debounce window plus an IPC round trip after the keystroke
+   *  that caused it. `null` means nothing has been sent yet. */
+  let lastSent: string | null = null;
 
-  const runSearch = debounce((q: string) => void library.setSearchQuery(q), SEARCH_DEBOUNCE_MS);
+  const runSearch = debounce((q: string) => {
+    lastSent = q;
+    void library.setSearchQuery(q);
+  }, SEARCH_DEBOUNCE_MS);
 
   function clearSearch() {
     // Cancel first: a pending debounced call would otherwise land after the clear and put
-    // the backend straight back into the search view.
+    // the backend straight back into the search view. Cancelling only stops a call that
+    // hasn't fired yet — a call already in flight can still land after this one and put the
+    // backend back into Search; library.setSearchQuery serialises calls in issue order so
+    // that in-flight ordering is guaranteed instead.
     runSearch.cancel();
     query = '';
+    lastSent = '';
     void library.setSearchQuery('');
   }
 
   // The backend is the source of truth for the active query (spec §5): clicking Starred or
   // a folder clears it server-side, and without this the box would keep displaying text
-  // that no longer filters anything.
+  // that no longer filters anything. But a backend value that matches what we last sent is
+  // our own echo of a keystroke, not an external change, and must not be adopted — doing so
+  // would snap the box back to stale text while the user is still typing ahead of it.
   $effect(() => {
     const backend = library.info.searchQuery;
-    if (backend !== lastBackendQuery) {
-      lastBackendQuery = backend;
-      query = backend;
-    }
+    if (backend === lastBackendQuery) return;
+    lastBackendQuery = backend;
+    if (backend === lastSent) return;
+    query = backend;
   });
 
   /** Folders that actually hold photos, grouped by the year of their newest one.
@@ -142,6 +157,10 @@
    *  an unawaited view switch can return a stale or mismatched result (see the Important 1
    *  writeup — awaiting here is load-bearing, not stylistic). */
   async function jumpToFolder(folderId: number) {
+    // Cancel a pending debounced search first: otherwise it can fire after the view switch
+    // below has already landed on `all` and re-enter Search with its captured text,
+    // replacing the grid the user just navigated to.
+    runSearch.cancel();
     if (library.info.view !== 'all') await library.setView('all');
     onjump(folderId);
   }
@@ -160,7 +179,11 @@
       bind:value={query}
       oninput={() => runSearch(query)}
       onkeydown={(e) => {
-        if (e.key === 'Escape') clearSearch();
+        // An empty box with Search not active has nothing to clear: unconditionally
+        // clearing here would call setSearchQuery('') regardless, which is a no-op query
+        // but still forces the view to All — kicking the user out of Starred with a
+        // keystroke that cleared nothing.
+        if (e.key === 'Escape' && (query !== '' || library.info.view === 'search')) clearSearch();
       }}
     />
   </div>
@@ -168,7 +191,12 @@
   <button
     class="root starred"
     class:active={library.info.view === 'starred'}
-    onclick={() => library.setView('starred')}
+    onclick={() => {
+      // Same hazard as jumpToFolder: an orphaned debounced search could otherwise fire
+      // after this and re-enter Search, replacing the Starred grid the user just asked for.
+      runSearch.cancel();
+      void library.setView('starred');
+    }}
     title="Photos rated in another program"
   >
     <span class="name">★ Starred</span>

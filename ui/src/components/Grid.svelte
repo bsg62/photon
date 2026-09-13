@@ -106,7 +106,7 @@
       {#if library.info.view === 'starred'}
         No starred photos. photon reads star ratings from photo files — it never sets them.
       {:else if library.info.view === 'search'}
-        No photos match "{library.info.searchQuery}"
+        No photos match “{library.info.searchQuery}”
       {:else}
         No photos yet. Add a folder to get started.
       {/if}

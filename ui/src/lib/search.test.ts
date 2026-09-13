@@ -49,6 +49,23 @@ describe('debounce', () => {
 
     expect(fn).not.toHaveBeenCalled();
   });
+
+  it('is reusable after cancel(): a later call still debounces and fires normally', () => {
+    // Pins the `timer = undefined` reset inside `cancel()` — without it, a call made after
+    // cancelling would see a stale timer handle and either fail to schedule or clear the
+    // wrong thing, breaking the "clear the box then type a new query" sequence.
+    const fn = vi.fn();
+    const debounced = debounce(fn, 150);
+
+    debounced('a');
+    debounced.cancel();
+
+    debounced('b');
+    vi.advanceTimersByTime(150);
+
+    expect(fn).toHaveBeenCalledTimes(1);
+    expect(fn).toHaveBeenCalledWith('b');
+  });
 });
 
 describe('resultsChanged', () => {

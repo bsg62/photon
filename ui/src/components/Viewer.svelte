@@ -20,8 +20,10 @@
   let wheelTotal = 0;
   let dragFrom = { x: 0, y: 0, panX: 0, panY: 0 };
 
-  /** Photos are numbered within their own folder, not across the library, so the count
-   *  matches what the file manager shows for that directory. */
+  /** Photos are numbered within their own folder, not across the library. In the All view
+   *  that count matches what the file manager shows for that directory; in Starred or
+   *  Search it is the folder's position among the current view's results instead, since
+   *  those views only show a subset of the folder's photos. */
   const position = $derived(positionInFolder(library.info.sections, current));
 
   function viewport(): { width: number; height: number } {

@@ -223,4 +223,71 @@ describe('LibraryStore', () => {
     await expect(store.setView('starred')).resolves.toBeUndefined();
     expect(store.errors.some((t) => t.message === 'set-view-fail')).toBe(true);
   });
+
+  it('setSearchQuery("") issues the command and refreshes, restoring the All view', async () => {
+    // Spec §7: "clearing the box restores the All view." The engine-level behaviour behind
+    // this is already covered on the Rust side; this pins the store's half of the path.
+    const store = new LibraryStore();
+    await store.init();
+
+    vi.mocked(api.setSearchQuery).mockResolvedValue(undefined);
+    vi.mocked(api.gridInfo).mockResolvedValueOnce({
+      version: 2,
+      len: 2,
+      sections: [],
+      starredCount: 0,
+      view: 'all',
+      searchQuery: '',
+    });
+
+    await store.setSearchQuery('');
+
+    expect(api.setSearchQuery).toHaveBeenCalledWith('');
+    expect(store.info.view).toBe('all');
+    expect(store.info.searchQuery).toBe('');
+  });
+
+  it('applies setSearchQuery calls in the order they were issued, not the order their IPC round trips finish', async () => {
+    // A pending call from a previous, slower request landing after a later one would put
+    // the backend's query out of sync with what the box last asked for (Fix 3: cancel()
+    // only stops a call that hasn't fired, so already-dispatched calls must be serialised
+    // here instead).
+    const store = new LibraryStore();
+    await store.init();
+
+    const order: string[] = [];
+    const first = deferred<void>();
+    const second = deferred<void>();
+    vi.mocked(api.setSearchQuery).mockImplementationOnce(async (q: string) => {
+      order.push(`start:${q}`);
+      await first.promise;
+      order.push(`end:${q}`);
+    });
+    vi.mocked(api.setSearchQuery).mockImplementationOnce(async (q: string) => {
+      order.push(`start:${q}`);
+      await second.promise;
+      order.push(`end:${q}`);
+    });
+    vi.mocked(api.gridInfo).mockResolvedValue({
+      version: 2,
+      len: 0,
+      sections: [],
+      starredCount: 0,
+      view: 'search',
+      searchQuery: 'beach',
+    });
+
+    const p1 = store.setSearchQuery('b');
+    const p2 = store.setSearchQuery('beach');
+
+    // Resolve the second (later-issued) call's IPC first — if calls weren't serialised,
+    // its effects would land before the first call's.
+    second.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    first.resolve();
+    await Promise.all([p1, p2]);
+
+    expect(order).toEqual(['start:b', 'end:b', 'start:beach', 'end:beach']);
+  });
 });
