@@ -38,7 +38,10 @@ pub fn read_stars(dir: &Path) -> Option<HashSet<String>> {
 fn ini_path(dir: &Path) -> Option<Option<PathBuf>> {
     let mut dotted = None;
     let mut plain = None;
-    for entry in fs::read_dir(dir).ok()?.flatten() {
+    for entry in fs::read_dir(dir).ok()? {
+        // A mid-iteration error here must not be read as "no INI in this directory": that
+        // would surface as `Some(empty)` and the caller would clear real stars on it.
+        let entry = entry.ok()?;
         let name = entry.file_name();
         let Some(name) = name.to_str() else {
             continue;
@@ -52,10 +55,23 @@ fn ini_path(dir: &Path) -> Option<Option<PathBuf>> {
     Some(dotted.or(plain))
 }
 
+/// Reads the file, or `None` if it is unreadable or larger than `MAX_INI`.
+///
+/// Reads one byte past the cap so an exactly-`MAX_INI` file can be told apart from a
+/// larger one, rather than silently treating "too big to read" as "read, and empty" —
+/// the same distinction `read_stars`'s `Option` exists to carry.
+/// Reads the file, or `None` if it is unreadable or larger than `MAX_INI`.
+///
+/// Reads one byte past the cap so an exactly-`MAX_INI` file can be told apart from a
+/// larger one, rather than silently treating "too big to read" as "read, and empty" —
+/// the same distinction `read_stars`'s `Option` exists to carry.
 fn read_capped(path: &Path) -> Option<Vec<u8>> {
     let mut file = fs::File::open(path).ok()?;
     let mut buf = Vec::new();
-    file.by_ref().take(MAX_INI).read_to_end(&mut buf).ok()?;
+    file.by_ref().take(MAX_INI + 1).read_to_end(&mut buf).ok()?;
+    if buf.len() as u64 > MAX_INI {
+        return None; // too big to read is not "no stars"
+    }
     Some(buf)
 }
 
@@ -75,7 +91,8 @@ fn parse_stars(text: &str) -> HashSet<String> {
             // letting the keys below it attach to the previous one.
             section = rest
                 .strip_suffix(']')
-                .map(|name| name.trim().to_lowercase());
+                .map(|name| name.trim().to_lowercase())
+                .filter(|name| !name.is_empty());
             continue;
         }
         let Some(name) = section.as_ref() else {
@@ -218,17 +235,18 @@ mod tests {
     #[test]
     fn survives_a_non_utf8_file() {
         // Picasa files from old Windows locales are not necessarily UTF-8. A section header
-        // that survives lossy decoding still matches.
+        // that survives lossy decoding still matches, with the invalid byte replaced by
+        // U+FFFD rather than the section (or the rest of the file) being dropped.
         let dir = tempfile::tempdir().unwrap();
         write_file(
             dir.path(),
             ".picasa.ini",
             b"[caf\xe9.jpg]\nstar=yes\n[a.jpg]\nstar=yes\n",
         );
-        let found = stars(dir.path());
-        assert!(
-            found.contains(&"a.jpg".to_string()),
-            "a valid section after invalid bytes is still read"
+        assert_eq!(
+            stars(dir.path()),
+            vec!["a.jpg", "caf\u{FFFD}.jpg"],
+            "the invalid byte is replaced, not dropped, and does not disturb the section after it"
         );
     }
 
@@ -263,17 +281,31 @@ mod tests {
     }
 
     #[test]
-    fn the_read_is_bounded() {
+    fn an_oversized_ini_reads_as_no_evidence_rather_than_a_partial_parse() {
         // Spec §3's cap has to actually bound the read rather than being advisory, the same
-        // way `xmp::a_packet_beyond_the_read_cap_is_not_found` pins the XMP one.
+        // way `xmp::a_packet_beyond_the_read_cap_is_not_found` pins the XMP one. But unlike
+        // that reader, something here acts on absence: the scanner clears every star a
+        // folder's INI does not confirm. A `take(MAX_INI)`-style truncation would read a
+        // too-big file as a *partial* one and silently un-star whatever fell past the cut,
+        // so an oversized file must come back as `None` (no evidence) rather than
+        // `Some(partial-or-empty)`.
         let dir = tempfile::tempdir().unwrap();
-        let mut ini = vec![b' '; MAX_INI as usize];
+        let mut ini = vec![b' '; MAX_INI as usize + 1];
         ini.extend_from_slice(b"\n[a.jpg]\nstar=yes\n");
         write_file(dir.path(), ".picasa.ini", &ini);
-        assert!(
-            stars(dir.path()).is_empty(),
-            "a section past the cap is not read"
+        assert_eq!(
+            read_stars(dir.path()),
+            None,
+            "too big to read is not evidence that nothing is starred"
         );
+
+        // ...but a file that ends just inside the cap is read in full.
+        let dir2 = tempfile::tempdir().unwrap();
+        let mut ini2 = vec![b' '; MAX_INI as usize - 18];
+        ini2.extend_from_slice(b"\n[a.jpg]\nstar=yes\n");
+        assert_eq!(ini2.len() as u64, MAX_INI);
+        write_file(dir2.path(), ".picasa.ini", &ini2);
+        assert_eq!(stars(dir2.path()), vec!["a.jpg"]);
     }
 
     #[test]
