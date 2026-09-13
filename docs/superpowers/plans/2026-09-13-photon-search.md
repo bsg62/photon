@@ -18,7 +18,8 @@
 - **Never launch the GUI.** No agent on this project runs the app; UI verification is `svelte-check` plus unit tests, and anything needing eyes goes on the README's manual checklist.
 - **The Rust gate is four commands, all of which must pass before any commit:**
   `cargo fmt --all --check` · `cargo clippy --workspace --all-targets -- -D warnings` · `cargo test --workspace` · `cargo bench -p photon-core --bench grid --no-run`
-- **The UI gate:** `npm run check` in `ui/` must report **0 errors and 0 warnings** (it runs with `--fail-on-warnings`), plus `npm test`.
+- **Every task must leave the whole workspace compiling.** `--workspace` is in the gate: a change to `photon-core` that breaks `photon-app` fails the task that made it, not the task that would have fixed it.
+- **The UI gate:** `npm run check` in `ui/` must report **0 errors and 0 warnings** (it runs with `--fail-on-warnings`), plus `npm test`. Note that `ui/tsconfig.json` includes `src/**/*.ts`, so **test files are typechecked too** — a struct field added to `GridInfo` breaks every `GridInfo` literal in `library.test.ts`.
 - **Every new test must be demonstrated to fail with its change reverted.** Revert the change, run the test, paste the failure, restore. A test that passes both ways proves nothing and must be replaced with one that discriminates — say so in your report rather than presenting it as proof.
 - **TypeScript mirrors do not validate.** A Rust struct field added without updating its `ui/src/lib/api.ts` interface is silently `undefined` at runtime and no tool warns. Rust and mirror change in the same task.
 
@@ -27,15 +28,16 @@
 ### Task 1: The matcher in `photon-core`
 
 **Files:**
-- Modify: `crates/photon-core/src/grid.rs` (the `GridView` enum, ~line 8)
-- Modify: `crates/photon-core/src/library/items.rs` (`grid_entries`, `grid_entries_for`, ~lines 306–338)
+- Modify: `crates/photon-core/src/grid.rs` (the `GridView` enum, ~line 6)
+- Modify: `crates/photon-core/src/library/items.rs` (`grid_entries` / `grid_entries_for`, ~lines 305–343; `GRID_ORDER` is far above at ~line 61)
+- Modify: `crates/photon-app/src/engine.rs` (~line 123, the one call site in the other crate — see Step 6)
 - Test: `crates/photon-core/src/library/items.rs` (the existing `#[cfg(test)] mod tests`)
 
 **Interfaces:**
 - Produces: `GridView::Search` variant; `Library::entries_for(&self, view: GridView, query: &str) -> Result<Vec<GridEntry>>`; `Library::grid_entries(&self) -> Result<Vec<GridEntry>>` unchanged in signature.
 - Consumes: nothing from other tasks.
 
-**Context you need:** `GridView` is `Copy` and serialises `rename_all = "camelCase"`, so `Search` appears on the wire as `"search"`. It must stay `Copy` — the query string is NOT added to the enum (spec §4).
+**Context you need:** `GridView` is `Copy` and serialises `rename_all = "camelCase"`, so `Search` appears on the wire as `"search"`. It must stay `Copy` — the query string is NOT added to the enum (spec §4). It already derives `PartialEq, Eq`; no derive change is needed.
 
 The current code is:
 
@@ -75,6 +77,8 @@ pub fn grid_entries_for(&self, view: GridView) -> Result<Vec<GridEntry>> {
 }
 ```
 
+**`grid_entries_for` has three call sites, not two** — two starred tests in `items.rs`, and one in `crates/photon-app/src/engine.rs` (`refresh_grid`). All three move to `entries_for` in this task. Find them with `rg 'grid_entries_for'` rather than trusting this count.
+
 - [ ] **Step 1: Add the `Search` variant**
 
 In `crates/photon-core/src/grid.rs`:
@@ -91,11 +95,11 @@ pub enum GridView {
 }
 ```
 
-Run `cargo check --workspace`. It will FAIL on the non-exhaustive match in `grid_entries_for`. That failure is expected and Step 2 resolves it.
+Run `cargo check --workspace`. It will FAIL on the non-exhaustive match in `grid_entries_for`. That failure is expected and Step 5 resolves it.
 
 - [ ] **Step 2: Write the failing tests**
 
-Add to the `mod tests` block in `items.rs`. Match the house style: long sentence-like names, and a message on any assertion whose expectation is not self-evident. Helpers `temp_library()`, `seed_folder(&lib, Path::new(...))`, `new_item(folder, path, taken_at)` already exist and are already imported.
+Add to the `mod tests` block in `items.rs`. Match the house style: long sentence-like names, and a message on any assertion whose expectation is not self-evident. The helpers `temp_library()`, `seed_folder(&lib, Path::new(...))` (returns `(watched_id, folder_id)`) and `new_item(folder, path, taken_at)` already exist and are imported. `new_item` derives `file_name` from the path and folder insertion derives `name` from the path's last segment, so `/München/Straße.jpg` really does store `file_name = "Straße.jpg"` and `name = "München"`.
 
 ```rust
 #[test]
@@ -132,7 +136,22 @@ fn search_matches_a_substring_of_the_folder_name() {
         .iter()
         .map(|e| e.id)
         .collect();
-    assert_eq!(hits, ids, "the folder's name matches even though the file's does not");
+    assert_eq!(
+        hits, ids,
+        "the folder's name matches even though the file's does not"
+    );
+}
+
+#[test]
+fn a_query_matching_neither_name_returns_nothing() {
+    let (_dir, lib) = temp_library();
+    let (_watched, folder) = seed_folder(&lib, Path::new("/p"));
+    lib.insert_items(&[new_item(folder, "/p/a.jpg", 1)]).unwrap();
+
+    assert!(
+        lib.entries_for(GridView::Search, "zzz").unwrap().is_empty(),
+        "no match is an empty result, not the whole library"
+    );
 }
 
 #[test]
@@ -212,7 +231,9 @@ fn search_keeps_grid_order_and_excludes_missing_items() {
             new_item(folder, "/trip/a.jpg", 1),
         ])
         .unwrap();
-    lib.mark_missing(&[ids[0]]).unwrap();
+    // `mark_missing` takes a timestamp as its second argument; the existing tests in
+    // this file call it as `mark_missing(&ids, 99)`.
+    lib.mark_missing(&[ids[0]], 99).unwrap();
 
     let hits: Vec<i64> = lib
         .entries_for(GridView::Search, "trip")
@@ -248,27 +269,44 @@ fn the_all_and_starred_views_are_unchanged_by_the_new_entry_point() {
         .unwrap();
     lib.update_items(&[(
         ids[1],
-        NewItem { rating: Some(3), ..new_item(folder, "/p/b.jpg", 2) },
+        NewItem {
+            rating: Some(3),
+            ..new_item(folder, "/p/b.jpg", 2)
+        },
     )])
     .unwrap();
 
-    let all: Vec<i64> = lib.entries_for(GridView::All, "").unwrap().iter().map(|e| e.id).collect();
-    let starred: Vec<i64> = lib.entries_for(GridView::Starred, "").unwrap().iter().map(|e| e.id).collect();
+    let all: Vec<i64> = lib
+        .entries_for(GridView::All, "")
+        .unwrap()
+        .iter()
+        .map(|e| e.id)
+        .collect();
+    let starred: Vec<i64> = lib
+        .entries_for(GridView::Starred, "")
+        .unwrap()
+        .iter()
+        .map(|e| e.id)
+        .collect();
     assert_eq!(all, ids);
     assert_eq!(starred, vec![ids[1]]);
-    assert_eq!(lib.grid_entries().unwrap().len(), 2, "the convenience wrapper still means All");
+    assert_eq!(
+        lib.grid_entries().unwrap().len(),
+        2,
+        "the convenience wrapper still means All"
+    );
 }
 ```
 
-**The `ß` behaviour above was verified, not assumed.** `"Straße".to_lowercase()` is `straße` and `"STRASSE".to_lowercase()` is `strasse`; `"München"` and `"MÜNCHEN"` both lowercase to `münchen`. Those are the assertions written. If your implementation disagrees with any of them, trust the observed behaviour over this plan and say so in your report.
+**The `ß` and `München` behaviours above were verified against the real toolchain, not assumed:** `"Straße".to_lowercase()` is `straße`, `"STRASSE".to_lowercase()` is `strasse`, and both `"München"` and `"MÜNCHEN"` lowercase to `münchen`. If your implementation disagrees with any of these, trust what you observe over this plan and say so in your report.
 
-`mark_missing` and `update_items`/`NewItem` are existing APIs — check their exact signatures in `items.rs` before use and adapt these calls if they differ. The test bodies matter more than their exact helper spelling.
+Check every helper signature against the file before use (`mark_missing`, `update_items`, `NewItem`, `insert_items`) and adapt these calls if they differ. The test bodies matter more than their exact helper spelling.
 
-- [ ] **Step 4: Run the tests and watch them fail**
+- [ ] **Step 3: Run the tests and watch them fail**
 
-Run: `cargo test -p photon-core search` — expect compile failure (`entries_for` does not exist). That is the failure you want at this step.
+Run: `cargo test -p photon-core search` — expect a compile failure (`entries_for` does not exist). That is the failure you want at this step.
 
-- [ ] **Step 5: Implement**
+- [ ] **Step 4: Implement**
 
 In `items.rs`, replace `grid_entries_for` with the shared-mapping version. **The row mapping must exist once.** Both query paths call it, so they cannot drift:
 
@@ -345,7 +383,10 @@ impl Library {
                 let folder_name: String = r.get(12)?;
                 let hit = file_name.to_lowercase().contains(&needle)
                     || folder_name.to_lowercase().contains(&needle);
-                Ok(hit.then(|| map_grid_row(r)).transpose()?)
+                // No `Ok(…?)` wrapper here: the closure already returns this type, and
+                // wrapping it trips `clippy::needless_question_mark`, which the gate
+                // treats as an error.
+                hit.then(|| map_grid_row(r)).transpose()
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?
             .into_iter()
@@ -356,15 +397,32 @@ impl Library {
 }
 ```
 
-Keep `starred_count` exactly as it is. Update the two existing call sites of `grid_entries_for` (the starred tests in this file) to `entries_for(view, "")`.
+Keep `starred_count` exactly as it is. Passing the free function `map_grid_row` directly to `query_map` is fine and has precedent in this codebase (`row_to_watched` in `folders.rs`).
 
-- [ ] **Step 6: Run the tests**
+- [ ] **Step 5: Update the two test call sites in `items.rs`**
 
-`cargo test -p photon-core` — all green, including the pre-existing starred tests.
+The starred tests call `grid_entries_for(view)`; change them to `entries_for(view, "")`.
 
-- [ ] **Step 7: Prove the tests discriminate**
+- [ ] **Step 6: Keep the workspace compiling**
 
-For `search_folds_case_for_non_ascii_text` and `search_treats_sql_wildcards_as_literal_characters`, temporarily replace the Rust match with the SQL form the spec rejected:
+`crates/photon-app/src/engine.rs` (~line 123, in `refresh_grid`) is the third call site:
+
+```rust
+// before
+let index = Arc::new(GridIndex::build(self.lib.grid_entries_for(*self.view.read())?));
+// after — Task 2 replaces the empty string with the engine's real query
+let index = Arc::new(GridIndex::build(
+    self.lib.entries_for(*self.view.read(), "")?,
+));
+```
+
+This one line belongs to this task, not Task 2: `cargo clippy --workspace` and `cargo test --workspace` are in the gate, so leaving it broken would make this task's own gate unpassable.
+
+- [ ] **Step 7: Run the tests, then prove they discriminate**
+
+`cargo test --workspace` — all green, including the pre-existing starred tests.
+
+Then, for `search_folds_case_for_non_ascii_text` and `search_treats_sql_wildcards_as_literal_characters`, temporarily replace the Rust match with the SQL form the spec rejected:
 
 ```rust
 // TEMPORARY — revert after observing the failure
@@ -378,7 +436,7 @@ Run both tests and paste the failures into your report. Restore the Rust impleme
 All four commands from Global Constraints, then:
 
 ```bash
-git add crates/photon-core
+git add crates/photon-core crates/photon-app/src/engine.rs
 git commit -m "feat(search): match photos by file and folder name in photon-core"
 ```
 
@@ -387,11 +445,13 @@ git commit -m "feat(search): match photos by file and folder name in photon-core
 ### Task 2: Engine state, IPC and the TypeScript mirror
 
 **Files:**
-- Modify: `crates/photon-app/src/engine.rs` (the `Engine` struct ~line 47, `Engine::open` ~line 93, `refresh_grid` ~line 117, `view()` ~line 135, `set_view` ~line 142)
-- Modify: `crates/photon-app/src/commands.rs` (`GridInfo` ~line 34, `grid_info` ~line 93, `set_grid_view` ~line 106)
-- Modify: `crates/photon-app/src/ipc.rs` (~line 67)
+- Modify: `crates/photon-app/src/engine.rs` (struct ~line 47, `Engine::open` ~line 93, `refresh_grid` ~line 120, `set_view` ~line 142)
+- Modify: `crates/photon-app/src/commands.rs` (`GridInfo` ~line 30, `grid_info` ~line 93, beside `set_grid_view` ~line 106)
+- Modify: `crates/photon-app/src/ipc.rs` (~line 66)
 - Modify: `crates/photon-app/src/app.rs` (the `generate_handler!` list, ~lines 118–132)
-- Modify: `ui/src/lib/api.ts` (~lines 15–18 and ~line 51)
+- Modify: `ui/src/lib/api.ts` (~lines 16–17 and ~line 51)
+- Modify: `ui/src/lib/library.svelte.ts` (the `info` state default, ~line 19)
+- Modify: `ui/src/lib/library.test.ts` (**four** `GridInfo` literals — see Step 5)
 - Test: `crates/photon-app/src/engine.rs` or the existing app test module — follow whatever the starred view's engine tests already do.
 
 **Interfaces:**
@@ -410,19 +470,6 @@ pub fn view(&self) -> GridView { *self.view.read() }
 pub fn set_view(&self, view: GridView) -> Result<()> {
     *self.view.write() = view;
     self.refresh_grid()
-}
-
-pub fn refresh_grid(&self) -> Result<()> {
-    let _serialize = self.refresh.lock();
-    let index = Arc::new(GridIndex::build(self.lib.grid_entries_for(*self.view.read())?));
-    let (version, len) = {
-        let mut grid = self.grid.write();
-        grid.0 += 1;
-        grid.1 = index;
-        (grid.0, grid.1.len())
-    };
-    self.events.library_changed(LibraryChanged { version, len });
-    Ok(())
 }
 ```
 
@@ -533,7 +580,7 @@ pub fn set_view(&self, view: GridView) -> Result<()> {
 }
 ```
 
-`refresh_grid`'s index line becomes:
+`refresh_grid`'s index line becomes (Task 1 left it with an empty string):
 
 ```rust
 let index = Arc::new(GridIndex::build(
@@ -541,7 +588,7 @@ let index = Arc::new(GridIndex::build(
 ));
 ```
 
-**Watch the lock order.** `refresh_grid` holds `self.refresh` and then takes read locks on `view` and `search_query`; `set_search_query` releases both write guards before calling it. Do not hold a write guard across the `refresh_grid` call — check that each `*self.x.write() = …` statement ends before the next line, and if you introduce a `let` binding for a guard, drop it explicitly.
+**Watch the lock order.** `refresh_grid` holds `self.refresh` and then takes read locks on `view` and `search_query`; `set_search_query` must release both write guards before calling it. Each `*self.x.write() = …` is a statement-scoped temporary and so is already fine — but if you introduce a `let` binding for a guard, drop it explicitly before the `refresh_grid` call.
 
 - [ ] **Step 4: Thread it through IPC**
 
@@ -574,7 +621,7 @@ pub fn set_search_query(engine: Eng<'_>, query: String) -> Result<(), AppError> 
 
 `app.rs`: add `ipc::set_search_query,` to the `generate_handler!` list, after `ipc::set_grid_view,`.
 
-- [ ] **Step 5: Update the TypeScript mirror — same task, not later**
+- [ ] **Step 5: Update the TypeScript mirror — including the test file**
 
 `ui/src/lib/api.ts`:
 
@@ -589,11 +636,15 @@ and beside `setGridView`:
 setSearchQuery: (query: string) => invoke<void>('set_search_query', { query }),
 ```
 
-Then update the `info` state default in `ui/src/lib/library.svelte.ts` (~line 19) to include `searchQuery: ''`, or `svelte-check` will fail on the missing property.
+`ui/src/lib/library.svelte.ts` (~line 19): add `searchQuery: ''` to the `info` state default.
+
+**`ui/src/lib/library.test.ts` builds four `GridInfo` literals, and `tsconfig.json` typechecks test files.** Every one of them needs `searchQuery: ''` or `npm run check` fails: the `mockResolvedValue({… view: 'all' })` near line 57, the `deferred<{…}>` type argument around lines 152–158, and the two `resolve(…)` calls around lines 172 and 201. Find them all with `rg "view: 'all'" ui/src`. Also add `setSearchQuery` to the `vi.mock('./api', …)` factory, or any later test that exercises it will fail on an undefined mock.
+
+This step is where the previous feature's defect lived: a Rust field added without its TypeScript mirror is silently `undefined` at runtime and nothing warns.
 
 - [ ] **Step 6: Run the gates and prove the tests discriminate**
 
-Full Rust gate, plus `npm run check` and `npm test` in `ui/`. Then revert the `if view != GridView::Search { … clear() }` line in `set_view` and confirm `switching_to_another_view_clears_the_search_query` fails; restore it. Paste the failure into your report.
+Full Rust gate, plus `npm run check` (0 errors AND 0 warnings) and `npm test` in `ui/`. Then revert the `if view != GridView::Search { … clear() }` line in `set_view`, confirm `switching_to_another_view_clears_the_search_query` fails, and restore it. Paste the failure into your report.
 
 - [ ] **Step 7: Commit**
 
@@ -607,11 +658,13 @@ git commit -m "feat(search): add the search view to the engine and IPC surface"
 ### Task 3: The search box
 
 **Files:**
+- Create: `ui/src/lib/search.ts` (the debounce and the results-changed predicate)
+- Create: a test file for it, named to match the existing convention in `ui/src/lib/` (check whether they are `*.test.ts` beside the module)
 - Modify: `ui/src/lib/library.svelte.ts` (add `setSearchQuery` beside the existing `setView`, ~line 92)
-- Modify: `ui/src/components/FolderTree.svelte` (the toolbar, and `jumpToFolder` ~line 111)
-- Modify: `ui/src/App.svelte` (the scroll-reset `$effect`, ~lines 19–27)
-- Modify: `ui/src/components/Grid.svelte` (the empty state)
-- Test: the existing UI test files — follow their conventions
+- Modify: `ui/src/components/FolderTree.svelte` (the toolbar, and `jumpToFolder` ~line 115)
+- Modify: `ui/src/App.svelte` (the scroll-reset `$effect`, ~lines 22–29)
+- Modify: `ui/src/components/Grid.svelte` (the **existing** empty state at ~lines 104–112, which already branches on `view === 'starred'`)
+- Modify: `README.md` (the "## Manual smoke checklist" section, ~line 69)
 
 **Interfaces:**
 - Consumes: `api.setSearchQuery`, `GridInfo.searchQuery`, `GridView` including `'search'` from Task 2.
@@ -630,7 +683,7 @@ async setView(view: GridView): Promise<void> {
 }
 ```
 
-`jumpToFolder` in `FolderTree.svelte`, which already carries the load-bearing await:
+`jumpToFolder` in `FolderTree.svelte`, which already carries a load-bearing await and a comment explaining it:
 
 ```svelte
 async function jumpToFolder(folderId: number) {
@@ -663,23 +716,39 @@ async setSearchQuery(query: string): Promise<void> {
 }
 ```
 
-- [ ] **Step 2: Write the failing tests**
+- [ ] **Step 2: Write the failing tests for `search.ts`**
 
-Put the debounce in a testable function in `ui/src/lib/` rather than inline in the component — the component cannot be unit-tested here, and a debounce asserted only by eye is not asserted. Follow the existing pattern of `ui/src/lib/nav.ts` (pure functions, tested directly).
+Both pieces of logic go in `ui/src/lib/search.ts` as pure functions, following the pattern of `ui/src/lib/nav.ts`. **Logic left inline in a `.svelte` file cannot be unit-tested in this project** — that is the whole reason for extracting them, so do not leave either one in the component.
 
 ```ts
-// ui/src/lib/search.ts
 export const SEARCH_DEBOUNCE_MS = 150;
-export function debounce<T extends (...args: never[]) => void>(fn: T, ms: number): (...args: Parameters<T>) => void
+
+/** Calls `fn` once the caller stops calling for `ms`. `cancel` drops a pending call. */
+export function debounce<T extends (...args: never[]) => void>(
+  fn: T,
+  ms: number,
+): ((...args: Parameters<T>) => void) & { cancel(): void };
+
+/** Whether the grid is showing a different set of photos than it was. */
+export function resultsChanged(
+  prev: { view: GridView; query: string },
+  next: { view: GridView; query: string },
+): boolean;
 ```
 
-Tests: several calls inside the window invoke `fn` once, with the LAST arguments; a call after the window invokes it again. Use the test runner's fake timers — check how the existing UI tests handle time before writing this.
+Tests:
+- several `debounce` calls inside the window invoke `fn` **once**, with the **last** arguments;
+- a call after the window invokes it again;
+- `cancel()` stops a pending call from ever firing;
+- `resultsChanged` is true when only the **view** differs, true when only the **query** differs, and false when neither does. The query case is the one that matters: it is the clause spec §5 requires and the one an implementation naturally forgets.
+
+**No existing UI test uses fake timers** — `vi.useFakeTimers()` is available in Vitest and works, but there is no in-repo precedent to copy, so write it the way the Vitest docs do.
 
 - [ ] **Step 3: Run them and watch them fail**
 
 `npm test` in `ui/` — the module does not exist yet.
 
-- [ ] **Step 4: Implement the debounce, then the box**
+- [ ] **Step 4: Implement `search.ts`, then the box**
 
 In `FolderTree.svelte`'s toolbar, above the Starred row:
 
@@ -691,7 +760,7 @@ In `FolderTree.svelte`'s toolbar, above the Starred row:
   aria-label="Search photos by file or folder name"
   bind:value={query}
   oninput={() => runSearch(query)}
-  onkeydown={(e) => { if (e.key === 'Escape') { query = ''; runSearch.flush?.(); library.setSearchQuery(''); } }}
+  onkeydown={(e) => { if (e.key === 'Escape') clearSearch(); }}
 />
 ```
 
@@ -700,9 +769,27 @@ with
 ```svelte
 let query = $state(library.info.searchQuery);
 const runSearch = debounce((q: string) => library.setSearchQuery(q), SEARCH_DEBOUNCE_MS);
+
+function clearSearch() {
+  // Cancel first: a pending debounced call would otherwise land after the clear and
+  // put the backend straight back into the search view.
+  runSearch.cancel();
+  query = '';
+  library.setSearchQuery('');
+}
+
+// The backend is the source of truth for the active query (spec §5): clicking Starred
+// or a folder clears it server-side, and without this the box would keep displaying
+// text that no longer filters anything.
+$effect(() => {
+  const backend = library.info.searchQuery;
+  if (backend !== query) query = backend;
+});
 ```
 
-Escape must take effect immediately rather than after the debounce — decide how (cancel the pending call, or call the store directly as sketched) and make the two paths agree so a pending debounced call cannot land after the clear and re-enter the search view. State in your report which you chose and why.
+**Do not use `flush`.** Firing the pending call and then clearing sends two un-ordered async IPC calls and re-enters the search view — the exact race the awaited `setView` in `jumpToFolder` exists to prevent. `cancel` is the correct primitive.
+
+The `$effect` above needs care: it writes `query`, which it also reads, so confirm it settles rather than looping. If Svelte 5 warns about that, restructure it (for example, track the last backend value seen in a separate variable and compare against that). Report what you did.
 
 Extend `jumpToFolder` so it leaves Search too:
 
@@ -713,46 +800,49 @@ async function jumpToFolder(folderId: number) {
 }
 ```
 
-The await is load-bearing — see the comment already above that function; keep it, and widen its wording to cover both views.
+The await is load-bearing — keep the existing comment above that function and widen its wording to cover both non-All views.
 
 - [ ] **Step 5: Reset scroll when the results change, not just the view**
 
-In `App.svelte`, the effect must key on the query as well:
+In `App.svelte`, use the extracted predicate so the condition is the tested one:
 
 ```svelte
-let lastView = library.info.view;
-let lastQuery = library.info.searchQuery;
+let last = { view: library.info.view, query: library.info.searchQuery };
 $effect(() => {
-  const view = library.info.view;
-  const query = library.info.searchQuery;
-  if (view !== lastView || query !== lastQuery) {
-    lastView = view;
-    lastQuery = query;
+  const next = { view: library.info.view, query: library.info.searchQuery };
+  if (resultsChanged(last, next)) {
+    last = next;
     grid?.scrollToOffset(0, 'start');
   }
 });
 ```
 
-Without the query in the condition, refining a query keeps the scroll offset from the previous, larger result set (spec §5).
+Without the query in the comparison, refining a query keeps the scroll offset from the previous, larger result set (spec §5).
 
-- [ ] **Step 6: The empty state**
+- [ ] **Step 6: Extend the existing empty state**
 
-In `Grid.svelte`, when `library.info.len === 0` and `library.info.view === 'search'`, render `No photos match "<query>"` rather than an empty area. Match the component's existing empty-state markup and styling if one exists; if none does, keep it plain and consistent with the sidebar's type.
+`Grid.svelte` already has an empty state that branches on `view === 'starred'` (~lines 104–112). Add a `search` branch to that same chain — `No photos match "<query>"` — rather than writing new markup. Use `library.info.searchQuery` for the text, not a local variable.
 
-- [ ] **Step 7: Run the UI gate**
+- [ ] **Step 7: Add the manual checklist items**
+
+The three items in spec §7 need eyes and no agent here runs the GUI. Append them to `README.md`'s "## Manual smoke checklist", matching its existing bullet style: typing part of a folder's name finds its photos; clearing the box restores the full library; clicking a folder while a search is active leaves search and lands on that folder.
+
+- [ ] **Step 8: Run the UI gate**
 
 `npm run check` (0 errors AND 0 warnings — it runs `--fail-on-warnings`) and `npm test`.
 
-- [ ] **Step 8: Prove the debounce test discriminates**
+- [ ] **Step 9: Prove the tests discriminate**
 
-Replace `debounce` with a pass-through that calls `fn` immediately, confirm the "invokes once with the last arguments" test fails, and restore. Paste the failure into your report.
+Two reverts, both pasted into your report:
+- Replace `debounce` with a pass-through that calls `fn` immediately; confirm the "invokes once with the last arguments" test fails; restore.
+- Change `resultsChanged` to compare only `view`; confirm the query-only test fails; restore.
 
-- [ ] **Step 9: Full gate and commit**
+- [ ] **Step 10: Full gate and commit**
 
 Both Rust and UI gates, then:
 
 ```bash
-git add ui
+git add ui README.md
 git commit -m "feat(search): add the sidebar search box"
 ```
 
@@ -764,15 +854,19 @@ git commit -m "feat(search): add the sidebar search box"
 |---|---|
 | §1 scope — file and folder name only | 1 |
 | §2 no schema change | 1 (assert none is added) |
-| §3 match in Rust, Unicode case folding, literal `%`/`_` | 1 (Steps 5, 7) |
+| §3 match in Rust, Unicode case folding, literal `%`/`_` | 1 (Steps 4, 7) |
+| §3 `ß` does not fold to `ss` — recorded, not fixed | 1 (Step 2) |
 | §4 `Search` variant, query beside it, one entry point, shared row mapping | 1 (variant, entry point), 2 (engine state) |
 | §4 empty query returns to All | 2 (policy), 1 (safety net) |
-| §5 search box, debounce, Escape clears | 3 |
+| §5 search box, debounce, Escape clears via `cancel` | 3 (Steps 2, 4) |
 | §5 folder click leaves Search, awaited | 3 (Step 4) |
-| §5 scroll resets when the query changes | 3 (Step 5) |
+| §5 the box renders the backend's query, not local state | 3 (Step 4, the `$effect`) |
+| §5 scroll resets when the query changes | 3 (Step 5), tested via `resultsChanged` in 3 (Step 2) |
 | §5 empty state | 3 (Step 6) |
-| §5 `GridInfo.search_query` and its TS mirror | 2 (Step 5) |
-| §6 a failed query does not blank the window | 2 (`reportError` path), 3 |
-| §7 testing | 1, 2, 3 |
+| §5 `GridInfo.search_query` and its TS mirror | 2 (Step 5), including the test file's four literals |
+| §6 a failed query surfaces as an error and leaves the previous results on screen | 2 (`?` propagation), 3 (`reportError` in the store) |
+| §7 matcher tests, including "matches neither" | 1 (Step 2) |
+| §7 UI tests — debounce, scroll reset | 3 (Step 2) |
+| §7 manual checklist | 3 (Step 7) |
 
-Every §5 clause has a frontend task owning it. This table is checked against the spec deliberately: on the starred work, §5's scroll-to-top was mapped to a backend-only task and consequently nothing implemented it.
+**This table was verified by a pre-flight scan against the spec and the real code, not merely written.** That scan found §6 mapped to a `reportError` path that did not implement what §6 then said — the identical failure mode that left §5's scroll-to-top unimplemented on the starred work. The spec's §6 was amended as a result: a failed query propagates and is surfaced, rather than silently falling back to an empty result, because an empty grid is indistinguishable from "no matches". A coverage table is worth nothing unless something checks it.

@@ -91,7 +91,9 @@ A text input sits in the sidebar toolbar, above the Starred row.
 
 ## 6. Error handling
 
-- **A failed search query**: logged, and the view falls back to an empty result rather than propagating an error that would blank the window. Consistent with `starred_count`'s existing treatment.
+- **A failed search query**: propagates, and is surfaced through the store's existing error path. The index is rebuilt and published only on success, so a failed query leaves the previous results on screen alongside the error rather than replacing them.
+
+  This deliberately does **not** follow `starred_count`, which logs and falls back to `0`. That fallback is right for a sidebar count, where a wrong number degrades benignly. It is wrong for the grid: an empty result is indistinguishable from "nothing matched", so a broken query would look like a successful search for something absent — the confusion §5's empty state exists to prevent.
 - **No matches**: not an error. §5's empty state.
 - Nothing else here can fail: there is no new I/O, no new file access, and no migration.
 
