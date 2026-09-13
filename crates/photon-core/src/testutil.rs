@@ -187,19 +187,35 @@ pub fn png_with_xmp(w: u32, h: u32, rating: i32) -> Vec<u8> {
 
 /// A GIF carrying the packet in an XMP Application Extension, inserted after the header.
 /// The XMP GIF convention stores the packet so that a reader ignoring sub-block framing
-/// still sees contiguous XML, which is exactly what `xmp::read_rating` relies on.
+/// still sees contiguous XML, which is exactly what `xmp::read_rating` relies on. To keep
+/// the file a byte-valid, decodable GIF, the raw packet is followed by the standard 256-byte
+/// "magic trailer": for i in 0..255, a byte valued `254 - i`, plus one final `0x00`. A GIF
+/// decoder that parses the extension strictly as length-prefixed sub-blocks (rather than
+/// reading the XMP packet as one contiguous blob) walks arbitrary "lengths" while stepping
+/// through the XML content, landing at some unpredictable offset inside the trailer; because
+/// each position i there is worth exactly `254 - i`, that jump always lands on the very last
+/// trailer byte (value 0), which is read as a proper zero-length terminator, however
+/// desynchronized the walk through the XML was.
 pub fn gif_with_xmp(w: u32, h: u32, rating: i32) -> Vec<u8> {
     let packet = xmp_packet(rating);
     let mut ext = vec![0x21, 0xFF, 0x0B];
     ext.extend_from_slice(b"XMP DataXMP");
     ext.extend_from_slice(packet.as_bytes());
-    ext.push(0x00); // block terminator
+    ext.extend((0..=254u8).rev());
+    ext.push(0x00);
 
     let gif = encode(&solid(w, h), ImageFormat::Gif);
-    // Header (6) + logical screen descriptor (7). No global colour table is emitted for
-    // these solid images; if one were present it would follow and the packet would simply
-    // sit after it, which the scan also tolerates.
-    let split = 13.min(gif.len());
+    // 6-byte header + 7-byte logical screen descriptor. If the descriptor's packed field
+    // has its top bit set, a global colour table of 3 * 2^(N+1) bytes follows, N being the
+    // low three bits. The encoder does emit one, so a fixed offset splices into the middle
+    // of the table and yields a byte-invalid GIF.
+    let packed = gif[10];
+    let gct = if packed & 0x80 != 0 {
+        3 * (1usize << ((packed & 0x07) + 1))
+    } else {
+        0
+    };
+    let split = 13 + gct;
     let mut out = gif[..split].to_vec();
     out.extend_from_slice(&ext);
     out.extend_from_slice(&gif[split..]);

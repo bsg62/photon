@@ -119,6 +119,17 @@ mod tests {
     }
 
     #[test]
+    fn the_gif_fixture_is_a_decodable_gif() {
+        // Otherwise the "reads a rating out of each container" test proves only that a
+        // packet can be found in arbitrary bytes — which the cap test already covers.
+        let bytes = gif_with_xmp(8, 8, 3);
+        assert!(
+            image::load_from_memory_with_format(&bytes, image::ImageFormat::Gif).is_ok(),
+            "the fixture must be a valid GIF, not merely GIF-shaped"
+        );
+    }
+
+    #[test]
     fn reads_a_rating_out_of_each_container() {
         let dir = tempfile::tempdir().unwrap();
         let jpg = write_file(dir.path(), "a.jpg", &jpeg_with_xmp(8, 8, 2));
