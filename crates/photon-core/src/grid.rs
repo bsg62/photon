@@ -9,6 +9,10 @@ pub enum GridView {
     #[default]
     All,
     Starred,
+    /// Photos whose file or folder name contains the engine's current search query.
+    /// The query itself lives on the engine, not here: this enum is `Copy` and is
+    /// mirrored in TypeScript as a union of plain strings.
+    Search,
 }
 
 /// A u64 as 16 lowercase hex characters: exact in JavaScript, unlike a JSON number.

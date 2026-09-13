@@ -69,6 +69,11 @@ pub fn set_grid_view(engine: Eng<'_>, view: photon_core::grid::GridView) -> Resu
 }
 
 #[tauri::command(async)]
+pub fn set_search_query(engine: Eng<'_>, query: String) -> Result<(), AppError> {
+    commands::set_search_query(&engine, &query)
+}
+
+#[tauri::command(async)]
 pub fn set_visible(engine: Eng<'_>, ids: Vec<i64>) {
     commands::set_visible(&engine, &ids)
 }

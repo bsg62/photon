@@ -45,6 +45,9 @@ pub struct Engine {
     grid: RwLock<(u64, Arc<GridIndex>)>,
     /// Which set of photos the grid currently shows.
     view: RwLock<GridView>,
+    /// The active search query. Beside the view rather than inside it: `GridView` is `Copy`
+    /// and is mirrored in TypeScript as plain strings (spec §4).
+    search_query: RwLock<String>,
     /// Serialises `refresh_grid` end to end (read, publish, emit), so two concurrent
     /// refreshes can't publish a stale snapshot under a newer version or emit events out
     /// of order.
@@ -91,6 +94,7 @@ impl Engine {
             excluded,
             grid: RwLock::new((0, grid)),
             view: RwLock::new(GridView::All),
+            search_query: RwLock::new(String::new()),
             refresh: Mutex::new(()),
             events,
             scans: Mutex::new(HashMap::new()),
@@ -120,7 +124,8 @@ impl Engine {
     pub fn refresh_grid(&self) -> Result<()> {
         let _serialize = self.refresh.lock();
         let index = Arc::new(GridIndex::build(
-            self.lib.grid_entries_for(*self.view.read())?,
+            self.lib
+                .entries_for(*self.view.read(), &self.search_query.read())?,
         ));
         let (version, len) = {
             let mut grid = self.grid.write();
@@ -136,12 +141,56 @@ impl Engine {
         *self.view.read()
     }
 
+    /// The active search query, or the empty string when no search is active.
+    pub fn search_query(&self) -> String {
+        self.search_query.read().clone()
+    }
+
     /// Switches which photos the grid shows and rebuilds the index. Rebuilding is the same
     /// work startup already does; a second index kept in sync would be a large new surface
     /// for staleness bugs to speed up something already fast and rarely done.
+    ///
+    /// Rolls `view`/`search_query` back to their previous values if the rebuild fails, so a
+    /// failed refresh can never leave `GridInfo` (the UI's one source of truth, spec §5)
+    /// reporting a view/query the grid was never actually rebuilt for. Without the
+    /// rollback the bad state is sticky: every later `refresh_grid` — including the scan
+    /// and watcher paths — re-reads the same failing query/view and fails again, and the
+    /// empty state can't rescue it either, since `len` still reflects the old, unrelated
+    /// result set.
     pub fn set_view(&self, view: GridView) -> Result<()> {
+        let previous = (*self.view.read(), self.search_query.read().clone());
+        // A query left behind would reappear the next time Search is entered.
+        if view != GridView::Search {
+            self.search_query.write().clear();
+        }
         *self.view.write() = view;
-        self.refresh_grid()
+        if let Err(err) = self.refresh_grid() {
+            *self.view.write() = previous.0;
+            *self.search_query.write() = previous.1;
+            return Err(err);
+        }
+        Ok(())
+    }
+
+    /// Searches for `query`, or returns to the full library when it is blank.
+    ///
+    /// An empty query is not a search: matching nothing would show an empty grid, and
+    /// matching everything would be the All view under a different name (spec §4).
+    ///
+    /// Rolls back on a failed refresh; see `set_view`'s doc comment for why.
+    pub fn set_search_query(&self, query: &str) -> Result<()> {
+        if query.trim().is_empty() {
+            return self.set_view(GridView::All);
+        }
+        let previous = (*self.view.read(), self.search_query.read().clone());
+        *self.search_query.write() = query.to_string();
+        *self.view.write() = GridView::Search;
+        if let Err(err) = self.refresh_grid() {
+            *self.view.write() = previous.0;
+            *self.search_query.write() = previous.1;
+            return Err(err);
+        }
+        Ok(())
     }
 
     /// Validates and watches `path`, registers it with the running watcher service (if
@@ -889,5 +938,55 @@ mod tests {
             2,
             "switching back restores the full set"
         );
+    }
+
+    #[test]
+    fn setting_a_search_query_switches_to_the_search_view_and_filters_the_grid() {
+        use photon_core::grid::GridView;
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a/beach.jpg", &img), ("a/mountain.jpg", &img)]);
+        f.add_photos();
+        f.engine.wait_for_scans();
+
+        f.engine.set_search_query("beach").unwrap();
+
+        let info = crate::commands::grid_info(&f.engine);
+        assert_eq!(info.view, GridView::Search);
+        assert_eq!(info.search_query, "beach");
+        assert_eq!(info.len, 1);
+    }
+
+    #[test]
+    fn an_empty_search_query_returns_to_the_all_view() {
+        // Clearing the box must restore the library, not leave a "search" view that is
+        // indistinguishable from All but labelled differently (spec §4).
+        use photon_core::grid::GridView;
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a/beach.jpg", &img), ("a/mountain.jpg", &img)]);
+        f.add_photos();
+        f.engine.wait_for_scans();
+
+        f.engine.set_search_query("beach").unwrap();
+        f.engine.set_search_query("   ").unwrap();
+
+        let info = crate::commands::grid_info(&f.engine);
+        assert_eq!(info.view, GridView::All);
+        assert_eq!(info.search_query, "");
+        assert_eq!(info.len, 2, "the whole library is back");
+    }
+
+    #[test]
+    fn switching_to_another_view_clears_the_search_query() {
+        // Otherwise a stale query rides along and reappears the next time Search is entered.
+        use photon_core::grid::GridView;
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a/beach.jpg", &img), ("a/mountain.jpg", &img)]);
+        f.add_photos();
+        f.engine.wait_for_scans();
+
+        f.engine.set_search_query("beach").unwrap();
+        f.engine.set_view(GridView::Starred).unwrap();
+
+        assert_eq!(crate::commands::grid_info(&f.engine).search_query, "");
     }
 }

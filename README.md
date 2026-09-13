@@ -87,6 +87,13 @@ publishing it.
 - [ ] Deleting a photo on disk removes it from the grid.
 - [ ] Renaming a folder on disk moves its photos in the tree within a few seconds.
 - [ ] Unplugging a watched drive dims it; plugging it back in restores it within about a minute, unattended.
+- [ ] Typing part of a folder's name in the sidebar search box finds its photos.
+- [ ] Clearing the search box restores the full library.
+- [ ] Clicking a folder in the sidebar while a search is active leaves search and lands on that folder.
+- [ ] Type a query, pause briefly, then keep typing without pausing again (e.g. type "beach", wait, then add "es" to make "beaches"): the box keeps every character you typed and never snaps back to an earlier, shorter query.
+- [ ] Edit the search box, then immediately (within ~150ms) click a folder or Starred: the click's destination is what stays on screen — the grid must not jump back into a search a moment later.
+- [ ] With Starred active and the search box empty, press Escape in the box: it stays on Starred rather than switching to All.
+- [ ] Type text into the search box, then click a folder within about 150ms: the pending search is cancelled, so the box keeps the text (filtering nothing) until you clear it or press Escape.
 - [ ] On a library large enough to exhaust the system's watch limit, the status bar says live updates are limited rather than silently missing changes.
 - [ ] A folder added with "Add folder…" while photon is running picks up changes on disk within a few seconds, with no restart.
 - [ ] Once a folder whose live updates were limited recovers, the status bar stops saying so without a restart.

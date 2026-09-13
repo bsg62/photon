@@ -60,6 +60,36 @@ impl Item {
 /// so each folder's items stay contiguous.
 pub(crate) const GRID_ORDER: &str = "ORDER BY f.sort_key, f.path, i.taken_at, i.file_name";
 
+/// The grid's columns, in the order `map_grid_row` reads them. Both query paths select
+/// this same prefix so one mapping serves both.
+///
+/// `search_entries` appends more columns after this prefix and reads them by index
+/// starting at `GRID_COLUMN_COUNT`: adding a column here shifts those indices, so keep
+/// the two in sync.
+const GRID_COLUMNS: &str = "i.id, i.folder_id, i.taken_at, i.width, i.height, i.orientation, i.kind, i.path, i.size, i.mtime_ms, i.rating";
+
+/// Number of columns selected by `GRID_COLUMNS`. `search_entries` uses this rather than a
+/// bare `11` so a future column added to `GRID_COLUMNS` can't silently shift `file_name`
+/// and `folder name` into the wrong indices without also touching this constant.
+const GRID_COLUMN_COUNT: usize = 11;
+
+fn map_grid_row(r: &Row<'_>) -> rusqlite::Result<GridEntry> {
+    let (w, h) = oriented_dims(r.get(3)?, r.get(4)?, r.get(5)?);
+    Ok(GridEntry {
+        id: r.get(0)?,
+        folder_id: r.get(1)?,
+        taken_at: r.get(2)?,
+        aspect: if w == 0 || h == 0 {
+            1.0
+        } else {
+            w as f32 / h as f32
+        },
+        kind: MediaKind::from_db(r.get(6)?).unwrap_or(MediaKind::Image),
+        starred: r.get::<_, Option<i64>>(10)?.unwrap_or(0) >= 1,
+        thumb_key: fingerprint(&r.get::<_, String>(7)?, r.get(8)?, r.get(9)?),
+    })
+}
+
 fn row_to_item(r: &Row<'_>) -> rusqlite::Result<Item> {
     Ok(Item {
         id: r.get(0)?,
@@ -304,41 +334,70 @@ impl Library {
 
     /// Every visible item in grid order: folder tree order, then capture time, then name.
     pub fn grid_entries(&self) -> Result<Vec<GridEntry>> {
-        self.grid_entries_for(GridView::All)
+        self.entries_for(GridView::All, "")
     }
 
-    /// The grid's rows for one view. `Starred` filters to `rating >= 1`; the `items_starred`
-    /// partial index can narrow that scan, but the query still joins `folders` and orders by
-    /// `GRID_ORDER`, so it does not serve the query outright the way it does `starred_count`.
-    pub fn grid_entries_for(&self, view: GridView) -> Result<Vec<GridEntry>> {
-        let filter = match view {
-            GridView::All => "",
-            GridView::Starred => "AND i.rating >= 1",
-        };
+    /// The grid's rows for one view. `query` is used only by `Search`; the other views
+    /// ignore it. One entry point rather than two, because `GridView` is matched
+    /// exhaustively and a `Search` arm that could not see the query would have to lie.
+    pub fn entries_for(&self, view: GridView, query: &str) -> Result<Vec<GridEntry>> {
+        match view {
+            GridView::All => self.entries_filtered(""),
+            GridView::Starred => self.entries_filtered("AND i.rating >= 1"),
+            GridView::Search => self.search_entries(query),
+        }
+    }
+
+    /// The grid's rows for a `WHERE` filter fragment. `Starred` filters to `rating >= 1`; the
+    /// `items_starred` partial index can narrow that scan, but the query still joins `folders`
+    /// and orders by `GRID_ORDER`, so it does not serve the query outright the way it does
+    /// `starred_count`.
+    fn entries_filtered(&self, filter: &str) -> Result<Vec<GridEntry>> {
         let conn = self.reader();
         let mut stmt = conn.prepare(&format!(
-            "SELECT i.id, i.folder_id, i.taken_at, i.width, i.height, i.orientation, i.kind, i.path, i.size, i.mtime_ms, i.rating
+            "SELECT {GRID_COLUMNS}
              FROM items i JOIN folders f ON f.id = i.folder_id
              WHERE i.missing_since IS NULL {filter} {GRID_ORDER}"
         ))?;
         let rows = stmt
-            .query_map([], |r| {
-                let (w, h) = oriented_dims(r.get(3)?, r.get(4)?, r.get(5)?);
-                Ok(GridEntry {
-                    id: r.get(0)?,
-                    folder_id: r.get(1)?,
-                    taken_at: r.get(2)?,
-                    aspect: if w == 0 || h == 0 {
-                        1.0
-                    } else {
-                        w as f32 / h as f32
-                    },
-                    kind: MediaKind::from_db(r.get(6)?).unwrap_or(MediaKind::Image),
-                    starred: r.get::<_, Option<i64>>(10)?.unwrap_or(0) >= 1,
-                    thumb_key: fingerprint(&r.get::<_, String>(7)?, r.get(8)?, r.get(9)?),
-                })
-            })?
+            .query_map([], map_grid_row)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// Photos whose file name or folder name contains `query`, case-insensitively.
+    ///
+    /// The match runs in Rust rather than as SQL `LIKE` for two reasons (spec §3):
+    /// SQLite folds case for ASCII only, so `MÜNCHEN` would not find `München`; and
+    /// `LIKE` would read `%` and `_` in the user's query as wildcards. This is one pass
+    /// over the same rows an index rebuild already reads, with two short string compares
+    /// added per row.
+    fn search_entries(&self, query: &str) -> Result<Vec<GridEntry>> {
+        let needle = query.trim().to_lowercase();
+        if needle.is_empty() {
+            return Ok(Vec::new());
+        }
+        let conn = self.reader();
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {GRID_COLUMNS}, i.file_name, f.name
+             FROM items i JOIN folders f ON f.id = i.folder_id
+             WHERE i.missing_since IS NULL {GRID_ORDER}"
+        ))?;
+        let rows = stmt
+            .query_map([], |r| {
+                let file_name: String = r.get(GRID_COLUMN_COUNT)?;
+                let folder_name: String = r.get(GRID_COLUMN_COUNT + 1)?;
+                let hit = file_name.to_lowercase().contains(&needle)
+                    || folder_name.to_lowercase().contains(&needle);
+                // No `Ok(…?)` wrapper here: the closure already returns this type, and
+                // wrapping it trips `clippy::needless_question_mark`, which the gate
+                // treats as an error.
+                hit.then(|| map_grid_row(r)).transpose()
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+            .into_iter()
+            .flatten()
+            .collect();
         Ok(rows)
     }
 
@@ -751,13 +810,13 @@ mod tests {
         .unwrap();
 
         let all: Vec<i64> = lib
-            .grid_entries_for(GridView::All)
+            .entries_for(GridView::All, "")
             .unwrap()
             .iter()
             .map(|e| e.id)
             .collect();
         let starred: Vec<i64> = lib
-            .grid_entries_for(GridView::Starred)
+            .entries_for(GridView::Starred, "")
             .unwrap()
             .iter()
             .map(|e| e.id)
@@ -767,6 +826,241 @@ mod tests {
             starred,
             vec![ids[1], ids[2]],
             "unrated and zero-rated are excluded"
+        );
+    }
+
+    #[test]
+    fn search_matches_a_substring_of_the_file_name() {
+        let (_dir, lib) = temp_library();
+        let (_watched, folder) = seed_folder(&lib, Path::new("/p"));
+        let ids = lib
+            .insert_items(&[
+                new_item(folder, "/p/sunset-beach.jpg", 1),
+                new_item(folder, "/p/mountain.jpg", 2),
+            ])
+            .unwrap();
+
+        let hits: Vec<i64> = lib
+            .entries_for(GridView::Search, "beach")
+            .unwrap()
+            .iter()
+            .map(|e| e.id)
+            .collect();
+        assert_eq!(hits, vec![ids[0]]);
+    }
+
+    #[test]
+    fn search_matches_a_substring_of_the_folder_name() {
+        let (_dir, lib) = temp_library();
+        let (_watched, holiday) = seed_folder(&lib, Path::new("/holiday-2024"));
+        let ids = lib
+            .insert_items(&[new_item(holiday, "/holiday-2024/a.jpg", 1)])
+            .unwrap();
+
+        let hits: Vec<i64> = lib
+            .entries_for(GridView::Search, "holiday")
+            .unwrap()
+            .iter()
+            .map(|e| e.id)
+            .collect();
+        assert_eq!(
+            hits, ids,
+            "the folder's name matches even though the file's does not"
+        );
+    }
+
+    #[test]
+    fn a_query_matching_neither_name_returns_nothing() {
+        let (_dir, lib) = temp_library();
+        let (_watched, folder) = seed_folder(&lib, Path::new("/p"));
+        lib.insert_items(&[new_item(folder, "/p/a.jpg", 1)])
+            .unwrap();
+
+        assert!(
+            lib.entries_for(GridView::Search, "zzz").unwrap().is_empty(),
+            "no match is an empty result, not the whole library"
+        );
+    }
+
+    #[test]
+    fn search_folds_case_for_non_ascii_text() {
+        // This is the test that pins the whole "match in Rust, not in SQL" decision
+        // (spec §3): SQLite's LIKE and lower() fold ASCII only, so a `LIKE`-based
+        // implementation passes the ASCII cases above and fails this one. Deleting it
+        // removes the only evidence for the design.
+        let (_dir, lib) = temp_library();
+        let (_watched, folder) = seed_folder(&lib, Path::new("/München"));
+        lib.insert_items(&[new_item(folder, "/München/Straße.jpg", 1)])
+            .unwrap();
+
+        // Of these four, only "MÜNCHEN" actually discriminates the Rust-vs-SQL-LIKE
+        // design: SQLite's LIKE folds ASCII case, and `ü` already matches `ü` exactly,
+        // so `'München' LIKE '%münchen%'` is true under LIKE too. `Ü` is the character
+        // LIKE does not fold. Do not trim this loop down without keeping "MÜNCHEN".
+        for query in ["münchen", "MÜNCHEN", "München"] {
+            assert_eq!(
+                lib.entries_for(GridView::Search, query).unwrap().len(),
+                1,
+                "{query} must find the folder München regardless of case"
+            );
+        }
+        assert_eq!(
+            lib.entries_for(GridView::Search, "straße").unwrap().len(),
+            1,
+            "the file Straße.jpg is found by its own name"
+        );
+    }
+
+    #[test]
+    fn search_does_not_treat_ss_and_eszett_as_the_same_letter() {
+        // A documented limit, not an aspiration. Rust's `to_lowercase` maps "Straße" to
+        // "straße" and "STRASSE" to "strasse", so the two spellings never meet. Someone
+        // who types `strasse` looking for `Straße.jpg` finds nothing.
+        //
+        // Left as-is deliberately: fixing it means full Unicode case-folding (ß → ss),
+        // which needs a dependency or a hand-rolled table, and this is a simple search.
+        // The test exists so the behaviour is a decision on record rather than a surprise.
+        let (_dir, lib) = temp_library();
+        let (_watched, folder) = seed_folder(&lib, Path::new("/p"));
+        lib.insert_items(&[new_item(folder, "/p/Straße.jpg", 1)])
+            .unwrap();
+
+        assert!(
+            lib.entries_for(GridView::Search, "strasse")
+                .unwrap()
+                .is_empty(),
+            "ß does not case-fold to ss"
+        );
+    }
+
+    #[test]
+    fn search_treats_sql_wildcards_as_literal_characters() {
+        // A LIKE-based implementation would return both rows for "%", since an
+        // unescaped % matches everything (spec §3).
+        let (_dir, lib) = temp_library();
+        let (_watched, folder) = seed_folder(&lib, Path::new("/p"));
+        let ids = lib
+            .insert_items(&[
+                new_item(folder, "/p/50% grey.jpg", 1),
+                new_item(folder, "/p/plain.jpg", 2),
+            ])
+            .unwrap();
+
+        let hits: Vec<i64> = lib
+            .entries_for(GridView::Search, "%")
+            .unwrap()
+            .iter()
+            .map(|e| e.id)
+            .collect();
+        assert_eq!(hits, vec![ids[0]], "% matches the character, not every row");
+
+        // Same idea for `_`, LIKE's single-character wildcard (spec §7): a LIKE-based
+        // implementation would return both rows, since an unescaped `_` matches any
+        // one character rather than a literal underscore.
+        let (_watched2, folder2) = seed_folder(&lib, Path::new("/q"));
+        let underscore_ids = lib
+            .insert_items(&[
+                new_item(folder2, "/q/snap_01.jpg", 1),
+                new_item(folder2, "/q/noseparator.jpg", 2),
+            ])
+            .unwrap();
+        let underscore_hits: Vec<i64> = lib
+            .entries_for(GridView::Search, "_")
+            .unwrap()
+            .iter()
+            .map(|e| e.id)
+            .collect();
+        assert_eq!(
+            underscore_hits,
+            vec![underscore_ids[0]],
+            "_ matches the character, not any character"
+        );
+    }
+
+    #[test]
+    fn search_keeps_grid_order_and_excludes_missing_items() {
+        // Three items so surviving results can actually show an order: a one-element
+        // result cannot discriminate `{GRID_ORDER}` from no ordering at all, which is
+        // exactly the gap this test used to leave (search_entries has its own SQL
+        // string, separate from entries_filtered's, and nothing else exercised it).
+        let (_dir, lib) = temp_library();
+        let (_watched, folder) = seed_folder(&lib, Path::new("/trip"));
+        let ids = lib
+            .insert_items(&[
+                new_item(folder, "/trip/b.jpg", 2),
+                new_item(folder, "/trip/a.jpg", 1),
+                new_item(folder, "/trip/c.jpg", 3),
+            ])
+            .unwrap();
+        let (b, a, c) = (ids[0], ids[1], ids[2]);
+        // `mark_missing` takes a timestamp as its second argument; the existing tests in
+        // this file call it as `mark_missing(&ids, 99)`.
+        lib.mark_missing(&[c], 99).unwrap();
+
+        let hits: Vec<i64> = lib
+            .entries_for(GridView::Search, "trip")
+            .unwrap()
+            .iter()
+            .map(|e| e.id)
+            .collect();
+        assert_eq!(
+            hits,
+            vec![a, b],
+            "a missing item is excluded, and the survivors keep grid order (by taken_at here)"
+        );
+    }
+
+    #[test]
+    fn an_empty_search_query_matches_nothing_rather_than_everything() {
+        // The engine turns an empty query back into the All view (Task 2); this is the
+        // safety net under that, so a bug there shows as an empty grid rather than as a
+        // "search" indistinguishable from the full library.
+        let (_dir, lib) = temp_library();
+        let (_watched, folder) = seed_folder(&lib, Path::new("/p"));
+        lib.insert_items(&[new_item(folder, "/p/a.jpg", 1)])
+            .unwrap();
+
+        assert!(lib.entries_for(GridView::Search, "").unwrap().is_empty());
+        assert!(lib.entries_for(GridView::Search, "   ").unwrap().is_empty());
+    }
+
+    #[test]
+    fn the_all_and_starred_views_are_unchanged_by_the_new_entry_point() {
+        let (_dir, lib) = temp_library();
+        let (_watched, folder) = seed_folder(&lib, Path::new("/p"));
+        let ids = lib
+            .insert_items(&[
+                new_item(folder, "/p/a.jpg", 1),
+                new_item(folder, "/p/b.jpg", 2),
+            ])
+            .unwrap();
+        lib.update_items(&[(
+            ids[1],
+            NewItem {
+                rating: Some(3),
+                ..new_item(folder, "/p/b.jpg", 2)
+            },
+        )])
+        .unwrap();
+
+        let all: Vec<i64> = lib
+            .entries_for(GridView::All, "")
+            .unwrap()
+            .iter()
+            .map(|e| e.id)
+            .collect();
+        let starred: Vec<i64> = lib
+            .entries_for(GridView::Starred, "")
+            .unwrap()
+            .iter()
+            .map(|e| e.id)
+            .collect();
+        assert_eq!(all, ids);
+        assert_eq!(starred, vec![ids[1]]);
+        assert_eq!(
+            lib.grid_entries().unwrap().len(),
+            2,
+            "the convenience wrapper still means All"
         );
     }
 }
