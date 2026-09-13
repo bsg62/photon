@@ -534,6 +534,7 @@ fn describe(
         height: meta.height,
         orientation: meta.orientation,
         taken_at: meta.taken_at.unwrap_or(mtime_ms.div_euclid(1000)),
+        // Always `None` here; `apply_picasa_stars` sets the real value after the walk.
         rating: meta.rating,
     }
 }

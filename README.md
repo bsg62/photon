@@ -18,13 +18,14 @@ Download the installer for your system from the [latest release](https://github.
 
 ### Upgrading to a version with Starred photos
 
-photon reads star ratings from each photo's embedded XMP as it indexes it. A library built
-by an earlier version has no ratings recorded, and photon will not re-read a file whose size
-and modification time have not changed — so Starred would stay empty.
+photon reads star ratings from Picasa's per-directory `.picasa.ini` / `Picasa.ini`, applied
+to each folder after it is scanned. A library built by a v0.3.x version holds XMP-derived
+ratings that no INI has confirmed.
 
 Delete the library and let photon rebuild it. It lives in your user data directory
 (`photon/library.db`); your photos are untouched, since photon never writes to watched
-folders. Rebuilding re-reads every photo, ratings included.
+folders. Rebuilding is the honest way to a clean state, since it lets every folder's INI be
+read fresh.
 
 ### photon is not code-signed
 
@@ -107,7 +108,10 @@ publishing it.
 - [ ] `sha256sum -c SHA256SUMS --ignore-missing` passes against the downloaded files.
 - [ ] On a freshly built library, photos rated in Picasa show under Starred with a matching count, once the first scan has finished.
 - [ ] Clicking Starred shows only starred photos; clicking any folder returns to the full library at that folder.
-- [ ] A library carried over from v0.2.0 shows no stars until it is deleted and rebuilt, as the README's upgrade note says.
+- [ ] A library carried over from v0.2.0 picks up stars on the first scan of each folder, without being deleted and rebuilt.
+- [ ] A folder starred in Picasa shows exactly those photos under Starred after a scan.
+- [ ] Starring a photo in Picasa and rescanning makes it appear under Starred, without deleting the library.
+- [ ] Un-starring a photo in Picasa and rescanning makes it disappear from Starred.
 - [ ] After a full scan, no photo file's modification time has changed — photon reads ratings and never writes them.
 
 ## How watching works

@@ -773,7 +773,7 @@ mod tests {
     }
 
     /// `new_item` builds a row with `rating: None`; this is the same row with a rating, as
-    /// the scanner produces once it has read the file's XMP.
+    /// the scanner produces once its Picasa INI pass has confirmed a star.
     fn rated(folder: i64, path: &str, taken_at: i64, rating: u8) -> NewItem {
         NewItem {
             rating: Some(rating),
