@@ -3,7 +3,7 @@
   import { api, type Folder, type WatchedFolder } from '../lib/api';
   import { folderRows, groupByYear } from '../lib/folders';
   import { library } from '../lib/library.svelte';
-  import { debounce, SEARCH_DEBOUNCE_MS } from '../lib/search';
+  import { debounce, SEARCH_DEBOUNCE_MS, shouldAdoptBackendQuery } from '../lib/search';
 
   let { onjump }: { onjump: (folderId: number) => void } = $props();
 
@@ -39,15 +39,13 @@
 
   // The backend is the source of truth for the active query (spec §5): clicking Starred or
   // a folder clears it server-side, and without this the box would keep displaying text
-  // that no longer filters anything. But a backend value that matches what we last sent is
-  // our own echo of a keystroke, not an external change, and must not be adopted — doing so
-  // would snap the box back to stale text while the user is still typing ahead of it.
+  // that no longer filters anything. shouldAdoptBackendQuery is what tells an external
+  // change (adopt it) from our own echo of a keystroke (must not be adopted — doing so
+  // would snap the box back to stale text while the user is still typing ahead of it).
   $effect(() => {
     const backend = library.info.searchQuery;
-    if (backend === lastBackendQuery) return;
+    if (shouldAdoptBackendQuery(backend, lastBackendQuery, lastSent)) query = backend;
     lastBackendQuery = backend;
-    if (backend === lastSent) return;
-    query = backend;
   });
 
   /** Folders that actually hold photos, grouped by the year of their newest one.

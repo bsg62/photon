@@ -25,6 +25,18 @@ export function debounce<T extends (...args: never[]) => void>(
   return debounced;
 }
 
+/** Whether the box should adopt a query that arrived from the backend.
+ *
+ *  Declines our own echo: a value we just sent comes back one debounce window plus an IPC
+ *  round trip later, by which time the user has usually typed more, and adopting it would
+ *  rewrite the box under them and move the caret. Backend changes that originated elsewhere
+ *  — a folder jump or the Starred click, both of which clear the query — are adopted, which
+ *  is the whole reason the sync exists. */
+export function shouldAdoptBackendQuery(backend: string, lastSeen: string, lastSent: string | null): boolean {
+  if (backend === lastSeen) return false;
+  return backend !== lastSent;
+}
+
 /** Whether the grid is showing a different set of photos than it was. Used to decide
  *  whether to reset scroll: keying on `view` alone would miss a refined query staying
  *  within the Search view (spec §5). */

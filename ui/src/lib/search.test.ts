@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { debounce, resultsChanged } from './search';
+import { debounce, resultsChanged, shouldAdoptBackendQuery } from './search';
 
 describe('debounce', () => {
   beforeEach(() => {
@@ -65,6 +65,28 @@ describe('debounce', () => {
 
     expect(fn).toHaveBeenCalledTimes(1);
     expect(fn).toHaveBeenCalledWith('b');
+  });
+});
+
+describe('shouldAdoptBackendQuery', () => {
+  it('adopts a backend change that we never sent (a folder jump or Starred clearing the query)', () => {
+    expect(shouldAdoptBackendQuery('', 'beach', 'beach')).toBe(true);
+  });
+
+  it('declines our own echo — this is the character-losing bug', () => {
+    expect(shouldAdoptBackendQuery('beach', '', 'beach')).toBe(false);
+  });
+
+  it('declines a value that has not changed since we last saw it', () => {
+    expect(shouldAdoptBackendQuery('beach', 'beach', null)).toBe(false);
+    expect(shouldAdoptBackendQuery('beach', 'beach', 'something else')).toBe(false);
+  });
+
+  it('adopts an external change even when a different value was last sent', () => {
+    // The user typed "beach" (sent), then a folder click cleared the query server-side
+    // while a stale "beaches" was in flight — the backend now reports "", which is neither
+    // what we last saw nor what we last sent, so it must be adopted.
+    expect(shouldAdoptBackendQuery('', 'beaches', 'beaches')).toBe(true);
   });
 });
 
