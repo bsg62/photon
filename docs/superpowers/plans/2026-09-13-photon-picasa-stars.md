@@ -23,6 +23,15 @@
 - **Every new test must be demonstrated to fail with its change reverted.** Revert, run, paste the real failure, restore. **A compile error is not a revert-proof** — it shows a symbol was missing, not that an assertion discriminates behaviour. A test that passes both ways proves nothing: say so and replace it.
 - **Disclose every deviation from this plan**, including ones you are confident are right. An undisclosed deviation is indistinguishable from an oversight and costs the reviewer the find.
 
+**Three deviations this plan makes deliberately, declared so nobody has to rediscover them:**
+`read_stars` returns `Option<HashSet<String>>` where spec §3 says a plain `HashSet` that
+"never fails" — the `Option` is what carries §7's distinction between "no stars" and "no
+evidence", and §3's wording is the looser of the two. `folder_item_names` uses
+`prepare_cached` on a reader where every other read in this codebase uses plain `prepare`;
+it runs once per folder per scan, so caching is worth the inconsistency. And Task 2's subtree
+test calls `scan_subtree` directly rather than the existing `scan_sub` helper, because it
+needs a distinct `scan_id`.
+
 ---
 
 ### Task 1: The INI parser
@@ -74,9 +83,17 @@ backuphash=1332313
 
 A section header is a bare filename. Lines under it are that file's properties until the next header. `star` is optional, default `no`. **Every other property is ignored.**
 
-- [ ] **Step 1: Write the failing tests**
+- [ ] **Step 1: Register the module**
 
-Create `crates/photon-core/src/picasa.rs` with only the tests and a stub, so the first run is a real failure rather than a missing file. House style: long sentence-like test names, and a comment on any case whose reason is not obvious. `write_file(dir, rel, bytes) -> PathBuf` already exists in `crate::testutil` and creates parent directories.
+Add `pub mod picasa;` to `crates/photon-core/src/lib.rs`, between `metadata` and `paths`.
+**Do this first.** Without it `picasa.rs` is never compiled, and Step 3's "expected failure"
+would be a vacuous `0 tests run` that reads like success.
+
+- [ ] **Step 2: Write the failing tests**
+
+Create `crates/photon-core/src/picasa.rs` containing the tests below **and nothing else** — no
+stub. The first run then fails to compile on the missing `read_stars`, which is an honest
+"not built yet" signal rather than a stub quietly returning something. House style: long sentence-like test names, and a comment on any case whose reason is not obvious. `write_file(dir, rel, bytes) -> PathBuf` already exists in `crate::testutil` and creates parent directories.
 
 ```rust
 #[cfg(test)]
@@ -191,6 +208,38 @@ mod tests {
     }
 
     #[test]
+    fn a_duplicate_section_starring_the_file_wins() {
+        // Spec §8 names this case. Picasa has been known to write a file twice; whichever
+        // way it resolves must be pinned rather than left to whatever the loop happens to
+        // do, since a silent change here would move stars.
+        let dir = tempfile::tempdir().unwrap();
+        write_file(dir.path(), ".picasa.ini", b"[a.jpg]\nstar=no\n[a.jpg]\nstar=yes\n");
+        assert_eq!(stars(dir.path()), vec!["a.jpg"], "a star anywhere in the file counts");
+
+        let dir2 = tempfile::tempdir().unwrap();
+        write_file(dir2.path(), ".picasa.ini", b"[a.jpg]\nstar=yes\n[a.jpg]\nstar=no\n");
+        assert_eq!(
+            stars(dir2.path()),
+            vec!["a.jpg"],
+            "inserting into a set never un-stars: a later star=no does not remove an earlier star"
+        );
+    }
+
+    #[test]
+    fn the_read_is_bounded() {
+        // Spec §3's cap has to actually bound the read rather than being advisory, the same
+        // way `xmp::a_packet_beyond_the_read_cap_is_not_found` pins the XMP one.
+        let dir = tempfile::tempdir().unwrap();
+        let mut ini = vec![b' '; MAX_INI as usize];
+        ini.extend_from_slice(b"\n[a.jpg]\nstar=yes\n");
+        write_file(dir.path(), ".picasa.ini", &ini);
+        assert!(
+            stars(dir.path()).is_empty(),
+            "a section past the cap is not read"
+        );
+    }
+
+    #[test]
     fn a_later_section_does_not_inherit_the_previous_one_s_star() {
         let dir = tempfile::tempdir().unwrap();
         write_file(dir.path(), ".picasa.ini", b"[a.jpg]\nstar=yes\n[b.jpg]\nbackuphash=1\n");
@@ -199,12 +248,12 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Run them and watch them fail**
+- [ ] **Step 3: Run them and watch them fail**
 
 Run: `cargo test -p photon-core picasa`
-Expected: compile failure — `read_stars` does not exist. That is the checkpoint for this step; it is **not** the revert-proof, which comes in Step 5.
+Expected: compile failure — `read_stars` does not exist. That is the checkpoint for this step; it is **not** the revert-proof, which comes in Step 6.
 
-- [ ] **Step 3: Implement**
+- [ ] **Step 4: Implement**
 
 ```rust
 //! Reads Picasa's per-directory star flags.
@@ -237,7 +286,7 @@ pub fn read_stars(dir: &Path) -> Option<HashSet<String>> {
     Some(parse_stars(&String::from_utf8_lossy(&bytes)))
 }
 
-/// The INI to read, if any. `Ok(None)` when the directory has none; `None` when the
+/// The INI to read, if any. `Some(None)` when the directory has none; `None` when the
 /// directory itself could not be listed.
 ///
 /// Listing the directory rather than probing two fixed names is what makes the match
@@ -297,11 +346,11 @@ fn is_star(value: &str) -> bool {
 }
 ```
 
-- [ ] **Step 4: Run the tests**
+- [ ] **Step 5: Run the tests**
 
 Run: `cargo test -p photon-core picasa` — all green.
 
-- [ ] **Step 5: Prove the tests discriminate**
+- [ ] **Step 6: Prove the tests discriminate**
 
 Two reverts, each with its real failure pasted into your report, restoring after each:
 
@@ -310,7 +359,7 @@ Two reverts, each with its real failure pasted into your report, restoring after
 
 If either passes anyway, it does not pin the behaviour — say so and fix the test.
 
-- [ ] **Step 6: Run the full Rust gate and commit**
+- [ ] **Step 7: Run the full Rust gate and commit**
 
 All four commands, then:
 
@@ -330,7 +379,13 @@ git commit -m "feat(stars): parse Picasa's per-directory INI star flags"
 
 **Interfaces:**
 - Consumes: `crate::picasa::read_stars(dir) -> Option<HashSet<String>>` from Task 1.
-- Produces: `Library::folder_item_names(folder_id: i64) -> Result<Vec<(i64, String)>>` (lowercased names); `Library::set_ratings(&[(i64, u8)]) -> Result<()>`.
+- Produces: `Library::folder_item_names(folder_id: i64) -> Result<Vec<(i64, String)>>` (lowercased names); `Library::set_ratings(&[(i64, u8)]) -> Result<()>`; `WalkOutcome.walked: Vec<(PathBuf, i64)>`.
+
+**Verify, do not modify:** `crates/photon-app`. Its
+`switching_to_the_starred_view_rebuilds_the_grid_with_only_starred_photos` writes a rating
+directly and holds a live watcher, so a watcher-triggered subtree scan over a folder with no
+INI could reset it. It should stay green because it runs no further scan — but if it goes
+flaky, report it rather than editing it.
 
 **Context you need — read this before writing anything.**
 
@@ -476,6 +531,35 @@ fn a_subtree_scan_applies_stars_too() {
 
 **Check `scan_subtree`'s real signature before writing that last test** and adapt the call — the argument list above is the shape, not a quotation. Find it with `rg -n 'pub fn scan_subtree' -A 10 crates/photon-core/src/scanner.rs`.
 
+```rust
+#[test]
+fn a_folder_that_cannot_be_read_keeps_its_stars() {
+    // Spec §7: failing to read is not evidence that the stars are gone, unlike a
+    // successfully-read INI with no entry for the photo. The `Option` in read_stars's
+    // return type is the only thing carrying that distinction, and this is the only test
+    // that exercises the caller's side of it.
+    //
+    // Make the folder unreadable however your platform allows (on Unix, chmod 0o000 the
+    // directory after the scan, and restore it before the temp dir is dropped). If that is
+    // not expressible portably, say so in your report and put it on the README checklist
+    // instead of writing a test that does not actually exercise the case.
+    let (dir, lib) = temp_library();
+    let root = photos_root(&dir);
+    write_file(&root, "sub/a.jpg", &jpeg_bytes(4, 2));
+    write_file(&root, "sub/.picasa.ini", b"[a.jpg]\nstar=yes\n");
+    let watched = lib.add_watched_folder(&root, &[]).unwrap();
+    scan(&lib, &watched, 1);
+    assert_eq!(lib.starred_count().unwrap(), 1);
+
+    // ...make root/sub unreadable, rescan, restore...
+    // assert_eq!(lib.starred_count().unwrap(), 1, "no evidence is not evidence of no stars");
+}
+```
+
+**Also drop `jpeg_with_xmp` from the test module's import list** (`scanner.rs:539`). Deleting
+the test below leaves it the only unused name there, and `unused_imports` under
+`clippy -D warnings` would fail this task's own gate.
+
 **The existing test `a_scan_reads_the_xmp_rating_into_the_library` will break in this task.** It writes a photo with an XMP rating of 3 and asserts `starred_count() == 1`; once the pass runs, that folder has no INI, so the star is cleared and the count is 0. **Delete it** — it pins behaviour this feature removes. Task 3 removes the XMP scan-path caller that made it pass.
 
 - [ ] **Step 2: Run them and watch them fail**
@@ -530,6 +614,9 @@ Add a unit test for each in that file's test module, following its conventions (
 
 In `crates/photon-core/src/scanner.rs`:
 
+The function's doc comment must carry why it exists, since the naive alternative is so
+tempting:
+
 ```rust
 /// Applies each walked folder's Picasa stars to its photos.
 ///
@@ -541,14 +628,90 @@ In `crates/photon-core/src/scanner.rs`:
 /// The INI is the only authority: a photo it does not name is set to unstarred, so removing
 /// a star in Picasa clears it here too. A folder that cannot be read is skipped instead,
 /// because failing to read is not evidence that the stars are gone.
-fn apply_picasa_stars(lib: &Library, folder_ids: &HashMap<PathBuf, i64>) -> Result<()> {
-    for (dir, &folder_id) in folder_ids {
+```
+
+**Where to call it — this placement is load-bearing, and the obvious spot is wrong.**
+
+In `scan_watched`, put the call **after the empty-root offline guard**, immediately before
+`finish_mark_purge`:
+
+```rust
+    // A reachable but empty root usually means an unmounted volume left its mount
+    // point behind, not that every known file vanished at once.
+    if seen.files_seen == 0 && known.values().any(|k| !k.missing) {
+        lib.set_watched_online(watched.id, false)?;
+        progress(&seen);
+        return Ok(ScanReport { offline: true, ..ScanReport::default() });
+    }
+    lib.set_watched_online(watched.id, true)?;
+
+    apply_picasa_stars(lib, &walked)?;          // <-- here
+
+    let (marked, purged) = finish_mark_purge(lib, known)?;
+```
+
+**Not after the `cancelled` block.** That guard exists because a reachable but empty root
+usually means an unmounted volume left its mount point behind, and it deliberately leaves
+every known item untouched. Running the pass before it means `read_stars(root)` returns
+`Some(empty)` for the still-mounted-but-empty root and **every photo in it is set to
+`rating = 0`** — a rescan of an unplugged drive silently wipes those stars. The existing
+`empty_reachable_root_is_treated_as_offline` test never inspects ratings, so nothing would
+catch it.
+
+In `scan_subtree`, call it at the equivalent point — after its `cancelled` and
+`skip_mark_purge` early returns, before its `finish_mark_purge`. Read the real function
+before placing it; it uses `outcome.cancelled` rather than a destructured binding.
+
+**And pass the folders the walk actually entered, not `folder_ids`.** In `scan_subtree`,
+`folder_ids` is pre-seeded by `seed_ancestors`, which inserts the watched root *and every
+ancestor directory* before the walk begins:
+
+```rust
+let (mut folder_ids, parent_id) = seed_ancestors(lib, watched, relative, scan_id)?;
+```
+
+Handing that to the pass would re-read and rewrite ratings for every ancestor of the scanned
+folder — contradicting `scan_subtree`'s own documented contract that "everything this touches
+is restricted to that subtree", and spec §7's "only for folders the walk completed". It would
+also make every watcher event touch the whole ancestor chain, when `scan_subtree` exists
+precisely to be cheap.
+
+So have `walk_tree` record what it entered. Add a field to `WalkOutcome`:
+
+```rust
+struct WalkOutcome {
+    report: ScanReport,
+    seen: ScanProgress,
+    /// The directories this walk actually entered, as opposed to those `seed_ancestors`
+    /// pre-inserted into `folder_ids`. The Picasa pass must only touch these: a subtree
+    /// scan that rewrote its ancestors' ratings would break its own isolation contract.
+    walked: Vec<(PathBuf, i64)>,
+    incomplete_prefixes: Vec<PathBuf>,
+    skip_mark_purge: bool,
+    cancelled: bool,
+}
+```
+
+Populate it in `walk_tree` at the same place `folder_ids` is filled:
+
+```rust
+let id = lib.upsert_folder(watched_id, parent, path_str, scan_id)?;
+folder_ids.insert(path.to_path_buf(), id);
+walked.push((path.to_path_buf(), id));
+continue;
+```
+
+and have `apply_picasa_stars` take `&[(PathBuf, i64)]`:
+
+```rust
+fn apply_picasa_stars(lib: &Library, walked: &[(PathBuf, i64)]) -> Result<()> {
+    for (dir, folder_id) in walked {
         let Some(stars) = crate::picasa::read_stars(dir) else {
             tracing::debug!(?dir, "leaving stars alone for an unreadable folder");
             continue;
         };
         let ratings: Vec<(i64, u8)> = lib
-            .folder_item_names(folder_id)?
+            .folder_item_names(*folder_id)?
             .into_iter()
             .map(|(id, name)| (id, u8::from(stars.contains(&name))))
             .collect();
@@ -560,18 +723,8 @@ fn apply_picasa_stars(lib: &Library, folder_ids: &HashMap<PathBuf, i64>) -> Resu
 }
 ```
 
-Call it in **both** `scan_watched` and `scan_subtree`, immediately after each one's `if cancelled { ... return ... }` block — so a cancelled scan applies nothing, matching the scanner's existing rule that anything unreached is unknown rather than changed, while a scan that completed its walk applies stars even if `skip_mark_purge` later stops it marking anything missing:
-
-```rust
-if cancelled {
-    progress(&seen);
-    return Ok(ScanReport { cancelled: true, ..report });
-}
-
-apply_picasa_stars(lib, &folder_ids)?;
-```
-
-In `scan_subtree`, use whatever that function calls its own `folder_ids` map; check the real code rather than assuming the name matches.
+`scan_watched` destructures `WalkOutcome`, so add `walked` to its pattern; `scan_subtree` binds
+the whole struct as `outcome`, so it reads `&outcome.walked`.
 
 - [ ] **Step 5: Run the tests**
 
@@ -639,23 +792,37 @@ In `metadata.rs`'s test module:
 
 Run `cargo test -p photon-core` and fix anything else that falls out. Do not delete or weaken any test in `xmp.rs`.
 
-- [ ] **Step 3: Confirm the XMP module is still built and tested**
+- [ ] **Step 3: Fix one stale doc comment**
+
+`crates/photon-core/src/library/items.rs` (~line 682) documents `rated()` as producing what
+"the scanner produces once it has read the file's XMP". That becomes false in this task.
+Reword it to say ratings come from the Picasa INI pass. Find it with
+`rg -n "XMP" crates/photon-core/src/library/items.rs`.
+
+- [ ] **Step 4: Confirm the XMP module is still built and tested**
 
 Run: `cargo test -p photon-core xmp`
 Expected: every `xmp` test passes. Then `rg -n 'xmp::' crates/` — expect **no** hits outside `xmp.rs` itself. Paste both results into your report: this is the evidence that the module survived intact with no caller.
 
-- [ ] **Step 4: Update the README**
+- [ ] **Step 5: Update the README**
 
 Two changes, matching the file's existing wording and bullet style:
 
-1. The upgrade note near the top currently tells people to delete `photon/library.db` to pick up ratings. Reword it for this release: stars now come from Picasa's `.picasa.ini` / `Picasa.ini`, a library from v0.3.x holds XMP-derived values that no INI has confirmed, and deleting the library is the honest way to get a clean state.
-2. Add to `## Manual smoke checklist`:
+1. **Checklist line ~110 becomes false.** It currently reads that a library carried over from
+   v0.2.0 "shows no stars until it is deleted and rebuilt". After this feature a carried-over
+   library gets stars on the first scan of each folder — spec §9 promises exactly that.
+   Rewrite it to check that instead: that stars appear on a rescan without a rebuild. Find it
+   with `rg -n 'shows no stars' README.md`.
+2. The upgrade note near the top currently tells people to delete `photon/library.db` to pick up ratings. Reword it for this release: stars now come from Picasa's `.picasa.ini` / `Picasa.ini`, a library from v0.3.x holds XMP-derived values that no INI has confirmed, and deleting the library is the honest way to get a clean state.
+3. Add to `## Manual smoke checklist`:
    - a folder starred in Picasa shows exactly those photos under Starred after a scan;
    - starring a photo in Picasa and rescanning makes it appear, **without deleting the library**;
-   - un-starring one in Picasa and rescanning makes it disappear;
-   - no photo file's modification time changes as a result of running photon.
+   - un-starring one in Picasa and rescanning makes it disappear.
 
-- [ ] **Step 5: Full gate and commit**
+   Do **not** add a fourth bullet about modification times — the checklist already carries
+   one ("After a full scan, no photo file's modification time has changed").
+
+- [ ] **Step 6: Full gate and commit**
 
 ```bash
 git add crates/photon-core README.md
@@ -680,8 +847,12 @@ git commit -m "refactor(stars): stop reading xmp:Rating during scanning"
 | §4 **both** `walk_tree` call sites | 2 (`a_subtree_scan_applies_stars_too`) |
 | §5 the INI is the only authority; unconfirmed stars cleared | 2 (removal and deleted-INI tests) |
 | §6 `star=yes` → `rating = 1`, no migration | 2 (`u8::from(...)`; no schema file is touched by any task) |
-| §7 unreadable folder keeps its stars | 1 (`None` vs `Some(empty)`), 2 (the pass skips on `None`) |
+| §7 unreadable folder keeps its stars | 1 (`None` vs `Some(empty)`), 2 (`a_folder_that_cannot_be_read_keeps_its_stars`) |
 | §7 cancelled scan applies nothing | 2 (Step 4 placement, after the `cancelled` return) |
+| §7 an offline/empty root does not clear stars | 2 (Step 4 placement, after the offline guard) |
+| §7 only folders the walk entered | 2 (`WalkOutcome.walked`, not the pre-seeded `folder_ids`) |
+| §8 duplicate sections | 1 (`a_duplicate_section_starring_the_file_wins`) |
+| §3 the bounded read actually bounds | 1 (`the_read_is_bounded`) |
 | §8 parser tests | 1 |
 | §8 the pass's tests | 2 |
 | §8 manual checklist | 3 (Step 4) |
