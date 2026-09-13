@@ -27,21 +27,31 @@ export function debounce<T extends (...args: never[]) => void>(
 
 /** Whether the box should adopt a query that arrived from the backend.
  *
- *  While any send of ours is still outstanding, decline everything: echoes arrive one at a
- *  time and an older one would otherwise overwrite what the user has since typed. Once the
- *  chain drains, the backend is authoritative and the box syncs to it — which is what makes
- *  a folder jump or the Starred click (both of which clear the query server-side) reach the
- *  box, the whole reason this sync exists.
+ *  Two separate things have to be true, and an earlier version of this shipped with only
+ *  one of them — the box swallowed characters while typing as a result.
  *
- *  A single "last value sent" is not enough once sends can overlap in flight (they do:
- *  `LibraryStore.setSearchQuery` serialises calls, so a second send can already be queued
- *  behind the first): the first send's echo arrives while the counter has already advanced
- *  to the second value, so it looks like an external change and gets adopted, snapping the
- *  box backwards; the second, correct echo then matches and is wrongly declined — and
- *  nothing ever resyncs it. Counting outstanding sends instead of remembering only the last
- *  one covers every ordering. */
-export function shouldAdoptBackendQuery(backend: string, current: string, outstanding: number): boolean {
-  return outstanding === 0 && backend !== current;
+ *  `outstanding` is the ordering half. Sends overlap (`LibraryStore.setSearchQuery`
+ *  serialises them, so a second can already be queued behind a first), and their echoes
+ *  arrive one at a time; adopting one while another is still in flight would take a
+ *  since-superseded value for the current one.
+ *
+ *  `lastSent` is the identity half, and is the one that was missing. A count reaching zero
+ *  says every send has landed — not that the value that landed came from anywhere but us.
+ *  Typing `b`, waiting for it to settle, and typing `each` meanwhile leaves the backend
+ *  holding `b` while the box holds `beach`: the count is zero and the values differ, so
+ *  without this clause the effect adopts `b` and the user watches `each` disappear.
+ *
+ *  Comparing against `lastSent` draws the line where it belongs. After the chain drains the
+ *  backend holds exactly what we last sent, so our own echo is declined; a folder jump or
+ *  the Starred click clears the query server-side to something we never sent, so that is
+ *  adopted — which is the whole reason this sync exists. */
+export function shouldAdoptBackendQuery(
+  backend: string,
+  current: string,
+  lastSent: string | null,
+  outstanding: number,
+): boolean {
+  return outstanding === 0 && backend !== lastSent && backend !== current;
 }
 
 /** Whether the grid is showing a different set of photos than it was. Used to decide

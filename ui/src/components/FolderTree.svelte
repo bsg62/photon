@@ -18,8 +18,15 @@
    *  does. */
   let outstanding = $state(0);
 
+  /** The last value we sent. The backend echoes it back on `library.info.searchQuery`, and
+   *  the sync effect below has to tell that echo from a change made anywhere else. Plain,
+   *  not `$state`: only the effect reads it, and always alongside a change it is already
+   *  waking for. */
+  let lastSent: string | null = null;
+
   /** Sends `q` to the backend, tracking it as outstanding for as long as it takes. */
   function send(q: string): Promise<void> {
+    lastSent = q;
     outstanding++;
     return library.setSearchQuery(q).finally(() => outstanding--);
   }
@@ -42,6 +49,9 @@
   // that no longer filters anything. shouldAdoptBackendQuery is what tells an external
   // change (adopt it) from our own echo of a keystroke (must not be adopted — doing so
   // would snap the box back to stale text while the user is still typing ahead of it).
+  // Both `lastSent` and `outstanding` are needed: the count alone says every send has
+  // landed, not that what landed came from anywhere but us, and shipping only the count is
+  // what made the box swallow characters.
   //
   // `query` is read via `untrack` rather than directly: a direct read would make `query`
   // itself a dependency of this effect, so every keystroke (which writes `query` via
@@ -51,7 +61,7 @@
   // pay for it: `outstanding` reaching zero is the only signal this effect needs to act on.
   $effect(() => {
     const backend = library.info.searchQuery;
-    if (shouldAdoptBackendQuery(backend, untrack(() => query), outstanding)) query = backend;
+    if (shouldAdoptBackendQuery(backend, untrack(() => query), lastSent, outstanding)) query = backend;
   });
 
   /** Folders that actually hold photos, grouped by the year of their newest one.
