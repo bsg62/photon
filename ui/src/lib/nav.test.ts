@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { clampPan, clampZoom, move, positionInFolder, wheelStep } from './nav';
+import { clampPan, clampZoom, closesViewer, move, positionInFolder, wheelStep } from './nav';
 
 const sections = [
   { folderId: 1, offset: 0, count: 5 },
@@ -97,5 +97,25 @@ describe('clampPan', () => {
 
   it('pins the photo to the centre at fit, where there is nothing to pan', () => {
     expect(clampPan(250, 250, 1, 800, 600)).toEqual({ x: 0, y: 0 });
+  });
+});
+
+describe('closesViewer', () => {
+  it('closes on the back button', () => {
+    expect(closesViewer(3)).toBe(true);
+  });
+
+  it('leaves the ordinary buttons alone', () => {
+    // Left pans the photo and right opens the context menu; claiming either here would
+    // shut the viewer out from under a drag.
+    expect(closesViewer(0)).toBe(false);
+    expect(closesViewer(1)).toBe(false);
+    expect(closesViewer(2)).toBe(false);
+  });
+
+  it('does not claim the forward button', () => {
+    // Forward has nowhere to go — photon keeps no history — so swallowing it would make a
+    // stray press on a five-button mouse close the viewer for no stated reason.
+    expect(closesViewer(4)).toBe(false);
   });
 });
