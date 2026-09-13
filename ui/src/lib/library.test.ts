@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { GridInfo } from './api';
 
 type Handler = (e: unknown) => void;
 
@@ -26,6 +27,7 @@ vi.mock('./api', () => ({
     gridInfo: vi.fn(),
     listFolders: vi.fn(),
     gridRows: vi.fn(),
+    setGridView: vi.fn(),
   },
   events: {
     onLibraryChanged: vi.fn((cb: Handler) => {
@@ -173,5 +175,43 @@ describe('LibraryStore', () => {
     expect(unlistenCounts.libraryChanged).toBe(1);
     expect(unlistenCounts.folderStatus).toBe(1);
     expect(unlistenCounts.scanProgress).toBe(1);
+  });
+
+  it('setView switches the backend view and only resolves once the refreshed grid has landed', async () => {
+    const store = new LibraryStore();
+    await store.init();
+
+    const refreshGate = deferred<GridInfo>();
+    vi.mocked(api.setGridView).mockResolvedValue(undefined);
+    vi.mocked(api.gridInfo).mockReturnValueOnce(refreshGate.promise);
+
+    let resolved = false;
+    const setViewPromise = store.setView('starred').then(() => {
+      resolved = true;
+    });
+
+    // The command has been issued, but the grid snapshot behind it hasn't arrived yet:
+    // setView must still be pending, not resolved early off the command call alone (the
+    // race Important 1 warned about, pinned at the unit that owns it).
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(api.setGridView).toHaveBeenCalledWith('starred');
+    expect(resolved).toBe(false);
+
+    refreshGate.resolve({ version: 2, len: 0, sections: [], starredCount: 0, view: 'starred' });
+    await setViewPromise;
+
+    expect(resolved).toBe(true);
+    expect(store.info.view).toBe('starred');
+  });
+
+  it('routes a setGridView failure into reportError instead of throwing', async () => {
+    const store = new LibraryStore();
+    await store.init();
+
+    vi.mocked(api.setGridView).mockRejectedValueOnce(new Error('set-view-fail'));
+
+    await expect(store.setView('starred')).resolves.toBeUndefined();
+    expect(store.errors.some((t) => t.message === 'set-view-fail')).toBe(true);
   });
 });
