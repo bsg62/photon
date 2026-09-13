@@ -5,9 +5,9 @@ export interface FolderRow {
   name: string;
   count: number;
   year: number;
-  /** Capture time of the folder's newest photo, in seconds. Decides both the year group and
+  /** Capture time of the folder's oldest photo, in seconds. Decides both the year group and
    *  the order within it. */
-  takenAtMax: number;
+  takenAtMin: number;
 }
 
 export interface YearGroup {
@@ -17,8 +17,8 @@ export interface YearGroup {
 
 /** Resolved in the viewer's local time rather than UTC: a person means their own new year,
  *  so a photo taken at 23:00 on 31 December belongs to the year they experienced. */
-function yearOf(takenAtMax: number): number {
-  return new Date(takenAtMax * 1000).getFullYear();
+function yearOf(takenAtMin: number): number {
+  return new Date(takenAtMin * 1000).getFullYear();
 }
 
 /** One row per folder that actually holds photos.
@@ -34,12 +34,12 @@ export function folderRows(sections: Section[], folders: Folder[]): FolderRow[] 
     // before the folder list has been refreshed, and a blank name beats throwing.
     name: names.get(s.folderId) ?? '',
     count: s.count,
-    year: yearOf(s.takenAtMax),
-    takenAtMax: s.takenAtMax,
+    year: yearOf(s.takenAtMin),
+    takenAtMin: s.takenAtMin,
   }));
 }
 
-/** Years newest first, and within a year the folder whose newest photo is newest. */
+/** Years newest first, and within a year the folder whose oldest photo is newest. */
 export function groupByYear(rows: FolderRow[]): YearGroup[] {
   const byYear = new Map<number, FolderRow[]>();
   for (const row of rows) {
@@ -51,6 +51,6 @@ export function groupByYear(rows: FolderRow[]): YearGroup[] {
     .sort(([a], [b]) => b - a)
     .map(([year, group]) => ({
       year,
-      rows: [...group].sort((a, b) => b.takenAtMax - a.takenAtMax),
+      rows: [...group].sort((a, b) => b.takenAtMin - a.takenAtMin),
     }));
 }
