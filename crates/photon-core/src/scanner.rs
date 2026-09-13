@@ -477,7 +477,7 @@ fn describe(
         height: meta.height,
         orientation: meta.orientation,
         taken_at: meta.taken_at.unwrap_or(mtime_ms.div_euclid(1000)),
-        rating: None,
+        rating: meta.rating,
     }
 }
 
@@ -535,7 +535,9 @@ fn mtime_ms(md: &Metadata) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testutil::{jpeg_bytes, jpeg_with_exif, png_bytes, temp_library, write_file};
+    use crate::testutil::{
+        jpeg_bytes, jpeg_with_exif, jpeg_with_xmp, png_bytes, temp_library, write_file,
+    };
     use std::fs;
 
     fn scan(lib: &Library, watched: &WatchedFolder, scan_id: i64) -> ScanReport {
@@ -592,6 +594,18 @@ mod tests {
         assert_eq!(names, ["photos", "2024"]);
         let sub = &lib.folders().unwrap()[1];
         assert_eq!(sub.parent_id, Some(lib.folders().unwrap()[0].id));
+    }
+
+    #[test]
+    fn a_scan_reads_the_xmp_rating_into_the_library() {
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        write_file(&root, "starred.jpg", &jpeg_with_xmp(4, 2, 3));
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
+
+        scan_watched(&lib, &watched, 1, &ScanOptions::default(), &mut |_| {}).unwrap();
+
+        assert_eq!(lib.starred_count().unwrap(), 1);
     }
 
     #[test]

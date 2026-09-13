@@ -306,7 +306,7 @@ impl Library {
     pub fn grid_entries(&self) -> Result<Vec<GridEntry>> {
         let conn = self.reader();
         let mut stmt = conn.prepare(&format!(
-            "SELECT i.id, i.folder_id, i.taken_at, i.width, i.height, i.orientation, i.kind, i.path, i.size, i.mtime_ms
+            "SELECT i.id, i.folder_id, i.taken_at, i.width, i.height, i.orientation, i.kind, i.path, i.size, i.mtime_ms, i.rating
              FROM items i JOIN folders f ON f.id = i.folder_id
              WHERE i.missing_since IS NULL {GRID_ORDER}"
         ))?;
@@ -323,6 +323,7 @@ impl Library {
                         w as f32 / h as f32
                     },
                     kind: MediaKind::from_db(r.get(6)?).unwrap_or(MediaKind::Image),
+                    starred: r.get::<_, Option<i64>>(10)?.unwrap_or(0) >= 1,
                     thumb_key: fingerprint(&r.get::<_, String>(7)?, r.get(8)?, r.get(9)?),
                 })
             })?
@@ -615,6 +616,34 @@ mod tests {
             rating: Some(rating),
             ..new_item(folder, path, taken_at)
         }
+    }
+
+    #[test]
+    fn grid_entries_report_whether_each_photo_is_starred() {
+        let (_dir, lib) = temp_library();
+        let (_watched, folder) = seed_folder(&lib, Path::new("/p"));
+        lib.insert_items(&[
+            rated(folder, "/p/starred.jpg", 1, 3),
+            rated(folder, "/p/unrated.jpg", 2, 0),
+            new_item(folder, "/p/unread.jpg", 3),
+        ])
+        .unwrap();
+
+        let mut starred: Vec<(String, bool)> = lib
+            .grid_entries()
+            .unwrap()
+            .iter()
+            .map(|e| (lib.item(e.id).unwrap().unwrap().path, e.starred))
+            .collect();
+        starred.sort();
+        assert_eq!(
+            starred,
+            [
+                ("/p/starred.jpg".to_string(), true),
+                ("/p/unrated.jpg".to_string(), false),
+                ("/p/unread.jpg".to_string(), false),
+            ]
+        );
     }
 
     #[test]

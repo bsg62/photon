@@ -21,6 +21,8 @@ pub struct GridEntry {
     /// Displayed width / height (orientation applied); 1.0 when unknown.
     pub aspect: f32,
     pub kind: MediaKind,
+    /// True when the photo carries at least one star in its XMP rating.
+    pub starred: bool,
     /// Fingerprint of the file version. Part of thumbnail URLs, so they can be cached forever.
     #[serde(serialize_with = "serialize_hex")]
     pub thumb_key: u64,
@@ -134,6 +136,7 @@ mod tests {
             taken_at: id,
             aspect: 1.5,
             kind: MediaKind::Image,
+            starred: false,
             thumb_key: 42,
         }
     }
@@ -223,6 +226,16 @@ mod tests {
     }
 
     #[test]
+    fn entries_carry_whether_they_are_starred() {
+        let json = serde_json::to_string(&GridEntry {
+            starred: true,
+            ..entry(7, 1)
+        })
+        .unwrap();
+        assert!(json.contains(r#""starred":true"#), "got {json}");
+    }
+
+    #[test]
     fn serialises_as_camel_case() {
         let json = serde_json::to_string(&Section {
             folder_id: 1,
@@ -238,7 +251,7 @@ mod tests {
         let json = serde_json::to_string(&entry(7, 1)).unwrap();
         assert_eq!(
             json,
-            r#"{"id":7,"folderId":1,"takenAt":7,"aspect":1.5,"kind":"image","thumbKey":"000000000000002a"}"#
+            r#"{"id":7,"folderId":1,"takenAt":7,"aspect":1.5,"kind":"image","starred":false,"thumbKey":"000000000000002a"}"#
         );
     }
 }
