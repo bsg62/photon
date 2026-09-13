@@ -2982,6 +2982,7 @@ dependencies = [
  "notify",
  "notify-debouncer-full",
  "parking_lot",
+ "quick-xml",
  "rusqlite",
  "serde",
  "serde_json",

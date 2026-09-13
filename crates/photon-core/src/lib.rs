@@ -10,6 +10,7 @@ pub(crate) mod paths;
 pub mod scanner;
 pub mod thumbs;
 pub mod watcher;
+pub mod xmp;
 
 #[cfg(test)]
 mod testutil;
