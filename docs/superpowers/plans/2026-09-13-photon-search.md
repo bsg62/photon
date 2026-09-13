@@ -362,7 +362,7 @@ impl Library {
     /// Photos whose file name or folder name contains `query`, case-insensitively.
     ///
     /// The match runs in Rust rather than as SQL `LIKE` for two reasons (spec §3):
-    /// SQLite folds case for ASCII only, so `münchen` would not find `München`; and
+    /// SQLite folds case for ASCII only, so `MÜNCHEN` would not find `München`; and
     /// `LIKE` would read `%` and `_` in the user's query as wildcards. This is one pass
     /// over the same rows an index rebuild already reads, with two short string compares
     /// added per row.

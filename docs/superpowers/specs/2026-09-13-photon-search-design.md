@@ -40,7 +40,9 @@ This is therefore the first feature since the library existed that adds no colum
 
 The obvious implementation is `WHERE i.file_name LIKE ?1 OR f.name LIKE ?1`. **It is rejected**, for two reasons that both bite this user's library specifically:
 
-1. **SQLite's `LIKE` folds case for ASCII only.** Searching `münchen` would not find `München/`, and `strasse` would not find `Straße`. `lower()` has the same limit without the ICU extension, which is a native dependency photon does not take (§ packaging constraint). Rust's `to_lowercase` is Unicode-aware and already available.
+1. **SQLite's `LIKE` folds case for ASCII only.** Searching `MÜNCHEN` would not find `München/`: `M`↔`m` folds as ASCII, but `Ü` never folds to `ü`. `lower()` has the same limit without the ICU extension, which is a native dependency photon does not take (§ packaging constraint). Rust's `to_lowercase` is Unicode-aware and already available.
+
+   **The lowercase query is the trap.** `'München' LIKE '%münchen%'` returns **1** — verified against SQLite, not assumed. Anyone testing this decision with the obvious example finds `LIKE` working and concludes the Rust matcher is unjustified overhead. It is the all-caps query that silently fails, which is exactly the kind of half-working behaviour that survives a casual check and reaches a user.
 2. **`LIKE` forces escaping.** A query containing `%` or `_` is a wildcard unless every one is escaped with an `ESCAPE` clause. A user typing `50%` gets every photo. Substring matching in Rust has no metacharacters to escape and so cannot get this wrong.
 
 So the query selects the same columns as the grid query plus `i.file_name` and `f.name`, and the filter is `haystack.to_lowercase().contains(&needle)` evaluated per row, with the needle lowercased once.
@@ -99,7 +101,7 @@ A text input sits in the sidebar toolbar, above the Starred row.
 
 ## 7. Testing
 
-- **The matcher**, as unit tests over a seeded library: a filename substring matches; a folder-name substring matches; a query matching neither returns nothing; matching is case-insensitive **for non-ASCII** (`münchen` finds `München`) — this test is the one that pins §3's whole argument, and it fails against a `LIKE` implementation; **`ß` and `ss` are not the same letter** (`strasse` does not find `Straße.jpg`), which is a limit of Rust's `to_lowercase` rather than a bug, recorded as a test so it is a decision rather than a surprise — fixing it needs full case-folding, which is more than a simple search warrants; a query containing `%` and `_` matches those characters literally rather than acting as a wildcard; results keep `GRID_ORDER`; missing items stay excluded.
+- **The matcher**, as unit tests over a seeded library: a filename substring matches; a folder-name substring matches; a query matching neither returns nothing; matching is case-insensitive **for non-ASCII** (`MÜNCHEN` finds `München` — the case `LIKE` gets wrong; `münchen` matches under both and so proves nothing) — this test is the one that pins §3's whole argument, and it fails against a `LIKE` implementation; **`ß` and `ss` are not the same letter** (`strasse` does not find `Straße.jpg`), which is a limit of Rust's `to_lowercase` rather than a bug, recorded as a test so it is a decision rather than a surprise — fixing it needs full case-folding, which is more than a simple search warrants; a query containing `%` and `_` matches those characters literally rather than acting as a wildcard; results keep `GRID_ORDER`; missing items stay excluded.
 - **Empty query**: returns the view to `All`.
 - **The view plumbing**: setting a query and reading `GridInfo` back reports the query and the `Search` view; switching to another view clears results.
 - **UI**: the debounce fires once per pause rather than per keystroke; clearing the box restores the All view; scroll resets when the query changes within the Search view.
@@ -108,6 +110,6 @@ A text input sits in the sidebar toolbar, above the Starred row.
 ## 8. Success criteria
 
 - Typing part of a file or folder name shows the matching photos, and clearing the box restores the library.
-- A query in German with umlauts matches regardless of case.
+- A query in German with umlauts matches regardless of case, including an all-caps one.
 - Searching a 100k library is fast enough not to feel like a mode change — the same bar Starred had to clear, and the same work.
 - No new table, column, index or migration.
