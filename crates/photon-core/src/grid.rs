@@ -34,7 +34,7 @@ pub struct GridEntry {
     /// Displayed width / height (orientation applied); 1.0 when unknown.
     pub aspect: f32,
     pub kind: MediaKind,
-    /// True when the photo carries at least one star in its XMP rating.
+    /// True when the photo is starred in Picasa's per-directory `.picasa.ini`.
     pub starred: bool,
     /// Fingerprint of the file version. Part of thumbnail URLs, so they can be cached forever.
     #[serde(serialize_with = "serialize_hex")]

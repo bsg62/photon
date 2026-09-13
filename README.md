@@ -19,13 +19,15 @@ Download the installer for your system from the [latest release](https://github.
 ### Upgrading to a version with Starred photos
 
 photon reads star ratings from Picasa's per-directory `.picasa.ini` / `Picasa.ini`, applied
-to each folder after it is scanned. A library built by a v0.3.x version holds XMP-derived
-ratings that no INI has confirmed.
+to each folder after it is scanned. A library built by a v0.2.0–v0.3.x version holds
+ratings from that era's XMP-based source, which no INI has confirmed.
 
-Delete the library and let photon rebuild it. It lives in your user data directory
-(`photon/library.db`); your photos are untouched, since photon never writes to watched
-folders. Rebuilding is the honest way to a clean state, since it lets every folder's INI be
-read fresh.
+Nothing needs to be done: a normal rescan corrects a folder's stars the first time it's
+walked again, whether that scan is manual or triggered by the file watcher. Deleting the
+library (`photon/library.db`, in your user data directory) is not required — it only forces
+every folder to be reached, and so corrected, in one pass instead of over time as folders
+are scanned. Your photos are untouched either way, since photon never writes to watched
+folders.
 
 ### photon is not code-signed
 

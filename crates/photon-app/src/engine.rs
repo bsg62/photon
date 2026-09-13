@@ -578,7 +578,19 @@ impl Engine {
         // decides which folders the thumbnail queue will work on, so the queue has to be
         // re-primed when a drive comes back.
         let touched_rows = match &result {
-            Ok(report) => report.added + report.changed + report.marked_missing + report.purged > 0,
+            // `restarred` counts alongside the others: starring a photo in Picasa never
+            // changes the photo itself, so on a rescan every photo takes the `unchanged`
+            // branch and this is often the only non-zero field in the report. Without it
+            // here, a star-only scan would compute `false`, skip the refresh, and leave the
+            // Starred view and its sidebar count stale until something else changed a row.
+            Ok(report) => {
+                report.added
+                    + report.changed
+                    + report.marked_missing
+                    + report.purged
+                    + report.restarred
+                    > 0
+            }
             // A scan that failed partway may still have committed earlier batches.
             Err(_) => true,
         };
@@ -725,6 +737,30 @@ mod tests {
             f.engine.grid().0,
             version,
             "a scan that changed nothing must not rebuild the grid"
+        );
+    }
+
+    /// THE regression test for the star-only-scan bug: starring a photo in Picasa never
+    /// changes the photo itself, so the scan's `added`/`changed`/`marked_missing`/`purged`
+    /// counters are all zero and only `restarred` moves. Before `ScanReport::restarred` was
+    /// folded into `touched_rows`, a scan like this computed `touched_rows == false`, skipped
+    /// `refresh_grid`, and left the grid (and so the Starred view and its sidebar count)
+    /// stale until something unrelated changed a row or the app restarted.
+    #[test]
+    fn a_star_added_via_the_ini_after_the_first_scan_rebuilds_the_grid() {
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a.jpg", &img)]);
+        let watched = f.add_photos();
+        let version = f.engine.grid().0;
+
+        std::fs::write(f.photos.join(".picasa.ini"), b"[a.jpg]\nstar=yes\n").unwrap();
+        f.engine.start_scan(watched);
+        f.engine.wait_for_scans();
+
+        assert!(
+            f.engine.grid().0 > version,
+            "a star landing via the Picasa INI, with no photo file changing, must still \
+             rebuild the grid"
         );
     }
 
@@ -906,27 +942,9 @@ mod tests {
         f.add_photos();
         f.engine.wait_for_scans();
         let ids = f.ids();
-        // Star one of them the way a scan would, then rebuild the index for the new view.
-        let item = f.engine.lib.item(ids[0]).unwrap().unwrap();
-        f.engine
-            .lib
-            .update_items(&[(
-                ids[0],
-                photon_core::library::NewItem {
-                    folder_id: item.folder_id,
-                    path: item.path.clone(),
-                    file_name: "one.jpg".into(),
-                    kind: photon_core::media::MediaKind::Image,
-                    size: item.size,
-                    mtime_ms: item.mtime_ms,
-                    width: 16,
-                    height: 16,
-                    orientation: 1,
-                    taken_at: 1,
-                    rating: Some(2),
-                },
-            )])
-            .unwrap();
+        // Star one of them the way the Picasa pass would, then rebuild the index for the
+        // new view. `rating` is `set_ratings`' column now, not `update_items`'.
+        f.engine.lib.set_ratings(&[(ids[0], 2)]).unwrap();
 
         f.engine.set_view(GridView::Starred).unwrap();
         assert_eq!(f.engine.grid().1.len(), 1);

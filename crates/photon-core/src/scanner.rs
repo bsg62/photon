@@ -33,6 +33,12 @@ pub struct ScanReport {
     pub unchanged: u64,
     pub marked_missing: u64,
     pub purged: u64,
+    /// Items whose `rating` the Picasa pass actually changed this scan. Populated even
+    /// when every photo in the walk took the `unchanged` branch, which is the whole point:
+    /// starring a photo in Picasa never changes the photo, so this is often the only
+    /// non-zero field in an otherwise all-unchanged report, and callers deciding whether to
+    /// refresh the grid must count it alongside `added`/`changed`/`marked_missing`/`purged`.
+    pub restarred: u64,
     pub cancelled: bool,
 }
 
@@ -135,7 +141,7 @@ pub fn scan_watched(
     }
     lib.set_watched_online(watched.id, true)?;
 
-    apply_picasa_stars(lib, &walked);
+    let restarred = apply_picasa_stars(lib, &walked);
 
     // Anything left in `known` was not found on this (reachable) scan: soft-delete it,
     // or purge it if it was already missing last time.
@@ -146,6 +152,7 @@ pub fn scan_watched(
     Ok(ScanReport {
         marked_missing: marked,
         purged,
+        restarred,
         ..report
     })
 }
@@ -262,13 +269,14 @@ pub fn scan_subtree(
             .any(|prefix| Path::new(path_str).starts_with(prefix))
     });
 
-    apply_picasa_stars(lib, &outcome.walked);
+    let restarred = apply_picasa_stars(lib, &outcome.walked);
 
     let mut report = outcome.report;
     let (marked, purged) = finish_mark_purge(lib, known)?;
     lib.prune_folders_under(watched.id, scan_id, target_str)?;
     report.marked_missing = marked;
     report.purged = purged;
+    report.restarred = restarred;
 
     progress(&outcome.seen);
     Ok(report)
@@ -448,7 +456,8 @@ fn walk_tree(
     })
 }
 
-/// Applies each walked folder's Picasa stars to its photos.
+/// Applies each walked folder's Picasa stars to its photos. Returns how many items' ratings
+/// actually changed, for [`ScanReport::restarred`].
 ///
 /// Runs after the walk rather than inside `describe()`, which is called only for photos
 /// whose size or mtime changed. Starring a photo in Picasa rewrites the folder's INI and
@@ -463,34 +472,48 @@ fn walk_tree(
 /// than aborting the whole scan, since that would also skip `finish_mark_purge` and
 /// `prune_folders` over an unrelated folder's transient failure. Nothing is lost — the next
 /// scan reapplies this folder's stars.
-fn apply_picasa_stars(lib: &Library, walked: &[(PathBuf, i64)]) {
+fn apply_picasa_stars(lib: &Library, walked: &[(PathBuf, i64)]) -> u64 {
+    let mut restarred = 0;
     for (dir, folder_id) in walked {
         let Some(stars) = crate::picasa::read_stars(dir) else {
             tracing::debug!(?dir, "leaving stars alone for an unreadable folder");
             continue;
         };
-        if let Err(err) = apply_folder_stars(lib, *folder_id, &stars) {
-            // One folder's transient failure (a busy database, say) must not cost the whole
-            // scan its mark/purge/prune. The next scan reapplies this folder's stars.
-            tracing::warn!(%err, ?dir, "could not apply Picasa stars for a folder");
+        match apply_folder_stars(lib, *folder_id, &stars) {
+            Ok(n) => restarred += n,
+            Err(err) => {
+                // One folder's transient failure (a busy database, say) must not cost the
+                // whole scan its mark/purge/prune. The next scan reapplies this folder's
+                // stars.
+                tracing::warn!(%err, ?dir, "could not apply Picasa stars for a folder");
+            }
         }
     }
+    restarred
 }
 
+/// Sets `folder_id`'s items' ratings from `stars`, writing only the rows whose rating
+/// actually changes, and returns how many that was. Comparing before writing is what makes
+/// a scan of an all-agreeing folder cost zero transactions, and what lets the caller tell a
+/// real star change from a no-op scan.
 fn apply_folder_stars(
     lib: &Library,
     folder_id: i64,
     stars: &std::collections::HashSet<String>,
-) -> Result<()> {
+) -> Result<u64> {
     let ratings: Vec<(i64, u8)> = lib
         .folder_item_names(folder_id)?
         .into_iter()
-        .map(|(id, name)| (id, u8::from(stars.contains(&name))))
+        .filter_map(|(id, name, current)| {
+            let wanted = u8::from(stars.contains(&name));
+            (current != Some(wanted as i64)).then_some((id, wanted))
+        })
         .collect();
+    let changed = ratings.len() as u64;
     for chunk in ratings.chunks(BATCH) {
         lib.set_ratings(chunk)?;
     }
-    Ok(())
+    Ok(changed)
 }
 
 /// Soft-deletes what this walk didn't find, and purges what was already missing.

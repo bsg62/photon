@@ -140,13 +140,18 @@ impl Library {
     }
 
     /// Replaces changed (or reappeared) items. Their thumbnails must be rebuilt.
+    ///
+    /// Deliberately does not touch `rating`: a star is not a property of the file (see
+    /// `set_ratings`), and `NewItem.rating` is always `None` for a scanned file. Writing it
+    /// here would `NULL` out a folder's existing stars on the next size/mtime change, and a
+    /// folder the Picasa pass could not read that scan would have no way to restore it.
     pub fn update_items(&self, items: &[(i64, NewItem)]) -> Result<()> {
         let mut conn = self.writer();
         let tx = conn.transaction()?;
         {
             let mut stmt = tx.prepare_cached(
                 "UPDATE items SET folder_id = ?2, path = ?3, file_name = ?4, kind = ?5, size = ?6, mtime_ms = ?7,
-                        width = ?8, height = ?9, orientation = ?10, taken_at = ?11, rating = ?12,
+                        width = ?8, height = ?9, orientation = ?10, taken_at = ?11,
                         thumb_state = 0, thumb_error = NULL, missing_since = NULL
                  WHERE id = ?1",
             )?;
@@ -163,7 +168,6 @@ impl Library {
                     it.height,
                     it.orientation,
                     it.taken_at,
-                    it.rating
                 ])?;
             }
         }
@@ -171,20 +175,25 @@ impl Library {
         Ok(())
     }
 
-    /// Every live item in one folder, as `(id, lowercased file name)`.
+    /// Every live item in one folder, as `(id, lowercased file name, current rating)`.
     ///
     /// Lowercased here because Picasa's INI may disagree in case with the files on disk, and
     /// this codebase folds case in Rust rather than in SQL: there is no `COLLATE NOCASE` on
     /// `file_name` and `lower()` is ASCII-only in SQLite without the ICU extension, which is a
-    /// native dependency photon does not take.
-    pub fn folder_item_names(&self, folder_id: i64) -> Result<Vec<(i64, String)>> {
+    /// native dependency photon does not take. The current rating is included so the Picasa
+    /// pass can write only the rows that actually change, rather than every row every scan.
+    pub fn folder_item_names(&self, folder_id: i64) -> Result<Vec<(i64, String, Option<i64>)>> {
         let conn = self.reader();
         let mut stmt = conn.prepare_cached(
-            "SELECT id, file_name FROM items WHERE folder_id = ?1 AND missing_since IS NULL",
+            "SELECT id, file_name, rating FROM items WHERE folder_id = ?1 AND missing_since IS NULL",
         )?;
         let rows = stmt
             .query_map(params![folder_id], |r| {
-                Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?.to_lowercase()))
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?.to_lowercase(),
+                    r.get::<_, Option<i64>>(2)?,
+                ))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
@@ -524,7 +533,7 @@ mod tests {
     }
 
     #[test]
-    fn folder_item_names_lowercases_and_excludes_missing_rows() {
+    fn folder_item_names_lowercases_excludes_missing_rows_and_reports_the_current_rating() {
         let (_dir, lib) = temp_library();
         let (_watched, folder) = seed_folder(&lib, Path::new("/p"));
         let ids = lib
@@ -535,10 +544,11 @@ mod tests {
             .unwrap();
         let (a, b) = (ids[0], ids[1]);
         lib.mark_missing(&[b], 50).unwrap();
+        lib.set_ratings(&[(a, 1)]).unwrap();
 
         let mut names = lib.folder_item_names(folder).unwrap();
         names.sort();
-        assert_eq!(names, vec![(a, "dsc_0001.jpg".to_string())]);
+        assert_eq!(names, vec![(a, "dsc_0001.jpg".to_string(), Some(1))]);
     }
 
     #[test]
@@ -851,9 +861,10 @@ mod tests {
     }
 
     #[test]
-    fn a_changed_photo_keeps_the_rating_its_rescan_read() {
-        // `update_items` runs when a file's size or mtime changed, and carries the rating
-        // the fresh scan read — so a star added in another program survives a rescan.
+    fn a_changed_photo_keeps_the_rating_a_later_set_ratings_call_wrote() {
+        // `update_items` runs when a file's size or mtime changed, and it must leave
+        // `rating` alone: it is the Picasa pass, via `set_ratings`, that owns the column,
+        // not a rescan of the file itself.
         let (_dir, lib) = temp_library();
         let (_watched, folder) = seed_folder(&lib, Path::new("/p"));
         let ids = lib
@@ -861,9 +872,14 @@ mod tests {
             .unwrap();
         assert_eq!(lib.starred_count().unwrap(), 0);
 
-        lib.update_items(&[(ids[0], rated(folder, "/p/a.jpg", 1, 5))])
+        lib.set_ratings(&[(ids[0], 5)]).unwrap();
+        lib.update_items(&[(ids[0], new_item(folder, "/p/a.jpg", 1))])
             .unwrap();
-        assert_eq!(lib.starred_count().unwrap(), 1);
+        assert_eq!(
+            lib.starred_count().unwrap(),
+            1,
+            "a rescan of the file must not clear a rating set_ratings wrote"
+        );
     }
 
     #[test]
@@ -877,30 +893,8 @@ mod tests {
                 new_item(folder, "/p/c.jpg", 3),
             ])
             .unwrap();
-        lib.update_items(&[
-            (
-                ids[0],
-                NewItem {
-                    rating: Some(0),
-                    ..new_item(folder, "/p/a.jpg", 1)
-                },
-            ),
-            (
-                ids[1],
-                NewItem {
-                    rating: Some(1),
-                    ..new_item(folder, "/p/b.jpg", 2)
-                },
-            ),
-            (
-                ids[2],
-                NewItem {
-                    rating: Some(5),
-                    ..new_item(folder, "/p/c.jpg", 3)
-                },
-            ),
-        ])
-        .unwrap();
+        lib.set_ratings(&[(ids[0], 0), (ids[1], 1), (ids[2], 5)])
+            .unwrap();
 
         let all: Vec<i64> = lib
             .entries_for(GridView::All, "")
@@ -1127,14 +1121,7 @@ mod tests {
                 new_item(folder, "/p/b.jpg", 2),
             ])
             .unwrap();
-        lib.update_items(&[(
-            ids[1],
-            NewItem {
-                rating: Some(3),
-                ..new_item(folder, "/p/b.jpg", 2)
-            },
-        )])
-        .unwrap();
+        lib.set_ratings(&[(ids[1], 3)]).unwrap();
 
         let all: Vec<i64> = lib
             .entries_for(GridView::All, "")
