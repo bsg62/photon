@@ -2,7 +2,8 @@ use crate::{Error, Result};
 use rusqlite::Connection;
 
 /// Each entry upgrades the schema by one version; `PRAGMA user_version` records the current one.
-const MIGRATIONS: &[&str] = &[r#"
+const MIGRATIONS: &[&str] = &[
+    r#"
 CREATE TABLE watched_folders (
     id     INTEGER PRIMARY KEY,
     path   TEXT NOT NULL UNIQUE,
@@ -37,7 +38,16 @@ CREATE TABLE items (
 );
 CREATE INDEX items_folder ON items(folder_id, taken_at);
 CREATE INDEX items_pending ON items(thumb_state) WHERE missing_since IS NULL;
-"#];
+"#,
+    r#"
+-- Nullable on purpose: NULL means "not read yet", 0 means "read and unrated". A NOT NULL
+-- DEFAULT 0 could not tell those apart, and since the scanner only re-reads a file whose
+-- size or mtime changed, photos indexed before this feature would never be looked at
+-- again — a Picasa-rated library would upgrade and show an empty Starred view.
+ALTER TABLE items ADD COLUMN rating INTEGER;
+CREATE INDEX items_starred ON items(rating) WHERE rating >= 1 AND missing_since IS NULL;
+"#,
+];
 
 pub fn migrate(conn: &Connection) -> Result<()> {
     let current: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
@@ -55,4 +65,49 @@ pub fn migrate(conn: &Connection) -> Result<()> {
         tx.commit()?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_second_migration_upgrades_a_version_one_library_without_touching_its_rows() {
+        // The upgrade that has never run in anger: a library created by an earlier photon,
+        // with a user's photos already indexed.
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(MIGRATIONS[0]).unwrap();
+        conn.pragma_update(None, "user_version", 1i64).unwrap();
+        conn.execute(
+            "INSERT INTO watched_folders (id, path) VALUES (1, '/p')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO folders (id, watched_id, parent_id, path, name, sort_key) \
+             VALUES (1, 1, NULL, '/p', 'p', 'p')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO items (folder_id, path, file_name, kind, size, mtime_ms, width, \
+             height, orientation, taken_at) VALUES (1, '/p/a.jpg', 'a.jpg', 0, 1, 1, 1, 1, 1, 1)",
+            [],
+        )
+        .unwrap();
+
+        migrate(&conn).unwrap();
+
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, MIGRATIONS.len() as i64);
+        let (path, rating): (String, Option<i64>) = conn
+            .query_row("SELECT path, rating FROM items", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(path, "/p/a.jpg", "the existing row survives untouched");
+        assert_eq!(rating, None, "and reads as unread, not as unrated");
+    }
 }

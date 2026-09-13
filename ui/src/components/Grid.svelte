@@ -102,7 +102,13 @@
   aria-label="Photos"
 >
   {#if library.info.len === 0}
-    <p class="empty">No photos yet. Add a folder to get started.</p>
+    <p class="empty">
+      {#if library.info.view === 'starred'}
+        No starred photos. photon reads star ratings from photo files — it never sets them.
+      {:else}
+        No photos yet. Add a folder to get started.
+      {/if}
+    </p>
   {/if}
   <div class="canvas" style:height="{totalHeight(rows)}px">
     {#each rendered as row (row.top)}

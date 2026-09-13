@@ -107,6 +107,15 @@
     const folder = folderById(folderId);
     if (folder) openMenu(e, { kind: 'folder', folder });
   }
+
+  /** Jumping to a folder from the Starred view has to leave that view first: the jump
+   *  looks up the offset in the grid's current index, and racing that lookup against an
+   *  unawaited view switch can return a stale or mismatched result (see the Important 1
+   *  writeup — awaiting here is load-bearing, not stylistic). */
+  async function jumpToFolder(folderId: number) {
+    if (library.info.view === 'starred') await library.setView('all');
+    onjump(folderId);
+  }
 </script>
 
 <svelte:window onclick={closeMenu} onkeydown={(e) => e.key === 'Escape' && closeMenu()} />
@@ -115,6 +124,16 @@
   <div class="toolbar">
     <button class="add" onclick={addFolder}>Add folder…</button>
   </div>
+
+  <button
+    class="root starred"
+    class:active={library.info.view === 'starred'}
+    onclick={() => library.setView('starred')}
+    title="Photos rated in another program"
+  >
+    <span class="name">★ Starred</span>
+    <span class="count">({library.info.starredCount})</span>
+  </button>
 
   {#each roots as w (w.id)}
     <button
@@ -137,7 +156,7 @@
       <button
         class="node"
         title={folderById(row.folderId)?.path}
-        onclick={() => onjump(row.folderId)}
+        onclick={() => jumpToFolder(row.folderId)}
         oncontextmenu={(e) => folderMenu(e, row.folderId)}
       >
         <span class="name">{row.name}</span>
@@ -199,6 +218,7 @@
   .node { padding-left: 18px; }
   .root:hover, .node:hover { background: #ffffff0d; }
   .root.offline { opacity: 0.45; }
+  .starred.active { background: #ffffff14; }
   .year {
     margin: 10px 0 2px;
     padding: 0 8px;

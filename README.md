@@ -16,6 +16,16 @@ Download the installer for your system from the [latest release](https://github.
 | macOS | `.dmg` | Open it and drag photon to Applications. Take the `aarch64` file for Apple Silicon, `x64` for Intel. |
 | Windows | `.msi` | Run it. |
 
+### Upgrading to a version with Starred photos
+
+photon reads star ratings from each photo's embedded XMP as it indexes it. A library built
+by an earlier version has no ratings recorded, and photon will not re-read a file whose size
+and modification time have not changed — so Starred would stay empty.
+
+Delete the library and let photon rebuild it. It lives in your user data directory
+(`photon/library.db`); your photos are untouched, since photon never writes to watched
+folders. Rebuilding re-reads every photo, ratings included.
+
 ### photon is not code-signed
 
 Signing certificates cost money and are tied to a personal identity, so photon's installers
@@ -87,6 +97,10 @@ publishing it.
 - [ ] On Linux, `sudo apt install ./photon_*.deb` pulls in the webview dependencies on a clean machine, and photon starts rather than failing on a missing library.
 - [ ] The security warning each OS shows matches what the README's "photon is not code-signed" section says to expect.
 - [ ] `sha256sum -c SHA256SUMS --ignore-missing` passes against the downloaded files.
+- [ ] On a freshly built library, photos rated in Picasa show under Starred with a matching count, once the first scan has finished.
+- [ ] Clicking Starred shows only starred photos; clicking any folder returns to the full library at that folder.
+- [ ] A library carried over from v0.2.0 shows no stars until it is deleted and rebuilt, as the README's upgrade note says.
+- [ ] After a full scan, no photo file's modification time has changed — photon reads ratings and never writes them.
 
 ## How watching works
 
