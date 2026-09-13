@@ -27,14 +27,21 @@ export function debounce<T extends (...args: never[]) => void>(
 
 /** Whether the box should adopt a query that arrived from the backend.
  *
- *  Declines our own echo: a value we just sent comes back one debounce window plus an IPC
- *  round trip later, by which time the user has usually typed more, and adopting it would
- *  rewrite the box under them and move the caret. Backend changes that originated elsewhere
- *  — a folder jump or the Starred click, both of which clear the query — are adopted, which
- *  is the whole reason the sync exists. */
-export function shouldAdoptBackendQuery(backend: string, lastSeen: string, lastSent: string | null): boolean {
-  if (backend === lastSeen) return false;
-  return backend !== lastSent;
+ *  While any send of ours is still outstanding, decline everything: echoes arrive one at a
+ *  time and an older one would otherwise overwrite what the user has since typed. Once the
+ *  chain drains, the backend is authoritative and the box syncs to it — which is what makes
+ *  a folder jump or the Starred click (both of which clear the query server-side) reach the
+ *  box, the whole reason this sync exists.
+ *
+ *  A single "last value sent" is not enough once sends can overlap in flight (they do:
+ *  `LibraryStore.setSearchQuery` serialises calls, so a second send can already be queued
+ *  behind the first): the first send's echo arrives while the counter has already advanced
+ *  to the second value, so it looks like an external change and gets adopted, snapping the
+ *  box backwards; the second, correct echo then matches and is wrongly declined — and
+ *  nothing ever resyncs it. Counting outstanding sends instead of remembering only the last
+ *  one covers every ordering. */
+export function shouldAdoptBackendQuery(backend: string, current: string, outstanding: number): boolean {
+  return outstanding === 0 && backend !== current;
 }
 
 /** Whether the grid is showing a different set of photos than it was. Used to decide

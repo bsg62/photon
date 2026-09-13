@@ -69,24 +69,20 @@ describe('debounce', () => {
 });
 
 describe('shouldAdoptBackendQuery', () => {
-  it('adopts a backend change that we never sent (a folder jump or Starred clearing the query)', () => {
-    expect(shouldAdoptBackendQuery('', 'beach', 'beach')).toBe(true);
+  it('declines while a send is outstanding, even when the value differs — this is the blocker', () => {
+    // library.setSearchQuery serialises calls, so a second send can already be queued
+    // behind a first that hasn't settled. The first send's echo can then arrive while a
+    // later value is already in flight; adopting it here would snap the box backwards to
+    // that stale value while the correct one is still on its way.
+    expect(shouldAdoptBackendQuery('b', 'beach', 1)).toBe(false);
   });
 
-  it('declines our own echo — this is the character-losing bug', () => {
-    expect(shouldAdoptBackendQuery('beach', '', 'beach')).toBe(false);
+  it('adopts once the outstanding count reaches zero', () => {
+    expect(shouldAdoptBackendQuery('', 'beach', 0)).toBe(true);
   });
 
-  it('declines a value that has not changed since we last saw it', () => {
-    expect(shouldAdoptBackendQuery('beach', 'beach', null)).toBe(false);
-    expect(shouldAdoptBackendQuery('beach', 'beach', 'something else')).toBe(false);
-  });
-
-  it('adopts an external change even when a different value was last sent', () => {
-    // The user typed "beach" (sent), then a folder click cleared the query server-side
-    // while a stale "beaches" was in flight — the backend now reports "", which is neither
-    // what we last saw nor what we last sent, so it must be adopted.
-    expect(shouldAdoptBackendQuery('', 'beaches', 'beaches')).toBe(true);
+  it('declines a value that has not changed, even with nothing outstanding', () => {
+    expect(shouldAdoptBackendQuery('beach', 'beach', 0)).toBe(false);
   });
 });
 

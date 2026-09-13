@@ -866,7 +866,8 @@ git commit -m "feat(search): add the sidebar search box"
 | §5 `GridInfo.search_query` and its TS mirror | 2 (Step 5), including the test file's four literals |
 | §6 a failed query surfaces as an error and leaves the previous results on screen | 2 (`?` propagation), 3 (`reportError` in the store) |
 | §7 matcher tests, including "matches neither" | 1 (Step 2) |
-| §7 UI tests — debounce, scroll reset, clearing the box restores All | 3 (Step 2; the All-view restoration is a store-level test added in the fix wave, `library.test.ts`) |
+| §7 UI tests — debounce, scroll reset | 3 (Step 2) |
+| §7 clearing the box restores the All view | verified on the Rust side (Task 2's `an_empty_search_query_returns_to_the_all_view`); the store-level test added in the fix wave (`library.test.ts`) pins only that `LibraryStore.setSearchQuery('')` issues the command and refreshes — with `api.gridInfo` mocked, it cannot fail for any reason related to actually clearing |
 | §7 manual checklist | 3 (Step 7) |
 
 **This table was verified by a pre-flight scan against the spec and the real code, not merely written.** That scan found §6 mapped to a `reportError` path that did not implement what §6 then said — the identical failure mode that left §5's scroll-to-top unimplemented on the starred work. The spec's §6 was amended as a result: a failed query propagates and is surfaced, rather than silently falling back to an empty result, because an empty grid is indistinguishable from "no matches". A coverage table is worth nothing unless something checks it.

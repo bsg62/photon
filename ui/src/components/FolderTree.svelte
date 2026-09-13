@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   import { ask, open } from '@tauri-apps/plugin-dialog';
   import { api, type Folder, type WatchedFolder } from '../lib/api';
   import { folderRows, groupByYear } from '../lib/folders';
@@ -8,33 +9,32 @@
   let { onjump }: { onjump: (folderId: number) => void } = $props();
 
   let query = $state(library.info.searchQuery);
-  /** The last query received from the backend, distinct from `query` itself: the effect
-   *  below both reads and writes `query`, and comparing against this instead of re-reading
-   *  `library.info.searchQuery` on the next tick is what keeps it from re-triggering on its
-   *  own write and looping. */
-  let lastBackendQuery = library.info.searchQuery;
-  /** The query most recently sent to the backend. A backend value equal to this is our own
-   *  echo, not an external change (a folder click, Starred, or another instance clearing
-   *  it) — adopting it into `query` would overwrite what the user has typed since, because
-   *  the echo always arrives a debounce window plus an IPC round trip after the keystroke
-   *  that caused it. `null` means nothing has been sent yet. */
-  let lastSent: string | null = null;
+  /** How many `setSearchQuery` calls of ours have been sent but not yet settled.
+   *  `library.setSearchQuery` serialises calls, so more than one can be outstanding at once
+   *  (a second send already queued behind a first that's still in flight); while any is
+   *  outstanding, an echo arriving on `library.info.searchQuery` might belong to an older,
+   *  since-superseded send rather than the latest one, so the sync effect below must not
+   *  adopt anything until the count reaches zero. `$state` so the effect re-runs once it
+   *  does. */
+  let outstanding = $state(0);
 
-  const runSearch = debounce((q: string) => {
-    lastSent = q;
-    void library.setSearchQuery(q);
-  }, SEARCH_DEBOUNCE_MS);
+  /** Sends `q` to the backend, tracking it as outstanding for as long as it takes. */
+  function send(q: string): Promise<void> {
+    outstanding++;
+    return library.setSearchQuery(q).finally(() => outstanding--);
+  }
+
+  const runSearch = debounce((q: string) => void send(q), SEARCH_DEBOUNCE_MS);
 
   function clearSearch() {
     // Cancel first: a pending debounced call would otherwise land after the clear and put
     // the backend straight back into the search view. Cancelling only stops a call that
-    // hasn't fired yet — a call already in flight can still land after this one and put the
-    // backend back into Search; library.setSearchQuery serialises calls in issue order so
-    // that in-flight ordering is guaranteed instead.
+    // hasn't fired yet; a call already dispatched can't be cancelled, which is why
+    // `outstanding` exists — the sync effect declines every echo until all dispatched calls,
+    // including this one, have settled in order.
     runSearch.cancel();
     query = '';
-    lastSent = '';
-    void library.setSearchQuery('');
+    void send('');
   }
 
   // The backend is the source of truth for the active query (spec §5): clicking Starred or
@@ -42,10 +42,16 @@
   // that no longer filters anything. shouldAdoptBackendQuery is what tells an external
   // change (adopt it) from our own echo of a keystroke (must not be adopted — doing so
   // would snap the box back to stale text while the user is still typing ahead of it).
+  //
+  // `query` is read via `untrack` rather than directly: a direct read would make `query`
+  // itself a dependency of this effect, so every keystroke (which writes `query` via
+  // `bind:value`) would re-run it — and since the effect can also write `query`, that write
+  // would immediately re-trigger the effect it happened inside. It would still settle rather
+  // than loop (the second run sees backend === query and stops), but there is no reason to
+  // pay for it: `outstanding` reaching zero is the only signal this effect needs to act on.
   $effect(() => {
     const backend = library.info.searchQuery;
-    if (shouldAdoptBackendQuery(backend, lastBackendQuery, lastSent)) query = backend;
-    lastBackendQuery = backend;
+    if (shouldAdoptBackendQuery(backend, untrack(() => query), outstanding)) query = backend;
   });
 
   /** Folders that actually hold photos, grouped by the year of their newest one.

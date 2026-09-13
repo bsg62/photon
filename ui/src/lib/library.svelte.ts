@@ -98,12 +98,13 @@ export class LibraryStore {
     }
   }
 
-  /** Chains each `setSearchQuery` call onto the previous one, so two calls issued close
-   *  together (for example a debounced search followed by Escape clearing it) apply to the
-   *  backend in the order they were issued rather than in whatever order their IPC round
-   *  trips happen to finish. `cancel()` on the debouncer only stops a call that hasn't fired
-   *  yet — a call already dispatched cannot be cancelled, so ordering has to be guaranteed
-   *  here instead. */
+  /** Chains each `setSearchQuery` call onto the previous one, so two `setSearchQuery` calls
+   *  issued close together (for example a debounced search followed by Escape clearing it)
+   *  apply to the backend in the order they were issued rather than in whatever order their
+   *  IPC round trips happen to finish. This says nothing about `setView`, which is not on
+   *  this chain. `cancel()` on the debouncer only stops a call that hasn't fired yet — a
+   *  call already dispatched cannot be cancelled, so ordering has to be guaranteed here
+   *  instead. */
   private searchQueryChain: Promise<void> = Promise.resolve();
 
   /** Searches for `query`. A blank query returns the backend to the All view. */
@@ -116,7 +117,14 @@ export class LibraryStore {
         this.reportError(e);
       }
     });
-    this.searchQueryChain = next;
+    // Stored separately from what's returned: `next` never rejects today because the
+    // try/catch above routes every failure into reportError, but the chain must not depend
+    // on that staying true. If some future failure ever did throw past this point, a bare
+    // `this.searchQueryChain = next` would leave the chain permanently rejected and every
+    // later setSearchQuery call would reject with it — search would go silently dead for
+    // the rest of the session. `.catch(() => {})` keeps the chain alive regardless; callers
+    // still see `next`, so a real failure is still reported and still rejects for them.
+    this.searchQueryChain = next.catch(() => {});
     return next;
   }
 
