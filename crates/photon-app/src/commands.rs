@@ -35,6 +35,7 @@ pub struct GridInfo {
     pub sections: Vec<Section>,
     pub starred_count: usize,
     pub view: GridView,
+    pub search_query: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -100,11 +101,17 @@ pub fn grid_info(engine: &Engine) -> GridInfo {
             0
         }),
         view: engine.view(),
+        search_query: engine.search_query(),
     }
 }
 
 pub fn set_grid_view(engine: &Engine, view: GridView) -> CmdResult<()> {
     engine.set_view(view)?;
+    Ok(())
+}
+
+pub fn set_search_query(engine: &Engine, query: &str) -> CmdResult<()> {
+    engine.set_search_query(query)?;
     Ok(())
 }
 

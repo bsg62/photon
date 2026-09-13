@@ -16,7 +16,7 @@ export interface Toast { id: number; message: string }
 
 /** App-wide reactive state: the grid snapshot, the folder tree, scan status and selection. */
 export class LibraryStore {
-  info = $state<GridInfo>({ version: -1, len: 0, sections: [], starredCount: 0, view: 'all' });
+  info = $state<GridInfo>({ version: -1, len: 0, sections: [], starredCount: 0, view: 'all', searchQuery: '' });
   folders = $state<FolderList>({ watched: [], folders: [] });
   scans = $state<Record<number, ScanProgressEvent>>({});
   /** Watched folder ids the OS won't let photon watch live, from the most recent

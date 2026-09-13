@@ -124,6 +124,7 @@ pub fn run() {
             ipc::grid_rows,
             ipc::grid_offset_of_folder,
             ipc::set_grid_view,
+            ipc::set_search_query,
             ipc::set_visible,
             ipc::viewer_item,
             ipc::neighbours,

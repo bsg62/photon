@@ -13,8 +13,8 @@ export interface FolderList { watched: WatchedFolder[]; folders: Folder[] }
  *  1000 for a JS Date). The sidebar groups folders by the year it falls in. */
 export interface Section { folderId: number; offset: number; count: number; takenAtMax: number }
 export interface GridEntry { id: number; folderId: number; takenAt: number; aspect: number; kind: 'image'; thumbKey: string; starred: boolean }
-export type GridView = 'all' | 'starred';
-export interface GridInfo { version: number; len: number; sections: Section[]; starredCount: number; view: GridView }
+export type GridView = 'all' | 'starred' | 'search';
+export interface GridInfo { version: number; len: number; sections: Section[]; starredCount: number; view: GridView; searchQuery: string }
 export interface GridRows { version: number; rows: GridEntry[] }
 export interface ViewerItem {
   id: number;
@@ -49,6 +49,7 @@ export const api = {
   gridRows: (offset: number, count: number) => invoke<GridRows>('grid_rows', { offset, count }),
   gridOffsetOfFolder: (folderId: number) => invoke<number | null>('grid_offset_of_folder', { folderId }),
   setGridView: (view: GridView) => invoke<void>('set_grid_view', { view }),
+  setSearchQuery: (query: string) => invoke<void>('set_search_query', { query }),
   setVisible: (ids: number[]) => invoke<void>('set_visible', { ids }),
   viewerItem: (id: number) => invoke<ViewerItem>('viewer_item', { id }),
   neighbours: (id: number, radius: number) => invoke<number[]>('neighbours', { id, radius }),
