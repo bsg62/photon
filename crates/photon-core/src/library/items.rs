@@ -307,8 +307,9 @@ impl Library {
         self.grid_entries_for(GridView::All)
     }
 
-    /// The grid's rows for one view. `Starred` filters to `rating >= 1`, which the
-    /// `items_starred` partial index serves.
+    /// The grid's rows for one view. `Starred` filters to `rating >= 1`; the `items_starred`
+    /// partial index can narrow that scan, but the query still joins `folders` and orders by
+    /// `GRID_ORDER`, so it does not serve the query outright the way it does `starred_count`.
     pub fn grid_entries_for(&self, view: GridView) -> Result<Vec<GridEntry>> {
         let filter = match view {
             GridView::All => "",

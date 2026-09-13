@@ -95,7 +95,10 @@ pub fn grid_info(engine: &Engine) -> GridInfo {
         version,
         len: grid.len(),
         sections: grid.sections().to_vec(),
-        starred_count: engine.lib.starred_count().unwrap_or(0),
+        starred_count: engine.lib.starred_count().unwrap_or_else(|err| {
+            tracing::warn!(%err, "starred count query failed");
+            0
+        }),
         view: engine.view(),
     }
 }

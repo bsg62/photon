@@ -2,7 +2,8 @@
 //!
 //! The packet is plain text in every container photon supports — JPEG `APP1`, PNG
 //! uncompressed `iTXt`, WebP `XMP ` chunk, GIF Application Extension — so a bounded scan
-//! for the packet markers finds all of them without a parser per format. photon only ever
+//! for the packet markers finds all of them without a parser per format. WebP is untested:
+//! the design is container-agnostic but no WebP fixture exists yet. photon only ever
 //! reads: nothing here writes to a file.
 
 use quick_xml::Reader;
@@ -54,9 +55,13 @@ pub fn rating_from_xml(xml: &str) -> Option<u8> {
                         return Some(rating);
                     }
                 }
-                if e.name().as_ref() == "xmp:Rating" {
-                    in_rating = true;
-                }
+                // Set (not just raised) on every Start/Empty: an unrelated element between
+                // an empty `<xmp:Rating/>` and its sibling text must not be misread as the
+                // rating, so entering any other element clears the flag.
+                in_rating = e.name().as_ref() == "xmp:Rating";
+            }
+            Ok(Event::End(_)) => {
+                in_rating = false;
             }
             Ok(Event::Text(t)) if in_rating => {
                 // Same reasoning: no unescaping needed for a purely numeric value.
@@ -149,6 +154,14 @@ mod tests {
     }
 
     #[test]
+    fn an_unrelated_element_after_an_empty_rating_tag_is_not_misread_as_the_rating() {
+        // `<xmp:Rating/>` sets `in_rating`; without clearing it on the next Start for a
+        // different element, the Urgency text below would be misread as the rating.
+        let xml = r#"<xmp:Rating/><photoshop:Urgency>3</photoshop:Urgency>"#;
+        assert_eq!(rating_from_xml(xml), None);
+    }
+
+    #[test]
     fn a_packet_beyond_the_read_cap_is_not_found() {
         // The cap is what stops a rating lookup pulling a 20MB photo through memory, so it
         // has to actually bound the read rather than being advisory.
@@ -164,5 +177,16 @@ mod tests {
         early.extend_from_slice(packet.as_bytes());
         let path = write_file(dir.path(), "early.jpg", &early);
         assert_eq!(read_rating(&path), Some(4));
+    }
+
+    #[test]
+    fn a_packet_with_a_start_marker_but_no_closing_tag_yields_none() {
+        // The packet is truncated (e.g. a partially-written or corrupted file): the start
+        // marker is found but `text.find(PACKET_END)` never matches, so `?` bails to None.
+        let dir = tempfile::tempdir().unwrap();
+        let mut bytes = PACKET_START.to_vec();
+        bytes.extend_from_slice(br#" xmlns:x="adobe:ns:meta/"><rdf:RDF>"#);
+        let path = write_file(dir.path(), "truncated.jpg", &bytes);
+        assert_eq!(read_rating(&path), None);
     }
 }
