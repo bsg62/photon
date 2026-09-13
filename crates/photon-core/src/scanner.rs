@@ -135,7 +135,7 @@ pub fn scan_watched(
     }
     lib.set_watched_online(watched.id, true)?;
 
-    apply_picasa_stars(lib, &walked)?;
+    apply_picasa_stars(lib, &walked);
 
     // Anything left in `known` was not found on this (reachable) scan: soft-delete it,
     // or purge it if it was already missing last time.
@@ -262,7 +262,7 @@ pub fn scan_subtree(
             .any(|prefix| Path::new(path_str).starts_with(prefix))
     });
 
-    apply_picasa_stars(lib, &outcome.walked)?;
+    apply_picasa_stars(lib, &outcome.walked);
 
     let mut report = outcome.report;
     let (marked, purged) = finish_mark_purge(lib, known)?;
@@ -458,20 +458,37 @@ fn walk_tree(
 /// The INI is the only authority: a photo it does not name is set to unstarred, so removing
 /// a star in Picasa clears it here too. A folder that cannot be read is skipped instead,
 /// because failing to read is not evidence that the stars are gone.
-fn apply_picasa_stars(lib: &Library, walked: &[(PathBuf, i64)]) -> Result<()> {
+///
+/// Infallible: a per-folder DB error (a busy database, say) is logged and skipped rather
+/// than aborting the whole scan, since that would also skip `finish_mark_purge` and
+/// `prune_folders` over an unrelated folder's transient failure. Nothing is lost — the next
+/// scan reapplies this folder's stars.
+fn apply_picasa_stars(lib: &Library, walked: &[(PathBuf, i64)]) {
     for (dir, folder_id) in walked {
         let Some(stars) = crate::picasa::read_stars(dir) else {
             tracing::debug!(?dir, "leaving stars alone for an unreadable folder");
             continue;
         };
-        let ratings: Vec<(i64, u8)> = lib
-            .folder_item_names(*folder_id)?
-            .into_iter()
-            .map(|(id, name)| (id, u8::from(stars.contains(&name))))
-            .collect();
-        for chunk in ratings.chunks(BATCH) {
-            lib.set_ratings(chunk)?;
+        if let Err(err) = apply_folder_stars(lib, *folder_id, &stars) {
+            // One folder's transient failure (a busy database, say) must not cost the whole
+            // scan its mark/purge/prune. The next scan reapplies this folder's stars.
+            tracing::warn!(%err, ?dir, "could not apply Picasa stars for a folder");
         }
+    }
+}
+
+fn apply_folder_stars(
+    lib: &Library,
+    folder_id: i64,
+    stars: &std::collections::HashSet<String>,
+) -> Result<()> {
+    let ratings: Vec<(i64, u8)> = lib
+        .folder_item_names(folder_id)?
+        .into_iter()
+        .map(|(id, name)| (id, u8::from(stars.contains(&name))))
+        .collect();
+    for chunk in ratings.chunks(BATCH) {
+        lib.set_ratings(chunk)?;
     }
     Ok(())
 }
@@ -740,7 +757,10 @@ mod tests {
         // Spec §7: failing to read is not evidence that the stars are gone, unlike a
         // successfully-read INI with no entry for the photo. The `Option` in read_stars's
         // return type is the only thing carrying that distinction, and this is the only test
-        // that exercises the caller's side of it.
+        // that exercises the caller's side of it. It does not discriminate the describe()
+        // revert (see a_star_added_after_indexing_...); the revert that does break this one
+        // is replacing read_stars's `None` arm with `.unwrap_or_default()`, which fails it
+        // with `left: 0, right: 1`.
         use std::os::unix::fs::PermissionsExt;
 
         let (dir, lib) = temp_library();

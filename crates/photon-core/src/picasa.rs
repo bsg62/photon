@@ -60,11 +60,6 @@ fn ini_path(dir: &Path) -> Option<Option<PathBuf>> {
 /// Reads one byte past the cap so an exactly-`MAX_INI` file can be told apart from a
 /// larger one, rather than silently treating "too big to read" as "read, and empty" —
 /// the same distinction `read_stars`'s `Option` exists to carry.
-/// Reads the file, or `None` if it is unreadable or larger than `MAX_INI`.
-///
-/// Reads one byte past the cap so an exactly-`MAX_INI` file can be told apart from a
-/// larger one, rather than silently treating "too big to read" as "read, and empty" —
-/// the same distinction `read_stars`'s `Option` exists to carry.
 fn read_capped(path: &Path) -> Option<Vec<u8>> {
     let mut file = fs::File::open(path).ok()?;
     let mut buf = Vec::new();
