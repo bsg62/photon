@@ -87,6 +87,9 @@ publishing it.
 - [ ] Deleting a photo on disk removes it from the grid.
 - [ ] Renaming a folder on disk moves its photos in the tree within a few seconds.
 - [ ] Unplugging a watched drive dims it; plugging it back in restores it within about a minute, unattended.
+- [ ] Typing part of a folder's name in the sidebar search box finds its photos.
+- [ ] Clearing the search box restores the full library.
+- [ ] Clicking a folder in the sidebar while a search is active leaves search and lands on that folder.
 - [ ] On a library large enough to exhaust the system's watch limit, the status bar says live updates are limited rather than silently missing changes.
 - [ ] A folder added with "Add folder…" while photon is running picks up changes on disk within a few seconds, with no restart.
 - [ ] Once a folder whose live updates were limited recovers, the status bar stops saying so without a restart.

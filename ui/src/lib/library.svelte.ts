@@ -98,6 +98,16 @@ export class LibraryStore {
     }
   }
 
+  /** Searches for `query`. A blank query returns the backend to the All view. */
+  async setSearchQuery(query: string): Promise<void> {
+    try {
+      await api.setSearchQuery(query);
+      await this.refresh();
+    } catch (e) {
+      this.reportError(e);
+    }
+  }
+
   async ensure(start: number, end: number): Promise<void> {
     if (await this.pages.ensure(start, Math.min(end, this.info.len))) this.pageTick++;
   }

@@ -3,8 +3,37 @@
   import { api, type Folder, type WatchedFolder } from '../lib/api';
   import { folderRows, groupByYear } from '../lib/folders';
   import { library } from '../lib/library.svelte';
+  import { debounce, SEARCH_DEBOUNCE_MS } from '../lib/search';
 
   let { onjump }: { onjump: (folderId: number) => void } = $props();
+
+  let query = $state(library.info.searchQuery);
+  /** The last query received from the backend, distinct from `query` itself: the effect
+   *  below both reads and writes `query`, and comparing against this instead of re-reading
+   *  `library.info.searchQuery` on the next tick is what keeps it from re-triggering on its
+   *  own write and looping. */
+  let lastBackendQuery = library.info.searchQuery;
+
+  const runSearch = debounce((q: string) => void library.setSearchQuery(q), SEARCH_DEBOUNCE_MS);
+
+  function clearSearch() {
+    // Cancel first: a pending debounced call would otherwise land after the clear and put
+    // the backend straight back into the search view.
+    runSearch.cancel();
+    query = '';
+    void library.setSearchQuery('');
+  }
+
+  // The backend is the source of truth for the active query (spec §5): clicking Starred or
+  // a folder clears it server-side, and without this the box would keep displaying text
+  // that no longer filters anything.
+  $effect(() => {
+    const backend = library.info.searchQuery;
+    if (backend !== lastBackendQuery) {
+      lastBackendQuery = backend;
+      query = backend;
+    }
+  });
 
   /** Folders that actually hold photos, grouped by the year of their newest one.
    *
@@ -108,12 +137,12 @@
     if (folder) openMenu(e, { kind: 'folder', folder });
   }
 
-  /** Jumping to a folder from the Starred view has to leave that view first: the jump
-   *  looks up the offset in the grid's current index, and racing that lookup against an
-   *  unawaited view switch can return a stale or mismatched result (see the Important 1
+  /** Jumping to a folder from the Starred or Search view has to leave that view first: the
+   *  jump looks up the offset in the grid's current index, and racing that lookup against
+   *  an unawaited view switch can return a stale or mismatched result (see the Important 1
    *  writeup — awaiting here is load-bearing, not stylistic). */
   async function jumpToFolder(folderId: number) {
-    if (library.info.view === 'starred') await library.setView('all');
+    if (library.info.view !== 'all') await library.setView('all');
     onjump(folderId);
   }
 </script>
@@ -123,6 +152,17 @@
 <nav class="tree" aria-label="Folders">
   <div class="toolbar">
     <button class="add" onclick={addFolder}>Add folder…</button>
+    <input
+      class="search"
+      type="search"
+      placeholder="Search"
+      aria-label="Search photos by file or folder name"
+      bind:value={query}
+      oninput={() => runSearch(query)}
+      onkeydown={(e) => {
+        if (e.key === 'Escape') clearSearch();
+      }}
+    />
   </div>
 
   <button
@@ -201,8 +241,17 @@
 
 <style>
   .tree { display: flex; flex-direction: column; padding-bottom: 12px; }
-  .toolbar { padding: 8px; }
+  .toolbar { display: flex; flex-direction: column; gap: 6px; padding: 8px; }
   .add { width: 100%; padding: 6px; border: 1px solid #fff2; border-radius: 4px; background: var(--panel-2); cursor: pointer; }
+  .search {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 6px 8px;
+    border: 1px solid #fff2;
+    border-radius: 4px;
+    background: var(--panel-2);
+    color: inherit;
+  }
   .root,
   .node {
     display: flex;

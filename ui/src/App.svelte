@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import { api } from './lib/api';
   import { library } from './lib/library.svelte';
+  import { resultsChanged } from './lib/search';
   import FolderTree from './components/FolderTree.svelte';
   import Grid from './components/Grid.svelte';
   import StatusBar from './components/StatusBar.svelte';
@@ -16,14 +17,15 @@
     return () => library.dispose();
   });
 
-  // Spec §5: switching views returns the grid to the top, since a scroll position from
-  // one view's set of photos is arbitrary against another's. Tracked here rather than in
-  // FolderTree because App owns the `grid` binding and its scroll helper.
-  let lastView = library.info.view;
+  // Spec §5: the grid returns to the top whenever the result set changes — a new view, or
+  // a refined query within Search — since a scroll position from one set of photos is
+  // arbitrary against another's. Tracked here rather than in FolderTree because App owns
+  // the `grid` binding and its scroll helper.
+  let last = { view: library.info.view, query: library.info.searchQuery };
   $effect(() => {
-    const view = library.info.view;
-    if (view !== lastView) {
-      lastView = view;
+    const next = { view: library.info.view, query: library.info.searchQuery };
+    if (resultsChanged(last, next)) {
+      last = next;
       grid?.scrollToOffset(0, 'start');
     }
   });
