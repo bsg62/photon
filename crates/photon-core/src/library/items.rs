@@ -171,6 +171,42 @@ impl Library {
         Ok(())
     }
 
+    /// Every live item in one folder, as `(id, lowercased file name)`.
+    ///
+    /// Lowercased here because Picasa's INI may disagree in case with the files on disk, and
+    /// this codebase folds case in Rust rather than in SQL: there is no `COLLATE NOCASE` on
+    /// `file_name` and `lower()` is ASCII-only in SQLite without the ICU extension, which is a
+    /// native dependency photon does not take.
+    pub fn folder_item_names(&self, folder_id: i64) -> Result<Vec<(i64, String)>> {
+        let conn = self.reader();
+        let mut stmt = conn.prepare_cached(
+            "SELECT id, file_name FROM items WHERE folder_id = ?1 AND missing_since IS NULL",
+        )?;
+        let rows = stmt
+            .query_map(params![folder_id], |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?.to_lowercase()))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// Sets the rating on specific items, leaving every other column alone.
+    ///
+    /// Deliberately not part of `update_items`: that rewrites a row from a rescanned file and
+    /// resets its thumbnail, which is wrong for a star that changed while the photo did not.
+    pub fn set_ratings(&self, ratings: &[(i64, u8)]) -> Result<()> {
+        let mut conn = self.writer();
+        let tx = conn.transaction()?;
+        {
+            let mut stmt = tx.prepare_cached("UPDATE items SET rating = ?2 WHERE id = ?1")?;
+            for (id, rating) in ratings {
+                stmt.execute(params![id, rating])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Soft-deletes items; they stay hidden until a later scan purges or restores them.
     pub fn mark_missing(&self, ids: &[i64], now_ms: i64) -> Result<()> {
         let mut conn = self.writer();
@@ -485,6 +521,63 @@ mod tests {
 
         lib.purge_items(&[b]).unwrap();
         assert!(lib.item(b).unwrap().is_none());
+    }
+
+    #[test]
+    fn folder_item_names_lowercases_and_excludes_missing_rows() {
+        let (_dir, lib) = temp_library();
+        let (_watched, folder) = seed_folder(&lib, Path::new("/p"));
+        let ids = lib
+            .insert_items(&[
+                new_item(folder, "/p/DSC_0001.JPG", 1),
+                new_item(folder, "/p/b.jpg", 2),
+            ])
+            .unwrap();
+        let (a, b) = (ids[0], ids[1]);
+        lib.mark_missing(&[b], 50).unwrap();
+
+        let mut names = lib.folder_item_names(folder).unwrap();
+        names.sort();
+        assert_eq!(names, vec![(a, "dsc_0001.jpg".to_string())]);
+    }
+
+    #[test]
+    fn set_ratings_changes_only_the_rating() {
+        let (_dir, lib) = temp_library();
+        let (_, folder) = seed_folder(&lib, Path::new("/p"));
+        let id = lib
+            .insert_items(&[new_item(folder, "/p/a.jpg", 1)])
+            .unwrap()[0];
+        let before = lib.item(id).unwrap().unwrap();
+
+        lib.set_ratings(&[(id, 1)]).unwrap();
+
+        let after = lib.item(id).unwrap().unwrap();
+        assert_eq!(
+            (
+                after.path.clone(),
+                after.size,
+                after.mtime_ms,
+                after.width,
+                after.height,
+                after.orientation,
+                after.taken_at,
+                after.thumb_state,
+                after.missing_since
+            ),
+            (
+                before.path,
+                before.size,
+                before.mtime_ms,
+                before.width,
+                before.height,
+                before.orientation,
+                before.taken_at,
+                before.thumb_state,
+                before.missing_since
+            )
+        );
+        assert_eq!(lib.starred_count().unwrap(), 1);
     }
 
     #[test]

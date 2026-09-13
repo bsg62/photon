@@ -81,6 +81,7 @@ pub fn scan_watched(
     let WalkOutcome {
         report,
         seen,
+        walked,
         incomplete_prefixes,
         skip_mark_purge,
         cancelled,
@@ -133,6 +134,8 @@ pub fn scan_watched(
         });
     }
     lib.set_watched_online(watched.id, true)?;
+
+    apply_picasa_stars(lib, &walked)?;
 
     // Anything left in `known` was not found on this (reachable) scan: soft-delete it,
     // or purge it if it was already missing last time.
@@ -259,6 +262,8 @@ pub fn scan_subtree(
             .any(|prefix| Path::new(path_str).starts_with(prefix))
     });
 
+    apply_picasa_stars(lib, &outcome.walked)?;
+
     let mut report = outcome.report;
     let (marked, purged) = finish_mark_purge(lib, known)?;
     lib.prune_folders_under(watched.id, scan_id, target_str)?;
@@ -307,6 +312,10 @@ fn seed_ancestors(
 struct WalkOutcome {
     report: ScanReport,
     seen: ScanProgress,
+    /// The directories this walk actually entered, as opposed to those `seed_ancestors`
+    /// pre-inserted into `folder_ids`. The Picasa pass must only touch these: a subtree
+    /// scan that rewrote its ancestors' ratings would break its own isolation contract.
+    walked: Vec<(PathBuf, i64)>,
     /// Subtrees we could not fully walk: anything `known` claims to live under one of
     /// these might still exist, so it must not be marked missing or purged this scan.
     incomplete_prefixes: Vec<PathBuf>,
@@ -336,6 +345,7 @@ fn walk_tree(
     let mut seen = ScanProgress::default();
     let mut new_batch: Vec<NewItem> = Vec::new();
     let mut changed_batch: Vec<(i64, NewItem)> = Vec::new();
+    let mut walked: Vec<(PathBuf, i64)> = Vec::new();
     let mut incomplete_prefixes: Vec<PathBuf> = Vec::new();
     let mut skip_mark_purge = false;
     let mut cancelled = false;
@@ -380,6 +390,7 @@ fn walk_tree(
             };
             let id = lib.upsert_folder(watched_id, parent, path_str, scan_id)?;
             folder_ids.insert(path.to_path_buf(), id);
+            walked.push((path.to_path_buf(), id));
             continue;
         }
         if !entry.file_type().is_file() {
@@ -430,10 +441,39 @@ fn walk_tree(
     Ok(WalkOutcome {
         report,
         seen,
+        walked,
         incomplete_prefixes,
         skip_mark_purge,
         cancelled,
     })
+}
+
+/// Applies each walked folder's Picasa stars to its photos.
+///
+/// Runs after the walk rather than inside `describe()`, which is called only for photos
+/// whose size or mtime changed. Starring a photo in Picasa rewrites the folder's INI and
+/// leaves the photo untouched, so on a rescan every photo takes the `unchanged` branch and
+/// a star read in `describe()` would never be written.
+///
+/// The INI is the only authority: a photo it does not name is set to unstarred, so removing
+/// a star in Picasa clears it here too. A folder that cannot be read is skipped instead,
+/// because failing to read is not evidence that the stars are gone.
+fn apply_picasa_stars(lib: &Library, walked: &[(PathBuf, i64)]) -> Result<()> {
+    for (dir, folder_id) in walked {
+        let Some(stars) = crate::picasa::read_stars(dir) else {
+            tracing::debug!(?dir, "leaving stars alone for an unreadable folder");
+            continue;
+        };
+        let ratings: Vec<(i64, u8)> = lib
+            .folder_item_names(*folder_id)?
+            .into_iter()
+            .map(|(id, name)| (id, u8::from(stars.contains(&name))))
+            .collect();
+        for chunk in ratings.chunks(BATCH) {
+            lib.set_ratings(chunk)?;
+        }
+    }
+    Ok(())
 }
 
 /// Soft-deletes what this walk didn't find, and purges what was already missing.
@@ -535,9 +575,7 @@ fn mtime_ms(md: &Metadata) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testutil::{
-        jpeg_bytes, jpeg_with_exif, jpeg_with_xmp, png_bytes, temp_library, write_file,
-    };
+    use crate::testutil::{jpeg_bytes, jpeg_with_exif, png_bytes, temp_library, write_file};
     use std::fs;
 
     fn scan(lib: &Library, watched: &WatchedFolder, scan_id: i64) -> ScanReport {
@@ -597,15 +635,140 @@ mod tests {
     }
 
     #[test]
-    fn a_scan_reads_the_xmp_rating_into_the_library() {
+    fn a_star_added_after_indexing_is_picked_up_without_the_photo_changing() {
+        // THE test for this feature. Starring in Picasa rewrites the INI and leaves the photo
+        // untouched, so the photo takes the scanner's `unchanged` branch and describe() never
+        // runs for it. An implementation that reads stars in describe() passes every other test
+        // here and fails this one.
         let (dir, lib) = temp_library();
         let root = photos_root(&dir);
-        write_file(&root, "starred.jpg", &jpeg_with_xmp(4, 2, 3));
+        write_file(&root, "a.jpg", &jpeg_bytes(4, 2));
         let watched = lib.add_watched_folder(&root, &[]).unwrap();
+        scan(&lib, &watched, 1);
+        assert_eq!(lib.starred_count().unwrap(), 0);
 
-        scan_watched(&lib, &watched, 1, &ScanOptions::default(), &mut |_| {}).unwrap();
+        write_file(&root, ".picasa.ini", b"[a.jpg]\nstar=yes\n");
+        let report = scan(&lib, &watched, 2);
+
+        assert_eq!(report.unchanged, 1, "the photo itself did not change");
+        assert_eq!(lib.starred_count().unwrap(), 1);
+    }
+
+    #[test]
+    fn a_star_removed_from_the_ini_is_cleared_on_the_next_scan() {
+        // The INI is the only authority (spec §5): only-ever-adding would leave an un-starred
+        // photo stuck with no way to clear it short of deleting the library.
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        write_file(&root, "a.jpg", &jpeg_bytes(4, 2));
+        write_file(&root, ".picasa.ini", b"[a.jpg]\nstar=yes\n");
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
+        scan(&lib, &watched, 1);
+        assert_eq!(lib.starred_count().unwrap(), 1);
+
+        write_file(&root, ".picasa.ini", b"[a.jpg]\nbackuphash=1\n");
+        scan(&lib, &watched, 2);
+        assert_eq!(lib.starred_count().unwrap(), 0);
+    }
+
+    #[test]
+    fn deleting_the_ini_clears_the_folder_s_stars() {
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        write_file(&root, "a.jpg", &jpeg_bytes(4, 2));
+        write_file(&root, ".picasa.ini", b"[a.jpg]\nstar=yes\n");
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
+        scan(&lib, &watched, 1);
+        assert_eq!(lib.starred_count().unwrap(), 1);
+
+        fs::remove_file(root.join(".picasa.ini")).unwrap();
+        scan(&lib, &watched, 2);
+        assert_eq!(
+            lib.starred_count().unwrap(),
+            0,
+            "a folder with no INI has no stars"
+        );
+    }
+
+    #[test]
+    fn a_parent_folder_s_ini_does_not_star_photos_in_a_subfolder() {
+        // Picasa writes one INI per directory and its section names are bare filenames, so
+        // nothing is inherited downward.
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        write_file(&root, "sub/a.jpg", &jpeg_bytes(4, 2));
+        write_file(&root, ".picasa.ini", b"[a.jpg]\nstar=yes\n");
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
+        scan(&lib, &watched, 1);
+
+        assert_eq!(lib.starred_count().unwrap(), 0);
+    }
+
+    #[test]
+    fn stars_are_matched_case_insensitively_against_the_files_on_disk() {
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        write_file(&root, "DSC_0001.JPG", &jpeg_bytes(4, 2));
+        write_file(&root, ".picasa.ini", b"[dsc_0001.jpg]\nstar=yes\n");
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
+        scan(&lib, &watched, 1);
 
         assert_eq!(lib.starred_count().unwrap(), 1);
+    }
+
+    #[test]
+    fn a_subtree_scan_applies_stars_too() {
+        // scan_subtree is the path the file watcher uses when a folder changes, which is
+        // exactly what happens when someone stars a photo in Picasa. Wiring the pass into
+        // scan_watched alone would leave this broken while every other test passed.
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        write_file(&root, "sub/a.jpg", &jpeg_bytes(4, 2));
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
+        scan(&lib, &watched, 1);
+        assert_eq!(lib.starred_count().unwrap(), 0);
+
+        write_file(&root, "sub/.picasa.ini", b"[a.jpg]\nstar=yes\n");
+        scan_sub(&lib, &watched, &root.join("sub"), 2);
+
+        assert_eq!(lib.starred_count().unwrap(), 1);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_folder_that_cannot_be_read_keeps_its_stars() {
+        // Spec §7: failing to read is not evidence that the stars are gone, unlike a
+        // successfully-read INI with no entry for the photo. The `Option` in read_stars's
+        // return type is the only thing carrying that distinction, and this is the only test
+        // that exercises the caller's side of it.
+        use std::os::unix::fs::PermissionsExt;
+
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        write_file(&root, "sub/a.jpg", &jpeg_bytes(4, 2));
+        write_file(&root, "sub/.picasa.ini", b"[a.jpg]\nstar=yes\n");
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
+        scan(&lib, &watched, 1);
+        assert_eq!(lib.starred_count().unwrap(), 1);
+
+        let sub = root.join("sub");
+        fs::set_permissions(&sub, fs::Permissions::from_mode(0o000)).unwrap();
+        if fs::read_dir(&sub).is_ok() {
+            // Running with elevated privileges (e.g. as root): permission bits aren't
+            // enforced, so this test can't exercise the unreadable-directory path.
+            fs::set_permissions(&sub, fs::Permissions::from_mode(0o755)).unwrap();
+            return;
+        }
+
+        scan(&lib, &watched, 2);
+
+        fs::set_permissions(&sub, fs::Permissions::from_mode(0o755)).unwrap();
+
+        assert_eq!(
+            lib.starred_count().unwrap(),
+            1,
+            "no evidence is not evidence of no stars"
+        );
     }
 
     #[test]
