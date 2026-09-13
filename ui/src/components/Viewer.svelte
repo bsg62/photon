@@ -88,6 +88,16 @@
     // While the zoom slider has focus the arrow keys belong to it, which is how a range
     // input is expected to behave. Navigation stays available everywhere else.
     if (e.target instanceof HTMLInputElement) return;
+    // Backspace closes as well, like the back button. Deliberately placed here: after the
+    // input guard, so a text field gets its character deleted rather than the viewer
+    // slammed shut; but before the empty-library check below, so it still closes when a
+    // scan has emptied the grid underneath an open viewer — the case where the viewer
+    // shows "This photo is no longer available" and Escape must still work.
+    if (e.key === 'Backspace') {
+      e.preventDefault();
+      onclose(current);
+      return;
+    }
     const last = library.info.len - 1;
     if (last < 0) return;
     const next =
