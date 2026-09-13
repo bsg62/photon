@@ -4,7 +4,9 @@
 
 **Goal:** photon reads star ratings that already exist in photos' embedded XMP and offers a Starred view, so a library rated in Picasa arrives already starred.
 
-**Architecture:** A container-agnostic XMP reader in `photon-core` finds the `<x:xmpmeta>` packet in a bounded prefix of a file and extracts `xmp:Rating`. A nullable `rating` column stores it — `NULL` meaning "not read yet", which is what lets a one-time backfill populate libraries indexed before this feature. The Starred view is the existing grid index rebuilt with a filter, so paging, sections and viewer navigation work unchanged.
+**Architecture:** A container-agnostic XMP reader in `photon-core` finds the `<x:xmpmeta>` packet in a bounded prefix of a file and extracts `xmp:Rating`. The scanner stores it as it indexes, in a nullable `rating` column. The Starred view is the existing grid index rebuilt with a filter, so paging, sections and viewer navigation work unchanged.
+
+This version expects a **fresh library**: every photo is rated as it is indexed, so no row is ever left unread and there is no backfill. An existing library carried across would show no stars until its photos are re-indexed.
 
 **Tech Stack:** Rust (edition 2024, rust-version 1.88), `quick-xml` 0.42 (already in the lockfile, pure Rust), rusqlite with `PRAGMA user_version` migrations, Tauri 2 IPC, Svelte 5 + TypeScript.
 
@@ -14,7 +16,7 @@
 
 - **photon never writes to, moves or deletes files inside watched folders.** This feature reads only. No XMP packet is modified and no sidecar is created. Any task that writes to a file under a watched folder is wrong.
 - **Starred means `rating >= 1`.** Ratings run 0–5; `-1` means "rejected" and is stored as `0`.
-- **The `rating` column is nullable.** `NULL` = not read yet, `0` = read and unrated. Never give it a `NOT NULL DEFAULT`.
+- **The `rating` column is nullable.** `NULL` = not read yet, `0` = read and unrated. Nothing writes `NULL` today, since every row is rated at index time — it stays nullable because `NOT NULL` would be a one-way door, forcing another migration to relax it if a backfill is ever needed. Never give it a `NOT NULL DEFAULT`.
 - **The XMP read is bounded to the first 256 KiB** of a file.
 - **Reading metadata never fails.** A malformed packet, truncated file or unexpected structure yields "no rating", never an error that fails a scan.
 - **No native library dependencies.** `quick-xml` is pure Rust and already vendored. Never add `xmp-toolkit` or anything wrapping a C/C++ SDK — it would undo photon's cross-platform packaging.
@@ -36,7 +38,7 @@ crates/photon-core/src/library/schema.rs       MIGRATIONS gains entry 2
 crates/photon-core/src/library/items.rs        NewItem.rating; insert/update; rating queries
 crates/photon-core/src/grid.rs                 GridEntry gains `starred`
 crates/photon-core/src/scanner.rs              describe() carries the rating through
-crates/photon-app/src/engine.rs                view mode; refresh_grid honours it; backfill
+crates/photon-app/src/engine.rs                view mode; refresh_grid honours it
 crates/photon-app/src/commands.rs              GridInfo.starred_count; set_grid_view
 crates/photon-app/src/ipc.rs                   #[tauri::command(async)] wrapper
 crates/photon-app/src/app.rs                   generate_handler! entry
@@ -271,7 +273,7 @@ use std::{fs::File, io::Read, path::Path};
 
 /// How much of a file is searched for the packet. XMP sits near the start of every
 /// container above; this stops a rating lookup pulling a 20MB photo through memory, and
-/// caps the cost of the backfill over an existing library at a predictable figure.
+/// keeps the per-photo cost of a first scan predictable rather than scaling with size.
 pub const MAX_PREFIX: usize = 256 * 1024;
 
 const PACKET_START: &[u8] = b"<x:xmpmeta";
@@ -374,9 +376,9 @@ git commit -m "feat(core): read xmp:Rating from a photo's embedded XMP packet"
 - Produces:
   - `items.rating` — `INTEGER`, nullable. `NULL` = not read yet, `0` = read and unrated.
   - `NewItem.rating: Option<u8>`
-  - `Library::items_needing_rating(&self, limit: usize) -> Result<Vec<(i64, String)>>` — (id, path) for items with `rating IS NULL`, oldest first.
-  - `Library::set_rating(&self, id: i64, rating: u8) -> Result<()>`
   - `Library::starred_count(&self) -> Result<usize>`
+
+Nothing else is added. A `set_rating` or `items_needing_rating` would have no production caller now that ratings arrive with the row: the scanner writes them through `insert_items` and `update_items`, and the tests below construct rows the same way. A public method with no caller is scope creep.
 
 **This is the first migration to upgrade a library that already exists on disk.** `MIGRATIONS` currently holds one entry that builds the schema from nothing, and every installed library sits at `user_version = 1`. The new entry must be purely additive and must not rewrite existing rows.
 
@@ -385,44 +387,39 @@ git commit -m "feat(core): read xmp:Rating from a photo's embedded XMP packet"
 Add to the `tests` module in `crates/photon-core/src/library/items.rs`:
 
 ```rust
-    #[test]
-    fn migrating_an_existing_library_adds_ratings_as_unread() {
-        // The upgrade path that matters: a library with rows already in it, created before
-        // this feature existed. Every row must survive, and read "not looked at yet"
-        // rather than "looked at and unrated" — those are different, and only the former
-        // lets the backfill know there is work to do.
-        let (_dir, lib) = temp_library();
-        let (_watched, folder) = seed_folder(&lib, Path::new("/p"));
-        let ids = lib
-            .insert_items(&[new_item(folder, "/p/a.jpg", 1), new_item(folder, "/p/b.jpg", 2)])
-            .unwrap();
-
-        let pending = lib.items_needing_rating(10).unwrap();
-        assert_eq!(pending.len(), 2, "both rows start unread");
-        assert_eq!(pending[0].0, ids[0]);
-        assert_eq!(pending[0].1, "/p/a.jpg");
+    /// `new_item` builds a row with `rating: None`; this is the same row with a rating, as
+    /// the scanner produces once it has read the file's XMP.
+    fn rated(folder: i64, path: &str, taken_at: i64, rating: u8) -> NewItem {
+        NewItem {
+            rating: Some(rating),
+            ..new_item(folder, path, taken_at)
+        }
     }
 
     #[test]
-    fn a_rating_is_stored_and_counted_when_starred() {
+    fn only_photos_rated_at_least_one_star_are_counted() {
         let (_dir, lib) = temp_library();
         let (_watched, folder) = seed_folder(&lib, Path::new("/p"));
-        let ids = lib
-            .insert_items(&[
-                new_item(folder, "/p/a.jpg", 1),
-                new_item(folder, "/p/b.jpg", 2),
-                new_item(folder, "/p/c.jpg", 3),
-            ])
-            .unwrap();
+        lib.insert_items(&[
+            rated(folder, "/p/a.jpg", 1, 3),
+            rated(folder, "/p/b.jpg", 2, 0),
+            rated(folder, "/p/c.jpg", 3, 1),
+        ])
+        .unwrap();
 
-        lib.set_rating(ids[0], 3).unwrap();
-        lib.set_rating(ids[1], 0).unwrap();
-        assert_eq!(lib.starred_count().unwrap(), 1, "only rating >= 1 is starred");
+        // Three rated photos, two of them starred: zero stars is a read rating, not a star.
+        assert_eq!(lib.starred_count().unwrap(), 2);
+    }
 
-        // Rated rows are no longer pending, including the one rated zero: it was read.
-        let pending = lib.items_needing_rating(10).unwrap();
-        assert_eq!(pending.len(), 1);
-        assert_eq!(pending[0].0, ids[2]);
+    #[test]
+    fn an_unread_rating_is_not_counted_as_starred() {
+        // `new_item` leaves `rating` NULL, which is what an unread row looks like. NULL is
+        // not >= 1, so it must not reach the Starred count — SQL comparisons against NULL
+        // are never true, and this pins that rather than trusting it.
+        let (_dir, lib) = temp_library();
+        let (_watched, folder) = seed_folder(&lib, Path::new("/p"));
+        lib.insert_items(&[new_item(folder, "/p/a.jpg", 1)]).unwrap();
+        assert_eq!(lib.starred_count().unwrap(), 0);
     }
 
     #[test]
@@ -431,31 +428,31 @@ Add to the `tests` module in `crates/photon-core/src/library/items.rs`:
         // not appear in the grid.
         let (_dir, lib) = temp_library();
         let (_watched, folder) = seed_folder(&lib, Path::new("/p"));
-        let ids = lib.insert_items(&[new_item(folder, "/p/a.jpg", 1)]).unwrap();
-        lib.set_rating(ids[0], 4).unwrap();
+        let ids = lib.insert_items(&[rated(folder, "/p/a.jpg", 1, 4)]).unwrap();
         assert_eq!(lib.starred_count().unwrap(), 1);
         lib.mark_missing(&ids, 1).unwrap();
         assert_eq!(lib.starred_count().unwrap(), 0);
     }
 
     #[test]
-    fn an_inserted_rating_is_kept() {
+    fn a_changed_photo_keeps_the_rating_its_rescan_read() {
+        // `update_items` runs when a file's size or mtime changed, and carries the rating
+        // the fresh scan read — so a star added in another program survives a rescan.
         let (_dir, lib) = temp_library();
         let (_watched, folder) = seed_folder(&lib, Path::new("/p"));
-        let item = NewItem {
-            rating: Some(2),
-            ..new_item(folder, "/p/a.jpg", 1)
-        };
-        lib.insert_items(&[item]).unwrap();
+        let ids = lib.insert_items(&[rated(folder, "/p/a.jpg", 1, 0)]).unwrap();
+        assert_eq!(lib.starred_count().unwrap(), 0);
+
+        lib.update_items(&[(ids[0], rated(folder, "/p/a.jpg", 1, 5))])
+            .unwrap();
         assert_eq!(lib.starred_count().unwrap(), 1);
-        assert!(lib.items_needing_rating(10).unwrap().is_empty());
     }
 ```
 
 - [ ] **Step 2: Run them to verify they fail**
 
 Run: `cargo test -p photon-core library::items`
-Expected: FAIL — `items_needing_rating`, `set_rating`, `starred_count` and `NewItem.rating` are not defined.
+Expected: FAIL — `starred_count` and `NewItem.rating` are not defined.
 
 - [ ] **Step 3: Add the migration**
 
@@ -510,27 +507,10 @@ and add `it.rating` as the last bound parameter, after `it.taken_at`.
 Add to `impl Library` in `crates/photon-core/src/library/items.rs`:
 
 ```rust
-    /// Items whose rating has never been read, oldest first. The backfill walks these.
-    pub fn items_needing_rating(&self, limit: usize) -> Result<Vec<(i64, String)>> {
-        let conn = self.reader();
-        let mut stmt = conn.prepare(
-            "SELECT id, path FROM items
-             WHERE rating IS NULL AND missing_since IS NULL
-             ORDER BY id LIMIT ?1",
-        )?;
-        let rows = stmt
-            .query_map([limit], |r| Ok((r.get(0)?, r.get(1)?)))?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(rows)
-    }
-
-    pub fn set_rating(&self, id: i64, rating: u8) -> Result<()> {
-        let conn = self.writer();
-        conn.execute("UPDATE items SET rating = ?2 WHERE id = ?1", params![id, rating])?;
-        Ok(())
-    }
-
     /// How many photos carry at least one star. Served by the `items_starred` partial index.
+    ///
+    /// `rating >= 1` also excludes unread rows without a second clause: a comparison
+    /// against NULL is never true in SQL.
     pub fn starred_count(&self) -> Result<usize> {
         let conn = self.reader();
         let count: i64 = conn.query_row(
@@ -624,8 +604,8 @@ Add to the `tests` module in `crates/photon-core/src/metadata.rs`:
 
     #[test]
     fn a_photo_without_xmp_reads_as_unrated_rather_than_unread() {
-        // Zero, not None: the file was read and had nothing to say. None would leave the
-        // backfill looking at it forever.
+        // Zero, not None: the file was read and had nothing to say. None means "never
+        // looked at", which after a scan would be a lie.
         let dir = tempfile::tempdir().unwrap();
         let path = write_file(dir.path(), "plain.png", &png_bytes(3, 5));
         assert_eq!(read_image_meta(&path).rating, Some(0));
@@ -664,7 +644,7 @@ and in `read_image_meta`, after the `ImageMeta` literal is built, set:
 
 ```rust
     // Zero rather than None when there is no packet: the file was read and had nothing to
-    // say, which is what stops the backfill revisiting it forever.
+    // say. None is reserved for rows no scan has ever looked at.
     meta.rating = Some(crate::xmp::read_rating(path).unwrap_or(0));
 ```
 
@@ -721,183 +701,7 @@ git commit -m "feat(core): scan ratings into the library and carry them on grid 
 
 ---
 
-### Task 4: The backfill
-
-**Files:**
-- Modify: `crates/photon-app/src/engine.rs`
-
-**Interfaces:**
-- Consumes: `Library::items_needing_rating`, `Library::set_rating` (Task 2); `xmp::read_rating` (Task 1).
-- Produces: `Engine::backfill_ratings(&self) -> usize` — reads one batch, returns how many it rated.
-
-Photos indexed before this feature have `rating IS NULL`. The backfill walks them in batches, reading each file's XMP. It is resumable by construction: progress is the absence of nulls, so a crash costs only the unread remainder.
-
-- [ ] **Step 1: Write the failing test**
-
-Add to the `tests` module in `crates/photon-app/src/engine.rs`:
-
-```rust
-    /// photon-core's `testutil` is a private module (`mod testutil;`, lib.rs:15), so this
-    /// crate cannot borrow its fixtures — hence the local one.
-    fn jpeg_with_xmp(rating: i32) -> Vec<u8> {
-        let packet = format!(
-            r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF
- xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description
- xmlns:xmp="http://ns.adobe.com/xap/1.0/" xmp:Rating="{rating}"/></rdf:RDF></x:xmpmeta>"#
-        );
-        let ns = b"http://ns.adobe.com/xap/1.0/\0";
-        let mut app1 = vec![0xFF, 0xE1];
-        app1.extend_from_slice(&((2 + ns.len() + packet.len()) as u16).to_be_bytes());
-        app1.extend_from_slice(ns);
-        app1.extend_from_slice(packet.as_bytes());
-        let base = jpeg(8, 8);
-        let mut out = base[..2].to_vec();
-        out.extend_from_slice(&app1);
-        out.extend_from_slice(&base[2..]);
-        out
-    }
-
-    #[test]
-    fn the_backfill_rates_photos_indexed_before_the_feature_existed() {
-        use photon_core::library::NewItem;
-        use photon_core::media::MediaKind;
-
-        let f = crate::testutil::fixture(&[]);
-        std::fs::create_dir_all(&f.photos).unwrap();
-        let path = f.photos.join("star.jpg");
-        std::fs::write(&path, jpeg_with_xmp(4)).unwrap();
-
-        // Indexed the way an older photon would have: the row exists and its rating is
-        // NULL. Inserted through the public API rather than by scanning, because a scan
-        // would read the rating and there would be nothing left to backfill.
-        let watched = f.engine.lib.add_watched_folder(&f.photos, &[]).unwrap();
-        let folder = f
-            .engine
-            .lib
-            .upsert_folder(watched.id, None, f.photos.to_str().unwrap(), 1)
-            .unwrap();
-        f.engine
-            .lib
-            .insert_items(&[NewItem {
-                folder_id: folder,
-                path: path.to_str().unwrap().to_string(),
-                file_name: "star.jpg".into(),
-                kind: MediaKind::Image,
-                size: 1,
-                mtime_ms: 1,
-                width: 8,
-                height: 8,
-                orientation: 1,
-                taken_at: 1,
-                rating: None,
-            }])
-            .unwrap();
-        assert_eq!(f.engine.lib.starred_count().unwrap(), 0);
-
-        let rated = f.engine.backfill_ratings();
-
-        assert_eq!(rated, 1);
-        assert_eq!(
-            f.engine.lib.starred_count().unwrap(),
-            1,
-            "the star is read out of the file, not invented"
-        );
-        assert!(f.engine.lib.items_needing_rating(10).unwrap().is_empty());
-    }
-
-    #[test]
-    fn the_backfill_reports_nothing_to_do_when_every_rating_is_read() {
-        let f = crate::testutil::fixture(&[]);
-        assert_eq!(f.engine.backfill_ratings(), 0);
-    }
-```
-
-**No test-only helper is added to `photon-core`.** A `#[cfg(test)]` item there does not exist for `photon-app`, and `photon-core` has no `[features]` section to gate one behind, so the scenario is built entirely through the public `Library` API above.
-
-- [ ] **Step 2: Run them to verify they fail**
-
-Run: `cargo test -p photon-app backfill`
-Expected: FAIL — `backfill_ratings` is not defined.
-
-- [ ] **Step 3: Write the implementation**
-
-Add to `impl Engine` in `crates/photon-app/src/engine.rs`:
-
-```rust
-    /// How many photos one backfill pass reads. Small enough that quitting mid-pass loses
-    /// almost nothing, large enough that the per-batch query is not the dominant cost.
-    const RATING_BATCH: usize = 200;
-
-    /// Reads XMP ratings for photos indexed before ratings existed, one batch per call.
-    /// Returns how many it rated; zero means there is nothing left to do.
-    ///
-    /// Resumable by construction: progress is the absence of nulls, so an interrupted pass
-    /// costs only its unread remainder. An unreadable file is left `NULL` and retried on a
-    /// later pass, exactly as an unreadable file during scanning is.
-    pub fn backfill_ratings(&self) -> usize {
-        let pending = match self.lib.items_needing_rating(Self::RATING_BATCH) {
-            Ok(pending) => pending,
-            Err(err) => {
-                tracing::warn!(%err, "could not list photos needing a rating");
-                return 0;
-            }
-        };
-        let mut rated = 0;
-        for (id, path) in pending {
-            let Some(rating) = photon_core::xmp::read_rating(std::path::Path::new(&path))
-                .map(Some)
-                .unwrap_or(Some(0))
-            else {
-                continue;
-            };
-            if let Err(err) = self.lib.set_rating(id, rating) {
-                tracing::warn!(%err, id, "could not store a rating");
-                continue;
-            }
-            rated += 1;
-        }
-        rated
-    }
-```
-
-- [ ] **Step 4: Run the tests to verify they pass**
-
-Run: `cargo test -p photon-app backfill`
-Expected: PASS.
-
-- [ ] **Step 5: Start it after the startup scans**
-
-In `crates/photon-app/src/engine.rs`, in the startup task that already queues pending thumbnails and rescans folders, add a loop after the rescan work, at lower priority than thumbnails — a visible grid matters more than a Starred view nobody has opened:
-
-```rust
-        // Backfill ratings for photos indexed before the feature existed. Batched so the
-        // work yields and a shutdown stops it promptly, and last so a visible grid and its
-        // thumbnails come first — a Starred view nobody has opened yet can wait.
-        while !shutting_down() && engine.backfill_ratings() > 0 {}
-        if shutting_down() {
-            return;
-        }
-        if let Err(err) = engine.refresh_grid() {
-            tracing::warn!(%err, "grid refresh after the rating backfill failed");
-        }
-```
-
-`startup` already defines `let shutting_down = || engine.shutting_down.load(Ordering::SeqCst);` at the top of its thread body and calls it as `if shutting_down() { return; }`. Put this block inside that same closure scope, after the garbage-collection step, so it reuses that closure rather than re-reading the atomic.
-
-- [ ] **Step 6: Commit**
-
-```bash
-cargo fmt --all
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
-cargo bench -p photon-core --bench grid --no-run
-git add crates/photon-app/src/engine.rs crates/photon-core/src/library/items.rs
-git commit -m "feat(app): backfill ratings for photos indexed before the feature"
-```
-
----
-
-### Task 5: The Starred view and its IPC
+### Task 4: The Starred view and its IPC
 
 **Files:**
 - Modify: `crates/photon-core/src/library/items.rs`, `crates/photon-app/src/engine.rs`, `crates/photon-app/src/commands.rs`, `crates/photon-app/src/ipc.rs`, `crates/photon-app/src/app.rs`
@@ -927,9 +731,12 @@ Add to the `tests` module in `crates/photon-core/src/library/items.rs`:
                 new_item(folder, "/p/c.jpg", 3),
             ])
             .unwrap();
-        lib.set_rating(ids[1], 1).unwrap();
-        lib.set_rating(ids[2], 5).unwrap();
-        lib.set_rating(ids[0], 0).unwrap();
+        lib.update_items(&[
+            (ids[0], NewItem { rating: Some(0), ..new_item(folder, "/p/a.jpg", 1) }),
+            (ids[1], NewItem { rating: Some(1), ..new_item(folder, "/p/b.jpg", 2) }),
+            (ids[2], NewItem { rating: Some(5), ..new_item(folder, "/p/c.jpg", 3) }),
+        ])
+        .unwrap();
 
         let all: Vec<i64> = lib.grid_entries_for(GridView::All).unwrap().iter().map(|e| e.id).collect();
         let starred: Vec<i64> = lib.grid_entries_for(GridView::Starred).unwrap().iter().map(|e| e.id).collect();
@@ -949,7 +756,27 @@ Add to the `tests` module in `crates/photon-app/src/engine.rs`:
         f.add_photos();
         f.engine.wait_for_scans();
         let ids = f.ids();
-        f.engine.lib.set_rating(ids[0], 2).unwrap();
+        // Star one of them the way a scan would, then rebuild the index for the new view.
+        let item = f.engine.lib.item(ids[0]).unwrap().unwrap();
+        f.engine
+            .lib
+            .update_items(&[(
+                ids[0],
+                photon_core::library::NewItem {
+                    folder_id: item.folder_id,
+                    path: item.path.clone(),
+                    file_name: "one.jpg".into(),
+                    kind: photon_core::media::MediaKind::Image,
+                    size: item.size,
+                    mtime_ms: item.mtime_ms,
+                    width: 16,
+                    height: 16,
+                    orientation: 1,
+                    taken_at: 1,
+                    rating: Some(2),
+                },
+            )])
+            .unwrap();
 
         f.engine.set_view(GridView::Starred).unwrap();
         assert_eq!(f.engine.grid().1.len(), 1);
@@ -1102,13 +929,13 @@ git commit -m "feat: a Starred view, as the grid index rebuilt with a filter"
 
 ---
 
-### Task 6: The Starred row in the sidebar
+### Task 5: The Starred row in the sidebar
 
 **Files:**
 - Modify: `ui/src/lib/api.ts`, `ui/src/lib/library.svelte.ts`, `ui/src/components/FolderTree.svelte`, `README.md`
 
 **Interfaces:**
-- Consumes: `GridInfo.starredCount`, `GridInfo.view`, and the `set_grid_view` command (Task 5).
+- Consumes: `GridInfo.starredCount`, `GridInfo.view`, and the `set_grid_view` command (Task 4).
 
 - [ ] **Step 1: Extend the API types**
 
@@ -1188,17 +1015,32 @@ The row is shown even when the count is zero: its absence would be indistinguish
 Run: `npm run check` — expect 0 errors and 0 warnings.
 Run: `npm test` — expect all tests passing.
 
-- [ ] **Step 5: Extend the smoke checklist**
+- [ ] **Step 5: Document the upgrade, and extend the smoke checklist**
 
-In `README.md`, append to the manual smoke checklist:
+**First**, add an upgrade note to `README.md`, immediately after the Install section's table and before the "photon is not code-signed" heading. Without this the checklist item below references a README line that does not exist, and the spec's §4 claim that "the README says so" is false:
 
 ```markdown
-- [ ] A folder of photos rated in Picasa shows those photos under Starred, with a matching count, once the first scan and backfill have finished.
-- [ ] Clicking Starred shows only starred photos; clicking any folder returns to the full library at that folder.
-- [ ] After a full scan and backfill, no photo file's modification time has changed — photon reads ratings and never writes them.
+### Upgrading to a version with Starred photos
+
+photon reads star ratings from each photo's embedded XMP as it indexes it. A library built
+by an earlier version has no ratings recorded, and photon will not re-read a file whose size
+and modification time have not changed — so Starred would stay empty.
+
+Delete the library and let photon rebuild it. It lives in your user data directory
+(`photon/library.db`); your photos are untouched, since photon never writes to watched
+folders. Rebuilding re-reads every photo, ratings included.
 ```
 
-The last item is the one no automated test can honestly make, and it verifies the invariant this whole feature is built around.
+**Then** append to the manual smoke checklist:
+
+```markdown
+- [ ] On a freshly built library, photos rated in Picasa show under Starred with a matching count, once the first scan has finished.
+- [ ] Clicking Starred shows only starred photos; clicking any folder returns to the full library at that folder.
+- [ ] A library carried over from v0.2.0 shows no stars until it is deleted and rebuilt, as the README's upgrade note says.
+- [ ] After a full scan, no photo file's modification time has changed — photon reads ratings and never writes them.
+```
+
+That last item is the one no automated test can honestly make, and it is the one that verifies the invariant this whole feature is built around: photon reads ratings and never writes them.
 
 - [ ] **Step 6: Commit**
 
@@ -1217,19 +1059,19 @@ git commit -m "feat(ui): a Starred row in the sidebar, switching the grid view"
 
 | Spec section | Task |
 |---|---|
-| §1 Read-only; invariant | Global constraints; Task 6 checklist item |
+| §1 Read-only; invariant | Global constraints; Task 5 checklist item |
 | §2 Nullable column, migration | Task 2 (steps 3, 8) |
 | §3 Packet locations, bounded read, quick-xml, values | Task 1 |
-| §4 Scan-time rating; backfill; mtime limitation | Task 3 (scan), Task 4 (backfill) |
-| §5 View mode, index rebuilt with a filter | Task 5 |
-| §6 Sidebar row, count in both views | Task 5 (`starred_count`), Task 6 (row) |
-| §7 Error handling: malformed XMP, unreadable file | Task 1 (`None` contract), Task 4 (left NULL, retried) |
-| §8 Testing | Tasks 1–5 tests; Task 6 checklist |
-| §9 Success criteria | Task 6 checklist |
+| §4 Scan-time rating; fresh library; mtime limitation | Task 3 (scan); Task 5 (README) |
+| §5 View mode, index rebuilt with a filter | Task 4 |
+| §6 Sidebar row, count in both views | Task 4 (`starred_count`), Task 5 (row) |
+| §7 Error handling: malformed XMP, unreadable file | Task 1 (`None` contract) |
+| §8 Testing | Tasks 1–4 tests; Task 5 checklist |
+| §9 Success criteria | Task 5 checklist |
 
 **Deliberate deviation from §8:** the spec lists fixtures for JPEG, PNG, WebP and GIF. This plan builds JPEG, PNG and GIF fixtures plus a byte-level cap test, and no WebP fixture. The reader is container-agnostic — it scans a bounded prefix for the packet, which is plain text in all four containers — so the per-container risk is low, and the project's `webp` crate is decode-oriented, making a hand-built RIFF fixture disproportionate. **Cost if wrong:** a WebP whose packet sits somewhere unexpected goes unread, surfacing as a missing star rather than a failure.
 
-**Type consistency:** `rating` flows as `Option<u8>` through `ImageMeta` → `NewItem` → SQL `?11`/`?12` → `Library::set_rating(u8)`, and reaches the UI only as the derived `GridEntry.starred: bool` and `GridInfo.starredCount: usize`. `GridView` is defined once in `photon_core::grid`, serialised `camelCase` (`all` / `starred`), and consumed by the TypeScript union of the same two strings.
+**Type consistency:** `rating` flows as `Option<u8>` through `ImageMeta` → `NewItem` → SQL `?11` (insert) and `?12` (update), and is never read back as a number — it reaches the UI only as the derived `GridEntry.starred: bool` and `GridInfo.starredCount: usize`. `GridView` is defined once in `photon_core::grid`, serialised `camelCase` (`all` / `starred`), and consumed by the TypeScript union of the same two strings.
 
 **Verified against the source, not assumed.** Five things this plan originally hedged on were checked and pinned instead:
 

@@ -13,7 +13,7 @@ Picasa wrote star ratings into each photo's embedded XMP metadata. photon reads 
 
 - Reading `xmp:Rating` from embedded XMP during scanning, for the formats v1 supports.
 - A `rating` column on `items`, and the first schema migration to run against libraries that already exist.
-- A one-time backfill that reads ratings for photos indexed before this feature.
+- Ratings read as photos are indexed, on a freshly built library (§4).
 - A **Starred** entry in the sidebar, and a grid view filtered to `rating >= 1`.
 
 ### Out of scope
@@ -38,7 +38,9 @@ ALTER TABLE items ADD COLUMN rating INTEGER;
 CREATE INDEX items_starred ON items(rating) WHERE rating >= 1 AND missing_since IS NULL;
 ```
 
-**The column is nullable on purpose, and this is the most important decision in the design.** `NULL` means *not read yet*; `0` means *read, and not rated*. A `NOT NULL DEFAULT 0` column would be indistinguishable from "we looked and found nothing" — and because the scanner only re-reads a file whose size or mtime changed, existing photos would never be looked at again. A Picasa-rated library would upgrade to photon and show an empty Starred view, which is precisely the outcome this feature exists to avoid.
+**The column is nullable on purpose**, even though nothing writes `NULL` today. `NULL` means *not read yet*; `0` means *read, and not rated*.
+
+Since this version expects a fresh library (§4), every row gets a rating at index time and no `NULL` ever occurs. Nullable is kept for two reasons anyway. It is a one-way door: `NOT NULL` now would force *another* migration later to relax it, if photon ever gains users who cannot simply delete their library and need their existing photos backfilled. And it keeps the two states distinguishable, so a library that *is* carried across reads as "unread" rather than silently as "no stars".
 
 **This is also the first migration to perform an actual upgrade.** `MIGRATIONS` currently holds a single entry that creates the schema from nothing; every library in the wild sits at `user_version = 1`. The machinery is sound — each entry runs in its own transaction, bumps `user_version`, and a library written by a newer photon is refused with `SchemaTooNew` — but it has never done the thing it exists to do, and people have real libraries installed from v0.1.0 and v0.2.0. The migration must be additive and must not rewrite existing rows.
 
@@ -55,19 +57,21 @@ CREATE INDEX items_starred ON items(rating) WHERE rating >= 1 AND missing_since 
 | WebP | RIFF chunk `XMP ` |
 | GIF | Application Extension block `XMP DataXMP` |
 
-**The read is bounded to the first 256 KiB.** XMP sits near the start of every container above, and a rating lookup must never pull a 20MB photo through memory. 256 KiB comfortably contains a real XMP packet while declining to follow extended ones, and caps the cost of the backfill pass over an existing library at a predictable figure rather than one that scales with photo size.
+**The read is bounded to the first 256 KiB.** XMP sits near the start of every container above, and a rating lookup must never pull a 20MB photo through memory. 256 KiB comfortably contains a real XMP packet while declining to follow extended ones, and keeps the per-photo cost of a first scan predictable rather than scaling with photo size.
 
 **Parsing** uses `quick-xml`, which is already in the dependency tree and is pure Rust. That matters: photon has no native library dependencies, which is what made packaging tractable across three platforms, and the obvious alternative (`xmp-toolkit`, wrapping Adobe's C++ SDK) would undo it. `xmp:Rating` appears either as an attribute on an `rdf:Description` element or as a child element, and both spellings are read.
 
 **Values.** XMP ratings run 0–5, with `-1` meaning "rejected". Starred means `rating >= 1`, which is what Picasa's single star writes. The full value is stored rather than a boolean, because it is free to keep and expensive to recover later.
 
-## 4. Populating existing libraries
+## 4. Where ratings come from
 
-New and changed files get their rating during `describe()`, alongside EXIF, at the single call site that already builds `NewItem`.
+New and changed files get their rating during `describe()`, alongside EXIF, at the single call site that already builds `NewItem`. That is the only path that writes a rating.
 
-Photos indexed before this feature have `rating IS NULL`, and a **backfill** reads them: a low-priority background pass, started after the startup rescan, that walks items with a null rating in grid order, reads each one's XMP, and writes the result. It is resumable by construction — progress is the absence of nulls — so a crash or a quit costs nothing but the unread remainder.
+**This version expects a fresh library.** photon has one user and a private repository, so rebuilding the library is free — and rebuilding means every photo is indexed anew and rated as it goes, leaving no row unread. There is therefore no backfill: nothing walks existing rows looking for ratings it never read.
 
-The backfill competes with thumbnail generation for disk and CPU on first launch after upgrading. It runs at lower priority than thumbnails: a visible grid matters more than a Starred view the user has not opened yet.
+The consequence is stated plainly rather than left to be discovered: **a library carried across from v0.2.0 shows no stars**, because the scanner only re-reads a file whose size or mtime changed, and none of them will have. Delete the library and let it rebuild. The README says so.
+
+This is the piece to revisit when the repository goes public. At that point users cannot be told to delete their libraries, and a backfill — a low-priority pass over rows with `rating IS NULL`, resumable because progress is the absence of nulls — becomes necessary. The nullable column (§2) is what keeps that option open without a second migration.
 
 **A known limitation, stated rather than discovered.** Change detection is size-plus-mtime. A rating edited by another tool is picked up only if that edit changed the file's mtime — which rewriting embedded XMP normally does, since the packet lives inside the file. A tool that preserved mtime would leave photon showing a stale star until something else about the file changed. This is inherent to the existing scanner, not introduced here.
 
@@ -92,7 +96,7 @@ When nothing is starred the row still appears, showing zero — its absence woul
 ## 7. Error handling
 
 - **Malformed or absent XMP**: the item's rating is `0`, recorded as read. The scan continues.
-- **An unreadable file during backfill**: left `NULL` and retried on a later pass, exactly as an unreadable file during scanning is retried.
+- **An unreadable file during scanning**: no rating is stored for it, and the scanner's existing retry behaviour applies unchanged — reading a rating adds no new failure path.
 - **A failed migration**: the app shows an error and refuses to open, per the v1 policy. This is the first release where that path can actually be reached with a user's library at stake.
 - **A library from a newer photon**: already refused with `SchemaTooNew`; unchanged.
 
@@ -100,15 +104,14 @@ When nothing is starred the row still appears, showing zero — its absence woul
 
 - **Container extraction and rating parse**, as unit tests over generated fixtures: JPEG, PNG, WebP and GIF each carrying a known `xmp:Rating`, in both the attribute and element spellings; a file with XMP but no rating; a file with no XMP at all; a truncated packet; a packet larger than the read cap; and a rating of `-1`.
 - **The migration**, run against a database created at `user_version = 1` with rows already in it: the column appears, existing rows read `NULL`, and no row is otherwise modified.
-- **The backfill**, over a library seeded with null ratings: it populates them, leaves unreadable files null, and survives being interrupted.
 - **The view filter**: the Starred index contains exactly the items with `rating >= 1`, sections are correct within it, and switching back restores the full set.
-- **Manual checklist additions**: a library rated in Picasa shows those photos under Starred after the backfill completes; the count matches; no photo file's modification time changes as a result of running photon.
+- **Manual checklist additions**: on a freshly built library, photos rated in Picasa show under Starred once the first scan finishes; the count matches; no photo file's modification time changes as a result of running photon.
 
 That last manual item is the one that matters most and the one no automated test can honestly make: it verifies the invariant this whole design is built around.
 
 ## 9. Success criteria
 
 - A folder of photos starred in Picasa appears under Starred in photon without anyone re-rating anything.
-- Upgrading a library from v0.2.0 preserves every row, and ratings appear as the backfill progresses rather than requiring a manual rescan.
-- No file inside a watched folder is written, moved or deleted — verifiable by modification times being unchanged after a full scan and backfill.
+- A freshly built library rates every photo as it indexes them, so Starred is populated by the time the first scan finishes.
+- No file inside a watched folder is written, moved or deleted — verifiable by modification times being unchanged after a full scan.
 - Switching between All and Starred is fast enough not to feel like a mode change on a 100k library.
