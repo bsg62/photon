@@ -477,6 +477,7 @@ fn describe(
         height: meta.height,
         orientation: meta.orientation,
         taken_at: meta.taken_at.unwrap_or(mtime_ms.div_euclid(1000)),
+        rating: None,
     }
 }
 

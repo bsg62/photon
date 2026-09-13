@@ -19,6 +19,8 @@ pub struct NewItem {
     pub height: u32,
     pub orientation: u8,
     pub taken_at: i64,
+    /// `None` when the file has not been read for a rating yet.
+    pub rating: Option<u8>,
 }
 
 /// What the scanner needs to know about an indexed file to detect changes.
@@ -83,8 +85,8 @@ impl Library {
         let mut ids = Vec::with_capacity(items.len());
         {
             let mut stmt = tx.prepare_cached(
-                "INSERT INTO items (folder_id, path, file_name, kind, size, mtime_ms, width, height, orientation, taken_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                "INSERT INTO items (folder_id, path, file_name, kind, size, mtime_ms, width, height, orientation, taken_at, rating)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             )?;
             for it in items {
                 stmt.execute(params![
@@ -97,7 +99,8 @@ impl Library {
                     it.width,
                     it.height,
                     it.orientation,
-                    it.taken_at
+                    it.taken_at,
+                    it.rating
                 ])?;
                 ids.push(tx.last_insert_rowid());
             }
@@ -113,7 +116,7 @@ impl Library {
         {
             let mut stmt = tx.prepare_cached(
                 "UPDATE items SET folder_id = ?2, path = ?3, file_name = ?4, kind = ?5, size = ?6, mtime_ms = ?7,
-                        width = ?8, height = ?9, orientation = ?10, taken_at = ?11,
+                        width = ?8, height = ?9, orientation = ?10, taken_at = ?11, rating = ?12,
                         thumb_state = 0, thumb_error = NULL, missing_since = NULL
                  WHERE id = ?1",
             )?;
@@ -129,7 +132,8 @@ impl Library {
                     it.width,
                     it.height,
                     it.orientation,
-                    it.taken_at
+                    it.taken_at,
+                    it.rating
                 ])?;
             }
         }
@@ -324,6 +328,20 @@ impl Library {
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
+    }
+
+    /// How many photos carry at least one star. Served by the `items_starred` partial index.
+    ///
+    /// `rating >= 1` also excludes unread rows without a second clause: a comparison
+    /// against NULL is never true in SQL.
+    pub fn starred_count(&self) -> Result<usize> {
+        let conn = self.reader();
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM items WHERE rating >= 1 AND missing_since IS NULL",
+            [],
+            |r| r.get(0),
+        )?;
+        Ok(count as usize)
     }
 }
 
@@ -588,5 +606,71 @@ mod tests {
             .unwrap()[0];
         let expected = lib.item(id).unwrap().unwrap().fingerprint();
         assert_eq!(lib.live_fingerprints().unwrap(), HashSet::from([expected]));
+    }
+
+    /// `new_item` builds a row with `rating: None`; this is the same row with a rating, as
+    /// the scanner produces once it has read the file's XMP.
+    fn rated(folder: i64, path: &str, taken_at: i64, rating: u8) -> NewItem {
+        NewItem {
+            rating: Some(rating),
+            ..new_item(folder, path, taken_at)
+        }
+    }
+
+    #[test]
+    fn only_photos_rated_at_least_one_star_are_counted() {
+        let (_dir, lib) = temp_library();
+        let (_watched, folder) = seed_folder(&lib, Path::new("/p"));
+        lib.insert_items(&[
+            rated(folder, "/p/a.jpg", 1, 3),
+            rated(folder, "/p/b.jpg", 2, 0),
+            rated(folder, "/p/c.jpg", 3, 1),
+        ])
+        .unwrap();
+
+        // Three rated photos, two of them starred: zero stars is a read rating, not a star.
+        assert_eq!(lib.starred_count().unwrap(), 2);
+    }
+
+    #[test]
+    fn an_unread_rating_is_not_counted_as_starred() {
+        // `new_item` leaves `rating` NULL, which is what an unread row looks like. NULL is
+        // not >= 1, so it must not reach the Starred count — SQL comparisons against NULL
+        // are never true, and this pins that rather than trusting it.
+        let (_dir, lib) = temp_library();
+        let (_watched, folder) = seed_folder(&lib, Path::new("/p"));
+        lib.insert_items(&[new_item(folder, "/p/a.jpg", 1)])
+            .unwrap();
+        assert_eq!(lib.starred_count().unwrap(), 0);
+    }
+
+    #[test]
+    fn a_missing_item_is_not_counted_as_starred() {
+        // A soft-deleted photo must not inflate the Starred count, the same way it does
+        // not appear in the grid.
+        let (_dir, lib) = temp_library();
+        let (_watched, folder) = seed_folder(&lib, Path::new("/p"));
+        let ids = lib
+            .insert_items(&[rated(folder, "/p/a.jpg", 1, 4)])
+            .unwrap();
+        assert_eq!(lib.starred_count().unwrap(), 1);
+        lib.mark_missing(&ids, 1).unwrap();
+        assert_eq!(lib.starred_count().unwrap(), 0);
+    }
+
+    #[test]
+    fn a_changed_photo_keeps_the_rating_its_rescan_read() {
+        // `update_items` runs when a file's size or mtime changed, and carries the rating
+        // the fresh scan read — so a star added in another program survives a rescan.
+        let (_dir, lib) = temp_library();
+        let (_watched, folder) = seed_folder(&lib, Path::new("/p"));
+        let ids = lib
+            .insert_items(&[rated(folder, "/p/a.jpg", 1, 0)])
+            .unwrap();
+        assert_eq!(lib.starred_count().unwrap(), 0);
+
+        lib.update_items(&[(ids[0], rated(folder, "/p/a.jpg", 1, 5))])
+            .unwrap();
+        assert_eq!(lib.starred_count().unwrap(), 1);
     }
 }

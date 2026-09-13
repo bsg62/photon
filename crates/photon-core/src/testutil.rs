@@ -46,6 +46,7 @@ pub fn new_item(folder_id: i64, path: &str, taken_at: i64) -> NewItem {
         height: 300,
         orientation: 1,
         taken_at,
+        rating: None,
     }
 }
 
