@@ -62,7 +62,16 @@ pub(crate) const GRID_ORDER: &str = "ORDER BY f.sort_key, f.path, i.taken_at, i.
 
 /// The grid's columns, in the order `map_grid_row` reads them. Both query paths select
 /// this same prefix so one mapping serves both.
+///
+/// `search_entries` appends more columns after this prefix and reads them by index
+/// starting at `GRID_COLUMN_COUNT`: adding a column here shifts those indices, so keep
+/// the two in sync.
 const GRID_COLUMNS: &str = "i.id, i.folder_id, i.taken_at, i.width, i.height, i.orientation, i.kind, i.path, i.size, i.mtime_ms, i.rating";
+
+/// Number of columns selected by `GRID_COLUMNS`. `search_entries` uses this rather than a
+/// bare `11` so a future column added to `GRID_COLUMNS` can't silently shift `file_name`
+/// and `folder name` into the wrong indices without also touching this constant.
+const GRID_COLUMN_COUNT: usize = 11;
 
 fn map_grid_row(r: &Row<'_>) -> rusqlite::Result<GridEntry> {
     let (w, h) = oriented_dims(r.get(3)?, r.get(4)?, r.get(5)?);
@@ -359,7 +368,7 @@ impl Library {
     /// Photos whose file name or folder name contains `query`, case-insensitively.
     ///
     /// The match runs in Rust rather than as SQL `LIKE` for two reasons (spec §3):
-    /// SQLite folds case for ASCII only, so `münchen` would not find `München`; and
+    /// SQLite folds case for ASCII only, so `MÜNCHEN` would not find `München`; and
     /// `LIKE` would read `%` and `_` in the user's query as wildcards. This is one pass
     /// over the same rows an index rebuild already reads, with two short string compares
     /// added per row.
@@ -376,8 +385,8 @@ impl Library {
         ))?;
         let rows = stmt
             .query_map([], |r| {
-                let file_name: String = r.get(11)?;
-                let folder_name: String = r.get(12)?;
+                let file_name: String = r.get(GRID_COLUMN_COUNT)?;
+                let folder_name: String = r.get(GRID_COLUMN_COUNT + 1)?;
                 let hit = file_name.to_lowercase().contains(&needle)
                     || folder_name.to_lowercase().contains(&needle);
                 // No `Ok(…?)` wrapper here: the closure already returns this type, and
@@ -884,6 +893,10 @@ mod tests {
         lib.insert_items(&[new_item(folder, "/München/Straße.jpg", 1)])
             .unwrap();
 
+        // Of these four, only "MÜNCHEN" actually discriminates the Rust-vs-SQL-LIKE
+        // design: SQLite's LIKE folds ASCII case, and `ü` already matches `ü` exactly,
+        // so `'München' LIKE '%münchen%'` is true under LIKE too. `Ü` is the character
+        // LIKE does not fold. Do not trim this loop down without keeping "MÜNCHEN".
         for query in ["münchen", "MÜNCHEN", "München"] {
             assert_eq!(
                 lib.entries_for(GridView::Search, query).unwrap().len(),
@@ -940,21 +953,49 @@ mod tests {
             .map(|e| e.id)
             .collect();
         assert_eq!(hits, vec![ids[0]], "% matches the character, not every row");
+
+        // Same idea for `_`, LIKE's single-character wildcard (spec §7): a LIKE-based
+        // implementation would return both rows, since an unescaped `_` matches any
+        // one character rather than a literal underscore.
+        let (_watched2, folder2) = seed_folder(&lib, Path::new("/q"));
+        let underscore_ids = lib
+            .insert_items(&[
+                new_item(folder2, "/q/snap_01.jpg", 1),
+                new_item(folder2, "/q/noseparator.jpg", 2),
+            ])
+            .unwrap();
+        let underscore_hits: Vec<i64> = lib
+            .entries_for(GridView::Search, "_")
+            .unwrap()
+            .iter()
+            .map(|e| e.id)
+            .collect();
+        assert_eq!(
+            underscore_hits,
+            vec![underscore_ids[0]],
+            "_ matches the character, not any character"
+        );
     }
 
     #[test]
     fn search_keeps_grid_order_and_excludes_missing_items() {
+        // Three items so surviving results can actually show an order: a one-element
+        // result cannot discriminate `{GRID_ORDER}` from no ordering at all, which is
+        // exactly the gap this test used to leave (search_entries has its own SQL
+        // string, separate from entries_filtered's, and nothing else exercised it).
         let (_dir, lib) = temp_library();
         let (_watched, folder) = seed_folder(&lib, Path::new("/trip"));
         let ids = lib
             .insert_items(&[
                 new_item(folder, "/trip/b.jpg", 2),
                 new_item(folder, "/trip/a.jpg", 1),
+                new_item(folder, "/trip/c.jpg", 3),
             ])
             .unwrap();
+        let (b, a, c) = (ids[0], ids[1], ids[2]);
         // `mark_missing` takes a timestamp as its second argument; the existing tests in
         // this file call it as `mark_missing(&ids, 99)`.
-        lib.mark_missing(&[ids[0]], 99).unwrap();
+        lib.mark_missing(&[c], 99).unwrap();
 
         let hits: Vec<i64> = lib
             .entries_for(GridView::Search, "trip")
@@ -962,7 +1003,11 @@ mod tests {
             .iter()
             .map(|e| e.id)
             .collect();
-        assert_eq!(hits, vec![ids[1]], "a missing item is not a search result");
+        assert_eq!(
+            hits,
+            vec![a, b],
+            "a missing item is excluded, and the survivors keep grid order (by taken_at here)"
+        );
     }
 
     #[test]
