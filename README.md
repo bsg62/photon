@@ -48,12 +48,15 @@ Verify a download against the `SHA256SUMS` file attached to the release:
 ## Development
 
 Prerequisites:
-- Rust (stable, 1.88 or newer). `mise use rust@stable` works.
+- Rust (stable, 1.88 or newer).
 - Node.js 24 or newer (an LTS release; the UI toolchain — Vite 8, Vitest 5 and
   `@sveltejs/vite-plugin-svelte` — requires Node 22.12+, 24+ or 26+, so a plain "Node 22" install
   can be too old depending on its exact patch version. Node 24 is the current LTS line and is
   used in CI).
 - The [Tauri 2 prerequisites](https://tauri.app/start/prerequisites/) for your OS. On Linux that means webkit2gtk-4.1, libsoup-3 and librsvg2.
+
+`mise.toml` pins the first two, so `mise install` gets you both at the versions CI builds
+against. The Tauri prerequisites are system packages and still need your own package manager.
 
 ```bash
 npm install        # installs the UI workspace and the Tauri CLI

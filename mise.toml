@@ -1,2 +1,6 @@
 [tools]
 rust = "stable"
+# Matches the `node-version` both workflows pin, so a local build is the one CI validates.
+# The UI toolchain (Vite 8, Vitest 5, @sveltejs/vite-plugin-svelte) needs 22.12+, 24+ or 26+,
+# so a plain "22" install can be too old depending on its patch version.
+node = "24"
