@@ -2,7 +2,7 @@
   import { untrack } from 'svelte';
   import { api, errorMessage, mediaUrl, type ViewerItem } from '../lib/api';
   import { library } from '../lib/library.svelte';
-  import { MAX_ZOOM, MIN_ZOOM, clampPan, clampZoom, positionInFolder, wheelStep } from '../lib/nav';
+  import { MAX_ZOOM, MIN_ZOOM, clampPan, clampZoom, closesViewer, positionInFolder, wheelStep } from '../lib/nav';
 
   let { offset, onclose }: { offset: number; onclose: (offset: number) => void } = $props();
 
@@ -114,6 +114,18 @@
     }
   }
 
+  /** The mouse's back button closes the viewer, like Escape, Backspace and the ✕.
+   *
+   *  On the window rather than the viewer element so a press anywhere counts, including on
+   *  the zoom slider. `preventDefault` stops the webview treating it as history navigation;
+   *  there is nowhere to go back to, but the press would otherwise be handled twice. The pan
+   *  handler below is unaffected — it already ignores every button but the left one. */
+  function onbackbutton(e: PointerEvent) {
+    if (!closesViewer(e.button)) return;
+    e.preventDefault();
+    onclose(current);
+  }
+
   function onwheel(e: WheelEvent) {
     e.preventDefault();
     const stepped = wheelStep(wheelTotal, e.deltaY);
@@ -163,7 +175,7 @@
   }
 </script>
 
-<svelte:window {onkeydown} />
+<svelte:window {onkeydown} onpointerdown={onbackbutton} />
 
 <!-- The pan handlers live here rather than on the stage below: this element already carries
      a role, and dragging anywhere in the viewer is easier to hit than the photo alone. -->

@@ -74,7 +74,8 @@ publishing it.
 
 - [ ] On first launch with a fresh profile, the Pictures folder is added and scanned without asking.
 - [ ] Thumbnails appear within seconds, and scrolling stays smooth while indexing continues.
-- [ ] Double-click or Enter opens the viewer with an image in about 100 ms. The full resolution follows. ←/→, Home/End and Esc work.
+- [ ] Double-click or Enter opens the viewer with an image in about 100 ms. The full resolution follows. ←/→, Home/End, Esc and Backspace work.
+- [ ] The mouse's back side button closes the viewer, and does not navigate the page or leave a blank frame. Worth checking on each OS: the three webviews deliver side buttons differently, and some consume them for history before the page sees them.
 - [ ] "Add folder…" adds a folder. Adding a folder inside a watched one is refused with a clear message.
 - [ ] Rescan works. "Remove from photon" asks first, works during a scan, and leaves the files on disk.
 - [ ] Unplugging a drive with a watched folder dims its folder and tiles after a rescan. Nothing disappears.

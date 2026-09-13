@@ -11,6 +11,17 @@ export const MAX_ZOOM = 4;
  *  the folder. */
 export const WHEEL_THRESHOLD = 100;
 
+/** `MouseEvent.button` numbers the mouse's buttons 0 left, 1 middle, 2 right, 3 back,
+ *  4 forward. Only the back button closes the viewer: forward has nowhere to go, since
+ *  photon keeps no history to walk, and claiming the button would silently swallow a press
+ *  some mice send by accident. */
+export const MOUSE_BACK_BUTTON = 3;
+
+/** Whether a mouse button should close the viewer, mirroring Escape and Backspace. */
+export function closesViewer(button: number): boolean {
+  return button === MOUSE_BACK_BUTTON;
+}
+
 export interface FolderPosition {
   /** 1-based position within the folder, or 0 when there is nothing to number. */
   index: number;
