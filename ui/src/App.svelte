@@ -16,6 +16,18 @@
     return () => library.dispose();
   });
 
+  // Spec §5: switching views returns the grid to the top, since a scroll position from
+  // one view's set of photos is arbitrary against another's. Tracked here rather than in
+  // FolderTree because App owns the `grid` binding and its scroll helper.
+  let lastView = library.info.view;
+  $effect(() => {
+    const view = library.info.view;
+    if (view !== lastView) {
+      lastView = view;
+      grid?.scrollToOffset(0, 'start');
+    }
+  });
+
   function open(offset: number) {
     library.selected = offset;
     viewerAt = offset;

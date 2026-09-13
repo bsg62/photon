@@ -107,6 +107,15 @@
     const folder = folderById(folderId);
     if (folder) openMenu(e, { kind: 'folder', folder });
   }
+
+  /** Jumping to a folder from the Starred view has to leave that view first: the jump
+   *  looks up the offset in the grid's current index, and racing that lookup against an
+   *  unawaited view switch can return a stale or mismatched result (see the Important 1
+   *  writeup — awaiting here is load-bearing, not stylistic). */
+  async function jumpToFolder(folderId: number) {
+    if (library.info.view === 'starred') await library.setView('all');
+    onjump(folderId);
+  }
 </script>
 
 <svelte:window onclick={closeMenu} onkeydown={(e) => e.key === 'Escape' && closeMenu()} />
@@ -147,10 +156,7 @@
       <button
         class="node"
         title={folderById(row.folderId)?.path}
-        onclick={() => {
-          if (library.info.view === 'starred') library.setView('all');
-          onjump(row.folderId);
-        }}
+        onclick={() => jumpToFolder(row.folderId)}
         oncontextmenu={(e) => folderMenu(e, row.folderId)}
       >
         <span class="name">{row.name}</span>
