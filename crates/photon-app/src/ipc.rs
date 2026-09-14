@@ -64,6 +64,16 @@ pub fn grid_offset_of_folder(engine: Eng<'_>, folder_id: i64) -> Option<usize> {
 }
 
 #[tauri::command(async)]
+pub fn last_folder(engine: Eng<'_>) -> Result<Option<i64>, AppError> {
+    commands::last_folder(&engine)
+}
+
+#[tauri::command(async)]
+pub fn set_last_folder(engine: Eng<'_>, folder_id: i64) -> Result<(), AppError> {
+    commands::set_last_folder(&engine, folder_id)
+}
+
+#[tauri::command(async)]
 pub fn set_grid_view(engine: Eng<'_>, view: photon_core::grid::GridView) -> Result<(), AppError> {
     commands::set_grid_view(&engine, view)
 }

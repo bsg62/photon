@@ -1,7 +1,7 @@
 <script lang="ts">
   import { api } from '../lib/api';
   import { library } from '../lib/library.svelte';
-  import { buildRows, columnsFor, GAP, itemSpan, layoutSections, rowOfItem, totalHeight, visibleRange } from '../lib/layout';
+  import { buildRows, columnsFor, GAP, itemSpan, layoutSections, rowOfItem, topFolderId, totalHeight, visibleRange } from '../lib/layout';
   import { move, type NavKey } from '../lib/nav';
   import Tile from './Tile.svelte';
 
@@ -39,6 +39,58 @@
   $effect(() => {
     const span = itemSpan(rendered);
     if (span) void library.ensure(span[0], span[1]);
+  });
+
+  // Jump to the folder the last session ended on, once there is something to jump to.
+  //
+  // Both guards are load-bearing. `len === 0` waits for the first grid: on a first run the
+  // scan is still working when this mounts, and asking an empty index for a folder's offset
+  // answers null, which is indistinguishable from "that folder is gone". `width === 0`
+  // waits for the first layout pass: row tops are computed from the column count, so a jump
+  // measured before the viewport has a width lands somewhere else once it gets one.
+  //
+  // It runs once. `started` guards the re-entry the `await`s open up, and `restoring` — read
+  // by the effect below — stays set until the jump has actually been made.
+  let started = false;
+  $effect(() => {
+    if (started || !library.restoring || library.info.len === 0 || width === 0) return;
+    started = true;
+    void (async () => {
+      try {
+        const folderId = await api.lastFolder();
+        if (folderId === null) return;
+        const offset = await api.gridOffsetOfFolder(folderId);
+        // The folder survives in the library but has no section in this view (every photo
+        // in it has gone missing, say). Staying at the top beats scrolling nowhere.
+        if (offset === null) return;
+        scrollToOffset(offset, 'start');
+      } catch {
+        // A failed restore is not worth a toast: the grid is simply where it already is.
+      } finally {
+        library.restoring = false;
+      }
+    })();
+  });
+
+  // Remember the folder at the top of the grid, so the next launch can come back to it.
+  //
+  // Only in the All view: Starred, Recent and Search are excursions, and letting one
+  // overwrite this would mean closing photon from Starred lost the place the user was
+  // actually browsing. Only on change, too — the folder at the top changes a handful of
+  // times a session, while `scrollTop` changes on every frame of a flick, and this is a
+  // database write.
+  //
+  // `library.restoring` gates the first write: until the restore below has run (or found
+  // nothing to restore), the top of a freshly built grid is offset 0, and writing that
+  // would overwrite the stored folder with the first one in the library before it could
+  // ever be read.
+  let remembered: number | null = null;
+  $effect(() => {
+    if (library.info.view !== 'all' || library.restoring) return;
+    const folderId = topFolderId(rows, sections, scrollTop);
+    if (folderId === null || folderId === remembered) return;
+    remembered = folderId;
+    api.setLastFolder(folderId).catch(() => {});
   });
 
   // Tell the thumbnail queue what's on screen once scrolling settles.

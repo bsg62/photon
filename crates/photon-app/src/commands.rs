@@ -127,6 +127,19 @@ pub fn grid_offset_of_folder(engine: &Engine, folder_id: i64) -> Option<usize> {
     engine.grid().1.offset_of_folder(folder_id)
 }
 
+/// The folder the grid should scroll back to on launch, or `None` when there is nothing to
+/// restore — a first run, or a folder that has been removed since it was recorded.
+pub fn last_folder(engine: &Engine) -> CmdResult<Option<i64>> {
+    Ok(engine.lib.last_folder()?)
+}
+
+/// Records the folder the grid is showing, for the next launch. Written when the folder at
+/// the top of the grid changes, so this is a handful of writes per session, not per scroll.
+pub fn set_last_folder(engine: &Engine, folder_id: i64) -> CmdResult<()> {
+    engine.lib.set_last_folder(folder_id)?;
+    Ok(())
+}
+
 pub fn set_visible(engine: &Engine, ids: &[i64]) {
     engine.thumbs.set_visible(ids);
 }

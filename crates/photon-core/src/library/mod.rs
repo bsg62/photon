@@ -1,6 +1,7 @@
 mod folders;
 mod items;
 mod schema;
+mod settings;
 
 pub use folders::{Folder, WatchedFolder};
 pub use items::{Item, KnownItem, NewItem, RECENT_LIMIT};
@@ -69,16 +70,16 @@ mod tests {
             .reader()
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 2);
+        assert_eq!(version, 3);
         let tables: i64 = lib
             .reader()
             .query_row(
-                "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name IN ('watched_folders', 'folders', 'items')",
+                "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name IN ('watched_folders', 'folders', 'items', 'settings')",
                 [],
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(tables, 3);
+        assert_eq!(tables, 4);
     }
 
     #[test]
@@ -94,7 +95,7 @@ mod tests {
             Library::open(&path),
             Err(Error::SchemaTooNew {
                 found: 99,
-                supported: 2
+                supported: 3
             })
         ));
     }
