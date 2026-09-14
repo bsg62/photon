@@ -1,4 +1,4 @@
-import type { Folder, Section } from './api';
+import type { Folder, GridView, Section } from './api';
 
 export interface FolderRow {
   folderId: number;
@@ -53,4 +53,38 @@ export function groupByYear(rows: FolderRow[]): YearGroup[] {
       year,
       rows: [...group].sort((a, b) => b.takenAtMin - a.takenAtMin),
     }));
+}
+
+/** A watched root's own folder row. A root whose drive is offline or which has never been
+ *  scanned has none — and so nothing to scroll to — which is why a jump can't simply pass
+ *  the watched id. */
+export function rootFolderOf(watchedId: number, folders: Folder[]): Folder | undefined {
+  return folders.find((f) => f.watchedId === watchedId && f.parentId === null);
+}
+
+/** Everything a folder jump has to do before it can scroll, in the order it has to do it.
+ *
+ *  Both steps are load-bearing, and both were once missing from the watched-root jump while
+ *  the year-row jump had them:
+ *
+ *  Cancelling first stops a debounced search that has been typed but not yet sent. Left
+ *  running, it fires after the view switch below has landed on `all` and re-enters Search
+ *  with its captured text, replacing the grid the user just navigated to.
+ *
+ *  Awaiting `setView` is what the jump itself depends on: `jump` looks the folder up in the
+ *  grid's current index, and racing that lookup against an unawaited view switch can return
+ *  a stale or mismatched offset (see the Important 1 writeup — awaiting here is load-bearing,
+ *  not stylistic). */
+export async function enterFolder(
+  folderId: number,
+  deps: {
+    cancelSearch: () => void;
+    currentView: () => GridView;
+    setView: (view: GridView) => Promise<void>;
+    jump: (folderId: number) => void;
+  },
+): Promise<void> {
+  deps.cancelSearch();
+  if (deps.currentView() !== 'all') await deps.setView('all');
+  deps.jump(folderId);
 }

@@ -1,7 +1,7 @@
 <script lang="ts">
   import { ask, open } from '@tauri-apps/plugin-dialog';
   import { api, type Folder, type WatchedFolder } from '../lib/api';
-  import { folderRows, groupByYear } from '../lib/folders';
+  import { enterFolder, folderRows, groupByYear, rootFolderOf } from '../lib/folders';
   import { library } from '../lib/library.svelte';
   import { searchBox } from '../lib/search-box.svelte';
 
@@ -34,12 +34,13 @@
   const foldersById = $derived(new Map(library.folders.folders.map((f) => [f.id, f])));
   const folderById = (id: number) => foldersById.get(id);
 
-  /** Jumps to a watched root's own folder row when it has one. A root whose drive is offline
-   *  or which has never been scanned has no row — and so nothing to scroll to — which is why
-   *  this can't simply pass the watched id. */
+  /** Jumps to a watched root's own folder row when it has one. Routed through the same
+   *  `enterFolder` as a year row's jump: this used to call `onjump` directly, so a root
+   *  clicked from Starred or Search scrolled against the wrong view's index and left a
+   *  pending search to re-enter Search behind it. */
   function jumpToRoot(w: WatchedFolder) {
-    const root = library.folders.folders.find((f) => f.watchedId === w.id && f.parentId === null);
-    if (root) onjump(root.id);
+    const root = rootFolderOf(w.id, library.folders.folders);
+    if (root) void jumpToFolder(root.id);
   }
 
   function lastSegment(path: string): string {
@@ -109,17 +110,15 @@
     if (folder) openMenu(e, { kind: 'folder', folder });
   }
 
-  /** Jumping to a folder from the Starred or Search view has to leave that view first: the
-   *  jump looks up the offset in the grid's current index, and racing that lookup against
-   *  an unawaited view switch can return a stale or mismatched result (see the Important 1
-   *  writeup — awaiting here is load-bearing, not stylistic). */
-  async function jumpToFolder(folderId: number) {
-    // Cancel a pending debounced search first: otherwise it can fire after the view switch
-    // below has already landed on `all` and re-enter Search with its captured text,
-    // replacing the grid the user just navigated to.
-    searchBox.cancel();
-    if (library.info.view !== 'all') await library.setView('all');
-    onjump(folderId);
+  /** The order here — cancel, then await the view switch, then scroll — is explained on
+   *  `enterFolder`, which both this and `jumpToRoot` go through. */
+  function jumpToFolder(folderId: number): Promise<void> {
+    return enterFolder(folderId, {
+      cancelSearch: () => searchBox.cancel(),
+      currentView: () => library.info.view,
+      setView: (view) => library.setView(view),
+      jump: onjump,
+    });
   }
 </script>
 

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { folderRows, groupByYear } from './folders';
+import type { Folder, GridView } from './api';
+import { enterFolder, folderRows, groupByYear, rootFolderOf } from './folders';
 
 /** Seconds since the epoch, since that is what `takenAtMin` carries. */
 const at = (iso: string) => Math.floor(new Date(iso).getTime() / 1000);
@@ -63,5 +64,71 @@ describe('groupByYear', () => {
 
   it('handles no folders at all', () => {
     expect(groupByYear([])).toEqual([]);
+  });
+});
+
+describe('rootFolderOf', () => {
+  // Subfolders deliberately precede their root: a lookup that matched on `watchedId` alone
+  // would return the subfolder and scroll to the wrong place.
+  const folders: Folder[] = [
+    { id: 2, watchedId: 10, parentId: 1, name: '2024', path: '/pics/2024' },
+    { id: 1, watchedId: 10, parentId: null, name: 'Pictures', path: '/pics' },
+    { id: 4, watchedId: 11, parentId: 3, name: 'Scans', path: '/arch/scans' },
+    { id: 3, watchedId: 11, parentId: null, name: 'Archive', path: '/arch' },
+  ];
+
+  it('finds the root row of a watched folder', () => {
+    expect(rootFolderOf(10, folders)?.id).toBe(1);
+    expect(rootFolderOf(11, folders)?.id).toBe(3);
+  });
+
+  it('returns nothing for a root that has no row — offline, or never scanned', () => {
+    expect(rootFolderOf(12, folders)).toBeUndefined();
+  });
+});
+
+describe('enterFolder', () => {
+  function spyDeps(view: GridView, setView: (v: GridView) => Promise<void> = () => Promise.resolve()) {
+    const order: string[] = [];
+    return {
+      order,
+      deps: {
+        cancelSearch: () => order.push('cancel'),
+        currentView: () => view,
+        setView: (v: GridView) => {
+          order.push('setView');
+          return setView(v);
+        },
+        jump: () => order.push('jump'),
+      },
+    };
+  }
+
+  it('cancels a pending search before switching the view', async () => {
+    const { order, deps } = spyDeps('search');
+    await enterFolder(7, deps);
+    expect(order).toEqual(['cancel', 'setView', 'jump']);
+  });
+
+  it('does not jump until the view switch has settled', async () => {
+    let release!: () => void;
+    const pending = new Promise<void>((res) => {
+      release = res;
+    });
+    const { order, deps } = spyDeps('starred', () => pending);
+
+    const done = enterFolder(7, deps);
+    await Promise.resolve();
+    expect(order).toEqual(['cancel', 'setView']);
+
+    release();
+    await done;
+    expect(order).toEqual(['cancel', 'setView', 'jump']);
+  });
+
+  it('skips the view switch when All is already showing', async () => {
+    const { order, deps } = spyDeps('all');
+    await enterFolder(7, deps);
+    expect(order).toEqual(['cancel', 'jump']);
   });
 });
