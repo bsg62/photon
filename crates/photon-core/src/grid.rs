@@ -9,6 +9,10 @@ pub enum GridView {
     #[default]
     All,
     Starred,
+    /// The newest photos by capture date, newest first and capped at
+    /// `library::items::RECENT_LIMIT`. Unlike every other view this one is a window rather
+    /// than a filter: it is bounded by count, not by a property of the photos.
+    Recent,
     /// Photos whose file or folder name contains the engine's current search query.
     /// The query itself lives on the engine, not here: this enum is `Copy` and is
     /// mirrored in TypeScript as a union of plain strings.

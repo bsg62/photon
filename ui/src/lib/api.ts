@@ -14,7 +14,7 @@ export interface FolderList { watched: WatchedFolder[]; folders: Folder[] }
  *  than newest, to match Picasa. */
 export interface Section { folderId: number; offset: number; count: number; takenAtMin: number }
 export interface GridEntry { id: number; folderId: number; takenAt: number; aspect: number; kind: 'image'; thumbKey: string; starred: boolean }
-export type GridView = 'all' | 'starred' | 'search';
+export type GridView = 'all' | 'starred' | 'recent' | 'search';
 export interface GridInfo { version: number; len: number; sections: Section[]; starredCount: number; view: GridView; searchQuery: string }
 export interface GridRows { version: number; rows: GridEntry[] }
 export interface ViewerItem {

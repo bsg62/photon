@@ -79,6 +79,12 @@ impl Item {
 /// the grid on a different axis from the sidebar.
 pub(crate) const GRID_ORDER: &str = "ORDER BY MIN(i.taken_at) OVER (PARTITION BY i.folder_id) DESC, f.path, i.taken_at, i.file_name";
 
+/// How many photos the Recent view shows. Picasa's equivalent list was a fixed-size window
+/// onto the newest photos rather than a filter, so there is nothing to derive this from: it
+/// is a chosen number, large enough to cover a few trips' worth of photos and small enough
+/// that the view stays a shortlist rather than a second All view.
+pub const RECENT_LIMIT: usize = 500;
+
 /// The grid's columns, in the order `map_grid_row` reads them. Both query paths select
 /// this same prefix so one mapping serves both.
 ///
@@ -409,6 +415,7 @@ impl Library {
         match view {
             GridView::All => self.entries_filtered(""),
             GridView::Starred => self.entries_filtered("AND i.rating >= 1"),
+            GridView::Recent => self.recent_entries(),
             GridView::Search => self.search_entries(query),
         }
     }
@@ -423,6 +430,34 @@ impl Library {
             "SELECT {GRID_COLUMNS}
              FROM items i JOIN folders f ON f.id = i.folder_id
              WHERE i.missing_since IS NULL {filter} {GRID_ORDER}"
+        ))?;
+        let rows = stmt
+            .query_map([], map_grid_row)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// The newest `RECENT_LIMIT` photos, newest capture date first.
+    ///
+    /// The one view that does not use `GRID_ORDER`: ordering by folder would make "newest"
+    /// mean "in the newest folder", and the whole point of this list is the individual
+    /// photos. The grid still shows a folder header wherever consecutive photos change
+    /// folder, so an interleaved stretch of dates produces short sections — that is the
+    /// accepted cost of the flat order, not a bug in `GridIndex::build`.
+    ///
+    /// `file_name` and `id` break ties so the cut at `RECENT_LIMIT` is deterministic:
+    /// without them two photos sharing a capture time could swap across the boundary
+    /// between rebuilds and the view would flicker for no reason.
+    ///
+    /// No join to `folders`: unlike `GRID_ORDER`, nothing here reads a folder column.
+    fn recent_entries(&self) -> Result<Vec<GridEntry>> {
+        let conn = self.reader();
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {GRID_COLUMNS}
+             FROM items i
+             WHERE i.missing_since IS NULL
+             ORDER BY i.taken_at DESC, i.file_name DESC, i.id DESC
+             LIMIT {RECENT_LIMIT}"
         ))?;
         let rows = stmt
             .query_map([], map_grid_row)?
@@ -979,6 +1014,77 @@ mod tests {
             vec![ids[1], ids[2]],
             "unrated and zero-rated are excluded"
         );
+    }
+
+    #[test]
+    fn the_recent_view_is_the_newest_photos_first_across_folders() {
+        let (_dir, lib) = temp_library();
+        let (watched, older_folder) = seed_folder(&lib, Path::new("/p/older"));
+        let newer_folder = lib.upsert_folder(watched, None, "/p/newer", 1).unwrap();
+        // The older *folder* (by its oldest photo) holds the newest single photo, so a
+        // result in folder order would put `/p/older/new.jpg` last instead of first.
+        let ids = lib
+            .insert_items(&[
+                new_item(older_folder, "/p/older/old.jpg", 1),
+                new_item(older_folder, "/p/older/new.jpg", 40),
+                new_item(newer_folder, "/p/newer/a.jpg", 20),
+                new_item(newer_folder, "/p/newer/b.jpg", 30),
+            ])
+            .unwrap();
+
+        let recent: Vec<i64> = lib
+            .entries_for(GridView::Recent, "")
+            .unwrap()
+            .iter()
+            .map(|e| e.id)
+            .collect();
+
+        assert_eq!(recent, vec![ids[1], ids[3], ids[2], ids[0]]);
+    }
+
+    #[test]
+    fn the_recent_view_keeps_only_the_newest_recent_limit_photos() {
+        let (_dir, lib) = temp_library();
+        let (_watched, folder) = seed_folder(&lib, Path::new("/p"));
+        let items: Vec<NewItem> = (0..RECENT_LIMIT + 10)
+            .map(|i| new_item(folder, &format!("/p/{i:04}.jpg"), i as i64))
+            .collect();
+        let ids = lib.insert_items(&items).unwrap();
+
+        let recent: Vec<i64> = lib
+            .entries_for(GridView::Recent, "")
+            .unwrap()
+            .iter()
+            .map(|e| e.id)
+            .collect();
+
+        assert_eq!(recent.len(), RECENT_LIMIT);
+        // The ten oldest are the ones dropped, and the newest is still first.
+        assert_eq!(recent[0], *ids.last().unwrap());
+        assert_eq!(*recent.last().unwrap(), ids[10]);
+    }
+
+    #[test]
+    fn a_missing_photo_is_not_in_the_recent_view() {
+        // A soft-deleted photo must not occupy one of the slots, the same way it does not
+        // appear in the grid or the Starred count.
+        let (_dir, lib) = temp_library();
+        let (_watched, folder) = seed_folder(&lib, Path::new("/p"));
+        let ids = lib
+            .insert_items(&[
+                new_item(folder, "/p/a.jpg", 1),
+                new_item(folder, "/p/b.jpg", 2),
+            ])
+            .unwrap();
+        lib.mark_missing(&ids[1..], 50).unwrap();
+
+        let recent: Vec<i64> = lib
+            .entries_for(GridView::Recent, "")
+            .unwrap()
+            .iter()
+            .map(|e| e.id)
+            .collect();
+        assert_eq!(recent, vec![ids[0]]);
     }
 
     #[test]

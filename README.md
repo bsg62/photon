@@ -120,6 +120,8 @@ publishing it.
 - [ ] Starring a photo in Picasa and rescanning makes it appear under Starred, without deleting the library.
 - [ ] Un-starring a photo in Picasa and rescanning makes it disappear from Starred.
 - [ ] After a full scan, no photo file's modification time has changed — photon reads ratings and never writes them.
+- [ ] Clicking Recent shows the newest photos first across folders, capped at 500; folder headers still appear, and a stretch where two folders overlap in time may show short, even single-photo, sections.
+- [ ] From Recent, clicking a folder or a watched root returns to the full library at that folder.
 
 ## How watching works
 
