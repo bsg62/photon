@@ -123,6 +123,10 @@ publishing it.
 - [ ] Clicking Recent shows the newest photos first across folders, capped at 500, as one continuous run of tiles with no folder headers and no gaps where the folder changes.
 - [ ] While Recent is shown, the sidebar lists each contributing folder once with the photos it contributes, and the viewer's caption counts through the 500 rather than restarting at "1 / 1" on every photo.
 - [ ] From Recent, clicking a folder or a watched root returns to the full library at that folder.
+- [ ] Maximising the window, quitting and reopening brings photon back maximised (the case this was built for, on Windows).
+- [ ] Resizing and moving the window, then quitting and reopening, restores that size and position — including on a second monitor, while it is still attached.
+- [ ] Unplugging the monitor a window was last on and reopening puts photon on a screen that exists, rather than off-screen.
+- [ ] A library that cannot be opened still shows the error dialog, and the launch after it has a visible window — window state must never carry the hidden window forward.
 
 ## How watching works
 

@@ -10,12 +10,34 @@ use serde::Serialize;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, RunEvent};
 use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
+use tauri_plugin_window_state::StateFlags;
 
 /// Event names emitted to the webview. The UI (Task 12) listens for these exact
 /// strings, so a typo here would break it silently.
 pub const LIBRARY_CHANGED: &str = "library-changed";
 pub const SCAN_PROGRESS: &str = "scan-progress";
 pub const FOLDER_STATUS: &str = "folder-status";
+
+/// What the window-state plugin persists, so photon reopens the size and place the user
+/// left it rather than `tauri.conf.json`'s default every time.
+///
+/// Spelled out rather than taking the plugin's `StateFlags::all()`/`default()`, which also
+/// persist VISIBLE — the one flag that is a trap here. `setup` hides the main window when
+/// `Engine::open` fails, so the error dialog doesn't sit in front of a dead window;
+/// persisting that would carry the hidden window into the next launch and photon would
+/// start with no window at all and no way to ask for one. DECORATIONS is left out for a
+/// duller reason: photon never changes them, so there is nothing to restore.
+///
+/// The state file lives in the app's *config* dir, not the data dir beside `library.db`;
+/// that is the plugin's own choice, not ours.
+///
+/// Position is restored only when a monitor that still exists overlaps the saved rectangle
+/// (the plugin checks `available_monitors`), so unplugging the screen a window was last on
+/// leaves the placement to the OS rather than stranding the window off-screen.
+const WINDOW_STATE_FLAGS: StateFlags = StateFlags::SIZE
+    .union(StateFlags::POSITION)
+    .union(StateFlags::MAXIMIZED)
+    .union(StateFlags::FULLSCREEN);
 
 struct TauriEvents(AppHandle);
 
@@ -49,6 +71,11 @@ pub fn run() {
     match tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(
+            tauri_plugin_window_state::Builder::default()
+                .with_state_flags(WINDOW_STATE_FLAGS)
+                .build(),
+        )
         .register_asynchronous_uri_scheme_protocol("photon", |ctx, request, responder| {
             let engine = ctx
                 .app_handle()
@@ -155,6 +182,21 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The window-state flags are the one part of reopening at the last size that can be
+    /// checked without a window. VISIBLE is the flag that matters: `setup` hides the main
+    /// window when the library cannot be opened, and persisting that would reopen photon
+    /// hidden — running, with nothing on screen and no way to ask for a window. Widening
+    /// this to `StateFlags::all()` or the plugin's default is what this guards against.
+    #[test]
+    fn the_window_state_flags_never_persist_visibility() {
+        assert!(!WINDOW_STATE_FLAGS.contains(StateFlags::VISIBLE));
+        assert!(!WINDOW_STATE_FLAGS.contains(StateFlags::DECORATIONS));
+        assert!(WINDOW_STATE_FLAGS.contains(StateFlags::SIZE));
+        assert!(WINDOW_STATE_FLAGS.contains(StateFlags::POSITION));
+        assert!(WINDOW_STATE_FLAGS.contains(StateFlags::MAXIMIZED));
+        assert!(WINDOW_STATE_FLAGS.contains(StateFlags::FULLSCREEN));
+    }
 
     #[test]
     fn event_names_match_what_the_ui_listens_for() {
