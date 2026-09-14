@@ -30,6 +30,21 @@ const DEGRADED_RESCAN: Duration = Duration::from_secs(300);
 /// blocks for longer than this.
 const POLL: Duration = Duration::from_millis(200);
 
+/// How long `stop` waits for those threads before leaving them to finish on their own.
+///
+/// They check `stopping` between operations, but either can be *inside* a filesystem call
+/// when it is set: `Path::is_dir` on a root that lives on a dead network mount, or
+/// `watch_root` on one. A hard mount does not fail fast, so joining unconditionally put
+/// that stall on the quit path — `RunEvent::Exit` -> `Engine::shutdown` -> `stop_watcher`
+/// -> here — with the window already gone and photon apparently hung. Generous enough that
+/// a healthy machine under load always joins cleanly, short enough that a quit never looks
+/// like a crash.
+const STOP_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// How often `join_within` looks at the handles it is waiting on. `JoinHandle` has no timed
+/// join, so the wait is a poll of `is_finished`.
+const JOIN_POLL: Duration = Duration::from_millis(50);
+
 pub struct WatcherService {
     engine: Arc<Engine>,
     /// The directories still waiting for a subtree scan, per watched folder: a bounded set
@@ -67,15 +82,18 @@ impl WatcherService {
 
         if let Some((watcher, rx, errors)) = try_start_watcher(&engine, &degraded) {
             *watcher_slot.lock() = Some(watcher);
-            threads.lock().push(spawn_event_thread(
-                engine.clone(),
-                pending.clone(),
-                degraded.clone(),
-                watcher_slot.clone(),
-                stopping.clone(),
-                rx,
-                errors,
-            ));
+            push_thread(
+                &threads,
+                spawn_event_thread(
+                    engine.clone(),
+                    pending.clone(),
+                    degraded.clone(),
+                    watcher_slot.clone(),
+                    stopping.clone(),
+                    rx,
+                    errors,
+                ),
+            );
         }
 
         // Tell the UI about every root that just failed to register, now rather than
@@ -111,7 +129,7 @@ impl WatcherService {
                 })
                 .expect("failed to spawn watch ticker thread")
         };
-        threads.lock().push(tick_handle);
+        push_thread(&threads, tick_handle);
 
         Self {
             engine,
@@ -192,19 +210,74 @@ impl WatcherService {
         self.pending.lock().get(&id).cloned()
     }
 
-    /// Stops the event and ticker threads and blocks until both have actually finished,
+    /// Stops the event and ticker threads, waiting up to `STOP_TIMEOUT` for them to finish,
     /// then drops the OS watcher (unregistering every root).
+    ///
+    /// The wait is bounded because a thread can be inside a filesystem call that a dead
+    /// network mount will not return from promptly, and this runs on the quit path. A
+    /// thread still running at the deadline is left to exit on its own: `stopping` is
+    /// already set, and every loop rechecks it as soon as its current call returns.
     pub fn stop(&self) {
         self.stopping.store(true, Ordering::SeqCst);
         let handles: Vec<JoinHandle<()>> = self.threads.lock().drain(..).collect();
-        for handle in handles {
-            let _ = handle.join();
+        let still_running = join_within(handles, STOP_TIMEOUT);
+        if still_running > 0 {
+            tracing::warn!(
+                threads = still_running,
+                "watcher threads did not stop within {STOP_TIMEOUT:?}; leaving them to finish \
+                 on their own (a watched folder on an unresponsive mount can hold a \
+                 filesystem call open past this point)"
+            );
         }
-        // Safe only now that both threads have stopped: the ticker thread reads and writes
-        // this same slot to retry a degraded root's registration, or to restart the whole
-        // watcher subsystem.
+        // Not "safe because both threads have stopped" — after a timeout one of them may
+        // still be running. It is safe because of what such a thread can do next, which is
+        // nothing that matters: the slot has its own lock, so taking it cannot race;
+        // `rescan_offline_roots` finding `None` does nothing; `retry_watcher_startup`
+        // returns early once `stopping` is set, so it can neither install a fresh watcher
+        // here nor spawn an event thread this `stop` would never see; and
+        // `Engine::start_scan_inner` refuses to start anything while the engine is shutting
+        // down.
         self.watcher.lock().take();
     }
+}
+
+/// Joins `handles`, waiting at most `timeout`, and returns how many were still running when
+/// it gave up. Those are dropped rather than waited on, which detaches them.
+///
+/// `JoinHandle` has no timed join, so this polls `is_finished` and joins whatever has
+/// finished — those joins return immediately and still surface a panicking thread.
+fn join_within(handles: Vec<JoinHandle<()>>, timeout: Duration) -> usize {
+    let deadline = Instant::now() + timeout;
+    let mut waiting = handles;
+    loop {
+        let (finished, running): (Vec<_>, Vec<_>) =
+            waiting.into_iter().partition(JoinHandle::is_finished);
+        for handle in finished {
+            let _ = handle.join();
+        }
+        if running.is_empty() {
+            return 0;
+        }
+        let now = Instant::now();
+        if now >= deadline {
+            return running.len();
+        }
+        waiting = running;
+        std::thread::sleep(JOIN_POLL.min(deadline - now));
+    }
+}
+
+/// Records `handle` as one of the threads `stop` waits for, dropping any handle whose
+/// thread has already finished.
+///
+/// `retry_watcher_startup` spawns a replacement event thread every time the watcher
+/// subsystem is restarted, so without the reaping this vec grows one dead handle per
+/// restart and is only ever emptied by `stop`. Dropping a finished handle instead of
+/// joining it loses nothing but the chance to observe a panic that has already happened.
+fn push_thread(threads: &Mutex<Vec<JoinHandle<()>>>, handle: JoinHandle<()>) {
+    let mut threads = threads.lock();
+    threads.retain(|h| !h.is_finished());
+    threads.push(handle);
 }
 
 impl Drop for WatcherService {
@@ -582,7 +655,7 @@ fn retry_watcher_startup(
         rx,
         errors,
     );
-    threads.lock().push(handle);
+    push_thread(threads, handle);
 }
 
 /// For each degraded root: retries registering its OS watch (dropping it from `degraded` on
@@ -670,6 +743,63 @@ mod tests {
             })
             .next_back()
             .unwrap_or(false)
+    }
+
+    #[test]
+    fn join_within_returns_as_soon_as_the_threads_finish() {
+        let handles = vec![
+            std::thread::spawn(|| {}),
+            std::thread::spawn(|| std::thread::sleep(Duration::from_millis(20))),
+        ];
+        let started = Instant::now();
+        assert_eq!(join_within(handles, Duration::from_secs(5)), 0);
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "waited {:?} for threads that finish in 20ms",
+            started.elapsed()
+        );
+    }
+
+    /// The whole point of the bound. A ticker stuck in a filesystem call on a dead network
+    /// mount does not come back on request, and joining it unconditionally is what made
+    /// quitting photon hang: `RunEvent::Exit` -> `Engine::shutdown` -> `stop`. The stuck
+    /// thread here stands in for that syscall — it cannot be cancelled, only outlived.
+    #[test]
+    fn join_within_gives_up_on_a_thread_that_will_not_finish() {
+        let stuck = std::thread::spawn(|| std::thread::sleep(Duration::from_secs(10)));
+        let quick = std::thread::spawn(|| {});
+        let started = Instant::now();
+
+        assert_eq!(
+            join_within(vec![stuck, quick], Duration::from_millis(150)),
+            1
+        );
+
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "gave up after {:?}, so it waited for the stuck thread rather than the timeout",
+            started.elapsed()
+        );
+    }
+
+    /// `retry_watcher_startup` spawns a replacement event thread on every watcher restart,
+    /// and until this the vec kept every one of their handles — a slow leak on a machine
+    /// whose watcher keeps dying, reaped only by `stop`.
+    #[test]
+    fn pushing_a_thread_reaps_the_handles_that_have_already_finished() {
+        let threads: Mutex<Vec<JoinHandle<()>>> = Mutex::new(Vec::new());
+        push_thread(&threads, std::thread::spawn(|| {}));
+        while !threads.lock()[0].is_finished() {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+
+        push_thread(&threads, std::thread::spawn(|| std::thread::sleep(POLL)));
+
+        assert_eq!(
+            threads.lock().len(),
+            1,
+            "the finished handle should have been dropped when the second was pushed"
+        );
     }
 
     #[test]
