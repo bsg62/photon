@@ -144,6 +144,19 @@
     <span class="count">({library.info.starredCount})</span>
   </button>
 
+  <button
+    class="root recent"
+    class:active={library.info.view === 'recent'}
+    onclick={() => {
+      // Same hazard as the Starred button above: cancel any pending search first.
+      searchBox.cancel();
+      void library.setView('recent');
+    }}
+    title="The newest photos by capture date"
+  >
+    <span class="name">🕘 Recent</span>
+  </button>
+
   {#each roots as w (w.id)}
     <button
       class="root"
@@ -227,7 +240,7 @@
   .node { padding-left: 18px; }
   .root:hover, .node:hover { background: #ffffff0d; }
   .root.offline { opacity: 0.45; }
-  .starred.active { background: #ffffff14; }
+  .starred.active, .recent.active { background: #ffffff14; }
   .year {
     margin: 10px 0 2px;
     padding: 0 8px;
