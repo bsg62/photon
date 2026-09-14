@@ -441,9 +441,14 @@ impl Library {
     ///
     /// The one view that does not use `GRID_ORDER`: ordering by folder would make "newest"
     /// mean "in the newest folder", and the whole point of this list is the individual
-    /// photos. The grid still shows a folder header wherever consecutive photos change
-    /// folder, so an interleaved stretch of dates produces short sections — that is the
-    /// accepted cost of the flat order, not a bug in `GridIndex::build`.
+    /// photos.
+    ///
+    /// The consequence is that `GridIndex::build` starts a section on every photo wherever
+    /// folders overlap in time — 500 photos came back as 500 sections from a library of
+    /// twelve interleaved folders. These rows are therefore *not* laid out as folder runs:
+    /// the UI collapses them into one continuous run of tiles (`layout.ts`,
+    /// `layoutSections`). Anything else reading `sections` for this view has to expect a
+    /// folder to appear in many of them.
     ///
     /// `file_name` and `id` break ties so the cut at `RECENT_LIMIT` is deterministic:
     /// without them two photos sharing a capture time could swap across the boundary

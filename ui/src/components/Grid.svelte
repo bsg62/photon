@@ -1,7 +1,7 @@
 <script lang="ts">
   import { api } from '../lib/api';
   import { library } from '../lib/library.svelte';
-  import { buildRows, columnsFor, GAP, itemSpan, rowOfItem, totalHeight, visibleRange } from '../lib/layout';
+  import { buildRows, columnsFor, GAP, itemSpan, layoutSections, rowOfItem, totalHeight, visibleRange } from '../lib/layout';
   import { move, type NavKey } from '../lib/nav';
   import Tile from './Tile.svelte';
 
@@ -16,7 +16,17 @@
   let scrollTop = $state(0);
 
   const columns = $derived(columnsFor(Math.max(0, width - 2 * GAP)));
-  const rows = $derived(buildRows(library.info.sections, columns));
+  /** Recent is laid out as one continuous run of tiles with no folder headers; every other
+   *  view keeps the index's folder sections. See `layoutSections` for why. Both the layout
+   *  and the keyboard navigation read these rather than `library.info.sections`, so arrow
+   *  keys move along the rows the eye sees.
+   *
+   *  A tile's offline dimming follows the photo's own folder for the same reason: one
+   *  Recent row holds photos from several folders, so the section's folder answers for at
+   *  most the first of them. */
+  const sections = $derived(layoutSections(library.info.view, library.info.sections, library.info.len));
+  const headers = $derived(library.info.view !== 'recent');
+  const rows = $derived(buildRows(sections, columns, headers));
   const rendered = $derived.by(() => {
     const [start, end] = visibleRange(rows, scrollTop, height, height * 2);
     return rows.slice(start, end);
@@ -84,7 +94,7 @@
     }
     if (!NAV_KEYS.includes(e.key) || library.info.len === 0) return;
     e.preventDefault();
-    const next = sel === null ? 0 : move(sel, e.key as NavKey, library.info.sections, columns);
+    const next = sel === null ? 0 : move(sel, e.key as NavKey, sections, columns);
     library.selected = next;
     scrollToOffset(next, 'nearest');
   }
@@ -115,9 +125,8 @@
   {/if}
   <div class="canvas" style:height="{totalHeight(rows)}px">
     {#each rendered as row (row.top)}
-      {@const folderId = library.info.sections[row.section].folderId}
       {#if row.kind === 'header'}
-        {@const folder = library.folderOf(folderId)}
+        {@const folder = library.folderOf(sections[row.section].folderId)}
         <div class="header" style:top="{row.top}px">
           <span class="name">{folder?.name ?? ''}</span>
           <span class="path">{folder?.path ?? ''}</span>
@@ -126,10 +135,11 @@
         <div class="row" style:top="{row.top}px" style:gap="{GAP}px" style:padding-left="{GAP}px">
           {#each { length: row.count } as _, i (row.first + i)}
             {@const offset = row.first + i}
+            {@const entry = library.entry(offset)}
             <Tile
-              entry={library.entry(offset)}
+              {entry}
               selected={library.selected === offset}
-              dimmed={!library.isOnline(folderId)}
+              dimmed={!!entry && !library.isOnline(entry.folderId)}
               onselect={() => (library.selected = offset)}
               onopen={() => onopen(offset)}
             />

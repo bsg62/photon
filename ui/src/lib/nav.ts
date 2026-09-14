@@ -1,3 +1,4 @@
+import type { GridView } from './api';
 import type { SectionLike } from './layout';
 
 export type NavKey = 'ArrowLeft' | 'ArrowRight' | 'ArrowUp' | 'ArrowDown' | 'Home' | 'End';
@@ -90,6 +91,23 @@ export function positionInFolder(sections: SectionLike[], offset: number): Folde
   if (sections.length === 0) return { index: 0, count: 0 };
   const s = sections[sectionIndexOf(sections, offset)];
   return { index: offset - s.offset + 1, count: s.count };
+}
+
+/** The numbers the viewer's caption shows for `offset`.
+ *
+ *  Folder-relative in every view whose order is folder-first, which is the number a person
+ *  can check against their file manager. Recent is not one of those: it orders by date
+ *  across folders, so the index starts a section on every photo wherever folders interleave
+ *  and `positionInFolder` answered "1 / 1" for photo after photo. A flat list is counted
+ *  flat — the photo's place among the newest. */
+export function positionInView(
+  view: GridView,
+  sections: SectionLike[],
+  offset: number,
+  len: number,
+): FolderPosition {
+  if (view !== 'recent') return positionInFolder(sections, offset);
+  return len === 0 ? { index: 0, count: 0 } : { index: offset + 1, count: len };
 }
 
 /** Folds one wheel event into a running total, emitting a step only once the total passes
