@@ -5,6 +5,7 @@
   import { resultsChanged } from './lib/search';
   import FolderTree from './components/FolderTree.svelte';
   import Grid from './components/Grid.svelte';
+  import SearchBar from './components/SearchBar.svelte';
   import StatusBar from './components/StatusBar.svelte';
   import Toasts from './components/Toasts.svelte';
   import Viewer from './components/Viewer.svelte';
@@ -51,6 +52,7 @@
 </script>
 
 <div class="app">
+  <div class="topbar" inert={viewerAt !== null}><SearchBar /></div>
   <aside class="sidebar" inert={viewerAt !== null}><FolderTree onjump={jump} /></aside>
   <main class="content" inert={viewerAt !== null}>
     <Grid bind:this={grid} onopen={open} />
@@ -64,7 +66,7 @@
   .app {
     display: grid;
     grid-template-columns: auto 1fr;
-    grid-template-rows: 1fr auto;
+    grid-template-rows: auto 1fr auto;
     height: 100%;
   }
   .sidebar {
@@ -77,5 +79,7 @@
     border-right: 1px solid #0003;
   }
   .content { min-width: 0; min-height: 0; }
+  /* Its own grid row, so it stays put while the sidebar and the grid scroll under it. */
+  .topbar { grid-column: 1 / -1; }
   .statusbar { grid-column: 1 / -1; }
 </style>

@@ -94,7 +94,8 @@ publishing it.
 - [ ] Deleting a photo on disk removes it from the grid.
 - [ ] Renaming a folder on disk moves its photos in the tree within a few seconds.
 - [ ] Unplugging a watched drive dims it; plugging it back in restores it within about a minute, unattended.
-- [ ] Typing part of a folder's name in the sidebar search box finds its photos.
+- [ ] Typing part of a folder's name in the search box finds its photos.
+- [ ] The search box stays put at the top of the window while the folder list and the grid scroll.
 - [ ] Clearing the search box restores the full library.
 - [ ] Clicking a folder in the sidebar while a search is active leaves search and lands on that folder.
 - [ ] Type a query, pause briefly, then keep typing without pausing again (e.g. type "beach", wait, then add "es" to make "beaches"): the box keeps every character you typed and never snaps back to an earlier, shorter query.

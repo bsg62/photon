@@ -1,68 +1,11 @@
 <script lang="ts">
-  import { untrack } from 'svelte';
   import { ask, open } from '@tauri-apps/plugin-dialog';
   import { api, type Folder, type WatchedFolder } from '../lib/api';
   import { folderRows, groupByYear } from '../lib/folders';
   import { library } from '../lib/library.svelte';
-  import { debounce, SEARCH_DEBOUNCE_MS, shouldAdoptBackendQuery } from '../lib/search';
+  import { searchBox } from '../lib/search-box.svelte';
 
   let { onjump }: { onjump: (folderId: number) => void } = $props();
-
-  let query = $state(library.info.searchQuery);
-  /** How many `setSearchQuery` calls of ours have been sent but not yet settled.
-   *  `library.setSearchQuery` serialises calls, so more than one can be outstanding at once
-   *  (a second send already queued behind a first that's still in flight); while any is
-   *  outstanding, an echo arriving on `library.info.searchQuery` might belong to an older,
-   *  since-superseded send rather than the latest one, so the sync effect below must not
-   *  adopt anything until the count reaches zero. `$state` so the effect re-runs once it
-   *  does. */
-  let outstanding = $state(0);
-
-  /** The last value we sent. The backend echoes it back on `library.info.searchQuery`, and
-   *  the sync effect below has to tell that echo from a change made anywhere else. Plain,
-   *  not `$state`: only the effect reads it, and always alongside a change it is already
-   *  waking for. */
-  let lastSent: string | null = null;
-
-  /** Sends `q` to the backend, tracking it as outstanding for as long as it takes. */
-  function send(q: string): Promise<void> {
-    lastSent = q;
-    outstanding++;
-    return library.setSearchQuery(q).finally(() => outstanding--);
-  }
-
-  const runSearch = debounce((q: string) => void send(q), SEARCH_DEBOUNCE_MS);
-
-  function clearSearch() {
-    // Cancel first: a pending debounced call would otherwise land after the clear and put
-    // the backend straight back into the search view. Cancelling only stops a call that
-    // hasn't fired yet; a call already dispatched can't be cancelled, which is why
-    // `outstanding` exists — the sync effect declines every echo until all dispatched calls,
-    // including this one, have settled in order.
-    runSearch.cancel();
-    query = '';
-    void send('');
-  }
-
-  // The backend is the source of truth for the active query (spec §5): clicking Starred or
-  // a folder clears it server-side, and without this the box would keep displaying text
-  // that no longer filters anything. shouldAdoptBackendQuery is what tells an external
-  // change (adopt it) from our own echo of a keystroke (must not be adopted — doing so
-  // would snap the box back to stale text while the user is still typing ahead of it).
-  // Both `lastSent` and `outstanding` are needed: the count alone says every send has
-  // landed, not that what landed came from anywhere but us, and shipping only the count is
-  // what made the box swallow characters.
-  //
-  // `query` is read via `untrack` rather than directly: a direct read would make `query`
-  // itself a dependency of this effect, so every keystroke (which writes `query` via
-  // `bind:value`) would re-run it — and since the effect can also write `query`, that write
-  // would immediately re-trigger the effect it happened inside. It would still settle rather
-  // than loop (the second run sees backend === query and stops), but there is no reason to
-  // pay for it: `outstanding` reaching zero is the only signal this effect needs to act on.
-  $effect(() => {
-    const backend = library.info.searchQuery;
-    if (shouldAdoptBackendQuery(backend, untrack(() => query), lastSent, outstanding)) query = backend;
-  });
 
   /** Folders that actually hold photos, grouped by the year of their newest one.
    *
@@ -174,7 +117,7 @@
     // Cancel a pending debounced search first: otherwise it can fire after the view switch
     // below has already landed on `all` and re-enter Search with its captured text,
     // replacing the grid the user just navigated to.
-    runSearch.cancel();
+    searchBox.cancel();
     if (library.info.view !== 'all') await library.setView('all');
     onjump(folderId);
   }
@@ -185,21 +128,6 @@
 <nav class="tree" aria-label="Folders">
   <div class="toolbar">
     <button class="add" onclick={addFolder}>Add folder…</button>
-    <input
-      class="search"
-      type="search"
-      placeholder="Search"
-      aria-label="Search photos by file or folder name"
-      bind:value={query}
-      oninput={() => runSearch(query)}
-      onkeydown={(e) => {
-        // An empty box with Search not active has nothing to clear: unconditionally
-        // clearing here would call setSearchQuery('') regardless, which is a no-op query
-        // but still forces the view to All — kicking the user out of Starred with a
-        // keystroke that cleared nothing.
-        if (e.key === 'Escape' && (query !== '' || library.info.view === 'search')) clearSearch();
-      }}
-    />
   </div>
 
   <button
@@ -208,7 +136,7 @@
     onclick={() => {
       // Same hazard as jumpToFolder: an orphaned debounced search could otherwise fire
       // after this and re-enter Search, replacing the Starred grid the user just asked for.
-      runSearch.cancel();
+      searchBox.cancel();
       void library.setView('starred');
     }}
     title="Photos rated in another program"
@@ -283,17 +211,8 @@
 
 <style>
   .tree { display: flex; flex-direction: column; padding-bottom: 12px; }
-  .toolbar { display: flex; flex-direction: column; gap: 6px; padding: 8px; }
+  .toolbar { display: flex; padding: 8px; }
   .add { width: 100%; padding: 6px; border: 1px solid #fff2; border-radius: 4px; background: var(--panel-2); cursor: pointer; }
-  .search {
-    width: 100%;
-    box-sizing: border-box;
-    padding: 6px 8px;
-    border: 1px solid #fff2;
-    border-radius: 4px;
-    background: var(--panel-2);
-    color: inherit;
-  }
   .root,
   .node {
     display: flex;
