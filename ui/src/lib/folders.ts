@@ -25,18 +25,36 @@ function yearOf(takenAtMin: number): number {
  *
  *  Sections exist only for folders with items, which is what excludes the empty intermediate
  *  folders the folder table still contains — the sidebar used to list those because it drew
- *  from `list_folders` instead. */
+ *  from `list_folders` instead.
+ *
+ *  Per folder, not per section: a view whose order is not folder-first hands back a folder
+ *  as several runs — Recent orders by date across folders, so a folder reappears every time
+ *  its photos are the newest again. One row per section listed such a folder once per run,
+ *  each row claiming the run's handful of photos. The folder's photos in this view are the
+ *  sum of its runs, and its oldest photo — the minimum, matching `Section::taken_at_min` —
+ *  decides its year and its place in the list. */
 export function folderRows(sections: Section[], folders: Folder[]): FolderRow[] {
   const names = new Map(folders.map((f) => [f.id, f.name]));
-  return sections.map((s) => ({
-    folderId: s.folderId,
-    // A section implies an item, which implies a folder row — but a section can arrive
-    // before the folder list has been refreshed, and a blank name beats throwing.
-    name: names.get(s.folderId) ?? '',
-    count: s.count,
-    year: yearOf(s.takenAtMin),
-    takenAtMin: s.takenAtMin,
-  }));
+  const rows = new Map<number, FolderRow>();
+  for (const s of sections) {
+    const row = rows.get(s.folderId);
+    if (row) {
+      row.count += s.count;
+      row.takenAtMin = Math.min(row.takenAtMin, s.takenAtMin);
+      row.year = yearOf(row.takenAtMin);
+      continue;
+    }
+    rows.set(s.folderId, {
+      folderId: s.folderId,
+      // A section implies an item, which implies a folder row — but a section can arrive
+      // before the folder list has been refreshed, and a blank name beats throwing.
+      name: names.get(s.folderId) ?? '',
+      count: s.count,
+      year: yearOf(s.takenAtMin),
+      takenAtMin: s.takenAtMin,
+    });
+  }
+  return [...rows.values()];
 }
 
 /** Years newest first, and within a year the folder whose oldest photo is newest. */

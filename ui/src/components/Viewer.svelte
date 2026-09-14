@@ -2,7 +2,7 @@
   import { untrack } from 'svelte';
   import { api, errorMessage, mediaUrl, type ViewerItem } from '../lib/api';
   import { library } from '../lib/library.svelte';
-  import { MAX_ZOOM, MIN_ZOOM, clampPan, clampZoom, closesViewer, positionInFolder, wheelStep } from '../lib/nav';
+  import { MAX_ZOOM, MIN_ZOOM, clampPan, clampZoom, closesViewer, positionInView, wheelStep } from '../lib/nav';
 
   let { offset, onclose }: { offset: number; onclose: (offset: number) => void } = $props();
 
@@ -23,8 +23,9 @@
   /** Photos are numbered within their own folder, not across the library. In the All view
    *  that count matches what the file manager shows for that directory; in Starred or
    *  Search it is the folder's position among the current view's results instead, since
-   *  those views only show a subset of the folder's photos. */
-  const position = $derived(positionInFolder(library.info.sections, current));
+   *  those views only show a subset of the folder's photos. Recent has no folder runs to
+   *  count within and is numbered flat — see `positionInView`. */
+  const position = $derived(positionInView(library.info.view, library.info.sections, current, library.info.len));
 
   function viewport(): { width: number; height: number } {
     return { width: stage?.clientWidth ?? 0, height: stage?.clientHeight ?? 0 };

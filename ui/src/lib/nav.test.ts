@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { clampPan, clampZoom, closesViewer, move, positionInFolder, wheelStep } from './nav';
+import { clampPan, clampZoom, closesViewer, move, positionInFolder, positionInView, wheelStep } from './nav';
 
 const sections = [
   { folderId: 1, offset: 0, count: 5 },
@@ -46,6 +46,28 @@ describe('positionInFolder', () => {
 
   it('reports nothing for an empty grid', () => {
     expect(positionInFolder([], 0)).toEqual({ index: 0, count: 0 });
+  });
+});
+
+describe('positionInView', () => {
+  it('numbers within the folder in every folder-ordered view', () => {
+    expect(positionInView('all', sections, 5, 8)).toEqual({ index: 1, count: 3 });
+    expect(positionInView('starred', sections, 7, 8)).toEqual({ index: 3, count: 3 });
+    expect(positionInView('search', sections, 0, 8)).toEqual({ index: 1, count: 5 });
+  });
+
+  it('numbers within the whole list in Recent', () => {
+    // Recent orders by date across folders, so the index splits it into a section per photo
+    // wherever folders interleave — and counting within the folder then answered "1 / 1"
+    // for photo after photo. A flat list is counted flat.
+    const perPhoto = [0, 1, 2].map((i) => ({ folderId: 10 + i, offset: i, count: 1 }));
+    expect(positionInView('recent', perPhoto, 0, 3)).toEqual({ index: 1, count: 3 });
+    expect(positionInView('recent', perPhoto, 2, 3)).toEqual({ index: 3, count: 3 });
+  });
+
+  it('reports nothing for an empty grid', () => {
+    expect(positionInView('recent', [], 0, 0)).toEqual({ index: 0, count: 0 });
+    expect(positionInView('all', [], 0, 0)).toEqual({ index: 0, count: 0 });
   });
 });
 

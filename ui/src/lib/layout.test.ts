@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildRows, columnsFor, itemSpan, rowIndexAt, rowOfItem, totalHeight, visibleRange } from './layout';
+import { buildRows, columnsFor, itemSpan, layoutSections, rowIndexAt, rowOfItem, totalHeight, visibleRange } from './layout';
 
 const sections = [
   { folderId: 1, offset: 0, count: 5 },
@@ -44,6 +44,39 @@ describe('layout', () => {
     expect(visibleRange([], 0, 100, 0)).toEqual([0, 0]);
     expect(itemSpan(rows.slice(0, 3))).toEqual([0, 4]);
     expect(itemSpan(rows.slice(4, 5))).toBeNull();
+  });
+
+  it('lays Recent out as one continuous run with no headers', () => {
+    // Recent orders photos by date across folders, so wherever folders overlap in time the
+    // index hands back a section per photo — 500 photos, 500 sections, measured against a
+    // library of 12 interleaved folders. Laid out as folder runs that is a header and a
+    // one-tile row each: a grid as tall as the whole library and five-sixths empty.
+    const perPhoto = [0, 1, 2, 3, 4].map((i) => ({
+      folderId: 10 + (i % 2),
+      offset: i,
+      count: 1,
+      takenAtMin: 900 - i,
+    }));
+    const flat = layoutSections('recent', perPhoto, 5);
+    expect(flat).toEqual([{ folderId: 10, offset: 0, count: 5, takenAtMin: 896 }]);
+
+    const rows = buildRows(flat, 2, false);
+    expect(rows.map((r) => [r.kind, r.first, r.count, r.top])).toEqual([
+      ['tiles', 0, 2, 0],
+      ['tiles', 2, 2, 168],
+      ['tiles', 4, 1, 336],
+    ]);
+    // Against 5 * (HEADER + TILE_ROW) = 1000 for the same photos as folder sections.
+    expect(totalHeight(rows)).toBe(504);
+  });
+
+  it('leaves every other view grouped by folder', () => {
+    const withDates = sections.map((s) => ({ ...s, takenAtMin: 100 }));
+    expect(layoutSections('all', withDates, 8)).toBe(withDates);
+    expect(layoutSections('starred', withDates, 8)).toBe(withDates);
+    expect(layoutSections('search', withDates, 8)).toBe(withDates);
+    // An empty Recent view has nothing to lay out, and must not invent a run of zero.
+    expect(layoutSections('recent', [], 0)).toEqual([]);
   });
 
   it('locates the row holding an item', () => {

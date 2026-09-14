@@ -27,6 +27,23 @@ describe('folderRows', () => {
     ]);
   });
 
+  it('lists a folder once however many runs of it the view holds', () => {
+    // Recent orders photos by date across folders, so one folder comes back as many runs —
+    // one per stretch where its dates are the newest. One row per section listed the same
+    // folder hundreds of times, each claiming a single photo; the sidebar has to show the
+    // folder once, with the photos it contributes and the oldest of them deciding its year.
+    const interleaved = [
+      { folderId: 2, offset: 0, count: 1, takenAtMin: at('2024-06-05T12:00:00') },
+      { folderId: 3, offset: 1, count: 1, takenAtMin: at('2024-06-04T12:00:00') },
+      { folderId: 2, offset: 2, count: 2, takenAtMin: at('2024-06-01T12:00:00') },
+      { folderId: 3, offset: 4, count: 1, takenAtMin: at('2023-12-31T12:00:00') },
+    ];
+    expect(folderRows(interleaved, folders)).toEqual([
+      { folderId: 2, name: 'rome', count: 3, year: 2024, takenAtMin: at('2024-06-01T12:00:00') },
+      { folderId: 3, name: 'oslo', count: 2, year: 2023, takenAtMin: at('2023-12-31T12:00:00') },
+    ]);
+  });
+
   it('lists only folders that have photos', () => {
     // Folder 1 holds no photos of its own — it has no section — so it must not appear,
     // which is the whole point of listing sections rather than the folder table.
