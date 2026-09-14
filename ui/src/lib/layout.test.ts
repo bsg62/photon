@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildRows, columnsFor, itemSpan, layoutSections, rowIndexAt, rowOfItem, totalHeight, visibleRange } from './layout';
+import { buildRows, columnsFor, itemSpan, layoutSections, rowIndexAt, rowOfItem, topFolderId, totalHeight, visibleRange } from './layout';
 
 const sections = [
   { folderId: 1, offset: 0, count: 5 },
@@ -77,6 +77,25 @@ describe('layout', () => {
     expect(layoutSections('search', withDates, 8)).toBe(withDates);
     // An empty Recent view has nothing to lay out, and must not invent a run of zero.
     expect(layoutSections('recent', [], 0)).toEqual([]);
+  });
+
+  it('names the folder at the top of the viewport', () => {
+    // What gets remembered for the next launch: whichever folder the eye is on, whether
+    // the user scrolled there or clicked it in the sidebar.
+    const rows = buildRows(sections, 2);
+    expect(topFolderId(rows, sections, 0)).toBe(1);
+    // Still inside folder 1's last tile row.
+    expect(topFolderId(rows, sections, 400)).toBe(1);
+    // Folder 2's header is at 536.
+    expect(topFolderId(rows, sections, 536)).toBe(2);
+    expect(topFolderId(rows, sections, 10_000)).toBe(2);
+  });
+
+  it('names no folder when there is no grid to be scrolled', () => {
+    // A launch before the first scan has produced anything: nothing to remember, and
+    // nothing that should overwrite what the last session remembered.
+    expect(topFolderId([], [], 0)).toBeNull();
+    expect(topFolderId(buildRows(sections, 2), [], 0)).toBeNull();
   });
 
   it('locates the row holding an item', () => {

@@ -26,6 +26,11 @@ export class LibraryStore {
   selected = $state<number | null>(null);
   /** Bumped whenever pages arrive, so `entry()` readers re-run. */
   pageTick = $state(0);
+  /** True until the grid has jumped to the folder the last session left it on — or has
+   *  established there is none. The grid does not record a new folder while this is set: a
+   *  freshly built grid starts at offset 0, and remembering that would overwrite the stored
+   *  folder with the library's first one before anything could read it. */
+  restoring = $state(true);
   errors = $state<Toast[]>([]);
 
   private folderById = $derived(new Map(this.folders.folders.map((f) => [f.id, f])));

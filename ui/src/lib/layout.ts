@@ -99,6 +99,18 @@ export function visibleRange(rows: Row[], scrollTop: number, viewport: number, o
   return [start, Math.min(end, rows.length)];
 }
 
+/** The folder whose section is at the top of the viewport, or null when the grid is empty.
+ *
+ *  This is what photon remembers across a restart. It follows the eye rather than the last
+ *  sidebar click, so scrolling into a folder counts as being in it — and it returns null
+ *  rather than a guess for an empty grid, so a launch whose first scan has not produced
+ *  anything yet cannot overwrite what the previous session recorded. */
+export function topFolderId(rows: Row[], sections: SectionLike[], scrollTop: number): number | null {
+  if (rows.length === 0) return null;
+  const row = rows[rowIndexAt(rows, scrollTop)];
+  return sections[row.section]?.folderId ?? null;
+}
+
 /** Index of the tile row containing grid offset `offset`, or -1. */
 export function rowOfItem(rows: Row[], offset: number): number {
   let lo = 0;

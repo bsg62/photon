@@ -47,6 +47,17 @@ CREATE INDEX items_pending ON items(thumb_state) WHERE missing_since IS NULL;
 ALTER TABLE items ADD COLUMN rating INTEGER;
 CREATE INDEX items_starred ON items(rating) WHERE rating >= 1 AND missing_since IS NULL;
 "#,
+    r#"
+-- Small, hand-written UI state that has to outlive the process: at present only the folder
+-- the grid was last showing. It lives here rather than in the webview's `localStorage`
+-- because that sits in the webview profile directory, is thrown away whenever that cache is
+-- cleared, and cannot be reached from a test. Values are TEXT because this table is not
+-- worth a column per setting; each caller owns the parsing of its own key.
+CREATE TABLE settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+"#,
 ];
 
 pub fn migrate(conn: &Connection) -> Result<()> {
@@ -70,6 +81,58 @@ pub fn migrate(conn: &Connection) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The settings table arriving in a library that already holds a user's photos. The
+    /// upgrade must add it and leave everything else alone — nothing here rewrites rows, but
+    /// that is the claim worth pinning, since it is the path every existing install takes.
+    #[test]
+    fn the_third_migration_adds_settings_to_a_populated_version_two_library() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(MIGRATIONS[0]).unwrap();
+        conn.execute_batch(MIGRATIONS[1]).unwrap();
+        conn.pragma_update(None, "user_version", 2i64).unwrap();
+        conn.execute(
+            "INSERT INTO watched_folders (id, path) VALUES (1, '/p')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO folders (id, watched_id, parent_id, path, name, sort_key) \
+             VALUES (1, 1, NULL, '/p', 'p', 'p')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO items (folder_id, path, file_name, kind, size, mtime_ms, width, \
+             height, orientation, taken_at, rating) \
+             VALUES (1, '/p/a.jpg', 'a.jpg', 0, 1, 1, 1, 1, 1, 1, 3)",
+            [],
+        )
+        .unwrap();
+
+        migrate(&conn).unwrap();
+
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, MIGRATIONS.len() as i64);
+        let settings: i64 = conn
+            .query_row("SELECT count(*) FROM settings", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(settings, 0, "a new library remembers nothing yet");
+        let rating: Option<i64> = conn
+            .query_row(
+                "SELECT rating FROM items WHERE path = '/p/a.jpg'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            rating,
+            Some(3),
+            "the upgrade must not disturb existing rows"
+        );
+    }
 
     #[test]
     fn the_second_migration_upgrades_a_version_one_library_without_touching_its_rows() {
