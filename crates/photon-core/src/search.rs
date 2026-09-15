@@ -32,9 +32,9 @@ impl Query {
     /// `split_whitespace` does the trimming the caller would otherwise do by hand: it
     /// ignores leading, trailing and repeated whitespace, including non-ASCII whitespace,
     /// and yields nothing at all for a blank query. That keeps this in step with
-    /// `Engine::set_search_query`, which decides a query is blank with `trim().is_empty()`
-    /// - the two must agree, or the engine would hold a live query the matcher considers
-    ///   empty and the grid would go blank with text still in the box.
+    /// `Engine::set_search_query`, which decides a query is blank with `trim().is_empty()` -
+    /// the two must agree, or the engine would hold a live query the matcher considers
+    /// empty and the grid would go blank with text still in the box.
     ///
     /// Duplicates are dropped because re-scanning the same needle on every row cannot
     /// change the answer. The list is short enough that a linear `contains` beats
@@ -74,8 +74,9 @@ impl Query {
     }
 
     /// How many tokens the query holds. Test-only: the count is not part of what callers
-    /// need, but `duplicate_tokens_collapse` has to see that de-duplication happened
-    /// rather than infer it from a match that would pass either way.
+    /// need, but `duplicate_tokens_collapse` has to see that de-duplication happened,
+    /// since a variant that kept duplicate tokens would still pass that test's match
+    /// assertion and differ only in the count.
     #[cfg(test)]
     fn token_count(&self) -> usize {
         self.tokens.len()

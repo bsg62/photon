@@ -139,8 +139,11 @@ Matching becomes O(rows × tokens) where it was O(rows). The constant is a `cont
 short strings that are already lowercased once per row, and a real query is one to four words.
 Against the pass `GridIndex::build` already makes over the same rows — and behind the existing
 150 ms debounce, which means one pass per typing pause rather than one per keystroke — this is
-not a cost worth designing around. A pasted paragraph is the pathological case; it is bounded
-by the same debounce and by dropping duplicate tokens.
+not a cost worth designing around. A pasted paragraph is the pathological case, and token
+count is otherwise uncapped; what bounds it is that `entries_for` runs off the engine's grid
+lock (`crates/photon-app/src/engine.rs`, `refresh_grid`, around line 182 — the query and the
+rebuild run with no view or query lock held), so a huge paste degrades search latency rather
+than freezing the app.
 
 If search ever grows terms a scan cannot answer cheaply, that is the moment to reconsider an
 index — as the parent spec said, and it is still not now.

@@ -572,7 +572,7 @@ State plainly which commands were run and their results. Do not claim the featur
 
 ## Notes for the implementer
 
-- **Do not add an FTS5 table or any index.** `LIKE '%foo%'` cannot use a B-tree index, and an FTS table would be a second source of truth to keep in sync on every scan, rename and removal. The design spec §2 and the parent spec §2 both reject it.
+- **Do not add an FTS5 table or any index.** `LIKE '%foo%'` cannot use a B-tree index, and an FTS table would be a second source of truth to keep in sync on every scan, rename and removal. The design spec §1 and §6 and the parent spec §2 all reject it.
 - **Do not filter punctuation-only tokens.** It looks like an improvement — `lake - bell` would stop matching every hyphenated name — but it breaks `search_treats_sql_wildcards_as_literal_characters`, an existing deliberate decision that a query of `%` or `_` matches those characters. Literalness wins.
 - **Do not sort results by match count.** The sidebar groups by the same value the grid orders by, so ranking would put the two on different axes. `CLAUDE.md` calls this out specifically.
 - **Do not touch `ScanReport` or `refresh_grid`.** This change alters no rows and no data; it only changes which existing rows a view selects, and the refresh chain already rebuilds the index when the query changes.

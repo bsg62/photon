@@ -1280,8 +1280,9 @@ mod tests {
     #[test]
     fn search_widens_with_each_added_word() {
         // Tokens are OR-ed, so a second word adds photos rather than removing them. This
-        // is the deliberate choice the design records; an AND implementation returns one
-        // row here and fails on the final assertion.
+        // is the deliberate choice the design records; an AND implementation returns
+        // nothing here (no name contains both "lake" and "bell") and fails on the final
+        // assertion.
         let (_dir, lib) = temp_library();
         let (_watched, folder) = seed_folder(&lib, Path::new("/p"));
         let ids = lib
@@ -1309,11 +1310,45 @@ mod tests {
     }
 
     #[test]
+    fn search_spans_folders_in_grid_order() {
+        // OR-ing tokens widens results across folders, not just within one - the case
+        // `search_widens_with_each_added_word` cannot show with a single folder. `/p/new`
+        // and `/p/old` each hold a photo matched by one word of "lake bell", plus a photo
+        // in `/p/old` matched by neither.
+        let (_dir, lib) = temp_library();
+        let (watched, old_folder) = seed_folder(&lib, Path::new("/p/old"));
+        let new_folder = lib.upsert_folder(watched, None, "/p/new", 1).unwrap();
+        let ids = lib
+            .insert_items(&[
+                new_item(old_folder, "/p/old/lake.jpg", 1),
+                new_item(old_folder, "/p/old/mountain.jpg", 5),
+                new_item(new_folder, "/p/new/bell.jpg", 10),
+            ])
+            .unwrap();
+
+        let hits: Vec<i64> = lib
+            .entries_for(GridView::Search, "lake bell")
+            .unwrap()
+            .iter()
+            .map(|e| e.id)
+            .collect();
+
+        // `GRID_ORDER` places folders by their oldest photo descending, regardless of
+        // whether that photo matches: `/p/old`'s oldest is `lake.jpg` at 1, `/p/new`'s
+        // oldest (its only photo) is `bell.jpg` at 10. 10 > 1, so `/p/new` sorts first.
+        // `mountain.jpg` matches neither token and is dropped, leaving one row per folder,
+        // so within-folder order does not come into play here.
+        assert_eq!(hits, vec![ids[2], ids[0]]);
+    }
+
+    #[test]
     fn search_folds_case_for_non_ascii_text() {
         // This is the test that pins the whole "match in Rust, not in SQL" decision
         // (spec §3): SQLite's LIKE and lower() fold ASCII only, so a `LIKE`-based
-        // implementation passes the ASCII cases above and fails this one. Deleting it
-        // removes the only evidence for the design.
+        // implementation passes the ASCII cases above and fails this one.
+        // `case_folds_outside_ascii` in `search.rs` pins the same property at the unit
+        // level; what this copy adds is proof that both names actually reach the matcher,
+        // read from the right columns of the grid query.
         let (_dir, lib) = temp_library();
         let (_watched, folder) = seed_folder(&lib, Path::new("/München"));
         lib.insert_items(&[new_item(folder, "/München/Straße.jpg", 1)])
