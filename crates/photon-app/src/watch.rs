@@ -560,20 +560,48 @@ fn try_drain(engine: &Arc<Engine>, pending: &Mutex<HashMap<i64, Vec<PathBuf>>>) 
     for (id, dir) in candidates {
         match watched.iter().find(|w| w.id == id) {
             Some(folder) => {
-                if engine.start_subtree_scan(folder.clone(), dir.clone()) {
-                    let mut pending = pending.lock();
-                    if let Some(dirs) = pending.get_mut(&id) {
-                        dirs.retain(|queued| queued != &dir);
-                        if dirs.is_empty() {
-                            pending.remove(&id);
-                        }
-                    }
-                }
+                let root = PathBuf::from(&folder.path);
+                let folder = folder.clone();
+                let started = dir.clone();
+                start_queued_scan(pending, id, &dir, &root, move || {
+                    engine.start_subtree_scan(folder, started)
+                });
             }
             None => {
                 pending.lock().remove(&id);
             }
         }
+    }
+}
+
+/// Starts one queued follow-up, taking it out of `pending` *before* the scan starts and
+/// putting it back if the start is refused.
+///
+/// The order matters. While `dir` is still queued, an event for anything beneath it takes
+/// `insert_pending`'s "already covered by a queued ancestor" early return, on the strength of
+/// an entry that is about to be deleted. Removing afterwards would then leave `pending`
+/// empty with that change covered only by a scan that started before it happened - and which
+/// may already have walked past that directory - so it would never be rescanned. Removing
+/// first can at worst queue a directory the running scan also covers: one redundant walk
+/// rather than a lost change.
+fn start_queued_scan(
+    pending: &Mutex<HashMap<i64, Vec<PathBuf>>>,
+    id: i64,
+    dir: &Path,
+    root: &Path,
+    start: impl FnOnce() -> bool,
+) {
+    {
+        let mut pending = pending.lock();
+        if let Some(dirs) = pending.get_mut(&id) {
+            dirs.retain(|queued| queued != dir);
+            if dirs.is_empty() {
+                pending.remove(&id);
+            }
+        }
+    }
+    if !start() {
+        queue_pending(pending, id, dir.to_path_buf(), root);
     }
 }
 
@@ -710,6 +738,46 @@ mod tests {
     use crate::events::Recorded;
     use crate::testutil::{fixture, jpeg};
     use photon_core::watcher::MAX_PENDING_DIRS;
+
+    /// The window between a follow-up's scan starting and its removal from `pending`: an
+    /// event arriving in it is folded into an entry that is then deleted, so nothing covers
+    /// it but a scan that may already have walked past that directory.
+    #[test]
+    fn an_event_arriving_as_its_follow_up_starts_is_kept() {
+        let pending: Mutex<HashMap<i64, Vec<PathBuf>>> = Mutex::new(HashMap::new());
+        let root = PathBuf::from("/photos");
+        let dir = root.join("a");
+        queue_pending(&pending, 1, dir.clone(), &root);
+
+        let deep = dir.join("deep");
+        start_queued_scan(&pending, 1, &dir, &root, || {
+            // The event thread, running while the scan is being started.
+            queue_pending(&pending, 1, deep.clone(), &root);
+            true
+        });
+
+        assert_eq!(
+            pending.lock().get(&1).cloned().unwrap_or_default(),
+            vec![root.join("a").join("deep")],
+            "the change that arrived during the start stays queued on its own account"
+        );
+    }
+
+    #[test]
+    fn a_follow_up_whose_scan_is_refused_stays_queued() {
+        let pending: Mutex<HashMap<i64, Vec<PathBuf>>> = Mutex::new(HashMap::new());
+        let root = PathBuf::from("/photos");
+        let dir = root.join("a");
+        queue_pending(&pending, 1, dir.clone(), &root);
+
+        start_queued_scan(&pending, 1, &dir, &root, || false);
+
+        assert_eq!(
+            pending.lock().get(&1).cloned().unwrap_or_default(),
+            vec![dir],
+            "removing before the start must not drop a follow-up the scan slot refused"
+        );
+    }
 
     #[test]
     fn a_dead_watcher_tells_the_ui_its_folders_are_degraded() {
