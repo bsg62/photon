@@ -55,6 +55,8 @@ pub struct ViewerItem {
     pub height: u32,
     pub orientation: u8,
     pub taken_at: i64,
+    /// File size in bytes, for the caption.
+    pub size: i64,
     pub thumb_key: String,
     pub thumb_state: &'static str,
     pub thumb_error: Option<String>,
@@ -173,6 +175,7 @@ pub fn viewer_item(engine: &Engine, id: i64) -> CmdResult<ViewerItem> {
         height: item.height,
         orientation: item.orientation,
         taken_at: item.taken_at,
+        size: item.size,
         thumb_error: item.thumb_error,
         path: item.path,
     })
@@ -281,6 +284,8 @@ mod tests {
             (item.file_name.as_str(), item.width, item.height),
             ("b.jpg", 32, 16)
         );
+        // The caption shows the file's size; it comes from the indexed row, not a stat.
+        assert_eq!(item.size, img.len() as i64);
         assert_eq!(item.thumb_key.len(), 16);
         assert!(matches!(item.thumb_state, "pending" | "ready"));
         assert_eq!(neighbours(&f.engine, ids[1], 50), vec![ids[2], ids[0]]);

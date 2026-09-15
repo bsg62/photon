@@ -1,8 +1,10 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { api } from './lib/api';
+  import { locateItem } from './lib/folders';
   import { library } from './lib/library.svelte';
   import { resultsChanged } from './lib/search';
+  import { searchBox } from './lib/search-box.svelte';
   import FolderTree from './components/FolderTree.svelte';
   import Grid from './components/Grid.svelte';
   import SearchBar from './components/SearchBar.svelte';
@@ -43,6 +45,23 @@
     grid?.focus();
   }
 
+  /** "Locate in photon" from the viewer. Closes it first so the grid is what lands on the
+   *  photo; the view switch and the lookup order are `locateItem`'s. */
+  async function locate(itemId: number) {
+    viewerAt = null;
+    await locateItem(itemId, {
+      cancelSearch: () => searchBox.cancel(),
+      currentView: () => library.info.view,
+      setView: (view) => library.setView(view),
+      offsetOfItem: (id) => api.gridOffsetOfItem(id).catch(() => null),
+      select: (offset) => {
+        library.selected = offset;
+        grid?.scrollToOffset(offset, 'nearest');
+        grid?.focus();
+      },
+    });
+  }
+
   async function jump(folderId: number) {
     const offset = await api.gridOffsetOfFolder(folderId).catch(() => null);
     if (offset === null) return;
@@ -59,7 +78,7 @@
   </main>
   <div class="statusbar"><StatusBar /></div>
 </div>
-{#if viewerAt !== null}<Viewer offset={viewerAt} onclose={closeViewer} />{/if}
+{#if viewerAt !== null}<Viewer offset={viewerAt} onclose={closeViewer} onlocate={locate} />{/if}
 <Toasts />
 
 <style>

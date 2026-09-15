@@ -86,6 +86,9 @@ publishing it.
 - [ ] Rescan works. "Remove from photon" asks first, works during a scan, and leaves the files on disk.
 - [ ] Unplugging a drive with a watched folder dims its folder and tiles after a rescan. Nothing disappears.
 - [ ] Ctrl/Cmd+Shift+R and "Reveal in file manager" open the system file manager at the file.
+- [ ] The viewer's caption reads name, capture time, resolution, size and position, e.g. `IMG_1234.JPG · Jun 15, 2024, 12:30 PM · 4000 × 3000 · 3.2 MB · (12 / 240)`. The capture time matches what the camera wrote, not shifted by your time zone.
+- [ ] Clicking the caption copies the file name to the clipboard and shows "Copied" for about a second. Paste somewhere to confirm.
+- [ ] Right-click in the viewer: "Locate in photon" closes it and lands the grid on that photo, selected and in view — also from Starred, Recent or a search, where it switches back to All first. "Reveal in file manager" opens the file's folder. Escape closes the menu before it closes the viewer.
 - [ ] A library that cannot be opened (for example a corrupt database, or one written by a newer photon) shows an error dialog and photon exits, with no empty window sitting behind it.
 - [ ] A watched folder whose drive is offline and which has never been scanned still appears in the sidebar as a dimmed row, and can still be rescanned or removed from there.
 - [ ] A release build (see Development above) starts and shows the library — not a blank window.
