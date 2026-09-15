@@ -9,6 +9,7 @@ pub mod metadata;
 pub(crate) mod paths;
 pub mod picasa;
 pub mod scanner;
+pub mod search;
 pub mod thumbs;
 pub mod watcher;
 pub mod xmp;
