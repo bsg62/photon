@@ -187,6 +187,38 @@ describe('LibraryStore', () => {
     expect(store.selected).toBe(2);
   });
 
+  it('a selection made by id is re-found after a rebuild even when its page was never loaded', async () => {
+    // "Locate in photon" and closing the viewer both know the photo's id but land on an
+    // offset whose page the grid has not fetched yet. Recording only the offset would leave
+    // nothing to re-find by, and the next scan would slide the selection onto a neighbour.
+    vi.mocked(api.gridInfo).mockResolvedValue({
+      version: 1,
+      len: 5,
+      sections: [],
+      starredCount: 0,
+      view: 'all',
+      searchQuery: '',
+    });
+    const store = new LibraryStore();
+    await store.init();
+    store.selectItem(3, 11);
+    expect(store.selected).toBe(3);
+
+    vi.mocked(api.gridInfo).mockResolvedValue({
+      version: 2,
+      len: 6,
+      sections: [],
+      starredCount: 0,
+      view: 'all',
+      searchQuery: '',
+    });
+    vi.mocked(api.gridOffsetOfItem).mockResolvedValue(4);
+    await store.refresh();
+
+    expect(api.gridOffsetOfItem).toHaveBeenCalledWith(11);
+    expect(store.selected).toBe(4);
+  });
+
   it('clamps a selection it cannot re-find into the shrunken grid', async () => {
     // The fallback: nothing was ever loaded at that offset, so there is no id to follow.
     vi.mocked(api.gridInfo).mockResolvedValue({

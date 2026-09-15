@@ -37,6 +37,15 @@ export class LibraryStore {
     // by the time the grid is rebuilt the pages are gone.
     this.selectedId = offset === null ? null : (this.pages.get(offset)?.id ?? null);
   }
+  /** Selects `offset` knowing it holds photo `id`, for callers that know the id without the
+   *  page being loaded: "Locate in photon" and the viewer closing, both of which arrive by
+   *  id and land on an offset the grid has not fetched yet. The plain setter would record
+   *  no id for such an offset, and the next rebuild would clamp instead of re-find. */
+  selectItem(offset: number, id: number): void {
+    this.selectedOffset = offset;
+    this.selectedId = id;
+  }
+
   /** Bumped whenever pages arrive, so `entry()` readers re-run. */
   pageTick = $state(0);
   /** True until the grid has jumped to the folder the last session left it on — or has

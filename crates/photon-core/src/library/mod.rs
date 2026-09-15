@@ -33,7 +33,7 @@ pub struct Library {
 }
 
 /// A pooled read connection. Returned to the pool on drop.
-pub(crate) struct Reader<'a> {
+struct Reader<'a> {
     lib: &'a Library,
     conn: Option<Connection>,
 }

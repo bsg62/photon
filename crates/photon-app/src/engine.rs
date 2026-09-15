@@ -55,6 +55,14 @@ struct ViewState {
     epoch: u64,
 }
 
+/// What one rebuild was started against: the view state, and a sequence number that
+/// orders it among all rebuilds. Both are read together, before the query begins.
+#[derive(Clone, Debug)]
+struct Rebuild {
+    state: ViewState,
+    seq: u64,
+}
+
 pub struct Engine {
     pub lib: Arc<Library>,
     pub thumbs: ThumbService,
@@ -64,12 +72,15 @@ pub struct Engine {
     /// moment of reading or writing it - never across a query or an index build - so a
     /// view switch on the UI thread is never made to wait for a rebuild a scan is running.
     state: Mutex<ViewState>,
-    /// Serialises the publish-and-emit step of a rebuild, so two rebuilds finishing
-    /// together can't publish under out-of-order version numbers or emit `library_changed`
-    /// out of order. Not the query and build themselves: those run unserialised, and the
-    /// `epoch` check in `publish_if_current` is what keeps a slow, stale one from
-    /// overwriting a newer view.
-    refresh: Mutex<()>,
+    /// Serialises the publish-and-emit step of a rebuild and holds the `seq` of the last
+    /// rebuild published, so two rebuilds finishing together can't publish under
+    /// out-of-order version numbers, emit `library_changed` out of order, or land an
+    /// older read over a newer one. Not the query and build themselves: those run
+    /// unserialised, and the two checks in `publish_if_current` are what keep a slow, stale
+    /// one from overwriting a newer view (`epoch`) or newer rows (`seq`).
+    refresh: Mutex<u64>,
+    /// Source of `Rebuild::seq`. Taken at snapshot time, before the query begins.
+    next_rebuild: AtomicU64,
     events: Arc<dyn Events>,
     scans: Mutex<HashMap<i64, RunningScan>>,
     /// Watched ids whose removal is under way. Per folder what `shutting_down` is for the
@@ -136,7 +147,8 @@ impl Engine {
                 query: String::new(),
                 epoch: 0,
             }),
-            refresh: Mutex::new(()),
+            refresh: Mutex::new(0),
+            next_rebuild: AtomicU64::new(1),
             events,
             scans: Mutex::new(HashMap::new()),
             removing: Mutex::new(HashSet::new()),
@@ -166,32 +178,52 @@ impl Engine {
     /// ~60ms per tick on a 100k library, for as long as the scan ran. What makes that safe
     /// is the `epoch` check at publish time; see `publish_if_current`.
     pub fn refresh_grid(&self) -> Result<()> {
-        let state = self.snapshot();
+        let rebuild = self.snapshot();
         let index = Arc::new(GridIndex::build(
-            self.lib.entries_for(state.view, &state.query)?,
+            self.lib
+                .entries_for(rebuild.state.view, &rebuild.state.query)?,
         ));
-        self.publish_if_current(index, state.epoch);
+        self.publish_if_current(index, &rebuild);
         Ok(())
     }
 
-    fn snapshot(&self) -> ViewState {
-        self.state.lock().clone()
+    /// The state a rebuild is about to query for, stamped with its place in the sequence
+    /// of rebuilds. The stamp is taken before the query so that "a later stamp" means "a
+    /// query that began later", which under WAL means "reads at least as new a database".
+    fn snapshot(&self) -> Rebuild {
+        let state = self.state.lock().clone();
+        let seq = self.next_rebuild.fetch_add(1, Ordering::SeqCst);
+        Rebuild { state, seq }
     }
 
-    /// Publishes `index`, built for the state whose epoch was `epoch`, unless the state has
-    /// changed since. Returns whether it published.
+    /// Publishes `index`, built from `rebuild`'s snapshot, unless it has been overtaken.
+    /// Returns whether it published.
     ///
-    /// This is the guard that lets rebuilds run unlocked. Without it a scan's rebuild that
-    /// read the All view, then lost the race to a click on Starred, would publish its
-    /// full index over the Starred one while `GridInfo` still said Starred. Discarding is
-    /// safe for the scan's rows too: the setter's own rebuild reads the database after it
-    /// bumped the epoch, which is after any rows committed before this rebuild started.
-    fn publish_if_current(&self, index: Arc<GridIndex>, epoch: u64) -> bool {
-        let _serialize = self.refresh.lock();
-        if self.state.lock().epoch != epoch {
+    /// Two guards let rebuilds run unlocked, and both are needed. The `epoch` guard: a
+    /// scan's rebuild that read the All view, then lost the race to a click on Starred,
+    /// would otherwise publish its full index over the Starred one while `GridInfo` still
+    /// said Starred. The `seq` guard: two rebuilds for the *same* view - two startup scans'
+    /// final refreshes, or a scan tick racing `remove_folder` - can finish in the opposite
+    /// order from their reads, and the earlier read landing last would drop rows already
+    /// committed and shown, with nothing left running to put them back. Once this shipped
+    /// with only the epoch guard and did exactly that.
+    ///
+    /// Discarding is safe for committed rows in both cases. Every commit is followed, on
+    /// the thread that made it, by a rebuild snapshotted after it; whichever rebuild
+    /// carries the highest `seq` therefore began its query after that commit and includes
+    /// it, and nothing can be stamped later to block it. A setter's rebuild likewise reads
+    /// after its epoch bump.
+    fn publish_if_current(&self, index: Arc<GridIndex>, rebuild: &Rebuild) -> bool {
+        let mut last_published = self.refresh.lock();
+        if self.state.lock().epoch != rebuild.state.epoch {
             tracing::debug!("discarding a grid rebuilt for a view that has since changed");
             return false;
         }
+        if rebuild.seq < *last_published {
+            tracing::debug!("discarding a grid rebuilt from an older read than the one published");
+            return false;
+        }
+        *last_published = rebuild.seq;
         let (version, len) = {
             let mut grid = self.grid.write();
             grid.0 += 1;
@@ -248,10 +280,20 @@ impl Engine {
             previous
         };
         if let Err(err) = self.refresh_grid() {
-            let mut state = self.state.lock();
-            state.view = previous.view;
-            state.query = previous.query;
-            state.epoch += 1;
+            {
+                let mut state = self.state.lock();
+                state.view = previous.view;
+                state.query = previous.query;
+                state.epoch += 1;
+            }
+            // The bump above discards every rebuild in flight for the state just restored,
+            // so rows a scan committed meanwhile would otherwise wait for its next tick. A
+            // best-effort rebuild for the restored state closes that; it is the query that
+            // was working a moment ago, and if it fails too there is nothing better to do
+            // than log it.
+            if let Err(err) = self.refresh_grid() {
+                tracing::warn!(%err, "grid refresh for the restored view failed");
+            }
             return Err(err);
         }
         Ok(())
@@ -1190,7 +1232,10 @@ mod tests {
         // A scan's rebuild reads the state and starts querying for All...
         let stale = f.engine.snapshot();
         let stale_index = Arc::new(GridIndex::build(
-            f.engine.lib.entries_for(stale.view, &stale.query).unwrap(),
+            f.engine
+                .lib
+                .entries_for(stale.state.view, &stale.state.query)
+                .unwrap(),
         ));
         assert_eq!(stale_index.len(), 2);
         // ...and while it does, the user clicks Starred, whose rebuild lands first.
@@ -1199,8 +1244,44 @@ mod tests {
         assert_eq!(grid.len(), 1);
 
         assert!(
-            !f.engine.publish_if_current(stale_index, stale.epoch),
+            !f.engine.publish_if_current(stale_index, &stale),
             "an index built for a superseded view is discarded"
+        );
+        let (after, grid) = f.engine.grid();
+        assert_eq!((after, grid.len()), (version, 1));
+    }
+
+    /// The epoch only says which *view* an index was built for. Two rebuilds for the same
+    /// view run their queries unserialised, and the one that read the database earlier can
+    /// finish later: two startup scans, say, where the slower one's final rebuild lands
+    /// last without the rows the other had already committed - and with both scans done,
+    /// nothing rebuilds again. The sequence stamp taken at snapshot time is what orders
+    /// them: an index stamped earlier than one already published is dropped.
+    #[test]
+    fn a_rebuild_snapshotted_earlier_is_not_published_over_a_later_one_for_the_same_view() {
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a/one.jpg", &img), ("a/two.jpg", &img)]);
+        f.add_photos();
+        f.engine.wait_for_scans();
+
+        // A slow rebuild reads both rows...
+        let early = f.engine.snapshot();
+        let early_index = Arc::new(GridIndex::build(
+            f.engine
+                .lib
+                .entries_for(early.state.view, &early.state.query)
+                .unwrap(),
+        ));
+        assert_eq!(early_index.len(), 2);
+        // ...then a purge commits and its own rebuild, stamped later, publishes first.
+        f.engine.lib.purge_items(&[f.ids()[0]]).unwrap();
+        f.engine.refresh_grid().unwrap();
+        let (version, grid) = f.engine.grid();
+        assert_eq!(grid.len(), 1);
+
+        assert!(
+            !f.engine.publish_if_current(early_index, &early),
+            "an index that read the database before an already-published one is dropped"
         );
         let (after, grid) = f.engine.grid();
         assert_eq!((after, grid.len()), (version, 1));

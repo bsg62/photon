@@ -85,6 +85,9 @@
   function goto(next: number) {
     const last = library.info.len - 1;
     if (last < 0) return;
+    // A menu opened on the previous photo would otherwise vanish while this one loads and
+    // reappear over it, having eaten one Escape on the way.
+    menu = null;
     current = Math.min(last, Math.max(0, next));
   }
 

@@ -166,7 +166,7 @@ describe('locateItem', () => {
           order.push(`find:${id}`);
           return Promise.resolve(at);
         },
-        select: (offset: number) => order.push(`select:${offset}`),
+        select: (offset: number, itemId: number) => order.push(`select:${offset}:${itemId}`),
       },
     };
   }
@@ -174,13 +174,13 @@ describe('locateItem', () => {
   it('leaves a subset view for All before looking the photo up, so the offset is against the right index', async () => {
     const { order, deps } = spyDeps('starred');
     await locateItem(42, deps);
-    expect(order).toEqual(['cancel', 'setView:all', 'find:42', 'select:5']);
+    expect(order).toEqual(['cancel', 'setView:all', 'find:42', 'select:5:42']);
   });
 
   it('does not switch views when already in All', async () => {
     const { order, deps } = spyDeps('all');
     await locateItem(42, deps);
-    expect(order).toEqual(['cancel', 'find:42', 'select:5']);
+    expect(order).toEqual(['cancel', 'find:42', 'select:5:42']);
   });
 
   it('selects nothing when the photo is no longer in the library', async () => {

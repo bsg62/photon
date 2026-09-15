@@ -72,17 +72,30 @@ The refresh chain is worth knowing end to end, because a change that alters rows
 travelling it will update the database while the UI shows stale data:
 
 ```
-scan/mutation → Engine::refresh_grid() → GridIndex::build() → bumps version
+scan/mutation → Engine::refresh_grid() → snapshot (view, query, epoch, seq)
+              → query + GridIndex::build(), no engine lock held
+              → publish_if_current(): discarded if the view changed (epoch) or a
+                later-stamped rebuild already published (seq); else bumps version
               → events::library_changed → UI listener → api.gridInfo() → re-render
 ```
 
-`engine.rs` gates that refresh on whether a scan actually touched rows. A change that alters
-data by some *other* means must add its own counter to `ScanReport` and fold it into that gate,
-or the grid silently never rebuilds.
+Rebuilds run unlocked so a view switch never waits behind a scan's rebuild; the two publish
+checks are what make that safe, and both are needed. A setter's own rebuild is the authority
+for a view change. A discarded rebuild never loses rows: every commit is followed on its own
+thread by a rebuild stamped after it, and the highest stamp always publishes.
+
+`ScanReport::touched_rows` gates the end-of-scan refresh on whether a scan actually moved
+rows. A change that alters data by some *other* means must add its own counter to `ScanReport`
+and fold it into `touched_rows`, or the grid silently never rebuilds.
 
 **Grid order** (`items.rs`, `GRID_ORDER`) is the folder's oldest photo descending, then each
 folder's photos oldest to newest. The sidebar groups by the same value, so the list is an index
-of the grid. Changing one without the other splits them onto different axes.
+of the grid. Changing one without the other splits them onto different axes. `GRID_ORDER` reads
+columns only `folder_order(filter)` supplies, and `grid_query(select, filter)` is the one place
+the two are paired: in a filtered view (Starred) the driver's filter must equal the outer
+`WHERE`, so a folder is placed by its oldest *matching* photo, which is what keeps the sidebar
+and the grid agreeing. A query assembled by hand with `GRID_ORDER` and no driver compiles and
+fails at `prepare`, only when that view is opened.
 
 **A grid offset is only meaningful against one index version.** Indexing a photo into a
 folder that sorts earlier shifts every later offset, so anything holding an offset across a
@@ -98,6 +111,10 @@ Adding a command means touching all three, in this order:
 2. `ipc.rs` — a `#[tauri::command(async)]` wrapper that only delegates.
 3. `app.rs` — an entry in `tauri::generate_handler![...]`. Forgetting this compiles fine and
    fails at runtime.
+
+A feature backed by a Tauri plugin has a fourth file: `capabilities/default.json` must grant
+the permission (`clipboard-manager:allow-write-text`, say). A missing grant compiles and fails
+only at runtime, inside the webview.
 
 ### TypeScript mirrors are hand-written and unchecked
 
@@ -131,6 +148,23 @@ branch's star behaviour cannot be tested from the filesystem either way.
 `library/schema.rs` holds `MIGRATIONS: &[&str]`, one entry per version, each run in its own
 transaction with `PRAGMA user_version` bumped after it. A library from a newer photon is refused
 with `SchemaTooNew`. SQLite runs in WAL mode, so `library.db` has `-wal`/`-shm` siblings.
+
+A schema bump breaks tests on purpose: `library/mod.rs` asserts the literal version number in
+two places, and the migration tests seed from `MIGRATIONS[..N-1]`. Update the numbers rather than
+loosening them to `MIGRATIONS.len()`; the hardcoding is the tripwire. An index that serves a
+specific query gets a plan test (`the_recent_view_is_served_by_its_index`), so drift between the
+index and the `ORDER BY` fails rather than silently regressing.
+
+**Reads are pooled, writes are one connection.** `Library::reader()` returns a `Result` and never
+waits on another reader: it hands out an idle pooled connection or opens one (at most eight are
+kept). `writer()` is a single mutexed connection.
+
+**Thumbnail garbage collection is gated.** Any write that can orphan a thumbnail — deleting an
+item, or changing `path`/`size`/`mtime_ms`, the fingerprint columns — must call
+`settings::bump_thumb_gc_epoch` inside its own transaction. Today that is `purge_items`,
+`update_items` and `remove_watched_folder`. The tripwire test in `settings.rs` enumerates those
+three, so a *new* orphaning write is not caught automatically; the seven-day `THUMB_GC_MAX_AGE`
+in `engine.rs` bounds the damage of a miss.
 
 There is no `COLLATE NOCASE` anywhere and `lower()` is ASCII-only without ICU (a native
 dependency this project does not take), so **case-insensitive matching is done in Rust**, not
