@@ -3,6 +3,7 @@ use crate::Result;
 use crate::grid::{GridEntry, GridView};
 use crate::media::{MediaKind, ThumbState, fingerprint};
 use crate::metadata::oriented_dims;
+use crate::search::Query;
 use rusqlite::{OptionalExtension, Row, params};
 use std::collections::{HashMap, HashSet};
 
@@ -519,16 +520,16 @@ impl Library {
         Ok(rows)
     }
 
-    /// Photos whose file name or folder name contains `query`, case-insensitively.
+    /// Photos whose file name or folder name contains any word of `query`,
+    /// case-insensitively.
     ///
-    /// The match runs in Rust rather than as SQL `LIKE` for two reasons (spec §3):
-    /// SQLite folds case for ASCII only, so `MÜNCHEN` would not find `München`; and
-    /// `LIKE` would read `%` and `_` in the user's query as wildcards. This is one pass
+    /// The words are OR-ed and the matching runs in Rust rather than as SQL `LIKE`;
+    /// `search::Query` holds both decisions and the reasons for them. This is one pass
     /// over the same rows an index rebuild already reads, with two short string compares
-    /// added per row.
+    /// per token added per row.
     fn search_entries(&self, query: &str) -> Result<Vec<GridEntry>> {
-        let needle = query.trim().to_lowercase();
-        if needle.is_empty() {
+        let query = Query::parse(query);
+        if query.is_empty() {
             return Ok(Vec::new());
         }
         let conn = self.reader()?;
@@ -540,8 +541,7 @@ impl Library {
             .query_map([], |r| {
                 let file_name: String = r.get(GRID_COLUMN_COUNT)?;
                 let folder_name: String = r.get(GRID_COLUMN_COUNT + 1)?;
-                let hit = file_name.to_lowercase().contains(&needle)
-                    || folder_name.to_lowercase().contains(&needle);
+                let hit = query.matches(&[&file_name, &folder_name]);
                 // No `Ok(…?)` wrapper here: the closure already returns this type, and
                 // wrapping it trips `clippy::needless_question_mark`, which the gate
                 // treats as an error.
@@ -1252,6 +1252,59 @@ mod tests {
         assert!(
             lib.entries_for(GridView::Search, "zzz").unwrap().is_empty(),
             "no match is an empty result, not the whole library"
+        );
+    }
+
+    #[test]
+    fn search_matches_any_word_of_a_multi_word_query() {
+        // The case the single-needle matcher missed: "lake bell" is not a substring of
+        // "lake_bell.jpg", because the file's separator is an underscore.
+        let (_dir, lib) = temp_library();
+        let (_watched, folder) = seed_folder(&lib, Path::new("/p"));
+        let ids = lib
+            .insert_items(&[
+                new_item(folder, "/p/lake_bell.jpg", 1),
+                new_item(folder, "/p/mountain.jpg", 2),
+            ])
+            .unwrap();
+
+        let hits: Vec<i64> = lib
+            .entries_for(GridView::Search, "lake bell")
+            .unwrap()
+            .iter()
+            .map(|e| e.id)
+            .collect();
+        assert_eq!(hits, vec![ids[0]]);
+    }
+
+    #[test]
+    fn search_widens_with_each_added_word() {
+        // Tokens are OR-ed, so a second word adds photos rather than removing them. This
+        // is the deliberate choice the design records; an AND implementation returns one
+        // row here and fails on the final assertion.
+        let (_dir, lib) = temp_library();
+        let (_watched, folder) = seed_folder(&lib, Path::new("/p"));
+        let ids = lib
+            .insert_items(&[
+                new_item(folder, "/p/lake.jpg", 1),
+                new_item(folder, "/p/bell.jpg", 2),
+                new_item(folder, "/p/mountain.jpg", 3),
+            ])
+            .unwrap();
+
+        let hits = |q: &str| -> Vec<i64> {
+            lib.entries_for(GridView::Search, q)
+                .unwrap()
+                .iter()
+                .map(|e| e.id)
+                .collect()
+        };
+
+        assert_eq!(hits("lake"), vec![ids[0]]);
+        assert_eq!(
+            hits("lake bell"),
+            vec![ids[0], ids[1]],
+            "the second word adds its matches; it does not narrow the first word's"
         );
     }
 
