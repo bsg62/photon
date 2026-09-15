@@ -66,7 +66,7 @@ impl Library {
     }
 
     pub fn watched_folders(&self) -> Result<Vec<WatchedFolder>> {
-        let conn = self.reader();
+        let conn = self.reader()?;
         let mut stmt =
             conn.prepare("SELECT id, path, online FROM watched_folders ORDER BY path")?;
         let rows = stmt
@@ -172,7 +172,7 @@ impl Library {
     /// All folders in tree order (parents before children, siblings alphabetical; `path`
     /// breaks ties between names that differ only in case).
     pub fn folders(&self) -> Result<Vec<Folder>> {
-        let conn = self.reader();
+        let conn = self.reader()?;
         let mut stmt = conn.prepare(
             "SELECT id, watched_id, parent_id, path, name FROM folders ORDER BY sort_key, path",
         )?;
@@ -358,6 +358,7 @@ mod tests {
         let (_dir, lib) = temp_library();
         let found: i64 = lib
             .reader()
+            .unwrap()
             .query_row(
                 "SELECT count(*) FROM sqlite_master WHERE type = 'index' AND name = 'folders_parent'",
                 [],

@@ -58,6 +58,14 @@ CREATE TABLE settings (
     value TEXT NOT NULL
 );
 "#,
+    r#"
+-- Serves the Recent view (`items::recent_sql`), whose ORDER BY this matches column for
+-- column and direction for direction: SQLite only walks an index for an ORDER BY it agrees
+-- with exactly, and with LIMIT 500 an index walk stops after 500 rows where a scan sorted
+-- every live row first (~37ms on 100k items, once per 250ms scan tick while Recent is
+-- open). Partial, so the missing rows the view excludes cost nothing to keep out of it.
+CREATE INDEX items_recent ON items(taken_at DESC, file_name DESC, id DESC) WHERE missing_since IS NULL;
+"#,
 ];
 
 pub fn migrate(conn: &Connection) -> Result<()> {
@@ -132,6 +140,60 @@ mod tests {
             Some(3),
             "the upgrade must not disturb existing rows"
         );
+    }
+
+    /// The Recent view's query, `ORDER BY taken_at DESC, file_name DESC, id DESC LIMIT 500`,
+    /// had nothing to walk and so scanned and sorted every live row on every rebuild: ~37ms
+    /// on 100k items, once per 250ms scan tick while Recent is open. The partial index
+    /// covers exactly that order and turns it into a 500-row index walk.
+    #[test]
+    fn the_fourth_migration_adds_the_recent_index_to_a_populated_version_three_library() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        for sql in &MIGRATIONS[..3] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 3i64).unwrap();
+        conn.execute(
+            "INSERT INTO watched_folders (id, path) VALUES (1, '/p')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO folders (id, watched_id, parent_id, path, name, sort_key) \
+             VALUES (1, 1, NULL, '/p', 'p', 'p')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO items (folder_id, path, file_name, kind, size, mtime_ms, width, \
+             height, orientation, taken_at, rating) \
+             VALUES (1, '/p/a.jpg', 'a.jpg', 0, 1, 1, 1, 1, 1, 1, 3)",
+            [],
+        )
+        .unwrap();
+
+        migrate(&conn).unwrap();
+
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, MIGRATIONS.len() as i64);
+        let indexed: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type = 'index' AND name = 'items_recent'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(indexed, 1, "the Recent index exists after the upgrade");
+        let rating: Option<i64> = conn
+            .query_row(
+                "SELECT rating FROM items WHERE path = '/p/a.jpg'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(rating, Some(3), "and the existing row is untouched");
     }
 
     #[test]
