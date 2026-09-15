@@ -37,16 +37,50 @@
     current = Math.min(last, Math.max(0, next));
   }
 
-  // A rescan can shrink the library under an open viewer, and nothing else moves `current`:
-  // `goto` clamps, but only a key or wheel event reaches it. Left alone, the caption counts
-  // past the end ("51 / 20") and the loader below asks for an offset that no longer exists.
+  /** An offset the rebind below has already resolved, so the loader can tell "the same photo,
+   *  renumbered" from "a different photo". Deliberately not `$state`: writing it must not
+   *  wake anything, and it is always set immediately before the `current` that does. */
+  let rebound: number | null = null;
+
+  // `current` is an index into a grid that is rebuilt whole whenever anything changes, so it
+  // stops meaning "the photo the user opened" the moment a scan indexes something ahead of
+  // it: one photo copied into an earlier folder shifts every later offset by one, and the
+  // viewer would go on showing the *next* photo under the same caption, silently. Clamping
+  // alone only catches the case where the offset falls off the end.
+  //
+  // So the photo is re-found by id after every rebuild. Only when nothing is loaded yet —
+  // the first paint, or after the photo has gone — is there an id to work from, and staying
+  // in range is then all that can be done.
   $effect(() => {
+    void library.info.version;
     const last = library.info.len - 1;
-    if (last >= 0 && untrack(() => current) > last) current = last;
+    const showing = untrack(() => item?.id);
+    if (showing === undefined) {
+      if (last >= 0 && untrack(() => current) > last) current = last;
+      return;
+    }
+    void (async () => {
+      const at = await api.gridOffsetOfItem(showing);
+      // The user navigated while this was in flight; that move is the newer truth.
+      if (untrack(() => item?.id) !== showing) return;
+      if (at === null) {
+        error = 'This photo is no longer available.';
+        return;
+      }
+      if (at === untrack(() => current)) return;
+      rebound = at;
+      current = at;
+    })();
   });
 
   $effect(() => {
     const at = current;
+    // A renumbering, not a navigation: the photo on screen is already the right one, so
+    // reloading it would blank it and throw away the zoom and pan for nothing.
+    if (rebound === at) {
+      rebound = null;
+      return;
+    }
     let cancelled = false;
     item = null;
     fullSrc = null;

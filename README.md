@@ -90,6 +90,7 @@ publishing it.
 - [ ] A watched folder whose drive is offline and which has never been scanned still appears in the sidebar as a dimmed row, and can still be rescanned or removed from there.
 - [ ] A release build (see Development above) starts and shows the library — not a blank window.
 - [ ] If a scan removes photos while the viewer is open, the viewer shows "This photo is no longer available" rather than a blank frame, and Escape still returns to the grid.
+- [ ] With the viewer open on a photo, zoomed and panned, copying a photo into a folder that sorts *ahead* of it leaves the viewer on the same photo, at the same zoom and pan, with its caption renumbered. (The offset the viewer holds shifts when the grid is rebuilt; this is the check that it re-finds its photo rather than sliding onto the next one.)
 - [ ] Copying a photo into a watched folder makes it appear in the grid within a few seconds, with no manual rescan.
 - [ ] Deleting a photo on disk removes it from the grid.
 - [ ] Renaming a folder on disk moves its photos in the tree within a few seconds.

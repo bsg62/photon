@@ -127,6 +127,16 @@ pub fn grid_offset_of_folder(engine: &Engine, folder_id: i64) -> Option<usize> {
     engine.grid().1.offset_of_folder(folder_id)
 }
 
+/// Where `item_id` sits in the current grid, or `None` if it is not in this view at all.
+///
+/// The viewer holds an offset, and an offset is only meaningful against one version of the
+/// index: a scan that indexes a photo into an earlier folder shifts every later offset by
+/// one, and the viewer would then be showing a different photo than the one it was opened
+/// on. This is how it re-finds the photo it is actually displaying after a rebuild.
+pub fn grid_offset_of_item(engine: &Engine, item_id: i64) -> Option<usize> {
+    engine.grid().1.position_of(item_id)
+}
+
 /// The folder the grid should scroll back to on launch, or `None` when there is nothing to
 /// restore — a first run, or a folder that has been removed since it was recorded.
 pub fn last_folder(engine: &Engine) -> CmdResult<Option<i64>> {
@@ -214,6 +224,38 @@ mod tests {
         assert_eq!((info.len, info.sections.len()), (2, 2));
         let sub = list.folders.iter().find(|x| x.name == "sub").unwrap();
         assert_eq!(grid_offset_of_folder(&f.engine, sub.id), Some(1));
+    }
+
+    /// The offset the viewer holds is only meaningful against one version of the index.
+    /// Indexing a photo into an earlier folder renumbers everything after it, and without a
+    /// way to re-find the open photo by id the viewer silently shows its neighbour.
+    #[test]
+    fn an_items_offset_follows_it_when_the_grid_is_renumbered() {
+        let img = jpeg(16, 16);
+        let f = fixture(&[("b/second.jpg", &img)]);
+        f.add_photos();
+        let watched = f.engine.lib.watched_folders().unwrap()[0].clone();
+        let open = f.ids()[0];
+        assert_eq!(grid_offset_of_item(&f.engine, open), Some(0));
+
+        // A folder that sorts ahead of it appears, the way a scan of a newly-copied
+        // directory would add one.
+        std::fs::create_dir_all(f.photos.join("a")).unwrap();
+        std::fs::write(f.photos.join("a").join("first.jpg"), &img).unwrap();
+        f.engine.start_scan(watched);
+        f.engine.wait_for_scans();
+
+        assert_eq!(f.ids().len(), 2);
+        assert_eq!(
+            grid_offset_of_item(&f.engine, open),
+            Some(1),
+            "the photo moved, and says where it moved to"
+        );
+        assert_eq!(
+            grid_offset_of_item(&f.engine, 9_999),
+            None,
+            "a photo no longer in this view says so, rather than answering with a neighbour"
+        );
     }
 
     #[test]

@@ -22,8 +22,21 @@ export class LibraryStore {
   /** Watched folder ids the OS won't let photon watch live, from the most recent
    *  `folder-status` event for each: they fall back to periodic rescans instead. */
   degraded = $state<Record<number, boolean>>({});
+  private selectedOffset = $state<number | null>(null);
+  /** The photo at `selectedOffset`, when it was selected. See `rebindSelection`. */
+  private selectedId: number | null = null;
+
   /** Selected grid offset. */
-  selected = $state<number | null>(null);
+  get selected(): number | null {
+    return this.selectedOffset;
+  }
+
+  set selected(offset: number | null) {
+    this.selectedOffset = offset;
+    // Which photo that offset meant, remembered now while the page holding it is loaded -
+    // by the time the grid is rebuilt the pages are gone.
+    this.selectedId = offset === null ? null : (this.pages.get(offset)?.id ?? null);
+  }
   /** Bumped whenever pages arrive, so `entry()` readers re-run. */
   pageTick = $state(0);
   /** True until the grid has jumped to the folder the last session left it on — or has
@@ -84,8 +97,41 @@ export class LibraryStore {
     if (info.version < this.info.version) return;
     this.pages.reset(info.version);
     this.info = info;
-    if (this.selected !== null && this.selected >= info.len) this.selected = info.len ? info.len - 1 : null;
     this.pageTick++;
+    await this.rebindSelection();
+  }
+
+  /** Puts the selection back on the photo it was on, after the index has been rebuilt.
+   *
+   *  An offset only means "this photo" against one version of the index: a scan that indexes
+   *  a photo into an earlier folder shifts every later offset by one, and the selection would
+   *  slide onto the next photo without anything looking wrong. Clamping alone catches only
+   *  the offset falling off the end, which is the rarer half of the problem.
+   *
+   *  Falls back to clamping when there is no id to work from, or when the photo has left this
+   *  view entirely - in that case the offset is as good an answer as any, and the next
+   *  deliberate selection restores an id to track. */
+  private async rebindSelection(): Promise<void> {
+    const clamp = () => {
+      if (this.selectedOffset !== null && this.selectedOffset >= this.info.len) {
+        this.selectedOffset = this.info.len ? this.info.len - 1 : null;
+      }
+    };
+    const id = this.selectedId;
+    if (id === null) {
+      clamp();
+      return;
+    }
+    const version = this.info.version;
+    const at = await api.gridOffsetOfItem(id);
+    // A newer refresh has landed while this was in flight; its own rebind is the current one.
+    if (version !== this.info.version) return;
+    if (at === null) {
+      this.selectedId = null;
+      clamp();
+      return;
+    }
+    this.selectedOffset = at;
   }
 
   /** Sequence of the most recently *issued* folder-list request; see `refreshFolders`. */
