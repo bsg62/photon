@@ -118,8 +118,19 @@ pub fn scan_watched(
     if skip_mark_purge {
         // We couldn't tell what happened to the rest of the tree; don't guess.
         lib.set_watched_online(watched.id, true)?;
+        // The stars of the folders we *did* walk are a separate question, and this branch
+        // has already concluded the root is live. Returning without them would leave every
+        // star in the library at its last scan's value over one walkdir error, with
+        // `restarred` at 0 so the grid would not refresh either. It cannot simply move above
+        // this guard: the empty-root check below is what tells a live folder from an
+        // unmounted volume, and an unmounted mount point reads as a folder whose INI is
+        // gone - which would clear every star it has.
+        let restarred = apply_picasa_stars(lib, &walked);
         progress(&seen);
-        return Ok(report);
+        return Ok(ScanReport {
+            restarred,
+            ..report
+        });
     }
 
     // Drop anything under a subtree we couldn't fully walk: it might still be there.
@@ -272,9 +283,16 @@ pub fn scan_subtree(
         });
     }
     if outcome.skip_mark_purge {
+        // The stars of the folders we did walk, for the reason in `scan_watched`.
+        let restarred = apply_picasa_stars(lib, &outcome.walked);
         progress(&outcome.seen);
-        return Ok(outcome.report);
+        return Ok(ScanReport {
+            restarred,
+            ..outcome.report
+        });
     }
+
+    let restarred = apply_picasa_stars(lib, &outcome.walked);
 
     known.retain(|path_str, _| {
         !outcome
@@ -282,8 +300,6 @@ pub fn scan_subtree(
             .iter()
             .any(|prefix| Path::new(path_str).starts_with(prefix))
     });
-
-    let restarred = apply_picasa_stars(lib, &outcome.walked);
 
     let mut report = outcome.report;
     let (marked, purged) = finish_mark_purge(lib, known)?;
