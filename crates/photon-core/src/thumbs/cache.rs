@@ -55,7 +55,9 @@ impl ThumbCache {
     }
 
     pub fn path_for(&self, fp: u64, size: ThumbSize) -> PathBuf {
-        let hex = format!("{fp:016x}");
+        // The same spelling the UI sees as `thumbKey` and `collect_garbage` parses back, so
+        // the directory layout, the wire format and the GC parser cannot drift apart.
+        let hex = crate::grid::hex_key(fp);
         self.root
             .join(size.dir_name())
             .join(&hex[..2])
@@ -176,9 +178,20 @@ fn shrink(img: &DynamicImage, max_edge: u32) -> DynamicImage {
 /// it's kept rather than replaced, which also avoids failing on Windows when that file
 /// is open.
 fn write_webp(img: &DynamicImage, dest: &Path) -> Result<()> {
-    let rgba = img.to_rgba8();
-    let data =
-        webp::Encoder::from_rgba(rgba.as_raw(), rgba.width(), rgba.height()).encode(WEBP_QUALITY);
+    // Encoded straight from RGB where there is no alpha to keep, which is every JPEG - the
+    // overwhelming majority. `to_rgba8` allocates and copies a buffer a third larger than
+    // the image for each of the two sizes written per photo, which on an import of any size
+    // is the largest pointless allocation in the pool.
+    let data = match img {
+        DynamicImage::ImageRgb8(rgb) => {
+            webp::Encoder::from_rgb(rgb.as_raw(), rgb.width(), rgb.height()).encode(WEBP_QUALITY)
+        }
+        _ => {
+            let rgba = img.to_rgba8();
+            webp::Encoder::from_rgba(rgba.as_raw(), rgba.width(), rgba.height())
+                .encode(WEBP_QUALITY)
+        }
+    };
     let dir = dest.parent().expect("thumbnail path has a parent");
     fs::create_dir_all(dir)?;
     let mut tmp = tempfile::Builder::new()

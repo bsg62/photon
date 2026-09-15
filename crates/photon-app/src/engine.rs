@@ -179,12 +179,22 @@ impl Engine {
     /// empty state can't rescue it either, since `len` still reflects the old, unrelated
     /// result set.
     pub fn set_view(&self, view: GridView) -> Result<()> {
+        self.rebuild_or_restore(|| {
+            // A query left behind would reappear the next time Search is entered.
+            if view != GridView::Search {
+                self.search_query.write().clear();
+            }
+            *self.view.write() = view;
+        })
+    }
+
+    /// Applies `mutate` to the view/query pair, rebuilds the grid, and puts both back if
+    /// that fails. One place rather than one per setter: the rollback is what keeps the
+    /// invariant above true, and a third setter (a sort order, a date filter) copying it a
+    /// third time is how one of the copies ends up missing a field.
+    fn rebuild_or_restore(&self, mutate: impl FnOnce()) -> Result<()> {
         let previous = (*self.view.read(), self.search_query.read().clone());
-        // A query left behind would reappear the next time Search is entered.
-        if view != GridView::Search {
-            self.search_query.write().clear();
-        }
-        *self.view.write() = view;
+        mutate();
         if let Err(err) = self.refresh_grid() {
             *self.view.write() = previous.0;
             *self.search_query.write() = previous.1;
@@ -203,15 +213,10 @@ impl Engine {
         if query.trim().is_empty() {
             return self.set_view(GridView::All);
         }
-        let previous = (*self.view.read(), self.search_query.read().clone());
-        *self.search_query.write() = query.to_string();
-        *self.view.write() = GridView::Search;
-        if let Err(err) = self.refresh_grid() {
-            *self.view.write() = previous.0;
-            *self.search_query.write() = previous.1;
-            return Err(err);
-        }
-        Ok(())
+        self.rebuild_or_restore(|| {
+            *self.search_query.write() = query.to_string();
+            *self.view.write() = GridView::Search;
+        })
     }
 
     /// Validates and watches `path`, registers it with the running watcher service (if
@@ -612,19 +617,11 @@ impl Engine {
         // decides which folders the thumbnail queue will work on, so the queue has to be
         // re-primed when a drive comes back.
         let touched_rows = match &result {
-            // `restarred` counts alongside the others: starring a photo in Picasa never
-            // changes the photo itself, so on a rescan every photo takes the `unchanged`
-            // branch and this is often the only non-zero field in the report. Without it
-            // here, a star-only scan would compute `false`, skip the refresh, and leave the
-            // Starred view and its sidebar count stale until something else changed a row.
-            Ok(report) => {
-                report.added
-                    + report.changed
-                    + report.marked_missing
-                    + report.purged
-                    + report.restarred
-                    > 0
-            }
+            // Which counters mean "rows moved" is `ScanReport::touched_rows`' business, not
+            // this crate's: spelled out here, a counter added to the report and forgotten
+            // here compiled fine and silently stopped the grid rebuilding, which is what
+            // `restarred` did once.
+            Ok(report) => report.touched_rows(),
             // A scan that failed partway may still have committed earlier batches.
             Err(_) => true,
         };
@@ -731,7 +728,7 @@ mod tests {
         assert!(f.engine.start_scan(watched.clone()));
         f.engine.wait_for_scans();
 
-        // Checking `queued() > 0` right after `wait_for_scans` is racy in practice: the
+        // Checking the queue length right after `wait_for_scans` is racy in practice: the
         // cache for this item is already complete from the first scan, so re-processing it
         // is a single fast DB update that the lone worker thread routinely finishes before
         // this assertion runs (the same worker sits parked in a blocking pop, and

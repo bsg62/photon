@@ -12,22 +12,23 @@ pub struct Versions {
     pub ui: String,
 }
 
-pub fn parse_tauri_version(json: &str) -> Result<String, String> {
-    let v: serde_json::Value = serde_json::from_str(json)
-        .map_err(|e| format!("tauri.conf.json is not valid JSON: {e}"))?;
+/// Both JSON manifests keep the version in the same place, so they are read the same way;
+/// `file` only names the one that was wrong in the error.
+fn parse_json_version(json: &str, file: &str) -> Result<String, String> {
+    let v: serde_json::Value =
+        serde_json::from_str(json).map_err(|e| format!("{file} is not valid JSON: {e}"))?;
     v.get("version")
         .and_then(|v| v.as_str())
         .map(str::to_owned)
-        .ok_or_else(|| "tauri.conf.json has no string `version` field".to_owned())
+        .ok_or_else(|| format!("{file} has no string `version` field"))
+}
+
+pub fn parse_tauri_version(json: &str) -> Result<String, String> {
+    parse_json_version(json, "tauri.conf.json")
 }
 
 pub fn parse_pkg_version(json: &str) -> Result<String, String> {
-    let v: serde_json::Value =
-        serde_json::from_str(json).map_err(|e| format!("package.json is not valid JSON: {e}"))?;
-    v.get("version")
-        .and_then(|v| v.as_str())
-        .map(str::to_owned)
-        .ok_or_else(|| "package.json has no string `version` field".to_owned())
+    parse_json_version(json, "package.json")
 }
 
 pub fn parse_cargo_version(toml_src: &str) -> Result<String, String> {

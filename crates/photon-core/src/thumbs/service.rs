@@ -121,6 +121,12 @@ impl ThumbService {
     }
 
     /// Returns the cached thumbnail, generating it on the calling thread if needed.
+    ///
+    /// Not the production path - `protocol.rs` uses `request`, which keeps decoding inside
+    /// the worker pool - and today only the tests call this, as a synchronous harness around
+    /// `process`. Kept public rather than gated to tests because `self.render` would
+    /// otherwise be a field no non-test code reads; if a second caller ever appears, it
+    /// should be `request` unless it genuinely wants to decode on its own thread.
     pub fn get_or_generate(&self, id: i64, size: ThumbSize) -> Result<PathBuf> {
         let item = self.lib.item(id)?.ok_or(Error::NotFound(id))?;
         if item.thumb_state == ThumbState::Failed {
@@ -149,15 +155,7 @@ impl ThumbService {
         // Two rounds: the first may only wait out a job already running for an older
         // version of the file.
         for _ in 0..2 {
-            let item = self.lib.item(id)?.ok_or(Error::NotFound(id))?;
-            if item.missing_since.is_some() {
-                return Err(Error::NotFound(id));
-            }
-            if item.thumb_state == ThumbState::Failed {
-                return Err(Error::ThumbFailed(item.thumb_error.unwrap_or_default()));
-            }
-            let path = self.cache.path_for(item.fingerprint(), size);
-            if path.is_file() {
+            if let Some(path) = self.cached(id, size)? {
                 return Ok(path);
             }
             self.queue.push(id, Priority::Visible);
@@ -165,24 +163,30 @@ impl ThumbService {
                 return Err(Error::ThumbTimeout(id));
             }
         }
+        self.cached(id, size)?.ok_or(Error::ThumbUnavailable(id))
+    }
+
+    /// The cached thumbnail for `id` at `size`, or `None` if it has not been built yet.
+    ///
+    /// The checks `request` makes before and after waiting, in one place rather than two
+    /// copies of four lines: `missing_since` was added to the copy inside the loop only, so
+    /// an item that went missing *while* its thumbnail was being built reported
+    /// `ThumbUnavailable` rather than `NotFound` - a 503 the tile would keep retrying
+    /// instead of a 404 it can give up on.
+    fn cached(&self, id: i64, size: ThumbSize) -> Result<Option<PathBuf>> {
         let item = self.lib.item(id)?.ok_or(Error::NotFound(id))?;
+        if item.missing_since.is_some() {
+            return Err(Error::NotFound(id));
+        }
         if item.thumb_state == ThumbState::Failed {
             return Err(Error::ThumbFailed(item.thumb_error.unwrap_or_default()));
         }
         let path = self.cache.path_for(item.fingerprint(), size);
-        if path.is_file() {
-            Ok(path)
-        } else {
-            Err(Error::ThumbUnavailable(id))
-        }
+        Ok(path.is_file().then_some(path))
     }
 
     pub fn wait_idle(&self) {
         self.queue.wait_idle();
-    }
-
-    pub fn queued(&self) -> usize {
-        self.queue.len()
     }
 
     pub fn collect_garbage(&self) -> Result<usize> {

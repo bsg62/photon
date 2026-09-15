@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { clampPan, clampZoom, closesViewer, move, nextSelection, positionInFolder, positionInView, wheelStep } from './nav';
+import { clampPan, clampZoom, closesViewer, move, positionInFolder, positionInView, wheelStep } from './nav';
 
 const sections = [
   { folderId: 1, offset: 0, count: 5 },
@@ -79,18 +79,18 @@ describe('positionInView', () => {
   });
 });
 
-describe('nextSelection', () => {
+describe('move from no selection', () => {
   it('honours the key when nothing is selected yet', () => {
     // Clicking the grid background clears the selection. Treating every navigation key as
     // "select the first photo" from there sent End and ArrowUp to the top of the library.
-    expect(nextSelection(null, 'End', sections, 4)).toBe(7);
-    expect(nextSelection(null, 'Home', sections, 4)).toBe(0);
-    expect(nextSelection(null, 'ArrowRight', sections, 4)).toBe(1);
+    expect(move(null, 'End', sections, 4)).toBe(7);
+    expect(move(null, 'Home', sections, 4)).toBe(0);
+    expect(move(null, 'ArrowRight', sections, 4)).toBe(1);
   });
 
   it('moves from the current selection when there is one', () => {
-    expect(nextSelection(3, 'ArrowRight', sections, 4)).toBe(4);
-    expect(nextSelection(3, 'End', sections, 4)).toBe(7);
+    expect(move(3, 'ArrowRight', sections, 4)).toBe(4);
+    expect(move(3, 'End', sections, 4)).toBe(7);
   });
 });
 

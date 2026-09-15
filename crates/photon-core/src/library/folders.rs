@@ -138,29 +138,23 @@ impl Library {
     /// Folders still holding soft-deleted items survive until those items are purged.
     pub fn prune_folders(&self, watched_id: i64, scan_id: i64) -> Result<usize> {
         let conn = self.writer();
-        let mut total = 0;
-        loop {
-            let removed = conn.execute(
+        delete_until_stable(|| {
+            conn.execute(
                 "DELETE FROM folders
                  WHERE watched_id = ?1 AND seen_scan < ?2
                    AND NOT EXISTS (SELECT 1 FROM items WHERE items.folder_id = folders.id)
                    AND NOT EXISTS (SELECT 1 FROM folders c WHERE c.parent_id = folders.id)",
                 params![watched_id, scan_id],
-            )?;
-            if removed == 0 {
-                return Ok(total);
-            }
-            total += removed;
-        }
+            )
+        })
     }
 
     /// `prune_folders`, restricted to `dir` and everything beneath it. A subtree scan must
     /// never prune folders it did not walk.
     pub fn prune_folders_under(&self, watched_id: i64, scan_id: i64, dir: &str) -> Result<usize> {
         let conn = self.writer();
-        let mut total = 0;
-        loop {
-            let removed = conn.execute(
+        delete_until_stable(|| {
+            conn.execute(
                 "WITH RECURSIVE sub(id) AS (
                      SELECT id FROM folders WHERE watched_id = ?1 AND path = ?3
                      UNION ALL
@@ -171,12 +165,8 @@ impl Library {
                    AND NOT EXISTS (SELECT 1 FROM items WHERE items.folder_id = folders.id)
                    AND NOT EXISTS (SELECT 1 FROM folders c WHERE c.parent_id = folders.id)",
                 params![watched_id, scan_id, dir],
-            )?;
-            if removed == 0 {
-                return Ok(total);
-            }
-            total += removed;
-        }
+            )
+        })
     }
 
     /// All folders in tree order (parents before children, siblings alphabetical; `path`
@@ -198,6 +188,23 @@ impl Library {
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
+    }
+}
+
+/// Runs `delete` until it removes nothing, returning the total.
+///
+/// Both prunes need the repeat and for the same reason: the statement only deletes a folder
+/// with no children, so emptying a leaf is what makes its parent deletable on the next pass.
+/// One `DELETE` cannot express that, and one pass would leave a deleted tree's upper levels
+/// behind until some later scan happened to run enough times.
+fn delete_until_stable(mut delete: impl FnMut() -> rusqlite::Result<usize>) -> Result<usize> {
+    let mut total = 0;
+    loop {
+        let removed = delete()?;
+        if removed == 0 {
+            return Ok(total);
+        }
+        total += removed;
     }
 }
 
