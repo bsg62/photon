@@ -115,6 +115,20 @@ fn map_grid_row(r: &Row<'_>) -> rusqlite::Result<GridEntry> {
     })
 }
 
+/// Shared by `known_items` and `known_items_under`, whose two queries select the same five
+/// columns in the same order and differ only in how they scope the rows.
+fn row_to_known(r: &Row<'_>) -> rusqlite::Result<(String, KnownItem)> {
+    Ok((
+        r.get::<_, String>(0)?,
+        KnownItem {
+            id: r.get(1)?,
+            size: r.get(2)?,
+            mtime_ms: r.get(3)?,
+            missing: r.get(4)?,
+        },
+    ))
+}
+
 fn row_to_item(r: &Row<'_>) -> rusqlite::Result<Item> {
     Ok(Item {
         id: r.get(0)?,
@@ -278,17 +292,7 @@ impl Library {
              FROM items i JOIN folders f ON f.id = i.folder_id WHERE f.watched_id = ?1",
         )?;
         let rows = stmt
-            .query_map(params![watched_id], |r| {
-                Ok((
-                    r.get::<_, String>(0)?,
-                    KnownItem {
-                        id: r.get(1)?,
-                        size: r.get(2)?,
-                        mtime_ms: r.get(3)?,
-                        missing: r.get(4)?,
-                    },
-                ))
-            })?
+            .query_map(params![watched_id], row_to_known)?
             .collect::<rusqlite::Result<HashMap<_, _>>>()?;
         Ok(rows)
     }
@@ -313,17 +317,7 @@ impl Library {
              FROM items i WHERE i.folder_id IN (SELECT id FROM sub)",
         )?;
         let rows = stmt
-            .query_map(params![watched_id, dir], |r| {
-                Ok((
-                    r.get::<_, String>(0)?,
-                    KnownItem {
-                        id: r.get(1)?,
-                        size: r.get(2)?,
-                        mtime_ms: r.get(3)?,
-                        missing: r.get(4)?,
-                    },
-                ))
-            })?
+            .query_map(params![watched_id, dir], row_to_known)?
             .collect::<rusqlite::Result<HashMap<_, _>>>()?;
         Ok(rows)
     }

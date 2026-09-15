@@ -168,16 +168,8 @@ impl WatcherService {
     /// Falls back to `degraded` exactly like start-time registration when it fails, or when
     /// there's currently no live OS watcher to register with at all.
     pub fn watch_added(&self, id: i64, path: &Path) {
-        let outcome = self
-            .watcher
-            .lock()
-            .as_mut()
-            .map(|watcher| watcher.watch_root(path));
-        let mut degraded = self.degraded.lock();
-        match outcome {
-            Some(Ok(())) => {
-                degraded.retain(|x| *x != id);
-            }
+        match try_register(&self.watcher, &self.degraded, id, path) {
+            Some(Ok(())) => {}
             Some(Err(err)) => {
                 tracing::warn!(
                     watched_id = id,
@@ -185,9 +177,11 @@ impl WatcherService {
                     error = %err.message,
                     "could not watch new folder; falling back to periodic rescans"
                 );
-                mark_degraded(&mut degraded, id);
+                mark_degraded(&mut self.degraded.lock(), id);
             }
-            None => mark_degraded(&mut degraded, id),
+            // Unlike the ticker's rescans, this one has no later retry of its own: without
+            // marking it here the folder would sit unwatched and unflagged.
+            None => mark_degraded(&mut self.degraded.lock(), id),
         }
     }
 
@@ -444,6 +438,33 @@ fn try_start_watcher(
     }
 }
 
+/// Registers `path`'s watch with the live OS watcher, if there is one, clearing `id` from
+/// `degraded` when that succeeds. Returns what the attempt did, so each caller keeps its own
+/// log line and its own answer to "there is no watcher at all".
+///
+/// The clear belongs here rather than at each call site: "registered again, so no longer
+/// degraded" was written out three times, and two of those copies disagreeing about who
+/// clears the flag is what left recovered roots never rescanned. It stays *before* whatever
+/// the caller does next, which for two of the three is `start_scan` - whose `FolderStatus`
+/// event reads `degraded` when the scan finishes, and would otherwise still report a
+/// recovered root as limited.
+///
+/// The lock is held for this one call only, never across a loop or across `start_scan`:
+/// `watch_root` can block on a dead network mount, and this thread also drains pending
+/// follow-ups.
+fn try_register(
+    watcher: &Mutex<Option<Watcher>>,
+    degraded: &Mutex<Vec<i64>>,
+    id: i64,
+    path: &Path,
+) -> Option<std::result::Result<(), WatchError>> {
+    let outcome = watcher.lock().as_mut().map(|w| w.watch_root(path));
+    if matches!(outcome, Some(Ok(()))) {
+        degraded.lock().retain(|x| *x != id);
+    }
+    outcome
+}
+
 /// Adds `id` to `degraded` if it isn't there already.
 fn mark_degraded(degraded: &mut Vec<i64>, id: i64) {
     if !degraded.contains(&id) {
@@ -623,16 +644,8 @@ fn rescan_offline_roots(
     let watched = engine.lib.watched_folders().unwrap_or_default();
     for w in watched.into_iter().filter(|w| !w.online) {
         if Path::new(&w.path).is_dir() {
-            // Locked only for this one call, not across the loop: `watch_root` can block
-            // (e.g. a dead network mount), and this thread also drains pending follow-ups.
-            let outcome = watcher
-                .lock()
-                .as_mut()
-                .map(|watcher| watcher.watch_root(Path::new(&w.path)));
-            match outcome {
-                Some(Ok(())) => {
-                    degraded.lock().retain(|id| *id != w.id);
-                }
+            match try_register(watcher, degraded, w.id, Path::new(&w.path)) {
+                Some(Ok(())) => {}
                 Some(Err(err)) => {
                     tracing::warn!(
                         watched_id = w.id,
@@ -718,16 +731,8 @@ fn rescan_degraded_roots(
             degraded.lock().retain(|x| *x != id);
             continue;
         };
-        // Locked only for this one call, not across the loop or across `start_scan`: see
-        // the same note in `rescan_offline_roots`.
-        let outcome = watcher
-            .lock()
-            .as_mut()
-            .map(|watcher| watcher.watch_root(Path::new(&folder.path)));
-        match outcome {
-            Some(Ok(())) => {
-                degraded.lock().retain(|x| *x != id);
-            }
+        match try_register(watcher, degraded, id, Path::new(&folder.path)) {
+            Some(Ok(())) => {}
             Some(Err(err)) => tracing::debug!(
                 watched_id = folder.id,
                 path = %folder.path,

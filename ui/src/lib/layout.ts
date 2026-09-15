@@ -78,17 +78,25 @@ export function totalHeight(rows: Row[]): number {
   return last ? last.top + last.height : 0;
 }
 
-/** Index of the last row whose top is at or below `y` (the row containing `y`). */
-export function rowIndexAt(rows: Row[], y: number): number {
+/** Index of the last item whose `key` is at or below `value`, or 0 if there is none.
+ *
+ *  Shared with `nav.ts`'s section lookup, which is the same search over a different field:
+ *  an upper-bound binary search is easy to get subtly wrong, and only one of the two copies
+ *  was covered by tests. */
+export function lastIndexAtOrBefore<T>(items: T[], value: number, key: (item: T) => number): number {
   let lo = 0;
-  let hi = rows.length - 1;
-  if (hi < 0 || y <= 0) return 0;
+  let hi = items.length - 1;
   while (lo < hi) {
     const mid = (lo + hi + 1) >> 1;
-    if (rows[mid].top <= y) lo = mid;
+    if (key(items[mid]) <= value) lo = mid;
     else hi = mid - 1;
   }
   return lo;
+}
+
+/** Index of the last row whose top is at or below `y` (the row containing `y`). */
+export function rowIndexAt(rows: Row[], y: number): number {
+  return lastIndexAtOrBefore(rows, y, (r) => r.top);
 }
 
 /** Rows intersecting `[scrollTop - overscan, scrollTop + viewport + overscan)`, as `[start, end)`. */

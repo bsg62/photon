@@ -1,4 +1,8 @@
-use std::{fs::File, io::BufReader, path::Path};
+use std::{
+    fs::File,
+    io::{BufReader, Seek, SeekFrom},
+    path::Path,
+};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ImageMeta {
@@ -17,7 +21,8 @@ pub struct ImageMeta {
 
 /// Reads dimensions and EXIF data. Never fails: missing data falls back to defaults.
 pub fn read_image_meta(path: &Path) -> ImageMeta {
-    let (width, height) = image::image_dimensions(path).unwrap_or((0, 0));
+    let (dims, exif) = read_header(path);
+    let (width, height) = dims.unwrap_or((0, 0));
     let mut meta = ImageMeta {
         width,
         height,
@@ -25,7 +30,7 @@ pub fn read_image_meta(path: &Path) -> ImageMeta {
         taken_at: None,
         rating: None,
     };
-    if let Some(exif) = read_exif(path) {
+    if let Some(exif) = exif {
         if let Some(o) = exif
             .get_field(exif::Tag::Orientation, exif::In::PRIMARY)
             .and_then(|f| f.value.get_uint(0))
@@ -56,11 +61,29 @@ pub fn oriented_dims(width: u32, height: u32, orientation: u8) -> (u32, u32) {
     }
 }
 
-fn read_exif(path: &Path) -> Option<exif::Exif> {
-    let file = File::open(path).ok()?;
-    exif::Reader::new()
-        .read_from_container(&mut BufReader::new(file))
+/// Dimensions and EXIF from one open file.
+///
+/// Both are in the same leading bytes, and `describe()` runs this for every new or changed
+/// photo: opening and header-parsing the file twice doubled the syscalls of an import for
+/// nothing, which on a network share or a spinning archive drive is what the import costs.
+fn read_header(path: &Path) -> (Option<(u32, u32)>, Option<exif::Exif>) {
+    let Ok(file) = File::open(path) else {
+        return (None, None);
+    };
+    let mut reader = BufReader::new(file);
+    let exif = exif::Reader::new().read_from_container(&mut reader).ok();
+    // Back to the start: the EXIF read consumed an unspecified amount, and a file with no
+    // EXIF at all leaves the cursor wherever the attempt gave up.
+    let dims = reader
+        .seek(SeekFrom::Start(0))
         .ok()
+        .and_then(|_| {
+            image::ImageReader::new(&mut reader)
+                .with_guessed_format()
+                .ok()
+        })
+        .and_then(|r| r.into_dimensions().ok());
+    (dims, exif)
 }
 
 fn parse_exif_datetime(value: &exif::Value) -> Option<i64> {

@@ -42,6 +42,20 @@ pub struct ScanReport {
     pub cancelled: bool,
 }
 
+impl ScanReport {
+    /// Whether this scan moved any row the grid is built from, and so whether the grid has
+    /// to be rebuilt.
+    ///
+    /// Here rather than at the caller: which fields mean "rows moved" is the scanner's
+    /// knowledge, and spelled out in the app crate it had to be remembered in three places
+    /// (this doc, the caller, and CLAUDE.md). A new mutation counter added to this struct
+    /// and forgotten there compiles, passes every scanner test, and silently stops the grid
+    /// from ever rebuilding for it - which is exactly what `restarred` did once.
+    pub fn touched_rows(&self) -> bool {
+        self.added + self.changed + self.marked_missing + self.purged + self.restarred > 0
+    }
+}
+
 /// Per-scan settings.
 #[derive(Clone, Debug, Default)]
 pub struct ScanOptions {
@@ -133,13 +147,6 @@ pub fn scan_watched(
         });
     }
 
-    // Drop anything under a subtree we couldn't fully walk: it might still be there.
-    known.retain(|path_str, _| {
-        !incomplete_prefixes
-            .iter()
-            .any(|prefix| Path::new(path_str).starts_with(prefix))
-    });
-
     // A reachable but empty root usually means an unmounted volume left its mount
     // point behind, not that every known file vanished at once.
     if seen.files_seen == 0 && known.values().any(|k| !k.missing) {
@@ -156,7 +163,7 @@ pub fn scan_watched(
 
     // Anything left in `known` was not found on this (reachable) scan: soft-delete it,
     // or purge it if it was already missing last time.
-    let (marked, purged) = finish_mark_purge(lib, known)?;
+    let (marked, purged) = finish_mark_purge(lib, known, &incomplete_prefixes)?;
     lib.prune_folders(watched.id, scan_id)?;
 
     progress(&seen);
@@ -282,9 +289,12 @@ pub fn scan_subtree(
             ..outcome.report
         });
     }
+    // Above the `skip_mark_purge` guard, which `scan_watched` cannot do: the constraint
+    // there is its empty-root check, and this function deliberately has none (see the doc
+    // comment). Every non-cancelled walk applies the stars of the folders it reached.
+    let restarred = apply_picasa_stars(lib, &outcome.walked);
+
     if outcome.skip_mark_purge {
-        // The stars of the folders we did walk, for the reason in `scan_watched`.
-        let restarred = apply_picasa_stars(lib, &outcome.walked);
         progress(&outcome.seen);
         return Ok(ScanReport {
             restarred,
@@ -292,17 +302,8 @@ pub fn scan_subtree(
         });
     }
 
-    let restarred = apply_picasa_stars(lib, &outcome.walked);
-
-    known.retain(|path_str, _| {
-        !outcome
-            .incomplete_prefixes
-            .iter()
-            .any(|prefix| Path::new(path_str).starts_with(prefix))
-    });
-
     let mut report = outcome.report;
-    let (marked, purged) = finish_mark_purge(lib, known)?;
+    let (marked, purged) = finish_mark_purge(lib, known, &outcome.incomplete_prefixes)?;
     lib.prune_folders_under(watched.id, scan_id, target_str)?;
     report.marked_missing = marked;
     report.purged = purged;
@@ -548,7 +549,22 @@ fn apply_folder_stars(
 
 /// Soft-deletes what this walk didn't find, and purges what was already missing.
 /// Both are chunked at `BATCH` rows per transaction.
-fn finish_mark_purge(lib: &Library, known: HashMap<String, KnownItem>) -> Result<(u64, u64)> {
+///
+/// `incomplete_prefixes` are the subtrees the walk could not read. Anything under one of
+/// them is dropped from `known` first: not finding it is no evidence it is gone. That is a
+/// precondition of marking and purging rather than of either caller, so it lives here - both
+/// callers used to carry their own copy of the filter, and the failure mode of the two
+/// drifting apart is silently purging photos from a directory the walk never reached.
+fn finish_mark_purge(
+    lib: &Library,
+    mut known: HashMap<String, KnownItem>,
+    incomplete_prefixes: &[PathBuf],
+) -> Result<(u64, u64)> {
+    known.retain(|path_str, _| {
+        !incomplete_prefixes
+            .iter()
+            .any(|prefix| Path::new(path_str).starts_with(prefix))
+    });
     let (mut to_mark, mut to_purge) = (Vec::new(), Vec::new());
     for k in known.into_values() {
         if k.missing {

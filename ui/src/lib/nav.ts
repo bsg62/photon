@@ -1,5 +1,5 @@
 import type { GridView } from './api';
-import type { SectionLike } from './layout';
+import { lastIndexAtOrBefore, type SectionLike } from './layout';
 
 export type NavKey = 'ArrowLeft' | 'ArrowRight' | 'ArrowUp' | 'ArrowDown' | 'Home' | 'End';
 
@@ -40,19 +40,20 @@ export interface Pan {
 }
 
 function sectionIndexOf(sections: SectionLike[], offset: number): number {
-  let lo = 0;
-  let hi = sections.length - 1;
-  while (lo < hi) {
-    const mid = (lo + hi + 1) >> 1;
-    if (sections[mid].offset <= offset) lo = mid;
-    else hi = mid - 1;
-  }
-  return lo;
+  return lastIndexAtOrBefore(sections, offset, (s) => s.offset);
 }
 
 /** The grid offset selected after pressing `key`. Vertical moves follow the on-screen
- *  rows, which restart at every section. */
-export function move(offset: number, key: NavKey, sections: SectionLike[], columns: number): number {
+ *  rows, which restart at every section.
+ *
+ *  A null `offset` means nothing is selected yet — clicking the grid background clears the
+ *  selection. Navigation starts from the first photo in that case, so each key still answers
+ *  for itself: End reaches the last photo rather than jumping to the top of the library. */
+export function move(offset: number | null, key: NavKey, sections: SectionLike[], columns: number): number {
+  return moveFrom(offset ?? 0, key, sections, columns);
+}
+
+function moveFrom(offset: number, key: NavKey, sections: SectionLike[], columns: number): number {
   const lastSection = sections[sections.length - 1];
   const len = lastSection ? lastSection.offset + lastSection.count : 0;
   if (len === 0) return 0;
@@ -82,20 +83,6 @@ export function move(offset: number, key: NavKey, sections: SectionLike[], colum
   if (!prev) return offset;
   const prevLastRow = Math.floor((prev.count - 1) / columns) * columns;
   return prev.offset + Math.min(prevLastRow + column, prev.count - 1);
-}
-
-/** The offset a navigation key selects, including from no selection at all.
- *
- *  Clicking the grid background clears the selection, and from there every key was treated
- *  as "select the first photo" - so End and ArrowUp jumped to the top of the library. `move`
- *  already answers each key correctly from offset 0; the only thing missing was letting it. */
-export function nextSelection(
-  selected: number | null,
-  key: NavKey,
-  sections: SectionLike[],
-  columns: number,
-): number {
-  return move(selected ?? 0, key, sections, columns);
 }
 
 /** Where a grid offset sits *within its own folder*. The viewer counts photos per folder
