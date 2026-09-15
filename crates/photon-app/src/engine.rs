@@ -13,7 +13,7 @@ use photon_core::{
     thumbs::{ThumbCache, ThumbService},
 };
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     sync::{
         Arc,
@@ -54,6 +54,13 @@ pub struct Engine {
     refresh: Mutex<()>,
     events: Arc<dyn Events>,
     scans: Mutex<HashMap<i64, RunningScan>>,
+    /// Watched ids whose removal is under way. Per folder what `shutting_down` is for the
+    /// whole engine: `remove_folder` cancels the running scan and only then deletes the
+    /// folder, and the watcher is live throughout that window - an event arriving in it
+    /// would start a *new* scan, which then writes the folder's rows back after the
+    /// deletion has committed. `cancel_scan` closes that for the scan it cancelled; this
+    /// closes it for the one that has not started yet.
+    removing: Mutex<HashSet<i64>>,
     next_token: AtomicU64,
     /// Set once by `shutdown`. Once true, no new scan starts and the startup thread stops
     /// at its next checkpoint.
@@ -111,6 +118,7 @@ impl Engine {
             refresh: Mutex::new(()),
             events,
             scans: Mutex::new(HashMap::new()),
+            removing: Mutex::new(HashSet::new()),
             next_token: AtomicU64::new(0),
             shutting_down: AtomicBool::new(false),
             startup: Mutex::new(None),
@@ -223,6 +231,16 @@ impl Engine {
     /// Stops any scan of the folder, forgets it and everything under it, unregisters its
     /// watch with the running watcher service (if any), and refreshes the grid.
     pub fn remove_folder(&self, watched_id: i64) -> Result<()> {
+        // Set before the scan is cancelled, so nothing can start one in the window between
+        // that and the deletion; cleared however this ends, so a failed removal does not
+        // leave the folder unable to scan for the rest of the session.
+        self.removing.lock().insert(watched_id);
+        let result = self.remove_folder_inner(watched_id);
+        self.removing.lock().remove(&watched_id);
+        result
+    }
+
+    fn remove_folder_inner(&self, watched_id: i64) -> Result<()> {
         self.cancel_scan(watched_id);
         let path = self
             .lib
@@ -312,7 +330,10 @@ impl Engine {
         subtree: Option<PathBuf>,
     ) -> bool {
         let mut scans = self.scans.lock();
-        if self.shutting_down.load(Ordering::SeqCst) || scans.contains_key(&watched.id) {
+        if self.shutting_down.load(Ordering::SeqCst)
+            || self.removing.lock().contains(&watched.id)
+            || scans.contains_key(&watched.id)
+        {
             return false;
         }
         let token = self.next_token.fetch_add(1, Ordering::Relaxed);
@@ -954,6 +975,37 @@ mod tests {
         assert!(!f.engine.start_scan(watched));
 
         f.engine.wait_for_scans();
+    }
+
+    /// `remove_folder` cancels the running scan before deleting the folder, but the watcher
+    /// is live in that whole window and maps events to roots by path. A subtree scan that
+    /// starts in it writes the folder's rows back *after* the deletion commits - exactly
+    /// what `cancel_scan`'s contract exists to prevent, which it closes for the scan it
+    /// cancelled and not for a new one.
+    #[test]
+    fn no_scan_starts_for_a_folder_being_removed() {
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a/one.jpg", &img)]);
+        let watched = f.add_photos();
+
+        f.engine.removing.lock().insert(watched.id);
+
+        assert!(
+            !f.engine.start_scan(watched.clone()),
+            "a full rescan is refused for a folder being removed"
+        );
+        assert!(
+            !f.engine
+                .start_subtree_scan(watched.clone(), f.photos.join("a")),
+            "and so is the watcher's subtree scan, which is the one that actually races"
+        );
+
+        f.engine.removing.lock().remove(&watched.id);
+        f.engine.remove_folder(watched.id).unwrap();
+        assert!(
+            f.engine.removing.lock().is_empty(),
+            "the gate lifts once the removal is done, however it ended"
+        );
     }
 
     /// Deterministic regardless of interleaving: `cancel_scan`'s contract is "cancelled
