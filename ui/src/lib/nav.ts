@@ -84,13 +84,31 @@ export function move(offset: number, key: NavKey, sections: SectionLike[], colum
   return prev.offset + Math.min(prevLastRow + column, prev.count - 1);
 }
 
+/** The offset a navigation key selects, including from no selection at all.
+ *
+ *  Clicking the grid background clears the selection, and from there every key was treated
+ *  as "select the first photo" - so End and ArrowUp jumped to the top of the library. `move`
+ *  already answers each key correctly from offset 0; the only thing missing was letting it. */
+export function nextSelection(
+  selected: number | null,
+  key: NavKey,
+  sections: SectionLike[],
+  columns: number,
+): number {
+  return move(selected ?? 0, key, sections, columns);
+}
+
 /** Where a grid offset sits *within its own folder*. The viewer counts photos per folder
  *  rather than across the whole library, so "3 / 40" means the third of forty in this
  *  folder — the number a person can check against their file manager. */
 export function positionInFolder(sections: SectionLike[], offset: number): FolderPosition {
   if (sections.length === 0) return { index: 0, count: 0 };
   const s = sections[sectionIndexOf(sections, offset)];
-  return { index: offset - s.offset + 1, count: s.count };
+  // Clamped, because the offset can outrun the sections: the viewer holds its own offset and
+  // a rescan that shrinks the library does not move it, so the caption had until the next
+  // keypress to say "31 / 12". `sectionIndexOf` clamps to the last section, leaving the
+  // index to run past its count.
+  return { index: Math.min(offset - s.offset + 1, s.count), count: s.count };
 }
 
 /** The numbers the viewer's caption shows for `offset`.
@@ -107,7 +125,7 @@ export function positionInView(
   len: number,
 ): FolderPosition {
   if (view !== 'recent') return positionInFolder(sections, offset);
-  return len === 0 ? { index: 0, count: 0 } : { index: offset + 1, count: len };
+  return len === 0 ? { index: 0, count: 0 } : { index: Math.min(offset + 1, len), count: len };
 }
 
 /** Folds one wheel event into a running total, emitting a step only once the total passes
