@@ -5,6 +5,7 @@ use std::{
     fs,
     io::Write,
     path::{Path, PathBuf},
+    time::Duration,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -33,6 +34,15 @@ impl ThumbSize {
 }
 
 const WEBP_QUALITY: f32 = 85.0;
+
+/// Prefix for the temp file `write_webp` renames into place. Named by us rather than left to
+/// `tempfile`'s default so garbage collection can recognise one.
+const TEMP_PREFIX: &str = "thumb-";
+
+/// How long an abandoned temp file must have sat untouched before GC reclaims it. Long
+/// enough that a temp file a worker is still writing is never in scope, whatever the machine
+/// is doing.
+const TEMP_GRACE: Duration = Duration::from_secs(60 * 60);
 
 /// On-disk WebP thumbnails keyed by content fingerprint.
 pub struct ThumbCache {
@@ -100,6 +110,14 @@ impl ThumbCache {
             };
             let path = entry.path();
             if path.extension().and_then(|e| e.to_str()) != Some("webp") {
+                if is_abandoned_temp(&entry) {
+                    match fs::remove_file(path) {
+                        Ok(()) => removed += 1,
+                        Err(err) => {
+                            tracing::warn!(%err, ?path, "could not remove a leaked temp file")
+                        }
+                    }
+                }
                 continue;
             }
             let Some(fp) = path
@@ -118,6 +136,30 @@ impl ThumbCache {
         }
         Ok(removed)
     }
+}
+
+/// Whether `entry` is a temp file left behind by a `write_webp` that never finished - a
+/// process killed between `new_in` and `persist_noclobber`. Nothing else ever reclaims one,
+/// so without this each leak is permanent.
+///
+/// Age is what separates a leak from a temp file a worker is writing right now. Anything
+/// that cannot be aged (its metadata won't read) is left alone: removing a file another
+/// thread is midway through writing would fail that thumbnail for nothing.
+fn is_abandoned_temp(entry: &walkdir::DirEntry) -> bool {
+    if !entry.file_type().is_file()
+        || !entry
+            .file_name()
+            .to_str()
+            .is_some_and(|name| name.starts_with(TEMP_PREFIX))
+    {
+        return false;
+    }
+    entry
+        .metadata()
+        .ok()
+        .and_then(|md| md.modified().ok())
+        .and_then(|at| at.elapsed().ok())
+        .is_some_and(|age| age > TEMP_GRACE)
 }
 
 fn shrink(img: &DynamicImage, max_edge: u32) -> DynamicImage {
@@ -139,7 +181,9 @@ fn write_webp(img: &DynamicImage, dest: &Path) -> Result<()> {
         webp::Encoder::from_rgba(rgba.as_raw(), rgba.width(), rgba.height()).encode(WEBP_QUALITY);
     let dir = dest.parent().expect("thumbnail path has a parent");
     fs::create_dir_all(dir)?;
-    let mut tmp = tempfile::NamedTempFile::new_in(dir)?;
+    let mut tmp = tempfile::Builder::new()
+        .prefix(TEMP_PREFIX)
+        .tempfile_in(dir)?;
     tmp.write_all(&data)?;
     match tmp.persist_noclobber(dest) {
         Ok(_) => Ok(()),
@@ -152,6 +196,7 @@ fn write_webp(img: &DynamicImage, dest: &Path) -> Result<()> {
 mod tests {
     use super::*;
     use crate::testutil::{jpeg_bytes, write_file};
+    use std::time::Duration;
 
     fn dims(path: &Path) -> (u32, u32) {
         let img = image::open(path).unwrap();
@@ -218,6 +263,42 @@ mod tests {
         let _open = fs::File::open(cache.path_for(5, ThumbSize::Grid)).unwrap();
         cache.generate(&src, 1, 5).unwrap();
         assert!(cache.is_complete(5));
+    }
+
+    /// A process killed between `new_in` and `persist_noclobber` leaves its temp file
+    /// behind, and GC only ever looked at `.webp` files - so one leaked file per worker
+    /// accumulated over the life of an install with nothing able to reclaim it.
+    #[test]
+    fn garbage_collection_reclaims_abandoned_temp_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = write_file(dir.path(), "src.jpg", &jpeg_bytes(64, 64));
+        let cache = ThumbCache::new(dir.path().join("cache"));
+        cache.generate(&src, 1, 5).unwrap();
+        let shard = cache
+            .path_for(5, ThumbSize::Grid)
+            .parent()
+            .unwrap()
+            .to_path_buf();
+
+        let abandoned = write_file(&shard, &format!("{TEMP_PREFIX}dead"), b"half a webp");
+        let in_progress = write_file(&shard, &format!("{TEMP_PREFIX}live"), b"being written");
+        let long_ago = std::time::SystemTime::now() - TEMP_GRACE - Duration::from_secs(60);
+        fs::File::options()
+            .write(true)
+            .open(&abandoned)
+            .unwrap()
+            .set_modified(long_ago)
+            .unwrap();
+
+        let removed = cache.collect_garbage(&HashSet::from([5])).unwrap();
+
+        assert_eq!(removed, 1);
+        assert!(!abandoned.exists(), "the leaked temp file is reclaimed");
+        assert!(
+            in_progress.exists(),
+            "a temp file young enough to be a running worker's is left alone"
+        );
+        assert!(cache.is_complete(5), "and the live thumbnail is untouched");
     }
 
     #[test]
