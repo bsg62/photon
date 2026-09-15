@@ -3,6 +3,7 @@ use crate::Result;
 use crate::grid::{GridEntry, GridView};
 use crate::media::{MediaKind, ThumbState, fingerprint};
 use crate::metadata::oriented_dims;
+use crate::search::Query;
 use rusqlite::{OptionalExtension, Row, params};
 use std::collections::{HashMap, HashSet};
 
@@ -519,16 +520,16 @@ impl Library {
         Ok(rows)
     }
 
-    /// Photos whose file name or folder name contains `query`, case-insensitively.
+    /// Photos whose file name or folder name contains any word of `query`,
+    /// case-insensitively.
     ///
-    /// The match runs in Rust rather than as SQL `LIKE` for two reasons (spec §3):
-    /// SQLite folds case for ASCII only, so `MÜNCHEN` would not find `München`; and
-    /// `LIKE` would read `%` and `_` in the user's query as wildcards. This is one pass
+    /// The words are OR-ed and the matching runs in Rust rather than as SQL `LIKE`;
+    /// `search::Query` holds both decisions and the reasons for them. This is one pass
     /// over the same rows an index rebuild already reads, with two short string compares
-    /// added per row.
+    /// per token added per row.
     fn search_entries(&self, query: &str) -> Result<Vec<GridEntry>> {
-        let needle = query.trim().to_lowercase();
-        if needle.is_empty() {
+        let query = Query::parse(query);
+        if query.is_empty() {
             return Ok(Vec::new());
         }
         let conn = self.reader()?;
@@ -540,8 +541,7 @@ impl Library {
             .query_map([], |r| {
                 let file_name: String = r.get(GRID_COLUMN_COUNT)?;
                 let folder_name: String = r.get(GRID_COLUMN_COUNT + 1)?;
-                let hit = file_name.to_lowercase().contains(&needle)
-                    || folder_name.to_lowercase().contains(&needle);
+                let hit = query.matches(&[&file_name, &folder_name]);
                 // No `Ok(…?)` wrapper here: the closure already returns this type, and
                 // wrapping it trips `clippy::needless_question_mark`, which the gate
                 // treats as an error.
@@ -1256,11 +1256,99 @@ mod tests {
     }
 
     #[test]
+    fn search_matches_any_word_of_a_multi_word_query() {
+        // The case the single-needle matcher missed: "lake bell" is not a substring of
+        // "lake_bell.jpg", because the file's separator is an underscore.
+        let (_dir, lib) = temp_library();
+        let (_watched, folder) = seed_folder(&lib, Path::new("/p"));
+        let ids = lib
+            .insert_items(&[
+                new_item(folder, "/p/lake_bell.jpg", 1),
+                new_item(folder, "/p/mountain.jpg", 2),
+            ])
+            .unwrap();
+
+        let hits: Vec<i64> = lib
+            .entries_for(GridView::Search, "lake bell")
+            .unwrap()
+            .iter()
+            .map(|e| e.id)
+            .collect();
+        assert_eq!(hits, vec![ids[0]]);
+    }
+
+    #[test]
+    fn search_widens_with_each_added_word() {
+        // Tokens are OR-ed, so a second word adds photos rather than removing them. This
+        // is the deliberate choice the design records; an AND implementation returns
+        // nothing here (no name contains both "lake" and "bell") and fails on the final
+        // assertion.
+        let (_dir, lib) = temp_library();
+        let (_watched, folder) = seed_folder(&lib, Path::new("/p"));
+        let ids = lib
+            .insert_items(&[
+                new_item(folder, "/p/lake.jpg", 1),
+                new_item(folder, "/p/bell.jpg", 2),
+                new_item(folder, "/p/mountain.jpg", 3),
+            ])
+            .unwrap();
+
+        let hits = |q: &str| -> Vec<i64> {
+            lib.entries_for(GridView::Search, q)
+                .unwrap()
+                .iter()
+                .map(|e| e.id)
+                .collect()
+        };
+
+        assert_eq!(hits("lake"), vec![ids[0]]);
+        assert_eq!(
+            hits("lake bell"),
+            vec![ids[0], ids[1]],
+            "the second word adds its matches; it does not narrow the first word's"
+        );
+    }
+
+    #[test]
+    fn search_spans_folders_in_grid_order() {
+        // OR-ing tokens widens results across folders, not just within one - the case
+        // `search_widens_with_each_added_word` cannot show with a single folder. `/p/new`
+        // and `/p/old` each hold a photo matched by one word of "lake bell", plus a photo
+        // in `/p/old` matched by neither.
+        let (_dir, lib) = temp_library();
+        let (watched, old_folder) = seed_folder(&lib, Path::new("/p/old"));
+        let new_folder = lib.upsert_folder(watched, None, "/p/new", 1).unwrap();
+        let ids = lib
+            .insert_items(&[
+                new_item(old_folder, "/p/old/lake.jpg", 1),
+                new_item(old_folder, "/p/old/mountain.jpg", 5),
+                new_item(new_folder, "/p/new/bell.jpg", 10),
+            ])
+            .unwrap();
+
+        let hits: Vec<i64> = lib
+            .entries_for(GridView::Search, "lake bell")
+            .unwrap()
+            .iter()
+            .map(|e| e.id)
+            .collect();
+
+        // `GRID_ORDER` places folders by their oldest photo descending, regardless of
+        // whether that photo matches: `/p/old`'s oldest is `lake.jpg` at 1, `/p/new`'s
+        // oldest (its only photo) is `bell.jpg` at 10. 10 > 1, so `/p/new` sorts first.
+        // `mountain.jpg` matches neither token and is dropped, leaving one row per folder,
+        // so within-folder order does not come into play here.
+        assert_eq!(hits, vec![ids[2], ids[0]]);
+    }
+
+    #[test]
     fn search_folds_case_for_non_ascii_text() {
         // This is the test that pins the whole "match in Rust, not in SQL" decision
         // (spec §3): SQLite's LIKE and lower() fold ASCII only, so a `LIKE`-based
-        // implementation passes the ASCII cases above and fails this one. Deleting it
-        // removes the only evidence for the design.
+        // implementation passes the ASCII cases above and fails this one.
+        // `case_folds_outside_ascii` in `search.rs` pins the same property at the unit
+        // level; what this copy adds is proof that both names actually reach the matcher,
+        // read from the right columns of the grid query.
         let (_dir, lib) = temp_library();
         let (_watched, folder) = seed_folder(&lib, Path::new("/München"));
         lib.insert_items(&[new_item(folder, "/München/Straße.jpg", 1)])
