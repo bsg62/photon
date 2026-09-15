@@ -2,7 +2,7 @@
   import { api } from '../lib/api';
   import { library } from '../lib/library.svelte';
   import { buildRows, columnsFor, GAP, itemSpan, layoutSections, rowOfItem, topFolderId, totalHeight, visibleRange } from '../lib/layout';
-  import { move, type NavKey } from '../lib/nav';
+  import { nextSelection, type NavKey } from '../lib/nav';
   import Tile from './Tile.svelte';
 
   let { onopen }: { onopen: (offset: number) => void } = $props();
@@ -146,7 +146,7 @@
     }
     if (!NAV_KEYS.includes(e.key) || library.info.len === 0) return;
     e.preventDefault();
-    const next = sel === null ? 0 : move(sel, e.key as NavKey, sections, columns);
+    const next = nextSelection(sel, e.key as NavKey, sections, columns);
     library.selected = next;
     scrollToOffset(next, 'nearest');
   }

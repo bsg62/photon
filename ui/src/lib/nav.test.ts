@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { clampPan, clampZoom, closesViewer, move, positionInFolder, positionInView, wheelStep } from './nav';
+import { clampPan, clampZoom, closesViewer, move, nextSelection, positionInFolder, positionInView, wheelStep } from './nav';
 
 const sections = [
   { folderId: 1, offset: 0, count: 5 },
@@ -49,6 +49,14 @@ describe('positionInFolder', () => {
   });
 });
 
+describe('positionInFolder past the end', () => {
+  it('never counts past the section it lands in', () => {
+    // The viewer's offset is not clamped by a rescan that shrinks the library, so it can
+    // outrun the sections until the next keypress. "31 / 12" is not a number to show.
+    expect(positionInFolder(sections, 40)).toEqual({ index: 3, count: 3 });
+  });
+});
+
 describe('positionInView', () => {
   it('numbers within the folder in every folder-ordered view', () => {
     expect(positionInView('all', sections, 5, 8)).toEqual({ index: 1, count: 3 });
@@ -68,6 +76,27 @@ describe('positionInView', () => {
   it('reports nothing for an empty grid', () => {
     expect(positionInView('recent', [], 0, 0)).toEqual({ index: 0, count: 0 });
     expect(positionInView('all', [], 0, 0)).toEqual({ index: 0, count: 0 });
+  });
+});
+
+describe('nextSelection', () => {
+  it('honours the key when nothing is selected yet', () => {
+    // Clicking the grid background clears the selection. Treating every navigation key as
+    // "select the first photo" from there sent End and ArrowUp to the top of the library.
+    expect(nextSelection(null, 'End', sections, 4)).toBe(7);
+    expect(nextSelection(null, 'Home', sections, 4)).toBe(0);
+    expect(nextSelection(null, 'ArrowRight', sections, 4)).toBe(1);
+  });
+
+  it('moves from the current selection when there is one', () => {
+    expect(nextSelection(3, 'ArrowRight', sections, 4)).toBe(4);
+    expect(nextSelection(3, 'End', sections, 4)).toBe(7);
+  });
+});
+
+describe('positionInView past the end', () => {
+  it('never counts past the view either', () => {
+    expect(positionInView('recent', [], 50, 20)).toEqual({ index: 20, count: 20 });
   });
 });
 

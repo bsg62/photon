@@ -392,9 +392,12 @@ fn degrade_failed_roots(engine: &Arc<Engine>, degraded: &Mutex<Vec<i64>>, failur
 /// Attempts to start the OS watcher and register every online watched root with it.
 ///
 /// Used both by `start` and by the ticker's retry when the watcher subsystem is down
-/// entirely, so both paths mark/clear `degraded` the same way: a root that registers
-/// successfully is cleared (it may have been marked degraded by an earlier attempt), one
-/// that fails is (re-)marked, logged once per attempt.
+/// entirely. A root that fails to register is (re-)marked `degraded`, logged once per
+/// attempt; one that succeeds is deliberately *left* degraded for `rescan_degraded_roots`
+/// to clear, because clearing it here would empty the list that function reads and it would
+/// return without scanning. A watch that only just started cannot have seen whatever changed
+/// while the subsystem was down, so dropping that rescan loses every addition and deletion
+/// from the outage until the user next touches those directories.
 ///
 /// Returns `None` (every online root marked degraded) if `Watcher::start` itself fails.
 #[allow(clippy::type_complexity)]
@@ -405,11 +408,10 @@ fn try_start_watcher(
     let watched = engine.lib.watched_folders().unwrap_or_default();
     match Watcher::start(DEBOUNCE) {
         Ok((mut watcher, rx, errors)) => {
-            let mut recovered = Vec::new();
             let mut failed = Vec::new();
             for w in watched.iter().filter(|w| w.online) {
                 match watcher.watch_root(Path::new(&w.path)) {
-                    Ok(()) => recovered.push(w.id),
+                    Ok(()) => {}
                     Err(err) => {
                         tracing::warn!(
                             watched_id = w.id,
@@ -422,7 +424,6 @@ fn try_start_watcher(
                 }
             }
             let mut degraded = degraded.lock();
-            degraded.retain(|id| !recovered.contains(id));
             for id in failed {
                 mark_degraded(&mut degraded, id);
             }
@@ -559,20 +560,48 @@ fn try_drain(engine: &Arc<Engine>, pending: &Mutex<HashMap<i64, Vec<PathBuf>>>) 
     for (id, dir) in candidates {
         match watched.iter().find(|w| w.id == id) {
             Some(folder) => {
-                if engine.start_subtree_scan(folder.clone(), dir.clone()) {
-                    let mut pending = pending.lock();
-                    if let Some(dirs) = pending.get_mut(&id) {
-                        dirs.retain(|queued| queued != &dir);
-                        if dirs.is_empty() {
-                            pending.remove(&id);
-                        }
-                    }
-                }
+                let root = PathBuf::from(&folder.path);
+                let folder = folder.clone();
+                let started = dir.clone();
+                start_queued_scan(pending, id, &dir, &root, move || {
+                    engine.start_subtree_scan(folder, started)
+                });
             }
             None => {
                 pending.lock().remove(&id);
             }
         }
+    }
+}
+
+/// Starts one queued follow-up, taking it out of `pending` *before* the scan starts and
+/// putting it back if the start is refused.
+///
+/// The order matters. While `dir` is still queued, an event for anything beneath it takes
+/// `insert_pending`'s "already covered by a queued ancestor" early return, on the strength of
+/// an entry that is about to be deleted. Removing afterwards would then leave `pending`
+/// empty with that change covered only by a scan that started before it happened - and which
+/// may already have walked past that directory - so it would never be rescanned. Removing
+/// first can at worst queue a directory the running scan also covers: one redundant walk
+/// rather than a lost change.
+fn start_queued_scan(
+    pending: &Mutex<HashMap<i64, Vec<PathBuf>>>,
+    id: i64,
+    dir: &Path,
+    root: &Path,
+    start: impl FnOnce() -> bool,
+) {
+    {
+        let mut pending = pending.lock();
+        if let Some(dirs) = pending.get_mut(&id) {
+            dirs.retain(|queued| queued != dir);
+            if dirs.is_empty() {
+                pending.remove(&id);
+            }
+        }
+    }
+    if !start() {
+        queue_pending(pending, id, dir.to_path_buf(), root);
     }
 }
 
@@ -641,6 +670,13 @@ fn retry_watcher_startup(
     // thread list, so installing this watcher and spawning an event thread now would leave
     // `stop` returned with a live, unjoined thread behind it. Dropping the watcher here also
     // unregisters the roots it just registered.
+    //
+    // The check and the install are both made under the thread-list lock - the same lock
+    // `stop` drains that list under - so that they cannot be separated. A bare load followed
+    // by an install leaves a window for `stop` to run entirely in between: it would set the
+    // flag, drain a list that is still empty and take the watcher slot, and only then would
+    // this put a live watcher in that slot and push a thread nobody is left to join.
+    let mut threads = threads.lock();
     if stopping.load(Ordering::SeqCst) {
         drop(new_watcher);
         return;
@@ -655,7 +691,8 @@ fn retry_watcher_startup(
         rx,
         errors,
     );
-    push_thread(threads, handle);
+    threads.retain(|h| !h.is_finished());
+    threads.push(handle);
 }
 
 /// For each degraded root: retries registering its OS watch (dropping it from `degraded` on
@@ -709,6 +746,46 @@ mod tests {
     use crate::events::Recorded;
     use crate::testutil::{fixture, jpeg};
     use photon_core::watcher::MAX_PENDING_DIRS;
+
+    /// The window between a follow-up's scan starting and its removal from `pending`: an
+    /// event arriving in it is folded into an entry that is then deleted, so nothing covers
+    /// it but a scan that may already have walked past that directory.
+    #[test]
+    fn an_event_arriving_as_its_follow_up_starts_is_kept() {
+        let pending: Mutex<HashMap<i64, Vec<PathBuf>>> = Mutex::new(HashMap::new());
+        let root = PathBuf::from("/photos");
+        let dir = root.join("a");
+        queue_pending(&pending, 1, dir.clone(), &root);
+
+        let deep = dir.join("deep");
+        start_queued_scan(&pending, 1, &dir, &root, || {
+            // The event thread, running while the scan is being started.
+            queue_pending(&pending, 1, deep.clone(), &root);
+            true
+        });
+
+        assert_eq!(
+            pending.lock().get(&1).cloned().unwrap_or_default(),
+            vec![root.join("a").join("deep")],
+            "the change that arrived during the start stays queued on its own account"
+        );
+    }
+
+    #[test]
+    fn a_follow_up_whose_scan_is_refused_stays_queued() {
+        let pending: Mutex<HashMap<i64, Vec<PathBuf>>> = Mutex::new(HashMap::new());
+        let root = PathBuf::from("/photos");
+        let dir = root.join("a");
+        queue_pending(&pending, 1, dir.clone(), &root);
+
+        start_queued_scan(&pending, 1, &dir, &root, || false);
+
+        assert_eq!(
+            pending.lock().get(&1).cloned().unwrap_or_default(),
+            vec![dir],
+            "removing before the start must not drop a follow-up the scan slot refused"
+        );
+    }
 
     #[test]
     fn a_dead_watcher_tells_the_ui_its_folders_are_degraded() {
@@ -1103,9 +1180,11 @@ mod tests {
             watcher_slot.lock().is_some(),
             "the watcher subsystem restarts successfully"
         );
-        assert!(
-            degraded.lock().is_empty(),
-            "the root's registration succeeds on retry, so it's no longer degraded"
+        assert_eq!(
+            degraded.lock().clone(),
+            vec![watched.id],
+            "the retry does not clear the flag itself: `rescan_degraded_roots` reads that \
+             list to decide what to rescan, and clears it as it goes"
         );
         assert_eq!(
             threads.lock().len(),
@@ -1114,6 +1193,53 @@ mod tests {
         );
 
         // Clean up the thread this test spawned directly (not through a `WatcherService`).
+        stopping.store(true, Ordering::SeqCst);
+        for handle in threads.lock().drain(..) {
+            let _ = handle.join();
+        }
+    }
+
+    /// The whole point of degrading a root is that a scan makes up for the events nobody
+    /// delivered. A restart that only re-registers the watch leaves everything added or
+    /// deleted during the outage unindexed until the user happens to touch those directories
+    /// again, because the freshly installed watch cannot have seen any of it.
+    #[test]
+    fn a_restarted_watcher_rescans_the_roots_it_recovers() {
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a/one.jpg", &img)]);
+        let watched = f.add_photos();
+
+        // The outage: `Watcher::start` failed at `start` time, so no event was delivered for
+        // this file and nothing but a rescan can find it.
+        std::fs::write(f.photos.join("a").join("two.jpg"), &img).unwrap();
+        let pending: Arc<Mutex<HashMap<i64, Vec<PathBuf>>>> = Arc::new(Mutex::new(HashMap::new()));
+        let degraded = Arc::new(Mutex::new(vec![watched.id]));
+        let watcher_slot: Arc<Mutex<Option<Watcher>>> = Arc::new(Mutex::new(None));
+        let stopping = Arc::new(AtomicBool::new(false));
+        let threads: Mutex<Vec<JoinHandle<()>>> = Mutex::new(Vec::new());
+
+        // Exactly what the five-minute tick does, in its order.
+        retry_watcher_startup(
+            &f.engine,
+            &pending,
+            &degraded,
+            &watcher_slot,
+            &stopping,
+            &threads,
+        );
+        rescan_degraded_roots(&f.engine, &degraded, &watcher_slot);
+        f.engine.wait_for_scans();
+
+        assert_eq!(
+            f.ids().len(),
+            2,
+            "the recovered root is rescanned, so what changed during the outage is indexed"
+        );
+        assert!(
+            degraded.lock().is_empty(),
+            "and it is only cleared once that rescan has been started for it"
+        );
+
         stopping.store(true, Ordering::SeqCst);
         for handle in threads.lock().drain(..) {
             let _ = handle.join();
@@ -1178,11 +1304,15 @@ mod tests {
             watcher_slot.lock().is_some(),
             "the five-minute tick restarts the watcher subsystem"
         );
+        assert_eq!(threads.lock().len(), 1, "with a fresh event thread");
+
+        rescan_degraded_roots(&f.engine, &degraded, &watcher_slot);
+        f.engine.wait_for_scans();
         assert!(
             degraded.lock().is_empty(),
-            "and the root's watch registers again, so it is no longer degraded"
+            "and the root's watch registers again, so - once it has been rescanned for what \
+             the dead watcher never reported - it is no longer degraded"
         );
-        assert_eq!(threads.lock().len(), 1, "with a fresh event thread");
 
         stopping.store(true, Ordering::SeqCst);
         for handle in threads.lock().drain(..) {

@@ -37,6 +37,14 @@
     current = Math.min(last, Math.max(0, next));
   }
 
+  // A rescan can shrink the library under an open viewer, and nothing else moves `current`:
+  // `goto` clamps, but only a key or wheel event reaches it. Left alone, the caption counts
+  // past the end ("51 / 20") and the loader below asks for an offset that no longer exists.
+  $effect(() => {
+    const last = library.info.len - 1;
+    if (last >= 0 && untrack(() => current) > last) current = last;
+  });
+
   $effect(() => {
     const at = current;
     let cancelled = false;
@@ -48,7 +56,13 @@
     zoom = MIN_ZOOM;
     pan = { x: 0, y: 0 };
     (async () => {
-      await library.ensure(at, at + 1);
+      // `untrack`, because `ensure` reads `library.info.len` and this call is still inside
+      // the effect's tracked window. `refresh()` assigns a new `info` object on every
+      // library-changed event, so without it any background scan finishing - or any single
+      // watched file changing - re-runs this effect, blanking the photo on screen and
+      // throwing away the zoom and pan the user set, although nothing about that photo
+      // changed. The one dependency this effect wants is `current`.
+      await untrack(() => library.ensure(at, at + 1));
       const entry = library.entry(at);
       if (cancelled) return;
       if (!entry) {

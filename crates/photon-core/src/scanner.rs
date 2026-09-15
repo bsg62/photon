@@ -118,8 +118,19 @@ pub fn scan_watched(
     if skip_mark_purge {
         // We couldn't tell what happened to the rest of the tree; don't guess.
         lib.set_watched_online(watched.id, true)?;
+        // The stars of the folders we *did* walk are a separate question, and this branch
+        // has already concluded the root is live. Returning without them would leave every
+        // star in the library at its last scan's value over one walkdir error, with
+        // `restarred` at 0 so the grid would not refresh either. It cannot simply move above
+        // this guard: the empty-root check below is what tells a live folder from an
+        // unmounted volume, and an unmounted mount point reads as a folder whose INI is
+        // gone - which would clear every star it has.
+        let restarred = apply_picasa_stars(lib, &walked);
         progress(&seen);
-        return Ok(report);
+        return Ok(ScanReport {
+            restarred,
+            ..report
+        });
     }
 
     // Drop anything under a subtree we couldn't fully walk: it might still be there.
@@ -232,6 +243,20 @@ pub fn scan_subtree(
         return Ok(ScanReport::default());
     };
 
+    // `walk_tree` skips hidden directories, but exempts its own depth 0 - which here is the
+    // event directory the watcher handed us, not the watched root. Nothing between the OS
+    // event and the walk rejects a dot-directory, so without this the subtree scan indexes
+    // photos that every `scan_watched` skips, marks missing and then purges. Only the part
+    // below the root is checked: a user who explicitly watches `~/.photos` gets it scanned,
+    // exactly as `scan_watched` does.
+    if relative
+        .components()
+        .filter_map(|c| c.as_os_str().to_str())
+        .any(|name| name.starts_with('.'))
+    {
+        return Ok(ScanReport::default());
+    }
+
     let target_str = target
         .to_str()
         .ok_or_else(|| crate::Error::NonUtf8Path(target.clone()))?;
@@ -258,9 +283,16 @@ pub fn scan_subtree(
         });
     }
     if outcome.skip_mark_purge {
+        // The stars of the folders we did walk, for the reason in `scan_watched`.
+        let restarred = apply_picasa_stars(lib, &outcome.walked);
         progress(&outcome.seen);
-        return Ok(outcome.report);
+        return Ok(ScanReport {
+            restarred,
+            ..outcome.report
+        });
     }
+
+    let restarred = apply_picasa_stars(lib, &outcome.walked);
 
     known.retain(|path_str, _| {
         !outcome
@@ -268,8 +300,6 @@ pub fn scan_subtree(
             .iter()
             .any(|prefix| Path::new(path_str).starts_with(prefix))
     });
-
-    let restarred = apply_picasa_stars(lib, &outcome.walked);
 
     let mut report = outcome.report;
     let (marked, purged) = finish_mark_purge(lib, known)?;
@@ -608,8 +638,15 @@ fn is_hidden(entry: &DirEntry) -> bool {
 fn mtime_ms(md: &Metadata) -> i64 {
     md.modified()
         .ok()
-        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-        .map(|d| d.as_millis() as i64)
+        .map(|t| match t.duration_since(UNIX_EPOCH) {
+            Ok(d) => d.as_millis() as i64,
+            // Dated before 1970 - an archive extracted by a tool that clamps, a backup
+            // restored with its original timestamps. Signed, not folded to 0: every such
+            // file would then compare equal to its last scan, so an edit in place that kept
+            // the byte size would take the `unchanged` branch and its new dimensions, EXIF
+            // and thumbnail would never be picked up.
+            Err(before) => -(before.duration().as_millis() as i64),
+        })
         .unwrap_or(0)
 }
 
@@ -618,6 +655,7 @@ mod tests {
     use super::*;
     use crate::testutil::{jpeg_bytes, jpeg_with_exif, png_bytes, temp_library, write_file};
     use std::fs;
+    use std::time::Duration;
 
     fn scan(lib: &Library, watched: &WatchedFolder, scan_id: i64) -> ScanReport {
         scan_watched(lib, watched, scan_id, &ScanOptions::default(), &mut |_| {}).unwrap()
@@ -773,6 +811,27 @@ mod tests {
         scan_sub(&lib, &watched, &root.join("sub"), 2);
 
         assert_eq!(lib.starred_count().unwrap(), 1);
+    }
+
+    #[test]
+    fn a_photo_with_a_pre_epoch_mtime_is_still_seen_as_changed() {
+        // Files dated before 1970 turn up in practice: archives extracted by tools that
+        // clamp, backups restored with their original timestamps. `duration_since` returns
+        // `Err` for all of them, and folding that to one stored value makes every such file
+        // compare equal to its last scan - so an edit that keeps the byte size takes the
+        // `unchanged` branch and its new dimensions, EXIF and thumbnail are never picked up.
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        let a = write_file(&root, "a.jpg", &jpeg_bytes(8, 8));
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
+        set_mtime(&a, UNIX_EPOCH - Duration::from_secs(400 * 86_400));
+        scan(&lib, &watched, 1);
+
+        // Edited in place, keeping its size and still dated before the epoch.
+        set_mtime(&a, UNIX_EPOCH - Duration::from_secs(399 * 86_400));
+        let report = scan(&lib, &watched, 2);
+
+        assert_eq!((report.changed, report.unchanged), (1, 0));
     }
 
     #[test]
@@ -1016,6 +1075,15 @@ mod tests {
         assert_eq!(lib.item(id).unwrap().unwrap().missing_since, None);
     }
 
+    fn set_mtime(path: &Path, at: std::time::SystemTime) {
+        fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(at)
+            .unwrap();
+    }
+
     fn scan_sub(lib: &Library, watched: &WatchedFolder, dir: &Path, scan_id: i64) -> ScanReport {
         scan_subtree(
             lib,
@@ -1167,6 +1235,32 @@ mod tests {
             scan_subtree(&lib, &watched, &root.join("a"), 2, &cancelled, &mut |_| {}).unwrap();
         assert!(report.cancelled);
         assert_eq!(report.marked_missing, 0);
+    }
+
+    #[test]
+    fn subtree_scan_of_a_hidden_directory_indexes_nothing() {
+        // `walk_tree`'s hidden filter exempts depth 0, which for a subtree scan is the
+        // watcher's event directory rather than the watched root. Without a check of its own,
+        // touching a file under `.private` indexes it, the next full scan skips `.private` and
+        // marks it missing, and the one after purges it: the photo flickers in and out of the
+        // library, rebuilding the grid on every transition.
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        write_file(&root, ".private/c.jpg", &jpeg_bytes(8, 8));
+        write_file(&root, ".private/sub/d.jpg", &jpeg_bytes(8, 8));
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
+
+        assert_eq!(
+            scan_sub(&lib, &watched, &root.join(".private"), 1),
+            ScanReport::default()
+        );
+        // A hidden component anywhere between the root and the event directory, not just the
+        // event directory itself.
+        assert_eq!(
+            scan_sub(&lib, &watched, &root.join(".private").join("sub"), 2),
+            ScanReport::default()
+        );
+        assert!(lib.known_items(watched.id).unwrap().is_empty());
     }
 
     #[test]
