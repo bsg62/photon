@@ -42,19 +42,33 @@ struct RunningScan {
     handle: Option<JoinHandle<()>>,
 }
 
+/// Which photos the grid shows. The query lives beside the view rather than inside it:
+/// `GridView` is `Copy` and is mirrored in TypeScript as plain strings (spec §4).
+///
+/// `epoch` goes up on every change to the pair. A rebuild reads it with the state it is
+/// about to query for and hands it back at publish time; a mismatch means a setter has
+/// moved on and that setter's own rebuild is the one that gets published.
+#[derive(Clone, Debug)]
+struct ViewState {
+    view: GridView,
+    query: String,
+    epoch: u64,
+}
+
 pub struct Engine {
     pub lib: Arc<Library>,
     pub thumbs: ThumbService,
     excluded: Vec<PathBuf>,
     grid: RwLock<(u64, Arc<GridIndex>)>,
-    /// Which set of photos the grid currently shows.
-    view: RwLock<GridView>,
-    /// The active search query. Beside the view rather than inside it: `GridView` is `Copy`
-    /// and is mirrored in TypeScript as plain strings (spec §4).
-    search_query: RwLock<String>,
-    /// Serialises `refresh_grid` end to end (read, publish, emit), so two concurrent
-    /// refreshes can't publish a stale snapshot under a newer version or emit events out
-    /// of order.
+    /// Which photos the grid shows, and a counter that changes with it. Held only for the
+    /// moment of reading or writing it - never across a query or an index build - so a
+    /// view switch on the UI thread is never made to wait for a rebuild a scan is running.
+    state: Mutex<ViewState>,
+    /// Serialises the publish-and-emit step of a rebuild, so two rebuilds finishing
+    /// together can't publish under out-of-order version numbers or emit `library_changed`
+    /// out of order. Not the query and build themselves: those run unserialised, and the
+    /// `epoch` check in `publish_if_current` is what keeps a slow, stale one from
+    /// overwriting a newer view.
     refresh: Mutex<()>,
     events: Arc<dyn Events>,
     scans: Mutex<HashMap<i64, RunningScan>>,
@@ -117,8 +131,11 @@ impl Engine {
             thumbs,
             excluded,
             grid: RwLock::new((0, grid)),
-            view: RwLock::new(GridView::All),
-            search_query: RwLock::new(String::new()),
+            state: Mutex::new(ViewState {
+                view: GridView::All,
+                query: String::new(),
+                epoch: 0,
+            }),
             refresh: Mutex::new(()),
             events,
             scans: Mutex::new(HashMap::new()),
@@ -141,17 +158,40 @@ impl Engine {
         (grid.0, grid.1.clone())
     }
 
-    /// Rebuilds the grid from the database and tells the UI.
+    /// Rebuilds the grid from the database for the current view and tells the UI.
     ///
-    /// Holds `refresh` across the read, the publish and the event so concurrent refreshes
-    /// (e.g. two scans, or a scan racing `remove_folder`) can't publish a stale snapshot
-    /// under a newer version number or emit `library_changed` out of order.
+    /// The query and the index build run with no engine lock held. This used to hold read
+    /// guards on the view and the query for their whole duration, so a view switch on the
+    /// UI thread - which needs the write side - stalled behind every scan-triggered rebuild:
+    /// ~60ms per tick on a 100k library, for as long as the scan ran. What makes that safe
+    /// is the `epoch` check at publish time; see `publish_if_current`.
     pub fn refresh_grid(&self) -> Result<()> {
-        let _serialize = self.refresh.lock();
+        let state = self.snapshot();
         let index = Arc::new(GridIndex::build(
-            self.lib
-                .entries_for(*self.view.read(), &self.search_query.read())?,
+            self.lib.entries_for(state.view, &state.query)?,
         ));
+        self.publish_if_current(index, state.epoch);
+        Ok(())
+    }
+
+    fn snapshot(&self) -> ViewState {
+        self.state.lock().clone()
+    }
+
+    /// Publishes `index`, built for the state whose epoch was `epoch`, unless the state has
+    /// changed since. Returns whether it published.
+    ///
+    /// This is the guard that lets rebuilds run unlocked. Without it a scan's rebuild that
+    /// read the All view, then lost the race to a click on Starred, would publish its
+    /// full index over the Starred one while `GridInfo` still said Starred. Discarding is
+    /// safe for the scan's rows too: the setter's own rebuild reads the database after it
+    /// bumped the epoch, which is after any rows committed before this rebuild started.
+    fn publish_if_current(&self, index: Arc<GridIndex>, epoch: u64) -> bool {
+        let _serialize = self.refresh.lock();
+        if self.state.lock().epoch != epoch {
+            tracing::debug!("discarding a grid rebuilt for a view that has since changed");
+            return false;
+        }
         let (version, len) = {
             let mut grid = self.grid.write();
             grid.0 += 1;
@@ -159,23 +199,23 @@ impl Engine {
             (grid.0, grid.1.len())
         };
         self.events.library_changed(LibraryChanged { version, len });
-        Ok(())
+        true
     }
 
     pub fn view(&self) -> GridView {
-        *self.view.read()
+        self.state.lock().view
     }
 
     /// The active search query, or the empty string when no search is active.
     pub fn search_query(&self) -> String {
-        self.search_query.read().clone()
+        self.state.lock().query.clone()
     }
 
     /// Switches which photos the grid shows and rebuilds the index. Rebuilding is the same
     /// work startup already does; a second index kept in sync would be a large new surface
     /// for staleness bugs to speed up something already fast and rarely done.
     ///
-    /// Rolls `view`/`search_query` back to their previous values if the rebuild fails, so a
+    /// Rolls the view and query back to their previous values if the rebuild fails, so a
     /// failed refresh can never leave `GridInfo` (the UI's one source of truth, spec §5)
     /// reporting a view/query the grid was never actually rebuilt for. Without the
     /// rollback the bad state is sticky: every later `refresh_grid` — including the scan
@@ -183,12 +223,12 @@ impl Engine {
     /// empty state can't rescue it either, since `len` still reflects the old, unrelated
     /// result set.
     pub fn set_view(&self, view: GridView) -> Result<()> {
-        self.rebuild_or_restore(|| {
+        self.rebuild_or_restore(|state| {
             // A query left behind would reappear the next time Search is entered.
             if view != GridView::Search {
-                self.search_query.write().clear();
+                state.query.clear();
             }
-            *self.view.write() = view;
+            state.view = view;
         })
     }
 
@@ -196,12 +236,22 @@ impl Engine {
     /// that fails. One place rather than one per setter: the rollback is what keeps the
     /// invariant above true, and a third setter (a sort order, a date filter) copying it a
     /// third time is how one of the copies ends up missing a field.
-    fn rebuild_or_restore(&self, mutate: impl FnOnce()) -> Result<()> {
-        let previous = (*self.view.read(), self.search_query.read().clone());
-        mutate();
+    ///
+    /// Both the change and the rollback bump the epoch, so a rebuild in flight for either
+    /// superseded state is discarded rather than published.
+    fn rebuild_or_restore(&self, mutate: impl FnOnce(&mut ViewState)) -> Result<()> {
+        let previous = {
+            let mut state = self.state.lock();
+            let previous = state.clone();
+            mutate(&mut state);
+            state.epoch += 1;
+            previous
+        };
         if let Err(err) = self.refresh_grid() {
-            *self.view.write() = previous.0;
-            *self.search_query.write() = previous.1;
+            let mut state = self.state.lock();
+            state.view = previous.view;
+            state.query = previous.query;
+            state.epoch += 1;
             return Err(err);
         }
         Ok(())
@@ -217,9 +267,9 @@ impl Engine {
         if query.trim().is_empty() {
             return self.set_view(GridView::All);
         }
-        self.rebuild_or_restore(|| {
-            *self.search_query.write() = query.to_string();
-            *self.view.write() = GridView::Search;
+        self.rebuild_or_restore(|state| {
+            state.query = query.to_string();
+            state.view = GridView::Search;
         })
     }
 
@@ -1122,6 +1172,38 @@ mod tests {
         t2.join().unwrap();
 
         assert!(!f.engine.is_scanning(id));
+    }
+
+    /// Rebuilds run with no engine lock held, so one can still be building for the old
+    /// view when a setter has already moved on and published its own. That stale index
+    /// must be dropped, not published: it would put the full library on screen while
+    /// `GridInfo` said Starred.
+    #[test]
+    fn a_rebuild_started_before_a_view_change_is_not_published_over_it() {
+        use photon_core::grid::GridView;
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a/one.jpg", &img), ("a/two.jpg", &img)]);
+        f.add_photos();
+        f.engine.wait_for_scans();
+        f.engine.lib.set_ratings(&[(f.ids()[0], 2)]).unwrap();
+
+        // A scan's rebuild reads the state and starts querying for All...
+        let stale = f.engine.snapshot();
+        let stale_index = Arc::new(GridIndex::build(
+            f.engine.lib.entries_for(stale.view, &stale.query).unwrap(),
+        ));
+        assert_eq!(stale_index.len(), 2);
+        // ...and while it does, the user clicks Starred, whose rebuild lands first.
+        f.engine.set_view(GridView::Starred).unwrap();
+        let (version, grid) = f.engine.grid();
+        assert_eq!(grid.len(), 1);
+
+        assert!(
+            !f.engine.publish_if_current(stale_index, stale.epoch),
+            "an index built for a superseded view is discarded"
+        );
+        let (after, grid) = f.engine.grid();
+        assert_eq!((after, grid.len()), (version, 1));
     }
 
     #[test]
