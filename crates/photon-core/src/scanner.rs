@@ -232,6 +232,20 @@ pub fn scan_subtree(
         return Ok(ScanReport::default());
     };
 
+    // `walk_tree` skips hidden directories, but exempts its own depth 0 - which here is the
+    // event directory the watcher handed us, not the watched root. Nothing between the OS
+    // event and the walk rejects a dot-directory, so without this the subtree scan indexes
+    // photos that every `scan_watched` skips, marks missing and then purges. Only the part
+    // below the root is checked: a user who explicitly watches `~/.photos` gets it scanned,
+    // exactly as `scan_watched` does.
+    if relative
+        .components()
+        .filter_map(|c| c.as_os_str().to_str())
+        .any(|name| name.starts_with('.'))
+    {
+        return Ok(ScanReport::default());
+    }
+
     let target_str = target
         .to_str()
         .ok_or_else(|| crate::Error::NonUtf8Path(target.clone()))?;
@@ -1167,6 +1181,32 @@ mod tests {
             scan_subtree(&lib, &watched, &root.join("a"), 2, &cancelled, &mut |_| {}).unwrap();
         assert!(report.cancelled);
         assert_eq!(report.marked_missing, 0);
+    }
+
+    #[test]
+    fn subtree_scan_of_a_hidden_directory_indexes_nothing() {
+        // `walk_tree`'s hidden filter exempts depth 0, which for a subtree scan is the
+        // watcher's event directory rather than the watched root. Without a check of its own,
+        // touching a file under `.private` indexes it, the next full scan skips `.private` and
+        // marks it missing, and the one after purges it: the photo flickers in and out of the
+        // library, rebuilding the grid on every transition.
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        write_file(&root, ".private/c.jpg", &jpeg_bytes(8, 8));
+        write_file(&root, ".private/sub/d.jpg", &jpeg_bytes(8, 8));
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
+
+        assert_eq!(
+            scan_sub(&lib, &watched, &root.join(".private"), 1),
+            ScanReport::default()
+        );
+        // A hidden component anywhere between the root and the event directory, not just the
+        // event directory itself.
+        assert_eq!(
+            scan_sub(&lib, &watched, &root.join(".private").join("sub"), 2),
+            ScanReport::default()
+        );
+        assert!(lib.known_items(watched.id).unwrap().is_empty());
     }
 
     #[test]
