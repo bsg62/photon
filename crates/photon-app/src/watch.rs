@@ -670,6 +670,13 @@ fn retry_watcher_startup(
     // thread list, so installing this watcher and spawning an event thread now would leave
     // `stop` returned with a live, unjoined thread behind it. Dropping the watcher here also
     // unregisters the roots it just registered.
+    //
+    // The check and the install are both made under the thread-list lock - the same lock
+    // `stop` drains that list under - so that they cannot be separated. A bare load followed
+    // by an install leaves a window for `stop` to run entirely in between: it would set the
+    // flag, drain a list that is still empty and take the watcher slot, and only then would
+    // this put a live watcher in that slot and push a thread nobody is left to join.
+    let mut threads = threads.lock();
     if stopping.load(Ordering::SeqCst) {
         drop(new_watcher);
         return;
@@ -684,7 +691,8 @@ fn retry_watcher_startup(
         rx,
         errors,
     );
-    push_thread(threads, handle);
+    threads.retain(|h| !h.is_finished());
+    threads.push(handle);
 }
 
 /// For each degraded root: retries registering its OS watch (dropping it from `degraded` on
