@@ -638,8 +638,15 @@ fn is_hidden(entry: &DirEntry) -> bool {
 fn mtime_ms(md: &Metadata) -> i64 {
     md.modified()
         .ok()
-        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-        .map(|d| d.as_millis() as i64)
+        .map(|t| match t.duration_since(UNIX_EPOCH) {
+            Ok(d) => d.as_millis() as i64,
+            // Dated before 1970 - an archive extracted by a tool that clamps, a backup
+            // restored with its original timestamps. Signed, not folded to 0: every such
+            // file would then compare equal to its last scan, so an edit in place that kept
+            // the byte size would take the `unchanged` branch and its new dimensions, EXIF
+            // and thumbnail would never be picked up.
+            Err(before) => -(before.duration().as_millis() as i64),
+        })
         .unwrap_or(0)
 }
 
@@ -648,6 +655,7 @@ mod tests {
     use super::*;
     use crate::testutil::{jpeg_bytes, jpeg_with_exif, png_bytes, temp_library, write_file};
     use std::fs;
+    use std::time::Duration;
 
     fn scan(lib: &Library, watched: &WatchedFolder, scan_id: i64) -> ScanReport {
         scan_watched(lib, watched, scan_id, &ScanOptions::default(), &mut |_| {}).unwrap()
@@ -803,6 +811,27 @@ mod tests {
         scan_sub(&lib, &watched, &root.join("sub"), 2);
 
         assert_eq!(lib.starred_count().unwrap(), 1);
+    }
+
+    #[test]
+    fn a_photo_with_a_pre_epoch_mtime_is_still_seen_as_changed() {
+        // Files dated before 1970 turn up in practice: archives extracted by tools that
+        // clamp, backups restored with their original timestamps. `duration_since` returns
+        // `Err` for all of them, and folding that to one stored value makes every such file
+        // compare equal to its last scan - so an edit that keeps the byte size takes the
+        // `unchanged` branch and its new dimensions, EXIF and thumbnail are never picked up.
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        let a = write_file(&root, "a.jpg", &jpeg_bytes(8, 8));
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
+        set_mtime(&a, UNIX_EPOCH - Duration::from_secs(400 * 86_400));
+        scan(&lib, &watched, 1);
+
+        // Edited in place, keeping its size and still dated before the epoch.
+        set_mtime(&a, UNIX_EPOCH - Duration::from_secs(399 * 86_400));
+        let report = scan(&lib, &watched, 2);
+
+        assert_eq!((report.changed, report.unchanged), (1, 0));
     }
 
     #[test]
@@ -1044,6 +1073,15 @@ mod tests {
         assert_eq!((report.marked_missing, report.purged), (0, 0));
         let id = lib.known_items(watched.id).unwrap()[&key(&b)].id;
         assert_eq!(lib.item(id).unwrap().unwrap().missing_since, None);
+    }
+
+    fn set_mtime(path: &Path, at: std::time::SystemTime) {
+        fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(at)
+            .unwrap();
     }
 
     fn scan_sub(lib: &Library, watched: &WatchedFolder, dir: &Path, scan_id: i64) -> ScanReport {
