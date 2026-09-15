@@ -17,6 +17,14 @@ struct State {
     visible: Vec<i64>,
     next_seq: u64,
     in_flight: HashSet<i64>,
+    /// Pushes that arrived while their id was in flight, applied when the job finishes.
+    ///
+    /// Queueing one alongside the running job would have a second worker decode the same
+    /// photo, but dropping it loses a retry nobody makes again: `enqueue_pending` pushes
+    /// each item left `Pending` by a transient I/O error exactly once, with none of
+    /// `request`'s rounds behind it. Re-running a job that did succeed costs a stat of the
+    /// cache file, since `process_item` short-circuits on a complete fingerprint.
+    deferred: HashMap<i64, Priority>,
     /// Number of live `wait_for` callers per id. An id someone is waiting on is demoted no
     /// further than `Neighbour`: it may have scrolled out of the strictly-visible span while
     /// its request was still in the queue, and dropping it to `Background` would park it
@@ -34,6 +42,8 @@ struct State {
 impl State {
     fn push(&mut self, id: i64, priority: Priority) {
         if self.in_flight.contains(&id) {
+            let held = self.deferred.entry(id).or_insert(priority);
+            *held = (*held).min(priority);
             return;
         }
         if let Some(&(current, seq)) = self.entries.get(&id) {
@@ -60,6 +70,13 @@ impl State {
             self.order.remove(&(current, seq, id));
             self.order.insert((priority, seq, id));
             self.entries.insert(id, (priority, seq));
+        }
+    }
+
+    fn done(&mut self, id: i64) {
+        self.in_flight.remove(&id);
+        if let Some(priority) = self.deferred.remove(&id) {
+            self.push(id, priority);
         }
     }
 
@@ -128,7 +145,7 @@ impl ThumbQueue {
 
     /// Marks the popped job `id` finished and wakes idle-waiters and `wait_for` callers.
     pub fn done(&self, id: i64) {
-        self.state.lock().in_flight.remove(&id);
+        self.state.lock().done(id);
         self.changed.notify_all();
     }
 
@@ -264,7 +281,7 @@ mod tests {
     use std::time::{Duration, Instant};
 
     #[test]
-    fn push_skips_items_in_flight() {
+    fn push_does_not_queue_an_item_alongside_its_running_job() {
         let q = ThumbQueue::new();
         q.push(1, Priority::Background);
         let id = q.pop_blocking().unwrap();
@@ -273,6 +290,26 @@ mod tests {
         q.done(id);
         q.push(1, Priority::Visible);
         assert_eq!(q.len(), 1);
+    }
+
+    /// A render that hits a transient I/O error (a network share, an external drive) leaves
+    /// its item `Pending` for the next scan's `enqueue_pending` to retry. That retry is a
+    /// plain `push`, with none of `request`'s rounds behind it, so dropping it because the
+    /// job is still in flight loses the retry for exactly the items most likely to need one.
+    #[test]
+    fn a_push_arriving_while_the_id_is_in_flight_is_applied_once_it_finishes() {
+        let q = ThumbQueue::new();
+        q.push(1, Priority::Background);
+        let id = q.pop_blocking().unwrap();
+
+        q.push(1, Priority::Visible);
+        assert!(
+            q.is_empty(),
+            "not queued alongside the job already running for it"
+        );
+
+        q.done(id);
+        assert_eq!(drain(&q), [1], "but not dropped either");
     }
 
     #[test]
