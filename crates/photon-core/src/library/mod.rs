@@ -9,13 +9,53 @@ pub use items::{Item, KnownItem, NewItem, RECENT_LIMIT};
 use crate::Result;
 use parking_lot::{Mutex, MutexGuard};
 use rusqlite::Connection;
-use std::path::Path;
+use std::{
+    ops::Deref,
+    path::{Path, PathBuf},
+};
 
-/// The photon library database. One connection is reserved for writes, a second
-/// serves reads so the UI can query while a scan is writing (SQLite WAL mode).
+/// Read connections kept open between uses. Enough for the thumbnail workers, the scan
+/// thread and a few protocol requests to all be reading at once; a burst beyond it opens
+/// connections that are closed again on return rather than kept, so a flick through the
+/// grid cannot leave hundreds of file handles behind.
+const MAX_IDLE_READERS: usize = 8;
+
+/// The photon library database. One connection is reserved for writes; reads come from a
+/// pool, because SQLite in WAL mode serves any number of concurrent readers and photon has
+/// several — the grid rebuild and pending-thumbnail sweep during a scan, an `item` lookup
+/// per thumbnail request and per worker job, the Starred count behind every `grid_info`.
+/// Behind a single shared read connection they all queued, and a scan's ~170ms of queries
+/// per 250ms tick stalled every tile the user was watching load.
 pub struct Library {
+    path: PathBuf,
     write: Mutex<Connection>,
-    read: Mutex<Connection>,
+    readers: Mutex<Vec<Connection>>,
+}
+
+/// A pooled read connection. Returned to the pool on drop.
+pub(crate) struct Reader<'a> {
+    lib: &'a Library,
+    conn: Option<Connection>,
+}
+
+impl Deref for Reader<'_> {
+    type Target = Connection;
+
+    fn deref(&self) -> &Connection {
+        self.conn
+            .as_ref()
+            .expect("connection is present until drop")
+    }
+}
+
+impl Drop for Reader<'_> {
+    fn drop(&mut self) {
+        let conn = self.conn.take().expect("dropped once");
+        let mut pool = self.lib.readers.lock();
+        if pool.len() < MAX_IDLE_READERS {
+            pool.push(conn);
+        }
+    }
 }
 
 impl Library {
@@ -26,11 +66,14 @@ impl Library {
         let write = Connection::open(path)?;
         configure(&write)?;
         schema::migrate(&write)?;
-        let read = Connection::open(path)?;
-        configure(&read)?;
+        // One reader opened eagerly, so a database that can be written but not read again
+        // (a permissions oddity, a WAL file owned by someone else) fails here rather than
+        // at the first query.
+        let read = open_reader(path)?;
         Ok(Self {
+            path: path.to_path_buf(),
             write: Mutex::new(write),
-            read: Mutex::new(read),
+            readers: Mutex::new(vec![read]),
         })
     }
 
@@ -38,9 +81,25 @@ impl Library {
         self.write.lock()
     }
 
-    fn reader(&self) -> MutexGuard<'_, Connection> {
-        self.read.lock()
+    /// A read connection: a pooled one if any is idle, otherwise a freshly opened one.
+    /// Never waits for another reader to finish.
+    fn reader(&self) -> Result<Reader<'_>> {
+        let pooled = self.readers.lock().pop();
+        let conn = match pooled {
+            Some(conn) => conn,
+            None => open_reader(&self.path)?,
+        };
+        Ok(Reader {
+            lib: self,
+            conn: Some(conn),
+        })
     }
+}
+
+fn open_reader(path: &Path) -> Result<Connection> {
+    let conn = Connection::open(path)?;
+    configure(&conn)?;
+    Ok(conn)
 }
 
 fn configure(conn: &Connection) -> Result<()> {
@@ -68,11 +127,13 @@ mod tests {
         let lib = Library::open(&path).unwrap();
         let version: i64 = lib
             .reader()
+            .unwrap()
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 3);
+        assert_eq!(version, 4);
         let tables: i64 = lib
             .reader()
+            .unwrap()
             .query_row(
                 "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name IN ('watched_folders', 'folders', 'items', 'settings')",
                 [],
@@ -95,9 +156,39 @@ mod tests {
             Library::open(&path),
             Err(Error::SchemaTooNew {
                 found: 99,
-                supported: 3
+                supported: 4
             })
         ));
+    }
+
+    /// SQLite in WAL mode serves any number of readers at once, and photon has several: the
+    /// grid rebuild and the pending-thumbnail sweep every 250ms of a scan, one `item` lookup
+    /// per thumbnail request and per worker job, the Starred count behind every `grid_info`.
+    /// Behind one shared connection they all queued, so a scan's ~170ms of queries per tick
+    /// stalled every tile the user was watching load. A second reader must be able to run
+    /// while the first is still held.
+    #[test]
+    fn a_second_reader_is_not_blocked_by_the_first() {
+        let (_dir, lib) = temp_library();
+        let lib = std::sync::Arc::new(lib);
+        let held = lib.reader().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let other = lib.clone();
+        std::thread::spawn(move || {
+            let count: i64 = other
+                .reader()
+                .unwrap()
+                .query_row("SELECT count(*) FROM items", [], |r| r.get(0))
+                .unwrap();
+            tx.send(count).unwrap();
+        });
+        let answered = rx.recv_timeout(std::time::Duration::from_secs(2));
+        drop(held);
+        assert_eq!(
+            answered,
+            Ok(0),
+            "a reader held elsewhere must not block this query"
+        );
     }
 
     #[test]

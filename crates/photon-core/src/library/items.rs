@@ -63,21 +63,47 @@ impl Item {
 /// alphabetically by path while the sidebar ran by year, and scrolling one bore no relation
 /// to reading the other.
 ///
-/// The window function is evaluated after `WHERE`, so in the Starred and Search views a
-/// folder is placed by its oldest *matching* photo. That is deliberate: the sidebar's sections
-/// come from the same filtered index (`commands::grid_info` reads `grid.sections()`), so the
-/// two agree in every view.
+/// `o.oldest` comes from [`oldest_join`], which every query using this fragment must include.
+/// In the Starred view the join is given the same filter as the outer `WHERE`, so a folder is
+/// placed by its oldest *starred* photo: the sidebar's sections come from that same filtered
+/// index, so the two agree. Search filters in Rust after the query and so places a folder by
+/// its oldest photo overall, exactly as it always has.
 ///
 /// `f.path` still breaks ties — two folders whose oldest photos share a timestamp would
 /// otherwise interleave, the same hazard `sort_key` collisions used to pose.
 ///
-/// The window function costs real time and the number is recorded rather than glossed:
-/// `startup_grid_100k` went from ~50ms to ~89ms, an 80% regression on a synthetic 100k-item
-/// library. The budget it answers to is one second, so it stays roughly an order of
-/// magnitude inside it, and `grid_rows_page` is unchanged. If that headroom ever matters,
-/// the fix is to materialise each folder's oldest photo rather than to go back to sorting
-/// the grid on a different axis from the sidebar.
-pub(crate) const GRID_ORDER: &str = "ORDER BY MIN(i.taken_at) OVER (PARTITION BY i.folder_id) DESC, f.path, i.taken_at, i.file_name";
+/// This used to be a window function, `MIN(i.taken_at) OVER (PARTITION BY i.folder_id)`,
+/// which SQLite evaluates by materialising and sorting the whole row set once for the
+/// partition and again for the `ORDER BY`. The `GROUP BY` join walks the `items_folder`
+/// index instead and sorts once: `startup_grid_100k` went from ~88ms to ~60ms and
+/// `pending_thumb_ids`, which runs every 250ms during a scan, from ~79ms to ~48ms. The row
+/// order is identical, verified on the 100k-item bench library.
+pub(crate) const GRID_ORDER: &str = "ORDER BY o.oldest DESC, f.path, i.taken_at, i.file_name";
+
+/// The join that supplies `o.oldest` to [`GRID_ORDER`]: each folder's oldest live photo.
+///
+/// `filter` is the same `AND …` fragment the caller's outer `WHERE` uses on `i`, so the
+/// minimum is taken over the rows the view shows rather than the whole folder. Passing a
+/// different filter here than outside is how Starred would silently sort by the wrong photo.
+fn oldest_join(filter: &str) -> String {
+    format!(
+        "JOIN (SELECT i.folder_id, MIN(i.taken_at) AS oldest FROM items i
+               WHERE i.missing_since IS NULL {filter} GROUP BY i.folder_id) o
+           ON o.folder_id = i.folder_id"
+    )
+}
+
+/// The Recent view's query. Shared with the test that checks its plan, so the `ORDER BY`
+/// the `items_recent` index was built for cannot drift from the one actually run.
+fn recent_sql() -> String {
+    format!(
+        "SELECT {GRID_COLUMNS}
+         FROM items i
+         WHERE i.missing_since IS NULL
+         ORDER BY i.taken_at DESC, i.file_name DESC, i.id DESC
+         LIMIT {RECENT_LIMIT}"
+    )
+}
 
 /// How many photos the Recent view shows. Picasa's equivalent list was a fixed-size window
 /// onto the newest photos rather than a filter, so there is nothing to derive this from: it
@@ -222,7 +248,7 @@ impl Library {
     /// native dependency photon does not take. The current rating is included so the Picasa
     /// pass can write only the rows that actually change, rather than every row every scan.
     pub fn folder_item_names(&self, folder_id: i64) -> Result<Vec<(i64, String, Option<i64>)>> {
-        let conn = self.reader();
+        let conn = self.reader()?;
         let mut stmt = conn.prepare_cached(
             "SELECT id, file_name, rating FROM items WHERE folder_id = ?1 AND missing_since IS NULL",
         )?;
@@ -286,7 +312,7 @@ impl Library {
 
     /// Every item under a watched folder, keyed by path, including soft-deleted ones.
     pub fn known_items(&self, watched_id: i64) -> Result<HashMap<String, KnownItem>> {
-        let conn = self.reader();
+        let conn = self.reader()?;
         let mut stmt = conn.prepare(
             "SELECT i.path, i.id, i.size, i.mtime_ms, i.missing_since IS NOT NULL
              FROM items i JOIN folders f ON f.id = i.folder_id WHERE f.watched_id = ?1",
@@ -306,7 +332,7 @@ impl Library {
         watched_id: i64,
         dir: &str,
     ) -> Result<HashMap<String, KnownItem>> {
-        let conn = self.reader();
+        let conn = self.reader()?;
         let mut stmt = conn.prepare(
             "WITH RECURSIVE sub(id) AS (
                  SELECT id FROM folders WHERE watched_id = ?1 AND path = ?2
@@ -324,7 +350,7 @@ impl Library {
 
     pub fn item(&self, id: i64) -> Result<Option<Item>> {
         let item = self
-            .reader()
+            .reader()?
             .query_row(
                 "SELECT id, folder_id, path, kind, size, mtime_ms, width, height, orientation, taken_at,
                         thumb_state, thumb_error, missing_since
@@ -370,12 +396,18 @@ impl Library {
 
     /// Items still waiting for thumbnails, in grid order. Items under an offline watched
     /// folder are skipped: their files can't be read until the folder comes back.
+    ///
+    /// "Grid order" means the All view's: folders placed by their oldest photo overall, so
+    /// the queue works through folders in the order the grid shows them. The join is
+    /// therefore unfiltered, unlike Starred's.
     pub fn pending_thumb_ids(&self) -> Result<Vec<i64>> {
-        let conn = self.reader();
+        let conn = self.reader()?;
+        let oldest = oldest_join("");
         let mut stmt = conn.prepare(&format!(
             "SELECT i.id FROM items i
              JOIN folders f ON f.id = i.folder_id
              JOIN watched_folders w ON w.id = f.watched_id
+             {oldest}
              WHERE i.thumb_state = 0 AND i.missing_since IS NULL AND w.online = 1 {GRID_ORDER}"
         ))?;
         let ids = stmt
@@ -386,7 +418,7 @@ impl Library {
 
     /// Fingerprints of every indexed item; thumbnails for anything else are garbage.
     pub fn live_fingerprints(&self) -> Result<HashSet<u64>> {
-        let conn = self.reader();
+        let conn = self.reader()?;
         let mut stmt = conn.prepare("SELECT path, size, mtime_ms FROM items")?;
         let set = stmt
             .query_map([], |r| {
@@ -414,15 +446,17 @@ impl Library {
         }
     }
 
-    /// The grid's rows for a `WHERE` filter fragment. `Starred` filters to `rating >= 1`; the
-    /// `items_starred` partial index can narrow that scan, but the query still joins `folders`
-    /// and orders by `GRID_ORDER`, so it does not serve the query outright the way it does
-    /// `starred_count`.
+    /// The grid's rows for a `WHERE` filter fragment, applied both to the rows returned and
+    /// to the per-folder minimum the order is built on (see `oldest_join`). `Starred`
+    /// filters to `rating >= 1`; the `items_starred` partial index can narrow that scan, but
+    /// the query still joins `folders` and orders by `GRID_ORDER`, so it does not serve the
+    /// query outright the way it does `starred_count`.
     fn entries_filtered(&self, filter: &str) -> Result<Vec<GridEntry>> {
-        let conn = self.reader();
+        let conn = self.reader()?;
+        let oldest = oldest_join(filter);
         let mut stmt = conn.prepare(&format!(
             "SELECT {GRID_COLUMNS}
-             FROM items i JOIN folders f ON f.id = i.folder_id
+             FROM items i JOIN folders f ON f.id = i.folder_id {oldest}
              WHERE i.missing_since IS NULL {filter} {GRID_ORDER}"
         ))?;
         let rows = stmt
@@ -450,14 +484,8 @@ impl Library {
     ///
     /// No join to `folders`: unlike `GRID_ORDER`, nothing here reads a folder column.
     fn recent_entries(&self) -> Result<Vec<GridEntry>> {
-        let conn = self.reader();
-        let mut stmt = conn.prepare(&format!(
-            "SELECT {GRID_COLUMNS}
-             FROM items i
-             WHERE i.missing_since IS NULL
-             ORDER BY i.taken_at DESC, i.file_name DESC, i.id DESC
-             LIMIT {RECENT_LIMIT}"
-        ))?;
+        let conn = self.reader()?;
+        let mut stmt = conn.prepare(&recent_sql())?;
         let rows = stmt
             .query_map([], map_grid_row)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -476,10 +504,11 @@ impl Library {
         if needle.is_empty() {
             return Ok(Vec::new());
         }
-        let conn = self.reader();
+        let conn = self.reader()?;
+        let oldest = oldest_join("");
         let mut stmt = conn.prepare(&format!(
             "SELECT {GRID_COLUMNS}, i.file_name, f.name
-             FROM items i JOIN folders f ON f.id = i.folder_id
+             FROM items i JOIN folders f ON f.id = i.folder_id {oldest}
              WHERE i.missing_since IS NULL {GRID_ORDER}"
         ))?;
         let rows = stmt
@@ -505,7 +534,7 @@ impl Library {
     /// `rating >= 1` also excludes unread rows without a second clause: a comparison
     /// against NULL is never true in SQL.
     pub fn starred_count(&self) -> Result<usize> {
-        let conn = self.reader();
+        let conn = self.reader()?;
         let count: i64 = conn.query_row(
             "SELECT COUNT(*) FROM items WHERE rating >= 1 AND missing_since IS NULL",
             [],
@@ -1016,6 +1045,43 @@ mod tests {
     }
 
     #[test]
+    fn the_starred_view_places_a_folder_by_its_oldest_starred_photo() {
+        // The ordering's per-folder minimum is taken over the rows the view actually shows,
+        // not over the whole folder: the sidebar's sections come from this same filtered
+        // index, so a folder whose only star is recent must sort as a recent folder in
+        // Starred even though its unstarred photos go back years. An implementation that
+        // computed each folder's oldest photo once, over every live row, would pass every
+        // other ordering test and fail this one.
+        let (_dir, lib) = temp_library();
+        let (watched, root) = seed_folder(&lib, Path::new("/p"));
+        let alpha = lib
+            .upsert_folder(watched, Some(root), "/p/alpha", 1)
+            .unwrap();
+        let zulu = lib
+            .upsert_folder(watched, Some(root), "/p/zulu", 1)
+            .unwrap();
+        lib.insert_items(&[
+            rated(alpha, "/p/alpha/old-unstarred.jpg", 1, 0),
+            rated(alpha, "/p/alpha/new-starred.jpg", 9, 1),
+            rated(zulu, "/p/zulu/starred.jpg", 5, 1),
+        ])
+        .unwrap();
+
+        let folders: Vec<i64> = lib
+            .entries_for(GridView::Starred, "")
+            .unwrap()
+            .iter()
+            .map(|e| e.folder_id)
+            .collect();
+        assert_eq!(
+            folders,
+            [alpha, zulu],
+            "alpha's oldest *starred* photo (9) is newer than zulu's (5), so alpha leads; \
+             by its oldest photo overall (1) it would trail"
+        );
+    }
+
+    #[test]
     fn the_recent_view_is_the_newest_photos_first_across_folders() {
         let (_dir, lib) = temp_library();
         let (watched, older_folder) = seed_folder(&lib, Path::new("/p/older"));
@@ -1039,6 +1105,31 @@ mod tests {
             .collect();
 
         assert_eq!(recent, vec![ids[1], ids[3], ids[2], ids[0]]);
+    }
+
+    /// Pins that the Recent query is actually served by `items_recent` rather than by a
+    /// scan and sort. An index whose columns or direction drift from the `ORDER BY` still
+    /// exists and still passes the migration test, but SQLite silently stops using it.
+    #[test]
+    fn the_recent_view_is_served_by_its_index() {
+        let (_dir, lib) = temp_library();
+        let conn = lib.reader().unwrap();
+        let mut stmt = conn
+            .prepare(&format!("EXPLAIN QUERY PLAN {}", recent_sql()))
+            .unwrap();
+        let plan: Vec<String> = stmt
+            .query_map([], |r| r.get::<_, String>(3))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert!(
+            plan.iter().any(|step| step.contains("items_recent")),
+            "expected an index walk, got {plan:?}"
+        );
+        assert!(
+            !plan.iter().any(|step| step.contains("TEMP B-TREE")),
+            "the order must come from the index, not a sort: {plan:?}"
+        );
     }
 
     #[test]

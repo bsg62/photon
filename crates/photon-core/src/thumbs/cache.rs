@@ -35,6 +35,14 @@ impl ThumbSize {
 
 const WEBP_QUALITY: f32 = 85.0;
 
+/// libwebp's speed/size trade-off, 0 (fastest) to 6 (smallest). The crate's plain `encode`
+/// uses 4, which cost ~70ms of the ~225ms it takes to thumbnail a 24 MP photo; 2 encodes
+/// the same 1600px preview in ~19ms for files about 15% larger. Thumbnails are written once
+/// and read from a local disk, so the bytes are cheap and the worker time is not: this is
+/// roughly a fifth more import throughput per worker. Measured on a synthetic image; a real
+/// photo's size difference may be smaller or larger, its time saving similar.
+const WEBP_METHOD: i32 = 2;
+
 /// Prefix for the temp file `write_webp` renames into place. Named by us rather than left to
 /// `tempfile`'s default so garbage collection can recognise one.
 const TEMP_PREFIX: &str = "thumb-";
@@ -183,13 +191,18 @@ fn write_webp(img: &DynamicImage, dest: &Path) -> Result<()> {
     // the image for each of the two sizes written per photo, which on an import of any size
     // is the largest pointless allocation in the pool.
     let data = match img {
-        DynamicImage::ImageRgb8(rgb) => {
-            webp::Encoder::from_rgb(rgb.as_raw(), rgb.width(), rgb.height()).encode(WEBP_QUALITY)
-        }
+        DynamicImage::ImageRgb8(rgb) => encode_webp(&webp::Encoder::from_rgb(
+            rgb.as_raw(),
+            rgb.width(),
+            rgb.height(),
+        ))?,
         _ => {
             let rgba = img.to_rgba8();
-            webp::Encoder::from_rgba(rgba.as_raw(), rgba.width(), rgba.height())
-                .encode(WEBP_QUALITY)
+            encode_webp(&webp::Encoder::from_rgba(
+                rgba.as_raw(),
+                rgba.width(),
+                rgba.height(),
+            ))?
         }
     };
     let dir = dest.parent().expect("thumbnail path has a parent");
@@ -203,6 +216,20 @@ fn write_webp(img: &DynamicImage, dest: &Path) -> Result<()> {
         Err(e) if e.error.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
         Err(e) => Err(e.error.into()),
     }
+}
+
+/// Encodes at [`WEBP_QUALITY`] and [`WEBP_METHOD`]. A failure here is libwebp refusing its
+/// own config or running out of memory, neither of which says anything about the source
+/// photo, so it is reported as I/O: `process_item` then leaves the item `Pending` for a
+/// retry rather than recording it as `Failed`.
+fn encode_webp(encoder: &webp::Encoder<'_>) -> Result<webp::WebPMemory> {
+    let mut config = webp::WebPConfig::new()
+        .map_err(|()| std::io::Error::other("libwebp rejected its default config"))?;
+    config.quality = WEBP_QUALITY;
+    config.method = WEBP_METHOD;
+    encoder
+        .encode_advanced(&config)
+        .map_err(|err| std::io::Error::other(format!("webp encoding failed: {err:?}")).into())
 }
 
 #[cfg(test)]

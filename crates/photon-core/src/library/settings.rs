@@ -12,7 +12,7 @@ const LAST_FOLDER: &str = "last_folder";
 impl Library {
     /// Reads a setting, or `None` when it has never been written.
     fn setting(&self, key: &str) -> Result<Option<String>> {
-        let conn = self.reader();
+        let conn = self.reader()?;
         let value = conn
             .query_row("SELECT value FROM settings WHERE key = ?1", [key], |r| {
                 r.get::<_, String>(0)
@@ -44,7 +44,7 @@ impl Library {
         else {
             return Ok(None);
         };
-        let conn = self.reader();
+        let conn = self.reader()?;
         let exists = conn
             .query_row("SELECT 1 FROM folders WHERE id = ?1", [id], |_| Ok(()))
             .is_ok();
