@@ -9,8 +9,8 @@ use photon_core::{
     grid::{GridIndex, GridView},
     library::{Library, WatchedFolder},
     now_ms,
-    scanner::{ScanOptions, ScanProgress, scan_subtree, scan_watched},
-    thumbs::{ThumbCache, ThumbService},
+    scanner::{ScanOptions, ScanProgress, ScanSink, scan_subtree, scan_watched},
+    thumbs::{Priority, ThumbCache, ThumbService},
 };
 use std::{
     collections::{HashMap, HashSet},
@@ -561,40 +561,19 @@ impl Engine {
             excluded: self.excluded.clone(),
             cancel,
         };
-        let mut last = ScanProgress::default();
-        let mut last_refresh = Instant::now();
-        let mut refreshed_total = 0;
-        let mut last_progress: Option<Instant> = None;
-        let mut on_progress = |p: &ScanProgress| {
-            last = *p;
-            let total = p.added + p.changed;
-            if total != refreshed_total && last_refresh.elapsed() >= THROTTLE {
-                if let Err(err) = self.refresh_grid() {
-                    tracing::warn!(%err, "grid refresh failed");
-                }
-                if let Err(err) = self.thumbs.enqueue_pending() {
-                    tracing::warn!(%err, "could not queue pending thumbnails");
-                }
-                last_refresh = Instant::now();
-                refreshed_total = total;
-            }
-            if last_progress.is_none_or(|t| t.elapsed() >= THROTTLE) {
-                self.events
-                    .scan_progress(ScanProgressEvent::new(watched.id, p, false, false));
-                last_progress = Some(Instant::now());
-            }
+        let mut sink = ScanReporter {
+            engine: self,
+            watched_id: watched.id,
+            last: ScanProgress::default(),
+            last_refresh: Instant::now(),
+            refreshed_total: 0,
+            last_progress: None,
         };
         let result = match &subtree {
-            Some(dir) => scan_subtree(
-                &self.lib,
-                watched,
-                dir,
-                now_ms(),
-                &options,
-                &mut on_progress,
-            ),
-            None => scan_watched(&self.lib, watched, now_ms(), &options, &mut on_progress),
+            Some(dir) => scan_subtree(&self.lib, watched, dir, now_ms(), &options, &mut sink),
+            None => scan_watched(&self.lib, watched, now_ms(), &options, &mut sink),
         };
+        let last = sink.last;
         let cancelled = match &result {
             Ok(report) => report.cancelled,
             Err(err) => {
@@ -631,10 +610,12 @@ impl Engine {
         {
             tracing::warn!(%err, "grid refresh failed");
         }
-        // Outside the guard: `refresh_grid` is the expensive half (it reads every grid row
-        // and makes the UI refetch), but re-queueing pending thumbnails is cheap and is the
-        // only thing that retries an item whose render failed transiently. Leaving it inside
-        // meant such an item waited for an unrelated change, or a restart.
+        // Outside the guard, and the one full sweep a scan makes. New and replaced items
+        // were queued as they were indexed (`ScanReporter::indexed`); this catches what
+        // that cannot: an item whose render failed transiently and sits `Pending` with
+        // nothing else to retry it, and a drive that came back online, whose items the
+        // sweep skipped while it was away. Leaving it inside the guard meant such an item
+        // waited for an unrelated change, or a restart.
         if let Err(err) = self.thumbs.enqueue_pending() {
             tracing::warn!(%err, "could not queue pending thumbnails");
         }
@@ -646,6 +627,50 @@ impl Engine {
         }
         self.events
             .scan_progress(ScanProgressEvent::new(watched.id, &last, true, cancelled));
+    }
+}
+
+/// What one running scan reports back into the engine: the grid rebuilds and progress
+/// events, throttled to [`THROTTLE`], and the ids of freshly indexed items for the
+/// thumbnail queue.
+struct ScanReporter<'a> {
+    engine: &'a Engine,
+    watched_id: i64,
+    last: ScanProgress,
+    last_refresh: Instant,
+    refreshed_total: u64,
+    last_progress: Option<Instant>,
+}
+
+impl ScanSink for ScanReporter<'_> {
+    fn progress(&mut self, p: &ScanProgress) {
+        self.last = *p;
+        let total = p.added + p.changed;
+        if total != self.refreshed_total && self.last_refresh.elapsed() >= THROTTLE {
+            if let Err(err) = self.engine.refresh_grid() {
+                tracing::warn!(%err, "grid refresh failed");
+            }
+            self.last_refresh = Instant::now();
+            self.refreshed_total = total;
+        }
+        if self.last_progress.is_none_or(|t| t.elapsed() >= THROTTLE) {
+            self.engine.events.scan_progress(ScanProgressEvent::new(
+                self.watched_id,
+                p,
+                false,
+                false,
+            ));
+            self.last_progress = Some(Instant::now());
+        }
+    }
+
+    /// Straight onto the queue, in the order the scanner found them. This used to be a
+    /// full `enqueue_pending` on every throttled tick above: a grid-order sort of every
+    /// pending row, every 250ms, for the whole of an import - and, with the grid rebuild
+    /// beside it, most of each tick spent inside the database. The end-of-scan sweep in
+    /// `run_scan` still runs once, for the rows a push cannot know about.
+    fn indexed(&mut self, ids: &[i64]) {
+        self.engine.thumbs.prioritize(ids, Priority::Background);
     }
 }
 

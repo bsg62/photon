@@ -56,6 +56,29 @@ impl ScanReport {
     }
 }
 
+/// Where a running scan reports to.
+///
+/// A trait rather than a second closure because the two reports have different consumers:
+/// `progress` feeds the UI's scan counter, `indexed` feeds the thumbnail queue. Any
+/// `FnMut(&ScanProgress)` is a sink that ignores `indexed`, which is what every test and
+/// the `index` example want.
+pub trait ScanSink {
+    /// Called after every batch, and once more at the end of the scan.
+    fn progress(&mut self, progress: &ScanProgress);
+
+    /// Items just inserted or replaced. Each has `thumb_state = Pending`, so these are
+    /// exactly the rows `Library::pending_thumb_ids` would find, handed over without the
+    /// query: re-running it every 250ms of a scan sorted every pending row in grid order,
+    /// for the whole of an import, to learn what the scanner already knew.
+    fn indexed(&mut self, _ids: &[i64]) {}
+}
+
+impl<F: FnMut(&ScanProgress)> ScanSink for F {
+    fn progress(&mut self, progress: &ScanProgress) {
+        self(progress)
+    }
+}
+
 /// Per-scan settings.
 #[derive(Clone, Debug, Default)]
 pub struct ScanOptions {
@@ -82,7 +105,7 @@ pub fn scan_watched(
     watched: &WatchedFolder,
     scan_id: i64,
     options: &ScanOptions,
-    progress: &mut dyn FnMut(&ScanProgress),
+    progress: &mut dyn ScanSink,
 ) -> Result<ScanReport> {
     let root = Path::new(&watched.path);
     if !root.is_dir() {
@@ -122,7 +145,7 @@ pub fn scan_watched(
         // online/offline as it was too: that decision needs the empty-root guard below,
         // which needs a complete walk, so a cancelled scan of an unmounted mount point
         // must not get marked online.
-        progress(&seen);
+        progress.progress(&seen);
         return Ok(ScanReport {
             cancelled: true,
             ..report
@@ -140,7 +163,7 @@ pub fn scan_watched(
         // unmounted volume, and an unmounted mount point reads as a folder whose INI is
         // gone - which would clear every star it has.
         let restarred = apply_picasa_stars(lib, &walked);
-        progress(&seen);
+        progress.progress(&seen);
         return Ok(ScanReport {
             restarred,
             ..report
@@ -151,7 +174,7 @@ pub fn scan_watched(
     // point behind, not that every known file vanished at once.
     if seen.files_seen == 0 && known.values().any(|k| !k.missing) {
         lib.set_watched_online(watched.id, false)?;
-        progress(&seen);
+        progress.progress(&seen);
         return Ok(ScanReport {
             offline: true,
             ..ScanReport::default()
@@ -166,7 +189,7 @@ pub fn scan_watched(
     let (marked, purged) = finish_mark_purge(lib, known, &incomplete_prefixes)?;
     lib.prune_folders(watched.id, scan_id)?;
 
-    progress(&seen);
+    progress.progress(&seen);
     Ok(ScanReport {
         marked_missing: marked,
         purged,
@@ -196,7 +219,7 @@ pub fn scan_subtree(
     dir: &Path,
     scan_id: i64,
     options: &ScanOptions,
-    progress: &mut dyn FnMut(&ScanProgress),
+    progress: &mut dyn ScanSink,
 ) -> Result<ScanReport> {
     let root = Path::new(&watched.path);
     if !root.is_dir() {
@@ -283,7 +306,7 @@ pub fn scan_subtree(
     )?;
 
     if outcome.cancelled {
-        progress(&outcome.seen);
+        progress.progress(&outcome.seen);
         return Ok(ScanReport {
             cancelled: true,
             ..outcome.report
@@ -295,7 +318,7 @@ pub fn scan_subtree(
     let restarred = apply_picasa_stars(lib, &outcome.walked);
 
     if outcome.skip_mark_purge {
-        progress(&outcome.seen);
+        progress.progress(&outcome.seen);
         return Ok(ScanReport {
             restarred,
             ..outcome.report
@@ -309,7 +332,7 @@ pub fn scan_subtree(
     report.purged = purged;
     report.restarred = restarred;
 
-    progress(&outcome.seen);
+    progress.progress(&outcome.seen);
     Ok(report)
 }
 
@@ -378,7 +401,7 @@ fn walk_tree(
     folder_ids: &mut HashMap<PathBuf, i64>,
     scan_id: i64,
     options: &ScanOptions,
-    progress: &mut dyn FnMut(&ScanProgress),
+    progress: &mut dyn ScanSink,
 ) -> Result<WalkOutcome> {
     let mut report = ScanReport::default();
     let mut seen = ScanProgress::default();
@@ -613,16 +636,17 @@ fn flush_new(
     batch: &mut Vec<NewItem>,
     report: &mut ScanReport,
     seen: &mut ScanProgress,
-    progress: &mut dyn FnMut(&ScanProgress),
+    progress: &mut dyn ScanSink,
 ) -> Result<()> {
     if batch.is_empty() {
         return Ok(());
     }
-    lib.insert_items(batch)?;
+    let ids = lib.insert_items(batch)?;
     report.added += batch.len() as u64;
     seen.added = report.added;
     batch.clear();
-    progress(seen);
+    progress.indexed(&ids);
+    progress.progress(seen);
     Ok(())
 }
 
@@ -631,16 +655,20 @@ fn flush_changed(
     batch: &mut Vec<(i64, NewItem)>,
     report: &mut ScanReport,
     seen: &mut ScanProgress,
-    progress: &mut dyn FnMut(&ScanProgress),
+    progress: &mut dyn ScanSink,
 ) -> Result<()> {
     if batch.is_empty() {
         return Ok(());
     }
     lib.update_items(batch)?;
+    // Replaced rows are reset to `Pending` by `update_items`, so they are pending
+    // thumbnails just as new rows are.
+    let ids: Vec<i64> = batch.iter().map(|(id, _)| *id).collect();
     report.changed += batch.len() as u64;
     seen.changed = report.changed;
     batch.clear();
-    progress(seen);
+    progress.indexed(&ids);
+    progress.progress(seen);
     Ok(())
 }
 
@@ -674,7 +702,14 @@ mod tests {
     use std::time::Duration;
 
     fn scan(lib: &Library, watched: &WatchedFolder, scan_id: i64) -> ScanReport {
-        scan_watched(lib, watched, scan_id, &ScanOptions::default(), &mut |_| {}).unwrap()
+        scan_watched(
+            lib,
+            watched,
+            scan_id,
+            &ScanOptions::default(),
+            &mut |_: &ScanProgress| {},
+        )
+        .unwrap()
     }
 
     fn key(path: &Path) -> String {
@@ -705,9 +740,13 @@ mod tests {
         let watched = lib.add_watched_folder(&root, &[]).unwrap();
 
         let mut last = None;
-        let report = scan_watched(&lib, &watched, 1, &ScanOptions::default(), &mut |p| {
-            last = Some(*p)
-        })
+        let report = scan_watched(
+            &lib,
+            &watched,
+            1,
+            &ScanOptions::default(),
+            &mut |p: &ScanProgress| last = Some(*p),
+        )
         .unwrap();
         assert_eq!(
             (report.added, report.changed, report.offline),
@@ -727,6 +766,45 @@ mod tests {
         assert_eq!(names, ["photos", "2024"]);
         let sub = &lib.folders().unwrap()[1];
         assert_eq!(sub.parent_id, Some(lib.folders().unwrap()[0].id));
+    }
+
+    /// A sink that keeps every id the scan reports as freshly indexed.
+    #[derive(Default)]
+    struct Indexed(Vec<i64>);
+
+    impl ScanSink for Indexed {
+        fn progress(&mut self, _: &ScanProgress) {}
+        fn indexed(&mut self, ids: &[i64]) {
+            self.0.extend_from_slice(ids);
+        }
+    }
+
+    /// The thumbnail queue used to learn about new photos only by re-running the full
+    /// pending query every 250ms of a scan - a grid-order sort of every pending row, for the
+    /// whole of an import. The scanner already has the ids it just inserted or replaced,
+    /// which are exactly the rows that query would find, so it hands them over directly.
+    #[test]
+    fn new_and_changed_items_are_reported_to_the_sink_as_they_are_indexed() {
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        let a = write_file(&root, "a.jpg", &jpeg_bytes(8, 8));
+        write_file(&root, "b.jpg", &jpeg_bytes(8, 8));
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
+
+        let mut first = Indexed::default();
+        scan_watched(&lib, &watched, 1, &ScanOptions::default(), &mut first).unwrap();
+        let known = lib.known_items(watched.id).unwrap();
+        let mut expected: Vec<i64> = known.values().map(|k| k.id).collect();
+        expected.sort();
+        first.0.sort();
+        assert_eq!(first.0, expected, "both new photos are reported");
+
+        // A changed file is replaced in place and its thumbnail reset, so it is reported
+        // again; the unchanged one is not.
+        write_file(&root, "a.jpg", &jpeg_bytes(64, 64));
+        let mut second = Indexed::default();
+        scan_watched(&lib, &watched, 2, &ScanOptions::default(), &mut second).unwrap();
+        assert_eq!(second.0, [known[&key(&a)].id]);
     }
 
     #[test]
@@ -1064,7 +1142,7 @@ mod tests {
             excluded: vec![root.join("cache")],
             ..ScanOptions::default()
         };
-        let report = scan_watched(&lib, &watched, 1, &options, &mut |_| {}).unwrap();
+        let report = scan_watched(&lib, &watched, 1, &options, &mut |_: &ScanProgress| {}).unwrap();
         assert_eq!(report.added, 1);
         assert!(lib.folders().unwrap().iter().all(|f| f.name != "cache"));
     }
@@ -1083,7 +1161,7 @@ mod tests {
         options
             .cancel
             .store(true, std::sync::atomic::Ordering::Relaxed);
-        let report = scan_watched(&lib, &watched, 2, &options, &mut |_| {}).unwrap();
+        let report = scan_watched(&lib, &watched, 2, &options, &mut |_: &ScanProgress| {}).unwrap();
 
         assert!(report.cancelled);
         assert_eq!((report.marked_missing, report.purged), (0, 0));
@@ -1107,7 +1185,7 @@ mod tests {
             dir,
             scan_id,
             &ScanOptions::default(),
-            &mut |_| {},
+            &mut |_: &ScanProgress| {},
         )
         .unwrap()
     }
@@ -1239,16 +1317,30 @@ mod tests {
             excluded: vec![root.join("a").join("cache")],
             ..ScanOptions::default()
         };
-        let report =
-            scan_subtree(&lib, &watched, &root.join("a"), 1, &excluded, &mut |_| {}).unwrap();
+        let report = scan_subtree(
+            &lib,
+            &watched,
+            &root.join("a"),
+            1,
+            &excluded,
+            &mut |_: &ScanProgress| {},
+        )
+        .unwrap();
         assert_eq!(report.added, 1);
 
         let cancelled = ScanOptions::default();
         cancelled
             .cancel
             .store(true, std::sync::atomic::Ordering::Relaxed);
-        let report =
-            scan_subtree(&lib, &watched, &root.join("a"), 2, &cancelled, &mut |_| {}).unwrap();
+        let report = scan_subtree(
+            &lib,
+            &watched,
+            &root.join("a"),
+            2,
+            &cancelled,
+            &mut |_: &ScanProgress| {},
+        )
+        .unwrap();
         assert!(report.cancelled);
         assert_eq!(report.marked_missing, 0);
     }
@@ -1308,7 +1400,7 @@ mod tests {
         options
             .cancel
             .store(true, std::sync::atomic::Ordering::Relaxed);
-        let report = scan_watched(&lib, &watched, 2, &options, &mut |_| {}).unwrap();
+        let report = scan_watched(&lib, &watched, 2, &options, &mut |_: &ScanProgress| {}).unwrap();
 
         assert!(report.cancelled);
         assert!(!lib.watched_folders().unwrap()[0].online);
