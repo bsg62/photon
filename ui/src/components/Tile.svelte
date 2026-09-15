@@ -3,6 +3,7 @@
   import { mediaUrl, type GridEntry } from '../lib/api';
   import { TILE } from '../lib/layout';
   import { library } from '../lib/library.svelte';
+  import { createThumbRequest } from '../lib/thumb-request.svelte';
 
   let {
     entry,
@@ -22,17 +23,31 @@
   let status = $state<'loading' | 'loaded' | 'broken'>('loading');
   let attempt = $state(0);
   let retryTimer: ReturnType<typeof setTimeout> | undefined;
-  const key = $derived(entry ? `${entry.id}/${entry.thumbKey}` : '');
+  const key = $derived(entry ? `thumb/${entry.id}/grid/${entry.thumbKey}` : '');
+  const request = createThumbRequest();
   const src = $derived(
-    entry ? mediaUrl(`thumb/${entry.id}/grid/${entry.thumbKey}`) + (attempt ? `?retry=${attempt}` : '') : undefined,
+    request.requested ? mediaUrl(request.requested) + (attempt ? `?retry=${attempt}` : '') : undefined,
   );
 
-  // A different item or file version starts fresh. Tiles are keyed by grid offset, not
-  // photo id, so the entry can change under a live tile (e.g. a scan renumbers the
-  // grid) without unmounting: a pending retry from the old photo must not fire against
-  // the new one, so cancel it whenever `key` changes or the tile unmounts.
+  // Tiles are keyed by grid offset, not photo id, so the entry changes under a live tile
+  // without it unmounting - every frame of a fast scroll. `request` is what decides when
+  // that becomes an actual round trip; see `createThumbRequest` for why asking for each one
+  // starves the tiles that finally stop on screen. The cancel covers both a key that moves
+  // on again before it settles and the tile unmounting.
   $effect(() => {
-    void key;
+    const assigned = key;
+    if (assigned) request.show(assigned);
+    return () => request.cancel();
+  });
+
+  // A different item or file version starts fresh. This tracks the photo actually
+  // requested, not the one assigned: `status` describes whatever `src` currently points at,
+  // and resetting it for a key the tile has not asked for yet would blank a loaded
+  // thumbnail - including when a scroll comes straight back to the photo already showing,
+  // where no new `src` is set and so no `onload` would ever arrive to clear it again.
+  // A pending retry belongs to the old photo, so it is cancelled here too.
+  $effect(() => {
+    void request.requested;
     status = 'loading';
     attempt = 0;
     return () => {
@@ -72,7 +87,7 @@
   onclick={onselect}
   ondblclick={onopen}
 >
-  {#if entry && status !== 'broken'}
+  {#if entry && src && status !== 'broken'}
     <img {src} alt="" draggable="false" decoding="async" class:loaded={status === 'loaded'} onload={() => (status = 'loaded')} {onerror} />
   {:else if status === 'broken'}
     <span class="broken" title="This photo can't be shown">⚠</span>
