@@ -13,12 +13,24 @@ use std::{
     time::{Duration, Instant},
 };
 
-/// Worker threads for thumbnail generation: all cores but one, so the UI stays responsive.
+/// The most thumbnail workers photon will run, however many cores the machine has.
+///
+/// Each worker holds a whole decoded image while it downscales it, and `image`'s default
+/// limit allows up to 512 MiB for one decode, so the peak memory of the thumbnail pool is
+/// this number times that. Without a cap it grows with the core count: a 32-core machine
+/// importing a folder of large scans or panoramas could put ~16 GiB of decode buffers in
+/// flight at once. Eight workers saturate the disk on any machine photon runs on, so the
+/// cap costs no throughput worth having.
+const MAX_WORKERS: usize = 8;
+
+/// Worker threads for thumbnail generation: all cores but one, so the UI stays responsive,
+/// and never more than [`MAX_WORKERS`].
 pub fn default_workers() -> usize {
-    std::thread::available_parallelism()
-        .map(|n| n.get().saturating_sub(1))
-        .unwrap_or(1)
-        .max(1)
+    worker_count(std::thread::available_parallelism().map_or(1, |n| n.get()))
+}
+
+fn worker_count(parallelism: usize) -> usize {
+    parallelism.saturating_sub(1).clamp(1, MAX_WORKERS)
 }
 
 pub struct ThumbService {
@@ -349,6 +361,17 @@ mod tests {
             service.request(9_999, ThumbSize::Grid, t),
             Err(Error::NotFound(9_999))
         ));
+    }
+
+    #[test]
+    fn worker_count_leaves_a_core_free_and_stops_at_the_cap() {
+        assert_eq!(worker_count(1), 1, "a single core still gets one worker");
+        assert_eq!(worker_count(4), 3, "one core stays free for the UI");
+        assert_eq!(
+            worker_count(64),
+            MAX_WORKERS,
+            "peak decode memory is bounded by the cap, not by the core count"
+        );
     }
 
     #[test]

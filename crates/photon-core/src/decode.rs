@@ -17,6 +17,12 @@ pub fn apply_orientation(img: DynamicImage, orientation: u8) -> DynamicImage {
 }
 
 /// Decodes `path` (format sniffed from its bytes), fits it within `max_edge` and orients it.
+///
+/// The decode runs under `image`'s default limits, which cap one decode's allocations at
+/// 512 MiB - roughly a 134 MP photo at RGBA8, so well clear of any camera photon will meet,
+/// while a header claiming absurd dimensions is refused before anything is allocated. That
+/// is a per-decode bound, not a total: what keeps the sum of the workers' decode buffers
+/// bounded is `MAX_WORKERS`, so the two belong together.
 pub fn decode_oriented(path: &Path, orientation: u8, max_edge: u32) -> Result<DynamicImage> {
     let img = ImageReader::open(path)?.with_guessed_format()?.decode()?;
     let img = if img.width().max(img.height()) > max_edge {
