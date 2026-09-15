@@ -150,6 +150,7 @@ pub fn run() {
             ipc::grid_info,
             ipc::grid_rows,
             ipc::grid_offset_of_folder,
+            ipc::grid_offset_of_item,
             ipc::last_folder,
             ipc::set_last_folder,
             ipc::set_grid_view,

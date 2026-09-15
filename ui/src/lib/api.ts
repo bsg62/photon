@@ -49,6 +49,9 @@ export const api = {
   gridInfo: () => invoke<GridInfo>('grid_info'),
   gridRows: (offset: number, count: number) => invoke<GridRows>('grid_rows', { offset, count }),
   gridOffsetOfFolder: (folderId: number) => invoke<number | null>('grid_offset_of_folder', { folderId }),
+  /** Where an item sits in the current grid, or null if this view no longer holds it. The
+   *  viewer uses it to re-find the photo it is showing after the index is rebuilt. */
+  gridOffsetOfItem: (itemId: number) => invoke<number | null>('grid_offset_of_item', { itemId }),
   lastFolder: () => invoke<number | null>('last_folder'),
   setLastFolder: (folderId: number) => invoke<void>('set_last_folder', { folderId }),
   setGridView: (view: GridView) => invoke<void>('set_grid_view', { view }),

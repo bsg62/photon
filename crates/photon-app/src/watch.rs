@@ -96,18 +96,6 @@ impl WatcherService {
             );
         }
 
-        // Tell the UI about every root that just failed to register, now rather than
-        // whenever some later scan happens to finish. `folder-status` is otherwise only
-        // emitted at the tail of a scan, and this runs *after* every start-up scan has
-        // already reported `degraded: false` — so a launch-time failure (an exhausted
-        // inotify limit, say) would stay invisible until the first five-minute tick
-        // produced a scan of its own, with the status bar claiming live updates are fine
-        // in the meantime.
-        let just_degraded: Vec<i64> = degraded.lock().clone();
-        for id in just_degraded {
-            engine.emit_folder_status(id, true);
-        }
-
         let tick_handle = {
             let tick_engine = engine.clone();
             let tick_pending = pending.clone();
@@ -418,10 +406,11 @@ fn try_start_watcher(
                 }
             }
             let mut degraded = degraded.lock();
-            for id in failed {
-                mark_degraded(&mut degraded, id);
+            for id in &failed {
+                mark_degraded(&mut degraded, *id);
             }
             drop(degraded);
+            announce_degraded(engine, &failed);
             Some((watcher, rx, errors))
         }
         Err(err) => {
@@ -429,10 +418,13 @@ fn try_start_watcher(
                 %err,
                 "could not start the filesystem watcher; watched folders will rely on periodic rescans"
             );
+            let online: Vec<i64> = watched.iter().filter(|w| w.online).map(|w| w.id).collect();
             let mut degraded = degraded.lock();
-            for w in watched.iter().filter(|w| w.online) {
-                mark_degraded(&mut degraded, w.id);
+            for id in &online {
+                mark_degraded(&mut degraded, *id);
             }
+            drop(degraded);
+            announce_degraded(engine, &online);
             None
         }
     }
@@ -463,6 +455,20 @@ fn try_register(
         degraded.lock().retain(|x| *x != id);
     }
     outcome
+}
+
+/// Tells the UI that these roots are relying on periodic rescans.
+///
+/// Called by `try_start_watcher` itself rather than by its callers: `folder-status` is
+/// otherwise only emitted at the tail of a scan, so a registration failure stays invisible
+/// until some unrelated scan finishes, with the status bar claiming live updates are fine in
+/// the meantime. `start` used to do this for itself, which left the five-minute retry - the
+/// path that runs when the watcher subsystem is down, i.e. exactly when roots are most
+/// likely to fail registration - announcing nothing at all.
+fn announce_degraded(engine: &Arc<Engine>, ids: &[i64]) {
+    for id in ids {
+        engine.emit_folder_status(*id, true);
+    }
 }
 
 /// Adds `id` to `degraded` if it isn't there already.
@@ -1208,6 +1214,33 @@ mod tests {
     /// delivered. A restart that only re-registers the watch leaves everything added or
     /// deleted during the outage unindexed until the user happens to touch those directories
     /// again, because the freshly installed watch cannot have seen any of it.
+    /// A root degraded by the five-minute retry must be reported like one degraded at
+    /// start-up. The emit used to live in `start`, so a root that failed to register on a
+    /// restart went unannounced and the status bar kept claiming live updates were fine
+    /// until some unrelated scan happened to finish.
+    #[test]
+    fn a_root_degraded_by_the_retry_is_reported_too() {
+        let f = fixture(&[]);
+        let watched = f.add_photos();
+        // The root is gone but still flagged online, so registering its watch fails - the
+        // same outcome an exhausted inotify limit produces, without needing one.
+        std::fs::remove_dir_all(&f.photos).unwrap();
+
+        let degraded = Arc::new(Mutex::new(Vec::new()));
+        let started = try_start_watcher(&f.engine, &degraded);
+
+        assert_eq!(
+            degraded.lock().clone(),
+            vec![watched.id],
+            "the root could not be registered"
+        );
+        assert!(
+            last_degraded(&f, watched.id),
+            "and the UI is told, wherever the attempt came from"
+        );
+        drop(started);
+    }
+
     #[test]
     fn a_restarted_watcher_rescans_the_roots_it_recovers() {
         let img = jpeg(16, 16);

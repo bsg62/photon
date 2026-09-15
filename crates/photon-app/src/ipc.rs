@@ -64,6 +64,11 @@ pub fn grid_offset_of_folder(engine: Eng<'_>, folder_id: i64) -> Option<usize> {
 }
 
 #[tauri::command(async)]
+pub fn grid_offset_of_item(engine: Eng<'_>, item_id: i64) -> Option<usize> {
+    commands::grid_offset_of_item(&engine, item_id)
+}
+
+#[tauri::command(async)]
 pub fn last_folder(engine: Eng<'_>) -> Result<Option<i64>, AppError> {
     commands::last_folder(&engine)
 }
