@@ -106,3 +106,28 @@ export async function enterFolder(
   if (deps.currentView() !== 'all') await deps.setView('all');
   deps.jump(folderId);
 }
+
+/** "Locate in photon" from the viewer: lands the grid on the photo, selected and in view.
+ *
+ *  The same shape as `enterFolder`, for the same two reasons: a pending search must not
+ *  re-enter Search behind the jump, and the photo's offset is only meaningful against the
+ *  index of the view it is looked up in, so a subset view (Starred, Search, Recent) is left
+ *  for All *before* the lookup. Looking it up first and then switching would hand the grid
+ *  an offset from the wrong index. A photo the library no longer holds selects nothing. */
+export async function locateItem(
+  itemId: number,
+  deps: {
+    cancelSearch: () => void;
+    currentView: () => GridView;
+    setView: (view: GridView) => Promise<void>;
+    offsetOfItem: (itemId: number) => Promise<number | null>;
+    select: (offset: number) => void;
+  },
+): Promise<void> {
+  deps.cancelSearch();
+  if (deps.currentView() !== 'all') await deps.setView('all');
+  const at = await deps.offsetOfItem(itemId);
+  if (at === null) return;
+  deps.select(at);
+}
+

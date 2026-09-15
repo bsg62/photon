@@ -25,6 +25,8 @@ export interface ViewerItem {
   height: number;
   orientation: number;
   takenAt: number;
+  /** File size in bytes. */
+  size: number;
   thumbKey: string;
   thumbState: 'pending' | 'ready' | 'failed';
   thumbError: string | null;

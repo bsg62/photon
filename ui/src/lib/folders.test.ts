@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Folder, GridView } from './api';
-import { enterFolder, folderRows, groupByYear, rootFolderOf } from './folders';
+import { enterFolder, locateItem, folderRows, groupByYear, rootFolderOf } from './folders';
 
 /** Seconds since the epoch, since that is what `takenAtMin` carries. */
 const at = (iso: string) => Math.floor(new Date(iso).getTime() / 1000);
@@ -149,3 +149,44 @@ describe('enterFolder', () => {
     expect(order).toEqual(['cancel', 'jump']);
   });
 });
+
+describe('locateItem', () => {
+  function spyDeps(view: GridView, at: number | null = 5) {
+    const order: string[] = [];
+    return {
+      order,
+      deps: {
+        cancelSearch: () => order.push('cancel'),
+        currentView: () => view,
+        setView: (v: GridView) => {
+          order.push(`setView:${v}`);
+          return Promise.resolve();
+        },
+        offsetOfItem: (id: number) => {
+          order.push(`find:${id}`);
+          return Promise.resolve(at);
+        },
+        select: (offset: number) => order.push(`select:${offset}`),
+      },
+    };
+  }
+
+  it('leaves a subset view for All before looking the photo up, so the offset is against the right index', async () => {
+    const { order, deps } = spyDeps('starred');
+    await locateItem(42, deps);
+    expect(order).toEqual(['cancel', 'setView:all', 'find:42', 'select:5']);
+  });
+
+  it('does not switch views when already in All', async () => {
+    const { order, deps } = spyDeps('all');
+    await locateItem(42, deps);
+    expect(order).toEqual(['cancel', 'find:42', 'select:5']);
+  });
+
+  it('selects nothing when the photo is no longer in the library', async () => {
+    const { order, deps } = spyDeps('all', null);
+    await locateItem(42, deps);
+    expect(order).toEqual(['cancel', 'find:42']);
+  });
+});
+

@@ -1,10 +1,22 @@
 <script lang="ts">
   import { untrack } from 'svelte';
+  import { writeText } from '@tauri-apps/plugin-clipboard-manager';
   import { api, errorMessage, mediaUrl, type ViewerItem } from '../lib/api';
+  import { formatCaption } from '../lib/caption';
+  import { createCopyFeedback } from '../lib/copied.svelte';
   import { library } from '../lib/library.svelte';
   import { MAX_ZOOM, MIN_ZOOM, clampPan, clampZoom, closesViewer, positionInView, wheelStep } from '../lib/nav';
 
-  let { offset, onclose }: { offset: number; onclose: (offset: number) => void } = $props();
+  let {
+    offset,
+    onclose,
+    onlocate,
+  }: {
+    offset: number;
+    onclose: (offset: number) => void;
+    /** "Locate in photon": the viewer closes and the grid lands on this photo. */
+    onlocate: (itemId: number) => void;
+  } = $props();
 
   const PRELOAD_RADIUS = 2;
   let current = $state(untrack(() => offset));
@@ -26,6 +38,45 @@
    *  those views only show a subset of the folder's photos. Recent has no folder runs to
    *  count within and is numbered flat — see `positionInView`. */
   const position = $derived(positionInView(library.info.view, library.info.sections, current, library.info.len));
+  const caption = $derived(item ? formatCaption(item, position) : '');
+
+  // Click-to-copy on the caption. The clipboard goes through the Tauri plugin rather than
+  // `navigator.clipboard`, which needs a secure context and answers differently in the
+  // three webviews photon ships in.
+  const copy = createCopyFeedback(writeText);
+  $effect(() => () => copy.dispose());
+
+  function copyName() {
+    if (item) copy.copy(item.fileName).catch(library.reportError);
+  }
+
+  let menu = $state<{ x: number; y: number } | null>(null);
+  let menuEl = $state<HTMLDivElement | undefined>();
+
+  $effect(() => {
+    if (menu) menuEl?.focus();
+  });
+
+  function oncontextmenu(e: MouseEvent) {
+    e.preventDefault();
+    if (item) menu = { x: e.clientX, y: e.clientY };
+  }
+
+  function closeMenu() {
+    menu = null;
+  }
+
+  function locate() {
+    if (!item) return;
+    closeMenu();
+    onlocate(item.id);
+  }
+
+  function reveal() {
+    if (!item) return;
+    closeMenu();
+    api.revealInFileManager(item.id).catch(library.reportError);
+  }
 
   function viewport(): { width: number; height: number } {
     return { width: stage?.clientWidth ?? 0, height: stage?.clientHeight ?? 0 };
@@ -131,6 +182,12 @@
   });
 
   function onkeydown(e: KeyboardEvent) {
+    // An open menu takes Escape first, the way any menu does; the viewer is next.
+    if (e.key === 'Escape' && menu) {
+      e.preventDefault();
+      closeMenu();
+      return;
+    }
     if (e.key === 'Escape') {
       e.preventDefault();
       onclose(current);
@@ -224,7 +281,7 @@
   }
 </script>
 
-<svelte:window {onkeydown} onpointerdown={onbackbutton} />
+<svelte:window {onkeydown} onpointerdown={onbackbutton} onclick={closeMenu} />
 
 <!-- The pan handlers live here rather than on the stage below: this element already carries
      a role, and dragging anywhere in the viewer is easier to hit than the photo alone. -->
@@ -239,6 +296,7 @@
   {onpointermove}
   {onpointerup}
   onpointercancel={onpointerup}
+  {oncontextmenu}
 >
   {#if error}
     <p class="error">{error}</p>
@@ -256,9 +314,24 @@
       {/if}
     </div>
   {/if}
-  <div class="caption">
-    {item?.fileName ?? ''}{#if position.count} · {position.index} / {position.count}{/if}
-  </div>
+  <!-- A button, because a click copies the file name. The confirmation replaces the whole
+       line for a moment rather than appending to it, so the line does not jump in width. -->
+  <button class="caption" onclick={copyName} disabled={!item} title="Click to copy the file name">
+    {copy.copied ? 'Copied' : caption}
+  </button>
+  {#if menu && item}
+    <div
+      class="menu"
+      role="menu"
+      tabindex="-1"
+      bind:this={menuEl}
+      style:left="{menu.x}px"
+      style:top="{menu.y}px"
+    >
+      <button role="menuitem" onclick={locate}>Locate in photon</button>
+      <button role="menuitem" onclick={reveal}>Reveal in file manager</button>
+    </div>
+  {/if}
   <div class="zoom">
     <input
       type="range"
@@ -284,7 +357,22 @@
      of panning. */
   img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; image-orientation: from-image; user-select: none; -webkit-user-drag: none; }
   .hidden { visibility: hidden; }
-  .caption { position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%); padding: 4px 10px; background: #0009; border-radius: 4px; color: var(--muted); font-size: 12px; }
+  .caption { position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%); padding: 4px 10px; border: 0; background: #0009; border-radius: 4px; color: var(--muted); font-size: 12px; white-space: nowrap; cursor: pointer; }
+  .caption:hover:not(:disabled) { color: var(--text); }
+  .caption:disabled { cursor: default; }
+  .menu {
+    position: fixed;
+    z-index: 40;
+    display: flex;
+    flex-direction: column;
+    min-width: 200px;
+    padding: 4px;
+    background: var(--panel-2);
+    border-radius: 6px;
+    box-shadow: 0 6px 24px #0008;
+  }
+  .menu button { padding: 6px 10px; border: 0; background: none; text-align: left; cursor: pointer; border-radius: 4px; }
+  .menu button:hover { background: #ffffff14; }
   .zoom { position: absolute; bottom: 12px; right: 12px; display: flex; align-items: center; gap: 8px; padding: 4px 10px; background: #0009; border-radius: 4px; }
   .zoom input { width: 120px; }
   .level { color: var(--muted); font-size: 12px; min-width: 38px; text-align: right; }
