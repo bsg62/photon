@@ -142,6 +142,34 @@ describe('LibraryStore', () => {
     expect(store.anyDegraded).toBe(false);
   });
 
+  it('ignores a folder list that arrives after a later one', async () => {
+    // `refreshFolders` has three callers that can overlap. Removing a watched folder
+    // mid-scan emits a final `done: true` whose listener fires one of them, which can read
+    // the database before the deletion commits; `FolderTree.remove` awaits its own. If the
+    // first resolves last, the deleted root comes back in the sidebar - with a working
+    // context menu - until some unrelated event happens to refresh it again.
+    vi.mocked(api.listFolders).mockResolvedValue({
+      watched: [{ id: 1, path: '/a', online: true }],
+      folders: [],
+    });
+    const store = new LibraryStore();
+    await store.init();
+
+    const stale = deferred<{ watched: { id: number; path: string; online: boolean }[]; folders: [] }>();
+    vi.mocked(api.listFolders).mockReturnValueOnce(stale.promise as never);
+    const inFlight = store.refreshFolders();
+
+    vi.mocked(api.listFolders).mockResolvedValue({ watched: [], folders: [] });
+    await store.refreshFolders();
+    expect(store.folders.watched).toEqual([]);
+
+    // The scan-done refresh answers last, with what the database held before the removal.
+    stale.resolve({ watched: [{ id: 1, path: '/a', online: true }], folders: [] });
+    await inFlight;
+
+    expect(store.folders.watched).toEqual([]);
+  });
+
   it('is idempotent: a second init() call never registers more than the three subscriptions', async () => {
     const store = new LibraryStore();
     const first = store.init();

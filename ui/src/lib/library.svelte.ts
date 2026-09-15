@@ -88,8 +88,21 @@ export class LibraryStore {
     this.pageTick++;
   }
 
+  /** Sequence of the most recently *issued* folder-list request; see `refreshFolders`. */
+  private folderSeq = 0;
+
   async refreshFolders(): Promise<void> {
-    this.folders = await api.listFolders();
+    // Three callers can have one of these in flight at once, and they can answer out of
+    // order. Removing a watched folder mid-scan emits a final `done: true` whose listener
+    // fires a refresh that may read the database before the deletion commits, while
+    // `FolderTree.remove` awaits its own; if the first answers last, the deleted root comes
+    // back in the sidebar - with a working context menu - until some unrelated event
+    // refreshes it again. Only the newest request may write, the same rule `refresh` applies
+    // through the grid version.
+    const seq = ++this.folderSeq;
+    const folders = await api.listFolders();
+    if (seq !== this.folderSeq) return;
+    this.folders = folders;
   }
 
   /** Switches which photos the grid shows. The backend rebuilds its index, so the grid is
