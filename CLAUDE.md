@@ -33,6 +33,12 @@ cargo test -p photon-core --lib scanner          # one module
 npm test -w ui -- src/lib/nav.test.ts            # one UI file
 ```
 
+**There is no component test harness.** vitest runs with `environment: 'node'`, so a
+`.svelte` file cannot be rendered or asserted on. Logic that needs a test goes in a
+`.svelte.ts` factory tested with fake timers (`createSearchBox`, `createThumbRequest`); what
+is left in the component is effect wiring, verified by `svelte-check` and the README's smoke
+checklist, not by a test.
+
 **Repository chores** (also run in CI, so run them before tagging):
 
 ```bash
@@ -78,6 +84,12 @@ or the grid silently never rebuilds.
 folder's photos oldest to newest. The sidebar groups by the same value, so the list is an index
 of the grid. Changing one without the other splits them onto different axes.
 
+**A grid offset is only meaningful against one index version.** Indexing a photo into a
+folder that sorts earlier shifts every later offset, so anything holding an offset across a
+rebuild — the viewer, the grid selection — must re-find its photo by id through
+`grid_offset_of_item`. Clamping catches only the offset falling off the end; in range the
+consumer silently shows a different photo.
+
 ### IPC is three files per command
 
 Adding a command means touching all three, in this order:
@@ -109,6 +121,11 @@ watcher's path). Wiring a post-walk pass into only the first leaves the common c
 every test passes. `scan_subtree`'s `folder_ids` is pre-seeded by `seed_ancestors` with every
 ancestor, so a per-folder pass must use `walked`, not `folder_ids`.
 
+`skip_mark_purge` is set by a walkdir error carrying **no** path — a mid-iteration `read_dir`
+failure (walkdir `lib.rs:1026`), not something the filesystem can be made to do on demand. An
+unlistable walk root sets it too, but `read_stars` lists the directory as well, so that
+branch's star behaviour cannot be tested from the filesystem either way.
+
 ### Schema
 
 `library/schema.rs` holds `MIGRATIONS: &[&str]`, one entry per version, each run in its own
@@ -129,7 +146,9 @@ in SQL.
   `svelte-check`; anything needing eyes goes on the README's `## Manual smoke checklist`.
 - **A new test must be demonstrated to fail with its change reverted.** A compile error is not
   proof — it shows a symbol was missing, not that an assertion discriminates behaviour. Tests
-  that pass with and without the change have shipped here more than once.
+  that pass with and without the change have shipped here more than once. When a change
+  genuinely cannot have one — a race with no seam, a Svelte effect — say so in the commit
+  message and why, rather than adding a test that passes either way.
 - Comments carry the reasoning, not the mechanics. Several exist specifically to stop a future
   reader "simplifying" a load-bearing line; a wrong justification is treated as a defect.
 - Design docs live in `docs/superpowers/specs/`, implementation plans in
@@ -138,11 +157,13 @@ in SQL.
 ## Releasing
 
 The version lives in three files — `crates/photon-app/tauri.conf.json` is authoritative, with
-`Cargo.toml` and `ui/package.json` agreeing — plus the regenerated `Cargo.lock`. Bump all three,
-run `cargo run -p xtask -- versions --tag vX.Y.Z`, commit as `chore(release): X.Y.Z`, then push
-the tag. The tag push triggers `.github/workflows/release.yml`, which builds all platforms and
-creates a **draft** release; verify the six artifacts attached (two `.dmg`, `.deb`, AppImage,
-`.msi`, `SHA256SUMS`) before publishing it.
+`Cargo.toml` and `ui/package.json` agreeing — plus the regenerated `Cargo.lock`. Bump all
+three, regenerate both lockfiles in place with `cargo update -p photon-core -p photon-app -p
+xtask --offline` and `npm install --package-lock-only` (a release commit touches exactly five
+files), run `cargo run -p xtask -- versions --tag vX.Y.Z`, commit as `chore(release): X.Y.Z`,
+then push the tag. The tag push triggers `.github/workflows/release.yml`, which builds all
+platforms and creates a **draft** release; verify the six artifacts attached (two `.dmg`,
+`.deb`, AppImage, `.msi`, `SHA256SUMS`) before publishing it.
 
 Installers are deliberately unsigned. There is no signing identity, no notarization and no
 auto-updater; the README explains the per-OS warnings.
