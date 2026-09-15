@@ -27,6 +27,7 @@ vi.mock('./api', () => ({
     gridInfo: vi.fn(),
     listFolders: vi.fn(),
     gridRows: vi.fn(),
+    gridOffsetOfItem: vi.fn(),
     setGridView: vi.fn(),
     setSearchQuery: vi.fn(),
   },
@@ -140,6 +141,88 @@ describe('LibraryStore', () => {
     await store.refreshFolders();
 
     expect(store.anyDegraded).toBe(false);
+  });
+
+  it('keeps the selection on its photo when the grid is renumbered', async () => {
+    // A grid offset only means "this photo" against one version of the index: a scan that
+    // indexes a photo into an earlier folder shifts every later offset by one. Clamping
+    // catches only the offset falling off the end; in range the selection silently slides
+    // onto the next photo.
+    const entry = (id: number) => ({
+      id,
+      folderId: 1,
+      takenAt: 0,
+      aspect: 1,
+      kind: 'image' as const,
+      thumbKey: '0',
+      starred: false,
+    });
+    vi.mocked(api.gridInfo).mockResolvedValue({
+      version: 1,
+      len: 2,
+      sections: [],
+      starredCount: 0,
+      view: 'all',
+      searchQuery: '',
+    });
+    vi.mocked(api.gridRows).mockResolvedValue({ version: 1, rows: [entry(10), entry(11)] });
+    const store = new LibraryStore();
+    await store.init();
+    await store.ensure(0, 2);
+    store.selected = 1;
+
+    // A photo appears ahead of it, so the one that was at offset 1 is now at offset 2.
+    vi.mocked(api.gridInfo).mockResolvedValue({
+      version: 2,
+      len: 3,
+      sections: [],
+      starredCount: 0,
+      view: 'all',
+      searchQuery: '',
+    });
+    vi.mocked(api.gridOffsetOfItem).mockResolvedValue(2);
+    await store.refresh();
+
+    expect(api.gridOffsetOfItem).toHaveBeenCalledWith(11);
+    expect(store.selected).toBe(2);
+  });
+
+  it('clamps a selection it cannot re-find into the shrunken grid', async () => {
+    // The fallback: nothing was ever loaded at that offset, so there is no id to follow.
+    vi.mocked(api.gridInfo).mockResolvedValue({
+      version: 1,
+      len: 5,
+      sections: [],
+      starredCount: 0,
+      view: 'all',
+      searchQuery: '',
+    });
+    const store = new LibraryStore();
+    await store.init();
+    store.selected = 4;
+
+    vi.mocked(api.gridInfo).mockResolvedValue({
+      version: 2,
+      len: 2,
+      sections: [],
+      starredCount: 0,
+      view: 'all',
+      searchQuery: '',
+    });
+    await store.refresh();
+    expect(store.selected).toBe(1);
+    expect(api.gridOffsetOfItem).not.toHaveBeenCalled();
+
+    vi.mocked(api.gridInfo).mockResolvedValue({
+      version: 3,
+      len: 0,
+      sections: [],
+      starredCount: 0,
+      view: 'all',
+      searchQuery: '',
+    });
+    await store.refresh();
+    expect(store.selected).toBeNull();
   });
 
   it('ignores a folder list that arrives after a later one', async () => {
