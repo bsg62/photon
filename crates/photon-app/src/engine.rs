@@ -87,6 +87,19 @@ impl Engine {
         if let Some(data_dir) = config.db_path.parent() {
             excluded.push(data_dir.to_path_buf());
         }
+        // Canonicalized once, here, because both things that compare against this list are
+        // handed canonical paths: `add_watched_folder` canonicalizes the root it is checking,
+        // and the watcher canonicalizes every event directory before `plan_scans` tests it.
+        // Left raw, a symlink anywhere in the configured path makes the comparison match
+        // nothing - and watching `$HOME` is allowed, so photon would then schedule a subtree
+        // scan for its own cache every time it writes a thumbnail into it, whose scan writes
+        // more thumbnails. A path that cannot be canonicalized keeps its raw form: it is no
+        // worse than what it replaces.
+        let excluded: Vec<PathBuf> = excluded
+            .into_iter()
+            .map(|p| dunce::canonicalize(&p).unwrap_or(p))
+            .collect();
+
         let grid = Arc::new(GridIndex::build(lib.grid_entries()?));
         Ok(Arc::new(Self {
             lib,
@@ -645,6 +658,39 @@ mod tests {
     use crate::events::Recorded;
     use crate::testutil::{fixture, jpeg};
     use photon_core::media::ThumbState;
+
+    /// Both readers of `excluded` compare it against a canonical path - `add_watched_folder`
+    /// canonicalizes the root it checks, and the watcher canonicalizes every event directory
+    /// before `plan_scans` tests it - so a raw config path with a symlink in it excludes
+    /// nothing. Watching `$HOME` is allowed, so photon would then schedule a subtree scan of
+    /// its own cache for every thumbnail it writes there.
+    #[test]
+    #[cfg(unix)]
+    fn excluded_paths_are_canonical_so_they_match_what_the_watcher_reports() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real");
+        std::fs::create_dir_all(real.join("data")).unwrap();
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        let engine = Engine::open(
+            EngineConfig {
+                db_path: link.join("data").join("library.db"),
+                cache_dir: link.join("cache").join("thumbs"),
+                workers: 1,
+            },
+            Arc::new(crate::events::Recorder::default()),
+        )
+        .unwrap();
+
+        let cache = dunce::canonicalize(real.join("cache").join("thumbs")).unwrap();
+        assert!(
+            engine.excluded().contains(&cache),
+            "the cache the watcher will report events for is {cache:?}, but excluded holds \
+             {:?}",
+            engine.excluded()
+        );
+    }
 
     #[test]
     fn a_scan_that_changed_nothing_still_re_primes_pending_thumbnails() {
