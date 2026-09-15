@@ -63,33 +63,56 @@ impl Item {
 /// alphabetically by path while the sidebar ran by year, and scrolling one bore no relation
 /// to reading the other.
 ///
-/// `o.oldest` comes from [`oldest_join`], which every query using this fragment must include.
-/// In the Starred view the join is given the same filter as the outer `WHERE`, so a folder is
-/// placed by its oldest *starred* photo: the sidebar's sections come from that same filtered
-/// index, so the two agree. Search filters in Rust after the query and so places a folder by
-/// its oldest photo overall, exactly as it always has.
+/// `o.oldest` and `o.fpath` come from [`folder_order`], the per-folder driver every grid
+/// query is built on. [`grid_query`] pairs the two structurally so a caller cannot take one
+/// without the other; `pending_thumb_ids` is the one hand-assembled query and says why.
 ///
-/// `f.path` still breaks ties — two folders whose oldest photos share a timestamp would
-/// otherwise interleave, the same hazard `sort_key` collisions used to pose.
+/// In the Starred view the driver is given the same filter as the outer `WHERE`, so a folder
+/// is placed by its oldest *starred* photo: the sidebar's sections come from that same
+/// filtered index, so the two agree. Search filters in Rust after the query and so places a
+/// folder by its oldest photo overall, exactly as it always has.
 ///
-/// This used to be a window function, `MIN(i.taken_at) OVER (PARTITION BY i.folder_id)`,
-/// which SQLite evaluates by materialising and sorting the whole row set once for the
-/// partition and again for the `ORDER BY`. The `GROUP BY` join walks the `items_folder`
-/// index instead and sorts once: `startup_grid_100k` went from ~88ms to ~60ms and
-/// `pending_thumb_ids`, which runs every 250ms during a scan, from ~79ms to ~48ms. The row
-/// order is identical, verified on the 100k-item bench library.
-pub(crate) const GRID_ORDER: &str = "ORDER BY o.oldest DESC, f.path, i.taken_at, i.file_name";
+/// `fpath` breaks ties — two folders whose oldest photos share a timestamp would otherwise
+/// interleave, the same hazard `sort_key` collisions used to pose.
+///
+/// Two earlier shapes are recorded here so nobody goes back to them. A window function,
+/// `MIN(i.taken_at) OVER (PARTITION BY i.folder_id)`, made SQLite materialise and sort the
+/// whole row set twice: ~88ms for `startup_grid_100k`. A `GROUP BY` join sorted it once:
+/// ~60ms. Driving from the ordered *folder* list instead sorts ~1,000 folders and then walks
+/// each folder's rows through `items_folder`, sorting only within a folder: ~47ms. The row
+/// order is byte-identical across all three, verified on the 100k bench library.
+pub(crate) const GRID_ORDER: &str = "ORDER BY o.oldest DESC, o.fpath, i.taken_at, i.file_name";
 
-/// The join that supplies `o.oldest` to [`GRID_ORDER`]: each folder's oldest live photo.
+/// The grid's driver: every folder with a matching live photo, placed by its oldest one and
+/// its path, already in grid order. Aliased `o` for [`GRID_ORDER`].
 ///
-/// `filter` is the same `AND …` fragment the caller's outer `WHERE` uses on `i`, so the
-/// minimum is taken over the rows the view shows rather than the whole folder. Passing a
-/// different filter here than outside is how Starred would silently sort by the wrong photo.
-fn oldest_join(filter: &str) -> String {
+/// `filter` is the same `AND …` fragment on `i` the caller's outer `WHERE` uses, so the
+/// minimum is taken over the rows the view shows rather than the whole folder; it may name
+/// only `items` columns, since inside this subquery `i` is the subquery's own alias.
+fn folder_order(filter: &str) -> String {
     format!(
-        "JOIN (SELECT i.folder_id, MIN(i.taken_at) AS oldest FROM items i
-               WHERE i.missing_since IS NULL {filter} GROUP BY i.folder_id) o
-           ON o.folder_id = i.folder_id"
+        "(SELECT i.folder_id, MIN(i.taken_at) AS oldest, f.path AS fpath
+          FROM items i JOIN folders f ON f.id = i.folder_id
+          WHERE i.missing_since IS NULL {filter}
+          GROUP BY i.folder_id
+          ORDER BY oldest DESC, fpath) o"
+    )
+}
+
+/// A whole grid query: `select` over the live items matching `filter`, in grid order, with
+/// `f` (the item's folder) joined for callers that read a folder column. The one place the
+/// driver's filter and the outer filter are spelled, so they cannot drift apart - a
+/// driver placed by one set of rows and a result holding another is how Starred would
+/// silently sort by the wrong photo.
+fn grid_query(select: &str, filter: &str) -> String {
+    let driver = folder_order(filter);
+    format!(
+        "SELECT {select}
+         FROM {driver}
+         JOIN items i ON i.folder_id = o.folder_id
+         JOIN folders f ON f.id = i.folder_id
+         WHERE i.missing_since IS NULL {filter}
+         {GRID_ORDER}"
     )
 }
 
@@ -404,14 +427,19 @@ impl Library {
     /// "Grid order" means the All view's: folders placed by their oldest photo overall, so
     /// the queue works through folders in the order the grid shows them. The join is
     /// therefore unfiltered, unlike Starred's.
+    ///
+    /// Assembled by hand rather than through `grid_query`, because its outer filter reads
+    /// `w.online`, which the driver cannot see. The driver is therefore unfiltered, and
+    /// the planner walks from `items_pending` regardless, so the shape costs nothing.
     pub fn pending_thumb_ids(&self) -> Result<Vec<i64>> {
         let conn = self.reader()?;
-        let oldest = oldest_join("");
+        let driver = folder_order("");
         let mut stmt = conn.prepare(&format!(
-            "SELECT i.id FROM items i
+            "SELECT i.id
+             FROM {driver}
+             JOIN items i ON i.folder_id = o.folder_id
              JOIN folders f ON f.id = i.folder_id
              JOIN watched_folders w ON w.id = f.watched_id
-             {oldest}
              WHERE i.thumb_state = 0 AND i.missing_since IS NULL AND w.online = 1 {GRID_ORDER}"
         ))?;
         let ids = stmt
@@ -451,18 +479,13 @@ impl Library {
     }
 
     /// The grid's rows for a `WHERE` filter fragment, applied both to the rows returned and
-    /// to the per-folder minimum the order is built on (see `oldest_join`). `Starred`
+    /// to the per-folder placement the order is built on (see `grid_query`). `Starred`
     /// filters to `rating >= 1`; the `items_starred` partial index can narrow that scan, but
     /// the query still joins `folders` and orders by `GRID_ORDER`, so it does not serve the
     /// query outright the way it does `starred_count`.
     fn entries_filtered(&self, filter: &str) -> Result<Vec<GridEntry>> {
         let conn = self.reader()?;
-        let oldest = oldest_join(filter);
-        let mut stmt = conn.prepare(&format!(
-            "SELECT {GRID_COLUMNS}
-             FROM items i JOIN folders f ON f.id = i.folder_id {oldest}
-             WHERE i.missing_since IS NULL {filter} {GRID_ORDER}"
-        ))?;
+        let mut stmt = conn.prepare(&grid_query(GRID_COLUMNS, filter))?;
         let rows = stmt
             .query_map([], map_grid_row)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -509,11 +532,9 @@ impl Library {
             return Ok(Vec::new());
         }
         let conn = self.reader()?;
-        let oldest = oldest_join("");
-        let mut stmt = conn.prepare(&format!(
-            "SELECT {GRID_COLUMNS}, i.file_name, f.name
-             FROM items i JOIN folders f ON f.id = i.folder_id {oldest}
-             WHERE i.missing_since IS NULL {GRID_ORDER}"
+        let mut stmt = conn.prepare(&grid_query(
+            &format!("{GRID_COLUMNS}, i.file_name, f.name"),
+            "",
         ))?;
         let rows = stmt
             .query_map([], |r| {

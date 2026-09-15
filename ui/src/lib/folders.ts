@@ -121,13 +121,15 @@ export async function locateItem(
     currentView: () => GridView;
     setView: (view: GridView) => Promise<void>;
     offsetOfItem: (itemId: number) => Promise<number | null>;
-    select: (offset: number) => void;
+    /** Given the id as well as the offset: the page at `offset` is not loaded at this
+     *  point, so the store needs telling which photo it is selecting. */
+    select: (offset: number, itemId: number) => void;
   },
 ): Promise<void> {
   deps.cancelSearch();
   if (deps.currentView() !== 'all') await deps.setView('all');
   const at = await deps.offsetOfItem(itemId);
   if (at === null) return;
-  deps.select(at);
+  deps.select(at, itemId);
 }
 

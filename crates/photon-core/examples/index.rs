@@ -5,7 +5,7 @@ use photon_core::{
     grid::GridIndex,
     library::Library,
     now_ms,
-    scanner::{ScanOptions, ScanProgress, scan_watched},
+    scanner::{ScanOptions, progress_only, scan_watched},
     thumbs::{ThumbCache, ThumbService, default_workers},
 };
 use std::{path::PathBuf, sync::Arc, time::Instant};
@@ -30,7 +30,7 @@ fn main() -> photon_core::Result<()> {
         &watched,
         now_ms(),
         &options,
-        &mut |p: &ScanProgress| eprint!("\rscanned {} files", p.files_seen),
+        &mut progress_only(|p| eprint!("\rscanned {} files", p.files_seen)),
     )?;
     eprintln!("\n{report:?} in {:?}", started.elapsed());
 

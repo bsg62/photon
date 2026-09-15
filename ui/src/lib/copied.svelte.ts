@@ -5,7 +5,7 @@ export const COPIED_MS = 1200;
 /** The state behind click-to-copy on the viewer's caption: writes through `write` and shows
  *  a confirmation for `COPIED_MS`. A `.svelte.ts` factory rather than component state so the
  *  timing is tested with fake timers; the component only reads `copied`. */
-export function createCopyFeedback(write: (text: string) => Promise<void>, ms = COPIED_MS) {
+export function createCopyFeedback(write: (text: string) => Promise<void>) {
   let copied = $state(false);
   let timer: ReturnType<typeof setTimeout> | undefined;
 
@@ -23,7 +23,7 @@ export function createCopyFeedback(write: (text: string) => Promise<void>, ms = 
       timer = setTimeout(() => {
         timer = undefined;
         copied = false;
-      }, ms);
+      }, COPIED_MS);
     },
 
     /** For the component's teardown: a timer must not fire into an unmounted component. */
@@ -33,5 +33,3 @@ export function createCopyFeedback(write: (text: string) => Promise<void>, ms = 
     },
   };
 }
-
-export type CopyFeedback = ReturnType<typeof createCopyFeedback>;

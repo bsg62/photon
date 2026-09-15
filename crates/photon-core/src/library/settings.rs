@@ -21,6 +21,17 @@ const THUMB_GC_CLEAN_EPOCH: &str = "thumb_gc_clean_epoch";
 /// When the last collection finished, in milliseconds since the epoch.
 const THUMB_GC_AT: &str = "thumb_gc_at";
 
+/// Writes a setting on `conn`, replacing any previous value. A free function over the
+/// connection so a caller inside its own transaction can use it too.
+fn set_setting(conn: &Connection, key: &str, value: &str) -> rusqlite::Result<()> {
+    conn.execute(
+        "INSERT INTO settings (key, value) VALUES (?1, ?2)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        [key, value],
+    )?;
+    Ok(())
+}
+
 /// Marks the thumbnail cache as possibly holding garbage. Takes the connection rather than
 /// `&Library` so the callers that orphan thumbnails can do it inside their own transaction:
 /// a purge that committed without its bump would leave garbage nothing will ever look for.
@@ -47,11 +58,7 @@ impl Library {
 
     /// Writes a setting, replacing any previous value.
     fn set_setting(&self, key: &str, value: &str) -> Result<()> {
-        self.writer().execute(
-            "INSERT INTO settings (key, value) VALUES (?1, ?2)
-             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            [key, value],
-        )?;
+        set_setting(&self.writer(), key, value)?;
         Ok(())
     }
 
@@ -62,10 +69,7 @@ impl Library {
     /// and the stored id then points at a row that has been cascaded away. The check is a
     /// join here rather than a lookup in the caller because only the database knows.
     pub fn last_folder(&self) -> Result<Option<i64>> {
-        let Some(id) = self
-            .setting(LAST_FOLDER)?
-            .and_then(|v| v.parse::<i64>().ok())
-        else {
+        let Some(id) = self.setting_i64(LAST_FOLDER)? else {
             return Ok(None);
         };
         let conn = self.reader()?;
@@ -112,11 +116,7 @@ impl Library {
         let mut conn = self.writer();
         let tx = conn.transaction()?;
         for (key, value) in [(THUMB_GC_CLEAN_EPOCH, epoch), (THUMB_GC_AT, now_ms)] {
-            tx.execute(
-                "INSERT INTO settings (key, value) VALUES (?1, ?2)
-                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                (key, value.to_string()),
-            )?;
+            set_setting(&tx, key, &value.to_string())?;
         }
         tx.commit()?;
         Ok(())

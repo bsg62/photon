@@ -54,8 +54,8 @@
       currentView: () => library.info.view,
       setView: (view) => library.setView(view),
       offsetOfItem: (id) => api.gridOffsetOfItem(id).catch(() => null),
-      select: (offset) => {
-        library.selected = offset;
+      select: (offset, id) => {
+        library.selectItem(offset, id);
         grid?.scrollToOffset(offset, 'nearest');
         grid?.focus();
       },

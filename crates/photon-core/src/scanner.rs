@@ -59,9 +59,8 @@ impl ScanReport {
 /// Where a running scan reports to.
 ///
 /// A trait rather than a second closure because the two reports have different consumers:
-/// `progress` feeds the UI's scan counter, `indexed` feeds the thumbnail queue. Any
-/// `FnMut(&ScanProgress)` is a sink that ignores `indexed`, which is what every test and
-/// the `index` example want.
+/// `progress` feeds the UI's scan counter, `indexed` feeds the thumbnail queue. A caller
+/// that wants only progress wraps a closure in [`progress_only`].
 pub trait ScanSink {
     /// Called after every batch, and once more at the end of the scan.
     fn progress(&mut self, progress: &ScanProgress);
@@ -73,10 +72,20 @@ pub trait ScanSink {
     fn indexed(&mut self, _ids: &[i64]) {}
 }
 
-impl<F: FnMut(&ScanProgress)> ScanSink for F {
-    fn progress(&mut self, progress: &ScanProgress) {
-        self(progress)
+/// A sink that reports progress to `f` and ignores `indexed`.
+///
+/// A named constructor rather than a blanket `impl ScanSink for F: FnMut` because a
+/// closure handed straight to a `&mut dyn ScanSink` parameter gets no signature hint, so
+/// `|_| {}` failed to infer and every call site needed `|_: &ScanProgress|`. Through a
+/// generic function's bound the closure's type infers as usual.
+pub fn progress_only(f: impl FnMut(&ScanProgress)) -> impl ScanSink {
+    struct ProgressOnly<F>(F);
+    impl<F: FnMut(&ScanProgress)> ScanSink for ProgressOnly<F> {
+        fn progress(&mut self, progress: &ScanProgress) {
+            (self.0)(progress)
+        }
     }
+    ProgressOnly(f)
 }
 
 /// Per-scan settings.
@@ -707,7 +716,7 @@ mod tests {
             watched,
             scan_id,
             &ScanOptions::default(),
-            &mut |_: &ScanProgress| {},
+            &mut progress_only(|_| {}),
         )
         .unwrap()
     }
@@ -745,7 +754,7 @@ mod tests {
             &watched,
             1,
             &ScanOptions::default(),
-            &mut |p: &ScanProgress| last = Some(*p),
+            &mut progress_only(|p| last = Some(*p)),
         )
         .unwrap();
         assert_eq!(
@@ -1142,7 +1151,7 @@ mod tests {
             excluded: vec![root.join("cache")],
             ..ScanOptions::default()
         };
-        let report = scan_watched(&lib, &watched, 1, &options, &mut |_: &ScanProgress| {}).unwrap();
+        let report = scan_watched(&lib, &watched, 1, &options, &mut progress_only(|_| {})).unwrap();
         assert_eq!(report.added, 1);
         assert!(lib.folders().unwrap().iter().all(|f| f.name != "cache"));
     }
@@ -1161,7 +1170,7 @@ mod tests {
         options
             .cancel
             .store(true, std::sync::atomic::Ordering::Relaxed);
-        let report = scan_watched(&lib, &watched, 2, &options, &mut |_: &ScanProgress| {}).unwrap();
+        let report = scan_watched(&lib, &watched, 2, &options, &mut progress_only(|_| {})).unwrap();
 
         assert!(report.cancelled);
         assert_eq!((report.marked_missing, report.purged), (0, 0));
@@ -1185,7 +1194,7 @@ mod tests {
             dir,
             scan_id,
             &ScanOptions::default(),
-            &mut |_: &ScanProgress| {},
+            &mut progress_only(|_| {}),
         )
         .unwrap()
     }
@@ -1323,7 +1332,7 @@ mod tests {
             &root.join("a"),
             1,
             &excluded,
-            &mut |_: &ScanProgress| {},
+            &mut progress_only(|_| {}),
         )
         .unwrap();
         assert_eq!(report.added, 1);
@@ -1338,7 +1347,7 @@ mod tests {
             &root.join("a"),
             2,
             &cancelled,
-            &mut |_: &ScanProgress| {},
+            &mut progress_only(|_| {}),
         )
         .unwrap();
         assert!(report.cancelled);
@@ -1400,7 +1409,7 @@ mod tests {
         options
             .cancel
             .store(true, std::sync::atomic::Ordering::Relaxed);
-        let report = scan_watched(&lib, &watched, 2, &options, &mut |_: &ScanProgress| {}).unwrap();
+        let report = scan_watched(&lib, &watched, 2, &options, &mut progress_only(|_| {})).unwrap();
 
         assert!(report.cancelled);
         assert!(!lib.watched_folders().unwrap()[0].online);
