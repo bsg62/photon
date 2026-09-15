@@ -5,7 +5,7 @@ use photon_core::{
     grid::GridIndex,
     library::Library,
     now_ms,
-    scanner::{ScanOptions, scan_watched},
+    scanner::{ScanOptions, ScanProgress, scan_watched},
     thumbs::{ThumbCache, ThumbService, default_workers},
 };
 use std::{path::PathBuf, sync::Arc, time::Instant};
@@ -25,9 +25,13 @@ fn main() -> photon_core::Result<()> {
         excluded: vec![PathBuf::from(&cache)],
         ..Default::default()
     };
-    let report = scan_watched(&lib, &watched, now_ms(), &options, &mut |p| {
-        eprint!("\rscanned {} files", p.files_seen)
-    })?;
+    let report = scan_watched(
+        &lib,
+        &watched,
+        now_ms(),
+        &options,
+        &mut |p: &ScanProgress| eprint!("\rscanned {} files", p.files_seen),
+    )?;
     eprintln!("\n{report:?} in {:?}", started.elapsed());
 
     let started = Instant::now();
