@@ -85,8 +85,13 @@ impl Library {
 
     /// Forgets a watched folder and everything indexed under it. Files on disk are untouched.
     pub fn remove_watched_folder(&self, id: i64) -> Result<()> {
-        self.writer()
-            .execute("DELETE FROM watched_folders WHERE id = ?1", params![id])?;
+        let mut conn = self.writer();
+        let tx = conn.transaction()?;
+        // The cascade takes every item under it, and their thumbnails with no item are
+        // garbage the next collection has to know to look for.
+        super::settings::bump_thumb_gc_epoch(&tx)?;
+        tx.execute("DELETE FROM watched_folders WHERE id = ?1", params![id])?;
+        tx.commit()?;
         Ok(())
     }
 }

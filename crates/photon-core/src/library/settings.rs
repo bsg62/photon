@@ -1,13 +1,37 @@
 //! Small pieces of UI state that have to outlive the process.
 //!
-//! Only one key so far — the folder the grid was last showing — but the table is generic
-//! because a column per setting would mean a migration per setting.
+//! Two things so far — the folder the grid was last showing, and whether the thumbnail
+//! cache needs collecting — but the table is generic because a column per setting would mean
+//! a migration per setting.
 
 use super::Library;
 use crate::Result;
+use rusqlite::Connection;
+use std::time::Duration;
 
 /// The folder whose section was at the top of the grid when photon last closed.
 const LAST_FOLDER: &str = "last_folder";
+
+/// Bumped by every write that can leave a thumbnail with no item: a purge, a replaced row
+/// (its fingerprint changes with the file), a removed watched folder. Compared against
+/// [`THUMB_GC_CLEAN_EPOCH`] to decide whether the cache walk is worth doing.
+const THUMB_GC_EPOCH: &str = "thumb_gc_epoch";
+/// The value of [`THUMB_GC_EPOCH`] the last completed collection was started against.
+const THUMB_GC_CLEAN_EPOCH: &str = "thumb_gc_clean_epoch";
+/// When the last collection finished, in milliseconds since the epoch.
+const THUMB_GC_AT: &str = "thumb_gc_at";
+
+/// Marks the thumbnail cache as possibly holding garbage. Takes the connection rather than
+/// `&Library` so the callers that orphan thumbnails can do it inside their own transaction:
+/// a purge that committed without its bump would leave garbage nothing will ever look for.
+pub(crate) fn bump_thumb_gc_epoch(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute(
+        "INSERT INTO settings (key, value) VALUES (?1, '1')
+         ON CONFLICT(key) DO UPDATE SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT)",
+        [THUMB_GC_EPOCH],
+    )?;
+    Ok(())
+}
 
 impl Library {
     /// Reads a setting, or `None` when it has never been written.
@@ -55,12 +79,133 @@ impl Library {
     pub fn set_last_folder(&self, folder_id: i64) -> Result<()> {
         self.set_setting(LAST_FOLDER, &folder_id.to_string())
     }
+
+    fn setting_i64(&self, key: &str) -> Result<Option<i64>> {
+        Ok(self.setting(key)?.and_then(|v| v.parse().ok()))
+    }
+
+    /// Whether the thumbnail cache is worth walking, and if so the epoch to report back to
+    /// [`Library::thumb_gc_done`] once the walk is over.
+    ///
+    /// Due when something has orphaned a thumbnail since the last collection, when there
+    /// has never been one, or when the last one is older than `max_age`. The age rule
+    /// exists for the one kind of garbage no write can announce: a temp file left by a
+    /// process killed mid-write. Without it the walk over every cached file, two per photo,
+    /// ran on every launch to find, almost always, nothing.
+    pub fn thumb_gc_due(&self, now_ms: i64, max_age: Duration) -> Result<Option<i64>> {
+        let epoch = self.setting_i64(THUMB_GC_EPOCH)?.unwrap_or(0);
+        let clean = self.setting_i64(THUMB_GC_CLEAN_EPOCH)?;
+        let at = self.setting_i64(THUMB_GC_AT)?;
+        let stale = match (clean, at) {
+            (Some(clean), Some(at)) => {
+                clean != epoch || now_ms.saturating_sub(at) > max_age.as_millis() as i64
+            }
+            _ => true,
+        };
+        Ok(stale.then_some(epoch))
+    }
+
+    /// Records a finished collection that was started against `epoch`. Garbage made while
+    /// the walk was running bumped the epoch past this value, so the next `thumb_gc_due`
+    /// still reports it rather than believing the cache clean.
+    pub fn thumb_gc_done(&self, epoch: i64, now_ms: i64) -> Result<()> {
+        let mut conn = self.writer();
+        let tx = conn.transaction()?;
+        for (key, value) in [(THUMB_GC_CLEAN_EPOCH, epoch), (THUMB_GC_AT, now_ms)] {
+            tx.execute(
+                "INSERT INTO settings (key, value) VALUES (?1, ?2)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (key, value.to_string()),
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::testutil::{seed_folder, temp_library};
+    use super::*;
+    use crate::testutil::{new_item, seed_folder, temp_library};
     use std::path::Path;
+
+    const WEEK: Duration = Duration::from_secs(7 * 24 * 3600);
+
+    #[test]
+    fn a_fresh_library_is_due_for_thumbnail_gc() {
+        let (_dir, lib) = temp_library();
+        assert!(lib.thumb_gc_due(1_000, WEEK).unwrap().is_some());
+    }
+
+    /// Each of the three writes that can orphan a thumbnail makes the next collection due,
+    /// and nothing else does: a collection with nothing to find is the walk this exists to
+    /// avoid.
+    #[test]
+    fn gc_is_due_again_only_after_a_write_that_can_orphan_a_thumbnail() {
+        let (_dir, lib) = temp_library();
+        let (watched, folder) = seed_folder(&lib, Path::new("/p"));
+        let ids = lib
+            .insert_items(&[
+                new_item(folder, "/p/a.jpg", 1),
+                new_item(folder, "/p/b.jpg", 2),
+            ])
+            .unwrap();
+        let settle = |lib: &Library| {
+            let epoch = lib.thumb_gc_due(1_000, WEEK).unwrap().unwrap();
+            lib.thumb_gc_done(epoch, 1_000).unwrap();
+            assert_eq!(lib.thumb_gc_due(1_000, WEEK).unwrap(), None);
+        };
+        settle(&lib);
+
+        lib.mark_missing(&[ids[0]], 5).unwrap();
+        lib.set_ratings(&[(ids[1], 1)]).unwrap();
+        assert_eq!(
+            lib.thumb_gc_due(1_000, WEEK).unwrap(),
+            None,
+            "marking missing and rating leave every thumbnail attached to its item"
+        );
+
+        lib.purge_items(&[ids[0]]).unwrap();
+        assert!(lib.thumb_gc_due(1_000, WEEK).unwrap().is_some(), "purge");
+        settle(&lib);
+
+        lib.update_items(&[(ids[1], new_item(folder, "/p/b.jpg", 2))])
+            .unwrap();
+        assert!(lib.thumb_gc_due(1_000, WEEK).unwrap().is_some(), "replace");
+        settle(&lib);
+
+        lib.remove_watched_folder(watched).unwrap();
+        assert!(
+            lib.thumb_gc_due(1_000, WEEK).unwrap().is_some(),
+            "removing a watched folder"
+        );
+    }
+
+    #[test]
+    fn garbage_made_while_a_collection_runs_keeps_the_next_one_due() {
+        let (_dir, lib) = temp_library();
+        let (_watched, folder) = seed_folder(&lib, Path::new("/p"));
+        let ids = lib
+            .insert_items(&[new_item(folder, "/p/a.jpg", 1)])
+            .unwrap();
+        let epoch = lib.thumb_gc_due(1_000, WEEK).unwrap().unwrap();
+
+        // A scan purges something after the walk read its fingerprints.
+        lib.purge_items(&ids).unwrap();
+        lib.thumb_gc_done(epoch, 1_000).unwrap();
+
+        assert!(lib.thumb_gc_due(1_000, WEEK).unwrap().is_some());
+    }
+
+    #[test]
+    fn gc_is_due_again_once_the_last_one_is_older_than_max_age() {
+        let (_dir, lib) = temp_library();
+        let epoch = lib.thumb_gc_due(1_000, WEEK).unwrap().unwrap();
+        lib.thumb_gc_done(epoch, 1_000).unwrap();
+        let week_ms = WEEK.as_millis() as i64;
+        assert_eq!(lib.thumb_gc_due(1_000 + week_ms, WEEK).unwrap(), None);
+        assert!(lib.thumb_gc_due(1_001 + week_ms, WEEK).unwrap().is_some());
+    }
 
     #[test]
     fn the_last_folder_survives_a_reopen() {

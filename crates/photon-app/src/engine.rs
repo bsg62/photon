@@ -26,6 +26,10 @@ use std::{
 /// Minimum time between grid rebuilds and between progress events during one scan.
 const THROTTLE: Duration = Duration::from_millis(250);
 
+/// How old the last thumbnail collection may be before startup runs one regardless of
+/// whether anything has orphaned a thumbnail since. See `Library::thumb_gc_due`.
+const THUMB_GC_MAX_AGE: Duration = Duration::from_secs(7 * 24 * 3600);
+
 pub struct EngineConfig {
     pub db_path: PathBuf,
     pub cache_dir: PathBuf,
@@ -515,13 +519,40 @@ impl Engine {
                 // Every folder's first scan has now run, so live watching won't race a
                 // startup scan for the same directory.
                 engine.start_watcher();
-                match engine.thumbs.collect_garbage() {
-                    Ok(removed) => tracing::info!(removed, "thumbnail garbage collected"),
-                    Err(err) => tracing::warn!(%err, "thumbnail garbage collection failed"),
-                }
+                engine.collect_thumb_garbage_if_due();
             })
             .expect("failed to spawn startup thread");
         *self.startup.lock() = Some(handle);
+    }
+
+    /// Walks the thumbnail cache for files with no item, but only when a write since the
+    /// last walk could have produced one, or the last walk is older than
+    /// [`THUMB_GC_MAX_AGE`]. The walk visits two files per photo and used to run on every
+    /// launch; on the usual launch, where nothing was purged or replaced, it found nothing.
+    ///
+    /// After the startup scans, deliberately: a scan that purged something bumps the epoch
+    /// first, so its garbage is collected on this launch rather than the next.
+    fn collect_thumb_garbage_if_due(&self) {
+        let epoch = match self.lib.thumb_gc_due(now_ms(), THUMB_GC_MAX_AGE) {
+            Ok(Some(epoch)) => epoch,
+            Ok(None) => {
+                tracing::debug!("thumbnail cache is clean; skipping the walk");
+                return;
+            }
+            Err(err) => {
+                tracing::warn!(%err, "could not tell whether thumbnail garbage collection is due");
+                return;
+            }
+        };
+        match self.thumbs.collect_garbage() {
+            Ok(removed) => {
+                tracing::info!(removed, "thumbnail garbage collected");
+                if let Err(err) = self.lib.thumb_gc_done(epoch, now_ms()) {
+                    tracing::warn!(%err, "could not record the thumbnail garbage collection");
+                }
+            }
+            Err(err) => tracing::warn!(%err, "thumbnail garbage collection failed"),
+        }
     }
 
     /// Blocks until the thread spawned by `startup` has finished, if it hasn't already.
@@ -895,6 +926,45 @@ mod tests {
             f.events.all().last(),
             Some(Recorded::Library(LibraryChanged { len: 0, .. }))
         ));
+    }
+
+    /// The startup collection used to walk the whole cache, two files per photo, on every
+    /// launch. It now runs only when a write since the last collection could have orphaned a
+    /// thumbnail. A planted orphan is the probe: it survives a launch where nothing changed
+    /// and goes on the launch after a purge.
+    #[test]
+    fn startup_walks_the_thumbnail_cache_only_when_something_could_have_orphaned_one() {
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a.jpg", &img)]);
+        f.add_photos();
+        let orphan = f
+            .config()
+            .cache_dir
+            .join("grid")
+            .join("de")
+            .join("deadbeefdeadbeef.webp");
+        std::fs::create_dir_all(orphan.parent().unwrap()).unwrap();
+        std::fs::write(&orphan, b"stale").unwrap();
+        // The previous launch collected after that scan.
+        let epoch = f
+            .engine
+            .lib
+            .thumb_gc_due(now_ms(), Duration::from_secs(1))
+            .unwrap()
+            .unwrap();
+        f.engine.lib.thumb_gc_done(epoch, now_ms()).unwrap();
+
+        f.engine.startup(None);
+        f.engine.wait_for_startup();
+        assert!(
+            orphan.exists(),
+            "nothing could have orphaned a thumbnail, so the cache was not walked"
+        );
+
+        f.engine.lib.purge_items(&f.ids()).unwrap();
+        f.engine.startup(None);
+        f.engine.wait_for_startup();
+        assert!(!orphan.exists(), "a purge makes the next launch collect");
     }
 
     #[test]

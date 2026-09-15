@@ -213,6 +213,9 @@ impl Library {
     pub fn update_items(&self, items: &[(i64, NewItem)]) -> Result<()> {
         let mut conn = self.writer();
         let tx = conn.transaction()?;
+        // The row's fingerprint changes with its size or mtime, so the thumbnails written
+        // under the old one are orphaned by this write.
+        super::settings::bump_thumb_gc_epoch(&tx)?;
         {
             let mut stmt = tx.prepare_cached(
                 "UPDATE items SET folder_id = ?2, path = ?3, file_name = ?4, kind = ?5, size = ?6, mtime_ms = ?7,
@@ -300,6 +303,7 @@ impl Library {
     pub fn purge_items(&self, ids: &[i64]) -> Result<()> {
         let mut conn = self.writer();
         let tx = conn.transaction()?;
+        super::settings::bump_thumb_gc_epoch(&tx)?;
         {
             let mut stmt = tx.prepare_cached("DELETE FROM items WHERE id = ?1")?;
             for id in ids {
