@@ -48,7 +48,7 @@ Creates the matcher as a standalone unit with its own tests. Nothing calls it ye
 
 - [ ] **Step 1: Create the module file with its tests only**
 
-Create `crates/photon-core/src/search.rs` with exactly this content. The tests come first and the implementation is empty on purpose — Step 2 runs them to watch them fail.
+Create `crates/photon-core/src/search.rs` with exactly this content. The tests come first and the implementation is missing on purpose — Step 3 runs the tests to watch them fail.
 
 ```rust
 //! Matching a typed search query against a photo's names.
@@ -148,15 +148,13 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [ ] **Step 2: Declare the module**
 
-Run: `cargo test -p photon-core search::`
+This comes before the test run, not after it. An undeclared module is never compiled, so
+running the tests first would match zero tests and print `0 passed` — which is not the same
+thing as failing, and would tell you nothing.
 
-Expected: FAIL — the compiler reports `cannot find type Query in this scope` (or `failed to resolve: use of undeclared type Query`) for every test, because `search.rs` has no `Query` yet and is not yet declared as a module.
-
-- [ ] **Step 3: Declare the module**
-
-In `crates/photon-core/src/lib.rs`, add `pub mod search;` to the `pub mod` list, keeping it alphabetical — between `pub mod picasa;` and `pub mod scanner;`:
+In `crates/photon-core/src/lib.rs`, add `pub mod search;` to the `pub mod` list, keeping it alphabetical — after `pub mod scanner;`:
 
 ```rust
 pub mod picasa;
@@ -172,6 +170,12 @@ pub mod search;
 ```
 
 Note `scanner` sorts before `search` (`c` < `e`), so `search` goes after it.
+
+- [ ] **Step 3: Run the tests to verify they fail**
+
+Run: `cargo test -p photon-core search::`
+
+Expected: FAIL — the crate does not build, and the compiler reports `cannot find type \`Query\` in this scope` for every test, because `search.rs` declares no `Query` yet.
 
 - [ ] **Step 4: Write the implementation**
 
@@ -358,6 +362,11 @@ Append these two tests to the `mod tests` block in `crates/photon-core/src/libra
         );
     }
 ```
+
+`search_widens_with_each_added_word` also covers ordering: `lake.jpg` and `bell.jpg` are
+asserted in `taken_at` order, which is `GRID_ORDER` within a folder. Exclusion of missing items
+needs no new test — it lives in the shared `grid_query` SQL this task does not touch, and
+`search_keeps_grid_order_and_excludes_missing_items` already pins it.
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
