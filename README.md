@@ -40,6 +40,15 @@ first photo is starred; an old `Picasa.ini` is edited in place. On Windows the f
 hidden attribute is kept. If Picasa has the file open at that moment the write fails with
 a message and nothing changes; try again once Picasa has finished.
 
+### Linux with an NVIDIA GPU
+
+WebKitGTK, the webview photon uses on Linux, crashes on NVIDIA's proprietary driver when its
+DMABUF renderer is on: the window flashes up and photon exits, printing `Error 71 (Protocol
+error) dispatching to Wayland display`. photon detects the driver and sets
+`WEBKIT_DISABLE_DMABUF_RENDERER=1` for itself, so nothing needs to be done. Rendering is a
+little slower with the renderer off. A value you set yourself is always kept, so
+`WEBKIT_DISABLE_DMABUF_RENDERER=0` turns the renderer back on if a later driver fixes this.
+
 ### photon is not code-signed
 
 Signing certificates cost money and are tied to a personal identity, so photon's installers
@@ -126,6 +135,7 @@ publishing it.
 - [ ] A freshly installed photon watches the Pictures folder on first launch, with no folder added by hand.
 - [ ] On macOS, the permission prompt for the Pictures folder appears. Denying it shows "Live updates limited" in the status bar rather than silently indexing nothing.
 - [ ] On Linux, `sudo apt install ./photon_*.deb` pulls in the webview dependencies on a clean machine, and photon starts rather than failing on a missing library.
+- [ ] On Linux with NVIDIA's proprietary driver, under Wayland, photon starts and stays open, and logs "NVIDIA driver detected". Launched with `WEBKIT_DISABLE_DMABUF_RENDERER=0` it does not log that line (and, while the driver bug stands, crashes with `Error 71`).
 - [ ] The security warning each OS shows matches what the README's "photon is not code-signed" section says to expect.
 - [ ] `sha256sum -c SHA256SUMS --ignore-missing` passes against the downloaded files.
 - [ ] On a freshly built library, photos rated in Picasa show under Starred with a matching count, once the first scan has finished.

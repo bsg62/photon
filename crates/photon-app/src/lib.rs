@@ -8,6 +8,8 @@ pub mod events;
 mod ipc;
 pub mod protocol;
 pub mod watch;
+#[cfg(target_os = "linux")]
+mod webkit;
 
 #[cfg(test)]
 mod testutil;

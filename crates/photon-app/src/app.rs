@@ -62,11 +62,20 @@ impl Events for TauriEvents {
 }
 
 pub fn run() {
+    // First, while the process is still single-threaded; see `webkit`.
+    #[cfg(target_os = "linux")]
+    let dmabuf_disabled = crate::webkit::apply_dmabuf_workaround();
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .init();
+
+    #[cfg(target_os = "linux")]
+    if dmabuf_disabled {
+        tracing::info!("NVIDIA driver detected; WebKit's DMABUF renderer is disabled");
+    }
 
     match tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
