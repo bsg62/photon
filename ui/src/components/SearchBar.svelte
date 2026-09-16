@@ -40,7 +40,8 @@
 </div>
 
 <style>
-  .bar { display: flex; padding: 8px; background: var(--panel); border-bottom: 1px solid #0003; }
+  /* Background and border belong to the top bar in App, which also holds the settings gear. */
+  .bar { display: flex; flex: 1; min-width: 0; padding: 8px; }
   .search {
     width: 320px;
     max-width: 100%;

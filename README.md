@@ -102,15 +102,19 @@ publishing it.
 - [ ] Thumbnails appear within seconds, and scrolling stays smooth while indexing continues.
 - [ ] Double-click or Enter opens the viewer with an image in about 100 ms. The full resolution follows. ←/→, Home/End, Esc and Backspace work.
 - [ ] The mouse's back side button closes the viewer, and does not navigate the page or leave a blank frame. Worth checking on each OS: the three webviews deliver side buttons differently, and some consume them for history before the page sees them.
-- [ ] "Add folder…" adds a folder. Adding a folder inside a watched one is refused with a clear message.
-- [ ] Rescan works. "Remove from photon" asks first, works during a scan, and leaves the files on disk.
+- [ ] The gear at the right of the top bar opens Settings. Escape, the close button and a click outside the dialog close it, and focus returns to the gear.
+- [ ] Settings → Folders lists every watched folder with its path, photo count and status, and the status shows scan progress live.
+- [ ] "Add folder…" in Settings adds a folder. Adding a folder inside a watched one is refused with a clear message.
+- [ ] Rescan works from Settings and from a sidebar folder's right-click menu. "Remove…" in Settings asks first, works during a scan, and leaves the files on disk.
+- [ ] Settings → About shows the version matching the release tag, and its "Reveal" opens the folder holding `library.db`.
+- [ ] After removing every folder, the sidebar offers "Add a folder in Settings…", which opens Settings on Folders.
 - [ ] Unplugging a drive with a watched folder dims its folder and tiles after a rescan. Nothing disappears.
 - [ ] Ctrl/Cmd+Shift+R and "Reveal in file manager" open the system file manager at the file.
 - [ ] The viewer's caption reads name, capture time, resolution, size and position, e.g. `IMG_1234.JPG · Jun 15, 2024, 12:30 PM · 4000 × 3000 · 3.2 MB · (12 / 240)`. The capture time matches what the camera wrote, not shifted by your time zone.
 - [ ] Clicking the caption copies the file name to the clipboard and shows "Copied" for about a second. Paste somewhere to confirm.
 - [ ] Right-click in the viewer: "Locate in photon" closes it and lands the grid on that photo, selected and in view — also from Starred, Recent or a search, where it switches back to All first. "Reveal in file manager" opens the file's folder. Escape closes the menu before it closes the viewer.
 - [ ] A library that cannot be opened (for example a corrupt database, or one written by a newer photon) shows an error dialog and photon exits, with no empty window sitting behind it.
-- [ ] A watched folder whose drive is offline and which has never been scanned still appears in the sidebar as a dimmed row, and can still be rescanned or removed from there.
+- [ ] A watched folder whose drive is offline and which has never been scanned appears in Settings → Folders as Offline, and can still be rescanned, revealed or removed from there.
 - [ ] A release build (see Development above) starts and shows the library — not a blank window.
 - [ ] If a scan removes photos while the viewer is open, the viewer shows "This photo is no longer available" rather than a blank frame, and Escape still returns to the grid.
 - [ ] With the viewer open on a photo, zoomed and panned, copying a photo into a folder that sorts *ahead* of it leaves the viewer on the same photo, at the same zoom and pan, with its caption renumbered. (The offset the viewer holds shifts when the grid is rebuilt; this is the check that it re-finds its photo rather than sliding onto the next one.)

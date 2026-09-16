@@ -9,6 +9,9 @@ export { mediaUrl } from './url';
 export interface WatchedFolder { id: number; path: string; online: boolean }
 export interface Folder { id: number; watchedId: number; parentId: number | null; path: string; name: string }
 export interface FolderList { watched: WatchedFolder[]; folders: Folder[] }
+/** A root with no photos is absent from the list. */
+export interface WatchedFolderStats { watchedId: number; photoCount: number }
+export interface AppInfo { version: string; libraryPath: string; licence: string }
 /** `takenAtMin` is the capture time of the folder's OLDEST photo, in SECONDS (multiply by
  *  1000 for a JS Date). The sidebar groups folders by the year it falls in. Oldest rather
  *  than newest, to match Picasa. */
@@ -49,6 +52,12 @@ export const api = {
   addFolder: (path: string) => invoke<WatchedFolder>('add_folder', { path }),
   removeFolder: (watchedId: number) => invoke<void>('remove_folder', { watchedId }),
   rescanFolder: (watchedId: number) => invoke<void>('rescan_folder', { watchedId }),
+  watchedFolderStats: () => invoke<WatchedFolderStats[]>('watched_folder_stats'),
+  appInfo: () => invoke<AppInfo>('app_info'),
+  /** Reveals a watched root itself; unlike `revealFolder` it works for a root that has no
+   *  folder row yet (offline, or never scanned). */
+  revealWatched: (watchedId: number) => invoke<void>('reveal_watched', { watchedId }),
+  revealLibrary: () => invoke<void>('reveal_library'),
   gridInfo: () => invoke<GridInfo>('grid_info'),
   gridRows: (offset: number, count: number) => invoke<GridRows>('grid_rows', { offset, count }),
   gridOffsetOfFolder: (folderId: number) => invoke<number | null>('grid_offset_of_folder', { folderId }),

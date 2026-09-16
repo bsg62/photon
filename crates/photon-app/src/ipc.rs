@@ -119,3 +119,27 @@ pub fn reveal_folder(engine: Eng<'_>, folder_id: i64) -> Result<(), AppError> {
     let path = commands::folder_path(&engine, folder_id)?;
     tauri_plugin_opener::reveal_item_in_dir(path).map_err(AppError::internal)
 }
+
+#[tauri::command(async)]
+pub fn watched_folder_stats(
+    engine: Eng<'_>,
+) -> Result<Vec<commands::WatchedFolderStats>, AppError> {
+    commands::watched_folder_stats(&engine)
+}
+
+#[tauri::command(async)]
+pub fn app_info(engine: Eng<'_>) -> commands::AppInfo {
+    commands::app_info(&engine)
+}
+
+#[tauri::command(async)]
+pub fn reveal_watched(engine: Eng<'_>, watched_id: i64) -> Result<(), AppError> {
+    let path = commands::watched_path(&engine, watched_id)?;
+    tauri_plugin_opener::reveal_item_in_dir(path).map_err(AppError::internal)
+}
+
+#[tauri::command(async)]
+pub fn reveal_library(engine: Eng<'_>) -> Result<(), AppError> {
+    let path = commands::app_info(&engine).library_path;
+    tauri_plugin_opener::reveal_item_in_dir(path).map_err(AppError::internal)
+}

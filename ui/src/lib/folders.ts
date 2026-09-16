@@ -73,13 +73,6 @@ export function groupByYear(rows: FolderRow[]): YearGroup[] {
     }));
 }
 
-/** A watched root's own folder row. A root whose drive is offline or which has never been
- *  scanned has none — and so nothing to scroll to — which is why a jump can't simply pass
- *  the watched id. */
-export function rootFolderOf(watchedId: number, folders: Folder[]): Folder | undefined {
-  return folders.find((f) => f.watchedId === watchedId && f.parentId === null);
-}
-
 /** Everything a folder jump has to do before it can scroll, in the order it has to do it.
  *
  *  Both steps are load-bearing, and both were once missing from the watched-root jump while

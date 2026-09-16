@@ -77,6 +77,11 @@ impl Library {
         })
     }
 
+    /// The database file this library was opened from.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
     fn writer(&self) -> MutexGuard<'_, Connection> {
         self.write.lock()
     }

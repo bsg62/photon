@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Folder, GridView } from './api';
-import { enterFolder, locateItem, folderRows, groupByYear, rootFolderOf } from './folders';
+import { enterFolder, locateItem, folderRows, groupByYear } from './folders';
 
 /** Seconds since the epoch, since that is what `takenAtMin` carries. */
 const at = (iso: string) => Math.floor(new Date(iso).getTime() / 1000);
@@ -81,26 +81,6 @@ describe('groupByYear', () => {
 
   it('handles no folders at all', () => {
     expect(groupByYear([])).toEqual([]);
-  });
-});
-
-describe('rootFolderOf', () => {
-  // Subfolders deliberately precede their root: a lookup that matched on `watchedId` alone
-  // would return the subfolder and scroll to the wrong place.
-  const folders: Folder[] = [
-    { id: 2, watchedId: 10, parentId: 1, name: '2024', path: '/pics/2024' },
-    { id: 1, watchedId: 10, parentId: null, name: 'Pictures', path: '/pics' },
-    { id: 4, watchedId: 11, parentId: 3, name: 'Scans', path: '/arch/scans' },
-    { id: 3, watchedId: 11, parentId: null, name: 'Archive', path: '/arch' },
-  ];
-
-  it('finds the root row of a watched folder', () => {
-    expect(rootFolderOf(10, folders)?.id).toBe(1);
-    expect(rootFolderOf(11, folders)?.id).toBe(3);
-  });
-
-  it('returns nothing for a root that has no row — offline, or never scanned', () => {
-    expect(rootFolderOf(12, folders)).toBeUndefined();
   });
 });
 

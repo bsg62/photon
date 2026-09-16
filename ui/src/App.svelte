@@ -1,20 +1,27 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import { api } from './lib/api';
   import { locateItem } from './lib/folders';
   import { library } from './lib/library.svelte';
   import { resultsChanged } from './lib/search';
   import { searchBox } from './lib/search-box.svelte';
+  import type { SettingsSection } from './lib/settings';
   import { clampSidebarWidth, SIDEBAR_DEFAULT, SIDEBAR_STEP } from './lib/sidebar';
   import FolderTree from './components/FolderTree.svelte';
   import Grid from './components/Grid.svelte';
   import SearchBar from './components/SearchBar.svelte';
+  import Settings from './components/Settings.svelte';
   import StatusBar from './components/StatusBar.svelte';
   import Toasts from './components/Toasts.svelte';
   import Viewer from './components/Viewer.svelte';
 
   let grid: ReturnType<typeof Grid> | undefined = $state();
   let viewerAt = $state<number | null>(null);
+  let settingsAt = $state<SettingsSection | null>(null);
+  let gear: HTMLButtonElement | undefined = $state();
+  /** Everything behind an overlay is inert; the two overlays never stack, because each one
+   *  makes the other's opener inert. */
+  const covered = $derived(viewerAt !== null || settingsAt !== null);
   let sidebarWidth = $state(SIDEBAR_DEFAULT);
   let dragFrom: { x: number; width: number } | null = null;
 
@@ -90,6 +97,18 @@
     });
   }
 
+  function openSettings(section: SettingsSection) {
+    settingsAt = section;
+  }
+
+  /** The top bar is still `inert` until the DOM catches up with `settingsAt`, and focusing
+   *  an inert element silently does nothing — hence the tick before handing focus back. */
+  async function closeSettings() {
+    settingsAt = null;
+    await tick();
+    gear?.focus();
+  }
+
   async function jump(folderId: number) {
     const offset = await api.gridOffsetOfFolder(folderId).catch(() => null);
     if (offset === null) return;
@@ -100,8 +119,15 @@
 
 <svelte:window onresize={() => (sidebarWidth = clampSidebarWidth(sidebarWidth, window.innerWidth))} />
 <div class="app" style:--sidebar-width="{sidebarWidth}px">
-  <div class="topbar" inert={viewerAt !== null}><SearchBar /></div>
-  <aside class="sidebar" inert={viewerAt !== null}><FolderTree onjump={jump} /></aside>
+  <div class="topbar" inert={covered}>
+    <SearchBar />
+    <button class="gear" bind:this={gear} aria-label="Settings" title="Settings" onclick={() => openSettings('folders')}
+      >⚙</button
+    >
+  </div>
+  <aside class="sidebar" inert={covered}>
+    <FolderTree onjump={jump} onopensettings={() => openSettings('folders')} />
+  </aside>
   <!-- A focusable separator is a widget in WAI-ARIA (a window splitter); Svelte's a11y
        rules list `separator` as non-interactive regardless. -->
   <!-- svelte-ignore a11y_no_noninteractive_element_interactions, a11y_no_noninteractive_tabindex -->
@@ -112,19 +138,20 @@
     aria-label="Resize sidebar"
     aria-valuenow={sidebarWidth}
     tabindex="0"
-    inert={viewerAt !== null}
+    inert={covered}
     onpointerdown={startResize}
     onpointermove={moveResize}
     onpointerup={endResize}
     onpointercancel={endResize}
     onkeydown={keyResize}
   ></div>
-  <main class="content" inert={viewerAt !== null}>
+  <main class="content" inert={covered}>
     <Grid bind:this={grid} onopen={open} />
   </main>
   <div class="statusbar"><StatusBar /></div>
 </div>
 {#if viewerAt !== null}<Viewer offset={viewerAt} onclose={closeViewer} onlocate={locate} />{/if}
+{#if settingsAt !== null}<Settings section={settingsAt} onclose={closeSettings} />{/if}
 <Toasts />
 
 <style>
@@ -151,6 +178,25 @@
   }
   .content { min-width: 0; min-height: 0; }
   /* Its own grid row, so it stays put while the sidebar and the grid scroll under it. */
-  .topbar { grid-column: 1 / -1; }
+  .topbar {
+    grid-column: 1 / -1;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding-right: 8px;
+    background: var(--panel);
+    border-bottom: 1px solid #0003;
+  }
+  .gear {
+    padding: 2px 8px;
+    border: 0;
+    border-radius: 4px;
+    background: none;
+    color: var(--muted);
+    font-size: 18px;
+    cursor: pointer;
+  }
+  .gear:hover,
+  .gear:focus-visible { color: var(--text); background: #ffffff14; }
   .statusbar { grid-column: 1 / -1; }
 </style>

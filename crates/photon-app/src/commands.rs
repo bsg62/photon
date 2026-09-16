@@ -63,6 +63,21 @@ pub struct ViewerItem {
     pub starred: bool,
 }
 
+#[derive(Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WatchedFolderStats {
+    pub watched_id: i64,
+    pub photo_count: i64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppInfo {
+    pub version: &'static str,
+    pub library_path: PathBuf,
+    pub licence: &'static str,
+}
+
 pub fn clamp_count(count: usize) -> usize {
     count.min(MAX_ROWS)
 }
@@ -80,6 +95,28 @@ pub fn add_folder(engine: &Arc<Engine>, path: &str) -> CmdResult<WatchedFolder> 
 
 pub fn remove_folder(engine: &Engine, watched_id: i64) -> CmdResult<()> {
     Ok(engine.remove_folder(watched_id)?)
+}
+
+/// Kept apart from `list_folders`, which runs on every scan completion and folder-status
+/// event; only the Settings dialog needs an aggregate over every item.
+pub fn watched_folder_stats(engine: &Engine) -> CmdResult<Vec<WatchedFolderStats>> {
+    Ok(engine
+        .lib
+        .watched_photo_counts()?
+        .into_iter()
+        .map(|(watched_id, photo_count)| WatchedFolderStats {
+            watched_id,
+            photo_count,
+        })
+        .collect())
+}
+
+pub fn app_info(engine: &Engine) -> AppInfo {
+    AppInfo {
+        version: env!("CARGO_PKG_VERSION"),
+        library_path: engine.lib.path().to_path_buf(),
+        licence: env!("CARGO_PKG_LICENSE"),
+    }
 }
 
 pub fn rescan_folder(engine: &Arc<Engine>, watched_id: i64) -> CmdResult<()> {
@@ -217,6 +254,18 @@ pub fn folder_path(engine: &Engine, folder_id: i64) -> CmdResult<PathBuf> {
     Ok(PathBuf::from(folder.path))
 }
 
+/// A watched root's own path. Not `folder_path`: an offline or never-scanned root may have
+/// no folder row to look up.
+pub fn watched_path(engine: &Engine, watched_id: i64) -> CmdResult<PathBuf> {
+    let watched = engine
+        .lib
+        .watched_folders()?
+        .into_iter()
+        .find(|w| w.id == watched_id)
+        .ok_or(Error::NotFound(watched_id))?;
+    Ok(PathBuf::from(watched.path))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -240,6 +289,31 @@ mod tests {
         assert_eq!((info.len, info.sections.len()), (2, 2));
         let sub = list.folders.iter().find(|x| x.name == "sub").unwrap();
         assert_eq!(grid_offset_of_folder(&f.engine, sub.id), Some(1));
+    }
+
+    #[test]
+    fn settings_reads_counts_paths_and_the_library_location() {
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a.jpg", &img), ("sub/b.jpg", &img)]);
+        let watched = f.add_photos();
+        assert_eq!(
+            watched_folder_stats(&f.engine).unwrap(),
+            [WatchedFolderStats {
+                watched_id: watched.id,
+                photo_count: 2
+            }]
+        );
+        assert_eq!(
+            watched_path(&f.engine, watched.id).unwrap(),
+            PathBuf::from(&watched.path)
+        );
+        assert!(watched_path(&f.engine, watched.id + 1).is_err());
+        let info = app_info(&f.engine);
+        assert_eq!(
+            info.library_path,
+            f.dir.path().join("data").join("library.db")
+        );
+        assert_eq!(info.version, env!("CARGO_PKG_VERSION"));
     }
 
     /// The offset the viewer holds is only meaningful against one version of the index.

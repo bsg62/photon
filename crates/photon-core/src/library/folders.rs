@@ -75,6 +75,23 @@ impl Library {
         Ok(rows)
     }
 
+    /// Photos per watched folder, keyed by watched id. A root with no photos is absent.
+    ///
+    /// Soft-deleted items are left out so the figure agrees with the All view; an offline
+    /// root's items are not soft-deleted, so its count survives the drive going away.
+    pub fn watched_photo_counts(&self) -> Result<Vec<(i64, i64)>> {
+        let conn = self.reader()?;
+        let mut stmt = conn.prepare(
+            "SELECT f.watched_id, count(*) FROM items i JOIN folders f ON f.id = i.folder_id
+             WHERE i.missing_since IS NULL
+             GROUP BY f.watched_id",
+        )?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
     pub fn set_watched_online(&self, id: i64, online: bool) -> Result<()> {
         self.writer().execute(
             "UPDATE watched_folders SET online = ?2 WHERE id = ?1",
@@ -302,6 +319,30 @@ mod tests {
             .add_watched_folder(&dir.path().join("PHOTOS"), &[])
             .unwrap();
         assert_eq!(again.id, a.id);
+    }
+
+    #[test]
+    fn photo_counts_are_per_watched_root_and_skip_missing_items() {
+        let (_dir, lib) = temp_library();
+        let a = watch(&lib, "/a");
+        let b = watch(&lib, "/b");
+        watch(&lib, "/empty");
+        let a_root = lib.upsert_folder(a.id, None, "/a", 1).unwrap();
+        let a_sub = lib.upsert_folder(a.id, Some(a_root), "/a/sub", 1).unwrap();
+        let b_root = lib.upsert_folder(b.id, None, "/b", 1).unwrap();
+        let ids = lib
+            .insert_items(&[
+                new_item(a_root, "/a/1.jpg", 0),
+                new_item(a_sub, "/a/sub/2.jpg", 0),
+                new_item(b_root, "/b/3.jpg", 0),
+                new_item(b_root, "/b/gone.jpg", 0),
+            ])
+            .unwrap();
+        lib.mark_missing(&ids[3..], 1).unwrap();
+
+        let mut counts = lib.watched_photo_counts().unwrap();
+        counts.sort();
+        assert_eq!(counts, [(a.id, 2), (b.id, 1)]);
     }
 
     #[test]

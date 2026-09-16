@@ -171,6 +171,10 @@ pub fn run() {
             ipc::neighbours,
             ipc::reveal_in_file_manager,
             ipc::reveal_folder,
+            ipc::watched_folder_stats,
+            ipc::app_info,
+            ipc::reveal_watched,
+            ipc::reveal_library,
         ])
         .build(tauri::generate_context!())
     {
