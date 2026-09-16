@@ -372,6 +372,22 @@ impl Engine {
         Ok(())
     }
 
+    /// After a tag rule change: rebuilds the grid, since the Tag and Search views read the
+    /// rules, and the rebuild's `library_changed` is what makes the sidebar refetch its tag
+    /// list. A rename carries an open Tag view from the old name to the new one inside the
+    /// same state change, so no rebuild can publish the view under a name that now answers
+    /// to nothing.
+    pub fn tags_changed(&self, renamed: Option<(&str, &str)>) -> Result<()> {
+        self.rebuild_or_restore(|state| {
+            if let Some((from, to)) = renamed
+                && state.view == GridView::Tag
+                && state.arg == from
+            {
+                state.arg = to.to_string();
+            }
+        })
+    }
+
     /// Sets or clears a photo's star: into the folder's Picasa INI first, then into the
     /// database, then the grid.
     ///
