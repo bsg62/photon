@@ -1,9 +1,10 @@
 <script lang="ts">
   import { ask, open } from '@tauri-apps/plugin-dialog';
-  import { onMount } from 'svelte';
-  import { api, type AppInfo, type WatchedFolder } from '../lib/api';
+  import { onMount, tick } from 'svelte';
+  import { api, type AppInfo, type TagCount, type TagRule, type WatchedFolder } from '../lib/api';
   import { library } from '../lib/library.svelte';
   import { folderStatus, photoCountLabel, type SettingsSection } from '../lib/settings';
+  import { filterTags, renameCheck, ruleLabel } from '../lib/tags';
 
   let { section = 'folders', onclose }: { section?: SettingsSection; onclose: () => void } = $props();
 
@@ -14,6 +15,13 @@
   let dialog = $state<HTMLDivElement | undefined>();
   let counts = $state<Map<number, number>>(new Map());
   let info = $state<AppInfo | null>(null);
+  let rules = $state<TagRule[]>([]);
+  let tagFilter = $state('');
+  let renaming = $state<string | null>(null);
+  let draft = $state('');
+  let renameError = $state('');
+  let renameInput = $state<HTMLInputElement | undefined>();
+  const shownTags = $derived(filterTags(library.tags, tagFilter));
 
   $effect(() => {
     dialog?.focus();
@@ -29,6 +37,22 @@
       .watchedFolderStats()
       .then((stats) => {
         if (!stale) counts = new Map(stats.map((s) => [s.watchedId, s.photoCount]));
+      })
+      .catch(library.reportError);
+    return () => {
+      stale = true;
+    };
+  });
+
+  // Every rule change rebuilds the grid, so keying on the version refetches after our own
+  // changes as well as any made elsewhere. `stale` as for the counts above.
+  $effect(() => {
+    void library.info.version;
+    let stale = false;
+    api
+      .listTagRules()
+      .then((r) => {
+        if (!stale) rules = r;
       })
       .catch(library.reportError);
     return () => {
@@ -79,6 +103,80 @@
       library.reportError(e);
     }
   }
+
+  /** The field appears a tick after `renaming` is set; focusing and selecting it then lets
+   *  a small correction be a few keystrokes. */
+  async function startRename(tag: TagCount) {
+    renaming = tag.tag;
+    draft = tag.tag;
+    renameError = '';
+    await tick();
+    renameInput?.focus();
+    renameInput?.select();
+  }
+
+  function cancelRename() {
+    renaming = null;
+    renameError = '';
+  }
+
+  async function commitRename(from: string) {
+    const check = renameCheck(from, draft, library.tags);
+    if (check === 'blank') {
+      renameError = 'A tag needs a name.';
+      return;
+    }
+    const to = draft.trim();
+    // Closed before the confirm: the dialog takes focus, and the field's blur would
+    // otherwise cancel underneath it.
+    cancelRename();
+    if (check === 'same') return;
+    try {
+      if (check === 'merge') {
+        const confirmed = await ask(`Merge “${from}” into “${to}”? Photos tagged with either will show under “${to}”.`, {
+          title: 'Merge tags',
+          kind: 'warning',
+        });
+        if (!confirmed) return;
+      }
+      await library.renameTag(from, to);
+    } catch (e) {
+      library.reportError(e);
+    }
+  }
+
+  function onRenameKeydown(e: KeyboardEvent, from: string) {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      void commitRename(from);
+    } else if (e.key === 'Escape') {
+      // The dialog closes on Escape too; this one only closes the field.
+      e.preventDefault();
+      e.stopPropagation();
+      cancelRename();
+    }
+  }
+
+  async function removeTag(tag: TagCount) {
+    try {
+      const confirmed = await ask(
+        `Remove “${tag.tag}” from photon? The keyword stays in your photo files, and you can restore it under Changes.`,
+        { title: 'Remove tag', kind: 'warning' },
+      );
+      if (!confirmed) return;
+      await library.hideTag(tag.tag);
+    } catch (e) {
+      library.reportError(e);
+    }
+  }
+
+  async function restore(rule: TagRule) {
+    try {
+      await library.restoreTagRule(rule.tag);
+    } catch (e) {
+      library.reportError(e);
+    }
+  }
 </script>
 
 <!-- The backdrop is a mouse convenience; Escape and the close button are the accessible ways
@@ -103,6 +201,9 @@
       <nav aria-label="Settings sections">
         <button class:active={current === 'folders'} aria-current={current === 'folders'} onclick={() => (current = 'folders')}>
           Folders
+        </button>
+        <button class:active={current === 'tags'} aria-current={current === 'tags'} onclick={() => (current = 'tags')}>
+          Tags
         </button>
         <button class:active={current === 'about'} aria-current={current === 'about'} onclick={() => (current = 'about')}>
           About
@@ -148,6 +249,58 @@
             </ul>
           {/if}
           <button class="add" onclick={addFolder}>Add folder…</button>
+        {:else if current === 'tags'}
+          <h2>Tags</h2>
+          <p class="hint">Tags are the keywords in your photos. Renaming or removing one changes how photon shows it; your files keep their keywords.</p>
+          {#if library.tags.length === 0}
+            <p class="empty">No tags. Keywords saved in your photos appear here.</p>
+          {:else}
+            <input class="filter" type="search" placeholder="Filter tags" aria-label="Filter tags" bind:value={tagFilter} />
+            <ul class="tags">
+              {#each shownTags as tag (tag.tag)}
+                <li>
+                  {#if renaming === tag.tag}
+                    <div class="meta">
+                      <input
+                        class="rename"
+                        bind:this={renameInput}
+                        bind:value={draft}
+                        aria-label="New name for {tag.tag}"
+                        aria-invalid={renameError !== ''}
+                        onkeydown={(e) => onRenameKeydown(e, tag.tag)}
+                        onblur={cancelRename}
+                      />
+                      {#if renameError}<span class="error">{renameError}</span>{/if}
+                    </div>
+                  {:else}
+                    <div class="meta">
+                      <span class="name">{tag.tag}</span>
+                      <span class="details">{photoCountLabel(tag.count)}</span>
+                    </div>
+                    <div class="actions">
+                      <button onclick={() => startRename(tag)}>Rename</button>
+                      <button class="danger" onclick={() => removeTag(tag)}>Remove…</button>
+                    </div>
+                  {/if}
+                </li>
+              {:else}
+                <li class="empty">No tag matches “{tagFilter}”.</li>
+              {/each}
+            </ul>
+          {/if}
+          {#if rules.length > 0}
+            <h2>Changes</h2>
+            <ul class="tags">
+              {#each rules as rule (rule.tag)}
+                <li>
+                  <span class="meta name">{ruleLabel(rule)}</span>
+                  <div class="actions">
+                    <button onclick={() => restore(rule)}>Restore</button>
+                  </div>
+                </li>
+              {/each}
+            </ul>
+          {/if}
         {:else}
           <h2>About</h2>
           {#if info}
@@ -243,4 +396,23 @@
   dd { margin: 0; min-width: 0; }
   .library { display: flex; align-items: center; gap: 8px; }
   .selectable { user-select: text; }
+  .filter, .rename {
+    width: 100%;
+    padding: 4px 8px;
+    border: 1px solid #fff2;
+    border-radius: 4px;
+    background: var(--panel-2);
+    color: inherit;
+    font: inherit;
+  }
+  .filter { margin-bottom: 8px; }
+  .tags { margin: 0 0 16px; padding: 0; list-style: none; }
+  .tags li {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 6px 0;
+    border-bottom: 1px solid #ffffff0d;
+  }
+  .error { color: var(--danger); font-size: 12px; }
 </style>
