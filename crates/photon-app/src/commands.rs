@@ -5,8 +5,9 @@ use crate::{engine::Engine, error::AppError};
 use photon_core::{
     Error,
     grid::{GridEntry, GridView, Section, hex_key},
-    library::{Folder, WatchedFolder, is_starred},
+    library::{Album, AlbumSummary, Folder, ItemFace, Person, TagCount, WatchedFolder, is_starred},
     media::ThumbState,
+    now_ms,
     thumbs::Priority,
 };
 use serde::Serialize;
@@ -35,7 +36,14 @@ pub struct GridInfo {
     pub sections: Vec<Section>,
     pub starred_count: usize,
     pub view: GridView,
+    /// The query while `view` is `Search`, otherwise empty.
     pub search_query: String,
+    /// The contact hash while `view` is `Person`.
+    pub person: Option<String>,
+    /// The album id while `view` is `Album`.
+    pub album: Option<i64>,
+    /// The keyword while `view` is `Tag`.
+    pub tag: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -61,6 +69,19 @@ pub struct ViewerItem {
     pub thumb_state: &'static str,
     pub thumb_error: Option<String>,
     pub starred: bool,
+    pub make: Option<String>,
+    pub model: Option<String>,
+    pub lens: Option<String>,
+    pub focal_mm: Option<f64>,
+    pub aperture: Option<f64>,
+    pub exposure_s: Option<f64>,
+    pub iso: Option<i64>,
+    /// Keywords from the file's XMP and IPTC, in file order.
+    pub tags: Vec<String>,
+    /// Named Picasa faces, in INI order.
+    pub faces: Vec<ItemFace>,
+    /// Ids of the albums the photo is in.
+    pub albums: Vec<i64>,
 }
 
 #[derive(Debug, Serialize, PartialEq, Eq)]
@@ -132,6 +153,8 @@ pub fn rescan_folder(engine: &Arc<Engine>, watched_id: i64) -> CmdResult<()> {
 
 pub fn grid_info(engine: &Engine) -> GridInfo {
     let (version, grid) = engine.grid();
+    // One read of the pair, so the argument reported is the one the view was built with.
+    let (view, arg) = engine.view_and_arg();
     GridInfo {
         version,
         len: grid.len(),
@@ -140,9 +163,76 @@ pub fn grid_info(engine: &Engine) -> GridInfo {
             tracing::warn!(%err, "starred count query failed");
             0
         }),
-        view: engine.view(),
-        search_query: engine.search_query(),
+        view,
+        search_query: if view == GridView::Search {
+            arg.clone()
+        } else {
+            String::new()
+        },
+        person: (view == GridView::Person).then(|| arg.clone()),
+        album: (view == GridView::Album)
+            .then(|| arg.parse().ok())
+            .flatten(),
+        tag: (view == GridView::Tag).then_some(arg),
     }
+}
+
+pub fn set_person_view(engine: &Engine, contact: &str) -> CmdResult<()> {
+    engine.set_person_view(contact)?;
+    Ok(())
+}
+
+pub fn set_album_view(engine: &Engine, album_id: i64) -> CmdResult<()> {
+    engine.set_album_view(album_id)?;
+    Ok(())
+}
+
+pub fn set_tag_view(engine: &Engine, tag: &str) -> CmdResult<()> {
+    engine.set_tag_view(tag)?;
+    Ok(())
+}
+
+/// Every named Picasa contact with a photo in the library, for the sidebar.
+pub fn list_people(engine: &Engine) -> CmdResult<Vec<Person>> {
+    Ok(engine.lib.people_with_counts()?)
+}
+
+/// Every keyword on a live photo, for the sidebar.
+pub fn list_tags(engine: &Engine) -> CmdResult<Vec<TagCount>> {
+    Ok(engine.lib.tags_with_counts()?)
+}
+
+pub fn list_albums(engine: &Engine) -> CmdResult<Vec<AlbumSummary>> {
+    Ok(engine.lib.albums_with_counts()?)
+}
+
+pub fn create_album(engine: &Engine, name: &str) -> CmdResult<Album> {
+    Ok(engine.lib.create_album(name, now_ms())?)
+}
+
+pub fn rename_album(engine: &Engine, album_id: i64, name: &str) -> CmdResult<()> {
+    engine.lib.rename_album(album_id, name)?;
+    Ok(())
+}
+
+/// Deleting the album on screen empties the grid rather than leaving it showing rows of
+/// an album that no longer exists; `albums_changed` is what does that.
+pub fn delete_album(engine: &Engine, album_id: i64) -> CmdResult<()> {
+    engine.lib.delete_album(album_id)?;
+    engine.albums_changed()?;
+    Ok(())
+}
+
+pub fn add_to_album(engine: &Engine, album_id: i64, item_ids: &[i64]) -> CmdResult<()> {
+    engine.lib.add_to_album(album_id, item_ids, now_ms())?;
+    engine.albums_changed()?;
+    Ok(())
+}
+
+pub fn remove_from_album(engine: &Engine, album_id: i64, item_ids: &[i64]) -> CmdResult<()> {
+    engine.lib.remove_from_album(album_id, item_ids)?;
+    engine.albums_changed()?;
+    Ok(())
 }
 
 pub fn set_grid_view(engine: &Engine, view: GridView) -> CmdResult<()> {
@@ -206,9 +296,14 @@ pub fn viewer_item(engine: &Engine, id: i64) -> CmdResult<ViewerItem> {
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
+    let tags = engine.lib.item_tags(item.id)?;
+    let faces = engine.lib.item_faces(item.id)?;
+    let albums = engine.lib.item_albums(item.id)?;
+    let thumb_key = hex_key(item.fingerprint());
+    let camera = item.camera;
     Ok(ViewerItem {
         id: item.id,
-        thumb_key: hex_key(item.fingerprint()),
+        thumb_key,
         thumb_state: match item.thumb_state {
             ThumbState::Pending => "pending",
             ThumbState::Ready => "ready",
@@ -223,6 +318,16 @@ pub fn viewer_item(engine: &Engine, id: i64) -> CmdResult<ViewerItem> {
         thumb_error: item.thumb_error,
         starred: is_starred(item.rating),
         path: item.path,
+        make: camera.make,
+        model: camera.model,
+        lens: camera.lens,
+        focal_mm: camera.focal_mm,
+        aperture: camera.aperture,
+        exposure_s: camera.exposure_s,
+        iso: camera.iso,
+        tags,
+        faces,
+        albums,
     })
 }
 
@@ -345,6 +450,101 @@ mod tests {
             grid_offset_of_item(&f.engine, 9_999),
             None,
             "a photo no longer in this view says so, rather than answering with a neighbour"
+        );
+    }
+
+    #[test]
+    fn viewer_item_carries_camera_keywords_faces_and_albums() {
+        // The plumbing from the row to the viewer, not the readers themselves (photon-core
+        // pins those): the camera columns and keywords are written the way the scanner's
+        // backfill writes them, the face the way Picasa's INI delivers it.
+        use photon_core::library::NewItem;
+        use photon_core::media::MediaKind;
+        use photon_core::metadata::CameraMeta;
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a.jpg", &img)]);
+        std::fs::write(
+            f.photos.join(".picasa.ini"),
+            b"[Contacts2]\nabc=Ada\n[a.jpg]\nfaces=rect64(4000200080006000),abc\n",
+        )
+        .unwrap();
+        f.add_photos();
+        let id = f.ids()[0];
+        let row = f.engine.lib.item(id).unwrap().unwrap();
+        let described = NewItem {
+            folder_id: row.folder_id,
+            path: row.path.clone(),
+            file_name: "a.jpg".into(),
+            kind: MediaKind::Image,
+            size: row.size,
+            mtime_ms: row.mtime_ms,
+            width: row.width,
+            height: row.height,
+            orientation: row.orientation,
+            taken_at: row.taken_at,
+            rating: None,
+            camera: CameraMeta {
+                make: Some("Canon".into()),
+                model: Some("EOS 5D".into()),
+                lens: Some("EF50mm".into()),
+                focal_mm: Some(50.0),
+                aperture: Some(1.8),
+                exposure_s: Some(0.004),
+                iso: Some(400),
+            },
+            tags: vec!["beach".into()],
+        };
+        f.engine.lib.update_item_meta(&[(id, described)]).unwrap();
+        let album = f.engine.lib.create_album("Trip", 1).unwrap();
+        f.engine.lib.add_to_album(album.id, &[id], 1).unwrap();
+
+        let item = viewer_item(&f.engine, id).unwrap();
+        assert_eq!(item.make.as_deref(), Some("Canon"));
+        assert_eq!(item.model.as_deref(), Some("EOS 5D"));
+        assert_eq!(item.lens.as_deref(), Some("EF50mm"));
+        assert_eq!(item.focal_mm, Some(50.0));
+        assert_eq!(item.aperture, Some(1.8));
+        assert_eq!(item.exposure_s, Some(0.004));
+        assert_eq!(item.iso, Some(400));
+        assert_eq!(item.tags, vec!["beach"]);
+        assert_eq!(item.faces.len(), 1);
+        assert_eq!(item.faces[0].name, "Ada");
+        assert_eq!(item.albums, vec![album.id]);
+        assert_eq!(list_people(&f.engine).unwrap()[0].name, "Ada");
+        assert_eq!(list_tags(&f.engine).unwrap()[0].tag, "beach");
+    }
+
+    #[test]
+    fn album_commands_round_trip_and_refresh_the_open_album() {
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a.jpg", &img), ("b.jpg", &img)]);
+        f.add_photos();
+        let ids = f.ids();
+        let album = create_album(&f.engine, "Trip").unwrap();
+        assert_eq!(
+            create_album(&f.engine, "  ").unwrap_err().kind,
+            "emptyAlbumName"
+        );
+        add_to_album(&f.engine, album.id, &ids[..1]).unwrap();
+        set_album_view(&f.engine, album.id).unwrap();
+        assert_eq!(grid_info(&f.engine).len, 1);
+
+        add_to_album(&f.engine, album.id, &ids[1..]).unwrap();
+        assert_eq!(
+            grid_info(&f.engine).len,
+            2,
+            "the open album follows the add"
+        );
+        remove_from_album(&f.engine, album.id, &ids).unwrap();
+        assert_eq!(grid_info(&f.engine).len, 0);
+
+        rename_album(&f.engine, album.id, "Zoo").unwrap();
+        assert_eq!(list_albums(&f.engine).unwrap()[0].name, "Zoo");
+        delete_album(&f.engine, album.id).unwrap();
+        assert!(list_albums(&f.engine).unwrap().is_empty());
+        assert_eq!(
+            delete_album(&f.engine, album.id).unwrap_err().kind,
+            "notFound"
         );
     }
 

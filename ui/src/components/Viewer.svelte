@@ -2,11 +2,25 @@
   import { untrack } from 'svelte';
   import { writeText } from '@tauri-apps/plugin-clipboard-manager';
   import { api, errorMessage, mediaUrl, type ViewerItem } from '../lib/api';
+  import { createAlbumMembership } from '../lib/album-membership.svelte';
   import { formatCaption } from '../lib/caption';
   import { createCopyFeedback } from '../lib/copied.svelte';
+  import { cameraRows } from '../lib/exif';
+  import { containedBox, faceBox } from '../lib/faces';
   import { createStarToggle } from '../lib/star-toggle.svelte';
   import { library } from '../lib/library.svelte';
-  import { MAX_ZOOM, MIN_ZOOM, clampPan, clampZoom, closesViewer, positionInView, wheelStep } from '../lib/nav';
+  import {
+    MAX_ZOOM,
+    MIN_ZOOM,
+    clampPan,
+    clampZoom,
+    closesViewer,
+    isQuarterTurn,
+    positionInView,
+    rotated,
+    wheelStep,
+    type Rotation,
+  } from '../lib/nav';
 
   let {
     offset,
@@ -26,8 +40,18 @@
   let error = $state<string | null>(null);
   let zoom = $state(MIN_ZOOM);
   let pan = $state({ x: 0, y: 0 });
+  /** Display rotation, clockwise. Nothing is written: `r` and `R` turn the frame the photo
+   *  sits in, and the next photo opens upright again, like the zoom. */
+  let rotation = $state<Rotation>(0);
+  /** The info panel: camera, keywords, people and albums. Its faces are outlined over the
+   *  photo while it is open. */
+  let info = $state(false);
   let dragging = $state(false);
   let stage = $state<HTMLDivElement | null>(null);
+  /** The frame's on-screen size, for placing the face outlines; the frame is the viewport
+   *  or, for a quarter turn, the viewport with its sides swapped. */
+  let frameW = $state(0);
+  let frameH = $state(0);
   /** The photo on screen has left the current view but still exists: unstarred while
    *  Starred is showing. It stays up - the user is looking at it - without a position in
    *  the caption, until the next navigation. */
@@ -55,6 +79,34 @@
   function toggleStar() {
     star.toggle().catch(library.reportError);
   }
+
+  // The album checkboxes in the info panel. Bound with the star, per photo, and optimistic
+  // for the same reason.
+  const membership = createAlbumMembership({
+    add: (albumId, ids) => library.addToAlbum(albumId, ids),
+    remove: (albumId, ids) => library.removeFromAlbum(albumId, ids),
+  });
+
+  function toggleAlbum(albumId: number) {
+    membership.toggle(albumId).catch(library.reportError);
+  }
+
+  function rotate(direction: 'cw' | 'ccw') {
+    rotation = rotated(rotation, direction);
+  }
+
+  const camera = $derived(item ? cameraRows(item) : []);
+  /** The photo as displayed, orientation applied: the coordinates Picasa's faces are in. */
+  const oriented = $derived.by(() => {
+    if (!item) return { width: 0, height: 0 };
+    const quarter = item.orientation >= 5 && item.orientation <= 8;
+    return quarter ? { width: item.height, height: item.width } : { width: item.width, height: item.height };
+  });
+  const faceBoxes = $derived.by(() => {
+    if (!item || !info) return [];
+    const image = containedBox(oriented.width, oriented.height, frameW, frameH);
+    return item.faces.map((f) => ({ name: f.name, box: faceBox(f, image) }));
+  });
 
   // Click-to-copy on the caption. The clipboard goes through the Tauri plugin rather than
   // `navigator.clipboard`, which needs a secure context and answers differently in the
@@ -181,10 +233,11 @@
     fullSrc = null;
     error = null;
     orphaned = false;
-    // Every photo opens fitted to the window: arriving at the next one already at 400% and
-    // panned into a corner leaves you lost.
+    // Every photo opens fitted to the window and upright: arriving at the next one already
+    // at 400%, panned into a corner or turned on its side leaves you lost.
     zoom = MIN_ZOOM;
     pan = { x: 0, y: 0 };
+    rotation = 0;
     (async () => {
       // `untrack`, because `ensure` reads `library.info.len` and this call is still inside
       // the effect's tracked window. `refresh()` assigns a new `info` object on every
@@ -203,6 +256,7 @@
       if (cancelled) return;
       item = it;
       star.bind(it.id, it.starred);
+      membership.bind(it.id, it.albums);
       if (it.thumbState === 'failed') {
         error = it.thumbError ?? "This photo can't be shown.";
         return;
@@ -252,6 +306,19 @@
       close();
       return;
     }
+    // Plain letters only: a modifier means the key belongs to the webview or the OS.
+    if (!e.ctrlKey && !e.metaKey && !e.altKey) {
+      if (e.key === 'r' || e.key === 'R') {
+        e.preventDefault();
+        rotate(e.key === 'r' ? 'cw' : 'ccw');
+        return;
+      }
+      if (e.key === 'i' || e.key === 'I') {
+        e.preventDefault();
+        info = !info;
+        return;
+      }
+    }
     const last = library.info.len - 1;
     if (last < 0) return;
     const next =
@@ -299,9 +366,9 @@
   }
 
   function onpointerdown(e: PointerEvent) {
-    // The zoom slider and the buttons sit on the same surface: a press on any of them is
-    // theirs, not the start of a pan.
-    if ((e.target as HTMLElement).closest('.zoom, .close, .bar')) return;
+    // The zoom slider, the buttons and the info panel sit on the same surface: a press on
+    // any of them is theirs, not the start of a pan.
+    if ((e.target as HTMLElement).closest('.zoom, .close, .bar, .info')) return;
     // Left button only. Without this every button panned, which is why the right button
     // looked like the pan control: the left one was being swallowed by the browser's native
     // image drag before the pointer stream could produce a move.
@@ -359,11 +426,90 @@
       style="transform: translate({pan.x}px, {pan.y}px) scale({zoom})"
       bind:this={stage}
     >
-      <img class="preview" src={mediaUrl(`thumb/${item.id}/preview/${item.thumbKey}`)} alt="" draggable="false" class:hidden={!!fullSrc} />
-      {#if fullSrc}
-        <img class="full" src={fullSrc} alt={item.fileName} draggable="false" />
-      {/if}
+      <!-- The frame is what rotates. It is the viewport's size, or the viewport's size with
+           width and height swapped for a quarter turn, so a landscape photo turned on its
+           side is `contain`-fitted to the viewport's height rather than clipped. Zoom and
+           pan apply to the stage outside it and are unaffected. -->
+      <div
+        class="frame"
+        class:quarter={isQuarterTurn(rotation)}
+        style:transform="rotate({rotation}deg)"
+        bind:clientWidth={frameW}
+        bind:clientHeight={frameH}
+      >
+        <img class="preview" src={mediaUrl(`thumb/${item.id}/preview/${item.thumbKey}`)} alt="" draggable="false" class:hidden={!!fullSrc} />
+        {#if fullSrc}
+          <img class="full" src={fullSrc} alt={item.fileName} draggable="false" />
+        {/if}
+        {#each faceBoxes as face, i (i)}
+          <div
+            class="face"
+            style:left="{face.box.left}px"
+            style:top="{face.box.top}px"
+            style:width="{face.box.width}px"
+            style:height="{face.box.height}px"
+          >
+            <span class="face-name">{face.name}</span>
+          </div>
+        {/each}
+      </div>
     </div>
+  {/if}
+  {#if info && item}
+    <aside class="info" aria-label="Photo information">
+      <h2 class="info-title">{item.fileName}</h2>
+      <p class="info-path" title={item.path}>{item.path}</p>
+      {#if camera.length}
+        <dl>
+          {#each camera as row (row.label)}
+            <dt>{row.label}</dt>
+            <dd>{row.value}</dd>
+          {/each}
+        </dl>
+      {:else}
+        <p class="info-muted">No camera data.</p>
+      {/if}
+      <h3>People</h3>
+      {#if item.faces.length}
+        <ul class="chips">
+          {#each item.faces as face, i (i)}
+            <li>{face.name}</li>
+          {/each}
+        </ul>
+      {:else}
+        <p class="info-muted">No faces named in Picasa.</p>
+      {/if}
+      <h3>Keywords</h3>
+      {#if item.tags.length}
+        <ul class="chips">
+          {#each item.tags as tag (tag)}
+            <li>{tag}</li>
+          {/each}
+        </ul>
+      {:else}
+        <p class="info-muted">No keywords in the file.</p>
+      {/if}
+      <h3>Albums</h3>
+      {#if library.albums.length}
+        <ul class="albums">
+          {#each library.albums as album (album.id)}
+            <li>
+              <label>
+                <input
+                  type="checkbox"
+                  checked={membership.has(album.id)}
+                  disabled={membership.busy(album.id)}
+                  onchange={() => toggleAlbum(album.id)}
+                />
+                {album.name}
+              </label>
+            </li>
+          {/each}
+        </ul>
+      {:else}
+        <p class="info-muted">No albums yet. Create one in the sidebar.</p>
+      {/if}
+    </aside>
   {/if}
   <!-- The star and the caption share one bottom-centred row, so the star sits where the
        eye already is for the file name rather than in a corner on its own. -->
@@ -377,6 +523,18 @@
       title={star.starred ? 'Unstar' : 'Star'}
     >
       {star.starred ? '★' : '☆'}
+    </button>
+    <button class="tool" onclick={() => rotate('ccw')} disabled={!item} aria-label="Rotate left" title="Rotate left (Shift+R)">↺</button>
+    <button class="tool" onclick={() => rotate('cw')} disabled={!item} aria-label="Rotate right" title="Rotate right (R)">↻</button>
+    <button
+      class="tool"
+      onclick={() => (info = !info)}
+      disabled={!item}
+      aria-pressed={info}
+      aria-label="Photo information"
+      title="Photo information (I)"
+    >
+      ⓘ
     </button>
     <!-- A button, because a click copies the file name. The confirmation replaces the whole
          line for a moment rather than appending to it, so the line does not jump in width. -->
@@ -415,6 +573,12 @@
 <style>
   .viewer { position: fixed; inset: 0; z-index: 20; display: grid; place-items: center; background: #000; overflow: hidden; }
   .stage { position: absolute; inset: 0; transform-origin: center; will-change: transform; }
+  /* Centred with the `translate` property, which applies before `transform`, so the
+     rotation in `transform` turns the frame about its own centre. */
+  .frame { position: absolute; left: 50%; top: 50%; width: 100vw; height: 100vh; translate: -50% -50%; transform-origin: center; }
+  .frame.quarter { width: 100vh; height: 100vw; }
+  .face { position: absolute; border: 2px solid #ffffffcc; border-radius: 3px; box-shadow: 0 0 0 1px #0008; pointer-events: none; }
+  .face-name { position: absolute; left: -2px; top: 100%; margin-top: 2px; padding: 1px 6px; background: #000c; border-radius: 3px; color: var(--text); font-size: 12px; white-space: nowrap; }
   .grabbable { cursor: grab; }
   .grabbing { cursor: grabbing; }
   /* `draggable="false"` covers the drag itself; these stop WebKit — which is the webview on
@@ -443,9 +607,35 @@
   .zoom input { width: 120px; }
   .level { color: var(--muted); font-size: 12px; min-width: 38px; text-align: right; }
   .close { position: absolute; top: 12px; right: 12px; width: 32px; height: 32px; border: 0; border-radius: 50%; background: #0009; cursor: pointer; }
-  .star { width: 26px; height: 26px; padding: 0; border: 0; border-radius: 4px; background: #0009; color: var(--muted); font-size: 16px; line-height: 1; cursor: pointer; }
-  .star:hover:not(:disabled) { color: var(--text); }
+  .star, .tool { width: 26px; height: 26px; padding: 0; border: 0; border-radius: 4px; background: #0009; color: var(--muted); font-size: 16px; line-height: 1; cursor: pointer; }
+  .star:hover:not(:disabled), .tool:hover:not(:disabled) { color: var(--text); }
   .star[aria-pressed='true'] { color: #ffcf40; }
-  .star:disabled { cursor: default; }
+  .tool[aria-pressed='true'] { color: var(--accent); }
+  .star:disabled, .tool:disabled { cursor: default; }
   .error { color: var(--muted); }
+  .info {
+    position: absolute;
+    top: 12px;
+    right: 56px;
+    bottom: 56px;
+    width: 280px;
+    overflow: auto;
+    padding: 12px 14px;
+    background: #000c;
+    border-radius: 6px;
+    color: var(--text);
+    font-size: 13px;
+    user-select: text;
+  }
+  .info-title { margin: 0 0 2px; font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
+  .info-path { margin: 0 0 10px; color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .info h3 { margin: 12px 0 4px; color: var(--muted); font-size: 11px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; }
+  .info dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 10px; margin: 0; }
+  .info dt { color: var(--muted); }
+  .info dd { margin: 0; overflow-wrap: anywhere; }
+  .info-muted { margin: 0; color: var(--muted); }
+  .chips { display: flex; flex-wrap: wrap; gap: 4px; margin: 0; padding: 0; list-style: none; }
+  .chips li { padding: 2px 8px; background: #ffffff1a; border-radius: 10px; font-size: 12px; }
+  .albums { margin: 0; padding: 0; list-style: none; }
+  .albums label { display: flex; align-items: center; gap: 8px; padding: 2px 0; cursor: pointer; }
 </style>

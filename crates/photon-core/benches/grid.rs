@@ -36,6 +36,8 @@ fn synthetic_library(dir: &Path, folders: usize, per_folder: usize) -> Library {
                 orientation: 1,
                 taken_at: 1_700_000_000 + (f * per_folder + i) as i64,
                 rating: None,
+                camera: photon_core::metadata::CameraMeta::default(),
+                tags: Vec::new(),
             });
         }
     }

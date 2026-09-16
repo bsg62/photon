@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { debounce, resultsChanged, shouldAdoptBackendQuery } from './search';
+import { debounce, resultsChanged, shouldAdoptBackendQuery, viewKey } from './search';
 
 describe('debounce', () => {
   beforeEach(() => {
@@ -121,5 +121,22 @@ describe('shouldAdoptBackendQuery — the reported swallowing bug', () => {
     // The ordering half: an echo arriving while another send is queued behind it may belong
     // to a since-superseded value.
     expect(shouldAdoptBackendQuery('b', 'beach', 'beach', 1)).toBe(false);
+  });
+});
+
+describe('viewKey', () => {
+  const base = { searchQuery: '', person: null, album: null, tag: null };
+
+  it('takes the argument that belongs to the active view', () => {
+    expect(viewKey({ ...base, view: 'search', searchQuery: 'lake' })).toEqual({ view: 'search', query: 'lake' });
+    expect(viewKey({ ...base, view: 'person', person: 'abc' })).toEqual({ view: 'person', query: 'abc' });
+    expect(viewKey({ ...base, view: 'album', album: 7 })).toEqual({ view: 'album', query: '7' });
+    expect(viewKey({ ...base, view: 'tag', tag: 'beach' })).toEqual({ view: 'tag', query: 'beach' });
+    expect(viewKey({ ...base, view: 'all' })).toEqual({ view: 'all', query: '' });
+  });
+
+  it('so switching albums resets the scroll, and one album re-published does not', () => {
+    expect(resultsChanged(viewKey({ ...base, view: 'album', album: 1 }), viewKey({ ...base, view: 'album', album: 2 }))).toBe(true);
+    expect(resultsChanged(viewKey({ ...base, view: 'album', album: 1 }), viewKey({ ...base, view: 'album', album: 1 }))).toBe(false);
   });
 });

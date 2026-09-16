@@ -2,12 +2,15 @@ import {
   api,
   errorMessage,
   events,
+  type AlbumSummary,
   type Folder,
   type FolderList,
   type GridEntry,
   type GridInfo,
   type GridView,
+  type Person,
   type ScanProgressEvent,
+  type TagCount,
 } from './api';
 import { PageCache } from './pages';
 import type { UnlistenFn } from '@tauri-apps/api/event';
@@ -16,8 +19,23 @@ export interface Toast { id: number; message: string }
 
 /** App-wide reactive state: the grid snapshot, the folder tree, scan status and selection. */
 export class LibraryStore {
-  info = $state<GridInfo>({ version: -1, len: 0, sections: [], starredCount: 0, view: 'all', searchQuery: '' });
+  info = $state<GridInfo>({
+    version: -1,
+    len: 0,
+    sections: [],
+    starredCount: 0,
+    view: 'all',
+    searchQuery: '',
+    person: null,
+    album: null,
+    tag: null,
+  });
   folders = $state<FolderList>({ watched: [], folders: [] });
+  /** The sidebar's three collections. Refetched on every `library-changed` (a scan can
+   *  add a face, a keyword or purge an album member) and after every album mutation. */
+  albums = $state<AlbumSummary[]>([]);
+  people = $state<Person[]>([]);
+  tags = $state<TagCount[]>([]);
   scans = $state<Record<number, ScanProgressEvent>>({});
   /** Watched folder ids the OS won't let photon watch live, from the most recent
    *  `folder-status` event for each: they fall back to periodic rescans instead. */
@@ -72,7 +90,10 @@ export class LibraryStore {
     const generation = ++this.generation;
     this.initPromise = (async () => {
       const unlisten = await Promise.all([
-        events.onLibraryChanged(() => void this.refresh().catch(this.reportError)),
+        events.onLibraryChanged(() => {
+          void this.refresh().catch(this.reportError);
+          void this.refreshCollections().catch(this.reportError);
+        }),
         events.onFolderStatus((e) => {
           this.degraded[e.watchedId] = e.degraded;
           void this.refreshFolders().catch(this.reportError);
@@ -88,7 +109,7 @@ export class LibraryStore {
         return;
       }
       this.unlisten = unlisten;
-      await Promise.all([this.refresh(), this.refreshFolders()]);
+      await Promise.all([this.refresh(), this.refreshFolders(), this.refreshCollections()]);
     })();
     return this.initPromise;
   }
@@ -160,15 +181,86 @@ export class LibraryStore {
     this.folders = folders;
   }
 
+  /** Sequence of the most recently issued collections request; same rule as `folderSeq`. */
+  private collectionsSeq = 0;
+
+  /** Refetches albums, people and tags together. Only the newest request may write. */
+  async refreshCollections(): Promise<void> {
+    const seq = ++this.collectionsSeq;
+    const [albums, people, tags] = await Promise.all([api.listAlbums(), api.listPeople(), api.listTags()]);
+    if (seq !== this.collectionsSeq) return;
+    this.albums = albums;
+    this.people = people;
+    this.tags = tags;
+  }
+
   /** Switches which photos the grid shows. The backend rebuilds its index, so the grid is
    *  reloaded from scratch rather than patched. */
   async setView(view: GridView): Promise<void> {
+    await this.switchView(() => api.setGridView(view));
+  }
+
+  /** Shows the photos of one Picasa contact. */
+  async setPersonView(hash: string): Promise<void> {
+    await this.switchView(() => api.setPersonView(hash));
+  }
+
+  /** Shows one album. */
+  async setAlbumView(albumId: number): Promise<void> {
+    await this.switchView(() => api.setAlbumView(albumId));
+  }
+
+  /** Shows the photos carrying one keyword. */
+  async setTagView(tag: string): Promise<void> {
+    await this.switchView(() => api.setTagView(tag));
+  }
+
+  /** One shape for every view switch: the command, then a refresh, with failures reported
+   *  rather than thrown, since every caller is a click handler. */
+  private async switchView(command: () => Promise<void>): Promise<void> {
     try {
-      await api.setGridView(view);
+      await command();
       await this.refresh();
     } catch (e) {
       this.reportError(e);
     }
+  }
+
+  albumName(albumId: number | null): string {
+    return this.albums.find((a) => a.id === albumId)?.name ?? '';
+  }
+
+  personName(hash: string | null): string {
+    return this.people.find((p) => p.hash === hash)?.name ?? '';
+  }
+
+  /** Album mutations. Each refetches the collections itself: the backend only announces a
+   *  grid change, and only when the album on screen is the one that changed. Errors are
+   *  thrown to the caller, which decides whether a toast or an open field is the answer. */
+  async createAlbum(name: string): Promise<number> {
+    const album = await api.createAlbum(name);
+    await this.refreshCollections();
+    return album.id;
+  }
+
+  async renameAlbum(albumId: number, name: string): Promise<void> {
+    await api.renameAlbum(albumId, name);
+    await this.refreshCollections();
+  }
+
+  async deleteAlbum(albumId: number): Promise<void> {
+    await api.deleteAlbum(albumId);
+    await this.refreshCollections();
+  }
+
+  async addToAlbum(albumId: number, itemIds: number[]): Promise<void> {
+    await api.addToAlbum(albumId, itemIds);
+    await this.refreshCollections();
+  }
+
+  async removeFromAlbum(albumId: number, itemIds: number[]): Promise<void> {
+    await api.removeFromAlbum(albumId, itemIds);
+    await this.refreshCollections();
   }
 
   /** Chains each `setSearchQuery` call onto the previous one, so two `setSearchQuery` calls

@@ -11,12 +11,15 @@
     dimmed,
     onselect,
     onopen,
+    onmenu,
   }: {
     entry: GridEntry | undefined;
     selected: boolean;
     dimmed: boolean;
     onselect: () => void;
     onopen: () => void;
+    /** Right-click. The grid owns the menu, since it knows the view and the albums. */
+    onmenu: (e: MouseEvent) => void;
   } = $props();
 
   const RETRY_MS = 2000;
@@ -86,6 +89,7 @@
   tabindex="-1"
   onclick={onselect}
   ondblclick={onopen}
+  oncontextmenu={onmenu}
 >
   {#if entry && src && status !== 'broken'}
     <img {src} alt="" draggable="false" decoding="async" class:loaded={status === 'loaded'} onload={() => (status = 'loaded')} {onerror} />

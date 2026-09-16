@@ -16,7 +16,7 @@
 //! blocking pool.
 
 use crate::{commands, engine::Engine, error::AppError};
-use photon_core::library::WatchedFolder;
+use photon_core::library::{Album, AlbumSummary, Person, TagCount, WatchedFolder};
 use std::sync::Arc;
 use tauri::State;
 
@@ -86,6 +86,65 @@ pub fn set_grid_view(engine: Eng<'_>, view: photon_core::grid::GridView) -> Resu
 #[tauri::command(async)]
 pub fn set_search_query(engine: Eng<'_>, query: String) -> Result<(), AppError> {
     commands::set_search_query(&engine, &query)
+}
+
+#[tauri::command(async)]
+pub fn set_person_view(engine: Eng<'_>, contact: String) -> Result<(), AppError> {
+    commands::set_person_view(&engine, &contact)
+}
+
+#[tauri::command(async)]
+pub fn set_album_view(engine: Eng<'_>, album_id: i64) -> Result<(), AppError> {
+    commands::set_album_view(&engine, album_id)
+}
+
+#[tauri::command(async)]
+pub fn set_tag_view(engine: Eng<'_>, tag: String) -> Result<(), AppError> {
+    commands::set_tag_view(&engine, &tag)
+}
+
+#[tauri::command(async)]
+pub fn list_people(engine: Eng<'_>) -> Result<Vec<Person>, AppError> {
+    commands::list_people(&engine)
+}
+
+#[tauri::command(async)]
+pub fn list_tags(engine: Eng<'_>) -> Result<Vec<TagCount>, AppError> {
+    commands::list_tags(&engine)
+}
+
+#[tauri::command(async)]
+pub fn list_albums(engine: Eng<'_>) -> Result<Vec<AlbumSummary>, AppError> {
+    commands::list_albums(&engine)
+}
+
+#[tauri::command(async)]
+pub fn create_album(engine: Eng<'_>, name: String) -> Result<Album, AppError> {
+    commands::create_album(&engine, &name)
+}
+
+#[tauri::command(async)]
+pub fn rename_album(engine: Eng<'_>, album_id: i64, name: String) -> Result<(), AppError> {
+    commands::rename_album(&engine, album_id, &name)
+}
+
+#[tauri::command(async)]
+pub fn delete_album(engine: Eng<'_>, album_id: i64) -> Result<(), AppError> {
+    commands::delete_album(&engine, album_id)
+}
+
+#[tauri::command(async)]
+pub fn add_to_album(engine: Eng<'_>, album_id: i64, item_ids: Vec<i64>) -> Result<(), AppError> {
+    commands::add_to_album(&engine, album_id, &item_ids)
+}
+
+#[tauri::command(async)]
+pub fn remove_from_album(
+    engine: Eng<'_>,
+    album_id: i64,
+    item_ids: Vec<i64>,
+) -> Result<(), AppError> {
+    commands::remove_from_album(&engine, album_id, &item_ids)
 }
 
 #[tauri::command(async)]

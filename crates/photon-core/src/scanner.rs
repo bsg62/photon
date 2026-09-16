@@ -1,8 +1,10 @@
 use crate::{
     Result,
+    keywords::read_keywords,
     library::{KnownItem, Library, NewItem, WatchedFolder},
     media::MediaKind,
-    metadata::read_image_meta,
+    metadata::{EXIF_VERSION, read_image_meta},
+    picasa::{Face, FolderIni},
 };
 use std::{
     collections::HashMap,
@@ -39,6 +41,14 @@ pub struct ScanReport {
     /// non-zero field in an otherwise all-unchanged report, and callers deciding whether to
     /// refresh the grid must count it alongside `added`/`changed`/`marked_missing`/`purged`.
     pub restarred: u64,
+    /// Items whose faces the Picasa pass changed this scan. Like `restarred`, populated
+    /// for photos the walk found unchanged: naming a face in Picasa rewrites the INI, not
+    /// the photo.
+    pub refaced: u64,
+    /// Unchanged files re-read because their stored metadata predates the current reader
+    /// (`items.exif_version` behind `metadata::EXIF_VERSION`). The backfill for a library
+    /// indexed before a camera column existed.
+    pub enriched: u64,
     pub cancelled: bool,
 }
 
@@ -51,8 +61,19 @@ impl ScanReport {
     /// (this doc, the caller, and CLAUDE.md). A new mutation counter added to this struct
     /// and forgotten there compiles, passes every scanner test, and silently stops the grid
     /// from ever rebuilding for it - which is exactly what `restarred` did once.
+    ///
+    /// `refaced` and `enriched` count because a view can be built from what they change:
+    /// the Person view from faces, the Tag and Search views from keywords and camera
+    /// columns.
     pub fn touched_rows(&self) -> bool {
-        self.added + self.changed + self.marked_missing + self.purged + self.restarred > 0
+        self.added
+            + self.changed
+            + self.marked_missing
+            + self.purged
+            + self.restarred
+            + self.refaced
+            + self.enriched
+            > 0
     }
 }
 
@@ -171,10 +192,11 @@ pub fn scan_watched(
         // this guard: the empty-root check below is what tells a live folder from an
         // unmounted volume, and an unmounted mount point reads as a folder whose INI is
         // gone - which would clear every star it has.
-        let restarred = apply_picasa_stars(lib, &walked);
+        let (restarred, refaced) = apply_picasa(lib, &walked);
         progress.progress(&seen);
         return Ok(ScanReport {
             restarred,
+            refaced,
             ..report
         });
     }
@@ -191,7 +213,7 @@ pub fn scan_watched(
     }
     lib.set_watched_online(watched.id, true)?;
 
-    let restarred = apply_picasa_stars(lib, &walked);
+    let (restarred, refaced) = apply_picasa(lib, &walked);
 
     // Anything left in `known` was not found on this (reachable) scan: soft-delete it,
     // or purge it if it was already missing last time.
@@ -203,6 +225,7 @@ pub fn scan_watched(
         marked_missing: marked,
         purged,
         restarred,
+        refaced,
         ..report
     })
 }
@@ -323,13 +346,15 @@ pub fn scan_subtree(
     }
     // Above the `skip_mark_purge` guard, which `scan_watched` cannot do: the constraint
     // there is its empty-root check, and this function deliberately has none (see the doc
-    // comment). Every non-cancelled walk applies the stars of the folders it reached.
-    let restarred = apply_picasa_stars(lib, &outcome.walked);
+    // comment). Every non-cancelled walk applies the stars and faces of the folders it
+    // reached.
+    let (restarred, refaced) = apply_picasa(lib, &outcome.walked);
 
     if outcome.skip_mark_purge {
         progress.progress(&outcome.seen);
         return Ok(ScanReport {
             restarred,
+            refaced,
             ..outcome.report
         });
     }
@@ -340,6 +365,7 @@ pub fn scan_subtree(
     report.marked_missing = marked;
     report.purged = purged;
     report.restarred = restarred;
+    report.refaced = refaced;
 
     progress.progress(&outcome.seen);
     Ok(report)
@@ -416,6 +442,7 @@ fn walk_tree(
     let mut seen = ScanProgress::default();
     let mut new_batch: Vec<NewItem> = Vec::new();
     let mut changed_batch: Vec<(i64, NewItem)> = Vec::new();
+    let mut meta_batch: Vec<(i64, NewItem)> = Vec::new();
     let mut walked: Vec<(PathBuf, i64)> = Vec::new();
     let mut incomplete_prefixes: Vec<PathBuf> = Vec::new();
     let mut skip_mark_purge = false;
@@ -490,7 +517,18 @@ fn walk_tree(
 
         match known.remove(path_str) {
             Some(k) if k.size == size && k.mtime_ms == mtime_ms && !k.missing => {
-                report.unchanged += 1
+                report.unchanged += 1;
+                // The file is as it was, but the reader that last looked at it knew less
+                // than the current one does (a camera column added since). This is the
+                // only place an unchanged file is ever re-read, and it is what backfills
+                // a library indexed before the column existed; a scan that skipped it
+                // would leave every old photo without camera metadata for good.
+                if k.exif_version < EXIF_VERSION {
+                    meta_batch.push((
+                        k.id,
+                        describe(&entry, path_str, folder_id, kind, size, mtime_ms),
+                    ));
+                }
             }
             Some(k) => changed_batch.push((
                 k.id,
@@ -505,9 +543,13 @@ fn walk_tree(
         if changed_batch.len() >= BATCH {
             flush_changed(lib, &mut changed_batch, &mut report, &mut seen, progress)?;
         }
+        if meta_batch.len() >= BATCH {
+            flush_meta(lib, &mut meta_batch, &mut report)?;
+        }
     }
     flush_new(lib, &mut new_batch, &mut report, &mut seen, progress)?;
     flush_changed(lib, &mut changed_batch, &mut report, &mut seen, progress)?;
+    flush_meta(lib, &mut meta_batch, &mut report)?;
 
     Ok(WalkOutcome {
         report,
@@ -519,40 +561,58 @@ fn walk_tree(
     })
 }
 
-/// Applies each walked folder's Picasa stars to its photos. Returns how many items' ratings
-/// actually changed, for [`ScanReport::restarred`].
+/// Applies each walked folder's Picasa stars, faces and contacts to its photos. Returns how
+/// many items' ratings and how many items' faces actually changed, for
+/// [`ScanReport::restarred`] and [`ScanReport::refaced`].
 ///
 /// Runs after the walk rather than inside `describe()`, which is called only for photos
-/// whose size or mtime changed. Starring a photo in Picasa rewrites the folder's INI and
-/// leaves the photo untouched, so on a rescan every photo takes the `unchanged` branch and
-/// a star read in `describe()` would never be written.
+/// whose size or mtime changed. Starring a photo or naming a face in Picasa rewrites the
+/// folder's INI and leaves the photo untouched, so on a rescan every photo takes the
+/// `unchanged` branch and anything read in `describe()` would never be written.
 ///
-/// The INI is the only authority: a photo it does not name is set to unstarred, so removing
-/// a star in Picasa clears it here too. A folder that cannot be read is skipped instead,
-/// because failing to read is not evidence that the stars are gone.
+/// The INI is the only authority: a photo it does not name is set to unstarred and
+/// faceless, so removing a star or a face in Picasa clears it here too. A folder that
+/// cannot be read is skipped instead, because failing to read is not evidence that they
+/// are gone.
 ///
 /// Infallible: a per-folder DB error (a busy database, say) is logged and skipped rather
 /// than aborting the whole scan, since that would also skip `finish_mark_purge` and
 /// `prune_folders` over an unrelated folder's transient failure. Nothing is lost — the next
-/// scan reapplies this folder's stars.
-fn apply_picasa_stars(lib: &Library, walked: &[(PathBuf, i64)]) -> u64 {
-    let mut restarred = 0;
+/// scan reapplies this folder's INI.
+fn apply_picasa(lib: &Library, walked: &[(PathBuf, i64)]) -> (u64, u64) {
+    let (mut restarred, mut refaced) = (0, 0);
     for (dir, folder_id) in walked {
-        let Some(stars) = crate::picasa::read_stars(dir) else {
-            tracing::debug!(?dir, "leaving stars alone for an unreadable folder");
+        let Some(ini) = crate::picasa::read_folder(dir) else {
+            tracing::debug!(
+                ?dir,
+                "leaving stars and faces alone for an unreadable folder"
+            );
             continue;
         };
-        match apply_folder_stars(lib, *folder_id, &stars) {
-            Ok(n) => restarred += n,
+        match apply_folder_ini(lib, *folder_id, &ini) {
+            Ok((stars, faces)) => {
+                restarred += stars;
+                refaced += faces;
+            }
             Err(err) => {
                 // One folder's transient failure (a busy database, say) must not cost the
                 // whole scan its mark/purge/prune. The next scan reapplies this folder's
-                // stars.
-                tracing::warn!(%err, ?dir, "could not apply Picasa stars for a folder");
+                // INI.
+                tracing::warn!(%err, ?dir, "could not apply the Picasa INI for a folder");
             }
         }
     }
-    restarred
+    (restarred, refaced)
+}
+
+/// Contacts first, so a face written below can already resolve its name; then stars and
+/// faces from one read of the folder's item names.
+fn apply_folder_ini(lib: &Library, folder_id: i64, ini: &FolderIni) -> Result<(u64, u64)> {
+    lib.upsert_contacts(&ini.contacts)?;
+    let names = lib.folder_item_names(folder_id)?;
+    let restarred = apply_folder_stars(lib, &names, &ini.stars)?;
+    let refaced = apply_folder_faces(lib, folder_id, &names, &ini.faces)?;
+    Ok((restarred, refaced))
 }
 
 /// Sets `folder_id`'s items' ratings from `stars`, writing only the rows whose rating
@@ -561,20 +621,45 @@ fn apply_picasa_stars(lib: &Library, walked: &[(PathBuf, i64)]) -> u64 {
 /// real star change from a no-op scan.
 fn apply_folder_stars(
     lib: &Library,
-    folder_id: i64,
+    names: &[(i64, String, Option<i64>)],
     stars: &std::collections::HashSet<String>,
 ) -> Result<u64> {
-    let ratings: Vec<(i64, u8)> = lib
-        .folder_item_names(folder_id)?
-        .into_iter()
+    let ratings: Vec<(i64, u8)> = names
+        .iter()
         .filter_map(|(id, name, current)| {
-            let wanted = u8::from(stars.contains(&name));
-            (current != Some(wanted as i64)).then_some((id, wanted))
+            let wanted = u8::from(stars.contains(name));
+            (*current != Some(wanted as i64)).then_some((*id, wanted))
         })
         .collect();
     let changed = ratings.len() as u64;
     for chunk in ratings.chunks(BATCH) {
         lib.set_ratings(chunk)?;
+    }
+    Ok(changed)
+}
+
+/// Sets each item's faces from the INI, writing only the items whose list differs from
+/// what is stored, and returns how many that was. The comparison is exact, in order:
+/// Picasa lists faces in a stable order, so a folder that agrees costs nothing.
+fn apply_folder_faces(
+    lib: &Library,
+    folder_id: i64,
+    names: &[(i64, String, Option<i64>)],
+    faces: &HashMap<String, Vec<Face>>,
+) -> Result<u64> {
+    let current = lib.folder_faces(folder_id)?;
+    let empty: Vec<Face> = Vec::new();
+    let changes: Vec<(i64, Vec<Face>)> = names
+        .iter()
+        .filter_map(|(id, name, _)| {
+            let wanted = faces.get(name).unwrap_or(&empty);
+            let stored = current.get(id).unwrap_or(&empty);
+            (wanted != stored).then(|| (*id, wanted.clone()))
+        })
+        .collect();
+    let changed = changes.len() as u64;
+    for chunk in changes.chunks(BATCH) {
+        lib.set_item_faces(chunk)?;
     }
     Ok(changed)
 }
@@ -635,9 +720,27 @@ fn describe(
         height: meta.height,
         orientation: meta.orientation,
         taken_at: meta.taken_at.unwrap_or(mtime_ms.div_euclid(1000)),
-        // Always `None` here; `apply_picasa_stars` sets the real value after the walk.
+        // Always `None` here; `apply_picasa` sets the real value after the walk.
         rating: meta.rating,
+        camera: meta.camera,
+        tags: read_keywords(entry.path()),
     }
+}
+
+/// Writes the re-read metadata of unchanged files. No `indexed` report: nothing about
+/// these rows' thumbnails changed.
+fn flush_meta(
+    lib: &Library,
+    batch: &mut Vec<(i64, NewItem)>,
+    report: &mut ScanReport,
+) -> Result<()> {
+    if batch.is_empty() {
+        return Ok(());
+    }
+    lib.update_item_meta(batch)?;
+    report.enriched += batch.len() as u64;
+    batch.clear();
+    Ok(())
 }
 
 fn flush_new(
@@ -706,7 +809,10 @@ fn mtime_ms(md: &Metadata) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testutil::{jpeg_bytes, jpeg_with_exif, png_bytes, temp_library, write_file};
+    use crate::testutil::{
+        ExifSpec, jpeg_bytes, jpeg_with_exif, jpeg_with_exif_spec, jpeg_with_iptc_keywords,
+        png_bytes, temp_library, write_file,
+    };
     use std::fs;
     use std::time::Duration;
 
@@ -834,6 +940,109 @@ mod tests {
 
         assert_eq!(report.unchanged, 1, "the photo itself did not change");
         assert_eq!(lib.starred_count().unwrap(), 1);
+    }
+
+    #[test]
+    fn a_face_named_in_picasa_is_picked_up_without_the_photo_changing() {
+        // The face pass is the star pass's twin: naming a face in Picasa rewrites the INI
+        // and leaves the photo untouched, so it takes the `unchanged` branch and only a
+        // post-walk pass can see it. Removing the face from the INI clears it again.
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        write_file(&root, "a.jpg", &jpeg_bytes(4, 2));
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
+        scan(&lib, &watched, 1);
+        assert!(lib.people_with_counts().unwrap().is_empty());
+
+        write_file(
+            &root,
+            ".picasa.ini",
+            b"[Contacts2]\nb5d3a7e4f1c2d9a8=Ada Lovelace;;\n[a.jpg]\nfaces=rect64(4000200080006000),b5d3a7e4f1c2d9a8\n",
+        );
+        let report = scan(&lib, &watched, 2);
+        assert_eq!((report.unchanged, report.refaced), (1, 1));
+        assert!(
+            report.touched_rows(),
+            "the grid must rebuild for the People list"
+        );
+        let people = lib.people_with_counts().unwrap();
+        assert_eq!(
+            (people[0].name.as_str(), people[0].count),
+            ("Ada Lovelace", 1)
+        );
+
+        let report = scan(&lib, &watched, 3);
+        assert_eq!(report.refaced, 0, "an agreeing folder writes nothing");
+
+        write_file(&root, ".picasa.ini", b"[a.jpg]\nbackuphash=1\n");
+        let report = scan(&lib, &watched, 4);
+        assert_eq!(report.refaced, 1);
+        assert!(lib.people_with_counts().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_photo_indexed_before_the_camera_columns_is_re_read_on_the_next_scan() {
+        // The backfill. A row with `exif_version = 0` is what every photo indexed before
+        // this feature looks like after the migration; the file has not changed, so only
+        // the version check can bring it back through `describe()`. Reverting that check
+        // leaves `make` NULL forever, which is what the final assertion catches.
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        let spec = ExifSpec {
+            make: Some("Canon"),
+            ..ExifSpec::default()
+        };
+        let a = write_file(&root, "a.jpg", &jpeg_with_exif_spec(4, 2, &spec));
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
+        scan(&lib, &watched, 1);
+        let id = lib.known_items(watched.id).unwrap()[&key(&a)].id;
+        assert_eq!(
+            lib.item(id).unwrap().unwrap().camera.make.as_deref(),
+            Some("Canon")
+        );
+
+        // A library from before the columns: the make is gone and the row is unread.
+        lib.forget_metadata_for_test(id).unwrap();
+        lib.set_thumb_state(id, crate::media::ThumbState::Ready, None)
+            .unwrap();
+
+        let report = scan(&lib, &watched, 2);
+        assert_eq!(
+            (report.unchanged, report.changed, report.enriched),
+            (1, 0, 1)
+        );
+        assert!(report.touched_rows());
+        let item = lib.item(id).unwrap().unwrap();
+        assert_eq!(item.camera.make.as_deref(), Some("Canon"));
+        assert_eq!(
+            item.thumb_state,
+            crate::media::ThumbState::Ready,
+            "a metadata re-read is not a file change: the thumbnail stays"
+        );
+
+        let report = scan(&lib, &watched, 3);
+        assert_eq!(report.enriched, 0, "read once, not on every scan");
+    }
+
+    #[test]
+    fn keywords_are_indexed_with_the_photo() {
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        let a = write_file(
+            &root,
+            "a.jpg",
+            &jpeg_with_iptc_keywords(4, 2, &[b"beach", b"summer"]),
+        );
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
+        scan(&lib, &watched, 1);
+        let id = lib.known_items(watched.id).unwrap()[&key(&a)].id;
+        assert_eq!(lib.item_tags(id).unwrap(), ["beach", "summer"]);
+        assert_eq!(lib.tags_with_counts().unwrap().len(), 2);
+
+        // Re-tagged in place: the file changes, and the keyword list follows it.
+        write_file(&root, "a.jpg", &jpeg_with_iptc_keywords(8, 8, &[b"beach"]));
+        scan(&lib, &watched, 2);
+        assert_eq!(lib.item_tags(id).unwrap(), ["beach"]);
     }
 
     #[test]

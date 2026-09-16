@@ -3,6 +3,8 @@
 pub mod decode;
 pub mod error;
 pub mod grid;
+pub mod iptc;
+pub mod keywords;
 pub mod library;
 pub mod media;
 pub mod metadata;

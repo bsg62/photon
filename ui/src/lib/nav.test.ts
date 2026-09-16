@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { clampPan, clampZoom, closesViewer, move, positionInFolder, positionInView, wheelStep } from './nav';
+import { clampPan, clampZoom, closesViewer, isQuarterTurn, move, positionInFolder, positionInView, rotated, wheelStep } from './nav';
 
 const sections = [
   { folderId: 1, offset: 0, count: 5 },
@@ -168,5 +168,21 @@ describe('closesViewer', () => {
     // Forward has nowhere to go — photon keeps no history — so swallowing it would make a
     // stray press on a five-button mouse close the viewer for no stated reason.
     expect(closesViewer(4)).toBe(false);
+  });
+});
+
+describe('rotated', () => {
+  it('steps a quarter turn either way and wraps', () => {
+    expect(rotated(0, 'cw')).toBe(90);
+    expect(rotated(270, 'cw')).toBe(0);
+    expect(rotated(0, 'ccw')).toBe(270);
+    expect(rotated(90, 'ccw')).toBe(0);
+  });
+
+  it('knows which rotations swap the frame', () => {
+    expect(isQuarterTurn(0)).toBe(false);
+    expect(isQuarterTurn(90)).toBe(true);
+    expect(isQuarterTurn(180)).toBe(false);
+    expect(isQuarterTurn(270)).toBe(true);
   });
 });

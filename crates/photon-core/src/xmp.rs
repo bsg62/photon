@@ -1,4 +1,4 @@
-//! Reads `xmp:Rating` out of a photo's embedded XMP packet.
+//! Reads `xmp:Rating` and `dc:subject` out of a photo's embedded XMP packet.
 //!
 //! The packet is plain text in every container photon supports — JPEG `APP1`, PNG
 //! uncompressed `iTXt`, WebP `XMP ` chunk, GIF Application Extension — so a bounded scan
@@ -28,12 +28,74 @@ pub fn read_rating(path: &Path) -> Option<u8> {
         .take(MAX_PREFIX as u64)
         .read_to_end(&mut buf)
         .ok()?;
-    let start = buf
+    rating_from_xml(&packet_in(&buf)?)
+}
+
+/// The XMP packet in the leading bytes of a file, as text, if one is complete there.
+///
+/// Decoded lossily: the packet is UTF-8 by specification, but the bytes around it are
+/// whatever the container holds, and the slice starts at the packet marker so nothing
+/// before it is decoded at all.
+pub fn packet_in(prefix: &[u8]) -> Option<String> {
+    let start = prefix
         .windows(PACKET_START.len())
         .position(|w| w == PACKET_START)?;
-    let text = String::from_utf8_lossy(&buf[start..]);
+    let text = String::from_utf8_lossy(&prefix[start..]);
     let end = text.find(PACKET_END).map(|i| i + PACKET_END.len())?;
-    rating_from_xml(&text[..end])
+    Some(text[..end].to_string())
+}
+
+/// The keywords in an XMP packet: every `rdf:li` inside `dc:subject`, in document order,
+/// trimmed, with empties dropped. Entities and character references are resolved, so
+/// `Tom &amp; Jerry` comes back as written by the person, not by the encoder.
+///
+/// Malformed XML yields what was read up to the error rather than nothing: a keyword list
+/// cut short is still a keyword list, and the alternative loses every tag in the file over
+/// one stray byte at the end of it.
+pub fn subjects_from_xml(xml: &str) -> Vec<String> {
+    let mut reader = Reader::from_str(xml);
+    let mut subjects = Vec::new();
+    let mut in_subject = false;
+    let mut in_item = false;
+    let mut current = String::new();
+    loop {
+        match reader.read_event() {
+            Err(_) | Ok(Event::Eof) => break,
+            Ok(Event::Start(e)) => match e.name().as_ref() {
+                "dc:subject" => in_subject = true,
+                "rdf:li" if in_subject => {
+                    in_item = true;
+                    current.clear();
+                }
+                _ => {}
+            },
+            Ok(Event::End(e)) => match e.name().as_ref() {
+                "dc:subject" => in_subject = false,
+                "rdf:li" if in_item => {
+                    in_item = false;
+                    let keyword = current.trim();
+                    if !keyword.is_empty() {
+                        subjects.push(keyword.to_string());
+                    }
+                }
+                _ => {}
+            },
+            Ok(Event::Text(t)) if in_item => current.push_str(t.as_ref()),
+            Ok(Event::CData(t)) if in_item => current.push_str(&t),
+            // quick-xml hands `&amp;` and `&#x263A;` over as their own events rather than
+            // resolving them inside the text, so a keyword with an ampersand arrives in
+            // three pieces.
+            Ok(Event::GeneralRef(r)) if in_item => {
+                if let Ok(Some(c)) = r.resolve_char_ref() {
+                    current.push(c);
+                } else if let Some(text) = quick_xml::escape::resolve_predefined_entity(&r) {
+                    current.push_str(text);
+                }
+            }
+            _ => {}
+        }
+    }
+    subjects
 }
 
 /// Reads `xmp:Rating` from an XMP packet, in either the attribute or the child-element
@@ -192,6 +254,34 @@ mod tests {
         // different element, the Urgency text below would be misread as the rating.
         let xml = r#"<xmp:Rating/><photoshop:Urgency>3</photoshop:Urgency>"#;
         assert_eq!(rating_from_xml(xml), None);
+    }
+
+    #[test]
+    fn subjects_are_read_from_the_dc_bag_in_order() {
+        let xml =
+            crate::testutil::xmp_packet_with_subjects(&["beach", " summer ", "", "Tom & Jerry"]);
+        assert_eq!(
+            subjects_from_xml(&xml),
+            ["beach", "summer", "Tom & Jerry"],
+            "trimmed, empties dropped, the ampersand entity resolved"
+        );
+    }
+
+    #[test]
+    fn a_character_reference_in_a_subject_is_resolved() {
+        let xml = "<dc:subject><rdf:Bag><rdf:li>caf&#xe9;</rdf:li></rdf:Bag></dc:subject>";
+        assert_eq!(subjects_from_xml(xml), ["café"]);
+    }
+
+    #[test]
+    fn list_items_outside_the_subject_bag_are_not_keywords() {
+        // `dc:creator` is an rdf:Seq of rdf:li too; only the subject bag holds keywords.
+        let xml = r#"<rdf:Description xmlns:dc="http://purl.org/dc/elements/1.1/">
+            <dc:creator><rdf:Seq><rdf:li>Ada</rdf:li></rdf:Seq></dc:creator>
+            <dc:subject><rdf:Bag><rdf:li>lake</rdf:li></rdf:Bag></dc:subject>
+        </rdf:Description>"#;
+        assert_eq!(subjects_from_xml(xml), ["lake"]);
+        assert!(subjects_from_xml("<x:xmpmeta/>").is_empty());
     }
 
     #[test]

@@ -66,6 +66,67 @@ CREATE TABLE settings (
 -- open). Partial, so the missing rows the view excludes cost nothing to keep out of it.
 CREATE INDEX items_recent ON items(taken_at DESC, file_name DESC, id DESC) WHERE missing_since IS NULL;
 "#,
+    r#"
+-- Camera metadata, keywords, Picasa faces and albums, in one entry because they share a
+-- release and each other's plumbing (the parameterised views, the post-walk Picasa pass).
+--
+-- The camera columns are NULL when the camera wrote nothing, which is common, so NULL cannot
+-- also mean "not read yet" the way it does for `rating`. `exif_version` carries that instead:
+-- the generation of `describe()` that last read the file, 0 for every row that predates this
+-- migration. The scanner re-reads an unchanged file whose version is behind
+-- `metadata::EXIF_VERSION`, which is what backfills a library indexed before these columns
+-- existed. A NOT NULL DEFAULT is right here precisely because it is *not* the marker.
+ALTER TABLE items ADD COLUMN make TEXT;
+ALTER TABLE items ADD COLUMN model TEXT;
+ALTER TABLE items ADD COLUMN lens TEXT;
+ALTER TABLE items ADD COLUMN focal_mm REAL;
+ALTER TABLE items ADD COLUMN aperture REAL;
+ALTER TABLE items ADD COLUMN exposure_s REAL;
+ALTER TABLE items ADD COLUMN iso INTEGER;
+ALTER TABLE items ADD COLUMN exif_version INTEGER NOT NULL DEFAULT 0;
+-- Keywords read from the photo's own XMP and IPTC. A table rather than a joined column so
+-- the Tags list is one GROUP BY and the Tag view one IN (…) filter.
+CREATE TABLE item_tags (
+    item_id INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+    tag     TEXT NOT NULL,
+    PRIMARY KEY (item_id, tag)
+);
+CREATE INDEX item_tags_tag ON item_tags(tag);
+-- Picasa's contacts, merged across every INI: a name recorded in one folder's [Contacts2]
+-- resolves the same hash tagged in another folder whose INI never names it.
+CREATE TABLE contacts (
+    hash TEXT PRIMARY KEY,
+    name TEXT NOT NULL
+);
+-- One row per face Picasa recorded on a photo; the rectangle is fractions of the displayed
+-- image, as Picasa's rect64 stores them. `contact` is not a foreign key: a face can be
+-- stored before any INI has named its contact.
+CREATE TABLE faces (
+    item_id INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+    contact TEXT NOT NULL,
+    left    REAL NOT NULL,
+    top     REAL NOT NULL,
+    right   REAL NOT NULL,
+    bottom  REAL NOT NULL
+);
+CREATE INDEX faces_item ON faces(item_id);
+CREATE INDEX faces_contact ON faces(contact);
+-- photon's own albums. Membership is by item id, so a photo renamed on disk (a new row to
+-- the scanner) leaves its albums when the old row is purged; recorded in the design as a
+-- known limitation.
+CREATE TABLE albums (
+    id         INTEGER PRIMARY KEY,
+    name       TEXT NOT NULL,
+    created_ms INTEGER NOT NULL
+);
+CREATE TABLE album_items (
+    album_id INTEGER NOT NULL REFERENCES albums(id) ON DELETE CASCADE,
+    item_id  INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+    added_ms INTEGER NOT NULL,
+    PRIMARY KEY (album_id, item_id)
+);
+CREATE INDEX album_items_item ON album_items(item_id);
+"#,
 ];
 
 pub fn migrate(conn: &Connection) -> Result<()> {
@@ -194,6 +255,70 @@ mod tests {
             )
             .unwrap();
         assert_eq!(rating, Some(3), "and the existing row is untouched");
+    }
+
+    /// The camera columns, keyword, face and album tables arriving in a populated library.
+    /// The existing row must keep its rating and read as `exif_version = 0`: that default is
+    /// what the scanner's backfill keys on, so a migration that set it to the current version
+    /// would leave every pre-existing photo without camera metadata for good.
+    #[test]
+    fn the_fifth_migration_adds_metadata_tables_and_leaves_existing_rows_unread() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        for sql in &MIGRATIONS[..4] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 4i64).unwrap();
+        conn.execute(
+            "INSERT INTO watched_folders (id, path) VALUES (1, '/p')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO folders (id, watched_id, parent_id, path, name, sort_key) \
+             VALUES (1, 1, NULL, '/p', 'p', 'p')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO items (folder_id, path, file_name, kind, size, mtime_ms, width, \
+             height, orientation, taken_at, rating) \
+             VALUES (1, '/p/a.jpg', 'a.jpg', 0, 1, 1, 1, 1, 1, 1, 3)",
+            [],
+        )
+        .unwrap();
+
+        migrate(&conn).unwrap();
+
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, MIGRATIONS.len() as i64);
+        let tables: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type = 'table' \
+                 AND name IN ('item_tags', 'contacts', 'faces', 'albums', 'album_items')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(tables, 5);
+        let (rating, exif_version, make): (Option<i64>, i64, Option<String>) = conn
+            .query_row(
+                "SELECT rating, exif_version, make FROM items WHERE path = '/p/a.jpg'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            rating,
+            Some(3),
+            "the upgrade must not disturb existing rows"
+        );
+        assert_eq!(
+            exif_version, 0,
+            "an existing row reads as not yet read for metadata"
+        );
+        assert_eq!(make, None);
     }
 
     #[test]

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { api } from '../lib/api';
+  import { api, type GridEntry } from '../lib/api';
   import { library } from '../lib/library.svelte';
   import { buildRows, columnsFor, GAP, itemSpan, layoutSections, rowOfItem, topFolderId, totalHeight, visibleRange } from '../lib/layout';
   import { move, type NavKey } from '../lib/nav';
@@ -131,6 +131,7 @@
     viewport?.focus();
   }
 
+
   function onkeydown(e: KeyboardEvent) {
     const sel = library.selected;
     if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'r') {
@@ -150,7 +151,37 @@
     library.selected = next;
     scrollToOffset(next, 'nearest');
   }
+  // ---- the tile's context menu ----
+
+  let menu = $state<{ x: number; y: number; entry: GridEntry } | null>(null);
+  let menuEl = $state<HTMLDivElement | undefined>();
+
+  $effect(() => {
+    if (menu) menuEl?.focus();
+  });
+
+  /** Right-click selects the tile as well, so what the menu acts on is what is outlined. */
+  function tileMenu(e: MouseEvent, offset: number) {
+    e.preventDefault();
+    const entry = library.entry(offset);
+    if (!entry) return;
+    library.selected = offset;
+    menu = { x: e.clientX, y: e.clientY, entry };
+  }
+
+  function closeMenu() {
+    menu = null;
+  }
+
+  function withEntry(action: (entry: GridEntry) => Promise<void>) {
+    const entry = menu?.entry;
+    menu = null;
+    if (entry) action(entry).catch(library.reportError);
+    focus();
+  }
 </script>
+
+<svelte:window onclick={closeMenu} onkeydown={(e) => e.key === 'Escape' && closeMenu()} />
 
 <div
   class="viewport"
@@ -166,10 +197,15 @@
   {#if library.info.len === 0}
     <p class="empty">
       {#if library.info.view === 'starred'}
-        No starred photos. photon reads stars from the Picasa.ini beside your photos — it
-        never sets them.
+        No starred photos. Star one in the viewer, or in Picasa.
       {:else if library.info.view === 'search'}
         No photos match “{library.info.searchQuery}”
+      {:else if library.info.view === 'album'}
+        “{library.albumName(library.info.album)}” is empty. Right-click a photo to add it.
+      {:else if library.info.view === 'person'}
+        No photos of {library.personName(library.info.person)}.
+      {:else if library.info.view === 'tag'}
+        No photos tagged “{library.info.tag}”.
       {:else}
         No photos yet. Add a folder to get started.
       {/if}
@@ -194,6 +230,7 @@
               dimmed={!!entry && !library.isOnline(entry.folderId)}
               onselect={() => (library.selected = offset)}
               onopen={() => onopen(offset)}
+              onmenu={(e) => tileMenu(e, offset)}
             />
           {/each}
         </div>
@@ -201,6 +238,36 @@
     {/each}
   </div>
 </div>
+
+{#if menu}
+  {@const albumId = library.info.view === 'album' ? library.info.album : null}
+  <div
+    class="menu"
+    role="menu"
+    tabindex="-1"
+    bind:this={menuEl}
+    style:left="{menu.x}px"
+    style:top="{menu.y}px"
+  >
+    <button role="menuitem" onclick={() => withEntry((e) => api.revealInFileManager(e.id))}>Reveal in file manager</button>
+    {#if albumId !== null}
+      <button role="menuitem" onclick={() => withEntry((e) => library.removeFromAlbum(albumId, [e.id]))}>
+        Remove from “{library.albumName(albumId)}”
+      </button>
+    {/if}
+    <div class="heading">Add to album</div>
+    {#each library.albums as album (album.id)}
+      <!-- Adding is idempotent, so the album the photo is already in is not filtered out
+           here: the grid row does not know its memberships, and asking per photo for a
+           menu would be a round trip for nothing. -->
+      <button role="menuitem" class="album" onclick={() => withEntry((e) => library.addToAlbum(album.id, [e.id]))}>
+        {album.name}
+      </button>
+    {:else}
+      <div class="none">No albums yet — create one in the sidebar.</div>
+    {/each}
+  </div>
+{/if}
 
 <style>
   .viewport { position: relative; height: 100%; overflow-y: auto; outline: none; }
@@ -211,4 +278,22 @@
   .header .path { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .row { display: flex; }
   .empty { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); margin: 0; }
+  .menu {
+    position: fixed;
+    z-index: 40;
+    display: flex;
+    flex-direction: column;
+    min-width: 220px;
+    max-height: 60vh;
+    overflow-y: auto;
+    padding: 4px;
+    background: var(--panel-2);
+    border-radius: 6px;
+    box-shadow: 0 6px 24px #0008;
+  }
+  .menu button { padding: 6px 10px; border: 0; background: none; text-align: left; cursor: pointer; border-radius: 4px; }
+  .menu button:hover { background: #ffffff14; }
+  .menu .album { padding-left: 18px; }
+  .menu .heading { margin-top: 4px; padding: 6px 10px 2px; color: var(--muted); font-size: 11px; font-weight: 600; letter-spacing: 0.04em; border-top: 1px solid #ffffff14; }
+  .menu .none { padding: 4px 18px 6px; color: var(--muted); font-size: 12px; }
 </style>

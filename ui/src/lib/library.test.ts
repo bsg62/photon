@@ -30,6 +30,11 @@ vi.mock('./api', () => ({
     gridOffsetOfItem: vi.fn(),
     setGridView: vi.fn(),
     setSearchQuery: vi.fn(),
+    listAlbums: vi.fn(),
+    listPeople: vi.fn(),
+    listTags: vi.fn(),
+    setAlbumView: vi.fn(),
+    createAlbum: vi.fn(),
   },
   events: {
     onLibraryChanged: vi.fn((cb: Handler) => {
@@ -63,8 +68,54 @@ describe('LibraryStore', () => {
       starredCount: 0,
       view: 'all',
       searchQuery: '',
+      person: null,
+      album: null,
+      tag: null,
     });
     vi.mocked(api.listFolders).mockResolvedValue({ watched: [], folders: [] });
+    vi.mocked(api.listAlbums).mockResolvedValue([]);
+    vi.mocked(api.listPeople).mockResolvedValue([]);
+    vi.mocked(api.listTags).mockResolvedValue([]);
+  });
+
+  it('refetches albums, people and tags on every library change and after an album mutation', async () => {
+    const store = new LibraryStore();
+    await store.init();
+    expect(api.listAlbums).toHaveBeenCalledTimes(1);
+
+    vi.mocked(api.listAlbums).mockResolvedValue([{ id: 1, name: 'Trip', count: 2 }]);
+    vi.mocked(api.listPeople).mockResolvedValue([{ hash: 'abc', name: 'Ada', count: 1 }]);
+    vi.mocked(api.listTags).mockResolvedValue([{ tag: 'beach', count: 3 }]);
+    handlers.libraryChanged({ version: 2, len: 0 });
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(store.albums).toEqual([{ id: 1, name: 'Trip', count: 2 }]);
+    expect(store.people[0]?.name).toBe('Ada');
+    expect(store.tags[0]?.tag).toBe('beach');
+    expect(store.albumName(1)).toBe('Trip');
+    expect(store.personName('abc')).toBe('Ada');
+    expect(store.albumName(99)).toBe('');
+
+    vi.mocked(api.createAlbum).mockResolvedValue({ id: 2, name: 'Zoo', createdMs: 0 });
+    vi.mocked(api.listAlbums).mockResolvedValue([
+      { id: 1, name: 'Trip', count: 2 },
+      { id: 2, name: 'Zoo', count: 0 },
+    ]);
+    await expect(store.createAlbum('Zoo')).resolves.toBe(2);
+    expect(api.createAlbum).toHaveBeenCalledWith('Zoo');
+    expect(store.albums).toHaveLength(2);
+  });
+
+  it('a failed collections fetch is reported, not thrown', async () => {
+    const store = new LibraryStore();
+    await store.init();
+    vi.mocked(api.listAlbums).mockRejectedValueOnce(new Error('albums-fail'));
+    handlers.libraryChanged({ version: 2, len: 0 });
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(store.errors.some((t) => t.message === 'albums-fail')).toBe(true);
   });
 
   it('routes background refresh failures from event handlers into reportError instead of throwing unhandled', async () => {
@@ -164,6 +215,9 @@ describe('LibraryStore', () => {
       starredCount: 0,
       view: 'all',
       searchQuery: '',
+      person: null,
+      album: null,
+      tag: null,
     });
     vi.mocked(api.gridRows).mockResolvedValue({ version: 1, rows: [entry(10), entry(11)] });
     const store = new LibraryStore();
@@ -179,6 +233,9 @@ describe('LibraryStore', () => {
       starredCount: 0,
       view: 'all',
       searchQuery: '',
+      person: null,
+      album: null,
+      tag: null,
     });
     vi.mocked(api.gridOffsetOfItem).mockResolvedValue(2);
     await store.refresh();
@@ -198,6 +255,9 @@ describe('LibraryStore', () => {
       starredCount: 0,
       view: 'all',
       searchQuery: '',
+      person: null,
+      album: null,
+      tag: null,
     });
     const store = new LibraryStore();
     await store.init();
@@ -211,6 +271,9 @@ describe('LibraryStore', () => {
       starredCount: 0,
       view: 'all',
       searchQuery: '',
+      person: null,
+      album: null,
+      tag: null,
     });
     vi.mocked(api.gridOffsetOfItem).mockResolvedValue(4);
     await store.refresh();
@@ -228,6 +291,9 @@ describe('LibraryStore', () => {
       starredCount: 0,
       view: 'all',
       searchQuery: '',
+      person: null,
+      album: null,
+      tag: null,
     });
     const store = new LibraryStore();
     await store.init();
@@ -240,6 +306,9 @@ describe('LibraryStore', () => {
       starredCount: 0,
       view: 'all',
       searchQuery: '',
+      person: null,
+      album: null,
+      tag: null,
     });
     await store.refresh();
     expect(store.selected).toBe(1);
@@ -252,6 +321,9 @@ describe('LibraryStore', () => {
       starredCount: 0,
       view: 'all',
       searchQuery: '',
+      person: null,
+      album: null,
+      tag: null,
     });
     await store.refresh();
     expect(store.selected).toBeNull();
@@ -307,6 +379,9 @@ describe('LibraryStore', () => {
       starredCount: number;
       view: 'all';
       searchQuery: string;
+      person: null;
+      album: null;
+      tag: null;
     }>();
     vi.mocked(api.gridInfo).mockReturnValueOnce(gridInfoGate.promise);
 
@@ -321,7 +396,7 @@ describe('LibraryStore', () => {
     const initPromise = store.init();
     store.dispose();
     listenGate.resolve();
-    gridInfoGate.resolve({ version: 1, len: 0, sections: [], starredCount: 0, view: 'all', searchQuery: '' });
+    gridInfoGate.resolve({ version: 1, len: 0, sections: [], starredCount: 0, view: 'all', searchQuery: '', person: null, album: null, tag: null });
     await initPromise;
 
     expect(unlistenCounts.libraryChanged).toBe(1);
@@ -350,7 +425,7 @@ describe('LibraryStore', () => {
     expect(api.setGridView).toHaveBeenCalledWith('starred');
     expect(resolved).toBe(false);
 
-    refreshGate.resolve({ version: 2, len: 0, sections: [], starredCount: 0, view: 'starred', searchQuery: '' });
+    refreshGate.resolve({ version: 2, len: 0, sections: [], starredCount: 0, view: 'starred', searchQuery: '', person: null, album: null, tag: null });
     await setViewPromise;
 
     expect(resolved).toBe(true);
@@ -381,6 +456,9 @@ describe('LibraryStore', () => {
       starredCount: 0,
       view: 'all',
       searchQuery: '',
+      person: null,
+      album: null,
+      tag: null,
     });
 
     await store.setSearchQuery('');
@@ -418,6 +496,9 @@ describe('LibraryStore', () => {
       starredCount: 0,
       view: 'search',
       searchQuery: 'beach',
+      person: null,
+      album: null,
+      tag: null,
     });
 
     const p1 = store.setSearchQuery('b');

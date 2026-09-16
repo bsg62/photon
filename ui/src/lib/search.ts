@@ -1,4 +1,4 @@
-import type { GridView } from './api';
+import type { GridInfo, GridView } from './api';
 
 export const SEARCH_DEBOUNCE_MS = 150;
 
@@ -56,10 +56,25 @@ export function shouldAdoptBackendQuery(
 
 /** Whether the grid is showing a different set of photos than it was. Used to decide
  *  whether to reset scroll: keying on `view` alone would miss a refined query staying
- *  within the Search view (spec §5). */
+ *  within the Search view (spec §5), or one album replacing another. */
 export function resultsChanged(
   prev: { view: GridView; query: string },
   next: { view: GridView; query: string },
 ): boolean {
   return prev.view !== next.view || prev.query !== next.query;
+}
+
+/** The view and its argument as `resultsChanged` compares them: the query for Search, the
+ *  contact for Person, the album id for Album, the keyword for Tag, and nothing else. */
+export function viewKey(info: Pick<GridInfo, 'view' | 'searchQuery' | 'person' | 'album' | 'tag'>): {
+  view: GridView;
+  query: string;
+} {
+  const query =
+    info.view === 'search' ? info.searchQuery
+    : info.view === 'person' ? (info.person ?? '')
+    : info.view === 'album' ? String(info.album ?? '')
+    : info.view === 'tag' ? (info.tag ?? '')
+    : '';
+  return { view: info.view, query };
 }

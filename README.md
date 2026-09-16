@@ -40,6 +40,28 @@ first photo is starred; an old `Picasa.ini` is edited in place. On Windows the f
 hidden attribute is kept. If Picasa has the file open at that moment the write fails with
 a message and nothing changes; try again once Picasa has finished.
 
+### Camera data, keywords, people and albums
+
+The viewer's ⓘ button (or `I`) opens an info panel: camera, lens, focal length, aperture,
+shutter speed and ISO from the photo's EXIF; the keywords the photo carries in its XMP or
+IPTC (as written by Picasa, Lightroom, Bridge, digiKam and the like); the people Picasa
+named in the folder's `.picasa.ini`, outlined over the photo while the panel is open; and
+checkboxes for photon's albums. `R` and `Shift+R` turn the photo on screen; nothing is
+written, and the next photo opens upright.
+
+The sidebar lists **Albums**, **People** and **Tags** above the years. Albums are photon's
+own and live only in its library: create one with "New album…", add photos from a tile's
+right-click menu or the info panel, and rename or delete from the album's right-click menu.
+People and Tags are read from Picasa's INI and from the photos themselves and cannot be
+edited here. The search box matches all of it: a camera or lens name, a keyword, `50mm`,
+`f/1.8`, `iso400`, or a date such as `2024-06`.
+
+Two things to know. A library from an earlier photon picks up camera data and keywords on
+the next scan of each folder, which reads every file's header once; nothing needs to be
+done. And an album remembers photos by their library row, so a photo renamed or moved on
+disk leaves its albums once the old row is purged — stars survive that because they live
+in Picasa's INI, album membership does not.
+
 ### Linux with an NVIDIA GPU
 
 WebKitGTK, the webview photon uses on Linux, crashes on NVIDIA's proprietary driver when its
@@ -157,6 +179,13 @@ publishing it.
 - [ ] The tile of a starred photo shows a ★ badge, which appears and disappears with the toggle, and the sidebar's Starred count follows.
 - [ ] Unstarring the photo on screen while Starred is showing keeps it on screen with no "n / m" in the caption; ArrowLeft goes to the previous starred photo, ArrowRight to the next, Escape returns to the grid.
 - [ ] Clicking ★ while zoomed in toggles the star and does not start a pan.
+- [ ] In the viewer, `R` turns the photo clockwise and `Shift+R` anticlockwise, as do the ↻ and ↺ buttons; a landscape photo turned on its side fits the window's height rather than being clipped, zoom and pan still work on the turned photo, and the next photo opens upright. No file's modification time changes.
+- [ ] The ⓘ button (or `I`) opens the info panel with the camera, lens and exposure line for a photo from a camera, and "No camera data" for a screenshot. Esc still closes the viewer with the panel open.
+- [ ] A photo with keywords written by Picasa, Lightroom or digiKam lists them under Keywords in the info panel, and each appears under Tags in the sidebar with a count; clicking a tag shows exactly those photos.
+- [ ] A folder whose `.picasa.ini` names faces lists the names under People in the info panel, outlines each face over the photo while the panel is open (also after `R`), and lists the person in the sidebar's People group; clicking the person shows their photos. Naming a new face in Picasa appears within a rescan, without the photo changing.
+- [ ] "New album…" in the sidebar takes a name on Enter and cancels on Escape or an empty name. A tile's right-click menu adds the photo to an album; in the album view it offers "Remove from". The info panel's checkboxes add and remove too, and the sidebar count follows. Rename and Delete… work from the album's right-click menu, and deleting the album on screen returns to All.
+- [ ] Typing a camera name, a lens, a keyword, `50mm`, `f/1.8`, `iso400` or a date like `2024-06` in the search box finds the matching photos.
+- [ ] On a library built by v0.12 or earlier, the first scan after upgrading fills in camera data and keywords for existing photos without changing their thumbnails, and the second scan does not re-read them.
 - [ ] Clicking Recent shows the newest photos first across folders, capped at 500, as one continuous run of tiles with no folder headers and no gaps where the folder changes.
 - [ ] While Recent is shown, the sidebar lists each contributing folder once with the photos it contributes, and the viewer's caption counts through the 500 rather than restarting at "1 / 1" on every photo.
 - [ ] From Recent, clicking a folder or a watched root returns to the full library at that folder.

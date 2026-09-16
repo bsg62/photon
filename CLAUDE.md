@@ -86,7 +86,9 @@ thread by a rebuild stamped after it, and the highest stamp always publishes.
 
 `ScanReport::touched_rows` gates the end-of-scan refresh on whether a scan actually moved
 rows. A change that alters data by some *other* means must add its own counter to `ScanReport`
-and fold it into `touched_rows`, or the grid silently never rebuilds.
+and fold it into `touched_rows`, or the grid silently never rebuilds. Today the counters
+beyond the obvious four are `restarred`, `refaced` (Picasa faces) and `enriched` (the
+metadata backfill).
 
 **Grid order** (`items.rs`, `GRID_ORDER`) is the folder's oldest photo descending, then each
 folder's photos oldest to newest. The sidebar groups by the same value, so the list is an index
@@ -96,6 +98,15 @@ the two are paired: in a filtered view (Starred) the driver's filter must equal 
 `WHERE`, so a folder is placed by its oldest *matching* photo, which is what keeps the sidebar
 and the grid agreeing. A query assembled by hand with `GRID_ORDER` and no driver compiles and
 fails at `prepare`, only when that view is opened.
+
+**Parameterised views.** `GridView::Search`, `Person`, `Album` and `Tag` are selected by an
+argument held beside the view in `ViewState.arg` (the query, a contact hash, an album id,
+a keyword). `entries_for(view, arg)` interprets it per view and binds it as a SQL
+parameter; `GridInfo` reports it in typed fields (`searchQuery`, `person`, `album`, `tag`)
+so the TS mirror stays explicit. `set_view` clears the argument unless it is re-entering the
+same parameterised view, so a query can never be read as a contact hash. The membership
+views filter the driver as well as the outer `WHERE`, the same way Starred does, or the
+sidebar's year groups and the grid disagree.
 
 **A grid offset is only meaningful against one index version.** Indexing a photo into a
 folder that sorts earlier shifts every later offset, so anything holding an offset across a
@@ -136,7 +147,17 @@ Picasa's per-directory `.picasa.ini` stars are the worked example — cannot be 
 `walk_tree` has **two** callers: `scan_watched` (a whole root) and `scan_subtree` (the file
 watcher's path). Wiring a post-walk pass into only the first leaves the common case broken while
 every test passes. `scan_subtree`'s `folder_ids` is pre-seeded by `seed_ancestors` with every
-ancestor, so a per-folder pass must use `walked`, not `folder_ids`.
+ancestor, so a per-folder pass must use `walked`, not `folder_ids`. The one post-walk pass
+today is `apply_picasa`, which applies stars *and* faces from one `picasa::read_folder`.
+
+**The metadata backfill.** `items.exif_version` records which generation of
+`read_image_meta` last read a file; `metadata::EXIF_VERSION` is the current one. An
+unchanged file whose stored version is behind is re-described and written through
+`update_item_meta` (camera columns, keywords, the version; not the fingerprint columns,
+not `rating`). Adding a field to `describe()` without bumping `EXIF_VERSION` leaves every
+existing photo without it forever. Keywords come from the file (XMP `dc:subject` and IPTC
+2:25, `keywords.rs`) into `item_tags`; every writer of an item row goes through
+`write_tags`.
 
 `skip_mark_purge` is set by a walkdir error carrying **no** path — a mid-iteration `read_dir`
 failure (walkdir `lib.rs:1026`), not something the filesystem can be made to do on demand. An
@@ -178,7 +199,10 @@ in SQL.
   This narrowed the older "never writes inside watched folders" promise on 2026-09-16 (spec
   `2026-09-16-photon-set-star-design.md`); any further write is a spec-level decision, not a
   code change. The writer and the reader in `picasa.rs` share one line classifier on purpose:
-  a writer with its own header/key logic drifts from the reader.
+  a writer with its own header/key logic drifts from the reader. Faces and contacts are read
+  from the same INI and never written; keywords are read from the photo and never written;
+  albums live only in `library.db` (membership is by item id, so a renamed file leaves its
+  albums when its old row is purged — a recorded limitation, not a bug).
 - **No native library dependencies.** Nothing wrapping a C/C++ SDK. This is what made packaging
   tractable on three platforms, and it is why XMP and INI parsing are hand-rolled or pure-Rust.
 - **Never launch the GUI to verify a change.** Verification is the test suites plus

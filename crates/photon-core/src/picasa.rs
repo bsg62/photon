@@ -1,17 +1,18 @@
-//! Reads and writes Picasa's per-directory star flags.
+//! Reads Picasa's per-directory stars, faces and contacts, and writes star flags.
 //!
 //! Picasa writes one INI per directory — `.picasa.ini` on newer versions, `Picasa.ini` on
-//! older ones — with a section per file. photon reads every star from it, and `set_star` is
-//! the one place photon writes inside a watched folder: it sets or clears a single `star=`
-//! line and leaves every other byte of the file as it found it. Nothing here writes a photo,
-//! and nothing else in photon writes an INI.
+//! older ones — with a section per file. photon reads every star and face from it, and
+//! `set_star` is the one place photon writes inside a watched folder: it sets or clears a
+//! single `star=` line and leaves every other byte of the file as it found it. Nothing here
+//! writes a photo, nothing here writes a face or a contact, and nothing else in photon
+//! writes an INI.
 //!
 //! The reader and the writer share one line classifier, `classify`. That is deliberate: a
 //! writer with its own idea of what a header or a key looks like would drift from the reader
 //! — appending a section the reader already matched, or leaving a `Star = 1` line the reader
 //! counts — and the two would then disagree about the file they both own.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
@@ -25,18 +26,47 @@ pub const MAX_INI: u64 = 8 * 1024 * 1024;
 /// The name photon creates when a folder has no INI yet: the one current Picasa writes.
 const NEW_INI: &str = ".picasa.ini";
 
-/// The starred file names in one directory, lowercased.
+/// One face Picasa recorded on a photo: the contact's hash and the rectangle as fractions
+/// of the displayed image's width and height, `0.0..=1.0`, left/top/right/bottom.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Face {
+    pub contact: String,
+    pub left: f64,
+    pub top: f64,
+    pub right: f64,
+    pub bottom: f64,
+}
+
+/// Everything photon reads from one directory's INI.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FolderIni {
+    /// The starred file names, lowercased.
+    pub stars: HashSet<String>,
+    /// Faces per lowercased file name, in the order the INI lists them.
+    pub faces: HashMap<String, Vec<Face>>,
+    /// Contact hash to display name, from the `[Contacts2]` section.
+    pub contacts: HashMap<String, String>,
+}
+
+/// The stars, faces and contacts in one directory's INI.
 ///
 /// `None` means the evidence could not be read — the directory or its INI is unreadable —
-/// and the caller must leave existing stars alone, because failing to read is not evidence
-/// that the stars are gone. `Some(empty)` is a real answer: the directory was read and
-/// nothing is starred, which is what lets a caller clear stars the INI no longer confirms.
-pub fn read_stars(dir: &Path) -> Option<HashSet<String>> {
+/// and the caller must leave existing stars and faces alone, because failing to read is not
+/// evidence that they are gone. `Some(default)` is a real answer: the directory was read and
+/// nothing is starred or tagged, which is what lets a caller clear what the INI no longer
+/// confirms.
+pub fn read_folder(dir: &Path) -> Option<FolderIni> {
     let Some(path) = ini_path(dir).ok()? else {
-        return Some(HashSet::new());
+        return Some(FolderIni::default());
     };
     let bytes = read_capped(&path).ok()?;
-    Some(parse_stars(&String::from_utf8_lossy(&bytes)))
+    Some(parse_folder(&String::from_utf8_lossy(&bytes)))
+}
+
+/// The starred file names in one directory, lowercased. See [`read_folder`] for what
+/// `None` means.
+pub fn read_stars(dir: &Path) -> Option<HashSet<String>> {
+    read_folder(dir).map(|ini| ini.stars)
 }
 
 /// Sets or clears `file_name`'s star in `dir`'s Picasa INI, and returns whether the file
@@ -169,21 +199,81 @@ fn classify(line: &str) -> Line<'_> {
     }
 }
 
-fn parse_stars(text: &str) -> HashSet<String> {
-    let mut stars = HashSet::new();
+/// The section Picasa 3.9 keeps its contacts in. Compared lowercased, like every header.
+const CONTACTS_SECTION: &str = "contacts2";
+
+/// Picasa's hash for a face it detected but nobody named, or that was marked "ignore".
+/// Not a person, so never stored.
+const IGNORED_CONTACT: &str = "ffffffffffffffff";
+
+fn parse_folder(text: &str) -> FolderIni {
+    let mut ini = FolderIni::default();
     let mut section: Option<String> = None;
     for line in text.lines() {
         match classify(line) {
             Line::Header(name) => section = name,
-            Line::Key { key, value } if is_star_key(key) && is_star(value) => {
-                if let Some(name) = &section {
-                    stars.insert(name.clone());
+            Line::Key { key, value } => {
+                let Some(name) = &section else {
+                    continue;
+                };
+                if name == CONTACTS_SECTION {
+                    // `hash=Name;email;…`: only the name is wanted, and an entry with no
+                    // name would list a blank person.
+                    let display = value.split(';').next().unwrap_or("").trim();
+                    if !key.is_empty() && !display.is_empty() {
+                        ini.contacts.insert(key.to_lowercase(), display.to_string());
+                    }
+                } else if is_star_key(key) && is_star(value) {
+                    ini.stars.insert(name.clone());
+                } else if key.eq_ignore_ascii_case("faces") {
+                    let faces = parse_faces(value);
+                    if !faces.is_empty() {
+                        ini.faces.entry(name.clone()).or_default().extend(faces);
+                    }
                 }
             }
             _ => {}
         }
     }
-    stars
+    ini
+}
+
+/// A `faces=` value: `rect64(hex),hash;rect64(hex),hash;…`. A face whose rectangle or hash
+/// cannot be read is skipped on its own, not the whole line, and Picasa's ignored-face hash
+/// is dropped since it names nobody.
+fn parse_faces(value: &str) -> Vec<Face> {
+    value
+        .split(';')
+        .filter_map(|entry| {
+            let (rect, contact) = entry.split_once(',')?;
+            let contact = contact.trim().to_lowercase();
+            if contact.is_empty() || contact == IGNORED_CONTACT {
+                return None;
+            }
+            let (left, top, right, bottom) = parse_rect64(rect.trim())?;
+            Some(Face {
+                contact,
+                left,
+                top,
+                right,
+                bottom,
+            })
+        })
+        .collect()
+}
+
+/// `rect64(hex)`: four 16-bit fractions of the image's width and height packed high to low
+/// as left, top, right, bottom, written without leading zeros. A rectangle with no area is
+/// not a face.
+fn parse_rect64(text: &str) -> Option<(f64, f64, f64, f64)> {
+    let hex = text.strip_prefix("rect64(")?.strip_suffix(')')?;
+    if hex.is_empty() || hex.len() > 16 {
+        return None;
+    }
+    let packed = u64::from_str_radix(hex, 16).ok()?;
+    let fraction = |shift: u32| ((packed >> shift) & 0xffff) as f64 / 65535.0;
+    let (left, top, right, bottom) = (fraction(48), fraction(32), fraction(16), fraction(0));
+    (right > left && bottom > top).then_some((left, top, right, bottom))
 }
 
 fn is_star_key(key: &str) -> bool {
@@ -572,6 +662,72 @@ mod tests {
         assert_eq!(ini2.len() as u64, MAX_INI);
         write_file(dir2.path(), ".picasa.ini", &ini2);
         assert_eq!(stars(dir2.path()), vec!["a.jpg"]);
+    }
+
+    #[test]
+    fn reads_faces_and_contacts_from_the_ini() {
+        let dir = tempfile::tempdir().unwrap();
+        write_file(
+            dir.path(),
+            ".picasa.ini",
+            b"[Contacts2]\nB5D3A7E4F1C2D9A8=Ada Lovelace;;\n0000000000000001=;;\n\
+              [a.jpg]\nfaces=rect64(4000200080006000),b5d3a7e4f1c2d9a8;rect64(1),ffffffffffffffff\n\
+              star=yes\n[B.JPG]\nfaces=rect64(0000000000000000),b5d3a7e4f1c2d9a8\n",
+        );
+        let ini = read_folder(dir.path()).unwrap();
+        assert_eq!(
+            ini.contacts,
+            HashMap::from([("b5d3a7e4f1c2d9a8".to_string(), "Ada Lovelace".to_string())]),
+            "the hash is lowercased, only the name is kept, and a nameless entry is dropped"
+        );
+        assert_eq!(
+            ini.faces,
+            HashMap::from([(
+                "a.jpg".to_string(),
+                vec![Face {
+                    contact: "b5d3a7e4f1c2d9a8".into(),
+                    left: 0x4000 as f64 / 65535.0,
+                    top: 0x2000 as f64 / 65535.0,
+                    right: 0x8000 as f64 / 65535.0,
+                    bottom: 0x6000 as f64 / 65535.0,
+                }]
+            )]),
+            "the ignored-face hash is dropped, an empty rectangle is not a face, and the \
+             section name is lowercased like the stars"
+        );
+        assert_eq!(
+            stars(dir.path()),
+            vec!["a.jpg"],
+            "stars still read alongside"
+        );
+    }
+
+    #[test]
+    fn a_rect64_without_leading_zeros_is_padded() {
+        // Picasa writes the hex without leading zeros, so a face at the top-left corner
+        // has a short value; parsing it as the low bits is what padding means here.
+        let (left, top, right, bottom) = parse_rect64("rect64(ffffffff)").unwrap();
+        assert_eq!((left, top), (0.0, 0.0));
+        assert_eq!((right, bottom), (1.0, 1.0));
+        assert_eq!(parse_rect64("rect64(ffff)"), None, "no width is not a face");
+        assert_eq!(parse_rect64("rect64()"), None);
+        assert_eq!(parse_rect64("rect64(zz)"), None);
+        assert_eq!(
+            parse_rect64("rect64(1ffffffffffffffff)"),
+            None,
+            "more than 64 bits"
+        );
+        assert_eq!(parse_rect64("(1234)"), None);
+    }
+
+    #[test]
+    fn a_directory_with_no_ini_has_no_faces_and_an_unreadable_one_no_evidence() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(read_folder(dir.path()), Some(FolderIni::default()));
+        assert_eq!(
+            read_folder(std::path::Path::new("/definitely/not/a/directory/here")),
+            None
+        );
     }
 
     #[test]

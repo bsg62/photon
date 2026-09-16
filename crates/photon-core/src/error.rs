@@ -26,6 +26,8 @@ pub enum Error {
     FolderOverlap { existing: String },
     #[error("{path} is used by photon itself and cannot be watched")]
     FolderExcluded { path: String },
+    #[error("an album needs a name")]
+    EmptyAlbumName,
     /// The one write photon makes inside a watched folder: a star into a Picasa INI. Carries
     /// the path so the message names the file the user has to look at.
     #[error("could not write {}: {source}", path.display())]

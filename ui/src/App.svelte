@@ -3,7 +3,7 @@
   import { api } from './lib/api';
   import { locateItem } from './lib/folders';
   import { library } from './lib/library.svelte';
-  import { resultsChanged } from './lib/search';
+  import { resultsChanged, viewKey } from './lib/search';
   import { searchBox } from './lib/search-box.svelte';
   import type { SettingsSection } from './lib/settings';
   import { clampSidebarWidth, SIDEBAR_DEFAULT, SIDEBAR_STEP } from './lib/sidebar';
@@ -59,9 +59,9 @@
   // a refined query within Search — since a scroll position from one set of photos is
   // arbitrary against another's. Tracked here rather than in FolderTree because App owns
   // the `grid` binding and its scroll helper.
-  let last = { view: library.info.view, query: library.info.searchQuery };
+  let last = viewKey(library.info);
   $effect(() => {
-    const next = { view: library.info.view, query: library.info.searchQuery };
+    const next = viewKey(library.info);
     if (resultsChanged(last, next)) {
       last = next;
       grid?.scrollToOffset(0, 'start');

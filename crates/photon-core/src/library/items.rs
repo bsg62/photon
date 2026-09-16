@@ -2,9 +2,9 @@ use super::Library;
 use crate::Result;
 use crate::grid::{GridEntry, GridView};
 use crate::media::{MediaKind, ThumbState, fingerprint};
-use crate::metadata::oriented_dims;
+use crate::metadata::{CameraMeta, EXIF_VERSION, date_text, oriented_dims};
 use crate::search::Query;
-use rusqlite::{OptionalExtension, Row, params};
+use rusqlite::{OptionalExtension, Row, ToSql, params};
 use std::collections::{HashMap, HashSet};
 
 /// A file discovered by the scanner, ready to be inserted or to replace an existing row.
@@ -22,6 +22,9 @@ pub struct NewItem {
     pub taken_at: i64,
     /// `None` when the file has not been read for a rating yet.
     pub rating: Option<u8>,
+    pub camera: CameraMeta,
+    /// Keywords read from the file's own XMP and IPTC.
+    pub tags: Vec<String>,
 }
 
 /// What the scanner needs to know about an indexed file to detect changes.
@@ -31,6 +34,9 @@ pub struct KnownItem {
     pub size: i64,
     pub mtime_ms: i64,
     pub missing: bool,
+    /// The generation of `metadata::read_image_meta` that last read this file; behind
+    /// `EXIF_VERSION`, the scanner re-reads it even though the file is unchanged.
+    pub exif_version: i64,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -50,6 +56,15 @@ pub struct Item {
     pub missing_since: Option<i64>,
     /// `None` until the Picasa pass has read the folder; see `is_starred`.
     pub rating: Option<i64>,
+    pub camera: CameraMeta,
+}
+
+/// A keyword and how many live photos carry it.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TagCount {
+    pub tag: String,
+    pub count: i64,
 }
 
 impl Item {
@@ -167,7 +182,7 @@ fn map_grid_row(r: &Row<'_>) -> rusqlite::Result<GridEntry> {
     })
 }
 
-/// Shared by `known_items` and `known_items_under`, whose two queries select the same five
+/// Shared by `known_items` and `known_items_under`, whose two queries select the same six
 /// columns in the same order and differ only in how they scope the rows.
 fn row_to_known(r: &Row<'_>) -> rusqlite::Result<(String, KnownItem)> {
     Ok((
@@ -177,8 +192,24 @@ fn row_to_known(r: &Row<'_>) -> rusqlite::Result<(String, KnownItem)> {
             size: r.get(2)?,
             mtime_ms: r.get(3)?,
             missing: r.get(4)?,
+            exif_version: r.get(5)?,
         },
     ))
+}
+
+/// The camera columns, in the order `camera_from_row` reads them from `base` onwards.
+const CAMERA_COLUMNS: &str = "make, model, lens, focal_mm, aperture, exposure_s, iso";
+
+fn camera_from_row(r: &Row<'_>, base: usize) -> rusqlite::Result<CameraMeta> {
+    Ok(CameraMeta {
+        make: r.get(base)?,
+        model: r.get(base + 1)?,
+        lens: r.get(base + 2)?,
+        focal_mm: r.get(base + 3)?,
+        aperture: r.get(base + 4)?,
+        exposure_s: r.get(base + 5)?,
+        iso: r.get(base + 6)?,
+    })
 }
 
 fn row_to_item(r: &Row<'_>) -> rusqlite::Result<Item> {
@@ -197,6 +228,7 @@ fn row_to_item(r: &Row<'_>) -> rusqlite::Result<Item> {
         thumb_error: r.get(11)?,
         missing_since: r.get(12)?,
         rating: r.get(13)?,
+        camera: camera_from_row(r, 14)?,
     })
 }
 
@@ -207,6 +239,23 @@ pub fn is_starred(rating: Option<i64>) -> bool {
     rating.unwrap_or(0) >= 1
 }
 
+/// Replaces one item's keywords inside the caller's transaction. Every writer of an item
+/// row goes through here so the table cannot fall behind the columns.
+fn write_tags(
+    tx: &rusqlite::Transaction<'_>,
+    item_id: i64,
+    tags: &[String],
+) -> rusqlite::Result<()> {
+    tx.prepare_cached("DELETE FROM item_tags WHERE item_id = ?1")?
+        .execute(params![item_id])?;
+    let mut insert =
+        tx.prepare_cached("INSERT OR IGNORE INTO item_tags (item_id, tag) VALUES (?1, ?2)")?;
+    for tag in tags {
+        insert.execute(params![item_id, tag])?;
+    }
+    Ok(())
+}
+
 impl Library {
     pub fn insert_items(&self, items: &[NewItem]) -> Result<Vec<i64>> {
         let mut conn = self.writer();
@@ -214,10 +263,12 @@ impl Library {
         let mut ids = Vec::with_capacity(items.len());
         {
             let mut stmt = tx.prepare_cached(
-                "INSERT INTO items (folder_id, path, file_name, kind, size, mtime_ms, width, height, orientation, taken_at, rating)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                "INSERT INTO items (folder_id, path, file_name, kind, size, mtime_ms, width, height, orientation, taken_at, rating,
+                                    make, model, lens, focal_mm, aperture, exposure_s, iso, exif_version)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
             )?;
             for it in items {
+                let c = &it.camera;
                 stmt.execute(params![
                     it.folder_id,
                     it.path,
@@ -229,9 +280,19 @@ impl Library {
                     it.height,
                     it.orientation,
                     it.taken_at,
-                    it.rating
+                    it.rating,
+                    c.make,
+                    c.model,
+                    c.lens,
+                    c.focal_mm,
+                    c.aperture,
+                    c.exposure_s,
+                    c.iso,
+                    EXIF_VERSION,
                 ])?;
-                ids.push(tx.last_insert_rowid());
+                let id = tx.last_insert_rowid();
+                write_tags(&tx, id, &it.tags)?;
+                ids.push(id);
             }
         }
         tx.commit()?;
@@ -254,10 +315,13 @@ impl Library {
             let mut stmt = tx.prepare_cached(
                 "UPDATE items SET folder_id = ?2, path = ?3, file_name = ?4, kind = ?5, size = ?6, mtime_ms = ?7,
                         width = ?8, height = ?9, orientation = ?10, taken_at = ?11,
+                        make = ?12, model = ?13, lens = ?14, focal_mm = ?15, aperture = ?16, exposure_s = ?17, iso = ?18,
+                        exif_version = ?19,
                         thumb_state = 0, thumb_error = NULL, missing_since = NULL
                  WHERE id = ?1",
             )?;
             for (id, it) in items {
+                let c = &it.camera;
                 stmt.execute(params![
                     id,
                     it.folder_id,
@@ -270,11 +334,104 @@ impl Library {
                     it.height,
                     it.orientation,
                     it.taken_at,
+                    c.make,
+                    c.model,
+                    c.lens,
+                    c.focal_mm,
+                    c.aperture,
+                    c.exposure_s,
+                    c.iso,
+                    EXIF_VERSION,
                 ])?;
+                write_tags(&tx, *id, &it.tags)?;
             }
         }
         tx.commit()?;
         Ok(())
+    }
+
+    /// Rewrites only what `metadata::read_image_meta` and `keywords::read_keywords`
+    /// produce (the camera columns, the keywords and `exif_version`) for files the scanner
+    /// found unchanged but whose stored metadata predates the current reader.
+    ///
+    /// Deliberately not `update_items`: that resets the thumbnail and bumps the garbage
+    /// epoch because the file's fingerprint changed, and here it has not. Nor does this touch
+    /// `rating`, which the Picasa pass owns, or `taken_at`: the date was read correctly the
+    /// first time, and rewriting it would move the photo in the grid for no reason.
+    pub fn update_item_meta(&self, items: &[(i64, NewItem)]) -> Result<()> {
+        let mut conn = self.writer();
+        let tx = conn.transaction()?;
+        {
+            let mut stmt = tx.prepare_cached(
+                "UPDATE items SET make = ?2, model = ?3, lens = ?4, focal_mm = ?5, aperture = ?6,
+                        exposure_s = ?7, iso = ?8, exif_version = ?9
+                 WHERE id = ?1",
+            )?;
+            for (id, it) in items {
+                let c = &it.camera;
+                stmt.execute(params![
+                    id,
+                    c.make,
+                    c.model,
+                    c.lens,
+                    c.focal_mm,
+                    c.aperture,
+                    c.exposure_s,
+                    c.iso,
+                    EXIF_VERSION,
+                ])?;
+                write_tags(&tx, *id, &it.tags)?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Test-only: makes a row look as it does after the metadata migration on a library
+    /// indexed before it - camera columns empty, `exif_version` at the migration's default -
+    /// so the scanner's backfill can be exercised on a file that has not changed.
+    #[cfg(test)]
+    pub(crate) fn forget_metadata_for_test(&self, id: i64) -> Result<()> {
+        self.writer().execute(
+            "UPDATE items SET make = NULL, model = NULL, lens = NULL, focal_mm = NULL,
+                    aperture = NULL, exposure_s = NULL, iso = NULL, exif_version = 0
+             WHERE id = ?1",
+            params![id],
+        )?;
+        Ok(())
+    }
+
+    /// The keywords on one photo, in the order the file lists them.
+    pub fn item_tags(&self, item_id: i64) -> Result<Vec<String>> {
+        let conn = self.reader()?;
+        let mut stmt =
+            conn.prepare_cached("SELECT tag FROM item_tags WHERE item_id = ?1 ORDER BY rowid")?;
+        let tags = stmt
+            .query_map(params![item_id], |r| r.get(0))?
+            .collect::<rusqlite::Result<Vec<String>>>()?;
+        Ok(tags)
+    }
+
+    /// Every keyword carried by at least one live photo, with its count. Sorted in Rust
+    /// rather than by SQL: the ordering is case-insensitive and `lower()` is ASCII-only
+    /// without ICU.
+    pub fn tags_with_counts(&self) -> Result<Vec<TagCount>> {
+        let conn = self.reader()?;
+        let mut stmt = conn.prepare(
+            "SELECT t.tag, count(*) FROM item_tags t JOIN items i ON i.id = t.item_id
+             WHERE i.missing_since IS NULL
+             GROUP BY t.tag",
+        )?;
+        let mut tags = stmt
+            .query_map([], |r| {
+                Ok(TagCount {
+                    tag: r.get(0)?,
+                    count: r.get(1)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        tags.sort_by_cached_key(|t| (t.tag.to_lowercase(), t.tag.clone()));
+        Ok(tags)
     }
 
     /// Every live item in one folder, as `(id, lowercased file name, current rating)`.
@@ -352,7 +509,7 @@ impl Library {
     pub fn known_items(&self, watched_id: i64) -> Result<HashMap<String, KnownItem>> {
         let conn = self.reader()?;
         let mut stmt = conn.prepare(
-            "SELECT i.path, i.id, i.size, i.mtime_ms, i.missing_since IS NOT NULL
+            "SELECT i.path, i.id, i.size, i.mtime_ms, i.missing_since IS NOT NULL, i.exif_version
              FROM items i JOIN folders f ON f.id = i.folder_id WHERE f.watched_id = ?1",
         )?;
         let rows = stmt
@@ -377,7 +534,7 @@ impl Library {
                  UNION ALL
                  SELECT f.id FROM folders f JOIN sub ON f.parent_id = sub.id
              )
-             SELECT i.path, i.id, i.size, i.mtime_ms, i.missing_since IS NOT NULL
+             SELECT i.path, i.id, i.size, i.mtime_ms, i.missing_since IS NOT NULL, i.exif_version
              FROM items i WHERE i.folder_id IN (SELECT id FROM sub)",
         )?;
         let rows = stmt
@@ -390,9 +547,11 @@ impl Library {
         let item = self
             .reader()?
             .query_row(
-                "SELECT id, folder_id, path, kind, size, mtime_ms, width, height, orientation, taken_at,
-                        thumb_state, thumb_error, missing_since, rating
-                 FROM items WHERE id = ?1",
+                &format!(
+                    "SELECT id, folder_id, path, kind, size, mtime_ms, width, height, orientation, taken_at,
+                            thumb_state, thumb_error, missing_since, rating, {CAMERA_COLUMNS}
+                     FROM items WHERE id = ?1"
+                ),
                 params![id],
                 row_to_item,
             )
@@ -477,15 +636,37 @@ impl Library {
         self.entries_for(GridView::All, "")
     }
 
-    /// The grid's rows for one view. `query` is used only by `Search`; the other views
-    /// ignore it. One entry point rather than two, because `GridView` is matched
-    /// exhaustively and a `Search` arm that could not see the query would have to lie.
-    pub fn entries_for(&self, view: GridView, query: &str) -> Result<Vec<GridEntry>> {
+    /// The grid's rows for one view. `arg` is the view's argument - the query for `Search`,
+    /// a contact hash for `Person`, an album id for `Album`, a keyword for `Tag` - and the
+    /// other views ignore it. One entry point rather than one per view, because `GridView`
+    /// is matched exhaustively and an arm that could not see the argument would have to lie.
+    ///
+    /// The three membership views filter with `IN (SELECT …)` on the driver as well as the
+    /// outer `WHERE`, exactly as Starred does, so a folder is placed by its oldest *member*
+    /// and the sidebar's year groups keep agreeing with the grid.
+    pub fn entries_for(&self, view: GridView, arg: &str) -> Result<Vec<GridEntry>> {
         match view {
-            GridView::All => self.entries_filtered(""),
-            GridView::Starred => self.entries_filtered("AND i.rating >= 1"),
+            GridView::All => self.entries_filtered("", &[]),
+            GridView::Starred => self.entries_filtered("AND i.rating >= 1", &[]),
             GridView::Recent => self.recent_entries(),
-            GridView::Search => self.search_entries(query),
+            GridView::Search => self.search_entries(arg),
+            GridView::Person => self.entries_filtered(
+                "AND i.id IN (SELECT item_id FROM faces WHERE contact = ?1)",
+                &[&arg],
+            ),
+            GridView::Album => {
+                // An argument that is not an id names no album; an empty grid says so
+                // rather than an error that would roll the view back to the previous one.
+                let album_id: i64 = arg.parse().unwrap_or(-1);
+                self.entries_filtered(
+                    "AND i.id IN (SELECT item_id FROM album_items WHERE album_id = ?1)",
+                    &[&album_id],
+                )
+            }
+            GridView::Tag => self.entries_filtered(
+                "AND i.id IN (SELECT item_id FROM item_tags WHERE tag = ?1)",
+                &[&arg],
+            ),
         }
     }
 
@@ -494,11 +675,16 @@ impl Library {
     /// filters to `rating >= 1`; the `items_starred` partial index can narrow that scan, but
     /// the query still joins `folders` and orders by `GRID_ORDER`, so it does not serve the
     /// query outright the way it does `starred_count`.
-    fn entries_filtered(&self, filter: &str) -> Result<Vec<GridEntry>> {
+    ///
+    /// `params` bind the filter's `?N` placeholders. The fragment appears twice in the
+    /// query (driver and outer filter), which is why placeholders are numbered: the same
+    /// value binds at both sites. Binding, rather than formatting the value into the SQL,
+    /// is what keeps a keyword or contact hash from ever being read as SQL.
+    fn entries_filtered(&self, filter: &str, params: &[&dyn ToSql]) -> Result<Vec<GridEntry>> {
         let conn = self.reader()?;
         let mut stmt = conn.prepare(&grid_query(GRID_COLUMNS, filter))?;
         let rows = stmt
-            .query_map([], map_grid_row)?
+            .query_map(params, map_grid_row)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
@@ -530,13 +716,19 @@ impl Library {
         Ok(rows)
     }
 
-    /// Photos whose file name or folder name contains any word of `query`,
-    /// case-insensitively.
+    /// Photos whose file name, folder name, camera, lens, keywords or capture date contain
+    /// any word of `query`, case-insensitively.
     ///
     /// The words are OR-ed and the matching runs in Rust rather than as SQL `LIKE`;
     /// `search::Query` holds both decisions and the reasons for them. This is one pass
-    /// over the same rows an index rebuild already reads, with two short string compares
-    /// per token added per row.
+    /// over the same rows an index rebuild already reads, with a handful of short string
+    /// compares per token added per row. The keywords arrive joined by a correlated
+    /// subquery over `item_tags`, one index probe per row, rather than a join that would
+    /// multiply the rows by their keyword count.
+    ///
+    /// The numeric fields are spelled the way a person types them - `50mm`, `f/1.8`,
+    /// `iso400` - and the date as `YYYY-MM-DD`, so "2024" and "2024-06" work without a folder
+    /// named so. `search_finds_a_photo_by_its_camera_lens_keyword_and_date` pins each.
     fn search_entries(&self, query: &str) -> Result<Vec<GridEntry>> {
         let query = Query::parse(query);
         if query.is_empty() {
@@ -544,14 +736,38 @@ impl Library {
         }
         let conn = self.reader()?;
         let mut stmt = conn.prepare(&grid_query(
-            &format!("{GRID_COLUMNS}, i.file_name, f.name"),
+            &format!(
+                "{GRID_COLUMNS}, i.file_name, f.name, i.make, i.model, i.lens, i.focal_mm, i.aperture, i.iso,
+                 (SELECT group_concat(tag, ' ') FROM item_tags t WHERE t.item_id = i.id)"
+            ),
             "",
         ))?;
         let rows = stmt
             .query_map([], |r| {
-                let file_name: String = r.get(GRID_COLUMN_COUNT)?;
-                let folder_name: String = r.get(GRID_COLUMN_COUNT + 1)?;
-                let hit = query.matches(&[&file_name, &folder_name]);
+                let base = GRID_COLUMN_COUNT;
+                let file_name: String = r.get(base)?;
+                let folder_name: String = r.get(base + 1)?;
+                let mut haystacks: Vec<String> = vec![file_name, folder_name];
+                for column in base + 2..=base + 4 {
+                    if let Some(text) = r.get::<_, Option<String>>(column)? {
+                        haystacks.push(text);
+                    }
+                }
+                if let Some(focal) = r.get::<_, Option<f64>>(base + 5)? {
+                    haystacks.push(format!("{}mm", focal.round() as i64));
+                }
+                if let Some(aperture) = r.get::<_, Option<f64>>(base + 6)? {
+                    haystacks.push(format!("f/{aperture}"));
+                }
+                if let Some(iso) = r.get::<_, Option<i64>>(base + 7)? {
+                    haystacks.push(format!("iso{iso}"));
+                }
+                if let Some(tags) = r.get::<_, Option<String>>(base + 8)? {
+                    haystacks.push(tags);
+                }
+                haystacks.push(date_text(r.get(2)?));
+                let refs: Vec<&str> = haystacks.iter().map(String::as_str).collect();
+                let hit = query.matches(&refs);
                 // No `Ok(…?)` wrapper here: the closure already returns this type, and
                 // wrapping it trips `clippy::needless_question_mark`, which the gate
                 // treats as an error.
@@ -626,7 +842,8 @@ mod tests {
                 id: a,
                 size: 100,
                 mtime_ms: 1_000,
-                missing: false
+                missing: false,
+                exif_version: EXIF_VERSION,
             }
         );
 
@@ -1245,6 +1462,59 @@ mod tests {
             .map(|e| e.id)
             .collect();
         assert_eq!(hits, vec![ids[0]]);
+    }
+
+    #[test]
+    fn search_finds_a_photo_by_its_camera_lens_keyword_and_date() {
+        // One haystack per field, each pinned by a query only it can answer. The file and
+        // folder names are chosen to match none of the queries, so a hit proves the field
+        // reached the matcher and was spelled the way a person types it.
+        let (_dir, lib) = temp_library();
+        let (_watched, folder) = seed_folder(&lib, Path::new("/p"));
+        let tagged = NewItem {
+            camera: CameraMeta {
+                make: Some("Canon".into()),
+                model: Some("EOS 5D".into()),
+                lens: Some("EF50mm f/1.8 STM".into()),
+                focal_mm: Some(50.0),
+                aperture: Some(1.8),
+                exposure_s: Some(0.004),
+                iso: Some(3200),
+            },
+            tags: vec!["Zoo".into(), "family".into()],
+            ..new_item(folder, "/p/a.jpg", 1_718_454_645) // 2024-06-15
+        };
+        let ids = lib
+            .insert_items(&[tagged, new_item(folder, "/p/b.jpg", 1)])
+            .unwrap();
+
+        for query in [
+            "canon",
+            "5d",
+            "stm",
+            "50mm",
+            "f/1.8",
+            "iso3200",
+            "zoo",
+            "family",
+            "2024-06-15",
+            "2024-06",
+            "2024",
+        ] {
+            let hits: Vec<i64> = lib
+                .entries_for(GridView::Search, query)
+                .unwrap()
+                .iter()
+                .map(|e| e.id)
+                .collect();
+            assert_eq!(hits, vec![ids[0]], "{query:?} finds the tagged photo alone");
+        }
+        assert!(
+            lib.entries_for(GridView::Search, "nikon")
+                .unwrap()
+                .is_empty(),
+            "a camera it was not shot with finds nothing"
+        );
     }
 
     #[test]

@@ -42,8 +42,10 @@ struct RunningScan {
     handle: Option<JoinHandle<()>>,
 }
 
-/// Which photos the grid shows. The query lives beside the view rather than inside it:
-/// `GridView` is `Copy` and is mirrored in TypeScript as plain strings (spec §4).
+/// Which photos the grid shows. The view's argument - the search query, a contact hash,
+/// an album id, a keyword - lives beside the view rather than inside it: `GridView` is
+/// `Copy` and is mirrored in TypeScript as plain strings (spec §4). Each parameterised
+/// view reads `arg` its own way (`Library::entries_for`); the others ignore it.
 ///
 /// `epoch` goes up on every change to the pair. A rebuild reads it with the state it is
 /// about to query for and hands it back at publish time; a mismatch means a setter has
@@ -51,7 +53,7 @@ struct RunningScan {
 #[derive(Clone, Debug)]
 struct ViewState {
     view: GridView,
-    query: String,
+    arg: String,
     epoch: u64,
 }
 
@@ -68,9 +70,10 @@ pub struct Engine {
     pub thumbs: ThumbService,
     excluded: Vec<PathBuf>,
     grid: RwLock<(u64, Arc<GridIndex>)>,
-    /// Which photos the grid shows, and a counter that changes with it. Held only for the
-    /// moment of reading or writing it - never across a query or an index build - so a
-    /// view switch on the UI thread is never made to wait for a rebuild a scan is running.
+    /// Which photos the grid shows (and the view's argument), and a counter that changes
+    /// with it. Held only for the moment of reading or writing it - never across a query or
+    /// an index build - so a view switch on the UI thread is never made to wait for a
+    /// rebuild a scan is running.
     state: Mutex<ViewState>,
     /// Serialises the publish-and-emit step of a rebuild and holds the `seq` of the last
     /// rebuild published, so two rebuilds finishing together can't publish under
@@ -149,7 +152,7 @@ impl Engine {
             grid: RwLock::new((0, grid)),
             state: Mutex::new(ViewState {
                 view: GridView::All,
-                query: String::new(),
+                arg: String::new(),
                 epoch: 0,
             }),
             refresh: Mutex::new(0),
@@ -187,7 +190,7 @@ impl Engine {
         let rebuild = self.snapshot();
         let index = Arc::new(GridIndex::build(
             self.lib
-                .entries_for(rebuild.state.view, &rebuild.state.query)?,
+                .entries_for(rebuild.state.view, &rebuild.state.arg)?,
         ));
         self.publish_if_current(index, &rebuild);
         Ok(())
@@ -246,25 +249,39 @@ impl Engine {
 
     /// The active search query, or the empty string when no search is active.
     pub fn search_query(&self) -> String {
-        self.state.lock().query.clone()
+        let state = self.state.lock();
+        if state.view == GridView::Search {
+            state.arg.clone()
+        } else {
+            String::new()
+        }
+    }
+
+    /// The current view and its argument, together, as one read of the state: read apart
+    /// they could straddle a view switch and pair a view with another view's argument.
+    pub fn view_and_arg(&self) -> (GridView, String) {
+        let state = self.state.lock();
+        (state.view, state.arg.clone())
     }
 
     /// Switches which photos the grid shows and rebuilds the index. Rebuilding is the same
     /// work startup already does; a second index kept in sync would be a large new surface
     /// for staleness bugs to speed up something already fast and rarely done.
     ///
-    /// Rolls the view and query back to their previous values if the rebuild fails, so a
-    /// failed refresh can never leave `GridInfo` (the UI's one source of truth, spec §5)
-    /// reporting a view/query the grid was never actually rebuilt for. Without the
+    /// Rolls the view and argument back to their previous values if the rebuild fails, so
+    /// a failed refresh can never leave `GridInfo` (the UI's one source of truth, spec §5)
+    /// reporting a view/argument the grid was never actually rebuilt for. Without the
     /// rollback the bad state is sticky: every later `refresh_grid` — including the scan
     /// and watcher paths — re-reads the same failing query/view and fails again, and the
     /// empty state can't rescue it either, since `len` still reflects the old, unrelated
     /// result set.
     pub fn set_view(&self, view: GridView) -> Result<()> {
         self.rebuild_or_restore(|state| {
-            // A query left behind would reappear the next time Search is entered.
-            if view != GridView::Search {
-                state.query.clear();
+            // An argument left behind would reappear the next time its view is entered -
+            // or, worse, be read by a different view: a search query as a contact hash.
+            // Only re-entering the same parameterised view keeps it.
+            if !(view.takes_argument() && view == state.view) {
+                state.arg.clear();
             }
             state.view = view;
         })
@@ -289,7 +306,7 @@ impl Engine {
             {
                 let mut state = self.state.lock();
                 state.view = previous.view;
-                state.query = previous.query;
+                state.arg = previous.arg;
                 state.epoch += 1;
             }
             // The bump above discards every rebuild in flight for the state just restored,
@@ -316,9 +333,43 @@ impl Engine {
             return self.set_view(GridView::All);
         }
         self.rebuild_or_restore(|state| {
-            state.query = query.to_string();
+            state.arg = query.to_string();
             state.view = GridView::Search;
         })
+    }
+
+    /// Shows the photos with a face of one Picasa contact. Rolls back on a failed refresh.
+    pub fn set_person_view(&self, contact: &str) -> Result<()> {
+        self.rebuild_or_restore(|state| {
+            state.arg = contact.to_string();
+            state.view = GridView::Person;
+        })
+    }
+
+    /// Shows one album. Rolls back on a failed refresh.
+    pub fn set_album_view(&self, album_id: i64) -> Result<()> {
+        self.rebuild_or_restore(|state| {
+            state.arg = album_id.to_string();
+            state.view = GridView::Album;
+        })
+    }
+
+    /// Shows the photos carrying one keyword. Rolls back on a failed refresh.
+    pub fn set_tag_view(&self, tag: &str) -> Result<()> {
+        self.rebuild_or_restore(|state| {
+            state.arg = tag.to_string();
+            state.view = GridView::Tag;
+        })
+    }
+
+    /// After an album mutation: rebuilds the grid if an album is what it is showing. Any
+    /// other view is unaffected by album membership, and the UI refetches the album list
+    /// itself after the call that got here.
+    pub fn albums_changed(&self) -> Result<()> {
+        if self.state.lock().view == GridView::Album {
+            self.refresh_grid()?;
+        }
+        Ok(())
     }
 
     /// Sets or clears a photo's star: into the folder's Picasa INI first, then into the
@@ -1428,7 +1479,7 @@ mod tests {
         let stale_index = Arc::new(GridIndex::build(
             f.engine
                 .lib
-                .entries_for(stale.state.view, &stale.state.query)
+                .entries_for(stale.state.view, &stale.state.arg)
                 .unwrap(),
         ));
         assert_eq!(stale_index.len(), 2);
@@ -1463,7 +1514,7 @@ mod tests {
         let early_index = Arc::new(GridIndex::build(
             f.engine
                 .lib
-                .entries_for(early.state.view, &early.state.query)
+                .entries_for(early.state.view, &early.state.arg)
                 .unwrap(),
         ));
         assert_eq!(early_index.len(), 2);
@@ -1538,6 +1589,53 @@ mod tests {
         assert_eq!(info.view, GridView::All);
         assert_eq!(info.search_query, "");
         assert_eq!(info.len, 2, "the whole library is back");
+    }
+
+    #[test]
+    fn the_album_person_and_tag_views_take_their_argument_from_the_setter() {
+        use photon_core::grid::GridView;
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a/one.jpg", &img), ("a/two.jpg", &img)]);
+        f.add_photos();
+        let ids = f.ids();
+        let album = f.engine.lib.create_album("Trip", 1).unwrap();
+        f.engine.lib.add_to_album(album.id, &ids[..1], 1).unwrap();
+
+        f.engine.set_album_view(album.id).unwrap();
+        let info = crate::commands::grid_info(&f.engine);
+        assert_eq!(
+            (info.view, info.album, info.len),
+            (GridView::Album, Some(album.id), 1)
+        );
+        assert_eq!(
+            info.search_query, "",
+            "the argument is an album id, not a query"
+        );
+
+        // A membership change while the album is on screen reaches the grid at once.
+        f.engine.lib.add_to_album(album.id, &ids[1..], 2).unwrap();
+        f.engine.albums_changed().unwrap();
+        assert_eq!(f.engine.grid().1.len(), 2);
+
+        f.engine.set_tag_view("beach").unwrap();
+        let info = crate::commands::grid_info(&f.engine);
+        assert_eq!(
+            (info.view, info.tag.as_deref(), info.album),
+            (GridView::Tag, Some("beach"), None)
+        );
+
+        f.engine.set_person_view("abc").unwrap();
+        let info = crate::commands::grid_info(&f.engine);
+        assert_eq!(
+            (info.view, info.person.as_deref()),
+            (GridView::Person, Some("abc"))
+        );
+
+        // Leaving for a plain view drops the argument, so it cannot be read by the next
+        // parameterised view as its own.
+        f.engine.set_view(GridView::All).unwrap();
+        let (view, arg) = f.engine.view_and_arg();
+        assert_eq!((view, arg.as_str()), (GridView::All, ""));
     }
 
     #[test]

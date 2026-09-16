@@ -47,6 +47,8 @@ pub fn new_item(folder_id: i64, path: &str, taken_at: i64) -> NewItem {
         orientation: 1,
         taken_at,
         rating: None,
+        camera: crate::metadata::CameraMeta::default(),
+        tags: Vec::new(),
     }
 }
 
@@ -68,41 +70,232 @@ pub fn png_bytes(w: u32, h: u32) -> Vec<u8> {
     encode(&solid(w, h), ImageFormat::Png)
 }
 
-/// A JPEG carrying a minimal little-endian EXIF block with Orientation and DateTimeOriginal.
-/// `datetime` must be exactly "YYYY:MM:DD HH:MM:SS".
-pub fn jpeg_with_exif(w: u32, h: u32, orientation: u16, datetime: &str) -> Vec<u8> {
-    fn entry(t: &mut Vec<u8>, tag: u16, typ: u16, count: u32, value: u32) {
-        t.extend_from_slice(&tag.to_le_bytes());
-        t.extend_from_slice(&typ.to_le_bytes());
-        t.extend_from_slice(&count.to_le_bytes());
-        t.extend_from_slice(&value.to_le_bytes());
+/// The EXIF fields the fixture builder can write. Every field is optional so a test names
+/// only what it is about.
+#[derive(Clone, Debug, Default)]
+pub struct ExifSpec<'a> {
+    pub orientation: Option<u16>,
+    /// `DateTimeOriginal`, exactly "YYYY:MM:DD HH:MM:SS".
+    pub datetime: Option<&'a str>,
+    pub make: Option<&'a str>,
+    pub model: Option<&'a str>,
+    pub lens: Option<&'a str>,
+    /// `FocalLength` as a rational (numerator, denominator).
+    pub focal: Option<(u32, u32)>,
+    /// `FNumber` as a rational.
+    pub fnumber: Option<(u32, u32)>,
+    /// `ExposureTime` as a rational.
+    pub exposure: Option<(u32, u32)>,
+    /// `PhotographicSensitivity`, a SHORT.
+    pub iso: Option<u16>,
+}
+
+/// One IFD entry: tag, TIFF type, count and the raw value bytes (little-endian).
+struct IfdEntry {
+    tag: u16,
+    typ: u16,
+    count: u32,
+    data: Vec<u8>,
+}
+
+fn ascii_entry(tag: u16, text: &str) -> IfdEntry {
+    let mut data = text.as_bytes().to_vec();
+    data.push(0);
+    IfdEntry {
+        tag,
+        typ: 2,
+        count: data.len() as u32,
+        data,
     }
+}
+
+fn short_entry(tag: u16, value: u16) -> IfdEntry {
+    IfdEntry {
+        tag,
+        typ: 3,
+        count: 1,
+        data: value.to_le_bytes().to_vec(),
+    }
+}
+
+fn long_entry(tag: u16, value: u32) -> IfdEntry {
+    IfdEntry {
+        tag,
+        typ: 4,
+        count: 1,
+        data: value.to_le_bytes().to_vec(),
+    }
+}
+
+fn rational_entry(tag: u16, (num, denom): (u32, u32)) -> IfdEntry {
+    let mut data = num.to_le_bytes().to_vec();
+    data.extend_from_slice(&denom.to_le_bytes());
+    IfdEntry {
+        tag,
+        typ: 5,
+        count: 1,
+        data,
+    }
+}
+
+/// Serialises one IFD starting at `base` (an offset into the TIFF): the entry table, then
+/// the data area for values longer than four bytes. Entries are sorted by tag as the
+/// specification asks. Returns the bytes and the offset just past them.
+fn write_ifd(mut entries: Vec<IfdEntry>, base: u32) -> (Vec<u8>, u32) {
+    entries.sort_by_key(|e| e.tag);
+    let table_len = 2 + entries.len() * 12 + 4;
+    let mut table = Vec::with_capacity(table_len);
+    let mut data: Vec<u8> = Vec::new();
+    table.extend_from_slice(&(entries.len() as u16).to_le_bytes());
+    for e in &entries {
+        table.extend_from_slice(&e.tag.to_le_bytes());
+        table.extend_from_slice(&e.typ.to_le_bytes());
+        table.extend_from_slice(&e.count.to_le_bytes());
+        if e.data.len() <= 4 {
+            let mut value = [0u8; 4];
+            value[..e.data.len()].copy_from_slice(&e.data);
+            table.extend_from_slice(&value);
+        } else {
+            let offset = base + table_len as u32 + data.len() as u32;
+            table.extend_from_slice(&offset.to_le_bytes());
+            data.extend_from_slice(&e.data);
+            if data.len() % 2 == 1 {
+                data.push(0);
+            }
+        }
+    }
+    table.extend_from_slice(&0u32.to_le_bytes()); // no next IFD
+    table.extend_from_slice(&data);
+    let end = base + table.len() as u32;
+    (table, end)
+}
+
+/// A little-endian TIFF structure with IFD0 and an Exif sub-IFD holding `spec`'s fields.
+pub fn exif_tiff(spec: &ExifSpec<'_>) -> Vec<u8> {
+    let mut exif_ifd = Vec::new();
+    if let Some(dt) = spec.datetime {
+        assert_eq!(dt.len(), 19, "datetime must be YYYY:MM:DD HH:MM:SS");
+        exif_ifd.push(ascii_entry(0x9003, dt));
+    }
+    if let Some(r) = spec.exposure {
+        exif_ifd.push(rational_entry(0x829a, r));
+    }
+    if let Some(r) = spec.fnumber {
+        exif_ifd.push(rational_entry(0x829d, r));
+    }
+    if let Some(iso) = spec.iso {
+        exif_ifd.push(short_entry(0x8827, iso));
+    }
+    if let Some(r) = spec.focal {
+        exif_ifd.push(rational_entry(0x920a, r));
+    }
+    if let Some(lens) = spec.lens {
+        exif_ifd.push(ascii_entry(0xa434, lens));
+    }
+
+    let mut ifd0 = Vec::new();
+    if let Some(make) = spec.make {
+        ifd0.push(ascii_entry(0x010f, make));
+    }
+    if let Some(model) = spec.model {
+        ifd0.push(ascii_entry(0x0110, model));
+    }
+    if let Some(o) = spec.orientation {
+        ifd0.push(short_entry(0x0112, o));
+    }
+    // The pointer's value is the offset of the Exif IFD, which sits right after IFD0 and
+    // its data; lay IFD0 out once with a placeholder to learn its length.
+    let has_exif_ifd = !exif_ifd.is_empty();
+    if has_exif_ifd {
+        ifd0.push(long_entry(0x8769, 0));
+    }
+    let (_, exif_offset) = write_ifd(
+        ifd0.iter()
+            .map(|e| IfdEntry {
+                tag: e.tag,
+                typ: e.typ,
+                count: e.count,
+                data: e.data.clone(),
+            })
+            .collect(),
+        8,
+    );
+    if has_exif_ifd {
+        let pointer = ifd0.iter_mut().find(|e| e.tag == 0x8769).unwrap();
+        pointer.data = exif_offset.to_le_bytes().to_vec();
+    }
+
     let mut tiff = Vec::new();
     tiff.extend_from_slice(b"II\x2a\x00");
     tiff.extend_from_slice(&8u32.to_le_bytes()); // IFD0 offset
-    tiff.extend_from_slice(&2u16.to_le_bytes()); // IFD0: 2 entries
-    entry(&mut tiff, 0x0112, 3, 1, orientation as u32); // Orientation, SHORT
-    entry(&mut tiff, 0x8769, 4, 1, 38); // Exif IFD pointer, LONG
-    tiff.extend_from_slice(&0u32.to_le_bytes()); // no IFD1
-    tiff.extend_from_slice(&1u16.to_le_bytes()); // Exif IFD at 38: 1 entry
-    entry(&mut tiff, 0x9003, 2, 20, 56); // DateTimeOriginal, ASCII[20] at 56
-    tiff.extend_from_slice(&0u32.to_le_bytes());
-    assert_eq!(tiff.len(), 56);
-    let mut date = datetime.as_bytes().to_vec();
-    date.push(0);
-    assert_eq!(date.len(), 20, "datetime must be YYYY:MM:DD HH:MM:SS");
-    tiff.extend_from_slice(&date);
+    let (ifd0_bytes, _) = write_ifd(ifd0, 8);
+    tiff.extend_from_slice(&ifd0_bytes);
+    if has_exif_ifd {
+        assert_eq!(tiff.len() as u32, exif_offset);
+        let (exif_bytes, _) = write_ifd(exif_ifd, exif_offset);
+        tiff.extend_from_slice(&exif_bytes);
+    }
+    tiff
+}
 
-    let mut app1 = vec![0xFF, 0xE1];
-    app1.extend_from_slice(&((2 + 6 + tiff.len()) as u16).to_be_bytes());
-    app1.extend_from_slice(b"Exif\0\0");
-    app1.extend_from_slice(&tiff);
-
+/// A JPEG with the given APP segments (marker byte, payload) inserted right after SOI.
+pub fn jpeg_with_segments(w: u32, h: u32, segments: &[(u8, &[u8])]) -> Vec<u8> {
     let jpeg = jpeg_bytes(w, h);
     let mut out = jpeg[..2].to_vec(); // SOI
-    out.extend_from_slice(&app1);
+    for (marker, payload) in segments {
+        out.extend_from_slice(&[0xFF, *marker]);
+        out.extend_from_slice(&((2 + payload.len()) as u16).to_be_bytes());
+        out.extend_from_slice(payload);
+    }
     out.extend_from_slice(&jpeg[2..]);
     out
+}
+
+/// A JPEG carrying `spec` in an APP1 EXIF segment.
+pub fn jpeg_with_exif_spec(w: u32, h: u32, spec: &ExifSpec<'_>) -> Vec<u8> {
+    let mut app1 = b"Exif\0\0".to_vec();
+    app1.extend_from_slice(&exif_tiff(spec));
+    jpeg_with_segments(w, h, &[(0xE1, &app1)])
+}
+
+/// A JPEG carrying a minimal EXIF block with Orientation and DateTimeOriginal.
+/// `datetime` must be exactly "YYYY:MM:DD HH:MM:SS".
+pub fn jpeg_with_exif(w: u32, h: u32, orientation: u16, datetime: &str) -> Vec<u8> {
+    jpeg_with_exif_spec(
+        w,
+        h,
+        &ExifSpec {
+            orientation: Some(orientation),
+            datetime: Some(datetime),
+            ..ExifSpec::default()
+        },
+    )
+}
+
+/// An APP13 "Photoshop 3.0" segment payload holding one IPTC-NAA resource with the given
+/// keywords as dataset 2:25 records, each in the given raw bytes.
+pub fn iptc_app13(keywords: &[&[u8]]) -> Vec<u8> {
+    let mut iim = Vec::new();
+    for kw in keywords {
+        iim.extend_from_slice(&[0x1C, 2, 25]);
+        iim.extend_from_slice(&(kw.len() as u16).to_be_bytes());
+        iim.extend_from_slice(kw);
+    }
+    let mut payload = b"Photoshop 3.0\0".to_vec();
+    payload.extend_from_slice(b"8BIM");
+    payload.extend_from_slice(&0x0404u16.to_be_bytes());
+    payload.extend_from_slice(&[0, 0]); // empty Pascal name, padded to two bytes
+    payload.extend_from_slice(&(iim.len() as u32).to_be_bytes());
+    payload.extend_from_slice(&iim);
+    if iim.len() % 2 == 1 {
+        payload.push(0);
+    }
+    payload
+}
+
+/// A JPEG whose IPTC block carries `keywords`.
+pub fn jpeg_with_iptc_keywords(w: u32, h: u32, keywords: &[&[u8]]) -> Vec<u8> {
+    jpeg_with_segments(w, h, &[(0xED, &iptc_app13(keywords))])
 }
 
 pub fn write_file(dir: &Path, rel: &str, bytes: &[u8]) -> PathBuf {
@@ -116,31 +309,49 @@ pub fn write_file(dir: &Path, rel: &str, bytes: &[u8]) -> PathBuf {
 
 /// A minimal XMP packet carrying `xmp:Rating` as an attribute, the spelling Picasa writes.
 pub fn xmp_packet(rating: i32) -> String {
+    xmp_packet_with(&format!(r#"xmp:Rating="{rating}""#), "")
+}
+
+/// An XMP packet whose `dc:subject` bag lists `subjects`, each XML-escaped.
+pub fn xmp_packet_with_subjects(subjects: &[&str]) -> String {
+    let items: String = subjects
+        .iter()
+        .map(|s| {
+            let escaped = s
+                .replace('&', "&amp;")
+                .replace('<', "&lt;")
+                .replace('>', "&gt;");
+            format!("<rdf:li>{escaped}</rdf:li>")
+        })
+        .collect();
+    xmp_packet_with(
+        r#"xmlns:dc="http://purl.org/dc/elements/1.1/""#,
+        &format!("<dc:subject><rdf:Bag>{items}</rdf:Bag></dc:subject>"),
+    )
+}
+
+fn xmp_packet_with(attributes: &str, children: &str) -> String {
     format!(
         r#"<?xpacket begin="" id="W5M0MpCehiHzreSzNTczkc9d"?>
 <x:xmpmeta xmlns:x="adobe:ns:meta/">
  <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
-  <rdf:Description rdf:about="" xmlns:xmp="http://ns.adobe.com/xap/1.0/" xmp:Rating="{rating}"/>
+  <rdf:Description rdf:about="" xmlns:xmp="http://ns.adobe.com/xap/1.0/" {attributes}>{children}</rdf:Description>
  </rdf:RDF>
 </x:xmpmeta>
 <?xpacket end="w"?>"#
     )
 }
 
+/// A JPEG carrying `packet` in an APP1 XMP segment.
+pub fn jpeg_with_xmp_packet(w: u32, h: u32, packet: &str) -> Vec<u8> {
+    let mut app1 = b"http://ns.adobe.com/xap/1.0/\0".to_vec();
+    app1.extend_from_slice(packet.as_bytes());
+    jpeg_with_segments(w, h, &[(0xE1, &app1)])
+}
+
 /// A JPEG carrying the packet in an APP1 segment, as a camera or Picasa writes it.
 pub fn jpeg_with_xmp(w: u32, h: u32, rating: i32) -> Vec<u8> {
-    let packet = xmp_packet(rating);
-    let mut app1 = vec![0xFF, 0xE1];
-    let ns = b"http://ns.adobe.com/xap/1.0/\0";
-    app1.extend_from_slice(&((2 + ns.len() + packet.len()) as u16).to_be_bytes());
-    app1.extend_from_slice(ns);
-    app1.extend_from_slice(packet.as_bytes());
-
-    let jpeg = jpeg_bytes(w, h);
-    let mut out = jpeg[..2].to_vec(); // SOI
-    out.extend_from_slice(&app1);
-    out.extend_from_slice(&jpeg[2..]);
-    out
+    jpeg_with_xmp_packet(w, h, &xmp_packet(rating))
 }
 
 /// CRC-32 (IEEE), computed bitwise so no table or dependency is needed. PNG chunks carry one.

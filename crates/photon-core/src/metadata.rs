@@ -4,7 +4,32 @@ use std::{
     path::Path,
 };
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// The generation of [`read_image_meta`] a row was last read with, stored in
+/// `items.exif_version`. The scanner re-describes an unchanged file whose stored version is
+/// behind this one, which is how a library indexed before a field existed acquires it: bump
+/// this when a new field is read, and every folder's next scan re-reads its files once.
+/// A header read per file, not a decode.
+///
+/// 0 is reserved for rows that predate the camera columns (the migration's default).
+pub const EXIF_VERSION: i64 = 1;
+
+/// What the camera wrote about itself and the exposure. Every field is optional because
+/// every field is: a phone omits the lens, a scan omits everything.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct CameraMeta {
+    pub make: Option<String>,
+    pub model: Option<String>,
+    pub lens: Option<String>,
+    /// Focal length in millimetres, as shot (no 35 mm equivalent).
+    pub focal_mm: Option<f64>,
+    /// The f-number.
+    pub aperture: Option<f64>,
+    /// Exposure time in seconds.
+    pub exposure_s: Option<f64>,
+    pub iso: Option<i64>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct ImageMeta {
     /// Stored pixel dimensions, before applying `orientation`.
     pub width: u32,
@@ -14,9 +39,10 @@ pub struct ImageMeta {
     /// Capture time as naive local time interpreted as UTC seconds.
     pub taken_at: Option<i64>,
     /// Always `None`: ratings come from Picasa's per-directory INI, applied by the scanner
-    /// after the walk (see `scanner::apply_picasa_stars`), not from anything in the file
-    /// itself. Kept on the struct because `NewItem` still carries the column.
+    /// after the walk (see `scanner::apply_picasa`), not from anything in the file itself.
+    /// Kept on the struct because `NewItem` still carries the column.
     pub rating: Option<u8>,
+    pub camera: CameraMeta,
 }
 
 /// Reads dimensions and EXIF data. Never fails: missing data falls back to defaults.
@@ -29,6 +55,7 @@ pub fn read_image_meta(path: &Path) -> ImageMeta {
         orientation: 1,
         taken_at: None,
         rating: None,
+        camera: CameraMeta::default(),
     };
     if let Some(exif) = exif {
         if let Some(o) = exif
@@ -48,8 +75,66 @@ pub fn read_image_meta(path: &Path) -> ImageMeta {
             exif.get_field(tag, exif::In::PRIMARY)
                 .and_then(|f| parse_exif_datetime(&f.value))
         });
+        meta.camera = read_camera(&exif);
     }
     meta
+}
+
+/// The camera fields, each `None` when absent or unusable. Fields in the Exif sub-IFD
+/// (lens, exposure) belong to the primary image as far as `In` is concerned, the same way
+/// `DateTimeOriginal` does above.
+fn read_camera(exif: &exif::Exif) -> CameraMeta {
+    let text = |tag| {
+        exif.get_field(tag, exif::In::PRIMARY)
+            .and_then(|f| ascii_text(&f.value))
+    };
+    let rational = |tag| {
+        exif.get_field(tag, exif::In::PRIMARY)
+            .and_then(|f| rational_f64(&f.value))
+    };
+    CameraMeta {
+        make: text(exif::Tag::Make),
+        model: text(exif::Tag::Model),
+        lens: text(exif::Tag::LensModel),
+        focal_mm: rational(exif::Tag::FocalLength),
+        aperture: rational(exif::Tag::FNumber),
+        exposure_s: rational(exif::Tag::ExposureTime),
+        iso: exif
+            .get_field(exif::Tag::PhotographicSensitivity, exif::In::PRIMARY)
+            .and_then(|f| f.value.get_uint(0))
+            .filter(|&iso| iso > 0)
+            .map(i64::from),
+    }
+}
+
+/// An ASCII field as text. Cameras pad these with spaces and NULs, and some write an empty
+/// string rather than omitting the tag; both come back as `None` rather than as "" or " ".
+/// Decoded lossily: the field is nominally ASCII, but a few firmwares write Latin-1 or
+/// UTF-8 into it, and a make name with one bad byte is still a make name.
+fn ascii_text(value: &exif::Value) -> Option<String> {
+    let exif::Value::Ascii(parts) = value else {
+        return None;
+    };
+    let text = String::from_utf8_lossy(parts.first()?);
+    let text = text
+        .trim_matches(|c: char| c.is_whitespace() || c == '\0')
+        .trim();
+    (!text.is_empty()).then(|| text.to_string())
+}
+
+/// The first rational as a float, or `None` for a zero denominator (a value some cameras
+/// write for "unknown") or a non-positive result, which no focal length, f-number or
+/// exposure can have.
+fn rational_f64(value: &exif::Value) -> Option<f64> {
+    let exif::Value::Rational(parts) = value else {
+        return None;
+    };
+    let r = parts.first()?;
+    if r.denom == 0 {
+        return None;
+    }
+    let f = r.to_f64();
+    (f > 0.0).then_some(f)
 }
 
 /// Dimensions as displayed, after applying the EXIF orientation.
@@ -123,16 +208,55 @@ pub(crate) fn naive_to_unix(
     days * 86_400 + hour as i64 * 3_600 + minute as i64 * 60 + second as i64
 }
 
+/// Unix seconds to a civil (year, month, day) in UTC: the inverse of [`naive_to_unix`],
+/// same algorithm. Used to spell a capture date as `YYYY-MM-DD` for search, where the
+/// stored value is the camera's wall-clock time and UTC is the right zone to read it in.
+pub fn civil_from_unix(secs: i64) -> (i64, u32, u32) {
+    let days = secs.div_euclid(86_400) + 719_468;
+    let era = days.div_euclid(146_097);
+    let doe = days - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    (if m <= 2 { y + 1 } else { y }, m, d)
+}
+
+/// A capture time as `YYYY-MM-DD`, for search.
+pub fn date_text(secs: i64) -> String {
+    let (y, m, d) = civil_from_unix(secs);
+    format!("{y:04}-{m:02}-{d:02}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testutil::{jpeg_with_exif, png_bytes, write_file};
+    use crate::testutil::{ExifSpec, jpeg_with_exif, jpeg_with_exif_spec, png_bytes, write_file};
 
     #[test]
     fn converts_naive_datetime_to_unix_seconds() {
         assert_eq!(naive_to_unix(1970, 1, 1, 0, 0, 0), 0);
         assert_eq!(naive_to_unix(2000, 3, 1, 0, 0, 0), 951_868_800);
         assert_eq!(naive_to_unix(2024, 6, 15, 12, 30, 45), 1_718_454_645);
+    }
+
+    #[test]
+    fn civil_from_unix_inverts_naive_to_unix() {
+        for (y, m, d) in [
+            (1970, 1, 1),
+            (2000, 2, 29),
+            (2024, 6, 15),
+            (1999, 12, 31),
+            (1969, 12, 31),
+        ] {
+            assert_eq!(
+                civil_from_unix(naive_to_unix(y, m, d, 23, 59, 59)),
+                (y, m, d)
+            );
+        }
+        assert_eq!(date_text(1_718_454_645), "2024-06-15");
     }
 
     #[test]
@@ -150,7 +274,61 @@ mod tests {
                 height: 2,
                 orientation: 6,
                 taken_at: Some(1_718_454_645),
-                rating: None
+                rating: None,
+                camera: CameraMeta::default(),
+            }
+        );
+    }
+
+    #[test]
+    fn reads_the_camera_lens_and_exposure_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        let spec = ExifSpec {
+            make: Some("Canon"),
+            model: Some("Canon EOS 5D Mark IV"),
+            lens: Some("EF50mm f/1.8 STM"),
+            focal: Some((50, 1)),
+            fnumber: Some((18, 10)),
+            exposure: Some((1, 250)),
+            iso: Some(400),
+            ..ExifSpec::default()
+        };
+        let path = write_file(dir.path(), "a.jpg", &jpeg_with_exif_spec(4, 2, &spec));
+        assert_eq!(
+            read_image_meta(&path).camera,
+            CameraMeta {
+                make: Some("Canon".into()),
+                model: Some("Canon EOS 5D Mark IV".into()),
+                lens: Some("EF50mm f/1.8 STM".into()),
+                focal_mm: Some(50.0),
+                aperture: Some(1.8),
+                exposure_s: Some(0.004),
+                iso: Some(400),
+            }
+        );
+    }
+
+    #[test]
+    fn padded_strings_and_zero_denominators_read_as_absent() {
+        // Cameras pad Make/Model with spaces or NULs to a fixed width, and write 0/0 for a
+        // focal length they do not know. Neither is a value: an aperture of "inf" or a make
+        // of "   " would render in the info panel and match every search.
+        let dir = tempfile::tempdir().unwrap();
+        let spec = ExifSpec {
+            make: Some("NIKON CORPORATION   "),
+            model: Some("   "),
+            lens: Some("\0\0"),
+            focal: Some((0, 0)),
+            fnumber: Some((0, 10)),
+            iso: Some(0),
+            ..ExifSpec::default()
+        };
+        let path = write_file(dir.path(), "a.jpg", &jpeg_with_exif_spec(4, 2, &spec));
+        assert_eq!(
+            read_image_meta(&path).camera,
+            CameraMeta {
+                make: Some("NIKON CORPORATION".into()),
+                ..CameraMeta::default()
             }
         );
     }
@@ -166,7 +344,8 @@ mod tests {
                 height: 5,
                 orientation: 1,
                 taken_at: None,
-                rating: None
+                rating: None,
+                camera: CameraMeta::default(),
             }
         );
     }
@@ -182,7 +361,8 @@ mod tests {
                 height: 0,
                 orientation: 1,
                 taken_at: None,
-                rating: None
+                rating: None,
+                camera: CameraMeta::default(),
             }
         );
     }

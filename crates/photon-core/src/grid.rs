@@ -13,10 +13,25 @@ pub enum GridView {
     /// `library::items::RECENT_LIMIT`. Unlike every other view this one is a window rather
     /// than a filter: it is bounded by count, not by a property of the photos.
     Recent,
-    /// Photos whose file or folder name contains the engine's current search query.
-    /// The query itself lives on the engine, not here: this enum is `Copy` and is
-    /// mirrored in TypeScript as a union of plain strings.
+    /// Photos whose file or folder name, camera, keywords or date contain the engine's
+    /// current search query. The query itself lives on the engine, not here: this enum is
+    /// `Copy` and is mirrored in TypeScript as a union of plain strings.
     Search,
+    /// Photos with a face of one Picasa contact. The contact hash is the engine's view
+    /// argument, like the search query.
+    Person,
+    /// Photos in one of photon's albums. The album id is the view argument.
+    Album,
+    /// Photos carrying one keyword. The keyword is the view argument.
+    Tag,
+}
+
+impl GridView {
+    /// Whether the view is selected by an argument held beside it on the engine. A view
+    /// switch to one of these keeps the argument; a switch to any other clears it.
+    pub fn takes_argument(self) -> bool {
+        matches!(self, Self::Search | Self::Person | Self::Album | Self::Tag)
+    }
 }
 
 /// A u64 as 16 lowercase hex characters: exact in JavaScript, unlike a JSON number.

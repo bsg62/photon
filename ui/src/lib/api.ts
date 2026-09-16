@@ -17,9 +17,27 @@ export interface AppInfo { version: string; libraryPath: string; licence: string
  *  than newest, to match Picasa. */
 export interface Section { folderId: number; offset: number; count: number; takenAtMin: number }
 export interface GridEntry { id: number; folderId: number; takenAt: number; aspect: number; kind: 'image'; thumbKey: string; starred: boolean }
-export type GridView = 'all' | 'starred' | 'recent' | 'search';
-export interface GridInfo { version: number; len: number; sections: Section[]; starredCount: number; view: GridView; searchQuery: string }
+export type GridView = 'all' | 'starred' | 'recent' | 'search' | 'person' | 'album' | 'tag';
+/** `searchQuery`, `person`, `album` and `tag` are the argument of the matching view and
+ *  empty/null in every other view: the backend is the source of truth for which one is
+ *  active, so the UI reads the argument from here rather than remembering what it asked for. */
+export interface GridInfo {
+  version: number;
+  len: number;
+  sections: Section[];
+  starredCount: number;
+  view: GridView;
+  searchQuery: string;
+  /** Picasa contact hash while `view` is 'person'. */
+  person: string | null;
+  /** Album id while `view` is 'album'. */
+  album: number | null;
+  /** Keyword while `view` is 'tag'. */
+  tag: string | null;
+}
 export interface GridRows { version: number; rows: GridEntry[] }
+/** A named Picasa face; the rectangle is fractions of the displayed (oriented) image. */
+export interface ItemFace { hash: string; name: string; left: number; top: number; right: number; bottom: number }
 export interface ViewerItem {
   id: number;
   path: string;
@@ -34,7 +52,26 @@ export interface ViewerItem {
   thumbState: 'pending' | 'ready' | 'failed';
   thumbError: string | null;
   starred: boolean;
+  make: string | null;
+  model: string | null;
+  lens: string | null;
+  /** Millimetres, as shot. */
+  focalMm: number | null;
+  /** The f-number. */
+  aperture: number | null;
+  /** Seconds. */
+  exposureS: number | null;
+  iso: number | null;
+  /** Keywords from the file's XMP and IPTC, in file order. */
+  tags: string[];
+  faces: ItemFace[];
+  /** Ids of the albums the photo is in. */
+  albums: number[];
 }
+export interface Person { hash: string; name: string; count: number }
+export interface TagCount { tag: string; count: number }
+export interface Album { id: number; name: string; createdMs: number }
+export interface AlbumSummary { id: number; name: string; count: number }
 export interface ScanProgressEvent {
   watchedId: number;
   filesSeen: number;
@@ -68,6 +105,17 @@ export const api = {
   setLastFolder: (folderId: number) => invoke<void>('set_last_folder', { folderId }),
   setGridView: (view: GridView) => invoke<void>('set_grid_view', { view }),
   setSearchQuery: (query: string) => invoke<void>('set_search_query', { query }),
+  setPersonView: (contact: string) => invoke<void>('set_person_view', { contact }),
+  setAlbumView: (albumId: number) => invoke<void>('set_album_view', { albumId }),
+  setTagView: (tag: string) => invoke<void>('set_tag_view', { tag }),
+  listPeople: () => invoke<Person[]>('list_people'),
+  listTags: () => invoke<TagCount[]>('list_tags'),
+  listAlbums: () => invoke<AlbumSummary[]>('list_albums'),
+  createAlbum: (name: string) => invoke<Album>('create_album', { name }),
+  renameAlbum: (albumId: number, name: string) => invoke<void>('rename_album', { albumId, name }),
+  deleteAlbum: (albumId: number) => invoke<void>('delete_album', { albumId }),
+  addToAlbum: (albumId: number, itemIds: number[]) => invoke<void>('add_to_album', { albumId, itemIds }),
+  removeFromAlbum: (albumId: number, itemIds: number[]) => invoke<void>('remove_from_album', { albumId, itemIds }),
   setVisible: (ids: number[]) => invoke<void>('set_visible', { ids }),
   viewerItem: (id: number) => invoke<ViewerItem>('viewer_item', { id }),
   /** Sets or clears a star. Written into the folder's Picasa INI first, then mirrored into

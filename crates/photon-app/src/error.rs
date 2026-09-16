@@ -25,6 +25,7 @@ impl From<photon_core::Error> for AppError {
             FolderExcluded { .. } => "folderExcluded",
             NotFound(_) => "notFound",
             IniWrite { .. } => "iniWrite",
+            EmptyAlbumName => "emptyAlbumName",
             _ => "internal",
         };
         Self {
