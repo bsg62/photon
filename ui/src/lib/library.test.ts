@@ -35,6 +35,9 @@ vi.mock('./api', () => ({
     listTags: vi.fn(),
     setAlbumView: vi.fn(),
     createAlbum: vi.fn(),
+    renameTag: vi.fn(),
+    hideTag: vi.fn(),
+    restoreTagRule: vi.fn(),
     watchedFolderStats: vi.fn(),
   },
   events: {
@@ -142,6 +145,28 @@ describe('LibraryStore', () => {
     await expect(store.createAlbum('Zoo')).resolves.toBe(2);
     expect(api.createAlbum).toHaveBeenCalledWith('Zoo');
     expect(store.albums).toHaveLength(2);
+  });
+
+  it('tag rule changes refetch the collections', async () => {
+    const store = new LibraryStore();
+    await store.init();
+    vi.mocked(api.listTags).mockResolvedValue([{ tag: 'vacation', count: 1 }]);
+    vi.mocked(api.renameTag).mockResolvedValue();
+    await store.renameTag('holiday', 'vacation');
+    expect(api.renameTag).toHaveBeenCalledWith('holiday', 'vacation');
+    expect(store.tags).toEqual([{ tag: 'vacation', count: 1 }]);
+
+    vi.mocked(api.listTags).mockResolvedValue([]);
+    vi.mocked(api.hideTag).mockResolvedValue();
+    await store.hideTag('vacation');
+    expect(api.hideTag).toHaveBeenCalledWith('vacation');
+    expect(store.tags).toEqual([]);
+
+    vi.mocked(api.listTags).mockResolvedValue([{ tag: 'holiday', count: 1 }]);
+    vi.mocked(api.restoreTagRule).mockResolvedValue();
+    await store.restoreTagRule('holiday');
+    expect(api.restoreTagRule).toHaveBeenCalledWith('holiday');
+    expect(store.tags).toEqual([{ tag: 'holiday', count: 1 }]);
   });
 
   it('a failed collections fetch is reported, not thrown', async () => {

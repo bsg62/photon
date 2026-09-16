@@ -372,6 +372,34 @@ impl Engine {
         Ok(())
     }
 
+    /// After a tag rule change, which the caller has already committed: rebuilds the grid,
+    /// since the Tag and Search views read the rules, and the rebuild's `library_changed` is
+    /// what makes the sidebar refetch its tag list. A rename carries an open Tag view from
+    /// the old name to the new one.
+    ///
+    /// The move is not atomic with the commit. A scan's rebuild that snapshots between the
+    /// two reads the old name under the new rules and can publish an empty grid; the epoch
+    /// bump here discards it if it finishes later, and this call's own rebuild, stamped
+    /// after it, replaces it if it finished first. Moving the view before the commit only
+    /// swaps which half is briefly wrong.
+    ///
+    /// Not `rebuild_or_restore`: the rule is already saved, so a failed rebuild must not put
+    /// the view back on a name that no longer answers, nor report the saved change as
+    /// failed. The next rebuild, from any source, shows it.
+    pub fn tags_changed(&self, renamed: Option<(&str, &str)>) -> Result<()> {
+        if let Some((from, to)) = renamed {
+            let mut state = self.state.lock();
+            if state.view == GridView::Tag && state.arg == from {
+                state.arg = to.to_string();
+                state.epoch += 1;
+            }
+        }
+        if let Err(err) = self.refresh_grid() {
+            tracing::warn!(%err, "grid refresh after a tag rule change failed");
+        }
+        Ok(())
+    }
+
     /// Sets or clears a photo's star: into the folder's Picasa INI first, then into the
     /// database, then the grid.
     ///

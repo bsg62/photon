@@ -70,6 +70,9 @@ export interface ViewerItem {
 }
 export interface Person { hash: string; name: string; count: number }
 export interface TagCount { tag: string; count: number }
+/** A tag the user renamed (`target` set) or removed (`target` null). photon applies it
+ *  when reading tags; the photo files keep their keywords. */
+export interface TagRule { tag: string; target: string | null }
 export interface Album { id: number; name: string; createdMs: number }
 export interface AlbumSummary { id: number; name: string; count: number }
 export interface ScanProgressEvent {
@@ -110,6 +113,11 @@ export const api = {
   setTagView: (tag: string) => invoke<void>('set_tag_view', { tag }),
   listPeople: () => invoke<Person[]>('list_people'),
   listTags: () => invoke<TagCount[]>('list_tags'),
+  listTagRules: () => invoke<TagRule[]>('list_tag_rules'),
+  /** Renames a tag, merging it into `to` if that already exists. */
+  renameTag: (from: string, to: string) => invoke<void>('rename_tag', { from, to }),
+  hideTag: (tag: string) => invoke<void>('hide_tag', { tag }),
+  restoreTagRule: (tag: string) => invoke<void>('restore_tag_rule', { tag }),
   listAlbums: () => invoke<AlbumSummary[]>('list_albums'),
   createAlbum: (name: string) => invoke<Album>('create_album', { name }),
   renameAlbum: (albumId: number, name: string) => invoke<void>('rename_album', { albumId, name }),

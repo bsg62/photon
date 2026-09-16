@@ -16,7 +16,7 @@
 //! blocking pool.
 
 use crate::{commands, engine::Engine, error::AppError};
-use photon_core::library::{Album, AlbumSummary, Person, TagCount, WatchedFolder};
+use photon_core::library::{Album, AlbumSummary, Person, TagCount, TagRule, WatchedFolder};
 use std::sync::Arc;
 use tauri::State;
 
@@ -111,6 +111,26 @@ pub fn list_people(engine: Eng<'_>) -> Result<Vec<Person>, AppError> {
 #[tauri::command(async)]
 pub fn list_tags(engine: Eng<'_>) -> Result<Vec<TagCount>, AppError> {
     commands::list_tags(&engine)
+}
+
+#[tauri::command(async)]
+pub fn list_tag_rules(engine: Eng<'_>) -> Result<Vec<TagRule>, AppError> {
+    commands::list_tag_rules(&engine)
+}
+
+#[tauri::command(async)]
+pub fn rename_tag(engine: Eng<'_>, from: String, to: String) -> Result<(), AppError> {
+    commands::rename_tag(&engine, &from, &to)
+}
+
+#[tauri::command(async)]
+pub fn hide_tag(engine: Eng<'_>, tag: String) -> Result<(), AppError> {
+    commands::hide_tag(&engine, &tag)
+}
+
+#[tauri::command(async)]
+pub fn restore_tag_rule(engine: Eng<'_>, tag: String) -> Result<(), AppError> {
+    commands::restore_tag_rule(&engine, &tag)
 }
 
 #[tauri::command(async)]

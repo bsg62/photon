@@ -1,4 +1,5 @@
 use super::Library;
+use super::tags::{EFFECTIVE_TAGS, TAG_FILTER};
 use crate::Result;
 use crate::grid::{GridEntry, GridView};
 use crate::media::{MediaKind, ThumbState, fingerprint};
@@ -57,14 +58,6 @@ pub struct Item {
     /// `None` until the Picasa pass has read the folder; see `is_starred`.
     pub rating: Option<i64>,
     pub camera: CameraMeta,
-}
-
-/// A keyword and how many live photos carry it.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TagCount {
-    pub tag: String,
-    pub count: i64,
 }
 
 impl Item {
@@ -240,7 +233,9 @@ pub fn is_starred(rating: Option<i64>) -> bool {
 }
 
 /// Replaces one item's keywords inside the caller's transaction. Every writer of an item
-/// row goes through here so the table cannot fall behind the columns.
+/// row goes through here so the table cannot fall behind the columns. The rows are the
+/// file's keywords verbatim; the user's renames and removals are applied on read
+/// (`library/tags.rs`).
 fn write_tags(
     tx: &rusqlite::Transaction<'_>,
     item_id: i64,
@@ -399,39 +394,6 @@ impl Library {
             params![id],
         )?;
         Ok(())
-    }
-
-    /// The keywords on one photo, in the order the file lists them.
-    pub fn item_tags(&self, item_id: i64) -> Result<Vec<String>> {
-        let conn = self.reader()?;
-        let mut stmt =
-            conn.prepare_cached("SELECT tag FROM item_tags WHERE item_id = ?1 ORDER BY rowid")?;
-        let tags = stmt
-            .query_map(params![item_id], |r| r.get(0))?
-            .collect::<rusqlite::Result<Vec<String>>>()?;
-        Ok(tags)
-    }
-
-    /// Every keyword carried by at least one live photo, with its count. Sorted in Rust
-    /// rather than by SQL: the ordering is case-insensitive and `lower()` is ASCII-only
-    /// without ICU.
-    pub fn tags_with_counts(&self) -> Result<Vec<TagCount>> {
-        let conn = self.reader()?;
-        let mut stmt = conn.prepare(
-            "SELECT t.tag, count(*) FROM item_tags t JOIN items i ON i.id = t.item_id
-             WHERE i.missing_since IS NULL
-             GROUP BY t.tag",
-        )?;
-        let mut tags = stmt
-            .query_map([], |r| {
-                Ok(TagCount {
-                    tag: r.get(0)?,
-                    count: r.get(1)?,
-                })
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        tags.sort_by_cached_key(|t| (t.tag.to_lowercase(), t.tag.clone()));
-        Ok(tags)
     }
 
     /// Every live item in one folder, as `(id, lowercased file name, current rating)`.
@@ -663,10 +625,7 @@ impl Library {
                     &[&album_id],
                 )
             }
-            GridView::Tag => self.entries_filtered(
-                "AND i.id IN (SELECT item_id FROM item_tags WHERE tag = ?1)",
-                &[&arg],
-            ),
+            GridView::Tag => self.entries_filtered(TAG_FILTER, &[&arg]),
         }
     }
 
@@ -723,7 +682,7 @@ impl Library {
     /// `search::Query` holds both decisions and the reasons for them. This is one pass
     /// over the same rows an index rebuild already reads, with a handful of short string
     /// compares per token added per row. The keywords arrive joined by a correlated
-    /// subquery over `item_tags`, one index probe per row, rather than a join that would
+    /// subquery over the rule-applied keywords (`EFFECTIVE_TAGS`), one index probe per row, rather than a join that would
     /// multiply the rows by their keyword count.
     ///
     /// The numeric fields are spelled the way a person types them - `50mm`, `f/1.8`,
@@ -738,7 +697,7 @@ impl Library {
         let mut stmt = conn.prepare(&grid_query(
             &format!(
                 "{GRID_COLUMNS}, i.file_name, f.name, i.make, i.model, i.lens, i.focal_mm, i.aperture, i.iso,
-                 (SELECT group_concat(tag, ' ') FROM item_tags t WHERE t.item_id = i.id)"
+                 (SELECT group_concat(e.tag, ' ') FROM ({EFFECTIVE_TAGS}) e WHERE e.item_id = i.id)"
             ),
             "",
         ))?;
@@ -1372,6 +1331,36 @@ mod tests {
             .collect();
 
         assert_eq!(recent, vec![ids[1], ids[3], ids[2], ids[0]]);
+    }
+
+    /// The Tag view probes `item_tags_tag` for each keyword that answers to the name. A
+    /// filter rewritten through `EFFECTIVE_TAGS` returns the same rows, but its `coalesce`
+    /// cannot use the index, and every Tag view click would scan every keyword.
+    #[test]
+    fn the_tag_view_is_served_by_its_index() {
+        let (_dir, lib) = temp_library();
+        let conn = lib.reader().unwrap();
+        let mut stmt = conn
+            .prepare(&format!(
+                "EXPLAIN QUERY PLAN {}",
+                grid_query(GRID_COLUMNS, TAG_FILTER)
+            ))
+            .unwrap();
+        let plan: Vec<String> = stmt
+            .query_map(["x"], |r| r.get::<_, String>(3))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert!(
+            plan.iter().any(|step| step.contains("item_tags_tag")),
+            "expected an index probe, got {plan:?}"
+        );
+        // Every step is a probe today. Keyword scans show under the table's alias
+        // (`SCAN t`), so the check is for any scan rather than for one table's name.
+        assert!(
+            !plan.iter().any(|step| step.starts_with("SCAN")),
+            "no scan: {plan:?}"
+        );
     }
 
     /// Pins that the Recent query is actually served by `items_recent` rather than by a

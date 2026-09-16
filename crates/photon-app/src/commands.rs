@@ -5,7 +5,9 @@ use crate::{engine::Engine, error::AppError};
 use photon_core::{
     Error,
     grid::{GridEntry, GridView, Section, hex_key},
-    library::{Album, AlbumSummary, Folder, ItemFace, Person, TagCount, WatchedFolder, is_starred},
+    library::{
+        Album, AlbumSummary, Folder, ItemFace, Person, TagCount, TagRule, WatchedFolder, is_starred,
+    },
     media::ThumbState,
     now_ms,
     thumbs::Priority,
@@ -200,6 +202,29 @@ pub fn list_people(engine: &Engine) -> CmdResult<Vec<Person>> {
 /// Every keyword on a live photo, for the sidebar.
 pub fn list_tags(engine: &Engine) -> CmdResult<Vec<TagCount>> {
     Ok(engine.lib.tags_with_counts()?)
+}
+
+/// The user's tag renames and removals, for Settings.
+pub fn list_tag_rules(engine: &Engine) -> CmdResult<Vec<TagRule>> {
+    Ok(engine.lib.tag_rules()?)
+}
+
+pub fn rename_tag(engine: &Engine, from: &str, to: &str) -> CmdResult<()> {
+    let to = engine.lib.rename_tag(from, to)?;
+    engine.tags_changed(Some((from, &to)))?;
+    Ok(())
+}
+
+pub fn hide_tag(engine: &Engine, tag: &str) -> CmdResult<()> {
+    engine.lib.hide_tag(tag)?;
+    engine.tags_changed(None)?;
+    Ok(())
+}
+
+pub fn restore_tag_rule(engine: &Engine, tag: &str) -> CmdResult<()> {
+    engine.lib.restore_tag_rule(tag)?;
+    engine.tags_changed(None)?;
+    Ok(())
 }
 
 pub fn list_albums(engine: &Engine) -> CmdResult<Vec<AlbumSummary>> {
@@ -512,6 +537,73 @@ mod tests {
         assert_eq!(item.albums, vec![album.id]);
         assert_eq!(list_people(&f.engine).unwrap()[0].name, "Ada");
         assert_eq!(list_tags(&f.engine).unwrap()[0].tag, "beach");
+    }
+
+    /// Gives a scanned photo keywords the way the scanner's metadata backfill writes them.
+    fn set_keywords(f: &crate::testutil::Fixture, id: i64, tags: &[&str]) {
+        use photon_core::library::NewItem;
+        let row = f.engine.lib.item(id).unwrap().unwrap();
+        let file_name = Path::new(&row.path)
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        let described = NewItem {
+            folder_id: row.folder_id,
+            path: row.path.clone(),
+            file_name,
+            kind: row.kind,
+            size: row.size,
+            mtime_ms: row.mtime_ms,
+            width: row.width,
+            height: row.height,
+            orientation: row.orientation,
+            taken_at: row.taken_at,
+            rating: None,
+            camera: Default::default(),
+            tags: tags.iter().map(|t| t.to_string()).collect(),
+        };
+        f.engine.lib.update_item_meta(&[(id, described)]).unwrap();
+    }
+
+    /// Renaming the tag on screen must carry the view with it: left on the old name, the
+    /// view would show a keyword that now answers to nothing, and the grid would empty.
+    #[test]
+    fn renaming_the_viewed_tag_keeps_the_view_on_it() {
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a.jpg", &img), ("b.jpg", &img)]);
+        f.add_photos();
+        let ids = f.ids();
+        set_keywords(&f, ids[0], &["holiday"]);
+        set_tag_view(&f.engine, "holiday").unwrap();
+        assert_eq!(grid_info(&f.engine).len, 1);
+
+        assert_eq!(
+            rename_tag(&f.engine, "holiday", " ").unwrap_err().kind,
+            "emptyTagName"
+        );
+        rename_tag(&f.engine, "holiday", " vacation").unwrap();
+        let info = grid_info(&f.engine);
+        assert_eq!(info.tag.as_deref(), Some("vacation"));
+        assert_eq!(info.len, 1);
+        assert_eq!(
+            list_tag_rules(&f.engine).unwrap(),
+            [photon_core::library::TagRule {
+                tag: "holiday".into(),
+                target: Some("vacation".into()),
+            }]
+        );
+
+        hide_tag(&f.engine, "vacation").unwrap();
+        assert_eq!(
+            grid_info(&f.engine).len,
+            0,
+            "the removed tag's view empties"
+        );
+        assert!(list_tags(&f.engine).unwrap().is_empty());
+
+        restore_tag_rule(&f.engine, "holiday").unwrap();
+        assert_eq!(list_tags(&f.engine).unwrap()[0].tag, "holiday");
     }
 
     #[test]
