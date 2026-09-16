@@ -268,11 +268,16 @@
 
   /** The mouse's back button closes the viewer, like Escape, Backspace and the ✕.
    *
+   *  `mousedown`, not `pointerdown`: on Linux WebKitGTK never sees the back button, because
+   *  wry swallows GDK button 8 and dispatches a synthetic `mousedown`/`mouseup` with button 3
+   *  in its place (wry-0.55.1/src/webkitgtk/synthetic_mouse_events.rs). No pointer event is
+   *  ever fired for it, so a `pointerdown` listener works on Windows and macOS only.
+   *
    *  On the window rather than the viewer element so a press anywhere counts, including on
    *  the zoom slider. `preventDefault` stops the webview treating it as history navigation;
    *  there is nowhere to go back to, but the press would otherwise be handled twice. The pan
    *  handler below is unaffected — it already ignores every button but the left one. */
-  function onbackbutton(e: PointerEvent) {
+  function onbackbutton(e: MouseEvent) {
     if (!closesViewer(e.button)) return;
     e.preventDefault();
     close();
@@ -327,7 +332,7 @@
   }
 </script>
 
-<svelte:window {onkeydown} onpointerdown={onbackbutton} onclick={closeMenu} />
+<svelte:window {onkeydown} onmousedown={onbackbutton} onclick={closeMenu} />
 
 <!-- The pan handlers live here rather than on the stage below: this element already carries
      a role, and dragging anywhere in the viewer is easier to hit than the photo alone. -->
