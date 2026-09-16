@@ -1,7 +1,7 @@
 # photon — Tag Manager Design
 
 **Date:** 2026-09-17
-**Status:** Approved design
+**Status:** Approved design, implemented
 **Builds on:** v0.13.0
 
 ## 1. What changes
@@ -77,12 +77,14 @@ nothing (hidden) if its rule's `target` is `NULL`.
   No-op when `from == to`. Otherwise, in one transaction:
   1. every rule with `target = from` gets `target = to` (keeps invariant 1: the tags
      already merged into `from` follow it);
-  2. upsert `from → to`;
-  3. if `to` itself has a rule, the rename re-points at a ruled name. `to` is the name the
-     user typed and sees, so its own rule is deleted: `to` becomes a live name again;
-  4. delete every row with `target = tag` (invariant 2 — this is what makes renaming back
-     to the original name a restore).
-- **`hide_tag(tag)`.** Upserts `tag → NULL` and sets `target = NULL` on every rule whose
+  2. upsert `from → to`, but only if some photo carries `from` as a keyword. A name that
+     exists only as another rule's target has nothing to rename, and a rule for it would
+     show in Settings as a change no photo reflects;
+  3. delete `to`'s own rule, if any. `to` is the name the user typed and sees, so it
+     becomes a live name again, and no chain is left. This also keeps invariant 2: the
+     only identity rule steps 1–2 can produce is `to → to`, so it is what makes renaming
+     back to the original name a restore.
+- **`hide_tag(tag)`.** Upserts `tag → NULL` (again only for a keyword some photo carries) and sets `target = NULL` on every rule whose
   target is `tag`: removing a merged tag removes everything merged into it.
 - **`restore_tag_rule(tag)`.** Deletes that one rule. A tag merged into a name that was
   later hidden had its rule set to `NULL` by `hide_tag`, so it is restored on its own,
@@ -100,9 +102,10 @@ FROM item_tags t LEFT JOIN tag_rules r ON r.tag = t.tag
 WHERE r.tag IS NULL OR r.target IS NOT NULL
 ```
 
-Every reader goes through it or through `tag_filter` below. A reader of `item_tags` that
-bypasses both shows hidden and renamed keywords, so the doc comment on `item_tags` in
-`schema.rs` names them.
+Every reader goes through it or through `TAG_FILTER` below. A reader of `item_tags` that
+bypasses both shows hidden and renamed keywords, so the comment on `tag_rules` in
+`schema.rs` names them. (The fragment also carries `item_tags`' rowid as `seq`, the
+order the file listed the keywords in, for the viewer.)
 
 - **`tags_with_counts`** groups `EFFECTIVE_TAGS` by tag and counts `DISTINCT item_id`, so a
   photo carrying both halves of a merge counts once.
@@ -111,7 +114,7 @@ bypasses both shows hidden and renamed keywords, so the doc comment on `item_tag
 - **Search**'s correlated `group_concat` reads effective tags, so a hidden keyword no
   longer matches and a renamed one matches by its new name. The old name no longer matches:
   the user renamed it.
-- **The Tag view** filters with `tag_filter`:
+- **The Tag view** filters with `TAG_FILTER`:
 
   ```sql
   AND i.id IN (

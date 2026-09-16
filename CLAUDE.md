@@ -157,7 +157,9 @@ unchanged file whose stored version is behind is re-described and written throug
 not `rating`). Adding a field to `describe()` without bumping `EXIF_VERSION` leaves every
 existing photo without it forever. Keywords come from the file (XMP `dc:subject` and IPTC
 2:25, `keywords.rs`) into `item_tags`; every writer of an item row goes through
-`write_tags`.
+`write_tags`. Every *reader* of keywords goes through `EFFECTIVE_TAGS` or `TAG_FILTER` in
+`library/tags.rs`, which apply the user's rename/remove rules; a reader of `item_tags` that
+bypasses them shows tags the user renamed or removed.
 
 **The watcher drops access events** (`watcher/fs.rs`, `may_have_changed`). On Linux, notify
 registers for inotify's open and close events, so reading a file's EXIF, listing a
@@ -177,9 +179,10 @@ branch's star behaviour cannot be tested from the filesystem either way.
 transaction with `PRAGMA user_version` bumped after it. A library from a newer photon is refused
 with `SchemaTooNew`. SQLite runs in WAL mode, so `library.db` has `-wal`/`-shm` siblings.
 
-A schema bump breaks tests on purpose: `library/mod.rs` asserts the literal version number in
-two places, and the migration tests seed from `MIGRATIONS[..N-1]`. Update the numbers rather than
-loosening them to `MIGRATIONS.len()`; the hardcoding is the tripwire. An index that serves a
+A schema bump breaks tests on purpose: `library/mod.rs` asserts the literal version number
+twice (the opened version and `SchemaTooNew`'s `supported`) and the table count once, and the
+migration tests seed from `MIGRATIONS[..N-1]`. Update the numbers rather than loosening them
+to `MIGRATIONS.len()`; the hardcoding is the tripwire. An index that serves a
 specific query gets a plan test (`the_recent_view_is_served_by_its_index`), so drift between the
 index and the `ORDER BY` fails rather than silently regressing.
 
@@ -207,7 +210,8 @@ in SQL.
   `2026-09-16-photon-set-star-design.md`); any further write is a spec-level decision, not a
   code change. The writer and the reader in `picasa.rs` share one line classifier on purpose:
   a writer with its own header/key logic drifts from the reader. Faces and contacts are read
-  from the same INI and never written; keywords are read from the photo and never written;
+  from the same INI and never written; keywords are read from the photo and never written (the user's renames and
+  removals are `tag_rules` rows applied on read, `library/tags.rs`);
   albums live only in `library.db` (membership is by item id, so a renamed file leaves its
   albums when its old row is purged — a recorded limitation, not a bug).
 - **No native library dependencies.** Nothing wrapping a C/C++ SDK. This is what made packaging
