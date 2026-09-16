@@ -127,6 +127,18 @@ CREATE TABLE album_items (
 );
 CREATE INDEX album_items_item ON album_items(item_id);
 "#,
+    r#"
+-- A keyword the user renamed (target set) or removed (target NULL). Keywords are read from
+-- the photo and never written, so a rule is applied wherever tags are read
+-- (`library/tags.rs`), never folded into item_tags: a rescan rewrites that table from the
+-- file. Every reader of item_tags goes through EFFECTIVE_TAGS or TAG_FILTER; one that does
+-- not shows keywords the user renamed or removed.
+CREATE TABLE tag_rules (
+    tag    TEXT PRIMARY KEY,
+    target TEXT
+);
+CREATE INDEX tag_rules_target ON tag_rules(target);
+"#,
 ];
 
 pub fn migrate(conn: &Connection) -> Result<()> {
@@ -255,6 +267,55 @@ mod tests {
             )
             .unwrap();
         assert_eq!(rating, Some(3), "and the existing row is untouched");
+    }
+
+    /// The rules table arriving in a library that already has keywords. Nothing existing
+    /// may change: the keywords are what the rules are applied to.
+    #[test]
+    fn the_sixth_migration_adds_tag_rules_and_keeps_keywords() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        for sql in &MIGRATIONS[..5] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 5i64).unwrap();
+        conn.execute(
+            "INSERT INTO watched_folders (id, path) VALUES (1, '/p')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO folders (id, watched_id, parent_id, path, name, sort_key) \
+             VALUES (1, 1, NULL, '/p', 'p', 'p')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO items (id, folder_id, path, file_name, kind, size, mtime_ms, width, \
+             height, orientation, taken_at) \
+             VALUES (1, 1, '/p/a.jpg', 'a.jpg', 0, 1, 1, 1, 1, 1, 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO item_tags (item_id, tag) VALUES (1, 'beach')",
+            [],
+        )
+        .unwrap();
+
+        migrate(&conn).unwrap();
+
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, 6);
+        let rules: i64 = conn
+            .query_row("SELECT count(*) FROM tag_rules", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rules, 0, "an upgraded library starts with no rules");
+        let tag: String = conn
+            .query_row("SELECT tag FROM item_tags", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(tag, "beach");
     }
 
     /// The camera columns, keyword, face and album tables arriving in a populated library.
