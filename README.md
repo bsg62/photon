@@ -120,6 +120,7 @@ publishing it.
 - [ ] Unplugging a watched drive dims it; plugging it back in restores it within about a minute, unattended.
 - [ ] Typing part of a folder's name in the search box finds its photos.
 - [ ] The search box stays put at the top of the window while the folder list and the grid scroll.
+- [ ] The bar between the folder list and the grid resizes the list along its full height: dragging it stops at a minimum width and at half the window, the grid reflows to the new width, and with the bar focused (Tab) the arrow keys resize it too. The list's lower-right corner no longer has a resize grip.
 - [ ] Clearing the search box restores the full library.
 - [ ] Clicking a folder in the sidebar while a search is active leaves search and lands on that folder.
 - [ ] Type a query, pause briefly, then keep typing without pausing again (e.g. type "beach", wait, then add "es" to make "beaches"): the box keeps every character you typed and never snaps back to an earlier, shorter query.
