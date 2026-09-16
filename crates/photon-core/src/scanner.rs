@@ -20,6 +20,13 @@ use walkdir::{DirEntry, WalkDir};
 
 const BATCH: usize = 500;
 
+/// How many files the walk passes between progress reports it makes on its own, apart
+/// from the ones every batch flush makes. A rescan of an unchanged folder flushes nothing,
+/// so without these it would report once, at the end, and the status bar would show no
+/// progress for exactly the scan a person triggers most. The sink throttles what it emits,
+/// so this only bounds how stale its view of the count can be.
+const PROGRESS_EVERY: u64 = 64;
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ScanProgress {
     pub files_seen: u64,
@@ -83,7 +90,8 @@ impl ScanReport {
 /// `progress` feeds the UI's scan counter, `indexed` feeds the thumbnail queue. A caller
 /// that wants only progress wraps a closure in [`progress_only`].
 pub trait ScanSink {
-    /// Called after every batch, and once more at the end of the scan.
+    /// Called after every batch, every [`PROGRESS_EVERY`] files the walk passes, and once
+    /// more at the end of the scan.
     fn progress(&mut self, progress: &ScanProgress);
 
     /// Items just inserted or replaced. Each has `thumb_state = Pending`, so these are
@@ -514,6 +522,9 @@ fn walk_tree(
         };
         let (size, mtime_ms) = (md.len() as i64, mtime_ms(&md));
         seen.files_seen += 1;
+        if seen.files_seen.is_multiple_of(PROGRESS_EVERY) {
+            progress.progress(&seen);
+        }
 
         match known.remove(path_str) {
             Some(k) if k.size == size && k.mtime_ms == mtime_ms && !k.missing => {
@@ -920,6 +931,38 @@ mod tests {
         let mut second = Indexed::default();
         scan_watched(&lib, &watched, 2, &ScanOptions::default(), &mut second).unwrap();
         assert_eq!(second.0, [known[&key(&a)].id]);
+    }
+
+    /// The status bar's bar. A rescan of an unchanged folder flushes no batch, and the
+    /// batch flushes were the only reports the walk made: the first event the UI saw was
+    /// the final one, so a rescan showed no progress at all. Reverting the per-file report
+    /// brings this back to exactly one call.
+    #[test]
+    fn an_unchanged_rescan_still_reports_progress_during_the_walk() {
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        for i in 0..(PROGRESS_EVERY as usize * 2 + 5) {
+            write_file(&root, &format!("{i:04}.jpg"), &jpeg_bytes(4, 4));
+        }
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
+        scan(&lib, &watched, 1);
+
+        let mut reports: Vec<u64> = Vec::new();
+        let report = scan_watched(
+            &lib,
+            &watched,
+            2,
+            &ScanOptions::default(),
+            &mut progress_only(|p| reports.push(p.files_seen)),
+        )
+        .unwrap();
+
+        assert_eq!((report.added, report.changed), (0, 0), "nothing changed");
+        assert_eq!(
+            reports,
+            [PROGRESS_EVERY, 2 * PROGRESS_EVERY, 2 * PROGRESS_EVERY + 5],
+            "two reports on the way and the final one, not just the final one"
+        );
     }
 
     #[test]

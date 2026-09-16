@@ -1,20 +1,33 @@
 <script lang="ts">
   import { library } from '../lib/library.svelte';
+  import { scanStatus } from '../lib/status';
 
-  const scanning = $derived(
+  /** One entry per running scan, in watched-folder order, each with a bar. */
+  const scans = $derived(
     library.folders.watched
       .filter((w) => library.isScanning(w.id))
-      .map((w) => `Scanning ${w.path.split(/[\\/]/).pop()}… ${library.scans[w.id].filesSeen.toLocaleString()} files`),
-  );
-  const notices = $derived(
-    library.anyDegraded
-      ? ['Live updates limited — photon will re-check these folders periodically.', ...scanning]
-      : scanning,
+      .map((w) => scanStatus(w, library.scans[w.id], library.expected[w.id])),
   );
 </script>
 
 <footer class="status">
-  <span>{notices.join(' · ')}</span>
+  <span class="notices">
+    {#if library.anyDegraded}
+      <span>Live updates limited — photon will re-check these folders periodically.</span>
+    {/if}
+    {#each scans as scan (scan.watchedId)}
+      <span class="scan" role="status">
+        <span>{scan.label}</span>
+        <!-- A `<progress>` with no value is the browser's own indeterminate bar, which is
+             exactly what a first scan is: the walk cannot know its total ahead of time. -->
+        {#if scan.fraction === null}
+          <progress aria-label="Scan progress"></progress>
+        {:else}
+          <progress aria-label="Scan progress" value={scan.fraction} max="1"></progress>
+        {/if}
+      </span>
+    {/each}
+  </span>
   <span>{library.info.len.toLocaleString()} photos</span>
 </footer>
 
@@ -22,10 +35,26 @@
   .status {
     display: flex;
     justify-content: space-between;
+    align-items: center;
+    gap: 12px;
     padding: 4px 12px;
     background: var(--panel);
     color: var(--muted);
     font-size: 12px;
     border-top: 1px solid #0003;
   }
+  .notices { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 16px; min-width: 0; }
+  .scan { display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; }
+  progress {
+    width: 120px;
+    height: 6px;
+    appearance: none;
+    border: 0;
+    border-radius: 3px;
+    background: #ffffff1a;
+    overflow: hidden;
+  }
+  progress::-webkit-progress-bar { background: #ffffff1a; border-radius: 3px; }
+  progress::-webkit-progress-value { background: var(--accent); border-radius: 3px; transition: width 200ms ease-out; }
+  progress::-moz-progress-bar { background: var(--accent); border-radius: 3px; }
 </style>

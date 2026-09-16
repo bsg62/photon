@@ -40,6 +40,10 @@ export class LibraryStore {
   /** Watched folder ids the OS won't let photon watch live, from the most recent
    *  `folder-status` event for each: they fall back to periodic rescans instead. */
   degraded = $state<Record<number, boolean>>({});
+  /** How many photos each folder held when its current scan started, for the status bar's
+   *  progress bar: a scan does not know its total ahead of time, and the previous count is
+   *  the best estimate of it. Absent for a folder's first scan. */
+  expected = $state<Record<number, number>>({});
   private selectedOffset = $state<number | null>(null);
   /** The photo at `selectedOffset`, when it was selected. See `rebindSelection`. */
   private selectedId: number | null = null;
@@ -99,7 +103,9 @@ export class LibraryStore {
           void this.refreshFolders().catch(this.reportError);
         }),
         events.onScanProgress((e) => {
+          const previous = this.scans[e.watchedId];
           this.scans[e.watchedId] = e;
+          if (!e.done && (!previous || previous.done)) void this.snapshotExpected(e).catch(this.reportError);
           if (e.done) void this.refreshFolders().catch(this.reportError);
         }),
       ]);
@@ -162,6 +168,21 @@ export class LibraryStore {
       return;
     }
     this.selectedOffset = at;
+  }
+
+  /** Records the folder's photo count at the start of a scan, from the first progress
+   *  event of it. That event arrives after the first batch has been written, so what this
+   *  scan has already added is taken back out: on a brand-new folder the count would
+   *  otherwise equal `added`, and the bar would read 100% from the first tick and then run
+   *  past it. Nothing to measure against (a first scan) is recorded as absent, which the
+   *  bar shows as indeterminate. */
+  private async snapshotExpected(first: ScanProgressEvent): Promise<void> {
+    const stats = await api.watchedFolderStats();
+    const count = (stats.find((s) => s.watchedId === first.watchedId)?.photoCount ?? 0) - first.added;
+    // A later event may already have marked this scan done; a stale snapshot is harmless
+    // but pointless.
+    if (count > 0) this.expected[first.watchedId] = count;
+    else delete this.expected[first.watchedId];
   }
 
   /** Sequence of the most recently *issued* folder-list request; see `refreshFolders`. */

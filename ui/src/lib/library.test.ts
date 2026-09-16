@@ -35,6 +35,7 @@ vi.mock('./api', () => ({
     listTags: vi.fn(),
     setAlbumView: vi.fn(),
     createAlbum: vi.fn(),
+    watchedFolderStats: vi.fn(),
   },
   events: {
     onLibraryChanged: vi.fn((cb: Handler) => {
@@ -76,6 +77,42 @@ describe('LibraryStore', () => {
     vi.mocked(api.listAlbums).mockResolvedValue([]);
     vi.mocked(api.listPeople).mockResolvedValue([]);
     vi.mocked(api.listTags).mockResolvedValue([]);
+    vi.mocked(api.watchedFolderStats).mockResolvedValue([]);
+  });
+
+  it('snapshots the folder’s photo count when a scan starts, net of what it has already added', async () => {
+    const store = new LibraryStore();
+    await store.init();
+    vi.mocked(api.watchedFolderStats).mockResolvedValue([{ watchedId: 1, photoCount: 5_000 }]);
+
+    // The first event of a scan arrives after its first batch: 200 of the 5,200 rows the
+    // stats now report were added by this very scan, so 5,000 is what it started with.
+    handlers.scanProgress({ watchedId: 1, filesSeen: 200, added: 200, changed: 0, done: false, cancelled: false });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(api.watchedFolderStats).toHaveBeenCalledTimes(1);
+    expect(store.expected[1]).toBe(4_800);
+
+    // Later ticks of the same scan do not re-snapshot: the count would drift upwards with
+    // every batch and the bar would never reach the end.
+    handlers.scanProgress({ watchedId: 1, filesSeen: 900, added: 300, changed: 0, done: false, cancelled: false });
+    await Promise.resolve();
+    expect(api.watchedFolderStats).toHaveBeenCalledTimes(1);
+
+    // A brand-new folder: everything counted so far is this scan's own work.
+    vi.mocked(api.watchedFolderStats).mockResolvedValue([{ watchedId: 2, photoCount: 150 }]);
+    handlers.scanProgress({ watchedId: 2, filesSeen: 150, added: 150, changed: 0, done: false, cancelled: false });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(store.expected[2]).toBeUndefined();
+
+    // The next scan of folder 1 snapshots afresh.
+    handlers.scanProgress({ watchedId: 1, filesSeen: 5_300, added: 300, changed: 0, done: true, cancelled: false });
+    vi.mocked(api.watchedFolderStats).mockResolvedValue([{ watchedId: 1, photoCount: 5_300 }]);
+    handlers.scanProgress({ watchedId: 1, filesSeen: 10, added: 0, changed: 0, done: false, cancelled: false });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(store.expected[1]).toBe(5_300);
   });
 
   it('refetches albums, people and tags on every library change and after an album mutation', async () => {
