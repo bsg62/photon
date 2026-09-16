@@ -3065,7 +3065,7 @@ dependencies = [
 
 [[package]]
 name = "photon-app"
-version = "0.12.1"
+version = "0.12.2"
 dependencies = [
  "dunce",
  "image",
@@ -3086,7 +3086,7 @@ dependencies = [
 
 [[package]]
 name = "photon-core"
-version = "0.12.1"
+version = "0.12.2"
 dependencies = [
  "criterion",
  "dunce",
@@ -5916,7 +5916,7 @@ checksum = "ea6fc2961e4ef194dcbfe56bb845534d0dc8098940c7e5c012a258bfec6701bd"
 
 [[package]]
 name = "xtask"
-version = "0.12.1"
+version = "0.12.2"
 dependencies = [
  "serde_json",
  "toml 0.9.12+spec-1.1.0",
