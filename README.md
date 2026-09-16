@@ -2,8 +2,10 @@
 
 A fast, local photo manager for Linux, macOS and Windows. A spiritual successor to Picasa 3.
 
-photon watches folders in place. It never moves or changes your files. It keeps a small
-SQLite library and a thumbnail cache in your user data and cache directories.
+photon watches folders in place. It never moves or changes your photos. It keeps a small
+SQLite library and a thumbnail cache in your user data and cache directories. Stars are
+shared with Picasa: photon reads them from Picasa's `.picasa.ini` beside your photos, and a
+star you set in photon is written back into that same file, so both programs agree.
 
 ## Install
 
@@ -26,8 +28,17 @@ Nothing needs to be done: a normal rescan corrects a folder's stars the first ti
 walked again, whether that scan is manual or triggered by the file watcher. Deleting the
 library (`photon/library.db`, in your user data directory) is not required — it only forces
 every folder to be reached, and so corrected, in one pass instead of over time as folders
-are scanned. Your photos are untouched either way, since photon never writes to watched
-folders.
+are scanned. Your photos are untouched either way, since photon never writes a photo file.
+
+### Stars and Picasa
+
+The star button in the viewer writes into the folder's `.picasa.ini` — the same file Picasa
+reads — so a star set in photon shows in Picasa and the other way round. photon changes only
+the `star=` line for that one photo and leaves the rest of the file (Picasa's face tags,
+crops and edits) exactly as it was. A folder with no INI gets a new `.picasa.ini` when its
+first photo is starred; an old `Picasa.ini` is edited in place. On Windows the file's
+hidden attribute is kept. If Picasa has the file open at that moment the write fails with
+a message and nothing changes; try again once Picasa has finished.
 
 ### photon is not code-signed
 
@@ -123,7 +134,14 @@ publishing it.
 - [ ] A folder starred in Picasa shows exactly those photos under Starred after a scan.
 - [ ] Starring a photo in Picasa and rescanning makes it appear under Starred, without deleting the library.
 - [ ] Un-starring a photo in Picasa and rescanning makes it disappear from Starred.
-- [ ] After a full scan, no photo file's modification time has changed — photon reads ratings and never writes them.
+- [ ] After a full scan, no photo file's modification time has changed — photon never writes a photo file, and an INI changes only when a star is clicked.
+- [ ] Starring a photo in the viewer writes `star=yes` into the folder's `.picasa.ini`; opening the folder in Picasa (or refreshing it) shows the star. Unstarring clears it there too.
+- [ ] Starring a photo in a folder whose INI carries `faces=`, `filters=` or `backuphash=` lines leaves every one of those lines exactly as it was, and Picasa's face tags and edits for the folder survive.
+- [ ] Starring a photo in a folder with only an old `Picasa.ini` edits that file and creates no `.picasa.ini` beside it; the folder's other stars stay.
+- [ ] On Windows, `.picasa.ini` is still hidden after a star is toggled.
+- [ ] The tile of a starred photo shows a ★ badge, which appears and disappears with the toggle, and the sidebar's Starred count follows.
+- [ ] Unstarring the photo on screen while Starred is showing keeps it on screen with no "n / m" in the caption; ArrowLeft goes to the previous starred photo, ArrowRight to the next, Escape returns to the grid.
+- [ ] Clicking ★ while zoomed in toggles the star and does not start a pan.
 - [ ] Clicking Recent shows the newest photos first across folders, capped at 500, as one continuous run of tiles with no folder headers and no gaps where the folder changes.
 - [ ] While Recent is shown, the sidebar lists each contributing folder once with the photos it contributes, and the viewer's caption counts through the 500 rather than restarting at "1 / 1" on every photo.
 - [ ] From Recent, clicking a folder or a watched root returns to the full library at that folder.

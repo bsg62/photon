@@ -24,6 +24,7 @@ impl From<photon_core::Error> for AppError {
             FolderOverlap { .. } => "folderOverlap",
             FolderExcluded { .. } => "folderExcluded",
             NotFound(_) => "notFound",
+            IniWrite { .. } => "iniWrite",
             _ => "internal",
         };
         Self {

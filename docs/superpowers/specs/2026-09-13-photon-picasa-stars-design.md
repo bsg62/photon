@@ -4,6 +4,9 @@
 **Status:** Approved design, pending implementation plan
 **Supersedes:** the rating source in `docs/superpowers/specs/2026-09-13-photon-starred-photos-design.md`
 **Builds on:** v0.3.1
+**Write support:** superseded by `2026-09-16-photon-set-star-design.md`, which narrows the
+invariant below to photo files and adds a star toggle that writes the INI. §5's "the INI is
+the only authority" is what that design is built against; the rest of this document stands.
 
 ## 1. Why this replaces the XMP source
 

@@ -92,6 +92,9 @@
   {:else if status === 'broken'}
     <span class="broken" title="This photo can't be shown">⚠</span>
   {/if}
+  {#if entry?.starred}
+    <span class="star" aria-label="Starred">★</span>
+  {/if}
 </button>
 
 <style>
@@ -116,4 +119,5 @@
   }
   img.loaded { opacity: 1; }
   .broken { display: grid; place-items: center; height: 100%; color: var(--muted); font-size: 28px; }
+  .star { position: absolute; right: 4px; bottom: 2px; color: #ffcf40; font-size: 14px; text-shadow: 0 0 3px #000; pointer-events: none; }
 </style>

@@ -172,8 +172,13 @@ in SQL.
 
 ## Conventions
 
-- **photon never writes to, moves or deletes files inside watched folders.** This is the
-  project's central promise; it appears in the README and every spec. Read-only, always.
+- **photon never writes to, moves or deletes photo files.** The one file it writes inside a
+  watched folder is Picasa's own `.picasa.ini` (or `Picasa.ini`), through `picasa::set_star`
+  only, to set or clear a single `star=` line; every other byte of that file is preserved.
+  This narrowed the older "never writes inside watched folders" promise on 2026-09-16 (spec
+  `2026-09-16-photon-set-star-design.md`); any further write is a spec-level decision, not a
+  code change. The writer and the reader in `picasa.rs` share one line classifier on purpose:
+  a writer with its own header/key logic drifts from the reader.
 - **No native library dependencies.** Nothing wrapping a C/C++ SDK. This is what made packaging
   tractable on three platforms, and it is why XMP and INI parsing are hand-rolled or pure-Rust.
 - **Never launch the GUI to verify a change.** Verification is the test suites plus

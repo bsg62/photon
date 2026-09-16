@@ -158,6 +158,7 @@ pub fn run() {
             ipc::set_search_query,
             ipc::set_visible,
             ipc::viewer_item,
+            ipc::set_star,
             ipc::neighbours,
             ipc::reveal_in_file_manager,
             ipc::reveal_folder,

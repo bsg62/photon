@@ -4,7 +4,7 @@ mod schema;
 mod settings;
 
 pub use folders::{Folder, WatchedFolder};
-pub use items::{Item, KnownItem, NewItem, RECENT_LIMIT};
+pub use items::{Item, KnownItem, NewItem, RECENT_LIMIT, is_starred};
 
 use crate::Result;
 use parking_lot::{Mutex, MutexGuard};

@@ -30,6 +30,7 @@ export interface ViewerItem {
   thumbKey: string;
   thumbState: 'pending' | 'ready' | 'failed';
   thumbError: string | null;
+  starred: boolean;
 }
 export interface ScanProgressEvent {
   watchedId: number;
@@ -60,6 +61,9 @@ export const api = {
   setSearchQuery: (query: string) => invoke<void>('set_search_query', { query }),
   setVisible: (ids: number[]) => invoke<void>('set_visible', { ids }),
   viewerItem: (id: number) => invoke<ViewerItem>('viewer_item', { id }),
+  /** Sets or clears a star. Written into the folder's Picasa INI first, then mirrored into
+   *  the library; the grid rebuilds and `library-changed` follows. */
+  setStar: (id: number, starred: boolean) => invoke<void>('set_star', { id, starred }),
   neighbours: (id: number, radius: number) => invoke<number[]>('neighbours', { id, radius }),
   revealInFileManager: (id: number) => invoke<void>('reveal_in_file_manager', { id }),
   revealFolder: (folderId: number) => invoke<void>('reveal_folder', { folderId }),
