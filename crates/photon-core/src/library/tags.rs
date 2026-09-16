@@ -283,17 +283,18 @@ mod tests {
 
     #[test]
     fn rules_are_listed_case_insensitively() {
-        let (_dir, lib, _) = library_with(&[&["b", "A", "c"]]);
+        // Byte order would put `B` before `a`.
+        let (_dir, lib, _) = library_with(&[&["c", "B", "a"]]);
         lib.hide_tag("c").unwrap();
-        lib.hide_tag("b").unwrap();
-        lib.hide_tag("A").unwrap();
+        lib.hide_tag("B").unwrap();
+        lib.hide_tag("a").unwrap();
         let tags: Vec<String> = lib
             .tag_rules()
             .unwrap()
             .into_iter()
             .map(|r| r.tag)
             .collect();
-        assert_eq!(tags, ["A", "b", "c"]);
+        assert_eq!(tags, ["a", "B", "c"]);
     }
 
     use crate::grid::GridView;

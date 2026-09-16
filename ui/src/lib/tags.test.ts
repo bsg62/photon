@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import type { TagCount } from './api';
+import type { TagCount, TagRule } from './api';
 import { filterTags, renameCheck, ruleLabel } from './tags';
 
 const tags: TagCount[] = [
   { tag: 'Beach', count: 3 },
   { tag: 'holiday', count: 1 },
 ];
+
+const rules: TagRule[] = [{ tag: 'junk', target: null }];
 
 describe('renameCheck', () => {
   it.each([
@@ -14,8 +16,9 @@ describe('renameCheck', () => {
     ['an existing name merges', 'holiday', 'Beach', 'merge'],
     ['names match exactly, so a case change is a merge only onto that exact name', 'holiday', 'beach', 'ok'],
     ['a new name renames', 'holiday', 'vacation', 'ok'],
+    ['a name with a rule of its own is revived, which asks first', 'holiday', ' junk', 'revive'],
   ] as const)('%s', (_, from, to, expected) => {
-    expect(renameCheck(from, to, tags)).toBe(expected);
+    expect(renameCheck(from, to, tags, rules)).toBe(expected);
   });
 });
 

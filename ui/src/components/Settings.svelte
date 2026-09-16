@@ -121,7 +121,7 @@
   }
 
   async function commitRename(from: string) {
-    const check = renameCheck(from, draft, library.tags);
+    const check = renameCheck(from, draft, library.tags, rules);
     if (check === 'blank') {
       renameError = 'A tag needs a name.';
       return;
@@ -132,11 +132,12 @@
     cancelRename();
     if (check === 'same') return;
     try {
-      if (check === 'merge') {
-        const confirmed = await ask(`Merge “${from}” into “${to}”? Photos tagged with either will show under “${to}”.`, {
-          title: 'Merge tags',
-          kind: 'warning',
-        });
+      if (check === 'merge' || check === 'revive') {
+        const message =
+          check === 'merge'
+            ? `Merge “${from}” into “${to}”? Photos tagged with either will show under “${to}”.`
+            : `“${to}” is listed under Changes. Renaming onto it undoes that change and shows its photos and those tagged “${from}” under “${to}”.`;
+        const confirmed = await ask(message, { title: 'Merge tags', kind: 'warning' });
         if (!confirmed) return;
       }
       await library.renameTag(from, to);
@@ -149,11 +150,25 @@
     if (e.key === 'Enter') {
       e.preventDefault();
       void commitRename(from);
+      // The field is about to leave the DOM, and focus with it; back on the dialog, Escape
+      // still closes Settings.
+      dialog?.focus();
     } else if (e.key === 'Escape') {
       // The dialog closes on Escape too; this one only closes the field.
       e.preventDefault();
       e.stopPropagation();
       cancelRename();
+      dialog?.focus();
+    }
+  }
+
+  /** Escape in a non-empty filter clears it, as a search field does, without also closing
+   *  the dialog. */
+  function onFilterKeydown(e: KeyboardEvent) {
+    if (e.key === 'Escape' && tagFilter !== '') {
+      e.preventDefault();
+      e.stopPropagation();
+      tagFilter = '';
     }
   }
 
@@ -255,7 +270,7 @@
           {#if library.tags.length === 0}
             <p class="empty">No tags. Keywords saved in your photos appear here.</p>
           {:else}
-            <input class="filter" type="search" placeholder="Filter tags" aria-label="Filter tags" bind:value={tagFilter} />
+            <input class="filter" type="search" placeholder="Filter tags" aria-label="Filter tags" bind:value={tagFilter} onkeydown={onFilterKeydown} />
             <ul class="tags">
               {#each shownTags as tag (tag.tag)}
                 <li>

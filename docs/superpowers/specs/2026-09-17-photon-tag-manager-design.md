@@ -154,7 +154,10 @@ the Tag view, search results and the sidebar (which re-reads `listTags` on
 
 **The Tag view follows a rename.** If the view is `Tag` with argument `from`, `rename_tag`
 re-enters `Tag` with argument `to` before rebuilding, so the grid keeps showing the same
-photos. Hiding the viewed tag leaves the argument alone; the grid empties, as deleting the
+photos. The rule is already committed by then, so a failed rebuild is logged rather than
+rolled back or reported: the change is saved, and the next rebuild shows it. A scan
+rebuild landing between the commit and the view change can flash an empty grid; the
+epoch bump and the later-stamped rebuild correct it. Hiding the viewed tag leaves the argument alone; the grid empties, as deleting the
 viewed album does.
 
 ## 6. UI
@@ -167,7 +170,8 @@ The section has two parts:
   `listTags`: name, photo count, **Rename** and **Remove**.
   - Rename turns the name into an input. Enter commits, Escape or blur cancels. A blank
     name is refused inline. A name that already exists in the list asks
-    "Merge "holiday" into "vacation"?" before committing.
+    "Merge "holiday" into "vacation"?" before committing. So does a name listed under
+    Changes: the backend drops that name's own rule, which brings its photos back under it.
   - Remove asks "Remove "X" from photon? The keyword stays in your photo files, and you can
     restore it below."
 - **Changes.** One row per `listTagRules` entry: `holiday → vacation` or `DSC_import —
@@ -176,8 +180,8 @@ The section has two parts:
 Both lists reload on `library.info.version`, with the same `stale` guard the Folders counts
 use. Errors go to `library.reportError`.
 
-The logic lives in `ui/src/lib/tags.ts`: `renameCheck(from, to, existing)` returning
-`'blank' | 'same' | 'merge' | 'ok'`, `filterTags(tags, query)`, and `ruleLabel(rule)`, each
+The logic lives in `ui/src/lib/tags.ts`: `renameCheck(from, to, existing, rules)` returning
+`'blank' | 'same' | 'merge' | 'revive' | 'ok'`, `filterTags(tags, query)`, and `ruleLabel(rule)`, each
 with vitest tests. The component is wiring.
 
 ## 7. Testing

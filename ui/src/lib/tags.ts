@@ -1,14 +1,22 @@
 import type { TagCount, TagRule } from './api';
 
 /** What committing a rename would do. `same` needs no call; `merge` asks first, because
- *  two tags become one and only restoring the rule separates them again. Names compare
- *  exactly, as the backend does. */
-export type RenameCheck = 'blank' | 'same' | 'merge' | 'ok';
+ *  two tags become one and only restoring the rule separates them again. `revive` asks too:
+ *  the name has a rule of its own (it was removed, or renamed away), which the backend
+ *  drops so the typed name is live, bringing that keyword's photos back under it. Names
+ *  compare exactly, as the backend does. */
+export type RenameCheck = 'blank' | 'same' | 'merge' | 'revive' | 'ok';
 
-export function renameCheck(from: string, to: string, existing: readonly TagCount[]): RenameCheck {
+export function renameCheck(
+  from: string,
+  to: string,
+  existing: readonly TagCount[],
+  rules: readonly TagRule[],
+): RenameCheck {
   const name = to.trim();
   if (name === '') return 'blank';
   if (name === from) return 'same';
+  if (rules.some((r) => r.tag === name)) return 'revive';
   return existing.some((t) => t.tag === name) ? 'merge' : 'ok';
 }
 
