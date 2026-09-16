@@ -159,6 +159,13 @@ existing photo without it forever. Keywords come from the file (XMP `dc:subject`
 2:25, `keywords.rs`) into `item_tags`; every writer of an item row goes through
 `write_tags`.
 
+**The watcher drops access events** (`watcher/fs.rs`, `may_have_changed`). On Linux, notify
+registers for inotify's open and close events, so reading a file's EXIF, listing a
+directory or walkdir entering one all arrive as `Access` events on that directory. A scan
+does all three to every directory it walks; treated as changes they scheduled the next
+subtree scan of the same directories two seconds after every scan, forever. Anything that
+makes the watcher react to more event kinds must keep a scan's own reads out.
+
 `skip_mark_purge` is set by a walkdir error carrying **no** path — a mid-iteration `read_dir`
 failure (walkdir `lib.rs:1026`), not something the filesystem can be made to do on demand. An
 unlistable walk root sets it too, but `read_stars` lists the directory as well, so that
