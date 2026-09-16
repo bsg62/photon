@@ -135,7 +135,7 @@ is out of scope.
 
 ## 6. The viewer
 
-A `★`/`☆` button at the top left, mirroring the close button, driven by a small state
+A `★`/`☆` button at the bottom, immediately left of the caption, driven by a small state
 machine (`createStarToggle`) so it can be tested: the flip is optimistic, a second click
 while one is in flight is dropped, a failure reverts and reports — and the revert checks
 that the button is still bound to the photo it toggled, because the user can navigate while

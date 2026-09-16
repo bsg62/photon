@@ -296,7 +296,7 @@
   function onpointerdown(e: PointerEvent) {
     // The zoom slider and the buttons sit on the same surface: a press on any of them is
     // theirs, not the start of a pan.
-    if ((e.target as HTMLElement).closest('.zoom, .close, .star')) return;
+    if ((e.target as HTMLElement).closest('.zoom, .close, .bar')) return;
     // Left button only. Without this every button panned, which is why the right button
     // looked like the pan control: the left one was being swallowed by the browser's native
     // image drag before the pointer stream could produce a move.
@@ -360,11 +360,25 @@
       {/if}
     </div>
   {/if}
-  <!-- A button, because a click copies the file name. The confirmation replaces the whole
-       line for a moment rather than appending to it, so the line does not jump in width. -->
-  <button class="caption" onclick={copyName} disabled={!item} title="Click to copy the file name">
-    {copy.copied ? 'Copied' : caption}
-  </button>
+  <!-- The star and the caption share one bottom-centred row, so the star sits where the
+       eye already is for the file name rather than in a corner on its own. -->
+  <div class="bar">
+    <button
+      class="star"
+      onclick={toggleStar}
+      disabled={!item || star.busy}
+      aria-pressed={star.starred}
+      aria-label={star.starred ? 'Unstar' : 'Star'}
+      title={star.starred ? 'Unstar' : 'Star'}
+    >
+      {star.starred ? '★' : '☆'}
+    </button>
+    <!-- A button, because a click copies the file name. The confirmation replaces the whole
+         line for a moment rather than appending to it, so the line does not jump in width. -->
+    <button class="caption" onclick={copyName} disabled={!item} title="Click to copy the file name">
+      {copy.copied ? 'Copied' : caption}
+    </button>
+  </div>
   {#if menu && item}
     <div
       class="menu"
@@ -390,16 +404,6 @@
     />
     <span class="level">{Math.round(zoom * 100)}%</span>
   </div>
-  <button
-    class="star"
-    onclick={toggleStar}
-    disabled={!item || star.busy}
-    aria-pressed={star.starred}
-    aria-label={star.starred ? 'Unstar' : 'Star'}
-    title={star.starred ? 'Unstar' : 'Star'}
-  >
-    {star.starred ? '★' : '☆'}
-  </button>
   <button class="close" onclick={close} aria-label="Close viewer">✕</button>
 </div>
 
@@ -413,7 +417,8 @@
      of panning. */
   img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; image-orientation: from-image; user-select: none; -webkit-user-drag: none; }
   .hidden { visibility: hidden; }
-  .caption { position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%); padding: 4px 10px; border: 0; background: #0009; border-radius: 4px; color: var(--muted); font-size: 12px; white-space: nowrap; cursor: pointer; }
+  .bar { position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 6px; }
+  .caption { padding: 4px 10px; border: 0; background: #0009; border-radius: 4px; color: var(--muted); font-size: 12px; white-space: nowrap; cursor: pointer; }
   .caption:hover:not(:disabled) { color: var(--text); }
   .caption:disabled { cursor: default; }
   .menu {
@@ -433,7 +438,7 @@
   .zoom input { width: 120px; }
   .level { color: var(--muted); font-size: 12px; min-width: 38px; text-align: right; }
   .close { position: absolute; top: 12px; right: 12px; width: 32px; height: 32px; border: 0; border-radius: 50%; background: #0009; cursor: pointer; }
-  .star { position: absolute; top: 12px; left: 12px; width: 32px; height: 32px; border: 0; border-radius: 50%; background: #0009; color: var(--muted); font-size: 18px; line-height: 1; cursor: pointer; }
+  .star { width: 26px; height: 26px; padding: 0; border: 0; border-radius: 4px; background: #0009; color: var(--muted); font-size: 16px; line-height: 1; cursor: pointer; }
   .star:hover:not(:disabled) { color: var(--text); }
   .star[aria-pressed='true'] { color: #ffcf40; }
   .star:disabled { cursor: default; }
