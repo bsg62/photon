@@ -52,8 +52,19 @@ fn config_in(dir: &TempDir) -> EngineConfig {
     }
 }
 
+/// The modification time every fixture file gets. The test JPEGs carry no EXIF date, so
+/// `taken_at` falls back to the file's mtime in whole seconds - and the grid places folders
+/// by their oldest photo, newest folder first, with the path as the tie-break. Left to the
+/// clock, two files written a second boundary apart put the subfolder ahead of its parent,
+/// which is what `folder_listing_and_grid_info` did on a Windows runner once. One fixed time
+/// makes every fixture folder tie, so the order is the path order the tests assume.
+fn fixture_mtime() -> std::time::SystemTime {
+    std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_600_000_000)
+}
+
 /// A temp dir with `photos/` holding `files` (names may contain '/') and an engine whose
-/// data and cache live elsewhere in the same temp dir.
+/// data and cache live elsewhere in the same temp dir. Every file is stamped with
+/// `fixture_mtime`.
 pub fn fixture(files: &[(&str, &[u8])]) -> Fixture {
     let dir = tempfile::tempdir().unwrap();
     let photos = dir.path().join("photos");
@@ -61,7 +72,13 @@ pub fn fixture(files: &[(&str, &[u8])]) -> Fixture {
     for (name, bytes) in files {
         let path = name.split('/').fold(photos.clone(), |p, part| p.join(part));
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(path, bytes).unwrap();
+        std::fs::write(&path, bytes).unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(fixture_mtime())
+            .unwrap();
     }
     let events = Arc::new(Recorder::default());
     let engine = Engine::open(config_in(&dir), events.clone()).unwrap();
