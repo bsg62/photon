@@ -117,11 +117,14 @@ bypasses both shows hidden and renamed keywords, so the doc comment on `item_tag
   AND i.id IN (
       SELECT item_id FROM item_tags
       WHERE tag IN (SELECT tag FROM tag_rules WHERE target = ?1)
-         OR (tag = ?1 AND NOT EXISTS (SELECT 1 FROM tag_rules WHERE tag = ?1))
+      UNION ALL
+      SELECT item_id FROM item_tags
+      WHERE tag = ?1 AND NOT EXISTS (SELECT 1 FROM tag_rules WHERE tag = ?1)
   )
   ```
 
-  Both arms are equality probes on `item_tags_tag`. A plan test,
+  `UNION ALL` rather than `OR`, which SQLite may answer with a scan; both arms are
+  equality probes on `item_tags_tag`. A plan test,
   `the_tag_view_is_served_by_its_index`, pins that, so a rewrite through the
   `coalesce` join (which cannot use the index) fails rather than silently scanning every
   keyword. `tag_rules` gets `CREATE INDEX tag_rules_target ON tag_rules(target)` in the same

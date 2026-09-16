@@ -27,7 +27,78 @@ fn valid_name(name: &str) -> Result<&str> {
     Ok(name)
 }
 
+/// A keyword and how many live photos carry it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TagCount {
+    pub tag: String,
+    pub count: i64,
+}
+
+/// Each keyword row with the rules applied: `(item_id, tag, seq)`, a renamed keyword under
+/// its new name, a removed one absent. `seq` is `item_tags`' rowid, the order the file
+/// listed the keywords in. One photo can list two keywords that now share a name, so a
+/// reader that needs each once must de-duplicate.
+pub(super) const EFFECTIVE_TAGS: &str =
+    "SELECT t.item_id, coalesce(r.target, t.tag) AS tag, t.rowid AS seq
+     FROM item_tags t LEFT JOIN tag_rules r ON r.tag = t.tag
+     WHERE r.tag IS NULL OR r.target IS NOT NULL";
+
+/// The Tag view's filter for the name bound to `?1`: every keyword renamed to it, plus the
+/// keyword itself unless it is ruled away. Not written through `EFFECTIVE_TAGS`, whose
+/// `coalesce` no index can serve: this form is two equality probes on `item_tags_tag`,
+/// and `the_tag_view_is_served_by_its_index` holds it to that. `UNION ALL` rather than
+/// `OR` because SQLite may answer an OR with a scan.
+pub(super) const TAG_FILTER: &str = "AND i.id IN (
+         SELECT item_id FROM item_tags
+         WHERE tag IN (SELECT tag FROM tag_rules WHERE target = ?1)
+         UNION ALL
+         SELECT item_id FROM item_tags
+         WHERE tag = ?1 AND NOT EXISTS (SELECT 1 FROM tag_rules WHERE tag = ?1)
+     )";
+
 impl Library {
+    /// One photo's tags as the user now names them, in the order the file lists them,
+    /// each once.
+    pub fn item_tags(&self, item_id: i64) -> Result<Vec<String>> {
+        let conn = self.reader()?;
+        let mut stmt = conn.prepare_cached(&format!(
+            "SELECT tag FROM ({EFFECTIVE_TAGS}) WHERE item_id = ?1 ORDER BY seq"
+        ))?;
+        let mut tags: Vec<String> = Vec::new();
+        for tag in stmt.query_map(params![item_id], |r| r.get::<_, String>(0))? {
+            let tag = tag?;
+            if !tags.contains(&tag) {
+                tags.push(tag);
+            }
+        }
+        Ok(tags)
+    }
+
+    /// Every tag carried by at least one live photo, with its photo count. `DISTINCT`
+    /// because a photo carrying both halves of a merge has two rows under one name.
+    /// Sorted in Rust: the ordering is case-insensitive and `lower()` is ASCII-only
+    /// without ICU.
+    pub fn tags_with_counts(&self) -> Result<Vec<TagCount>> {
+        let conn = self.reader()?;
+        let mut stmt = conn.prepare(&format!(
+            "SELECT e.tag, count(DISTINCT e.item_id)
+             FROM ({EFFECTIVE_TAGS}) e JOIN items i ON i.id = e.item_id
+             WHERE i.missing_since IS NULL
+             GROUP BY e.tag"
+        ))?;
+        let mut tags = stmt
+            .query_map([], |r| {
+                Ok(TagCount {
+                    tag: r.get(0)?,
+                    count: r.get(1)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        tags.sort_by_cached_key(|t| (t.tag.to_lowercase(), t.tag.clone()));
+        Ok(tags)
+    }
+
     /// Renames `from` to `to`, merging the two when `to` already exists. Returns the name
     /// stored, which is `to` trimmed.
     ///
@@ -223,5 +294,85 @@ mod tests {
             .map(|r| r.tag)
             .collect();
         assert_eq!(tags, ["A", "b", "c"]);
+    }
+
+    use crate::grid::GridView;
+
+    fn tag_view(lib: &Library, tag: &str) -> Vec<i64> {
+        lib.entries_for(GridView::Tag, tag)
+            .unwrap()
+            .iter()
+            .map(|e| e.id)
+            .collect()
+    }
+
+    fn search(lib: &Library, query: &str) -> Vec<i64> {
+        lib.entries_for(GridView::Search, query)
+            .unwrap()
+            .iter()
+            .map(|e| e.id)
+            .collect()
+    }
+
+    fn listed(lib: &Library) -> Vec<(String, i64)> {
+        lib.tags_with_counts()
+            .unwrap()
+            .into_iter()
+            .map(|t| (t.tag, t.count))
+            .collect()
+    }
+
+    #[test]
+    fn a_renamed_tag_is_listed_viewed_searched_and_shown_by_its_new_name() {
+        let (_dir, lib, ids) = library_with(&[&["holiday"], &[]]);
+        lib.rename_tag("holiday", "vacation").unwrap();
+        assert_eq!(listed(&lib), [("vacation".to_string(), 1)]);
+        assert_eq!(tag_view(&lib, "vacation"), [ids[0]]);
+        assert_eq!(tag_view(&lib, "holiday"), Vec::<i64>::new());
+        assert_eq!(search(&lib, "vacation"), [ids[0]]);
+        assert_eq!(search(&lib, "holiday"), Vec::<i64>::new());
+        assert_eq!(lib.item_tags(ids[0]).unwrap(), ["vacation"]);
+    }
+
+    #[test]
+    fn merging_two_tags_counts_each_photo_once() {
+        let (_dir, lib, ids) = library_with(&[&["holiday", "vacation"], &["vacation"]]);
+        lib.rename_tag("holiday", "vacation").unwrap();
+        assert_eq!(listed(&lib), [("vacation".to_string(), 2)]);
+        assert_eq!(tag_view(&lib, "vacation"), [ids[0], ids[1]]);
+        assert_eq!(lib.item_tags(ids[0]).unwrap(), ["vacation"]);
+    }
+
+    #[test]
+    fn a_removed_tag_is_gone_from_every_reader_until_restored() {
+        let (_dir, lib, ids) = library_with(&[&["beach", "junk"]]);
+        lib.hide_tag("junk").unwrap();
+        assert_eq!(listed(&lib), [("beach".to_string(), 1)]);
+        assert_eq!(tag_view(&lib, "junk"), Vec::<i64>::new());
+        assert_eq!(search(&lib, "junk"), Vec::<i64>::new());
+        assert_eq!(lib.item_tags(ids[0]).unwrap(), ["beach"]);
+
+        lib.restore_tag_rule("junk").unwrap();
+        assert_eq!(
+            listed(&lib),
+            [("beach".to_string(), 1), ("junk".to_string(), 1)]
+        );
+        assert_eq!(tag_view(&lib, "junk"), [ids[0]]);
+    }
+
+    /// The reason rules are applied on read: the scanner rewrites a photo's keywords from
+    /// the file whenever it re-reads it, and the user's rename must outlive that.
+    #[test]
+    fn a_rule_survives_rereading_the_keywords() {
+        let (_dir, lib, ids) = library_with(&[&["holiday"]]);
+        lib.rename_tag("holiday", "vacation").unwrap();
+        let row = lib.item(ids[0]).unwrap().unwrap();
+        let reread = NewItem {
+            tags: vec!["holiday".into()],
+            ..new_item(row.folder_id, &row.path, row.taken_at)
+        };
+        lib.update_item_meta(&[(ids[0], reread)]).unwrap();
+        assert_eq!(lib.item_tags(ids[0]).unwrap(), ["vacation"]);
+        assert_eq!(tag_view(&lib, "vacation"), [ids[0]]);
     }
 }
