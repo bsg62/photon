@@ -5,7 +5,7 @@ use crate::{engine::Engine, error::AppError};
 use photon_core::{
     Error,
     grid::{GridEntry, GridView, Section, hex_key},
-    library::{Folder, WatchedFolder},
+    library::{Folder, WatchedFolder, is_starred},
     media::ThumbState,
     thumbs::Priority,
 };
@@ -60,6 +60,7 @@ pub struct ViewerItem {
     pub thumb_key: String,
     pub thumb_state: &'static str,
     pub thumb_error: Option<String>,
+    pub starred: bool,
 }
 
 pub fn clamp_count(count: usize) -> usize {
@@ -156,8 +157,14 @@ pub fn set_visible(engine: &Engine, ids: &[i64]) {
     engine.thumbs.set_visible(ids);
 }
 
+/// A photo the scanner has marked missing is `NotFound` here, not returned: the viewer
+/// asks this after `grid_offset_of_item` comes back empty, to tell "left the current view"
+/// (keep showing it) from "gone" (say so), and a missing row is the second case.
 pub fn viewer_item(engine: &Engine, id: i64) -> CmdResult<ViewerItem> {
     let item = engine.lib.item(id)?.ok_or(Error::NotFound(id))?;
+    if item.missing_since.is_some() {
+        return Err(Error::NotFound(id).into());
+    }
     let file_name = Path::new(&item.path)
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
@@ -177,8 +184,14 @@ pub fn viewer_item(engine: &Engine, id: i64) -> CmdResult<ViewerItem> {
         taken_at: item.taken_at,
         size: item.size,
         thumb_error: item.thumb_error,
+        starred: is_starred(item.rating),
         path: item.path,
     })
+}
+
+pub fn set_star(engine: &Engine, id: i64, starred: bool) -> CmdResult<()> {
+    engine.set_star(id, starred)?;
+    Ok(())
 }
 
 /// Items around `id`, nearest first, queued at neighbour priority so the viewer's

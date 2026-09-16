@@ -48,6 +48,8 @@ pub struct Item {
     pub thumb_state: ThumbState,
     pub thumb_error: Option<String>,
     pub missing_since: Option<i64>,
+    /// `None` until the Picasa pass has read the folder; see `is_starred`.
+    pub rating: Option<i64>,
 }
 
 impl Item {
@@ -160,7 +162,7 @@ fn map_grid_row(r: &Row<'_>) -> rusqlite::Result<GridEntry> {
             w as f32 / h as f32
         },
         kind: MediaKind::from_db(r.get(6)?).unwrap_or(MediaKind::Image),
-        starred: r.get::<_, Option<i64>>(10)?.unwrap_or(0) >= 1,
+        starred: is_starred(r.get(10)?),
         thumb_key: fingerprint(&r.get::<_, String>(7)?, r.get(8)?, r.get(9)?),
     })
 }
@@ -194,7 +196,15 @@ fn row_to_item(r: &Row<'_>) -> rusqlite::Result<Item> {
         thumb_state: ThumbState::from_db(r.get(10)?),
         thumb_error: r.get(11)?,
         missing_since: r.get(12)?,
+        rating: r.get(13)?,
     })
+}
+
+/// What a `rating` means as a star. `NULL` is "not read yet" and `0` is "read, unstarred";
+/// Picasa's single star is `1`, and the column keeps its 0-5 range for a future source with
+/// real ratings. The grid and the viewer both go through here so they cannot disagree.
+pub fn is_starred(rating: Option<i64>) -> bool {
+    rating.unwrap_or(0) >= 1
 }
 
 impl Library {
@@ -381,7 +391,7 @@ impl Library {
             .reader()?
             .query_row(
                 "SELECT id, folder_id, path, kind, size, mtime_ms, width, height, orientation, taken_at,
-                        thumb_state, thumb_error, missing_since
+                        thumb_state, thumb_error, missing_since, rating
                  FROM items WHERE id = ?1",
                 params![id],
                 row_to_item,
@@ -657,6 +667,21 @@ mod tests {
         let mut names = lib.folder_item_names(folder).unwrap();
         names.sort();
         assert_eq!(names, vec![(a, "dsc_0001.jpg".to_string(), Some(1))]);
+    }
+
+    #[test]
+    fn item_reports_its_rating() {
+        // `viewer_item` and `set_star` read the star through `Library::item`, so the row
+        // has to carry the column; a `SELECT` that leaves it out compiles and reads `None`
+        // forever, which the viewer would show as never starred.
+        let (_dir, lib) = temp_library();
+        let (_, folder) = seed_folder(&lib, Path::new("/p"));
+        let id = lib
+            .insert_items(&[new_item(folder, "/p/a.jpg", 1)])
+            .unwrap()[0];
+        assert_eq!(lib.item(id).unwrap().unwrap().rating, None);
+        lib.set_ratings(&[(id, 1)]).unwrap();
+        assert_eq!(lib.item(id).unwrap().unwrap().rating, Some(1));
     }
 
     #[test]

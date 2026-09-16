@@ -5,10 +5,10 @@ use crate::events::{Events, FolderStatus, LibraryChanged, ScanProgressEvent};
 use crate::watch::WatcherService;
 use parking_lot::{Mutex, RwLock};
 use photon_core::{
-    Result,
+    Error, Result,
     grid::{GridIndex, GridView},
     library::{Library, WatchedFolder},
-    now_ms,
+    now_ms, picasa,
     scanner::{ScanOptions, ScanProgress, ScanSink, scan_subtree, scan_watched},
     thumbs::{Priority, ThumbCache, ThumbService},
 };
@@ -107,6 +107,11 @@ pub struct Engine {
     /// (dropping this `Arc`) before or as part of stopping it, so it never outlives an
     /// explicit stop.
     watcher: Mutex<Option<Arc<WatcherService>>>,
+    /// Serialises `set_star`. Tauri runs async commands concurrently on a worker pool, and
+    /// two stars into one folder are two read-modify-writes of the same INI: unserialised,
+    /// the second read would miss the first write and the rename would drop it. Held across
+    /// the database write too, so the rows land in the order the file did.
+    ini_write: Mutex<()>,
 }
 
 impl Engine {
@@ -156,6 +161,7 @@ impl Engine {
             shutting_down: AtomicBool::new(false),
             startup: Mutex::new(None),
             watcher: Mutex::new(None),
+            ini_write: Mutex::new(()),
         }))
     }
 
@@ -313,6 +319,38 @@ impl Engine {
             state.query = query.to_string();
             state.view = GridView::Search;
         })
+    }
+
+    /// Sets or clears a photo's star: into the folder's Picasa INI first, then into the
+    /// database, then the grid.
+    ///
+    /// The INI is the authority and the database its mirror (`scanner::apply_picasa_stars`
+    /// sets every row from the file on every scan), which fixes the order. A database write
+    /// that landed without the file would be undone by the next scan and the star would
+    /// simply vanish; a file write that landed without the database is put right by the
+    /// scan our own write triggers. That scan is the file watcher reacting to photon's
+    /// write like any other, and it is wanted: it re-reads what we wrote, finds the rows
+    /// already agree, and rebuilds nothing. Do not add a suppression for it.
+    ///
+    /// A photo the scanner has marked missing is refused: its folder may be an unmounted
+    /// drive, and the INI photon would create there would be the only thing on it.
+    pub fn set_star(&self, id: i64, starred: bool) -> Result<()> {
+        let _serialised = self.ini_write.lock();
+        let item = self.lib.item(id)?.ok_or(Error::NotFound(id))?;
+        if item.missing_since.is_some() {
+            return Err(Error::NotFound(id));
+        }
+        let path = Path::new(&item.path);
+        let (Some(dir), Some(file_name)) = (path.parent(), path.file_name()) else {
+            return Err(Error::NonUtf8Path(path.to_path_buf()));
+        };
+        let file_name = file_name.to_string_lossy();
+        picasa::set_star(dir, &file_name, starred).map_err(|source| Error::IniWrite {
+            path: dir.join(picasa::ini_name(dir)),
+            source,
+        })?;
+        self.lib.set_ratings(&[(id, u8::from(starred))])?;
+        self.refresh_grid()
     }
 
     /// Validates and watches `path`, registers it with the running watcher service (if
@@ -974,6 +1012,162 @@ mod tests {
             "a star landing via the Picasa INI, with no photo file changing, must still \
              rebuild the grid"
         );
+    }
+
+    #[test]
+    fn viewer_item_reports_whether_the_photo_is_starred() {
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a.jpg", &img), ("b.jpg", &img)]);
+        std::fs::write(f.photos.join(".picasa.ini"), b"[a.jpg]\nstar=yes\n").unwrap();
+        f.add_photos();
+        let ids = f.ids();
+        assert!(
+            crate::commands::viewer_item(&f.engine, ids[0])
+                .unwrap()
+                .starred
+        );
+        assert!(
+            !crate::commands::viewer_item(&f.engine, ids[1])
+                .unwrap()
+                .starred
+        );
+    }
+
+    #[test]
+    fn viewer_item_refuses_a_missing_photo() {
+        // The viewer probes this after the photo has left the grid, to tell "left the
+        // current view" from "gone". A soft-deleted row answering `Ok` would keep a
+        // vanished photo on screen with no message.
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a.jpg", &img)]);
+        f.add_photos();
+        let id = f.ids()[0];
+        f.engine.lib.mark_missing(&[id], 1).unwrap();
+        let err = crate::commands::viewer_item(&f.engine, id).unwrap_err();
+        assert_eq!(err.kind, "notFound");
+    }
+
+    #[test]
+    fn set_star_writes_the_ini_and_the_grid_follows() {
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a.jpg", &img), ("b.jpg", &img)]);
+        f.add_photos();
+        let ids = f.ids();
+        let version = f.engine.grid().0;
+
+        f.engine.set_star(ids[0], true).unwrap();
+
+        assert_eq!(
+            std::fs::read(f.photos.join(".picasa.ini")).unwrap(),
+            b"[a.jpg]\r\nstar=yes\r\n"
+        );
+        let info = crate::commands::grid_info(&f.engine);
+        assert_eq!(info.starred_count, 1);
+        assert!(f.engine.grid().1.rows(0, 2)[0].starred);
+        assert!(
+            f.engine.grid().0 > version,
+            "the grid is rebuilt so the tile badge and the count follow"
+        );
+        assert!(
+            crate::commands::viewer_item(&f.engine, ids[0])
+                .unwrap()
+                .starred
+        );
+    }
+
+    #[test]
+    fn a_rescan_after_set_star_agrees_with_what_photon_wrote() {
+        // The INI is the authority: a star that lived only in the database would be undone
+        // by the next scan's Picasa pass, which sets every row from the file. A DB-only
+        // implementation fails here twice over - the scan clears the star and, having
+        // changed a row, bumps the version.
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a.jpg", &img)]);
+        let watched = f.add_photos();
+        let id = f.ids()[0];
+        f.engine.set_star(id, true).unwrap();
+        let version = f.engine.grid().0;
+
+        f.engine.start_scan(watched);
+        f.engine.wait_for_scans();
+
+        assert_eq!(
+            f.engine.grid().0,
+            version,
+            "nothing moved, so nothing was rebuilt"
+        );
+        assert_eq!(f.engine.lib.item(id).unwrap().unwrap().rating, Some(1));
+    }
+
+    #[test]
+    fn unstarring_removes_only_that_photo_s_star() {
+        use photon_core::grid::GridView;
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a.jpg", &img), ("b.jpg", &img)]);
+        std::fs::write(
+            f.photos.join(".picasa.ini"),
+            b"[a.jpg]\r\nstar=yes\r\nbackuphash=1\r\n[b.jpg]\r\nstar=yes\r\n",
+        )
+        .unwrap();
+        f.add_photos();
+        let ids = f.ids();
+        f.engine.set_view(GridView::Starred).unwrap();
+        assert_eq!(f.engine.grid().1.len(), 2);
+
+        f.engine.set_star(ids[0], false).unwrap();
+
+        assert_eq!(
+            std::fs::read(f.photos.join(".picasa.ini")).unwrap(),
+            b"[a.jpg]\r\nbackuphash=1\r\n[b.jpg]\r\nstar=yes\r\n"
+        );
+        assert_eq!(
+            f.engine.grid().1.len(),
+            1,
+            "the Starred view drops the photo at once"
+        );
+        assert_eq!(f.engine.grid().1.rows(0, 1)[0].id, ids[1]);
+    }
+
+    #[test]
+    fn set_star_refuses_a_missing_or_unknown_photo_and_writes_nothing() {
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a.jpg", &img)]);
+        f.add_photos();
+        let id = f.ids()[0];
+        f.engine.lib.mark_missing(&[id], 1).unwrap();
+        assert!(matches!(
+            f.engine.set_star(id, true),
+            Err(photon_core::Error::NotFound(_))
+        ));
+        assert!(matches!(
+            f.engine.set_star(id + 1000, true),
+            Err(photon_core::Error::NotFound(_))
+        ));
+        assert!(!f.photos.join(".picasa.ini").exists());
+    }
+
+    #[test]
+    fn a_failed_ini_write_leaves_the_database_untouched() {
+        // The file first, then the database. The other order would leave a star in the
+        // database that no INI confirms - shown in the UI, then silently cleared by the next
+        // scan - which is the exact staleness the Picasa pass exists to prevent.
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a.jpg", &img)]);
+        f.add_photos();
+        let id = f.ids()[0];
+        let version = f.engine.grid().0;
+        std::fs::write(
+            f.photos.join(".picasa.ini"),
+            vec![b' '; photon_core::picasa::MAX_INI as usize + 1],
+        )
+        .unwrap();
+
+        let err: crate::error::AppError = f.engine.set_star(id, true).unwrap_err().into();
+
+        assert_eq!(err.kind, "iniWrite");
+        assert!(err.message.contains(".picasa.ini"), "{}", err.message);
+        assert_ne!(f.engine.lib.item(id).unwrap().unwrap().rating, Some(1));
+        assert_eq!(f.engine.grid().0, version);
     }
 
     #[test]

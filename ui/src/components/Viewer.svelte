@@ -4,6 +4,7 @@
   import { api, errorMessage, mediaUrl, type ViewerItem } from '../lib/api';
   import { formatCaption } from '../lib/caption';
   import { createCopyFeedback } from '../lib/copied.svelte';
+  import { createStarToggle } from '../lib/star-toggle.svelte';
   import { library } from '../lib/library.svelte';
   import { MAX_ZOOM, MIN_ZOOM, clampPan, clampZoom, closesViewer, positionInView, wheelStep } from '../lib/nav';
 
@@ -27,6 +28,12 @@
   let pan = $state({ x: 0, y: 0 });
   let dragging = $state(false);
   let stage = $state<HTMLDivElement | null>(null);
+  /** The photo on screen has left the current view but still exists: unstarred while
+   *  Starred is showing. It stays up - the user is looking at it - without a position in
+   *  the caption, until the next navigation. */
+  let orphaned = $state(false);
+  /** Bumped to make the loader run again for an offset `current` already holds. */
+  let reload = $state(0);
   /** Deliberately not `$state`: nothing renders from a partial wheel total, and making it
    *  reactive would re-run effects on every wheel event of a flick. */
   let wheelTotal = 0;
@@ -38,7 +45,16 @@
    *  those views only show a subset of the folder's photos. Recent has no folder runs to
    *  count within and is numbered flat — see `positionInView`. */
   const position = $derived(positionInView(library.info.view, library.info.sections, current, library.info.len));
-  const caption = $derived(item ? formatCaption(item, position) : '');
+  const caption = $derived(item ? formatCaption(item, orphaned ? { index: 0, count: 0 } : position) : '');
+
+  // The star goes into the folder's Picasa INI, then the library; the rebind below sees the
+  // rebuild that follows. In the Starred view that rebuild is the photo leaving the grid,
+  // which is what `orphaned` is for.
+  const star = createStarToggle(api.setStar);
+
+  function toggleStar() {
+    star.toggle().catch(library.reportError);
+  }
 
   // Click-to-copy on the caption. The clipboard goes through the Tauri plugin rather than
   // `navigator.clipboard`, which needs a secure context and answers differently in the
@@ -88,8 +104,21 @@
     // A menu opened on the previous photo would otherwise vanish while this one loads and
     // reappear over it, having eaten one Escape on the way.
     menu = null;
-    current = Math.min(last, Math.max(0, next));
+    // An orphaned photo holds no offset: whatever sits at `current` now is its right-hand
+    // neighbour, so "next" is `current` itself, and `current` has to reload rather than
+    // stay - assigning it the value it already has would wake nothing.
+    if (orphaned && next === current + 1) next = current;
+    const target = Math.min(last, Math.max(0, next));
+    if (target === current) reload++;
+    else current = target;
   }
+
+  /** The offset handed back to the grid on close. An orphaned photo's offset can sit past
+   *  the end of the view that dropped it. */
+  function close() {
+    onclose(Math.max(0, Math.min(current, library.info.len - 1)));
+  }
+
 
   /** An offset the rebind below has already resolved, so the loader can tell "the same photo,
    *  renumbered" from "a different photo". Deliberately not `$state`: writing it must not
@@ -118,9 +147,20 @@
       // The user navigated while this was in flight; that move is the newer truth.
       if (untrack(() => item?.id) !== showing) return;
       if (at === null) {
-        error = 'This photo is no longer available.';
+        // Left this view, or left the library? Only the second deserves a message, and only
+        // the backend can tell: it refuses a photo the scanner has marked missing.
+        let exists = true;
+        try {
+          await api.viewerItem(showing);
+        } catch {
+          exists = false;
+        }
+        if (untrack(() => item?.id) !== showing) return;
+        if (exists) orphaned = true;
+        else error = 'This photo is no longer available.';
         return;
       }
+      orphaned = false;
       if (at === untrack(() => current)) return;
       rebound = at;
       current = at;
@@ -129,6 +169,7 @@
 
   $effect(() => {
     const at = current;
+    void reload;
     // A renumbering, not a navigation: the photo on screen is already the right one, so
     // reloading it would blank it and throw away the zoom and pan for nothing.
     if (rebound === at) {
@@ -139,6 +180,7 @@
     item = null;
     fullSrc = null;
     error = null;
+    orphaned = false;
     // Every photo opens fitted to the window: arriving at the next one already at 400% and
     // panned into a corner leaves you lost.
     zoom = MIN_ZOOM;
@@ -160,6 +202,7 @@
       const it = await api.viewerItem(entry.id);
       if (cancelled) return;
       item = it;
+      star.bind(it.id, it.starred);
       if (it.thumbState === 'failed') {
         error = it.thumbError ?? "This photo can't be shown.";
         return;
@@ -193,7 +236,7 @@
     }
     if (e.key === 'Escape') {
       e.preventDefault();
-      onclose(current);
+      close();
       return;
     }
     // While the zoom slider has focus the arrow keys belong to it, which is how a range
@@ -206,7 +249,7 @@
     // shows "This photo is no longer available" and Escape must still work.
     if (e.key === 'Backspace') {
       e.preventDefault();
-      onclose(current);
+      close();
       return;
     }
     const last = library.info.len - 1;
@@ -232,7 +275,7 @@
   function onbackbutton(e: PointerEvent) {
     if (!closesViewer(e.button)) return;
     e.preventDefault();
-    onclose(current);
+    close();
   }
 
   function onwheel(e: WheelEvent) {
@@ -251,9 +294,9 @@
   }
 
   function onpointerdown(e: PointerEvent) {
-    // The zoom slider and the close button sit on the same surface: a press on either is
+    // The zoom slider and the buttons sit on the same surface: a press on any of them is
     // theirs, not the start of a pan.
-    if ((e.target as HTMLElement).closest('.zoom, .close')) return;
+    if ((e.target as HTMLElement).closest('.zoom, .close, .star')) return;
     // Left button only. Without this every button panned, which is why the right button
     // looked like the pan control: the left one was being swallowed by the browser's native
     // image drag before the pointer stream could produce a move.
@@ -347,7 +390,17 @@
     />
     <span class="level">{Math.round(zoom * 100)}%</span>
   </div>
-  <button class="close" onclick={() => onclose(current)} aria-label="Close viewer">✕</button>
+  <button
+    class="star"
+    onclick={toggleStar}
+    disabled={!item || star.busy}
+    aria-pressed={star.starred}
+    aria-label={star.starred ? 'Unstar' : 'Star'}
+    title={star.starred ? 'Unstar' : 'Star'}
+  >
+    {star.starred ? '★' : '☆'}
+  </button>
+  <button class="close" onclick={close} aria-label="Close viewer">✕</button>
 </div>
 
 <style>
@@ -380,5 +433,9 @@
   .zoom input { width: 120px; }
   .level { color: var(--muted); font-size: 12px; min-width: 38px; text-align: right; }
   .close { position: absolute; top: 12px; right: 12px; width: 32px; height: 32px; border: 0; border-radius: 50%; background: #0009; cursor: pointer; }
+  .star { position: absolute; top: 12px; left: 12px; width: 32px; height: 32px; border: 0; border-radius: 50%; background: #0009; color: var(--muted); font-size: 18px; line-height: 1; cursor: pointer; }
+  .star:hover:not(:disabled) { color: var(--text); }
+  .star[aria-pressed='true'] { color: #ffcf40; }
+  .star:disabled { cursor: default; }
   .error { color: var(--muted); }
 </style>

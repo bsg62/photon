@@ -99,6 +99,11 @@ pub fn viewer_item(engine: Eng<'_>, id: i64) -> Result<commands::ViewerItem, App
 }
 
 #[tauri::command(async)]
+pub fn set_star(engine: Eng<'_>, id: i64, starred: bool) -> Result<(), AppError> {
+    commands::set_star(&engine, id, starred)
+}
+
+#[tauri::command(async)]
 pub fn neighbours(engine: Eng<'_>, id: i64, radius: usize) -> Vec<i64> {
     commands::neighbours(&engine, id, radius)
 }
