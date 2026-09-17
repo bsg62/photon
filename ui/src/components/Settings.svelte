@@ -1,10 +1,11 @@
 <script lang="ts">
   import { ask, open } from '@tauri-apps/plugin-dialog';
   import { onMount, tick } from 'svelte';
-  import { api, type AppInfo, type TagCount, type TagRule, type WatchedFolder } from '../lib/api';
+  import { api, errorMessage, type AppInfo, type TagCount, type TagRule, type WatchedFolder } from '../lib/api';
   import { library } from '../lib/library.svelte';
   import { folderStatus, photoCountLabel, type SettingsSection } from '../lib/settings';
-  import { filterTags, renameCheck, ruleLabel } from '../lib/tags';
+  import { createTagRenamer } from '../lib/tag-renamer.svelte';
+  import { filterTags, ruleLabel } from '../lib/tags';
 
   let { section = 'folders', onclose }: { section?: SettingsSection; onclose: () => void } = $props();
 
@@ -17,9 +18,11 @@
   let info = $state<AppInfo | null>(null);
   let rules = $state<TagRule[]>([]);
   let tagFilter = $state('');
-  let renaming = $state<string | null>(null);
-  let draft = $state('');
-  let renameError = $state('');
+  const renamer = createTagRenamer({
+    rename: (from, to) => library.renameTag(from, to),
+    confirm: (message) => ask(message, { title: 'Merge tags', kind: 'warning' }),
+    errorMessage,
+  });
   let renameInput = $state<HTMLInputElement | undefined>();
   const shownTags = $derived(filterTags(library.tags, tagFilter));
 
@@ -104,60 +107,35 @@
     }
   }
 
-  /** The field appears a tick after `renaming` is set; focusing and selecting it then lets
-   *  a small correction be a few keystrokes. */
+  /** The field appears a tick after it opens; focusing and selecting it then lets a small
+   *  correction be a few keystrokes. */
   async function startRename(tag: TagCount) {
-    renaming = tag.tag;
-    draft = tag.tag;
-    renameError = '';
+    renamer.start(tag.tag);
     await tick();
     renameInput?.focus();
     renameInput?.select();
   }
 
-  function cancelRename() {
-    renaming = null;
-    renameError = '';
+  /** Focus follows the outcome: back to the dialog once the field has gone, so Escape
+   *  still closes Settings, or back into the field when it stayed open (a declined merge,
+   *  a refused name, a failed save) so the user can go on typing. `tick` first, because
+   *  the field is disabled while the commit runs and cannot take focus until that clears. */
+  async function commitRename() {
+    await renamer.commit(library.tags, rules);
+    await tick();
+    if (renamer.editing === null) dialog?.focus();
+    else renameInput?.focus();
   }
 
-  async function commitRename(from: string) {
-    const check = renameCheck(from, draft, library.tags, rules);
-    if (check === 'blank') {
-      renameError = 'A tag needs a name.';
-      return;
-    }
-    const to = draft.trim();
-    // Closed before the confirm: the dialog takes focus, and the field's blur would
-    // otherwise cancel underneath it.
-    cancelRename();
-    if (check === 'same') return;
-    try {
-      if (check === 'merge' || check === 'revive') {
-        const message =
-          check === 'merge'
-            ? `Merge “${from}” into “${to}”? Photos tagged with either will show under “${to}”.`
-            : `“${to}” is listed under Changes. Renaming onto it undoes that change and shows its photos and those tagged “${from}” under “${to}”.`;
-        const confirmed = await ask(message, { title: 'Merge tags', kind: 'warning' });
-        if (!confirmed) return;
-      }
-      await library.renameTag(from, to);
-    } catch (e) {
-      library.reportError(e);
-    }
-  }
-
-  function onRenameKeydown(e: KeyboardEvent, from: string) {
+  function onRenameKeydown(e: KeyboardEvent) {
     if (e.key === 'Enter') {
       e.preventDefault();
-      void commitRename(from);
-      // The field is about to leave the DOM, and focus with it; back on the dialog, Escape
-      // still closes Settings.
-      dialog?.focus();
+      void commitRename();
     } else if (e.key === 'Escape') {
       // The dialog closes on Escape too; this one only closes the field.
       e.preventDefault();
       e.stopPropagation();
-      cancelRename();
+      renamer.cancel();
       dialog?.focus();
     }
   }
@@ -274,18 +252,19 @@
             <ul class="tags">
               {#each shownTags as tag (tag.tag)}
                 <li>
-                  {#if renaming === tag.tag}
+                  {#if renamer.editing === tag.tag}
                     <div class="meta">
                       <input
                         class="rename"
                         bind:this={renameInput}
-                        bind:value={draft}
+                        bind:value={renamer.text}
+                        disabled={renamer.busy}
                         aria-label="New name for {tag.tag}"
-                        aria-invalid={renameError !== ''}
-                        onkeydown={(e) => onRenameKeydown(e, tag.tag)}
-                        onblur={cancelRename}
+                        aria-invalid={renamer.error !== ''}
+                        onkeydown={onRenameKeydown}
+                        onblur={() => renamer.cancel()}
                       />
-                      {#if renameError}<span class="error">{renameError}</span>{/if}
+                      {#if renamer.error}<span class="error">{renamer.error}</span>{/if}
                     </div>
                   {:else}
                     <div class="meta">
