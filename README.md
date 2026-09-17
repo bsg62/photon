@@ -132,6 +132,8 @@ publishing it.
 - [ ] With a few hundred tags, Settings → Tags stays centred in the window and the list scrolls inside the dialog.
 - [ ] Settings → Tags lists every tag with its photo count, and the filter box narrows it. Rename a tag: Enter saves, Escape or clicking away cancels (Escape does not close Settings), a blank name is refused. The sidebar's Tags list and an open Tag view follow the new name.
 - [ ] Renaming a tag to another existing tag asks to merge, then shows one tag whose count is the photos carrying either. "Remove…" asks first, and the tag disappears from the sidebar and from search.
+- [ ] With the viewer's info panel open on a tagged photo, rename one of its tags in Settings: the panel shows the new name without reopening the photo, and the zoom, pan and rotation stay as they were.
+- [ ] Rename a tag onto an existing one and decline the merge: the field stays open with what you typed.
 - [ ] Each rename or removal appears under Changes, and "Restore" brings the original tag back. Rescanning the folder does not undo a rename, and the photo files' keywords are unchanged (check in another app).
 - [ ] After removing every folder, the sidebar offers "Add a folder in Settings…", which opens Settings on Folders.
 - [ ] Unplugging a drive with a watched folder dims its folder and tiles after a rescan. Nothing disappears.

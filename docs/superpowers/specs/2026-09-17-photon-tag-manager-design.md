@@ -89,8 +89,10 @@ nothing (hidden) if its rule's `target` is `NULL`.
 - **`restore_tag_rule(tag)`.** Deletes that one rule. A tag merged into a name that was
   later hidden had its rule set to `NULL` by `hide_tag`, so it is restored on its own,
   under its original name.
-- **`tag_rules()`** returns every rule, sorted case-insensitively in Rust by `(tag
-  lowercased, tag)`.
+- **`tag_rules()`** returns every rule whose keyword some photo still carries (offline
+  photos included), sorted case-insensitively in Rust by `(tag lowercased, tag)`. A rule
+  whose keyword has left the library is kept but not listed, so a folder removed and added
+  back returns with its changes.
 
 ### Readers
 
@@ -147,17 +149,18 @@ Four commands, each through `commands.rs`, `ipc.rs` and `app.rs`:
 `TagRule { tag: String, target: Option<String> }`, mirrored in `api.ts` as
 `{ tag: string; target: string | null }` in the same commit.
 
-The three mutations call a new `Engine::tags_changed()`, the counterpart of
-`albums_changed()`: it rebuilds the grid through `refresh_grid()`, which is what reaches
-the Tag view, search results and the sidebar (which re-reads `listTags` on
+Every change ends in a new `Engine::tags_changed()`, the counterpart of
+`albums_changed()`: removing and restoring call it directly, and renaming reaches it
+through `Engine::rename_tag` (below). It rebuilds the grid through `refresh_grid()`, which
+is what reaches the Tag view, search results and the sidebar (which re-reads `listTags` on
 `library_changed`). No `ScanReport` counter is involved; this is not a scan.
 
-**The Tag view follows a rename.** If the view is `Tag` with argument `from`, `rename_tag`
-re-enters `Tag` with argument `to` before rebuilding, so the grid keeps showing the same
-photos. The rule is already committed by then, so a failed rebuild is logged rather than
-rolled back or reported: the change is saved, and the next rebuild shows it. A scan
-rebuild landing between the commit and the view change can flash an empty grid; the
-epoch bump and the later-stamped rebuild correct it. Hiding the viewed tag leaves the argument alone; the grid empties, as deleting the
+**The Tag view follows a rename.** `Engine::rename_tag` holds the view lock across the
+rule's commit and, if the view is `Tag` with argument `from`, the move to `to` (with an
+epoch bump). A rebuild therefore sees the old name with the old rules or the new name with
+the new ones, never the old name under the new rules, which would be an empty grid. The
+rebuild that follows is `tags_changed`'s: the rule is already committed, so a failed
+rebuild is logged rather than rolled back or reported. Hiding the viewed tag leaves the argument alone; the grid empties, as deleting the
 viewed album does.
 
 ## 6. UI

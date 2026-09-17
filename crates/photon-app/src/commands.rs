@@ -210,20 +210,19 @@ pub fn list_tag_rules(engine: &Engine) -> CmdResult<Vec<TagRule>> {
 }
 
 pub fn rename_tag(engine: &Engine, from: &str, to: &str) -> CmdResult<()> {
-    let to = engine.lib.rename_tag(from, to)?;
-    engine.tags_changed(Some((from, &to)))?;
+    engine.rename_tag(from, to)?;
     Ok(())
 }
 
 pub fn hide_tag(engine: &Engine, tag: &str) -> CmdResult<()> {
     engine.lib.hide_tag(tag)?;
-    engine.tags_changed(None)?;
+    engine.tags_changed();
     Ok(())
 }
 
 pub fn restore_tag_rule(engine: &Engine, tag: &str) -> CmdResult<()> {
     engine.lib.restore_tag_rule(tag)?;
-    engine.tags_changed(None)?;
+    engine.tags_changed();
     Ok(())
 }
 

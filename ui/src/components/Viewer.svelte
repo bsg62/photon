@@ -186,10 +186,44 @@
   // So the photo is re-found by id after every rebuild. Only when nothing is loaded yet —
   // the first paint, or after the photo has gone — is there an id to work from, and staying
   // in range is then all that can be done.
+  /** Rebuild effects issued so far; see its use below. Not state: nothing renders it. */
+  let detailsSeq = 0;
+
+  /** Takes a re-read of the photo on screen. A change the picture itself shows - the file
+   *  rewritten (a new thumbnail key or size), or no longer decodable - reloads the photo,
+   *  which resets the zoom as any other new picture does. Anything else replaces `item` in
+   *  place, keeping zoom, pan and rotation. The star and album toggles are not rebound;
+   *  they hold their own state and may be mid-write.
+   *
+   *  `canReload` is false for a photo this view no longer holds: a reload loads whatever
+   *  sits at `current`, which for that photo is some other one. Its picture is left as it
+   *  is, and its details too, since they would describe a picture not on screen. */
+  function refreshDetails(fresh: ViewerItem, canReload: boolean) {
+    const old = untrack(() => item);
+    if (!old || old.id !== fresh.id) return;
+    const pictureChanged =
+      old.thumbKey !== fresh.thumbKey ||
+      old.width !== fresh.width ||
+      old.height !== fresh.height ||
+      old.orientation !== fresh.orientation ||
+      old.thumbState !== fresh.thumbState;
+    if (pictureChanged) {
+      if (canReload) {
+        rebound = null;
+        reload++;
+      }
+    } else {
+      item = fresh;
+    }
+  }
+
   $effect(() => {
     void library.info.version;
     const last = library.info.len - 1;
     const showing = untrack(() => item?.id);
+    // Rebuilds come every 250ms during a scan, and their replies can arrive out of order;
+    // the photo's id cannot tell an older reply from a newer one, this can.
+    const seq = ++detailsSeq;
     if (showing === undefined) {
       if (last >= 0 && untrack(() => current) > last) current = last;
       return;
@@ -201,21 +235,32 @@
       if (at === null) {
         // Left this view, or left the library? Only the second deserves a message, and only
         // the backend can tell: it refuses a photo the scanner has marked missing.
-        let exists = true;
+        let fresh: ViewerItem | null = null;
         try {
-          await api.viewerItem(showing);
+          fresh = await api.viewerItem(showing);
         } catch {
-          exists = false;
+          fresh = null;
         }
-        if (untrack(() => item?.id) !== showing) return;
-        if (exists) orphaned = true;
-        else error = 'This photo is no longer available.';
+        if (untrack(() => item?.id) !== showing || seq !== detailsSeq) return;
+        if (fresh) {
+          orphaned = true;
+          refreshDetails(fresh, false);
+        } else error = 'This photo is no longer available.';
         return;
       }
       orphaned = false;
-      if (at === untrack(() => current)) return;
-      rebound = at;
-      current = at;
+      if (at !== untrack(() => current)) {
+        rebound = at;
+        current = at;
+      }
+      // The photo is the same, but what the library says about it may not be: a renamed
+      // or removed tag, a face named in Picasa, a rescan's metadata.
+      try {
+        const fresh = await api.viewerItem(showing);
+        if (untrack(() => item?.id) === showing && seq === detailsSeq) refreshDetails(fresh, true);
+      } catch {
+        // Gone between the two calls; the next rebuild reports it.
+      }
     })();
   });
 

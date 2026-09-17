@@ -104,7 +104,9 @@ impl Library {
     ///
     /// Tags already merged into `from` follow it, which keeps the rules flat. `to` loses
     /// any rule of its own: it is the name the user just typed, so it must be a live name,
-    /// and a rule `to → x` left behind would be a chain. That delete is also what makes
+    /// and a rule `to → x` left behind would be a chain. That includes a rule `tag_rules`
+    /// no longer lists because no photo carries `to`: if such photos come back, they show
+    /// under the name the user chose to keep live, merged with `from`. That delete is also what makes
     /// renaming a tag back to its original name a restore: the first update turned the
     /// original's rule into `to → to`.
     ///
@@ -112,6 +114,20 @@ impl Library {
     /// only as another rule's target (`vacation` after `holiday → vacation`) has nothing to
     /// rename, and a rule for it would show in Settings as a change no photo reflects.
     pub fn rename_tag(&self, from: &str, to: &str) -> Result<String> {
+        self.rename_tag_with(from, to, |_| ())
+    }
+
+    /// `rename_tag`, with `guard` run on the stored name after the rename is written and
+    /// before it commits. What `guard` returns is held until the commit has finished, so a
+    /// lock it returns spans the moment the rename becomes visible to readers. Nothing is
+    /// run for a refused or unchanged name. The write lock is already held when `guard`
+    /// runs, so a lock it takes must never be held elsewhere while waiting for a write.
+    pub fn rename_tag_with<G>(
+        &self,
+        from: &str,
+        to: &str,
+        guard: impl FnOnce(&str) -> G,
+    ) -> Result<String> {
         let to = valid_name(to)?;
         if from == to {
             return Ok(to.to_string());
@@ -129,7 +145,9 @@ impl Library {
             params![from, to],
         )?;
         tx.execute("DELETE FROM tag_rules WHERE tag = ?1", params![to])?;
+        let held = guard(to);
         tx.commit()?;
+        drop(held);
         Ok(to.to_string())
     }
 
@@ -161,11 +179,19 @@ impl Library {
         Ok(())
     }
 
-    /// Every rule, sorted by tag case-insensitively in Rust (`lower()` is ASCII-only
-    /// without ICU).
+    /// Every rule whose keyword some photo still carries, sorted by tag case-insensitively
+    /// in Rust (`lower()` is ASCII-only without ICU).
+    ///
+    /// A photo on an offline drive still counts: its rows stay until the scanner purges
+    /// them. A rule whose keyword has gone entirely is kept but not listed. It applies to
+    /// nothing, so there is nothing to restore; and deleting it instead would lose the
+    /// user's change when a removed folder is added back.
     pub fn tag_rules(&self) -> Result<Vec<TagRule>> {
         let conn = self.reader()?;
-        let mut stmt = conn.prepare("SELECT tag, target FROM tag_rules")?;
+        let mut stmt = conn.prepare(
+            "SELECT r.tag, r.target FROM tag_rules r
+             WHERE EXISTS (SELECT 1 FROM item_tags t WHERE t.tag = r.tag)",
+        )?;
         let mut rules = stmt
             .query_map([], |r| {
                 Ok(TagRule {
@@ -265,6 +291,32 @@ mod tests {
         lib.rename_tag("b", "c").unwrap();
         lib.rename_tag("a", "b").unwrap();
         assert_eq!(lib.tag_rules().unwrap(), [rule("a", Some("b"))]);
+    }
+
+    /// A rule whose keyword has left the library is not listed, but kept: the keyword can
+    /// come back (a folder removed and added again), and the user's change with it.
+    #[test]
+    fn a_rule_is_listed_only_while_some_photo_carries_its_keyword() {
+        let (_dir, lib, ids) = library_with(&[&["junk"], &["holiday"]]);
+        lib.hide_tag("junk").unwrap();
+        lib.rename_tag("holiday", "vacation").unwrap();
+        lib.purge_items(&[ids[0]]).unwrap();
+        assert_eq!(
+            lib.tag_rules().unwrap(),
+            [rule("holiday", Some("vacation"))]
+        );
+
+        let folder = lib.item(ids[1]).unwrap().unwrap().folder_id;
+        let back = NewItem {
+            tags: vec!["junk".into()],
+            ..new_item(folder, "/p/again.jpg", 5)
+        };
+        lib.insert_items(&[back]).unwrap();
+        assert_eq!(
+            lib.tag_rules().unwrap(),
+            [rule("holiday", Some("vacation")), rule("junk", None)]
+        );
+        assert_eq!(listed(&lib), [("vacation".to_string(), 1)]);
     }
 
     #[test]
