@@ -161,11 +161,19 @@ impl Library {
         Ok(())
     }
 
-    /// Every rule, sorted by tag case-insensitively in Rust (`lower()` is ASCII-only
-    /// without ICU).
+    /// Every rule whose keyword some photo still carries, sorted by tag case-insensitively
+    /// in Rust (`lower()` is ASCII-only without ICU).
+    ///
+    /// A photo on an offline drive still counts: its rows stay until the scanner purges
+    /// them. A rule whose keyword has gone entirely is kept but not listed. It applies to
+    /// nothing, so there is nothing to restore; and deleting it instead would lose the
+    /// user's change when a removed folder is added back.
     pub fn tag_rules(&self) -> Result<Vec<TagRule>> {
         let conn = self.reader()?;
-        let mut stmt = conn.prepare("SELECT tag, target FROM tag_rules")?;
+        let mut stmt = conn.prepare(
+            "SELECT r.tag, r.target FROM tag_rules r
+             WHERE EXISTS (SELECT 1 FROM item_tags t WHERE t.tag = r.tag)",
+        )?;
         let mut rules = stmt
             .query_map([], |r| {
                 Ok(TagRule {
@@ -265,6 +273,32 @@ mod tests {
         lib.rename_tag("b", "c").unwrap();
         lib.rename_tag("a", "b").unwrap();
         assert_eq!(lib.tag_rules().unwrap(), [rule("a", Some("b"))]);
+    }
+
+    /// A rule whose keyword has left the library is not listed, but kept: the keyword can
+    /// come back (a folder removed and added again), and the user's change with it.
+    #[test]
+    fn a_rule_is_listed_only_while_some_photo_carries_its_keyword() {
+        let (_dir, lib, ids) = library_with(&[&["junk"], &["holiday"]]);
+        lib.hide_tag("junk").unwrap();
+        lib.rename_tag("holiday", "vacation").unwrap();
+        lib.purge_items(&[ids[0]]).unwrap();
+        assert_eq!(
+            lib.tag_rules().unwrap(),
+            [rule("holiday", Some("vacation"))]
+        );
+
+        let folder = lib.item(ids[1]).unwrap().unwrap().folder_id;
+        let back = NewItem {
+            tags: vec!["junk".into()],
+            ..new_item(folder, "/p/again.jpg", 5)
+        };
+        lib.insert_items(&[back]).unwrap();
+        assert_eq!(
+            lib.tag_rules().unwrap(),
+            [rule("holiday", Some("vacation")), rule("junk", None)]
+        );
+        assert_eq!(listed(&lib), [("vacation".to_string(), 1)]);
     }
 
     #[test]
