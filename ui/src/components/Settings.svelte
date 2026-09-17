@@ -343,6 +343,10 @@
     inset: 0;
     z-index: 30;
     display: grid;
+    /* Definite tracks. Left implicit, the row grows to the dialog's whole content height:
+       the dialog's `height: min(520px, 100%)` has nothing to resolve against, so a long
+       Tags list centred a 520px box in a row thousands of pixels tall, off the screen. */
+    grid-template: minmax(0, 1fr) / minmax(0, 1fr);
     place-items: center;
     padding: 16px;
     background: #0009;

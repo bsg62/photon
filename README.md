@@ -129,6 +129,7 @@ publishing it.
 - [ ] "Add folder…" in Settings adds a folder. Adding a folder inside a watched one is refused with a clear message.
 - [ ] Rescan works from Settings and from a sidebar folder's right-click menu. "Remove…" in Settings asks first, works during a scan, and leaves the files on disk.
 - [ ] Settings → About shows the version matching the release tag, and its "Reveal" opens the folder holding `library.db`.
+- [ ] With a few hundred tags, Settings → Tags stays centred in the window and the list scrolls inside the dialog.
 - [ ] Settings → Tags lists every tag with its photo count, and the filter box narrows it. Rename a tag: Enter saves, Escape or clicking away cancels (Escape does not close Settings), a blank name is refused. The sidebar's Tags list and an open Tag view follow the new name.
 - [ ] Renaming a tag to another existing tag asks to merge, then shows one tag whose count is the photos carrying either. "Remove…" asks first, and the tag disappears from the sidebar and from search.
 - [ ] Each rename or removal appears under Changes, and "Restore" brings the original tag back. Rescanning the folder does not undo a rename, and the photo files' keywords are unchanged (check in another app).
