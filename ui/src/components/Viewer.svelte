@@ -213,9 +213,20 @@
         return;
       }
       orphaned = false;
-      if (at === untrack(() => current)) return;
-      rebound = at;
-      current = at;
+      if (at !== untrack(() => current)) {
+        rebound = at;
+        current = at;
+      }
+      // The photo is the same, but what the library says about it may not be: a renamed
+      // or removed tag, a face named in Picasa, a rescan's metadata. Replacing `item` in
+      // place keeps the zoom, pan and rotation, which only a navigation resets. The star
+      // and album toggles are not rebound; they hold their own state and may be mid-write.
+      try {
+        const fresh = await api.viewerItem(showing);
+        if (untrack(() => item?.id) === showing) item = fresh;
+      } catch {
+        // Gone between the two calls; the next rebuild reports it.
+      }
     })();
   });
 
