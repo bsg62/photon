@@ -374,27 +374,52 @@ impl Engine {
 
     /// Renames a tag and carries an open Tag view from the old name to the new one.
     ///
-    /// The view lock is held across the rule's commit and the move, so a rebuild snapshots
-    /// either the old name with the old rules or the new name with the new ones. Apart,
-    /// a scan's rebuild landing between them read the old name under the new rules and
-    /// published an empty grid until this call's own rebuild replaced it. Holding it across
-    /// a write is safe: the library's write lock is private to `Library` and never calls
-    /// back into the engine, so nothing takes the two in the other order. The epoch bump
-    /// discards a rebuild that snapshotted the old name but queried after the commit.
+    /// The view moves inside the rename's transaction, and the view lock is held until
+    /// the commit has finished, so a rebuild sees the old name with the old rules or the
+    /// new name with the new ones. Apart, a scan's rebuild landing between them read the
+    /// old name under the new rules and published an empty grid. A rebuild that
+    /// snapshotted the old name but queried after the commit publishes only after the lock
+    /// is released, and the epoch bump discards it.
+    ///
+    /// The order is the library's write lock, then the view lock. Taking the view lock
+    /// first would stall every view switch, `grid_info` and rebuild behind whatever write
+    /// is running - seconds, for the purge of a large folder. Nothing takes the two the
+    /// other way round: the write lock is private to `Library`, which never calls back
+    /// into the engine except through this guard.
     ///
     /// Returns the stored name. The rebuild follows as in `tags_changed`.
     pub fn rename_tag(&self, from: &str, to: &str) -> Result<String> {
-        let to = {
+        let moved = std::cell::Cell::new(false);
+        let renamed = self.lib.rename_tag_with(from, to, |to| {
             let mut state = self.state.lock();
-            let to = self.lib.rename_tag(from, to)?;
             if state.view == GridView::Tag && state.arg == from {
-                state.arg = to.clone();
+                state.arg = to.to_string();
                 state.epoch += 1;
+                moved.set(true);
             }
-            to
-        };
-        self.tags_changed();
-        Ok(to)
+            state
+        });
+        match renamed {
+            Ok(to) => {
+                self.tags_changed();
+                Ok(to)
+            }
+            Err(err) => {
+                // The commit failed after the view moved: put it back on the name the
+                // rules still answer to.
+                if moved.get() {
+                    {
+                        let mut state = self.state.lock();
+                        if state.view == GridView::Tag {
+                            state.arg = from.to_string();
+                            state.epoch += 1;
+                        }
+                    }
+                    self.tags_changed();
+                }
+                Err(err)
+            }
+        }
     }
 
     /// After a tag rule change the caller has committed: rebuilds the grid, since the Tag

@@ -29,8 +29,10 @@ export function createTagRenamer(deps: {
     get text() {
       return text;
     },
+    /** Typing clears a shown error: it was about the name as it was. */
     set text(value: string) {
       text = value;
+      error = '';
     },
     get error() {
       return error;

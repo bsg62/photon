@@ -286,20 +286,22 @@ export class LibraryStore {
 
   /** Tag rule changes. The backend's rebuild announces a library change, which refetches
    *  the collections too; refetching here as well means the caller's list is current when
-   *  its await returns, not a round trip later. Errors are thrown to the caller. */
+   *  its await returns, not a round trip later. The change's own error is thrown to the
+   *  caller; the refetch's is only reported, because the change is saved by then and the
+   *  rename field would otherwise stay open on a tag that no longer exists. */
   async renameTag(from: string, to: string): Promise<void> {
     await api.renameTag(from, to);
-    await this.refreshCollections();
+    await this.refreshCollections().catch(this.reportError);
   }
 
   async hideTag(tag: string): Promise<void> {
     await api.hideTag(tag);
-    await this.refreshCollections();
+    await this.refreshCollections().catch(this.reportError);
   }
 
   async restoreTagRule(tag: string): Promise<void> {
     await api.restoreTagRule(tag);
-    await this.refreshCollections();
+    await this.refreshCollections().catch(this.reportError);
   }
 
   /** Chains each `setSearchQuery` call onto the previous one, so two `setSearchQuery` calls

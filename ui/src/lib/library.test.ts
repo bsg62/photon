@@ -169,6 +169,15 @@ describe('LibraryStore', () => {
     expect(store.tags).toEqual([{ tag: 'holiday', count: 1 }]);
   });
 
+  it('a tag change that saved is not reported as failed when the refetch fails', async () => {
+    const store = new LibraryStore();
+    await store.init();
+    vi.mocked(api.renameTag).mockResolvedValue();
+    vi.mocked(api.listTags).mockRejectedValueOnce(new Error('tags-fail'));
+    await expect(store.renameTag('holiday', 'vacation')).resolves.toBeUndefined();
+    expect(store.errors.some((t) => t.message === 'tags-fail')).toBe(true);
+  });
+
   it('a failed collections fetch is reported, not thrown', async () => {
     const store = new LibraryStore();
     await store.init();

@@ -104,7 +104,9 @@ impl Library {
     ///
     /// Tags already merged into `from` follow it, which keeps the rules flat. `to` loses
     /// any rule of its own: it is the name the user just typed, so it must be a live name,
-    /// and a rule `to → x` left behind would be a chain. That delete is also what makes
+    /// and a rule `to → x` left behind would be a chain. That includes a rule `tag_rules`
+    /// no longer lists because no photo carries `to`: if such photos come back, they show
+    /// under the name the user chose to keep live, merged with `from`. That delete is also what makes
     /// renaming a tag back to its original name a restore: the first update turned the
     /// original's rule into `to → to`.
     ///
@@ -112,6 +114,20 @@ impl Library {
     /// only as another rule's target (`vacation` after `holiday → vacation`) has nothing to
     /// rename, and a rule for it would show in Settings as a change no photo reflects.
     pub fn rename_tag(&self, from: &str, to: &str) -> Result<String> {
+        self.rename_tag_with(from, to, |_| ())
+    }
+
+    /// `rename_tag`, with `guard` run on the stored name after the rename is written and
+    /// before it commits. What `guard` returns is held until the commit has finished, so a
+    /// lock it returns spans the moment the rename becomes visible to readers. Nothing is
+    /// run for a refused or unchanged name. The write lock is already held when `guard`
+    /// runs, so a lock it takes must never be held elsewhere while waiting for a write.
+    pub fn rename_tag_with<G>(
+        &self,
+        from: &str,
+        to: &str,
+        guard: impl FnOnce(&str) -> G,
+    ) -> Result<String> {
         let to = valid_name(to)?;
         if from == to {
             return Ok(to.to_string());
@@ -129,7 +145,9 @@ impl Library {
             params![from, to],
         )?;
         tx.execute("DELETE FROM tag_rules WHERE tag = ?1", params![to])?;
+        let held = guard(to);
         tx.commit()?;
+        drop(held);
         Ok(to.to_string())
     }
 

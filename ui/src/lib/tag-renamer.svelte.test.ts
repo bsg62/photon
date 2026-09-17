@@ -102,6 +102,8 @@ describe('createTagRenamer', () => {
     expect(r.error).toBe('disk full');
     expect(r.busy).toBe(false);
 
+    r.text = 'trips';
+    expect(r.error).toBe('');
     r.cancel();
     expect(r.editing).toBeNull();
     expect(r.error).toBe('');
