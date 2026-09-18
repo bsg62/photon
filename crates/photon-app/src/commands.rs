@@ -360,6 +360,15 @@ pub fn set_star(engine: &Engine, id: i64, starred: bool) -> CmdResult<()> {
     Ok(())
 }
 
+pub fn add_item_tag(engine: &Engine, id: i64, tag: &str) -> CmdResult<String> {
+    Ok(engine.add_item_tag(id, tag)?)
+}
+
+pub fn remove_item_tag(engine: &Engine, id: i64, tag: &str) -> CmdResult<()> {
+    engine.remove_item_tag(id, tag)?;
+    Ok(())
+}
+
 /// Items around `id`, nearest first, queued at neighbour priority so the viewer's
 /// next and previous previews are ready early.
 pub fn neighbours(engine: &Engine, id: i64, radius: usize) -> Vec<i64> {

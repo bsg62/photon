@@ -467,6 +467,36 @@ impl Engine {
         self.refresh_grid()
     }
 
+    /// Adds `tag` to one photo, returning the name stored — a rename rule can make that
+    /// differ from what was typed, and the caller shows the stored name.
+    ///
+    /// The refresh is not optional: a tag change moves Tag-view membership and the text
+    /// search matches, so a change that skipped the refresh chain would update the database
+    /// while the grid showed stale rows.
+    pub fn add_item_tag(&self, id: i64, tag: &str) -> Result<String> {
+        self.live_item(id)?;
+        let name = self.lib.add_item_tag(id, tag)?;
+        self.refresh_grid()?;
+        Ok(name)
+    }
+
+    /// Removes the displayed name `tag` from one photo. Refreshes for the same reason.
+    pub fn remove_item_tag(&self, id: i64, tag: &str) -> Result<()> {
+        self.live_item(id)?;
+        self.lib.remove_item_tag(id, tag)?;
+        self.refresh_grid()
+    }
+
+    /// `NotFound` for an id that has been purged or marked missing, so a stale viewer gets
+    /// the same answer here as it does from `set_star`.
+    fn live_item(&self, id: i64) -> Result<()> {
+        let item = self.lib.item(id)?.ok_or(Error::NotFound(id))?;
+        if item.missing_since.is_some() {
+            return Err(Error::NotFound(id));
+        }
+        Ok(())
+    }
+
     /// Validates and watches `path`, registers it with the running watcher service (if
     /// any), and starts its first scan.
     ///
@@ -1187,6 +1217,29 @@ mod tests {
                 .unwrap()
                 .starred
         );
+    }
+
+    /// A tag change moves Tag-view membership and what search matches, so it has to travel
+    /// the refresh chain. Without it the database moves while the grid shows stale rows.
+    #[test]
+    fn setting_a_tag_refreshes_the_grid() {
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a.jpg", &img), ("b.jpg", &img)]);
+        f.add_photos();
+        let ids = f.ids();
+        let version = f.engine.grid().0;
+
+        assert_eq!(f.engine.add_item_tag(ids[0], "sunset").unwrap(), "sunset");
+        assert!(
+            f.engine.grid().0 > version,
+            "the grid version must move with the tag"
+        );
+
+        f.engine.set_tag_view("sunset").unwrap();
+        assert_eq!(f.engine.grid().1.len(), 1);
+
+        f.engine.remove_item_tag(ids[0], "sunset").unwrap();
+        assert_eq!(f.engine.grid().1.len(), 0);
     }
 
     #[test]

@@ -183,6 +183,8 @@ pub fn run() {
             ipc::set_visible,
             ipc::viewer_item,
             ipc::set_star,
+            ipc::add_item_tag,
+            ipc::remove_item_tag,
             ipc::neighbours,
             ipc::reveal_in_file_manager,
             ipc::reveal_folder,
