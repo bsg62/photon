@@ -139,6 +139,22 @@ CREATE TABLE tag_rules (
 );
 CREATE INDEX tag_rules_target ON tag_rules(target);
 "#,
+    r#"
+-- The user's per-photo tag changes: a tag added to one photo (added = 1), or one of that
+-- photo's own file keywords hidden on it (added = 0). Separate from item_tags for the same
+-- reason tag_rules is: a rescan rewrites item_tags from the file, and the user's change
+-- must outlive that. Suppressions name the *raw* keyword; additions name it as tag_rules
+-- resolves it. The two namespaces meet only in remove_item_tag.
+CREATE TABLE item_user_tags (
+    item_id INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+    tag     TEXT NOT NULL,
+    added   INTEGER NOT NULL,
+    PRIMARY KEY (item_id, tag)
+);
+-- Partial: the Tag view's third arm asks only for additions, and suppressions are reached
+-- through the primary key, correlated to one item.
+CREATE INDEX item_user_tags_tag ON item_user_tags(tag) WHERE added = 1;
+"#,
 ];
 
 pub fn migrate(conn: &Connection) -> Result<()> {
@@ -307,7 +323,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 6);
+        assert_eq!(version, 7);
         let rules: i64 = conn
             .query_row("SELECT count(*) FROM tag_rules", [], |r| r.get(0))
             .unwrap();
@@ -420,5 +436,67 @@ mod tests {
             .unwrap();
         assert_eq!(path, "/p/a.jpg", "the existing row survives untouched");
         assert_eq!(rating, None, "and reads as unread, not as unrated");
+    }
+
+    /// The overlay table arriving in a library that already has keywords and a rule.
+    /// Nothing existing may change: the keywords and the rule are what the overlay is
+    /// applied on top of.
+    #[test]
+    fn the_seventh_migration_adds_item_user_tags_and_keeps_keywords_and_rules() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        for sql in &MIGRATIONS[..6] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 6i64).unwrap();
+        conn.execute(
+            "INSERT INTO watched_folders (id, path) VALUES (1, '/p')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO folders (id, watched_id, parent_id, path, name, sort_key) \
+             VALUES (1, 1, NULL, '/p', 'p', 'p')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO items (id, folder_id, path, file_name, kind, size, mtime_ms, width, \
+             height, orientation, taken_at) \
+             VALUES (1, 1, '/p/a.jpg', 'a.jpg', 0, 1, 1, 1, 1, 1, 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO item_tags (item_id, tag) VALUES (1, 'beach')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO tag_rules (tag, target) VALUES ('beach', 'seaside')",
+            [],
+        )
+        .unwrap();
+
+        migrate(&conn).unwrap();
+
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, 7);
+        let overlay: i64 = conn
+            .query_row("SELECT count(*) FROM item_user_tags", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            overlay, 0,
+            "an upgraded library starts with no per-photo changes"
+        );
+        let tag: String = conn
+            .query_row("SELECT tag FROM item_tags", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(tag, "beach");
+        let target: String = conn
+            .query_row("SELECT target FROM tag_rules", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(target, "seaside");
     }
 }
