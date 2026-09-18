@@ -3,7 +3,9 @@
   import { library } from '../lib/library.svelte';
   import { buildRows, columnsFor, GAP, itemSpan, layoutSections, rowOfItem, topFolderId, totalHeight, visibleRange } from '../lib/layout';
   import { move, type NavKey } from '../lib/nav';
+  import { yearMarks } from '../lib/timeline';
   import Tile from './Tile.svelte';
+  import Timeline from './Timeline.svelte';
 
   let { onopen }: { onopen: (offset: number) => void } = $props();
 
@@ -27,6 +29,11 @@
   const sections = $derived(layoutSections(library.info.view, library.info.sections, library.info.len));
   const headers = $derived(library.info.view !== 'recent');
   const rows = $derived(buildRows(sections, columns, headers));
+  const total = $derived(totalHeight(rows));
+  /** The year strip. It needs folder headers to mark (so Recent, which has none, never
+   *  shows it), more than one year to choose between, and something to scroll. */
+  const marks = $derived(yearMarks(sections, rows));
+  const scrubbable = $derived(marks.length > 1 && total > height);
   const rendered = $derived.by(() => {
     const [start, end] = visibleRange(rows, scrollTop, height, height * 2);
     return rows.slice(start, end);
@@ -183,60 +190,65 @@
 
 <svelte:window onclick={closeMenu} onkeydown={(e) => e.key === 'Escape' && closeMenu()} />
 
-<div
-  class="viewport"
-  bind:this={viewport}
-  bind:clientWidth={width}
-  bind:clientHeight={height}
-  onscroll={() => (scrollTop = viewport.scrollTop)}
-  {onkeydown}
-  tabindex="0"
-  role="grid"
-  aria-label="Photos"
->
-  {#if library.info.len === 0}
-    <p class="empty">
-      {#if library.info.view === 'starred'}
-        No starred photos. Star one in the viewer, or in Picasa.
-      {:else if library.info.view === 'search'}
-        No photos match “{library.info.searchQuery}”
-      {:else if library.info.view === 'album'}
-        “{library.albumName(library.info.album)}” is empty. Right-click a photo to add it.
-      {:else if library.info.view === 'person'}
-        No photos of {library.personName(library.info.person)}.
-      {:else if library.info.view === 'tag'}
-        No photos tagged “{library.info.tag}”.
-      {:else}
-        No photos yet. Add a folder to get started.
-      {/if}
-    </p>
-  {/if}
-  <div class="canvas" style:height="{totalHeight(rows)}px">
-    {#each rendered as row (row.top)}
-      {#if row.kind === 'header'}
-        {@const folder = library.folderOf(sections[row.section].folderId)}
-        <div class="header" style:top="{row.top}px">
-          <span class="name">{folder?.name ?? ''}</span>
-          <span class="path">{folder?.path ?? ''}</span>
-        </div>
-      {:else}
-        <div class="row" style:top="{row.top}px" style:gap="{GAP}px" style:padding-left="{GAP}px">
-          {#each { length: row.count } as _, i (row.first + i)}
-            {@const offset = row.first + i}
-            {@const entry = library.entry(offset)}
-            <Tile
-              {entry}
-              selected={library.selected === offset}
-              dimmed={!!entry && !library.isOnline(entry.folderId)}
-              onselect={() => (library.selected = offset)}
-              onopen={() => onopen(offset)}
-              onmenu={(e) => tileMenu(e, offset)}
-            />
-          {/each}
-        </div>
-      {/if}
-    {/each}
+<div class="grid">
+  <div
+    class="viewport"
+    bind:this={viewport}
+    bind:clientWidth={width}
+    bind:clientHeight={height}
+    onscroll={() => (scrollTop = viewport.scrollTop)}
+    {onkeydown}
+    tabindex="0"
+    role="grid"
+    aria-label="Photos"
+  >
+    {#if library.info.len === 0}
+      <p class="empty">
+        {#if library.info.view === 'starred'}
+          No starred photos. Star one in the viewer, or in Picasa.
+        {:else if library.info.view === 'search'}
+          No photos match “{library.info.searchQuery}”
+        {:else if library.info.view === 'album'}
+          “{library.albumName(library.info.album)}” is empty. Right-click a photo to add it.
+        {:else if library.info.view === 'person'}
+          No photos of {library.personName(library.info.person)}.
+        {:else if library.info.view === 'tag'}
+          No photos tagged “{library.info.tag}”.
+        {:else}
+          No photos yet. Add a folder to get started.
+        {/if}
+      </p>
+    {/if}
+    <div class="canvas" style:height="{total}px">
+      {#each rendered as row (row.top)}
+        {#if row.kind === 'header'}
+          {@const folder = library.folderOf(sections[row.section].folderId)}
+          <div class="header" style:top="{row.top}px">
+            <span class="name">{folder?.name ?? ''}</span>
+            <span class="path">{folder?.path ?? ''}</span>
+          </div>
+        {:else}
+          <div class="row" style:top="{row.top}px" style:gap="{GAP}px" style:padding-left="{GAP}px">
+            {#each { length: row.count } as _, i (row.first + i)}
+              {@const offset = row.first + i}
+              {@const entry = library.entry(offset)}
+              <Tile
+                {entry}
+                selected={library.selected === offset}
+                dimmed={!!entry && !library.isOnline(entry.folderId)}
+                onselect={() => (library.selected = offset)}
+                onopen={() => onopen(offset)}
+                onmenu={(e) => tileMenu(e, offset)}
+              />
+            {/each}
+          </div>
+        {/if}
+      {/each}
+    </div>
   </div>
+  {#if scrubbable}
+    <Timeline {marks} {total} viewport={height} {scrollTop} onscrub={(top) => (viewport.scrollTop = top)} />
+  {/if}
 </div>
 
 {#if menu}
@@ -270,7 +282,8 @@
 {/if}
 
 <style>
-  .viewport { position: relative; height: 100%; overflow-y: auto; outline: none; }
+  .grid { display: flex; height: 100%; }
+  .viewport { position: relative; flex: 1; min-width: 0; height: 100%; overflow-y: auto; outline: none; }
   .canvas { position: relative; }
   .header, .row { position: absolute; left: 0; right: 0; }
   .header { display: flex; align-items: baseline; gap: 12px; height: 32px; padding: 8px 8px 0; }
