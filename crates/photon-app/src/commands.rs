@@ -37,6 +37,8 @@ pub struct GridInfo {
     pub len: usize,
     pub sections: Vec<Section>,
     pub starred_count: usize,
+    /// Photos with a byte-identical twin; the sidebar shows the Duplicates row only above 0.
+    pub duplicate_count: usize,
     pub view: GridView,
     /// The query while `view` is `Search`, otherwise empty.
     pub search_query: String,
@@ -84,6 +86,15 @@ pub struct ViewerItem {
     pub faces: Vec<ItemFace>,
     /// Ids of the albums the photo is in.
     pub albums: Vec<i64>,
+    /// Other files with the same bytes as this one.
+    pub copies: Vec<ItemCopy>,
+}
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ItemCopy {
+    pub id: i64,
+    pub path: String,
 }
 
 #[derive(Debug, Serialize, PartialEq, Eq)]
@@ -163,6 +174,10 @@ pub fn grid_info(engine: &Engine) -> GridInfo {
         sections: grid.sections().to_vec(),
         starred_count: engine.lib.starred_count().unwrap_or_else(|err| {
             tracing::warn!(%err, "starred count query failed");
+            0
+        }),
+        duplicate_count: engine.lib.duplicate_count().unwrap_or_else(|err| {
+            tracing::warn!(%err, "duplicate count query failed");
             0
         }),
         view,
@@ -333,6 +348,15 @@ pub fn viewer_item(engine: &Engine, id: i64) -> CmdResult<ViewerItem> {
     let tags = engine.lib.item_tags(item.id)?;
     let faces = engine.lib.item_faces(item.id)?;
     let albums = engine.lib.item_albums(item.id)?;
+    let copies = engine
+        .lib
+        .copies_of(item.id)?
+        .into_iter()
+        .map(|c| ItemCopy {
+            id: c.id,
+            path: c.path,
+        })
+        .collect();
     let thumb_key = hex_key(item.fingerprint());
     let camera = item.camera;
     Ok(ViewerItem {
@@ -362,6 +386,7 @@ pub fn viewer_item(engine: &Engine, id: i64) -> CmdResult<ViewerItem> {
         tags,
         faces,
         albums,
+        copies,
     })
 }
 

@@ -168,6 +168,20 @@
     <span class="name">🕘 Recent</span>
   </button>
 
+  <!-- Only while there is something in it, or while it is what the grid shows: most
+       libraries have no duplicates, and a permanent "(0)" row is noise. -->
+  {#if library.info.duplicateCount > 0 || library.info.view === 'duplicates'}
+    <button
+      class="root duplicates"
+      class:active={library.info.view === 'duplicates'}
+      onclick={() => show(() => library.setView('duplicates'))}
+      title="Photos with a byte-identical copy elsewhere in the library"
+    >
+      <span class="name">⧉ Duplicates</span>
+      <span class="count">({library.info.duplicateCount})</span>
+    </button>
+  {/if}
+
   <!-- Albums: photon's own, so the group is editable. -->
   <button class="group" aria-expanded={open.albums} onclick={() => (open.albums = !open.albums)}>
     <span class="chevron">{open.albums ? '▾' : '▸'}</span>
@@ -339,7 +353,7 @@
   .chevron { width: 10px; color: var(--muted); font-size: 11px; }
   .node { padding-left: 18px; }
   .root:hover, .node:hover, .group:hover { background: #ffffff0d; }
-  .starred.active, .recent.active, .node.active { background: #ffffff14; }
+  .starred.active, .recent.active, .duplicates.active, .node.active { background: #ffffff14; }
   .add-album { color: var(--muted); }
   .add-album:hover { color: var(--text); }
   .editor {

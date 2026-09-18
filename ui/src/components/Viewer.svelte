@@ -701,6 +701,16 @@
       {:else}
         <p class="info-muted">No albums yet. Create one in the sidebar.</p>
       {/if}
+      {#if item.copies.length}
+        <!-- Absent rather than "none": nearly every photo has no copy, and the panel is
+             long enough. A click locates the copy in the grid, as the menu's Locate does. -->
+        <h3>Identical copies</h3>
+        <ul class="copies">
+          {#each item.copies as copy (copy.id)}
+            <li><button class="info-link" onclick={() => onlocate(copy.id)} title="Locate in photon">{copy.path}</button></li>
+          {/each}
+        </ul>
+      {/if}
     </aside>
   {/if}
   <!-- The star and the caption share one bottom-centred row, so the star sits where the
@@ -848,6 +858,8 @@
   .chips { display: flex; flex-wrap: wrap; gap: 4px; margin: 0; padding: 0; list-style: none; }
   .chips li { padding: 2px 8px; background: #ffffff1a; border-radius: 10px; font-size: 12px; }
   .albums { margin: 0; padding: 0; list-style: none; }
+  .copies { margin: 0; padding: 0; list-style: none; font-size: 12px; }
+  .copies li { padding: 2px 0; }
   .albums label { display: flex; align-items: center; gap: 8px; padding: 2px 0; cursor: pointer; }
   .chip-remove {
     margin-left: 4px;

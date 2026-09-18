@@ -18,7 +18,7 @@ export interface AppInfo { version: string; libraryPath: string; licence: string
  *  than newest, to match Picasa. */
 export interface Section { folderId: number; offset: number; count: number; takenAtMin: number }
 export interface GridEntry { id: number; folderId: number; takenAt: number; aspect: number; kind: 'image'; thumbKey: string; starred: boolean }
-export type GridView = 'all' | 'starred' | 'recent' | 'search' | 'person' | 'album' | 'tag';
+export type GridView = 'all' | 'starred' | 'recent' | 'search' | 'person' | 'album' | 'tag' | 'duplicates';
 /** `searchQuery`, `person`, `album` and `tag` are the argument of the matching view and
  *  empty/null in every other view: the backend is the source of truth for which one is
  *  active, so the UI reads the argument from here rather than remembering what it asked for. */
@@ -27,6 +27,8 @@ export interface GridInfo {
   len: number;
   sections: Section[];
   starredCount: number;
+  /** Photos with a byte-identical twin elsewhere in the library. */
+  duplicateCount: number;
   view: GridView;
   searchQuery: string;
   /** Picasa contact hash while `view` is 'person'. */
@@ -68,7 +70,10 @@ export interface ViewerItem {
   faces: ItemFace[];
   /** Ids of the albums the photo is in. */
   albums: number[];
+  /** Other files with the same bytes as this one. */
+  copies: ItemCopy[];
 }
+export interface ItemCopy { id: number; path: string }
 export interface Person { hash: string; name: string; count: number }
 export interface TagCount { tag: string; count: number }
 /** A tag the user renamed (`target` set) or removed (`target` null). photon applies it

@@ -69,6 +69,15 @@ done. And an album remembers photos by their library row, so a photo renamed or 
 disk leaves its albums once the old row is purged — stars survive that because they live
 in Picasa's INI, album membership does not.
 
+### Duplicates
+
+photon finds byte-identical files. After each scan it reads only the files that share their
+exact size with another file, so on most libraries almost nothing is read. While any exist,
+a **Duplicates** row in the sidebar shows every photo that has an identical copy, folder by
+folder, and the viewer's info panel lists where a photo's copies are; clicking one locates it.
+photon never deletes anything: use "Reveal in file manager" and decide there. Resized or
+re-saved versions are different files and are not reported.
+
 ### Slideshow and fullscreen
 
 Press `S` in the viewer (or the ▶ button) to play the current view from the photo on screen:
@@ -140,6 +149,8 @@ publishing it.
 
 - [ ] On first launch with a fresh profile, the Pictures folder is added and scanned without asking.
 - [ ] Thumbnails appear within seconds, and scrolling stays smooth while indexing continues.
+- [ ] Copy a photo into another watched folder: within a scan the sidebar gains "⧉ Duplicates (2)", the view shows both files under their folders, and each one's info panel lists the other under "Identical copies"; clicking the path closes the viewer and lands on that copy. Edit or delete one of the two: after the next scan the row disappears.
+- [ ] Upgrade a real library from schema 7: the first scans finish as quickly as before, and duplicates appear shortly after the status bar stops showing a scan.
 - [ ] In the viewer, `S` starts a slideshow: the window goes fullscreen, photos crossfade (no flash of black between them) at the interval from Settings → Slideshow, and the last photo is followed by the first. Space pauses and resumes; ←/→ step and the next photo then stays a full interval; the bar, zoom and ✕ fade out after the pointer rests about 2.5 s and return when it moves. Escape ends the show, leaves fullscreen and stays in the viewer; a second Escape closes the viewer.
 - [ ] Start a slideshow from a window that is already fullscreen (F11 first): ending the show leaves it fullscreen. F11 toggles fullscreen from the grid, the viewer and Settings.
 - [ ] Settings → Slideshow: the field shows the stored interval; entering 0 or 999 snaps to 1 or 60; the next slideshow uses the new value.

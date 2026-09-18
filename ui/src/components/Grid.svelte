@@ -212,6 +212,8 @@
           “{library.albumName(library.info.album)}” is empty. Right-click a photo to add it.
         {:else if library.info.view === 'person'}
           No photos of {library.personName(library.info.person)}.
+        {:else if library.info.view === 'duplicates'}
+          No duplicates. Every photo in the library is the only copy of itself.
         {:else if library.info.view === 'tag'}
           No photos tagged “{library.info.tag}”.
         {:else}

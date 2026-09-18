@@ -1,4 +1,5 @@
 mod albums;
+mod duplicates;
 mod faces;
 mod folders;
 mod items;
@@ -7,6 +8,7 @@ mod settings;
 mod tags;
 
 pub use albums::{Album, AlbumSummary};
+pub use duplicates::{HashCandidate, ItemCopy};
 pub use faces::{ItemFace, Person};
 pub use folders::{Folder, WatchedFolder};
 pub use items::{Item, KnownItem, NewItem, RECENT_LIMIT, is_starred};
@@ -141,7 +143,7 @@ mod tests {
             .unwrap()
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 7);
+        assert_eq!(version, 8);
         let tables: i64 = lib
             .reader()
             .unwrap()
@@ -167,7 +169,7 @@ mod tests {
             Library::open(&path),
             Err(Error::SchemaTooNew {
                 found: 99,
-                supported: 7
+                supported: 8
             })
         ));
     }

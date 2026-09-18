@@ -24,6 +24,7 @@ export class LibraryStore {
     len: 0,
     sections: [],
     starredCount: 0,
+    duplicateCount: 0,
     view: 'all',
     searchQuery: '',
     person: null,

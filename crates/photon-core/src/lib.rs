@@ -1,6 +1,7 @@
 //! photon-core: headless library, scanning and thumbnail engine for photon.
 
 pub mod decode;
+pub mod duplicates;
 pub mod error;
 pub mod grid;
 pub mod iptc;
