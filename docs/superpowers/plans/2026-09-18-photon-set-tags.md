@@ -455,21 +455,7 @@ Add to `mod tests` in `crates/photon-core/src/library/tags.rs`:
         lib.remove_item_tag(ids[0], "vacation").unwrap();
         assert_eq!(lib.item_tags(ids[0]).unwrap(), Vec::<String>::new());
     }
-
-    /// A rename after the fact carries the user's own tags with it, because the overlay is
-    /// read through the same rules as the file's keywords.
-    #[test]
-    fn renaming_a_tag_later_moves_the_users_own_tags_too() {
-        let (_dir, lib, ids) = library_with(&[&["beach"]]);
-        lib.add_item_tag(ids[0], "sunset").unwrap();
-        lib.rename_tag("sunset", "dusk").unwrap();
-        assert_eq!(lib.item_tags(ids[0]).unwrap(), ["beach", "dusk"]);
-        lib.remove_item_tag(ids[0], "dusk").unwrap();
-        assert_eq!(lib.item_tags(ids[0]).unwrap(), ["beach"]);
-    }
 ```
-
-`renaming_a_tag_later_moves_the_users_own_tags_too` needs `rename_tag` to see a tag that exists only in the overlay — that is Task 6. If it fails here for that reason, leave it failing and note it; Task 6's steps re-run it.
 
 - [ ] **Step 2: Run them to verify they fail**
 
@@ -561,7 +547,7 @@ A keyword under a *removal* rule resolves through `coalesce` to its own name and
 - [ ] **Step 5: Run the tests**
 
 Run: `cargo test -p photon-core --lib tags`
-Expected: PASS, except `renaming_a_tag_later_moves_the_users_own_tags_too`, which stays FAILING until Task 6.
+Expected: PASS.
 
 - [ ] **Step 6: Prove the tests discriminate**
 
@@ -572,7 +558,7 @@ Revert the `DELETE FROM tag_rules … target IS NULL` statement alone: `adding_a
 ```bash
 cargo fmt --all
 cargo clippy --workspace --all-targets -- -D warnings
-cargo test -p photon-core --lib tags 2>&1 | tail -20   # one known failure, fixed in Task 6
+cargo test --workspace
 git add crates/photon-core/src/library/tags.rs
 git commit -m "feat(tags): resolve the user's global rules when a photo's tags change"
 ```
@@ -671,7 +657,7 @@ pub(super) const TAG_FILTER: &str = "AND i.id IN (
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `cargo test -p photon-core --lib tags`
-Expected: PASS, except `renaming_a_tag_later_moves_the_users_own_tags_too` from Task 4, still waiting on Task 6.
+Expected: PASS.
 
 - [ ] **Step 5: Extend the plan test**
 
@@ -735,9 +721,19 @@ Add to `mod tests` in `crates/photon-core/src/library/tags.rs`:
         assert_eq!(lib.item_tags(ids[0]).unwrap(), ["beach"]);
         assert_eq!(listed(&lib), [("beach".to_string(), 1)]);
     }
-```
 
-Task 4's `renaming_a_tag_later_moves_the_users_own_tags_too` is failing for the same reason and is fixed by this task.
+    /// A rename after the fact carries the user's own tags with it, because the overlay is
+    /// read through the same rules as the file's keywords.
+    #[test]
+    fn renaming_a_tag_later_moves_the_users_own_tags_too() {
+        let (_dir, lib, ids) = library_with(&[&["beach"]]);
+        lib.add_item_tag(ids[0], "sunset").unwrap();
+        lib.rename_tag("sunset", "dusk").unwrap();
+        assert_eq!(lib.item_tags(ids[0]).unwrap(), ["beach", "dusk"]);
+        lib.remove_item_tag(ids[0], "dusk").unwrap();
+        assert_eq!(lib.item_tags(ids[0]).unwrap(), ["beach"]);
+    }
+```
 
 - [ ] **Step 2: Run them to verify they fail**
 
@@ -788,7 +784,7 @@ Update `rename_tag_with`'s and `tag_rules`'s doc comments, which both say a tag 
 - [ ] **Step 4: Run the tests**
 
 Run: `cargo test -p photon-core --lib tags`
-Expected: PASS — including `renaming_a_tag_later_moves_the_users_own_tags_too` from Task 4.
+Expected: PASS.
 
 - [ ] **Step 5: Prove the test discriminates**
 
