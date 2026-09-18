@@ -3,6 +3,7 @@
   import { writeText } from '@tauri-apps/plugin-clipboard-manager';
   import { api, errorMessage, mediaUrl, type ViewerItem } from '../lib/api';
   import { createAlbumMembership } from '../lib/album-membership.svelte';
+  import { createTagEditor } from '../lib/tag-editor.svelte';
   import { formatCaption } from '../lib/caption';
   import { createCopyFeedback } from '../lib/copied.svelte';
   import { cameraRows } from '../lib/exif';
@@ -89,6 +90,23 @@
 
   function toggleAlbum(albumId: number) {
     membership.toggle(albumId).catch(library.reportError);
+  }
+
+  // The tag editor in the info panel. Bound per photo with the star and the album
+  // checkboxes, and optimistic for the same reason.
+  const tags = createTagEditor({
+    add: (id, tag) => api.addItemTag(id, tag),
+    remove: (id, tag) => api.removeItemTag(id, tag),
+  });
+
+  function addTag() {
+    const draft = tags.draft;
+    tags.draft = '';
+    tags.add(draft).catch(library.reportError);
+  }
+
+  function removeTag(tag: string) {
+    tags.remove(tag).catch(library.reportError);
   }
 
   function rotate(direction: 'cw' | 'ccw') {
@@ -302,6 +320,7 @@
       item = it;
       star.bind(it.id, it.starred);
       membership.bind(it.id, it.albums);
+      tags.bind(it.id, it.tags);
       if (it.thumbState === 'failed') {
         error = it.thumbError ?? "This photo can't be shown.";
         return;
@@ -525,15 +544,41 @@
         <p class="info-muted">No faces named in Picasa.</p>
       {/if}
       <h3>Keywords</h3>
-      {#if item.tags.length}
+      {#if tags.list.length}
         <ul class="chips">
-          {#each item.tags as tag (tag)}
-            <li>{tag}</li>
+          {#each tags.list as tag (tag)}
+            <li>
+              {tag}
+              <button
+                type="button"
+                class="chip-remove"
+                aria-label="Remove {tag}"
+                disabled={tags.busy(tag)}
+                onclick={() => removeTag(tag)}>×</button
+              >
+            </li>
           {/each}
         </ul>
       {:else}
-        <p class="info-muted">No keywords in the file.</p>
+        <p class="info-muted">No keywords yet.</p>
       {/if}
+      <input
+        class="tag-input"
+        list="tag-suggestions"
+        placeholder="Add a keyword"
+        bind:value={tags.draft}
+        onkeydown={(e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            addTag();
+          }
+        }}
+      />
+      <datalist id="tag-suggestions">
+        {#each tags.suggestions(library.tags.map((t) => t.tag)) as name (name)}
+          <option value={name}></option>
+        {/each}
+      </datalist>
       <h3>Albums</h3>
       {#if library.albums.length}
         <ul class="albums">
@@ -683,4 +728,18 @@
   .chips li { padding: 2px 8px; background: #ffffff1a; border-radius: 10px; font-size: 12px; }
   .albums { margin: 0; padding: 0; list-style: none; }
   .albums label { display: flex; align-items: center; gap: 8px; padding: 2px 0; cursor: pointer; }
+  .chip-remove {
+    margin-left: 4px;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: inherit;
+    font: inherit;
+    line-height: 1;
+    cursor: pointer;
+    opacity: 0.6;
+  }
+  .chip-remove:hover:not(:disabled) { opacity: 1; }
+  .chip-remove:disabled { cursor: default; opacity: 0.3; }
+  .tag-input { width: 100%; margin-top: 6px; box-sizing: border-box; }
 </style>
