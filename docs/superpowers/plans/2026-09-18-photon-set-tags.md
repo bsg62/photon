@@ -677,7 +677,9 @@ The existing "no step starts with SCAN" assertion already covers the suppression
 Run: `cargo test -p photon-core the_tag_view_is_served_by_its_index`
 Expected: PASS.
 
-Now drop `WHERE added = 1` from the `CREATE INDEX item_user_tags_tag` statement in migration 7 and re-run — with the partial index gone the third arm can no longer be answered by it, and the test must FAIL. Restore the `WHERE`.
+Now delete the whole `CREATE INDEX item_user_tags_tag` statement from migration 7 and re-run: the user-tag arm falls back to `SCAN item_user_tags` and the test must FAIL. Restore the statement.
+
+Dropping only the `WHERE added = 1` does **not** discriminate, and is not the check to run: SQLite still probes the now-full index for `tag = ?1` and filters `added = 1` itself, so the plan is unchanged. The predicate earns its place by keeping suppression rows out of the index, not by changing this plan.
 
 - [ ] **Step 7: Commit**
 
