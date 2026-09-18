@@ -115,6 +115,11 @@ pub struct Engine {
     /// the second read would miss the first write and the rename would drop it. Held across
     /// the database write too, so the rows land in the order the file did.
     ini_write: Mutex<()>,
+    /// Held by the one thread running the duplicate-hashing pass; see `hash_duplicates`.
+    hashing: Mutex<()>,
+    /// Set by every scan that ends, cleared by the pass as it starts a round. A scan that
+    /// finds the pass already running leaves this behind instead of starting a second one.
+    hash_requested: AtomicBool,
 }
 
 impl Engine {
@@ -165,6 +170,8 @@ impl Engine {
             startup: Mutex::new(None),
             watcher: Mutex::new(None),
             ini_write: Mutex::new(()),
+            hashing: Mutex::new(()),
+            hash_requested: AtomicBool::new(false),
         }))
     }
 
@@ -867,7 +874,7 @@ impl Engine {
     fn run_scan(&self, watched: &WatchedFolder, subtree: Option<PathBuf>, cancel: Arc<AtomicBool>) {
         let options = ScanOptions {
             excluded: self.excluded.clone(),
-            cancel,
+            cancel: cancel.clone(),
         };
         let mut sink = ScanReporter {
             engine: self,
@@ -935,6 +942,57 @@ impl Engine {
         }
         self.events
             .scan_progress(ScanProgressEvent::new(watched.id, &last, true, cancelled));
+        // After the scan has reported done, not before: the pass reads files, and on a
+        // library with many duplicates on a slow drive that is minutes during which the
+        // status bar should not claim the folder is still being scanned.
+        if !cancelled {
+            self.hash_duplicates(&cancel);
+        }
+    }
+
+    /// Hashes the files that may be duplicates (`photon_core::duplicates`) and rebuilds the
+    /// grid if any row took a hash, since the Duplicates view and its count are built from
+    /// them.
+    ///
+    /// Here rather than in the scanner because a duplicate is a fact about the whole
+    /// library, not about the root or subtree one scan walked - and because `walk_tree` has
+    /// two callers, which a pass wired into the scanner has to remember and this does not.
+    /// It runs after *every* scan, changed rows or not: the first scan after the upgrade
+    /// that added the column touches nothing and still has the whole library to hash. With
+    /// nothing to do it is one indexed query.
+    ///
+    /// One pass at a time. Several roots finish their startup scans close together, and two
+    /// passes would read the same files twice. A scan that finds the pass running sets
+    /// `hash_requested` and leaves; the runner goes round again while the flag is set, so
+    /// files indexed after its candidate list was read are not left for the next launch.
+    /// The re-check after the guard is dropped closes the window where the flag is set
+    /// after the runner's last look and before it lets go.
+    ///
+    /// `cancel` is the calling scan's. Cancelling it (its folder is being removed, or photon
+    /// is shutting down) stops the pass even though the files may belong to other roots;
+    /// the next scan of anything picks the work up.
+    fn hash_duplicates(&self, cancel: &AtomicBool) {
+        self.hash_requested.store(true, Ordering::Release);
+        loop {
+            let Some(guard) = self.hashing.try_lock() else {
+                return;
+            };
+            while self.hash_requested.swap(false, Ordering::AcqRel) {
+                match photon_core::duplicates::hash_candidates(&self.lib, cancel) {
+                    Ok(0) => {}
+                    Ok(_) => {
+                        if let Err(err) = self.refresh_grid() {
+                            tracing::warn!(%err, "grid refresh failed");
+                        }
+                    }
+                    Err(err) => tracing::warn!(%err, "duplicate hashing failed"),
+                }
+            }
+            drop(guard);
+            if !self.hash_requested.load(Ordering::Acquire) {
+                return;
+            }
+        }
     }
 }
 
@@ -1009,6 +1067,34 @@ mod tests {
     use crate::events::Recorded;
     use crate::testutil::{fixture, jpeg};
     use photon_core::media::ThumbState;
+
+    /// The hashing pass is wired into the end of a scan, and its result reaches everything
+    /// built on it: the count in `grid_info`, the Duplicates view, and a photo's copies.
+    /// `wait_for_scans` covers the pass, since it runs on the scan's thread. Without the
+    /// call in `run_scan` nothing is ever hashed and every assertion below reads zero.
+    #[test]
+    fn a_scan_finds_the_duplicates_it_indexed() {
+        let same = jpeg(4, 2);
+        let mut padded = same.clone();
+        padded.extend_from_slice(b"a size of its own");
+        let f = fixture(&[
+            ("a/one.jpg", &same),
+            ("b/two.jpg", &same),
+            ("b/three.jpg", &padded),
+        ]);
+        f.add_photos();
+
+        let info = crate::commands::grid_info(&f.engine);
+        assert_eq!(info.duplicate_count, 2);
+        assert_eq!(info.len, 3, "the All view is untouched");
+
+        f.engine.set_view(GridView::Duplicates).unwrap();
+        let ids = f.ids();
+        assert_eq!(ids.len(), 2);
+        let item = crate::commands::viewer_item(&f.engine, ids[0]).unwrap();
+        assert_eq!(item.copies.len(), 1);
+        assert_eq!(item.copies[0].id, ids[1]);
+    }
 
     /// Both readers of `excluded` compare it against a canonical path - `add_watched_folder`
     /// canonicalizes the root it checks, and the watcher canonicalizes every event directory

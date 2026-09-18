@@ -70,6 +70,7 @@ describe('LibraryStore', () => {
       len: 0,
       sections: [],
       starredCount: 0,
+      duplicateCount: 0,
       view: 'all',
       searchQuery: '',
       person: null,
@@ -284,6 +285,7 @@ describe('LibraryStore', () => {
       len: 2,
       sections: [],
       starredCount: 0,
+      duplicateCount: 0,
       view: 'all',
       searchQuery: '',
       person: null,
@@ -302,6 +304,7 @@ describe('LibraryStore', () => {
       len: 3,
       sections: [],
       starredCount: 0,
+      duplicateCount: 0,
       view: 'all',
       searchQuery: '',
       person: null,
@@ -324,6 +327,7 @@ describe('LibraryStore', () => {
       len: 5,
       sections: [],
       starredCount: 0,
+      duplicateCount: 0,
       view: 'all',
       searchQuery: '',
       person: null,
@@ -340,6 +344,7 @@ describe('LibraryStore', () => {
       len: 6,
       sections: [],
       starredCount: 0,
+      duplicateCount: 0,
       view: 'all',
       searchQuery: '',
       person: null,
@@ -360,6 +365,7 @@ describe('LibraryStore', () => {
       len: 5,
       sections: [],
       starredCount: 0,
+      duplicateCount: 0,
       view: 'all',
       searchQuery: '',
       person: null,
@@ -375,6 +381,7 @@ describe('LibraryStore', () => {
       len: 2,
       sections: [],
       starredCount: 0,
+      duplicateCount: 0,
       view: 'all',
       searchQuery: '',
       person: null,
@@ -390,6 +397,7 @@ describe('LibraryStore', () => {
       len: 0,
       sections: [],
       starredCount: 0,
+      duplicateCount: 0,
       view: 'all',
       searchQuery: '',
       person: null,
@@ -448,6 +456,7 @@ describe('LibraryStore', () => {
       len: number;
       sections: never[];
       starredCount: number;
+      duplicateCount: number;
       view: 'all';
       searchQuery: string;
       person: null;
@@ -467,7 +476,7 @@ describe('LibraryStore', () => {
     const initPromise = store.init();
     store.dispose();
     listenGate.resolve();
-    gridInfoGate.resolve({ version: 1, len: 0, sections: [], starredCount: 0, view: 'all', searchQuery: '', person: null, album: null, tag: null });
+    gridInfoGate.resolve({ version: 1, len: 0, sections: [], starredCount: 0, duplicateCount: 0, view: 'all', searchQuery: '', person: null, album: null, tag: null });
     await initPromise;
 
     expect(unlistenCounts.libraryChanged).toBe(1);
@@ -496,7 +505,7 @@ describe('LibraryStore', () => {
     expect(api.setGridView).toHaveBeenCalledWith('starred');
     expect(resolved).toBe(false);
 
-    refreshGate.resolve({ version: 2, len: 0, sections: [], starredCount: 0, view: 'starred', searchQuery: '', person: null, album: null, tag: null });
+    refreshGate.resolve({ version: 2, len: 0, sections: [], starredCount: 0, duplicateCount: 0, view: 'starred', searchQuery: '', person: null, album: null, tag: null });
     await setViewPromise;
 
     expect(resolved).toBe(true);
@@ -525,6 +534,7 @@ describe('LibraryStore', () => {
       len: 2,
       sections: [],
       starredCount: 0,
+      duplicateCount: 0,
       view: 'all',
       searchQuery: '',
       person: null,
@@ -565,6 +575,7 @@ describe('LibraryStore', () => {
       len: 0,
       sections: [],
       starredCount: 0,
+      duplicateCount: 0,
       view: 'search',
       searchQuery: 'beach',
       person: null,

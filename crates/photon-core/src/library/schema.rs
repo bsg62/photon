@@ -160,6 +160,17 @@ CREATE TABLE item_user_tags (
 -- through the primary key, correlated to one item.
 CREATE INDEX item_user_tags_tag ON item_user_tags(tag) WHERE added = 1;
 "#,
+    r#"
+-- The duplicate finder. content_hash is the XXH3-128 of the file's bytes, and NULL for
+-- nearly every row: only files that share a byte size with another file are ever read
+-- (duplicates.rs), since two files of different sizes cannot be identical. A row whose
+-- file changes goes back to NULL in update_items.
+ALTER TABLE items ADD COLUMN content_hash BLOB;
+-- Finds the sizes held by more than one file, which is the candidate query.
+CREATE INDEX items_size ON items(size) WHERE missing_since IS NULL;
+-- Finds the hashes held by more than one file: the Duplicates view and a photo's copies.
+CREATE INDEX items_content_hash ON items(content_hash) WHERE content_hash IS NOT NULL;
+"#,
 ];
 
 pub fn migrate(conn: &Connection) -> Result<()> {
@@ -328,7 +339,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 7);
+        assert_eq!(version, 8);
         let rules: i64 = conn
             .query_row("SELECT count(*) FROM tag_rules", [], |r| r.get(0))
             .unwrap();
@@ -487,7 +498,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 7);
+        assert_eq!(version, 8);
         let overlay: i64 = conn
             .query_row("SELECT count(*) FROM item_user_tags", [], |r| r.get(0))
             .unwrap();
@@ -503,5 +514,46 @@ mod tests {
             .query_row("SELECT target FROM tag_rules", [], |r| r.get(0))
             .unwrap();
         assert_eq!(target, "seaside");
+    }
+    /// The column arrives NULL on every existing row, which is what makes the first scan
+    /// after the upgrade hash the library's same-size files rather than trust a default.
+    #[test]
+    fn the_eighth_migration_adds_an_empty_content_hash_to_existing_rows() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        for sql in &MIGRATIONS[..7] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 7i64).unwrap();
+        conn.execute(
+            "INSERT INTO watched_folders (id, path) VALUES (1, '/p')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO folders (id, watched_id, parent_id, path, name, sort_key) \
+             VALUES (1, 1, NULL, '/p', 'p', 'p')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO items (id, folder_id, path, file_name, kind, size, mtime_ms, width, \
+             height, orientation, taken_at) \
+             VALUES (1, 1, '/p/a.jpg', 'a.jpg', 0, 1, 1, 1, 1, 1, 1)",
+            [],
+        )
+        .unwrap();
+
+        migrate(&conn).unwrap();
+
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, 8);
+        let hash: Option<Vec<u8>> = conn
+            .query_row("SELECT content_hash FROM items WHERE id = 1", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(hash, None);
     }
 }

@@ -24,6 +24,9 @@ pub enum GridView {
     Album,
     /// Photos carrying one keyword. The keyword is the view argument.
     Tag,
+    /// Photos with a byte-identical twin elsewhere in the library (`duplicates.rs`). A
+    /// filter like Starred, so it keeps the folder-first order and everything built on it.
+    Duplicates,
 }
 
 impl GridView {

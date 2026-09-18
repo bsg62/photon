@@ -199,6 +199,15 @@ item, or changing `path`/`size`/`mtime_ms`, the fingerprint columns — must cal
 three, so a *new* orphaning write is not caught automatically; the seven-day `THUMB_GC_MAX_AGE`
 in `engine.rs` bounds the damage of a miss.
 
+**The duplicate finder hashes after the scan, in the engine.** `items.content_hash` (XXH3-128,
+NULL for almost every row) is filled by `photon_core::duplicates::hash_candidates`, which reads
+only files sharing a byte size with another live file. `Engine::hash_duplicates` runs it at the
+end of every `run_scan` - not inside the scanner, so neither of `walk_tree`'s callers can be
+forgotten, and because a duplicate is a fact about the whole library. Any write that replaces
+a file's fingerprint must set `content_hash = NULL` (today `update_items`); a row that keeps a
+stale hash is never a candidate again. `set_content_hash` refuses a row whose size or mtime
+moved since the candidate was listed.
+
 There is no `COLLATE NOCASE` anywhere and `lower()` is ASCII-only without ICU (a native
 dependency this project does not take), so **case-insensitive matching is done in Rust**, not
 in SQL.

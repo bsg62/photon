@@ -1,4 +1,5 @@
 use super::Library;
+use super::duplicates::DUPLICATE_FILTER;
 use super::tags::{EFFECTIVE_TAGS, TAG_FILTER};
 use crate::Result;
 use crate::grid::{GridEntry, GridView};
@@ -295,6 +296,7 @@ impl Library {
     }
 
     /// Replaces changed (or reappeared) items. Their thumbnails must be rebuilt.
+    /// So must their content hash: it described bytes the file no longer holds.
     ///
     /// Deliberately does not touch `rating`: a star is not a property of the file (see
     /// `set_ratings`), and `NewItem.rating` is always `None` for a scanned file. Writing it
@@ -312,7 +314,8 @@ impl Library {
                         width = ?8, height = ?9, orientation = ?10, taken_at = ?11,
                         make = ?12, model = ?13, lens = ?14, focal_mm = ?15, aperture = ?16, exposure_s = ?17, iso = ?18,
                         exif_version = ?19,
-                        thumb_state = 0, thumb_error = NULL, missing_since = NULL
+                        thumb_state = 0, thumb_error = NULL, missing_since = NULL,
+                        content_hash = NULL
                  WHERE id = ?1",
             )?;
             for (id, it) in items {
@@ -643,6 +646,7 @@ impl Library {
                 )
             }
             GridView::Tag => self.entries_filtered(TAG_FILTER, &[&arg]),
+            GridView::Duplicates => self.entries_filtered(DUPLICATE_FILTER, &[]),
         }
     }
 
