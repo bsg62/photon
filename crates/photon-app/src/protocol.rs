@@ -2,7 +2,11 @@
 //!
 //! - `/thumb/<id>/<grid|preview>/<thumbKey>`: WebP, built on demand, cached forever
 //!   (`thumbKey` changes when the file does).
-//! - `/image/<id>`: the original file.
+//! - `/image/<id>`: the original file - or, for a photo with an edit, the edited picture
+//!   rendered on the fly (`photon_core::edit::render_full`). The file itself is never what
+//!   an edited photo shows.
+//! - `/image/<id>/uncropped`: the same without the crop, which is what the crop tool draws
+//!   its rectangle on.
 
 use crate::engine::Engine;
 use photon_core::{Error, thumbs::ThumbSize};
@@ -15,7 +19,8 @@ pub fn handle(engine: &Engine, path: &str) -> Response<Vec<u8>> {
     let parts: Vec<&str> = path.trim_start_matches('/').split('/').collect();
     match parts.as_slice() {
         ["thumb", id, size, ..] => thumb(engine, id, size),
-        ["image", id] => image(engine, id),
+        ["image", id] => image(engine, id, true),
+        ["image", id, "uncropped"] => image(engine, id, false),
         _ => text(StatusCode::NOT_FOUND, "not found"),
     }
 }
@@ -43,7 +48,7 @@ fn thumb(engine: &Engine, id: &str, size: &str) -> Response<Vec<u8>> {
     }
 }
 
-fn image(engine: &Engine, id: &str) -> Response<Vec<u8>> {
+fn image(engine: &Engine, id: &str, cropped: bool) -> Response<Vec<u8>> {
     let Ok(id) = id.parse::<i64>() else {
         return text(StatusCode::BAD_REQUEST, "bad id");
     };
@@ -52,6 +57,24 @@ fn image(engine: &Engine, id: &str) -> Response<Vec<u8>> {
         Ok(_) => return text(StatusCode::NOT_FOUND, "not found"),
         Err(err) => return text(StatusCode::INTERNAL_SERVER_ERROR, &err.to_string()),
     };
+    let edit = if cropped {
+        item.edit
+    } else {
+        item.edit.without_crop()
+    };
+    if !edit.is_identity() {
+        // `no-cache`, like the original: the URL does not change with the edit, so the
+        // webview must ask again. The UI adds the thumbnail key as a query for the same
+        // reason - an `<img>` given the URL it already has does not refetch at all.
+        return match photon_core::edit::render_full(Path::new(&item.path), item.orientation, edit) {
+            Ok((bytes, mime)) => ok(bytes, mime, "no-cache"),
+            Err(Error::Io(err)) if err.kind() == std::io::ErrorKind::NotFound => {
+                text(StatusCode::NOT_FOUND, "not found")
+            }
+            Err(Error::Io(err)) => text(StatusCode::SERVICE_UNAVAILABLE, &err.to_string()),
+            Err(err) => text(StatusCode::INTERNAL_SERVER_ERROR, &err.to_string()),
+        };
+    }
     match std::fs::read(&item.path) {
         Ok(bytes) => ok(bytes, mime_for(Path::new(&item.path)), "no-cache"),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
@@ -130,6 +153,33 @@ mod tests {
         assert_eq!(r.status(), 200);
         assert_eq!(header(&r, "content-type"), "image/jpeg");
         assert_eq!(r.body(), &img);
+    }
+
+    #[test]
+    fn an_edited_photo_is_served_as_the_edit_not_as_the_file() {
+        let img = jpeg(40, 20);
+        let f = fixture(&[("a.jpg", &img)]);
+        f.add_photos();
+        let id = f.ids()[0];
+        let dims = |path: &str| {
+            let r = handle(&f.engine, path);
+            assert_eq!(r.status(), 200, "{path}");
+            let picture = image::load_from_memory(r.body()).unwrap();
+            (picture.width(), picture.height())
+        };
+        assert_eq!(handle(&f.engine, &format!("/image/{id}")).body(), &img);
+
+        // Turned clockwise (20x40), then the top half of that.
+        crate::commands::set_item_edit(&f.engine, id, 1, Some([0, 0, 65535, 32768])).unwrap();
+        assert_eq!(dims(&format!("/image/{id}")), (20, 20));
+        assert_eq!(
+            dims(&format!("/image/{id}/uncropped")),
+            (20, 40),
+            "the crop tool draws on the whole turned picture"
+        );
+        let r = handle(&f.engine, &format!("/image/{id}"));
+        assert_eq!(header(&r, "content-type"), "image/jpeg");
+        assert_eq!(header(&r, "cache-control"), "no-cache");
     }
 
     #[test]
