@@ -130,9 +130,10 @@ impl Library {
     /// renaming a tag back to its original name a restore: the first update turned the
     /// original's rule into `to → to`.
     ///
-    /// `from` gets a rule only if some photo carries it as a keyword. A name that exists
-    /// only as another rule's target (`vacation` after `holiday → vacation`) has nothing to
-    /// rename, and a rule for it would show in Settings as a change no photo reflects.
+    /// `from` gets a rule only if some photo carries it as a keyword or as a tag the user
+    /// added. A name that exists only as another rule's target (`vacation` after
+    /// `holiday → vacation`) has nothing to rename, and a rule for it would show in Settings
+    /// as a change no photo reflects.
     pub fn rename_tag(&self, from: &str, to: &str) -> Result<String> {
         self.rename_tag_with(from, to, |_| ())
     }
@@ -161,6 +162,8 @@ impl Library {
         tx.execute(
             "INSERT INTO tag_rules (tag, target)
              SELECT ?1, ?2 WHERE EXISTS (SELECT 1 FROM item_tags WHERE tag = ?1)
+                              OR EXISTS (SELECT 1 FROM item_user_tags
+                                         WHERE tag = ?1 AND added = 1)
              ON CONFLICT (tag) DO UPDATE SET target = excluded.target",
             params![from, to],
         )?;
@@ -183,6 +186,8 @@ impl Library {
         tx.execute(
             "INSERT INTO tag_rules (tag, target)
              SELECT ?1, NULL WHERE EXISTS (SELECT 1 FROM item_tags WHERE tag = ?1)
+                               OR EXISTS (SELECT 1 FROM item_user_tags
+                                          WHERE tag = ?1 AND added = 1)
              ON CONFLICT (tag) DO UPDATE SET target = NULL",
             params![tag],
         )?;
@@ -261,8 +266,8 @@ impl Library {
         Ok(())
     }
 
-    /// Every rule whose keyword some photo still carries, sorted by tag case-insensitively
-    /// in Rust (`lower()` is ASCII-only without ICU).
+    /// Every rule whose keyword some photo still carries as a keyword or as a tag the user
+    /// added, sorted by tag case-insensitively in Rust (`lower()` is ASCII-only without ICU).
     ///
     /// A photo on an offline drive still counts: its rows stay until the scanner purges
     /// them. A rule whose keyword has gone entirely is kept but not listed. It applies to
@@ -272,7 +277,9 @@ impl Library {
         let conn = self.reader()?;
         let mut stmt = conn.prepare(
             "SELECT r.tag, r.target FROM tag_rules r
-             WHERE EXISTS (SELECT 1 FROM item_tags t WHERE t.tag = r.tag)",
+             WHERE EXISTS (SELECT 1 FROM item_tags t WHERE t.tag = r.tag)
+                OR EXISTS (SELECT 1 FROM item_user_tags u
+                           WHERE u.tag = r.tag AND u.added = 1)",
         )?;
         let mut rules = stmt
             .query_map([], |r| {
@@ -662,5 +669,33 @@ mod tests {
             )
             .unwrap();
         assert_eq!(tag_view(&lib, "vacation"), [ids[0]]);
+    }
+
+    /// A tag that exists only because the user added it is still the user's tag: the tag
+    /// manager has to be able to rename it, remove it, and list what it did.
+    #[test]
+    fn a_tag_that_exists_only_as_a_user_tag_can_be_managed() {
+        let (_dir, lib, ids) = library_with(&[&["beach"]]);
+        lib.add_item_tag(ids[0], "sunset").unwrap();
+
+        lib.rename_tag("sunset", "dusk").unwrap();
+        assert_eq!(lib.tag_rules().unwrap(), [rule("sunset", Some("dusk"))]);
+        assert_eq!(lib.item_tags(ids[0]).unwrap(), ["beach", "dusk"]);
+
+        lib.hide_tag("dusk").unwrap();
+        assert_eq!(lib.item_tags(ids[0]).unwrap(), ["beach"]);
+        assert_eq!(listed(&lib), [("beach".to_string(), 1)]);
+    }
+
+    /// A rename after the fact carries the user's own tags with it, because the overlay is
+    /// read through the same rules as the file's keywords.
+    #[test]
+    fn renaming_a_tag_later_moves_the_users_own_tags_too() {
+        let (_dir, lib, ids) = library_with(&[&["beach"]]);
+        lib.add_item_tag(ids[0], "sunset").unwrap();
+        lib.rename_tag("sunset", "dusk").unwrap();
+        assert_eq!(lib.item_tags(ids[0]).unwrap(), ["beach", "dusk"]);
+        lib.remove_item_tag(ids[0], "dusk").unwrap();
+        assert_eq!(lib.item_tags(ids[0]).unwrap(), ["beach"]);
     }
 }
