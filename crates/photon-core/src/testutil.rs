@@ -77,6 +77,8 @@ pub struct ExifSpec<'a> {
     pub orientation: Option<u16>,
     /// `DateTimeOriginal`, exactly "YYYY:MM:DD HH:MM:SS".
     pub datetime: Option<&'a str>,
+    /// `DateTime` (the file-change date in IFD0), same format.
+    pub modified: Option<&'a str>,
     pub make: Option<&'a str>,
     pub model: Option<&'a str>,
     pub lens: Option<&'a str>,
@@ -202,6 +204,10 @@ pub fn exif_tiff(spec: &ExifSpec<'_>) -> Vec<u8> {
     }
     if let Some(o) = spec.orientation {
         ifd0.push(short_entry(0x0112, o));
+    }
+    if let Some(dt) = spec.modified {
+        assert_eq!(dt.len(), 19, "modified must be YYYY:MM:DD HH:MM:SS");
+        ifd0.push(ascii_entry(0x0132, dt));
     }
     // The pointer's value is the offset of the Exif IFD, which sits right after IFD0 and
     // its data; lay IFD0 out once with a placeholder to learn its length.

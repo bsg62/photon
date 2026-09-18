@@ -11,7 +11,31 @@ use std::{
 /// A header read per file, not a decode.
 ///
 /// 0 is reserved for rows that predate the camera columns (the migration's default).
-pub const EXIF_VERSION: i64 = 1;
+/// 2 is the first generation that refuses an implausible capture date (see
+/// [`plausible_taken_at`]); the bump is what re-dates photos indexed under 1.
+pub const EXIF_VERSION: i64 = 2;
+
+/// Capture dates earlier than this are refused: 1970-01-01, in naive-as-UTC seconds. A
+/// camera whose clock was never set writes 0000 or 1900-something, and no digital camera
+/// predates the bound. The cost is a scan deliberately back-dated in EXIF to before 1970,
+/// which falls back to the file's mtime like a photo with no EXIF at all - accepted when
+/// the bound was chosen (spec `2026-09-18-photon-exif-date-sanity-design.md`).
+const EARLIEST_TAKEN_AT: i64 = 0;
+
+/// How far past "now" a capture date may lie and still be believed. `taken_at` is the
+/// camera's naive local time read as UTC, so an honest photo taken this minute in UTC+14
+/// reads fourteen hours ahead; a day covers every timezone with room to spare.
+const FUTURE_SLACK_S: i64 = 24 * 60 * 60;
+
+/// Whether a capture date can be believed, given the current time in Unix seconds.
+///
+/// One file with a broken date is not a local problem: a folder is filed in the sidebar
+/// and placed in the grid by its photos' dates, so a single photo dated 4501 drags its
+/// whole folder to the top of the library. A refused date makes the caller fall back to
+/// the file's mtime, the same path a photo without EXIF takes.
+pub(crate) fn plausible_taken_at(taken_at: i64, now: i64) -> bool {
+    (EARLIEST_TAKEN_AT..=now + FUTURE_SLACK_S).contains(&taken_at)
+}
 
 /// What the camera wrote about itself and the exposure. Every field is optional because
 /// every field is: a phone omits the lens, a scan omits everything.
@@ -47,6 +71,14 @@ pub struct ImageMeta {
 
 /// Reads dimensions and EXIF data. Never fails: missing data falls back to defaults.
 pub fn read_image_meta(path: &Path) -> ImageMeta {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(i64::MAX - FUTURE_SLACK_S, |d| d.as_secs() as i64);
+    read_image_meta_at(path, now)
+}
+
+/// [`read_image_meta`] with the clock passed in, so the future bound can be tested.
+pub(crate) fn read_image_meta_at(path: &Path, now: i64) -> ImageMeta {
     let (dims, exif) = read_header(path);
     let (width, height) = dims.unwrap_or((0, 0));
     let mut meta = ImageMeta {
@@ -71,9 +103,13 @@ pub fn read_image_meta(path: &Path) -> ImageMeta {
             exif::Tag::DateTime,
         ]
         .iter()
+        // The plausibility check sits inside the search, not after it: a file whose
+        // DateTimeOriginal is garbage often still carries a sane DateTime, and that beats
+        // falling all the way back to the mtime.
         .find_map(|&tag| {
             exif.get_field(tag, exif::In::PRIMARY)
                 .and_then(|f| parse_exif_datetime(&f.value))
+                .filter(|&t| plausible_taken_at(t, now))
         });
         meta.camera = read_camera(&exif);
     }
@@ -371,6 +407,60 @@ mod tests {
     fn rejects_zeroed_exif_dates() {
         let value = exif::Value::Ascii(vec![b"0000:00:00 00:00:00".to_vec()]);
         assert_eq!(parse_exif_datetime(&value), None);
+    }
+
+    #[test]
+    fn a_capture_date_is_believed_only_between_1970_and_tomorrow() {
+        let now = 1_718_454_645; // 2024-06-15
+        assert!(plausible_taken_at(0, now));
+        assert!(!plausible_taken_at(-1, now), "1969 predates the bound");
+        assert!(
+            plausible_taken_at(now + FUTURE_SLACK_S, now),
+            "UTC+14 today"
+        );
+        assert!(!plausible_taken_at(now + FUTURE_SLACK_S + 1, now));
+    }
+
+    #[test]
+    fn an_implausible_exif_date_is_not_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let now = 1_718_454_645; // 2024-06-15
+        let future = write_file(
+            dir.path(),
+            "future.jpg",
+            &jpeg_with_exif(4, 2, 1, "4501:01:01 00:00:00"),
+        );
+        assert_eq!(read_image_meta_at(&future, now).taken_at, None);
+        let ancient = write_file(
+            dir.path(),
+            "ancient.jpg",
+            &jpeg_with_exif(4, 2, 1, "1900:01:01 00:00:00"),
+        );
+        assert_eq!(read_image_meta_at(&ancient, now).taken_at, None);
+        // The same file read by a clock past its date is believed: the bound is relative
+        // to now, not a constant.
+        let sane = write_file(
+            dir.path(),
+            "sane.jpg",
+            &jpeg_with_exif(4, 2, 1, "2024:06:15 12:30:45"),
+        );
+        assert_eq!(read_image_meta_at(&sane, now).taken_at, Some(1_718_454_645));
+        assert_eq!(read_image_meta_at(&sane, 1_000_000_000).taken_at, None);
+    }
+
+    #[test]
+    fn a_sane_later_date_tag_beats_an_implausible_earlier_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let spec = ExifSpec {
+            datetime: Some("4501:01:01 00:00:00"),
+            modified: Some("2024:06:15 12:30:45"),
+            ..ExifSpec::default()
+        };
+        let path = write_file(dir.path(), "a.jpg", &jpeg_with_exif_spec(4, 2, &spec));
+        assert_eq!(
+            read_image_meta_at(&path, 1_800_000_000).taken_at,
+            Some(1_718_454_645)
+        );
     }
 
     #[test]

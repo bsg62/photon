@@ -153,8 +153,10 @@ today is `apply_picasa`, which applies stars *and* faces from one `picasa::read_
 **The metadata backfill.** `items.exif_version` records which generation of
 `read_image_meta` last read a file; `metadata::EXIF_VERSION` is the current one. An
 unchanged file whose stored version is behind is re-described and written through
-`update_item_meta` (camera columns, keywords, the version; not the fingerprint columns,
-not `rating`). Adding a field to `describe()` without bumping `EXIF_VERSION` leaves every
+`update_item_meta` (camera columns, keywords, `taken_at`, the version; not the fingerprint
+columns, not `rating`). `taken_at` is included because a capture date outside 1970..tomorrow
+is refused (`plausible_taken_at`) and the backfill is the only way an unchanged file is
+re-dated. Adding a field to `describe()` without bumping `EXIF_VERSION` leaves every
 existing photo without it forever. Keywords come from the file (XMP `dc:subject` and IPTC
 2:25, `keywords.rs`) into `item_tags`; every writer of an item row goes through
 `write_tags`. Every *reader* of keywords goes through `EFFECTIVE_TAGS` or `TAG_FILTER` in
