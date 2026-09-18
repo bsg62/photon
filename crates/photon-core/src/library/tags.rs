@@ -35,13 +35,20 @@ pub struct TagCount {
     pub count: i64,
 }
 
-/// Each keyword row with the rules applied: `(item_id, tag, seq)`, a renamed keyword under
-/// its new name, a removed one absent. `seq` is `item_tags`' rowid, the order the file
-/// listed the keywords in. One photo can list two keywords that now share a name, so a
-/// reader that needs each once must de-duplicate.
+/// Each effective keyword row with the rules applied: `(item_id, tag, src, seq)`. A
+/// renamed keyword appears under its new name, a removed one is absent, and a tag the user
+/// added to one photo joins the file's own keywords. `src` is 0 for a file keyword and 1
+/// for a user addition; `seq` is the source table's rowid, so `ORDER BY src, seq` is the
+/// file's own keyword order followed by the order the user added tags in. One photo can
+/// list two keywords that now share a name, so a reader that needs each once must
+/// de-duplicate.
 pub(super) const EFFECTIVE_TAGS: &str =
-    "SELECT t.item_id, coalesce(r.target, t.tag) AS tag, t.rowid AS seq
-     FROM item_tags t LEFT JOIN tag_rules r ON r.tag = t.tag
+    "SELECT t.item_id, coalesce(r.target, t.tag) AS tag, t.src, t.seq
+     FROM (SELECT it.item_id, it.tag, 0 AS src, it.rowid AS seq FROM item_tags it
+           UNION ALL
+           SELECT u.item_id, u.tag, 1 AS src, u.rowid AS seq
+             FROM item_user_tags u WHERE u.added = 1) t
+     LEFT JOIN tag_rules r ON r.tag = t.tag
      WHERE r.tag IS NULL OR r.target IS NOT NULL";
 
 /// The Tag view's filter for the name bound to `?1`: every keyword renamed to it, plus the
@@ -63,7 +70,7 @@ impl Library {
     pub fn item_tags(&self, item_id: i64) -> Result<Vec<String>> {
         let conn = self.reader()?;
         let mut stmt = conn.prepare_cached(&format!(
-            "SELECT tag FROM ({EFFECTIVE_TAGS}) WHERE item_id = ?1 ORDER BY seq"
+            "SELECT tag FROM ({EFFECTIVE_TAGS}) WHERE item_id = ?1 ORDER BY src, seq"
         ))?;
         let mut tags: Vec<String> = Vec::new();
         for tag in stmt.query_map(params![item_id], |r| r.get::<_, String>(0))? {
@@ -177,6 +184,18 @@ impl Library {
         self.writer()
             .execute("DELETE FROM tag_rules WHERE tag = ?1", params![tag])?;
         Ok(())
+    }
+
+    /// Adds `tag` to one photo, returning the name stored. Adding a name the photo already
+    /// carries is not an error: it leaves the photo with the tag, which is what was asked.
+    pub fn add_item_tag(&self, item_id: i64, tag: &str) -> Result<String> {
+        let tag = valid_name(tag)?;
+        self.writer().execute(
+            "INSERT INTO item_user_tags (item_id, tag, added) VALUES (?1, ?2, 1)
+             ON CONFLICT (item_id, tag) DO UPDATE SET added = 1",
+            params![item_id, tag],
+        )?;
+        Ok(tag.to_string())
     }
 
     /// Every rule whose keyword some photo still carries, sorted by tag case-insensitively
@@ -427,5 +446,44 @@ mod tests {
         lib.update_item_meta(&[(ids[0], reread)]).unwrap();
         assert_eq!(lib.item_tags(ids[0]).unwrap(), ["vacation"]);
         assert_eq!(tag_view(&lib, "vacation"), [ids[0]]);
+    }
+
+    #[test]
+    fn a_tag_the_user_adds_shows_after_the_file_keywords() {
+        let (_dir, lib, ids) = library_with(&[&["beach"]]);
+        assert_eq!(lib.add_item_tag(ids[0], "  sunset ").unwrap(), "sunset");
+        assert_eq!(lib.item_tags(ids[0]).unwrap(), ["beach", "sunset"]);
+    }
+
+    #[test]
+    fn a_blank_tag_is_refused() {
+        let (_dir, lib, ids) = library_with(&[&["beach"]]);
+        assert!(matches!(
+            lib.add_item_tag(ids[0], "   "),
+            Err(Error::EmptyTagName)
+        ));
+        assert_eq!(lib.item_tags(ids[0]).unwrap(), ["beach"]);
+    }
+
+    #[test]
+    fn adding_a_tag_the_file_already_carries_shows_it_once() {
+        let (_dir, lib, ids) = library_with(&[&["beach"]]);
+        lib.add_item_tag(ids[0], "beach").unwrap();
+        assert_eq!(lib.item_tags(ids[0]).unwrap(), ["beach"]);
+    }
+
+    /// The reason the overlay is a second table: the scanner rewrites a photo's item_tags
+    /// rows from the file whenever it re-reads it, and the user's tag must outlive that.
+    #[test]
+    fn a_user_tag_survives_rereading_the_keywords() {
+        let (_dir, lib, ids) = library_with(&[&["beach"]]);
+        lib.add_item_tag(ids[0], "sunset").unwrap();
+        let row = lib.item(ids[0]).unwrap().unwrap();
+        let reread = NewItem {
+            tags: vec!["beach".into()],
+            ..new_item(row.folder_id, &row.path, row.taken_at)
+        };
+        lib.update_item_meta(&[(ids[0], reread)]).unwrap();
+        assert_eq!(lib.item_tags(ids[0]).unwrap(), ["beach", "sunset"]);
     }
 }
