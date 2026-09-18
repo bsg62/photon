@@ -698,4 +698,23 @@ mod tests {
         lib.remove_item_tag(ids[0], "dusk").unwrap();
         assert_eq!(lib.item_tags(ids[0]).unwrap(), ["beach"]);
     }
+
+    /// Hiding a tag the user added directly creates a rule, so the tag is removed and the
+    /// rule is listed. The first UPDATE in hide_tag is a no-op when nothing targets the tag
+    /// yet, so the INSERT's OR EXISTS is what writes the rule.
+    #[test]
+    fn hiding_a_freshly_added_overlay_tag_creates_its_rule() {
+        let (_dir, lib, ids) = library_with(&[&["beach"]]);
+        lib.add_item_tag(ids[0], "vacation").unwrap();
+        assert_eq!(lib.item_tags(ids[0]).unwrap(), ["beach", "vacation"]);
+        assert_eq!(
+            listed(&lib),
+            [("beach".to_string(), 1), ("vacation".to_string(), 1)]
+        );
+
+        lib.hide_tag("vacation").unwrap();
+        assert_eq!(lib.item_tags(ids[0]).unwrap(), ["beach"]);
+        assert_eq!(listed(&lib), [("beach".to_string(), 1)]);
+        assert_eq!(lib.tag_rules().unwrap(), [rule("vacation", None)]);
+    }
 }
