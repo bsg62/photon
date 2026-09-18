@@ -57,7 +57,13 @@ export function createTagEditor(deps: {
     },
 
     /** Adds `tag` to the bound photo. A blank name, a name already shown, or one already in
-     *  flight is dropped: each would be a call whose result the user can already see. */
+     *  flight is dropped: each would be a call whose result the user can already see.
+     *
+     *  If the backend returns a stored name that is already in the list (typing `holiday`
+     *  under `holiday → vacation` when the photo already shows `vacation`), the existing
+     *  entry is removed and re-appended, so it silently moves to the end of the panel. No
+     *  duplication, no data loss, and it resets at the next `bind` — accepted behaviour,
+     *  not a bug. */
     async add(tag: string): Promise<void> {
       const name = tag.trim();
       if (bound === null || !name || pending.has(name)) return;

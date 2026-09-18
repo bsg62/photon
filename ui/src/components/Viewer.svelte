@@ -102,7 +102,12 @@
   function addTag() {
     const draft = tags.draft;
     tags.draft = '';
-    tags.add(draft).catch(library.reportError);
+    tags.add(draft).catch((e) => {
+      // Give the user back what they typed, but only if they haven't already started
+      // typing something else while the call was in flight.
+      if (tags.draft === '') tags.draft = draft;
+      library.reportError(e);
+    });
   }
 
   function removeTag(tag: string) {
