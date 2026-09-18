@@ -17,7 +17,7 @@ export interface YearGroup {
 
 /** Resolved in the viewer's local time rather than UTC: a person means their own new year,
  *  so a photo taken at 23:00 on 31 December belongs to the year they experienced. */
-function yearOf(takenAtMin: number): number {
+export function yearOf(takenAtMin: number): number {
   return new Date(takenAtMin * 1000).getFullYear();
 }
 

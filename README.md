@@ -164,6 +164,7 @@ publishing it.
 - [ ] The search box stays put at the top of the window while the folder list and the grid scroll.
 - [ ] The bar between the folder list and the grid resizes the list along its full height: dragging it stops at a minimum width and at half the window, the grid reflows to the new width, and with the bar focused (Tab) the arrow keys resize it too. The list's lower-right corner no longer has a resize grip.
 - [ ] Clearing the search box restores the full library.
+- [ ] With photos from several years, a year strip shows right of the grid's scrollbar: years sit where they start, a line marks the current position and follows scrolling, hovering shows a year bubble, and pressing or dragging scrolls there — pressing on a printed year lands on that year's first folder, the same folder the sidebar lists first under it. The strip is absent in Recent, with a single year, and when everything fits on screen.
 - [ ] `lake bell` shows only photos matching both words; `lake OR bell` shows photos matching either; typing `lake OR` on the way there keeps showing the `lake` results rather than flashing empty.
 - [ ] In the viewer's info panel, click the camera (then, on another photo, the lens): the viewer closes, the search box reads `camera:"…"`, and the grid shows that camera's photos, the clicked one among them.
 - [ ] Clicking a folder in the sidebar while a search is active leaves search and lands on that folder.
