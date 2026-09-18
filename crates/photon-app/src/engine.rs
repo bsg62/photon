@@ -116,9 +116,10 @@ pub struct Engine {
     /// the second read would miss the first write and the rename would drop it. Held across
     /// the database write too, so the rows land in the order the file did.
     ini_write: Mutex<()>,
-    /// Held by the one thread running the duplicate-hashing pass; see `hash_duplicates`.
-    /// Serialises read-modify-write edits (`rotate_item`).
+    /// Serialises every write of a photo's edit; see `rotate_item`. A leaf lock: taken
+    /// before the library and view locks and never while holding them.
     edit_write: Mutex<()>,
+    /// Held by the one thread running the duplicate-hashing pass; see `hash_duplicates`.
     hashing: Mutex<()>,
     /// Set by every scan that ends, cleared by the pass as it starts a round. A scan that
     /// finds the pass already running leaves this behind instead of starting a second one.
@@ -506,6 +507,12 @@ impl Engine {
     /// the viewer name a thumbnail by that key. An edit identical to the one in place does
     /// neither.
     pub fn set_item_edit(&self, id: i64, edit: Edit) -> Result<()> {
+        let _serialised = self.edit_write.lock();
+        self.write_edit(id, edit)
+    }
+
+    /// `set_item_edit` for a caller already holding `edit_write`.
+    fn write_edit(&self, id: i64, edit: Edit) -> Result<()> {
         self.live_item(id)?;
         if self.lib.set_item_edit(id, edit)? {
             self.thumbs.prioritize(&[id], Priority::Visible);
@@ -517,14 +524,15 @@ impl Engine {
     /// Turns one photo a quarter, on top of whatever edit it has; the crop goes round with
     /// the picture (`Edit::turned`). Serialised, because it reads the edit it builds on:
     /// commands run on a thread pool, and two quick presses of `R` that both read the same
-    /// starting edit would come out as one turn.
+    /// starting edit would come out as one turn. `set_item_edit` takes the same lock, or an
+    /// "Original" landing between this read and this write would be turned back on.
     pub fn rotate_item(&self, id: i64, clockwise: bool) -> Result<()> {
         let _serialised = self.edit_write.lock();
         let item = self.lib.item(id)?.ok_or(Error::NotFound(id))?;
         if item.missing_since.is_some() {
             return Err(Error::NotFound(id));
         }
-        self.set_item_edit(id, item.edit.turned(clockwise))
+        self.write_edit(id, item.edit.turned(clockwise))
     }
 
     /// `NotFound` for an id that has been purged or marked missing, so a stale viewer gets

@@ -13,6 +13,7 @@
   import { createSlideshow } from '../lib/slideshow.svelte';
   import { createStarToggle } from '../lib/star-toggle.svelte';
   import { library } from '../lib/library.svelte';
+  import { pictureChanged } from '../lib/picture';
   import {
     MAX_ZOOM,
     MIN_ZOOM,
@@ -335,13 +336,7 @@
   function refreshDetails(fresh: ViewerItem, canReload: boolean) {
     const old = untrack(() => item);
     if (!old || old.id !== fresh.id) return;
-    const pictureChanged =
-      old.thumbKey !== fresh.thumbKey ||
-      old.width !== fresh.width ||
-      old.height !== fresh.height ||
-      old.orientation !== fresh.orientation ||
-      old.thumbState !== fresh.thumbState;
-    if (pictureChanged) {
+    if (pictureChanged(old, fresh)) {
       if (canReload) {
         rebound = null;
         reload++;
@@ -901,8 +896,6 @@
 <style>
   .viewer { position: fixed; inset: 0; z-index: 20; display: grid; place-items: center; background: #000; overflow: hidden; }
   .stage { position: absolute; inset: 0; transform-origin: center; will-change: transform; }
-  /* Centred with the `translate` property, which applies before `transform`, so the
-     rotation in `transform` turns the frame about its own centre. */
   .frame { position: absolute; left: 50%; top: 50%; width: 100vw; height: 100vh; translate: -50% -50%; }
   .face { position: absolute; border: 2px solid #ffffffcc; border-radius: 3px; box-shadow: 0 0 0 1px #0008; pointer-events: none; }
   .face-name { position: absolute; left: -2px; top: 100%; margin-top: 2px; padding: 1px 6px; background: #000c; border-radius: 3px; color: var(--text); font-size: 12px; white-space: nowrap; }

@@ -99,3 +99,28 @@ mutation probes, ten failures. UI: `crop.ts` and the crop tool, six probes, six 
 overlay's CSS was measured in headless Chromium (handles centred on the corners and hittable).
 What remains is component wiring — five README checklist lines, including the schema 8 → 9
 upgrade regenerating no thumbnails.
+
+## 7. What the branch review found
+
+An independent read of the branch before merge found one bug the feature armed and three
+weaknesses; all four are fixed in the second commit.
+
+- **An unrelated change reloaded an edited photo, closing the crop tool.** The viewer reloads
+  when a re-read shows a different picture, and "different" compared `thumbState` plainly. An
+  edit sends the row to `pending`; the viewer re-reads it before the worker finishes; the next
+  library change of any kind delivered `ready` and reloaded the photo - mid-crop if a scan
+  finished then. The comparison predates edits but only ever fired for a just-scanned photo.
+  Now `picture.ts` (`pictureChanged`, tested): the state counts only across `failed`.
+- **A stale thumbnail URL could be cached for a year with the wrong picture.** The thumb handler
+  serves the photo's current thumbnail whatever key the URL carries, as `immutable`. Harmless
+  while keys never recurred; "Original" and a fourth turn bring a key back. It now answers
+  `no-store` unless the URL's key is the current one.
+- **Full-size renders were unbounded, and preloads wasted them.** `neighbours` no longer offers
+  edited photos for the full-image preload (the viewer asks for them under a keyed URL, so the
+  preload's render was never read), and `protocol.rs` renders one at a time: a render holds a
+  whole decoded photo outside the thumbnail pool that bounds decode memory.
+- **A turn could overwrite a reset.** `edit_write` serialised turns only against each other;
+  `set_item_edit` now takes it too. No test: the race has no seam, and the lock is a leaf.
+
+Recorded, not fixed: on a panorama beyond about 10:1, a locked ratio can produce a rectangle
+under the backend's 1% minimum. The save is refused with `invalidCrop` and the tool stays open.

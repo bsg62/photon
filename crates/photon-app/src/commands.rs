@@ -481,10 +481,24 @@ pub fn remove_item_tag(engine: &Engine, id: i64, tag: &str) -> CmdResult<()> {
 
 /// Items around `id`, nearest first, queued at neighbour priority so the viewer's
 /// next and previous previews are ready early.
+///
+/// The ids returned are the ones whose *full image* is worth fetching ahead, which leaves
+/// out edited photos: their full image is rendered per request and the viewer asks for it
+/// under a keyed URL, so a preload of the bare URL costs a full-size decode and encode whose
+/// result nothing ever reads. Their thumbnails are still queued.
 pub fn neighbours(engine: &Engine, id: i64, radius: usize) -> Vec<i64> {
     let ids = engine.grid().1.neighbours(id, radius.min(MAX_RADIUS));
     engine.thumbs.prioritize(&ids, Priority::Neighbour);
-    ids
+    ids.into_iter()
+        .filter(|&id| {
+            engine
+                .lib
+                .item(id)
+                .ok()
+                .flatten()
+                .is_some_and(|item| item.edit.is_identity())
+        })
+        .collect()
 }
 
 pub fn item_path(engine: &Engine, id: i64) -> CmdResult<PathBuf> {
@@ -658,6 +672,17 @@ mod tests {
     }
 
     /// Gives a scanned photo keywords the way the scanner's metadata backfill writes them.
+    #[test]
+    fn an_edited_neighbour_is_not_offered_for_a_full_size_preload() {
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a.jpg", &img), ("b.jpg", &img), ("c.jpg", &img)]);
+        f.add_photos();
+        let ids = f.ids();
+        assert_eq!(neighbours(&f.engine, ids[1], 1).len(), 2);
+        rotate_item(&f.engine, ids[2], true).unwrap();
+        assert_eq!(neighbours(&f.engine, ids[1], 1), vec![ids[0]]);
+    }
+
     #[test]
     fn an_edited_photo_is_described_as_it_is_shown() {
         // A 40x20 photo with a face centred at (0.375, 0.25). What the viewer is told has

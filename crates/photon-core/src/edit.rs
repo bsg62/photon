@@ -237,7 +237,9 @@ pub fn render_full(path: &Path, orientation: u8, edit: Edit) -> Result<(Vec<u8>,
         "image/png"
     } else {
         let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut bytes, FULL_QUALITY);
-        img.to_rgb8().write_with_encoder(encoder)?;
+        // `into_rgb8` hands back the buffer of a photo that already is RGB8, which a JPEG
+        // is; `to_rgb8` would copy all of it.
+        img.into_rgb8().write_with_encoder(encoder)?;
         "image/jpeg"
     };
     Ok((bytes, mime))
