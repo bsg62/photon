@@ -1333,9 +1333,10 @@ mod tests {
         assert_eq!(recent, vec![ids[1], ids[3], ids[2], ids[0]]);
     }
 
-    /// The Tag view probes `item_tags_tag` for each keyword that answers to the name. A
-    /// filter rewritten through `EFFECTIVE_TAGS` returns the same rows, but its `coalesce`
-    /// cannot use the index, and every Tag view click would scan every keyword.
+    /// The Tag view probes `item_tags_tag` for each keyword that answers to the name, and
+    /// `item_user_tags_tag` for tags the user added under it. A filter rewritten through
+    /// `EFFECTIVE_TAGS` returns the same rows, but its `coalesce` cannot use either index,
+    /// and every Tag view click would scan every keyword.
     #[test]
     fn the_tag_view_is_served_by_its_index() {
         let (_dir, lib) = temp_library();
@@ -1354,6 +1355,10 @@ mod tests {
         assert!(
             plan.iter().any(|step| step.contains("item_tags_tag")),
             "expected an index probe, got {plan:?}"
+        );
+        assert!(
+            plan.iter().any(|step| step.contains("item_user_tags_tag")),
+            "expected the user tags arm to probe its index, got {plan:?}"
         );
         // Every step is a probe today. Keyword scans show under the table's alias
         // (`SCAN t`), so the check is for any scan rather than for one table's name.

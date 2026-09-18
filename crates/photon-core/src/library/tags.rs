@@ -54,16 +54,27 @@ pub(super) const EFFECTIVE_TAGS: &str =
      WHERE r.tag IS NULL OR r.target IS NOT NULL";
 
 /// The Tag view's filter for the name bound to `?1`: every keyword renamed to it, plus the
-/// keyword itself unless it is ruled away. Not written through `EFFECTIVE_TAGS`, whose
-/// `coalesce` no index can serve: this form is two equality probes on `item_tags_tag`,
-/// and `the_tag_view_is_served_by_its_index` holds it to that. `UNION ALL` rather than
-/// `OR` because SQLite may answer an OR with a scan.
+/// keyword itself unless it is ruled away, plus every tag the user added under that name —
+/// each minus the photos that suppressed their own copy of the keyword. Not written
+/// through `EFFECTIVE_TAGS`, whose `coalesce` no index can serve: this form is equality
+/// probes on `item_tags_tag` and `item_user_tags_tag`, with the suppression checks reaching
+/// `item_user_tags` through its primary key, and
+/// `the_tag_view_is_served_by_its_index` holds it to that. `UNION ALL` rather than `OR`
+/// because SQLite may answer an OR with a scan.
 pub(super) const TAG_FILTER: &str = "AND i.id IN (
          SELECT item_id FROM item_tags
          WHERE tag IN (SELECT tag FROM tag_rules WHERE target = ?1)
+           AND NOT EXISTS (SELECT 1 FROM item_user_tags u
+                           WHERE u.item_id = item_tags.item_id AND u.tag = item_tags.tag
+                             AND u.added = 0)
          UNION ALL
          SELECT item_id FROM item_tags
          WHERE tag = ?1 AND NOT EXISTS (SELECT 1 FROM tag_rules WHERE tag = ?1)
+           AND NOT EXISTS (SELECT 1 FROM item_user_tags u
+                           WHERE u.item_id = item_tags.item_id AND u.tag = item_tags.tag
+                             AND u.added = 0)
+         UNION ALL
+         SELECT item_id FROM item_user_tags WHERE tag = ?1 AND added = 1
      )";
 
 impl Library {
@@ -615,5 +626,41 @@ mod tests {
         assert_eq!(lib.item_tags(ids[0]).unwrap(), ["vacation"]);
         lib.remove_item_tag(ids[0], "vacation").unwrap();
         assert_eq!(lib.item_tags(ids[0]).unwrap(), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_user_tag_is_viewed_counted_and_searched_like_a_keyword() {
+        let (_dir, lib, ids) = library_with(&[&["beach"], &[]]);
+        lib.add_item_tag(ids[1], "sunset").unwrap();
+        assert_eq!(tag_view(&lib, "sunset"), [ids[1]]);
+        assert_eq!(search(&lib, "sunset"), [ids[1]]);
+        assert_eq!(
+            listed(&lib),
+            [("beach".to_string(), 1), ("sunset".to_string(), 1)]
+        );
+    }
+
+    #[test]
+    fn a_photo_leaves_the_tag_view_when_its_keyword_is_removed_there() {
+        let (_dir, lib, ids) = library_with(&[&["beach"], &["beach"]]);
+        lib.remove_item_tag(ids[0], "beach").unwrap();
+        assert_eq!(tag_view(&lib, "beach"), [ids[1]]);
+        assert_eq!(search(&lib, "beach"), [ids[1]]);
+        assert_eq!(listed(&lib), [("beach".to_string(), 1)]);
+    }
+
+    /// The photo keeps one keyword that answers to the name, so it stays in the view: the
+    /// suppression is of a row, not of the photo.
+    #[test]
+    fn suppressing_one_of_two_merged_keywords_keeps_the_photo_in_the_view() {
+        let (_dir, lib, ids) = library_with(&[&["holiday", "vacation"]]);
+        lib.rename_tag("holiday", "vacation").unwrap();
+        lib.writer()
+            .execute(
+                "INSERT INTO item_user_tags (item_id, tag, added) VALUES (?1, 'holiday', 0)",
+                params![ids[0]],
+            )
+            .unwrap();
+        assert_eq!(tag_view(&lib, "vacation"), [ids[0]]);
     }
 }
