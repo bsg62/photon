@@ -1068,6 +1068,36 @@ mod tests {
     }
 
     #[test]
+    fn a_photo_dated_by_a_credulous_reader_is_re_dated_on_the_next_scan() {
+        // A library indexed before EXIF_VERSION 2 holds whatever date the file claimed.
+        // The file never changes, so only the backfill can correct the row, and only if
+        // `update_item_meta` writes `taken_at`: dropping it from that UPDATE leaves the
+        // year 4501 in place, which is what the assertion after the second scan catches.
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        let a = write_file(
+            &root,
+            "a.jpg",
+            &jpeg_with_exif(4, 2, 1, "4501:01:01 00:00:00"),
+        );
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
+        scan(&lib, &watched, 1);
+        let id = lib.known_items(watched.id).unwrap()[&key(&a)].id;
+        let mtime_s = lib.item(id).unwrap().unwrap().taken_at;
+        assert!(
+            mtime_s < 4_000_000_000,
+            "a fresh index already refuses the date and uses the mtime"
+        );
+
+        let year_4501 = crate::metadata::naive_to_unix(4501, 1, 1, 0, 0, 0);
+        lib.misdate_for_test(id, year_4501).unwrap();
+
+        let report = scan(&lib, &watched, 2);
+        assert_eq!((report.unchanged, report.enriched), (1, 1));
+        assert_eq!(lib.item(id).unwrap().unwrap().taken_at, mtime_s);
+    }
+
+    #[test]
     fn keywords_are_indexed_with_the_photo() {
         let (dir, lib) = temp_library();
         let root = photos_root(&dir);

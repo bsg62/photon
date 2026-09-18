@@ -351,15 +351,20 @@ impl Library {
     ///
     /// Deliberately not `update_items`: that resets the thumbnail and bumps the garbage
     /// epoch because the file's fingerprint changed, and here it has not. Nor does this touch
-    /// `rating`, which the Picasa pass owns, or `taken_at`: the date was read correctly the
-    /// first time, and rewriting it would move the photo in the grid for no reason.
+    /// `rating`, which the Picasa pass owns.
+    ///
+    /// `taken_at` is written, because readers before `EXIF_VERSION` 2 believed any EXIF date
+    /// and this is the only path that can re-date a photo whose file never changes again.
+    /// For every photo whose date was sane the value written is the one already stored (the
+    /// file is unchanged, so both the EXIF date and the mtime fallback are), and the photo
+    /// does not move.
     pub fn update_item_meta(&self, items: &[(i64, NewItem)]) -> Result<()> {
         let mut conn = self.writer();
         let tx = conn.transaction()?;
         {
             let mut stmt = tx.prepare_cached(
                 "UPDATE items SET make = ?2, model = ?3, lens = ?4, focal_mm = ?5, aperture = ?6,
-                        exposure_s = ?7, iso = ?8, exif_version = ?9
+                        exposure_s = ?7, iso = ?8, exif_version = ?9, taken_at = ?10
                  WHERE id = ?1",
             )?;
             for (id, it) in items {
@@ -374,6 +379,7 @@ impl Library {
                     c.exposure_s,
                     c.iso,
                     EXIF_VERSION,
+                    it.taken_at,
                 ])?;
                 write_tags(&tx, *id, &it.tags)?;
             }
@@ -392,6 +398,17 @@ impl Library {
                     aperture = NULL, exposure_s = NULL, iso = NULL, exif_version = 0
              WHERE id = ?1",
             params![id],
+        )?;
+        Ok(())
+    }
+
+    /// Test-only: makes a row look as it does in a library indexed by a reader that
+    /// believed any EXIF date - the given `taken_at`, and a version behind the current one.
+    #[cfg(test)]
+    pub(crate) fn misdate_for_test(&self, id: i64, taken_at: i64) -> Result<()> {
+        self.writer().execute(
+            "UPDATE items SET taken_at = ?2, exif_version = 1 WHERE id = ?1",
+            params![id, taken_at],
         )?;
         Ok(())
     }
