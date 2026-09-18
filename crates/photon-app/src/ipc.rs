@@ -79,6 +79,16 @@ pub fn set_last_folder(engine: Eng<'_>, folder_id: i64) -> Result<(), AppError> 
 }
 
 #[tauri::command(async)]
+pub fn slideshow_interval(engine: Eng<'_>) -> Result<i64, AppError> {
+    commands::slideshow_interval(&engine)
+}
+
+#[tauri::command(async)]
+pub fn set_slideshow_interval(engine: Eng<'_>, seconds: i64) -> Result<i64, AppError> {
+    commands::set_slideshow_interval(&engine, seconds)
+}
+
+#[tauri::command(async)]
 pub fn set_grid_view(engine: Eng<'_>, view: photon_core::grid::GridView) -> Result<(), AppError> {
     commands::set_grid_view(&engine, view)
 }

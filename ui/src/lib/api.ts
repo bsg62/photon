@@ -3,6 +3,7 @@
 
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import { getCurrentWindow } from '@tauri-apps/api/window';
 
 export { mediaUrl } from './url';
 
@@ -106,6 +107,12 @@ export const api = {
   gridOffsetOfItem: (itemId: number) => invoke<number | null>('grid_offset_of_item', { itemId }),
   lastFolder: () => invoke<number | null>('last_folder'),
   setLastFolder: (folderId: number) => invoke<void>('set_last_folder', { folderId }),
+  /** The window's own fullscreen, granted in `capabilities/default.json`. */
+  windowFullscreen: () => getCurrentWindow().isFullscreen(),
+  setWindowFullscreen: (on: boolean) => getCurrentWindow().setFullscreen(on),
+  slideshowInterval: () => invoke<number>('slideshow_interval'),
+  /** Resolves to the clamped value the backend stored. */
+  setSlideshowInterval: (seconds: number) => invoke<number>('set_slideshow_interval', { seconds }),
   setGridView: (view: GridView) => invoke<void>('set_grid_view', { view }),
   setSearchQuery: (query: string) => invoke<void>('set_search_query', { query }),
   setPersonView: (contact: string) => invoke<void>('set_person_view', { contact }),

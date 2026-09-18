@@ -70,6 +70,36 @@
       .catch(library.reportError);
   });
 
+  /** Seconds per photo. Null until read, so the field never shows a value that is not the
+   *  stored one. */
+  let interval = $state<number | null>(null);
+
+  onMount(() => {
+    api
+      .slideshowInterval()
+      .then((s) => (interval = s))
+      .catch(library.reportError);
+  });
+
+  /** On `change`, not `input`: the backend clamps, and clamping "1" on the way to typing
+   *  "15" would fight the user. What comes back is what was stored, so an out-of-range
+   *  entry snaps to the limit in the field too. */
+  function saveInterval(e: Event & { currentTarget: HTMLInputElement }) {
+    const seconds = Math.round(Number(e.currentTarget.value));
+    const field = e.currentTarget;
+    if (!Number.isFinite(seconds)) {
+      field.value = String(interval ?? '');
+      return;
+    }
+    api
+      .setSlideshowInterval(seconds)
+      .then((stored) => {
+        interval = stored;
+        field.value = String(stored);
+      })
+      .catch(library.reportError);
+  }
+
   function onkeydown(e: KeyboardEvent) {
     if (e.key === 'Escape') {
       e.preventDefault();
@@ -198,6 +228,9 @@
         <button class:active={current === 'tags'} aria-current={current === 'tags'} onclick={() => (current = 'tags')}>
           Tags
         </button>
+        <button class:active={current === 'slideshow'} aria-current={current === 'slideshow'} onclick={() => (current = 'slideshow')}>
+          Slideshow
+        </button>
         <button class:active={current === 'about'} aria-current={current === 'about'} onclick={() => (current = 'about')}>
           About
         </button>
@@ -295,6 +328,14 @@
               {/each}
             </ul>
           {/if}
+        {:else if current === 'slideshow'}
+          <h2>Slideshow</h2>
+          <p class="hint">Press S in the viewer to play the current view from the photo on screen. Space pauses, the arrow keys step, Escape ends it.</p>
+          <label class="interval">
+            Show each photo for
+            <input type="number" min="1" max="60" step="1" value={interval ?? ''} disabled={interval === null} onchange={saveInterval} />
+            seconds
+          </label>
         {:else}
           <h2>About</h2>
           {#if info}
@@ -372,6 +413,8 @@
   nav button.active { background: #ffffff14; }
   section { flex: 1; min-width: 0; padding: 12px 16px; overflow: auto; }
   .hint, .empty { margin: 0 0 12px; color: var(--muted); }
+  .interval { display: flex; align-items: center; gap: 8px; }
+  .interval input { width: 64px; }
   .folders { margin: 0 0 12px; padding: 0; list-style: none; }
   .folders li {
     display: flex;

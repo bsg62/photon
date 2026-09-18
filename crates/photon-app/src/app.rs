@@ -163,6 +163,8 @@ pub fn run() {
             ipc::grid_offset_of_item,
             ipc::last_folder,
             ipc::set_last_folder,
+            ipc::slideshow_interval,
+            ipc::set_slideshow_interval,
             ipc::set_grid_view,
             ipc::set_search_query,
             ipc::set_person_view,

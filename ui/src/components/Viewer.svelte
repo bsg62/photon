@@ -8,6 +8,7 @@
   import { createCopyFeedback } from '../lib/copied.svelte';
   import { cameraRows } from '../lib/exif';
   import { containedBox, faceBox } from '../lib/faces';
+  import { createSlideshow } from '../lib/slideshow.svelte';
   import { createStarToggle } from '../lib/star-toggle.svelte';
   import { library } from '../lib/library.svelte';
   import {
@@ -66,6 +67,60 @@
    *  reactive would re-run effects on every wheel event of a flick. */
   let wheelTotal = 0;
   let dragFrom = { x: 0, y: 0, panX: 0, panY: 0 };
+
+  // ---- slideshow ----
+
+  /** The photo being left, held opaque over the stage until its successor has decoded and
+   *  then faded out: a crossfade rather than a cut through black. Only set during a
+   *  slideshow, and only for a photo shown fitted and upright, since this layer knows
+   *  nothing of zoom, pan or rotation. */
+  let outgoing = $state<{ src: string; fading: boolean } | null>(null);
+  /** Must match the `.outgoing` transition in the styles below. */
+  const CROSSFADE_MS = 600;
+
+  const slideshow = createSlideshow({
+    advance: () => {
+      const len = library.info.len;
+      // One photo has no next: `goto` would reload it, blanking the screen every interval.
+      if (len > 1) goto(current + 1 >= len ? 0 : current + 1);
+    },
+    interval: () => api.slideshowInterval(),
+    fullscreen: { get: () => api.windowFullscreen(), set: (on) => api.setWindowFullscreen(on) },
+  });
+
+  function startSlideshow() {
+    info = false;
+    void slideshow.start(fullSrc !== null || error !== null);
+  }
+
+  function stopSlideshow() {
+    slideshow.stop();
+    outgoing = null;
+  }
+
+  // The countdown runs from the moment the photo is on screen; a photo that cannot be shown
+  // counts as shown, so one bad file does not end the show.
+  //
+  // `outgoing` is read untracked, and that is load-bearing: `goto` sets it while the old
+  // `fullSrc` is still in place, so an effect that woke for it would fade the old photo out
+  // before the new one had even been asked for. The layer removes itself on a timer rather
+  // than on `transitionend`, which never fires when a preloaded photo decodes within the
+  // frame the layer was inserted in - no transition runs, and the layer would stay forever.
+  $effect(() => {
+    if (fullSrc === null && error === null) return;
+    slideshow.shown();
+    untrack(() => {
+      const leaving = outgoing;
+      if (!leaving) return;
+      leaving.fading = true;
+      setTimeout(() => {
+        if (outgoing === leaving) outgoing = null;
+      }, CROSSFADE_MS + 100);
+    });
+  });
+
+  // Closing by any route - Escape, the back button, the grid going away - leaves fullscreen.
+  $effect(() => () => slideshow.stop());
 
   /** Photos are numbered within their own folder, not across the library. In the All view
    *  that count matches what the file manager shows for that directory; in Starred or
@@ -187,6 +242,9 @@
     // stay - assigning it the value it already has would wake nothing.
     if (orphaned && next === current + 1) next = current;
     const target = Math.min(last, Math.max(0, next));
+    if (slideshow.active && fullSrc && target !== current && zoom === MIN_ZOOM && rotation === 0) {
+      outgoing = { src: fullSrc, fading: false };
+    }
     if (target === current) reload++;
     else current = target;
   }
@@ -194,6 +252,7 @@
   /** The offset handed back to the grid on close. An orphaned photo's offset can sit past
    *  the end of the view that dropped it. */
   function close() {
+    stopSlideshow();
     onclose(Math.max(0, Math.min(current, library.info.len - 1)));
   }
 
@@ -300,6 +359,7 @@
       return;
     }
     let cancelled = false;
+    slideshow.changed();
     item = null;
     fullSrc = null;
     error = null;
@@ -360,6 +420,13 @@
       closeMenu();
       return;
     }
+    // Escape leaves the slideshow first and the viewer second, so the photo the show
+    // stopped on is still there to look at.
+    if (e.key === 'Escape' && slideshow.active) {
+      e.preventDefault();
+      stopSlideshow();
+      return;
+    }
     if (e.key === 'Escape') {
       e.preventDefault();
       close();
@@ -383,6 +450,17 @@
       if (e.key === 'r' || e.key === 'R') {
         e.preventDefault();
         rotate(e.key === 'r' ? 'cw' : 'ccw');
+        return;
+      }
+      if (e.key === 's' || e.key === 'S') {
+        e.preventDefault();
+        if (slideshow.active) stopSlideshow();
+        else startSlideshow();
+        return;
+      }
+      if (e.key === ' ' && slideshow.active) {
+        e.preventDefault();
+        slideshow.toggle();
         return;
       }
       if (e.key === 'i' || e.key === 'I') {
@@ -452,6 +530,7 @@
   }
 
   function onpointermove(e: PointerEvent) {
+    slideshow.poke();
     if (!dragging) return;
     const { width, height } = viewport();
     pan = clampPan(
@@ -477,6 +556,7 @@
      a role, and dragging anywhere in the viewer is easier to hit than the photo alone. -->
 <div
   class="viewer"
+  class:quiet={slideshow.idle}
   role="dialog"
   aria-modal="true"
   aria-label="Photo viewer"
@@ -526,6 +606,13 @@
         {/each}
       </div>
     </div>
+  {/if}
+  {#if outgoing}
+    <!-- Keyed, so each photo leaving gets an element of its own: reusing one would fade the
+         next outgoing photo *in* from the opacity the last one ended on. -->
+    {#key outgoing.src}
+      <img class="outgoing" class:fading={outgoing.fading} src={outgoing.src} alt="" draggable="false" />
+    {/key}
   {/if}
   {#if info && item}
     <aside class="info" aria-label="Photo information">
@@ -633,6 +720,15 @@
     <button class="tool" onclick={() => rotate('cw')} disabled={!item} aria-label="Rotate right" title="Rotate right (R)">↻</button>
     <button
       class="tool"
+      onclick={() => (slideshow.active ? slideshow.toggle() : startSlideshow())}
+      disabled={!item && !slideshow.active}
+      aria-label={!slideshow.active ? 'Start slideshow' : slideshow.playing ? 'Pause slideshow' : 'Resume slideshow'}
+      title={!slideshow.active ? 'Slideshow (S)' : slideshow.playing ? 'Pause (Space)' : 'Resume (Space)'}
+    >
+      {slideshow.active && slideshow.playing ? '⏸' : '▶'}
+    </button>
+    <button
+      class="tool"
       onclick={() => (info = !info)}
       disabled={!item}
       aria-pressed={info}
@@ -691,6 +787,14 @@
      of panning. */
   img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; image-orientation: from-image; user-select: none; -webkit-user-drag: none; }
   .hidden { visibility: hidden; }
+  /* After the stage in the document and before the controls, so it paints between them
+     without a z-index. The duration is `CROSSFADE_MS`. */
+  .outgoing { opacity: 1; transition: opacity 600ms ease; pointer-events: none; }
+  .outgoing.fading { opacity: 0; }
+  /* A resting pointer during a slideshow: everything but the photo gets out of the way. */
+  .quiet { cursor: none; }
+  .quiet .bar, .quiet .zoom, .quiet .close { opacity: 0; pointer-events: none; }
+  .bar, .zoom, .close { transition: opacity 200ms ease; }
   .bar { position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 6px; }
   .caption { padding: 4px 10px; border: 0; background: #0009; border-radius: 4px; color: var(--muted); font-size: 12px; white-space: nowrap; cursor: pointer; }
   .caption:hover:not(:disabled) { color: var(--text); }
