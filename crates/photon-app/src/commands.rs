@@ -89,6 +89,12 @@ pub struct ViewerItem {
     pub albums: Vec<i64>,
     /// Other files with the same bytes as this one.
     pub copies: Vec<ItemCopy>,
+    /// The size of the picture turned but not cropped - what `/image/<id>/uncropped`
+    /// serves and the crop tool draws its rectangle on. Sent rather than read off the
+    /// loaded image, because `naturalWidth` of an EXIF-rotated file is one more thing the
+    /// three webviews need not agree on.
+    pub uncropped_width: u32,
+    pub uncropped_height: u32,
     /// What the user has done to the photo in photon, or `None` for an untouched one.
     ///
     /// For an edited photo `width`, `height` and `orientation` describe the picture *as
@@ -381,12 +387,13 @@ pub fn viewer_item(engine: &Engine, id: i64) -> CmdResult<ViewerItem> {
             })
         })
         .collect();
+    let (upright_w, upright_h) =
+        photon_core::metadata::oriented_dims(item.width, item.height, item.orientation);
+    let (uncropped_width, uncropped_height) = edit.without_crop().dims(upright_w, upright_h);
     let (width, height, orientation) = if edit.is_identity() {
         (item.width, item.height, item.orientation)
     } else {
-        let (w, h) =
-            photon_core::metadata::oriented_dims(item.width, item.height, item.orientation);
-        let (w, h) = edit.dims(w, h);
+        let (w, h) = edit.dims(upright_w, upright_h);
         (w, h, 1)
     };
     let albums = engine.lib.item_albums(item.id)?;
@@ -429,6 +436,8 @@ pub fn viewer_item(engine: &Engine, id: i64) -> CmdResult<ViewerItem> {
         faces,
         albums,
         copies,
+        uncropped_width,
+        uncropped_height,
         edit: (!edit.is_identity()).then(|| ItemEdit {
             turns: edit.turns,
             crop: edit.crop.map(|c| [c.left, c.top, c.right, c.bottom]),
@@ -690,6 +699,11 @@ mod tests {
         set_item_edit(&f.engine, id, 0, Some([32768, 0, 65535, 65535])).unwrap();
         let cropped = viewer_item(&f.engine, id).unwrap();
         assert_eq!((cropped.width, cropped.height), (20, 20));
+        assert_eq!(
+            (cropped.uncropped_width, cropped.uncropped_height),
+            (40, 20)
+        );
+        assert_eq!((turned.uncropped_width, turned.uncropped_height), (20, 40));
         assert!(cropped.faces.is_empty());
 
         let err = set_item_edit(&f.engine, id, 0, Some([40000, 0, 30000, 65535])).unwrap_err();

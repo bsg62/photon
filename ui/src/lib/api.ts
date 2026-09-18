@@ -72,7 +72,16 @@ export interface ViewerItem {
   albums: number[];
   /** Other files with the same bytes as this one. */
   copies: ItemCopy[];
+  /** The picture turned but not cropped: what `image/<id>/uncropped` serves. */
+  uncroppedWidth: number;
+  uncroppedHeight: number;
+  /** What the user has done to the photo in photon; null for an untouched one. For an
+   *  edited photo `width`, `height`, `orientation` and `faces` describe the picture as
+   *  shown, because the edit is rendered into every image the backend serves. */
+  edit: ItemEdit | null;
 }
+/** `crop` is `[left, top, right, bottom]` in 1/65535ths of the turned picture. */
+export interface ItemEdit { turns: number; crop: [number, number, number, number] | null }
 export interface ItemCopy { id: number; path: string }
 export interface Person { hash: string; name: string; count: number }
 export interface TagCount { tag: string; count: number }
@@ -145,6 +154,11 @@ export const api = {
   /** Sets or clears a star. Written into the folder's Picasa INI first, then mirrored into
    *  the library; the grid rebuilds and `library-changed` follows. */
   setStar: (id: number, starred: boolean) => invoke<void>('set_star', { id, starred }),
+  /** Turns the photo a quarter; the crop goes round with it. Nothing is written to the file. */
+  rotateItem: (id: number, clockwise: boolean) => invoke<void>('rotate_item', { id, clockwise }),
+  /** Replaces the photo's edit; no turns and no crop is the original again. */
+  setItemEdit: (id: number, turns: number, crop: [number, number, number, number] | null) =>
+    invoke<void>('set_item_edit', { id, turns, crop }),
   neighbours: (id: number, radius: number) => invoke<number[]>('neighbours', { id, radius }),
   revealInFileManager: (id: number) => invoke<void>('reveal_in_file_manager', { id }),
   revealFolder: (folderId: number) => invoke<void>('reveal_folder', { folderId }),

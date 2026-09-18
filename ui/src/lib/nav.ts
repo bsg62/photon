@@ -23,21 +23,6 @@ export function closesViewer(button: number): boolean {
   return button === MOUSE_BACK_BUTTON;
 }
 
-/** The viewer's display rotation, in degrees clockwise. Display only: nothing is written,
- *  and it resets on every navigation like the zoom. */
-export type Rotation = 0 | 90 | 180 | 270;
-
-/** The rotation after one quarter turn in `direction`. */
-export function rotated(current: Rotation, direction: 'cw' | 'ccw'): Rotation {
-  const step = direction === 'cw' ? 90 : 270;
-  return (((current + step) % 360) as Rotation);
-}
-
-/** Whether a rotation swaps the photo's width and height on screen. */
-export function isQuarterTurn(rotation: Rotation): boolean {
-  return rotation === 90 || rotation === 270;
-}
-
 export interface FolderPosition {
   /** 1-based position within the folder, or 0 when there is nothing to number. */
   index: number;

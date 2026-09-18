@@ -69,6 +69,19 @@ done. And an album remembers photos by their library row, so a photo renamed or 
 disk leaves its albums once the old row is purged — stars survive that because they live
 in Picasa's INI, album membership does not.
 
+### Rotating and cropping
+
+In the viewer, `R` and `Shift+R` (or ↻ ↺) turn a photo, and `C` (or ✂) opens the crop tool:
+drag the rectangle or its handles, pick a ratio to lock it, Enter applies, Escape cancels.
+Cropping again shows the whole photo with the current rectangle, so you adjust it rather than
+cropping what was left. **Original** undoes everything.
+
+None of this changes your files. photon remembers the edit in its library and applies it
+wherever it shows the photo — the grid, the viewer, a slideshow — so "Reveal in file manager"
+still leads to the photo exactly as the camera wrote it, and other programs do not see the
+edit. An edit belongs to the file's entry in the library: a photo renamed or moved outside
+photon comes back unedited. Picasa's own crops and rotations are not imported.
+
 ### Duplicates
 
 photon finds byte-identical files. After each scan it reads only the files that share their
@@ -149,6 +162,11 @@ publishing it.
 
 - [ ] On first launch with a fresh profile, the Pictures folder is added and scanned without asking.
 - [ ] Thumbnails appear within seconds, and scrolling stays smooth while indexing continues.
+- [ ] In the viewer press `R`: within about half a second the photo is shown turned (preview first, then sharp), the caption's pixel size swaps, and back in the grid its tile is turned too. Press `R` four times quickly: it ends upright, not one turn short. Close and reopen photon: the turn is still there. The file on disk is unchanged (same size and date in the file manager).
+- [ ] Press `C`: the whole photo shows with a bright rectangle and the rest dimmed; the eight handles resize, dragging inside moves, and nothing can be dragged off the photo. Choose 1:1: the rectangle becomes square *on screen* and stays square from every handle. Enter applies: the viewer shows only the crop, sharp at 100%, and the grid tile matches. `C` again shows the whole photo with the same rectangle. "Whole photo" then Enter removes the crop. Escape cancels without saving, and a second Escape is needed to close the viewer.
+- [ ] Turn a cropped photo: the same part of the picture stays framed. With the info panel open on a photo with Picasa faces, the outlines still sit on the faces after a turn, and a face cropped out of the frame has no outline.
+- [ ] "Original" appears in the bar only for an edited photo and restores it; its old thumbnail appears at once (it was still cached). A slideshow shows edited photos edited.
+- [ ] Upgrade a real library from schema 8: no thumbnail is regenerated (the grid fills from cache as before).
 - [ ] Copy a photo into another watched folder: within a scan the sidebar gains "⧉ Duplicates (2)", the view shows both files under their folders, and each one's info panel lists the other under "Identical copies"; clicking the path closes the viewer and lands on that copy. Edit or delete one of the two: after the next scan the row disappears.
 - [ ] Upgrade a real library from schema 7: the first scans finish as quickly as before, and duplicates appear shortly after the status bar stops showing a scan.
 - [ ] In the viewer, `S` starts a slideshow: the window goes fullscreen, photos crossfade (no flash of black between them) at the interval from Settings → Slideshow, and the last photo is followed by the first. Space pauses and resumes; ←/→ step and the next photo then stays a full interval; the bar, zoom and ✕ fade out after the pointer rests about 2.5 s and return when it moves. Escape ends the show, leaves fullscreen and stays in the viewer; a second Escape closes the viewer.
@@ -164,7 +182,7 @@ publishing it.
 - [ ] With a few hundred tags, Settings → Tags stays centred in the window and the list scrolls inside the dialog.
 - [ ] Settings → Tags lists every tag with its photo count, and the filter box narrows it. Rename a tag: Enter saves, Escape or clicking away cancels (Escape does not close Settings), a blank name is refused. The sidebar's Tags list and an open Tag view follow the new name.
 - [ ] Renaming a tag to another existing tag asks to merge, then shows one tag whose count is the photos carrying either. "Remove…" asks first, and the tag disappears from the sidebar and from search.
-- [ ] With the viewer's info panel open on a tagged photo, rename one of its tags in Settings: the panel shows the new name without reopening the photo, and the zoom, pan and rotation stay as they were.
+- [ ] With the viewer's info panel open on a tagged photo, rename one of its tags in Settings: the panel shows the new name without reopening the photo, and the zoom and pan stay as they were.
 - [ ] Rename a tag onto an existing one and decline the merge: the field stays open with what you typed.
 - [ ] Each rename or removal appears under Changes, and "Restore" brings the original tag back. Rescanning the folder does not undo a rename, and the photo files' keywords are unchanged (check in another app).
 - [ ] After removing every folder, the sidebar offers "Add a folder in Settings…", which opens Settings on Folders.

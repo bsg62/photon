@@ -7,6 +7,8 @@
   import { formatCaption } from '../lib/caption';
   import { createCopyFeedback } from '../lib/copied.svelte';
   import { cameraRows } from '../lib/exif';
+  import { ASPECTS, HANDLES, type Handle } from '../lib/crop';
+  import { createCropTool } from '../lib/crop-tool.svelte';
   import { containedBox, faceBox } from '../lib/faces';
   import { createSlideshow } from '../lib/slideshow.svelte';
   import { createStarToggle } from '../lib/star-toggle.svelte';
@@ -17,11 +19,8 @@
     clampPan,
     clampZoom,
     closesViewer,
-    isQuarterTurn,
     positionInView,
-    rotated,
     wheelStep,
-    type Rotation,
   } from '../lib/nav';
 
   let {
@@ -45,16 +44,12 @@
   let error = $state<string | null>(null);
   let zoom = $state(MIN_ZOOM);
   let pan = $state({ x: 0, y: 0 });
-  /** Display rotation, clockwise. Nothing is written: `r` and `R` turn the frame the photo
-   *  sits in, and the next photo opens upright again, like the zoom. */
-  let rotation = $state<Rotation>(0);
   /** The info panel: camera, keywords, people and albums. Its faces are outlined over the
    *  photo while it is open. */
   let info = $state(false);
   let dragging = $state(false);
   let stage = $state<HTMLDivElement | null>(null);
-  /** The frame's on-screen size, for placing the face outlines; the frame is the viewport
-   *  or, for a quarter turn, the viewport with its sides swapped. */
+  /** The frame's on-screen size, for placing the face outlines and the crop rectangle. */
   let frameW = $state(0);
   let frameH = $state(0);
   /** The photo on screen has left the current view but still exists: unstarred while
@@ -72,8 +67,8 @@
 
   /** The photo being left, held opaque over the stage until its successor has decoded and
    *  then faded out: a crossfade rather than a cut through black. Only set during a
-   *  slideshow, and only for a photo shown fitted and upright, since this layer knows
-   *  nothing of zoom, pan or rotation. */
+   *  slideshow, and only for a photo shown fitted, since this layer knows nothing of zoom
+   *  or pan. */
   let outgoing = $state<{ src: string; fading: boolean } | null>(null);
   /** Must match the `.outgoing` transition in the styles below. */
   const CROSSFADE_MS = 600;
@@ -172,8 +167,62 @@
     tags.remove(tag).catch(library.reportError);
   }
 
+  // ---- edits ----
+  //
+  // Nothing here draws an edit. A turn or a crop is written to the library, which renders
+  // it into the thumbnails and the full image; the rebuild that follows hands the rebind
+  // effect below a new `thumbKey`, and that reloads the picture. So an edit reaches the
+  // screen the same way a file changed on disk does.
+
+  /** Whether the photo on screen can be edited: loaded, showable, and still in this view
+   *  (an edit reloads the picture, and an orphaned photo has no offset to reload from). */
+  const editable = $derived(!!item && !error && !orphaned);
+
   function rotate(direction: 'cw' | 'ccw') {
-    rotation = rotated(rotation, direction);
+    if (!item || !editable) return;
+    api.rotateItem(item.id, direction === 'cw').catch(library.reportError);
+  }
+
+  function resetEdit() {
+    if (!item || !editable) return;
+    api.setItemEdit(item.id, 0, null).catch(library.reportError);
+  }
+
+  const crop = createCropTool();
+  /** Where the uncropped picture sits in the frame while cropping: the rectangle's
+   *  fractions are fractions of this box. */
+  const cropBox = $derived(
+    crop.active && item ? containedBox(item.uncroppedWidth, item.uncroppedHeight, frameW, frameH) : null,
+  );
+
+  function startCrop() {
+    if (!item || !editable) return;
+    stopSlideshow();
+    info = false;
+    zoom = MIN_ZOOM;
+    pan = { x: 0, y: 0 };
+    crop.begin(item.edit?.crop, item.uncroppedWidth, item.uncroppedHeight);
+  }
+
+  function applyCrop() {
+    if (!item) return;
+    // The tool closes only once the write has succeeded, so a refused rectangle leaves the
+    // user where they can fix it rather than back in the viewer with nothing changed.
+    api
+      .setItemEdit(item.id, item.edit?.turns ?? 0, crop.wire())
+      .then(() => crop.cancel())
+      .catch(library.reportError);
+  }
+
+  function cropPointerDown(e: PointerEvent, handle: Handle) {
+    if (e.button !== 0) return;
+    e.stopPropagation();
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    crop.startDrag(handle, e.clientX, e.clientY);
+  }
+
+  function cropPointerMove(e: PointerEvent) {
+    if (cropBox) crop.dragTo(e.clientX, e.clientY, cropBox.width, cropBox.height);
   }
 
   const camera = $derived(item ? cameraRows(item) : []);
@@ -184,7 +233,7 @@
     return quarter ? { width: item.height, height: item.width } : { width: item.width, height: item.height };
   });
   const faceBoxes = $derived.by(() => {
-    if (!item || !info) return [];
+    if (!item || !info || crop.active) return [];
     const image = containedBox(oriented.width, oriented.height, frameW, frameH);
     return item.faces.map((f) => ({ name: f.name, box: faceBox(f, image) }));
   });
@@ -242,7 +291,7 @@
     // stay - assigning it the value it already has would wake nothing.
     if (orphaned && next === current + 1) next = current;
     const target = Math.min(last, Math.max(0, next));
-    if (slideshow.active && fullSrc && target !== current && zoom === MIN_ZOOM && rotation === 0) {
+    if (slideshow.active && fullSrc && target !== current && zoom === MIN_ZOOM) {
       outgoing = { src: fullSrc, fading: false };
     }
     if (target === current) reload++;
@@ -277,7 +326,7 @@
   /** Takes a re-read of the photo on screen. A change the picture itself shows - the file
    *  rewritten (a new thumbnail key or size), or no longer decodable - reloads the photo,
    *  which resets the zoom as any other new picture does. Anything else replaces `item` in
-   *  place, keeping zoom, pan and rotation. The star and album toggles are not rebound;
+   *  place, keeping zoom and pan. The star and album toggles are not rebound;
    *  they hold their own state and may be mid-write.
    *
    *  `canReload` is false for a photo this view no longer holds: a reload loads whatever
@@ -364,11 +413,11 @@
     fullSrc = null;
     error = null;
     orphaned = false;
-    // Every photo opens fitted to the window and upright: arriving at the next one already
-    // at 400%, panned into a corner or turned on its side leaves you lost.
+    // Every photo opens fitted to the window: arriving at the next one already at 400% or
+    // panned into a corner leaves you lost. A crop being drawn belonged to the last photo.
     zoom = MIN_ZOOM;
     pan = { x: 0, y: 0 };
-    rotation = 0;
+    crop.cancel();
     (async () => {
       // `untrack`, because `ensure` reads `library.info.len` and this call is still inside
       // the effect's tracked window. `refresh()` assigns a new `info` object on every
@@ -393,7 +442,10 @@
         error = it.thumbError ?? "This photo can't be shown.";
         return;
       }
-      const url = mediaUrl(`image/${it.id}`);
+      // An edited photo's URL carries its key: the path does not change with the edit, and
+      // an `<img>` handed the URL it already has shows the picture it already has. The
+      // untouched photo keeps the bare URL the neighbour preload below warms.
+      const url = mediaUrl(`image/${it.id}`) + (it.edit ? `?k=${it.thumbKey}` : '');
       const full = new Image();
       full.src = url;
       full.decode().then(
@@ -418,6 +470,18 @@
     if (e.key === 'Escape' && menu) {
       e.preventDefault();
       closeMenu();
+      return;
+    }
+    // The crop tool owns the keyboard while it is open: Enter applies, Escape cancels, and
+    // nothing else may navigate away from the photo under the rectangle.
+    if (crop.active) {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        crop.cancel();
+      } else if (e.key === 'Enter' && !(e.target instanceof HTMLSelectElement)) {
+        e.preventDefault();
+        applyCrop();
+      }
       return;
     }
     // Escape leaves the slideshow first and the viewer second, so the photo the show
@@ -450,6 +514,11 @@
       if (e.key === 'r' || e.key === 'R') {
         e.preventDefault();
         rotate(e.key === 'r' ? 'cw' : 'ccw');
+        return;
+      }
+      if (e.key === 'c' || e.key === 'C') {
+        e.preventDefault();
+        startCrop();
         return;
       }
       if (e.key === 's' || e.key === 'S') {
@@ -502,6 +571,7 @@
 
   function onwheel(e: WheelEvent) {
     e.preventDefault();
+    if (crop.active) return;
     const stepped = wheelStep(wheelTotal, e.deltaY);
     wheelTotal = stepped.accumulated;
     if (stepped.step !== 0) goto(current + stepped.step);
@@ -578,20 +648,50 @@
       style="transform: translate({pan.x}px, {pan.y}px) scale({zoom})"
       bind:this={stage}
     >
-      <!-- The frame is what rotates. It is the viewport's size, or the viewport's size with
-           width and height swapped for a quarter turn, so a landscape photo turned on its
-           side is `contain`-fitted to the viewport's height rather than clipped. Zoom and
-           pan apply to the stage outside it and are unaffected. -->
-      <div
-        class="frame"
-        class:quarter={isQuarterTurn(rotation)}
-        style:transform="rotate({rotation}deg)"
-        bind:clientWidth={frameW}
-        bind:clientHeight={frameH}
-      >
-        <img class="preview" src={mediaUrl(`thumb/${item.id}/preview/${item.thumbKey}`)} alt="" draggable="false" class:hidden={!!fullSrc} />
-        {#if fullSrc}
-          <img class="full" src={fullSrc} alt={item.fileName} draggable="false" />
+      <!-- The frame is the viewport's size; the photo is `contain`-fitted inside it. Turns
+           and crops are not drawn here - the backend renders them into the images. -->
+      <div class="frame" bind:clientWidth={frameW} bind:clientHeight={frameH}>
+        {#if crop.active && cropBox}
+          <!-- The whole turned picture, with the rectangle on it. The box is the picture's
+               own, so the rectangle's fractions are percentages of it and the dimming
+               shadow is clipped to the photo rather than spilling over the black. -->
+          <img class="full" src={mediaUrl(`image/${item.id}/uncropped`) + `?k=${item.thumbKey}`} alt={item.fileName} draggable="false" />
+          <div
+            class="crop-area"
+            style:left="{cropBox.left}px"
+            style:top="{cropBox.top}px"
+            style:width="{cropBox.width}px"
+            style:height="{cropBox.height}px"
+          >
+            <div
+              class="crop-rect"
+              role="presentation"
+              style:left="{crop.rect.left * 100}%"
+              style:top="{crop.rect.top * 100}%"
+              style:width="{(crop.rect.right - crop.rect.left) * 100}%"
+              style:height="{(crop.rect.bottom - crop.rect.top) * 100}%"
+              onpointerdown={(e) => cropPointerDown(e, 'move')}
+              onpointermove={cropPointerMove}
+              onpointerup={() => crop.endDrag()}
+              onpointercancel={() => crop.endDrag()}
+            >
+              {#each HANDLES as handle (handle)}
+                <div
+                  class="crop-handle {handle}"
+                  role="presentation"
+                  onpointerdown={(e) => cropPointerDown(e, handle)}
+                  onpointermove={cropPointerMove}
+                  onpointerup={() => crop.endDrag()}
+                  onpointercancel={() => crop.endDrag()}
+                ></div>
+              {/each}
+            </div>
+          </div>
+        {:else}
+          <img class="preview" src={mediaUrl(`thumb/${item.id}/preview/${item.thumbKey}`)} alt="" draggable="false" class:hidden={!!fullSrc} />
+          {#if fullSrc}
+            <img class="full" src={fullSrc} alt={item.fileName} draggable="false" />
+          {/if}
         {/if}
         {#each faceBoxes as face, i (i)}
           <div
@@ -715,6 +815,18 @@
   {/if}
   <!-- The star and the caption share one bottom-centred row, so the star sits where the
        eye already is for the file name rather than in a corner on its own. -->
+  {#if crop.active}
+    <div class="bar">
+      <select class="aspect" aria-label="Crop ratio" value={crop.aspect} onchange={(e) => crop.setAspect(Number(e.currentTarget.value))}>
+        {#each ASPECTS as aspect, i (aspect.label)}
+          <option value={i}>{aspect.label}</option>
+        {/each}
+      </select>
+      <button class="tool wide" onclick={() => crop.clear()} title="Select the whole photo, which removes the crop">Whole photo</button>
+      <button class="tool wide" onclick={() => crop.cancel()} title="Cancel (Esc)">Cancel</button>
+      <button class="tool wide primary" onclick={applyCrop} title="Apply (Enter)">Apply</button>
+    </div>
+  {:else}
   <div class="bar">
     <button
       class="star"
@@ -726,8 +838,12 @@
     >
       {star.starred ? '★' : '☆'}
     </button>
-    <button class="tool" onclick={() => rotate('ccw')} disabled={!item} aria-label="Rotate left" title="Rotate left (Shift+R)">↺</button>
-    <button class="tool" onclick={() => rotate('cw')} disabled={!item} aria-label="Rotate right" title="Rotate right (R)">↻</button>
+    <button class="tool" onclick={() => rotate('ccw')} disabled={!editable} aria-label="Rotate left" title="Rotate left (Shift+R)">↺</button>
+    <button class="tool" onclick={() => rotate('cw')} disabled={!editable} aria-label="Rotate right" title="Rotate right (R)">↻</button>
+    <button class="tool" onclick={startCrop} disabled={!editable} aria-label="Crop" title="Crop (C)">✂</button>
+    {#if item?.edit}
+      <button class="tool wide" onclick={resetEdit} disabled={!editable} title="Undo every turn and crop. The file was never changed.">Original</button>
+    {/if}
     <button
       class="tool"
       onclick={() => (slideshow.active ? slideshow.toggle() : startSlideshow())}
@@ -753,6 +869,7 @@
       {copy.copied ? 'Copied' : caption}
     </button>
   </div>
+  {/if}
   {#if menu && item}
     <div
       class="menu"
@@ -766,7 +883,7 @@
       <button role="menuitem" onclick={reveal}>Reveal in file manager</button>
     </div>
   {/if}
-  <div class="zoom">
+  <div class="zoom" class:hidden={crop.active}>
     <input
       type="range"
       min={MIN_ZOOM}
@@ -786,8 +903,7 @@
   .stage { position: absolute; inset: 0; transform-origin: center; will-change: transform; }
   /* Centred with the `translate` property, which applies before `transform`, so the
      rotation in `transform` turns the frame about its own centre. */
-  .frame { position: absolute; left: 50%; top: 50%; width: 100vw; height: 100vh; translate: -50% -50%; transform-origin: center; }
-  .frame.quarter { width: 100vh; height: 100vw; }
+  .frame { position: absolute; left: 50%; top: 50%; width: 100vw; height: 100vh; translate: -50% -50%; }
   .face { position: absolute; border: 2px solid #ffffffcc; border-radius: 3px; box-shadow: 0 0 0 1px #0008; pointer-events: none; }
   .face-name { position: absolute; left: -2px; top: 100%; margin-top: 2px; padding: 1px 6px; background: #000c; border-radius: 3px; color: var(--text); font-size: 12px; white-space: nowrap; }
   .grabbable { cursor: grab; }
@@ -831,6 +947,23 @@
   .star[aria-pressed='true'] { color: #ffcf40; }
   .tool[aria-pressed='true'] { color: var(--accent); }
   .star:disabled, .tool:disabled { cursor: default; }
+  .tool.wide { width: auto; padding: 0 10px; font-size: 12px; }
+  .tool.primary { background: var(--accent); color: #fff; }
+  .aspect { height: 26px; border: 0; border-radius: 4px; background: #0009; color: var(--text); font-size: 12px; }
+  /* The crop rectangle. The shadow is the dimming: one element, clipped by the area to the
+     photo's own box. Handles are larger than they look, so they can be caught. */
+  .crop-area { position: absolute; overflow: hidden; touch-action: none; }
+  .crop-rect { position: absolute; box-sizing: border-box; border: 1px solid #fff; box-shadow: 0 0 0 9999px #000a; cursor: move; }
+  .crop-handle { position: absolute; width: 22px; height: 22px; }
+  .crop-handle::after { content: ''; position: absolute; inset: 7px; background: #fff; border-radius: 1px; box-shadow: 0 0 0 1px #0008; }
+  .crop-handle.n, .crop-handle.s { left: 50%; margin-left: -11px; cursor: ns-resize; }
+  .crop-handle.e, .crop-handle.w { top: 50%; margin-top: -11px; cursor: ew-resize; }
+  .crop-handle.n, .crop-handle.ne, .crop-handle.nw { top: -11px; }
+  .crop-handle.s, .crop-handle.se, .crop-handle.sw { bottom: -11px; }
+  .crop-handle.w, .crop-handle.nw, .crop-handle.sw { left: -11px; }
+  .crop-handle.e, .crop-handle.ne, .crop-handle.se { right: -11px; }
+  .crop-handle.nw, .crop-handle.se { cursor: nwse-resize; }
+  .crop-handle.ne, .crop-handle.sw { cursor: nesw-resize; }
   .error { color: var(--muted); }
   .info {
     position: absolute;
