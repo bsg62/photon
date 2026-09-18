@@ -35,9 +35,20 @@ npm test -w ui -- src/lib/nav.test.ts            # one UI file
 
 **There is no component test harness.** vitest runs with `environment: 'node'`, so a
 `.svelte` file cannot be rendered or asserted on. Logic that needs a test goes in a
-`.svelte.ts` factory tested with fake timers (`createSearchBox`, `createThumbRequest`); what
-is left in the component is effect wiring, verified by `svelte-check` and the README's smoke
-checklist, not by a test.
+`.svelte.ts` factory tested with fake timers (`createSearchBox`, `createThumbRequest`,
+`createSlideshow`, `createCropTool`) or a pure module (`timeline.ts`, `crop.ts`, `picture.ts`);
+what is left in the component is effect wiring, verified by `svelte-check` and the README's
+smoke checklist, not by a test. Layout *can* be measured without the GUI: a static page
+holding the component's CSS, run through headless Chromium with `--dump-dom` and a load script
+that writes `getBoundingClientRect()` into `document.title`.
+
+**Test fixtures.** Solid-colour JPEGs of different dimensions often encode to the *same byte
+size*; a test that needs distinct sizes appends bytes after the end-of-image marker. A fixture
+of several megapixels costs seconds in a debug build: a thin strip proves a resolution claim as
+well as a square does.
+
+**Waiting for CI on a PR:** `gh pr checks N --watch`. Straight after a push it can answer
+"no checks reported" and exit 0; wait until checks exist before trusting it.
 
 **Repository chores** (also run in CI, so run them before tagging):
 
@@ -107,6 +118,14 @@ so the TS mirror stays explicit. `set_view` clears the argument unless it is re-
 same parameterised view, so a query can never be read as a contact hash. The membership
 views filter the driver as well as the outer `WHERE`, the same way Starred does, or the
 sidebar's year groups and the grid disagree.
+
+**Search** is one view, not a family of them. `search_entries` builds the haystacks — file
+and folder name, make, model, lens, `50mm`/`f/1.8`/`iso400`, keywords through `EFFECTIVE_TAGS`,
+and the capture date as `YYYY-MM-DD` — and `search::Query` holds the grammar: words AND,
+capitals-only `OR`/`AND`, quotes, `camera:`/`lens:` confined to `Fields.camera`/`.lens`, dangling
+pieces ignored. A new searchable fact is a haystack there, not a view; a new *filter* is a
+prefixed term. The query string is the whole interface, so UI links (the info panel's camera
+and lens) go through `searchBox.search()`, which cancels a pending debounce first.
 
 **A grid offset is only meaningful against one index version.** Indexing a photo into a
 folder that sorts earlier shifts every later offset, so anything holding an offset across a
@@ -211,7 +230,21 @@ fingerprint, as `map_grid_row` and `live_fingerprints` do); a bare `fingerprint`
 caches from before edits existed stay valid. `set_thumb_state_if_unchanged` compares the edit
 too, or a worker that rendered the pre-edit picture marks the row `Ready` with nothing cached
 under the new key. For an edited photo `ViewerItem` reports `width`/`height`/`orientation` and
-`faces` *as shown*.
+`faces` *as shown*. Keys can recur ("Original", a fourth turn), so the thumb handler answers
+`immutable` only when the URL's key is the photo's current one and `no-store` otherwise; and
+every write of an edit takes `Engine.edit_write`, because a turn reads the edit it builds on.
+Full-size renders run one at a time (`protocol.rs`, `RENDERING`), outside the thumbnail pool
+that otherwise bounds decode memory, and `neighbours` leaves edited photos out of the preload.
+
+**What reloads the viewer** is `pictureChanged` (`ui/src/lib/picture.ts`), fed by the re-read
+the viewer makes on every grid version. A reload blanks the photo, resets zoom and pan and
+closes the crop tool, so the comparison must stay exact: `thumbState` counts only across
+`failed`. Anything that sends a row back to `pending` (an edit does) would otherwise make the
+*next* unrelated change — a star, a scan finishing — reload the photo on screen.
+
+**The window's fullscreen state is persisted** (`WINDOW_STATE_FLAGS`), and the slideshow uses
+the window's own fullscreen, so quitting mid-show reopens fullscreen with no title bar. `F11`
+(global, `App.svelte`) is the way out and the reason it exists.
 
 **The duplicate finder hashes after the scan, in the engine.** `items.content_hash` (XXH3-128,
 NULL for almost every row) is filled by `photon_core::duplicates::hash_candidates`, which reads
@@ -249,7 +282,17 @@ in SQL.
   proof — it shows a symbol was missing, not that an assertion discriminates behaviour. Tests
   that pass with and without the change have shipped here more than once. When a change
   genuinely cannot have one — a race with no seam, a Svelte effect — say so in the commit
-  message and why, rather than adding a test that passes either way.
+  message and why, rather than adding a test that passes either way. **A probe that passes is
+  a finding, not a formality:** it has exposed a missing test (the slideshow's still-loading
+  case) and a line whose comment called it load-bearing when it did nothing (an `IS NOT NULL`
+  "planner hint"). Revert with an exact replacement; a loose `sed` that also hits a
+  neighbouring writer fails ten tests and proves nothing.
+- **A large branch gets an independent read before it merges.** Every whole-branch review here
+  has found a real bug no test could see; the edits branch's was the viewer reloading on any
+  unrelated library change. Point the reviewer at the effect wiring and at anything a new
+  feature *arms* in old code, not only at the new code.
+- **Read the code before proposing a feature.** "Date search" and camera search were pitched
+  as new and already existed as search haystacks; the viewer already had a rotate key.
 - Comments carry the reasoning, not the mechanics. Several exist specifically to stop a future
   reader "simplifying" a load-bearing line; a wrong justification is treated as a defect.
 - Design docs live in `docs/superpowers/specs/`, implementation plans in
@@ -265,6 +308,13 @@ files), run `cargo run -p xtask -- versions --tag vX.Y.Z`, commit as `chore(rele
 then push the tag. The tag push triggers `.github/workflows/release.yml`, which builds all
 platforms and creates a **draft** release; verify the six artifacts attached (two `.dmg`,
 `.deb`, AppImage, `.msi`, `SHA256SUMS`) before publishing it.
+
+Release commits go straight to `main`. A schema bump makes the release a minor. The generated
+notes are a list of PR titles; replace them with hand-written ones in the shape of v0.14.0 and
+v0.15.0 — Highlights, Your files are untouched, Upgrading (say when an older photon will refuse
+the library, and any behaviour that changed under the user), Not in this release, the unsigned
+line, the changelog link. `gh release edit --notes-file` has reported success while changing
+nothing: read the body back before `--draft=false`.
 
 Installers are deliberately unsigned. There is no signing identity, no notarization and no
 auto-updater; the README explains the per-OS warnings.
