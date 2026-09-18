@@ -2,7 +2,11 @@
 //!
 //! - `/thumb/<id>/<grid|preview>/<thumbKey>`: WebP, built on demand, cached forever
 //!   (`thumbKey` changes when the file does).
-//! - `/image/<id>`: the original file.
+//! - `/image/<id>`: the original file - or, for a photo with an edit, the edited picture
+//!   rendered on the fly (`photon_core::edit::render_full`). The file itself is never what
+//!   an edited photo shows.
+//! - `/image/<id>/uncropped`: the same without the crop, which is what the crop tool draws
+//!   its rectangle on.
 
 use crate::engine::Engine;
 use photon_core::{Error, thumbs::ThumbSize};
@@ -14,13 +18,14 @@ pub const THUMB_TIMEOUT: Duration = Duration::from_secs(30);
 pub fn handle(engine: &Engine, path: &str) -> Response<Vec<u8>> {
     let parts: Vec<&str> = path.trim_start_matches('/').split('/').collect();
     match parts.as_slice() {
-        ["thumb", id, size, ..] => thumb(engine, id, size),
-        ["image", id] => image(engine, id),
+        ["thumb", id, size, rest @ ..] => thumb(engine, id, size, rest.first().copied()),
+        ["image", id] => image(engine, id, true),
+        ["image", id, "uncropped"] => image(engine, id, false),
         _ => text(StatusCode::NOT_FOUND, "not found"),
     }
 }
 
-fn thumb(engine: &Engine, id: &str, size: &str) -> Response<Vec<u8>> {
+fn thumb(engine: &Engine, id: &str, size: &str, url_key: Option<&str>) -> Response<Vec<u8>> {
     let Ok(id) = id.parse::<i64>() else {
         return text(StatusCode::BAD_REQUEST, "bad id");
     };
@@ -31,7 +36,7 @@ fn thumb(engine: &Engine, id: &str, size: &str) -> Response<Vec<u8>> {
     };
     match engine.thumbs.request(id, size, THUMB_TIMEOUT) {
         Ok(file) => match std::fs::read(&file) {
-            Ok(bytes) => ok(bytes, "image/webp", "public, max-age=31536000, immutable"),
+            Ok(bytes) => ok(bytes, "image/webp", thumb_caching(engine, id, url_key)),
             Err(err) => text(StatusCode::INTERNAL_SERVER_ERROR, &err.to_string()),
         },
         Err(Error::NotFound(_)) => text(StatusCode::NOT_FOUND, "not found"),
@@ -43,7 +48,34 @@ fn thumb(engine: &Engine, id: &str, size: &str) -> Response<Vec<u8>> {
     }
 }
 
-fn image(engine: &Engine, id: &str) -> Response<Vec<u8>> {
+/// How long the webview may keep a thumbnail it was just served.
+///
+/// Forever, if the key in the URL is the photo's current one: that is what the key is for.
+/// Not at all otherwise. The handler serves the photo's *current* thumbnail whatever key
+/// was asked for, and keys can recur - "Original", or a fourth quarter turn, returns a photo
+/// to a key it has had before. A request still carrying the original's key while the row
+/// holds an edit would otherwise pin the edited picture under the original's URL for a year.
+fn thumb_caching(engine: &Engine, id: i64, url_key: Option<&str>) -> &'static str {
+    let current = engine
+        .lib
+        .item(id)
+        .ok()
+        .flatten()
+        .map(|item| photon_core::grid::hex_key(item.thumb_key()));
+    if current.as_deref() == url_key && url_key.is_some() {
+        "public, max-age=31536000, immutable"
+    } else {
+        "no-store"
+    }
+}
+
+/// One full-size render at a time. A render holds a whole decoded photo (150 MB and up
+/// for 24 MP) on a protocol thread, outside the thumbnail pool whose `MAX_WORKERS` is what
+/// bounds decode memory; flicking through a run of edited photos would otherwise start one
+/// per photo passed.
+static RENDERING: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
+fn image(engine: &Engine, id: &str, cropped: bool) -> Response<Vec<u8>> {
     let Ok(id) = id.parse::<i64>() else {
         return text(StatusCode::BAD_REQUEST, "bad id");
     };
@@ -52,6 +84,25 @@ fn image(engine: &Engine, id: &str) -> Response<Vec<u8>> {
         Ok(_) => return text(StatusCode::NOT_FOUND, "not found"),
         Err(err) => return text(StatusCode::INTERNAL_SERVER_ERROR, &err.to_string()),
     };
+    let edit = if cropped {
+        item.edit
+    } else {
+        item.edit.without_crop()
+    };
+    if !edit.is_identity() {
+        // `no-cache`, like the original: the URL does not change with the edit, so the
+        // webview must ask again. The UI adds the thumbnail key as a query for the same
+        // reason - an `<img>` given the URL it already has does not refetch at all.
+        let _one_at_a_time = RENDERING.lock();
+        return match photon_core::edit::render_full(Path::new(&item.path), item.orientation, edit) {
+            Ok((bytes, mime)) => ok(bytes, mime, "no-cache"),
+            Err(Error::Io(err)) if err.kind() == std::io::ErrorKind::NotFound => {
+                text(StatusCode::NOT_FOUND, "not found")
+            }
+            Err(Error::Io(err)) => text(StatusCode::SERVICE_UNAVAILABLE, &err.to_string()),
+            Err(err) => text(StatusCode::INTERNAL_SERVER_ERROR, &err.to_string()),
+        };
+    }
     match std::fs::read(&item.path) {
         Ok(bytes) => ok(bytes, mime_for(Path::new(&item.path)), "no-cache"),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
@@ -110,7 +161,10 @@ mod tests {
         let f = fixture(&[("a.jpg", &img)]);
         f.add_photos();
         let id = f.ids()[0];
-        let r = handle(&f.engine, &format!("/thumb/{id}/grid/0123456789abcdef"));
+        let key = crate::commands::viewer_item(&f.engine, id)
+            .unwrap()
+            .thumb_key;
+        let r = handle(&f.engine, &format!("/thumb/{id}/grid/{key}"));
         assert_eq!(r.status(), 200);
         assert_eq!(header(&r, "content-type"), "image/webp");
         assert!(header(&r, "cache-control").contains("immutable"));
@@ -130,6 +184,57 @@ mod tests {
         assert_eq!(r.status(), 200);
         assert_eq!(header(&r, "content-type"), "image/jpeg");
         assert_eq!(r.body(), &img);
+    }
+
+    #[test]
+    fn a_thumbnail_is_cached_forever_only_under_its_current_key() {
+        let f = fixture(&[("a.jpg", &jpeg(40, 20))]);
+        f.add_photos();
+        let id = f.ids()[0];
+        let key = |f: &crate::testutil::Fixture| {
+            crate::commands::viewer_item(&f.engine, id)
+                .unwrap()
+                .thumb_key
+        };
+        let original = key(&f);
+        crate::commands::rotate_item(&f.engine, id, true).unwrap();
+
+        // A tile that has not refetched yet still asks under the original's key. It gets
+        // the turned picture, and must not keep it: "Original" brings that key back.
+        let stale = handle(&f.engine, &format!("/thumb/{id}/grid/{original}"));
+        assert_eq!(stale.status(), 200);
+        assert_eq!(header(&stale, "cache-control"), "no-store");
+        let fresh = handle(&f.engine, &format!("/thumb/{id}/grid/{}", key(&f)));
+        assert!(header(&fresh, "cache-control").contains("immutable"));
+        let keyless = handle(&f.engine, &format!("/thumb/{id}/grid"));
+        assert_eq!(header(&keyless, "cache-control"), "no-store");
+    }
+
+    #[test]
+    fn an_edited_photo_is_served_as_the_edit_not_as_the_file() {
+        let img = jpeg(40, 20);
+        let f = fixture(&[("a.jpg", &img)]);
+        f.add_photos();
+        let id = f.ids()[0];
+        let dims = |path: &str| {
+            let r = handle(&f.engine, path);
+            assert_eq!(r.status(), 200, "{path}");
+            let picture = image::load_from_memory(r.body()).unwrap();
+            (picture.width(), picture.height())
+        };
+        assert_eq!(handle(&f.engine, &format!("/image/{id}")).body(), &img);
+
+        // Turned clockwise (20x40), then the top half of that.
+        crate::commands::set_item_edit(&f.engine, id, 1, Some([0, 0, 65535, 32768])).unwrap();
+        assert_eq!(dims(&format!("/image/{id}")), (20, 20));
+        assert_eq!(
+            dims(&format!("/image/{id}/uncropped")),
+            (20, 40),
+            "the crop tool draws on the whole turned picture"
+        );
+        let r = handle(&f.engine, &format!("/image/{id}"));
+        assert_eq!(header(&r, "content-type"), "image/jpeg");
+        assert_eq!(header(&r, "cache-control"), "no-cache");
     }
 
     #[test]

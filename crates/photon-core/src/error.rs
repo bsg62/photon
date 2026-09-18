@@ -30,6 +30,9 @@ pub enum Error {
     EmptyAlbumName,
     #[error("a tag needs a name")]
     EmptyTagName,
+    /// A crop that is inverted, or too small to be anything but a slip of the pointer.
+    #[error("that crop is not a usable rectangle")]
+    InvalidCrop,
     /// The one write photon makes inside a watched folder: a star into a Picasa INI. Carries
     /// the path so the message names the file the user has to look at.
     #[error("could not write {}: {source}", path.display())]

@@ -4,6 +4,7 @@
 use crate::{engine::Engine, error::AppError};
 use photon_core::{
     Error,
+    edit::{Crop, Edit},
     grid::{GridEntry, GridView, Section, hex_key},
     library::{
         Album, AlbumSummary, Folder, ItemFace, Person, TagCount, TagRule, WatchedFolder, is_starred,
@@ -88,6 +89,29 @@ pub struct ViewerItem {
     pub albums: Vec<i64>,
     /// Other files with the same bytes as this one.
     pub copies: Vec<ItemCopy>,
+    /// The size of the picture turned but not cropped - what `/image/<id>/uncropped`
+    /// serves and the crop tool draws its rectangle on. Sent rather than read off the
+    /// loaded image, because `naturalWidth` of an EXIF-rotated file is one more thing the
+    /// three webviews need not agree on.
+    pub uncropped_width: u32,
+    pub uncropped_height: u32,
+    /// What the user has done to the photo in photon, or `None` for an untouched one.
+    ///
+    /// For an edited photo `width`, `height` and `orientation` describe the picture *as
+    /// shown* - the edited size, upright - because that is the picture every URL serves:
+    /// the edit is rendered into the thumbnails and the full image, EXIF orientation
+    /// included. `faces` are likewise mapped into the edited frame, and a face whose centre
+    /// was cropped away is left out.
+    pub edit: Option<ItemEdit>,
+}
+
+/// An edit on the wire. The crop is `[left, top, right, bottom]` in
+/// `photon_core::edit::CROP_UNIT`s of the turned picture.
+#[derive(Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ItemEdit {
+    pub turns: u8,
+    pub crop: Option<[u16; 4]>,
 }
 
 #[derive(Debug, Serialize, PartialEq, Eq)]
@@ -346,7 +370,32 @@ pub fn viewer_item(engine: &Engine, id: i64) -> CmdResult<ViewerItem> {
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
     let tags = engine.lib.item_tags(item.id)?;
-    let faces = engine.lib.item_faces(item.id)?;
+    let edit = item.edit;
+    let faces = engine
+        .lib
+        .item_faces(item.id)?
+        .into_iter()
+        .filter_map(|face| {
+            let (left, top, right, bottom) =
+                edit.map_rect((face.left, face.top, face.right, face.bottom))?;
+            Some(ItemFace {
+                left,
+                top,
+                right,
+                bottom,
+                ..face
+            })
+        })
+        .collect();
+    let (upright_w, upright_h) =
+        photon_core::metadata::oriented_dims(item.width, item.height, item.orientation);
+    let (uncropped_width, uncropped_height) = edit.without_crop().dims(upright_w, upright_h);
+    let (width, height, orientation) = if edit.is_identity() {
+        (item.width, item.height, item.orientation)
+    } else {
+        let (w, h) = edit.dims(upright_w, upright_h);
+        (w, h, 1)
+    };
     let albums = engine.lib.item_albums(item.id)?;
     let copies = engine
         .lib
@@ -357,7 +406,7 @@ pub fn viewer_item(engine: &Engine, id: i64) -> CmdResult<ViewerItem> {
             path: c.path,
         })
         .collect();
-    let thumb_key = hex_key(item.fingerprint());
+    let thumb_key = hex_key(item.thumb_key());
     let camera = item.camera;
     Ok(ViewerItem {
         id: item.id,
@@ -368,9 +417,9 @@ pub fn viewer_item(engine: &Engine, id: i64) -> CmdResult<ViewerItem> {
             ThumbState::Failed => "failed",
         },
         file_name,
-        width: item.width,
-        height: item.height,
-        orientation: item.orientation,
+        width,
+        height,
+        orientation,
         taken_at: item.taken_at,
         size: item.size,
         thumb_error: item.thumb_error,
@@ -387,7 +436,33 @@ pub fn viewer_item(engine: &Engine, id: i64) -> CmdResult<ViewerItem> {
         faces,
         albums,
         copies,
+        uncropped_width,
+        uncropped_height,
+        edit: (!edit.is_identity()).then(|| ItemEdit {
+            turns: edit.turns,
+            crop: edit.crop.map(|c| [c.left, c.top, c.right, c.bottom]),
+        }),
     })
+}
+
+/// Turns one photo a quarter, keeping its crop on the same part of the picture.
+pub fn rotate_item(engine: &Engine, id: i64, clockwise: bool) -> CmdResult<()> {
+    engine.rotate_item(id, clockwise)?;
+    Ok(())
+}
+
+/// Replaces one photo's edit. `crop` is `[left, top, right, bottom]` in `CROP_UNIT`s of the
+/// turned picture; no turns and no crop is the original again.
+pub fn set_item_edit(engine: &Engine, id: i64, turns: u8, crop: Option<[u16; 4]>) -> CmdResult<()> {
+    let crop = crop.map(|[left, top, right, bottom]| Crop {
+        left,
+        top,
+        right,
+        bottom,
+    });
+    let edit = Edit::new(turns, crop).ok_or(Error::InvalidCrop)?;
+    engine.set_item_edit(id, edit)?;
+    Ok(())
 }
 
 pub fn set_star(engine: &Engine, id: i64, starred: bool) -> CmdResult<()> {
@@ -406,10 +481,24 @@ pub fn remove_item_tag(engine: &Engine, id: i64, tag: &str) -> CmdResult<()> {
 
 /// Items around `id`, nearest first, queued at neighbour priority so the viewer's
 /// next and previous previews are ready early.
+///
+/// The ids returned are the ones whose *full image* is worth fetching ahead, which leaves
+/// out edited photos: their full image is rendered per request and the viewer asks for it
+/// under a keyed URL, so a preload of the bare URL costs a full-size decode and encode whose
+/// result nothing ever reads. Their thumbnails are still queued.
 pub fn neighbours(engine: &Engine, id: i64, radius: usize) -> Vec<i64> {
     let ids = engine.grid().1.neighbours(id, radius.min(MAX_RADIUS));
     engine.thumbs.prioritize(&ids, Priority::Neighbour);
-    ids
+    ids.into_iter()
+        .filter(|&id| {
+            engine
+                .lib
+                .item(id)
+                .ok()
+                .flatten()
+                .is_some_and(|item| item.edit.is_identity())
+        })
+        .collect()
 }
 
 pub fn item_path(engine: &Engine, id: i64) -> CmdResult<PathBuf> {
@@ -583,6 +672,78 @@ mod tests {
     }
 
     /// Gives a scanned photo keywords the way the scanner's metadata backfill writes them.
+    #[test]
+    fn an_edited_neighbour_is_not_offered_for_a_full_size_preload() {
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a.jpg", &img), ("b.jpg", &img), ("c.jpg", &img)]);
+        f.add_photos();
+        let ids = f.ids();
+        assert_eq!(neighbours(&f.engine, ids[1], 1).len(), 2);
+        rotate_item(&f.engine, ids[2], true).unwrap();
+        assert_eq!(neighbours(&f.engine, ids[1], 1), vec![ids[0]]);
+    }
+
+    #[test]
+    fn an_edited_photo_is_described_as_it_is_shown() {
+        // A 40x20 photo with a face centred at (0.375, 0.25). What the viewer is told has
+        // to match the picture the URLs serve, which has the edit rendered into it.
+        let img = jpeg(40, 20);
+        let f = fixture(&[("a.jpg", &img)]);
+        std::fs::write(
+            f.photos.join(".picasa.ini"),
+            b"[Contacts2]\nabc=Ada\n[a.jpg]\nfaces=rect64(4000200080006000),abc\n",
+        )
+        .unwrap();
+        f.add_photos();
+        let id = f.ids()[0];
+        let plain = viewer_item(&f.engine, id).unwrap();
+        assert_eq!(
+            (plain.width, plain.height, plain.edit.is_none()),
+            (40, 20, true)
+        );
+
+        rotate_item(&f.engine, id, true).unwrap();
+        let turned = viewer_item(&f.engine, id).unwrap();
+        assert_eq!(
+            (turned.width, turned.height, turned.orientation),
+            (20, 40, 1)
+        );
+        assert_eq!(
+            turned.edit,
+            Some(ItemEdit {
+                turns: 1,
+                crop: None
+            })
+        );
+        assert_ne!(turned.thumb_key, plain.thumb_key);
+        // Clockwise, the face's left edge becomes its top and its bottom its left.
+        let face = &turned.faces[0];
+        assert!((face.top - 0.25).abs() < 1e-3 && (face.left - 0.625).abs() < 1e-3);
+
+        // The right half of the unturned photo: the face is in the left half, so it goes.
+        set_item_edit(&f.engine, id, 0, Some([32768, 0, 65535, 65535])).unwrap();
+        let cropped = viewer_item(&f.engine, id).unwrap();
+        assert_eq!((cropped.width, cropped.height), (20, 20));
+        assert_eq!(
+            (cropped.uncropped_width, cropped.uncropped_height),
+            (40, 20)
+        );
+        assert_eq!((turned.uncropped_width, turned.uncropped_height), (20, 40));
+        assert!(cropped.faces.is_empty());
+
+        let err = set_item_edit(&f.engine, id, 0, Some([40000, 0, 30000, 65535])).unwrap_err();
+        assert_eq!(err.kind, "invalidCrop");
+
+        set_item_edit(&f.engine, id, 0, None).unwrap();
+        let reset = viewer_item(&f.engine, id).unwrap();
+        assert_eq!(reset.edit, None);
+        assert_eq!(
+            reset.thumb_key, plain.thumb_key,
+            "the cached original is reused"
+        );
+        assert_eq!(reset.faces.len(), 1);
+    }
+
     fn set_keywords(f: &crate::testutil::Fixture, id: i64, tags: &[&str]) {
         use photon_core::library::NewItem;
         let row = f.engine.lib.item(id).unwrap().unwrap();

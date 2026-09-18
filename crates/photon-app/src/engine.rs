@@ -6,6 +6,7 @@ use crate::watch::WatcherService;
 use parking_lot::{Mutex, RwLock};
 use photon_core::{
     Error, Result,
+    edit::Edit,
     grid::{GridIndex, GridView},
     library::{Library, WatchedFolder},
     now_ms, picasa,
@@ -115,6 +116,9 @@ pub struct Engine {
     /// the second read would miss the first write and the rename would drop it. Held across
     /// the database write too, so the rows land in the order the file did.
     ini_write: Mutex<()>,
+    /// Serialises every write of a photo's edit; see `rotate_item`. A leaf lock: taken
+    /// before the library and view locks and never while holding them.
+    edit_write: Mutex<()>,
     /// Held by the one thread running the duplicate-hashing pass; see `hash_duplicates`.
     hashing: Mutex<()>,
     /// Set by every scan that ends, cleared by the pass as it starts a round. A scan that
@@ -170,6 +174,7 @@ impl Engine {
             startup: Mutex::new(None),
             watcher: Mutex::new(None),
             ini_write: Mutex::new(()),
+            edit_write: Mutex::new(()),
             hashing: Mutex::new(()),
             hash_requested: AtomicBool::new(false),
         }))
@@ -492,6 +497,42 @@ impl Engine {
         self.live_item(id)?;
         self.lib.remove_item_tag(id, tag)?;
         self.refresh_grid()
+    }
+
+    /// Records the user's edit of one photo (`photon_core::edit`). Nothing is written to the
+    /// photo: the edit lives in the library and is applied wherever the photo is drawn.
+    ///
+    /// The row goes back to `Pending` under a new thumbnail key, so it is queued at the
+    /// front - the user is looking at it - and the grid is rebuilt, because every tile and
+    /// the viewer name a thumbnail by that key. An edit identical to the one in place does
+    /// neither.
+    pub fn set_item_edit(&self, id: i64, edit: Edit) -> Result<()> {
+        let _serialised = self.edit_write.lock();
+        self.write_edit(id, edit)
+    }
+
+    /// `set_item_edit` for a caller already holding `edit_write`.
+    fn write_edit(&self, id: i64, edit: Edit) -> Result<()> {
+        self.live_item(id)?;
+        if self.lib.set_item_edit(id, edit)? {
+            self.thumbs.prioritize(&[id], Priority::Visible);
+            self.refresh_grid()?;
+        }
+        Ok(())
+    }
+
+    /// Turns one photo a quarter, on top of whatever edit it has; the crop goes round with
+    /// the picture (`Edit::turned`). Serialised, because it reads the edit it builds on:
+    /// commands run on a thread pool, and two quick presses of `R` that both read the same
+    /// starting edit would come out as one turn. `set_item_edit` takes the same lock, or an
+    /// "Original" landing between this read and this write would be turned back on.
+    pub fn rotate_item(&self, id: i64, clockwise: bool) -> Result<()> {
+        let _serialised = self.edit_write.lock();
+        let item = self.lib.item(id)?.ok_or(Error::NotFound(id))?;
+        if item.missing_since.is_some() {
+            return Err(Error::NotFound(id));
+        }
+        self.write_edit(id, item.edit.turned(clockwise))
     }
 
     /// `NotFound` for an id that has been purged or marked missing, so a stale viewer gets
@@ -1067,6 +1108,36 @@ mod tests {
     use crate::events::Recorded;
     use crate::testutil::{fixture, jpeg};
     use photon_core::media::ThumbState;
+
+    /// An edit travels the whole refresh chain: the row, a new grid version, and a tile
+    /// that names a different thumbnail. Two turns are two turns - `rotate_item` reads the
+    /// edit it builds on, so it has to be serialised against itself.
+    #[test]
+    fn rotating_a_photo_rebuilds_the_grid_under_a_new_thumbnail_key() {
+        let f = fixture(&[("a.jpg", &jpeg(40, 20))]);
+        f.add_photos();
+        let id = f.ids()[0];
+        let (version, grid) = f.engine.grid();
+        let before = grid.rows(0, 1)[0];
+
+        f.engine.rotate_item(id, true).unwrap();
+        f.engine.rotate_item(id, true).unwrap();
+
+        assert_eq!(f.engine.lib.item(id).unwrap().unwrap().edit.turns, 2);
+        let (after_version, grid) = f.engine.grid();
+        assert!(after_version > version);
+        assert_ne!(grid.rows(0, 1)[0].thumb_key, before.thumb_key);
+
+        // The same edit again is not a change: no rebuild, no UI refetch.
+        let edit = f.engine.lib.item(id).unwrap().unwrap().edit;
+        f.engine.set_item_edit(id, edit).unwrap();
+        assert_eq!(f.engine.grid().0, after_version);
+
+        assert!(matches!(
+            f.engine.rotate_item(9_999, true),
+            Err(Error::NotFound(9_999))
+        ));
+    }
 
     /// The hashing pass is wired into the end of a scan, and its result reaches everything
     /// built on it: the count in `grid_info`, the Duplicates view, and a photo's copies.

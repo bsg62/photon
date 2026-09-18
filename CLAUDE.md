@@ -193,11 +193,25 @@ waits on another reader: it hands out an idle pooled connection or opens one (at
 kept). `writer()` is a single mutexed connection.
 
 **Thumbnail garbage collection is gated.** Any write that can orphan a thumbnail — deleting an
-item, or changing `path`/`size`/`mtime_ms`, the fingerprint columns — must call
+item, or changing anything the thumbnail key is made of (`path`/`size`/`mtime_ms`, the
+fingerprint columns, and `edit_turns`/`edit_crop`) — must call
 `settings::bump_thumb_gc_epoch` inside its own transaction. Today that is `purge_items`,
-`update_items` and `remove_watched_folder`. The tripwire test in `settings.rs` enumerates those
-three, so a *new* orphaning write is not caught automatically; the seven-day `THUMB_GC_MAX_AGE`
+`update_items`, `remove_watched_folder` and `set_item_edit`. The tripwire test in `settings.rs`
+enumerates those four, so a *new* orphaning write is not caught automatically; the seven-day `THUMB_GC_MAX_AGE`
 in `engine.rs` bounds the damage of a miss.
+
+**Edits are rendered by the backend, and the thumbnail key includes them.** An edit
+(`photon_core::edit`: EXIF orientation, then quarter turns, then a crop of the turned picture)
+lives in `items.edit_turns`/`edit_crop` and is applied in exactly three places: the thumbnail
+renderer, `/image/<id>` in `protocol.rs`, and the face rectangles in `viewer_item`. The UI draws
+no edit; it writes one and the refresh chain reloads the picture under its new `thumbKey`.
+Anything that names a thumbnail must use `Item::thumb_key()` (or `Edit::thumb_key` over the
+fingerprint, as `map_grid_row` and `live_fingerprints` do); a bare `fingerprint` names the
+*unedited* photo's thumbnail. The untouched photo's key is the bare fingerprint on purpose, so
+caches from before edits existed stay valid. `set_thumb_state_if_unchanged` compares the edit
+too, or a worker that rendered the pre-edit picture marks the row `Ready` with nothing cached
+under the new key. For an edited photo `ViewerItem` reports `width`/`height`/`orientation` and
+`faces` *as shown*.
 
 **The duplicate finder hashes after the scan, in the engine.** `items.content_hash` (XXH3-128,
 NULL for almost every row) is filled by `photon_core::duplicates::hash_candidates`, which reads
@@ -223,8 +237,10 @@ in SQL.
   a writer with its own header/key logic drifts from the reader. Faces and contacts are read
   from the same INI and never written; keywords are read from the photo and never written (the user's renames and
   removals are `tag_rules` rows applied on read, `library/tags.rs`);
-  albums live only in `library.db` (membership is by item id, so a renamed file leaves its
-  albums when its old row is purged — a recorded limitation, not a bug).
+  albums and edits (turns and crops) live only in `library.db` (both are by item id, so a
+  renamed file leaves its albums and loses its edit when its old row is purged — a recorded
+  limitation, not a bug). An edit never touches the photo: it is rendered on the way to the
+  screen.
 - **No native library dependencies.** Nothing wrapping a C/C++ SDK. This is what made packaging
   tractable on three platforms, and it is why XMP and INI parsing are hand-rolled or pure-Rust.
 - **Never launch the GUI to verify a change.** Verification is the test suites plus

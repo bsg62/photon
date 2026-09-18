@@ -171,6 +171,14 @@ CREATE INDEX items_size ON items(size) WHERE missing_since IS NULL;
 -- Finds the hashes held by more than one file: the Duplicates view and a photo's copies.
 CREATE INDEX items_content_hash ON items(content_hash) WHERE content_hash IS NOT NULL;
 "#,
+    r#"
+-- Non-destructive edits (edit.rs): clockwise quarter turns after the EXIF orientation, then
+-- a crop of the turned picture packed as four 16-bit fractions. On items rather than in a
+-- table of their own because the grid query derives every thumbnail key from them, and a
+-- join per row of a 100k-row rebuild is not free. 0 and NULL are the untouched photo.
+ALTER TABLE items ADD COLUMN edit_turns INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE items ADD COLUMN edit_crop INTEGER;
+"#,
 ];
 
 pub fn migrate(conn: &Connection) -> Result<()> {
@@ -339,7 +347,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 8);
+        assert_eq!(version, 9);
         let rules: i64 = conn
             .query_row("SELECT count(*) FROM tag_rules", [], |r| r.get(0))
             .unwrap();
@@ -498,7 +506,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 8);
+        assert_eq!(version, 9);
         let overlay: i64 = conn
             .query_row("SELECT count(*) FROM item_user_tags", [], |r| r.get(0))
             .unwrap();
@@ -548,12 +556,51 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 8);
+        assert_eq!(version, 9);
         let hash: Option<Vec<u8>> = conn
             .query_row("SELECT content_hash FROM items WHERE id = 1", [], |r| {
                 r.get(0)
             })
             .unwrap();
         assert_eq!(hash, None);
+    }
+    /// Every existing photo must come out of the upgrade untouched: an edit is mixed into
+    /// the thumbnail key, so a default that read as an edit would orphan the whole cache.
+    #[test]
+    fn the_ninth_migration_leaves_every_existing_photo_unedited() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        for sql in &MIGRATIONS[..8] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 8i64).unwrap();
+        conn.execute(
+            "INSERT INTO watched_folders (id, path) VALUES (1, '/p')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO folders (id, watched_id, parent_id, path, name, sort_key) \
+             VALUES (1, 1, NULL, '/p', 'p', 'p')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO items (id, folder_id, path, file_name, kind, size, mtime_ms, width, \
+             height, orientation, taken_at) \
+             VALUES (1, 1, '/p/a.jpg', 'a.jpg', 0, 1, 1, 1, 1, 1, 1)",
+            [],
+        )
+        .unwrap();
+
+        migrate(&conn).unwrap();
+
+        let (turns, crop): (i64, Option<i64>) = conn
+            .query_row(
+                "SELECT edit_turns, edit_crop FROM items WHERE id = 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((turns, crop), (0, None));
     }
 }

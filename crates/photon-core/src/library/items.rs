@@ -2,6 +2,7 @@ use super::Library;
 use super::duplicates::DUPLICATE_FILTER;
 use super::tags::{EFFECTIVE_TAGS, TAG_FILTER};
 use crate::Result;
+use crate::edit::{Crop, Edit};
 use crate::grid::{GridEntry, GridView};
 use crate::media::{MediaKind, ThumbState, fingerprint};
 use crate::metadata::{CameraMeta, EXIF_VERSION, date_text, oriented_dims};
@@ -59,12 +60,26 @@ pub struct Item {
     /// `None` until the Picasa pass has read the folder; see `is_starred`.
     pub rating: Option<i64>,
     pub camera: CameraMeta,
+    /// What the user has done to the photo in photon; `Edit::default()` for nearly all.
+    pub edit: Edit,
 }
 
 impl Item {
-    pub fn fingerprint(&self) -> u64 {
-        fingerprint(&self.path, self.size, self.mtime_ms)
+    /// The key this photo's thumbnails are cached under: the file's fingerprint, mixed with
+    /// the edit when there is one. Everything that names a thumbnail - the cache, the grid,
+    /// the viewer, the garbage collector - must go through this or `edit_from_db` +
+    /// `Edit::thumb_key`; a bare `fingerprint` names the *unedited* photo's thumbnail.
+    pub fn thumb_key(&self) -> u64 {
+        self.edit
+            .thumb_key(fingerprint(&self.path, self.size, self.mtime_ms))
     }
+}
+
+/// The edit held in a row's `edit_turns` and `edit_crop`. A row that does not make a valid
+/// edit reads as untouched rather than failing the query it is part of: the photo then shows
+/// as it is on disk, which is never wrong.
+fn edit_from_db(turns: i64, crop: Option<i64>) -> Edit {
+    Edit::new(turns.rem_euclid(4) as u8, crop.map(Crop::from_db)).unwrap_or_default()
 }
 
 /// Grid order, shared by every query that walks items the way the grid shows them.
@@ -152,15 +167,17 @@ pub const RECENT_LIMIT: usize = 500;
 /// `search_entries` appends more columns after this prefix and reads them by index
 /// starting at `GRID_COLUMN_COUNT`: adding a column here shifts those indices, so keep
 /// the two in sync.
-const GRID_COLUMNS: &str = "i.id, i.folder_id, i.taken_at, i.width, i.height, i.orientation, i.kind, i.path, i.size, i.mtime_ms, i.rating";
+const GRID_COLUMNS: &str = "i.id, i.folder_id, i.taken_at, i.width, i.height, i.orientation, i.kind, i.path, i.size, i.mtime_ms, i.rating, i.edit_turns, i.edit_crop";
 
 /// Number of columns selected by `GRID_COLUMNS`. `search_entries` uses this rather than a
-/// bare `11` so a future column added to `GRID_COLUMNS` can't silently shift `file_name`
+/// bare `13` so a future column added to `GRID_COLUMNS` can't silently shift `file_name`
 /// and `folder name` into the wrong indices without also touching this constant.
-const GRID_COLUMN_COUNT: usize = 11;
+const GRID_COLUMN_COUNT: usize = 13;
 
 fn map_grid_row(r: &Row<'_>) -> rusqlite::Result<GridEntry> {
+    let edit = edit_from_db(r.get(11)?, r.get(12)?);
     let (w, h) = oriented_dims(r.get(3)?, r.get(4)?, r.get(5)?);
+    let (w, h) = edit.dims(w, h);
     Ok(GridEntry {
         id: r.get(0)?,
         folder_id: r.get(1)?,
@@ -172,7 +189,7 @@ fn map_grid_row(r: &Row<'_>) -> rusqlite::Result<GridEntry> {
         },
         kind: MediaKind::from_db(r.get(6)?).unwrap_or(MediaKind::Image),
         starred: is_starred(r.get(10)?),
-        thumb_key: fingerprint(&r.get::<_, String>(7)?, r.get(8)?, r.get(9)?),
+        thumb_key: edit.thumb_key(fingerprint(&r.get::<_, String>(7)?, r.get(8)?, r.get(9)?)),
     })
 }
 
@@ -223,6 +240,7 @@ fn row_to_item(r: &Row<'_>) -> rusqlite::Result<Item> {
         missing_since: r.get(12)?,
         rating: r.get(13)?,
         camera: camera_from_row(r, 14)?,
+        edit: edit_from_db(r.get(21)?, r.get(22)?),
     })
 }
 
@@ -531,7 +549,8 @@ impl Library {
             .query_row(
                 &format!(
                     "SELECT id, folder_id, path, kind, size, mtime_ms, width, height, orientation, taken_at,
-                            thumb_state, thumb_error, missing_since, rating, {CAMERA_COLUMNS}
+                            thumb_state, thumb_error, missing_since, rating, {CAMERA_COLUMNS},
+                            edit_turns, edit_crop
                      FROM items WHERE id = ?1"
                 ),
                 params![id],
@@ -539,6 +558,29 @@ impl Library {
             )
             .optional()?;
         Ok(item)
+    }
+
+    /// Records the user's edit of one photo and sends its thumbnails back to be made.
+    /// Returns `false`, writing nothing, when the photo already has exactly this edit or
+    /// does not exist.
+    ///
+    /// The thumbnails cached under the old key are orphaned by this write, so it bumps the
+    /// garbage epoch in the same transaction, like every other write that can orphan one.
+    /// `update_items` leaves these columns alone: a photo re-saved by another program is
+    /// still the photo the user turned.
+    pub fn set_item_edit(&self, id: i64, edit: Edit) -> Result<bool> {
+        let mut conn = self.writer();
+        let tx = conn.transaction()?;
+        let changed = tx.execute(
+            "UPDATE items SET edit_turns = ?2, edit_crop = ?3, thumb_state = 0, thumb_error = NULL
+             WHERE id = ?1 AND NOT (edit_turns = ?2 AND edit_crop IS ?3)",
+            params![id, edit.turns, edit.crop.map(Crop::to_db)],
+        )?;
+        if changed > 0 {
+            super::settings::bump_thumb_gc_epoch(&tx)?;
+        }
+        tx.commit()?;
+        Ok(changed > 0)
     }
 
     pub fn set_thumb_state(&self, id: i64, state: ThumbState, error: Option<&str>) -> Result<()> {
@@ -549,9 +591,11 @@ impl Library {
         Ok(())
     }
 
-    /// Like `set_thumb_state`, but only if the row still matches `item` (path/size/mtime).
-    /// Returns `false` without writing if the item changed since it was read, so a worker
-    /// processing a stale snapshot can't clobber a rescan's reset to `Pending`.
+    /// Like `set_thumb_state`, but only if the row still matches `item` (path/size/mtime
+    /// and the edit). Returns `false` without writing if the item changed since it was read,
+    /// so a worker processing a stale snapshot can't clobber a rescan's reset to `Pending` -
+    /// or an edit's: a worker that rendered the photo as it was before the user turned it
+    /// would otherwise mark it `Ready` with no thumbnail under the new key.
     pub fn set_thumb_state_if_unchanged(
         &self,
         item: &Item,
@@ -560,14 +604,17 @@ impl Library {
     ) -> Result<bool> {
         let changed = self.writer().execute(
             "UPDATE items SET thumb_state = ?2, thumb_error = ?3
-             WHERE id = ?1 AND path = ?4 AND size = ?5 AND mtime_ms = ?6",
+             WHERE id = ?1 AND path = ?4 AND size = ?5 AND mtime_ms = ?6
+               AND edit_turns = ?7 AND edit_crop IS ?8",
             params![
                 item.id,
                 state.to_db(),
                 error,
                 item.path,
                 item.size,
-                item.mtime_ms
+                item.mtime_ms,
+                item.edit.turns,
+                item.edit.crop.map(Crop::to_db),
             ],
         )?;
         Ok(changed > 0)
@@ -600,13 +647,17 @@ impl Library {
         Ok(ids)
     }
 
-    /// Fingerprints of every indexed item; thumbnails for anything else are garbage.
+    /// Thumbnail keys of every indexed item; thumbnails for anything else are garbage. The
+    /// key includes the edit, so the thumbnails of a photo as it looked before its current
+    /// edit are garbage too, and the untouched photo's are again once the edit is reset.
     pub fn live_fingerprints(&self) -> Result<HashSet<u64>> {
         let conn = self.reader()?;
-        let mut stmt = conn.prepare("SELECT path, size, mtime_ms FROM items")?;
+        let mut stmt =
+            conn.prepare("SELECT path, size, mtime_ms, edit_turns, edit_crop FROM items")?;
         let set = stmt
             .query_map([], |r| {
-                Ok(fingerprint(&r.get::<_, String>(0)?, r.get(1)?, r.get(2)?))
+                let file = fingerprint(&r.get::<_, String>(0)?, r.get(1)?, r.get(2)?);
+                Ok(edit_from_db(r.get(3)?, r.get(4)?).thumb_key(file))
             })?
             .collect::<rusqlite::Result<HashSet<u64>>>()?;
         Ok(set)
@@ -811,7 +862,7 @@ mod tests {
         );
         assert_eq!(item.thumb_state, ThumbState::Pending);
         assert_eq!(item.missing_since, None);
-        assert_eq!(item.fingerprint(), fingerprint("/p/a.jpg", 100, 1_000));
+        assert_eq!(item.thumb_key(), fingerprint("/p/a.jpg", 100, 1_000));
         assert!(lib.item(9_999).unwrap().is_none());
     }
 
@@ -945,6 +996,115 @@ mod tests {
         let item = lib.item(id).unwrap().unwrap();
         assert_eq!(item.thumb_state, ThumbState::Failed);
         assert_eq!(item.thumb_error.as_deref(), Some("corrupt"));
+    }
+
+    fn crop_of(left: f64, top: f64, right: f64, bottom: f64) -> Crop {
+        let u = |v: f64| (v * crate::edit::CROP_UNIT as f64).round() as u16;
+        Crop {
+            left: u(left),
+            top: u(top),
+            right: u(right),
+            bottom: u(bottom),
+        }
+    }
+
+    #[test]
+    fn an_edit_renames_the_thumbnail_and_sends_it_back_to_be_made() {
+        let (_dir, lib) = temp_library();
+        let (_, folder) = seed_folder(&lib, Path::new("/p"));
+        let wide = NewItem {
+            width: 400,
+            height: 200,
+            ..new_item(folder, "/p/a.jpg", 1)
+        };
+        let id = lib.insert_items(&[wide]).unwrap()[0];
+        lib.set_thumb_state(id, ThumbState::Ready, None).unwrap();
+        let before = lib.item(id).unwrap().unwrap();
+        assert_eq!(before.edit, Edit::default());
+        assert_eq!(before.thumb_key(), fingerprint("/p/a.jpg", 100, 1_000));
+
+        let edit = Edit::new(1, Some(crop_of(0.0, 0.0, 1.0, 0.5))).unwrap();
+        assert!(lib.set_item_edit(id, edit).unwrap());
+
+        let after = lib.item(id).unwrap().unwrap();
+        assert_eq!(after.edit, edit, "the edit reads back as written");
+        assert_ne!(after.thumb_key(), before.thumb_key());
+        assert_eq!(
+            after.thumb_state,
+            ThumbState::Pending,
+            "nothing is cached under the new key yet"
+        );
+        // The grid and the garbage collector derive the key on their own, from columns:
+        // both must arrive at the item's.
+        let entry = lib.grid_entries().unwrap()[0];
+        assert_eq!(entry.thumb_key, after.thumb_key());
+        // Turned, the 400x200 photo is 200x400; the top half of that is 200x200.
+        assert_eq!(entry.aspect, 1.0);
+        let live = lib.live_fingerprints().unwrap();
+        assert!(live.contains(&after.thumb_key()));
+        assert!(
+            !live.contains(&before.thumb_key()),
+            "the old look is garbage now"
+        );
+
+        assert!(
+            !lib.set_item_edit(id, edit).unwrap(),
+            "the same edit is no write"
+        );
+        assert!(
+            !lib.set_item_edit(9_999, edit).unwrap(),
+            "nor is an unknown photo"
+        );
+        assert!(lib.set_item_edit(id, Edit::default()).unwrap());
+        assert_eq!(
+            lib.item(id).unwrap().unwrap().thumb_key(),
+            before.thumb_key()
+        );
+    }
+
+    #[test]
+    fn a_rewritten_file_keeps_its_edit() {
+        let (_dir, lib) = temp_library();
+        let (_, folder) = seed_folder(&lib, Path::new("/p"));
+        let id = lib
+            .insert_items(&[new_item(folder, "/p/a.jpg", 1)])
+            .unwrap()[0];
+        let edit = Edit::new(3, None).unwrap();
+        lib.set_item_edit(id, edit).unwrap();
+        let changed = NewItem {
+            size: 999,
+            ..new_item(folder, "/p/a.jpg", 1)
+        };
+        lib.update_items(&[(id, changed)]).unwrap();
+        assert_eq!(lib.item(id).unwrap().unwrap().edit, edit);
+    }
+
+    #[test]
+    fn a_worker_that_rendered_the_photo_before_an_edit_cannot_mark_it_ready() {
+        // The render it holds was stored under the old key. Marking the row Ready would
+        // leave it Ready with nothing cached under the new one, and `Ready` rows are never
+        // queued again.
+        let (_dir, lib) = temp_library();
+        let (_, folder) = seed_folder(&lib, Path::new("/p"));
+        let id = lib
+            .insert_items(&[new_item(folder, "/p/a.jpg", 1)])
+            .unwrap()[0];
+        let stale = lib.item(id).unwrap().unwrap();
+        lib.set_item_edit(id, Edit::new(1, None).unwrap()).unwrap();
+
+        assert!(
+            !lib.set_thumb_state_if_unchanged(&stale, ThumbState::Ready, None)
+                .unwrap()
+        );
+        assert_eq!(
+            lib.item(id).unwrap().unwrap().thumb_state,
+            ThumbState::Pending
+        );
+        let fresh = lib.item(id).unwrap().unwrap();
+        assert!(
+            lib.set_thumb_state_if_unchanged(&fresh, ThumbState::Ready, None)
+                .unwrap()
+        );
     }
 
     #[test]
@@ -1115,7 +1275,7 @@ mod tests {
         assert_eq!(entries[1].aspect, 300.0 / 400.0);
         assert_eq!(entries[2].aspect, 1.0);
         assert_eq!(entries[0].folder_id, a);
-        let expected = lib.item(ids[2]).unwrap().unwrap().fingerprint();
+        let expected = lib.item(ids[2]).unwrap().unwrap().thumb_key();
         assert_eq!(entries[0].thumb_key, expected);
     }
 
@@ -1166,7 +1326,7 @@ mod tests {
         let id = lib
             .insert_items(&[new_item(folder, "/p/a.jpg", 1)])
             .unwrap()[0];
-        let expected = lib.item(id).unwrap().unwrap().fingerprint();
+        let expected = lib.item(id).unwrap().unwrap().thumb_key();
         assert_eq!(lib.live_fingerprints().unwrap(), HashSet::from([expected]));
     }
 

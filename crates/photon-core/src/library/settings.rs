@@ -184,7 +184,7 @@ mod tests {
         assert!(lib.thumb_gc_due(1_000, WEEK).unwrap().is_some());
     }
 
-    /// Each of the three writes that can orphan a thumbnail makes the next collection due,
+    /// Each of the four writes that can orphan a thumbnail makes the next collection due,
     /// and nothing else does: a collection with nothing to find is the walk this exists to
     /// avoid.
     #[test]
@@ -220,6 +220,17 @@ mod tests {
             .unwrap();
         assert!(lib.thumb_gc_due(1_000, WEEK).unwrap().is_some(), "replace");
         settle(&lib);
+
+        let turned = crate::edit::Edit::new(1, None).unwrap();
+        lib.set_item_edit(ids[1], turned).unwrap();
+        assert!(lib.thumb_gc_due(1_000, WEEK).unwrap().is_some(), "an edit");
+        settle(&lib);
+        lib.set_item_edit(ids[1], turned).unwrap();
+        assert_eq!(
+            lib.thumb_gc_due(1_000, WEEK).unwrap(),
+            None,
+            "the same edit again orphans nothing"
+        );
 
         lib.remove_watched_folder(watched).unwrap();
         assert!(

@@ -1,4 +1,4 @@
-use crate::{Result, decode::decode_oriented};
+use crate::{Result, decode::decode_oriented, edit::Edit};
 use image::DynamicImage;
 use std::{
     collections::HashSet,
@@ -78,20 +78,35 @@ impl ThumbCache {
             .all(|&size| self.path_for(fp, size).is_file())
     }
 
-    /// Decodes `source` once and writes the preview and grid thumbnails.
+    /// Decodes `source` once and writes the preview and grid thumbnails of the untouched
+    /// photo. The service renders through `render` with the item's edit; this is the plain
+    /// form the cache's own tests use.
     pub fn generate(&self, source: &Path, orientation: u8, fp: u64) -> Result<()> {
-        let (preview, grid) = self.render(source, orientation)?;
+        let (preview, grid) = self.render(source, orientation, Edit::default())?;
         self.store(fp, &preview, &grid)
     }
 
-    /// Decodes `source` and produces the preview and grid images, without touching disk.
-    /// Failures here mean the source file itself is unreadable/corrupt.
+    /// Decodes `source` and produces the preview and grid images of the photo under `edit`,
+    /// without touching disk. Failures here mean the source file itself is unreadable/corrupt.
+    ///
+    /// A crop is taken from the full-size decode and only then shrunk. Shrinking first, as
+    /// the uncropped path does for speed, would crop an already small preview: a quarter of
+    /// the frame would come out at half the preview's resolution, visibly soft in the
+    /// viewer until the full image arrived. A turn costs nothing either way, so an edit
+    /// without a crop keeps the fast path.
     pub(crate) fn render(
         &self,
         source: &Path,
         orientation: u8,
+        edit: Edit,
     ) -> Result<(DynamicImage, DynamicImage)> {
-        let preview = decode_oriented(source, orientation, ThumbSize::Preview.max_edge())?;
+        let preview_edge = ThumbSize::Preview.max_edge();
+        let preview = if edit.crop.is_some() {
+            let full = decode_oriented(source, orientation, u32::MAX)?;
+            shrink(&edit.apply(full), preview_edge)
+        } else {
+            edit.apply(decode_oriented(source, orientation, preview_edge)?)
+        };
         let grid = shrink(&preview, ThumbSize::Grid.max_edge());
         Ok((preview, grid))
     }
@@ -281,6 +296,40 @@ mod tests {
         let cache = ThumbCache::new(dir.path().join("cache"));
         cache.generate(&src, 6, 7).unwrap();
         assert_eq!(dims(&cache.path_for(7, ThumbSize::Grid)), (128, 256));
+    }
+
+    #[test]
+    fn a_crop_is_taken_at_full_size_and_only_then_shrunk() {
+        // The left half of a 3400-wide photo is 1700 wide: more than a preview holds, so
+        // the preview must come out at its full 1600. Cropping the already shrunk 1600
+        // preview instead gives 800 - the soft picture this order exists to avoid. A thin
+        // strip, because a debug build decodes a square this wide in seconds.
+        let dir = tempfile::tempdir().unwrap();
+        let src = write_file(dir.path(), "src.jpg", &jpeg_bytes(3400, 170));
+        let cache = ThumbCache::new(dir.path().join("cache"));
+        let left_half = Edit::new(
+            0,
+            Some(crate::edit::Crop {
+                left: 0,
+                top: 0,
+                right: (crate::edit::CROP_UNIT / 2) as u16,
+                bottom: crate::edit::CROP_UNIT as u16,
+            }),
+        )
+        .unwrap();
+        let (preview, grid) = cache.render(&src, 1, left_half).unwrap();
+        assert_eq!((preview.width(), preview.height()), (1600, 160));
+        assert_eq!((grid.width(), grid.height()), (256, 26));
+    }
+
+    #[test]
+    fn a_turn_is_applied_to_the_thumbnails() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = write_file(dir.path(), "src.jpg", &jpeg_bytes(800, 400));
+        let cache = ThumbCache::new(dir.path().join("cache"));
+        let (preview, grid) = cache.render(&src, 1, Edit::new(1, None).unwrap()).unwrap();
+        assert_eq!((preview.width(), preview.height()), (400, 800));
+        assert_eq!((grid.width(), grid.height()), (128, 256));
     }
 
     #[test]

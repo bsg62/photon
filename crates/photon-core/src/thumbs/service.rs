@@ -1,6 +1,7 @@
 use super::{Priority, ThumbCache, ThumbQueue, ThumbSize};
 use crate::{
     Error, Result,
+    edit::Edit,
     library::{Item, Library},
     media::ThumbState,
 };
@@ -43,14 +44,15 @@ pub struct ThumbService {
 
 /// Decodes a source file into (preview, grid) images. A seam so tests can inject a
 /// misbehaving decoder; production always uses [`ThumbCache::render`].
-type RenderFn = fn(&ThumbCache, &Path, u8) -> Result<(DynamicImage, DynamicImage)>;
+type RenderFn = fn(&ThumbCache, &Path, u8, Edit) -> Result<(DynamicImage, DynamicImage)>;
 
 fn default_render(
     cache: &ThumbCache,
     source: &Path,
     orientation: u8,
+    edit: Edit,
 ) -> Result<(DynamicImage, DynamicImage)> {
-    cache.render(source, orientation)
+    cache.render(source, orientation, edit)
 }
 
 /// Guarantees `queue.done(id)` runs exactly once per popped job, even if the job panics.
@@ -132,7 +134,7 @@ impl ThumbService {
         if item.thumb_state == ThumbState::Failed {
             return Err(Error::ThumbFailed(item.thumb_error.unwrap_or_default()));
         }
-        let path = self.cache.path_for(item.fingerprint(), size);
+        let path = self.cache.path_for(item.thumb_key(), size);
         if path.is_file() {
             return Ok(path);
         }
@@ -181,7 +183,7 @@ impl ThumbService {
         if item.thumb_state == ThumbState::Failed {
             return Err(Error::ThumbFailed(item.thumb_error.unwrap_or_default()));
         }
-        let path = self.cache.path_for(item.fingerprint(), size);
+        let path = self.cache.path_for(item.thumb_key(), size);
         Ok(path.is_file().then_some(path))
     }
 
@@ -237,9 +239,9 @@ fn process(lib: &Library, cache: &ThumbCache, id: i64, render: RenderFn) -> Resu
 }
 
 fn process_item(lib: &Library, cache: &ThumbCache, item: &Item, render: RenderFn) -> Result<()> {
-    let fp = item.fingerprint();
+    let fp = item.thumb_key();
     if !cache.is_complete(fp) {
-        match render(cache, Path::new(&item.path), item.orientation) {
+        match render(cache, Path::new(&item.path), item.orientation, item.edit) {
             Ok((preview, grid)) => cache.store(fp, &preview, &grid)?,
             Err(err) if !is_source_defect(&err) => return Err(err),
             Err(err) => {
@@ -298,19 +300,21 @@ mod tests {
         cache: &ThumbCache,
         source: &Path,
         orientation: u8,
+        edit: Edit,
     ) -> Result<(DynamicImage, DynamicImage)> {
         COUNTED_RENDERS.fetch_add(1, Ordering::SeqCst);
         std::thread::sleep(Duration::from_millis(100));
-        cache.render(source, orientation)
+        cache.render(source, orientation, edit)
     }
 
     fn slow_render(
         cache: &ThumbCache,
         source: &Path,
         orientation: u8,
+        edit: Edit,
     ) -> Result<(DynamicImage, DynamicImage)> {
         std::thread::sleep(Duration::from_millis(500));
-        cache.render(source, orientation)
+        cache.render(source, orientation, edit)
     }
 
     #[test]
@@ -387,7 +391,7 @@ mod tests {
         service.wait_idle();
         for id in ids {
             assert_eq!(state(&lib, id), ThumbState::Ready);
-            assert!(cache.is_complete(lib.item(id).unwrap().unwrap().fingerprint()));
+            assert!(cache.is_complete(lib.item(id).unwrap().unwrap().thumb_key()));
         }
         assert!(lib.pending_thumb_ids().unwrap().is_empty());
     }
@@ -419,6 +423,22 @@ mod tests {
                 .unwrap(),
             "webp"
         );
+    }
+
+    #[test]
+    fn an_edited_photo_gets_thumbnails_of_the_edit_under_its_own_key() {
+        let (_dir, lib, cache, ids) = setup(&[("a.jpg", jpeg_bytes(64, 32))]);
+        let service = ThumbService::start(lib.clone(), cache.clone(), 1);
+        let plain = service.get_or_generate(ids[0], ThumbSize::Grid).unwrap();
+        assert_eq!(image::image_dimensions(&plain).unwrap(), (64, 32));
+
+        lib.set_item_edit(ids[0], Edit::new(1, None).unwrap())
+            .unwrap();
+        assert_eq!(state(&lib, ids[0]), ThumbState::Pending);
+        let turned = service.get_or_generate(ids[0], ThumbSize::Grid).unwrap();
+        assert_ne!(turned, plain, "a different key, so a different file");
+        assert_eq!(image::image_dimensions(&turned).unwrap(), (32, 64));
+        assert_eq!(state(&lib, ids[0]), ThumbState::Ready);
     }
 
     #[test]
@@ -497,11 +517,12 @@ mod tests {
         cache: &ThumbCache,
         source: &Path,
         orientation: u8,
+        edit: Edit,
     ) -> Result<(DynamicImage, DynamicImage)> {
         if source.to_string_lossy().contains("panic") {
             panic!("simulated decoder bug");
         }
-        cache.render(source, orientation)
+        cache.render(source, orientation, edit)
     }
 
     #[test]
