@@ -59,6 +59,20 @@ describe('createSearchBox', () => {
     expect(send).toHaveBeenCalledExactlyOnceWith('');
   });
 
+  it('runs a linked search at once and drops what was half-typed before it', () => {
+    const send = vi.fn(() => Promise.resolve());
+    const box = createSearchBox(send);
+
+    box.query = 'bea';
+    box.run('bea');
+    box.search('camera:"NIKON D750"');
+    vi.advanceTimersByTime(SEARCH_DEBOUNCE_MS * 10);
+
+    // Without the cancel, 'bea' fires after the link's query and replaces it.
+    expect(box.query).toBe('camera:"NIKON D750"');
+    expect(send).toHaveBeenCalledExactlyOnceWith('camera:"NIKON D750"');
+  });
+
   it('adopts a query the backend changed on its own — a folder jump clearing search', async () => {
     const send = vi.fn(() => Promise.resolve());
     const box = createSearchBox(send, 'beach');

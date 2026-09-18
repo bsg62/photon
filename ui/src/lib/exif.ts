@@ -7,6 +7,16 @@ import type { ViewerItem } from './api';
 export interface InfoRow {
   label: string;
   value: string;
+  /** The search this row links to, for the rows that are worth filtering by. */
+  search?: string;
+}
+
+/** A search confined to one field, in the grammar of `photon-core`'s `search::Query`. The
+ *  value is quoted because it holds spaces, and a quote inside it is dropped because the
+ *  grammar has no escape; the backend matches a quoted field value word by word, so the
+ *  lost character costs nothing. */
+export function fieldQuery(field: 'camera' | 'lens', value: string): string {
+  return `${field}:"${value.replaceAll('"', ' ').trim()}"`;
 }
 
 /** "Canon EOS 5D Mark IV", not "Canon Canon EOS 5D Mark IV": most makers repeat the make
@@ -57,8 +67,8 @@ export function formatIso(iso: number): string {
 export function cameraRows(item: Pick<ViewerItem, 'make' | 'model' | 'lens' | 'focalMm' | 'aperture' | 'exposureS' | 'iso'>): InfoRow[] {
   const rows: InfoRow[] = [];
   const camera = cameraName(item.make, item.model);
-  if (camera) rows.push({ label: 'Camera', value: camera });
-  if (item.lens) rows.push({ label: 'Lens', value: item.lens });
+  if (camera) rows.push({ label: 'Camera', value: camera, search: fieldQuery('camera', camera) });
+  if (item.lens) rows.push({ label: 'Lens', value: item.lens, search: fieldQuery('lens', item.lens) });
   const exposure: string[] = [];
   if (item.focalMm) exposure.push(formatFocal(item.focalMm));
   if (item.aperture) exposure.push(formatAperture(item.aperture));

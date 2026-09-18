@@ -97,6 +97,15 @@
     });
   }
 
+  /** A camera or lens clicked in the viewer's info panel. Closes the viewer, since the
+   *  photo it shows has no fixed place in the results, and hands the query to the search
+   *  box so the box shows what the grid is filtered by. */
+  function searchFrom(query: string) {
+    viewerAt = null;
+    searchBox.search(query);
+    grid?.focus();
+  }
+
   function openSettings(section: SettingsSection) {
     settingsAt = section;
   }
@@ -150,7 +159,7 @@
   </main>
   <div class="statusbar"><StatusBar /></div>
 </div>
-{#if viewerAt !== null}<Viewer offset={viewerAt} onclose={closeViewer} onlocate={locate} />{/if}
+{#if viewerAt !== null}<Viewer offset={viewerAt} onclose={closeViewer} onlocate={locate} onsearch={searchFrom} />{/if}
 {#if settingsAt !== null}<Settings section={settingsAt} onclose={closeSettings} />{/if}
 <Toasts />
 

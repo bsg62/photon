@@ -27,7 +27,7 @@
     type="search"
     placeholder="Search names, camera, keywords, dates…"
     aria-label="Search photos by file or folder name, camera, lens, keyword or date"
-    title="Any word matches: a name, a folder, a camera or lens, a keyword, 50mm, f/1.8, iso400, or a date like 2024-06"
+    title="Every word must match: a name, a folder, a camera or lens, a keyword, 50mm, f/1.8, iso400, or a date like 2024-06. Use OR to widen, &quot;quotes&quot; for a phrase, camera: or lens: for one field."
     bind:value={searchBox.query}
     oninput={() => searchBox.run(searchBox.query)}
     onkeydown={(e) => {

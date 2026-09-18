@@ -27,11 +27,14 @@
     offset,
     onclose,
     onlocate,
+    onsearch,
   }: {
     offset: number;
     onclose: (offset: number) => void;
     /** "Locate in photon": the viewer closes and the grid lands on this photo. */
     onlocate: (itemId: number) => void;
+    /** A camera or lens in the info panel was clicked: leave the viewer for that search. */
+    onsearch: (query: string) => void;
   } = $props();
 
   const PRELOAD_RADIUS = 2;
@@ -532,7 +535,14 @@
         <dl>
           {#each camera as row (row.label)}
             <dt>{row.label}</dt>
-            <dd>{row.value}</dd>
+            <dd>
+              {#if row.search}
+                {@const query = row.search}
+                <button class="info-link" onclick={() => onsearch(query)} title="Show every photo with this {row.label.toLowerCase()}">{row.value}</button>
+              {:else}
+                {row.value}
+              {/if}
+            </dd>
           {/each}
         </dl>
       {:else}
@@ -728,6 +738,8 @@
   .info dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 10px; margin: 0; }
   .info dt { color: var(--muted); }
   .info dd { margin: 0; overflow-wrap: anywhere; }
+  .info-link { padding: 0; border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; overflow-wrap: anywhere; }
+  .info-link:hover { text-decoration: underline; }
   .info-muted { margin: 0; color: var(--muted); }
   .chips { display: flex; flex-wrap: wrap; gap: 4px; margin: 0; padding: 0; list-style: none; }
   .chips li { padding: 2px 8px; background: #ffffff1a; border-radius: 10px; font-size: 12px; }

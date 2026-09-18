@@ -56,6 +56,13 @@ People and Tags are read from Picasa's INI and from the photos themselves and ca
 edited here. The search box matches all of it: a camera or lens name, a keyword, `50mm`,
 `f/1.8`, `iso400`, or a date such as `2024-06`.
 
+Every word narrows the search: `italy lake` finds photos matching both, each word wherever
+it likes (`lake.jpg` in the folder `2019 Italy`). `lake OR pond` widens it; `AND` and `OR`
+count as operators only in capitals, so `salt and pepper` still looks for the word. Double
+quotes make a phrase, and `camera:` or `lens:` confine a term to that field, so
+`camera:canon 2019` is the Canon's photos from 2019 and not a folder named Canon. A camera or
+lens in the viewer's info panel is a link to that search.
+
 Two things to know. A library from an earlier photon picks up camera data and keywords on
 the next scan of each folder, which reads every file's header once; nothing needs to be
 done. And an album remembers photos by their library row, so a photo renamed or moved on
@@ -157,6 +164,8 @@ publishing it.
 - [ ] The search box stays put at the top of the window while the folder list and the grid scroll.
 - [ ] The bar between the folder list and the grid resizes the list along its full height: dragging it stops at a minimum width and at half the window, the grid reflows to the new width, and with the bar focused (Tab) the arrow keys resize it too. The list's lower-right corner no longer has a resize grip.
 - [ ] Clearing the search box restores the full library.
+- [ ] `lake bell` shows only photos matching both words; `lake OR bell` shows photos matching either; typing `lake OR` on the way there keeps showing the `lake` results rather than flashing empty.
+- [ ] In the viewer's info panel, click the camera (then, on another photo, the lens): the viewer closes, the search box reads `camera:"…"`, and the grid shows that camera's photos, the clicked one among them.
 - [ ] Clicking a folder in the sidebar while a search is active leaves search and lands on that folder.
 - [ ] Type a query, pause briefly, then keep typing without pausing again (e.g. type "beach", wait, then add "es" to make "beaches"): the box keeps every character you typed and never snaps back to an earlier, shorter query.
 - [ ] Edit the search box, then immediately (within ~150ms) click a folder or Starred: the click's destination is what stays on screen — the grid must not jump back into a search a moment later.

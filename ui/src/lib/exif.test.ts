@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { cameraName, cameraRows, formatAperture, formatExposure, formatFocal, formatIso } from './exif';
+import { cameraName, cameraRows, fieldQuery, formatAperture, formatExposure, formatFocal, formatIso } from './exif';
 
 describe('cameraName', () => {
   it('does not repeat the make when the model already names it', () => {
@@ -52,8 +52,8 @@ describe('cameraRows', () => {
         iso: 400,
       }),
     ).toEqual([
-      { label: 'Camera', value: 'Canon EOS 5D' },
-      { label: 'Lens', value: 'EF50mm f/1.8 STM' },
+      { label: 'Camera', value: 'Canon EOS 5D', search: 'camera:"Canon EOS 5D"' },
+      { label: 'Lens', value: 'EF50mm f/1.8 STM', search: 'lens:"EF50mm f/1.8 STM"' },
       { label: 'Exposure', value: '50 mm · f/1.8 · 1/250 s · ISO 400' },
     ]);
   });
@@ -62,5 +62,12 @@ describe('cameraRows', () => {
     const none = { make: null, model: null, lens: null, focalMm: null, aperture: null, exposureS: null, iso: null };
     expect(cameraRows(none)).toEqual([]);
     expect(cameraRows({ ...none, iso: 100 })).toEqual([{ label: 'Exposure', value: 'ISO 100' }]);
+  });
+});
+
+describe('fieldQuery', () => {
+  it('quotes the value and drops a quote the grammar could not escape', () => {
+    expect(fieldQuery('camera', 'NIKON D750')).toBe('camera:"NIKON D750"');
+    expect(fieldQuery('lens', ' 7" tele ')).toBe('lens:"7  tele"');
   });
 });

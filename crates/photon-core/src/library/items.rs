@@ -4,7 +4,7 @@ use crate::Result;
 use crate::grid::{GridEntry, GridView};
 use crate::media::{MediaKind, ThumbState, fingerprint};
 use crate::metadata::{CameraMeta, EXIF_VERSION, date_text, oriented_dims};
-use crate::search::Query;
+use crate::search::{Fields, Query};
 use rusqlite::{OptionalExtension, Row, ToSql, params};
 use std::collections::{HashMap, HashSet};
 
@@ -692,15 +692,16 @@ impl Library {
         Ok(rows)
     }
 
-    /// Photos whose file name, folder name, camera, lens, keywords or capture date contain
-    /// any word of `query`, case-insensitively.
+    /// Photos matching `query` in their file name, folder name, camera, lens, keywords or
+    /// capture date, case-insensitively.
     ///
-    /// The words are OR-ed and the matching runs in Rust rather than as SQL `LIKE`;
-    /// `search::Query` holds both decisions and the reasons for them. This is one pass
-    /// over the same rows an index rebuild already reads, with a handful of short string
-    /// compares per token added per row. The keywords arrive joined by a correlated
-    /// subquery over the rule-applied keywords (`EFFECTIVE_TAGS`), one index probe per row, rather than a join that would
-    /// multiply the rows by their keyword count.
+    /// Words narrow, `OR` widens, `camera:` and `lens:` confine a term to that field, and
+    /// the matching runs in Rust rather than as SQL `LIKE`; `search::Query` holds the
+    /// grammar and the reasons for it. This is one pass over the same rows an index rebuild
+    /// already reads, with a handful of short string compares per term added per row. The
+    /// keywords arrive joined by a correlated subquery over the rule-applied keywords
+    /// (`EFFECTIVE_TAGS`), one index probe per row, rather than a join that would multiply
+    /// the rows by their keyword count.
     ///
     /// The numeric fields are spelled the way a person types them - `50mm`, `f/1.8`,
     /// `iso400` - and the date as `YYYY-MM-DD`, so "2024" and "2024-06" work without a folder
@@ -723,12 +724,20 @@ impl Library {
                 let base = GRID_COLUMN_COUNT;
                 let file_name: String = r.get(base)?;
                 let folder_name: String = r.get(base + 1)?;
+                let make: Option<String> = r.get(base + 2)?;
+                let model: Option<String> = r.get(base + 3)?;
+                let lens: Option<String> = r.get(base + 4)?;
+                // Make and model as one field, so `camera:` finds a word of either.
+                let camera = match (&make, &model) {
+                    (None, None) => None,
+                    _ => Some(format!(
+                        "{} {}",
+                        make.as_deref().unwrap_or(""),
+                        model.as_deref().unwrap_or("")
+                    )),
+                };
                 let mut haystacks: Vec<String> = vec![file_name, folder_name];
-                for column in base + 2..=base + 4 {
-                    if let Some(text) = r.get::<_, Option<String>>(column)? {
-                        haystacks.push(text);
-                    }
-                }
+                haystacks.extend([make, model, lens.clone()].into_iter().flatten());
                 if let Some(focal) = r.get::<_, Option<f64>>(base + 5)? {
                     haystacks.push(format!("{}mm", focal.round() as i64));
                 }
@@ -743,7 +752,11 @@ impl Library {
                 }
                 haystacks.push(date_text(r.get(2)?));
                 let refs: Vec<&str> = haystacks.iter().map(String::as_str).collect();
-                let hit = query.matches(&refs);
+                let hit = query.matches(&Fields {
+                    any: &refs,
+                    camera: camera.as_deref(),
+                    lens: lens.as_deref(),
+                });
                 // No `Ok(…?)` wrapper here: the closure already returns this type, and
                 // wrapping it trips `clippy::needless_question_mark`, which the gate
                 // treats as an error.
@@ -1584,18 +1597,18 @@ mod tests {
     }
 
     #[test]
-    fn search_widens_with_each_added_word() {
-        // Tokens are OR-ed, so a second word adds photos rather than removing them. This
-        // is the deliberate choice the design records; an AND implementation returns
-        // nothing here (no name contains both "lake" and "bell") and fails on the final
-        // assertion.
+    fn search_narrows_with_each_added_word_and_widens_on_or() {
+        // Words are AND-ed, each free to match in a different field: "trip" is only in
+        // the folder name and "lake" only in a file name. Under the OR this replaced,
+        // "trip lake" returned all three photos; an implementation that wants both words
+        // in one haystack returns none.
         let (_dir, lib) = temp_library();
-        let (_watched, folder) = seed_folder(&lib, Path::new("/p"));
+        let (_watched, folder) = seed_folder(&lib, Path::new("/trip"));
         let ids = lib
             .insert_items(&[
-                new_item(folder, "/p/lake.jpg", 1),
-                new_item(folder, "/p/bell.jpg", 2),
-                new_item(folder, "/p/mountain.jpg", 3),
+                new_item(folder, "/trip/lake.jpg", 1),
+                new_item(folder, "/trip/bell.jpg", 2),
+                new_item(folder, "/trip/mountain.jpg", 3),
             ])
             .unwrap();
 
@@ -1607,20 +1620,57 @@ mod tests {
                 .collect()
         };
 
-        assert_eq!(hits("lake"), vec![ids[0]]);
+        assert_eq!(hits("trip"), ids);
+        assert_eq!(hits("trip lake"), vec![ids[0]]);
+        assert_eq!(hits("lake bell"), Vec::<i64>::new());
+        assert_eq!(hits("lake OR bell"), vec![ids[0], ids[1]]);
+    }
+
+    #[test]
+    fn search_confines_a_prefixed_term_to_the_camera_or_the_lens() {
+        // The folder is named after a camera maker, so the bare word finds both photos
+        // and only the prefix tells them apart. Proves the make, model and lens columns
+        // reach `Fields` rather than only the catch-all haystacks.
+        let (_dir, lib) = temp_library();
+        let (_watched, folder) = seed_folder(&lib, Path::new("/canon"));
+        let shot = NewItem {
+            camera: CameraMeta {
+                make: Some("Canon".into()),
+                model: Some("EOS 5D".into()),
+                lens: Some("EF50mm f/1.8 STM".into()),
+                ..CameraMeta::default()
+            },
+            ..new_item(folder, "/canon/a.jpg", 1)
+        };
+        let ids = lib
+            .insert_items(&[shot, new_item(folder, "/canon/b.jpg", 2)])
+            .unwrap();
+        let hits = |q: &str| -> Vec<i64> {
+            lib.entries_for(GridView::Search, q)
+                .unwrap()
+                .iter()
+                .map(|e| e.id)
+                .collect()
+        };
+
+        assert_eq!(hits("canon"), ids);
+        assert_eq!(hits("camera:canon"), vec![ids[0]]);
+        assert_eq!(hits("camera:\"canon eos 5d\""), vec![ids[0]]);
         assert_eq!(
-            hits("lake bell"),
-            vec![ids[0], ids[1]],
-            "the second word adds its matches; it does not narrow the first word's"
+            hits("camera:5d"),
+            vec![ids[0]],
+            "the model, not only the make"
         );
+        assert_eq!(hits("lens:stm"), vec![ids[0]]);
+        assert_eq!(hits("lens:canon"), Vec::<i64>::new());
+        assert_eq!(hits("camera:stm"), Vec::<i64>::new());
     }
 
     #[test]
     fn search_spans_folders_in_grid_order() {
-        // OR-ing tokens widens results across folders, not just within one - the case
-        // `search_widens_with_each_added_word` cannot show with a single folder. `/p/new`
-        // and `/p/old` each hold a photo matched by one word of "lake bell", plus a photo
-        // in `/p/old` matched by neither.
+        // Results cross folders and keep the grid's order. `/p/new` and `/p/old` each hold
+        // a photo matched by one side of "lake OR bell", plus a photo in `/p/old` matched
+        // by neither.
         let (_dir, lib) = temp_library();
         let (watched, old_folder) = seed_folder(&lib, Path::new("/p/old"));
         let new_folder = lib.upsert_folder(watched, None, "/p/new", 1).unwrap();
@@ -1633,7 +1683,7 @@ mod tests {
             .unwrap();
 
         let hits: Vec<i64> = lib
-            .entries_for(GridView::Search, "lake bell")
+            .entries_for(GridView::Search, "lake OR bell")
             .unwrap()
             .iter()
             .map(|e| e.id)
@@ -1642,7 +1692,7 @@ mod tests {
         // `GRID_ORDER` places folders by their oldest photo descending, regardless of
         // whether that photo matches: `/p/old`'s oldest is `lake.jpg` at 1, `/p/new`'s
         // oldest (its only photo) is `bell.jpg` at 10. 10 > 1, so `/p/new` sorts first.
-        // `mountain.jpg` matches neither token and is dropped, leaving one row per folder,
+        // `mountain.jpg` matches neither side and is dropped, leaving one row per folder,
         // so within-folder order does not come into play here.
         assert_eq!(hits, vec![ids[2], ids[0]]);
     }

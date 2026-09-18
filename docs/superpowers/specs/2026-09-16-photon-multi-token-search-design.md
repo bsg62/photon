@@ -1,6 +1,7 @@
 # photon — Multi-Token Search Design
 
 **Date:** 2026-09-16
+**Superseded in part:** the OR rule, by `2026-09-18-photon-search-grammar-design.md`
 **Status:** Approved design, pending implementation plan
 **Parent spec:** `docs/superpowers/specs/2026-09-13-photon-search-design.md`, whose matcher this
 replaces and whose §1–§6 otherwise stand unchanged
