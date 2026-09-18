@@ -69,6 +69,17 @@ done. And an album remembers photos by their library row, so a photo renamed or 
 disk leaves its albums once the old row is purged — stars survive that because they live
 in Picasa's INI, album membership does not.
 
+### Slideshow and fullscreen
+
+Press `S` in the viewer (or the ▶ button) to play the current view from the photo on screen:
+fullscreen, crossfading, looping back to the start at the end. Space pauses, the arrow keys
+and the wheel step, the controls hide while the pointer rests, and Escape ends the show and
+leaves you in the viewer on the photo it stopped at. How long each photo stays is set under
+Settings → Slideshow.
+
+`F11` toggles fullscreen at any time. photon remembers the window's fullscreen state, so if
+you quit in the middle of a slideshow it reopens fullscreen; `F11` is the way out.
+
 ### Linux with an NVIDIA GPU
 
 WebKitGTK, the webview photon uses on Linux, crashes on NVIDIA's proprietary driver when its
@@ -129,6 +140,9 @@ publishing it.
 
 - [ ] On first launch with a fresh profile, the Pictures folder is added and scanned without asking.
 - [ ] Thumbnails appear within seconds, and scrolling stays smooth while indexing continues.
+- [ ] In the viewer, `S` starts a slideshow: the window goes fullscreen, photos crossfade (no flash of black between them) at the interval from Settings → Slideshow, and the last photo is followed by the first. Space pauses and resumes; ←/→ step and the next photo then stays a full interval; the bar, zoom and ✕ fade out after the pointer rests about 2.5 s and return when it moves. Escape ends the show, leaves fullscreen and stays in the viewer; a second Escape closes the viewer.
+- [ ] Start a slideshow from a window that is already fullscreen (F11 first): ending the show leaves it fullscreen. F11 toggles fullscreen from the grid, the viewer and Settings.
+- [ ] Settings → Slideshow: the field shows the stored interval; entering 0 or 999 snaps to 1 or 60; the next slideshow uses the new value.
 - [ ] Double-click or Enter opens the viewer with an image in about 100 ms. The full resolution follows. ←/→, Home/End, Esc and Backspace work.
 - [ ] The mouse's back side button closes the viewer, and does not navigate the page or leave a blank frame. Worth checking on each OS: the three webviews deliver side buttons differently, and some consume them for history before the page sees them.
 - [ ] The gear at the right of the top bar opens Settings. Escape, the close button and a click outside the dialog close it, and focus returns to the gear.

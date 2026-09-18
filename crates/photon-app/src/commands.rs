@@ -304,6 +304,16 @@ pub fn set_last_folder(engine: &Engine, folder_id: i64) -> CmdResult<()> {
     Ok(())
 }
 
+/// Seconds a slideshow holds each photo.
+pub fn slideshow_interval(engine: &Engine) -> CmdResult<i64> {
+    Ok(engine.lib.slideshow_interval_s()?)
+}
+
+/// Stores the slideshow interval and returns the clamped value now in force.
+pub fn set_slideshow_interval(engine: &Engine, seconds: i64) -> CmdResult<i64> {
+    Ok(engine.lib.set_slideshow_interval_s(seconds)?)
+}
+
 pub fn set_visible(engine: &Engine, ids: &[i64]) {
     engine.thumbs.set_visible(ids);
 }

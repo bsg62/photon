@@ -106,6 +106,18 @@
     grid?.focus();
   }
 
+  /** F11 toggles fullscreen, everywhere. It exists for its own sake and as the way out of a
+   *  trap: the window's fullscreen state is remembered across launches, so quitting in the
+   *  middle of a slideshow reopens photon fullscreen, with no title bar to leave it by. */
+  function onkeydown(e: KeyboardEvent) {
+    if (e.key !== 'F11') return;
+    e.preventDefault();
+    api
+      .windowFullscreen()
+      .then((on) => api.setWindowFullscreen(!on))
+      .catch(library.reportError);
+  }
+
   function openSettings(section: SettingsSection) {
     settingsAt = section;
   }
@@ -126,7 +138,7 @@
   }
 </script>
 
-<svelte:window onresize={() => (sidebarWidth = clampSidebarWidth(sidebarWidth, window.innerWidth))} />
+<svelte:window onresize={() => (sidebarWidth = clampSidebarWidth(sidebarWidth, window.innerWidth))} onkeydown={onkeydown} />
 <div class="app" style:--sidebar-width="{sidebarWidth}px">
   <div class="topbar" inert={covered}>
     <SearchBar />
