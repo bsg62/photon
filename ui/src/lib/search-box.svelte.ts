@@ -59,6 +59,16 @@ export function createSearchBox(send: (query: string) => Promise<void>, initial 
       run.cancel();
     },
 
+    /** Runs `q` now, as though it had been typed and the debounce had elapsed: what a link
+     *  elsewhere in the UI (the info panel's camera and lens) calls. A pending debounced
+     *  send is dropped first, or the text the user had half-typed would land after this
+     *  and replace it. */
+    search(q: string) {
+      run.cancel();
+      query = q;
+      void dispatch(q);
+    },
+
     clear() {
       // Cancel first: a pending debounced call would otherwise land after the clear and put
       // the backend straight back into the search view. Cancelling only stops a call that
