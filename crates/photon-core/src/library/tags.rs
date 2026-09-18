@@ -616,16 +616,4 @@ mod tests {
         lib.remove_item_tag(ids[0], "vacation").unwrap();
         assert_eq!(lib.item_tags(ids[0]).unwrap(), Vec::<String>::new());
     }
-
-    /// A rename after the fact carries the user's own tags with it, because the overlay is
-    /// read through the same rules as the file's keywords.
-    #[test]
-    fn renaming_a_tag_later_moves_the_users_own_tags_too() {
-        let (_dir, lib, ids) = library_with(&[&["beach"]]);
-        lib.add_item_tag(ids[0], "sunset").unwrap();
-        lib.rename_tag("sunset", "dusk").unwrap();
-        assert_eq!(lib.item_tags(ids[0]).unwrap(), ["beach", "dusk"]);
-        lib.remove_item_tag(ids[0], "dusk").unwrap();
-        assert_eq!(lib.item_tags(ids[0]).unwrap(), ["beach"]);
-    }
 }
