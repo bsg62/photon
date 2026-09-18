@@ -145,6 +145,11 @@ CREATE INDEX tag_rules_target ON tag_rules(target);
 -- reason tag_rules is: a rescan rewrites item_tags from the file, and the user's change
 -- must outlive that. Suppressions name the *raw* keyword; additions name it as tag_rules
 -- resolves it. The two namespaces meet only in remove_item_tag.
+-- A suppression row deliberately outlives the keyword it hides: ON DELETE CASCADE fires
+-- only when the *item* is purged, not when a rescan drops the item_tags row because the
+-- file no longer carries the keyword. If the keyword later returns to the file, it comes
+-- back invisible, with nothing in the UI explaining why; typing the name into the panel
+-- (which flips the row to added = 1) is what recovers it.
 CREATE TABLE item_user_tags (
     item_id INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
     tag     TEXT NOT NULL,

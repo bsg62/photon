@@ -488,7 +488,10 @@ impl Engine {
     }
 
     /// `NotFound` for an id that has been purged or marked missing, so a stale viewer gets
-    /// the same answer here as it does from `set_star`.
+    /// the same answer here as it does from `set_star` — not because a tag edit shares
+    /// `set_star`'s reason (writing a `.picasa.ini` that must not land on an unmounted
+    /// drive; a tag edit is database-only), but because the two should behave alike from
+    /// the caller's side regardless.
     fn live_item(&self, id: i64) -> Result<()> {
         let item = self.lib.item(id)?.ok_or(Error::NotFound(id))?;
         if item.missing_since.is_some() {

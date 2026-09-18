@@ -115,9 +115,11 @@ pub fn remove_item_tag(&self, item_id: i64, tag: &str) -> Result<()>
 2. Resolve through `tag_rules`. A name with a **rename** rule is stored as the rule's
    target: typing `holiday` under `holiday → vacation` stores `vacation`, so the tag the
    user gets is the tag they see.
-3. A name with a **removal** rule has that rule deleted, which brings the tag back
-   everywhere. This is the one global effect a per-photo action has; it is reachable only
-   by typing a hidden name exactly, since the suggestions list only live names. The
+3. A name with a **removal** rule has that rule deleted — not any rule merged into it, so
+   this only ever undoes hiding that exact name, and a tag still reached through a
+   separately merged name stays hidden. This is the one global effect a per-photo action
+   has; it is reachable only by typing a hidden name exactly, since the suggestions list
+   only live names. The
    alternative — refusing the name — was rejected: a tag the user has just typed should not
    be turned away, and storing it literally while a rule hides it would make it vanish from
    the panel on the next read, which reads as a bug.

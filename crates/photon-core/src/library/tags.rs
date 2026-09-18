@@ -55,12 +55,14 @@ pub(super) const EFFECTIVE_TAGS: &str =
 
 /// The Tag view's filter for the name bound to `?1`: every keyword renamed to it, plus the
 /// keyword itself unless it is ruled away, plus every tag the user added under that name —
-/// each minus the photos that suppressed their own copy of the keyword. Not written
-/// through `EFFECTIVE_TAGS`, whose `coalesce` no index can serve: this form is equality
-/// probes on `item_tags_tag` and `item_user_tags_tag`, with the suppression checks reaching
-/// `item_user_tags` through its primary key, and
-/// `the_tag_view_is_served_by_its_index` holds it to that. `UNION ALL` rather than `OR`
-/// because SQLite may answer an OR with a scan.
+/// applying the same rules to the overlay's own tags that `EFFECTIVE_TAGS` applies to them,
+/// so a tag added and later renamed or hidden moves or drops the same way it does in the
+/// panel and the sidebar count. Each keyword arm also subtracts the photos that suppressed
+/// their own copy of the keyword. Not written through `EFFECTIVE_TAGS`, whose `coalesce` no
+/// index can serve: this form is equality probes on `item_tags_tag` and
+/// `item_user_tags_tag`, with the suppression checks reaching `item_user_tags` through its
+/// primary key, and `the_tag_view_is_served_by_its_index` holds it to that. `UNION ALL`
+/// rather than `OR` because SQLite may answer an OR with a scan.
 pub(super) const TAG_FILTER: &str = "AND i.id IN (
          SELECT item_id FROM item_tags
          WHERE tag IN (SELECT tag FROM tag_rules WHERE target = ?1)
@@ -74,12 +76,16 @@ pub(super) const TAG_FILTER: &str = "AND i.id IN (
                            WHERE u.item_id = item_tags.item_id AND u.tag = item_tags.tag
                              AND u.added = 0)
          UNION ALL
-         SELECT item_id FROM item_user_tags WHERE tag = ?1 AND added = 1
+         SELECT item_id FROM item_user_tags
+          WHERE added = 1 AND tag IN (SELECT tag FROM tag_rules WHERE target = ?1)
+         UNION ALL
+         SELECT item_id FROM item_user_tags
+          WHERE added = 1 AND tag = ?1 AND NOT EXISTS (SELECT 1 FROM tag_rules WHERE tag = ?1)
      )";
 
 impl Library {
-    /// One photo's tags as the user now names them, in the order the file lists them,
-    /// each once.
+    /// One photo's tags as the user now names them: the file's own keywords in the order
+    /// the file lists them, followed by the tags the user added, each once.
     pub fn item_tags(&self, item_id: i64) -> Result<Vec<String>> {
         let conn = self.reader()?;
         let mut stmt = conn.prepare_cached(&format!(
@@ -208,8 +214,11 @@ impl Library {
     /// carries is not an error: it leaves the photo with the tag, which is what was asked.
     ///
     /// A rename rule's target is stored instead of what was typed, so the user gets the tag
-    /// they see. A removal rule for the typed name is dropped, which brings that tag back
-    /// everywhere — the one global effect a per-photo action has. The alternatives were
+    /// they see. A removal rule for the typed name is dropped — not any rule merged into
+    /// it, so this only ever undoes hiding that exact name, and a tag reached through a
+    /// separate merged name (`trash → junk` still hides photos carrying `trash` after
+    /// `hide_tag("junk")`) stays hidden. That is the one global effect a per-photo action
+    /// has. The alternatives were
     /// refusing a name the user has just typed, or storing it literally and watching it
     /// vanish from the panel on the next read, which reads as a bug.
     pub fn add_item_tag(&self, item_id: i64, tag: &str) -> Result<String> {
@@ -695,8 +704,22 @@ mod tests {
         lib.add_item_tag(ids[0], "sunset").unwrap();
         lib.rename_tag("sunset", "dusk").unwrap();
         assert_eq!(lib.item_tags(ids[0]).unwrap(), ["beach", "dusk"]);
+        assert_eq!(tag_view(&lib, "dusk"), [ids[0]]);
         lib.remove_item_tag(ids[0], "dusk").unwrap();
         assert_eq!(lib.item_tags(ids[0]).unwrap(), ["beach"]);
+    }
+
+    /// A tag the user added, later hidden in Settings, must leave the Tag view the same way
+    /// it leaves `item_tags` and the sidebar count — `TAG_FILTER`'s overlay arm has to apply
+    /// `tag_rules` too, not just match the overlay's raw stored name.
+    #[test]
+    fn hiding_a_users_own_tag_removes_it_from_the_tag_view() {
+        let (_dir, lib, ids) = library_with(&[&["beach"]]);
+        lib.add_item_tag(ids[0], "sunset").unwrap();
+        assert_eq!(tag_view(&lib, "sunset"), [ids[0]]);
+        lib.hide_tag("sunset").unwrap();
+        assert_eq!(lib.item_tags(ids[0]).unwrap(), ["beach"]);
+        assert_eq!(tag_view(&lib, "sunset"), Vec::<i64>::new());
     }
 
     /// Hiding a tag the user added directly creates a rule, so the tag is removed and the
