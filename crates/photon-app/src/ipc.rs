@@ -183,6 +183,16 @@ pub fn set_star(engine: Eng<'_>, id: i64, starred: bool) -> Result<(), AppError>
 }
 
 #[tauri::command(async)]
+pub fn add_item_tag(engine: Eng<'_>, id: i64, tag: String) -> Result<String, AppError> {
+    commands::add_item_tag(&engine, id, &tag)
+}
+
+#[tauri::command(async)]
+pub fn remove_item_tag(engine: Eng<'_>, id: i64, tag: String) -> Result<(), AppError> {
+    commands::remove_item_tag(&engine, id, &tag)
+}
+
+#[tauri::command(async)]
 pub fn neighbours(engine: Eng<'_>, id: i64, radius: usize) -> Vec<i64> {
     commands::neighbours(&engine, id, radius)
 }

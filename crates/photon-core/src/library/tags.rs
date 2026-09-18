@@ -7,7 +7,7 @@
 
 use super::Library;
 use crate::{Error, Result};
-use rusqlite::params;
+use rusqlite::{OptionalExtension, params};
 use serde::Serialize;
 
 /// One change the user made. `target` is the new name, or `None` for a removed tag.
@@ -35,35 +35,61 @@ pub struct TagCount {
     pub count: i64,
 }
 
-/// Each keyword row with the rules applied: `(item_id, tag, seq)`, a renamed keyword under
-/// its new name, a removed one absent. `seq` is `item_tags`' rowid, the order the file
-/// listed the keywords in. One photo can list two keywords that now share a name, so a
-/// reader that needs each once must de-duplicate.
+/// Each effective keyword row with the rules applied: `(item_id, tag, src, seq)`. A
+/// renamed keyword appears under its new name, a removed one is absent, and a tag the user
+/// added to one photo joins the file's own keywords. `src` is 0 for a file keyword and 1
+/// for a user addition; `seq` is the source table's rowid, so `ORDER BY src, seq` is the
+/// file's own keyword order followed by the order the user added tags in. One photo can
+/// list two keywords that now share a name, so a reader that needs each once must
+/// de-duplicate.
 pub(super) const EFFECTIVE_TAGS: &str =
-    "SELECT t.item_id, coalesce(r.target, t.tag) AS tag, t.rowid AS seq
-     FROM item_tags t LEFT JOIN tag_rules r ON r.tag = t.tag
+    "SELECT t.item_id, coalesce(r.target, t.tag) AS tag, t.src, t.seq
+     FROM (SELECT it.item_id, it.tag, 0 AS src, it.rowid AS seq FROM item_tags it
+            WHERE NOT EXISTS (SELECT 1 FROM item_user_tags u
+                              WHERE u.item_id = it.item_id AND u.tag = it.tag AND u.added = 0)
+           UNION ALL
+           SELECT u.item_id, u.tag, 1 AS src, u.rowid AS seq
+             FROM item_user_tags u WHERE u.added = 1) t
+     LEFT JOIN tag_rules r ON r.tag = t.tag
      WHERE r.tag IS NULL OR r.target IS NOT NULL";
 
 /// The Tag view's filter for the name bound to `?1`: every keyword renamed to it, plus the
-/// keyword itself unless it is ruled away. Not written through `EFFECTIVE_TAGS`, whose
-/// `coalesce` no index can serve: this form is two equality probes on `item_tags_tag`,
-/// and `the_tag_view_is_served_by_its_index` holds it to that. `UNION ALL` rather than
-/// `OR` because SQLite may answer an OR with a scan.
+/// keyword itself unless it is ruled away, plus every tag the user added under that name —
+/// applying the same rules to the overlay's own tags that `EFFECTIVE_TAGS` applies to them,
+/// so a tag added and later renamed or hidden moves or drops the same way it does in the
+/// panel and the sidebar count. Each keyword arm also subtracts the photos that suppressed
+/// their own copy of the keyword. Not written through `EFFECTIVE_TAGS`, whose `coalesce` no
+/// index can serve: this form is equality probes on `item_tags_tag` and
+/// `item_user_tags_tag`, with the suppression checks reaching `item_user_tags` through its
+/// primary key, and `the_tag_view_is_served_by_its_index` holds it to that. `UNION ALL`
+/// rather than `OR` because SQLite may answer an OR with a scan.
 pub(super) const TAG_FILTER: &str = "AND i.id IN (
          SELECT item_id FROM item_tags
          WHERE tag IN (SELECT tag FROM tag_rules WHERE target = ?1)
+           AND NOT EXISTS (SELECT 1 FROM item_user_tags u
+                           WHERE u.item_id = item_tags.item_id AND u.tag = item_tags.tag
+                             AND u.added = 0)
          UNION ALL
          SELECT item_id FROM item_tags
          WHERE tag = ?1 AND NOT EXISTS (SELECT 1 FROM tag_rules WHERE tag = ?1)
+           AND NOT EXISTS (SELECT 1 FROM item_user_tags u
+                           WHERE u.item_id = item_tags.item_id AND u.tag = item_tags.tag
+                             AND u.added = 0)
+         UNION ALL
+         SELECT item_id FROM item_user_tags
+          WHERE added = 1 AND tag IN (SELECT tag FROM tag_rules WHERE target = ?1)
+         UNION ALL
+         SELECT item_id FROM item_user_tags
+          WHERE added = 1 AND tag = ?1 AND NOT EXISTS (SELECT 1 FROM tag_rules WHERE tag = ?1)
      )";
 
 impl Library {
-    /// One photo's tags as the user now names them, in the order the file lists them,
-    /// each once.
+    /// One photo's tags as the user now names them: the file's own keywords in the order
+    /// the file lists them, followed by the tags the user added, each once.
     pub fn item_tags(&self, item_id: i64) -> Result<Vec<String>> {
         let conn = self.reader()?;
         let mut stmt = conn.prepare_cached(&format!(
-            "SELECT tag FROM ({EFFECTIVE_TAGS}) WHERE item_id = ?1 ORDER BY seq"
+            "SELECT tag FROM ({EFFECTIVE_TAGS}) WHERE item_id = ?1 ORDER BY src, seq"
         ))?;
         let mut tags: Vec<String> = Vec::new();
         for tag in stmt.query_map(params![item_id], |r| r.get::<_, String>(0))? {
@@ -110,9 +136,10 @@ impl Library {
     /// renaming a tag back to its original name a restore: the first update turned the
     /// original's rule into `to → to`.
     ///
-    /// `from` gets a rule only if some photo carries it as a keyword. A name that exists
-    /// only as another rule's target (`vacation` after `holiday → vacation`) has nothing to
-    /// rename, and a rule for it would show in Settings as a change no photo reflects.
+    /// `from` gets a rule only if some photo carries it as a keyword or as a tag the user
+    /// added. A name that exists only as another rule's target (`vacation` after
+    /// `holiday → vacation`) has nothing to rename, and a rule for it would show in Settings
+    /// as a change no photo reflects.
     pub fn rename_tag(&self, from: &str, to: &str) -> Result<String> {
         self.rename_tag_with(from, to, |_| ())
     }
@@ -141,6 +168,8 @@ impl Library {
         tx.execute(
             "INSERT INTO tag_rules (tag, target)
              SELECT ?1, ?2 WHERE EXISTS (SELECT 1 FROM item_tags WHERE tag = ?1)
+                              OR EXISTS (SELECT 1 FROM item_user_tags
+                                         WHERE tag = ?1 AND added = 1)
              ON CONFLICT (tag) DO UPDATE SET target = excluded.target",
             params![from, to],
         )?;
@@ -163,6 +192,8 @@ impl Library {
         tx.execute(
             "INSERT INTO tag_rules (tag, target)
              SELECT ?1, NULL WHERE EXISTS (SELECT 1 FROM item_tags WHERE tag = ?1)
+                               OR EXISTS (SELECT 1 FROM item_user_tags
+                                          WHERE tag = ?1 AND added = 1)
              ON CONFLICT (tag) DO UPDATE SET target = NULL",
             params![tag],
         )?;
@@ -179,8 +210,73 @@ impl Library {
         Ok(())
     }
 
-    /// Every rule whose keyword some photo still carries, sorted by tag case-insensitively
-    /// in Rust (`lower()` is ASCII-only without ICU).
+    /// Adds `tag` to one photo, returning the name stored. Adding a name the photo already
+    /// carries is not an error: it leaves the photo with the tag, which is what was asked.
+    ///
+    /// A rename rule's target is stored instead of what was typed, so the user gets the tag
+    /// they see. A removal rule for the typed name is dropped — not any rule merged into
+    /// it, so this only ever undoes hiding that exact name, and a tag reached through a
+    /// separate merged name (`trash → junk` still hides photos carrying `trash` after
+    /// `hide_tag("junk")`) stays hidden. That is the one global effect a per-photo action
+    /// has. The alternatives were
+    /// refusing a name the user has just typed, or storing it literally and watching it
+    /// vanish from the panel on the next read, which reads as a bug.
+    pub fn add_item_tag(&self, item_id: i64, tag: &str) -> Result<String> {
+        let tag = valid_name(tag)?;
+        let mut conn = self.writer();
+        let tx = conn.transaction()?;
+        let name = tx
+            .query_row(
+                "SELECT target FROM tag_rules WHERE tag = ?1",
+                params![tag],
+                |r| r.get::<_, Option<String>>(0),
+            )
+            .optional()?
+            .flatten()
+            .unwrap_or_else(|| tag.to_string());
+        tx.execute(
+            "DELETE FROM tag_rules WHERE tag = ?1 AND target IS NULL",
+            params![tag],
+        )?;
+        tx.execute(
+            "INSERT INTO item_user_tags (item_id, tag, added) VALUES (?1, ?2, 1)
+             ON CONFLICT (item_id, tag) DO UPDATE SET added = 1",
+            params![item_id, &name],
+        )?;
+        tx.commit()?;
+        Ok(name)
+    }
+
+    /// Removes the displayed name `tag` from one photo: every tag the user added that shows
+    /// under that name is deleted, and every one of the photo's own keywords that shows
+    /// under it is suppressed. A merge means one displayed name can stand for several raw
+    /// keywords, and all of them have to go or the tag reappears.
+    ///
+    /// Deletion runs before suppression because a name that is both ends as the single
+    /// suppression row the primary key allows.
+    pub fn remove_item_tag(&self, item_id: i64, tag: &str) -> Result<()> {
+        let mut conn = self.writer();
+        let tx = conn.transaction()?;
+        tx.execute(
+            "DELETE FROM item_user_tags WHERE item_id = ?1 AND added = 1
+               AND coalesce((SELECT target FROM tag_rules WHERE tag = item_user_tags.tag),
+                            item_user_tags.tag) = ?2",
+            params![item_id, tag],
+        )?;
+        tx.execute(
+            "INSERT OR REPLACE INTO item_user_tags (item_id, tag, added)
+             SELECT item_id, tag, 0 FROM item_tags
+              WHERE item_id = ?1
+                AND coalesce((SELECT target FROM tag_rules WHERE tag = item_tags.tag),
+                             item_tags.tag) = ?2",
+            params![item_id, tag],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Every rule whose keyword some photo still carries as a keyword or as a tag the user
+    /// added, sorted by tag case-insensitively in Rust (`lower()` is ASCII-only without ICU).
     ///
     /// A photo on an offline drive still counts: its rows stay until the scanner purges
     /// them. A rule whose keyword has gone entirely is kept but not listed. It applies to
@@ -190,7 +286,9 @@ impl Library {
         let conn = self.reader()?;
         let mut stmt = conn.prepare(
             "SELECT r.tag, r.target FROM tag_rules r
-             WHERE EXISTS (SELECT 1 FROM item_tags t WHERE t.tag = r.tag)",
+             WHERE EXISTS (SELECT 1 FROM item_tags t WHERE t.tag = r.tag)
+                OR EXISTS (SELECT 1 FROM item_user_tags u
+                           WHERE u.tag = r.tag AND u.added = 1)",
         )?;
         let mut rules = stmt
             .query_map([], |r| {
@@ -427,5 +525,219 @@ mod tests {
         lib.update_item_meta(&[(ids[0], reread)]).unwrap();
         assert_eq!(lib.item_tags(ids[0]).unwrap(), ["vacation"]);
         assert_eq!(tag_view(&lib, "vacation"), [ids[0]]);
+    }
+
+    #[test]
+    fn a_tag_the_user_adds_shows_after_the_file_keywords() {
+        let (_dir, lib, ids) = library_with(&[&["beach"]]);
+        assert_eq!(lib.add_item_tag(ids[0], "  sunset ").unwrap(), "sunset");
+        assert_eq!(lib.item_tags(ids[0]).unwrap(), ["beach", "sunset"]);
+    }
+
+    #[test]
+    fn a_blank_tag_is_refused() {
+        let (_dir, lib, ids) = library_with(&[&["beach"]]);
+        assert!(matches!(
+            lib.add_item_tag(ids[0], "   "),
+            Err(Error::EmptyTagName)
+        ));
+        assert_eq!(lib.item_tags(ids[0]).unwrap(), ["beach"]);
+    }
+
+    #[test]
+    fn adding_a_tag_the_file_already_carries_shows_it_once() {
+        let (_dir, lib, ids) = library_with(&[&["beach"]]);
+        lib.add_item_tag(ids[0], "beach").unwrap();
+        assert_eq!(lib.item_tags(ids[0]).unwrap(), ["beach"]);
+    }
+
+    /// The reason the overlay is a second table: the scanner rewrites a photo's item_tags
+    /// rows from the file whenever it re-reads it, and the user's tag must outlive that.
+    #[test]
+    fn a_user_tag_survives_rereading_the_keywords() {
+        let (_dir, lib, ids) = library_with(&[&["beach"]]);
+        lib.add_item_tag(ids[0], "sunset").unwrap();
+        let row = lib.item(ids[0]).unwrap().unwrap();
+        let reread = NewItem {
+            tags: vec!["beach".into()],
+            ..new_item(row.folder_id, &row.path, row.taken_at)
+        };
+        lib.update_item_meta(&[(ids[0], reread)]).unwrap();
+        assert_eq!(lib.item_tags(ids[0]).unwrap(), ["beach", "sunset"]);
+    }
+
+    #[test]
+    fn removing_a_file_keyword_hides_it_on_that_photo_only() {
+        let (_dir, lib, ids) = library_with(&[&["beach", "sunset"], &["beach"]]);
+        lib.remove_item_tag(ids[0], "beach").unwrap();
+        assert_eq!(lib.item_tags(ids[0]).unwrap(), ["sunset"]);
+        assert_eq!(lib.item_tags(ids[1]).unwrap(), ["beach"]);
+    }
+
+    /// The scanner rewrites item_tags from the file; a suppression that did not outlive
+    /// that would bring the keyword back at the next rescan.
+    #[test]
+    fn a_suppressed_keyword_stays_hidden_across_a_reread() {
+        let (_dir, lib, ids) = library_with(&[&["beach", "sunset"]]);
+        lib.remove_item_tag(ids[0], "beach").unwrap();
+        let row = lib.item(ids[0]).unwrap().unwrap();
+        let reread = NewItem {
+            tags: vec!["beach".into(), "sunset".into()],
+            ..new_item(row.folder_id, &row.path, row.taken_at)
+        };
+        lib.update_item_meta(&[(ids[0], reread)]).unwrap();
+        assert_eq!(lib.item_tags(ids[0]).unwrap(), ["sunset"]);
+    }
+
+    #[test]
+    fn removing_a_tag_the_user_added_takes_it_away_again() {
+        let (_dir, lib, ids) = library_with(&[&["beach"]]);
+        lib.add_item_tag(ids[0], "sunset").unwrap();
+        lib.remove_item_tag(ids[0], "sunset").unwrap();
+        assert_eq!(lib.item_tags(ids[0]).unwrap(), ["beach"]);
+    }
+
+    /// A name that is both a file keyword and a user addition is one row, so the states
+    /// have to degenerate correctly: removing then re-adding leaves the photo carrying it.
+    #[test]
+    fn re_adding_a_removed_file_keyword_brings_it_back() {
+        let (_dir, lib, ids) = library_with(&[&["beach"]]);
+        lib.add_item_tag(ids[0], "beach").unwrap();
+        lib.remove_item_tag(ids[0], "beach").unwrap();
+        assert_eq!(lib.item_tags(ids[0]).unwrap(), Vec::<String>::new());
+        lib.add_item_tag(ids[0], "beach").unwrap();
+        assert_eq!(lib.item_tags(ids[0]).unwrap(), ["beach"]);
+    }
+
+    /// The user gets the tag they see: under `holiday → vacation`, typing either name
+    /// stores `vacation`.
+    #[test]
+    fn adding_a_renamed_name_stores_its_target() {
+        let (_dir, lib, ids) = library_with(&[&["holiday"], &[]]);
+        lib.rename_tag("holiday", "vacation").unwrap();
+        assert_eq!(lib.add_item_tag(ids[1], "holiday").unwrap(), "vacation");
+        assert_eq!(lib.item_tags(ids[1]).unwrap(), ["vacation"]);
+    }
+
+    /// The one global effect a per-photo action has, and the reason for it: a name the user
+    /// has just typed must not come back hidden.
+    #[test]
+    fn adding_a_removed_name_brings_the_tag_back_everywhere() {
+        let (_dir, lib, ids) = library_with(&[&["junk"], &[]]);
+        lib.hide_tag("junk").unwrap();
+        assert_eq!(lib.item_tags(ids[0]).unwrap(), Vec::<String>::new());
+
+        assert_eq!(lib.add_item_tag(ids[1], "junk").unwrap(), "junk");
+        assert_eq!(lib.tag_rules().unwrap(), []);
+        assert_eq!(lib.item_tags(ids[0]).unwrap(), ["junk"]);
+        assert_eq!(lib.item_tags(ids[1]).unwrap(), ["junk"]);
+    }
+
+    /// One displayed name can stand for several raw keywords after a merge. Missing one
+    /// would leave the tag on the photo after the user removed it.
+    #[test]
+    fn removing_a_merged_name_suppresses_every_keyword_behind_it() {
+        let (_dir, lib, ids) = library_with(&[&["holiday", "vacation"]]);
+        lib.rename_tag("holiday", "vacation").unwrap();
+        assert_eq!(lib.item_tags(ids[0]).unwrap(), ["vacation"]);
+        lib.remove_item_tag(ids[0], "vacation").unwrap();
+        assert_eq!(lib.item_tags(ids[0]).unwrap(), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_user_tag_is_viewed_counted_and_searched_like_a_keyword() {
+        let (_dir, lib, ids) = library_with(&[&["beach"], &[]]);
+        lib.add_item_tag(ids[1], "sunset").unwrap();
+        assert_eq!(tag_view(&lib, "sunset"), [ids[1]]);
+        assert_eq!(search(&lib, "sunset"), [ids[1]]);
+        assert_eq!(
+            listed(&lib),
+            [("beach".to_string(), 1), ("sunset".to_string(), 1)]
+        );
+    }
+
+    #[test]
+    fn a_photo_leaves_the_tag_view_when_its_keyword_is_removed_there() {
+        let (_dir, lib, ids) = library_with(&[&["beach"], &["beach"]]);
+        lib.remove_item_tag(ids[0], "beach").unwrap();
+        assert_eq!(tag_view(&lib, "beach"), [ids[1]]);
+        assert_eq!(search(&lib, "beach"), [ids[1]]);
+        assert_eq!(listed(&lib), [("beach".to_string(), 1)]);
+    }
+
+    /// The photo keeps one keyword that answers to the name, so it stays in the view: the
+    /// suppression is of a row, not of the photo.
+    #[test]
+    fn suppressing_one_of_two_merged_keywords_keeps_the_photo_in_the_view() {
+        let (_dir, lib, ids) = library_with(&[&["holiday", "vacation"]]);
+        lib.rename_tag("holiday", "vacation").unwrap();
+        lib.writer()
+            .execute(
+                "INSERT INTO item_user_tags (item_id, tag, added) VALUES (?1, 'holiday', 0)",
+                params![ids[0]],
+            )
+            .unwrap();
+        assert_eq!(tag_view(&lib, "vacation"), [ids[0]]);
+    }
+
+    /// A tag that exists only because the user added it is still the user's tag: the tag
+    /// manager has to be able to rename it, remove it, and list what it did.
+    #[test]
+    fn a_tag_that_exists_only_as_a_user_tag_can_be_managed() {
+        let (_dir, lib, ids) = library_with(&[&["beach"]]);
+        lib.add_item_tag(ids[0], "sunset").unwrap();
+
+        lib.rename_tag("sunset", "dusk").unwrap();
+        assert_eq!(lib.tag_rules().unwrap(), [rule("sunset", Some("dusk"))]);
+        assert_eq!(lib.item_tags(ids[0]).unwrap(), ["beach", "dusk"]);
+
+        lib.hide_tag("dusk").unwrap();
+        assert_eq!(lib.item_tags(ids[0]).unwrap(), ["beach"]);
+        assert_eq!(listed(&lib), [("beach".to_string(), 1)]);
+    }
+
+    /// A rename after the fact carries the user's own tags with it, because the overlay is
+    /// read through the same rules as the file's keywords.
+    #[test]
+    fn renaming_a_tag_later_moves_the_users_own_tags_too() {
+        let (_dir, lib, ids) = library_with(&[&["beach"]]);
+        lib.add_item_tag(ids[0], "sunset").unwrap();
+        lib.rename_tag("sunset", "dusk").unwrap();
+        assert_eq!(lib.item_tags(ids[0]).unwrap(), ["beach", "dusk"]);
+        assert_eq!(tag_view(&lib, "dusk"), [ids[0]]);
+        lib.remove_item_tag(ids[0], "dusk").unwrap();
+        assert_eq!(lib.item_tags(ids[0]).unwrap(), ["beach"]);
+    }
+
+    /// A tag the user added, later hidden in Settings, must leave the Tag view the same way
+    /// it leaves `item_tags` and the sidebar count — `TAG_FILTER`'s overlay arm has to apply
+    /// `tag_rules` too, not just match the overlay's raw stored name.
+    #[test]
+    fn hiding_a_users_own_tag_removes_it_from_the_tag_view() {
+        let (_dir, lib, ids) = library_with(&[&["beach"]]);
+        lib.add_item_tag(ids[0], "sunset").unwrap();
+        assert_eq!(tag_view(&lib, "sunset"), [ids[0]]);
+        lib.hide_tag("sunset").unwrap();
+        assert_eq!(lib.item_tags(ids[0]).unwrap(), ["beach"]);
+        assert_eq!(tag_view(&lib, "sunset"), Vec::<i64>::new());
+    }
+
+    /// Hiding a tag the user added directly creates a rule, so the tag is removed and the
+    /// rule is listed. The first UPDATE in hide_tag is a no-op when nothing targets the tag
+    /// yet, so the INSERT's OR EXISTS is what writes the rule.
+    #[test]
+    fn hiding_a_freshly_added_overlay_tag_creates_its_rule() {
+        let (_dir, lib, ids) = library_with(&[&["beach"]]);
+        lib.add_item_tag(ids[0], "vacation").unwrap();
+        assert_eq!(lib.item_tags(ids[0]).unwrap(), ["beach", "vacation"]);
+        assert_eq!(
+            listed(&lib),
+            [("beach".to_string(), 1), ("vacation".to_string(), 1)]
+        );
+
+        lib.hide_tag("vacation").unwrap();
+        assert_eq!(lib.item_tags(ids[0]).unwrap(), ["beach"]);
+        assert_eq!(listed(&lib), [("beach".to_string(), 1)]);
+        assert_eq!(lib.tag_rules().unwrap(), [rule("vacation", None)]);
     }
 }

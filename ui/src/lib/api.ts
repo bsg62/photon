@@ -118,6 +118,10 @@ export const api = {
   renameTag: (from: string, to: string) => invoke<void>('rename_tag', { from, to }),
   hideTag: (tag: string) => invoke<void>('hide_tag', { tag }),
   restoreTagRule: (tag: string) => invoke<void>('restore_tag_rule', { tag }),
+  /** Adds a tag to one photo. Resolves to the name stored, which a rename rule can make
+   *  different from what was typed. */
+  addItemTag: (id: number, tag: string) => invoke<string>('add_item_tag', { id, tag }),
+  removeItemTag: (id: number, tag: string) => invoke<void>('remove_item_tag', { id, tag }),
   listAlbums: () => invoke<AlbumSummary[]>('list_albums'),
   createAlbum: (name: string) => invoke<Album>('create_album', { name }),
   renameAlbum: (albumId: number, name: string) => invoke<void>('rename_album', { albumId, name }),
