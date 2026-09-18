@@ -45,6 +45,8 @@ pub struct TagCount {
 pub(super) const EFFECTIVE_TAGS: &str =
     "SELECT t.item_id, coalesce(r.target, t.tag) AS tag, t.src, t.seq
      FROM (SELECT it.item_id, it.tag, 0 AS src, it.rowid AS seq FROM item_tags it
+            WHERE NOT EXISTS (SELECT 1 FROM item_user_tags u
+                              WHERE u.item_id = it.item_id AND u.tag = it.tag AND u.added = 0)
            UNION ALL
            SELECT u.item_id, u.tag, 1 AS src, u.rowid AS seq
              FROM item_user_tags u WHERE u.added = 1) t
@@ -196,6 +198,25 @@ impl Library {
             params![item_id, tag],
         )?;
         Ok(tag.to_string())
+    }
+
+    /// Removes `tag` from one photo: a tag the user added is deleted, one of the photo's
+    /// own keywords is suppressed. Both in one transaction, deletion first, because a name
+    /// that is both ends as the single suppression row the primary key allows.
+    pub fn remove_item_tag(&self, item_id: i64, tag: &str) -> Result<()> {
+        let mut conn = self.writer();
+        let tx = conn.transaction()?;
+        tx.execute(
+            "DELETE FROM item_user_tags WHERE item_id = ?1 AND tag = ?2 AND added = 1",
+            params![item_id, tag],
+        )?;
+        tx.execute(
+            "INSERT OR REPLACE INTO item_user_tags (item_id, tag, added)
+             SELECT item_id, tag, 0 FROM item_tags WHERE item_id = ?1 AND tag = ?2",
+            params![item_id, tag],
+        )?;
+        tx.commit()?;
+        Ok(())
     }
 
     /// Every rule whose keyword some photo still carries, sorted by tag case-insensitively
@@ -485,5 +506,48 @@ mod tests {
         };
         lib.update_item_meta(&[(ids[0], reread)]).unwrap();
         assert_eq!(lib.item_tags(ids[0]).unwrap(), ["beach", "sunset"]);
+    }
+
+    #[test]
+    fn removing_a_file_keyword_hides_it_on_that_photo_only() {
+        let (_dir, lib, ids) = library_with(&[&["beach", "sunset"], &["beach"]]);
+        lib.remove_item_tag(ids[0], "beach").unwrap();
+        assert_eq!(lib.item_tags(ids[0]).unwrap(), ["sunset"]);
+        assert_eq!(lib.item_tags(ids[1]).unwrap(), ["beach"]);
+    }
+
+    /// The scanner rewrites item_tags from the file; a suppression that did not outlive
+    /// that would bring the keyword back at the next rescan.
+    #[test]
+    fn a_suppressed_keyword_stays_hidden_across_a_reread() {
+        let (_dir, lib, ids) = library_with(&[&["beach", "sunset"]]);
+        lib.remove_item_tag(ids[0], "beach").unwrap();
+        let row = lib.item(ids[0]).unwrap().unwrap();
+        let reread = NewItem {
+            tags: vec!["beach".into(), "sunset".into()],
+            ..new_item(row.folder_id, &row.path, row.taken_at)
+        };
+        lib.update_item_meta(&[(ids[0], reread)]).unwrap();
+        assert_eq!(lib.item_tags(ids[0]).unwrap(), ["sunset"]);
+    }
+
+    #[test]
+    fn removing_a_tag_the_user_added_takes_it_away_again() {
+        let (_dir, lib, ids) = library_with(&[&["beach"]]);
+        lib.add_item_tag(ids[0], "sunset").unwrap();
+        lib.remove_item_tag(ids[0], "sunset").unwrap();
+        assert_eq!(lib.item_tags(ids[0]).unwrap(), ["beach"]);
+    }
+
+    /// A name that is both a file keyword and a user addition is one row, so the states
+    /// have to degenerate correctly: removing then re-adding leaves the photo carrying it.
+    #[test]
+    fn re_adding_a_removed_file_keyword_brings_it_back() {
+        let (_dir, lib, ids) = library_with(&[&["beach"]]);
+        lib.add_item_tag(ids[0], "beach").unwrap();
+        lib.remove_item_tag(ids[0], "beach").unwrap();
+        assert_eq!(lib.item_tags(ids[0]).unwrap(), Vec::<String>::new());
+        lib.add_item_tag(ids[0], "beach").unwrap();
+        assert_eq!(lib.item_tags(ids[0]).unwrap(), ["beach"]);
     }
 }
