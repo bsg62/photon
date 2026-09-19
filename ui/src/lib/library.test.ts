@@ -745,6 +745,72 @@ describe('LibraryStore', () => {
       expect(store.selected).toBe(5);
     });
 
+    it('discards rows fetched against a newer index than the offsets they were asked for', async () => {
+      // `this.info.version` guard alone is not enough: it only catches a refresh the
+      // library-changed listener has already applied. Here the backend has published a
+      // newer index but that listener has not run yet, so `version` still matches while the
+      // ids `gridRows` answers with belong to the new index - meaningless for the offsets
+      // this call asked for.
+      const store = await storeOf(20);
+      store.selected = 0;
+
+      vi.mocked(api.gridRows).mockResolvedValueOnce({ version: 2, rows: [entryAt(0), entryAt(1)] });
+
+      await store.extendSelection(1);
+
+      expect(store.selectionCount).toBe(1);
+      expect(store.isSelected(idAt(0))).toBe(true);
+      expect(store.selected).toBe(0);
+    });
+
+    it('isSelectedTile rings the lead even when its page has not loaded', async () => {
+      // storeOf only ensures the first 50 offsets, but pages are fetched whole (PAGE_SIZE =
+      // 200), so offset 250 - in the second page - is never cached. The plain `selected`
+      // setter can only record an id for a loaded page, so `selection` is empty here -
+      // `isSelectedTile` has to fall back to comparing offsets directly, or the tile the
+      // keyboard is actually on goes unringed.
+      const store = await storeOf(500);
+      store.selected = 250;
+
+      expect(store.entry(250)).toBeUndefined();
+      expect(store.isSelectedTile(250, undefined)).toBe(true);
+      expect(store.isSelectedTile(249, undefined)).toBe(false);
+    });
+
+    it('carries the anchor with the lead across a refresh that shifts every offset', async () => {
+      // Without this, a Shift+click after the rebuild would range from the stale offset - one
+      // photo off from where the user actually clicked - and the user would star the wrong
+      // range without anything looking wrong.
+      const store = await storeOf(20);
+      store.selected = 3; // anchor = 3
+
+      vi.mocked(api.gridInfo).mockResolvedValue({
+        version: 2,
+        len: 21,
+        sections: [],
+        starredCount: 0,
+        duplicateCount: 0,
+        view: 'all',
+        searchQuery: '',
+        person: null,
+        album: null,
+        tag: null,
+      });
+      vi.mocked(api.gridOffsetOfItem).mockResolvedValue(4);
+      // The rebuilt index answers version 2 now, so the range fetched below must match it too.
+      vi.mocked(api.gridRows).mockImplementation(async (offset: number, count: number) => ({
+        version: 2,
+        rows: Array.from({ length: Math.min(count, 20 - offset) }, (_, i) => entryAt(offset + i)),
+      }));
+      await store.refresh();
+      expect(store.selected).toBe(4);
+
+      await store.extendSelection(10);
+      expect(store.selectionCount).toBe(7); // 4..10, not 3..10
+      expect(store.isSelected(idAt(4))).toBe(true);
+      expect(store.isSelected(idAt(3))).toBe(false);
+    });
+
     it('a view switch clears the selection', async () => {
       const store = await storeOf(10);
       store.selected = 3;

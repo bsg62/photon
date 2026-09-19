@@ -113,6 +113,8 @@ export class LibraryStore {
    *  way, so the next Shift+click extends from where the user last clicked. */
   toggleSelected(offset: number): void {
     const id = this.pages.get(offset)?.id;
+    // Reachable: Ctrl+click on a placeholder tile during a fast scroll, before its page has
+    // arrived. There is no id to toggle, so this is a deliberate silent no-op, not dead code.
     if (id === undefined) return;
     const next = new Set(this.selection);
     if (!next.delete(id)) next.add(id);
@@ -144,6 +146,12 @@ export class LibraryStore {
       // A later extendSelection call has started; that call's write wins, not whichever
       // call's fetch happens to finish last.
       if (call !== this.extendCall) return;
+      // this.info.version can lag a rebuild the backend has already published: the
+      // library-changed listener that would bump it has not run yet, so the guard above can
+      // pass while these rows were fetched against a newer index than the offsets they were
+      // asked for. PageCache.ensure discards a page on the same mismatch; a range built from
+      // it would otherwise name photos for offsets the user never saw.
+      if (rows.version !== version) return;
       for (const entry of rows.rows) ids.add(entry.id);
     }
     this.selection = ids;
@@ -162,6 +170,19 @@ export class LibraryStore {
 
   isSelected(id: number): boolean {
     return this.selection.has(id);
+  }
+
+  /** Whether the tile at `offset` should ring, given the id its page currently holds (or
+   *  `undefined` when that page has not loaded). The plain `selected` setter records an id
+   *  only when the target offset's page is already cached — `End`, the sidebar's folder
+   *  jump and a click during a fast scroll can all select an offset with nothing loaded yet,
+   *  and `this.selection` is then empty. Falling back to the offset itself when the
+   *  selection is empty is what still rings that tile once its entry arrives: the lead has
+   *  to stay visible regardless of caching, because the ring is what tells the user where
+   *  the keyboard is. */
+  isSelectedTile(offset: number, id: number | undefined): boolean {
+    if (id !== undefined) return this.selection.has(id);
+    return this.selection.size === 0 && this.selectedOffset === offset;
   }
 
   get selectionCount(): number {
@@ -262,6 +283,9 @@ export class LibraryStore {
       clamp();
       return;
     }
+    // Captured before the lead moves, so it can be compared against where the lead
+    // *was* rather than where it is about to go.
+    const before = this.selectedOffset;
     const version = this.info.version;
     const at = await api.gridOffsetOfItem(id);
     // A newer refresh has landed while this was in flight; its own rebind is the current one.
@@ -272,6 +296,14 @@ export class LibraryStore {
       return;
     }
     this.selectedOffset = at;
+    // The anchor is a grid offset too, and means nothing once the rebuild has moved rows
+    // underneath it: left on its stale value, the next Shift+click would range from the
+    // wrong photo without anything looking wrong. It normally agrees with the lead, so it
+    // moves with it here. The one time it does not is right after `extendSelection`, which
+    // deliberately leaves the anchor at the start of the range while the lead moves to the
+    // far end - carrying the lead's rebind onto the anchor there would relocate the start
+    // of the *next* range to a photo the user never clicked, so it is left untouched.
+    if (this.anchor === before) this.anchor = at;
   }
 
   /** Records the folder's photo count at the start of a scan, from the first progress

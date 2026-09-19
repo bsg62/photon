@@ -143,7 +143,10 @@
     const sel = library.selected;
     if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'r') {
       e.preventDefault();
-      // One path is all a file manager takes, so this acts on the lead alone.
+      // One path is all a file manager takes, so this follows the same rule as the menu's
+      // Reveal item: only when exactly one photo is selected, not just the lead of a wider
+      // selection.
+      if (library.selectionCount !== 1) return;
       const entry = sel === null ? undefined : library.entry(sel);
       if (entry) api.revealInFileManager(entry.id).catch(library.reportError);
       return;
@@ -194,9 +197,14 @@
     menu = null;
   }
 
+  /** "1 photo" / "12 photos", for a message naming a specific count. */
+  function counted(n: number): string {
+    return n === 1 ? '1 photo' : `${n.toLocaleString()} photos`;
+  }
+
   const count = $derived(library.selectionCount);
   /** "photo" / "12 photos", for menu items that name what they will act on. */
-  const subject = $derived(count === 1 ? 'photo' : `${count.toLocaleString()} photos`);
+  const subject = $derived(count === 1 ? 'photo' : counted(count));
 
   function withSelection(action: (ids: number[]) => Promise<unknown>) {
     const ids = library.selectedItemIds;
@@ -212,7 +220,7 @@
     const done = await api.setStars(ids, starred);
     if (done < ids.length) {
       throw new Error(
-        `${(ids.length - done).toLocaleString()} of ${ids.length.toLocaleString()} photos could not be ${starred ? 'starred' : 'unstarred'}`,
+        `${counted(ids.length - done)} of ${ids.length.toLocaleString()} could not be ${starred ? 'starred' : 'unstarred'}`,
       );
     }
   }
@@ -266,7 +274,7 @@
               {@const entry = library.entry(offset)}
               <Tile
                 {entry}
-                selected={!!entry && library.isSelected(entry.id)}
+                selected={library.isSelectedTile(offset, entry?.id)}
                 dimmed={!!entry && !library.isOnline(entry.folderId)}
                 onselect={(e) => tileClick(e, offset)}
                 onopen={() => onopen(offset)}
