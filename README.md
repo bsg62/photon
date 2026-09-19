@@ -154,6 +154,7 @@ npm run check      # svelte-check
 cargo test --workspace
 cargo run -p xtask -- versions   # the three version files agree
 cargo run -p xtask -- metadata   # licence and installer metadata are complete
+cargo run -p xtask -- screenshots   # the built UI in headless Chromium, to target/screenshots/
 ```
 
 Build a release bundle for this OS with explicit host-appropriate bundles, e.g. on Linux

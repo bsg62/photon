@@ -2,8 +2,11 @@
 //!
 //! Usage:
 //!   cargo run -p xtask -- versions [--tag v0.1.0]
+//!   cargo run -p xtask -- metadata
+//!   cargo run -p xtask -- screenshots [--out <dir>] [--only <shot>] [--no-build]
 
 mod checks;
+mod screenshots;
 
 use checks::{
     Versions, check_metadata, check_versions, parse_cargo_version, parse_pkg_version,
@@ -18,11 +21,22 @@ fn main() -> ExitCode {
     match command {
         Some("versions") => run_versions(tag.as_deref()),
         Some("metadata") => run_metadata(),
+        Some("screenshots") => screenshots::run(&repo_root(), &args),
         other => {
-            eprintln!("unknown command {other:?}; expected `versions` or `metadata`");
+            eprintln!(
+                "unknown command {other:?}; expected `versions`, `metadata` or `screenshots`"
+            );
             ExitCode::FAILURE
         }
     }
+}
+
+fn repo_root() -> std::path::PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("xtask lives at <root>/crates/xtask")
+        .to_path_buf()
 }
 
 /// Reads `--tag <value>`. An empty value is treated as absent, because a
