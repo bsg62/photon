@@ -7,6 +7,7 @@
   import { folderStatus, photoCountLabel, type SettingsSection } from '../lib/settings';
   import { createTagRenamer } from '../lib/tag-renamer.svelte';
   import { filterTags, ruleLabel } from '../lib/tags';
+  import Icon from './Icon.svelte';
 
   let { section = 'folders', onclose }: { section?: SettingsSection; onclose: () => void } = $props();
 
@@ -224,7 +225,7 @@
   >
     <header>
       <h1 id="settings-title">Settings</h1>
-      <button class="close" aria-label="Close settings" onclick={onclose}>✕</button>
+      <button class="close" aria-label="Close settings" onclick={onclose}><Icon name="x" size={16} /></button>
     </header>
 
     <div class="body">
@@ -397,95 +398,108 @@
     grid-template: minmax(0, 1fr) / minmax(0, 1fr);
     place-items: center;
     padding: 16px;
-    background: #0009;
+    background: var(--scrim);
   }
   .dialog {
     display: flex;
     flex-direction: column;
     width: min(720px, 100%);
     height: min(520px, 100%);
-    background: var(--panel);
-    border-radius: 8px;
-    box-shadow: 0 12px 48px #000a;
+    /* Clips the header's and the section list's chrome to the rounded corners. */
+    overflow: hidden;
+    background: var(--surface);
+    border-radius: var(--r-4);
+    box-shadow: 0 0 0 1px var(--line), var(--shadow-dialog);
     outline: none;
   }
   header {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 10px 12px 10px 16px;
-    border-bottom: 1px solid #0003;
+    padding: 10px var(--s-3) 10px var(--s-4);
+    background: var(--chrome);
+    border-bottom: 1px solid var(--line);
   }
-  h1 { margin: 0; font-size: 15px; font-weight: 600; }
-  h2 { margin: 0 0 4px; font-size: 14px; font-weight: 600; }
+  h1 { margin: 0; font-size: var(--t-4); font-weight: 600; }
+  h2 { margin: 0 0 var(--s-1); font-size: var(--t-4); font-weight: 600; }
   button {
-    padding: 4px 10px;
-    border: 1px solid #fff2;
-    border-radius: 4px;
-    background: var(--panel-2);
+    padding: 5px var(--s-3);
+    border: 0;
+    border-radius: var(--r-3);
+    background: var(--field);
     cursor: pointer;
+    transition: background-color 120ms ease-out;
   }
-  button:hover:not(:disabled) { background: #3a3e45; }
-  button:disabled { color: var(--muted); cursor: default; }
-  .close { border: 0; background: none; }
+  button:hover:not(:disabled) { background: var(--field-hover); }
+  button:disabled { color: var(--text-dim); opacity: 0.6; cursor: default; }
+  .close { display: grid; place-items: center; width: 28px; height: 28px; padding: 0; background: none; color: var(--text-dim); }
+  .close:hover:not(:disabled) { background: var(--hover); color: var(--text); }
+  .add { background: var(--accent); color: var(--on-accent); font-weight: 600; }
+  /* Spelled to out-rank the generic hover above, which would otherwise grey it. */
+  .add:hover:not(:disabled) { background: var(--accent); filter: brightness(1.08); }
   .body { display: flex; flex: 1; min-height: 0; }
   nav {
     display: flex;
     flex-direction: column;
     gap: 2px;
     width: 150px;
-    padding: 8px;
-    border-right: 1px solid #0003;
+    padding: var(--s-2) 6px;
+    background: var(--chrome);
+    border-right: 1px solid var(--line);
   }
-  nav button { border: 0; background: none; text-align: left; }
-  nav button.active { background: #ffffff14; }
-  section { flex: 1; min-width: 0; padding: 12px 16px; overflow: auto; }
-  .hint, .empty { margin: 0 0 12px; color: var(--muted); }
+  nav button { height: 28px; padding: 0 var(--s-2); background: none; text-align: left; }
+  nav button:hover:not(:disabled) { background: var(--hover); }
+  nav button.active, nav button.active:hover:not(:disabled) { background: var(--accent-soft); }
+  section { flex: 1; min-width: 0; padding: var(--s-3) var(--s-4); overflow: auto; }
+  .hint, .empty { margin: 0 0 var(--s-3); color: var(--text-dim); }
   .interval { display: flex; align-items: center; gap: 8px; }
-  .interval input { width: 64px; }
+  .interval input { width: 64px; padding: 5px var(--s-2); border: 0; border-radius: var(--r-2); background: var(--field); color: inherit; font: inherit; }
   .segmented { display: inline-flex; gap: 2px; padding: 2px; border-radius: var(--r-3); background: var(--field); }
-  .segmented button { padding: 4px 14px; border: 0; border-radius: var(--r-2); background: none; cursor: pointer; }
-  .segmented button:hover { background: var(--hover); }
-  .segmented button.checked { background: var(--accent); color: var(--on-accent); }
+  .segmented button { padding: 4px 14px; border-radius: var(--r-2); background: none; }
+  .segmented button:hover:not(:disabled) { background: var(--hover); }
+  /* After the hover rule and spelled as long, so the chosen segment keeps its accent under
+     the pointer by specificity rather than by source order alone. */
+  .segmented button.checked, .segmented button.checked:hover:not(:disabled) { background: var(--accent); color: var(--on-accent); }
   .folders { margin: 0 0 12px; padding: 0; list-style: none; }
+  .folders li, .tags li { border-bottom: 1px solid var(--line); }
   .folders li {
     display: flex;
     align-items: center;
     gap: 12px;
     padding: 8px 0;
-    border-bottom: 1px solid #ffffff0d;
   }
   .meta { display: flex; flex: 1; flex-direction: column; min-width: 0; }
   .name { font-weight: 600; }
-  .path { overflow: hidden; color: var(--muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
-  .details { color: var(--muted); font-size: 12px; }
+  .path { overflow: hidden; color: var(--text-dim); font-size: var(--t-2); text-overflow: ellipsis; white-space: nowrap; }
+  .details { color: var(--text-dim); font-size: var(--t-2); }
   .offline .name { opacity: 0.6; }
   .status.scanning { color: var(--accent); }
   .status.degraded, .status.offline { color: var(--text); }
   .actions { display: flex; flex-shrink: 0; gap: 6px; }
   .danger { color: var(--danger); }
   dl { display: grid; grid-template-columns: auto 1fr; gap: 8px 16px; margin: 8px 0 0; }
-  dt { color: var(--muted); }
+  dt { color: var(--text-dim); }
   dd { margin: 0; min-width: 0; }
   .library { display: flex; align-items: center; gap: 8px; }
   .selectable { user-select: text; }
   .filter, .rename {
     width: 100%;
-    padding: 4px 8px;
-    border: 1px solid #fff2;
-    border-radius: 4px;
-    background: var(--panel-2);
+    padding: 5px var(--s-2);
+    border: 0;
+    border-radius: var(--r-2);
+    background: var(--field);
     color: inherit;
     font: inherit;
   }
   .filter { margin-bottom: 8px; }
+  .filter::placeholder { color: var(--text-dim); }
   .tags { margin: 0 0 16px; padding: 0; list-style: none; }
   .tags li {
     display: flex;
     align-items: center;
     gap: 12px;
     padding: 6px 0;
-    border-bottom: 1px solid #ffffff0d;
   }
-  .error { color: var(--danger); font-size: 12px; }
+  .error { color: var(--danger); font-size: var(--t-2); }
+  @media (prefers-reduced-motion: reduce) { button { transition: none; } }
 </style>

@@ -404,7 +404,7 @@
     background: var(--field);
     cursor: pointer;
   }
-  .add:hover { background: var(--hover); }
+  .add:hover { background: var(--field-hover); }
   .menu {
     position: fixed;
     z-index: 40;

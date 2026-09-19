@@ -11,6 +11,9 @@
   --chrome: #ebebed;
   --raised: #ffffff;
   --field: #0000000d;
+  /* A ghost button under the pointer. --hover is for things that rest on nothing; it is
+     fainter than --field, so it cannot serve here. */
+  --field-hover: #00000018;
   --hover: #0000000a;
   --line: #00000018;
   --text: #1f1f23;
@@ -32,6 +35,7 @@
   --chrome: #2c2c31;
   --raised: #36363c;
   --field: #ffffff12;
+  --field-hover: #ffffff1f;
   --hover: #ffffff0d;
   --line: #ffffff14;
   --text: #ededf0;
