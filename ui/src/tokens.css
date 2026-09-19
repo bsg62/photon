@@ -11,6 +11,9 @@
   --chrome: #ebebed;
   --raised: #ffffff;
   --field: #0000000d;
+  /* A ghost button under the pointer. --hover is for things that rest on nothing; it is
+     fainter than --field, so it cannot serve here. */
+  --field-hover: #00000018;
   --hover: #0000000a;
   --line: #00000018;
   --text: #1f1f23;
@@ -20,7 +23,7 @@
      distribution ships. */
   --accent-soft: #1f6fd633;
   --on-accent: #ffffff;
-  --danger: #c4302b;
+  --danger: #bf302b;
   --star: #e0a100;
 }
 
@@ -32,6 +35,7 @@
   --chrome: #2c2c31;
   --raised: #36363c;
   --field: #ffffff12;
+  --field-hover: #ffffff1f;
   --hover: #ffffff0d;
   --line: #ffffff14;
   --text: #ededf0;
@@ -39,25 +43,19 @@
   --accent: #62a0ea;
   --accent-soft: #62a0ea33;
   --on-accent: #111111;
-  --danger: #ff6b6b;
+  --danger: #ff8d8d;
   --star: #ffd24a;
   /* The viewer is dark in both themes, so its glass exists only here. */
   --glass: #26262be6;
   --glass-line: #ffffff1a;
 }
 
-/* The names components used before the tokens, removed in the reskin's last PR. Declared
-   on [data-theme] as well as :root because a var() is resolved where it is declared: on
-   :root alone, a dark subtree inside a light app would inherit the light values.
-   accent-color sits here for the same reason the aliases do: it is inherited and would
-   otherwise be computed once on :root, in the app's theme, so a dark subtree inside a light
-   app would keep the light accent on its checkboxes and range input. */
+/* accent-color is inherited and would otherwise be computed once, on :root, in the app's
+   theme, so a dark subtree inside a light app (the viewer) would keep the light accent on
+   its checkboxes and range input. Declaring it again on [data-theme] gives each themed
+   subtree its own. */
 :root,
 [data-theme] {
-  --bg: var(--surface);
-  --panel: var(--chrome);
-  --panel-2: var(--raised);
-  --muted: var(--text-dim);
   accent-color: var(--accent);
 }
 

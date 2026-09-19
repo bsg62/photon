@@ -22,6 +22,9 @@
 
 <style>
   /* An inline SVG sits on the text baseline and drags its line taller; as a block-level
-     flex item it takes exactly its own box. */
-  svg { display: block; flex: none; }
+     flex item it takes exactly its own box. pointer-events: none makes the icon decoration
+     for hit-testing too, not only for the screen reader: without it a click lands on the
+     svg rather than the button around it, and a disabled button relies only on Svelte's
+     delegation guard to stop that click, not on anything the DOM itself enforces. */
+  svg { display: block; flex: none; pointer-events: none; }
 </style>

@@ -114,11 +114,19 @@
     overflow: hidden;
     cursor: default;
   }
-  /* An outline, not a border: it sits outside the 160px box in the 8px gap between tiles,
-     so the photo does not shrink when selected, and it reads over any photo in either
-     theme. From the class and not from focus - tiles are tabindex="-1", and tokens.css
-     takes the focus ring off those. */
-  .tile.selected { outline: 2px solid var(--accent); outline-offset: 2px; }
+  /* Inside the box, not an outline around it: the grid scrolls a row flush to the top of
+     its container on ArrowUp, and Recent's first row starts at 0, so anything outside the
+     tile is clipped there. The thin surface-coloured line inside the accent keeps the ring
+     legible over a photo of the accent's own blue. From the class and not from focus -
+     tiles are tabindex="-1", and tokens.css takes the focus ring off those. */
+  .tile.selected::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    box-shadow: inset 0 0 0 2px var(--accent), inset 0 0 0 3px var(--surface);
+    pointer-events: none;
+  }
   .tile.dimmed { opacity: 0.4; }
   img {
     width: 100%;

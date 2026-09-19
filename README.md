@@ -284,9 +284,10 @@ publishing it.
       panel's edge. Drag the splitter, and resize it with the arrow keys, as before.
 - [ ] A long album or folder name ellipsises and its count stays right-aligned at every
       sidebar width.
-- [ ] In Light and in Dark: a selected tile has a blue outline that stays visible over a
-      white, a black and a blue photo; selecting does not resize the photo; arrow-key
-      selection shows the same outline.
+- [ ] In Light and in Dark: a selected tile has a blue ring drawn inside its edge, whole on
+      all four sides, that stays visible over a white, a black and a blue photo; selecting
+      does not resize the photo; arrow-key selection shows the same ring, whole and
+      unclipped, including after ArrowUp/Home and on Recent's first row.
 - [ ] Scroll a long library top to bottom, then drag the timeline: folder headers never
       overlap the first tile row, and the year bubble follows the pointer.
 - [ ] A starred tile's amber star is legible over a bright photo; a photo that cannot be
@@ -308,6 +309,11 @@ publishing it.
       and the zoom control may meet; nothing becomes unreachable.
 - [ ] On Windows, with photon in Light: open the crop tool and its ratio list — the list is
       readable (dark text on light, or light on dark, never light on light).
+- [ ] Settings in Light and in Dark: the header and section list are tinted, the content is
+      not; the active section is a blue-tinted row; every button changes shade slightly under
+      the pointer, "Add folder…" is the one blue button, and "Remove…" is red text.
+- [ ] Settings → Tags with hundreds of tags: the dialog stays centred and its corners stay
+      rounded while the list scrolls.
 
 ## How watching works
 

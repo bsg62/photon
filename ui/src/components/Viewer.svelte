@@ -937,7 +937,10 @@
   }
   .bar { position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 2px; padding: var(--s-1); border-radius: var(--r-4); }
   .sep { width: 1px; height: 18px; margin: 0 var(--s-1); background: var(--glass-line); }
-  .caption { padding: 0 10px; border: 0; background: none; color: var(--text-dim); font-size: var(--t-2); white-space: nowrap; cursor: pointer; }
+  /* The file name is the only part of the toolbar that can be any length. This caps how far
+     an unbounded one can run the toolbar under the zoom control at the minimum window width
+     - it bounds the overlap, it does not remove it, and the tools stay reachable either way. */
+  .caption { padding: 0 10px; border: 0; background: none; color: var(--text-dim); font-size: var(--t-2); white-space: nowrap; cursor: pointer; max-width: 34vw; overflow: hidden; text-overflow: ellipsis; }
   .caption:hover:not(:disabled) { color: var(--text); }
   .caption:disabled { cursor: default; }
   .menu {
@@ -960,7 +963,7 @@
   .close:hover { color: var(--text); }
   .star, .tool { display: grid; place-items: center; width: 30px; height: 30px; padding: 0; border: 0; border-radius: var(--r-3); background: none; color: var(--text-dim); font-size: var(--t-2); line-height: 1; cursor: pointer; transition: background-color 120ms ease-out; }
   .star:hover:not(:disabled), .tool:hover:not(:disabled) { color: var(--text); background: var(--hover); }
-  /* Spelled out with :hover, like .tool.primary above: the generic hover rule otherwise
+  /* Spelled out with :hover, like .tool.primary below: the generic hover rule otherwise
      out-specifies these, so a starred star or a pressed tool loses its colour under the
      pointer - exactly while it is, right after the click that set aria-pressed. */
   .star[aria-pressed='true'], .star[aria-pressed='true']:hover:not(:disabled) { color: var(--star); }
