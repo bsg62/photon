@@ -118,4 +118,44 @@ describe('createTheme', () => {
     setOs(true);
     expect(apply).not.toHaveBeenCalled();
   });
+
+  it('applies again when initialised after a dispose', async () => {
+    const { theme, apply } = setup({ stored: 'dark', osDark: false });
+    await theme.init();
+    theme.dispose();
+    apply.mockClear();
+    await theme.init();
+    expect(apply).toHaveBeenLastCalledWith('dark', 'dark');
+  });
+
+  it('hears the desktop again after dispose and re-init with a system choice', async () => {
+    const { theme, apply, setOs } = setup({ stored: 'system', osDark: false });
+    await theme.init();
+    theme.dispose();
+    await theme.init();
+    apply.mockClear();
+    setOs(true);
+    expect(apply).toHaveBeenLastCalledWith('dark', 'system');
+  });
+
+  it('a second init does not leave the first listener behind', async () => {
+    const { theme, listeners } = setup({ stored: 'system', osDark: false });
+    await theme.init();
+    await theme.init();
+    theme.dispose();
+    expect(listeners.size).toBe(0);
+  });
+
+  it('keeps a choice made while the stored one was still loading', async () => {
+    let resolveLoad!: (choice: ThemeChoice) => void;
+    const { theme, apply } = setup({
+      load: () => new Promise<ThemeChoice>((resolve) => (resolveLoad = resolve)),
+    });
+    const pending = theme.init();
+    await theme.set('light');
+    resolveLoad('dark');
+    await pending;
+    expect(theme.choice).toBe('light');
+    expect(apply).toHaveBeenLastCalledWith('light', 'light');
+  });
 });
