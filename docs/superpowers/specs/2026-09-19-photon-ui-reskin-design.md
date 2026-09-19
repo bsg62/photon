@@ -47,6 +47,7 @@ component `<style>` block contains no colour literal (enforced, §7).
 | `--chrome` | `#ebebed` | `#2c2c31` | top bar, sidebar, status bar, settings nav |
 | `--raised` | `#ffffff` | `#36363c` | menus, toasts, the timeline bubble |
 | `--field` | `#0000000d` | `#ffffff12` | inputs, ghost buttons, chips |
+| `--field-hover` | `#00000018` | `#ffffff1f` | a ghost button under the pointer (`--hover` is fainter than `--field`, so it cannot serve there) |
 | `--hover` | `#0000000a` | `#ffffff0d` | row and button hover |
 | `--line` | `#00000018` | `#ffffff14` | every hairline divider |
 | `--text` | `#1f1f23` | `#ededf0` | |
@@ -54,13 +55,22 @@ component `<style>` block contains no colour literal (enforced, §7).
 | `--accent` | `#1f6fd6` | `#62a0ea` | |
 | `--accent-soft` | `#1f6fd633` | `#62a0ea33` | the active row |
 | `--on-accent` | `#ffffff` | `#111111` | text on a primary button |
-| `--danger` | `#c4302b` | `#ff6b6b` | |
+| `--danger` | `#c2302b` | `#ff8989` | |
 | `--star` | `#e0a100` | `#ffd24a` | |
 | `--glass` | — | `#26262be6` | viewer toolbar and info card |
 | `--glass-line` | — | `#ffffff1a` | their 1px edge |
 
 `--accent-soft` is a literal, not `color-mix()`: the webview on Linux is whatever WebKitGTK
 the distribution ships, and a literal needs no minimum version.
+
+Theme-independent colours, declared once in the scales block because what they sit on is
+never themed:
+
+| Token | Value | Used for |
+|---|---|---|
+| `--shadow-ink` | `#000000b3` | shadows cast onto photos |
+| `--photo-line` | `#ffffffe6` | face boxes, the crop rectangle and its handles, drawn on a photo |
+| `--scrim` | `#000000a6` | dims what is behind: the photo outside a crop, a face's name plate, the app behind a dialog |
 
 Scales, identical in both themes:
 
@@ -90,10 +100,14 @@ GPUs; the toolbar must read correctly without it.
 switches to `--text` (§5). `--text-dim` also reaches 4.5:1 on `--glass` composited over white,
 the viewer's toolbar and info card over the brightest photo they will ever sit on.
 Enforced by a test (§7). If a value in the table fails the test, the value is adjusted and
-this table updated; the rule wins over the table. (Three values already differ from the
+this table updated; the rule wins over the table. (Four values already differ from the
 mockups for this reason: the light accent, since white on `#2f7de1` reached only 4.1:1, the
-dark `--text-dim`, since `#9a9aa3` reached only 4.2:1 on a hovered row, and `--glass`, since
-85% opacity (`#26262bd9`) gave only 3.9:1 over a white photo.)
+dark `--text-dim`, since `#9a9aa3` reached only 4.2:1 on a hovered row, `--glass`, since
+85% opacity (`#26262bd9`) gave only 3.9:1 over a white photo, and `--danger`, since it also
+has to read as text on `--raised`, on a hovered menu item (`--hover` over `--raised`) and on
+a hovered ghost button (`--field-hover` over `--surface`) — the light value moved from
+`#c4302b` to `#c2302b` (4.46:1 to 4.53:1 on the worst of those grounds) and the dark value
+from `#ff6b6b` to `#ff8989` (3.71:1 to 4.51:1 on its worst ground, the hovered menu item).)
 
 ## 3. Theming
 

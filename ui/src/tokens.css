@@ -23,7 +23,7 @@
      distribution ships. */
   --accent-soft: #1f6fd633;
   --on-accent: #ffffff;
-  --danger: #c4302b;
+  --danger: #c2302b;
   --star: #e0a100;
 }
 
@@ -43,7 +43,7 @@
   --accent: #62a0ea;
   --accent-soft: #62a0ea33;
   --on-accent: #111111;
-  --danger: #ff6b6b;
+  --danger: #ff8989;
   --star: #ffd24a;
   /* The viewer is dark in both themes, so its glass exists only here. */
   --glass: #26262be6;

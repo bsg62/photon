@@ -80,6 +80,14 @@ describe.each(Object.entries(themes))('the %s theme', (_name, t) => {
     expect(contrast(t['--text-dim'], over(t['--hover'], t['--chrome']))).toBeGreaterThanOrEqual(4.5);
     expect(contrast(t['--text'], over(t['--accent-soft'], t['--chrome']))).toBeGreaterThanOrEqual(4.5);
   });
+
+  it('keeps --danger readable wherever it is used as text', () => {
+    // A context menu's "Delete…"/"Remove…" sits on --raised, sometimes hovered (--hover
+    // over --raised). Settings' "Remove…" sits on --surface, hovered with --field-hover.
+    expect(contrast(t['--danger'], t['--raised'])).toBeGreaterThanOrEqual(4.5);
+    expect(contrast(t['--danger'], over(t['--hover'], t['--raised']))).toBeGreaterThanOrEqual(4.5);
+    expect(contrast(t['--danger'], over(t['--field-hover'], t['--surface']))).toBeGreaterThanOrEqual(4.5);
+  });
 });
 
 describe('the viewer glass', () => {
@@ -115,7 +123,7 @@ describe('the structure of tokens.css', () => {
     expect(darkIndex).toBeGreaterThan(lightIndex);
   });
 
-  it('declares accent-color beside the aliases, on [data-theme], not in the theme-independent scales block', () => {
+  it('declares accent-color on [data-theme], not in the theme-independent scales block', () => {
     expect(ruleBody(css, '[data-theme]')).toMatch(/accent-color\s*:\s*var\(--accent\)\s*;/);
     expect(ruleBody(css, ':root', { exact: true })).not.toMatch(/accent-color/);
   });
