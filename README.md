@@ -271,7 +271,8 @@ publishing it.
 - [ ] On a light desktop: Settings → Appearance → Dark, then System: photon returns to light
       without a restart.
 - [ ] Pin Light on a dark desktop (or Dark on a light one), quit, relaunch: the first frame
-      is already the pinned theme, with no flash of the other.
+      is already the pinned theme, with no flash of the other - and so is the title bar, from
+      the moment the window appears, not a second later.
 - [ ] Pin a theme, then change the desktop's scheme: photon does not move.
 - [ ] Checkboxes, the crop ratio menu and the scrollbars match the theme.
 - [ ] Tab through the top bar, sidebar and Settings: every control shows the same blue

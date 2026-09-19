@@ -299,7 +299,12 @@ The theme choice lives in the `settings` table; `theme-boot.js` applies a `local
 mirror before first paint because the database answers too late, and it is a file rather than
 an inline script because the CSP forbids inline scripts. The database wins when the two
 disagree. `createTheme` is generation-counted like `LibraryStore`, because the singleton
-outlives an App remount.
+outlives an App remount. The native title bar is themed twice, on purpose: by `setup` in
+`app.rs`, from the stored choice, as soon as the library has opened, and again by the UI on
+every change. The mirror cannot reach the window, and the UI's own call only lands once the
+webview has loaded and asked for the setting, so without the first a pinned theme opened under
+the desktop's title bar. `System` is `None` in both, never the scheme resolved in code: `None`
+is what lets the title bar keep following the desktop while photon runs.
 
 `[tabindex='-1']:focus-visible { outline: none }` is global, for script-focused containers. A
 roving-tabindex widget's items carry `tabindex="-1"` too and would silently lose their focus
