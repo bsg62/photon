@@ -284,6 +284,15 @@ publishing it.
       panel's edge. Drag the splitter, and resize it with the arrow keys, as before.
 - [ ] A long album or folder name ellipsises and its count stays right-aligned at every
       sidebar width.
+- [ ] In Light and in Dark: a selected tile has a blue outline that stays visible over a
+      white, a black and a blue photo; selecting does not resize the photo; arrow-key
+      selection shows the same outline.
+- [ ] Scroll a long library top to bottom, then drag the timeline: folder headers never
+      overlap the first tile row, and the year bubble follows the pointer.
+- [ ] A starred tile's amber star is legible over a bright photo; a photo that cannot be
+      shown has a warning icon, not an emoji.
+- [ ] Right-click a tile in Light: the menu is distinct from the grid behind it. Provoke an
+      error toast (open an offline folder's photo): it is readable in both themes.
 
 ## How watching works
 

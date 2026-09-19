@@ -93,16 +93,17 @@
     cursor: pointer;
     user-select: none;
     touch-action: none;
-    border-left: 1px solid #ffffff14;
+    border-left: 1px solid var(--line);
   }
   .year {
     position: absolute;
     left: 0;
     right: 0;
-    color: var(--muted);
-    font-size: 11px;
+    color: var(--text-dim);
+    font-size: var(--t-1);
     line-height: 14px;
     text-align: center;
+    font-variant-numeric: tabular-nums;
     pointer-events: none;
   }
   .here {
@@ -111,7 +112,7 @@
     right: 4px;
     height: 2px;
     margin-top: -1px;
-    background: var(--accent, #6aa7ff);
+    background: var(--accent);
     border-radius: 1px;
     pointer-events: none;
   }
@@ -120,11 +121,11 @@
     right: 100%;
     margin-right: 6px;
     transform: translateY(-50%);
-    padding: 3px 8px;
-    background: var(--panel-2);
-    border-radius: 4px;
-    box-shadow: 0 2px 10px #0008;
-    font-size: 12px;
+    padding: 3px var(--s-2);
+    background: var(--raised);
+    border-radius: var(--r-2);
+    box-shadow: 0 0 0 1px var(--line), var(--shadow-menu);
+    font-size: var(--t-2);
     font-weight: 600;
     white-space: nowrap;
     pointer-events: none;
