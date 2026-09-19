@@ -304,6 +304,10 @@ publishing it.
       screen does not reload, and zoom and pan are kept.
 - [ ] Slideshow: after a few seconds without the pointer the toolbar, zoom and close fade
       out, and come back when it moves.
+- [ ] At the minimum window width (800px), open a photo with a long file name: the toolbar
+      and the zoom control may meet; nothing becomes unreachable.
+- [ ] On Windows, with photon in Light: open the crop tool and its ratio list — the list is
+      readable (dark text on light, or light on dark, never light on light).
 
 ## How watching works
 
