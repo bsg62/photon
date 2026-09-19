@@ -7,5 +7,7 @@ export default defineConfig({
   clearScreen: false,
   server: { port: 5173, strictPort: true },
   build: { target: 'es2022' },
-  test: { include: ['src/**/*.test.ts'], environment: 'node' },
+  // `css: true`: vitest otherwise turns every CSS import into an empty string, `?raw`
+  // included, and tokens.test.ts reads tokens.css as text.
+  test: { include: ['src/**/*.test.ts'], environment: 'node', css: true },
 });

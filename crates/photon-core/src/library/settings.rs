@@ -1,12 +1,14 @@
 //! Small pieces of UI state that have to outlive the process.
 //!
-//! Three things so far — the folder the grid was last showing, how long a slideshow holds
-//! each photo, and whether the thumbnail cache needs collecting — but the table is generic because a column per setting would mean
+//! Four things so far — the folder the grid was last showing, how long a slideshow holds
+//! each photo, whether the thumbnail cache needs collecting, and which colour scheme the UI
+//! uses — but the table is generic because a column per setting would mean
 //! a migration per setting.
 
 use super::Library;
 use crate::Result;
 use rusqlite::Connection;
+use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 /// The folder whose section was at the top of the grid when photon last closed.
@@ -19,6 +21,39 @@ pub const SLIDESHOW_INTERVAL_DEFAULT_S: i64 = 4;
 /// The shortest and longest interval accepted. Under a second a full-size photo may not
 /// have decoded before it is replaced; past a minute it reads as stuck.
 pub const SLIDESHOW_INTERVAL_RANGE_S: std::ops::RangeInclusive<i64> = 1..=60;
+
+/// Which colour scheme the UI uses.
+const THEME: &str = "theme";
+
+/// The user's colour scheme: the desktop's, or one of the two pinned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ThemeChoice {
+    #[default]
+    System,
+    Light,
+    Dark,
+}
+
+impl ThemeChoice {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::System => "system",
+            Self::Light => "light",
+            Self::Dark => "dark",
+        }
+    }
+
+    /// Anything unrecognised is `System`: the table is plain text a newer photon may have
+    /// written, and following the desktop is the one answer that is never wrong.
+    fn parse(stored: &str) -> Self {
+        match stored {
+            "light" => Self::Light,
+            "dark" => Self::Dark,
+            _ => Self::System,
+        }
+    }
+}
 
 /// Bumped by every write that can leave a thumbnail with no item: a purge, a replaced row
 /// (its fingerprint changes with the file), a removed watched folder. Compared against
@@ -117,6 +152,18 @@ impl Library {
         Ok(seconds)
     }
 
+    /// The colour scheme the user chose; `System` when never set.
+    pub fn theme(&self) -> Result<ThemeChoice> {
+        Ok(self
+            .setting(THEME)?
+            .map_or(ThemeChoice::System, |stored| ThemeChoice::parse(&stored)))
+    }
+
+    /// Stores the colour scheme.
+    pub fn set_theme(&self, choice: ThemeChoice) -> Result<()> {
+        self.set_setting(THEME, choice.as_str())
+    }
+
     fn setting_i64(&self, key: &str) -> Result<Option<i64>> {
         Ok(self.setting(key)?.and_then(|v| v.parse().ok()))
     }
@@ -176,6 +223,37 @@ mod tests {
         // A value written by something other than the setter is clamped on read.
         lib.set_setting(SLIDESHOW_INTERVAL_S, "0").unwrap();
         assert_eq!(lib.slideshow_interval_s().unwrap(), 1);
+    }
+
+    #[test]
+    fn the_theme_defaults_to_system_and_round_trips() {
+        let (_dir, lib) = temp_library();
+        assert_eq!(lib.theme().unwrap(), ThemeChoice::System);
+        for choice in [ThemeChoice::Dark, ThemeChoice::Light, ThemeChoice::System] {
+            lib.set_theme(choice).unwrap();
+            assert_eq!(lib.theme().unwrap(), choice);
+        }
+    }
+
+    #[test]
+    fn a_theme_this_photon_does_not_know_reads_as_system() {
+        let (_dir, lib) = temp_library();
+        lib.set_theme(ThemeChoice::Dark).unwrap();
+        // Written by a newer photon, or by hand.
+        lib.set_setting(THEME, "sepia").unwrap();
+        assert_eq!(lib.theme().unwrap(), ThemeChoice::System);
+    }
+
+    #[test]
+    fn a_theme_choice_crosses_ipc_in_lowercase() {
+        assert_eq!(
+            serde_json::to_string(&ThemeChoice::System).unwrap(),
+            "\"system\""
+        );
+        assert_eq!(
+            serde_json::from_str::<ThemeChoice>("\"dark\"").unwrap(),
+            ThemeChoice::Dark
+        );
     }
 
     #[test]

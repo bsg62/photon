@@ -82,12 +82,12 @@ Because the blocks match any element and not only `:root`, the viewer's root ele
 blur(18px)` is layered on as an enhancement, since it can be slow or absent on some Linux
 GPUs; the toolbar must read correctly without it.
 
-**Contrast rule.** `--text` and `--text-dim` reach 4.5:1 on both `--surface` and `--chrome`;
-`--accent` reaches 3:1 on both; `--on-accent` reaches 4.5:1 on `--accent`; `--text-dim`
-still reaches 4.5:1 on a hovered chrome row (`--hover` composited over `--chrome`), and
-`--text` on an active one (`--accent-soft` over `--chrome`); in each theme. `--text-dim` does
-*not* reach it on an active row (4.1:1), which is why an active row's count switches to
-`--text` (§5).
+**Contrast rule.** `--text`, `--text-dim` and `--danger` reach 4.5:1 on both `--surface` and
+`--chrome`; `--accent` reaches 3:1 on both; `--on-accent` reaches 4.5:1 on `--accent`;
+`--text-dim` still reaches 4.5:1 on a hovered chrome row (`--hover` composited over
+`--chrome`), and `--text` on an active one (`--accent-soft` over `--chrome`); in each theme.
+`--text-dim` does *not* reach it on an active row (4.1:1), which is why an active row's count
+switches to `--text` (§5).
 Enforced by a test (§7). If a value in the table fails the test, the value is adjusted and
 this table updated; the rule wins over the table. (Two values already differ from the
 mockups for this reason: the light accent, since white on `#2f7de1` reached only 4.1:1, and

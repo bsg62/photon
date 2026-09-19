@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
   import { api } from './lib/api';
+  import { theme } from './lib/app-theme.svelte';
   import { locateItem } from './lib/folders';
   import { library } from './lib/library.svelte';
   import { resultsChanged, viewKey } from './lib/search';
@@ -52,7 +53,12 @@
 
   onMount(() => {
     library.init().catch(library.reportError);
-    return () => library.dispose();
+    // `init` reports its own failures; theme-boot.js has already set the first frame.
+    void theme.init();
+    return () => {
+      library.dispose();
+      theme.dispose();
+    };
   });
 
   // Spec §5: the grid returns to the top whenever the result set changes — a new view, or
