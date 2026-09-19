@@ -924,8 +924,9 @@
   .quiet { cursor: none; }
   .quiet .bar, .quiet .zoom, .quiet .close { opacity: 0; pointer-events: none; }
   .bar, .zoom, .close { transition: opacity 200ms ease; }
-  /* Glass: 85% opaque on its own, so it reads where backdrop-filter is slow or missing
-     (some Linux GPUs); the blur is an enhancement on top. */
+  /* Glass: 90% opaque on its own, so it reads where backdrop-filter is slow or missing
+     (some Linux GPUs); the blur is an enhancement on top. The opacity is set by contrast,
+     not taste: dim text on it must still reach 4.5:1 over a white photo (tokens.test.ts). */
   .bar, .zoom, .close, .info {
     background: var(--glass);
     box-shadow: 0 0 0 1px var(--glass-line), var(--shadow-menu);

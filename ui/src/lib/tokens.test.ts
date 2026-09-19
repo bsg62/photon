@@ -82,6 +82,14 @@ describe.each(Object.entries(themes))('the %s theme', (_name, t) => {
   });
 });
 
+describe('the viewer glass', () => {
+  it("keeps dim text readable on the viewer's glass over the brightest photo", () => {
+    const ground = over(themes.dark['--glass'], '#ffffff');
+    expect(contrast(themes.dark['--text-dim'], ground)).toBeGreaterThanOrEqual(4.5);
+    expect(contrast(themes.dark['--text'], ground)).toBeGreaterThanOrEqual(4.5);
+  });
+});
+
 describe('the structure of tokens.css', () => {
   it('places the dark block after the light block, since equal specificity on the root leaves source order as the only tiebreaker', () => {
     const bare = css.replace(/\/\*[\s\S]*?\*\//g, '');
