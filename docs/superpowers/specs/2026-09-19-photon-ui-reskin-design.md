@@ -55,7 +55,7 @@ component `<style>` block contains no colour literal (enforced, §7).
 | `--accent` | `#1f6fd6` | `#62a0ea` | |
 | `--accent-soft` | `#1f6fd633` | `#62a0ea33` | the active row |
 | `--on-accent` | `#ffffff` | `#111111` | text on a primary button |
-| `--danger` | `#c2302b` | `#ff8989` | |
+| `--danger` | `#bf302b` | `#ff8d8d` | |
 | `--star` | `#e0a100` | `#ffd24a` | |
 | `--glass` | — | `#26262be6` | viewer toolbar and info card |
 | `--glass-line` | — | `#ffffff1a` | their 1px edge |
@@ -106,8 +106,11 @@ dark `--text-dim`, since `#9a9aa3` reached only 4.2:1 on a hovered row, `--glass
 85% opacity (`#26262bd9`) gave only 3.9:1 over a white photo, and `--danger`, since it also
 has to read as text on `--raised`, on a hovered menu item (`--hover` over `--raised`) and on
 a hovered ghost button (`--field-hover` over `--surface`) — the light value moved from
-`#c4302b` to `#c2302b` (4.46:1 to 4.53:1 on the worst of those grounds) and the dark value
-from `#ff6b6b` to `#ff8989` (3.71:1 to 4.51:1 on its worst ground, the hovered menu item).)
+`#c4302b` to `#bf302b` (4.46:1 to 4.62:1 on the worst of those grounds) and the dark value
+from `#ff6b6b` to `#ff8d8d` (3.71:1 to 4.63:1 on its worst ground, the hovered menu item),
+each retuned a second time to clear 4.6:1 rather than sit a rounding error above the 4.5:1
+floor the test asserts, so a later, unrelated change to `--hover` or `--raised` cannot turn
+the suite red.)
 
 ## 3. Theming
 

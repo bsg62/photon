@@ -293,9 +293,14 @@
   .header { display: flex; align-items: baseline; gap: var(--s-3); height: 32px; padding: 7px var(--s-2) 0; }
   /* min-width: 0 and overflow: hidden so a folder name wider than the grid ellipsises
      instead of forcing a horizontal scrollbar, which would change the viewport's measured
-     clientHeight. */
-  .header .name { flex: 0 1 auto; min-width: 0; overflow: hidden; font-size: var(--t-4); font-weight: 600; white-space: nowrap; text-overflow: ellipsis; }
-  .header .path { flex: 1 1 0; min-width: 0; color: var(--text-dim); font-size: var(--t-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+     clientHeight. max-width caps the name so a long one cannot squeeze .path (flex: 1 1 auto,
+     not 1 1 0, so the path keeps its own room rather than starting from nothing) down to
+     zero. overflow: hidden moves a flex item's baseline to its own bottom edge, not its
+     text's; giving .name and .path the same line-height puts both bottom edges - and so both
+     baselines - on the same line, which plain `align-items: baseline` alone no longer does
+     once either child clips its own overflow. */
+  .header .name { flex: 0 1 auto; max-width: 70%; min-width: 0; overflow: hidden; font-size: var(--t-4); font-weight: 600; line-height: 20px; white-space: nowrap; text-overflow: ellipsis; }
+  .header .path { flex: 1 1 auto; min-width: 0; color: var(--text-dim); font-size: var(--t-1); line-height: 20px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .row { display: flex; }
   .empty { position: absolute; inset: 0; display: grid; place-items: center; color: var(--text-dim); margin: 0; }
   .menu {
