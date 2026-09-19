@@ -4,6 +4,7 @@
   import { TILE } from '../lib/layout';
   import { library } from '../lib/library.svelte';
   import { createThumbRequest } from '../lib/thumb-request.svelte';
+  import Icon from './Icon.svelte';
 
   let {
     entry,
@@ -94,10 +95,10 @@
   {#if entry && src && status !== 'broken'}
     <img {src} alt="" draggable="false" decoding="async" class:loaded={status === 'loaded'} onload={() => (status = 'loaded')} {onerror} />
   {:else if status === 'broken'}
-    <span class="broken" title="This photo can't be shown">⚠</span>
+    <span class="broken" title="This photo can't be shown"><Icon name="triangle-alert" size={28} /></span>
   {/if}
   {#if entry?.starred}
-    <span class="star" aria-label="Starred">★</span>
+    <span class="star" aria-label="Starred"><Icon name="star" size={14} filled /></span>
   {/if}
 </button>
 
@@ -106,13 +107,18 @@
     position: relative;
     flex: none;
     padding: 0;
-    border: 2px solid transparent;
-    border-radius: 4px;
-    background: var(--panel-2);
+    border: 0;
+    border-radius: var(--r-2);
+    /* What shows while the thumbnail loads, and behind a broken one. */
+    background: var(--field);
     overflow: hidden;
     cursor: default;
   }
-  .tile.selected { border-color: var(--accent); }
+  /* An outline, not a border: it sits outside the 160px box in the 8px gap between tiles,
+     so the photo does not shrink when selected, and it reads over any photo in either
+     theme. From the class and not from focus - tiles are tabindex="-1", and tokens.css
+     takes the focus ring off those. */
+  .tile.selected { outline: 2px solid var(--accent); outline-offset: 2px; }
   .tile.dimmed { opacity: 0.4; }
   img {
     width: 100%;
@@ -122,6 +128,14 @@
     transition: opacity 120ms ease-out;
   }
   img.loaded { opacity: 1; }
-  .broken { display: grid; place-items: center; height: 100%; color: var(--muted); font-size: 28px; }
-  .star { position: absolute; right: 4px; bottom: 2px; color: #ffcf40; font-size: 14px; text-shadow: 0 0 3px #000; pointer-events: none; }
+  .broken { display: grid; place-items: center; height: 100%; color: var(--text-dim); }
+  /* The shadow keeps an amber star legible on a bright or amber photo. */
+  .star {
+    position: absolute;
+    right: 5px;
+    bottom: 5px;
+    color: var(--star);
+    filter: drop-shadow(0 0 2px var(--shadow-ink));
+    pointer-events: none;
+  }
 </style>

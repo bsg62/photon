@@ -75,6 +75,8 @@
   --t-5: 18px;
   --shadow-menu: 0 6px 24px #00000040;
   --shadow-dialog: 0 16px 48px #00000059;
+  /* Ink for shadows cast onto photos, which are not themed: dark in both themes. */
+  --shadow-ink: #000000b3;
   accent-color: var(--accent);
 }
 

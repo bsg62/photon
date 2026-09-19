@@ -284,15 +284,17 @@
 {/if}
 
 <style>
-  .grid { display: flex; height: 100%; }
+  .grid { display: flex; height: 100%; background: var(--surface); }
   .viewport { position: relative; flex: 1; min-width: 0; height: 100%; overflow-y: auto; outline: none; }
   .canvas { position: relative; }
   .header, .row { position: absolute; left: 0; right: 0; }
-  .header { display: flex; align-items: baseline; gap: 12px; height: 32px; padding: 8px 8px 0; }
-  .header .name { font-weight: 600; }
-  .header .path { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* 32px is layout.ts's HEADER: every row below is placed by it, so the type fits the box
+     rather than the box growing to the type. */
+  .header { display: flex; align-items: baseline; gap: var(--s-3); height: 32px; padding: 7px var(--s-2) 0; }
+  .header .name { font-size: var(--t-4); font-weight: 600; white-space: nowrap; }
+  .header .path { color: var(--text-dim); font-size: var(--t-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .row { display: flex; }
-  .empty { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); margin: 0; }
+  .empty { position: absolute; inset: 0; display: grid; place-items: center; color: var(--text-dim); margin: 0; }
   .menu {
     position: fixed;
     z-index: 40;
@@ -301,14 +303,23 @@
     min-width: 220px;
     max-height: 60vh;
     overflow-y: auto;
-    padding: 4px;
-    background: var(--panel-2);
-    border-radius: 6px;
-    box-shadow: 0 6px 24px #0008;
+    padding: var(--s-1);
+    background: var(--raised);
+    border-radius: var(--r-3);
+    /* The hairline is what separates a white menu from a white grid in light mode. */
+    box-shadow: 0 0 0 1px var(--line), var(--shadow-menu);
   }
-  .menu button { padding: 6px 10px; border: 0; background: none; text-align: left; cursor: pointer; border-radius: 4px; }
-  .menu button:hover { background: #ffffff14; }
+  .menu button { padding: 6px 10px; border: 0; border-radius: var(--r-2); background: none; text-align: left; cursor: pointer; }
+  .menu button:hover { background: var(--hover); }
   .menu .album { padding-left: 18px; }
-  .menu .heading { margin-top: 4px; padding: 6px 10px 2px; color: var(--muted); font-size: 11px; font-weight: 600; letter-spacing: 0.04em; border-top: 1px solid #ffffff14; }
-  .menu .none { padding: 4px 18px 6px; color: var(--muted); font-size: 12px; }
+  .menu .heading {
+    margin-top: var(--s-1);
+    padding: 6px 10px 2px;
+    color: var(--text-dim);
+    font-size: var(--t-1);
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    border-top: 1px solid var(--line);
+  }
+  .menu .none { padding: 4px 18px 6px; color: var(--text-dim); font-size: var(--t-2); }
 </style>
