@@ -341,11 +341,14 @@
         {:else if current === 'appearance'}
           <h2>Appearance</h2>
           <p class="hint">System follows your desktop. The photo viewer is always dark, so every photo is seen against the same ground.</p>
-          <div class="segmented" role="radiogroup" aria-label="Theme">
+          <!-- A group of independent toggle buttons, each its own Tab stop with Enter/Space
+               to activate — not the APG radiogroup pattern (one roving tab stop, arrows to
+               move and select). role="radio" without that key handling lies to a screen
+               reader, so this is role="group" with aria-pressed, not role="radiogroup". -->
+          <div class="segmented" role="group" aria-label="Theme">
             {#each THEMES as option (option.value)}
               <button
-                role="radio"
-                aria-checked={theme.choice === option.value}
+                aria-pressed={theme.choice === option.value}
                 class:checked={theme.choice === option.value}
                 onclick={() => theme.set(option.value)}
               >
