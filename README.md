@@ -111,9 +111,11 @@ error) dispatching to Wayland display`. photon detects the driver and sets
 little slower with the renderer off. A value you set yourself is always kept, so
 `WEBKIT_DISABLE_DMABUF_RENDERER=0` turns the renderer back on if a later driver fixes this.
 
-**Theme on Linux.** photon follows the desktop's light or dark setting, but the system
-webview (WebKitGTK) does not report it on every desktop. If photon stays light on a dark
-desktop, pin it in Settings → Appearance.
+### Theme on Linux
+
+photon follows the desktop's light or dark setting, but the system webview (WebKitGTK) does
+not report it on every desktop. If photon stays light on a dark desktop, pin it in Settings →
+Appearance.
 
 ### photon is not code-signed
 
@@ -265,6 +267,8 @@ publishing it.
 - [ ] Settings → Appearance → Dark, then Light, then System: the whole window follows at
       once, and so does the title bar. With System, switching the desktop between light
       and dark switches photon without a restart.
+- [ ] On a light desktop: Settings → Appearance → Dark, then System: photon returns to light
+      without a restart.
 - [ ] Pin Light on a dark desktop (or Dark on a light one), quit, relaunch: the first frame
       is already the pinned theme, with no flash of the other.
 - [ ] Pin a theme, then change the desktop's scheme: photon does not move.
