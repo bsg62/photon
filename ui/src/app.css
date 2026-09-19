@@ -2,7 +2,7 @@
 
 :root {
   font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
-  font-size: 14px;
+  font-size: var(--t-3);
   color: var(--text);
   background: var(--surface);
 }
