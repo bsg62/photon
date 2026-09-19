@@ -28,7 +28,9 @@
       </span>
     {/each}
   </span>
-  <span>{library.info.len.toLocaleString()} photos</span>
+  <span>
+    {#if library.selectionCount > 1}<span class="selected">{library.selectionCount.toLocaleString()} selected</span> · {/if}{library.info.len.toLocaleString()} photos
+  </span>
 </footer>
 
 <style>
@@ -45,6 +47,9 @@
   }
   .notices { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 16px; min-width: 0; }
   .scan { display: inline-flex; align-items: center; gap: var(--s-2); white-space: nowrap; }
+  /* Brighter than the footer's --text-dim: the count is the only thing here that changes
+     under the user's hand, and it answers "what will the menu act on". */
+  .selected { color: var(--text); }
   progress {
     width: 120px;
     height: 6px;
