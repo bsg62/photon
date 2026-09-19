@@ -326,6 +326,10 @@ publishing it.
       `star=yes` under every selected photo's header, and every other line it had is untouched.
 - [ ] Select several, open one with Enter and close it again: the selection is still there.
       Arrow to another photo inside the viewer and close: only that photo is selected.
+- [ ] In the library view, click a photo and press Ctrl+A (Cmd+A on macOS): its folder is
+      selected and nothing above or below that folder's header is. In Starred, an album or a
+      set of search results, Ctrl+A takes the whole view. Escape clears the selection — with
+      the context menu open, the first Escape only closes the menu.
 
 ## How watching works
 
