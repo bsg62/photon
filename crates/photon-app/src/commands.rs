@@ -7,7 +7,8 @@ use photon_core::{
     edit::{Crop, Edit},
     grid::{GridEntry, GridView, Section, hex_key},
     library::{
-        Album, AlbumSummary, Folder, ItemFace, Person, TagCount, TagRule, WatchedFolder, is_starred,
+        Album, AlbumSummary, Folder, ItemFace, Person, TagCount, TagRule, ThemeChoice,
+        WatchedFolder, is_starred,
     },
     media::ThumbState,
     now_ms,
@@ -351,6 +352,15 @@ pub fn slideshow_interval(engine: &Engine) -> CmdResult<i64> {
 /// Stores the slideshow interval and returns the clamped value now in force.
 pub fn set_slideshow_interval(engine: &Engine, seconds: i64) -> CmdResult<i64> {
     Ok(engine.lib.set_slideshow_interval_s(seconds)?)
+}
+
+/// The colour scheme the user chose.
+pub fn theme(engine: &Engine) -> CmdResult<ThemeChoice> {
+    Ok(engine.lib.theme()?)
+}
+
+pub fn set_theme(engine: &Engine, choice: ThemeChoice) -> CmdResult<()> {
+    Ok(engine.lib.set_theme(choice)?)
 }
 
 pub fn set_visible(engine: &Engine, ids: &[i64]) {

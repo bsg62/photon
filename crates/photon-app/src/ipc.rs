@@ -89,6 +89,19 @@ pub fn set_slideshow_interval(engine: Eng<'_>, seconds: i64) -> Result<i64, AppE
 }
 
 #[tauri::command(async)]
+pub fn theme(engine: Eng<'_>) -> Result<photon_core::library::ThemeChoice, AppError> {
+    commands::theme(&engine)
+}
+
+#[tauri::command(async)]
+pub fn set_theme(
+    engine: Eng<'_>,
+    choice: photon_core::library::ThemeChoice,
+) -> Result<(), AppError> {
+    commands::set_theme(&engine, choice)
+}
+
+#[tauri::command(async)]
 pub fn set_grid_view(engine: Eng<'_>, view: photon_core::grid::GridView) -> Result<(), AppError> {
     commands::set_grid_view(&engine, view)
 }

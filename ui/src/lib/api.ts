@@ -19,6 +19,8 @@ export interface AppInfo { version: string; libraryPath: string; licence: string
 export interface Section { folderId: number; offset: number; count: number; takenAtMin: number }
 export interface GridEntry { id: number; folderId: number; takenAt: number; aspect: number; kind: 'image'; thumbKey: string; starred: boolean }
 export type GridView = 'all' | 'starred' | 'recent' | 'search' | 'person' | 'album' | 'tag' | 'duplicates';
+/** Mirrors `photon_core::library::ThemeChoice` (serde lowercase). */
+export type ThemeChoice = 'system' | 'light' | 'dark';
 /** `searchQuery`, `person`, `album` and `tag` are the argument of the matching view and
  *  empty/null in every other view: the backend is the source of truth for which one is
  *  active, so the UI reads the argument from here rather than remembering what it asked for. */
@@ -127,6 +129,11 @@ export const api = {
   slideshowInterval: () => invoke<number>('slideshow_interval'),
   /** Resolves to the clamped value the backend stored. */
   setSlideshowInterval: (seconds: number) => invoke<number>('set_slideshow_interval', { seconds }),
+  theme: () => invoke<ThemeChoice>('theme'),
+  setTheme: (choice: ThemeChoice) => invoke<void>('set_theme', { choice }),
+  /** The native title bar's scheme; null hands it back to the desktop. Granted in
+   *  `capabilities/default.json`. */
+  setWindowTheme: (theme: 'light' | 'dark' | null) => getCurrentWindow().setTheme(theme),
   setGridView: (view: GridView) => invoke<void>('set_grid_view', { view }),
   setSearchQuery: (query: string) => invoke<void>('set_search_query', { query }),
   setPersonView: (contact: string) => invoke<void>('set_person_view', { contact }),

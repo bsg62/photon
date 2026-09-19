@@ -3,5 +3,5 @@
   "identifier": "default",
   "description": "Permissions for the main window",
   "windows": ["main"],
-  "permissions": ["core:default", "core:window:allow-is-fullscreen", "core:window:allow-set-fullscreen", "dialog:allow-open", "dialog:allow-ask", "clipboard-manager:allow-write-text"]
+  "permissions": ["core:default", "core:window:allow-is-fullscreen", "core:window:allow-set-fullscreen", "core:window:allow-set-theme", "dialog:allow-open", "dialog:allow-ask", "clipboard-manager:allow-write-text"]
 }
