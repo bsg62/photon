@@ -50,18 +50,12 @@
   --glass-line: #ffffff1a;
 }
 
-/* The names components used before the tokens, removed in the reskin's last PR. Declared
-   on [data-theme] as well as :root because a var() is resolved where it is declared: on
-   :root alone, a dark subtree inside a light app would inherit the light values.
-   accent-color sits here for the same reason the aliases do: it is inherited and would
-   otherwise be computed once on :root, in the app's theme, so a dark subtree inside a light
-   app would keep the light accent on its checkboxes and range input. */
+/* accent-color is inherited and would otherwise be computed once, on :root, in the app's
+   theme, so a dark subtree inside a light app (the viewer) would keep the light accent on
+   its checkboxes and range input. Declaring it again on [data-theme] gives each themed
+   subtree its own. */
 :root,
 [data-theme] {
-  --bg: var(--surface);
-  --panel: var(--chrome);
-  --panel-2: var(--raised);
-  --muted: var(--text-dim);
   accent-color: var(--accent);
 }
 

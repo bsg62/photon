@@ -120,12 +120,10 @@ describe('the structure of tokens.css', () => {
     expect(ruleBody(css, ':root', { exact: true })).not.toMatch(/accent-color/);
   });
 
-  it('aliases --bg/--panel/--panel-2/--muted to --surface/--chrome/--raised/--text-dim, declared on [data-theme] too', () => {
-    const aliases = block(css, '[data-theme]');
-    expect(aliases['--bg']).toBe('var(--surface)');
-    expect(aliases['--panel']).toBe('var(--chrome)');
-    expect(aliases['--panel-2']).toBe('var(--raised)');
-    expect(aliases['--muted']).toBe('var(--text-dim)');
+  it('no longer defines the names the components used before the tokens', () => {
+    for (const name of ['--bg', '--panel', '--panel-2', '--muted']) {
+      expect(css).not.toMatch(new RegExp(`${name}\\s*:`));
+    }
   });
 });
 
