@@ -58,6 +58,13 @@ cargo run -p xtask -- versions --tag v0.5.0   # ...and match the tag
 cargo run -p xtask -- metadata            # licence and installer metadata are complete
 ```
 
+**Seeing the UI without launching it** (not in CI; needs Chromium on `PATH` or in `CHROMIUM`):
+
+```bash
+cargo run -p xtask -- screenshots                     # ten PNGs into target/screenshots/
+cargo run -p xtask -- screenshots --only viewer-info-light --no-build
+```
+
 `npm run dev` runs the app with hot reload. **Do not run it to verify a change** — see
 Conventions.
 
@@ -69,7 +76,7 @@ Three crates plus the UI:
   about Tauri.
 - **`photon-app`** — the Tauri shell. Owns `Engine`, the IPC surface and the custom protocol
   that serves thumbnails.
-- **`xtask`** — repository chores. Binary only, no `lib.rs`.
+- **`xtask`** — repository chores, and `screenshots`. Binary only, no `lib.rs`.
 - **`ui/`** — Svelte 5 runes + TypeScript, an npm workspace.
 
 ### The grid index is the spine
@@ -301,11 +308,18 @@ ring: scope the rule before adding one. For the same reason a tile's selection r
 because the grid scrolls a row flush to the top of its container (ArrowUp, Home, Recent's
 first row), which clips anything sitting outside the tile's own box.
 
-The look cannot be tested here, but it can be seen without launching the app: build the UI,
-serve `ui/dist` with a script that fakes `window.__TAURI_INTERNALS__.invoke` with canned data,
-and screenshot it in headless Chromium (`--screenshot`, with `--force-dark-mode` or not);
-thumbnails can be served by mapping `photon.localhost` with `--host-resolver-rules` and a
-Windows user agent, since `mediaUrl` uses `http://photon.localhost` there.
+The look cannot be tested here, but it can be seen without launching the app: `cargo run -p xtask --
+screenshots` builds the UI, serves `ui/dist` itself with `mock.js` (in
+`crates/xtask/screenshots/`) standing in for Tauri's IPC, and writes ten PNGs, in both themes,
+to `target/screenshots/` with headless Chromium. It claims a Windows user agent and maps
+`photon.localhost` to its own port, because `mediaUrl` uses `http://photon.localhost` there
+and no plain browser can load `photon://`. It is Chromium's rendering, not WebKitGTK's or
+WKWebView's, so it replaces no item of the smoke checklist, and it is not run in CI. A new
+IPC command must be given an answer in `mock.js` (`canned`, or `SILENT` when nothing draws its
+result): a test in `screenshots.rs` reads `api.ts` and fails otherwise, because an unanswered
+command resolves to null and the screenshot of what the UI makes of that reads as a styling
+bug. A new surface worth seeing is a new entry in `SHOTS` and, if it needs a click, a new
+action in `mock.js`.
 
 ## Conventions
 
