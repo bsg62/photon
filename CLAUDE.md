@@ -263,11 +263,13 @@ in SQL.
 
 Almost every colour is a token in `ui/src/tokens.css`, in a light and a dark block selected by
 `data-theme` on `<html>` plus a theme-independent scales block for the colours that are never
-themed, for two different reasons: `--photo-line` and `--shadow-ink` are drawn onto the photo
-itself, which is never themed either, so there is nothing for a second block to vary; `--scrim`,
-`--shadow-menu` and `--shadow-dialog` sit on `--surface` or `--chrome`, which *are* themed, but
-are dark ink by design in both themes - a shadow or a dialog's scrim reads dark against a light
-UI too. The viewer's black ground is a literal by design, not an oversight: a
+themed, for two different reasons: `--photo-line`, `--shadow-ink`, and `--scrim` where it lies
+over a photo (a face's name plate in the viewer, the dimming outside a crop) are drawn onto the
+photo itself, which is never themed either, so there is nothing for a second block to vary;
+`--shadow-menu`, `--shadow-dialog`, and `--scrim` where it dims the app behind the Settings
+dialog fall on `--surface` or `--chrome`, which *are* themed, but are dark ink by design in both
+themes - a shadow or a scrim reads dark against a light UI too. The viewer's black ground is a
+literal by design, not an oversight: a
 photo is judged against black regardless of theme, so it is the one colour literal
 `no-literals.test.ts` allows, and only there, only once. That test also fails on a removed
 variable name, a glyph icon, and now (after the reskin's last hardening pass) a named colour
