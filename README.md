@@ -195,6 +195,7 @@ publishing it.
 - [ ] After removing every folder, the sidebar offers "Add a folder in Settings…", which opens Settings on Folders.
 - [ ] Unplugging a drive with a watched folder dims its folder and tiles after a rescan. Nothing disappears.
 - [ ] Ctrl/Cmd+Shift+R and "Reveal in file manager" open the system file manager at the file.
+- [ ] On Windows, add an SMB share (`\\server\photos` or by IP) as a watched folder: Settings → Folders shows it as `\\server\photos`, not `\\?\UNC\server\photos`, and "Reveal" there, on a sidebar folder and on a photo in it all open Explorer rather than failing. A library that already held the share from an older photon shows the same after the upgrade, with its photos, stars and albums intact (the share's thumbnails are rebuilt once).
 - [ ] The viewer's caption reads name, capture time, resolution, size and position, e.g. `IMG_1234.JPG · Jun 15, 2024, 12:30 PM · 4000 × 3000 · 3.2 MB · (12 / 240)`. The capture time matches what the camera wrote, not shifted by your time zone.
 - [ ] Clicking the caption copies the file name to the clipboard and shows "Copied" for about a second. Paste somewhere to confirm.
 - [ ] Right-click in the viewer: "Locate in photon" closes it and lands the grid on that photo, selected and in view — also from Starred, Recent or a search, where it switches back to All first. "Reveal in file manager" opens the file's folder. Escape closes the menu before it closes the viewer.

@@ -1,7 +1,45 @@
 //! Path comparison for watched-folder rules: component-wise, and case-insensitive on
-//! the platforms whose default filesystems are (macOS, Windows).
+//! the platforms whose default filesystems are (macOS, Windows). Plus the one canonical
+//! form every stored path takes.
 
-use std::path::{Component, Path};
+use std::path::{Component, Path, PathBuf};
+
+/// The prefix Windows puts on a canonicalized network path: `\\?\UNC\server\share\...`.
+const VERBATIM_UNC: &str = r"\\?\UNC\";
+
+/// Like `dunce::canonicalize`, but a network share comes back as `\\server\share\...` rather
+/// than in the verbatim `\\?\UNC\` form `fs::canonicalize` returns.
+///
+/// dunce strips the verbatim prefix only from disk paths, so before this every path under an
+/// SMB share was stored, shown and revealed as `\\?\UNC\10.0.0.1\photos\...`. The Windows
+/// shell rejects that form outright - `ILCreateFromPathW` returns null for it, which is the
+/// "failed to convert path to ITEMIDLIST" behind a dead Reveal - and it is not what a person
+/// recognises as their share either.
+///
+/// On non-Windows platforms no path can carry the prefix, so this is `dunce::canonicalize`.
+pub fn canonicalize<P: AsRef<Path>>(path: P) -> std::io::Result<PathBuf> {
+    Ok(simplified_unc(&dunce::canonicalize(path)?))
+}
+
+/// Rewrites `\\?\UNC\server\share\x` to `\\server\share\x`, and returns anything else
+/// unchanged.
+///
+/// The rewrite is unconditional, unlike dunce's disk one, which backs out when a component
+/// is a reserved DOS name or the path is longer than `MAX_PATH`. Two reasons. The length
+/// limit does not bind here: `std` converts a long absolute path back to the verbatim form
+/// on its way into the file APIs, so photon's own reads are not capped at 260 characters by
+/// storing the short form. And the migration that rewrites libraries indexed before this
+/// (schema 10) is SQL, which cannot test a component for `CON` or a trailing space: a rule
+/// Rust applied and SQL could not would leave the two forms side by side in one library,
+/// where `same_path` sees two different folders and `scan_subtree`'s `strip_prefix` of an
+/// event directory misses its own watched root. One rule both can express is worth more
+/// than the handful of share paths whose last component names a DOS device.
+pub fn simplified_unc(path: &Path) -> PathBuf {
+    match path.to_str().and_then(|s| s.strip_prefix(VERBATIM_UNC)) {
+        Some(rest) => PathBuf::from(format!(r"\\{rest}")),
+        None => path.to_path_buf(),
+    }
+}
 
 fn keys(path: &Path) -> Vec<String> {
     path.components()
@@ -35,6 +73,33 @@ pub(crate) fn overlaps(a: &Path, b: &Path) -> bool {
 mod tests {
     use super::*;
     use std::path::Path;
+
+    #[test]
+    fn a_verbatim_unc_path_is_simplified_to_the_share_windows_and_people_understand() {
+        assert_eq!(
+            simplified_unc(Path::new(r"\\?\UNC\10.0.0.1\photos\2024\a.jpg")),
+            PathBuf::from(r"\\10.0.0.1\photos\2024\a.jpg")
+        );
+        assert_eq!(
+            simplified_unc(Path::new(r"\\?\UNC\nas\photos")),
+            PathBuf::from(r"\\nas\photos")
+        );
+    }
+
+    #[test]
+    fn nothing_else_is_touched() {
+        // A verbatim *disk* path is dunce's business, not this one, and a path that merely
+        // begins with a backslash pair is already the form we want.
+        for path in [
+            r"\\?\C:\photos",
+            r"\\nas\photos",
+            r"C:\photos",
+            "/home/dh/photos",
+            r"\\?\UNCLE\nope",
+        ] {
+            assert_eq!(simplified_unc(Path::new(path)), PathBuf::from(path));
+        }
+    }
 
     #[test]
     fn within_is_component_wise() {

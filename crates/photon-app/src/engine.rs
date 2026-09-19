@@ -150,7 +150,7 @@ impl Engine {
         // worse than what it replaces.
         let excluded: Vec<PathBuf> = excluded
             .into_iter()
-            .map(|p| dunce::canonicalize(&p).unwrap_or(p))
+            .map(|p| photon_core::paths::canonicalize(&p).unwrap_or(p))
             .collect();
 
         let grid = Arc::new(GridIndex::build(lib.grid_entries()?));
@@ -1191,7 +1191,7 @@ mod tests {
         )
         .unwrap();
 
-        let cache = dunce::canonicalize(real.join("cache").join("thumbs")).unwrap();
+        let cache = photon_core::paths::canonicalize(real.join("cache").join("thumbs")).unwrap();
         assert!(
             engine.excluded().contains(&cache),
             "the cache the watcher will report events for is {cache:?}, but excluded holds \

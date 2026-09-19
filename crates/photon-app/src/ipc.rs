@@ -9,7 +9,7 @@
 //! duration, and enough of them in flight would stall every other command's dispatch.
 //!
 //! Most commands here are short database or lock operations, so that's fine as plain
-//! functions. `add_folder` (whose `dunce::canonicalize` can hang on a dead network
+//! functions. `add_folder` (whose `photon_core::paths::canonicalize` can hang on a dead network
 //! mount) and `remove_folder` (which joins a scan thread) can genuinely block for a
 //! while, so they're `async fn`s that hand their blocking body to
 //! `tauri::async_runtime::spawn_blocking`, which *does* run on Tauri's dedicated

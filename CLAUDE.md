@@ -201,6 +201,17 @@ failure (walkdir `lib.rs:1026`), not something the filesystem can be made to do 
 unlistable walk root sets it too, but `read_stars` lists the directory as well, so that
 branch's star behaviour cannot be tested from the filesystem either way.
 
+**Every stored path is `paths::canonicalize`, never `dunce::canonicalize` or
+`fs::canonicalize`.** dunce strips the verbatim `\\?\` prefix from disk paths only, so a
+network share canonicalizes to `\\?\UNC\server\share\...`: a form the Windows shell rejects
+(`ILCreateFromPathW` returns null, which is Reveal failing with "failed to convert path to
+ITEMIDLIST") and nobody recognises as their share. `paths::simplified_unc` rewrites it to
+`\\server\share\...`, and migration 10 rewrote the three path columns of libraries indexed
+before it. The form has to be the *same everywhere*: `paths::same_path` compares
+component-wise, so one path in each form is two different folders to photon - a re-added
+root rather than a recognised one, and a `scan_subtree` whose `strip_prefix` misses its own
+watched root.
+
 ### Schema
 
 `library/schema.rs` holds `MIGRATIONS: &[&str]`, one entry per version, each run in its own
