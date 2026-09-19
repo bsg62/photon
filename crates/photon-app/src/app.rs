@@ -6,6 +6,7 @@ use crate::{
     events::{Events, FolderStatus, LibraryChanged, ScanProgressEvent},
     ipc, protocol,
 };
+use photon_core::library::ThemeChoice;
 use serde::Serialize;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, RunEvent};
@@ -17,6 +18,16 @@ use tauri_plugin_window_state::StateFlags;
 pub const LIBRARY_CHANGED: &str = "library-changed";
 pub const SCAN_PROGRESS: &str = "scan-progress";
 pub const FOLDER_STATUS: &str = "folder-status";
+
+/// The native window's theme for the user's choice. `None` is "the desktop's", and is what
+/// lets the title bar keep following the desktop while photon runs.
+fn window_theme(choice: ThemeChoice) -> Option<tauri::Theme> {
+    match choice {
+        ThemeChoice::System => None,
+        ThemeChoice::Light => Some(tauri::Theme::Light),
+        ThemeChoice::Dark => Some(tauri::Theme::Dark),
+    }
+}
 
 /// What the window-state plugin persists, so photon reopens the size and place the user
 /// left it rather than `tauri.conf.json`'s default every time.
@@ -113,6 +124,24 @@ pub fn run() {
             let events = Arc::new(TauriEvents(app.handle().clone()));
             match Engine::open(config, events) {
                 Ok(engine) => {
+                    // The title bar, before the webview has run a line of script. The UI
+                    // sets the window's theme too (`app-theme.svelte.ts`), but only once it
+                    // has loaded and asked for the setting over IPC; until then a pinned
+                    // theme that differs from the desktop's showed the desktop's title bar
+                    // over photon's own colours. This is the earliest the choice is known:
+                    // the library has just opened, and the configured window already
+                    // exists. A failure costs that moment's mismatch and nothing else, so
+                    // it is logged and startup goes on.
+                    match engine.lib.theme() {
+                        Ok(choice) => {
+                            if let Some(window) = app.get_webview_window("main")
+                                && let Err(err) = window.set_theme(window_theme(choice))
+                            {
+                                tracing::warn!(%err, "could not theme the title bar at launch");
+                            }
+                        }
+                        Err(err) => tracing::warn!(%err, "could not read the theme at launch"),
+                    }
                     let pictures = paths.picture_dir().ok();
                     app.manage(engine.clone());
                     engine.startup(pictures);
@@ -237,6 +266,16 @@ mod tests {
         assert!(WINDOW_STATE_FLAGS.contains(StateFlags::POSITION));
         assert!(WINDOW_STATE_FLAGS.contains(StateFlags::MAXIMIZED));
         assert!(WINDOW_STATE_FLAGS.contains(StateFlags::FULLSCREEN));
+    }
+
+    /// The call that uses this needs a window, so the mapping is the part that can be held
+    /// here. `System` must be `None`, not the desktop's scheme resolved in Rust: `None` hands
+    /// the title bar back to the desktop, which then keeps following it while photon runs.
+    #[test]
+    fn a_pinned_theme_is_the_windows_theme_and_system_is_none() {
+        assert_eq!(window_theme(ThemeChoice::System), None);
+        assert_eq!(window_theme(ThemeChoice::Light), Some(tauri::Theme::Light));
+        assert_eq!(window_theme(ThemeChoice::Dark), Some(tauri::Theme::Dark));
     }
 
     #[test]
