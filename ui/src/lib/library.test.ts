@@ -700,7 +700,6 @@ describe('LibraryStore', () => {
       const store = await storeOf(10);
       store.selected = 3;
       store.toggleSelected(4);
-      const picked = [...store.selectedItemIds].sort();
 
       // One photo appears ahead of them all, so every old offset is now one later.
       vi.mocked(api.gridInfo).mockResolvedValue({
@@ -718,7 +717,7 @@ describe('LibraryStore', () => {
       vi.mocked(api.gridOffsetOfItem).mockResolvedValue(5);
       await store.refresh();
 
-      expect([...store.selectedItemIds].sort()).toEqual(picked);
+      expect([...store.selectedItemIds].sort((a, b) => a - b)).toEqual([idAt(3), idAt(4)]);
       expect(store.selected).toBe(5);
     });
 
