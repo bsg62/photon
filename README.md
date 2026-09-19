@@ -308,6 +308,11 @@ publishing it.
       and the zoom control may meet; nothing becomes unreachable.
 - [ ] On Windows, with photon in Light: open the crop tool and its ratio list — the list is
       readable (dark text on light, or light on dark, never light on light).
+- [ ] Settings in Light and in Dark: the header and section list are tinted, the content is
+      not; the active section is a blue-tinted row; every button darkens slightly under the
+      pointer, "Add folder…" is the one blue button, and "Remove…" is red text.
+- [ ] Settings → Tags with hundreds of tags: the dialog stays centred and its corners stay
+      rounded while the list scrolls.
 
 ## How watching works
 

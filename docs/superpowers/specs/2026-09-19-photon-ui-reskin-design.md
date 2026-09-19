@@ -1,7 +1,7 @@
 # photon — UI Reskin Design
 
 **Date:** 2026-09-19
-**Status:** Approved design, not yet implemented
+**Status:** Approved design, implemented (PRs #46–#NN)
 **Builds on:** v0.15.0
 
 ## 1. What changes

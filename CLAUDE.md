@@ -259,6 +259,38 @@ There is no `COLLATE NOCASE` anywhere and `lower()` is ASCII-only without ICU (a
 dependency this project does not take), so **case-insensitive matching is done in Rust**, not
 in SQL.
 
+### Styling
+
+Every colour is a token in `ui/src/tokens.css`, in a light and a dark block selected by
+`data-theme` on `<html>`; `no-literals.test.ts` fails on a colour literal, a removed variable
+name or a glyph icon in any component, and `tokens.test.ts` holds the palette to WCAG contrast,
+light/dark parity and the dark-after-light block order (equal specificity on `<html>`, so
+source order is what lets dark win). Icons are `Icon.svelte` over vendored Lucide path data in
+`lib/icons.ts`; a new icon is copied from `lucide-static` and its licence is already in
+`THIRD-PARTY-NOTICES.md`.
+
+The theme blocks match any element, which is how the viewer is dark in both themes
+(`data-theme="dark"` on its root). An inherited property set from a token on `:root` (`color`,
+`accent-color`) is computed there, in the app's theme, so a themed subtree must set it again on
+its own root.
+
+The theme choice lives in the `settings` table; `theme-boot.js` applies a `localStorage`
+mirror before first paint because the database answers too late, and it is a file rather than
+an inline script because the CSP forbids inline scripts. The database wins when the two
+disagree. `createTheme` is generation-counted like `LibraryStore`, because the singleton
+outlives an App remount.
+
+`[tabindex='-1']:focus-visible { outline: none }` is global, for script-focused containers. A
+roving-tabindex widget's items carry `tabindex="-1"` too and would silently lose their focus
+ring: scope the rule before adding one. For the same reason a tile's selection outline comes
+from `.selected`, not from focus.
+
+The look cannot be tested here, but it can be seen without launching the app: build the UI,
+serve `ui/dist` with a script that fakes `window.__TAURI_INTERNALS__.invoke` with canned data,
+and screenshot it in headless Chromium (`--screenshot`, with `--force-dark-mode` or not);
+thumbnails can be served by mapping `photon.localhost` with `--host-resolver-rules` and a
+Windows user agent, since `mediaUrl` uses `http://photon.localhost` there.
+
 ## Conventions
 
 - **photon never writes to, moves or deletes photo files.** The one file it writes inside a
