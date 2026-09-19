@@ -12,6 +12,7 @@ import {
   type ScanProgressEvent,
   type TagCount,
 } from './api';
+import { lastIndexAtOrBefore } from './layout';
 import { PageCache } from './pages';
 import type { UnlistenFn } from '@tauri-apps/api/event';
 
@@ -69,7 +70,7 @@ export class LibraryStore {
   /** The grid offset a Shift+click extends from: the last plain click or Ctrl+click. Plain,
    *  not `$state` — nothing renders from it. */
   private anchor: number | null = null;
-  /** Bumped on every `extendSelection` call. Two fast Shift+clicks issue overlapping calls
+  /** Bumped on every range fetch — a Shift+click or a Ctrl+A. Two fast Shift+clicks issue overlapping calls
    *  with no ordering guarantee on their fetches - a wide range started first can still be
    *  fetching its later chunks when a narrow range started second finishes first. The rule is
    *  last *call* wins, not last chunk to resolve, so a call abandons its write once a later
@@ -134,7 +135,62 @@ export class LibraryStore {
     const from = this.anchor ?? this.selectedOffset ?? 0;
     const start = Math.max(0, Math.min(from, offset));
     const end = Math.min(this.info.len - 1, Math.max(from, offset));
-    if (end < start) return;
+    const ids = await this.fetchIds(start, end);
+    if (!ids) return;
+    this.selection = ids;
+    this.selectedOffset = offset;
+    this.selectedId = this.pages.get(offset)?.id ?? null;
+    // The anchor stays put, so dragging the far end back and forth re-ranges from the
+    // same start rather than walking away from it.
+  }
+
+  /** Ctrl/Cmd+A: selects the photos of the folder the lead is in, or — outside the library
+   *  view — every photo in the view.
+   *
+   *  The lead stays where it is, so Enter still opens the photo the user was on. The anchor
+   *  moves to the start of what was selected, which is what a Shift+click afterwards extends
+   *  from: the selection began there. */
+  async selectAll(): Promise<void> {
+    const range = this.selectAllRange();
+    if (!range) return;
+    const [start, end] = range;
+    const ids = await this.fetchIds(start, end);
+    if (!ids) return;
+    this.selection = ids;
+    if (this.selectedOffset === null) {
+      this.selectedOffset = start;
+      this.selectedId = this.pages.get(start)?.id ?? null;
+    }
+    this.anchor = start;
+  }
+
+  /** What Ctrl/Cmd+A covers, as a grid range.
+   *
+   *  Every view but All is a set the user asked for — an album, a search, the starred
+   *  photos — so "all" is that set, and the folder sections inside it are an arrangement of
+   *  it rather than a bound. All is the whole library, where the unit the user is actually
+   *  looking at is one folder: on a fifty-thousand photo library, selecting every photo is
+   *  never what this key was pressed for, and starring the result would be a long operation
+   *  nobody asked for. */
+  private selectAllRange(): [number, number] | null {
+    const len = this.info.len;
+    if (len === 0) return null;
+    const sections = this.info.sections;
+    if (this.info.view !== 'all' || sections.length === 0) return [0, len - 1];
+    const at = this.selectedOffset ?? 0;
+    const section = sections[lastIndexAtOrBefore(sections, at, (s) => s.offset)];
+    return [section.offset, Math.min(len - 1, section.offset + section.count - 1)];
+  }
+
+  /** The ids of every photo in `start..end`, or `null` when this fetch has been overtaken
+   *  and must not write anything.
+   *
+   *  The ids come from the backend rather than from the loaded pages: a range can span
+   *  thousands of photos the grid has never rendered. `MAX_ROWS` in `commands.rs` clamps a
+   *  `grid_rows` ask to 1000 *silently*, so a single call for a wider range would take its
+   *  first thousand photos and drop the rest without an error anywhere. */
+  private async fetchIds(start: number, end: number): Promise<Set<number> | null> {
+    if (end < start) return null;
     const version = this.info.version;
     const call = ++this.extendCall;
     const ids = new Set<number>();
@@ -142,23 +198,19 @@ export class LibraryStore {
       const count = Math.min(GRID_ROWS_CHUNK, end - at + 1);
       const rows = await api.gridRows(at, count);
       // A refresh has landed while this was in flight; its own selection is the current one.
-      if (version !== this.info.version) return;
-      // A later extendSelection call has started; that call's write wins, not whichever
-      // call's fetch happens to finish last.
-      if (call !== this.extendCall) return;
+      if (version !== this.info.version) return null;
+      // A later range call has started; that call's write wins, not whichever call's fetch
+      // happens to finish last.
+      if (call !== this.extendCall) return null;
       // this.info.version can lag a rebuild the backend has already published: the
       // library-changed listener that would bump it has not run yet, so the guard above can
       // pass while these rows were fetched against a newer index than the offsets they were
       // asked for. PageCache.ensure discards a page on the same mismatch; a range built from
       // it would otherwise name photos for offsets the user never saw.
-      if (rows.version !== version) return;
+      if (rows.version !== version) return null;
       for (const entry of rows.rows) ids.add(entry.id);
     }
-    this.selection = ids;
-    this.selectedOffset = offset;
-    this.selectedId = this.pages.get(offset)?.id ?? null;
-    // The anchor stays put, so dragging the far end back and forth re-ranges from the
-    // same start rather than walking away from it.
+    return ids;
   }
 
   clearSelection(): void {

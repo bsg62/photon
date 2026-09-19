@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { GridInfo } from './api';
+import type { GridInfo, GridView, Section } from './api';
 
 type Handler = (e: unknown) => void;
 
@@ -610,15 +610,16 @@ describe('LibraryStore', () => {
       starred: false,
     });
 
-    /** A store over `len` photos, with every page answerable. */
-    async function storeOf(len: number) {
+    /** A store over `len` photos, with every page answerable. `sections` and `view` matter
+     *  only to select-all, which reads the folder the lead is in. */
+    async function storeOf(len: number, opts: { sections?: Section[]; view?: GridView } = {}) {
       vi.mocked(api.gridInfo).mockResolvedValue({
         version: 1,
         len,
-        sections: [],
+        sections: opts.sections ?? [],
         starredCount: 0,
         duplicateCount: 0,
-        view: 'all',
+        view: opts.view ?? 'all',
         searchQuery: '',
         person: null,
         album: null,
@@ -873,6 +874,105 @@ describe('LibraryStore', () => {
 
       store.selectItem(8, idAt(8)); // the viewer navigated away and closed there
       expect(store.selectedItemIds).toEqual([idAt(8)]);
+    });
+
+    describe('select all', () => {
+      /** Three folders: 0..4, 5..11, 12..14. */
+      const folders: Section[] = [
+        { folderId: 1, offset: 0, count: 5, takenAtMin: 0 },
+        { folderId: 2, offset: 5, count: 7, takenAtMin: 0 },
+        { folderId: 3, offset: 12, count: 3, takenAtMin: 0 },
+      ];
+
+      it('takes the folder the lead is in, not the whole library', async () => {
+        // The point of the key on a fifty-thousand photo library: All is not a result set,
+        // so "all" is the folder being looked at.
+        const store = await storeOf(15, { sections: folders });
+        store.selected = 7;
+
+        await store.selectAll();
+
+        expect([...store.selectedItemIds].sort((a, b) => a - b)).toEqual(
+          [5, 6, 7, 8, 9, 10, 11].map(idAt),
+        );
+        expect(store.isSelected(idAt(4))).toBe(false);
+        expect(store.isSelected(idAt(12))).toBe(false);
+        expect(store.selected).toBe(7);
+      });
+
+      it('takes the first folder when nothing is selected yet', async () => {
+        const store = await storeOf(15, { sections: folders });
+
+        await store.selectAll();
+
+        expect(store.selectionCount).toBe(5);
+        expect(store.isSelected(idAt(0))).toBe(true);
+        expect(store.isSelected(idAt(5))).toBe(false);
+        expect(store.selected).toBe(0);
+      });
+
+      it('takes the whole view outside the library view', async () => {
+        // Search results, an album, a person, a tag, Recent: each is already a set the user
+        // asked for, and its folder sections are an arrangement of that set, not a bound.
+        const store = await storeOf(15, { sections: folders, view: 'search' });
+        store.selected = 7;
+
+        await store.selectAll();
+
+        expect(store.selectionCount).toBe(15);
+        expect(store.isSelected(idAt(0))).toBe(true);
+        expect(store.isSelected(idAt(14))).toBe(true);
+      });
+
+      it('leaves the anchor at the start of what it selected', async () => {
+        const store = await storeOf(15, { sections: folders });
+        store.selected = 7;
+        await store.selectAll();
+
+        await store.extendSelection(13); // a Shift+click after Ctrl+A
+
+        expect(
+          [...store.selectedItemIds].sort((a, b) => a - b),
+          'the range runs from the folder the selection started at, not from the lead',
+        ).toEqual([5, 6, 7, 8, 9, 10, 11, 12, 13].map(idAt));
+      });
+
+      it('is discarded when the rows come from a newer index than the offsets', async () => {
+        const store = await storeOf(15, { sections: folders });
+        store.selected = 7;
+        vi.mocked(api.gridRows).mockResolvedValue({ version: 2, rows: [entryAt(5)] });
+
+        await store.selectAll();
+
+        expect(store.selectionCount, 'still the lead alone, not a range of stale ids').toBe(1);
+        expect(store.selectedItemIds).toEqual([idAt(7)]);
+      });
+
+      it('is superseded by a later range call', async () => {
+        const store = await storeOf(15, { sections: folders });
+        store.selected = 7;
+        const slow = deferred<{ version: number; rows: ReturnType<typeof entryAt>[] }>();
+        vi.mocked(api.gridRows).mockImplementationOnce(() => slow.promise);
+
+        const all = store.selectAll(); // stuck on its fetch
+        await store.extendSelection(1); // issued later, resolves first
+        slow.resolve({ version: 1, rows: [5, 6, 7, 8, 9, 10, 11].map(entryAt) });
+        await all;
+
+        expect(
+          [...store.selectedItemIds].sort((a, b) => a - b),
+          'the later Shift+click wins, not the slower select-all',
+        ).toEqual([1, 2, 3, 4, 5, 6, 7].map(idAt));
+      });
+
+      it('does nothing on an empty grid', async () => {
+        const store = await storeOf(0, { sections: [] });
+        vi.mocked(api.gridRows).mockClear();
+
+        await store.selectAll();
+        expect(store.selectionCount).toBe(0);
+        expect(api.gridRows).not.toHaveBeenCalled();
+      });
     });
   });
 });

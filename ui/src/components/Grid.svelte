@@ -151,6 +151,19 @@
       if (entry) api.revealInFileManager(entry.id).catch(library.reportError);
       return;
     }
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a') {
+      // preventDefault or the webview selects the chrome's own text behind the grid.
+      e.preventDefault();
+      library.selectAll().catch(library.reportError);
+      return;
+    }
+    if (e.key === 'Escape') {
+      // The window handler closes the menu on Escape. Clearing here as well would do both at
+      // once, so the first Escape only ever dismisses the menu.
+      if (menu) return;
+      library.clearSelection();
+      return;
+    }
     if (e.key === 'Enter') {
       e.preventDefault();
       if (sel !== null) onopen(sel);
