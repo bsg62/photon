@@ -480,6 +480,12 @@ pub fn set_star(engine: &Engine, id: i64, starred: bool) -> CmdResult<()> {
     Ok(())
 }
 
+/// Stars or unstars several photos, returning how many landed. See `Engine::set_stars` for
+/// why a folder that cannot be written is skipped rather than fatal.
+pub fn set_stars(engine: &Engine, ids: &[i64], starred: bool) -> CmdResult<usize> {
+    Ok(engine.set_stars(ids, starred)?)
+}
+
 pub fn add_item_tag(engine: &Engine, id: i64, tag: &str) -> CmdResult<String> {
     Ok(engine.add_item_tag(id, tag)?)
 }

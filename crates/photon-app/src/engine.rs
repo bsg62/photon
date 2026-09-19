@@ -14,7 +14,7 @@ use photon_core::{
     thumbs::{Priority, ThumbCache, ThumbService},
 };
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     path::{Path, PathBuf},
     sync::{
         Arc,
@@ -477,6 +477,73 @@ impl Engine {
         })?;
         self.lib.set_ratings(&[(id, u8::from(starred))])?;
         self.refresh_grid()
+    }
+
+    /// Stars or unstars several photos, returning how many landed.
+    ///
+    /// Grouped by directory so each folder's INI is rewritten once (`picasa::set_stars`),
+    /// with one rating write and one `refresh_grid` for the whole batch: the per-photo
+    /// route would rewrite the same file once per photo and rebuild the grid as many times.
+    ///
+    /// A folder whose INI cannot be written is **skipped**, not fatal - one read-only
+    /// folder in a selection must not cost the user every other photo in it. The count tells
+    /// the caller how many landed so it can say so. When no folder at all could be written
+    /// the first error is returned instead, so the user sees the reason rather than a zero.
+    ///
+    /// Unknown and missing ids are skipped for the same reason: a selection can outlive the
+    /// photos in it (a scan purges one between the right-click and the click), and that is
+    /// not a failure of the other eleven. `set_star`, which acts on the photo the user is
+    /// looking at, still refuses them - see `live_item` for why the two differ.
+    pub fn set_stars(&self, ids: &[i64], starred: bool) -> Result<usize> {
+        let _serialised = self.ini_write.lock();
+        let mut by_dir: BTreeMap<PathBuf, Vec<(i64, String)>> = BTreeMap::new();
+        for &id in ids {
+            let Some(item) = self.lib.item(id)? else {
+                continue;
+            };
+            if item.missing_since.is_some() {
+                continue;
+            }
+            let path = PathBuf::from(&item.path);
+            let (Some(dir), Some(file_name)) = (path.parent(), path.file_name()) else {
+                continue;
+            };
+            by_dir
+                .entry(dir.to_path_buf())
+                .or_default()
+                .push((id, file_name.to_string_lossy().into_owned()));
+        }
+
+        let mut ratings: Vec<(i64, u8)> = Vec::new();
+        let mut first_error: Option<Error> = None;
+        for (dir, files) in &by_dir {
+            let changes: Vec<(&str, bool)> = files
+                .iter()
+                .map(|(_, name)| (name.as_str(), starred))
+                .collect();
+            match picasa::set_stars(dir, &changes) {
+                Ok(_) => ratings.extend(files.iter().map(|&(id, _)| (id, u8::from(starred)))),
+                Err(source) => {
+                    // The file first, then the database, per folder: a rating written for a
+                    // folder whose INI never took it is shown to the user and then silently
+                    // cleared by the next scan.
+                    first_error.get_or_insert(Error::IniWrite {
+                        path: dir.join(picasa::ini_name(dir)),
+                        source,
+                    });
+                }
+            }
+        }
+
+        if ratings.is_empty() {
+            return match first_error {
+                Some(err) => Err(err),
+                None => Ok(0),
+            };
+        }
+        self.lib.set_ratings(&ratings)?;
+        self.refresh_grid()?;
+        Ok(ratings.len())
     }
 
     /// Adds `tag` to one photo, returning the name stored — a rename rule can make that
@@ -1376,6 +1443,116 @@ mod tests {
             crate::commands::viewer_item(&f.engine, ids[0])
                 .unwrap()
                 .starred
+        );
+    }
+
+    #[test]
+    fn set_stars_writes_one_ini_per_folder_and_refreshes_once() {
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a.jpg", &img), ("b.jpg", &img), ("sub/c.jpg", &img)]);
+        f.add_photos();
+        let ids = f.ids();
+        let version = f.engine.grid().0;
+
+        assert_eq!(f.engine.set_stars(&ids, true).unwrap(), 3);
+
+        assert_eq!(
+            std::fs::read(f.photos.join(".picasa.ini")).unwrap(),
+            b"[a.jpg]\r\nstar=yes\r\n[b.jpg]\r\nstar=yes\r\n",
+            "both of this folder's photos in one file"
+        );
+        assert_eq!(
+            std::fs::read(f.photos.join("sub").join(".picasa.ini")).unwrap(),
+            b"[c.jpg]\r\nstar=yes\r\n"
+        );
+        let info = crate::commands::grid_info(&f.engine);
+        assert_eq!(info.starred_count, 3);
+        assert_eq!(
+            f.engine.grid().0,
+            version + 1,
+            "one refresh for the whole batch, not one per photo"
+        );
+    }
+
+    #[test]
+    fn set_stars_skips_a_folder_it_cannot_write_and_reports_the_count() {
+        // An oversized INI is unreadable (MAX_INI), which is how the single-photo test
+        // arranges a failing write. The other folder must still be starred: a read-only
+        // folder in a selection cannot cost the user every other photo in it.
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a.jpg", &img), ("sub/c.jpg", &img)]);
+        f.add_photos();
+        let ids = f.ids();
+        std::fs::write(
+            f.photos.join(".picasa.ini"),
+            vec![b' '; photon_core::picasa::MAX_INI as usize + 1],
+        )
+        .unwrap();
+
+        assert_eq!(f.engine.set_stars(&ids, true).unwrap(), 1);
+
+        assert_eq!(
+            std::fs::read(f.photos.join("sub").join(".picasa.ini")).unwrap(),
+            b"[c.jpg]\r\nstar=yes\r\n"
+        );
+        let starred: Vec<i64> = f
+            .engine
+            .grid()
+            .1
+            .rows(0, 2)
+            .iter()
+            .filter(|e| e.starred)
+            .map(|e| e.id)
+            .collect();
+        assert_eq!(starred.len(), 1, "only the folder that could be written");
+        assert_ne!(
+            f.engine.lib.item(ids[0]).unwrap().unwrap().rating,
+            Some(1),
+            "a folder whose INI write failed gets no rating either"
+        );
+    }
+
+    #[test]
+    fn set_stars_fails_when_no_folder_could_be_written() {
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a.jpg", &img)]);
+        f.add_photos();
+        let ids = f.ids();
+        let version = f.engine.grid().0;
+        std::fs::write(
+            f.photos.join(".picasa.ini"),
+            vec![b' '; photon_core::picasa::MAX_INI as usize + 1],
+        )
+        .unwrap();
+
+        let err: crate::error::AppError = f.engine.set_stars(&ids, true).unwrap_err().into();
+
+        assert_eq!(err.kind, "iniWrite");
+        assert_eq!(
+            f.engine.grid().0,
+            version,
+            "nothing landed, nothing to refresh"
+        );
+    }
+
+    #[test]
+    fn set_stars_ignores_unknown_and_missing_photos() {
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a.jpg", &img), ("b.jpg", &img)]);
+        f.add_photos();
+        let ids = f.ids();
+        f.engine.lib.mark_missing(&[ids[0]], 1).unwrap();
+
+        assert_eq!(
+            f.engine
+                .set_stars(&[ids[0], ids[1], ids[1] + 1000], true)
+                .unwrap(),
+            1,
+            "the missing one and the unknown one are skipped, not fatal"
+        );
+        assert_eq!(
+            std::fs::read(f.photos.join(".picasa.ini")).unwrap(),
+            b"[b.jpg]\r\nstar=yes\r\n"
         );
     }
 
