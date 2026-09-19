@@ -421,7 +421,7 @@
     border-bottom: 1px solid var(--line);
   }
   h1 { margin: 0; font-size: var(--t-4); font-weight: 600; }
-  h2 { margin: 0 0 var(--s-1); font-size: var(--t-4); font-weight: 600; }
+  h2 { margin: 0 0 var(--s-1); font-size: var(--t-3); font-weight: 600; }
   button {
     padding: 5px var(--s-3);
     border: 0;

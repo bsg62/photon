@@ -937,8 +937,9 @@
   }
   .bar { position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 2px; padding: var(--s-1); border-radius: var(--r-4); }
   .sep { width: 1px; height: 18px; margin: 0 var(--s-1); background: var(--glass-line); }
-  /* The file name is the only part of the toolbar that can be any length; at the minimum
-     window width an unbounded one ran the toolbar under the zoom control. */
+  /* The file name is the only part of the toolbar that can be any length. This caps how far
+     an unbounded one can run the toolbar under the zoom control at the minimum window width
+     - it bounds the overlap, it does not remove it, and the tools stay reachable either way. */
   .caption { padding: 0 10px; border: 0; background: none; color: var(--text-dim); font-size: var(--t-2); white-space: nowrap; cursor: pointer; max-width: 34vw; overflow: hidden; text-overflow: ellipsis; }
   .caption:hover:not(:disabled) { color: var(--text); }
   .caption:disabled { cursor: default; }

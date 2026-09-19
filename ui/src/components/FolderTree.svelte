@@ -373,12 +373,15 @@
     height: 28px;
     margin: 0 6px 0 26px;
     padding: 0 var(--s-2);
-    border: 1px solid var(--accent);
+    border: 0;
     border-radius: var(--r-2);
     background: var(--surface);
     color: inherit;
     font: inherit;
   }
+  /* The global ring, pulled in to hug the field rather than float 2px off it - it replaces
+     the old accent border, so a focused editor gets one ring, not two. */
+  .editor:focus-visible { outline-offset: 0; }
   .year {
     margin: var(--s-3) 0 2px;
     padding: 0 14px;
