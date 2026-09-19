@@ -8,6 +8,7 @@
   import { searchBox } from './lib/search-box.svelte';
   import type { SettingsSection } from './lib/settings';
   import { clampSidebarWidth, SIDEBAR_DEFAULT, SIDEBAR_STEP } from './lib/sidebar';
+  import Icon from './components/Icon.svelte';
   import FolderTree from './components/FolderTree.svelte';
   import Grid from './components/Grid.svelte';
   import SearchBar from './components/SearchBar.svelte';
@@ -149,7 +150,7 @@
   <div class="topbar" inert={covered}>
     <SearchBar />
     <button class="gear" bind:this={gear} aria-label="Settings" title="Settings" onclick={() => openSettings('folders')}
-      >⚙</button
+      ><Icon name="settings" size={18} /></button
     >
   </div>
   <aside class="sidebar" inert={covered}>
@@ -190,14 +191,15 @@
   }
   .sidebar {
     overflow: auto;
-    background: var(--panel);
+    background: var(--chrome);
   }
   .splitter {
     cursor: col-resize;
     touch-action: none;
-    background: var(--panel);
-    border-left: 1px solid #0003;
+    background: var(--chrome);
+    border-left: 1px solid var(--line);
   }
+  /* Its own focus treatment rather than the global ring: a 5px bar cannot hold one. */
   .splitter:hover,
   .splitter:focus-visible {
     background: var(--accent);
@@ -210,20 +212,24 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding-right: 8px;
-    background: var(--panel);
-    border-bottom: 1px solid #0003;
+    padding-right: var(--s-2);
+    background: var(--chrome);
+    border-bottom: 1px solid var(--line);
   }
   .gear {
-    padding: 2px 8px;
+    display: grid;
+    place-items: center;
+    width: 30px;
+    height: 30px;
+    padding: 0;
     border: 0;
-    border-radius: 4px;
+    border-radius: var(--r-3);
     background: none;
-    color: var(--muted);
-    font-size: 18px;
+    color: var(--text-dim);
     cursor: pointer;
+    transition: background-color 120ms ease-out;
   }
-  .gear:hover,
-  .gear:focus-visible { color: var(--text); background: #ffffff14; }
+  .gear:hover { color: var(--text); background: var(--hover); }
+  @media (prefers-reduced-motion: reduce) { .gear { transition: none; } }
   .statusbar { grid-column: 1 / -1; }
 </style>

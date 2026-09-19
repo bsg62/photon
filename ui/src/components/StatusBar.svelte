@@ -36,25 +36,25 @@
     display: flex;
     justify-content: space-between;
     align-items: center;
-    gap: 12px;
-    padding: 4px 12px;
-    background: var(--panel);
-    color: var(--muted);
-    font-size: 12px;
-    border-top: 1px solid #0003;
+    gap: var(--s-3);
+    padding: var(--s-1) var(--s-3);
+    background: var(--chrome);
+    color: var(--text-dim);
+    font-size: var(--t-2);
+    border-top: 1px solid var(--line);
   }
   .notices { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 16px; min-width: 0; }
-  .scan { display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; }
+  .scan { display: inline-flex; align-items: center; gap: var(--s-2); white-space: nowrap; }
   progress {
     width: 120px;
     height: 6px;
     appearance: none;
     border: 0;
     border-radius: 3px;
-    background: #ffffff1a;
+    background: var(--line);
     overflow: hidden;
   }
-  progress::-webkit-progress-bar { background: #ffffff1a; border-radius: 3px; }
+  progress::-webkit-progress-bar { background: var(--line); border-radius: 3px; }
   progress::-webkit-progress-value { background: var(--accent); border-radius: 3px; transition: width 200ms ease-out; }
   progress::-moz-progress-bar { background: var(--accent); border-radius: 3px; }
 </style>

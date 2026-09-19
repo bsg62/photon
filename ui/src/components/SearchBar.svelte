@@ -2,6 +2,7 @@
   import { untrack } from 'svelte';
   import { library } from '../lib/library.svelte';
   import { searchBox } from '../lib/search-box.svelte';
+  import Icon from './Icon.svelte';
 
   // This component only renders the machine in `search-box.svelte.ts`; the folder tree
   // drives the same instance, which is why none of that state lives here.
@@ -22,35 +23,51 @@
 </script>
 
 <div class="bar">
-  <input
-    class="search"
-    type="search"
-    placeholder="Search names, camera, keywords, dates…"
-    aria-label="Search photos by file or folder name, camera, lens, keyword or date"
-    title="Every word must match: a name, a folder, a camera or lens, a keyword, 50mm, f/1.8, iso400, or a date like 2024-06. Use OR to widen, &quot;quotes&quot; for a phrase, camera: or lens: for one field."
-    bind:value={searchBox.query}
-    oninput={() => searchBox.run(searchBox.query)}
-    onkeydown={(e) => {
-      // An empty box with Search not active has nothing to clear: unconditionally clearing
-      // here would call setSearchQuery('') regardless, which is a no-op query but still
-      // forces the view to All — kicking the user out of Starred with a keystroke that
-      // cleared nothing.
-      if (e.key === 'Escape' && (searchBox.query !== '' || library.info.view === 'search')) searchBox.clear();
-    }}
-  />
+  <div class="field">
+    <Icon name="search" size={14} />
+    <input
+      class="search"
+      type="search"
+      placeholder="Search names, camera, keywords, dates…"
+      aria-label="Search photos by file or folder name, camera, lens, keyword or date"
+      title="Every word must match: a name, a folder, a camera or lens, a keyword, 50mm, f/1.8, iso400, or a date like 2024-06. Use OR to widen, &quot;quotes&quot; for a phrase, camera: or lens: for one field."
+      bind:value={searchBox.query}
+      oninput={() => searchBox.run(searchBox.query)}
+      onkeydown={(e) => {
+        // An empty box with Search not active has nothing to clear: unconditionally clearing
+        // here would call setSearchQuery('') regardless, which is a no-op query but still
+        // forces the view to All — kicking the user out of Starred with a keystroke that
+        // cleared nothing.
+        if (e.key === 'Escape' && (searchBox.query !== '' || library.info.view === 'search')) searchBox.clear();
+      }}
+    />
+  </div>
 </div>
 
 <style>
   /* Background and border belong to the top bar in App, which also holds the settings gear. */
-  .bar { display: flex; flex: 1; min-width: 0; padding: 8px; }
-  .search {
+  .bar { display: flex; flex: 1; min-width: 0; padding: var(--s-2); }
+  .field {
+    position: relative;
+    display: flex;
+    align-items: center;
     width: 320px;
     max-width: 100%;
-    box-sizing: border-box;
-    padding: 6px 8px;
-    border: 1px solid #fff2;
-    border-radius: 4px;
-    background: var(--panel-2);
-    color: inherit;
+    color: var(--text-dim);
   }
+  /* The icon sits over the input's left padding; clicks pass through to the input. */
+  .field :global(svg) { position: absolute; left: 9px; pointer-events: none; }
+  .search {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 6px var(--s-2) 6px 30px;
+    border: 0;
+    border-radius: var(--r-3);
+    background: var(--field);
+    color: var(--text);
+    font: inherit;
+  }
+  .search::placeholder { color: var(--text-dim); }
+  /* The global ring, pulled in to hug the field rather than float 2px off it. */
+  .search:focus-visible { outline-offset: 0; }
 </style>

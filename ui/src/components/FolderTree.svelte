@@ -6,6 +6,7 @@
   import { enterFolder, folderRows, groupByYear } from '../lib/folders';
   import { library } from '../lib/library.svelte';
   import { searchBox } from '../lib/search-box.svelte';
+  import Icon from './Icon.svelte';
 
   let { onjump, onopensettings }: { onjump: (folderId: number) => void; onopensettings: () => void } = $props();
 
@@ -155,8 +156,8 @@
     onclick={() => show(() => library.setView('starred'))}
     title="Starred photos"
   >
-    <span class="name">★ Starred</span>
-    <span class="count">({library.info.starredCount})</span>
+    <Icon name="star" size={14} /><span class="name">Starred</span>
+    <span class="count">{library.info.starredCount.toLocaleString()}</span>
   </button>
 
   <button
@@ -165,7 +166,7 @@
     onclick={() => show(() => library.setView('recent'))}
     title="The newest photos by capture date"
   >
-    <span class="name">🕘 Recent</span>
+    <Icon name="clock" size={14} /><span class="name">Recent</span>
   </button>
 
   <!-- Only while there is something in it, or while it is what the grid shows: most
@@ -177,16 +178,16 @@
       onclick={() => show(() => library.setView('duplicates'))}
       title="Photos with a byte-identical copy elsewhere in the library"
     >
-      <span class="name">⧉ Duplicates</span>
-      <span class="count">({library.info.duplicateCount})</span>
+      <Icon name="copy" size={14} /><span class="name">Duplicates</span>
+      <span class="count">{library.info.duplicateCount.toLocaleString()}</span>
     </button>
   {/if}
 
   <!-- Albums: photon's own, so the group is editable. -->
   <button class="group" aria-expanded={open.albums} onclick={() => (open.albums = !open.albums)}>
-    <span class="chevron">{open.albums ? '▾' : '▸'}</span>
+    <span class="chevron"><Icon name={open.albums ? 'chevron-down' : 'chevron-right'} size={12} /></span><Icon name="folder" size={14} />
     <span class="name">Albums</span>
-    <span class="count">({library.albums.length})</span>
+    <span class="count">{library.albums.length.toLocaleString()}</span>
   </button>
   {#if open.albums}
     {#each library.albums as album (album.id)}
@@ -209,7 +210,7 @@
           oncontextmenu={(e) => albumContextMenu(e, album)}
         >
           <span class="name">{album.name}</span>
-          <span class="count">({album.count})</span>
+          <span class="count">{album.count.toLocaleString()}</span>
         </button>
       {/if}
     {/each}
@@ -231,9 +232,9 @@
 
   <!-- People: Picasa's contacts, read from the INI beside the photos. Read only. -->
   <button class="group" aria-expanded={open.people} onclick={() => (open.people = !open.people)}>
-    <span class="chevron">{open.people ? '▾' : '▸'}</span>
+    <span class="chevron"><Icon name={open.people ? 'chevron-down' : 'chevron-right'} size={12} /></span><Icon name="user" size={14} />
     <span class="name">People</span>
-    <span class="count">({library.people.length})</span>
+    <span class="count">{library.people.length.toLocaleString()}</span>
   </button>
   {#if open.people}
     {#each library.people as person (person.hash)}
@@ -244,7 +245,7 @@
         onclick={() => show(() => library.setPersonView(person.hash))}
       >
         <span class="name">{person.name}</span>
-        <span class="count">({person.count})</span>
+        <span class="count">{person.count.toLocaleString()}</span>
       </button>
     {:else}
       <p class="empty small">No people. photon reads face names from Picasa’s .picasa.ini.</p>
@@ -253,9 +254,9 @@
 
   <!-- Tags: keywords read from the photos' own XMP and IPTC. Read only. -->
   <button class="group" aria-expanded={open.tags} onclick={() => (open.tags = !open.tags)}>
-    <span class="chevron">{open.tags ? '▾' : '▸'}</span>
+    <span class="chevron"><Icon name={open.tags ? 'chevron-down' : 'chevron-right'} size={12} /></span><Icon name="tag" size={14} />
     <span class="name">Tags</span>
-    <span class="count">({library.tags.length})</span>
+    <span class="count">{library.tags.length.toLocaleString()}</span>
   </button>
   {#if open.tags}
     {#each library.tags as t (t.tag)}
@@ -266,7 +267,7 @@
         onclick={() => show(() => library.setTagView(t.tag))}
       >
         <span class="name">{t.tag}</span>
-        <span class="count">({t.count})</span>
+        <span class="count">{t.count.toLocaleString()}</span>
       </button>
     {:else}
       <p class="empty small">No keywords. photon reads them from the photos themselves.</p>
@@ -283,7 +284,7 @@
         oncontextmenu={(e) => folderMenu(e, row.folderId)}
       >
         <span class="name">{row.name}</span>
-        <span class="count">({row.count})</span>
+        <span class="count">{row.count.toLocaleString()}</span>
       </button>
     {/each}
   {/each}
@@ -334,62 +335,100 @@
 {/if}
 
 <style>
-  .tree { display: flex; flex-direction: column; padding: 8px 0 12px; }
-  .add { margin: 0 8px; padding: 6px; border: 1px solid #fff2; border-radius: 4px; background: var(--panel-2); cursor: pointer; }
+  .tree { display: flex; flex-direction: column; padding: var(--s-2) 0 var(--s-3); }
+  /* Rows are inset from the panel edge so the focus ring, which sits 2px outside its
+     element, is not clipped by the sidebar's overflow. */
   .root,
   .node,
   .group {
     display: flex;
     align-items: center;
-    gap: 8px;
-    padding: 4px 8px;
+    gap: var(--s-2);
+    flex: none;
+    height: 28px;
+    margin: 0 6px;
+    padding: 0 var(--s-2);
     border: 0;
+    border-radius: var(--r-3);
     background: none;
     text-align: left;
     cursor: pointer;
+    transition: background-color 120ms ease-out;
   }
-  .root { font-weight: 600; }
-  .group { margin-top: 6px; font-weight: 600; }
-  .chevron { width: 10px; color: var(--muted); font-size: 11px; }
-  .node { padding-left: 18px; }
-  .root:hover, .node:hover, .group:hover { background: #ffffff0d; }
-  .starred.active, .recent.active, .duplicates.active, .node.active { background: #ffffff14; }
-  .add-album { color: var(--muted); }
+  .group {
+    margin-top: var(--s-2);
+    color: var(--text-dim);
+    font-size: var(--t-1);
+    font-weight: 600;
+  }
+  .chevron { display: grid; place-items: center; width: 12px; }
+  .node { padding-left: 28px; }
+  .root:hover, .node:hover, .group:hover { background: var(--hover); }
+  .starred.active, .recent.active, .duplicates.active, .node.active { background: var(--accent-soft); }
+  /* --text-dim does not reach 4.5:1 over --accent-soft; --text does (tokens.test.ts). */
+  .active .count { color: var(--text); }
+  .add-album { color: var(--text-dim); }
   .add-album:hover { color: var(--text); }
   .editor {
-    margin: 2px 8px 2px 18px;
-    padding: 3px 6px;
+    height: 28px;
+    margin: 0 6px 0 26px;
+    padding: 0 var(--s-2);
     border: 1px solid var(--accent);
-    border-radius: 4px;
-    background: var(--panel-2);
+    border-radius: var(--r-2);
+    background: var(--surface);
     color: inherit;
     font: inherit;
   }
   .year {
-    margin: 10px 0 2px;
-    padding: 0 8px;
-    color: var(--muted);
-    font-size: 11px;
+    margin: var(--s-3) 0 2px;
+    padding: 0 14px;
+    color: var(--text-dim);
+    font-size: var(--t-1);
     font-weight: 600;
     letter-spacing: 0.04em;
   }
-  .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .count { color: var(--muted); font-size: 11px; }
-  .empty { padding: 8px 12px; color: var(--muted); }
-  .empty.small { margin: 0; padding: 2px 18px 6px; font-size: 12px; }
+  .name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .count {
+    margin-left: auto;
+    color: var(--text-dim);
+    font-size: var(--t-1);
+    font-variant-numeric: tabular-nums;
+  }
+  .empty { padding: var(--s-2) 14px; color: var(--text-dim); }
+  .empty.small { margin: 0; padding: 2px 14px 6px 34px; font-size: var(--t-2); }
+  .add {
+    margin: 0 14px;
+    padding: 6px;
+    border: 0;
+    border-radius: var(--r-3);
+    background: var(--field);
+    cursor: pointer;
+  }
+  .add:hover { background: var(--hover); }
   .menu {
     position: fixed;
     z-index: 40;
     display: flex;
     flex-direction: column;
     min-width: 200px;
-    padding: 4px;
-    background: var(--panel-2);
-    border-radius: 6px;
-    box-shadow: 0 6px 24px #0008;
+    padding: var(--s-1);
+    background: var(--raised);
+    border-radius: var(--r-3);
+    /* The hairline is what separates a white menu from a white grid in light mode. */
+    box-shadow: 0 0 0 1px var(--line), var(--shadow-menu);
   }
-  .menu button { padding: 6px 10px; border: 0; background: none; text-align: left; cursor: pointer; border-radius: 4px; }
-  .menu button:hover:not(:disabled) { background: #ffffff14; }
-  .menu button:disabled { color: var(--muted); cursor: default; }
+  .menu button {
+    padding: 6px 10px;
+    border: 0;
+    border-radius: var(--r-2);
+    background: none;
+    text-align: left;
+    cursor: pointer;
+  }
+  .menu button:hover:not(:disabled) { background: var(--hover); }
+  .menu button:disabled { color: var(--text-dim); cursor: default; }
   .menu .danger { color: var(--danger); }
+  @media (prefers-reduced-motion: reduce) {
+    .root, .node, .group { transition: none; }
+  }
 </style>
