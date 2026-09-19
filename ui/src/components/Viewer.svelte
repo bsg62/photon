@@ -902,9 +902,11 @@
 
 <style>
   /* #000 is the one colour literal in the UI: the ground a photo is judged against is not
-     a theme decision. `color` and `accent-color` are set here because both are inherited
-     and were computed on :root, in the app's theme, before this subtree turned dark. */
-  .viewer { position: fixed; inset: 0; z-index: 20; display: grid; place-items: center; background: #000; overflow: hidden; color: var(--text); accent-color: var(--accent); }
+     a theme decision. `color` is set here because it is inherited and was computed on :root,
+     in the app's theme, before this subtree turned dark; app.css's `button { color: inherit }`
+     is why menu buttons and labels depend on it. accent-color needs no override here:
+     tokens.css declares it on `[data-theme]`, which this element already matches. */
+  .viewer { position: fixed; inset: 0; z-index: 20; display: grid; place-items: center; background: #000; overflow: hidden; color: var(--text); }
   .stage { position: absolute; inset: 0; transform-origin: center; will-change: transform; }
   .frame { position: absolute; left: 50%; top: 50%; width: 100vw; height: 100vh; translate: -50% -50%; }
   .face { position: absolute; border: 2px solid var(--photo-line); border-radius: var(--r-1); box-shadow: 0 0 0 1px var(--shadow-ink); pointer-events: none; }
@@ -958,8 +960,11 @@
   .close:hover { color: var(--text); }
   .star, .tool { display: grid; place-items: center; width: 30px; height: 30px; padding: 0; border: 0; border-radius: var(--r-3); background: none; color: var(--text-dim); font-size: var(--t-2); line-height: 1; cursor: pointer; transition: background-color 120ms ease-out; }
   .star:hover:not(:disabled), .tool:hover:not(:disabled) { color: var(--text); background: var(--hover); }
-  .star[aria-pressed='true'] { color: var(--star); }
-  .tool[aria-pressed='true'] { background: var(--accent); color: var(--on-accent); }
+  /* Spelled out with :hover, like .tool.primary above: the generic hover rule otherwise
+     out-specifies these, so a starred star or a pressed tool loses its colour under the
+     pointer - exactly while it is, right after the click that set aria-pressed. */
+  .star[aria-pressed='true'], .star[aria-pressed='true']:hover:not(:disabled) { color: var(--star); }
+  .tool[aria-pressed='true'], .tool[aria-pressed='true']:hover:not(:disabled) { background: var(--accent); color: var(--on-accent); }
   .star:disabled, .tool:disabled { cursor: default; opacity: 0.4; }
   .tool.wide { width: auto; padding: 0 var(--s-3); color: var(--text); }
   .tool.primary, .tool.primary:hover:not(:disabled) { background: var(--accent); color: var(--on-accent); }

@@ -90,6 +90,22 @@ describe('the viewer glass', () => {
   });
 });
 
+/** The raw (comment-stripped) body of the rule whose selector list contains `selector`
+ *  exactly - like `block()`, but keeps every declaration, not only `--*` ones, so a plain
+ *  property such as `accent-color` can be asserted on too. `exact: true` additionally
+ *  requires `selector` to be the rule's *only* selector, to tell the scales-only `:root`
+ *  block apart from `:root, [data-theme]`, which also matches on `:root`. */
+function ruleBody(source: string, selector: string, { exact = false } = {}): string {
+  const bare = source.replace(/\/\*[\s\S]*?\*\//g, '');
+  for (const rule of bare.matchAll(/([^{}]+)\{([^}]*)\}/g)) {
+    const selectors = rule[1].split(',').map((s) => s.trim());
+    if (exact ? selectors.length === 1 && selectors[0] === selector : selectors.includes(selector)) {
+      return rule[2];
+    }
+  }
+  throw new Error(`no rule has the selector ${selector}`);
+}
+
 describe('the structure of tokens.css', () => {
   it('places the dark block after the light block, since equal specificity on the root leaves source order as the only tiebreaker', () => {
     const bare = css.replace(/\/\*[\s\S]*?\*\//g, '');
@@ -97,6 +113,11 @@ describe('the structure of tokens.css', () => {
     const darkIndex = bare.indexOf("[data-theme='dark']");
     expect(lightIndex).toBeGreaterThanOrEqual(0);
     expect(darkIndex).toBeGreaterThan(lightIndex);
+  });
+
+  it('declares accent-color beside the aliases, on [data-theme], not in the theme-independent scales block', () => {
+    expect(ruleBody(css, '[data-theme]')).toMatch(/accent-color\s*:\s*var\(--accent\)\s*;/);
+    expect(ruleBody(css, ':root', { exact: true })).not.toMatch(/accent-color/);
   });
 
   it('aliases --bg/--panel/--panel-2/--muted to --surface/--chrome/--raised/--text-dim, declared on [data-theme] too', () => {
