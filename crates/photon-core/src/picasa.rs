@@ -2,10 +2,10 @@
 //!
 //! Picasa writes one INI per directory — `.picasa.ini` on newer versions, `Picasa.ini` on
 //! older ones — with a section per file. photon reads every star and face from it, and
-//! `set_star` is the one place photon writes inside a watched folder: it sets or clears a
-//! single `star=` line and leaves every other byte of the file as it found it. Nothing here
-//! writes a photo, nothing here writes a face or a contact, and nothing else in photon
-//! writes an INI.
+//! `set_star` and `set_stars` are the one place photon writes inside a watched folder: they
+//! set or clear `star=` lines and leave every other byte of the file as they found it.
+//! Nothing here writes a photo, nothing here writes a face or a contact, and nothing else in
+//! photon writes an INI.
 //!
 //! The reader and the writer share one line classifier, `classify`. That is deliberate: a
 //! writer with its own idea of what a header or a key looks like would drift from the reader
@@ -72,31 +72,53 @@ pub fn read_stars(dir: &Path) -> Option<HashSet<String>> {
 /// Sets or clears `file_name`'s star in `dir`'s Picasa INI, and returns whether the file
 /// changed.
 ///
+/// [`set_stars`] with one change; see it for what is and is not written.
+pub fn set_star(dir: &Path, file_name: &str, starred: bool) -> io::Result<bool> {
+    set_stars(dir, &[(file_name, starred)])
+}
+
+/// Applies every `(file_name, starred)` change to `dir`'s Picasa INI in **one** rewrite,
+/// and returns whether the file changed.
+///
+/// One rewrite, not one per photo: starring a selection of two hundred photos in a folder
+/// through `set_star` would read, rewrite and rename the same file two hundred times. The
+/// changes are folded in memory through the same `rewrite` the single-photo case uses, so
+/// the writer keeps sharing its line classifier with the reader.
+///
 /// Edits the same file `read_stars` would read. That matters when a folder carries only an
 /// old `Picasa.ini`: creating `.picasa.ini` beside it would make the reader prefer the new
 /// file and silently drop every other star in the folder. A folder with no INI gets a
-/// `.picasa.ini` when starring, and nothing at all when unstarring — there is no star to
-/// clear, so there is nothing to write.
+/// `.picasa.ini` when something is being starred, and nothing at all when every change is
+/// an unstar — there is no star to clear, so there is nothing to write.
 ///
 /// Every byte outside the affected `star=` lines is preserved, including bytes that are not
 /// UTF-8 and the file's own line endings: the INI carries Picasa's face, crop and edit
-/// records, and photon has no business rewriting them. A file that already says what was
-/// asked is left alone, so its modification time does not move. The write is atomic (a
-/// temporary file renamed over the original), so a crash cannot leave a truncated INI.
-pub fn set_star(dir: &Path, file_name: &str, starred: bool) -> io::Result<bool> {
-    let (path, bytes, template) = match ini_path(dir)? {
+/// records, and photon has no business rewriting them. Changes that ask for what the file
+/// already says leave it alone, so its modification time does not move. The write is atomic
+/// (a temporary file renamed over the original), so a crash cannot leave a truncated INI.
+pub fn set_stars(dir: &Path, changes: &[(&str, bool)]) -> io::Result<bool> {
+    let (path, mut bytes, template) = match ini_path(dir)? {
         Some(path) => {
             let bytes = read_capped(&path)?;
             let meta = fs::metadata(&path)?;
             (path, bytes, Some(meta))
         }
-        None if starred => (dir.join(NEW_INI), Vec::new(), None),
+        None if changes.iter().any(|&(_, starred)| starred) => {
+            (dir.join(NEW_INI), Vec::new(), None)
+        }
         None => return Ok(false),
     };
-    let Some(rewritten) = rewrite(&bytes, file_name, starred) else {
+    let mut changed = false;
+    for &(file_name, starred) in changes {
+        if let Some(rewritten) = rewrite(&bytes, file_name, starred) {
+            bytes = rewritten;
+            changed = true;
+        }
+    }
+    if !changed {
         return Ok(false);
-    };
-    write_atomically(&path, &rewritten, template.as_ref())?;
+    }
+    write_atomically(&path, &bytes, template.as_ref())?;
     Ok(true)
 }
 
@@ -1032,5 +1054,64 @@ mod tests {
             b"[a.jpg]\r\n",
             "the section stays, as Picasa leaves it"
         );
+    }
+
+    #[test]
+    fn set_stars_writes_every_change_in_one_pass() {
+        // The whole file is asserted, not just "both are starred": a per-photo loop would
+        // also leave both starred, and the point of this writer is the single rewrite.
+        let dir = tempfile::tempdir().unwrap();
+        write_file(
+            dir.path(),
+            ".picasa.ini",
+            b"[a.jpg]\nstar=yes\n[c.jpg]\nbackuphash=7\n",
+        );
+        assert!(
+            set_stars(
+                dir.path(),
+                &[("a.jpg", false), ("b.jpg", true), ("c.jpg", true)]
+            )
+            .unwrap()
+        );
+        assert_eq!(
+            ini(dir.path(), ".picasa.ini"),
+            b"[a.jpg]\n[c.jpg]\nstar=yes\nbackuphash=7\n[b.jpg]\nstar=yes\n",
+            "one rewrite: a unstarred in place, c starred under its own header, b appended"
+        );
+        assert_eq!(
+            entries(dir.path()),
+            vec![".picasa.ini"],
+            "no temporary left behind"
+        );
+        assert_eq!(stars(dir.path()), vec!["b.jpg", "c.jpg"]);
+    }
+
+    #[test]
+    fn set_stars_that_changes_nothing_leaves_the_file_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let before: &[u8] = b"[a.jpg]\nstar=yes\n";
+        write_file(dir.path(), ".picasa.ini", before);
+        assert!(!set_stars(dir.path(), &[("a.jpg", true), ("b.jpg", false)]).unwrap());
+        assert_eq!(ini(dir.path(), ".picasa.ini"), before);
+    }
+
+    #[test]
+    fn set_stars_creates_no_ini_when_nothing_is_being_starred() {
+        // Same promise `unstarring_in_a_folder_without_an_ini_creates_nothing` makes: a folder
+        // photon has never starred in must not grow a file because a selection was unstarred.
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!set_stars(dir.path(), &[("a.jpg", false), ("b.jpg", false)]).unwrap());
+        assert!(entries(dir.path()).is_empty());
+    }
+
+    #[test]
+    fn set_stars_edits_the_undotted_ini_in_place() {
+        // Creating `.picasa.ini` beside an existing `Picasa.ini` makes the reader prefer the
+        // new file and silently drop every star in the old one.
+        let dir = tempfile::tempdir().unwrap();
+        write_file(dir.path(), "Picasa.ini", b"[z.jpg]\nstar=yes\n");
+        assert!(set_stars(dir.path(), &[("a.jpg", true), ("b.jpg", true)]).unwrap());
+        assert_eq!(entries(dir.path()), vec!["Picasa.ini"]);
+        assert_eq!(stars(dir.path()), vec!["a.jpg", "b.jpg", "z.jpg"]);
     }
 }
