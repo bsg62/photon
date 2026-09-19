@@ -19,6 +19,9 @@ const OLD_NAMES = ['--bg', '--panel', '--panel-2', '--muted'];
 /** `--sidebar-width` is set by a `style:` binding in App.svelte, not declared in tokens.css. */
 const UNDEFINED_VAR_EXCEPTIONS = ['--sidebar-width'];
 
+/** The glyphs the UI once used as icons, before Icon.svelte. `×` is included because no
+ *  component contains one as text: a dimension string like `5472 × 3648` is built in
+ *  lib/caption.ts, which this test does not read. */
 const GLYPHS = /[⚙★☆🕘⧉▸▾⚠✕×↺↻✂▶⏸ⓘ]/u;
 
 function styleOf(source: string): string {
@@ -41,7 +44,7 @@ function codeOf(source: string): string {
 function literals(css: string): string[] {
   return (
     css.match(
-      /#[0-9a-fA-F]{3,8}\b|rgba?\([^)]*\)|hsla?\([^)]*\)|color-mix\(|oklch\(|oklab\(|lab\(|lch\(|(?<![\w-])(?:white|black)(?![\w-])/g,
+      /#[0-9a-fA-F]{3,8}\b|rgba?\([^)]*\)|hsla?\([^)]*\)|color-mix\(|oklch\(|oklab\(|lab\(|lch\(|(?<![\w-])(?:white|black)(?![\w-])/gi,
     ) ?? []
   );
 }
