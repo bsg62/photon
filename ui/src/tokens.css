@@ -42,19 +42,23 @@
   --danger: #ff6b6b;
   --star: #ffd24a;
   /* The viewer is dark in both themes, so its glass exists only here. */
-  --glass: #26262bd9;
+  --glass: #26262be6;
   --glass-line: #ffffff1a;
 }
 
 /* The names components used before the tokens, removed in the reskin's last PR. Declared
    on [data-theme] as well as :root because a var() is resolved where it is declared: on
-   :root alone, a dark subtree inside a light app would inherit the light values. */
+   :root alone, a dark subtree inside a light app would inherit the light values.
+   accent-color sits here for the same reason the aliases do: it is inherited and would
+   otherwise be computed once on :root, in the app's theme, so a dark subtree inside a light
+   app would keep the light accent on its checkboxes and range input. */
 :root,
 [data-theme] {
   --bg: var(--surface);
   --panel: var(--chrome);
   --panel-2: var(--raised);
   --muted: var(--text-dim);
+  accent-color: var(--accent);
 }
 
 :root {
@@ -77,7 +81,12 @@
   --shadow-dialog: 0 16px 48px #00000059;
   /* Ink for shadows cast onto photos, which are not themed: dark in both themes. */
   --shadow-ink: #000000b3;
-  accent-color: var(--accent);
+  /* Drawn onto a photo - face boxes, the crop rectangle and its handles. The same in both
+     themes, because the photo under it is. */
+  --photo-line: #ffffffe6;
+  /* Dims whatever is behind: the photo outside a crop, a face's name plate, and (from the
+     reskin's last PR) the app behind a dialog. Dark in both themes. */
+  --scrim: #000000a6;
 }
 
 :focus-visible {

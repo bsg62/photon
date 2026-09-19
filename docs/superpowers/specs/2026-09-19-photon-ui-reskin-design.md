@@ -56,7 +56,7 @@ component `<style>` block contains no colour literal (enforced, §7).
 | `--on-accent` | `#ffffff` | `#111111` | text on a primary button |
 | `--danger` | `#c4302b` | `#ff6b6b` | |
 | `--star` | `#e0a100` | `#ffd24a` | |
-| `--glass` | — | `#26262bd9` | viewer toolbar and info card |
+| `--glass` | — | `#26262be6` | viewer toolbar and info card |
 | `--glass-line` | — | `#ffffff1a` | their 1px edge |
 
 `--accent-soft` is a literal, not `color-mix()`: the webview on Linux is whatever WebKitGTK
@@ -78,7 +78,7 @@ Because the blocks match any element and not only `:root`, the viewer's root ele
 `data-theme="dark"` and its whole subtree resolves dark tokens whatever the app theme is.
 `--glass` and `--glass-line` exist only in the dark block; they are used only there.
 
-**Glass.** `background: var(--glass)` at 85% opacity is the design. `backdrop-filter:
+**Glass.** `background: var(--glass)` at 90% opacity is the design. `backdrop-filter:
 blur(18px)` is layered on as an enhancement, since it can be slow or absent on some Linux
 GPUs; the toolbar must read correctly without it.
 
@@ -87,11 +87,13 @@ GPUs; the toolbar must read correctly without it.
 `--text-dim` still reaches 4.5:1 on a hovered chrome row (`--hover` composited over
 `--chrome`), and `--text` on an active one (`--accent-soft` over `--chrome`); in each theme.
 `--text-dim` does *not* reach it on an active row (4.1:1), which is why an active row's count
-switches to `--text` (§5).
+switches to `--text` (§5). `--text-dim` also reaches 4.5:1 on `--glass` composited over white,
+the viewer's toolbar and info card over the brightest photo they will ever sit on.
 Enforced by a test (§7). If a value in the table fails the test, the value is adjusted and
-this table updated; the rule wins over the table. (Two values already differ from the
-mockups for this reason: the light accent, since white on `#2f7de1` reached only 4.1:1, and
-the dark `--text-dim`, since `#9a9aa3` reached only 4.2:1 on a hovered row.)
+this table updated; the rule wins over the table. (Three values already differ from the
+mockups for this reason: the light accent, since white on `#2f7de1` reached only 4.1:1, the
+dark `--text-dim`, since `#9a9aa3` reached only 4.2:1 on a hovered row, and `--glass`, since
+85% opacity (`#26262bd9`) gave only 3.9:1 over a white photo.)
 
 ## 3. Theming
 

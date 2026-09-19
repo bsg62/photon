@@ -14,6 +14,7 @@
   import { createStarToggle } from '../lib/star-toggle.svelte';
   import { library } from '../lib/library.svelte';
   import { pictureChanged } from '../lib/picture';
+  import Icon from './Icon.svelte';
   import {
     MAX_ZOOM,
     MIN_ZOOM,
@@ -619,9 +620,12 @@
 
 <!-- The pan handlers live here rather than on the stage below: this element already carries
      a role, and dragging anywhere in the viewer is easier to hit than the photo alone. -->
+<!-- Dark in both themes, so a photo is always judged against the same ground. tokens.css's
+     theme blocks match any element, so this subtree resolves the dark tokens. -->
 <div
   class="viewer"
   class:quiet={slideshow.idle}
+  data-theme="dark"
   role="dialog"
   aria-modal="true"
   aria-label="Photo viewer"
@@ -751,7 +755,7 @@
                 class="chip-remove"
                 aria-label="Remove {tag}"
                 disabled={tags.busy(tag)}
-                onclick={() => removeTag(tag)}>×</button
+                onclick={() => removeTag(tag)}><Icon name="x" size={10} /></button
               >
             </li>
           {/each}
@@ -831,14 +835,16 @@
       aria-label={star.starred ? 'Unstar' : 'Star'}
       title={star.starred ? 'Unstar' : 'Star'}
     >
-      {star.starred ? '★' : '☆'}
+      <Icon name="star" size={16} filled={star.starred} />
     </button>
-    <button class="tool" onclick={() => rotate('ccw')} disabled={!editable} aria-label="Rotate left" title="Rotate left (Shift+R)">↺</button>
-    <button class="tool" onclick={() => rotate('cw')} disabled={!editable} aria-label="Rotate right" title="Rotate right (R)">↻</button>
-    <button class="tool" onclick={startCrop} disabled={!editable} aria-label="Crop" title="Crop (C)">✂</button>
+    <span class="sep" aria-hidden="true"></span>
+    <button class="tool" onclick={() => rotate('ccw')} disabled={!editable} aria-label="Rotate left" title="Rotate left (Shift+R)"><Icon name="rotate-ccw" size={16} /></button>
+    <button class="tool" onclick={() => rotate('cw')} disabled={!editable} aria-label="Rotate right" title="Rotate right (R)"><Icon name="rotate-cw" size={16} /></button>
+    <button class="tool" onclick={startCrop} disabled={!editable} aria-label="Crop" title="Crop (C)"><Icon name="crop" size={16} /></button>
     {#if item?.edit}
       <button class="tool wide" onclick={resetEdit} disabled={!editable} title="Undo every turn and crop. The file was never changed.">Original</button>
     {/if}
+    <span class="sep" aria-hidden="true"></span>
     <button
       class="tool"
       onclick={() => (slideshow.active ? slideshow.toggle() : startSlideshow())}
@@ -846,7 +852,7 @@
       aria-label={!slideshow.active ? 'Start slideshow' : slideshow.playing ? 'Pause slideshow' : 'Resume slideshow'}
       title={!slideshow.active ? 'Slideshow (S)' : slideshow.playing ? 'Pause (Space)' : 'Resume (Space)'}
     >
-      {slideshow.active && slideshow.playing ? '⏸' : '▶'}
+      <Icon name={slideshow.active && slideshow.playing ? 'pause' : 'play'} size={16} />
     </button>
     <button
       class="tool"
@@ -856,8 +862,9 @@
       aria-label="Photo information"
       title="Photo information (I)"
     >
-      ⓘ
+      <Icon name="info" size={16} />
     </button>
+    <span class="sep" aria-hidden="true"></span>
     <!-- A button, because a click copies the file name. The confirmation replaces the whole
          line for a moment rather than appending to it, so the line does not jump in width. -->
     <button class="caption" onclick={copyName} disabled={!item} title="Click to copy the file name">
@@ -890,15 +897,20 @@
     />
     <span class="level">{Math.round(zoom * 100)}%</span>
   </div>
-  <button class="close" onclick={close} aria-label="Close viewer">✕</button>
+  <button class="close" onclick={close} aria-label="Close viewer"><Icon name="x" size={16} /></button>
 </div>
 
 <style>
-  .viewer { position: fixed; inset: 0; z-index: 20; display: grid; place-items: center; background: #000; overflow: hidden; }
+  /* #000 is the one colour literal in the UI: the ground a photo is judged against is not
+     a theme decision. `color` is set here because it is inherited and was computed on :root,
+     in the app's theme, before this subtree turned dark; app.css's `button { color: inherit }`
+     is why menu buttons and labels depend on it. accent-color needs no override here:
+     tokens.css declares it on `[data-theme]`, which this element already matches. */
+  .viewer { position: fixed; inset: 0; z-index: 20; display: grid; place-items: center; background: #000; overflow: hidden; color: var(--text); }
   .stage { position: absolute; inset: 0; transform-origin: center; will-change: transform; }
   .frame { position: absolute; left: 50%; top: 50%; width: 100vw; height: 100vh; translate: -50% -50%; }
-  .face { position: absolute; border: 2px solid #ffffffcc; border-radius: 3px; box-shadow: 0 0 0 1px #0008; pointer-events: none; }
-  .face-name { position: absolute; left: -2px; top: 100%; margin-top: 2px; padding: 1px 6px; background: #000c; border-radius: 3px; color: var(--text); font-size: 12px; white-space: nowrap; }
+  .face { position: absolute; border: 2px solid var(--photo-line); border-radius: var(--r-1); box-shadow: 0 0 0 1px var(--shadow-ink); pointer-events: none; }
+  .face-name { position: absolute; left: -2px; top: 100%; margin-top: 2px; padding: 1px 6px; background: var(--scrim); border-radius: var(--r-1); color: var(--text); font-size: var(--t-2); white-space: nowrap; }
   .grabbable { cursor: grab; }
   .grabbing { cursor: grabbing; }
   /* `draggable="false"` covers the drag itself; these stop WebKit — which is the webview on
@@ -914,8 +926,18 @@
   .quiet { cursor: none; }
   .quiet .bar, .quiet .zoom, .quiet .close { opacity: 0; pointer-events: none; }
   .bar, .zoom, .close { transition: opacity 200ms ease; }
-  .bar { position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 6px; }
-  .caption { padding: 4px 10px; border: 0; background: #0009; border-radius: 4px; color: var(--muted); font-size: 12px; white-space: nowrap; cursor: pointer; }
+  /* Glass: 90% opaque on its own, so it reads where backdrop-filter is slow or missing
+     (some Linux GPUs); the blur is an enhancement on top. The opacity is set by contrast,
+     not taste: dim text on it must still reach 4.5:1 over a white photo (tokens.test.ts). */
+  .bar, .zoom, .close, .info {
+    background: var(--glass);
+    box-shadow: 0 0 0 1px var(--glass-line), var(--shadow-menu);
+    -webkit-backdrop-filter: blur(18px);
+    backdrop-filter: blur(18px);
+  }
+  .bar { position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 2px; padding: var(--s-1); border-radius: var(--r-4); }
+  .sep { width: 1px; height: 18px; margin: 0 var(--s-1); background: var(--glass-line); }
+  .caption { padding: 0 10px; border: 0; background: none; color: var(--text-dim); font-size: var(--t-2); white-space: nowrap; cursor: pointer; }
   .caption:hover:not(:disabled) { color: var(--text); }
   .caption:disabled { cursor: default; }
   .menu {
@@ -924,31 +946,36 @@
     display: flex;
     flex-direction: column;
     min-width: 200px;
-    padding: 4px;
-    background: var(--panel-2);
-    border-radius: 6px;
-    box-shadow: 0 6px 24px #0008;
+    padding: var(--s-1);
+    background: var(--raised);
+    border-radius: var(--r-3);
+    box-shadow: 0 0 0 1px var(--line), var(--shadow-menu);
   }
-  .menu button { padding: 6px 10px; border: 0; background: none; text-align: left; cursor: pointer; border-radius: 4px; }
-  .menu button:hover { background: #ffffff14; }
-  .zoom { position: absolute; bottom: 12px; right: 12px; display: flex; align-items: center; gap: 8px; padding: 4px 10px; background: #0009; border-radius: 4px; }
+  .menu button { padding: 6px 10px; border: 0; border-radius: var(--r-2); background: none; text-align: left; cursor: pointer; }
+  .menu button:hover { background: var(--hover); }
+  .zoom { position: absolute; bottom: 12px; right: 12px; display: flex; align-items: center; gap: var(--s-2); padding: 6px var(--s-3); border-radius: var(--r-4); }
   .zoom input { width: 120px; }
-  .level { color: var(--muted); font-size: 12px; min-width: 38px; text-align: right; }
-  .close { position: absolute; top: 12px; right: 12px; width: 32px; height: 32px; border: 0; border-radius: 50%; background: #0009; cursor: pointer; }
-  .star, .tool { width: 26px; height: 26px; padding: 0; border: 0; border-radius: 4px; background: #0009; color: var(--muted); font-size: 16px; line-height: 1; cursor: pointer; }
-  .star:hover:not(:disabled), .tool:hover:not(:disabled) { color: var(--text); }
-  .star[aria-pressed='true'] { color: #ffcf40; }
-  .tool[aria-pressed='true'] { color: var(--accent); }
-  .star:disabled, .tool:disabled { cursor: default; }
-  .tool.wide { width: auto; padding: 0 10px; font-size: 12px; }
-  .tool.primary { background: var(--accent); color: #fff; }
-  .aspect { height: 26px; border: 0; border-radius: 4px; background: #0009; color: var(--text); font-size: 12px; }
+  .level { color: var(--text-dim); font-size: var(--t-2); min-width: 38px; text-align: right; font-variant-numeric: tabular-nums; }
+  .close { position: absolute; top: 12px; right: 12px; display: grid; place-items: center; width: 32px; height: 32px; padding: 0; border: 0; border-radius: 50%; color: var(--text-dim); cursor: pointer; }
+  .close:hover { color: var(--text); }
+  .star, .tool { display: grid; place-items: center; width: 30px; height: 30px; padding: 0; border: 0; border-radius: var(--r-3); background: none; color: var(--text-dim); font-size: var(--t-2); line-height: 1; cursor: pointer; transition: background-color 120ms ease-out; }
+  .star:hover:not(:disabled), .tool:hover:not(:disabled) { color: var(--text); background: var(--hover); }
+  /* Spelled out with :hover, like .tool.primary above: the generic hover rule otherwise
+     out-specifies these, so a starred star or a pressed tool loses its colour under the
+     pointer - exactly while it is, right after the click that set aria-pressed. */
+  .star[aria-pressed='true'], .star[aria-pressed='true']:hover:not(:disabled) { color: var(--star); }
+  .tool[aria-pressed='true'], .tool[aria-pressed='true']:hover:not(:disabled) { background: var(--accent); color: var(--on-accent); }
+  .star:disabled, .tool:disabled { cursor: default; opacity: 0.4; }
+  .tool.wide { width: auto; padding: 0 var(--s-3); color: var(--text); }
+  .tool.primary, .tool.primary:hover:not(:disabled) { background: var(--accent); color: var(--on-accent); }
+  .aspect { height: 30px; padding: 0 var(--s-2); border: 0; border-radius: var(--r-3); background: var(--field); color: var(--text); font: inherit; font-size: var(--t-2); }
+  @media (prefers-reduced-motion: reduce) { .star, .tool { transition: none; } }
   /* The crop rectangle. The shadow is the dimming: one element, clipped by the area to the
      photo's own box. Handles are larger than they look, so they can be caught. */
   .crop-area { position: absolute; overflow: hidden; touch-action: none; }
-  .crop-rect { position: absolute; box-sizing: border-box; border: 1px solid #fff; box-shadow: 0 0 0 9999px #000a; cursor: move; }
+  .crop-rect { position: absolute; box-sizing: border-box; border: 1px solid var(--photo-line); box-shadow: 0 0 0 9999px var(--scrim); cursor: move; }
   .crop-handle { position: absolute; width: 22px; height: 22px; }
-  .crop-handle::after { content: ''; position: absolute; inset: 7px; background: #fff; border-radius: 1px; box-shadow: 0 0 0 1px #0008; }
+  .crop-handle::after { content: ''; position: absolute; inset: 7px; background: var(--photo-line); border-radius: 1px; box-shadow: 0 0 0 1px var(--shadow-ink); }
   .crop-handle.n, .crop-handle.s { left: 50%; margin-left: -11px; cursor: ns-resize; }
   .crop-handle.e, .crop-handle.w { top: 50%; margin-top: -11px; cursor: ew-resize; }
   .crop-handle.n, .crop-handle.ne, .crop-handle.nw { top: -11px; }
@@ -957,7 +984,7 @@
   .crop-handle.e, .crop-handle.ne, .crop-handle.se { right: -11px; }
   .crop-handle.nw, .crop-handle.se { cursor: nwse-resize; }
   .crop-handle.ne, .crop-handle.sw { cursor: nesw-resize; }
-  .error { color: var(--muted); }
+  .error { color: var(--text-dim); }
   .info {
     position: absolute;
     top: 12px;
@@ -965,40 +992,40 @@
     bottom: 56px;
     width: 280px;
     overflow: auto;
-    padding: 12px 14px;
-    background: #000c;
-    border-radius: 6px;
+    padding: 14px var(--s-4);
+    border-radius: var(--r-4);
     color: var(--text);
-    font-size: 13px;
+    font-size: var(--t-3);
     user-select: text;
   }
-  .info-title { margin: 0 0 2px; font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
-  .info-path { margin: 0 0 10px; color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .info h3 { margin: 12px 0 4px; color: var(--muted); font-size: 11px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; }
+  .info-title { margin: 0 0 2px; font-size: var(--t-4); font-weight: 600; overflow-wrap: anywhere; }
+  .info-path { margin: 0 0 10px; color: var(--text-dim); font-size: var(--t-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .info h3 { margin: var(--s-3) 0 var(--s-1); color: var(--text-dim); font-size: var(--t-1); font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; }
   .info dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 10px; margin: 0; }
-  .info dt { color: var(--muted); }
+  .info dt { color: var(--text-dim); }
   .info dd { margin: 0; overflow-wrap: anywhere; }
-  .info-link { padding: 0; border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; overflow-wrap: anywhere; }
+  .info-link { padding: 0; border: 0; background: none; color: var(--accent); font: inherit; text-align: left; cursor: pointer; overflow-wrap: anywhere; }
   .info-link:hover { text-decoration: underline; }
-  .info-muted { margin: 0; color: var(--muted); }
+  .info-muted { margin: 0; color: var(--text-dim); }
   .chips { display: flex; flex-wrap: wrap; gap: 4px; margin: 0; padding: 0; list-style: none; }
-  .chips li { padding: 2px 8px; background: #ffffff1a; border-radius: 10px; font-size: 12px; }
+  .chips li { display: inline-flex; align-items: center; padding: 2px var(--s-2); background: var(--field); border-radius: 999px; font-size: var(--t-2); }
   .albums { margin: 0; padding: 0; list-style: none; }
-  .copies { margin: 0; padding: 0; list-style: none; font-size: 12px; }
+  .copies { margin: 0; padding: 0; list-style: none; font-size: var(--t-2); }
   .copies li { padding: 2px 0; }
   .albums label { display: flex; align-items: center; gap: 8px; padding: 2px 0; cursor: pointer; }
   .chip-remove {
-    margin-left: 4px;
+    display: grid;
+    place-items: center;
+    margin-left: var(--s-1);
     padding: 0;
     border: 0;
     background: none;
     color: inherit;
-    font: inherit;
-    line-height: 1;
     cursor: pointer;
     opacity: 0.6;
   }
   .chip-remove:hover:not(:disabled) { opacity: 1; }
   .chip-remove:disabled { cursor: default; opacity: 0.3; }
-  .tag-input { width: 100%; margin-top: 6px; box-sizing: border-box; }
+  .tag-input { width: 100%; margin-top: 6px; box-sizing: border-box; padding: 5px var(--s-2); border: 0; border-radius: var(--r-2); background: var(--field); color: var(--text); font: inherit; }
+  .tag-input::placeholder { color: var(--text-dim); }
 </style>

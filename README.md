@@ -293,6 +293,21 @@ publishing it.
       shown has a warning icon, not an emoji.
 - [ ] Right-click a tile in Light: the menu is distinct from the grid behind it. Provoke an
       error toast (open an offline folder's photo): it is readable in both themes.
+- [ ] With photon in Light, open a photo: the viewer is black and its toolbar, info panel,
+      zoom control, menu and checkboxes are all dark, with the dark theme's blue.
+- [ ] The toolbar reads over a white photo and over a black one; on a machine where the
+      blur is missing it is still legible. Star, rotate, crop, slideshow and info all still
+      work, and a disabled tool looks disabled.
+- [ ] Crop: the rectangle, its eight handles and the dimming outside it are where they were;
+      dragging a handle, Apply, Cancel and Whole photo behave as before.
+- [ ] Info panel open, star a photo, add and remove a keyword, tick an album: the photo on
+      screen does not reload, and zoom and pan are kept.
+- [ ] Slideshow: after a few seconds without the pointer the toolbar, zoom and close fade
+      out, and come back when it moves.
+- [ ] At the minimum window width (800px), open a photo with a long file name: the toolbar
+      and the zoom control may meet; nothing becomes unreachable.
+- [ ] On Windows, with photon in Light: open the crop tool and its ratio list — the list is
+      readable (dark text on light, or light on dark, never light on light).
 
 ## How watching works
 
