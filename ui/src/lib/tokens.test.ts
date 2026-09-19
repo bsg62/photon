@@ -82,6 +82,24 @@ describe.each(Object.entries(themes))('the %s theme', (_name, t) => {
   });
 });
 
+describe('the structure of tokens.css', () => {
+  it('places the dark block after the light block, since equal specificity on the root leaves source order as the only tiebreaker', () => {
+    const bare = css.replace(/\/\*[\s\S]*?\*\//g, '');
+    const lightIndex = bare.indexOf("[data-theme='light']");
+    const darkIndex = bare.indexOf("[data-theme='dark']");
+    expect(lightIndex).toBeGreaterThanOrEqual(0);
+    expect(darkIndex).toBeGreaterThan(lightIndex);
+  });
+
+  it('aliases --bg/--panel/--panel-2/--muted to --surface/--chrome/--raised/--text-dim, declared on [data-theme] too', () => {
+    const aliases = block(css, '[data-theme]');
+    expect(aliases['--bg']).toBe('var(--surface)');
+    expect(aliases['--panel']).toBe('var(--chrome)');
+    expect(aliases['--panel-2']).toBe('var(--raised)');
+    expect(aliases['--muted']).toBe('var(--text-dim)');
+  });
+});
+
 describe('the two themes', () => {
   it('define the same tokens, bar the viewer-only glass', () => {
     const glass = ['--glass', '--glass-line'];
