@@ -275,6 +275,15 @@ publishing it.
 - [ ] Checkboxes, the crop ratio menu and the scrollbars match the theme.
 - [ ] Tab through the top bar, sidebar and Settings: every control shows the same blue
       focus ring, and opening the viewer or Settings draws no ring around the window.
+- [ ] In Light and in Dark: the top bar, sidebar and status bar are one tinted surface with
+      hairline dividers; the active sidebar row is a blue-tinted pill and its count stays
+      readable; hovering a row tints it.
+- [ ] Sidebar icons (star, clock, copies, the chevrons and the three group icons) are crisp
+      and follow the text colour; no emoji or box glyph appears anywhere in the shell.
+- [ ] Tab through the sidebar: the focus ring shows whole on every row, not clipped at the
+      panel's edge. Drag the splitter, and resize it with the arrow keys, as before.
+- [ ] A long album or folder name ellipsises and its count stays right-aligned at every
+      sidebar width.
 
 ## How watching works
 
