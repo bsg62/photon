@@ -30,8 +30,15 @@ export const theme = createTheme({
     } catch {
       // Only the next launch's first frame depends on it.
     }
-    // null hands the title bar back to the desktop.
-    api.setWindowTheme(choice === 'system' ? null : choice).catch(library.reportError);
+    // null hands the title bar back to the desktop. The title bar is cosmetic: whatever goes
+    // wrong with it, the DOM theme above is already applied, so the error is reported, never
+    // thrown into `init`/`set`. `getCurrentWindow()` inside `setWindowTheme` can throw
+    // synchronously (no initialized Tauri window), which a bare `.catch` would not see since
+    // it attaches only after the call already threw - routing through `Promise.resolve()`
+    // defers the call itself into the chain `.catch` covers.
+    Promise.resolve()
+      .then(() => api.setWindowTheme(choice === 'system' ? null : choice))
+      .catch(library.reportError);
   },
   onerror: library.reportError,
 });
