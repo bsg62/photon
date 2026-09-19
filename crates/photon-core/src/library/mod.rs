@@ -12,6 +12,7 @@ pub use duplicates::{HashCandidate, ItemCopy};
 pub use faces::{ItemFace, Person};
 pub use folders::{Folder, WatchedFolder};
 pub use items::{Item, KnownItem, NewItem, RECENT_LIMIT, is_starred};
+pub use settings::ThemeChoice;
 pub use tags::{TagCount, TagRule};
 
 use crate::Result;
