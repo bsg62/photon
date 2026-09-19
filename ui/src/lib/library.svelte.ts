@@ -17,6 +17,10 @@ import type { UnlistenFn } from '@tauri-apps/api/event';
 
 export interface Toast { id: number; message: string }
 
+/** How many rows one `gridRows` call may ask for: `MAX_ROWS` in `commands.rs`, which
+ *  `clamp_count` applies without telling the caller it truncated. */
+const GRID_ROWS_CHUNK = 1000;
+
 /** App-wide reactive state: the grid snapshot, the folder tree, scan status and selection. */
 export class LibraryStore {
   info = $state<GridInfo>({
@@ -48,6 +52,31 @@ export class LibraryStore {
   private selectedOffset = $state<number | null>(null);
   /** The photo at `selectedOffset`, when it was selected. See `rebindSelection`. */
   private selectedId: number | null = null;
+  /** The photo ids in the selection, as a set replaced wholesale on every change — Svelte's
+   *  runes do not track mutation of a plain Set.
+   *
+   *  Ids, not offsets. An offset only means "this photo" against one version of the index,
+   *  and a scan that indexes a photo into an earlier folder shifts every later one: an
+   *  offset-based selection would silently ring, and star, the neighbours of what the user
+   *  picked. Ids survive every rebuild untouched, which is also why there is no multi-photo
+   *  counterpart to `rebindSelection`.
+   *
+   *  A photo purged by a scan leaves its id behind here. Nothing is drawn wrong — there is
+   *  no tile left to ring — but `selectionCount` over-reports until the next plain click.
+   *  Pruning it needs a "which of these ids are still live" round trip, which is not worth
+   *  an IPC surface for a count one click from correct. Do not "fix" this with offsets. */
+  private selection = $state<Set<number>>(new Set());
+  /** The grid offset a Shift+click extends from: the last plain click or Ctrl+click. Plain,
+   *  not `$state` — nothing renders from it. */
+  private anchor: number | null = null;
+  /** Bumped on every `extendSelection` call. Two fast Shift+clicks issue overlapping calls
+   *  with no ordering guarantee on their fetches - a wide range started first can still be
+   *  fetching its later chunks when a narrow range started second finishes first. The rule is
+   *  last *call* wins, not last chunk to resolve, so a call abandons its write once a later
+   *  call has started; there is no backend ordering to preserve the way `searchQueryChain`
+   *  preserves one, so a promise chain would only make the second call wait on the first
+   *  instead of pre-empting it. */
+  private extendCall = 0;
 
   /** Selected grid offset. */
   get selected(): number | null {
@@ -58,15 +87,110 @@ export class LibraryStore {
     this.selectedOffset = offset;
     // Which photo that offset meant, remembered now while the page holding it is loaded -
     // by the time the grid is rebuilt the pages are gone.
-    this.selectedId = offset === null ? null : (this.pages.get(offset)?.id ?? null);
+    const id = offset === null ? null : (this.pages.get(offset)?.id ?? null);
+    this.selectedId = id;
+    // Every caller of the plain setter is a collapse: an arrow key, a plain click, a
+    // right-click outside the selection. Keeping that rule here rather than at each call
+    // site is what stops a new caller silently leaving a stale multi-selection behind.
+    this.selection = id === null ? new Set() : new Set([id]);
+    this.anchor = offset;
   }
   /** Selects `offset` knowing it holds photo `id`, for callers that know the id without the
    *  page being loaded: "Locate in photon" and the viewer closing, both of which arrive by
    *  id and land on an offset the grid has not fetched yet. The plain setter would record
    *  no id for such an offset, and the next rebuild would clamp instead of re-find. */
   selectItem(offset: number, id: number): void {
+    // Closing the viewer on the photo it was opened with keeps the selection; navigating
+    // away inside the viewer and closing there collapses to the photo on screen.
+    const collapse = id !== this.selectedId;
     this.selectedOffset = offset;
     this.selectedId = id;
+    if (collapse) this.selection = new Set([id]);
+    this.anchor = offset;
+  }
+
+  /** Ctrl/Cmd+click: adds or removes one photo. The lead and the anchor move to it either
+   *  way, so the next Shift+click extends from where the user last clicked. */
+  toggleSelected(offset: number): void {
+    const id = this.pages.get(offset)?.id;
+    // Reachable: Ctrl+click on a placeholder tile during a fast scroll, before its page has
+    // arrived. There is no id to toggle, so this is a deliberate silent no-op, not dead code.
+    if (id === undefined) return;
+    const next = new Set(this.selection);
+    if (!next.delete(id)) next.add(id);
+    this.selection = next;
+    this.selectedOffset = next.size === 0 ? null : offset;
+    this.selectedId = next.size === 0 ? null : id;
+    this.anchor = offset;
+  }
+
+  /** Shift+click: replaces the selection with the range between the anchor and `offset`.
+   *
+   *  The ids come from the backend rather than from the loaded pages: a range can span
+   *  thousands of photos the grid has never rendered. `MAX_ROWS` in `commands.rs` clamps a
+   *  `grid_rows` ask to 1000 *silently*, so a single call for a wider range would select its
+   *  first thousand photos and drop the rest without an error anywhere. */
+  async extendSelection(offset: number): Promise<void> {
+    const from = this.anchor ?? this.selectedOffset ?? 0;
+    const start = Math.max(0, Math.min(from, offset));
+    const end = Math.min(this.info.len - 1, Math.max(from, offset));
+    if (end < start) return;
+    const version = this.info.version;
+    const call = ++this.extendCall;
+    const ids = new Set<number>();
+    for (let at = start; at <= end; at += GRID_ROWS_CHUNK) {
+      const count = Math.min(GRID_ROWS_CHUNK, end - at + 1);
+      const rows = await api.gridRows(at, count);
+      // A refresh has landed while this was in flight; its own selection is the current one.
+      if (version !== this.info.version) return;
+      // A later extendSelection call has started; that call's write wins, not whichever
+      // call's fetch happens to finish last.
+      if (call !== this.extendCall) return;
+      // this.info.version can lag a rebuild the backend has already published: the
+      // library-changed listener that would bump it has not run yet, so the guard above can
+      // pass while these rows were fetched against a newer index than the offsets they were
+      // asked for. PageCache.ensure discards a page on the same mismatch; a range built from
+      // it would otherwise name photos for offsets the user never saw.
+      if (rows.version !== version) return;
+      for (const entry of rows.rows) ids.add(entry.id);
+    }
+    this.selection = ids;
+    this.selectedOffset = offset;
+    this.selectedId = this.pages.get(offset)?.id ?? null;
+    // The anchor stays put, so dragging the far end back and forth re-ranges from the
+    // same start rather than walking away from it.
+  }
+
+  clearSelection(): void {
+    this.selection = new Set();
+    this.selectedOffset = null;
+    this.selectedId = null;
+    this.anchor = null;
+  }
+
+  isSelected(id: number): boolean {
+    return this.selection.has(id);
+  }
+
+  /** Whether the tile at `offset` should ring, given the id its page currently holds (or
+   *  `undefined` when that page has not loaded). The plain `selected` setter records an id
+   *  only when the target offset's page is already cached — `End`, the sidebar's folder
+   *  jump and a click during a fast scroll can all select an offset with nothing loaded yet,
+   *  and `this.selection` is then empty. Falling back to the offset itself when the
+   *  selection is empty is what still rings that tile once its entry arrives: the lead has
+   *  to stay visible regardless of caching, because the ring is what tells the user where
+   *  the keyboard is. */
+  isSelectedTile(offset: number, id: number | undefined): boolean {
+    if (id !== undefined) return this.selection.has(id);
+    return this.selection.size === 0 && this.selectedOffset === offset;
+  }
+
+  get selectionCount(): number {
+    return this.selection.size;
+  }
+
+  get selectedItemIds(): number[] {
+    return [...this.selection];
   }
 
   /** Bumped whenever pages arrive, so `entry()` readers re-run. */
@@ -156,19 +280,40 @@ export class LibraryStore {
     };
     const id = this.selectedId;
     if (id === null) {
+      // No id means no way to tell how far the rebuild moved things, so the anchor - a
+      // stale offset with nothing left to confirm it - cannot be trusted either. Leaving it
+      // set would let the next Shift+click, with no plain click first, range from a photo
+      // that was never clicked. `extendSelection`'s `?? this.selectedOffset` fallback (also
+      // null here) already gives the same answer a first-ever Shift+click would.
+      this.anchor = null;
       clamp();
       return;
     }
+    // Captured before the lead moves, so it can be compared against where the lead
+    // *was* rather than where it is about to go.
+    const before = this.selectedOffset;
     const version = this.info.version;
     const at = await api.gridOffsetOfItem(id);
     // A newer refresh has landed while this was in flight; its own rebind is the current one.
     if (version !== this.info.version) return;
     if (at === null) {
+      // The lead's id no longer resolves to an offset in this view, so there is nothing to
+      // re-find the anchor by either - the same reasoning as the id === null branch above,
+      // reached one step later.
       this.selectedId = null;
+      this.anchor = null;
       clamp();
       return;
     }
     this.selectedOffset = at;
+    // The anchor is a grid offset too, and means nothing once the rebuild has moved rows
+    // underneath it: left on its stale value, the next Shift+click would range from the
+    // wrong photo without anything looking wrong. It normally agrees with the lead, so it
+    // moves with it here. The one time it does not is right after `extendSelection`, which
+    // deliberately leaves the anchor at the start of the range while the lead moves to the
+    // far end - carrying the lead's rebind onto the anchor there would relocate the start
+    // of the *next* range to a photo the user never clicked, so it is left untouched.
+    if (this.anchor === before) this.anchor = at;
   }
 
   /** Records the folder's photo count at the start of a scan, from the first progress
@@ -242,6 +387,7 @@ export class LibraryStore {
   private async switchView(command: () => Promise<void>): Promise<void> {
     try {
       await command();
+      this.clearSelection();
       await this.refresh();
     } catch (e) {
       this.reportError(e);
@@ -319,6 +465,7 @@ export class LibraryStore {
     const next = this.searchQueryChain.then(async () => {
       try {
         await api.setSearchQuery(query);
+        this.clearSelection();
         await this.refresh();
       } catch (e) {
         this.reportError(e);

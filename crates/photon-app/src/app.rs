@@ -216,6 +216,7 @@ pub fn run() {
             ipc::set_visible,
             ipc::viewer_item,
             ipc::set_star,
+            ipc::set_stars,
             ipc::rotate_item,
             ipc::set_item_edit,
             ipc::add_item_tag,

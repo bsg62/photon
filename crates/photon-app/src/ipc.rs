@@ -221,6 +221,11 @@ pub fn set_star(engine: Eng<'_>, id: i64, starred: bool) -> Result<(), AppError>
 }
 
 #[tauri::command(async)]
+pub fn set_stars(engine: Eng<'_>, ids: Vec<i64>, starred: bool) -> Result<usize, AppError> {
+    commands::set_stars(&engine, &ids, starred)
+}
+
+#[tauri::command(async)]
 pub fn add_item_tag(engine: Eng<'_>, id: i64, tag: String) -> Result<String, AppError> {
     commands::add_item_tag(&engine, id, &tag)
 }

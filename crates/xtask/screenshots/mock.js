@@ -110,6 +110,7 @@
     app_info: () => ({ version: '0.0.0', libraryPath: '/home/ada/.local/share/photon/library.db', licence: 'MIT' }),
     last_folder: () => null,
     slideshow_interval: () => 4,
+    set_stars: (args) => (args.ids || []).length,
     theme: () => P.get('theme') || 'system',
   };
 

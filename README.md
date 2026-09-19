@@ -317,6 +317,15 @@ publishing it.
       the pointer, "Add folder…" is the one blue button, and "Remove…" is red text.
 - [ ] Settings → Tags with hundreds of tags: the dialog stays centred and its corners stay
       rounded while the list scrolls.
+- [ ] Ctrl+click (Cmd on macOS) three photos: each gets a ring, the status bar reads
+      `3 selected`. Shift+click a fourth further down: the run between the last Ctrl+click and
+      it is selected. A plain click anywhere collapses back to one.
+- [ ] Right-click inside a selection: the menu reads `Star 4 photos`, and Reveal is absent.
+      Right-click a photo outside it: the selection collapses to that one first.
+- [ ] Star a selection spanning two folders, then check both `.picasa.ini` files: each holds a
+      `star=yes` under every selected photo's header, and every other line it had is untouched.
+- [ ] Select several, open one with Enter and close it again: the selection is still there.
+      Arrow to another photo inside the viewer and close: only that photo is selected.
 
 ## How watching works
 

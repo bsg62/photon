@@ -596,4 +596,283 @@ describe('LibraryStore', () => {
 
     expect(order).toEqual(['start:b', 'end:b', 'start:beach', 'end:beach']);
   });
+
+  describe('multi-selection', () => {
+    /** Photo ids are offset + 100, so a wrong offset is visible in the failure message. */
+    const idAt = (offset: number) => offset + 100;
+    const entryAt = (offset: number) => ({
+      id: idAt(offset),
+      folderId: 1,
+      takenAt: 0,
+      aspect: 1,
+      kind: 'image' as const,
+      thumbKey: '0',
+      starred: false,
+    });
+
+    /** A store over `len` photos, with every page answerable. */
+    async function storeOf(len: number) {
+      vi.mocked(api.gridInfo).mockResolvedValue({
+        version: 1,
+        len,
+        sections: [],
+        starredCount: 0,
+        duplicateCount: 0,
+        view: 'all',
+        searchQuery: '',
+        person: null,
+        album: null,
+        tag: null,
+      });
+      vi.mocked(api.gridRows).mockImplementation(async (offset: number, count: number) => ({
+        version: 1,
+        rows: Array.from({ length: Math.min(count, len - offset) }, (_, i) => entryAt(offset + i)),
+      }));
+      const store = new LibraryStore();
+      await store.init();
+      await store.ensure(0, Math.min(len, 50));
+      return store;
+    }
+
+    it('ctrl+click toggles a photo in and out, moving the lead each time', async () => {
+      const store = await storeOf(10);
+      store.selected = 2;
+      expect(store.selectedItemIds).toEqual([idAt(2)]);
+
+      store.toggleSelected(5);
+      expect([...store.selectedItemIds].sort()).toEqual([idAt(2), idAt(5)].sort());
+      expect(store.selected).toBe(5);
+
+      store.toggleSelected(5);
+      expect(store.selectedItemIds).toEqual([idAt(2)]);
+      expect(store.selected).toBe(5);
+    });
+
+    it('a plain selection replaces the whole set', async () => {
+      const store = await storeOf(10);
+      store.selected = 2;
+      store.toggleSelected(5);
+      store.selected = 7;
+      expect(store.selectedItemIds).toEqual([idAt(7)]);
+      expect(store.selectionCount).toBe(1);
+    });
+
+    it('shift+click selects the range from the anchor, chunking past MAX_ROWS', async () => {
+      // 1301 > MAX_ROWS (1000): one un-chunked grid_rows call is silently truncated by
+      // clamp_count, and the range's last three hundred photos would go unselected with
+      // no error anywhere.
+      const store = await storeOf(1500);
+      store.selected = 100;
+      vi.mocked(api.gridRows).mockClear(); // only this call's fetches count below
+
+      await store.extendSelection(1400);
+
+      expect(store.selectionCount).toBe(1301);
+      expect(store.isSelected(idAt(1400))).toBe(true);
+      expect(store.isSelected(idAt(99))).toBe(false);
+      expect(vi.mocked(api.gridRows).mock.calls.filter(([, count]) => count > 1000)).toEqual([]);
+      expect(store.selected).toBe(1400);
+    });
+
+    it('shift+click twice re-ranges from the same anchor', async () => {
+      const store = await storeOf(20);
+      store.selected = 5;
+      await store.extendSelection(10);
+      await store.extendSelection(7);
+      expect(store.selectionCount).toBe(3);
+      expect(store.isSelected(idAt(10))).toBe(false);
+      expect(store.isSelected(idAt(5))).toBe(true);
+    });
+
+    it('a later extendSelection call wins even if an earlier, wider one resolves after it', async () => {
+      // Two fast Shift+clicks issue overlapping calls with no ordering guarantee on their
+      // fetches. Without a per-call guard, whichever fetch's last chunk happens to resolve
+      // last would win - here that is the wide range, issued first but still awaiting its
+      // gridRows call when the narrow range, issued second, has already finished.
+      const store = await storeOf(20);
+      store.selected = 0;
+
+      const wideChunk = deferred<{ version: number; rows: ReturnType<typeof entryAt>[] }>();
+      vi.mocked(api.gridRows).mockImplementationOnce(() => wideChunk.promise);
+
+      const wide = store.extendSelection(15); // its one chunk is now stuck on wideChunk
+      const narrow = store.extendSelection(2); // falls through to the default mock, resolves fast
+      await narrow;
+
+      expect(store.selectionCount).toBe(3); // the narrow range has already landed
+      wideChunk.resolve({ version: 1, rows: Array.from({ length: 16 }, (_, i) => entryAt(i)) });
+      await wide;
+
+      expect(store.selectionCount).toBe(3);
+      expect(store.selected).toBe(2);
+      expect(store.isSelected(idAt(15))).toBe(false);
+    });
+
+    it('extends backwards from the anchor too', async () => {
+      const store = await storeOf(20);
+      store.selected = 10;
+      await store.extendSelection(6);
+      expect(store.selectionCount).toBe(5);
+      expect(store.isSelected(idAt(6))).toBe(true);
+      expect(store.isSelected(idAt(11))).toBe(false);
+    });
+
+    it('keeps the selection across a refresh that shifts every offset', async () => {
+      // The test that discriminates ids from offsets. A scan indexing a photo into an
+      // earlier folder moves every later offset by one; an offset-based selection would
+      // silently ring - and star - the neighbours of what the user picked.
+      const store = await storeOf(10);
+      store.selected = 3;
+      store.toggleSelected(4);
+
+      // One photo appears ahead of them all, so every old offset is now one later.
+      vi.mocked(api.gridInfo).mockResolvedValue({
+        version: 2,
+        len: 11,
+        sections: [],
+        starredCount: 0,
+        duplicateCount: 0,
+        view: 'all',
+        searchQuery: '',
+        person: null,
+        album: null,
+        tag: null,
+      });
+      vi.mocked(api.gridOffsetOfItem).mockResolvedValue(5);
+      await store.refresh();
+
+      expect([...store.selectedItemIds].sort((a, b) => a - b)).toEqual([idAt(3), idAt(4)]);
+      expect(store.selected).toBe(5);
+    });
+
+    it('discards rows fetched against a newer index than the offsets they were asked for', async () => {
+      // `this.info.version` guard alone is not enough: it only catches a refresh the
+      // library-changed listener has already applied. Here the backend has published a
+      // newer index but that listener has not run yet, so `version` still matches while the
+      // ids `gridRows` answers with belong to the new index - meaningless for the offsets
+      // this call asked for.
+      const store = await storeOf(20);
+      store.selected = 0;
+
+      vi.mocked(api.gridRows).mockResolvedValueOnce({ version: 2, rows: [entryAt(0), entryAt(1)] });
+
+      await store.extendSelection(1);
+
+      expect(store.selectionCount).toBe(1);
+      expect(store.isSelected(idAt(0))).toBe(true);
+      expect(store.selected).toBe(0);
+    });
+
+    it('isSelectedTile rings the lead even when its page has not loaded', async () => {
+      // storeOf only ensures the first 50 offsets, but pages are fetched whole (PAGE_SIZE =
+      // 200), so offset 250 - in the second page - is never cached. The plain `selected`
+      // setter can only record an id for a loaded page, so `selection` is empty here -
+      // `isSelectedTile` has to fall back to comparing offsets directly, or the tile the
+      // keyboard is actually on goes unringed.
+      const store = await storeOf(500);
+      store.selected = 250;
+
+      expect(store.entry(250)).toBeUndefined();
+      expect(store.isSelectedTile(250, undefined)).toBe(true);
+      expect(store.isSelectedTile(249, undefined)).toBe(false);
+    });
+
+    it('carries the anchor with the lead across a refresh that shifts every offset', async () => {
+      // Without this, a Shift+click after the rebuild would range from the stale offset - one
+      // photo off from where the user actually clicked - and the user would star the wrong
+      // range without anything looking wrong.
+      const store = await storeOf(20);
+      store.selected = 3; // anchor = 3
+
+      vi.mocked(api.gridInfo).mockResolvedValue({
+        version: 2,
+        len: 21,
+        sections: [],
+        starredCount: 0,
+        duplicateCount: 0,
+        view: 'all',
+        searchQuery: '',
+        person: null,
+        album: null,
+        tag: null,
+      });
+      vi.mocked(api.gridOffsetOfItem).mockResolvedValue(4);
+      // The rebuilt index answers version 2 now, so the range fetched below must match it too.
+      vi.mocked(api.gridRows).mockImplementation(async (offset: number, count: number) => ({
+        version: 2,
+        rows: Array.from({ length: Math.min(count, 20 - offset) }, (_, i) => entryAt(offset + i)),
+      }));
+      await store.refresh();
+      expect(store.selected).toBe(4);
+
+      await store.extendSelection(10);
+      expect(store.selectionCount).toBe(7); // 4..10, not 3..10
+      expect(store.isSelected(idAt(4))).toBe(true);
+      expect(store.isSelected(idAt(3))).toBe(false);
+    });
+
+    it('drops a stale anchor when a rebuild had no lead to re-find it by', async () => {
+      // Ctrl+click deselecting the last-selected tile nulls the lead but leaves the anchor
+      // at that offset (`toggleSelected`). If a rebuild then finds no id to rebind, and
+      // does not also clear the anchor, a Shift+click with no plain click in between ranges
+      // from that stale, pre-shift offset instead of falling back to the lead.
+      const store = await storeOf(10);
+      store.selected = 2; // lead = 2, anchor = 2
+      store.toggleSelected(2); // deselects it: lead = null, anchor stays 2
+
+      // One photo appears ahead of them all, so every old offset is now one later - but
+      // there is no lead id for rebindSelection to re-find, so it never learns that.
+      vi.mocked(api.gridInfo).mockResolvedValue({
+        version: 2,
+        len: 11,
+        sections: [],
+        starredCount: 0,
+        duplicateCount: 0,
+        view: 'all',
+        searchQuery: '',
+        person: null,
+        album: null,
+        tag: null,
+      });
+      vi.mocked(api.gridRows).mockImplementation(async (offset: number, count: number) => ({
+        version: 2,
+        rows: Array.from({ length: Math.min(count, 11 - offset) }, (_, i) => entryAt(offset + i)),
+      }));
+      await store.refresh();
+      expect(store.selected).toBeNull();
+
+      await store.extendSelection(5);
+
+      // With a live anchor, extendSelection falls back to `this.selectedOffset ?? 0`, i.e.
+      // the same range a user's very first Shift+click would get: 0..5. A stale anchor of 2
+      // would instead range 2..5, four photos short.
+      expect(store.selectionCount).toBe(6);
+      expect(store.isSelected(idAt(0))).toBe(true);
+      expect(store.isSelected(idAt(5))).toBe(true);
+    });
+
+    it('a view switch clears the selection', async () => {
+      const store = await storeOf(10);
+      store.selected = 3;
+      store.toggleSelected(4);
+      vi.mocked(api.setGridView).mockResolvedValue(undefined);
+
+      await store.setView('starred');
+
+      expect(store.selectionCount).toBe(0);
+      expect(store.selected).toBeNull();
+    });
+
+    it('selectItem collapses only when it names a different photo', async () => {
+      const store = await storeOf(10);
+      store.selected = 3;
+      store.toggleSelected(4);
+
+      store.selectItem(4, idAt(4)); // the viewer closing on the photo it opened with
+      expect(store.selectionCount).toBe(2);
+
+      store.selectItem(8, idAt(8)); // the viewer navigated away and closed there
+      expect(store.selectedItemIds).toEqual([idAt(8)]);
+    });
+  });
 });

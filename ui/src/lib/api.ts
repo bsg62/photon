@@ -161,6 +161,9 @@ export const api = {
   /** Sets or clears a star. Written into the folder's Picasa INI first, then mirrored into
    *  the library; the grid rebuilds and `library-changed` follows. */
   setStar: (id: number, starred: boolean) => invoke<void>('set_star', { id, starred }),
+  /** Stars or unstars several photos at once, answering how many landed: a folder whose
+   *  `.picasa.ini` cannot be written is skipped, and the caller says so. */
+  setStars: (ids: number[], starred: boolean) => invoke<number>('set_stars', { ids, starred }),
   /** Turns the photo a quarter; the crop goes round with it. Nothing is written to the file. */
   rotateItem: (id: number, clockwise: boolean) => invoke<void>('rotate_item', { id, clockwise }),
   /** Replaces the photo's edit; no turns and no crop is the original again. */

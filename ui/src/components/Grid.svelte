@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { api, type GridEntry } from '../lib/api';
+  import { api } from '../lib/api';
   import { library } from '../lib/library.svelte';
   import { buildRows, columnsFor, GAP, itemSpan, layoutSections, rowOfItem, topFolderId, totalHeight, visibleRange } from '../lib/layout';
   import { move, type NavKey } from '../lib/nav';
@@ -143,6 +143,10 @@
     const sel = library.selected;
     if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'r') {
       e.preventDefault();
+      // One path is all a file manager takes, so this follows the same rule as the menu's
+      // Reveal item: only when exactly one photo is selected, not just the lead of a wider
+      // selection.
+      if (library.selectionCount !== 1) return;
       const entry = sel === null ? undefined : library.entry(sel);
       if (entry) api.revealInFileManager(entry.id).catch(library.reportError);
       return;
@@ -160,31 +164,65 @@
   }
   // ---- the tile's context menu ----
 
-  let menu = $state<{ x: number; y: number; entry: GridEntry } | null>(null);
+  let menu = $state<{ x: number; y: number } | null>(null);
   let menuEl = $state<HTMLDivElement | undefined>();
 
   $effect(() => {
     if (menu) menuEl?.focus();
   });
 
-  /** Right-click selects the tile as well, so what the menu acts on is what is outlined. */
+  /** Shift extends, Ctrl/Cmd toggles, a plain click collapses to one. Shift wins when both
+   *  are held, which is what every file manager does. */
+  function tileClick(e: MouseEvent, offset: number) {
+    if (e.shiftKey) {
+      void library.extendSelection(offset).catch(library.reportError);
+    } else if (e.ctrlKey || e.metaKey) {
+      library.toggleSelected(offset);
+    } else {
+      library.selected = offset;
+    }
+  }
+
+  /** Right-clicking outside the selection selects that tile first, so what the menu acts on
+   *  is always what is outlined. Inside it, the whole selection stands. */
   function tileMenu(e: MouseEvent, offset: number) {
     e.preventDefault();
     const entry = library.entry(offset);
     if (!entry) return;
-    library.selected = offset;
-    menu = { x: e.clientX, y: e.clientY, entry };
+    if (!library.isSelected(entry.id)) library.selected = offset;
+    menu = { x: e.clientX, y: e.clientY };
   }
 
   function closeMenu() {
     menu = null;
   }
 
-  function withEntry(action: (entry: GridEntry) => Promise<void>) {
-    const entry = menu?.entry;
+  /** "1 photo" / "12 photos", for a message naming a specific count. */
+  function counted(n: number): string {
+    return n === 1 ? '1 photo' : `${n.toLocaleString()} photos`;
+  }
+
+  const count = $derived(library.selectionCount);
+  /** "photo" / "12 photos", for menu items that name what they will act on. */
+  const subject = $derived(count === 1 ? 'photo' : counted(count));
+
+  function withSelection(action: (ids: number[]) => Promise<unknown>) {
+    const ids = library.selectedItemIds;
     menu = null;
-    if (entry) action(entry).catch(library.reportError);
+    if (ids.length) action(ids).catch(library.reportError);
     focus();
+  }
+
+  /** Stars or unstars everything selected. The backend skips a folder whose `.picasa.ini`
+   *  it cannot write and answers with how many landed, so a read-only folder in the
+   *  selection costs the user a toast rather than the other eleven photos. */
+  async function star(ids: number[], starred: boolean) {
+    const done = await api.setStars(ids, starred);
+    if (done < ids.length) {
+      throw new Error(
+        `${counted(ids.length - done)} of ${ids.length.toLocaleString()} could not be ${starred ? 'starred' : 'unstarred'}`,
+      );
+    }
   }
 </script>
 
@@ -236,9 +274,9 @@
               {@const entry = library.entry(offset)}
               <Tile
                 {entry}
-                selected={library.selected === offset}
+                selected={library.isSelectedTile(offset, entry?.id)}
                 dimmed={!!entry && !library.isOnline(entry.folderId)}
-                onselect={() => (library.selected = offset)}
+                onselect={(e) => tileClick(e, offset)}
                 onopen={() => onopen(offset)}
                 onmenu={(e) => tileMenu(e, offset)}
               />
@@ -263,18 +301,24 @@
     style:left="{menu.x}px"
     style:top="{menu.y}px"
   >
-    <button role="menuitem" onclick={() => withEntry((e) => api.revealInFileManager(e.id))}>Reveal in file manager</button>
+    {#if count === 1}
+      <button role="menuitem" onclick={() => withSelection((ids) => api.revealInFileManager(ids[0]))}>
+        Reveal in file manager
+      </button>
+    {/if}
+    <button role="menuitem" onclick={() => withSelection((ids) => star(ids, true))}>Star {subject}</button>
+    <button role="menuitem" onclick={() => withSelection((ids) => star(ids, false))}>Unstar {subject}</button>
     {#if albumId !== null}
-      <button role="menuitem" onclick={() => withEntry((e) => library.removeFromAlbum(albumId, [e.id]))}>
-        Remove from “{library.albumName(albumId)}”
+      <button role="menuitem" onclick={() => withSelection((ids) => library.removeFromAlbum(albumId, ids))}>
+        Remove {subject} from “{library.albumName(albumId)}”
       </button>
     {/if}
     <div class="heading">Add to album</div>
     {#each library.albums as album (album.id)}
-      <!-- Adding is idempotent, so the album the photo is already in is not filtered out
-           here: the grid row does not know its memberships, and asking per photo for a
+      <!-- Adding is idempotent, so the album the photos are already in is not filtered out
+           here: the grid rows do not know their memberships, and asking per photo for a
            menu would be a round trip for nothing. -->
-      <button role="menuitem" class="album" onclick={() => withEntry((e) => library.addToAlbum(album.id, [e.id]))}>
+      <button role="menuitem" class="album" onclick={() => withSelection((ids) => library.addToAlbum(album.id, ids))}>
         {album.name}
       </button>
     {:else}
