@@ -539,7 +539,7 @@ fn plan_and_apply(
     // path; `scan_subtree` resolves that by walking up to its nearest living ancestor.
     let dirs: Vec<PathBuf> = dirs
         .into_iter()
-        .map(|dir| dunce::canonicalize(&dir).unwrap_or(dir))
+        .map(|dir| photon_core::paths::canonicalize(&dir).unwrap_or(dir))
         .collect();
     let watched = engine.lib.watched_folders().unwrap_or_default();
     let roots: Vec<WatchedRoot> = watched
@@ -1044,7 +1044,7 @@ mod tests {
         f.engine.wait_for_scans();
         assert_eq!(
             Path::new(&watched.path),
-            dunce::canonicalize(&real).unwrap(),
+            photon_core::paths::canonicalize(&real).unwrap(),
             "the watched root is stored canonicalized, not as the symlinked path given"
         );
 

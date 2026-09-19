@@ -10,7 +10,7 @@ pub mod keywords;
 pub mod library;
 pub mod media;
 pub mod metadata;
-pub(crate) mod paths;
+pub mod paths;
 pub mod picasa;
 pub mod scanner;
 pub mod search;

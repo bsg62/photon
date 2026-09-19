@@ -4,6 +4,7 @@ use crate::{
     library::{KnownItem, Library, NewItem, WatchedFolder},
     media::MediaKind,
     metadata::{EXIF_VERSION, read_image_meta},
+    paths,
     picasa::{Face, FolderIni},
 };
 use std::{
@@ -295,7 +296,7 @@ pub fn scan_subtree(
     // `add_watched_folder` stored canonicalized. Skipping this would let a `dir` that only
     // differs from `root` in case, or that contains `..`, slip past `is_within` and then
     // corrupt the folder tree once `strip_prefix` disagrees with it.
-    let target = dunce::canonicalize(&target).unwrap_or(target);
+    let target = paths::canonicalize(&target).unwrap_or(target);
 
     if !crate::paths::is_within(&target, root) {
         tracing::warn!(?dir, watched = %watched.path, "ignoring a subtree outside its watched folder");
@@ -847,7 +848,7 @@ mod tests {
     fn photos_root(dir: &tempfile::TempDir) -> std::path::PathBuf {
         let root = dir.path().join("photos");
         std::fs::create_dir_all(&root).unwrap();
-        dunce::canonicalize(root).unwrap()
+        paths::canonicalize(root).unwrap()
     }
 
     #[test]

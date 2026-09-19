@@ -20,12 +20,12 @@ impl Library {
     /// photon's own directories in `excluded`.
     pub fn add_watched_folder(&self, path: &Path, excluded: &[PathBuf]) -> Result<WatchedFolder> {
         let canonical =
-            dunce::canonicalize(path).map_err(|_| Error::FolderNotFound(path.to_path_buf()))?;
+            paths::canonicalize(path).map_err(|_| Error::FolderNotFound(path.to_path_buf()))?;
         if !canonical.is_dir() {
             return Err(Error::FolderNotFound(path.to_path_buf()));
         }
         for ex in excluded {
-            let ex = dunce::canonicalize(ex).unwrap_or_else(|_| ex.clone());
+            let ex = paths::canonicalize(ex).unwrap_or_else(|_| ex.clone());
             if paths::is_within(&canonical, &ex) {
                 return Err(Error::FolderExcluded {
                     path: ex.display().to_string(),
@@ -252,7 +252,7 @@ mod tests {
                     .split('/')
                     .fold(root.to_path_buf(), |p, part| p.join(part));
                 std::fs::create_dir_all(&path).unwrap();
-                dunce::canonicalize(path).unwrap()
+                paths::canonicalize(path).unwrap()
             })
             .collect()
     }

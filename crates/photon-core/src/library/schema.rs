@@ -179,6 +179,33 @@ CREATE INDEX items_content_hash ON items(content_hash) WHERE content_hash IS NOT
 ALTER TABLE items ADD COLUMN edit_turns INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE items ADD COLUMN edit_crop INTEGER;
 "#,
+    r#"
+-- Network shares indexed before `paths::canonicalize` existed were stored in the verbatim
+-- form `fs::canonicalize` returns, \\?\UNC\server\share\..., which the Windows shell
+-- refuses (a dead Reveal) and no one recognises as their share. Rewrite them to
+-- \\server\share\..., the form every path takes from now on.
+--
+-- This is not cosmetic and it cannot be skipped: `paths::same_path` compares paths
+-- component-wise, so a root left in the old form while a new canonicalisation produces the
+-- new one is a *different* folder to photon - re-adding the share would be allowed rather
+-- than recognised, and `scan_subtree`'s `strip_prefix` of a canonicalised event directory
+-- would miss its own watched root, which is the file watcher for that share gone quiet.
+--
+-- The rewrite is by prefix only, matching `paths::simplified_unc`; see the reasoning there
+-- for why neither side tests components.
+--
+-- A thumbnail is cached under a key made from the item's path, so every thumbnail of a
+-- rewritten photo is now garbage nothing will look for again. Ordered before the rewrite
+-- because it asks whether there was one to do: every library but a Windows one with a
+-- share in it must come out of this migration with its settings untouched.
+INSERT INTO settings (key, value)
+    SELECT 'thumb_gc_epoch', '1'
+    WHERE EXISTS (SELECT 1 FROM items WHERE substr(path, 1, 8) = '\\?\UNC\')
+    ON CONFLICT(key) DO UPDATE SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT);
+UPDATE watched_folders SET path = '\\' || substr(path, 9) WHERE substr(path, 1, 8) = '\\?\UNC\';
+UPDATE folders         SET path = '\\' || substr(path, 9) WHERE substr(path, 1, 8) = '\\?\UNC\';
+UPDATE items           SET path = '\\' || substr(path, 9) WHERE substr(path, 1, 8) = '\\?\UNC\';
+"#,
 ];
 
 pub fn migrate(conn: &Connection) -> Result<()> {
@@ -253,6 +280,89 @@ mod tests {
             Some(3),
             "the upgrade must not disturb existing rows"
         );
+    }
+
+    /// A library that indexed an SMB share before `paths::canonicalize` simplified the
+    /// verbatim prefix. Every one of its three path columns has to be rewritten together:
+    /// a watched root left in the old form no longer matches the folders under it.
+    #[test]
+    fn the_tenth_migration_rewrites_verbatim_unc_paths_to_the_share_form() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        for sql in &MIGRATIONS[..9] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 9i64).unwrap();
+        conn.execute(
+            r"INSERT INTO watched_folders (id, path) VALUES (1, '\\?\UNC\10.0.0.1\photos')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            r"INSERT INTO folders (id, watched_id, parent_id, path, name, sort_key)
+             VALUES (1, 1, NULL, '\\?\UNC\10.0.0.1\photos\2024', '2024', '2024')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            r"INSERT INTO items (id, folder_id, path, file_name, kind, size, mtime_ms, width,
+             height, orientation, taken_at, rating)
+             VALUES (1, 1, '\\?\UNC\10.0.0.1\photos\2024\a.jpg', 'a.jpg', 0, 1, 1, 1, 1, 1, 1, 3)",
+            [],
+        )
+        .unwrap();
+        // A local library must come through untouched, which is every library but this one.
+        conn.execute(
+            "INSERT INTO watched_folders (id, path) VALUES (2, 'C:\\photos')",
+            [],
+        )
+        .unwrap();
+
+        migrate(&conn).unwrap();
+
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, MIGRATIONS.len() as i64);
+        let paths: Vec<String> = ["watched_folders", "folders", "items"]
+            .iter()
+            .map(|table| {
+                conn.query_row(&format!("SELECT path FROM {table} WHERE id = 1"), [], |r| {
+                    r.get(0)
+                })
+                .unwrap()
+            })
+            .collect();
+        assert_eq!(
+            paths,
+            vec![
+                r"\\10.0.0.1\photos".to_string(),
+                r"\\10.0.0.1\photos\2024".to_string(),
+                r"\\10.0.0.1\photos\2024\a.jpg".to_string(),
+            ],
+            "the root, the folder under it and the photo are rewritten as one"
+        );
+        let local: String = conn
+            .query_row("SELECT path FROM watched_folders WHERE id = 2", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(
+            local, "C:\\photos",
+            "a path without the prefix is left alone"
+        );
+        let rating: Option<i64> = conn
+            .query_row("SELECT rating FROM items WHERE id = 1", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rating, Some(3), "and nothing else about the row moves");
+        // The rewrite changed the key every one of that photo's thumbnails is cached under.
+        let epoch: String = conn
+            .query_row(
+                "SELECT value FROM settings WHERE key = 'thumb_gc_epoch'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(epoch, "1", "the orphaned thumbnails are marked collectable");
     }
 
     /// The Recent view's query, `ORDER BY taken_at DESC, file_name DESC, id DESC LIMIT 500`,
@@ -347,7 +457,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 9);
+        assert_eq!(version, 10);
         let rules: i64 = conn
             .query_row("SELECT count(*) FROM tag_rules", [], |r| r.get(0))
             .unwrap();
@@ -506,7 +616,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 9);
+        assert_eq!(version, 10);
         let overlay: i64 = conn
             .query_row("SELECT count(*) FROM item_user_tags", [], |r| r.get(0))
             .unwrap();
@@ -556,7 +666,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 9);
+        assert_eq!(version, 10);
         let hash: Option<Vec<u8>> = conn
             .query_row("SELECT content_hash FROM items WHERE id = 1", [], |r| {
                 r.get(0)

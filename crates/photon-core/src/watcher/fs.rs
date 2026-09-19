@@ -159,6 +159,7 @@ fn may_have_changed(kind: &EventKind) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::paths;
 
     /// Real filesystem events are timing-dependent, so this is excluded from CI.
     /// Run it locally with: cargo test -p photon-core -- --ignored watcher_reports
@@ -174,11 +175,11 @@ mod tests {
         let batch = rx
             .recv_timeout(Duration::from_secs(5))
             .expect("no event arrived");
-        let canonical = dunce::canonicalize(dir.path()).unwrap();
+        let canonical = paths::canonicalize(dir.path()).unwrap();
         assert!(
             batch
                 .iter()
-                .any(|d| dunce::canonicalize(d).unwrap() == canonical)
+                .any(|d| paths::canonicalize(d).unwrap() == canonical)
         );
     }
 }
@@ -186,6 +187,7 @@ mod tests {
 #[cfg(test)]
 mod change_tests {
     use super::*;
+    use crate::paths;
     use notify::event::{CreateKind, ModifyKind, RemoveKind, RenameMode};
 
     #[test]
@@ -249,11 +251,11 @@ mod change_tests {
         let batch = rx
             .recv_timeout(Duration::from_secs(5))
             .expect("a written file is a change");
-        let canonical = dunce::canonicalize(dir.path().join("sub")).unwrap();
+        let canonical = paths::canonicalize(dir.path().join("sub")).unwrap();
         assert!(
             batch
                 .iter()
-                .any(|d| dunce::canonicalize(d).unwrap() == canonical)
+                .any(|d| paths::canonicalize(d).unwrap() == canonical)
         );
     }
 }
