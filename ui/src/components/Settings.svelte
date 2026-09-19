@@ -1,13 +1,20 @@
 <script lang="ts">
   import { ask, open } from '@tauri-apps/plugin-dialog';
   import { onMount, tick } from 'svelte';
-  import { api, errorMessage, type AppInfo, type TagCount, type TagRule, type WatchedFolder } from '../lib/api';
+  import { api, errorMessage, type AppInfo, type TagCount, type TagRule, type ThemeChoice, type WatchedFolder } from '../lib/api';
+  import { theme } from '../lib/app-theme.svelte';
   import { library } from '../lib/library.svelte';
   import { folderStatus, photoCountLabel, type SettingsSection } from '../lib/settings';
   import { createTagRenamer } from '../lib/tag-renamer.svelte';
   import { filterTags, ruleLabel } from '../lib/tags';
 
   let { section = 'folders', onclose }: { section?: SettingsSection; onclose: () => void } = $props();
+
+  const THEMES: { value: ThemeChoice; label: string }[] = [
+    { value: 'system', label: 'System' },
+    { value: 'light', label: 'Light' },
+    { value: 'dark', label: 'Dark' },
+  ];
 
   // Seeded from the prop once: the dialog is mounted fresh each time it opens, and the
   // section list is the user's to drive after that.
@@ -225,6 +232,9 @@
         <button class:active={current === 'folders'} aria-current={current === 'folders'} onclick={() => (current = 'folders')}>
           Folders
         </button>
+        <button class:active={current === 'appearance'} aria-current={current === 'appearance'} onclick={() => (current = 'appearance')}>
+          Appearance
+        </button>
         <button class:active={current === 'tags'} aria-current={current === 'tags'} onclick={() => (current = 'tags')}>
           Tags
         </button>
@@ -328,6 +338,21 @@
               {/each}
             </ul>
           {/if}
+        {:else if current === 'appearance'}
+          <h2>Appearance</h2>
+          <p class="hint">System follows your desktop. The photo viewer is always dark, so every photo is seen against the same ground.</p>
+          <div class="segmented" role="radiogroup" aria-label="Theme">
+            {#each THEMES as option (option.value)}
+              <button
+                role="radio"
+                aria-checked={theme.choice === option.value}
+                class:checked={theme.choice === option.value}
+                onclick={() => theme.set(option.value)}
+              >
+                {option.label}
+              </button>
+            {/each}
+          </div>
         {:else if current === 'slideshow'}
           <h2>Slideshow</h2>
           <p class="hint">Press S in the viewer to play the current view from the photo on screen. Space pauses, the arrow keys step, Escape ends it.</p>
@@ -415,6 +440,10 @@
   .hint, .empty { margin: 0 0 12px; color: var(--muted); }
   .interval { display: flex; align-items: center; gap: 8px; }
   .interval input { width: 64px; }
+  .segmented { display: inline-flex; gap: 2px; padding: 2px; border-radius: var(--r-3); background: var(--field); }
+  .segmented button { padding: 4px 14px; border: 0; border-radius: var(--r-2); background: none; cursor: pointer; }
+  .segmented button:hover { background: var(--hover); }
+  .segmented button.checked { background: var(--accent); color: var(--on-accent); }
   .folders { margin: 0 0 12px; padding: 0; list-style: none; }
   .folders li {
     display: flex;
