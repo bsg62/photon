@@ -261,18 +261,28 @@ in SQL.
 
 ### Styling
 
-Every colour is a token in `ui/src/tokens.css`, in a light and a dark block selected by
-`data-theme` on `<html>`; `no-literals.test.ts` fails on a colour literal, a removed variable
-name or a glyph icon in any component, and `tokens.test.ts` holds the palette to WCAG contrast,
-light/dark parity and the dark-after-light block order (equal specificity on `<html>`, so
-source order is what lets dark win). Icons are `Icon.svelte` over vendored Lucide path data in
-`lib/icons.ts`; a new icon is copied from `lucide-static` and its licence is already in
-`THIRD-PARTY-NOTICES.md`.
+Almost every colour is a token in `ui/src/tokens.css`, in a light and a dark block selected by
+`data-theme` on `<html>` plus a theme-independent scales block for the colours that are never
+themed - inks drawn on a photo and shadows (`--scrim`, `--photo-line`, `--shadow-ink`,
+`--shadow-menu`, `--shadow-dialog`) are the same in both themes because what they sit on is
+never themed either. The viewer's black ground is a literal by design, not an oversight: a
+photo is judged against black regardless of theme, so it is the one colour literal
+`no-literals.test.ts` allows, and only there, only once. That test also fails on a removed
+variable name, a glyph icon, and now (after the reskin's last hardening pass) a named colour
+(`white`/`black`) or a `color-mix`/`oklch`/`oklab`/`lab`/`lch` function used as a component
+colour, and any `var(--x)` a component reads that `tokens.css` does not declare (`--sidebar-width`,
+set by a `style:` binding in `App.svelte`, is the one exception). It does not catch a colour in
+an inline `style=` attribute or written in a form its regex does not know. `tokens.test.ts`
+holds the palette to WCAG contrast, light/dark parity and the dark-after-light block order
+(equal specificity on `<html>`, so source order is what lets dark win). Icons are `Icon.svelte`
+over vendored Lucide path data in `lib/icons.ts`; a new icon is copied from `lucide-static` and
+its licence is already in `THIRD-PARTY-NOTICES.md`.
 
 The theme blocks match any element, which is how the viewer is dark in both themes
 (`data-theme="dark"` on its root). An inherited property set from a token on `:root` (`color`,
 `accent-color`) is computed there, in the app's theme, so a themed subtree must set it again on
-its own root.
+its own root - which is why `accent-color` is declared again on the bare `[data-theme]`
+selector rather than only on `:root`.
 
 The theme choice lives in the `settings` table; `theme-boot.js` applies a `localStorage`
 mirror before first paint because the database answers too late, and it is a file rather than
@@ -282,8 +292,10 @@ outlives an App remount.
 
 `[tabindex='-1']:focus-visible { outline: none }` is global, for script-focused containers. A
 roving-tabindex widget's items carry `tabindex="-1"` too and would silently lose their focus
-ring: scope the rule before adding one. For the same reason a tile's selection outline comes
-from `.selected`, not from focus.
+ring: scope the rule before adding one. For the same reason a tile's selection ring comes from
+`.selected`, not from focus - and it is drawn inside the tile, not as an outline around it,
+because the grid scrolls a row flush to the top of its container (ArrowUp, Home, Recent's
+first row), which clips anything sitting outside the tile's own box.
 
 The look cannot be tested here, but it can be seen without launching the app: build the UI,
 serve `ui/dist` with a script that fakes `window.__TAURI_INTERNALS__.invoke` with canned data,
