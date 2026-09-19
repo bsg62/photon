@@ -24,6 +24,7 @@ export function createTheme(deps: ThemeDeps) {
   let choice = $state<ThemeChoice>('system');
   let resolved = $state<ResolvedTheme>(resolveTheme('system', deps.media.dark()));
   let unsubscribe: (() => void) | undefined;
+  let disposed = false;
 
   function refresh() {
     resolved = resolveTheme(choice, deps.media.dark());
@@ -47,8 +48,16 @@ export function createTheme(deps: ThemeDeps) {
       try {
         choice = await deps.load();
       } catch (e) {
-        deps.onerror(e);
+        // A disposed instance has no caller left to show the error to, and no state left
+        // that reporting it would explain, so it is dropped along with the refresh below.
+        if (!disposed) deps.onerror(e);
       }
+      if (disposed) return;
+      // Unconditional, not `if (choice === 'system')`: a media change that arrives while
+      // `load()` is still pending passes that guard and fires a transient `apply()` for the
+      // still-default 'system' choice, and this call is what overwrites it with the loaded
+      // choice's real result. Guarding it too would leave that transient apply as the last
+      // word whenever the stored choice turns out not to be 'system'.
       refresh();
     },
 
@@ -66,6 +75,7 @@ export function createTheme(deps: ThemeDeps) {
     },
 
     dispose() {
+      disposed = true;
       unsubscribe?.();
       unsubscribe = undefined;
     },

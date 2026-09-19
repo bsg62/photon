@@ -97,6 +97,18 @@ describe('createTheme', () => {
     expect(onerror).toHaveBeenCalledWith(failure);
   });
 
+  it('applies nothing when disposed before the stored choice arrives', async () => {
+    let resolveLoad!: (choice: ThemeChoice) => void;
+    const { theme, apply } = setup({
+      load: () => new Promise<ThemeChoice>((resolve) => (resolveLoad = resolve)),
+    });
+    const pending = theme.init();
+    theme.dispose();
+    resolveLoad('dark');
+    await pending;
+    expect(apply).not.toHaveBeenCalled();
+  });
+
   it('stops listening to the desktop on dispose', async () => {
     const { theme, apply, setOs, listeners } = setup({ stored: 'system', osDark: false });
     await theme.init();
