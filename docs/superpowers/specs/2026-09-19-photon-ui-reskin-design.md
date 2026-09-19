@@ -194,8 +194,11 @@ in `--text` rather than `--text-dim` (contrast, §2). Counts
   2px }` replaces the per-component treatments. The splitter keeps its accent fill.
 - **Fields.** `--field`, no border at rest, the accent ring on focus. The search field gains
   a leading `search` icon.
-- **Tiles.** `--r-2`. Selection is a 2px accent outline offset 2px, visible over any photo
-  in either theme. Star badge in `--star` with a soft drop shadow. Offline dimming unchanged.
+- **Tiles.** `--r-2`. Selection is a 2px accent ring drawn *inside* the tile, with a 1px
+  surface-coloured line inside that so it stays legible over a photo of the accent's own
+  blue; an outline outside the tile would be clipped where the grid scrolls a row flush to
+  its container's top edge (ArrowUp, Home, Recent's first row). Star badge in `--star` with
+  a soft drop shadow. Offline dimming unchanged.
 - **Folder headers.** Name `--t-4` weight 600, path `--t-1` `--text-dim`, in the existing
   header height.
 - **Floating things** (context menus, toasts, timeline bubble): `--raised`, `--r-3`,

@@ -291,8 +291,11 @@
   /* 32px is layout.ts's HEADER: every row below is placed by it, so the type fits the box
      rather than the box growing to the type. */
   .header { display: flex; align-items: baseline; gap: var(--s-3); height: 32px; padding: 7px var(--s-2) 0; }
-  .header .name { font-size: var(--t-4); font-weight: 600; white-space: nowrap; }
-  .header .path { color: var(--text-dim); font-size: var(--t-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* min-width: 0 and overflow: hidden so a folder name wider than the grid ellipsises
+     instead of forcing a horizontal scrollbar, which would change the viewport's measured
+     clientHeight. */
+  .header .name { flex: 0 1 auto; min-width: 0; overflow: hidden; font-size: var(--t-4); font-weight: 600; white-space: nowrap; text-overflow: ellipsis; }
+  .header .path { flex: 1 1 0; min-width: 0; color: var(--text-dim); font-size: var(--t-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .row { display: flex; }
   .empty { position: absolute; inset: 0; display: grid; place-items: center; color: var(--text-dim); margin: 0; }
   .menu {
