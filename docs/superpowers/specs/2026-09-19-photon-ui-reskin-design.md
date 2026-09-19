@@ -50,7 +50,7 @@ component `<style>` block contains no colour literal (enforced, §7).
 | `--hover` | `#0000000a` | `#ffffff0d` | row and button hover |
 | `--line` | `#00000018` | `#ffffff14` | every hairline divider |
 | `--text` | `#1f1f23` | `#ededf0` | |
-| `--text-dim` | `#5f5f67` | `#9a9aa3` | counts, paths, captions, group headers |
+| `--text-dim` | `#5f5f67` | `#a6a6af` | counts, paths, captions, group headers |
 | `--accent` | `#1f6fd6` | `#62a0ea` | |
 | `--accent-soft` | `#1f6fd633` | `#62a0ea33` | the active row |
 | `--on-accent` | `#ffffff` | `#111111` | text on a primary button |
@@ -83,10 +83,15 @@ blur(18px)` is layered on as an enhancement, since it can be slow or absent on s
 GPUs; the toolbar must read correctly without it.
 
 **Contrast rule.** `--text` and `--text-dim` reach 4.5:1 on both `--surface` and `--chrome`;
-`--accent` reaches 3:1 on both; `--on-accent` reaches 4.5:1 on `--accent`; in each theme.
+`--accent` reaches 3:1 on both; `--on-accent` reaches 4.5:1 on `--accent`; `--text-dim`
+still reaches 4.5:1 on a hovered chrome row (`--hover` composited over `--chrome`), and
+`--text` on an active one (`--accent-soft` over `--chrome`); in each theme. `--text-dim` does
+*not* reach it on an active row (4.1:1), which is why an active row's count switches to
+`--text` (§5).
 Enforced by a test (§7). If a value in the table fails the test, the value is adjusted and
-this table updated; the rule wins over the table. (The light accent is already darker than
-the mockup's `#2f7de1`, on which white text reached only 4.1:1.)
+this table updated; the rule wins over the table. (Two values already differ from the
+mockups for this reason: the light accent, since white on `#2f7de1` reached only 4.1:1, and
+the dark `--text-dim`, since `#9a9aa3` reached only 4.2:1 on a hovered row.)
 
 ## 3. Theming
 
@@ -128,9 +133,12 @@ The production `apply`:
 ### No flash at launch
 
 The database read is asynchronous, so a Light override on a dark desktop would paint dark
-first. An inline script in `index.html`, before the module script, reads
-`localStorage['photon.theme']` and sets `data-theme` synchronously; a missing or unreadable
-mirror falls back to the media query. When `load()` answers, the database wins if the two
+first. A classic, render-blocking `<script src="/theme-boot.js">` in `index.html`'s `<head>`
+(the file lives in `ui/public/`) reads `localStorage['photon.theme']` and sets `data-theme`
+synchronously; a missing or unreadable mirror falls back to the media query. It is a file
+rather than an inline script because the app's CSP is `default-src 'self'` with no
+`'unsafe-inline'` for scripts, and loosening the CSP for five lines is the wrong trade. It
+is a classic script rather than part of the bundle because a module script is deferred. When `load()` answers, the database wins if the two
 differ (a library copied from another machine), at the cost of a one-frame correction.
 
 ### Settings
@@ -174,7 +182,8 @@ Tags group headers.
 
 - **Surfaces.** Chrome on `--chrome`, the grid on `--surface`, divided by 1px `--line`.
 - **Rows** (sidebar items, menu items, settings nav): 28 px high, `--r-3`, inset 6 px from
-  the panel edge. Hover `--hover`; active `--accent-soft` with normal-weight text. Counts
+  the panel edge. Hover `--hover`; active `--accent-soft` with normal-weight text, its count
+in `--text` rather than `--text-dim` (contrast, §2). Counts
   lose their parentheses and become right-aligned `--text-dim`, `--t-1`, `tabular-nums`.
   Year headings and group headers are `--t-1`, weight 600, `--text-dim`.
 - **Buttons.** Primary (`--accent` / `--on-accent`), ghost (`--field`), icon-only (30 px
@@ -232,7 +241,11 @@ Every new test is shown to fail with its change reverted, per the repo's convent
   a failed save keeps the applied theme and reports; `dispose()` unsubscribes.
 - **`settings.rs`**: the theme defaults to `System`, round-trips, and an unrecognised stored
   value reads as `System`.
-- **`tokens.test.ts`** (PR 1): parses `tokens.css` as text, resolves the light and dark
+- **`theme-boot.test.ts`** (PR 1): imports `public/theme-boot.js` as raw text and runs it
+  with fake `localStorage`, `matchMedia` and `document`: each stored choice, no stored
+  choice under each OS scheme, and a `localStorage` that throws.
+- **`tokens.test.ts`** (PR 1): reads `tokens.css` as raw text (vitest needs `test.css: true`
+  for a CSS `?raw` import to be anything but empty), resolves the light and dark
   blocks, composites translucent values over their ground, and asserts the contrast rule of
   §2 with the WCAG formula. Pure string and arithmetic work, so it runs in the node
   environment. It also asserts both blocks define the same token names (bar the two glass
