@@ -511,7 +511,8 @@ mod tests {
         assert!(
             dark.contains(&"--host-resolver-rules=MAP photon.localhost 127.0.0.1:4321".to_owned())
         );
-        assert!(dark.contains(&"--screenshot=/tmp/shots/a.png".to_owned()));
+        // Joined here as the code joins it: the separator is `\` on Windows.
+        assert!(dark.contains(&format!("--screenshot={}", out.join("a.png").display())));
         assert_eq!(
             dark.last().unwrap(),
             "http://127.0.0.1:4321/?theme=dark&do=info"
