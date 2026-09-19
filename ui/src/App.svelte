@@ -76,13 +76,18 @@
   });
 
   function open(offset: number) {
-    library.selected = offset;
+    // Only when it is not already the lead: assigning collapses a multi-selection, and
+    // Enter on a selection of twelve should open one photo without throwing the other
+    // eleven away. (A double-click collapses anyway — the click lands first.)
+    if (library.selected !== offset) library.selected = offset;
     viewerAt = offset;
   }
 
   function closeViewer(at: number) {
     viewerAt = null;
-    library.selected = at;
+    // Same rule, the other way round: closing on the photo the viewer was opened with
+    // leaves the selection alone; closing after navigating collapses to what is on screen.
+    if (library.selected !== at) library.selected = at;
     grid?.scrollToOffset(at, 'nearest');
     grid?.focus();
   }

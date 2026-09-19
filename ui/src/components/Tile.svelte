@@ -17,7 +17,9 @@
     entry: GridEntry | undefined;
     selected: boolean;
     dimmed: boolean;
-    onselect: () => void;
+    /** The click that selects. The event travels because the grid, not the tile, decides
+     *  what Ctrl and Shift mean. */
+    onselect: (e: MouseEvent) => void;
     onopen: () => void;
     /** Right-click. The grid owns the menu, since it knows the view and the albums. */
     onmenu: (e: MouseEvent) => void;
