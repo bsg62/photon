@@ -280,6 +280,12 @@ export class LibraryStore {
     };
     const id = this.selectedId;
     if (id === null) {
+      // No id means no way to tell how far the rebuild moved things, so the anchor - a
+      // stale offset with nothing left to confirm it - cannot be trusted either. Leaving it
+      // set would let the next Shift+click, with no plain click first, range from a photo
+      // that was never clicked. `extendSelection`'s `?? this.selectedOffset` fallback (also
+      // null here) already gives the same answer a first-ever Shift+click would.
+      this.anchor = null;
       clamp();
       return;
     }
@@ -291,7 +297,11 @@ export class LibraryStore {
     // A newer refresh has landed while this was in flight; its own rebind is the current one.
     if (version !== this.info.version) return;
     if (at === null) {
+      // The lead's id no longer resolves to an offset in this view, so there is nothing to
+      // re-find the anchor by either - the same reasoning as the id === null branch above,
+      // reached one step later.
       this.selectedId = null;
+      this.anchor = null;
       clamp();
       return;
     }

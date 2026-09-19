@@ -811,6 +811,46 @@ describe('LibraryStore', () => {
       expect(store.isSelected(idAt(3))).toBe(false);
     });
 
+    it('drops a stale anchor when a rebuild had no lead to re-find it by', async () => {
+      // Ctrl+click deselecting the last-selected tile nulls the lead but leaves the anchor
+      // at that offset (`toggleSelected`). If a rebuild then finds no id to rebind, and
+      // does not also clear the anchor, a Shift+click with no plain click in between ranges
+      // from that stale, pre-shift offset instead of falling back to the lead.
+      const store = await storeOf(10);
+      store.selected = 2; // lead = 2, anchor = 2
+      store.toggleSelected(2); // deselects it: lead = null, anchor stays 2
+
+      // One photo appears ahead of them all, so every old offset is now one later - but
+      // there is no lead id for rebindSelection to re-find, so it never learns that.
+      vi.mocked(api.gridInfo).mockResolvedValue({
+        version: 2,
+        len: 11,
+        sections: [],
+        starredCount: 0,
+        duplicateCount: 0,
+        view: 'all',
+        searchQuery: '',
+        person: null,
+        album: null,
+        tag: null,
+      });
+      vi.mocked(api.gridRows).mockImplementation(async (offset: number, count: number) => ({
+        version: 2,
+        rows: Array.from({ length: Math.min(count, 11 - offset) }, (_, i) => entryAt(offset + i)),
+      }));
+      await store.refresh();
+      expect(store.selected).toBeNull();
+
+      await store.extendSelection(5);
+
+      // With a live anchor, extendSelection falls back to `this.selectedOffset ?? 0`, i.e.
+      // the same range a user's very first Shift+click would get: 0..5. A stale anchor of 2
+      // would instead range 2..5, four photos short.
+      expect(store.selectionCount).toBe(6);
+      expect(store.isSelected(idAt(0))).toBe(true);
+      expect(store.isSelected(idAt(5))).toBe(true);
+    });
+
     it('a view switch clears the selection', async () => {
       const store = await storeOf(10);
       store.selected = 3;
