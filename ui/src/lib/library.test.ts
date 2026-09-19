@@ -684,6 +684,30 @@ describe('LibraryStore', () => {
       expect(store.isSelected(idAt(5))).toBe(true);
     });
 
+    it('a later extendSelection call wins even if an earlier, wider one resolves after it', async () => {
+      // Two fast Shift+clicks issue overlapping calls with no ordering guarantee on their
+      // fetches. Without a per-call guard, whichever fetch's last chunk happens to resolve
+      // last would win - here that is the wide range, issued first but still awaiting its
+      // gridRows call when the narrow range, issued second, has already finished.
+      const store = await storeOf(20);
+      store.selected = 0;
+
+      const wideChunk = deferred<{ version: number; rows: ReturnType<typeof entryAt>[] }>();
+      vi.mocked(api.gridRows).mockImplementationOnce(() => wideChunk.promise);
+
+      const wide = store.extendSelection(15); // its one chunk is now stuck on wideChunk
+      const narrow = store.extendSelection(2); // falls through to the default mock, resolves fast
+      await narrow;
+
+      expect(store.selectionCount).toBe(3); // the narrow range has already landed
+      wideChunk.resolve({ version: 1, rows: Array.from({ length: 16 }, (_, i) => entryAt(i)) });
+      await wide;
+
+      expect(store.selectionCount).toBe(3);
+      expect(store.selected).toBe(2);
+      expect(store.isSelected(idAt(15))).toBe(false);
+    });
+
     it('extends backwards from the anchor too', async () => {
       const store = await storeOf(20);
       store.selected = 10;

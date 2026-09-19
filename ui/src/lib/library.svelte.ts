@@ -69,6 +69,14 @@ export class LibraryStore {
   /** The grid offset a Shift+click extends from: the last plain click or Ctrl+click. Plain,
    *  not `$state` — nothing renders from it. */
   private anchor: number | null = null;
+  /** Bumped on every `extendSelection` call. Two fast Shift+clicks issue overlapping calls
+   *  with no ordering guarantee on their fetches - a wide range started first can still be
+   *  fetching its later chunks when a narrow range started second finishes first. The rule is
+   *  last *call* wins, not last chunk to resolve, so a call abandons its write once a later
+   *  call has started; there is no backend ordering to preserve the way `searchQueryChain`
+   *  preserves one, so a promise chain would only make the second call wait on the first
+   *  instead of pre-empting it. */
+  private extendCall = 0;
 
   /** Selected grid offset. */
   get selected(): number | null {
@@ -126,12 +134,16 @@ export class LibraryStore {
     const end = Math.min(this.info.len - 1, Math.max(from, offset));
     if (end < start) return;
     const version = this.info.version;
+    const call = ++this.extendCall;
     const ids = new Set<number>();
     for (let at = start; at <= end; at += GRID_ROWS_CHUNK) {
       const count = Math.min(GRID_ROWS_CHUNK, end - at + 1);
       const rows = await api.gridRows(at, count);
       // A refresh has landed while this was in flight; its own selection is the current one.
       if (version !== this.info.version) return;
+      // A later extendSelection call has started; that call's write wins, not whichever
+      // call's fetch happens to finish last.
+      if (call !== this.extendCall) return;
       for (const entry of rows.rows) ids.add(entry.id);
     }
     this.selection = ids;
