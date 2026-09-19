@@ -596,4 +596,154 @@ describe('LibraryStore', () => {
 
     expect(order).toEqual(['start:b', 'end:b', 'start:beach', 'end:beach']);
   });
+
+  describe('multi-selection', () => {
+    /** Photo ids are offset + 100, so a wrong offset is visible in the failure message. */
+    const idAt = (offset: number) => offset + 100;
+    const entryAt = (offset: number) => ({
+      id: idAt(offset),
+      folderId: 1,
+      takenAt: 0,
+      aspect: 1,
+      kind: 'image' as const,
+      thumbKey: '0',
+      starred: false,
+    });
+
+    /** A store over `len` photos, with every page answerable. */
+    async function storeOf(len: number) {
+      vi.mocked(api.gridInfo).mockResolvedValue({
+        version: 1,
+        len,
+        sections: [],
+        starredCount: 0,
+        duplicateCount: 0,
+        view: 'all',
+        searchQuery: '',
+        person: null,
+        album: null,
+        tag: null,
+      });
+      vi.mocked(api.gridRows).mockImplementation(async (offset: number, count: number) => ({
+        version: 1,
+        rows: Array.from({ length: Math.min(count, len - offset) }, (_, i) => entryAt(offset + i)),
+      }));
+      const store = new LibraryStore();
+      await store.init();
+      await store.ensure(0, Math.min(len, 50));
+      return store;
+    }
+
+    it('ctrl+click toggles a photo in and out, moving the lead each time', async () => {
+      const store = await storeOf(10);
+      store.selected = 2;
+      expect(store.selectedItemIds).toEqual([idAt(2)]);
+
+      store.toggleSelected(5);
+      expect([...store.selectedItemIds].sort()).toEqual([idAt(2), idAt(5)].sort());
+      expect(store.selected).toBe(5);
+
+      store.toggleSelected(5);
+      expect(store.selectedItemIds).toEqual([idAt(2)]);
+      expect(store.selected).toBe(5);
+    });
+
+    it('a plain selection replaces the whole set', async () => {
+      const store = await storeOf(10);
+      store.selected = 2;
+      store.toggleSelected(5);
+      store.selected = 7;
+      expect(store.selectedItemIds).toEqual([idAt(7)]);
+      expect(store.selectionCount).toBe(1);
+    });
+
+    it('shift+click selects the range from the anchor, chunking past MAX_ROWS', async () => {
+      // 1301 > MAX_ROWS (1000): one un-chunked grid_rows call is silently truncated by
+      // clamp_count, and the range's last three hundred photos would go unselected with
+      // no error anywhere.
+      const store = await storeOf(1500);
+      store.selected = 100;
+      vi.mocked(api.gridRows).mockClear(); // only this call's fetches count below
+
+      await store.extendSelection(1400);
+
+      expect(store.selectionCount).toBe(1301);
+      expect(store.isSelected(idAt(1400))).toBe(true);
+      expect(store.isSelected(idAt(99))).toBe(false);
+      expect(vi.mocked(api.gridRows).mock.calls.filter(([, count]) => count > 1000)).toEqual([]);
+      expect(store.selected).toBe(1400);
+    });
+
+    it('shift+click twice re-ranges from the same anchor', async () => {
+      const store = await storeOf(20);
+      store.selected = 5;
+      await store.extendSelection(10);
+      await store.extendSelection(7);
+      expect(store.selectionCount).toBe(3);
+      expect(store.isSelected(idAt(10))).toBe(false);
+      expect(store.isSelected(idAt(5))).toBe(true);
+    });
+
+    it('extends backwards from the anchor too', async () => {
+      const store = await storeOf(20);
+      store.selected = 10;
+      await store.extendSelection(6);
+      expect(store.selectionCount).toBe(5);
+      expect(store.isSelected(idAt(6))).toBe(true);
+      expect(store.isSelected(idAt(11))).toBe(false);
+    });
+
+    it('keeps the selection across a refresh that shifts every offset', async () => {
+      // The test that discriminates ids from offsets. A scan indexing a photo into an
+      // earlier folder moves every later offset by one; an offset-based selection would
+      // silently ring - and star - the neighbours of what the user picked.
+      const store = await storeOf(10);
+      store.selected = 3;
+      store.toggleSelected(4);
+      const picked = [...store.selectedItemIds].sort();
+
+      // One photo appears ahead of them all, so every old offset is now one later.
+      vi.mocked(api.gridInfo).mockResolvedValue({
+        version: 2,
+        len: 11,
+        sections: [],
+        starredCount: 0,
+        duplicateCount: 0,
+        view: 'all',
+        searchQuery: '',
+        person: null,
+        album: null,
+        tag: null,
+      });
+      vi.mocked(api.gridOffsetOfItem).mockResolvedValue(5);
+      await store.refresh();
+
+      expect([...store.selectedItemIds].sort()).toEqual(picked);
+      expect(store.selected).toBe(5);
+    });
+
+    it('a view switch clears the selection', async () => {
+      const store = await storeOf(10);
+      store.selected = 3;
+      store.toggleSelected(4);
+      vi.mocked(api.setGridView).mockResolvedValue(undefined);
+
+      await store.setView('starred');
+
+      expect(store.selectionCount).toBe(0);
+      expect(store.selected).toBeNull();
+    });
+
+    it('selectItem collapses only when it names a different photo', async () => {
+      const store = await storeOf(10);
+      store.selected = 3;
+      store.toggleSelected(4);
+
+      store.selectItem(4, idAt(4)); // the viewer closing on the photo it opened with
+      expect(store.selectionCount).toBe(2);
+
+      store.selectItem(8, idAt(8)); // the viewer navigated away and closed there
+      expect(store.selectedItemIds).toEqual([idAt(8)]);
+    });
+  });
 });

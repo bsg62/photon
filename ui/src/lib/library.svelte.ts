@@ -17,6 +17,10 @@ import type { UnlistenFn } from '@tauri-apps/api/event';
 
 export interface Toast { id: number; message: string }
 
+/** How many rows one `gridRows` call may ask for: `MAX_ROWS` in `commands.rs`, which
+ *  `clamp_count` applies without telling the caller it truncated. */
+const GRID_ROWS_CHUNK = 1000;
+
 /** App-wide reactive state: the grid snapshot, the folder tree, scan status and selection. */
 export class LibraryStore {
   info = $state<GridInfo>({
@@ -48,6 +52,23 @@ export class LibraryStore {
   private selectedOffset = $state<number | null>(null);
   /** The photo at `selectedOffset`, when it was selected. See `rebindSelection`. */
   private selectedId: number | null = null;
+  /** The photo ids in the selection, as a set replaced wholesale on every change — Svelte's
+   *  runes do not track mutation of a plain Set.
+   *
+   *  Ids, not offsets. An offset only means "this photo" against one version of the index,
+   *  and a scan that indexes a photo into an earlier folder shifts every later one: an
+   *  offset-based selection would silently ring, and star, the neighbours of what the user
+   *  picked. Ids survive every rebuild untouched, which is also why there is no multi-photo
+   *  counterpart to `rebindSelection`.
+   *
+   *  A photo purged by a scan leaves its id behind here. Nothing is drawn wrong — there is
+   *  no tile left to ring — but `selectionCount` over-reports until the next plain click.
+   *  Pruning it needs a "which of these ids are still live" round trip, which is not worth
+   *  an IPC surface for a count one click from correct. Do not "fix" this with offsets. */
+  private selection = $state<Set<number>>(new Set());
+  /** The grid offset a Shift+click extends from: the last plain click or Ctrl+click. Plain,
+   *  not `$state` — nothing renders from it. */
+  private anchor: number | null = null;
 
   /** Selected grid offset. */
   get selected(): number | null {
@@ -58,15 +79,85 @@ export class LibraryStore {
     this.selectedOffset = offset;
     // Which photo that offset meant, remembered now while the page holding it is loaded -
     // by the time the grid is rebuilt the pages are gone.
-    this.selectedId = offset === null ? null : (this.pages.get(offset)?.id ?? null);
+    const id = offset === null ? null : (this.pages.get(offset)?.id ?? null);
+    this.selectedId = id;
+    // Every caller of the plain setter is a collapse: an arrow key, a plain click, a
+    // right-click outside the selection. Keeping that rule here rather than at each call
+    // site is what stops a new caller silently leaving a stale multi-selection behind.
+    this.selection = id === null ? new Set() : new Set([id]);
+    this.anchor = offset;
   }
   /** Selects `offset` knowing it holds photo `id`, for callers that know the id without the
    *  page being loaded: "Locate in photon" and the viewer closing, both of which arrive by
    *  id and land on an offset the grid has not fetched yet. The plain setter would record
    *  no id for such an offset, and the next rebuild would clamp instead of re-find. */
   selectItem(offset: number, id: number): void {
+    // Closing the viewer on the photo it was opened with keeps the selection; navigating
+    // away inside the viewer and closing there collapses to the photo on screen.
+    const collapse = id !== this.selectedId;
     this.selectedOffset = offset;
     this.selectedId = id;
+    if (collapse) this.selection = new Set([id]);
+    this.anchor = offset;
+  }
+
+  /** Ctrl/Cmd+click: adds or removes one photo. The lead and the anchor move to it either
+   *  way, so the next Shift+click extends from where the user last clicked. */
+  toggleSelected(offset: number): void {
+    const id = this.pages.get(offset)?.id;
+    if (id === undefined) return;
+    const next = new Set(this.selection);
+    if (!next.delete(id)) next.add(id);
+    this.selection = next;
+    this.selectedOffset = next.size === 0 ? null : offset;
+    this.selectedId = next.size === 0 ? null : id;
+    this.anchor = offset;
+  }
+
+  /** Shift+click: replaces the selection with the range between the anchor and `offset`.
+   *
+   *  The ids come from the backend rather than from the loaded pages: a range can span
+   *  thousands of photos the grid has never rendered. `MAX_ROWS` in `commands.rs` clamps a
+   *  `grid_rows` ask to 1000 *silently*, so a single call for a wider range would select its
+   *  first thousand photos and drop the rest without an error anywhere. */
+  async extendSelection(offset: number): Promise<void> {
+    const from = this.anchor ?? this.selectedOffset ?? 0;
+    const start = Math.max(0, Math.min(from, offset));
+    const end = Math.min(this.info.len - 1, Math.max(from, offset));
+    if (end < start) return;
+    const version = this.info.version;
+    const ids = new Set<number>();
+    for (let at = start; at <= end; at += GRID_ROWS_CHUNK) {
+      const count = Math.min(GRID_ROWS_CHUNK, end - at + 1);
+      const rows = await api.gridRows(at, count);
+      // A refresh has landed while this was in flight; its own selection is the current one.
+      if (version !== this.info.version) return;
+      for (const entry of rows.rows) ids.add(entry.id);
+    }
+    this.selection = ids;
+    this.selectedOffset = offset;
+    this.selectedId = this.pages.get(offset)?.id ?? null;
+    // The anchor stays put, so dragging the far end back and forth re-ranges from the
+    // same start rather than walking away from it.
+  }
+
+  clearSelection(): void {
+    this.selection = new Set();
+    this.selectedOffset = null;
+    this.selectedId = null;
+    this.anchor = null;
+  }
+
+  isSelected(id: number): boolean {
+    return this.selection.has(id);
+  }
+
+  get selectionCount(): number {
+    return this.selection.size;
+  }
+
+  get selectedItemIds(): number[] {
+    return [...this.selection];
   }
 
   /** Bumped whenever pages arrive, so `entry()` readers re-run. */
@@ -242,6 +333,7 @@ export class LibraryStore {
   private async switchView(command: () => Promise<void>): Promise<void> {
     try {
       await command();
+      this.clearSelection();
       await this.refresh();
     } catch (e) {
       this.reportError(e);
@@ -319,6 +411,7 @@ export class LibraryStore {
     const next = this.searchQueryChain.then(async () => {
       try {
         await api.setSearchQuery(query);
+        this.clearSelection();
         await this.refresh();
       } catch (e) {
         this.reportError(e);
