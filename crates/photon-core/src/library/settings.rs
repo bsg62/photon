@@ -25,6 +25,10 @@ pub const SLIDESHOW_INTERVAL_RANGE_S: std::ops::RangeInclusive<i64> = 1..=60;
 /// Which colour scheme the UI uses.
 const THEME: &str = "theme";
 
+/// Whether an export writes edited photos as they are shown. Remembered because it is a
+/// choice about how the user works, not about one export.
+const EXPORT_APPLY_EDITS: &str = "export_apply_edits";
+
 /// The user's colour scheme: the desktop's, or one of the two pinned.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -150,6 +154,20 @@ impl Library {
         let seconds = clamp_interval(seconds);
         self.set_setting(SLIDESHOW_INTERVAL_S, &seconds.to_string())?;
         Ok(seconds)
+    }
+
+    /// Whether an export renders edits into the copies. True until the user says otherwise:
+    /// an untouched photo is a byte copy either way, so this only decides what happens to
+    /// photos the user has deliberately edited - and there, what they see is what they
+    /// asked for.
+    pub fn export_apply_edits(&self) -> Result<bool> {
+        Ok(self
+            .setting(EXPORT_APPLY_EDITS)?
+            .is_none_or(|stored| stored == "1"))
+    }
+
+    pub fn set_export_apply_edits(&self, apply: bool) -> Result<()> {
+        self.set_setting(EXPORT_APPLY_EDITS, if apply { "1" } else { "0" })
     }
 
     /// The colour scheme the user chose; `System` when never set.

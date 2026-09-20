@@ -33,6 +33,12 @@ pub enum Error {
     /// A crop that is inverted, or too small to be anything but a slip of the pointer.
     #[error("that crop is not a usable rectangle")]
     InvalidCrop,
+    /// An export aimed inside a watched folder. Copies written there would be scanned back
+    /// in as new photos: one click would double the library and fill the duplicate finder.
+    #[error(
+        "that folder is inside the watched folder {existing} - photon would index the copies as new photos"
+    )]
+    ExportIntoLibrary { existing: String },
     /// The one write photon makes inside a watched folder: a star into a Picasa INI. Carries
     /// the path so the message names the file the user has to look at.
     #[error("could not write {}: {source}", path.display())]

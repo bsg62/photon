@@ -4,6 +4,7 @@ pub mod decode;
 pub mod duplicates;
 pub mod edit;
 pub mod error;
+pub mod export;
 pub mod grid;
 pub mod iptc;
 pub mod keywords;

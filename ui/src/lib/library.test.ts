@@ -53,6 +53,10 @@ vi.mock('./api', () => ({
       handlers.scanProgress = cb;
       return Promise.resolve(makeUnlisten('scanProgress'));
     }),
+    onExportProgress: vi.fn((cb: Handler) => {
+      handlers.exportProgress = cb;
+      return Promise.resolve(makeUnlisten('exportProgress'));
+    }),
   },
   errorMessage: (e: unknown) => (e instanceof Error ? e.message : String(e)),
 }));
@@ -448,6 +452,20 @@ describe('LibraryStore', () => {
     expect(events.onLibraryChanged).toHaveBeenCalledTimes(1);
     expect(events.onFolderStatus).toHaveBeenCalledTimes(1);
     expect(events.onScanProgress).toHaveBeenCalledTimes(1);
+    expect(events.onExportProgress).toHaveBeenCalledTimes(1);
+  });
+
+  /** The bar the user watches while an export runs. It has to clear at the end whatever
+   *  happened on the way, including an export where every photo failed. */
+  it('shows export progress while one is running and clears it at the end', async () => {
+    const store = new LibraryStore();
+    await store.init();
+
+    handlers.exportProgress({ done: 3, total: 12, failed: 0 });
+    expect(store.exporting).toEqual({ done: 3, total: 12, failed: 0 });
+
+    handlers.exportProgress({ done: 12, total: 12, failed: 12 });
+    expect(store.exporting).toBe(null);
   });
 
   it('unsubscribes cleanly when dispose() runs before init() finishes subscribing', async () => {

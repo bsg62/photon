@@ -236,6 +236,31 @@ pub fn remove_item_tag(engine: Eng<'_>, id: i64, tag: String) -> Result<(), AppE
 }
 
 #[tauri::command(async)]
+pub fn export_items(
+    engine: Eng<'_>,
+    ids: Vec<i64>,
+    dest: String,
+    apply_edits: bool,
+) -> Result<commands::ExportReport, AppError> {
+    commands::export_items(&engine, &ids, &dest, apply_edits)
+}
+
+#[tauri::command(async)]
+pub fn check_export_dest(engine: Eng<'_>, dest: String) -> Result<(), AppError> {
+    commands::check_export_dest(&engine, &dest)
+}
+
+#[tauri::command(async)]
+pub fn export_apply_edits(engine: Eng<'_>) -> Result<bool, AppError> {
+    commands::export_apply_edits(&engine)
+}
+
+#[tauri::command(async)]
+pub fn set_export_apply_edits(engine: Eng<'_>, apply: bool) -> Result<(), AppError> {
+    commands::set_export_apply_edits(&engine, apply)
+}
+
+#[tauri::command(async)]
 pub fn add_items_tag(
     engine: Eng<'_>,
     ids: Vec<i64>,

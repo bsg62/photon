@@ -44,10 +44,21 @@ pub struct FolderStatus {
     pub degraded: bool,
 }
 
+/// How far an export has got. `done` counts every photo the export has finished with,
+/// written or not, so `done == total` is the end whatever happened along the way.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportProgress {
+    pub done: usize,
+    pub total: usize,
+    pub failed: usize,
+}
+
 pub trait Events: Send + Sync + 'static {
     fn library_changed(&self, event: LibraryChanged);
     fn scan_progress(&self, event: ScanProgressEvent);
     fn folder_status(&self, event: FolderStatus);
+    fn export_progress(&self, event: ExportProgress);
 }
 
 #[cfg(test)]
@@ -56,6 +67,7 @@ pub enum Recorded {
     Library(LibraryChanged),
     Scan(ScanProgressEvent),
     Folder(FolderStatus),
+    Export(ExportProgress),
 }
 
 /// Test sink that keeps every event.
@@ -80,5 +92,8 @@ impl Events for Recorder {
     }
     fn folder_status(&self, e: FolderStatus) {
         self.0.lock().push(Recorded::Folder(e));
+    }
+    fn export_progress(&self, e: ExportProgress) {
+        self.0.lock().push(Recorded::Export(e));
     }
 }

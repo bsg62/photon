@@ -25,6 +25,17 @@ pub const MAX_RADIUS: usize = 10;
 
 type CmdResult<T> = Result<T, AppError>;
 
+/// What one export came to: how many copies were written, how many photos could not be, and
+/// the first reason why not. `failed` counts a photo that has gone from the library since
+/// the grid was built as well as one that could not be read.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportReport {
+    pub written: usize,
+    pub failed: usize,
+    pub reason: Option<String>,
+}
+
 /// What one keyword write to a selection came to: the name stored - which is not always the
 /// name typed, since a keyword the user has renamed stores as its new name - and how many
 /// photos took it. The count is what the toast says, and it can be short of the selection:
@@ -521,6 +532,39 @@ pub fn remove_items_tag(engine: &Engine, ids: &[i64], tag: &str) -> CmdResult<Ta
         tag: tag.to_string(),
         count,
     })
+}
+
+/// Copies photos into `dest`. See `Engine::export_items`: a destination inside a watched
+/// folder is refused, and a photo that cannot be written is counted rather than fatal.
+pub fn export_items(
+    engine: &Engine,
+    ids: &[i64],
+    dest: &str,
+    apply_edits: bool,
+) -> CmdResult<ExportReport> {
+    let done = engine.export_items(ids, Path::new(dest), apply_edits)?;
+    Ok(ExportReport {
+        written: done.written,
+        failed: done.failed,
+        reason: done.reason,
+    })
+}
+
+/// Whether copies may be written into `dest`. The dialog asks as soon as a folder is
+/// picked, so the one refusal this feature expects is shown while it is still open.
+pub fn check_export_dest(engine: &Engine, dest: &str) -> CmdResult<()> {
+    engine.check_export_dest(Path::new(dest))?;
+    Ok(())
+}
+
+/// Whether an export renders edits into the copies; remembered between exports.
+pub fn export_apply_edits(engine: &Engine) -> CmdResult<bool> {
+    Ok(engine.lib.export_apply_edits()?)
+}
+
+pub fn set_export_apply_edits(engine: &Engine, apply: bool) -> CmdResult<()> {
+    engine.lib.set_export_apply_edits(apply)?;
+    Ok(())
 }
 
 /// Items around `id`, nearest first, queued at neighbour priority so the viewer's

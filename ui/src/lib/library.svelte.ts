@@ -8,6 +8,7 @@ import {
   type GridEntry,
   type GridInfo,
   type GridView,
+  type ExportProgress,
   type Person,
   type ScanProgressEvent,
   type TagCount,
@@ -255,6 +256,9 @@ export class LibraryStore {
    *  folder with the library's first one before anything could read it. */
   restoring = $state(true);
   toasts = $state<Toast[]>([]);
+  /** The export running now, or null when none is. An export can take minutes, so the
+   *  status bar says where it has got to; the dialog that started it is long closed. */
+  exporting = $state<ExportProgress | null>(null);
 
   private folderById = $derived(new Map(this.folders.folders.map((f) => [f.id, f])));
   private onlineByWatched = $derived(new Map(this.folders.watched.map((w) => [w.id, w.online])));
@@ -280,6 +284,11 @@ export class LibraryStore {
         events.onFolderStatus((e) => {
           this.degraded[e.watchedId] = e.degraded;
           void this.refreshFolders().catch(this.reportError);
+        }),
+        events.onExportProgress((e) => {
+          // `done === total` is the end whatever happened on the way, including an export
+          // where every photo failed - so the bar always clears.
+          this.exporting = e.done < e.total ? e : null;
         }),
         events.onScanProgress((e) => {
           const previous = this.scans[e.watchedId];

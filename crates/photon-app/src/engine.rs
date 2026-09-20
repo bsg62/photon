@@ -1,15 +1,16 @@
 //! The running library: photon-core services plus the current grid snapshot and the
 //! background scans. Plain Rust, so it can be tested without a webview.
 
-use crate::events::{Events, FolderStatus, LibraryChanged, ScanProgressEvent};
+use crate::events::{Events, ExportProgress, FolderStatus, LibraryChanged, ScanProgressEvent};
 use crate::watch::WatcherService;
 use parking_lot::{Mutex, RwLock};
 use photon_core::{
     Error, Result,
     edit::Edit,
+    export::{self, Source},
     grid::{GridIndex, GridView},
     library::{Library, WatchedFolder},
-    now_ms, picasa,
+    now_ms, paths, picasa,
     scanner::{ScanOptions, ScanProgress, ScanSink, scan_subtree, scan_watched},
     thumbs::{Priority, ThumbCache, ThumbService},
 };
@@ -65,6 +66,19 @@ struct Rebuild {
     state: ViewState,
     seq: u64,
 }
+
+/// What one export came to: how many copies were written, how many photos could not be,
+/// and the first reason why not.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Export {
+    pub written: usize,
+    pub failed: usize,
+    pub reason: Option<String>,
+}
+
+/// How often an export tells the UI where it has got to. Short enough to look live, long
+/// enough that a fast export of small files is not mostly event traffic.
+const EXPORT_PROGRESS_EVERY: Duration = Duration::from_millis(100);
 
 pub struct Engine {
     pub lib: Arc<Library>,
@@ -594,6 +608,107 @@ impl Engine {
         self.live_item(id)?;
         self.lib.remove_item_tag(id, tag)?;
         self.refresh_grid()
+    }
+
+    /// Copies photos out of the library into `dest`, returning what landed.
+    ///
+    /// **The only place photon writes a photo file**, and it writes only new files, at a
+    /// destination the user picked in the system's own folder picker. The watched photos
+    /// themselves are never opened for writing.
+    ///
+    /// A destination inside a watched folder is refused before anything is written. The
+    /// scanner would index the copies as new photos - one click would double the library and
+    /// fill the duplicate finder with pairs the user did not make.
+    ///
+    /// An edited photo is decoded at full size to be exported as it is shown, under
+    /// `protocol::RENDERING` - the lock that bounds how many full-size decodes exist at once
+    /// across the whole app. It is held across the render and *not* across the write: by
+    /// then the picture has been dropped, and a write to a slow stick or a share would
+    /// otherwise stall the viewer for no memory benefit.
+    ///
+    /// A photo that cannot be read, or has gone from the library since the grid was built,
+    /// is counted and skipped rather than ending the export: one unreadable file must not
+    /// cost the user the other hundred and nineteen. The first reason is reported so the
+    /// message can say what went wrong rather than only that something did.
+    pub fn export_items(&self, ids: &[i64], dest: &Path, apply_edits: bool) -> Result<Export> {
+        let dest = self.check_export_dest(dest)?;
+        let total = ids.len();
+        let mut report = Export {
+            written: 0,
+            failed: 0,
+            reason: None,
+        };
+        // Progress is throttled the way the scanner's is: a per-file event for a 5,000-photo
+        // export is 5,000 round trips into the webview, all to move one bar.
+        let mut last = Instant::now();
+        for (n, &id) in ids.iter().enumerate() {
+            let outcome = self.export_one(id, &dest, apply_edits);
+            match outcome {
+                Ok(()) => report.written += 1,
+                Err(err) => {
+                    report.failed += 1;
+                    if report.reason.is_none() {
+                        report.reason = Some(err.to_string());
+                    }
+                    tracing::warn!(%err, id, "could not export a photo");
+                }
+            }
+            let done = n + 1;
+            if done == total || last.elapsed() >= EXPORT_PROGRESS_EVERY {
+                last = Instant::now();
+                self.events.export_progress(ExportProgress {
+                    done,
+                    total,
+                    failed: report.failed,
+                });
+            }
+        }
+        Ok(report)
+    }
+
+    /// Whether copies may be written into `dest`, and its canonical form if so.
+    ///
+    /// Its own method because the dialog asks *when the folder is picked*, while it is still
+    /// open and the answer can be shown against the field: this is the only refusal the
+    /// feature expects to produce routinely, and `export_items` closes the dialog before it
+    /// starts. `export_items` checks again anyway - a folder can be watched in between, and
+    /// the check is a directory walk of nothing.
+    ///
+    /// Inside a watched root, not merely overlapping one: a folder that *contains* a watched
+    /// folder (exporting to the home folder while `~/Pictures` is watched) is a perfectly
+    /// good destination, because nothing scans it.
+    pub fn check_export_dest(&self, dest: &Path) -> Result<PathBuf> {
+        let dest = paths::canonicalize(dest)?;
+        for watched in self.lib.watched_folders()? {
+            if paths::is_within(&dest, Path::new(&watched.path)) {
+                return Err(Error::ExportIntoLibrary {
+                    existing: watched.path,
+                });
+            }
+        }
+        Ok(dest)
+    }
+
+    fn export_one(&self, id: i64, dest: &Path, apply_edits: bool) -> Result<()> {
+        let item = self.lib.item(id)?.ok_or(Error::NotFound(id))?;
+        if item.missing_since.is_some() {
+            return Err(Error::NotFound(id));
+        }
+        let source = Source {
+            path: PathBuf::from(&item.path),
+            orientation: item.orientation,
+            edit: item.edit,
+        };
+        if source.needs_render(apply_edits) {
+            let (bytes, mime) = {
+                let _one_at_a_time = crate::protocol::RENDERING.lock();
+                export::render_for_export(&source)?
+            };
+            export::write_rendered(&source, dest, mime, &bytes)?;
+        } else {
+            export::copy_original(&source, dest)?;
+        }
+        Ok(())
     }
 
     /// Records the user's edit of one photo (`photon_core::edit`). Nothing is written to the
@@ -1501,6 +1616,134 @@ mod tests {
             f.engine.grid().0,
             version + 1,
             "one refresh for the whole batch, not one per photo"
+        );
+    }
+
+    /// The promise the whole feature has to keep: the photos it copies are not touched.
+    #[test]
+    fn exporting_copies_photos_out_and_leaves_the_originals_alone() {
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a.jpg", &img), ("b.jpg", &img)]);
+        f.add_photos();
+        let ids = f.ids();
+        let out = f.dir.path().join("out");
+        std::fs::create_dir_all(&out).unwrap();
+        let before: Vec<_> = ["a.jpg", "b.jpg"]
+            .iter()
+            .map(|n| {
+                let p = f.photos.join(n);
+                (
+                    std::fs::read(&p).unwrap(),
+                    std::fs::metadata(&p).unwrap().modified().unwrap(),
+                )
+            })
+            .collect();
+
+        let report = f.engine.export_items(&ids, &out, true).unwrap();
+
+        assert_eq!((report.written, report.failed), (2, 0));
+        assert_eq!(std::fs::read(out.join("a.jpg")).unwrap(), img);
+        assert_eq!(std::fs::read(out.join("b.jpg")).unwrap(), img);
+        for (n, (bytes, modified)) in ["a.jpg", "b.jpg"].iter().zip(before) {
+            let p = f.photos.join(n);
+            assert_eq!(std::fs::read(&p).unwrap(), bytes, "{n} was rewritten");
+            assert_eq!(
+                std::fs::metadata(&p).unwrap().modified().unwrap(),
+                modified,
+                "{n} was touched"
+            );
+        }
+    }
+
+    /// Copies written inside a watched folder are scanned back in as new photos: one click
+    /// would double the library. Refused before anything is written, not after.
+    #[test]
+    fn exporting_into_a_watched_folder_is_refused_and_writes_nothing() {
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a.jpg", &img), ("sub/b.jpg", &img)]);
+        f.add_photos();
+        let ids = f.ids();
+
+        for dest in [f.photos.clone(), f.photos.join("sub")] {
+            let err = f.engine.export_items(&ids, &dest, false).unwrap_err();
+            assert!(
+                matches!(err, Error::ExportIntoLibrary { .. }),
+                "{dest:?}: {err}"
+            );
+        }
+
+        // The folder *holding* the watched one is not the library: copies there are never
+        // scanned, and refusing it would cost the user their home folder as a destination.
+        let above = f.photos.parent().unwrap().join("beside");
+        std::fs::create_dir_all(&above).unwrap();
+        assert_eq!(
+            f.engine.export_items(&ids, &above, false).unwrap().written,
+            2
+        );
+        let parent = f.photos.parent().unwrap().to_path_buf();
+        assert!(
+            f.engine.export_items(&ids[..1], &parent, false).is_ok(),
+            "a folder that contains a watched one is a usable destination"
+        );
+
+        // Nothing landed: the watched folder still holds exactly what it did.
+        let mut names: Vec<_> = std::fs::read_dir(&f.photos)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        assert_eq!(names, ["a.jpg", "sub"]);
+    }
+
+    /// A selection outlives its photos, and one purged id must not end the export.
+    #[test]
+    fn an_export_reports_what_it_could_not_write_and_keeps_going() {
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a.jpg", &img), ("b.jpg", &img)]);
+        f.add_photos();
+        let ids = f.ids();
+        let out = f.dir.path().join("out");
+        std::fs::create_dir_all(&out).unwrap();
+
+        let report = f
+            .engine
+            .export_items(&[ids[0], 9_999, ids[1]], &out, false)
+            .unwrap();
+
+        assert_eq!((report.written, report.failed), (2, 1));
+        assert!(report.reason.is_some(), "the first reason is reported");
+    }
+
+    /// The progress a user watches: it ends at the total whatever happened on the way, so a
+    /// failure cannot leave the bar short of the end for ever.
+    #[test]
+    fn an_export_reports_progress_that_ends_at_the_total() {
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a.jpg", &img), ("b.jpg", &img)]);
+        f.add_photos();
+        let ids = vec![f.ids()[0], 9_999, f.ids()[1]];
+        let out = f.dir.path().join("out");
+        std::fs::create_dir_all(&out).unwrap();
+
+        f.engine.export_items(&ids, &out, false).unwrap();
+
+        let last = f
+            .events
+            .all()
+            .into_iter()
+            .filter_map(|e| match e {
+                Recorded::Export(p) => Some(p),
+                _ => None,
+            })
+            .next_back()
+            .expect("an export reports progress");
+        assert_eq!(
+            last,
+            ExportProgress {
+                done: 3,
+                total: 3,
+                failed: 1
+            }
         );
     }
 
