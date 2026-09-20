@@ -7,7 +7,7 @@ use photon_core::{
     edit::{Crop, Edit},
     grid::{GridEntry, GridView, Section, hex_key},
     library::{
-        Album, AlbumSummary, Folder, ItemFace, Person, TagCount, TagRule, ThemeChoice,
+        Album, AlbumSummary, Folder, ItemFace, Person, SavedSearch, TagCount, TagRule, ThemeChoice,
         WatchedFolder, is_starred,
     },
     media::ThumbState,
@@ -306,6 +306,28 @@ pub fn rename_album(engine: &Engine, album_id: i64, name: &str) -> CmdResult<()>
 pub fn delete_album(engine: &Engine, album_id: i64) -> CmdResult<()> {
     engine.lib.delete_album(album_id)?;
     engine.albums_changed()?;
+    Ok(())
+}
+
+pub fn list_saved_searches(engine: &Engine) -> CmdResult<Vec<SavedSearch>> {
+    Ok(engine.lib.saved_searches()?)
+}
+
+pub fn save_search(engine: &Engine, name: &str, query: &str) -> CmdResult<SavedSearch> {
+    Ok(engine.lib.create_saved_search(name, query, now_ms())?)
+}
+
+pub fn rename_saved_search(engine: &Engine, search_id: i64, name: &str) -> CmdResult<()> {
+    engine.lib.rename_saved_search(search_id, name)?;
+    Ok(())
+}
+
+/// Unlike `delete_album`, this does not touch the grid. A saved search is a name over a
+/// query, and the Search view is driven by the query string itself, not by this row: the
+/// photos on screen are still the answer to what was typed, so deleting the bookmark
+/// leaves them there rather than emptying the grid under the user.
+pub fn delete_saved_search(engine: &Engine, search_id: i64) -> CmdResult<()> {
+    engine.lib.delete_saved_search(search_id)?;
     Ok(())
 }
 
@@ -993,5 +1015,50 @@ mod tests {
         );
         remove_folder(&f.engine, watched.id).unwrap();
         assert_eq!(grid_info(&f.engine).len, 0);
+    }
+
+    /// The command layer's own wiring: a saved search round-trips, its errors reach the UI
+    /// as kinds rather than as `internal`, and - unlike deleting an album - deleting one
+    /// leaves the grid showing the photos the query still answers for.
+    #[test]
+    fn saved_searches_round_trip_and_deleting_one_leaves_the_grid_alone() {
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a.jpg", &img), ("b.jpg", &img)]);
+        f.add_photos();
+
+        let saved = save_search(&f.engine, "  Canon  ", "a").unwrap();
+        assert_eq!((saved.name.as_str(), saved.query.as_str()), ("Canon", "a"));
+        assert_eq!(
+            save_search(&f.engine, "  ", "a").unwrap_err().kind,
+            "emptySearchName"
+        );
+        assert_eq!(
+            save_search(&f.engine, "Canon", "  ").unwrap_err().kind,
+            "emptySearchQuery"
+        );
+        assert_eq!(
+            list_saved_searches(&f.engine)
+                .unwrap()
+                .iter()
+                .map(|s| s.name.clone())
+                .collect::<Vec<_>>(),
+            ["Canon"],
+            "the two refusals wrote nothing"
+        );
+
+        rename_saved_search(&f.engine, saved.id, "Dad's").unwrap();
+        assert_eq!(list_saved_searches(&f.engine).unwrap()[0].name, "Dad's");
+
+        // The search view is driven by the query string, not by the saved row.
+        set_search_query(&f.engine, "a").unwrap();
+        let before = grid_info(&f.engine).len;
+        assert_eq!(before, 1, "the query matches a.jpg only");
+        delete_saved_search(&f.engine, saved.id).unwrap();
+        assert!(list_saved_searches(&f.engine).unwrap().is_empty());
+        assert_eq!(
+            grid_info(&f.engine).len,
+            before,
+            "deleting the bookmark leaves the photos it was pointing at on screen"
+        );
     }
 }

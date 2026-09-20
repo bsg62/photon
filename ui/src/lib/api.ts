@@ -117,6 +117,9 @@ export interface TagCount { tag: string; count: number }
 export interface TagRule { tag: string; target: string | null }
 export interface Album { id: number; name: string; createdMs: number }
 export interface AlbumSummary { id: number; name: string; count: number }
+/** A named query in the sidebar. No count: see `library/searches.rs` for why one would
+ *  cost a full library pass per row on every change. */
+export interface SavedSearch { id: number; name: string; query: string; createdMs: number }
 export interface ScanProgressEvent {
   watchedId: number;
   filesSeen: number;
@@ -192,6 +195,11 @@ export const api = {
   deleteAlbum: (albumId: number) => invoke<void>('delete_album', { albumId }),
   addToAlbum: (albumId: number, itemIds: number[]) => invoke<void>('add_to_album', { albumId, itemIds }),
   removeFromAlbum: (albumId: number, itemIds: number[]) => invoke<void>('remove_from_album', { albumId, itemIds }),
+  listSavedSearches: () => invoke<SavedSearch[]>('list_saved_searches'),
+  saveSearch: (name: string, query: string) => invoke<SavedSearch>('save_search', { name, query }),
+  renameSavedSearch: (searchId: number, name: string) =>
+    invoke<void>('rename_saved_search', { searchId, name }),
+  deleteSavedSearch: (searchId: number) => invoke<void>('delete_saved_search', { searchId }),
   setVisible: (ids: number[]) => invoke<void>('set_visible', { ids }),
   viewerItem: (id: number) => invoke<ViewerItem>('viewer_item', { id }),
   /** Sets or clears a star. Written into the folder's Picasa INI first, then mirrored into

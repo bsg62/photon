@@ -27,6 +27,8 @@ impl From<photon_core::Error> for AppError {
             IniWrite { .. } => "iniWrite",
             EmptyAlbumName => "emptyAlbumName",
             EmptyTagName => "emptyTagName",
+            EmptySearchName => "emptySearchName",
+            EmptySearchQuery => "emptySearchQuery",
             InvalidCrop => "invalidCrop",
             _ => "internal",
         };

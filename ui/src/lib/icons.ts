@@ -4,9 +4,10 @@
 // are reproduced in THIRD-PARTY-NOTICES.md at the repository root.
 //
 // Each value is the inside of the icon's <svg>, on Lucide's 24-unit grid. Vendored rather
-// than depended on: eighteen icons do not justify a package and its update churn.
+// than depended on: nineteen icons do not justify a package and its update churn.
 
 export type IconName =
+  | 'bookmark'
   | 'chevron-down'
   | 'chevron-right'
   | 'clock'
@@ -27,6 +28,7 @@ export type IconName =
   | 'x';
 
 export const ICONS: Record<IconName, string> = {
+  bookmark: '<path d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16z"/>',
   'chevron-down': '<path d="m6 9 6 6 6-6"/>',
   'chevron-right': '<path d="m9 18 6-6-6-6"/>',
   clock: '<circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>',

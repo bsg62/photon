@@ -2,6 +2,7 @@
   import { untrack } from 'svelte';
   import { library } from '../lib/library.svelte';
   import { searchBox } from '../lib/search-box.svelte';
+  import { canSaveSearch, defaultSearchName, savedSearchFor } from '../lib/searches';
   import Icon from './Icon.svelte';
 
   // This component only renders the machine in `search-box.svelte.ts`; the folder tree
@@ -20,6 +21,19 @@
     // for it.
     untrack(() => searchBox.syncFromBackend(backend));
   });
+
+  /** The saved search the box already holds, if any. Drives both the filled bookmark and
+   *  the refusal to save the same query twice. */
+  const already = $derived(savedSearchFor(library.searches, searchBox.query));
+  const canSave = $derived(canSaveSearch(library.searches, searchBox.query));
+
+  /** Saving names the search after the query itself; the sidebar's right-click menu is
+   *  where it gets a friendlier name. Nothing is offered to save an empty box. */
+  function save() {
+    const query = searchBox.query;
+    if (!canSaveSearch(library.searches, query)) return;
+    library.saveSearch(defaultSearchName(query), query).catch(library.reportError);
+  }
 </script>
 
 <div class="bar">
@@ -41,6 +55,20 @@
         if (e.key === 'Escape' && (searchBox.query !== '' || library.info.view === 'search')) searchBox.clear();
       }}
     />
+    {#if searchBox.query.trim() !== ''}
+      <!-- Filled and inert once saved: removing a saved search is done from the sidebar,
+           which asks first, so there is no one-click undo of a thing the sidebar guards. -->
+      <button
+        class="save"
+        class:saved={already !== undefined}
+        disabled={!canSave}
+        aria-label={already ? `Saved as “${already.name}”` : 'Save this search'}
+        title={already ? `Saved as “${already.name}”` : 'Save this search'}
+        onclick={save}
+      >
+        <Icon name="bookmark" size={14} filled={already !== undefined} />
+      </button>
+    {/if}
   </div>
 </div>
 
@@ -55,12 +83,15 @@
     max-width: 100%;
     color: var(--text-dim);
   }
-  /* The icon sits over the input's left padding; clicks pass through to the input. */
-  .field :global(svg) { position: absolute; left: 9px; pointer-events: none; }
+  /* The leading icon sits over the input's left padding; clicks pass through to the input.
+     Scoped to a direct child so the bookmark button's own icon, which is nested inside the
+     button, keeps its place in the flow instead of being dragged to the left edge too. */
+  .field > :global(svg) { position: absolute; left: 9px; pointer-events: none; }
   .search {
     width: 100%;
     box-sizing: border-box;
-    padding: 6px var(--s-2) 6px 30px;
+    /* Right padding clears the bookmark button, which overlaps the field's trailing edge. */
+    padding: 6px 30px 6px 30px;
     border: 0;
     border-radius: var(--r-3);
     background: var(--field);
@@ -70,4 +101,19 @@
   .search::placeholder { color: var(--text-dim); }
   /* The global ring, pulled in to hug the field rather than float 2px off it. */
   .search:focus-visible { outline-offset: 0; }
+  .save {
+    position: absolute;
+    right: 4px;
+    display: flex;
+    padding: var(--s-1);
+    border: 0;
+    border-radius: var(--r-2);
+    background: none;
+    color: var(--text-dim);
+    cursor: pointer;
+  }
+  .save:hover:not(:disabled) { color: var(--text); background: var(--hover); }
+  /* Saved: the accent marks it, and the cursor says there is nothing more to do here. */
+  .save.saved { color: var(--accent); }
+  .save:disabled { cursor: default; }
 </style>

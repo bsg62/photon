@@ -69,6 +69,11 @@
     };
   }
 
+  // The query the box has sent, echoed back by grid_info the way the real backend does.
+  // Without the echo the search box adopts the empty string the moment its send settles and
+  // wipes what was typed - which is the box working correctly against a mock that was not.
+  let searchQuery = '';
+
   // Commands whose answer the UI draws.
   const canned = {
     list_folders: () => ({ watched: [{ id: 1, path: '/home/ada/Pictures', online: true }], folders }),
@@ -78,8 +83,8 @@
       sections,
       starredCount: 13,
       duplicateCount: 4,
-      view: P.get('view') || 'all',
-      searchQuery: '',
+      view: searchQuery === '' ? P.get('view') || 'all' : 'search',
+      searchQuery,
       person: null,
       album: null,
       tag: null,
@@ -106,10 +111,21 @@
       { id: 1, name: 'Best of 2025', count: 96 },
       { id: 2, name: 'Lisbon', count: 48 },
     ],
+    list_saved_searches: () => [
+      { id: 1, name: 'Canon, 2019', query: 'camera:canon 2019', createdMs: 0 },
+      { id: 2, name: 'Lakes', query: 'lake OR pond', createdMs: 0 },
+    ],
+    // The bookmark button reports the row it made; nothing draws it, but a null would make
+    // the store's refetch race an answer it cannot read.
+    save_search: (args) => ({ id: 3, name: args.name, query: args.query, createdMs: 0 }),
     watched_folder_stats: () => [{ watchedId: 1, photoCount: 12480 }],
     app_info: () => ({ version: '0.0.0', libraryPath: '/home/ada/.local/share/photon/library.db', licence: 'MIT' }),
     last_folder: () => null,
     slideshow_interval: () => 4,
+    set_search_query: (args) => {
+      searchQuery = args.query || '';
+      return null;
+    },
     set_stars: (args) => (args.ids || []).length,
     // The keyword dialog reports what landed, so these answer rather than staying silent.
     add_items_tag: (args) => ({ tag: args.tag, count: (args.ids || []).length }),
@@ -123,9 +139,10 @@
   const SILENT = [
     'add_folder', 'add_item_tag', 'add_to_album', 'create_album', 'delete_album', 'hide_tag',
     'remove_folder', 'remove_from_album', 'remove_item_tag', 'rename_album', 'rename_tag',
+    'delete_saved_search', 'rename_saved_search',
     'rescan_folder', 'restore_tag_rule', 'reveal_folder', 'reveal_in_file_manager',
     'reveal_library', 'reveal_watched', 'rotate_item', 'set_album_view', 'set_grid_view',
-    'set_item_edit', 'set_last_folder', 'set_person_view', 'set_search_query',
+    'set_item_edit', 'set_last_folder', 'set_person_view',
     'check_export_dest', 'set_export_apply_edits', 'set_slideshow_interval', 'set_star', 'set_tag_view', 'set_theme',
     'set_visible',
   ];
@@ -188,6 +205,14 @@
           .find((b) => b.textContent.trim().startsWith('Add keyword'))
           ?.click(),
       );
+    },
+    // Types a query the canned list already holds, so the bookmark is drawn filled - the
+    // state that says "saved", which is also the state that cannot be clicked.
+    savedsearch: () => {
+      const box = document.querySelector('input.search');
+      if (!box) return;
+      box.value = 'lake OR pond';
+      box.dispatchEvent(new Event('input', { bubbles: true }));
     },
     viewer: () => open(2),
     info: () => {

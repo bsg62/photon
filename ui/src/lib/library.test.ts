@@ -31,6 +31,10 @@ vi.mock('./api', () => ({
     setGridView: vi.fn(),
     setSearchQuery: vi.fn(),
     listAlbums: vi.fn(),
+    listSavedSearches: vi.fn(),
+    saveSearch: vi.fn(),
+    renameSavedSearch: vi.fn(),
+    deleteSavedSearch: vi.fn(),
     listPeople: vi.fn(),
     listTags: vi.fn(),
     setAlbumView: vi.fn(),
@@ -83,6 +87,7 @@ describe('LibraryStore', () => {
     });
     vi.mocked(api.listFolders).mockResolvedValue({ watched: [], folders: [] });
     vi.mocked(api.listAlbums).mockResolvedValue([]);
+    vi.mocked(api.listSavedSearches).mockResolvedValue([]);
     vi.mocked(api.listPeople).mockResolvedValue([]);
     vi.mocked(api.listTags).mockResolvedValue([]);
     vi.mocked(api.watchedFolderStats).mockResolvedValue([]);
@@ -123,7 +128,7 @@ describe('LibraryStore', () => {
     expect(store.expected[1]).toBe(5_300);
   });
 
-  it('refetches albums, people and tags on every library change and after an album mutation', async () => {
+  it('refetches albums, saved searches, people and tags on every library change and after an album mutation', async () => {
     const store = new LibraryStore();
     await store.init();
     expect(api.listAlbums).toHaveBeenCalledTimes(1);
@@ -131,6 +136,9 @@ describe('LibraryStore', () => {
     vi.mocked(api.listAlbums).mockResolvedValue([{ id: 1, name: 'Trip', count: 2 }]);
     vi.mocked(api.listPeople).mockResolvedValue([{ hash: 'abc', name: 'Ada', count: 1 }]);
     vi.mocked(api.listTags).mockResolvedValue([{ tag: 'beach', count: 3 }]);
+    vi.mocked(api.listSavedSearches).mockResolvedValue([
+      { id: 7, name: 'Canon', query: 'camera:canon', createdMs: 0 },
+    ]);
     handlers.libraryChanged({ version: 2, len: 0 });
     await Promise.resolve();
     await Promise.resolve();
@@ -141,6 +149,7 @@ describe('LibraryStore', () => {
     expect(store.albumName(1)).toBe('Trip');
     expect(store.personName('abc')).toBe('Ada');
     expect(store.albumName(99)).toBe('');
+    expect(store.searches).toEqual([{ id: 7, name: 'Canon', query: 'camera:canon', createdMs: 0 }]);
 
     vi.mocked(api.createAlbum).mockResolvedValue({ id: 2, name: 'Zoo', createdMs: 0 });
     vi.mocked(api.listAlbums).mockResolvedValue([
@@ -150,6 +159,31 @@ describe('LibraryStore', () => {
     await expect(store.createAlbum('Zoo')).resolves.toBe(2);
     expect(api.createAlbum).toHaveBeenCalledWith('Zoo');
     expect(store.albums).toHaveLength(2);
+  });
+
+  // None of the three changes the grid, so no `library_changed` is coming to refresh the
+  // sidebar; each mutation has to refetch for itself or the new row never appears.
+  it('saved-search mutations refetch the collections themselves', async () => {
+    const store = new LibraryStore();
+    await store.init();
+    const calls = vi.mocked(api.listSavedSearches).mock.calls.length;
+
+    vi.mocked(api.saveSearch).mockResolvedValue({ id: 1, name: 'a', query: 'a', createdMs: 0 });
+    vi.mocked(api.listSavedSearches).mockResolvedValue([{ id: 1, name: 'a', query: 'a', createdMs: 0 }]);
+    await store.saveSearch('a', 'a');
+    expect(api.saveSearch).toHaveBeenCalledWith('a', 'a');
+    expect(store.searches).toHaveLength(1);
+
+    vi.mocked(api.renameSavedSearch).mockResolvedValue();
+    vi.mocked(api.listSavedSearches).mockResolvedValue([{ id: 1, name: 'b', query: 'a', createdMs: 0 }]);
+    await store.renameSavedSearch(1, 'b');
+    expect(store.searches[0]?.name).toBe('b');
+
+    vi.mocked(api.deleteSavedSearch).mockResolvedValue();
+    vi.mocked(api.listSavedSearches).mockResolvedValue([]);
+    await store.deleteSavedSearch(1);
+    expect(store.searches).toEqual([]);
+    expect(vi.mocked(api.listSavedSearches).mock.calls.length).toBe(calls + 3);
   });
 
   it('tag rule changes refetch the collections', async () => {

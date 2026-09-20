@@ -4,6 +4,7 @@ mod faces;
 mod folders;
 mod items;
 mod schema;
+mod searches;
 mod settings;
 mod tags;
 
@@ -12,6 +13,7 @@ pub use duplicates::{HashCandidate, ItemCopy};
 pub use faces::{ItemFace, Person};
 pub use folders::{Folder, WatchedFolder};
 pub use items::{Item, KnownItem, NewItem, RECENT_LIMIT, is_starred};
+pub use searches::SavedSearch;
 pub use settings::ThemeChoice;
 pub use tags::{TagCount, TagRule};
 
@@ -144,17 +146,17 @@ mod tests {
             .unwrap()
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 10);
+        assert_eq!(version, 11);
         let tables: i64 = lib
             .reader()
             .unwrap()
             .query_row(
-                "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name IN ('watched_folders', 'folders', 'items', 'settings', 'item_tags', 'contacts', 'faces', 'albums', 'album_items', 'tag_rules', 'item_user_tags')",
+                "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name IN ('watched_folders', 'folders', 'items', 'settings', 'item_tags', 'contacts', 'faces', 'albums', 'album_items', 'tag_rules', 'item_user_tags', 'saved_searches')",
                 [],
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(tables, 11);
+        assert_eq!(tables, 12);
     }
 
     #[test]
@@ -170,7 +172,7 @@ mod tests {
             Library::open(&path),
             Err(Error::SchemaTooNew {
                 found: 99,
-                supported: 10
+                supported: 11
             })
         ));
     }

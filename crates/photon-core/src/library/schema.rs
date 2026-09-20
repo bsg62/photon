@@ -206,6 +206,24 @@ UPDATE watched_folders SET path = '\\' || substr(path, 9) WHERE substr(path, 1, 
 UPDATE folders         SET path = '\\' || substr(path, 9) WHERE substr(path, 1, 8) = '\\?\UNC\';
 UPDATE items           SET path = '\\' || substr(path, 9) WHERE substr(path, 1, 8) = '\\?\UNC\';
 "#,
+    r#"
+-- A saved search: a name and the query string the search box would hold. Nothing about the
+-- photos is stored, because a saved search is not a collection - the query is re-run on
+-- every visit, so a photo indexed tomorrow appears in it without anything being updated.
+-- That is also why there is no membership table to keep in step and no thumbnail to
+-- orphan, which is what makes this the cheapest of photon's sidebar sections.
+--
+-- The query is stored exactly as typed, operators and all, and parsed by `search::Query`
+-- on use. Storing a parsed form would freeze today's grammar into old rows: a library
+-- saved before `camera:` existed must gain it by photon learning the word, not by a
+-- migration rewriting what the user wrote.
+CREATE TABLE saved_searches (
+    id         INTEGER PRIMARY KEY,
+    name       TEXT NOT NULL,
+    query      TEXT NOT NULL,
+    created_ms INTEGER NOT NULL
+);
+"#,
 ];
 
 pub fn migrate(conn: &Connection) -> Result<()> {
@@ -457,7 +475,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 10);
+        assert_eq!(version, 11);
         let rules: i64 = conn
             .query_row("SELECT count(*) FROM tag_rules", [], |r| r.get(0))
             .unwrap();
@@ -616,7 +634,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 10);
+        assert_eq!(version, 11);
         let overlay: i64 = conn
             .query_row("SELECT count(*) FROM item_user_tags", [], |r| r.get(0))
             .unwrap();
@@ -666,7 +684,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 10);
+        assert_eq!(version, 11);
         let hash: Option<Vec<u8>> = conn
             .query_row("SELECT content_hash FROM items WHERE id = 1", [], |r| {
                 r.get(0)
@@ -712,5 +730,41 @@ mod tests {
             )
             .unwrap();
         assert_eq!((turns, crop), (0, None));
+    }
+
+    /// A saved search is a name and a query string, nothing more: the query is re-run on
+    /// every visit, so the rows a saved search shows follow the library. The migration must
+    /// leave an existing library's own rows alone.
+    #[test]
+    fn the_eleventh_migration_adds_saved_searches_to_a_populated_version_ten_library() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        for sql in &MIGRATIONS[..10] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 10i64).unwrap();
+        conn.execute(
+            "INSERT INTO albums (id, name, created_ms) VALUES (1, 'Trip', 5)",
+            [],
+        )
+        .unwrap();
+
+        migrate(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO saved_searches (name, query, created_ms) VALUES ('Canon', 'camera:canon', 7)",
+            [],
+        )
+        .unwrap();
+        let (name, query): (String, String) = conn
+            .query_row("SELECT name, query FROM saved_searches", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        assert_eq!((name.as_str(), query.as_str()), ("Canon", "camera:canon"));
+        // The album the library already held is untouched.
+        let albums: i64 = conn
+            .query_row("SELECT count(*) FROM albums", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(albums, 1);
     }
 }

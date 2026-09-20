@@ -16,7 +16,9 @@
 //! blocking pool.
 
 use crate::{commands, engine::Engine, error::AppError};
-use photon_core::library::{Album, AlbumSummary, Person, TagCount, TagRule, WatchedFolder};
+use photon_core::library::{
+    Album, AlbumSummary, Person, SavedSearch, TagCount, TagRule, WatchedFolder,
+};
 use std::sync::Arc;
 use tauri::State;
 
@@ -174,6 +176,26 @@ pub fn rename_album(engine: Eng<'_>, album_id: i64, name: String) -> Result<(), 
 #[tauri::command(async)]
 pub fn delete_album(engine: Eng<'_>, album_id: i64) -> Result<(), AppError> {
     commands::delete_album(&engine, album_id)
+}
+
+#[tauri::command(async)]
+pub fn list_saved_searches(engine: Eng<'_>) -> Result<Vec<SavedSearch>, AppError> {
+    commands::list_saved_searches(&engine)
+}
+
+#[tauri::command(async)]
+pub fn save_search(engine: Eng<'_>, name: String, query: String) -> Result<SavedSearch, AppError> {
+    commands::save_search(&engine, &name, &query)
+}
+
+#[tauri::command(async)]
+pub fn rename_saved_search(engine: Eng<'_>, search_id: i64, name: String) -> Result<(), AppError> {
+    commands::rename_saved_search(&engine, search_id, &name)
+}
+
+#[tauri::command(async)]
+pub fn delete_saved_search(engine: Eng<'_>, search_id: i64) -> Result<(), AppError> {
+    commands::delete_saved_search(&engine, search_id)
 }
 
 #[tauri::command(async)]
