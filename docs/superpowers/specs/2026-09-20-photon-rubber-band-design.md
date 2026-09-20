@@ -25,7 +25,7 @@ window's.
 
 **No autoscroll.** Dragging to the edge does not scroll the grid, so a band covers what is on
 screen (the wheel is the way to reach more). This is what keeps the feature honest about ids:
-see below.
+see below. *(Amended the same day - see the end of this document.)*
 
 **No drag and drop.** Nothing in photon moves a photo, so a press on a tile has no other
 meaning to compete with; that is why the band may start there rather than only on the
@@ -76,3 +76,25 @@ Enter opens something inside the band and a later Shift+click extends from it.
 - `library.test.ts`: a preview replaces or adds according to `additive`; `cancelBand` restores;
   `endBand` overrides a preview that missed a placeholder; a band whose grid version changed
   mid-flight writes nothing.
+
+## Amendment, 2026-09-20: autoscroll
+
+Holding the band near the top or bottom edge now scrolls the grid under it, a frame at a
+time, faster the deeper into a 48px margin the pointer is held and capped so a pointer
+dragged clean off the window does not scroll wildly. `edgeScrollSpeed` is the pure part; each
+margin is capped at a third of the viewport's height, so a short grid keeps a middle third
+that holds still rather than being all edge.
+
+The band's far corner is recomputed from the pointer's *screen* position on every frame,
+because the canvas is what moved: keeping the canvas-space corner fixed would slide the grid
+out from under the rectangle.
+
+**What this does to the two answers above.** The preview's "everything the band covers is on
+screen and therefore loaded" is no longer true: a band can now scroll past rows whose pages
+have not arrived. It stays *useful* rather than correct - every frame previews again, so a
+tile rings on the frame after its page lands - and `endBand`'s fetch is what makes the result
+right, exactly as it already did for a placeholder tile. The design did not need changing to
+allow autoscroll; it needed only for the preview to stop being described as complete.
+
+Still not done: no horizontal autoscroll (the grid does not scroll sideways), and no
+acceleration curve beyond the linear ramp.

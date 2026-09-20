@@ -1,7 +1,7 @@
 <script lang="ts">
   import { api } from '../lib/api';
   import { library } from '../lib/library.svelte';
-  import { buildRows, columnsFor, GAP, itemSpan, itemsInRect, layoutSections, type Rect, rowOfItem, topFolderId, totalHeight, visibleRange } from '../lib/layout';
+  import { buildRows, columnsFor, edgeScrollSpeed, GAP, itemSpan, itemsInRect, layoutSections, type Rect, rowOfItem, topFolderId, totalHeight, visibleRange } from '../lib/layout';
   import { move, type NavKey } from '../lib/nav';
   import { yearMarks } from '../lib/timeline';
   import Tile from './Tile.svelte';
@@ -22,6 +22,11 @@
   /** How far the pointer must move before a press becomes a rubber band rather than a
    *  click. Below this a steady hand and a shaky one must mean the same thing. */
   const BAND_THRESHOLD = 4;
+  /** How close to the viewport's edge a band has to be dragged before the grid scrolls
+   *  under it, and how fast it can scroll, per frame. A tile is 160px, so the margin is
+   *  under a third of one: a band that stops short of the edge does not creep. */
+  const BAND_EDGE = 48;
+  const BAND_SCROLL_MAX = 24;
 
   let viewport: HTMLDivElement;
   let width = $state(0);
@@ -224,10 +229,17 @@
    *  tile and collapse the selection the band just made. */
   let swallowClick = false;
 
-  /** Pointer position in the canvas's coordinates. */
-  function atCanvas(e: PointerEvent): { x: number; y: number } {
+  /** Where the pointer was last seen, in the window's coordinates. The autoscroll loop
+   *  needs it: the grid moves under a pointer that is holding still, so every frame has to
+   *  ask again what canvas position that same screen position now names. */
+  let bandAt: { x: number; y: number } | null = null;
+  /** The running autoscroll frame, if any. */
+  let bandScroll: number | null = null;
+
+  /** A point in the window's coordinates, in the canvas's. */
+  function atCanvas(x: number, y: number): { x: number; y: number } {
     const box = viewport.getBoundingClientRect();
-    return { x: e.clientX - box.left + viewport.scrollLeft, y: e.clientY - box.top + viewport.scrollTop };
+    return { x: x - box.left + viewport.scrollLeft, y: y - box.top + viewport.scrollTop };
   }
 
   function bandRanges(rect: Rect): [number, number][] {
@@ -250,7 +262,8 @@
     // click; left alone the menu would sit over the new selection describing the old one.
     menu = null;
     bandPointer = e.pointerId;
-    const at = atCanvas(e);
+    bandAt = { x: e.clientX, y: e.clientY };
+    const at = atCanvas(e.clientX, e.clientY);
     band = { x0: at.x, y0: at.y, x1: at.x, y1: at.y };
     banding = false;
     // A release whose click never arrived (the pointer left the window under capture) would
@@ -260,7 +273,8 @@
 
   function bandMove(e: PointerEvent) {
     if (!band || e.pointerId !== bandPointer) return;
-    const at = atCanvas(e);
+    bandAt = { x: e.clientX, y: e.clientY };
+    const at = atCanvas(e.clientX, e.clientY);
     if (!banding) {
       if (Math.abs(at.x - band.x0) < BAND_THRESHOLD && Math.abs(at.y - band.y0) < BAND_THRESHOLD) return;
       banding = true;
@@ -275,8 +289,56 @@
       }
       library.beginBand(e.ctrlKey || e.metaKey || e.shiftKey);
     }
-    band = { ...band, x1: at.x, y1: at.y };
+    dragTo(at.x, at.y);
+    // The pointer may have come to rest in the margin, where nothing more will be heard from
+    // it until it moves again; the loop is what keeps the grid moving under it.
+    startBandScroll();
+  }
+
+  /** Moves the band's far corner and previews what it now covers. */
+  function dragTo(x: number, y: number) {
+    if (!band) return;
+    band = { ...band, x1: x, y1: y };
     library.bandTo(bandRanges(band));
+  }
+
+  /** Scrolls the grid while the band is held near an edge, a frame at a time.
+   *
+   *  The band's far corner is recomputed from the pointer's *screen* position each frame,
+   *  because the canvas has moved under it: without that the rectangle would stay the size
+   *  it was and the scroll would slide the grid out from under it.
+   *
+   *  The preview is still drawn from the loaded pages, so tiles scrolled past before their
+   *  page arrives do not ring at once - they ring on the frame after it lands, since every
+   *  frame previews again. `endBand`'s fetch is what makes the result right either way,
+   *  which is the whole reason the band is answered twice. */
+  function startBandScroll() {
+    if (bandScroll !== null || !banding) return;
+    const step = () => {
+      bandScroll = null;
+      if (!banding || !band || !bandAt) return;
+      const box = viewport.getBoundingClientRect();
+      const speed = edgeScrollSpeed(bandAt.y, box.top, box.bottom, BAND_EDGE, BAND_SCROLL_MAX);
+      if (speed !== 0) {
+        const before = viewport.scrollTop;
+        viewport.scrollTop = before + speed;
+        // At either end the grid cannot move; the band simply stops growing, and the frame
+        // after that is not worth scheduling until the pointer moves again.
+        if (viewport.scrollTop === before) return;
+        const at = atCanvas(bandAt.x, bandAt.y);
+        dragTo(at.x, at.y);
+      } else {
+        return;
+      }
+      bandScroll = requestAnimationFrame(step);
+    };
+    bandScroll = requestAnimationFrame(step);
+  }
+
+  function stopBandScroll() {
+    if (bandScroll !== null) cancelAnimationFrame(bandScroll);
+    bandScroll = null;
+    bandAt = null;
   }
 
   function bandUp(e: PointerEvent) {
@@ -286,6 +348,7 @@
     const finished = banding ? band : null;
     band = null;
     banding = false;
+    stopBandScroll();
     if (!finished) return;
     // The release is followed by a click on whatever is under it; without this a band that
     // ended over a tile would collapse to that one photo.
@@ -305,6 +368,7 @@
     band = null;
     banding = false;
     bandPointer = null;
+    stopBandScroll();
     return true;
   }
 

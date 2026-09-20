@@ -194,3 +194,28 @@ export function itemsInRect(rows: Row[], rect: Rect): [number, number][] {
   }
   return ranges;
 }
+
+/** How far to scroll the grid this frame while a rubber band is dragged towards an edge,
+ *  in pixels: negative up, positive down, zero while the pointer is well inside.
+ *
+ *  `y`, `top` and `bottom` are in the window's coordinates (the viewport's own
+ *  `getBoundingClientRect`), because that is where the pointer is. Speed ramps with how far
+ *  into `margin` the pointer has gone and clamps at `max`, so a pointer dragged clean off
+ *  the window - the common case, since the drag is captured - scrolls fast but not wildly.
+ *
+ *  A viewport shorter than two margins would otherwise have every point inside both, and a
+ *  band in a short grid would scroll wherever the pointer rested. The margins are capped at
+ *  a third of the height each, so there is always a middle third that holds still. */
+export function edgeScrollSpeed(
+  y: number,
+  top: number,
+  bottom: number,
+  margin: number,
+  max: number,
+): number {
+  const band = Math.min(margin, Math.max(0, (bottom - top) / 3));
+  if (band === 0) return 0;
+  if (y < top + band) return -max * Math.min(1, (top + band - y) / band);
+  if (y > bottom - band) return max * Math.min(1, (y - (bottom - band)) / band);
+  return 0;
+}
