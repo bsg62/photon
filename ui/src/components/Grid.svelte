@@ -1,7 +1,7 @@
 <script lang="ts">
   import { api } from '../lib/api';
   import { library } from '../lib/library.svelte';
-  import { buildRows, columnsFor, GAP, itemSpan, layoutSections, rowOfItem, topFolderId, totalHeight, visibleRange } from '../lib/layout';
+  import { buildRows, columnsFor, GAP, itemSpan, itemsInRect, layoutSections, type Rect, rowOfItem, topFolderId, totalHeight, visibleRange } from '../lib/layout';
   import { move, type NavKey } from '../lib/nav';
   import { yearMarks } from '../lib/timeline';
   import Tile from './Tile.svelte';
@@ -19,6 +19,9 @@
 
   const NAV_KEYS = ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'];
   const VISIBLE_DEBOUNCE_MS = 150;
+  /** How far the pointer must move before a press becomes a rubber band rather than a
+   *  click. Below this a steady hand and a shaky one must mean the same thing. */
+  const BAND_THRESHOLD = 4;
 
   let viewport: HTMLDivElement;
   let width = $state(0);
@@ -166,6 +169,9 @@
       return;
     }
     if (e.key === 'Escape') {
+      // A drag in progress owns this Escape: clearing the selection is the opposite of
+      // putting it back, and this handler runs first when the viewport has focus.
+      if (cancelBandKey()) return;
       // The window handler closes the menu on Escape. Clearing here as well would do both at
       // once, so the first Escape only ever dismisses the menu.
       if (menu) return;
@@ -202,6 +208,104 @@
     } else {
       library.selected = offset;
     }
+  }
+
+  /** The rubber band, in the canvas's own coordinates - the same space `Row.top` is in, so
+   *  the band keeps its grip on the photos it was started over while the wheel scrolls
+   *  under it. `null` when no button is down. */
+  let band = $state<Rect | null>(null);
+  /** True once the pointer has moved past the threshold: until then the press is still a
+   *  click, and nothing is drawn or selected. */
+  let banding = $state(false);
+  /** The pointer that owns the current drag. A second finger's events - and the right
+   *  button's `pointerup` during a left drag - must not steer or end someone else's band. */
+  let bandPointer: number | null = null;
+  /** Set when a band ends, so the click that follows the release does not also land on a
+   *  tile and collapse the selection the band just made. */
+  let swallowClick = false;
+
+  /** Pointer position in the canvas's coordinates. */
+  function atCanvas(e: PointerEvent): { x: number; y: number } {
+    const box = viewport.getBoundingClientRect();
+    return { x: e.clientX - box.left + viewport.scrollLeft, y: e.clientY - box.top + viewport.scrollTop };
+  }
+
+  function bandRanges(rect: Rect): [number, number][] {
+    return itemsInRect(rows, rect);
+  }
+
+  function bandDown(e: PointerEvent) {
+    // The left button only: the right one opens the menu, and the middle one is nothing.
+    // A press that lands on the open menu belongs to the menu.
+    if (e.button !== 0 || (e.target as HTMLElement).closest('.menu')) return;
+    // A press already owns the grid: a second finger must not take it over, or the band it
+    // starts would capture `bandPrevious` from the first one's preview and the real
+    // selection would be gone for good.
+    if (bandPointer !== null) return;
+    // The viewport is the scrolling element, so a press on its own scrollbar arrives here.
+    // Without this the thumb's drag starts a band whose far corner races down the canvas
+    // with the scroll, and the release selects everything it passed.
+    if (e.offsetX > viewport.clientWidth || e.offsetY > viewport.clientHeight) return;
+    // The menu's own dismissal is the click that follows a press, and a band swallows that
+    // click; left alone the menu would sit over the new selection describing the old one.
+    menu = null;
+    bandPointer = e.pointerId;
+    const at = atCanvas(e);
+    band = { x0: at.x, y0: at.y, x1: at.x, y1: at.y };
+    banding = false;
+    // A release whose click never arrived (the pointer left the window under capture) would
+    // otherwise leave the flag set and swallow this press's click instead.
+    swallowClick = false;
+  }
+
+  function bandMove(e: PointerEvent) {
+    if (!band || e.pointerId !== bandPointer) return;
+    const at = atCanvas(e);
+    if (!banding) {
+      if (Math.abs(at.x - band.x0) < BAND_THRESHOLD && Math.abs(at.y - band.y0) < BAND_THRESHOLD) return;
+      banding = true;
+      // Capture, so the drag survives the pointer leaving the viewport or the window. It
+      // throws for a pointer the browser no longer considers active (and for the synthetic
+      // ones the screenshot harness dispatches); the band works without it, ending early if
+      // the pointer leaves, so this is reported and not fatal.
+      try {
+        viewport.setPointerCapture(e.pointerId);
+      } catch {
+        // Nothing to do: the drag continues uncaptured.
+      }
+      library.beginBand(e.ctrlKey || e.metaKey || e.shiftKey);
+    }
+    band = { ...band, x1: at.x, y1: at.y };
+    library.bandTo(bandRanges(band));
+  }
+
+  function bandUp(e: PointerEvent) {
+    // Another button or another finger releasing says nothing about this drag.
+    if (!band || e.pointerId !== bandPointer || e.button !== 0) return;
+    bandPointer = null;
+    const finished = banding ? band : null;
+    band = null;
+    banding = false;
+    if (!finished) return;
+    // The release is followed by a click on whatever is under it; without this a band that
+    // ended over a tile would collapse to that one photo.
+    swallowClick = true;
+    focus();
+    library.endBand(bandRanges(finished)).catch(library.reportError);
+  }
+
+  /** Escape abandons the drag and puts the selection back. Returns whether it did, because
+   *  the grid's own Escape clears the selection - the opposite - and must not also run.
+   *  Both the viewport's handler and the window's call this: the viewport has focus during a
+   *  drag that began with a click, but a drag whose press did not focus it does not, so
+   *  neither handler alone covers every Escape. */
+  function cancelBandKey(): boolean {
+    if (!band) return false;
+    if (banding) library.cancelBand();
+    band = null;
+    banding = false;
+    bandPointer = null;
+    return true;
   }
 
   /** Right-clicking outside the selection selects that tile first, so what the menu acts on
@@ -256,7 +360,16 @@
   }
 </script>
 
-<svelte:window onclick={closeMenu} onkeydown={(e) => e.key === 'Escape' && closeMenu()} />
+<svelte:window
+  onclick={closeMenu}
+  onkeydown={(e) => {
+    if (e.key !== 'Escape') return;
+    // A drag in progress owns this Escape; the menu keeps its own, as it always has.
+    if (cancelBandKey()) return;
+    closeMenu();
+  }}
+  onpointerup={bandUp}
+/>
 
 <div class="grid">
   <div
@@ -265,6 +378,13 @@
     bind:clientWidth={width}
     bind:clientHeight={height}
     onscroll={() => (scrollTop = viewport.scrollTop)}
+    onpointerdown={bandDown}
+    onpointermove={bandMove}
+    onclickcapture={(e) => {
+      if (!swallowClick) return;
+      swallowClick = false;
+      e.stopPropagation();
+    }}
     {onkeydown}
     tabindex="0"
     role="grid"
@@ -289,7 +409,16 @@
         {/if}
       </p>
     {/if}
-    <div class="canvas" style:height="{total}px">
+    <div class="canvas" class:banding style:height="{total}px">
+      {#if banding && band}
+        <div
+          class="band"
+          style:left="{Math.min(band.x0, band.x1)}px"
+          style:top="{Math.min(band.y0, band.y1)}px"
+          style:width="{Math.abs(band.x1 - band.x0)}px"
+          style:height="{Math.abs(band.y1 - band.y0)}px"
+        ></div>
+      {/if}
       {#each rendered as row (row.top)}
         {#if row.kind === 'header'}
           {@const folder = library.folderOf(sections[row.section].folderId)}
@@ -375,6 +504,16 @@
      edge, which clips anything outside the box. */
   .viewport:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
   .canvas { position: relative; }
+  /* While a band is drawn, dragging over a folder header must not select its text. */
+  .canvas.banding { user-select: none; }
+  .band {
+    position: absolute;
+    z-index: 1;
+    background: var(--accent-soft);
+    border-radius: var(--r-1);
+    box-shadow: 0 0 0 1px var(--accent);
+    pointer-events: none;
+  }
   .header, .row { position: absolute; left: 0; right: 0; }
   /* 32px is layout.ts's HEADER: every row below is placed by it, so the type fits the box
      rather than the box growing to the type. */

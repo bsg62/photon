@@ -676,6 +676,137 @@ describe('LibraryStore', () => {
       expect(store.selectionCount).toBe(1);
     });
 
+    describe('a rubber band', () => {
+      it('previews from the loaded pages and replaces the selection', async () => {
+        const store = await storeOf(20);
+        store.selected = 15;
+
+        store.beginBand(false);
+        store.bandTo([[2, 4]]);
+
+        expect([...store.selectedItemIds].sort()).toEqual([idAt(2), idAt(3), idAt(4)].sort());
+        expect(store.isSelected(idAt(15))).toBe(false);
+      });
+
+      /** Ctrl/Cmd or Shift while dragging adds to what was already selected. The base is
+       *  captured at `beginBand`, so dragging the band smaller takes photos back off rather
+       *  than piling every frame's worth on top of the last. */
+      it('adds to the selection it started with, and shrinks back again', async () => {
+        const store = await storeOf(20);
+        store.selected = 15;
+
+        store.beginBand(true);
+        store.bandTo([[2, 4]]);
+        store.bandTo([[2, 3]]);
+
+        expect([...store.selectedItemIds].sort()).toEqual(
+          [idAt(15), idAt(2), idAt(3)].sort(),
+        );
+      });
+
+      it('puts the selection back when the drag is abandoned', async () => {
+        const store = await storeOf(20);
+        store.selected = 15;
+
+        store.beginBand(false);
+        store.bandTo([[2, 4]]);
+        store.cancelBand();
+
+        expect(store.selectedItemIds).toEqual([idAt(15)]);
+        expect(store.selected).toBe(15);
+      });
+
+      /** The preview can only see pages that have arrived; the release asks the backend,
+       *  which is what makes a band over a still-loading tile come out right. */
+      it('fills in a tile the preview could not see when the drag ends', async () => {
+        const store = await storeOf(2000);
+        // Offsets past the first 50 were never fetched, so no page holds them.
+        store.beginBand(false);
+        store.bandTo([[1200, 1202]]);
+        expect(store.selectionCount).toBe(0);
+
+        await store.endBand([[1200, 1202]]);
+
+        expect(store.selectionCount).toBe(3);
+        expect(store.isSelected(idAt(1201))).toBe(true);
+      });
+
+      /** Dragging a box over empty space is how a selection is cleared - the canonical
+       *  gesture in every file manager. Answering an empty band like an overtaken fetch put
+       *  the old selection back, springing the rings on again after the preview had visibly
+       *  taken them off. */
+      it('clears the selection when the band covers nothing', async () => {
+        const store = await storeOf(20);
+        store.selected = 15;
+
+        store.beginBand(false);
+        store.bandTo([]);
+        await store.endBand([]);
+
+        expect(store.selectionCount).toBe(0);
+        expect(store.selected).toBe(null);
+      });
+
+      it('leaves an additive band that covers nothing with what it started with', async () => {
+        const store = await storeOf(20);
+        store.selected = 15;
+
+        store.beginBand(true);
+        await store.endBand([]);
+
+        expect(store.selectedItemIds).toEqual([idAt(15)]);
+        expect(store.selected).toBe(15);
+      });
+
+      /** A grid rebuilt under the drag re-finds the lead by id (`rebindSelection`). A band
+       *  that then wrote back the offset it captured when the drag began would undo that -
+       *  the photo still rings, but Enter opens its neighbour. */
+      it('does not write a pre-rebuild offset back over the lead when a band is abandoned', async () => {
+        const store = await storeOf(20);
+        store.selected = 15;
+        store.beginBand(false);
+        store.bandTo([[4, 5]]);
+        // The rebuild lands mid-drag and re-finds the lead two offsets along.
+        store.selectItem(17, idAt(15));
+        vi.mocked(api.gridRows).mockResolvedValueOnce({ version: 2, rows: [entryAt(4)] });
+
+        await store.endBand([[4, 5]]);
+
+        expect(store.selected).toBe(17);
+      });
+
+      it('lands the lead and the anchor on the first photo of the band', async () => {
+        const store = await storeOf(20);
+        // An anchor somewhere else first: `extendSelection` falls back to the lead when
+        // there is no anchor, so a band that set only the lead would answer this correctly
+        // by accident unless the old anchor is a different, non-null offset.
+        store.selected = 15;
+
+        store.beginBand(false);
+        await store.endBand([[4, 6]]);
+        expect(store.selected).toBe(4);
+
+        // A Shift+click afterwards extends from where the band began, not from offset 15.
+        await store.extendSelection(8);
+        expect(store.selectionCount).toBe(5);
+        expect(store.isSelected(idAt(4))).toBe(true);
+      });
+
+      it('writes nothing when the grid is rebuilt under the drag', async () => {
+        const store = await storeOf(20);
+        store.selected = 15;
+        store.beginBand(false);
+        vi.mocked(api.gridRows).mockResolvedValueOnce({
+          version: 2,
+          rows: [entryAt(4), entryAt(5)],
+        });
+
+        await store.endBand([[4, 5]]);
+
+        expect(store.selectedItemIds).toEqual([idAt(15)]);
+      });
+    });
+
     it('shift+click selects the range from the anchor, chunking past MAX_ROWS', async () => {
       // 1301 > MAX_ROWS (1000): one un-chunked grid_rows call is silently truncated by
       // clamp_count, and the range's last three hundred photos would go unselected with
