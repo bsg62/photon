@@ -16,7 +16,9 @@ import { lastIndexAtOrBefore } from './layout';
 import { PageCache } from './pages';
 import type { UnlistenFn } from '@tauri-apps/api/event';
 
-export interface Toast { id: number; message: string }
+/** `error` is a failure the user should see; `done` is an action reporting what it did.
+ *  Both use the same channel because they compete for the same corner of the screen. */
+export interface Toast { id: number; message: string; kind: 'error' | 'done' }
 
 /** How many rows one `gridRows` call may ask for: `MAX_ROWS` in `commands.rs`, which
  *  `clamp_count` applies without telling the caller it truncated. */
@@ -252,7 +254,7 @@ export class LibraryStore {
    *  freshly built grid starts at offset 0, and remembering that would overwrite the stored
    *  folder with the library's first one before anything could read it. */
   restoring = $state(true);
-  errors = $state<Toast[]>([]);
+  toasts = $state<Toast[]>([]);
 
   private folderById = $derived(new Map(this.folders.folders.map((f) => [f.id, f])));
   private onlineByWatched = $derived(new Map(this.folders.watched.map((w) => [w.id, w.online])));
@@ -568,13 +570,26 @@ export class LibraryStore {
   }
 
   reportError = (e: unknown): void => {
-    const id = this.nextToast++;
-    this.errors.push({ id, message: errorMessage(e) });
-    setTimeout(() => this.dismissError(id), 6000);
+    this.toast(errorMessage(e), 'error');
   };
 
-  dismissError(id: number): void {
-    this.errors = this.errors.filter((t) => t.id !== id);
+  /** Says what an action did. Some actions - a keyword written to a selection - change
+   *  nothing the user can see from where they are standing, and silence there is
+   *  indistinguishable from a click that missed. */
+  notify = (message: string): void => {
+    this.toast(message, 'done');
+  };
+
+  private toast(message: string, kind: Toast['kind']): void {
+    const id = this.nextToast++;
+    this.toasts.push({ id, message, kind });
+    // A report of something that worked is read at a glance or not at all; an error is
+    // read, so it stays longer.
+    setTimeout(() => this.dismissToast(id), kind === 'error' ? 6000 : 4000);
+  }
+
+  dismissToast(id: number): void {
+    this.toasts = this.toasts.filter((t) => t.id !== id);
   }
 }
 

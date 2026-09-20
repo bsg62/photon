@@ -206,6 +206,10 @@ publishing it.
 - [ ] A watched folder whose drive is offline and which has never been scanned appears in Settings → Folders as Offline, and can still be rescanned, revealed or removed from there.
 - [ ] A release build (see Development above) starts and shows the library — not a blank window.
 - [ ] If a scan removes photos while the viewer is open, the viewer shows "This photo is no longer available" rather than a blank frame, and Escape still returns to the grid.
+- [ ] Select several photos spanning two folders and right-click → "Add keyword to 12 photos…": the dialog opens with the field focused and lists the library's keywords; typing narrows them; Enter (or clicking one) writes it to all of them and a toast says how many took it. The keyword then shows in the sidebar's Tags list, finds all of them in search, and appears in each photo's info panel.
+- [ ] "Remove keyword from …" on the same selection takes it off every one of them, including photos that carry it as their own metadata keyword — and it stays gone after that folder is rescanned.
+- [ ] In the dialog, Escape and the × close it without writing anything, and the selection behind it is still selected. **Then press an arrow key straight away: the grid moves.** (Closing the dialog has to hand the keyboard back; the grid's keys live on the grid, so focus left on nothing makes them all dead.) While the dialog is open, Tab must stay inside it — the gear, the sidebar and the tiles behind the dimming are not reachable.
+- [ ] Type a keyword you have renamed in Settings → Tags: the toast names the *new* name, and that is the name the photos carry. Remove a keyword from a selection twice: the second toast says it changed nothing rather than repeating the count.
 - [ ] Open a photo, type a keyword in the info panel and press Enter: the chip appears at once, and the keyword shows in the sidebar's Tags list and finds the photo in search.
 - [ ] Click the × on a keyword that came from the photo's own metadata: it goes from this photo only, and stays gone after the folder is rescanned.
 - [ ] Rename that keyword in Settings → Tags: the photo's chip follows to the new name.

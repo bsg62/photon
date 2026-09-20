@@ -7,7 +7,10 @@
   import Tile from './Tile.svelte';
   import Timeline from './Timeline.svelte';
 
-  let { onopen }: { onopen: (offset: number) => void } = $props();
+  let {
+    onopen,
+    onkeywords,
+  }: { onopen: (offset: number) => void; onkeywords: (mode: 'add' | 'remove') => void } = $props();
 
   const NAV_KEYS = ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'];
   const VISIBLE_DEBOUNCE_MS = 150;
@@ -226,6 +229,15 @@
     focus();
   }
 
+  /** Unlike the other verbs, this one does not act on the click: the keyword dialog is an
+   *  overlay, so App owns it - everything behind an overlay is made `inert` there, and a
+   *  dialog mounted inside the grid would be one of the things made inert. All this does is
+   *  close the menu and ask. Focus comes back to the grid when App closes the dialog. */
+  function pickKeyword(mode: 'add' | 'remove') {
+    menu = null;
+    onkeywords(mode);
+  }
+
   /** Stars or unstars everything selected. The backend skips a folder whose `.picasa.ini`
    *  it cannot write and answers with how many landed, so a read-only folder in the
    *  selection costs the user a toast rather than the other eleven photos. */
@@ -321,6 +333,8 @@
     {/if}
     <button role="menuitem" onclick={() => withSelection((ids) => star(ids, true))}>Star {subject}</button>
     <button role="menuitem" onclick={() => withSelection((ids) => star(ids, false))}>Unstar {subject}</button>
+    <button role="menuitem" onclick={() => pickKeyword('add')}>Add keyword to {subject}…</button>
+    <button role="menuitem" onclick={() => pickKeyword('remove')}>Remove keyword from {subject}…</button>
     {#if albumId !== null}
       <button role="menuitem" onclick={() => withSelection((ids) => library.removeFromAlbum(albumId, ids))}>
         Remove {subject} from “{library.albumName(albumId)}”

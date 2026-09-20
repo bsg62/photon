@@ -25,6 +25,17 @@ pub const MAX_RADIUS: usize = 10;
 
 type CmdResult<T> = Result<T, AppError>;
 
+/// What one keyword write to a selection came to: the name stored - which is not always the
+/// name typed, since a keyword the user has renamed stores as its new name - and how many
+/// photos took it. The count is what the toast says, and it can be short of the selection:
+/// a photo purged or gone missing since the grid was built is skipped, not refused.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TagWrite {
+    pub tag: String,
+    pub count: usize,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FolderList {
@@ -493,6 +504,23 @@ pub fn add_item_tag(engine: &Engine, id: i64, tag: &str) -> CmdResult<String> {
 pub fn remove_item_tag(engine: &Engine, id: i64, tag: &str) -> CmdResult<()> {
     engine.remove_item_tag(id, tag)?;
     Ok(())
+}
+
+/// Adds one keyword to several photos, reporting the name stored and how many took it.
+/// The name can differ from what was typed: a keyword the user has renamed stores as the
+/// name they renamed it to, which is the name they will see on the photos.
+pub fn add_items_tag(engine: &Engine, ids: &[i64], tag: &str) -> CmdResult<TagWrite> {
+    let (tag, count) = engine.add_items_tag(ids, tag)?;
+    Ok(TagWrite { tag, count })
+}
+
+/// Removes one keyword from several photos, reporting how many changed.
+pub fn remove_items_tag(engine: &Engine, ids: &[i64], tag: &str) -> CmdResult<TagWrite> {
+    let count = engine.remove_items_tag(ids, tag)?;
+    Ok(TagWrite {
+        tag: tag.to_string(),
+        count,
+    })
 }
 
 /// Items around `id`, nearest first, queued at neighbour priority so the viewer's

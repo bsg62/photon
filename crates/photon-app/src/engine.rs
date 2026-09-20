@@ -559,6 +559,36 @@ impl Engine {
         Ok(name)
     }
 
+    /// Adds `tag` to several photos at once, returning the name stored and how many photos
+    /// took it.
+    ///
+    /// One write and one `refresh_grid` for the whole batch: the per-photo route rebuilds
+    /// the index once per photo, and the index is what the Tag view and the sidebar's counts
+    /// are read from - on a large library that is the difference between a click and a
+    /// stall. Ids that are no longer live photos are skipped by the library rather than
+    /// refused here, for the reason `set_stars` gives: a selection can outlive its photos.
+    ///
+    /// A write that changed nothing does not rebuild, the way an identical edit does not:
+    /// every rebuild bumps the grid version, and a version bump is what makes the viewer
+    /// re-read its photo and the UI re-render.
+    pub fn add_items_tag(&self, ids: &[i64], tag: &str) -> Result<(String, usize)> {
+        let (name, count) = self.lib.add_items_tag(ids, tag)?;
+        if count > 0 {
+            self.refresh_grid()?;
+        }
+        Ok((name, count))
+    }
+
+    /// Removes the displayed name `tag` from several photos, returning how many changed.
+    /// One write and one refresh, as `add_items_tag`.
+    pub fn remove_items_tag(&self, ids: &[i64], tag: &str) -> Result<usize> {
+        let count = self.lib.remove_items_tag(ids, tag)?;
+        if count > 0 {
+            self.refresh_grid()?;
+        }
+        Ok(count)
+    }
+
     /// Removes the displayed name `tag` from one photo. Refreshes for the same reason.
     pub fn remove_item_tag(&self, id: i64, tag: &str) -> Result<()> {
         self.live_item(id)?;
@@ -1472,6 +1502,38 @@ mod tests {
             version + 1,
             "one refresh for the whole batch, not one per photo"
         );
+    }
+
+    #[test]
+    fn a_keyword_written_to_a_selection_refreshes_the_grid_once() {
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a.jpg", &img), ("b.jpg", &img), ("sub/c.jpg", &img)]);
+        f.add_photos();
+        let ids = f.ids();
+        let version = f.engine.grid().0;
+
+        let (name, count) = f.engine.add_items_tag(&ids, "beach").unwrap();
+        assert_eq!((name.as_str(), count), ("beach", 3));
+        assert_eq!(
+            f.engine.grid().0,
+            version + 1,
+            "one refresh for the whole batch, not one per photo"
+        );
+        for id in &ids {
+            assert_eq!(f.engine.lib.item_tags(*id).unwrap(), ["beach"]);
+        }
+
+        let version = f.engine.grid().0;
+        assert_eq!(f.engine.remove_items_tag(&ids, "beach").unwrap(), 3);
+        assert_eq!(f.engine.grid().0, version + 1);
+        assert!(f.engine.lib.item_tags(ids[0]).unwrap().is_empty());
+
+        // A write that changed nothing must not bump the version: the bump is what makes
+        // every listener re-read, and the viewer re-read its photo.
+        let version = f.engine.grid().0;
+        assert_eq!(f.engine.remove_items_tag(&ids, "beach").unwrap(), 0);
+        assert_eq!(f.engine.add_items_tag(&[9_999], "sun").unwrap().1, 0);
+        assert_eq!(f.engine.grid().0, version);
     }
 
     #[test]

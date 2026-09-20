@@ -111,6 +111,9 @@
     last_folder: () => null,
     slideshow_interval: () => 4,
     set_stars: (args) => (args.ids || []).length,
+    // The keyword dialog reports what landed, so these answer rather than staying silent.
+    add_items_tag: (args) => ({ tag: args.tag, count: (args.ids || []).length }),
+    remove_items_tag: (args) => ({ tag: args.tag, count: (args.ids || []).length }),
     theme: () => P.get('theme') || 'system',
   };
 
@@ -154,6 +157,14 @@
     menu: () => {
       tile(7)?.click();
       tile(7)?.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 700, clientY: 300 }));
+    },
+    keyword: () => {
+      actions.menu();
+      later(100, () =>
+        [...document.querySelectorAll('[role="menuitem"]')]
+          .find((b) => b.textContent.trim().startsWith('Add keyword'))
+          ?.click(),
+      );
     },
     viewer: () => open(2),
     info: () => {

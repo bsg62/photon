@@ -86,6 +86,14 @@ export interface ViewerItem {
 export interface ItemEdit { turns: number; crop: [number, number, number, number] | null }
 export interface ItemCopy { id: number; path: string }
 export interface Person { hash: string; name: string; count: number }
+/** What one keyword write to a selection came to. Mirrors `TagWrite` in `commands.rs`.
+ *  `count` can be short of the selection: a photo purged or gone missing since the grid was
+ *  built is skipped, not refused. */
+export interface TagWrite {
+  tag: string;
+  count: number;
+}
+
 export interface TagCount { tag: string; count: number }
 /** A tag the user renamed (`target` set) or removed (`target` null). photon applies it
  *  when reading tags; the photo files keep their keywords. */
@@ -150,6 +158,10 @@ export const api = {
    *  different from what was typed. */
   addItemTag: (id: number, tag: string) => invoke<string>('add_item_tag', { id, tag }),
   removeItemTag: (id: number, tag: string) => invoke<void>('remove_item_tag', { id, tag }),
+  /** Adds one keyword to a whole selection. The name that comes back is the one stored,
+   *  which a rename rule can make different from what was typed. */
+  addItemsTag: (ids: number[], tag: string) => invoke<TagWrite>('add_items_tag', { ids, tag }),
+  removeItemsTag: (ids: number[], tag: string) => invoke<TagWrite>('remove_items_tag', { ids, tag }),
   listAlbums: () => invoke<AlbumSummary[]>('list_albums'),
   createAlbum: (name: string) => invoke<Album>('create_album', { name }),
   renameAlbum: (albumId: number, name: string) => invoke<void>('rename_album', { albumId, name }),
