@@ -330,6 +330,9 @@ publishing it.
       selected and nothing above or below that folder's header is. In Starred, an album or a
       set of search results, Ctrl+A takes the whole view. Escape clears the selection — with
       the context menu open, the first Escape only closes the menu.
+- [ ] Click the sidebar, the status bar or a folder name and press Ctrl+A: **nothing**
+      highlights. No blue wash over the chrome, no selected folder names. Then click into the
+      search box, type a word and press Ctrl+A: the query is selected, as in any text field.
 
 ## How watching works
 

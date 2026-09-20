@@ -4,6 +4,7 @@
   import { theme } from './lib/app-theme.svelte';
   import { locateItem } from './lib/folders';
   import { library } from './lib/library.svelte';
+  import { ownsSelectAll } from './lib/nav';
   import { resultsChanged, viewKey } from './lib/search';
   import { searchBox } from './lib/search-box.svelte';
   import type { SettingsSection } from './lib/settings';
@@ -122,6 +123,16 @@
    *  trap: the window's fullscreen state is remembered across launches, so quitting in the
    *  middle of a slideshow reopens photon fullscreen, with no title bar to leave it by. */
   function onkeydown(e: KeyboardEvent) {
+    // Ctrl/Cmd+A is photon's, not the webview's. Unprevented, the webview runs its own
+    // select-all and paints the whole window in selection highlight — the way a browser
+    // treats a page. The grid's handler has already run by the time this does, so a
+    // Ctrl+A over the grid has selected its photos and this only stops the default that
+    // would otherwise follow; everywhere else the key does nothing at all, which is the
+    // fix. A text entry keeps it, because there it means "select this field's text".
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a' && ownsSelectAll(e.target as HTMLElement | null)) {
+      e.preventDefault();
+      return;
+    }
     if (e.key !== 'F11') return;
     e.preventDefault();
     api

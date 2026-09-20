@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { clampPan, clampZoom, closesViewer, move, positionInFolder, positionInView, wheelStep } from './nav';
+import { clampPan, clampZoom, closesViewer, move, ownsSelectAll, positionInFolder, positionInView, wheelStep } from './nav';
 
 const sections = [
   { folderId: 1, offset: 0, count: 5 },
@@ -168,6 +168,34 @@ describe('closesViewer', () => {
     // Forward has nowhere to go — photon keeps no history — so swallowing it would make a
     // stray press on a five-button mouse close the viewer for no stated reason.
     expect(closesViewer(4)).toBe(false);
+  });
+});
+
+describe('ownsSelectAll', () => {
+  it('leaves a text field to the browser', () => {
+    // Ctrl+A in the search box means "select this query", and in Settings' rename fields
+    // "select this name". Swallowing it there would break an editing key every text field
+    // in every application has.
+    expect(ownsSelectAll({ tagName: 'INPUT' })).toBe(false);
+    expect(ownsSelectAll({ tagName: 'input' })).toBe(false);
+    expect(ownsSelectAll({ tagName: 'TEXTAREA' })).toBe(false);
+    expect(ownsSelectAll({ tagName: 'DIV', isContentEditable: true })).toBe(false);
+  });
+
+  it('claims it everywhere else', () => {
+    // The webview's own Ctrl+A paints the whole application with a selection highlight —
+    // the sidebar, the status bar, every folder name — which is what a browser does to a
+    // page and what a photo manager must not do to its own chrome.
+    expect(ownsSelectAll({ tagName: 'DIV' })).toBe(true);
+    expect(ownsSelectAll({ tagName: 'BUTTON' })).toBe(true);
+    expect(ownsSelectAll({ tagName: 'BODY' })).toBe(true);
+    expect(ownsSelectAll({ tagName: 'SPAN', isContentEditable: false })).toBe(true);
+  });
+
+  it('claims a keystroke whose target has gone', () => {
+    // An element removed mid-keystroke leaves a null target; the keystroke is still one the
+    // application, not the webview, answers for.
+    expect(ownsSelectAll(null)).toBe(true);
   });
 });
 

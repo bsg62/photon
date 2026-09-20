@@ -23,6 +23,31 @@ export function closesViewer(button: number): boolean {
   return button === MOUSE_BACK_BUTTON;
 }
 
+/** The part of a keydown target that decides who owns Ctrl/Cmd+A. Structural rather than
+ *  `Element`, so the rule can be tested: vitest runs in node, where there is no DOM. */
+export interface SelectAllTarget {
+  tagName?: string;
+  isContentEditable?: boolean;
+}
+
+/** Whether photon, rather than the webview, answers for a Ctrl/Cmd+A on this target.
+ *
+ *  Left to the webview, Ctrl+A runs its own select-all over the document and paints the
+ *  whole application — sidebar, status bar, folder names — in selection highlight, the way
+ *  a browser treats a page. photon is not a page, so every keystroke outside a text entry
+ *  is the application's to answer, even when it answers by doing nothing: the grid's own
+ *  handler covers the case where something *should* happen.
+ *
+ *  A text entry keeps it, because there Ctrl+A means "select this field's text" — the
+ *  search box and Settings' rename fields would otherwise lose an editing key that every
+ *  text field everywhere has. */
+export function ownsSelectAll(target: SelectAllTarget | null): boolean {
+  if (!target) return true;
+  if (target.isContentEditable) return false;
+  const tag = target.tagName?.toUpperCase();
+  return tag !== 'INPUT' && tag !== 'TEXTAREA';
+}
+
 export interface FolderPosition {
   /** 1-based position within the folder, or 0 when there is nothing to number. */
   index: number;
