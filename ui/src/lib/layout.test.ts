@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildRows, columnsFor, GAP, HEADER, itemSpan, itemsInRect, layoutSections, rowIndexAt, rowOfItem, TILE, TILE_ROW, topFolderId, totalHeight, visibleRange } from './layout';
+import { buildRows, columnsFor, edgeScrollSpeed, GAP, HEADER, itemSpan, itemsInRect, layoutSections, rowIndexAt, rowOfItem, TILE, TILE_ROW, topFolderId, totalHeight, visibleRange } from './layout';
 
 const sections = [
   { folderId: 1, offset: 0, count: 5 },
@@ -177,5 +177,67 @@ describe('itemsInRect', () => {
       false,
     );
     expect(itemsInRect(two, rect(0, 0, 1000, 1000))).toEqual([[0, 5]]);
+  });
+});
+
+describe('edgeScrollSpeed', () => {
+  // A viewport 500px tall on screen at y = 100..600, with a 40px margin.
+  const speed = (y: number) => edgeScrollSpeed(y, 100, 600, 40, 20);
+
+  it('does not scroll while the pointer is well inside the viewport', () => {
+    expect(speed(300)).toBe(0);
+    expect(speed(141)).toBe(0);
+    expect(speed(559)).toBe(0);
+  });
+
+  /** The boundaries themselves. Whether the comparison is `<` or `<=` cannot matter - the
+   *  ramp is zero at the boundary either way - so this pins the behaviour (no movement, and
+   *  movement one pixel further out) rather than the operator. `Math.abs` because the top
+   *  edge computes `-0`, which `toBe(0)` refuses. */
+  it('holds still exactly at the edge of the margin', () => {
+    expect(Math.abs(speed(140))).toBe(0);
+    expect(Math.abs(speed(560))).toBe(0);
+    expect(speed(139)).toBeLessThan(0);
+    expect(speed(561)).toBeGreaterThan(0);
+  });
+
+  /** A viewport with no height has no margins to be inside. Without the guard the ramp
+   *  divides by zero and answers ±max for every point, so a grid measured before its first
+   *  layout would scroll at full speed. */
+  it('never scrolls a viewport with no height, or with no margin', () => {
+    expect(edgeScrollSpeed(100, 100, 100, 40, 20)).toBe(0);
+    expect(edgeScrollSpeed(120, 100, 100, 40, 20)).toBe(0);
+    expect(edgeScrollSpeed(300, 100, 600, 0, 20)).toBe(0);
+    expect(edgeScrollSpeed(110, 100, 600, 0, 20)).toBe(0);
+  });
+
+  it('scrolls faster the deeper into the margin the pointer is', () => {
+    const shallow = speed(590);
+    const deep = speed(599);
+    expect(shallow).toBeGreaterThan(0);
+    expect(deep).toBeGreaterThan(shallow);
+  });
+
+  it('scrolls up at the top edge and down at the bottom', () => {
+    expect(speed(110)).toBeLessThan(0);
+    expect(speed(590)).toBeGreaterThan(0);
+  });
+
+  /** A pointer dragged off the window entirely must not scroll arbitrarily fast: the drag
+   *  is captured, so this is the common case, not an edge one. */
+  it('clamps to the maximum however far outside the viewport the pointer goes', () => {
+    expect(speed(601)).toBe(20);
+    expect(speed(5000)).toBe(20);
+    expect(speed(99)).toBe(-20);
+    expect(speed(-5000)).toBe(-20);
+  });
+
+  /** A viewport shorter than two margins would otherwise be all edge, and a band in a short
+   *  grid would scroll wherever the pointer rested. 100..160 is 60 tall, so each margin is
+   *  capped at 20 and the middle third holds still. */
+  it('keeps a still middle third in a viewport shorter than its margins', () => {
+    expect(edgeScrollSpeed(130, 100, 160, 40, 20)).toBe(0);
+    expect(edgeScrollSpeed(105, 100, 160, 40, 20)).toBeLessThan(0);
+    expect(edgeScrollSpeed(155, 100, 160, 40, 20)).toBeGreaterThan(0);
   });
 });
