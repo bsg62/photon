@@ -61,7 +61,7 @@ cargo run -p xtask -- metadata            # licence and installer metadata are c
 **Seeing the UI without launching it** (not in CI; needs Chromium on `PATH` or in `CHROMIUM`):
 
 ```bash
-cargo run -p xtask -- screenshots                     # eleven PNGs into target/screenshots/
+cargo run -p xtask -- screenshots                     # twelve PNGs into target/screenshots/
 cargo run -p xtask -- screenshots --only viewer-info-light --no-build
 ```
 
@@ -326,7 +326,7 @@ first row), which clips anything sitting outside the tile's own box.
 
 The look cannot be tested here, but it can be seen without launching the app: `cargo run -p xtask --
 screenshots` builds the UI, serves `ui/dist` itself with `mock.js` (in
-`crates/xtask/screenshots/`) standing in for Tauri's IPC, and writes eleven PNGs, in both themes,
+`crates/xtask/screenshots/`) standing in for Tauri's IPC, and writes twelve PNGs, in both themes,
 to `target/screenshots/` with headless Chromium. It claims a Windows user agent and maps
 `photon.localhost` to its own port, because `mediaUrl` uses `http://photon.localhost` there
 and no plain browser can load `photon://`. It is Chromium's rendering, not WebKitGTK's or
@@ -342,6 +342,10 @@ action in `mock.js`.
 - **photon never writes to, moves or deletes photo files.** The one file it writes inside a
   watched folder is Picasa's own `.picasa.ini` (or `Picasa.ini`), through `picasa::set_star`
   only, to set or clear a single `star=` line; every other byte of that file is preserved.
+  Export (`photon_core::export`, spec `2026-09-20-photon-export-copies-design.md`, 2026-09-20)
+  writes photo files, but only *new* ones, only where the user pointed a folder picker, and
+  never inside a watched root - `Engine::export_items` refuses that destination, because the
+  scanner would index the copies as new photos. No watched photo is ever opened for writing.
   This narrowed the older "never writes inside watched folders" promise on 2026-09-16 (spec
   `2026-09-16-photon-set-star-design.md`); any further write is a spec-level decision, not a
   code change. The writer and the reader in `picasa.rs` share one line classifier on purpose:

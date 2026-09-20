@@ -219,13 +219,22 @@ impl Crop {
     }
 }
 
-/// The full-size edited picture, encoded for the webview: JPEG, or PNG when the source has
+/// The full-size edited picture, encoded: JPEG at `quality`, or PNG when the source has
 /// transparency to keep. Returns the bytes and their MIME type.
 ///
 /// Decoded at full resolution, under the same allocation limits as a thumbnail decode
 /// (`decode::decode_oriented`). The caller serves the *file* for an untouched photo; this is
 /// only ever asked for an edit, where there is no file that holds the picture.
-pub fn render_full(path: &Path, orientation: u8, edit: Edit) -> Result<(Vec<u8>, &'static str)> {
+///
+/// `quality` is the caller's because the two callers want different things from it: the
+/// viewer throws its render away after one look (`FULL_QUALITY`), and an export is the copy
+/// the user keeps (`export::EXPORT_QUALITY`).
+pub fn render_full(
+    path: &Path,
+    orientation: u8,
+    edit: Edit,
+    quality: u8,
+) -> Result<(Vec<u8>, &'static str)> {
     let img = ImageReader::open(path)?.with_guessed_format()?.decode()?;
     let img = edit.apply(apply_orientation(img, orientation));
     let mut bytes = Vec::new();
@@ -236,7 +245,7 @@ pub fn render_full(path: &Path, orientation: u8, edit: Edit) -> Result<(Vec<u8>,
         )?;
         "image/png"
     } else {
-        let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut bytes, FULL_QUALITY);
+        let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut bytes, quality);
         // `into_rgb8` hands back the buffer of a photo that already is RGB8, which a JPEG
         // is; `to_rgb8` would copy all of it.
         img.into_rgb8().write_with_encoder(encoder)?;
@@ -245,9 +254,10 @@ pub fn render_full(path: &Path, orientation: u8, edit: Edit) -> Result<(Vec<u8>,
     Ok((bytes, mime))
 }
 
-/// High enough that a second generation is not visible at 100%; the render is for looking
-/// at, never for keeping.
-const FULL_QUALITY: u8 = 92;
+/// High enough that a second generation is not visible at 100%, for a render the viewer
+/// shows once and throws away. A render the user *keeps* is encoded at
+/// `export::EXPORT_QUALITY` instead.
+pub const FULL_QUALITY: u8 = 92;
 
 #[cfg(test)]
 mod tests {
@@ -404,7 +414,7 @@ mod tests {
         let path = dir.path().join("a.png");
         numbered().save(&path).unwrap();
         let edit = Edit::new(1, Some(crop(0.0, 0.0, 1.0, 0.5))).unwrap();
-        let (bytes, mime) = render_full(&path, 1, edit).unwrap();
+        let (bytes, mime) = render_full(&path, 1, edit, FULL_QUALITY).unwrap();
         // The fixture is RGBA, so the render stays lossless and can be compared exactly.
         assert_eq!(mime, "image/png");
         let out = image::load_from_memory(&bytes).unwrap();
@@ -412,7 +422,7 @@ mod tests {
 
         let opaque = dir.path().join("b.jpg");
         numbered().to_rgb8().save(&opaque).unwrap();
-        let (bytes, mime) = render_full(&opaque, 1, edit).unwrap();
+        let (bytes, mime) = render_full(&opaque, 1, edit, FULL_QUALITY).unwrap();
         assert_eq!(mime, "image/jpeg");
         let out = image::load_from_memory(&bytes).unwrap();
         assert_eq!((out.width(), out.height()), edit.dims(4, 2));

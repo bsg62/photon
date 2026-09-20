@@ -10,7 +10,12 @@
   let {
     onopen,
     onkeywords,
-  }: { onopen: (offset: number) => void; onkeywords: (mode: 'add' | 'remove') => void } = $props();
+    onexport,
+  }: {
+    onopen: (offset: number) => void;
+    onkeywords: (mode: 'add' | 'remove') => void;
+    onexport: () => void;
+  } = $props();
 
   const NAV_KEYS = ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'];
   const VISIBLE_DEBOUNCE_MS = 150;
@@ -335,6 +340,13 @@
     <button role="menuitem" onclick={() => withSelection((ids) => star(ids, false))}>Unstar {subject}</button>
     <button role="menuitem" onclick={() => pickKeyword('add')}>Add keyword to {subject}…</button>
     <button role="menuitem" onclick={() => pickKeyword('remove')}>Remove keyword from {subject}…</button>
+    <button
+      role="menuitem"
+      onclick={() => {
+        menu = null;
+        onexport();
+      }}>Export {subject}…</button
+    >
     {#if albumId !== null}
       <button role="menuitem" onclick={() => withSelection((ids) => library.removeFromAlbum(albumId, ids))}>
         Remove {subject} from “{library.albumName(albumId)}”

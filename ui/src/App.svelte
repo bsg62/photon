@@ -1,5 +1,7 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
+  // `open` is already this component's name for opening the viewer.
+  import { open as pickFolder } from '@tauri-apps/plugin-dialog';
   import { api } from './lib/api';
   import { theme } from './lib/app-theme.svelte';
   import { locateItem } from './lib/folders';
@@ -9,12 +11,14 @@
   import { searchBox } from './lib/search-box.svelte';
   import type { SettingsSection } from './lib/settings';
   import { clampSidebarWidth, SIDEBAR_DEFAULT, SIDEBAR_STEP } from './lib/sidebar';
+  import { createExportDialog } from './lib/export-dialog.svelte';
   import { createTagPicker } from './lib/tag-picker.svelte';
   import Icon from './components/Icon.svelte';
   import FolderTree from './components/FolderTree.svelte';
   import Grid from './components/Grid.svelte';
   import SearchBar from './components/SearchBar.svelte';
   import Settings from './components/Settings.svelte';
+  import ExportDialog from './components/ExportDialog.svelte';
   import StatusBar from './components/StatusBar.svelte';
   import TagPicker from './components/TagPicker.svelte';
   import Toasts from './components/Toasts.svelte';
@@ -32,9 +36,22 @@
     apply: (mode, tag, ids) => (mode === 'add' ? api.addItemsTag(ids, tag) : api.removeItemsTag(ids, tag)),
   });
 
+  /** Exporting copies. Here with the other overlays, for the reason the picker gives, and
+   *  the folder picker is the plugin's - photon never types a path for the user. */
+  const exporter = createExportDialog({
+    run: (ids, dest, applyEdits) => api.exportItems(ids, dest, applyEdits),
+    pick: async () => {
+      const picked = await pickFolder({ directory: true, multiple: false, title: 'Export copies to…' });
+      return typeof picked === 'string' ? picked : null;
+    },
+    remember: (apply) => api.setExportApplyEdits(apply),
+  });
+
   /** Everything behind an overlay is inert; the overlays never stack, because each one
    *  makes the other's opener inert. */
-  const covered = $derived(viewerAt !== null || settingsAt !== null || picker.visible);
+  const covered = $derived(
+    viewerAt !== null || settingsAt !== null || picker.visible || exporter.visible,
+  );
   let sidebarWidth = $state(SIDEBAR_DEFAULT);
   let dragFrom: { x: number; width: number } | null = null;
 
@@ -180,6 +197,24 @@
     grid?.focus();
   }
 
+  /** The remembered checkbox is read when the dialog opens rather than held in the UI: it
+   *  lives in the library, and Settings is not the only thing that can change it. A read
+   *  that fails must not cost the user the export, so it falls back to rendering edits -
+   *  the default, and what the dialog says it does. */
+  async function openExport() {
+    const ids = library.selectedItemIds;
+    if (!ids.length) return;
+    const applyEdits = await api.exportApplyEdits().catch(() => true);
+    exporter.show(ids, applyEdits);
+  }
+
+  /** As `closeKeywords`: the grid's keys live on the grid, and `<main>` is inert until the
+   *  DOM catches up with `covered`. */
+  async function closeExport() {
+    await tick();
+    grid?.focus();
+  }
+
   async function jump(folderId: number) {
     const offset = await api.gridOffsetOfFolder(folderId).catch(() => null);
     if (offset === null) return;
@@ -217,13 +252,14 @@
     onkeydown={keyResize}
   ></div>
   <main class="content" inert={covered}>
-    <Grid bind:this={grid} onopen={open} onkeywords={openKeywords} />
+    <Grid bind:this={grid} onopen={open} onkeywords={openKeywords} onexport={openExport} />
   </main>
   <div class="statusbar"><StatusBar /></div>
 </div>
 {#if viewerAt !== null}<Viewer offset={viewerAt} onclose={closeViewer} onlocate={locate} onsearch={searchFrom} />{/if}
 {#if settingsAt !== null}<Settings section={settingsAt} onclose={closeSettings} />{/if}
 <TagPicker {picker} onclosed={closeKeywords} />
+<ExportDialog dialog={exporter} onclosed={closeExport} />
 <Toasts />
 
 <style>

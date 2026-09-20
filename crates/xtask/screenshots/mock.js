@@ -113,6 +113,8 @@
     set_stars: (args) => (args.ids || []).length,
     // The keyword dialog reports what landed, so these answer rather than staying silent.
     add_items_tag: (args) => ({ tag: args.tag, count: (args.ids || []).length }),
+    export_apply_edits: () => true,
+    export_items: (args) => ({ written: (args.ids || []).length, failed: 0, reason: null }),
     remove_items_tag: (args) => ({ tag: args.tag, count: (args.ids || []).length }),
     theme: () => P.get('theme') || 'system',
   };
@@ -124,7 +126,8 @@
     'rescan_folder', 'restore_tag_rule', 'reveal_folder', 'reveal_in_file_manager',
     'reveal_library', 'reveal_watched', 'rotate_item', 'set_album_view', 'set_grid_view',
     'set_item_edit', 'set_last_folder', 'set_person_view', 'set_search_query',
-    'set_slideshow_interval', 'set_star', 'set_tag_view', 'set_theme', 'set_visible',
+    'set_export_apply_edits', 'set_slideshow_interval', 'set_star', 'set_tag_view', 'set_theme',
+    'set_visible',
   ];
 
   let callbacks = 0;
@@ -157,6 +160,14 @@
     menu: () => {
       tile(7)?.click();
       tile(7)?.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 700, clientY: 300 }));
+    },
+    export: () => {
+      actions.menu();
+      later(100, () =>
+        [...document.querySelectorAll('[role="menuitem"]')]
+          .find((b) => b.textContent.trim().startsWith('Export'))
+          ?.click(),
+      );
     },
     keyword: () => {
       actions.menu();

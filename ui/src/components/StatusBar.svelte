@@ -15,6 +15,12 @@
     {#if library.anyDegraded}
       <span>Live updates limited — photon will re-check these folders periodically.</span>
     {/if}
+    {#if library.exporting}
+      <span class="scan" role="status">
+        <span>Exporting {library.exporting.done.toLocaleString()} / {library.exporting.total.toLocaleString()}…</span>
+        <progress aria-label="Export progress" value={library.exporting.done} max={library.exporting.total}></progress>
+      </span>
+    {/if}
     {#each scans as scan (scan.watchedId)}
       <span class="scan" role="status">
         <span>{scan.label}</span>

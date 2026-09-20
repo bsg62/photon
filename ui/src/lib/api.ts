@@ -86,6 +86,23 @@ export interface ViewerItem {
 export interface ItemEdit { turns: number; crop: [number, number, number, number] | null }
 export interface ItemCopy { id: number; path: string }
 export interface Person { hash: string; name: string; count: number }
+/** What one export came to. Mirrors `ExportReport` in `commands.rs`. `failed` counts a photo
+ *  that has gone from the library since the grid was built as well as one that could not be
+ *  read; `reason` is the first of those failures, for a message that can say why. */
+export interface ExportReport {
+  written: number;
+  failed: number;
+  reason: string | null;
+}
+
+/** How far an export has got. Mirrors `ExportProgress` in `events.rs`; `done` counts every
+ *  photo finished with, written or not, so `done === total` is always the end. */
+export interface ExportProgress {
+  done: number;
+  total: number;
+  failed: number;
+}
+
 /** What one keyword write to a selection came to. Mirrors `TagWrite` in `commands.rs`.
  *  `count` can be short of the selection: a photo purged or gone missing since the grid was
  *  built is skipped, not refused. */
@@ -160,6 +177,11 @@ export const api = {
   removeItemTag: (id: number, tag: string) => invoke<void>('remove_item_tag', { id, tag }),
   /** Adds one keyword to a whole selection. The name that comes back is the one stored,
    *  which a rename rule can make different from what was typed. */
+  /** Copies photos into `dest`. A destination inside a watched folder is refused. */
+  exportItems: (ids: number[], dest: string, applyEdits: boolean) =>
+    invoke<ExportReport>('export_items', { ids, dest, applyEdits }),
+  exportApplyEdits: () => invoke<boolean>('export_apply_edits'),
+  setExportApplyEdits: (apply: boolean) => invoke<void>('set_export_apply_edits', { apply }),
   addItemsTag: (ids: number[], tag: string) => invoke<TagWrite>('add_items_tag', { ids, tag }),
   removeItemsTag: (ids: number[], tag: string) => invoke<TagWrite>('remove_items_tag', { ids, tag }),
   listAlbums: () => invoke<AlbumSummary[]>('list_albums'),
@@ -193,6 +215,8 @@ export const events = {
     listen<ScanProgressEvent>('scan-progress', (e) => cb(e.payload)),
   onFolderStatus: (cb: (e: FolderStatus) => void): Promise<UnlistenFn> =>
     listen<FolderStatus>('folder-status', (e) => cb(e.payload)),
+  onExportProgress: (cb: (e: ExportProgress) => void): Promise<UnlistenFn> =>
+    listen<ExportProgress>('export-progress', (e) => cb(e.payload)),
 };
 
 export function errorMessage(e: unknown): string {

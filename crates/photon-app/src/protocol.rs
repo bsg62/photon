@@ -73,7 +73,11 @@ fn thumb_caching(engine: &Engine, id: i64, url_key: Option<&str>) -> &'static st
 /// for 24 MP) on a protocol thread, outside the thumbnail pool whose `MAX_WORKERS` is what
 /// bounds decode memory; flicking through a run of edited photos would otherwise start one
 /// per photo passed.
-static RENDERING: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+///
+/// An export takes the same lock: a full-size render is a full-size render whoever asked
+/// for it, and an export of a hundred edited photos beside a viewer flicking through them
+/// would otherwise be two at once.
+pub(crate) static RENDERING: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
 
 fn image(engine: &Engine, id: &str, cropped: bool) -> Response<Vec<u8>> {
     let Ok(id) = id.parse::<i64>() else {
@@ -94,7 +98,12 @@ fn image(engine: &Engine, id: &str, cropped: bool) -> Response<Vec<u8>> {
         // webview must ask again. The UI adds the thumbnail key as a query for the same
         // reason - an `<img>` given the URL it already has does not refetch at all.
         let _one_at_a_time = RENDERING.lock();
-        return match photon_core::edit::render_full(Path::new(&item.path), item.orientation, edit) {
+        return match photon_core::edit::render_full(
+            Path::new(&item.path),
+            item.orientation,
+            edit,
+            photon_core::edit::FULL_QUALITY,
+        ) {
             Ok((bytes, mime)) => ok(bytes, mime, "no-cache"),
             Err(Error::Io(err)) if err.kind() == std::io::ErrorKind::NotFound => {
                 text(StatusCode::NOT_FOUND, "not found")

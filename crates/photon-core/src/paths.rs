@@ -65,7 +65,9 @@ pub(crate) fn is_within(child: &Path, parent: &Path) -> bool {
     child.len() >= parent.len() && child[..parent.len()] == parent[..]
 }
 
-pub(crate) fn overlaps(a: &Path, b: &Path) -> bool {
+/// True when `a` and `b` are the same folder or one contains the other. Public because an
+/// export has to refuse a destination anywhere inside a watched root, not only the root.
+pub fn overlaps(a: &Path, b: &Path) -> bool {
     is_within(a, b) || is_within(b, a)
 }
 
