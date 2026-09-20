@@ -10,7 +10,7 @@ authors.workspace = true
 
 [dependencies]
 dunce = "1.0.5"
-image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "gif", "webp"] }
+image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "gif", "webp", "tiff", "bmp"] }
 kamadak-exif = "0.6.1"
 notify = "8.2.0"
 notify-debouncer-full = "0.7.0"

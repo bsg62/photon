@@ -822,8 +822,8 @@ fn mtime_ms(md: &Metadata) -> i64 {
 mod tests {
     use super::*;
     use crate::testutil::{
-        ExifSpec, jpeg_bytes, jpeg_with_exif, jpeg_with_exif_spec, jpeg_with_iptc_keywords,
-        png_bytes, temp_library, write_file,
+        ExifSpec, bmp_bytes, jpeg_bytes, jpeg_with_exif, jpeg_with_exif_spec,
+        jpeg_with_iptc_keywords, png_bytes, temp_library, tiff_bytes, write_file,
     };
     use std::fs;
     use std::time::Duration;
@@ -1696,5 +1696,28 @@ mod tests {
 
         assert!(report.cancelled);
         assert!(!lib.watched_folders().unwrap()[0].online);
+    }
+
+    /// TIFFs and BMPs are photos like any other: indexed by the walk and described, so
+    /// their real dimensions reach the row rather than a placeholder. The two files have
+    /// different shapes so a swapped or defaulted size cannot pass.
+    #[test]
+    fn indexes_tiff_and_bmp_files() {
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        let tif = write_file(&root, "scan.tif", &tiff_bytes(40, 10));
+        let bmp = write_file(&root, "old.bmp", &bmp_bytes(12, 24));
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
+
+        let report = scan(&lib, &watched, 1);
+        assert_eq!(report.added, 2);
+
+        let known = lib.known_items(watched.id).unwrap();
+        let shape = |path: &Path| {
+            let item = lib.item(known[&key(path)].id).unwrap().unwrap();
+            (item.width, item.height)
+        };
+        assert_eq!(shape(&tif), (40, 10));
+        assert_eq!(shape(&bmp), (12, 24));
     }
 }

@@ -439,3 +439,81 @@ pub fn gif_with_xmp(w: u32, h: u32, rating: i32) -> Vec<u8> {
     out.extend_from_slice(&gif[split..]);
     out
 }
+
+/// One IFD entry holding several SHORTs, for a field like `BitsPerSample`.
+fn shorts_entry(tag: u16, values: &[u16]) -> IfdEntry {
+    let mut data = Vec::with_capacity(values.len() * 2);
+    for v in values {
+        data.extend_from_slice(&v.to_le_bytes());
+    }
+    IfdEntry {
+        tag,
+        typ: 3,
+        count: values.len() as u32,
+        data,
+    }
+}
+
+/// A baseline TIFF: little-endian, uncompressed RGB, one strip, no EXIF.
+///
+/// Hand-built rather than encoded by `image`, so the fixture exists whether or not the
+/// crate's `tiff` feature is on. That is what lets a test of "photon reads TIFFs" fail on
+/// its assertion rather than on a missing encoder.
+pub fn tiff_bytes(w: u32, h: u32) -> Vec<u8> {
+    let pixels: Vec<u8> = (0..w * h).flat_map(|_| [200u8, 100, 50]).collect();
+    const PIXEL_OFFSET: u32 = 8;
+    let ifd_base = PIXEL_OFFSET + pixels.len() as u32;
+    let entries = vec![
+        long_entry(0x0100, w),                   // ImageWidth
+        long_entry(0x0101, h),                   // ImageLength
+        shorts_entry(0x0102, &[8, 8, 8]),        // BitsPerSample
+        short_entry(0x0103, 1),                  // Compression: none
+        short_entry(0x0106, 2),                  // PhotometricInterpretation: RGB
+        long_entry(0x0111, PIXEL_OFFSET),        // StripOffsets
+        short_entry(0x0115, 3),                  // SamplesPerPixel
+        long_entry(0x0116, h),                   // RowsPerStrip: the whole image
+        long_entry(0x0117, pixels.len() as u32), // StripByteCounts
+        short_entry(0x011C, 1),                  // PlanarConfiguration: chunky
+    ];
+    let (ifd, _) = write_ifd(entries, ifd_base);
+
+    let mut out = Vec::with_capacity(ifd_base as usize + ifd.len());
+    out.extend_from_slice(b"II\x2a\x00");
+    out.extend_from_slice(&ifd_base.to_le_bytes());
+    out.extend_from_slice(&pixels);
+    out.extend_from_slice(&ifd);
+    out
+}
+
+/// A 24-bit BMP with a `BITMAPINFOHEADER`, stored bottom-up as the format's default is.
+/// Hand-built for the same reason as `tiff_bytes`.
+pub fn bmp_bytes(w: u32, h: u32) -> Vec<u8> {
+    const HEADER_LEN: u32 = 54;
+    // Every row is padded out to a four-byte boundary.
+    let stride = (w * 3).div_ceil(4) * 4;
+    let mut pixels = vec![0u8; (stride * h) as usize];
+    for row in pixels.chunks_exact_mut(stride as usize) {
+        for px in row[..(w * 3) as usize].as_chunks_mut::<3>().0 {
+            *px = [50, 100, 200]; // BGR of the same colour `solid` uses
+        }
+    }
+
+    let mut out = Vec::with_capacity(HEADER_LEN as usize + pixels.len());
+    out.extend_from_slice(b"BM");
+    out.extend_from_slice(&(HEADER_LEN + pixels.len() as u32).to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes()); // reserved
+    out.extend_from_slice(&HEADER_LEN.to_le_bytes()); // offset to the pixels
+    out.extend_from_slice(&40u32.to_le_bytes()); // BITMAPINFOHEADER size
+    out.extend_from_slice(&(w as i32).to_le_bytes());
+    out.extend_from_slice(&(h as i32).to_le_bytes()); // positive: bottom-up
+    out.extend_from_slice(&1u16.to_le_bytes()); // planes
+    out.extend_from_slice(&24u16.to_le_bytes()); // bits per pixel
+    out.extend_from_slice(&0u32.to_le_bytes()); // BI_RGB, uncompressed
+    out.extend_from_slice(&(pixels.len() as u32).to_le_bytes());
+    out.extend_from_slice(&2835i32.to_le_bytes()); // 72 dpi horizontally
+    out.extend_from_slice(&2835i32.to_le_bytes()); // and vertically
+    out.extend_from_slice(&0u32.to_le_bytes()); // palette colours used
+    out.extend_from_slice(&0u32.to_le_bytes()); // and important
+    out.extend_from_slice(&pixels);
+    out
+}
