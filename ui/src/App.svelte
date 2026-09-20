@@ -44,6 +44,7 @@
       const picked = await pickFolder({ directory: true, multiple: false, title: 'Export copies to…' });
       return typeof picked === 'string' ? picked : null;
     },
+    check: (dest) => api.checkExportDest(dest),
     remember: (apply) => api.setExportApplyEdits(apply),
   });
 

@@ -126,7 +126,7 @@
     'rescan_folder', 'restore_tag_rule', 'reveal_folder', 'reveal_in_file_manager',
     'reveal_library', 'reveal_watched', 'rotate_item', 'set_album_view', 'set_grid_view',
     'set_item_edit', 'set_last_folder', 'set_person_view', 'set_search_query',
-    'set_export_apply_edits', 'set_slideshow_interval', 'set_star', 'set_tag_view', 'set_theme',
+    'check_export_dest', 'set_export_apply_edits', 'set_slideshow_interval', 'set_star', 'set_tag_view', 'set_theme',
     'set_visible',
   ];
 

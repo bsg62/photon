@@ -226,6 +226,7 @@ pub fn run() {
             ipc::add_item_tag,
             ipc::remove_item_tag,
             ipc::export_items,
+            ipc::check_export_dest,
             ipc::export_apply_edits,
             ipc::set_export_apply_edits,
             ipc::add_items_tag,

@@ -10,6 +10,8 @@
 
 use crate::edit::{Edit, render_full};
 use crate::error::Result;
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 /// A photo to copy out: where it is, how its EXIF says it is turned, and the edit the user
@@ -35,36 +37,87 @@ impl Source {
     }
 }
 
-/// Writes one photo into `dir`, returning the path written.
+/// The full-size edited picture for an export: decoded, turned, cropped and re-encoded.
 ///
-/// Nothing is ever overwritten. A name already in use gets ` (2)`, ` (3)` before its
-/// extension - the convention every desktop file manager uses for the same situation.
+/// Separate from the write because the caller holds `protocol::RENDERING` across *this* and
+/// not across the write: the lock exists to bound how many full-size decodes are in memory
+/// at once, and by the time the bytes are on their way to a slow USB stick the picture has
+/// already been dropped.
+pub fn render_for_export(src: &Source) -> Result<(Vec<u8>, &'static str)> {
+    render_full(&src.path, src.orientation, src.edit, EXPORT_QUALITY)
+}
+
+/// Writes an already rendered picture into `dir`, returning the path written.
 ///
-/// Two watched folders can each hold `IMG_1234.JPG`, and both copies have to arrive. They
-/// do without a ledger of names already chosen, because each file is *written* before the
-/// next name is picked: the first copy is on disk, so the second sees it and steps aside. A
-/// ledger was written first and removed when a probe showed it changed no outcome.
-pub fn export_one(src: &Source, dir: &Path, apply_edits: bool) -> Result<PathBuf> {
-    if src.needs_render(apply_edits) {
-        let (bytes, mime) = render_full(&src.path, src.orientation, src.edit, EXPORT_QUALITY)?;
-        // The edited picture is no longer the source's format: a JPEG stays a JPEG, but a
-        // source with transparency is re-encoded as PNG and anything else photon can decode
-        // comes out as one of the two. The extension has to follow the bytes.
-        let ext = if mime == "image/png" { "png" } else { "jpg" };
-        let out = unique_path(dir, &stem(&src.path), ext);
-        std::fs::write(&out, bytes)?;
-        Ok(out)
-    } else {
-        let ext = src
-            .path
-            .extension()
-            .map(|e| e.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        let out = unique_path(dir, &stem(&src.path), &ext);
-        // `copy` and not a read-then-write: it keeps every byte, including the EXIF photon
-        // does not write, and on most platforms it is a single syscall.
-        std::fs::copy(&src.path, &out)?;
-        Ok(out)
+/// The edited picture is no longer the source's format - a source with transparency is
+/// re-encoded as PNG and anything else comes out JPEG - so the extension follows the bytes,
+/// not the original name.
+pub fn write_rendered(src: &Source, dir: &Path, mime: &str, bytes: &[u8]) -> Result<PathBuf> {
+    let ext = if mime == "image/png" { "png" } else { "jpg" };
+    create_new_in(dir, &stem(&src.path), ext, |file| file.write_all(bytes))
+}
+
+/// Copies a photo's own file into `dir`, returning the path written. Every byte, including
+/// the EXIF photon does not write, since nothing is decoded on this path.
+pub fn copy_original(src: &Source, dir: &Path) -> Result<PathBuf> {
+    let ext = src
+        .path
+        .extension()
+        .map(|e| e.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let mut source = std::fs::File::open(&src.path)?;
+    create_new_in(dir, &stem(&src.path), &ext, |file| {
+        std::io::copy(&mut source, file).map(|_| ())
+    })
+}
+
+/// Creates `dir/stem.ext` - or `dir/stem (2).ext` and onwards when that name is taken - and
+/// hands the new file to `write`. Returns the path written.
+///
+/// **`create_new` is what makes "nothing is ever overwritten" true**, rather than merely
+/// intended. Looking with `exists()` and then writing is two things:
+///
+/// - a race. An export runs for minutes, and a sync client or a second photon window
+///   creating that name in between would lose its file to the write that followed.
+/// - a symlink. `exists()` follows one, so a *dangling* link in the destination
+///   (`dest/IMG_1234.JPG -> /watched/photos/IMG_1234.JPG`, target not yet there) answers
+///   "no" and the write then follows it - landing a new file inside a watched folder, which
+///   is the one thing this feature must never do.
+///
+/// `O_CREAT|O_EXCL` refuses both: it is atomic, and it will not follow a symlink.
+fn create_new_in(
+    dir: &Path,
+    stem: &str,
+    ext: &str,
+    write: impl FnOnce(&mut std::fs::File) -> std::io::Result<()>,
+) -> Result<PathBuf> {
+    // Linear probing. A ledger of names already used would not help: the files are on disk
+    // by the time the next name is chosen, so it would hold exactly what the directory does.
+    // It is quadratic only in photos that share one name, which is a handful in practice.
+    let mut n = 1;
+    loop {
+        let base = if n == 1 {
+            stem.to_string()
+        } else {
+            format!("{stem} ({n})")
+        };
+        let candidate = dir.join(if ext.is_empty() {
+            base
+        } else {
+            format!("{base}.{ext}")
+        });
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&candidate)
+        {
+            Ok(mut file) => {
+                write(&mut file)?;
+                return Ok(candidate);
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => n += 1,
+            Err(err) => return Err(err.into()),
+        }
     }
 }
 
@@ -72,32 +125,6 @@ fn stem(path: &Path) -> String {
     path.file_stem()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| "photo".to_string())
-}
-
-/// `dir/stem.ext`, or `dir/stem (2).ext` and onwards when that name is already on disk.
-fn unique_path(dir: &Path, stem: &str, ext: &str) -> PathBuf {
-    let named = |n: usize| {
-        let base = if n == 1 {
-            stem.to_string()
-        } else {
-            format!("{stem} ({n})")
-        };
-        dir.join(if ext.is_empty() {
-            base
-        } else {
-            format!("{base}.{ext}")
-        })
-    };
-    let mut n = 1;
-    loop {
-        let candidate = named(n);
-        // `exists()` answers false for a path that cannot be read, which is the right answer
-        // here: the write is what decides, and it will report its own error.
-        if !candidate.exists() {
-            return candidate;
-        }
-        n += 1;
-    }
 }
 
 #[cfg(test)]
@@ -130,6 +157,16 @@ mod tests {
 
     fn quarter_turn() -> Edit {
         Edit::new(1, None).unwrap()
+    }
+
+    /// Exactly what `Engine::export_one` does, minus the lock it holds around the render.
+    fn export_one(src: &Source, dir: &Path, apply_edits: bool) -> Result<PathBuf> {
+        if src.needs_render(apply_edits) {
+            let (bytes, mime) = render_for_export(src)?;
+            write_rendered(src, dir, mime, &bytes)
+        } else {
+            copy_original(src, dir)
+        }
     }
 
     #[test]
@@ -213,6 +250,26 @@ mod tests {
             edit: Edit::default(),
         };
         assert!(export_one(&src, out_dir.path(), false).is_err());
+    }
+
+    /// `exists()` follows a symlink, so a dangling one in the destination used to answer
+    /// "free" and the write then followed it - straight into the watched folder it pointed
+    /// at. `create_new` refuses to follow a link at all, so the name is simply taken and the
+    /// copy steps aside to `(2)`.
+    #[cfg(unix)]
+    #[test]
+    fn a_dangling_symlink_in_the_destination_is_never_followed() {
+        let src_dir = TempDir::new().unwrap();
+        let out_dir = TempDir::new().unwrap();
+        let watched = TempDir::new().unwrap();
+        let src = source(src_dir.path(), "a.jpg", Edit::default());
+        let target = watched.path().join("a.jpg");
+        std::os::unix::fs::symlink(&target, out_dir.path().join("a.jpg")).unwrap();
+
+        let out = export_one(&src, out_dir.path(), false).unwrap();
+
+        assert_eq!(out, out_dir.path().join("a (2).jpg"));
+        assert!(!target.exists(), "nothing was written through the link");
     }
 
     /// A crop makes the picture smaller; the export has to carry the crop, not the frame.

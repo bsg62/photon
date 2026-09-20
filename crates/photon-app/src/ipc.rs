@@ -246,6 +246,11 @@ pub fn export_items(
 }
 
 #[tauri::command(async)]
+pub fn check_export_dest(engine: Eng<'_>, dest: String) -> Result<(), AppError> {
+    commands::check_export_dest(&engine, &dest)
+}
+
+#[tauri::command(async)]
 pub fn export_apply_edits(engine: Eng<'_>) -> Result<bool, AppError> {
     commands::export_apply_edits(&engine)
 }

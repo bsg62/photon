@@ -54,6 +54,10 @@ for the same reason: a parallel export of twelve 60-megapixel photos is twelve f
 memory at once. Export takes the same lock, so a user browsing during an export still gets
 their picture and neither path can starve the other of memory.
 
+**No thread.** The loop runs inside a `#[tauri::command(async)]`, which Tauri already puts on
+a worker, so the UI is not blocked; a long export occupies one worker of the pool for its
+duration. A thread of its own buys nothing until there is something to cancel.
+
 **No cancellation in v1**, and no resume. Recorded here rather than hidden: the dialog says how
 many photos it is about to write before it starts, which is the point where the user can still
 change their mind.
@@ -66,7 +70,8 @@ The same rule `set_stars` and the batch keyword writers already follow.
 
 ```
 photon_core::export::{Plan, copy_or_render}      # headless: naming, collisions, the render
-Engine::export_items(ids, dest, apply_edits) -> ExportReport    # thread + progress events
+Engine::export_items(ids, dest, apply_edits) -> ExportReport    # a loop, + progress events
+Engine::check_export_dest(dest)                  # the refusal, asked when the folder is picked
 events::ExportProgress { done, total, failed }   # trait method + Tauri impl + Recorder
 commands::export_items -> ExportReport { written, failed, reason }   # + ipc.rs + app.rs
 settings::export_apply_edits / set_export_apply_edits

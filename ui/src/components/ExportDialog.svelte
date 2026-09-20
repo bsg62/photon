@@ -59,10 +59,16 @@
         <button class="close" aria-label="Cancel" onclick={dismiss}><Icon name="x" size={16} /></button>
       </header>
 
-      <button class="dest" bind:this={chooser} onclick={choose}>
+      <button class="dest" bind:this={chooser} onclick={choose} class:refused={dialog.problem !== null}>
         <Icon name="folder" size={16} />
         <span class:placeholder={dialog.dest === null}>{dialog.dest ?? 'Choose a folder…'}</span>
       </button>
+      {#if dialog.problem}
+        <!-- Against the field, while the folder is still in hand: photon refuses a
+             destination inside a watched folder, and that is worth saying before the export
+             rather than after it. -->
+        <p class="problem" role="alert">{dialog.problem}</p>
+      {/if}
 
       <label class="option">
         <input
@@ -140,6 +146,8 @@
     cursor: pointer;
   }
   .dest:hover { background: var(--field-hover); }
+  .dest.refused { box-shadow: inset 0 0 0 1px var(--danger); }
+  .problem { margin: 0; color: var(--danger); font-size: var(--t-2); }
   /* The path is the only part that can be any length, and it is the end of it that says
      which folder this is. */
   .dest span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; }

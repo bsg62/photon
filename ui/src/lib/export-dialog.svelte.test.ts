@@ -4,9 +4,10 @@ import { createExportDialog } from './export-dialog.svelte';
 function setup(report = { written: 3, failed: 0, reason: null as string | null }) {
   const run = vi.fn(async (_ids: number[], _dest: string, _applyEdits: boolean) => report);
   const pick = vi.fn(async () => '/home/ada/Desktop' as string | null);
+  const check = vi.fn(async (_dest: string) => {});
   const remember = vi.fn(async (_apply: boolean) => {});
-  const dialog = createExportDialog({ run, pick, remember });
-  return { dialog, run, pick, remember };
+  const dialog = createExportDialog({ run, pick, check, remember });
+  return { dialog, run, pick, check, remember };
 }
 
 describe('createExportDialog', () => {
@@ -54,6 +55,41 @@ describe('createExportDialog', () => {
     expect(dialog.visible).toBe(true);
   });
 
+  /** The one refusal this feature expects, and the dialog is still open to show it: an
+   *  export that accepted the folder and failed afterwards would report it to a dialog that
+   *  had gone, with the folder the user chose already forgotten. */
+  it('shows a refused folder against the field instead of accepting it', async () => {
+    const { dialog, check, run } = setup();
+    check.mockRejectedValueOnce(new Error('that folder is inside the watched folder /photos'));
+    dialog.show([1, 2], true);
+
+    await dialog.choose();
+
+    expect(dialog.dest).toBe(null);
+    expect(dialog.problem).toBe('that folder is inside the watched folder /photos');
+    expect(dialog.visible).toBe(true);
+    expect(await dialog.submit()).toBe(null);
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it('clears the problem once a usable folder is picked', async () => {
+    const { dialog, check } = setup();
+    check.mockRejectedValueOnce(new Error('no'));
+    dialog.show([1], true);
+    await dialog.choose();
+    await dialog.choose();
+    expect(dialog.problem).toBe(null);
+    expect(dialog.dest).toBe('/home/ada/Desktop');
+  });
+
+  it('puts the checkbox back when the setting cannot be stored', async () => {
+    const { dialog, remember } = setup();
+    remember.mockRejectedValueOnce(new Error('disk'));
+    dialog.show([1], true);
+    await expect(dialog.setApplyEdits(false)).rejects.toThrow('disk');
+    expect(dialog.applyEdits).toBe(true);
+  });
+
   /** The export can take minutes; a second Enter must not start a second one. */
   it('ignores a second submit while the first is still running', async () => {
     let land!: (r: { written: number; failed: number; reason: string | null }) => void;
@@ -61,6 +97,7 @@ describe('createExportDialog', () => {
     const dialog = createExportDialog({
       run,
       pick: async () => '/dest',
+      check: async () => {},
       remember: async () => {},
     });
     dialog.show([1, 2], true);

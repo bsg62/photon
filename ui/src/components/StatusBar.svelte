@@ -17,7 +17,9 @@
     {/if}
     {#if library.exporting}
       <span class="scan" role="status">
-        <span>Exporting {library.exporting.done.toLocaleString()} / {library.exporting.total.toLocaleString()}…</span>
+        <span>
+          Exporting {library.exporting.done.toLocaleString()} / {library.exporting.total.toLocaleString()}…{#if library.exporting.failed > 0}&nbsp;({library.exporting.failed.toLocaleString()} could not be written){/if}
+        </span>
         <progress aria-label="Export progress" value={library.exporting.done} max={library.exporting.total}></progress>
       </span>
     {/if}

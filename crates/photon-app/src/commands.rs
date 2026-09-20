@@ -520,6 +520,20 @@ pub fn remove_item_tag(engine: &Engine, id: i64, tag: &str) -> CmdResult<()> {
 /// Adds one keyword to several photos, reporting the name stored and how many took it.
 /// The name can differ from what was typed: a keyword the user has renamed stores as the
 /// name they renamed it to, which is the name they will see on the photos.
+pub fn add_items_tag(engine: &Engine, ids: &[i64], tag: &str) -> CmdResult<TagWrite> {
+    let (tag, count) = engine.add_items_tag(ids, tag)?;
+    Ok(TagWrite { tag, count })
+}
+
+/// Removes one keyword from several photos, reporting how many changed.
+pub fn remove_items_tag(engine: &Engine, ids: &[i64], tag: &str) -> CmdResult<TagWrite> {
+    let count = engine.remove_items_tag(ids, tag)?;
+    Ok(TagWrite {
+        tag: tag.to_string(),
+        count,
+    })
+}
+
 /// Copies photos into `dest`. See `Engine::export_items`: a destination inside a watched
 /// folder is refused, and a photo that cannot be written is counted rather than fatal.
 pub fn export_items(
@@ -536,6 +550,13 @@ pub fn export_items(
     })
 }
 
+/// Whether copies may be written into `dest`. The dialog asks as soon as a folder is
+/// picked, so the one refusal this feature expects is shown while it is still open.
+pub fn check_export_dest(engine: &Engine, dest: &str) -> CmdResult<()> {
+    engine.check_export_dest(Path::new(dest))?;
+    Ok(())
+}
+
 /// Whether an export renders edits into the copies; remembered between exports.
 pub fn export_apply_edits(engine: &Engine) -> CmdResult<bool> {
     Ok(engine.lib.export_apply_edits()?)
@@ -544,20 +565,6 @@ pub fn export_apply_edits(engine: &Engine) -> CmdResult<bool> {
 pub fn set_export_apply_edits(engine: &Engine, apply: bool) -> CmdResult<()> {
     engine.lib.set_export_apply_edits(apply)?;
     Ok(())
-}
-
-pub fn add_items_tag(engine: &Engine, ids: &[i64], tag: &str) -> CmdResult<TagWrite> {
-    let (tag, count) = engine.add_items_tag(ids, tag)?;
-    Ok(TagWrite { tag, count })
-}
-
-/// Removes one keyword from several photos, reporting how many changed.
-pub fn remove_items_tag(engine: &Engine, ids: &[i64], tag: &str) -> CmdResult<TagWrite> {
-    let count = engine.remove_items_tag(ids, tag)?;
-    Ok(TagWrite {
-        tag: tag.to_string(),
-        count,
-    })
 }
 
 /// Items around `id`, nearest first, queued at neighbour priority so the viewer's

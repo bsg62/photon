@@ -18,6 +18,10 @@ export function createExportDialog(deps: {
   run: (ids: number[], dest: string, applyEdits: boolean) => Promise<ExportReport>;
   /** The system folder picker; null when the user dismissed it. */
   pick: () => Promise<string | null>;
+  /** Refuses a destination photon will not write into - today, one inside a watched folder.
+   *  Asked here rather than at export time so the answer can be shown while the dialog is
+   *  still open, with the folder the user picked still in hand. */
+  check: (dest: string) => Promise<void>;
   /** Stores the checkbox, which is remembered between exports. */
   remember: (apply: boolean) => Promise<void>;
 }) {
@@ -25,6 +29,7 @@ export function createExportDialog(deps: {
   let dest = $state<string | null>(null);
   let applyEdits = $state(true);
   let busy = $state(false);
+  let problem = $state<string | null>(null);
   let ids = $state<number[]>([]);
 
   return {
@@ -44,6 +49,11 @@ export function createExportDialog(deps: {
       return busy;
     },
 
+    /** Why the folder that was picked cannot be used, or null. */
+    get problem(): string | null {
+      return problem;
+    },
+
     /** How many photos the export will write, for the dialog's own title: the selection is
      *  behind the dialog and cannot be counted by eye once it has focus. */
     get count(): number {
@@ -54,6 +64,7 @@ export function createExportDialog(deps: {
       ids = [...selection];
       applyEdits = remembered;
       dest = null;
+      problem = null;
       busy = false;
       visible = true;
     },
@@ -63,17 +74,34 @@ export function createExportDialog(deps: {
     },
 
     /** Stores the checkbox as it is ticked rather than when the export runs: an export the
-     *  user cancels still told us how they want exports to work. */
+     *  user cancels still told us how they want exports to work. Put back if the store
+     *  fails, so the box and the setting cannot disagree. */
     async setApplyEdits(next: boolean): Promise<void> {
+      const previous = applyEdits;
       applyEdits = next;
-      await deps.remember(next);
+      try {
+        await deps.remember(next);
+      } catch (e) {
+        applyEdits = previous;
+        throw e;
+      }
     },
 
-    /** Asks for a destination. A dismissed picker leaves the dialog exactly as it was -
-     *  there is nothing to report and nothing to undo. */
+    /** Asks for a destination and checks it. A dismissed picker leaves the dialog exactly as
+     *  it was - there is nothing to report and nothing to undo. A refused folder is shown
+     *  against the field rather than accepted and rejected later, when the dialog would be
+     *  gone and the folder forgotten. */
     async choose(): Promise<void> {
       const picked = await deps.pick();
-      if (picked !== null) dest = picked;
+      if (picked === null) return;
+      try {
+        await deps.check(picked);
+        dest = picked;
+        problem = null;
+      } catch (e) {
+        dest = null;
+        problem = e instanceof Error ? e.message : String(e);
+      }
     },
 
     /** Runs the export and returns the line to report, or null when there was nothing to

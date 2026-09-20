@@ -59,15 +59,16 @@ pub(crate) fn same_path(a: &Path, b: &Path) -> bool {
     keys(a) == keys(b)
 }
 
-/// True when `child` is `parent` or lies inside it.
-pub(crate) fn is_within(child: &Path, parent: &Path) -> bool {
+/// True when `child` is `parent` or lies inside it. Public because an export has to refuse
+/// a destination anywhere inside a watched root - and only there: a folder that *contains* a
+/// watched root is a perfectly good destination, since nothing scans it.
+pub fn is_within(child: &Path, parent: &Path) -> bool {
     let (child, parent) = (keys(child), keys(parent));
     child.len() >= parent.len() && child[..parent.len()] == parent[..]
 }
 
-/// True when `a` and `b` are the same folder or one contains the other. Public because an
-/// export has to refuse a destination anywhere inside a watched root, not only the root.
-pub fn overlaps(a: &Path, b: &Path) -> bool {
+/// True when `a` and `b` are the same folder or one contains the other.
+pub(crate) fn overlaps(a: &Path, b: &Path) -> bool {
     is_within(a, b) || is_within(b, a)
 }
 

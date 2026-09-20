@@ -620,24 +620,18 @@ impl Engine {
     /// scanner would index the copies as new photos - one click would double the library and
     /// fill the duplicate finder with pairs the user did not make.
     ///
-    /// One photo at a time, under `protocol::RENDERING`, because an edited photo is decoded
-    /// at full size to be exported as it is shown; that lock is what bounds how many
-    /// full-size decodes exist at once across the whole app.
+    /// An edited photo is decoded at full size to be exported as it is shown, under
+    /// `protocol::RENDERING` - the lock that bounds how many full-size decodes exist at once
+    /// across the whole app. It is held across the render and *not* across the write: by
+    /// then the picture has been dropped, and a write to a slow stick or a share would
+    /// otherwise stall the viewer for no memory benefit.
     ///
     /// A photo that cannot be read, or has gone from the library since the grid was built,
     /// is counted and skipped rather than ending the export: one unreadable file must not
     /// cost the user the other hundred and nineteen. The first reason is reported so the
     /// message can say what went wrong rather than only that something did.
     pub fn export_items(&self, ids: &[i64], dest: &Path, apply_edits: bool) -> Result<Export> {
-        let dest = paths::canonicalize(dest)?;
-        for watched in self.lib.watched_folders()? {
-            if paths::overlaps(&dest, Path::new(&watched.path)) {
-                return Err(Error::ExportIntoLibrary {
-                    existing: watched.path,
-                });
-            }
-        }
-
+        let dest = self.check_export_dest(dest)?;
         let total = ids.len();
         let mut report = Export {
             written: 0,
@@ -672,6 +666,29 @@ impl Engine {
         Ok(report)
     }
 
+    /// Whether copies may be written into `dest`, and its canonical form if so.
+    ///
+    /// Its own method because the dialog asks *when the folder is picked*, while it is still
+    /// open and the answer can be shown against the field: this is the only refusal the
+    /// feature expects to produce routinely, and `export_items` closes the dialog before it
+    /// starts. `export_items` checks again anyway - a folder can be watched in between, and
+    /// the check is a directory walk of nothing.
+    ///
+    /// Inside a watched root, not merely overlapping one: a folder that *contains* a watched
+    /// folder (exporting to the home folder while `~/Pictures` is watched) is a perfectly
+    /// good destination, because nothing scans it.
+    pub fn check_export_dest(&self, dest: &Path) -> Result<PathBuf> {
+        let dest = paths::canonicalize(dest)?;
+        for watched in self.lib.watched_folders()? {
+            if paths::is_within(&dest, Path::new(&watched.path)) {
+                return Err(Error::ExportIntoLibrary {
+                    existing: watched.path,
+                });
+            }
+        }
+        Ok(dest)
+    }
+
     fn export_one(&self, id: i64, dest: &Path, apply_edits: bool) -> Result<()> {
         let item = self.lib.item(id)?.ok_or(Error::NotFound(id))?;
         if item.missing_since.is_some() {
@@ -682,10 +699,15 @@ impl Engine {
             orientation: item.orientation,
             edit: item.edit,
         };
-        let _one_at_a_time = source
-            .needs_render(apply_edits)
-            .then(|| crate::protocol::RENDERING.lock());
-        export::export_one(&source, dest, apply_edits)?;
+        if source.needs_render(apply_edits) {
+            let (bytes, mime) = {
+                let _one_at_a_time = crate::protocol::RENDERING.lock();
+                export::render_for_export(&source)?
+            };
+            export::write_rendered(&source, dest, mime, &bytes)?;
+        } else {
+            export::copy_original(&source, dest)?;
+        }
         Ok(())
     }
 
@@ -1649,6 +1671,20 @@ mod tests {
                 "{dest:?}: {err}"
             );
         }
+
+        // The folder *holding* the watched one is not the library: copies there are never
+        // scanned, and refusing it would cost the user their home folder as a destination.
+        let above = f.photos.parent().unwrap().join("beside");
+        std::fs::create_dir_all(&above).unwrap();
+        assert_eq!(
+            f.engine.export_items(&ids, &above, false).unwrap().written,
+            2
+        );
+        let parent = f.photos.parent().unwrap().to_path_buf();
+        assert!(
+            f.engine.export_items(&ids[..1], &parent, false).is_ok(),
+            "a folder that contains a watched one is a usable destination"
+        );
 
         // Nothing landed: the watched folder still holds exactly what it did.
         let mut names: Vec<_> = std::fs::read_dir(&f.photos)

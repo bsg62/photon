@@ -180,6 +180,8 @@ export const api = {
   /** Copies photos into `dest`. A destination inside a watched folder is refused. */
   exportItems: (ids: number[], dest: string, applyEdits: boolean) =>
     invoke<ExportReport>('export_items', { ids, dest, applyEdits }),
+  /** Rejects a destination photon will not write into - today, one inside a watched folder. */
+  checkExportDest: (dest: string) => invoke<void>('check_export_dest', { dest }),
   exportApplyEdits: () => invoke<boolean>('export_apply_edits'),
   setExportApplyEdits: (apply: boolean) => invoke<void>('set_export_apply_edits', { apply }),
   addItemsTag: (ids: number[], tag: string) => invoke<TagWrite>('add_items_tag', { ids, tag }),
