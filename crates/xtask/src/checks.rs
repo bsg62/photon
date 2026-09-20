@@ -122,6 +122,21 @@ pub fn check_metadata(
                     problems.push(format!("tauri.conf.json bundle is missing `{field}`"));
                 }
             }
+            // The installed executable's name. Left unset it silently takes the *crate*
+            // name, which is how photon shipped `photon-app` in every installer up to
+            // 0.19.1. It must also match the `[[bin]]` name in the crate, or the bundler
+            // cannot find the binary it is told to ship.
+            match v.get("mainBinaryName").and_then(|n| n.as_str()) {
+                Some(name) if Some(name) == v.get("productName").and_then(|n| n.as_str()) => {}
+                Some(name) => problems.push(format!(
+                    "tauri.conf.json `mainBinaryName` is `{name}`, which is not the productName"
+                )),
+                None => problems.push(
+                    "tauri.conf.json has no `mainBinaryName`; the installed binary would take \
+                     the crate name"
+                        .to_owned(),
+                ),
+            }
             if bundle
                 .and_then(|b| b.get("createUpdaterArtifacts"))
                 .is_some()
@@ -276,6 +291,8 @@ authors = ["David Henning"]
 "#;
 
     const GOOD_CONF: &str = r#"{
+      "productName": "photon",
+      "mainBinaryName": "photon",
       "version": "0.1.0",
       "bundle": {
         "license": "MIT",
@@ -316,6 +333,29 @@ authors = ["David Henning"]
                 "removing {field} was not reported: {errs:?}"
             );
         }
+    }
+
+    /// The installed executable was `photon-app` in every installer up to 0.19.1, because
+    /// `mainBinaryName` was unset and it silently took the crate name. Nothing failed - the
+    /// app worked - so only a check like this one keeps it named.
+    #[test]
+    fn a_binary_name_that_is_missing_or_not_the_product_name_is_reported() {
+        let missing = GOOD_CONF.replace(r#""mainBinaryName": "photon","#, "");
+        let errs = check_metadata(GOOD_CARGO, &missing, true).unwrap_err();
+        assert!(
+            errs.iter().any(|e| e.contains("mainBinaryName")),
+            "got {errs:?}"
+        );
+
+        let wrong = GOOD_CONF.replace(
+            r#""mainBinaryName": "photon""#,
+            r#""mainBinaryName": "photon-app""#,
+        );
+        let errs = check_metadata(GOOD_CARGO, &wrong, true).unwrap_err();
+        assert!(
+            errs.iter().any(|e| e.contains("photon-app")),
+            "got {errs:?}"
+        );
     }
 
     #[test]
