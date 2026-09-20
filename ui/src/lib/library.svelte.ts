@@ -81,6 +81,13 @@ export class LibraryStore {
    *  preserves one, so a promise chain would only make the second call wait on the first
    *  instead of pre-empting it. */
   private extendCall = 0;
+  /** What a rubber band adds to, captured when it starts; empty for a band that replaces. */
+  private bandBase = new Set<number>();
+  /** The selection a band started from. Not the same as `bandBase`, which is empty for a
+   *  band that replaces: an abandoned drag puts back what was selected either way. */
+  private bandPrevious = new Set<number>();
+  /** Where the lead was when a band started, for `cancelBand` to put back. */
+  private bandFrom: { offset: number | null; id: number | null; anchor: number | null } | null = null;
 
   /** Selected grid offset. */
   get selected(): number | null {
@@ -193,27 +200,103 @@ export class LibraryStore {
    *  `grid_rows` ask to 1000 *silently*, so a single call for a wider range would take its
    *  first thousand photos and drop the rest without an error anywhere. */
   private async fetchIds(start: number, end: number): Promise<Set<number> | null> {
-    if (end < start) return null;
+    return this.fetchIdsOf([[start, end]]);
+  }
+
+  /** `fetchIds` over several ranges at once - what a rubber band covers. One call id and one
+   *  version for the whole set, so a band is written wholly or not at all: two ranges of it
+   *  resolved against different indexes would name photos from two different grids. */
+  private async fetchIdsOf(ranges: [number, number][]): Promise<Set<number> | null> {
+    if (ranges.length === 0 || ranges.some(([start, end]) => end < start)) return null;
     const version = this.info.version;
     const call = ++this.extendCall;
     const ids = new Set<number>();
-    for (let at = start; at <= end; at += GRID_ROWS_CHUNK) {
-      const count = Math.min(GRID_ROWS_CHUNK, end - at + 1);
-      const rows = await api.gridRows(at, count);
-      // A refresh has landed while this was in flight; its own selection is the current one.
-      if (version !== this.info.version) return null;
-      // A later range call has started; that call's write wins, not whichever call's fetch
-      // happens to finish last.
-      if (call !== this.extendCall) return null;
-      // this.info.version can lag a rebuild the backend has already published: the
-      // library-changed listener that would bump it has not run yet, so the guard above can
-      // pass while these rows were fetched against a newer index than the offsets they were
-      // asked for. PageCache.ensure discards a page on the same mismatch; a range built from
-      // it would otherwise name photos for offsets the user never saw.
-      if (rows.version !== version) return null;
-      for (const entry of rows.rows) ids.add(entry.id);
+    for (const [start, end] of ranges) {
+      for (let at = start; at <= end; at += GRID_ROWS_CHUNK) {
+        const count = Math.min(GRID_ROWS_CHUNK, end - at + 1);
+        const rows = await api.gridRows(at, count);
+        // A refresh has landed while this was in flight; its own selection is the current one.
+        if (version !== this.info.version) return null;
+        // A later range call has started; that call's write wins, not whichever call's fetch
+        // happens to finish last.
+        if (call !== this.extendCall) return null;
+        // this.info.version can lag a rebuild the backend has already published: the
+        // library-changed listener that would bump it has not run yet, so the guard above can
+        // pass while these rows were fetched against a newer index than the offsets they were
+        // asked for. PageCache.ensure discards a page on the same mismatch; a range built from
+        // it would otherwise name photos for offsets the user never saw.
+        if (rows.version !== version) return null;
+        for (const entry of rows.rows) ids.add(entry.id);
+      }
     }
     return ids;
+  }
+
+  /** Starts a rubber band. The selection to build on is captured now: every preview is
+   *  `base` plus what the band covers, so dragging the rectangle smaller takes photos back
+   *  off instead of piling each frame's worth on the last. */
+  beginBand(additive: boolean): void {
+    this.bandPrevious = new Set(this.selection);
+    this.bandBase = additive ? new Set(this.selection) : new Set();
+    this.bandFrom = { offset: this.selectedOffset, id: this.selectedId, anchor: this.anchor };
+  }
+
+  /** Previews the band, resolving offsets through the loaded pages: synchronous, so the
+   *  tiles ring as the pointer moves, and correct for everything on screen. A tile whose
+   *  page has not arrived resolves to nothing and is skipped - the silent rule
+   *  `toggleSelected` already follows - and `endBand` is what puts it right. */
+  bandTo(ranges: [number, number][]): void {
+    const next = new Set(this.bandBase);
+    for (const [start, end] of ranges) {
+      for (let at = start; at <= end; at++) {
+        const id = this.pages.get(at)?.id;
+        if (id !== undefined) next.add(id);
+      }
+    }
+    this.selection = next;
+  }
+
+  /** Ends a band: the same ranges resolved through the backend, which is the authority.
+   *  The lead and the anchor land on the band's first photo, so Enter opens something
+   *  inside it and a later Shift+click extends from where the band began. */
+  async endBand(ranges: [number, number][]): Promise<void> {
+    const base = this.bandBase;
+    const previous = this.bandPrevious;
+    this.bandBase = new Set();
+    this.bandPrevious = new Set();
+    const from = this.bandFrom;
+    this.bandFrom = null;
+    const ids = await this.fetchIdsOf(ranges);
+    if (!ids) {
+      // Overtaken, or the grid was rebuilt under the drag. The preview drawn from the old
+      // offsets is as stale as the fetch, so the whole band is abandoned: the selection and
+      // the lead go back to what they were before it started.
+      this.selection = previous;
+      if (from) {
+        this.selectedOffset = from.offset;
+        this.selectedId = from.id;
+        this.anchor = from.anchor;
+      }
+      return;
+    }
+    for (const id of base) ids.add(id);
+    this.selection = ids;
+    const first = ranges[0][0];
+    this.selectedOffset = first;
+    this.selectedId = this.pages.get(first)?.id ?? null;
+    this.anchor = first;
+  }
+
+  /** Abandons a band (Escape mid-drag): the selection goes back to what it was. */
+  cancelBand(): void {
+    this.selection = new Set(this.bandPrevious);
+    if (this.bandFrom) {
+      this.selectedOffset = this.bandFrom.offset;
+      this.selectedId = this.bandFrom.id;
+      this.anchor = this.bandFrom.anchor;
+    }
+    this.bandBase = new Set();
+    this.bandFrom = null;
   }
 
   clearSelection(): void {

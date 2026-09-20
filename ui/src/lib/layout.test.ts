@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildRows, columnsFor, itemSpan, layoutSections, rowIndexAt, rowOfItem, topFolderId, totalHeight, visibleRange } from './layout';
+import { buildRows, columnsFor, HEADER, itemSpan, itemsInRect, layoutSections, rowIndexAt, rowOfItem, TILE, TILE_ROW, topFolderId, totalHeight, visibleRange } from './layout';
 
 const sections = [
   { folderId: 1, offset: 0, count: 5 },
@@ -105,5 +105,56 @@ describe('layout', () => {
     expect(rowOfItem(rows, 5)).toBe(5);
     expect(rowOfItem(rows, 7)).toBe(6);
     expect(rowOfItem(rows, 8)).toBe(-1);
+  });
+});
+
+describe('itemsInRect', () => {
+  // Two sections of 5 photos, 3 columns, no headers: rows at 0 and 168 (TILE_ROW).
+  const rows = buildRows([{ folderId: 1, offset: 0, count: 5 }], 3, false);
+  const rect = (x0: number, y0: number, x1: number, y1: number) => ({ x0, y0, x1, y1 });
+
+  it('takes the tiles a rectangle touches in one row', () => {
+    // Tile k spans x = GAP + k*TILE_ROW .. + TILE, so tile 1 starts at 176.
+    expect(itemsInRect(rows, 3, rect(180, 10, 200, 20))).toEqual([[1, 1]]);
+  });
+
+  it('merges rows that join up into one range', () => {
+    expect(itemsInRect(rows, 3, rect(0, 0, 1000, 1000))).toEqual([[0, 4]]);
+  });
+
+  /** The gap below a row belongs to no tile: a band that only grazes it selects nothing,
+   *  or dragging between two rows would sweep up both. */
+  it('selects nothing from a band inside the gap between rows', () => {
+    expect(itemsInRect(rows, 3, rect(0, TILE + 1, 1000, TILE_ROW - 1))).toEqual([]);
+  });
+
+  it('stops at the last tile of a short row', () => {
+    // The second row holds 2 of the 5 photos; a band across it cannot reach a third.
+    expect(itemsInRect(rows, 3, rect(0, TILE_ROW + 1, 1000, TILE_ROW + TILE))).toEqual([[3, 4]]);
+  });
+
+  it('ignores headers', () => {
+    const withHeaders = buildRows([{ folderId: 1, offset: 0, count: 2 }], 3, true);
+    expect(itemsInRect(withHeaders, 3, rect(0, 0, 1000, HEADER - 1))).toEqual([]);
+    expect(itemsInRect(withHeaders, 3, rect(0, 0, 1000, HEADER + TILE))).toEqual([[0, 1]]);
+  });
+
+  it('takes nothing from an empty rectangle or an empty grid', () => {
+    expect(itemsInRect(rows, 3, rect(10, 10, 10, 10))).toEqual([[0, 0]]);
+    expect(itemsInRect([], 3, rect(0, 0, 1000, 1000))).toEqual([]);
+  });
+
+  /** Two sections are two runs of rows; a band over both is two ranges only if the offsets
+   *  do not run on. Here they do, so it is one. */
+  it('joins ranges across sections when the offsets are contiguous', () => {
+    const two = buildRows(
+      [
+        { folderId: 1, offset: 0, count: 3 },
+        { folderId: 2, offset: 3, count: 3 },
+      ],
+      3,
+      false,
+    );
+    expect(itemsInRect(two, 3, rect(0, 0, 1000, 1000))).toEqual([[0, 5]]);
   });
 });

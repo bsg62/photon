@@ -147,3 +147,47 @@ export function itemSpan(rows: Row[]): [number, number] | null {
   }
   return start === Infinity ? null : [start, end];
 }
+
+/** A rectangle in the canvas's own coordinates: the same space `Row.top` is in, so a band
+ *  keeps its grip on the photos it was started over while the wheel scrolls under it. */
+export interface Rect {
+  x0: number;
+  y0: number;
+  x1: number;
+  y1: number;
+}
+
+/** The grid offsets a rubber band covers, as contiguous ranges - one per row it crosses,
+ *  with rows that join up merged into a single range.
+ *
+ *  Ranges rather than a list of offsets because that is what the backend fetch takes
+ *  (`fetchIds`), and because a band over a whole row is one range whatever the column count.
+ *
+ *  A row's tiles occupy `top..top + TILE`, not `top + TILE_ROW`: the gap below a row belongs
+ *  to no tile, so a band drawn entirely inside it selects nothing rather than both
+ *  neighbours. Headers are not photos and are skipped.
+ *
+ *  `rect` may be given in any corner order; it is normalised here. */
+export function itemsInRect(rows: Row[], columns: number, rect: Rect): [number, number][] {
+  const left = Math.min(rect.x0, rect.x1);
+  const right = Math.max(rect.x0, rect.x1);
+  const top = Math.min(rect.y0, rect.y1);
+  const bottom = Math.max(rect.y0, rect.y1);
+
+  const ranges: [number, number][] = [];
+  for (const row of rows) {
+    if (row.kind !== 'tiles') continue;
+    if (row.top + TILE < top || row.top > bottom) continue;
+    // Tile k spans GAP + k*TILE_ROW .. + TILE. Touching counts, so the first tile is the
+    // last one whose left edge is at or before `right`, and vice versa.
+    const firstColumn = Math.max(0, Math.ceil((left - GAP - TILE) / TILE_ROW));
+    const lastColumn = Math.min(row.count - 1, Math.floor((right - GAP) / TILE_ROW));
+    if (lastColumn < firstColumn || lastColumn < 0) continue;
+    const from = row.first + Math.min(firstColumn, row.count - 1);
+    const to = row.first + lastColumn;
+    const previous = ranges[ranges.length - 1];
+    if (previous && previous[1] + 1 === from) previous[1] = to;
+    else ranges.push([from, to]);
+  }
+  return ranges;
+}

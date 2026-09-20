@@ -161,6 +161,16 @@
       tile(7)?.click();
       tile(7)?.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 700, clientY: 300 }));
     },
+    band: () => {
+      // A drag across the second and third rows of tiles, in three moves so the threshold
+      // is passed and the band is drawn.
+      const view = document.querySelector('.viewport');
+      const send = (type, x, y) =>
+        view.dispatchEvent(new PointerEvent(type, { bubbles: true, clientX: x, clientY: y, button: 0, buttons: 1, pointerId: 1 }));
+      send('pointerdown', 300, 250);
+      send('pointermove', 320, 270);
+      send('pointermove', 700, 480);
+    },
     export: () => {
       actions.menu();
       later(100, () =>

@@ -1,7 +1,7 @@
 <script lang="ts">
   import { api } from '../lib/api';
   import { library } from '../lib/library.svelte';
-  import { buildRows, columnsFor, GAP, itemSpan, layoutSections, rowOfItem, topFolderId, totalHeight, visibleRange } from '../lib/layout';
+  import { buildRows, columnsFor, GAP, itemSpan, itemsInRect, layoutSections, type Rect, rowOfItem, topFolderId, totalHeight, visibleRange } from '../lib/layout';
   import { move, type NavKey } from '../lib/nav';
   import { yearMarks } from '../lib/timeline';
   import Tile from './Tile.svelte';
@@ -19,6 +19,9 @@
 
   const NAV_KEYS = ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'];
   const VISIBLE_DEBOUNCE_MS = 150;
+  /** How far the pointer must move before a press becomes a rubber band rather than a
+   *  click. Below this a steady hand and a shaky one must mean the same thing. */
+  const BAND_THRESHOLD = 4;
 
   let viewport: HTMLDivElement;
   let width = $state(0);
@@ -204,6 +207,77 @@
     }
   }
 
+  /** The rubber band, in the canvas's own coordinates - the same space `Row.top` is in, so
+   *  the band keeps its grip on the photos it was started over while the wheel scrolls
+   *  under it. `null` when no button is down. */
+  let band = $state<Rect | null>(null);
+  /** True once the pointer has moved past the threshold: until then the press is still a
+   *  click, and nothing is drawn or selected. */
+  let banding = $state(false);
+  /** Set when a band ends, so the click that follows the release does not also land on a
+   *  tile and collapse the selection the band just made. */
+  let swallowClick = false;
+
+  /** Pointer position in the canvas's coordinates. */
+  function atCanvas(e: PointerEvent): { x: number; y: number } {
+    const box = viewport.getBoundingClientRect();
+    return { x: e.clientX - box.left + viewport.scrollLeft, y: e.clientY - box.top + viewport.scrollTop };
+  }
+
+  function bandRanges(rect: Rect): [number, number][] {
+    return itemsInRect(rows, columns, rect);
+  }
+
+  function bandDown(e: PointerEvent) {
+    // The left button only: the right one opens the menu, and the middle one is nothing.
+    // A press that lands on the open menu belongs to the menu.
+    if (e.button !== 0 || (e.target as HTMLElement).closest('.menu')) return;
+    const at = atCanvas(e);
+    band = { x0: at.x, y0: at.y, x1: at.x, y1: at.y };
+    banding = false;
+    // A release whose click never arrived (the pointer left the window under capture) would
+    // otherwise leave the flag set and swallow this press's click instead.
+    swallowClick = false;
+  }
+
+  function bandMove(e: PointerEvent) {
+    if (!band) return;
+    const at = atCanvas(e);
+    if (!banding) {
+      if (Math.abs(at.x - band.x0) < BAND_THRESHOLD && Math.abs(at.y - band.y0) < BAND_THRESHOLD) return;
+      banding = true;
+      // Capture, so the drag survives the pointer leaving the viewport or the window.
+      viewport.setPointerCapture(e.pointerId);
+      library.beginBand(e.ctrlKey || e.metaKey || e.shiftKey);
+    }
+    band = { ...band, x1: at.x, y1: at.y };
+    library.bandTo(bandRanges(band));
+  }
+
+  function bandUp() {
+    if (!band) return;
+    const finished = banding ? band : null;
+    band = null;
+    banding = false;
+    if (!finished) return;
+    // The release is followed by a click on whatever is under it; without this a band that
+    // ended over a tile would collapse to that one photo.
+    swallowClick = true;
+    focus();
+    library.endBand(bandRanges(finished)).catch(library.reportError);
+  }
+
+  /** Escape abandons the drag and puts the selection back. It is handled here rather than in
+   *  `onkeydown` because the grid's own Escape clears the selection, which is the opposite. */
+  function bandKey(e: KeyboardEvent) {
+    if (e.key !== 'Escape' || !band) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (banding) library.cancelBand();
+    band = null;
+    banding = false;
+  }
+
   /** Right-clicking outside the selection selects that tile first, so what the menu acts on
    *  is always what is outlined. Inside it, the whole selection stands. */
   function tileMenu(e: MouseEvent, offset: number) {
@@ -256,7 +330,14 @@
   }
 </script>
 
-<svelte:window onclick={closeMenu} onkeydown={(e) => e.key === 'Escape' && closeMenu()} />
+<svelte:window
+  onclick={closeMenu}
+  onkeydown={(e) => {
+    bandKey(e);
+    if (e.key === 'Escape') closeMenu();
+  }}
+  onpointerup={bandUp}
+/>
 
 <div class="grid">
   <div
@@ -265,6 +346,13 @@
     bind:clientWidth={width}
     bind:clientHeight={height}
     onscroll={() => (scrollTop = viewport.scrollTop)}
+    onpointerdown={bandDown}
+    onpointermove={bandMove}
+    onclickcapture={(e) => {
+      if (!swallowClick) return;
+      swallowClick = false;
+      e.stopPropagation();
+    }}
     {onkeydown}
     tabindex="0"
     role="grid"
@@ -289,7 +377,16 @@
         {/if}
       </p>
     {/if}
-    <div class="canvas" style:height="{total}px">
+    <div class="canvas" class:banding style:height="{total}px">
+      {#if banding && band}
+        <div
+          class="band"
+          style:left="{Math.min(band.x0, band.x1)}px"
+          style:top="{Math.min(band.y0, band.y1)}px"
+          style:width="{Math.abs(band.x1 - band.x0)}px"
+          style:height="{Math.abs(band.y1 - band.y0)}px"
+        ></div>
+      {/if}
       {#each rendered as row (row.top)}
         {#if row.kind === 'header'}
           {@const folder = library.folderOf(sections[row.section].folderId)}
@@ -375,6 +472,16 @@
      edge, which clips anything outside the box. */
   .viewport:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
   .canvas { position: relative; }
+  /* While a band is drawn, dragging over a folder header must not select its text. */
+  .canvas.banding { user-select: none; }
+  .band {
+    position: absolute;
+    z-index: 1;
+    background: var(--accent-soft);
+    border-radius: var(--r-1);
+    box-shadow: 0 0 0 1px var(--accent);
+    pointer-events: none;
+  }
   .header, .row { position: absolute; left: 0; right: 0; }
   /* 32px is layout.ts's HEADER: every row below is placed by it, so the type fits the box
      rather than the box growing to the type. */
