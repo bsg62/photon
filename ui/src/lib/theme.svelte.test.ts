@@ -2,7 +2,14 @@ import { describe, expect, it, vi } from 'vitest';
 import type { ThemeChoice } from './api';
 import { createTheme, resolveTheme } from './theme.svelte';
 
-function setup(opts: { stored?: ThemeChoice; osDark?: boolean; load?: () => Promise<ThemeChoice> } = {}) {
+function setup(
+  opts: {
+    stored?: ThemeChoice;
+    osDark?: boolean;
+    load?: () => Promise<ThemeChoice>;
+    mirrored?: ThemeChoice | null;
+  } = {},
+) {
   let osDark = opts.osDark ?? false;
   const listeners = new Set<() => void>();
   const apply = vi.fn();
@@ -10,6 +17,7 @@ function setup(opts: { stored?: ThemeChoice; osDark?: boolean; load?: () => Prom
   const onerror = vi.fn();
   const theme = createTheme({
     load: opts.load ?? (async () => opts.stored ?? 'system'),
+    mirrored: () => opts.mirrored ?? null,
     save,
     media: {
       dark: () => osDark,
@@ -95,6 +103,34 @@ describe('createTheme', () => {
     expect(theme.choice).toBe('system');
     expect(apply).toHaveBeenLastCalledWith('dark', 'system');
     expect(onerror).toHaveBeenCalledWith(failure);
+  });
+
+  // The mirror is what theme-boot.js painted the first frame with, so keeping it is also
+  // keeping the screen as it is. Falling back to `system` instead would apply `system` -
+  // and `apply` writes the choice back to the mirror, so one failed load would cost a
+  // pinned user the no-flash boot on every later launch, not just this one.
+  it('keeps the launch mirror when the stored choice cannot be read', async () => {
+    const failure = new Error('locked');
+    const { theme, apply, onerror } = setup({
+      osDark: true,
+      mirrored: 'light',
+      load: async () => Promise.reject(failure),
+    });
+    await theme.init();
+    expect(theme.choice).toBe('light');
+    expect(apply).toHaveBeenLastCalledWith('light', 'light');
+    expect(onerror).toHaveBeenCalledWith(failure);
+  });
+
+  it('still falls back to the desktop when the load fails and there is no mirror', async () => {
+    const { theme, apply } = setup({
+      osDark: true,
+      mirrored: null,
+      load: async () => Promise.reject(new Error('locked')),
+    });
+    await theme.init();
+    expect(theme.choice).toBe('system');
+    expect(apply).toHaveBeenLastCalledWith('dark', 'system');
   });
 
   it('applies nothing when disposed before the stored choice arrives', async () => {

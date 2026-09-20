@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import css from '../tokens.css?raw';
+import viewer from '../components/Viewer.svelte?raw';
 
 type Tokens = Record<string, string>;
 
@@ -96,6 +97,34 @@ describe('the viewer glass', () => {
     expect(contrast(themes.dark['--text-dim'], ground)).toBeGreaterThanOrEqual(4.5);
     expect(contrast(themes.dark['--text'], ground)).toBeGreaterThanOrEqual(4.5);
   });
+
+  // The app's --accent is tuned against --surface and reaches only 4.10 here, because the
+  // glass over a white photo is a much lighter ground than any panel. The links in the info
+  // panel are the one place it is used as text on glass, so the glass gets its own accent
+  // rather than the whole dark theme being lightened for them.
+  it('has an accent that stays readable as a link on glass', () => {
+    const ground = over(themes.dark['--glass'], '#ffffff');
+    expect(contrast(themes.dark['--accent-glass'], ground)).toBeGreaterThanOrEqual(4.5);
+    // Still recognisably the accent, not a second blue: on the app's own surface it reads
+    // as the same link colour.
+    expect(contrast(themes.dark['--accent-glass'], themes.dark['--surface'])).toBeGreaterThanOrEqual(4.5);
+  });
+
+  // Read from the component, because which ground a control sits on is a fact about the
+  // component and not about the palette. --field is a white film: over glass it *lightens*
+  // the ground, which is what dropped the placeholder to 3.71.
+  it('gives the info panel controls a ground dim text survives', () => {
+    const rule = (selector: string) => {
+      const m = new RegExp(`\\${selector}\\s*\\{([^}]*)\\}`).exec(viewer);
+      if (!m) throw new Error(`no rule for ${selector} in Viewer.svelte`);
+      return m[1];
+    };
+    expect(rule('.tag-input')).not.toContain('var(--field)');
+    expect(rule('.info-link')).toContain('var(--accent-glass)');
+    // The placeholder's ground is now the bare glass the panel is made of.
+    const ground = over(themes.dark['--glass'], '#ffffff');
+    expect(contrast(themes.dark['--text-dim'], ground)).toBeGreaterThanOrEqual(4.5);
+  });
 });
 
 /** The raw (comment-stripped) body of the rule whose selector list contains `selector`
@@ -137,7 +166,7 @@ describe('the structure of tokens.css', () => {
 
 describe('the two themes', () => {
   it('define the same tokens, bar the viewer-only glass', () => {
-    const glass = ['--glass', '--glass-line'];
+    const glass = ['--glass', '--glass-line', '--accent-glass'];
     const names = (t: Tokens) => Object.keys(t).filter((n) => !glass.includes(n)).sort();
     expect(names(themes.light).length).toBeGreaterThan(10);
     expect(names(themes.dark)).toEqual(names(themes.light));

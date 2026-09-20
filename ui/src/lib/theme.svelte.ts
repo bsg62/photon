@@ -4,6 +4,8 @@ export type ResolvedTheme = 'light' | 'dark';
 
 export interface ThemeDeps {
   load(): Promise<ThemeChoice>;
+  /** The launch mirror's value, or null when there is none to read. */
+  mirrored(): ThemeChoice | null;
   save(choice: ThemeChoice): Promise<void>;
   /** The desktop's colour scheme. `onchange` returns its own unsubscribe. */
   media: { dark(): boolean; onchange(cb: () => void): () => void };
@@ -68,7 +70,18 @@ export function createTheme(deps: ThemeDeps) {
         // A disposed (or superseded) instance has no caller left to show the error to, and
         // no state left that reporting it would explain, so it is dropped along with the
         // refresh below.
-        if (myGeneration === generation) deps.onerror(e);
+        if (myGeneration === generation) {
+          // Fall back to the launch mirror rather than to the default `system`. The mirror
+          // is the last choice known to have been saved, and what theme-boot.js already
+          // painted the first frame with, so adopting it keeps the screen as it is. The
+          // default would not merely be wrong on screen: `refresh()` below calls `apply`,
+          // which writes the choice back into the mirror, so one unreadable load would
+          // overwrite a pinned choice and cost the no-flash boot on every later launch.
+          // Not applied when `set()` won the race, for the same reason the load's own
+          // answer is not: the user's newer choice stands.
+          if (!setDuringLoad) choice = deps.mirrored() ?? choice;
+          deps.onerror(e);
+        }
       }
       if (myGeneration !== generation) return;
       // Unconditional, not `if (choice === 'system')`: a media change that arrives while

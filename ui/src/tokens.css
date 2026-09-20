@@ -48,6 +48,10 @@
   /* The viewer is dark in both themes, so its glass exists only here. */
   --glass: #26262be6;
   --glass-line: #ffffff1a;
+  /* A link on the glass, which over a white photo is a far lighter ground than any panel:
+     --accent itself reaches only 4.10 there. Lighter than --accent, not a different hue, so
+     it still reads as the same link colour (lib/tokens.test.ts holds both). */
+  --accent-glass: #77aef0;
 }
 
 /* accent-color is inherited and would otherwise be computed once, on :root, in the app's
