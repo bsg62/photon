@@ -23,10 +23,16 @@
    *  click. Below this a steady hand and a shaky one must mean the same thing. */
   const BAND_THRESHOLD = 4;
   /** How close to the viewport's edge a band has to be dragged before the grid scrolls
-   *  under it, and how fast it can scroll, per frame. A tile is 160px, so the margin is
-   *  under a third of one: a band that stops short of the edge does not creep. */
+   *  under it, and how fast it may scroll, in pixels **per second** - not per frame, or the
+   *  same gesture would scroll twice as far on a 120Hz screen as on a 60Hz one. A tile is
+   *  160px, so the margin is under a third of one: a band that stops short of the edge does
+   *  not creep. */
   const BAND_EDGE = 48;
-  const BAND_SCROLL_MAX = 24;
+  const BAND_SCROLL_MAX = 1400;
+  /** The longest frame the scroll will act on. A tab that was in the background, or a slow
+   *  first paint, hands back a delta of whole seconds; without a cap that is one enormous
+   *  jump through the library. */
+  const BAND_FRAME_MAX_MS = 50;
 
   let viewport: HTMLDivElement;
   let width = $state(0);
@@ -156,6 +162,11 @@
 
 
   function onkeydown(e: KeyboardEvent) {
+    // A drag owns the grid while it lasts: Escape abandons it (below), and every other key
+    // is ignored rather than acted on. Enter is the one that mattered - it opens the viewer,
+    // which makes the grid `inert`, and `inert` does not stop a running animation frame: the
+    // band would go on scrolling and rewriting the selection behind the photo.
+    if (band && e.key !== 'Escape') return;
     const sel = library.selected;
     if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'r') {
       e.preventDefault();
@@ -235,6 +246,11 @@
   let bandAt: { x: number; y: number } | null = null;
   /** The running autoscroll frame, if any. */
   let bandScroll: number | null = null;
+  /** When the last autoscroll frame ran, and the sub-pixel part of the scroll it could not
+   *  apply. Without the remainder a one-pixel-deep hold asks for a fraction of a pixel per
+   *  frame for ever and the grid never moves at all. */
+  let bandScrollAt = 0;
+  let bandScrollRest = 0;
 
   /** A point in the window's coordinates, in the canvas's. */
   function atCanvas(x: number, y: number): { x: number; y: number } {
@@ -309,27 +325,37 @@
    *  it was and the scroll would slide the grid out from under it.
    *
    *  The preview is still drawn from the loaded pages, so tiles scrolled past before their
-   *  page arrives do not ring at once - they ring on the frame after it lands, since every
-   *  frame previews again. `endBand`'s fetch is what makes the result right either way,
-   *  which is the whole reason the band is answered twice. */
+   *  page arrives do not ring at once - they ring on the next scrolling frame, since each
+   *  one previews again. `endBand`'s fetch is what makes the result right either way, which
+   *  is the whole reason the band is answered twice.
+   *
+   *  The loop keeps running while the pointer is in a margin, even where the grid cannot
+   *  move - at the end of the library, or when the step rounds away to nothing. It is one
+   *  idle frame either way, and stopping there means never starting again: the wheel still
+   *  scrolls during a drag (so the end can stop being the end) and a scan can lengthen the
+   *  grid, and neither of those sends a pointer event to restart anything. */
   function startBandScroll() {
     if (bandScroll !== null || !banding) return;
-    const step = () => {
+    bandScrollAt = performance.now();
+    bandScrollRest = 0;
+    const step = (now: number) => {
       bandScroll = null;
       if (!banding || !band || !bandAt) return;
       const box = viewport.getBoundingClientRect();
       const speed = edgeScrollSpeed(bandAt.y, box.top, box.bottom, BAND_EDGE, BAND_SCROLL_MAX);
-      if (speed !== 0) {
-        const before = viewport.scrollTop;
-        viewport.scrollTop = before + speed;
-        // At either end the grid cannot move; the band simply stops growing, and the frame
-        // after that is not worth scheduling until the pointer moves again.
-        if (viewport.scrollTop === before) return;
-        const at = atCanvas(bandAt.x, bandAt.y);
-        dragTo(at.x, at.y);
-      } else {
+      if (speed === 0) {
+        bandScrollRest = 0;
+        bandScrollAt = now;
         return;
       }
+      const elapsed = Math.min(BAND_FRAME_MAX_MS, Math.max(0, now - bandScrollAt));
+      bandScrollAt = now;
+      const wanted = (speed * elapsed) / 1000 + bandScrollRest;
+      const whole = Math.trunc(wanted);
+      bandScrollRest = wanted - whole;
+      if (whole !== 0) viewport.scrollTop += whole;
+      const at = atCanvas(bandAt.x, bandAt.y);
+      dragTo(at.x, at.y);
       bandScroll = requestAnimationFrame(step);
     };
     bandScroll = requestAnimationFrame(step);
@@ -338,6 +364,7 @@
   function stopBandScroll() {
     if (bandScroll !== null) cancelAnimationFrame(bandScroll);
     bandScroll = null;
+    bandScrollRest = 0;
     bandAt = null;
   }
 
@@ -362,13 +389,25 @@
    *  Both the viewport's handler and the window's call this: the viewport has focus during a
    *  drag that began with a click, but a drag whose press did not focus it does not, so
    *  neither handler alone covers every Escape. */
-  function cancelBandKey(): boolean {
-    if (!band) return false;
+  /** Abandons a drag that was interrupted rather than finished: the browser taking the
+   *  gesture for a pan (`pointercancel`, which a touchscreen sends after a few moves), or
+   *  the viewer opening on top of the grid.
+   *
+   *  Before autoscroll a missed teardown left a stuck rectangle; now it leaves a loop that
+   *  scrolls to the end of the library rewriting the selection as it goes, and a
+   *  `bandPointer` that never clears, so no band can be started again. Every way out of a
+   *  drag has to come through here. */
+  function abandonBand() {
     if (banding) library.cancelBand();
     band = null;
     banding = false;
     bandPointer = null;
     stopBandScroll();
+  }
+
+  function cancelBandKey(): boolean {
+    if (!band) return false;
+    abandonBand();
     return true;
   }
 
@@ -444,6 +483,7 @@
     onscroll={() => (scrollTop = viewport.scrollTop)}
     onpointerdown={bandDown}
     onpointermove={bandMove}
+    onpointercancel={abandonBand}
     onclickcapture={(e) => {
       if (!swallowClick) return;
       swallowClick = false;

@@ -79,9 +79,11 @@ Enter opens something inside the band and a later Shift+click extends from it.
 
 ## Amendment, 2026-09-20: autoscroll
 
-Holding the band near the top or bottom edge now scrolls the grid under it, a frame at a
-time, faster the deeper into a 48px margin the pointer is held and capped so a pointer
-dragged clean off the window does not scroll wildly. `edgeScrollSpeed` is the pure part; each
+Holding the band near the top or bottom edge now scrolls the grid under it, faster the deeper
+into a 48px margin the pointer is held and capped so a pointer dragged clean off the window
+does not scroll wildly. The speed is in pixels **per second**, multiplied by each frame's own
+duration (capped, so a backgrounded tab does not hand back one enormous jump): per-frame
+steps would scroll twice as far on a 120Hz screen as on a 60Hz one. `edgeScrollSpeed` is the pure part; each
 margin is capped at a third of the viewport's height, so a short grid keeps a middle third
 that holds still rather than being all edge.
 
@@ -95,6 +97,14 @@ have not arrived. It stays *useful* rather than correct - every frame previews a
 tile rings on the frame after its page lands - and `endBand`'s fetch is what makes the result
 right, exactly as it already did for a placeholder tile. The design did not need changing to
 allow autoscroll; it needed only for the preview to stop being described as complete.
+
+**Every interruption has to tear the drag down.** A finished band ends on `pointerup` and an
+abandoned one on Escape, but a browser that takes the gesture for a pan sends
+`pointercancel` instead, and opening the viewer mid-drag makes the grid `inert` - which does
+not stop an animation frame. Before autoscroll a missed teardown left a stuck rectangle;
+after it, the loop scrolls to the end of the library rewriting the selection as it goes, and
+the `bandPointer` it never clears blocks every later drag. `abandonBand` is the one way out,
+and the grid's key handler honours nothing but Escape while a band is live.
 
 Still not done: no horizontal autoscroll (the grid does not scroll sideways), and no
 acceleration curve beyond the linear ramp.

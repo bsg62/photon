@@ -190,6 +190,27 @@ describe('edgeScrollSpeed', () => {
     expect(speed(559)).toBe(0);
   });
 
+  /** The boundaries themselves. Whether the comparison is `<` or `<=` cannot matter - the
+   *  ramp is zero at the boundary either way - so this pins the behaviour (no movement, and
+   *  movement one pixel further out) rather than the operator. `Math.abs` because the top
+   *  edge computes `-0`, which `toBe(0)` refuses. */
+  it('holds still exactly at the edge of the margin', () => {
+    expect(Math.abs(speed(140))).toBe(0);
+    expect(Math.abs(speed(560))).toBe(0);
+    expect(speed(139)).toBeLessThan(0);
+    expect(speed(561)).toBeGreaterThan(0);
+  });
+
+  /** A viewport with no height has no margins to be inside. Without the guard the ramp
+   *  divides by zero and answers ±max for every point, so a grid measured before its first
+   *  layout would scroll at full speed. */
+  it('never scrolls a viewport with no height, or with no margin', () => {
+    expect(edgeScrollSpeed(100, 100, 100, 40, 20)).toBe(0);
+    expect(edgeScrollSpeed(120, 100, 100, 40, 20)).toBe(0);
+    expect(edgeScrollSpeed(300, 100, 600, 0, 20)).toBe(0);
+    expect(edgeScrollSpeed(110, 100, 600, 0, 20)).toBe(0);
+  });
+
   it('scrolls faster the deeper into the margin the pointer is', () => {
     const shallow = speed(590);
     const deep = speed(599);

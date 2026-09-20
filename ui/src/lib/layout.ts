@@ -199,9 +199,11 @@ export function itemsInRect(rows: Row[], rect: Rect): [number, number][] {
  *  in pixels: negative up, positive down, zero while the pointer is well inside.
  *
  *  `y`, `top` and `bottom` are in the window's coordinates (the viewport's own
- *  `getBoundingClientRect`), because that is where the pointer is. Speed ramps with how far
- *  into `margin` the pointer has gone and clamps at `max`, so a pointer dragged clean off
- *  the window - the common case, since the drag is captured - scrolls fast but not wildly.
+ *  `getBoundingClientRect`), because that is where the pointer is. The answer is in pixels
+ *  **per second**: the caller multiplies by the frame's own duration, so the grid scrolls at
+ *  the same rate on a 60Hz screen and a 120Hz one. Speed ramps with how far into `margin`
+ *  the pointer has gone and clamps at `max`, so a pointer dragged clean off the window - the
+ *  common case, since the drag is captured - scrolls fast but not wildly.
  *
  *  A viewport shorter than two margins would otherwise have every point inside both, and a
  *  band in a short grid would scroll wherever the pointer rested. The margins are capped at
@@ -213,8 +215,10 @@ export function edgeScrollSpeed(
   margin: number,
   max: number,
 ): number {
-  const band = Math.min(margin, Math.max(0, (bottom - top) / 3));
-  if (band === 0) return 0;
+  const band = Math.min(margin, (bottom - top) / 3);
+  // A viewport with no height (or a degenerate box) has no margins to be in, and dividing
+  // by the band below would answer ±max for every point in it.
+  if (band <= 0) return 0;
   if (y < top + band) return -max * Math.min(1, (top + band - y) / band);
   if (y > bottom - band) return max * Math.min(1, (y - (bottom - band)) / band);
   return 0;
