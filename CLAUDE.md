@@ -98,7 +98,10 @@ scan/mutation → Engine::refresh_grid() → snapshot (view, query, epoch, seq)
 ```
 
 Rebuilds run unlocked so a view switch never waits behind a scan's rebuild; the two publish
-checks are what make that safe, and both are needed. A setter's own rebuild is the authority
+checks are what make that safe, and both are needed - each has a test that fails only when
+that guard is removed, which is worth keeping that way: the epoch's own window (the state
+moved, its rebuild not yet landed) went untested for months while the `seq` stamp quietly
+covered every scenario written for it. A setter's own rebuild is the authority
 for a view change. A discarded rebuild never loses rows: every commit is followed on its own
 thread by a rebuild stamped after it, and the highest stamp always publishes.
 

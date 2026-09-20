@@ -2223,6 +2223,10 @@ mod tests {
     /// view when a setter has already moved on and published its own. That stale index
     /// must be dropped, not published: it would put the full library on screen while
     /// `GridInfo` said Starred.
+    ///
+    /// Here the setter has *published*, so the `seq` stamp is what discards the stale index
+    /// and this test passes with the epoch check removed. The epoch's own window - the state
+    /// moved, its rebuild not yet landed - is the test below it.
     #[test]
     fn a_rebuild_started_before_a_view_change_is_not_published_over_it() {
         use photon_core::grid::GridView;
@@ -2252,6 +2256,101 @@ mod tests {
         );
         let (after, grid) = f.engine.grid();
         assert_eq!((after, grid.len()), (version, 1));
+    }
+
+    /// The combination left untested when search shipped, and recorded as the one most
+    /// likely to regress if the rebuild path were ever refactored - which it since was, into
+    /// the unlocked `snapshot`/`publish_if_current` pair. A scan finishing while a search is
+    /// active must rebuild *the search*, not quietly restore the whole library underneath a
+    /// query the UI still shows.
+    #[test]
+    fn a_scan_finishing_during_a_search_rebuilds_the_search() {
+        use photon_core::grid::GridView;
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a/beach.jpg", &img), ("a/mountain.jpg", &img)]);
+        let watched = f.add_photos();
+        f.engine.wait_for_scans();
+        f.engine.set_search_query("beach").unwrap();
+        assert_eq!(f.engine.grid().1.len(), 1);
+        let version = f.engine.grid().0;
+
+        // A photo arrives that the query matches, and a scan picks it up.
+        std::fs::write(f.photos.join("a").join("beach hut.jpg"), &img).unwrap();
+        f.engine.start_scan(watched);
+        f.engine.wait_for_scans();
+
+        let info = crate::commands::grid_info(&f.engine);
+        assert_eq!(
+            (info.view, info.search_query.as_str()),
+            (GridView::Search, "beach"),
+            "the scan must not move the view or lose the query"
+        );
+        assert_eq!(info.len, 2, "the new match is in the rebuilt search");
+        assert!(f.engine.grid().0 > version, "and the UI was told");
+        // The sidebar reads the same index, so its sections describe the filtered set.
+        assert_eq!(info.sections.len(), 1);
+    }
+
+    /// The window the epoch guard exists for, and the one the scenario tests miss.
+    ///
+    /// `rebuild_or_restore` moves the view (or the query) and bumps the epoch *first*, and
+    /// only then runs its own query - so there is a stretch where the state has changed and
+    /// nothing has published yet. A rebuild stamped before that change is not stale by `seq`
+    /// during it: its stamp is still the highest one published. Only the epoch says it was
+    /// built for a set of photos the UI is no longer reporting.
+    ///
+    /// The whole app suite passed with the epoch check removed before this test existed,
+    /// which is what `publish_if_current`'s "both are needed" was resting on.
+    ///
+    /// The `arg` half matters as much as the view: two searches are two different result
+    /// sets under one `GridView::Search`, and an index built for the first would land while
+    /// `GridInfo` reported the second's query.
+    #[test]
+    fn a_rebuild_is_refused_once_the_state_has_moved_even_before_the_new_one_publishes() {
+        use photon_core::grid::GridView;
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a/beach.jpg", &img), ("a/mountain.jpg", &img)]);
+        f.add_photos();
+        f.engine.wait_for_scans();
+        f.engine.lib.set_ratings(&[(f.ids()[0], 2)]).unwrap();
+
+        for moved in ["view", "query"] {
+            f.engine.set_view(GridView::All).unwrap();
+            let stale = f.engine.snapshot();
+            let stale_index = Arc::new(GridIndex::build(
+                f.engine
+                    .lib
+                    .entries_for(stale.state.view, &stale.state.arg)
+                    .unwrap(),
+            ));
+            assert_eq!(stale_index.len(), 2, "{moved}: built for the whole library");
+
+            // The setter has moved the state; its own rebuild is still querying.
+            {
+                let mut state = f.engine.state.lock();
+                match moved {
+                    "view" => state.view = GridView::Starred,
+                    _ => {
+                        state.view = GridView::Search;
+                        state.arg = "beach".to_string();
+                    }
+                }
+                state.epoch += 1;
+            }
+            let (version, grid) = f.engine.grid();
+            let len = grid.len();
+
+            assert!(
+                !f.engine.publish_if_current(stale_index, &stale),
+                "{moved}: an index built for state that has moved is discarded"
+            );
+            let (after, grid) = f.engine.grid();
+            assert_eq!(
+                (after, grid.len()),
+                (version, len),
+                "{moved}: nothing was published and nothing was told to re-read"
+            );
+        }
     }
 
     /// The epoch only says which *view* an index was built for. Two rebuilds for the same
