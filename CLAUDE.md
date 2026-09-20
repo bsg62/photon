@@ -386,8 +386,16 @@ action in `mock.js`.
   message and why, rather than adding a test that passes either way. **A probe that passes is
   a finding, not a formality:** it has exposed a missing test (the slideshow's still-loading
   case) and a line whose comment called it load-bearing when it did nothing (an `IS NOT NULL`
-  "planner hint"). Revert with an exact replacement; a loose `sed` that also hits a
-  neighbouring writer fails ten tests and proves nothing.
+  "planner hint"), and an export collision ledger that changed no outcome. Revert with an
+  exact replacement; a loose `sed` that also hits a neighbouring writer fails ten tests and
+  proves nothing.
+  **A probe proves the rule only for the inputs the tests actually use.** Six green probes
+  on the rubber band left four of its rules undefended, because each probe only exercised
+  cases the existing tests happened to cover: the range-merge rule was one of them, and
+  without it a narrow band selects seven photos where three were drawn. The same blind spot
+  had left `publish_if_current`'s epoch guard pinned by nothing at all — the whole app suite
+  passed with it removed, including the test named after it. When a probe passes, ask what
+  input would make the reverted code *differ*, and write that case.
 - **A large branch gets an independent read before it merges.** Every whole-branch review here
   has found a real bug no test could see; the edits branch's was the viewer reloading on any
   unrelated library change. Point the reviewer at the effect wiring and at anything a new
