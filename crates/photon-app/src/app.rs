@@ -221,6 +221,8 @@ pub fn run() {
             ipc::set_item_edit,
             ipc::add_item_tag,
             ipc::remove_item_tag,
+            ipc::add_items_tag,
+            ipc::remove_items_tag,
             ipc::neighbours,
             ipc::reveal_in_file_manager,
             ipc::reveal_folder,

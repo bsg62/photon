@@ -3,7 +3,9 @@
   import { library } from '../lib/library.svelte';
   import { buildRows, columnsFor, GAP, itemSpan, layoutSections, rowOfItem, topFolderId, totalHeight, visibleRange } from '../lib/layout';
   import { move, type NavKey } from '../lib/nav';
+  import { createTagPicker } from '../lib/tag-picker.svelte';
   import { yearMarks } from '../lib/timeline';
+  import TagPicker from './TagPicker.svelte';
   import Tile from './Tile.svelte';
   import Timeline from './Timeline.svelte';
 
@@ -229,6 +231,21 @@
   /** Stars or unstars everything selected. The backend skips a folder whose `.picasa.ini`
    *  it cannot write and answers with how many landed, so a read-only folder in the
    *  selection costs the user a toast rather than the other eleven photos. */
+  /** The keyword dialog. It captures the selection when it opens, so a scan landing while
+   *  it has focus cannot move what the user was told it would write to. */
+  const picker = createTagPicker({
+    apply: (mode, tag, ids) => (mode === 'add' ? api.addItemsTag(ids, tag) : api.removeItemsTag(ids, tag)),
+  });
+
+  /** Unlike the other verbs, this one does not act on the click: it opens a dialog, which
+   *  keeps the ids and writes them when the user has typed a name. `withSelection` is still
+   *  what closes the menu and returns focus, so the dialog's own focus wins afterwards. */
+  function pickKeyword(mode: 'add' | 'remove') {
+    const ids = library.selectedItemIds;
+    menu = null;
+    if (ids.length) picker.show(mode, ids);
+  }
+
   async function star(ids: number[], starred: boolean) {
     const done = await api.setStars(ids, starred);
     if (done < ids.length) {
@@ -321,6 +338,8 @@
     {/if}
     <button role="menuitem" onclick={() => withSelection((ids) => star(ids, true))}>Star {subject}</button>
     <button role="menuitem" onclick={() => withSelection((ids) => star(ids, false))}>Unstar {subject}</button>
+    <button role="menuitem" onclick={() => pickKeyword('add')}>Add keyword to {subject}…</button>
+    <button role="menuitem" onclick={() => pickKeyword('remove')}>Remove keyword from {subject}…</button>
     {#if albumId !== null}
       <button role="menuitem" onclick={() => withSelection((ids) => library.removeFromAlbum(albumId, ids))}>
         Remove {subject} from “{library.albumName(albumId)}”
@@ -339,6 +358,8 @@
     {/each}
   </div>
 {/if}
+
+<TagPicker {picker} />
 
 <style>
   .grid { display: flex; height: 100%; background: var(--surface); }

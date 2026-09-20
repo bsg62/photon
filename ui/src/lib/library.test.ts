@@ -176,7 +176,7 @@ describe('LibraryStore', () => {
     vi.mocked(api.renameTag).mockResolvedValue();
     vi.mocked(api.listTags).mockRejectedValueOnce(new Error('tags-fail'));
     await expect(store.renameTag('holiday', 'vacation')).resolves.toBeUndefined();
-    expect(store.errors.some((t) => t.message === 'tags-fail')).toBe(true);
+    expect(store.toasts.some((t) => t.message === 'tags-fail')).toBe(true);
   });
 
   it('a failed collections fetch is reported, not thrown', async () => {
@@ -187,7 +187,7 @@ describe('LibraryStore', () => {
     await Promise.resolve();
     await Promise.resolve();
     await Promise.resolve();
-    expect(store.errors.some((t) => t.message === 'albums-fail')).toBe(true);
+    expect(store.toasts.some((t) => t.message === 'albums-fail')).toBe(true);
   });
 
   it('routes background refresh failures from event handlers into reportError instead of throwing unhandled', async () => {
@@ -199,8 +199,8 @@ describe('LibraryStore', () => {
     await Promise.resolve();
     await Promise.resolve();
 
-    expect(store.errors).toHaveLength(1);
-    expect(store.errors[0]?.message).toBe('boom');
+    expect(store.toasts).toHaveLength(1);
+    expect(store.toasts[0]?.message).toBe('boom');
   });
 
   it('routes folder-status and done scan-progress failures into reportError too', async () => {
@@ -211,13 +211,13 @@ describe('LibraryStore', () => {
     handlers.folderStatus({ watchedId: 1, online: false, degraded: false });
     await Promise.resolve();
     await Promise.resolve();
-    expect(store.errors.some((t) => t.message === 'folders-fail')).toBe(true);
+    expect(store.toasts.some((t) => t.message === 'folders-fail')).toBe(true);
 
     vi.mocked(api.listFolders).mockRejectedValueOnce(new Error('scan-done-fail'));
     handlers.scanProgress({ watchedId: 1, filesSeen: 1, added: 0, changed: 0, done: true, cancelled: false });
     await Promise.resolve();
     await Promise.resolve();
-    expect(store.errors.some((t) => t.message === 'scan-done-fail')).toBe(true);
+    expect(store.toasts.some((t) => t.message === 'scan-done-fail')).toBe(true);
   });
 
   it('tracks anyDegraded from folder-status events, filtered to currently-watched ids', async () => {
@@ -519,7 +519,7 @@ describe('LibraryStore', () => {
     vi.mocked(api.setGridView).mockRejectedValueOnce(new Error('set-view-fail'));
 
     await expect(store.setView('starred')).resolves.toBeUndefined();
-    expect(store.errors.some((t) => t.message === 'set-view-fail')).toBe(true);
+    expect(store.toasts.some((t) => t.message === 'set-view-fail')).toBe(true);
   });
 
   it('setSearchQuery("") issues the command and refreshes, restoring the All view', async () => {

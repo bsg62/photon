@@ -222,6 +222,22 @@ impl Library {
     /// refusing a name the user has just typed, or storing it literally and watching it
     /// vanish from the panel on the next read, which reads as a bug.
     pub fn add_item_tag(&self, item_id: i64, tag: &str) -> Result<String> {
+        Ok(self.add_items_tag(&[item_id], tag)?.0)
+    }
+
+    /// `add_item_tag` for several photos at once, returning the name stored and how many
+    /// rows were written. One writer for both, so the single-photo path (which is now its
+    /// one-element case) cannot drift from it - the same reason `picasa::set_star` became
+    /// `set_stars`' one-element case.
+    ///
+    /// The rename rule is resolved, and a removal rule dropped, **once for the batch**: per
+    /// photo, a rule changing under a long write could split one click between two names.
+    ///
+    /// An id that is no longer a live photo - purged, or soft-deleted by a scan that found
+    /// the file gone - writes nothing instead of failing on the foreign key: a selection can
+    /// outlive the photos in it, and one such id must not cost the user the rest of the
+    /// batch. The count is what landed, so the caller can say so.
+    pub fn add_items_tag(&self, item_ids: &[i64], tag: &str) -> Result<(String, usize)> {
         let tag = valid_name(tag)?;
         let mut conn = self.writer();
         let tx = conn.transaction()?;
@@ -238,13 +254,22 @@ impl Library {
             "DELETE FROM tag_rules WHERE tag = ?1 AND target IS NULL",
             params![tag],
         )?;
-        tx.execute(
-            "INSERT INTO item_user_tags (item_id, tag, added) VALUES (?1, ?2, 1)
-             ON CONFLICT (item_id, tag) DO UPDATE SET added = 1",
-            params![item_id, &name],
-        )?;
+        let mut count = 0;
+        {
+            // The `WHERE EXISTS` is also what makes this an upsert SQLite will parse: a
+            // SELECT-form INSERT needs a WHERE clause before ON CONFLICT to disambiguate.
+            let mut stmt = tx.prepare_cached(
+                "INSERT INTO item_user_tags (item_id, tag, added)
+                 SELECT ?1, ?2, 1
+                  WHERE EXISTS (SELECT 1 FROM items WHERE id = ?1 AND missing_since IS NULL)
+                 ON CONFLICT (item_id, tag) DO UPDATE SET added = 1",
+            )?;
+            for &item_id in item_ids {
+                count += stmt.execute(params![item_id, &name])?;
+            }
+        }
         tx.commit()?;
-        Ok(name)
+        Ok((name, count))
     }
 
     /// Removes the displayed name `tag` from one photo: every tag the user added that shows
@@ -255,24 +280,46 @@ impl Library {
     /// Deletion runs before suppression because a name that is both ends as the single
     /// suppression row the primary key allows.
     pub fn remove_item_tag(&self, item_id: i64, tag: &str) -> Result<()> {
+        self.remove_items_tag(&[item_id], tag)?;
+        Ok(())
+    }
+
+    /// `remove_item_tag` for several photos at once, returning how many photos it changed.
+    /// One writer for both, and one transaction for the batch; see `add_items_tag` for why
+    /// an id that is no longer there is skipped rather than fatal.
+    pub fn remove_items_tag(&self, item_ids: &[i64], tag: &str) -> Result<usize> {
         let mut conn = self.writer();
         let tx = conn.transaction()?;
-        tx.execute(
-            "DELETE FROM item_user_tags WHERE item_id = ?1 AND added = 1
-               AND coalesce((SELECT target FROM tag_rules WHERE tag = item_user_tags.tag),
-                            item_user_tags.tag) = ?2",
-            params![item_id, tag],
-        )?;
-        tx.execute(
-            "INSERT OR REPLACE INTO item_user_tags (item_id, tag, added)
-             SELECT item_id, tag, 0 FROM item_tags
-              WHERE item_id = ?1
-                AND coalesce((SELECT target FROM tag_rules WHERE tag = item_tags.tag),
-                             item_tags.tag) = ?2",
-            params![item_id, tag],
-        )?;
+        let mut count = 0;
+        {
+            let mut delete = tx.prepare_cached(
+                "DELETE FROM item_user_tags WHERE item_id = ?1 AND added = 1
+                   AND coalesce((SELECT target FROM tag_rules WHERE tag = item_user_tags.tag),
+                                item_user_tags.tag) = ?2
+                   AND EXISTS (SELECT 1 FROM items
+                                WHERE id = ?1 AND missing_since IS NULL)",
+            )?;
+            let mut suppress = tx.prepare_cached(
+                "INSERT OR REPLACE INTO item_user_tags (item_id, tag, added)
+                 SELECT item_id, tag, 0 FROM item_tags
+                  WHERE item_id = ?1
+                    AND coalesce((SELECT target FROM tag_rules WHERE tag = item_tags.tag),
+                                 item_tags.tag) = ?2
+                    AND EXISTS (SELECT 1 FROM items
+                                 WHERE id = ?1 AND missing_since IS NULL)",
+            )?;
+            for &item_id in item_ids {
+                // Deletion before suppression, per photo: a name that is both ends as the
+                // single suppression row the primary key allows.
+                let deleted = delete.execute(params![item_id, tag])?;
+                let suppressed = suppress.execute(params![item_id, tag])?;
+                if deleted + suppressed > 0 {
+                    count += 1;
+                }
+            }
+        }
         tx.commit()?;
-        Ok(())
+        Ok(count)
     }
 
     /// Every rule whose keyword some photo still carries as a keyword or as a tag the user
@@ -739,5 +786,61 @@ mod tests {
         assert_eq!(lib.item_tags(ids[0]).unwrap(), ["beach"]);
         assert_eq!(listed(&lib), [("beach".to_string(), 1)]);
         assert_eq!(lib.tag_rules().unwrap(), [rule("vacation", None)]);
+    }
+
+    #[test]
+    fn a_bulk_add_writes_one_name_to_every_photo() {
+        let (_dir, lib, ids) = library_with(&[&[], &["beach"], &[]]);
+        let (name, count) = lib.add_items_tag(&ids, "beach").unwrap();
+        assert_eq!((name.as_str(), count), ("beach", 3));
+        for id in &ids {
+            assert_eq!(lib.item_tags(*id).unwrap(), ["beach"]);
+        }
+    }
+
+    /// The name is resolved once for the batch, not per photo, so one click can never split
+    /// across two names - and the stored name is the one the user sees, as for one photo.
+    #[test]
+    fn a_bulk_add_of_a_renamed_away_name_stores_the_target() {
+        let (_dir, lib, ids) = library_with(&[&["holiday"], &[]]);
+        lib.rename_tag("holiday", "vacation").unwrap();
+        let (name, count) = lib.add_items_tag(&ids, "holiday").unwrap();
+        assert_eq!((name.as_str(), count), ("vacation", 2));
+        assert_eq!(lib.item_tags(ids[1]).unwrap(), ["vacation"]);
+    }
+
+    #[test]
+    fn a_bulk_remove_suppresses_every_photos_own_keyword() {
+        let (_dir, lib, ids) = library_with(&[&["beach", "sun"], &["beach"]]);
+        assert_eq!(lib.remove_items_tag(&ids, "beach").unwrap(), 2);
+        assert_eq!(lib.item_tags(ids[0]).unwrap(), ["sun"]);
+        assert!(lib.item_tags(ids[1]).unwrap().is_empty());
+    }
+
+    /// A selection can outlive the photos in it; one id that has been purged must not cost
+    /// the user every other photo in the batch.
+    #[test]
+    fn an_unknown_id_does_not_stop_the_rest_of_a_batch() {
+        let (_dir, lib, ids) = library_with(&[&[], &[]]);
+        let with_ghost = [ids[0], 9_999, ids[1]];
+        assert_eq!(lib.add_items_tag(&with_ghost, "beach").unwrap().1, 2);
+        assert_eq!(lib.item_tags(ids[1]).unwrap(), ["beach"]);
+        assert_eq!(lib.remove_items_tag(&with_ghost, "beach").unwrap(), 2);
+    }
+
+    /// A photo the scanner has marked missing is still in `items` and still selectable in a
+    /// grid built before the scan, but its file is gone; a keyword written to it would be a
+    /// row the user cannot see and cannot undo.
+    #[test]
+    fn a_batch_skips_photos_whose_files_have_gone() {
+        let (_dir, lib, ids) = library_with(&[&["beach"], &["beach"]]);
+        lib.mark_missing(&[ids[0]], 1).unwrap();
+
+        assert_eq!(lib.add_items_tag(&ids, "sun").unwrap().1, 1);
+        assert_eq!(lib.item_tags(ids[0]).unwrap(), ["beach"]);
+        assert_eq!(lib.item_tags(ids[1]).unwrap(), ["beach", "sun"]);
+
+        assert_eq!(lib.remove_items_tag(&ids, "beach").unwrap(), 1);
+        assert_eq!(lib.item_tags(ids[0]).unwrap(), ["beach"]);
     }
 }

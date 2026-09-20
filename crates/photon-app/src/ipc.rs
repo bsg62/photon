@@ -236,6 +236,24 @@ pub fn remove_item_tag(engine: Eng<'_>, id: i64, tag: String) -> Result<(), AppE
 }
 
 #[tauri::command(async)]
+pub fn add_items_tag(
+    engine: Eng<'_>,
+    ids: Vec<i64>,
+    tag: String,
+) -> Result<commands::TagWrite, AppError> {
+    commands::add_items_tag(&engine, &ids, &tag)
+}
+
+#[tauri::command(async)]
+pub fn remove_items_tag(
+    engine: Eng<'_>,
+    ids: Vec<i64>,
+    tag: String,
+) -> Result<commands::TagWrite, AppError> {
+    commands::remove_items_tag(&engine, &ids, &tag)
+}
+
+#[tauri::command(async)]
 pub fn neighbours(engine: Eng<'_>, id: i64, radius: usize) -> Vec<i64> {
     commands::neighbours(&engine, id, radius)
 }

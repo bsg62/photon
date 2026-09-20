@@ -75,6 +75,11 @@ pub const SHOTS: &[Shot] = &[
         dark: true,
     },
     Shot {
+        name: "keyword-dark",
+        query: "theme=dark&do=keyword",
+        dark: true,
+    },
+    Shot {
         name: "settings-light",
         query: "theme=light&do=settings",
         dark: false,
