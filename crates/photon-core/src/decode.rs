@@ -37,7 +37,7 @@ pub fn decode_oriented(path: &Path, orientation: u8, max_edge: u32) -> Result<Dy
 mod tests {
     use super::*;
     use crate::Error;
-    use crate::testutil::{jpeg_bytes, write_file};
+    use crate::testutil::{bmp_bytes, jpeg_bytes, tiff_bytes, write_file};
     use image::{Rgba, RgbaImage};
 
     const RED: Rgba<u8> = Rgba([255, 0, 0, 255]);
@@ -101,5 +101,17 @@ mod tests {
             decode_oriented(&missing, 1, 100),
             Err(Error::Io(_))
         ));
+    }
+
+    /// The fixtures are hand-built byte streams, so this fails on the decode rather than
+    /// on a missing encoder when the crate's `tiff`/`bmp` features are off.
+    #[test]
+    fn decodes_tiff_and_bmp() {
+        let dir = tempfile::tempdir().unwrap();
+        for (name, bytes) in [("a.tif", tiff_bytes(40, 20)), ("a.bmp", bmp_bytes(40, 20))] {
+            let path = write_file(dir.path(), name, &bytes);
+            let img = decode_oriented(&path, 1, 100).expect(name);
+            assert_eq!((img.width(), img.height()), (40, 20), "{name}");
+        }
     }
 }

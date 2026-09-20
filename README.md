@@ -40,6 +40,16 @@ first photo is starred; an old `Picasa.ini` is edited in place. On Windows the f
 hidden attribute is kept. If Picasa has the file open at that moment the write fails with
 a message and nothing changes; try again once Picasa has finished.
 
+### File formats
+
+photon indexes JPEG, PNG, GIF, WebP, TIFF and BMP. A TIFF holding several pages is shown as
+its first page. Camera RAW files and HEIC are not read: every way of decoding them means
+shipping a C library, and photon deliberately has no native dependencies.
+
+Adding TIFF and BMP does not disturb a library built by an earlier photon. Those files
+simply appear as each folder is walked again, whether that scan is manual or triggered by
+the file watcher; nothing already indexed is re-read and no thumbnail is rebuilt.
+
 ### Camera data, keywords, people and albums
 
 The viewer's ⓘ button (or `I`) opens an info panel: camera, lens, focal length, aperture,
@@ -197,6 +207,7 @@ publishing it.
 - [ ] Each rename or removal appears under Changes, and "Restore" brings the original tag back. Rescanning the folder does not undo a rename, and the photo files' keywords are unchanged (check in another app).
 - [ ] After removing every folder, the sidebar offers "Add a folder in Settings…", which opens Settings on Folders.
 - [ ] Unplugging a drive with a watched folder dims its folder and tiles after a rescan. Nothing disappears.
+- [ ] Drop a `.tif` and a `.bmp` into a watched folder: both appear after the scan with correct thumbnails, and their tiles show the right shape (not stretched or letterboxed). Open each in the viewer at 100%. A TIFF the decoder cannot read (16-bit, CMYK, or JPEG-compressed — save one from GIMP or Photoshop to get one) shows the failed-thumbnail placeholder rather than an empty tile, and does not stall the folder's other thumbnails.
 - [ ] Ctrl/Cmd+Shift+R and "Reveal in file manager" open the system file manager at the file.
 - [ ] On Windows, add an SMB share (`\\server\photos` or by IP) as a watched folder: Settings → Folders shows it as `\\server\photos`, not `\\?\UNC\server\photos`, and "Reveal" there, on a sidebar folder and on a photo in it all open Explorer rather than failing. A library that already held the share from an older photon shows the same after the upgrade, with its photos, stars and albums intact (the share's thumbnails are rebuilt once).
 - [ ] The viewer's caption reads name, capture time, resolution, size and position, e.g. `IMG_1234.JPG · Jun 15, 2024, 12:30 PM · 4000 × 3000 · 3.2 MB · (12 / 240)`. The capture time matches what the camera wrote, not shifted by your time zone.

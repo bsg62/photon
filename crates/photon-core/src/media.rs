@@ -13,7 +13,11 @@ impl MediaKind {
     pub fn from_path(path: &Path) -> Option<Self> {
         let ext = path.extension()?.to_str()?.to_ascii_lowercase();
         match ext.as_str() {
-            "jpg" | "jpeg" | "jpe" | "png" | "gif" | "webp" => Some(Self::Image),
+            // A multi-page TIFF shows its first page: photon has no notion of one file
+            // holding several photos.
+            "jpg" | "jpeg" | "jpe" | "png" | "gif" | "webp" | "tif" | "tiff" | "bmp" => {
+                Some(Self::Image)
+            }
             _ => None,
         }
     }
@@ -73,7 +77,9 @@ mod tests {
 
     #[test]
     fn recognises_common_image_extensions_case_insensitively() {
-        for name in ["a.jpg", "a.JPEG", "a.jpe", "a.png", "a.gif", "a.WebP"] {
+        for name in [
+            "a.jpg", "a.JPEG", "a.jpe", "a.png", "a.gif", "a.WebP", "a.tif", "a.TIFF", "a.bmp",
+        ] {
             assert_eq!(
                 MediaKind::from_path(Path::new(name)),
                 Some(MediaKind::Image),
