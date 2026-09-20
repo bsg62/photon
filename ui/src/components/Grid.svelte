@@ -343,6 +343,11 @@
 <style>
   .grid { display: flex; height: 100%; background: var(--surface); }
   .viewport { position: relative; flex: 1; min-width: 0; height: 100%; overflow-y: auto; outline: none; }
+  /* The grid is in the tab order (tabindex="0"), so tabbing into it must show something -
+     with nothing selected there is no tile ring to stand in for it. Drawn inside, like the
+     tile's ring and for the same reason: the viewport scrolls a row flush to its own top
+     edge, which clips anything outside the box. */
+  .viewport:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
   .canvas { position: relative; }
   .header, .row { position: absolute; left: 0; right: 0; }
   /* 32px is layout.ts's HEADER: every row below is placed by it, so the type fits the box

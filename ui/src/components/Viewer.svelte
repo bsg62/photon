@@ -935,12 +935,17 @@
     -webkit-backdrop-filter: blur(18px);
     backdrop-filter: blur(18px);
   }
-  .bar { position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 2px; padding: var(--s-1); border-radius: var(--r-4); }
+  /* Centred, with the zoom control's side kept clear on BOTH sides so it stays centred:
+     the control measures 194px at 12px from the edge, and a little air after it makes 214.
+     Without this the bar simply grows through it - the caption's old cap bounded the overlap
+     rather than removing it - and at the 800px minimum width the tools went under the
+     slider. What is left is the caption's; it ellipsises into it. */
+  .bar { position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 2px; max-width: calc(100% - 428px); padding: var(--s-1); border-radius: var(--r-4); }
   .sep { width: 1px; height: 18px; margin: 0 var(--s-1); background: var(--glass-line); }
-  /* The file name is the only part of the toolbar that can be any length. This caps how far
-     an unbounded one can run the toolbar under the zoom control at the minimum window width
-     - it bounds the overlap, it does not remove it, and the tools stay reachable either way. */
-  .caption { padding: 0 10px; border: 0; background: none; color: var(--text-dim); font-size: var(--t-2); white-space: nowrap; cursor: pointer; max-width: 34vw; overflow: hidden; text-overflow: ellipsis; }
+  /* The file name is the only part of the toolbar that can be any length, so it is the part
+     that gives way: `min-width: 0` is what lets a flex item shrink below its content and
+     ellipsise, and the tools keep their intrinsic width. */
+  .caption { flex: 0 1 auto; min-width: 0; padding: 0 10px; border: 0; background: none; color: var(--text-dim); font-size: var(--t-2); white-space: nowrap; cursor: pointer; overflow: hidden; text-overflow: ellipsis; }
   .caption:hover:not(:disabled) { color: var(--text); }
   .caption:disabled { cursor: default; }
   .menu {
@@ -1007,7 +1012,7 @@
   .info dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 10px; margin: 0; }
   .info dt { color: var(--text-dim); }
   .info dd { margin: 0; overflow-wrap: anywhere; }
-  .info-link { padding: 0; border: 0; background: none; color: var(--accent); font: inherit; text-align: left; cursor: pointer; overflow-wrap: anywhere; }
+  .info-link { padding: 0; border: 0; background: none; color: var(--accent-glass); font: inherit; text-align: left; cursor: pointer; overflow-wrap: anywhere; }
   .info-link:hover { text-decoration: underline; }
   .info-muted { margin: 0; color: var(--text-dim); }
   .chips { display: flex; flex-wrap: wrap; gap: 4px; margin: 0; padding: 0; list-style: none; }
@@ -1029,6 +1034,9 @@
   }
   .chip-remove:hover:not(:disabled) { opacity: 1; }
   .chip-remove:disabled { cursor: default; opacity: 0.3; }
-  .tag-input { width: 100%; margin-top: 6px; box-sizing: border-box; padding: 5px var(--s-2); border: 0; border-radius: var(--r-2); background: var(--field); color: var(--text); font: inherit; }
+  /* A hairline on the bare glass rather than the usual --field film. --field is white at 7%,
+     so on glass it lightens the ground and takes the placeholder's dim text to 3.71; the
+     glass itself keeps it at 4.61 (lib/tokens.test.ts). */
+  .tag-input { width: 100%; margin-top: 6px; box-sizing: border-box; padding: 5px var(--s-2); border: 0; border-radius: var(--r-2); background: none; box-shadow: inset 0 0 0 1px var(--glass-line); color: var(--text); font: inherit; }
   .tag-input::placeholder { color: var(--text-dim); }
 </style>

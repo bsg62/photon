@@ -12,6 +12,14 @@ const osDark = () => window.matchMedia('(prefers-color-scheme: dark)');
  *  in its own module so importing `createTheme` in a test touches no `window`. */
 export const theme = createTheme({
   load: () => api.theme(),
+  mirrored: () => {
+    try {
+      const stored = localStorage.getItem(THEME_MIRROR_KEY);
+      return stored === 'light' || stored === 'dark' || stored === 'system' ? stored : null;
+    } catch {
+      return null;
+    }
+  },
   save: (choice) => api.setTheme(choice),
   media: {
     // `createTheme` asks once at creation, which is at import - and theme-boot.test.ts
