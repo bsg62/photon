@@ -24,7 +24,10 @@ export function createTagPicker(deps: {
   let mode = $state<TagPickerMode>('add');
   let draft = $state('');
   let busy = $state(false);
-  let ids: number[] = [];
+  /** `$state`, because `count` is read in the dialog's title: a `show()` onto an already
+   *  open dialog would otherwise leave the old count on screen while writing to the new
+   *  ids, and the title's one job is to say what the write will touch. */
+  let ids = $state<number[]>([]);
 
   return {
     get visible(): boolean {

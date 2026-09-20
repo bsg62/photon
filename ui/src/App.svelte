@@ -9,12 +9,14 @@
   import { searchBox } from './lib/search-box.svelte';
   import type { SettingsSection } from './lib/settings';
   import { clampSidebarWidth, SIDEBAR_DEFAULT, SIDEBAR_STEP } from './lib/sidebar';
+  import { createTagPicker } from './lib/tag-picker.svelte';
   import Icon from './components/Icon.svelte';
   import FolderTree from './components/FolderTree.svelte';
   import Grid from './components/Grid.svelte';
   import SearchBar from './components/SearchBar.svelte';
   import Settings from './components/Settings.svelte';
   import StatusBar from './components/StatusBar.svelte';
+  import TagPicker from './components/TagPicker.svelte';
   import Toasts from './components/Toasts.svelte';
   import Viewer from './components/Viewer.svelte';
 
@@ -22,9 +24,17 @@
   let viewerAt = $state<number | null>(null);
   let settingsAt = $state<SettingsSection | null>(null);
   let gear: HTMLButtonElement | undefined = $state();
-  /** Everything behind an overlay is inert; the two overlays never stack, because each one
+  /** The keyword dialog for the grid's selection. It lives here, not in the grid, because
+   *  it is an overlay: `covered` below makes everything behind one inert, and a dialog
+   *  mounted inside `<main>` would be made inert by its own opening - Settings could then
+   *  be opened on top of it by tabbing to a gear that should not have been reachable. */
+  const picker = createTagPicker({
+    apply: (mode, tag, ids) => (mode === 'add' ? api.addItemsTag(ids, tag) : api.removeItemsTag(ids, tag)),
+  });
+
+  /** Everything behind an overlay is inert; the overlays never stack, because each one
    *  makes the other's opener inert. */
-  const covered = $derived(viewerAt !== null || settingsAt !== null);
+  const covered = $derived(viewerAt !== null || settingsAt !== null || picker.visible);
   let sidebarWidth = $state(SIDEBAR_DEFAULT);
   let dragFrom: { x: number; width: number } | null = null;
 
@@ -153,6 +163,23 @@
     gear?.focus();
   }
 
+  /** The selection is captured now, not read when the dialog writes: the dialog takes
+   *  focus, and a scan landing while it is open can rebind what the grid has selected. What
+   *  the user was told the dialog would act on is what it acts on. */
+  function openKeywords(mode: 'add' | 'remove') {
+    const ids = library.selectedItemIds;
+    if (ids.length) picker.show(mode, ids);
+  }
+
+  /** The grid keeps its own keyboard handling on its viewport, so a dialog that closes
+   *  without handing focus back leaves the arrow keys dead until the user clicks. The
+   *  `tick` is `closeSettings`' reason: `<main>` is still inert until the DOM catches up
+   *  with `covered`, and focusing an inert element silently does nothing. */
+  async function closeKeywords() {
+    await tick();
+    grid?.focus();
+  }
+
   async function jump(folderId: number) {
     const offset = await api.gridOffsetOfFolder(folderId).catch(() => null);
     if (offset === null) return;
@@ -190,12 +217,13 @@
     onkeydown={keyResize}
   ></div>
   <main class="content" inert={covered}>
-    <Grid bind:this={grid} onopen={open} />
+    <Grid bind:this={grid} onopen={open} onkeywords={openKeywords} />
   </main>
   <div class="statusbar"><StatusBar /></div>
 </div>
 {#if viewerAt !== null}<Viewer offset={viewerAt} onclose={closeViewer} onlocate={locate} onsearch={searchFrom} />{/if}
 {#if settingsAt !== null}<Settings section={settingsAt} onclose={closeSettings} />{/if}
+<TagPicker {picker} onclosed={closeKeywords} />
 <Toasts />
 
 <style>

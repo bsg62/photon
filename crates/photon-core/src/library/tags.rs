@@ -230,8 +230,14 @@ impl Library {
     /// one-element case) cannot drift from it - the same reason `picasa::set_star` became
     /// `set_stars`' one-element case.
     ///
-    /// The rename rule is resolved, and a removal rule dropped, **once for the batch**: per
-    /// photo, a rule changing under a long write could split one click between two names.
+    /// The rename rule is resolved **once for the batch**: per photo, a rule changing under
+    /// a long write could split one click between two names. (Nothing in photon can change a
+    /// rule while a write is running, so there is no seam to test that on; it is the cheaper
+    /// of the two shapes either way.)
+    ///
+    /// A removal rule for the typed name is dropped only if something was actually written.
+    /// That drop is global - it un-hides the keyword for the whole library - and a batch
+    /// whose every id has gone writes nothing, so it must not have that effect either.
     ///
     /// An id that is no longer a live photo - purged, or soft-deleted by a scan that found
     /// the file gone - writes nothing instead of failing on the foreign key: a selection can
@@ -250,10 +256,6 @@ impl Library {
             .optional()?
             .flatten()
             .unwrap_or_else(|| tag.to_string());
-        tx.execute(
-            "DELETE FROM tag_rules WHERE tag = ?1 AND target IS NULL",
-            params![tag],
-        )?;
         let mut count = 0;
         {
             // The `WHERE EXISTS` is also what makes this an upsert SQLite will parse: a
@@ -267,6 +269,12 @@ impl Library {
             for &item_id in item_ids {
                 count += stmt.execute(params![item_id, &name])?;
             }
+        }
+        if count > 0 {
+            tx.execute(
+                "DELETE FROM tag_rules WHERE tag = ?1 AND target IS NULL",
+                params![tag],
+            )?;
         }
         tx.commit()?;
         Ok((name, count))
@@ -284,9 +292,11 @@ impl Library {
         Ok(())
     }
 
-    /// `remove_item_tag` for several photos at once, returning how many photos it changed.
-    /// One writer for both, and one transaction for the batch; see `add_items_tag` for why
-    /// an id that is no longer there is skipped rather than fatal.
+    /// `remove_item_tag` for several photos at once, returning how many photos it changed -
+    /// photos that did not carry the name, and photos already suppressed, are not counted,
+    /// so removing the same keyword twice reports the second time honestly. One writer for
+    /// both, and one transaction for the batch; see `add_items_tag` for why an id that is no
+    /// longer there is skipped rather than fatal.
     pub fn remove_items_tag(&self, item_ids: &[i64], tag: &str) -> Result<usize> {
         let mut conn = self.writer();
         let tx = conn.transaction()?;
@@ -300,13 +310,18 @@ impl Library {
                                 WHERE id = ?1 AND missing_since IS NULL)",
             )?;
             let mut suppress = tx.prepare_cached(
-                "INSERT OR REPLACE INTO item_user_tags (item_id, tag, added)
+                // An upsert rather than INSERT OR REPLACE, so that re-suppressing a keyword
+                // already suppressed reports no change: the count is the whole of what the
+                // user is told, and REPLACE counts a row it rewrote identically.
+                "INSERT INTO item_user_tags (item_id, tag, added)
                  SELECT item_id, tag, 0 FROM item_tags
                   WHERE item_id = ?1
                     AND coalesce((SELECT target FROM tag_rules WHERE tag = item_tags.tag),
                                  item_tags.tag) = ?2
                     AND EXISTS (SELECT 1 FROM items
-                                 WHERE id = ?1 AND missing_since IS NULL)",
+                                 WHERE id = ?1 AND missing_since IS NULL)
+                 ON CONFLICT (item_id, tag) DO UPDATE SET added = 0
+                  WHERE item_user_tags.added <> 0",
             )?;
             for &item_id in item_ids {
                 // Deletion before suppression, per photo: a name that is both ends as the
@@ -798,8 +813,9 @@ mod tests {
         }
     }
 
-    /// The name is resolved once for the batch, not per photo, so one click can never split
-    /// across two names - and the stored name is the one the user sees, as for one photo.
+    /// The stored name is the one the user sees, as it is for one photo. This pins the
+    /// resolution, not the *once*: resolving per photo would pass here too, and nothing in
+    /// photon can change a rule mid-write, so that claim has no seam to test against.
     #[test]
     fn a_bulk_add_of_a_renamed_away_name_stores_the_target() {
         let (_dir, lib, ids) = library_with(&[&["holiday"], &[]]);
@@ -842,5 +858,28 @@ mod tests {
 
         assert_eq!(lib.remove_items_tag(&ids, "beach").unwrap(), 1);
         assert_eq!(lib.item_tags(ids[0]).unwrap(), ["beach"]);
+    }
+
+    /// The count is the whole of what the toast says, so a second removal that changes
+    /// nothing must not claim it changed twelve photos.
+    #[test]
+    fn removing_a_keyword_that_has_already_gone_changes_nothing() {
+        let (_dir, lib, ids) = library_with(&[&["beach"], &["beach"]]);
+        assert_eq!(lib.remove_items_tag(&ids, "beach").unwrap(), 2);
+        assert_eq!(lib.remove_items_tag(&ids, "beach").unwrap(), 0);
+    }
+
+    /// Dropping the removal rule un-hides the keyword for the whole library. A batch whose
+    /// every photo has gone writes nothing, so it must not have that effect either.
+    #[test]
+    fn a_batch_that_writes_nothing_leaves_a_hidden_keyword_hidden() {
+        let (_dir, lib, ids) = library_with(&[&["beach"]]);
+        lib.hide_tag("beach").unwrap();
+        assert!(lib.item_tags(ids[0]).unwrap().is_empty());
+
+        assert_eq!(lib.add_items_tag(&[9_999], "beach").unwrap().1, 0);
+
+        assert_eq!(lib.tag_rules().unwrap(), [rule("beach", None)]);
+        assert!(lib.item_tags(ids[0]).unwrap().is_empty());
     }
 }

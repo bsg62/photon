@@ -567,9 +567,15 @@ impl Engine {
     /// are read from - on a large library that is the difference between a click and a
     /// stall. Ids that are no longer live photos are skipped by the library rather than
     /// refused here, for the reason `set_stars` gives: a selection can outlive its photos.
+    ///
+    /// A write that changed nothing does not rebuild, the way an identical edit does not:
+    /// every rebuild bumps the grid version, and a version bump is what makes the viewer
+    /// re-read its photo and the UI re-render.
     pub fn add_items_tag(&self, ids: &[i64], tag: &str) -> Result<(String, usize)> {
         let (name, count) = self.lib.add_items_tag(ids, tag)?;
-        self.refresh_grid()?;
+        if count > 0 {
+            self.refresh_grid()?;
+        }
         Ok((name, count))
     }
 
@@ -577,7 +583,9 @@ impl Engine {
     /// One write and one refresh, as `add_items_tag`.
     pub fn remove_items_tag(&self, ids: &[i64], tag: &str) -> Result<usize> {
         let count = self.lib.remove_items_tag(ids, tag)?;
-        self.refresh_grid()?;
+        if count > 0 {
+            self.refresh_grid()?;
+        }
         Ok(count)
     }
 
@@ -1519,6 +1527,13 @@ mod tests {
         assert_eq!(f.engine.remove_items_tag(&ids, "beach").unwrap(), 3);
         assert_eq!(f.engine.grid().0, version + 1);
         assert!(f.engine.lib.item_tags(ids[0]).unwrap().is_empty());
+
+        // A write that changed nothing must not bump the version: the bump is what makes
+        // every listener re-read, and the viewer re-read its photo.
+        let version = f.engine.grid().0;
+        assert_eq!(f.engine.remove_items_tag(&ids, "beach").unwrap(), 0);
+        assert_eq!(f.engine.add_items_tag(&[9_999], "sun").unwrap().1, 0);
+        assert_eq!(f.engine.grid().0, version);
     }
 
     #[test]

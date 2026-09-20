@@ -3,7 +3,7 @@
   import type { TagPicker } from '../lib/tag-picker.svelte';
   import Icon from './Icon.svelte';
 
-  let { picker }: { picker: TagPicker } = $props();
+  let { picker, onclosed }: { picker: TagPicker; onclosed: () => void } = $props();
 
   let field = $state<HTMLInputElement | undefined>();
 
@@ -15,14 +15,23 @@
 
   const suggestions = $derived(picker.suggestions(library.tags.map((t) => t.tag)));
 
-  /** One write, then the toast. The picker closes itself before the call lands, so the
-   *  failure path has no dialog left to put an error in - it goes to the same corner the
-   *  report would have. */
+  /** Closes and hands focus back. Every way out of the dialog goes through here or through
+   *  `submit`, because the caller is what knows where focus belongs once the dialog has
+   *  gone - the field that has it is about to leave the DOM, and focus would fall to
+   *  `<body>`, where the grid's keys do not reach. */
+  function dismiss() {
+    picker.close();
+    onclosed();
+  }
+
+  /** One write, then the toast. The picker closes itself synchronously before the call
+   *  lands, so the failure path has no dialog left to put an error in - it goes to the same
+   *  corner the report would have. A submit that does nothing (a blank name) leaves the
+   *  dialog up, which is why the hand-back is conditional. */
   function submit(tag?: string) {
-    picker
-      .submit(tag)
-      .then((message) => message && library.notify(message))
-      .catch(library.reportError);
+    const written = picker.submit(tag);
+    if (!picker.visible) onclosed();
+    written.then((message) => message && library.notify(message)).catch(library.reportError);
   }
 
   function onkeydown(e: KeyboardEvent) {
@@ -31,7 +40,7 @@
       // This Escape belongs to the dialog in front, not to the window handlers behind it:
       // the grid closes its context menu on a window-level Escape.
       e.stopPropagation();
-      picker.close();
+      dismiss();
     }
   }
 </script>
@@ -40,7 +49,7 @@
   <!-- The backdrop is a mouse convenience; Escape and Cancel are the accessible ways out,
        so it needs no role or key handler of its own. -->
   <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-  <div class="backdrop" onclick={(e) => e.target === e.currentTarget && picker.close()}>
+  <div class="backdrop" onclick={(e) => e.target === e.currentTarget && dismiss()}>
     <div
       class="dialog"
       role="dialog"
@@ -54,7 +63,7 @@
           {picker.mode === 'add' ? 'Add a keyword to' : 'Remove a keyword from'}
           {picker.count === 1 ? '1 photo' : `${picker.count.toLocaleString()} photos`}
         </h1>
-        <button class="close" aria-label="Cancel" onclick={() => picker.close()}>
+        <button class="close" aria-label="Cancel" onclick={dismiss}>
           <Icon name="x" size={16} />
         </button>
       </header>
@@ -82,9 +91,12 @@
 
       <!-- The library's own keywords, narrowed as you type. This is the point of the dialog
            over a bare prompt: it is how you avoid a second “Beach” beside “beach”. -->
-      <div class="list" role="listbox" aria-label="Existing keywords">
+      <!-- A group of buttons, not a `listbox`: the options are separate tab stops with no
+           arrow-key roving and nothing selected among them, so the listbox roles would
+           describe a widget this is not. -->
+      <div class="list" role="group" aria-label="Existing keywords">
         {#each suggestions as tag (tag)}
-          <button role="option" aria-selected="false" onclick={() => submit(tag)}>{tag}</button>
+          <button onclick={() => submit(tag)}>{tag}</button>
         {:else}
           <p class="none">
             {library.tags.length === 0

@@ -3,13 +3,14 @@
   import { library } from '../lib/library.svelte';
   import { buildRows, columnsFor, GAP, itemSpan, layoutSections, rowOfItem, topFolderId, totalHeight, visibleRange } from '../lib/layout';
   import { move, type NavKey } from '../lib/nav';
-  import { createTagPicker } from '../lib/tag-picker.svelte';
   import { yearMarks } from '../lib/timeline';
-  import TagPicker from './TagPicker.svelte';
   import Tile from './Tile.svelte';
   import Timeline from './Timeline.svelte';
 
-  let { onopen }: { onopen: (offset: number) => void } = $props();
+  let {
+    onopen,
+    onkeywords,
+  }: { onopen: (offset: number) => void; onkeywords: (mode: 'add' | 'remove') => void } = $props();
 
   const NAV_KEYS = ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'];
   const VISIBLE_DEBOUNCE_MS = 150;
@@ -228,24 +229,18 @@
     focus();
   }
 
+  /** Unlike the other verbs, this one does not act on the click: the keyword dialog is an
+   *  overlay, so App owns it - everything behind an overlay is made `inert` there, and a
+   *  dialog mounted inside the grid would be one of the things made inert. All this does is
+   *  close the menu and ask. Focus comes back to the grid when App closes the dialog. */
+  function pickKeyword(mode: 'add' | 'remove') {
+    menu = null;
+    onkeywords(mode);
+  }
+
   /** Stars or unstars everything selected. The backend skips a folder whose `.picasa.ini`
    *  it cannot write and answers with how many landed, so a read-only folder in the
    *  selection costs the user a toast rather than the other eleven photos. */
-  /** The keyword dialog. It captures the selection when it opens, so a scan landing while
-   *  it has focus cannot move what the user was told it would write to. */
-  const picker = createTagPicker({
-    apply: (mode, tag, ids) => (mode === 'add' ? api.addItemsTag(ids, tag) : api.removeItemsTag(ids, tag)),
-  });
-
-  /** Unlike the other verbs, this one does not act on the click: it opens a dialog, which
-   *  keeps the ids and writes them when the user has typed a name. `withSelection` is still
-   *  what closes the menu and returns focus, so the dialog's own focus wins afterwards. */
-  function pickKeyword(mode: 'add' | 'remove') {
-    const ids = library.selectedItemIds;
-    menu = null;
-    if (ids.length) picker.show(mode, ids);
-  }
-
   async function star(ids: number[], starred: boolean) {
     const done = await api.setStars(ids, starred);
     if (done < ids.length) {
@@ -358,8 +353,6 @@
     {/each}
   </div>
 {/if}
-
-<TagPicker {picker} />
 
 <style>
   .grid { display: flex; height: 100%; background: var(--surface); }
