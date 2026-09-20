@@ -169,6 +169,9 @@
       return;
     }
     if (e.key === 'Escape') {
+      // A drag in progress owns this Escape: clearing the selection is the opposite of
+      // putting it back, and this handler runs first when the viewport has focus.
+      if (cancelBandKey()) return;
       // The window handler closes the menu on Escape. Clearing here as well would do both at
       // once, so the first Escape only ever dismisses the menu.
       if (menu) return;
@@ -214,6 +217,9 @@
   /** True once the pointer has moved past the threshold: until then the press is still a
    *  click, and nothing is drawn or selected. */
   let banding = $state(false);
+  /** The pointer that owns the current drag. A second finger's events - and the right
+   *  button's `pointerup` during a left drag - must not steer or end someone else's band. */
+  let bandPointer: number | null = null;
   /** Set when a band ends, so the click that follows the release does not also land on a
    *  tile and collapse the selection the band just made. */
   let swallowClick = false;
@@ -225,13 +231,25 @@
   }
 
   function bandRanges(rect: Rect): [number, number][] {
-    return itemsInRect(rows, columns, rect);
+    return itemsInRect(rows, rect);
   }
 
   function bandDown(e: PointerEvent) {
     // The left button only: the right one opens the menu, and the middle one is nothing.
     // A press that lands on the open menu belongs to the menu.
     if (e.button !== 0 || (e.target as HTMLElement).closest('.menu')) return;
+    // A press already owns the grid: a second finger must not take it over, or the band it
+    // starts would capture `bandPrevious` from the first one's preview and the real
+    // selection would be gone for good.
+    if (bandPointer !== null) return;
+    // The viewport is the scrolling element, so a press on its own scrollbar arrives here.
+    // Without this the thumb's drag starts a band whose far corner races down the canvas
+    // with the scroll, and the release selects everything it passed.
+    if (e.offsetX > viewport.clientWidth || e.offsetY > viewport.clientHeight) return;
+    // The menu's own dismissal is the click that follows a press, and a band swallows that
+    // click; left alone the menu would sit over the new selection describing the old one.
+    menu = null;
+    bandPointer = e.pointerId;
     const at = atCanvas(e);
     band = { x0: at.x, y0: at.y, x1: at.x, y1: at.y };
     banding = false;
@@ -241,21 +259,30 @@
   }
 
   function bandMove(e: PointerEvent) {
-    if (!band) return;
+    if (!band || e.pointerId !== bandPointer) return;
     const at = atCanvas(e);
     if (!banding) {
       if (Math.abs(at.x - band.x0) < BAND_THRESHOLD && Math.abs(at.y - band.y0) < BAND_THRESHOLD) return;
       banding = true;
-      // Capture, so the drag survives the pointer leaving the viewport or the window.
-      viewport.setPointerCapture(e.pointerId);
+      // Capture, so the drag survives the pointer leaving the viewport or the window. It
+      // throws for a pointer the browser no longer considers active (and for the synthetic
+      // ones the screenshot harness dispatches); the band works without it, ending early if
+      // the pointer leaves, so this is reported and not fatal.
+      try {
+        viewport.setPointerCapture(e.pointerId);
+      } catch {
+        // Nothing to do: the drag continues uncaptured.
+      }
       library.beginBand(e.ctrlKey || e.metaKey || e.shiftKey);
     }
     band = { ...band, x1: at.x, y1: at.y };
     library.bandTo(bandRanges(band));
   }
 
-  function bandUp() {
-    if (!band) return;
+  function bandUp(e: PointerEvent) {
+    // Another button or another finger releasing says nothing about this drag.
+    if (!band || e.pointerId !== bandPointer || e.button !== 0) return;
+    bandPointer = null;
     const finished = banding ? band : null;
     band = null;
     banding = false;
@@ -267,15 +294,18 @@
     library.endBand(bandRanges(finished)).catch(library.reportError);
   }
 
-  /** Escape abandons the drag and puts the selection back. It is handled here rather than in
-   *  `onkeydown` because the grid's own Escape clears the selection, which is the opposite. */
-  function bandKey(e: KeyboardEvent) {
-    if (e.key !== 'Escape' || !band) return;
-    e.preventDefault();
-    e.stopPropagation();
+  /** Escape abandons the drag and puts the selection back. Returns whether it did, because
+   *  the grid's own Escape clears the selection - the opposite - and must not also run.
+   *  Both the viewport's handler and the window's call this: the viewport has focus during a
+   *  drag that began with a click, but a drag whose press did not focus it does not, so
+   *  neither handler alone covers every Escape. */
+  function cancelBandKey(): boolean {
+    if (!band) return false;
     if (banding) library.cancelBand();
     band = null;
     banding = false;
+    bandPointer = null;
+    return true;
   }
 
   /** Right-clicking outside the selection selects that tile first, so what the menu acts on
@@ -333,8 +363,10 @@
 <svelte:window
   onclick={closeMenu}
   onkeydown={(e) => {
-    bandKey(e);
-    if (e.key === 'Escape') closeMenu();
+    if (e.key !== 'Escape') return;
+    // A drag in progress owns this Escape; the menu keeps its own, as it always has.
+    if (cancelBandKey()) return;
+    closeMenu();
   }}
   onpointerup={bandUp}
 />

@@ -84,10 +84,14 @@ export class LibraryStore {
   /** What a rubber band adds to, captured when it starts; empty for a band that replaces. */
   private bandBase = new Set<number>();
   /** The selection a band started from. Not the same as `bandBase`, which is empty for a
-   *  band that replaces: an abandoned drag puts back what was selected either way. */
+   *  band that replaces: an abandoned drag puts back what was selected either way.
+   *
+   *  There is deliberately no saved *lead* beside it. A band never moves the lead while it
+   *  is being drawn - only a successful `endBand` does - so there is nothing to put back,
+   *  and saving one would be worse than useless: a grid rebuilt under the drag re-finds the
+   *  lead by id (`rebindSelection`), and writing a pre-rebuild offset back over that answer
+   *  is the exact trap that makes Enter open the neighbouring photo. */
   private bandPrevious = new Set<number>();
-  /** Where the lead was when a band started, for `cancelBand` to put back. */
-  private bandFrom: { offset: number | null; id: number | null; anchor: number | null } | null = null;
 
   /** Selected grid offset. */
   get selected(): number | null {
@@ -238,7 +242,6 @@ export class LibraryStore {
   beginBand(additive: boolean): void {
     this.bandPrevious = new Set(this.selection);
     this.bandBase = additive ? new Set(this.selection) : new Set();
-    this.bandFrom = { offset: this.selectedOffset, id: this.selectedId, anchor: this.anchor };
   }
 
   /** Previews the band, resolving offsets through the loaded pages: synchronous, so the
@@ -264,19 +267,28 @@ export class LibraryStore {
     const previous = this.bandPrevious;
     this.bandBase = new Set();
     this.bandPrevious = new Set();
-    const from = this.bandFrom;
-    this.bandFrom = null;
+
+    // A band that covers nothing is a band, not a failure: dragging over empty space is how
+    // a selection is cleared, and how an additive drag that ends up covering nothing leaves
+    // what it started with. Answering it like an overtaken fetch would put the selection
+    // back that the preview had visibly just taken away.
+    if (ranges.length === 0) {
+      this.selection = new Set(base);
+      if (base.size === 0) {
+        this.selectedOffset = null;
+        this.selectedId = null;
+        this.anchor = null;
+      }
+      return;
+    }
+
     const ids = await this.fetchIdsOf(ranges);
     if (!ids) {
-      // Overtaken, or the grid was rebuilt under the drag. The preview drawn from the old
-      // offsets is as stale as the fetch, so the whole band is abandoned: the selection and
-      // the lead go back to what they were before it started.
+      // Overtaken, or the grid was rebuilt under the drag. The preview was drawn from
+      // offsets that mean something else now, so the band is abandoned and the selection
+      // goes back to what it was. The lead is left alone: it was never moved by the drag,
+      // and a rebuild has already re-found it by id.
       this.selection = previous;
-      if (from) {
-        this.selectedOffset = from.offset;
-        this.selectedId = from.id;
-        this.anchor = from.anchor;
-      }
       return;
     }
     for (const id of base) ids.add(id);
@@ -287,16 +299,12 @@ export class LibraryStore {
     this.anchor = first;
   }
 
-  /** Abandons a band (Escape mid-drag): the selection goes back to what it was. */
+  /** Abandons a band (Escape mid-drag): the selection goes back to what it was. The lead is
+   *  left alone for the reason `bandPrevious` gives - the drag never moved it. */
   cancelBand(): void {
     this.selection = new Set(this.bandPrevious);
-    if (this.bandFrom) {
-      this.selectedOffset = this.bandFrom.offset;
-      this.selectedId = this.bandFrom.id;
-      this.anchor = this.bandFrom.anchor;
-    }
     this.bandBase = new Set();
-    this.bandFrom = null;
+    this.bandPrevious = new Set();
   }
 
   clearSelection(): void {

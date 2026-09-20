@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildRows, columnsFor, HEADER, itemSpan, itemsInRect, layoutSections, rowIndexAt, rowOfItem, TILE, TILE_ROW, topFolderId, totalHeight, visibleRange } from './layout';
+import { buildRows, columnsFor, GAP, HEADER, itemSpan, itemsInRect, layoutSections, rowIndexAt, rowOfItem, TILE, TILE_ROW, topFolderId, totalHeight, visibleRange } from './layout';
 
 const sections = [
   { folderId: 1, offset: 0, count: 5 },
@@ -113,35 +113,56 @@ describe('itemsInRect', () => {
   const rows = buildRows([{ folderId: 1, offset: 0, count: 5 }], 3, false);
   const rect = (x0: number, y0: number, x1: number, y1: number) => ({ x0, y0, x1, y1 });
 
+  /** The point of returning ranges rather than one span: a band narrower than the grid
+   *  takes a few photos from each row it crosses, and merging those into one range would
+   *  select everything between them - the over-selection ids-not-offsets exists to stop. */
+  it('keeps a narrow band down one column as one range per row', () => {
+    const tall = buildRows([{ folderId: 1, offset: 0, count: 9 }], 3, false);
+    const column2 = GAP + 2 * TILE_ROW;
+    expect(itemsInRect(tall, rect(column2 + 1, 0, column2 + TILE - 1, 3 * TILE_ROW))).toEqual([
+      [2, 2],
+      [5, 5],
+      [8, 8],
+    ]);
+  });
+
+  /** The left edge is measured from each tile's right edge, so a band starting in the gap
+   *  after a tile does not take it. Measuring from the left edges instead agrees everywhere
+   *  except here, which is why this case exists. */
+  it('does not take the tile to the left of a band that starts in the gap', () => {
+    const gapAfterTile0 = GAP + TILE + 2;
+    expect(itemsInRect(rows, rect(gapAfterTile0, 10, 1000, 20))).toEqual([[1, 2]]);
+  });
+
   it('takes the tiles a rectangle touches in one row', () => {
     // Tile k spans x = GAP + k*TILE_ROW .. + TILE, so tile 1 starts at 176.
-    expect(itemsInRect(rows, 3, rect(180, 10, 200, 20))).toEqual([[1, 1]]);
+    expect(itemsInRect(rows, rect(180, 10, 200, 20))).toEqual([[1, 1]]);
   });
 
   it('merges rows that join up into one range', () => {
-    expect(itemsInRect(rows, 3, rect(0, 0, 1000, 1000))).toEqual([[0, 4]]);
+    expect(itemsInRect(rows, rect(0, 0, 1000, 1000))).toEqual([[0, 4]]);
   });
 
   /** The gap below a row belongs to no tile: a band that only grazes it selects nothing,
    *  or dragging between two rows would sweep up both. */
   it('selects nothing from a band inside the gap between rows', () => {
-    expect(itemsInRect(rows, 3, rect(0, TILE + 1, 1000, TILE_ROW - 1))).toEqual([]);
+    expect(itemsInRect(rows, rect(0, TILE + 1, 1000, TILE_ROW - 1))).toEqual([]);
   });
 
   it('stops at the last tile of a short row', () => {
     // The second row holds 2 of the 5 photos; a band across it cannot reach a third.
-    expect(itemsInRect(rows, 3, rect(0, TILE_ROW + 1, 1000, TILE_ROW + TILE))).toEqual([[3, 4]]);
+    expect(itemsInRect(rows, rect(0, TILE_ROW + 1, 1000, TILE_ROW + TILE))).toEqual([[3, 4]]);
   });
 
   it('ignores headers', () => {
     const withHeaders = buildRows([{ folderId: 1, offset: 0, count: 2 }], 3, true);
-    expect(itemsInRect(withHeaders, 3, rect(0, 0, 1000, HEADER - 1))).toEqual([]);
-    expect(itemsInRect(withHeaders, 3, rect(0, 0, 1000, HEADER + TILE))).toEqual([[0, 1]]);
+    expect(itemsInRect(withHeaders, rect(0, 0, 1000, HEADER - 1))).toEqual([]);
+    expect(itemsInRect(withHeaders, rect(0, 0, 1000, HEADER + TILE))).toEqual([[0, 1]]);
   });
 
   it('takes nothing from an empty rectangle or an empty grid', () => {
-    expect(itemsInRect(rows, 3, rect(10, 10, 10, 10))).toEqual([[0, 0]]);
-    expect(itemsInRect([], 3, rect(0, 0, 1000, 1000))).toEqual([]);
+    expect(itemsInRect(rows, rect(10, 10, 10, 10))).toEqual([[0, 0]]);
+    expect(itemsInRect([], rect(0, 0, 1000, 1000))).toEqual([]);
   });
 
   /** Two sections are two runs of rows; a band over both is two ranges only if the offsets
@@ -155,6 +176,6 @@ describe('itemsInRect', () => {
       3,
       false,
     );
-    expect(itemsInRect(two, 3, rect(0, 0, 1000, 1000))).toEqual([[0, 5]]);
+    expect(itemsInRect(two, rect(0, 0, 1000, 1000))).toEqual([[0, 5]]);
   });
 });

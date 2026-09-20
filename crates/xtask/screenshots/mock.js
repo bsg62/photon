@@ -163,7 +163,9 @@
     },
     band: () => {
       // A drag across the second and third rows of tiles, in three moves so the threshold
-      // is passed and the band is drawn.
+      // is passed and the band is drawn. A synthetic pointer is not one the browser knows,
+      // so `setPointerCapture` throws for it - the grid reports that and carries on, which
+      // is what lets this shot exercise the real path.
       const view = document.querySelector('.viewport');
       const send = (type, x, y) =>
         view.dispatchEvent(new PointerEvent(type, { bubbles: true, clientX: x, clientY: y, button: 0, buttons: 1, pointerId: 1 }));

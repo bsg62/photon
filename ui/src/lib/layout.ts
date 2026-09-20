@@ -168,7 +168,7 @@ export interface Rect {
  *  neighbours. Headers are not photos and are skipped.
  *
  *  `rect` may be given in any corner order; it is normalised here. */
-export function itemsInRect(rows: Row[], columns: number, rect: Rect): [number, number][] {
+export function itemsInRect(rows: Row[], rect: Rect): [number, number][] {
   const left = Math.min(rect.x0, rect.x1);
   const right = Math.max(rect.x0, rect.x1);
   const top = Math.min(rect.y0, rect.y1);
@@ -178,12 +178,15 @@ export function itemsInRect(rows: Row[], columns: number, rect: Rect): [number, 
   for (const row of rows) {
     if (row.kind !== 'tiles') continue;
     if (row.top + TILE < top || row.top > bottom) continue;
-    // Tile k spans GAP + k*TILE_ROW .. + TILE. Touching counts, so the first tile is the
-    // last one whose left edge is at or before `right`, and vice versa.
+    // Tile k spans GAP + k*TILE_ROW .. + TILE, and touching counts. `firstColumn` measures
+    // from each tile's *right* edge, so a band whose left edge lies in the gap after tile k
+    // starts at k+1 rather than at k; `lastColumn` measures from the left edges and is
+    // clamped to what this row actually holds, which is what stops a band running off the
+    // end of a short last row into the next one's offsets.
     const firstColumn = Math.max(0, Math.ceil((left - GAP - TILE) / TILE_ROW));
     const lastColumn = Math.min(row.count - 1, Math.floor((right - GAP) / TILE_ROW));
-    if (lastColumn < firstColumn || lastColumn < 0) continue;
-    const from = row.first + Math.min(firstColumn, row.count - 1);
+    if (lastColumn < firstColumn) continue;
+    const from = row.first + firstColumn;
     const to = row.first + lastColumn;
     const previous = ranges[ranges.length - 1];
     if (previous && previous[1] + 1 === from) previous[1] = to;
