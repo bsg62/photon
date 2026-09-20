@@ -210,7 +210,10 @@ ITEMIDLIST") and nobody recognises as their share. `paths::simplified_unc` rewri
 before it. The form has to be the *same everywhere*: `paths::same_path` compares
 component-wise, so one path in each form is two different folders to photon - a re-added
 root rather than a recognised one, and a `scan_subtree` whose `strip_prefix` misses its own
-watched root.
+watched root. `paths::overlaps` is symmetric - it answers "do these two collide",
+which is the question `add_watched_folder` asks. "Is this inside the library" is
+`paths::is_within(child, root)`: an export destination checked with `overlaps` refuses a
+folder that merely *contains* a watched root, and then says the opposite of what is true.
 
 ### Schema
 
@@ -251,7 +254,8 @@ under the new key. For an edited photo `ViewerItem` reports `width`/`height`/`or
 `faces` *as shown*. Keys can recur ("Original", a fourth turn), so the thumb handler answers
 `immutable` only when the URL's key is the photo's current one and `no-store` otherwise; and
 every write of an edit takes `Engine.edit_write`, because a turn reads the edit it builds on.
-Full-size renders run one at a time (`protocol.rs`, `RENDERING`), outside the thumbnail pool
+Full-size renders run one at a time (`protocol.rs`, `RENDERING`, which export shares - held
+across the render and never across the write), outside the thumbnail pool
 that otherwise bounds decode memory, and `neighbours` leaves edited photos out of the preload.
 
 **What reloads the viewer** is `pictureChanged` (`ui/src/lib/picture.ts`), fed by the re-read
@@ -317,6 +321,15 @@ webview has loaded and asked for the setting, so without the first a pinned them
 the desktop's title bar. `System` is `None` in both, never the scheme resolved in code: `None`
 is what lets the title bar keep following the desktop while photon runs.
 
+**A dialog belongs in `App.svelte`, not in the component that opens it.** `covered` makes the
+topbar, sidebar, splitter and `<main>` `inert` while an overlay is up, and the grid is inside
+`<main>`: a dialog mounted there is made inert *by its own opening* - Tab walks out of an
+`aria-modal` dialog into the tiles and the gear, and Settings can then be opened on top of it.
+A new overlay renders beside `Settings`, counts towards `covered`, and hands focus back when it
+closes - after `await tick()`, because `<main>` is inert until the DOM catches up and focusing
+an inert element silently does nothing. The grid's keys live on its viewport, so a dialog that
+closes onto `<body>` leaves the arrow keys, Enter and Escape dead until the user clicks.
+
 `[tabindex='-1']:focus-visible { outline: none }` is global, for script-focused containers. A
 roving-tabindex widget's items carry `tabindex="-1"` too and would silently lose their focus
 ring: scope the rule before adding one. For the same reason a tile's selection ring comes from
@@ -345,7 +358,10 @@ action in `mock.js`.
   Export (`photon_core::export`, spec `2026-09-20-photon-export-copies-design.md`, 2026-09-20)
   writes photo files, but only *new* ones, only where the user pointed a folder picker, and
   never inside a watched root - `Engine::export_items` refuses that destination, because the
-  scanner would index the copies as new photos. No watched photo is ever opened for writing.
+  scanner would index the copies as new photos. No watched photo is ever opened for writing,
+  and every file it does write is created with `create_new` (`O_CREAT|O_EXCL`):
+  `exists()`-then-write is a race, and `exists()` follows a symlink, so a dangling link in the
+  destination landed a write inside a watched folder.
   This narrowed the older "never writes inside watched folders" promise on 2026-09-16 (spec
   `2026-09-16-photon-set-star-design.md`); any further write is a spec-level decision, not a
   code change. The writer and the reader in `picasa.rs` share one line classifier on purpose:
