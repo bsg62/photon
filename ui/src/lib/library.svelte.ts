@@ -3,6 +3,7 @@ import {
   errorMessage,
   events,
   type AlbumSummary,
+  type SavedSearch,
   type Folder,
   type FolderList,
   type GridEntry,
@@ -43,6 +44,7 @@ export class LibraryStore {
   /** The sidebar's three collections. Refetched on every `library-changed` (a scan can
    *  add a face, a keyword or purge an album member) and after every album mutation. */
   albums = $state<AlbumSummary[]>([]);
+  searches = $state<SavedSearch[]>([]);
   people = $state<Person[]>([]);
   tags = $state<TagCount[]>([]);
   scans = $state<Record<number, ScanProgressEvent>>({});
@@ -505,12 +507,19 @@ export class LibraryStore {
   /** Sequence of the most recently issued collections request; same rule as `folderSeq`. */
   private collectionsSeq = 0;
 
-  /** Refetches albums, people and tags together. Only the newest request may write. */
+  /** Refetches albums, saved searches, people and tags together. Only the newest request
+   *  may write. */
   async refreshCollections(): Promise<void> {
     const seq = ++this.collectionsSeq;
-    const [albums, people, tags] = await Promise.all([api.listAlbums(), api.listPeople(), api.listTags()]);
+    const [albums, searches, people, tags] = await Promise.all([
+      api.listAlbums(),
+      api.listSavedSearches(),
+      api.listPeople(),
+      api.listTags(),
+    ]);
     if (seq !== this.collectionsSeq) return;
     this.albums = albums;
+    this.searches = searches;
     this.people = people;
     this.tags = tags;
   }
@@ -572,6 +581,23 @@ export class LibraryStore {
 
   async deleteAlbum(albumId: number): Promise<void> {
     await api.deleteAlbum(albumId);
+    await this.refreshCollections();
+  }
+
+  /** Saved-search mutations. Like the album ones they refetch the collections themselves:
+   *  none of them changes the grid, so no `library_changed` is coming to do it. */
+  async saveSearch(name: string, query: string): Promise<void> {
+    await api.saveSearch(name, query);
+    await this.refreshCollections();
+  }
+
+  async renameSavedSearch(searchId: number, name: string): Promise<void> {
+    await api.renameSavedSearch(searchId, name);
+    await this.refreshCollections();
+  }
+
+  async deleteSavedSearch(searchId: number): Promise<void> {
+    await api.deleteSavedSearch(searchId);
     await this.refreshCollections();
   }
 

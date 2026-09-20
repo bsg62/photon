@@ -73,6 +73,20 @@ quotes make a phrase, and `camera:` or `lens:` confine a term to that field, so
 `camera:canon 2019` is the Canon's photos from 2019 and not a folder named Canon. A camera or
 lens in the viewer's info panel is a link to that search.
 
+### Saving a search
+
+A search worth repeating can be kept: with a query in the box, the bookmark button at its
+right saves it, and it appears under **Searches** in the sidebar. Clicking it runs the query
+again — a saved search is not a collection, so a photo indexed tomorrow turns up in it
+without anything being added. Right-click one to rename it (it is named after the query
+until you do) or to delete it; deleting asks first and leaves the photos on screen, since
+they are still the answer to what was typed. The bookmark fills once a query is saved, and
+saving the same one twice does nothing.
+
+The sidebar shows no photo count beside a saved search, unlike Albums, People and Tags.
+Counting one means running it over the whole library, and doing that for every saved search
+on every change would cost more than the number is worth.
+
 Two things to know. A library from an earlier photon picks up camera data and keywords on
 the next scan of each folder, which reads every file's header once; nothing needs to be
 done. And an album remembers photos by their library row, so a photo renamed or moved on
@@ -207,6 +221,10 @@ publishing it.
 - [ ] Each rename or removal appears under Changes, and "Restore" brings the original tag back. Rescanning the folder does not undo a rename, and the photo files' keywords are unchanged (check in another app).
 - [ ] After removing every folder, the sidebar offers "Add a folder in Settings…", which opens Settings on Folders.
 - [ ] Unplugging a drive with a watched folder dims its folder and tiles after a rescan. Nothing disappears.
+- [ ] Type a search, then click the bookmark at the right of the box: a **Searches** group appears in the sidebar with the query as its name, and the bookmark fills. Click the bookmark again: nothing happens (it is inert, not a toggle). Clear the box and type the same query again — the bookmark is filled straight away, and with a trailing space too.
+- [ ] Click the saved search in the sidebar from a different view: the box fills with the query and the grid shows its photos. Type fast in the box and click a saved search before the typing settles: the grid shows the saved search, not the half-typed text.
+- [ ] Right-click a saved search → Rename…: the field opens with the name selected, Enter saves, Escape cancels. Delete… asks first; after deleting, the photos stay on screen and the box still holds the query. Both `lake OR pond` and `lake or pond` can be saved separately (capitals are operators, so they are different searches).
+- [ ] Upgrade a real library from schema 10: it opens, and an older photon then refuses it with a clear message rather than a crash.
 - [ ] Drop a `.tif` and a `.bmp` into a watched folder: both appear after the scan with correct thumbnails, and their tiles show the right shape (not stretched or letterboxed). Open each in the viewer at 100%. A TIFF the decoder cannot read (16-bit, CMYK, or JPEG-compressed — save one from GIMP or Photoshop to get one) shows the failed-thumbnail placeholder rather than an empty tile, and does not stall the folder's other thumbnails.
 - [ ] Ctrl/Cmd+Shift+R and "Reveal in file manager" open the system file manager at the file.
 - [ ] On Windows, add an SMB share (`\\server\photos` or by IP) as a watched folder: Settings → Folders shows it as `\\server\photos`, not `\\?\UNC\server\photos`, and "Reveal" there, on a sidebar folder and on a photo in it all open Explorer rather than failing. A library that already held the share from an older photon shows the same after the upgrade, with its photos, stars and albums intact (the share's thumbnails are rebuilt once).

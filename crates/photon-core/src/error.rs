@@ -30,6 +30,10 @@ pub enum Error {
     EmptyAlbumName,
     #[error("a tag needs a name")]
     EmptyTagName,
+    #[error("a saved search needs a name")]
+    EmptySearchName,
+    #[error("a saved search needs a query")]
+    EmptySearchQuery,
     /// A crop that is inverted, or too small to be anything but a slip of the pointer.
     #[error("that crop is not a usable rectangle")]
     InvalidCrop,

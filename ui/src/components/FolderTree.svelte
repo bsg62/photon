@@ -1,7 +1,7 @@
 <script lang="ts">
   import { ask } from '@tauri-apps/plugin-dialog';
   import { tick } from 'svelte';
-  import { api, type AlbumSummary, type Folder } from '../lib/api';
+  import { api, type AlbumSummary, type Folder, type SavedSearch } from '../lib/api';
   import { createAlbumEditor } from '../lib/album-editor.svelte';
   import { enterFolder, folderRows, groupByYear } from '../lib/folders';
   import { library } from '../lib/library.svelte';
@@ -20,19 +20,25 @@
   /** Which collection groups are open. Albums start open because they are the user's own;
    *  People and Tags start closed because a real library has hundreds of each, and the years
    *  below must stay reachable. Session state, not persisted. */
-  let open = $state({ albums: true, people: false, tags: false });
+  let open = $state({ albums: true, searches: true, people: false, tags: false });
 
   let menu = $state<{ x: number; y: number; folder: Folder } | null>(null);
   let albumMenu = $state<{ x: number; y: number; album: AlbumSummary } | null>(null);
+  let searchMenu = $state<{ x: number; y: number; search: SavedSearch } | null>(null);
   let menuEl = $state<HTMLDivElement | undefined>();
   let albumMenuEl = $state<HTMLDivElement | undefined>();
+  let searchMenuEl = $state<HTMLDivElement | undefined>();
   let editorInput = $state<HTMLInputElement | undefined>();
+  let searchEditorInput = $state<HTMLInputElement | undefined>();
 
   $effect(() => {
     if (menu) menuEl?.focus();
   });
   $effect(() => {
     if (albumMenu) albumMenuEl?.focus();
+  });
+  $effect(() => {
+    if (searchMenu) searchMenuEl?.focus();
   });
 
   /** Rebuilt only when the folder list changes: `folderById` is called for every row's title
@@ -54,6 +60,7 @@
   function closeMenus() {
     menu = null;
     albumMenu = null;
+    searchMenu = null;
   }
 
   function onMenuKeydown(e: KeyboardEvent) {
@@ -145,6 +152,71 @@
       library.reportError(e);
     }
   }
+
+  // ---- saved searches ----
+
+  /** A second editor instance: the sidebar shows one field at a time, and an album rename
+   *  started over a search rename should replace it, but the two lists key their rows by
+   *  their own ids, so one editor shared between them would open a field in both lists at
+   *  once whenever the ids happened to match. `create` saves whatever the box currently
+   *  holds; nothing renders it today, since saving is the bookmark button's job. */
+  const searchEditor = createAlbumEditor({
+    create: (name) => library.saveSearch(name, searchBox.query),
+    rename: (searchId, name) => library.renameSavedSearch(searchId, name),
+  });
+
+  async function startSearchRename(search: SavedSearch) {
+    searchMenu = null;
+    searchEditor.startRename(search.id, search.name);
+    await tick();
+    searchEditorInput?.focus();
+    searchEditorInput?.select();
+  }
+
+  function commitSearchEditor() {
+    searchEditor.commit().catch(library.reportError);
+  }
+
+  function onSearchEditorKeydown(e: KeyboardEvent) {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      commitSearchEditor();
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      searchEditor.cancel();
+    }
+  }
+
+  function searchContextMenu(e: MouseEvent, search: SavedSearch) {
+    e.preventDefault();
+    menu = null;
+    albumMenu = null;
+    searchMenu = { x: e.clientX, y: e.clientY, search };
+  }
+
+  async function deleteSearch(search: SavedSearch) {
+    searchMenu = null;
+    try {
+      const confirmed = await ask(`Delete the saved search “${search.name}”? Your photos are not affected.`, {
+        title: 'Delete saved search',
+        kind: 'warning',
+      });
+      if (!confirmed) return;
+      await library.deleteSavedSearch(search.id);
+      // Unlike an album, this leaves the grid alone: the Search view is driven by the query
+      // string, so the photos on screen are still the answer to what was typed.
+    } catch (e) {
+      library.reportError(e);
+    }
+  }
+
+  /** Runs a saved search as though it had been typed. `searchBox.search` cancels a pending
+   *  debounce first, which is what stops half-typed text landing after this and replacing
+   *  the grid the click just asked for. */
+  function showSearch(search: SavedSearch) {
+    closeMenus();
+    searchBox.search(search.query);
+  }
 </script>
 
 <svelte:window onclick={closeMenus} onkeydown={(e) => e.key === 'Escape' && closeMenus()} />
@@ -227,6 +299,41 @@
       />
     {:else}
       <button class="node add-album" onclick={startNew}>New album…</button>
+    {/if}
+  {/if}
+
+  <!-- Saved searches: a name over a query, re-run on every visit. No count - one would
+       cost a full library pass per row on every change; see library/searches.rs. -->
+  {#if library.searches.length > 0}
+    <button class="group" aria-expanded={open.searches} onclick={() => (open.searches = !open.searches)}>
+      <span class="chevron"><Icon name={open.searches ? 'chevron-down' : 'chevron-right'} size={12} /></span><Icon name="bookmark" size={14} />
+      <span class="name">Searches</span>
+      <span class="count">{library.searches.length.toLocaleString()}</span>
+    </button>
+    {#if open.searches}
+      {#each library.searches as search (search.id)}
+        {#if searchEditor.editing(search.id)}
+          <input
+            class="editor"
+            bind:this={searchEditorInput}
+            bind:value={searchEditor.text}
+            disabled={searchEditor.busy}
+            aria-label="Saved search name"
+            onkeydown={onSearchEditorKeydown}
+            onblur={commitSearchEditor}
+          />
+        {:else}
+          <button
+            class="node"
+            class:active={library.info.view === 'search' && library.info.searchQuery === search.query}
+            title={search.name === search.query ? search.query : `${search.name} — ${search.query}`}
+            onclick={() => showSearch(search)}
+            oncontextmenu={(e) => searchContextMenu(e, search)}
+          >
+            <span class="name">{search.name}</span>
+          </button>
+        {/if}
+      {/each}
     {/if}
   {/if}
 
@@ -331,6 +438,22 @@
   >
     <button role="menuitem" onclick={() => startRename(album)}>Rename…</button>
     <button role="menuitem" class="danger" onclick={() => deleteAlbum(album)}>Delete…</button>
+  </div>
+{/if}
+
+{#if searchMenu}
+  {@const search = searchMenu.search}
+  <div
+    class="menu"
+    role="menu"
+    tabindex="-1"
+    bind:this={searchMenuEl}
+    style:left="{searchMenu.x}px"
+    style:top="{searchMenu.y}px"
+    onkeydown={onMenuKeydown}
+  >
+    <button role="menuitem" onclick={() => startSearchRename(search)}>Rename…</button>
+    <button role="menuitem" class="danger" onclick={() => deleteSearch(search)}>Delete…</button>
   </div>
 {/if}
 

@@ -48,6 +48,12 @@ pub const SHOTS: &[Shot] = &[
         query: "theme=dark&do=select",
         dark: true,
     },
+    // The bookmark filled: a query the sidebar already holds, so the button is inert.
+    Shot {
+        name: "saved-search-light",
+        query: "theme=light&do=savedsearch",
+        dark: false,
+    },
     Shot {
         name: "starred-light",
         query: "theme=light&view=starred",
