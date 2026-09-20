@@ -333,6 +333,21 @@ closes - after `await tick()`, because `<main>` is inert until the DOM catches u
 an inert element silently does nothing. The grid's keys live on its viewport, so a dialog that
 closes onto `<body>` leaves the arrow keys, Enter and Escape dead until the user clicks.
 
+**A pointer gesture has three endings, not two.** `pointerup` finishes it and Escape abandons
+it, but a browser that claims the gesture for itself - a touchscreen pan, which Windows
+laptops have - sends **`pointercancel`** and nothing else. Every drag needs one teardown that
+all three reach: `App.svelte`'s splitter wires `onpointercancel={endResize}`, and the grid's
+rubber band reaches `abandonBand` the same way. **`inert` does not stop a
+`requestAnimationFrame`**, so an overlay opening over a drag is a fourth ending - the grid's
+key handler honours nothing but Escape while a band is live, for exactly that reason.
+
+The reason this is here rather than in the band's own spec: the missed teardown was a *stale
+rectangle* until autoscroll gave it a loop to drive, and then it scrolled to the end of the
+library rewriting the selection, with a pointer id it never cleared blocking every later drag.
+A new loop or timer is worth asking what already-known-broken path now drives it. Anything
+per-frame is worth the same question about time: multiply by the frame's own duration, or it
+runs twice as fast on a 120Hz screen as on a 60Hz one.
+
 `[tabindex='-1']:focus-visible { outline: none }` is global, for script-focused containers. A
 roving-tabindex widget's items carry `tabindex="-1"` too and would silently lose their focus
 ring: scope the rule before adding one. For the same reason a tile's selection ring comes from
