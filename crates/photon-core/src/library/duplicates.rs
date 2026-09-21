@@ -21,8 +21,31 @@ pub struct HashCandidate {
 pub struct ItemCopy {
     pub id: i64,
     pub path: String,
+    /// The copy's dimensions **as shown**, like `ViewerItem`'s: EXIF orientation applied,
+    /// then the user's turns and crop. The raw columns would answer the wrong question -
+    /// the panel prints these under "which of these is the big one?", and an upright phone
+    /// photo's columns are its sensor's landscape ones.
     pub width: u32,
     pub height: u32,
+}
+
+/// The columns [`shown_copy`] reads, in its order. Shared so the two queries that build an
+/// `ItemCopy` cannot drift into selecting different things.
+pub(super) const COPY_COLUMNS: &str = "o.id, o.path, o.width, o.height, o.orientation, o.edit_turns, \
+                            o.edit_crop";
+
+/// One `ItemCopy` from a row of [`COPY_COLUMNS`], sized as the photo is displayed.
+pub(super) fn shown_copy(r: &rusqlite::Row<'_>) -> rusqlite::Result<ItemCopy> {
+    let (width, height): (u32, u32) = (r.get(2)?, r.get(3)?);
+    let (upright_w, upright_h) = crate::metadata::oriented_dims(width, height, r.get(4)?);
+    let edit = super::items::edit_from_db(r.get(5)?, r.get(6)?);
+    let (width, height) = edit.dims(upright_w, upright_h);
+    Ok(ItemCopy {
+        id: r.get(0)?,
+        path: r.get(1)?,
+        width,
+        height,
+    })
 }
 
 /// The photos that have at least one byte-identical twin **or** a look-alike, as a grid
@@ -91,10 +114,14 @@ const CANDIDATES_SQL: &str = "SELECT i.id, i.path, i.size, i.mtime_ms
 /// Runs for every photo the viewer opens, so it has to come from `items_content_hash`;
 /// `a_photos_copies_are_found_through_the_hash_index` pins that. An unhashed photo has no
 /// copies by construction: NULL equals nothing.
-const COPIES_SQL: &str = "SELECT o.id, o.path, o.width, o.height FROM items i
+fn copies_sql() -> String {
+    format!(
+        "SELECT {COPY_COLUMNS} FROM items i
      JOIN items o ON o.content_hash = i.content_hash AND o.id <> i.id
      WHERE i.id = ?1 AND o.missing_since IS NULL
-     ORDER BY o.path";
+     ORDER BY o.path"
+    )
+}
 
 /// `duplicate_count`'s query, shared with its plan test so the two cannot drift onto two
 /// different strings that happen to look alike.
@@ -155,16 +182,9 @@ impl Library {
     /// The other live files with the same bytes as `item_id`, by path.
     pub fn copies_of(&self, item_id: i64) -> Result<Vec<ItemCopy>> {
         let conn = self.reader()?;
-        let mut stmt = conn.prepare_cached(COPIES_SQL)?;
+        let mut stmt = conn.prepare_cached(&copies_sql())?;
         let rows = stmt
-            .query_map([item_id], |r| {
-                Ok(ItemCopy {
-                    id: r.get(0)?,
-                    path: r.get(1)?,
-                    width: r.get(2)?,
-                    height: r.get(3)?,
-                })
-            })?
+            .query_map([item_id], shown_copy)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
@@ -200,7 +220,7 @@ mod tests {
     #[test]
     fn a_photos_copies_are_found_through_the_hash_index() {
         let (_dir, lib) = temp_library();
-        let plan = plan(&lib, COPIES_SQL, &[&1i64]);
+        let plan = plan(&lib, &copies_sql(), &[&1i64]);
         assert!(
             plan.iter().any(|step| step.contains("items_content_hash")),
             "expected the hash index, got {plan:?}"

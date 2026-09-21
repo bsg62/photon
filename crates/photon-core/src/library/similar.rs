@@ -2,7 +2,7 @@
 //! this is only what they read and write, and what the UI asks afterwards.
 
 use super::Library;
-use super::duplicates::ItemCopy;
+use super::duplicates::{COPY_COLUMNS, ItemCopy, shown_copy};
 use super::items::edit_from_db;
 use crate::Result;
 use crate::edit::{Crop, Edit};
@@ -182,21 +182,14 @@ impl Library {
     /// The other live photos that look like `item_id`, by path.
     pub fn similar_of(&self, item_id: i64) -> Result<Vec<ItemCopy>> {
         let conn = self.reader()?;
-        let mut stmt = conn.prepare_cached(
-            "SELECT o.id, o.path, o.width, o.height FROM items i
+        let mut stmt = conn.prepare_cached(&format!(
+            "SELECT {COPY_COLUMNS} FROM items i
              JOIN items o ON o.similar_group = i.similar_group AND o.id <> i.id
              WHERE i.id = ?1 AND i.similar_group IS NOT NULL AND o.missing_since IS NULL
-             ORDER BY o.path",
-        )?;
+             ORDER BY o.path"
+        ))?;
         let rows = stmt
-            .query_map([item_id], |r| {
-                Ok(ItemCopy {
-                    id: r.get(0)?,
-                    path: r.get(1)?,
-                    width: r.get(2)?,
-                    height: r.get(3)?,
-                })
-            })?
+            .query_map([item_id], shown_copy)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
@@ -432,6 +425,49 @@ mod tests {
         assert!(
             lib.percep_hashes().unwrap().is_empty(),
             "and nothing was written"
+        );
+    }
+
+    /// The panel prints a look-alike's dimensions under "which of these is the big one?",
+    /// so they have to be the photo's **as shown**, like `ViewerItem`'s - EXIF orientation
+    /// applied, then the user's turns and crop. Read straight from the columns, an upright
+    /// phone photo answers with its sensor's landscape size and a cropped copy with the
+    /// frame it was cropped out of, which is the opposite of what the question asks.
+    #[test]
+    fn a_look_alikes_dimensions_are_the_ones_on_screen() {
+        let (_dir, lib) = temp_library();
+        let (_w, folder) = seed_folder(&lib, Path::new("/pics"));
+        // 400x300 on the sensor, orientation 6: a quarter turn, so 300x400 upright.
+        let upright = NewItem {
+            orientation: 6,
+            ..item_at(folder, "/pics/upright.jpg", 10, 100)
+        };
+        let ids = lib
+            .insert_items(&[item_at(folder, "/pics/a.jpg", 11, 101), upright])
+            .unwrap();
+        // ...and then cropped to its left half: 150x400 on screen.
+        lib.set_item_edit(
+            ids[1],
+            crate::edit::Edit {
+                turns: 0,
+                crop: Some(crate::edit::Crop {
+                    left: 0,
+                    top: 0,
+                    right: 32768,
+                    bottom: 65535,
+                }),
+            },
+        )
+        .unwrap();
+        lib.set_similar_groups(&[(ids[0], ids[0]), (ids[1], ids[0])])
+            .unwrap();
+
+        let alike = lib.similar_of(ids[0]).unwrap();
+        assert_eq!(alike.len(), 1);
+        assert_eq!(
+            (alike[0].width, alike[0].height),
+            (150, 400),
+            "the raw columns (400x300) are neither turned nor cropped"
         );
     }
 }
