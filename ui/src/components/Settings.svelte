@@ -8,6 +8,7 @@
   import { createTagRenamer } from '../lib/tag-renamer.svelte';
   import { filterTags, ruleLabel } from '../lib/tags';
   import Icon from './Icon.svelte';
+  import SizeControl from './SizeControl.svelte';
 
   let { section = 'folders', onclose }: { section?: SettingsSection; onclose: () => void } = $props();
 
@@ -357,6 +358,9 @@
               </button>
             {/each}
           </div>
+          <h2>Photo size</h2>
+          <p class="hint">How large the grid draws each photo.</p>
+          <SizeControl />
         {:else if current === 'slideshow'}
           <h2>Slideshow</h2>
           <p class="hint">Press S in the viewer to play the current view from the photo on screen. Space pauses, the arrow keys step, Escape ends it.</p>

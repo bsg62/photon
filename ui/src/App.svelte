@@ -19,6 +19,7 @@
   import Grid from './components/Grid.svelte';
   import SearchBar from './components/SearchBar.svelte';
   import Settings from './components/Settings.svelte';
+  import SizeControl from './components/SizeControl.svelte';
   import ExportDialog from './components/ExportDialog.svelte';
   import StatusBar from './components/StatusBar.svelte';
   import TagPicker from './components/TagPicker.svelte';
@@ -233,6 +234,7 @@
 <div class="app" style:--sidebar-width="{sidebarWidth}px">
   <div class="topbar" inert={covered}>
     <SearchBar />
+    <SizeControl />
     <button class="gear" bind:this={gear} aria-label="Settings" title="Settings" onclick={() => openSettings('folders')}
       ><Icon name="settings" size={18} /></button
     >
