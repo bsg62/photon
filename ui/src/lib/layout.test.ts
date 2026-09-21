@@ -284,6 +284,37 @@ describe('keeping your place across a size change', () => {
     expect(firstVisibleOffset(medium, 2 * row + row - 1)).toBe(6);
   });
 
+  // Two folders, so there is a header partway down to land on.
+  const folders = [
+    { folderId: 1, offset: 0, count: 5 },
+    { folderId: 2, offset: 5, count: 4 },
+  ];
+
+  // The claim the whole feature rests on, and the one an assertion made inside a single
+  // layout cannot reach: the pin is read from the layout the user was looking at and spent
+  // in the one that replaces it, so it has to name a row *there*. Medium at three columns
+  // and small at five share no row tops at all, which is the point.
+  it('finds its row in the layout the pin was not taken in', () => {
+    const medium = buildRows(folders, 3, true, TILE_WIDTH.medium);
+    const small = buildRows(folders, 5, true, TILE_WIDTH.small);
+    for (const top of [0, 40, 200, 500, totalHeight(medium) - 1]) {
+      const offset = firstVisibleOffset(medium, top);
+      expect(offset).not.toBeNull();
+      expect(rowOfItem(small, offset!)).toBeGreaterThanOrEqual(0);
+    }
+  });
+
+  // A header is where the pin can be wrong without being out of range, so this is the case
+  // that discriminates: at a section's header the eye is on that section's first photo, and
+  // an implementation that answered with the tile row above - the last row of the previous
+  // folder - would scroll the user back into a folder they had already left. It round-trips
+  // because `scrollToOffset(offset, 'start')` puts the header itself back at the top.
+  it('answers a header with the section it heads, not the row above it', () => {
+    const medium = buildRows(folders, 3, true, TILE_WIDTH.medium);
+    const header = medium.find((r) => r.kind === 'header' && r.section === 1)!;
+    expect(firstVisibleOffset(medium, header.top)).toBe(5);
+    expect(rowOfItem(buildRows(folders, 5, true, TILE_WIDTH.small), 5)).toBeGreaterThanOrEqual(0);
+  });
 });
 
 describe('edgeScrollSpeed', () => {
