@@ -48,6 +48,18 @@ pub const SHOTS: &[Shot] = &[
         query: "theme=dark&do=select",
         dark: true,
     },
+    // Whether 120 and 224 are the right widths is a looking question, and this is how it
+    // is looked at without launching the app.
+    Shot {
+        name: "grid-small",
+        query: "theme=light&tile=small",
+        dark: false,
+    },
+    Shot {
+        name: "grid-large",
+        query: "theme=light&tile=large",
+        dark: false,
+    },
     // The bookmark filled: a query the sidebar already holds, so the button is inert.
     Shot {
         name: "saved-search-light",

@@ -66,7 +66,8 @@ describe('layout', () => {
       ['tiles', 2, 2, 168],
       ['tiles', 4, 1, 336],
     ]);
-    // Against 5 * (HEADER + TILE_ROW) = 1000 for the same photos as folder sections.
+    // Against 5 * (HEADER + tileRow(TILE_WIDTH.medium)) = 1000 for the same photos as
+    // folder sections.
     expect(totalHeight(rows)).toBe(504);
   });
 
@@ -109,7 +110,7 @@ describe('layout', () => {
 });
 
 describe('itemsInRect', () => {
-  // Two sections of 5 photos, 3 columns, no headers: rows at 0 and 168 (TILE_ROW).
+  // Two sections of 5 photos, 3 columns, no headers: rows at 0 and 168 (tileRow(TILE_WIDTH.medium)).
   const rows = buildRows([{ folderId: 1, offset: 0, count: 5 }], 3, false);
   const rect = (x0: number, y0: number, x1: number, y1: number) => ({ x0, y0, x1, y1 });
 
@@ -137,7 +138,8 @@ describe('itemsInRect', () => {
   });
 
   it('takes the tiles a rectangle touches in one row', () => {
-    // Tile k spans x = GAP + k*TILE_ROW .. + TILE, so tile 1 starts at 176.
+    // Tile k spans x = GAP + k*tileRow(TILE_WIDTH.medium) .. + TILE_WIDTH.medium, so tile 1
+    // starts at 176.
     expect(itemsInRect(rows, rect(180, 10, 200, 20))).toEqual([[1, 1]]);
   });
 

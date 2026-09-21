@@ -61,7 +61,7 @@ cargo run -p xtask -- metadata            # licence and installer metadata are c
 **Seeing the UI without launching it** (not in CI; needs Chromium on `PATH` or in `CHROMIUM`):
 
 ```bash
-cargo run -p xtask -- screenshots                     # fourteen PNGs into target/screenshots/
+cargo run -p xtask -- screenshots                     # sixteen PNGs into target/screenshots/
 cargo run -p xtask -- screenshots --only viewer-info-light --no-build
 ```
 
@@ -357,7 +357,7 @@ first row), which clips anything sitting outside the tile's own box.
 
 The look cannot be tested here, but it can be seen without launching the app: `cargo run -p xtask --
 screenshots` builds the UI, serves `ui/dist` itself with `mock.js` (in
-`crates/xtask/screenshots/`) standing in for Tauri's IPC, and writes fourteen PNGs, in both themes,
+`crates/xtask/screenshots/`) standing in for Tauri's IPC, and writes sixteen PNGs, in both themes,
 to `target/screenshots/` with headless Chromium. It claims a Windows user agent and maps
 `photon.localhost` to its own port, because `mediaUrl` uses `http://photon.localhost` there
 and no plain browser can load `photon://`. It is Chromium's rendering, not WebKitGTK's or
