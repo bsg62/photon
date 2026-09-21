@@ -170,11 +170,19 @@ fn union(parent: &mut [usize], a: usize, b: usize) {
 /// What one pass did; see [`update`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PassOutcome {
-    /// How many rows took a new hash.
+    /// How many rows took a new hash. `percep_hash` sits in no view filter and no
+    /// `GridInfo` field - only the materialised `similar_group` the regroup writes decides
+    /// Duplicates membership - so hashing a row can never by itself change what a grid
+    /// shows, and `Engine::hash_after_scan` does not gate its refresh on this. It stays a
+    /// field of its own, not folded away, because it is what the tests here assert on to
+    /// pin *which* rows a pass actually hashed (candidates vs. `Off` vs. cancellation),
+    /// separately from whether the regroup moved anything.
     pub hashed: u64,
     /// Whether the regroup changed which photos are in which group. Separate from `hashed`
     /// because the two come apart: changing the distance setting regroups the whole library
-    /// having hashed nothing, and a photo purged out of a group does the same.
+    /// having hashed nothing, and a photo purged out of a group does the same. This is the
+    /// one signal that means the Duplicates view moved, and the only one
+    /// `Engine::hash_after_scan` refreshes the grid on.
     pub groups_changed: bool,
 }
 

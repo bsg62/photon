@@ -1334,12 +1334,22 @@ impl Engine {
     /// Runs the two passes the Duplicates view is built from - the byte-identical one
     /// (`photon_core::duplicates`, which hashes files) and the look-alike one
     /// (`photon_core::similar`, which hashes cached thumbnails and regroups) - and rebuilds
-    /// the grid if either moved a row, since the view and its count are built from them.
+    /// the grid if either changed what the view shows.
     ///
-    /// "Moved a row" is not the same as "hashed something" for the look-alike pass: a
-    /// regroup that hashes nothing still moves photos into and out of the view, which is
-    /// exactly what changing the distance setting does. That is why it reports the two
-    /// separately and the refresh is gated on either.
+    /// The two passes are gated differently, and that asymmetry is load-bearing, not an
+    /// oversight to tidy up. `hash_candidates` (the byte-identical half) hashes rows whose
+    /// `content_hash` is read straight into `DUPLICATE_FILTER` at query time, so hashing a
+    /// row can by itself change who has a twin - `Ok(_)` there refreshes unconditionally.
+    /// `photon_core::similar::update`'s hash half writes `percep_hash`, which appears in no
+    /// view filter and no `GridInfo` field; membership in Duplicates comes only from the
+    /// *materialised* `similar_group` the regroup half writes. So `pass.hashed > 0` can
+    /// never itself change what any grid shows, and gating on it only rebuilt the grid for
+    /// no reason - which is what a rescan that hashes a newly-thumbnailed, unstarred photo
+    /// did, moving the version and failing
+    /// `a_rescan_after_set_star_agrees_with_what_photon_wrote`. `pass.groups_changed` is
+    /// the one signal that means the view moved: a regroup that hashes nothing still moves
+    /// photos into and out of the view (changing the distance setting is exactly that), so
+    /// the refresh is gated on `groups_changed` alone.
     ///
     /// Here rather than in the scanner because a duplicate is a fact about the whole
     /// library, not about the root or subtree one scan walked - and because `walk_tree` has
@@ -1386,7 +1396,7 @@ impl Engine {
                     }
                 };
                 match photon_core::similar::update(&self.lib, &self.cache, distance, cancel) {
-                    Ok(pass) if pass.hashed > 0 || pass.groups_changed => {
+                    Ok(pass) if pass.groups_changed => {
                         if let Err(err) = self.refresh_grid() {
                             tracing::warn!(%err, "grid refresh failed");
                         }
@@ -2365,11 +2375,19 @@ mod tests {
         // by the next scan's Picasa pass, which sets every row from the file. A DB-only
         // implementation fails here twice over - the scan clears the star and, having
         // changed a row, bumps the version.
+        //
+        // `wait_idle` before the rescan is what makes this deterministic rather than a race
+        // against the thumbnail workers: it lets the rescan's look-alike pass find the
+        // photo's thumbnail already cached and hash it, which is exactly the case PR #70
+        // regressed on macOS CI - hashing a row through a gate reading `pass.hashed > 0`
+        // rebuilt the grid for nothing, since `percep_hash` decides no view. Without this
+        // call the pass sees no thumbnail yet on most runs and the bug is invisible here.
         let img = jpeg(16, 16);
         let f = fixture(&[("a.jpg", &img)]);
         let watched = f.add_photos();
         let id = f.ids()[0];
         f.engine.set_star(id, true).unwrap();
+        f.engine.thumbs.wait_idle();
         let version = f.engine.grid().0;
 
         f.engine.start_scan(watched);
