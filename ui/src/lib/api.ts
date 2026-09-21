@@ -21,6 +21,8 @@ export interface GridEntry { id: number; folderId: number; takenAt: number; aspe
 export type GridView = 'all' | 'starred' | 'recent' | 'search' | 'person' | 'album' | 'tag' | 'duplicates';
 /** Mirrors `photon_core::library::ThemeChoice` (serde lowercase). */
 export type ThemeChoice = 'system' | 'light' | 'dark';
+/** Mirrors `photon_core::library::GridTile` (serde lowercase). */
+export type GridTile = 'small' | 'medium' | 'large';
 /** `searchQuery`, `person`, `album` and `tag` are the argument of the matching view and
  *  empty/null in every other view: the backend is the source of truth for which one is
  *  active, so the UI reads the argument from here rather than remembering what it asked for. */
@@ -159,6 +161,8 @@ export const api = {
   setSlideshowInterval: (seconds: number) => invoke<number>('set_slideshow_interval', { seconds }),
   theme: () => invoke<ThemeChoice>('theme'),
   setTheme: (choice: ThemeChoice) => invoke<void>('set_theme', { choice }),
+  gridTile: () => invoke<GridTile>('grid_tile'),
+  setGridTile: (tile: GridTile) => invoke<void>('set_grid_tile', { tile }),
   /** The native title bar's scheme; null hands it back to the desktop. Granted in
    *  `capabilities/default.json`. */
   setWindowTheme: (theme: 'light' | 'dark' | null) => getCurrentWindow().setTheme(theme),
