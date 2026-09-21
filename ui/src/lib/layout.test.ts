@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildRows, columnsFor, edgeScrollSpeed, firstVisibleOffset, GAP, HEADER, itemSpan, itemsInRect, layoutSections, rowIndexAt, rowOfItem, scrollTopForOffset, tileRow, TILE_WIDTH, topFolderId, totalHeight, visibleRange } from './layout';
+import { buildRows, columnsFor, edgeScrollSpeed, firstVisibleOffset, GAP, HEADER, itemSpan, itemsInRect, layoutSections, rowIndexAt, rowOfItem, tileRow, TILE_WIDTH, topFolderId, totalHeight, visibleRange } from './layout';
 
 const sections = [
   { folderId: 1, offset: 0, count: 5 },
@@ -265,19 +265,15 @@ describe('keeping your place across a size change', () => {
     expect(firstVisibleOffset([], 0)).toBeNull();
   });
 
-  it('finds the scroll position that puts an offset back at the top', () => {
-    const large = buildRows(sections, 3, false, TILE_WIDTH.large);
-    expect(scrollTopForOffset(large, 3)).toBe(tileRow(TILE_WIDTH.large));
-    expect(scrollTopForOffset(large, 999)).toBeNull();
-  });
-
-  it('round-trips an offset from one size to another', () => {
+  // The pin `Grid.svelte` takes before a size change: what matters is that it names a
+  // photo and not a pixel, so it survives every row's `top` moving underneath it. Anywhere
+  // within a row answers with that row's first offset, which is what makes the number
+  // meaningful in a layout it was not measured in.
+  it('names the photo, not the pixel, anywhere within a row', () => {
     const medium = buildRows(sections, 3, false, TILE_WIDTH.medium);
-    const large = buildRows(sections, 2, false, TILE_WIDTH.large);
-    const offset = firstVisibleOffset(medium, 2 * tileRow(TILE_WIDTH.medium));
-    expect(offset).toBe(6);
-    // Row 3 of the two-column large layout holds offsets 6 and 7.
-    expect(scrollTopForOffset(large, offset!)).toBe(3 * tileRow(TILE_WIDTH.large));
+    const row = tileRow(TILE_WIDTH.medium);
+    expect(firstVisibleOffset(medium, 2 * row)).toBe(6);
+    expect(firstVisibleOffset(medium, 2 * row + row - 1)).toBe(6);
   });
 });
 

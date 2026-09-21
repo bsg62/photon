@@ -246,19 +246,15 @@ export function edgeScrollSpeed(
 /** The grid offset of the first photo in the row at the top of the viewport, or null when
  *  the grid has no rows.
  *
- *  Paired with `scrollTopForOffset` to keep your place when the tile size changes: every
- *  row's `top` moves, so a scroll position kept as a number points somewhere else
- *  afterwards, and a grid that jumps to a different year when the tiles grow is worse than
- *  no size control at all. A header row answers with the offset of the section it heads,
- *  which is the photo the eye is on. */
+ *  This is how the grid keeps your place when the tile size changes: every row's `top`
+ *  moves, so a scroll position kept as a number points somewhere else afterwards, and a
+ *  grid that jumps to a different year when the tiles grow is worse than no size control
+ *  at all. The offset is read here from the layout as it was, and `Grid.svelte` scrolls to
+ *  it in the layout as it is through its own `scrollToOffset(offset, 'start')` - which puts
+ *  a section's header back at the top rather than the first row under it, so a header row
+ *  answering with the offset of the section it heads (the photo the eye is on) round-trips
+ *  to what the eye actually saw. */
 export function firstVisibleOffset(rows: Row[], scrollTop: number): number | null {
   if (rows.length === 0) return null;
   return rows[rowIndexAt(rows, scrollTop)].first;
-}
-
-/** The scroll position that puts `offset`'s row at the top of the viewport, or null when
- *  no row holds it. */
-export function scrollTopForOffset(rows: Row[], offset: number): number | null {
-  const row = rowOfItem(rows, offset);
-  return row < 0 ? null : rows[row].top;
 }

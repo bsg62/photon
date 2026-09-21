@@ -26,9 +26,10 @@
   /** How close to the viewport's edge a band has to be dragged before the grid scrolls
    *  under it, and how fast it may scroll, in pixels **per second** - not per frame, or the
    *  same gesture would scroll twice as far on a 120Hz screen as on a 60Hz one. It stays a
-   *  fixed number of pixels while the tile does not: the margin is a property of the
-   *  pointer's reach, not of the grid, and at the smallest tile it is still well under half
-   *  of one, so a band that stops short of the edge does not creep. */
+   *  fixed number of pixels while the tile does not, because the margin is a property of the
+   *  pointer's reach rather than of the grid: 48px is two fifths of the smallest tile (120)
+   *  and under a quarter of the largest (224), so at every size a band that stops short of
+   *  the edge does not creep. */
   const BAND_EDGE = 48;
   const BAND_SCROLL_MAX = 1400;
   /** The longest frame the scroll will act on. A tab that was in the background, or a slow
@@ -184,12 +185,19 @@
     const top = scrollTop;
     if (tile !== pinnedWidth) {
       pinnedWidth = tile;
-      // Only when the viewport is still where the pin was taken. A programmatic scroll -
-      // the launch jump to last session's folder, App's jump to the top on a view change -
-      // moves the viewport now and reaches `scrollTop` only when the browser's scroll event
-      // arrives, so a width change landing in between would find a pin describing somewhere
-      // the user has already left and drag them back to it. Staying put keeps the pixel
-      // position instead of the photo, which is the lesser of the two wrongs.
+      // A programmatic scroll - the launch jump to last session's folder, App's jump to the
+      // top on a view change - moves the viewport now and reaches `scrollTop` only when the
+      // browser's scroll event arrives. Both of those sit behind IPC round trips, and so
+      // does the stored tile size, so on launch a width change can land in that gap: the pin
+      // would then still say offset 0 and this would drag the user off the folder they were
+      // restored to, back to the top. Worse, `library.restoring` is already false by then,
+      // so the effect above would write the library's first folder over the one they were
+      // actually browsing - the loss would survive the next launch too.
+      //
+      // `pinnedTop` is the scroll position the pin was taken at; a viewport that has since
+      // moved means the pin describes somewhere the user has already left. Staying put keeps
+      // the pixel position instead of the photo, and the pending scroll event re-pins a
+      // moment later. Do not simplify this to `pinned !== null`.
       if (pinned !== null && viewport && viewport.scrollTop === pinnedTop) scrollToOffset(pinned, 'start');
       return;
     }
