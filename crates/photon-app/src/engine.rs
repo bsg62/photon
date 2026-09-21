@@ -83,6 +83,9 @@ const EXPORT_PROGRESS_EVERY: Duration = Duration::from_millis(100);
 pub struct Engine {
     pub lib: Arc<Library>,
     pub thumbs: ThumbService,
+    /// The same cache the thumbnail service writes into. Held here because the look-alike
+    /// pass hashes the cached grid thumbnails rather than the photos.
+    cache: Arc<ThumbCache>,
     excluded: Vec<PathBuf>,
     grid: RwLock<(u64, Arc<GridIndex>)>,
     /// Which photos the grid shows (and the view's argument), and a counter that changes
@@ -133,7 +136,7 @@ pub struct Engine {
     /// Serialises every write of a photo's edit; see `rotate_item`. A leaf lock: taken
     /// before the library and view locks and never while holding them.
     edit_write: Mutex<()>,
-    /// Held by the one thread running the duplicate-hashing pass; see `hash_duplicates`.
+    /// Held by the one thread running the post-scan hashing passes; see `hash_after_scan`.
     hashing: Mutex<()>,
     /// Set by every scan that ends, cleared by the pass as it starts a round. A scan that
     /// finds the pass already running leaves this behind instead of starting a second one.
@@ -145,7 +148,7 @@ impl Engine {
         std::fs::create_dir_all(&config.cache_dir)?;
         let lib = Arc::new(Library::open(&config.db_path)?);
         let cache = Arc::new(ThumbCache::new(config.cache_dir.clone()));
-        let thumbs = ThumbService::start(lib.clone(), cache, config.workers);
+        let thumbs = ThumbService::start(lib.clone(), cache.clone(), config.workers);
         let mut excluded = vec![config.cache_dir.clone()];
         // The cache root too, not just the thumbnail directory inside it.
         if let Some(cache_root) = config.cache_dir.parent() {
@@ -171,6 +174,7 @@ impl Engine {
         Ok(Arc::new(Self {
             lib,
             thumbs,
+            cache,
             excluded,
             grid: RwLock::new((0, grid)),
             state: Mutex::new(ViewState {
@@ -1199,13 +1203,14 @@ impl Engine {
         // library with many duplicates on a slow drive that is minutes during which the
         // status bar should not claim the folder is still being scanned.
         if !cancelled {
-            self.hash_duplicates(&cancel);
+            self.hash_after_scan(&cancel);
         }
     }
 
-    /// Hashes the files that may be duplicates (`photon_core::duplicates`) and rebuilds the
-    /// grid if any row took a hash, since the Duplicates view and its count are built from
-    /// them.
+    /// Runs the two passes the Duplicates view is built from - the byte-identical one
+    /// (`photon_core::duplicates`, which hashes files) and the look-alike one
+    /// (`photon_core::similar`, which hashes cached thumbnails and regroups) - and rebuilds
+    /// the grid if either moved a row, since the view and its count are built from them.
     ///
     /// Here rather than in the scanner because a duplicate is a fact about the whole
     /// library, not about the root or subtree one scan walked - and because `walk_tree` has
@@ -1213,6 +1218,10 @@ impl Engine {
     /// It runs after *every* scan, changed rows or not: the first scan after the upgrade
     /// that added the column touches nothing and still has the whole library to hash. With
     /// nothing to do it is one indexed query.
+    ///
+    /// One guard covers both passes, in order: a photo is a look-alike candidate only once
+    /// its thumbnail exists, and nothing in the duplicate pass changes that, so the order is
+    /// only about keeping the cheap whole-library regroup last.
     ///
     /// One pass at a time. Several roots finish their startup scans close together, and two
     /// passes would read the same files twice. A scan that finds the pass running sets
@@ -1224,7 +1233,7 @@ impl Engine {
     /// `cancel` is the calling scan's. Cancelling it (its folder is being removed, or photon
     /// is shutting down) stops the pass even though the files may belong to other roots;
     /// the next scan of anything picks the work up.
-    fn hash_duplicates(&self, cancel: &AtomicBool) {
+    fn hash_after_scan(&self, cancel: &AtomicBool) {
         self.hash_requested.store(true, Ordering::Release);
         loop {
             let Some(guard) = self.hashing.try_lock() else {
@@ -1239,6 +1248,17 @@ impl Engine {
                         }
                     }
                     Err(err) => tracing::warn!(%err, "duplicate hashing failed"),
+                }
+                // Task 6 replaces this with the user's setting, `self.lib.similar_distance()`.
+                let distance = photon_core::similar::EXACT_RECALL_DISTANCE;
+                match photon_core::similar::update(&self.lib, &self.cache, distance, cancel) {
+                    Ok(0) => {}
+                    Ok(_) => {
+                        if let Err(err) = self.refresh_grid() {
+                            tracing::warn!(%err, "grid refresh failed");
+                        }
+                    }
+                    Err(err) => tracing::warn!(%err, "look-alike hashing failed"),
                 }
             }
             drop(guard);
@@ -1318,7 +1338,7 @@ impl Drop for TestScanSlot {
 mod tests {
     use super::*;
     use crate::events::Recorded;
-    use crate::testutil::{fixture, jpeg};
+    use crate::testutil::{fixture, jpeg, jpeg_pattern, jpeg_picture};
     use photon_core::media::ThumbState;
 
     /// An edit travels the whole refresh chain: the row, a new grid version, and a tile
@@ -1358,7 +1378,12 @@ mod tests {
     #[test]
     fn a_scan_finds_the_duplicates_it_indexed() {
         let same = jpeg(4, 2);
-        let mut padded = same.clone();
+        // A different picture, not a padded copy of `same`: a flat colour is a look-alike of
+        // every other flat colour, so a third solid JPEG would join the pair through the
+        // look-alike pass and this test would stop being about byte-identical files. The
+        // padding stays, since two JPEGs can encode to the same byte size and only a file
+        // with a size of its own is left out of the duplicate pass on its own merits.
+        let mut padded = jpeg_pattern(36, 24);
         padded.extend_from_slice(b"a size of its own");
         let f = fixture(&[
             ("a/one.jpg", &same),
@@ -1377,6 +1402,43 @@ mod tests {
         let item = crate::commands::viewer_item(&f.engine, ids[0]).unwrap();
         assert_eq!(item.copies.len(), 1);
         assert_eq!(item.copies[0].id, ids[1]);
+    }
+
+    /// The look-alike pass is wired into the same end-of-scan guard, and reaches the same
+    /// places: two files that are one picture at two sizes share no byte and no size, so
+    /// only the look-alike pass can put them in the Duplicates view.
+    ///
+    /// The second scan is what makes this deterministic rather than a race: the pass hashes
+    /// cached thumbnails, and the first scan's pass runs while the thumbnail workers are
+    /// still going. By the time `wait_idle` returns every thumbnail is on disk, and the
+    /// scan after it has all three to hash.
+    #[test]
+    fn a_scan_finds_the_look_alikes_it_indexed() {
+        let f = fixture(&[
+            ("a/big.jpg", &jpeg_picture(180, 120)),
+            ("a/small.jpg", &jpeg_picture(45, 30)),
+            ("a/other.jpg", &jpeg_pattern(60, 40)),
+        ]);
+        let watched = f.add_photos();
+        f.engine.thumbs.wait_idle();
+        f.engine.start_scan(watched);
+        f.engine.wait_for_scans();
+
+        let info = crate::commands::grid_info(&f.engine);
+        assert_eq!(
+            info.duplicate_count, 2,
+            "the resized copy is not a look-alike"
+        );
+
+        f.engine.set_view(GridView::Duplicates).unwrap();
+        let ids = f.ids();
+        assert_eq!(ids.len(), 2);
+        let paths: Vec<String> = ids
+            .iter()
+            .map(|id| f.engine.lib.item(*id).unwrap().unwrap().path)
+            .collect();
+        assert!(paths.iter().any(|p| p.ends_with("big.jpg")));
+        assert!(paths.iter().any(|p| p.ends_with("small.jpg")));
     }
 
     /// Both readers of `excluded` compare it against a canonical path - `add_watched_folder`

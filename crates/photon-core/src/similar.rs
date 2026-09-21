@@ -13,8 +13,15 @@
 //! looking for a duplicate.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use image::{DynamicImage, imageops::FilterType};
+
+use crate::{
+    Result,
+    library::Library,
+    thumbs::{ThumbCache, ThumbSize},
+};
 
 /// Width of the reduced image. One more than the 8 columns of bits, because each bit
 /// compares a pixel with its right-hand neighbour.
@@ -129,10 +136,69 @@ fn union(parent: &mut [usize], a: usize, b: usize) {
     }
 }
 
+/// Hashes every photo that has a thumbnail but no hash, then regroups the whole library.
+/// Returns how many rows took a new hash.
+///
+/// The hash comes from the **cached 256px grid thumbnail**, not from the photo: the
+/// thumbnail is the reduced image this hash wants, it is already on disk, and decoding it
+/// costs about a millisecond against the ~175ms a source decode costs. That is also what
+/// makes an existing library fill in - the thumbnail renderer skips a photo whose thumbnail
+/// is already cached, so a hash computed there would never have been computed at all for
+/// any photo indexed before this feature existed, which is every photo in every library.
+///
+/// A thumbnail that cannot be read is skipped and the row stays a candidate: it is usually
+/// a cache still being written, and the next scan's pass tries again. Cancelling stops
+/// between photos; what was hashed so far is kept.
+pub fn update(
+    lib: &Library,
+    cache: &ThumbCache,
+    distance: u32,
+    cancel: &AtomicBool,
+) -> Result<u64> {
+    let mut hashed = 0;
+    for candidate in lib.similar_candidates()? {
+        if cancel.load(Ordering::Relaxed) {
+            break;
+        }
+        let path = cache.path_for(candidate.thumb_key, ThumbSize::Grid);
+        match image::open(&path) {
+            // False only when the row moved on while the thumbnail was being read, which is
+            // the row no longer being the one hashed rather than a failure.
+            Ok(img) => {
+                if lib.set_percep_hash(&candidate, dhash(&img))? {
+                    hashed += 1;
+                }
+            }
+            Err(err) => {
+                tracing::debug!(id = candidate.id, %err, "could not read a thumbnail to hash");
+            }
+        }
+    }
+
+    // Regroup unconditionally, not only when something was hashed: the distance setting may
+    // have changed, or a photo may have been purged out of a group since the last pass.
+    lib.set_similar_groups(&group(&lib.percep_hashes()?, distance))?;
+    Ok(hashed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use image::{DynamicImage, Rgb, RgbImage};
+    use crate::library::NewItem;
+    use crate::media::{ThumbState, fingerprint};
+    use crate::testutil::{encode, new_item, seed_folder, temp_library, write_file};
+    use image::{DynamicImage, ImageFormat, Rgb, RgbImage};
+    use std::path::Path;
+
+    /// `new_item` fixes size and mtime; these tests turn them into thumbnail cache keys, so
+    /// they name them rather than relying on the shared helper's values.
+    fn item_at(folder: i64, path: &str, size: i64, mtime_ms: i64) -> NewItem {
+        NewItem {
+            size,
+            mtime_ms,
+            ..new_item(folder, path, 0)
+        }
+    }
 
     /// A gradient with a bright blob, at whatever size is asked for. The same picture at two
     /// resolutions must hash to (nearly) the same value - that is the whole property.
@@ -290,5 +356,109 @@ mod tests {
     fn distance_zero_groups_nothing() {
         let out = group(&[(1, 5), (2, 5)], 0);
         assert!(out.is_empty(), "distance 0 means the feature is off");
+    }
+
+    /// The end-to-end property: two files that are the same picture at different sizes, both
+    /// with thumbnails, end up in one group; an unrelated third does not.
+    ///
+    /// The fixtures are written as real JPEGs and thumbnailed through `ThumbCache`, because
+    /// what the pass hashes is the cached grid thumbnail, not the photo - so a test that
+    /// handed it the source images would not exercise the path that exists.
+    #[test]
+    fn the_pass_groups_the_same_picture_at_two_sizes() {
+        let (dir, lib) = temp_library();
+        let photos = dir.path().join("pics");
+        let (_w, folder) = seed_folder(&lib, &photos);
+        let cache = ThumbCache::new(dir.path().join("cache"));
+
+        // Small fixtures: a thin-ish pair proves the resize claim as well as a big one, and
+        // a debug build encodes and decodes these in milliseconds.
+        let files = [
+            ("big.jpg", picture(600, 400), 10, 100),
+            ("small.jpg", picture(150, 100), 11, 101),
+            ("other.jpg", unrelated_pattern(300, 200), 12, 102),
+        ];
+        let mut items = Vec::new();
+        for (name, img, size, mtime) in &files {
+            let src = write_file(&photos, name, &encode(img, ImageFormat::Jpeg));
+            let path = src.to_str().unwrap().to_string();
+            // The row's size and mtime are the fixture's, not the file's: they are only the
+            // fingerprint's inputs here, and naming them is what lets the thumbnail be
+            // written under the very key the pass will look for.
+            cache
+                .generate(&src, 1, fingerprint(&path, *size, *mtime))
+                .unwrap();
+            items.push(item_at(folder, &path, *size, *mtime));
+        }
+        let ids = lib.insert_items(&items).unwrap();
+        for id in &ids {
+            lib.set_thumb_state(*id, ThumbState::Ready, None).unwrap();
+        }
+
+        let hashed = update(&lib, &cache, EXACT_RECALL_DISTANCE, &AtomicBool::new(false)).unwrap();
+        assert_eq!(hashed, 3, "every thumbnailed photo takes a hash");
+
+        let alike = lib.similar_of(ids[0]).unwrap();
+        assert_eq!(
+            alike.iter().map(|c| c.id).collect::<Vec<_>>(),
+            vec![ids[1]],
+            "the same picture at two sizes is one group"
+        );
+        assert!(
+            lib.similar_of(ids[2]).unwrap().is_empty(),
+            "an unrelated picture was grouped with them"
+        );
+
+        // A second pass has nothing left to hash: a photo takes this path once.
+        assert_eq!(
+            update(&lib, &cache, EXACT_RECALL_DISTANCE, &AtomicBool::new(false)).unwrap(),
+            0
+        );
+    }
+
+    /// A thumbnail that is not on disk yet leaves the row a candidate for the next pass,
+    /// rather than failing the whole run or marking the photo hashed.
+    #[test]
+    fn a_photo_whose_thumbnail_is_missing_stays_a_candidate() {
+        let (dir, lib) = temp_library();
+        let (_w, folder) = seed_folder(&lib, Path::new("/pics"));
+        let cache = ThumbCache::new(dir.path().join("cache"));
+        let ids = lib
+            .insert_items(&[item_at(folder, "/pics/a.jpg", 10, 100)])
+            .unwrap();
+        lib.set_thumb_state(ids[0], ThumbState::Ready, None)
+            .unwrap();
+
+        assert_eq!(
+            update(&lib, &cache, EXACT_RECALL_DISTANCE, &AtomicBool::new(false)).unwrap(),
+            0
+        );
+        assert_eq!(lib.similar_candidates().unwrap().len(), 1);
+    }
+
+    /// Cancelling stops between photos and keeps what was hashed. With the flag already set
+    /// the pass hashes nothing at all, and still regroups.
+    #[test]
+    fn a_cancelled_pass_hashes_nothing_and_still_regroups() {
+        let (dir, lib) = temp_library();
+        let (_w, folder) = seed_folder(&lib, Path::new("/pics"));
+        let cache = ThumbCache::new(dir.path().join("cache"));
+        let ids = lib
+            .insert_items(&[
+                item_at(folder, "/pics/a.jpg", 10, 100),
+                item_at(folder, "/pics/b.jpg", 11, 101),
+            ])
+            .unwrap();
+        lib.set_similar_groups(&[(ids[0], ids[0]), (ids[1], ids[0])])
+            .unwrap();
+
+        assert_eq!(
+            update(&lib, &cache, EXACT_RECALL_DISTANCE, &AtomicBool::new(true)).unwrap(),
+            0
+        );
+        assert!(
+            lib.similar_of(ids[0]).unwrap().is_empty(),
+            "the regroup runs even when nothing was hashed"
+        );
     }
 }

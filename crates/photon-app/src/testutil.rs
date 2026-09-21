@@ -18,6 +18,46 @@ pub fn jpeg(w: u32, h: u32) -> Vec<u8> {
     buf
 }
 
+/// A JPEG of a blocky pattern, for a photo that must *not* be a look-alike of `jpeg`'s.
+/// A flat colour reduces to a flat picture at any size, so every `jpeg` fixture hashes
+/// identically however different its bytes are; the blocks here are laid out on the 9x8
+/// grid the look-alike hash reduces to, so they survive that reduction.
+pub fn jpeg_pattern(w: u32, h: u32) -> Vec<u8> {
+    let mut img = image::RgbImage::new(w, h);
+    for (x, y, px) in img.enumerate_pixels_mut() {
+        let v = (((x * 9 / w) * 73 + (y * 8 / h) * 151 + 41) % 256) as u8;
+        *px = image::Rgb([v, 255 - v, v / 2]);
+    }
+    encode_jpeg(img)
+}
+
+fn encode_jpeg(img: image::RgbImage) -> Vec<u8> {
+    let mut buf = Vec::new();
+    image::DynamicImage::ImageRgb8(img)
+        .write_to(&mut Cursor::new(&mut buf), image::ImageFormat::Jpeg)
+        .unwrap();
+    buf
+}
+
+/// A JPEG of a gradient with a bright blob: the same picture at any size, so two of these
+/// at different resolutions are look-alikes. The shape `photon_core::similar`'s own tests
+/// use, for the same reason.
+pub fn jpeg_picture(w: u32, h: u32) -> Vec<u8> {
+    let mut img = image::RgbImage::new(w, h);
+    for (x, y, px) in img.enumerate_pixels_mut() {
+        let fx = x as f32 / w as f32;
+        let fy = y as f32 / h as f32;
+        let blob = if (fx - 0.3).abs() < 0.12 && (fy - 0.6).abs() < 0.12 {
+            90.0
+        } else {
+            0.0
+        };
+        let v = (fx * 160.0 + fy * 60.0 + blob).min(255.0) as u8;
+        *px = image::Rgb([v, v.wrapping_add(20), 255 - v]);
+    }
+    encode_jpeg(img)
+}
+
 pub struct Fixture {
     pub dir: TempDir,
     pub photos: PathBuf,
