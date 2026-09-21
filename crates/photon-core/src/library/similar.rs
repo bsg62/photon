@@ -143,7 +143,12 @@ impl Library {
 
     /// Every stored `(item, group)` pair, sorted, for comparison with a freshly computed
     /// set. Served by `items_similar_group`, so it reads the grouped rows and not the rest.
-    fn similar_groups(&self) -> Result<Vec<(i64, i64)>> {
+    ///
+    /// `pub` because it is also the only way to see what a pass *left behind*, which is
+    /// what `photon-app`'s tests about requesting a pass assert on: the Duplicates view is
+    /// kept honest by `DUPLICATE_FILTER` whether or not a pass ran, so the view cannot tell
+    /// the two apart and the column can.
+    pub fn similar_groups(&self) -> Result<Vec<(i64, i64)>> {
         let conn = self.reader()?;
         let mut stmt = conn.prepare_cached(
             "SELECT id, similar_group FROM items WHERE similar_group IS NOT NULL",

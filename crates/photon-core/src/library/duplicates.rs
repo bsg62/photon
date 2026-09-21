@@ -29,9 +29,21 @@ pub struct ItemCopy {
 /// filter. Applied to the driver as well as the outer `WHERE`, like every membership view,
 /// so a folder is placed by its oldest matching photo and the sidebar agrees with the grid.
 ///
-/// The identical half counts live rows only: a photo whose one twin has gone missing is no
-/// longer a duplicate of anything the user can find. The look-alike half is a single column
-/// read, because `crate::similar` has already done the grouping.
+/// **Both halves count their own group's live members, and that is not symmetry for its own
+/// sake.** The two columns are different kinds of fact. `content_hash` is derived here, at
+/// query time, so `HAVING COUNT(*) > 1` is the whole of the membership test and a photo
+/// whose one twin is deleted or goes missing stops matching on the very next query, with no
+/// pass in between - which is why `remove_watched_folder` and `set_item_edit` have never
+/// needed to run one. `similar_group` is *materialised* by the last pass: `crate::similar`
+/// only ever emits members of groups of two or more, but a later write can leave a survivor
+/// behind - `set_item_edit` clears the edited row's group, and any delete removes members
+/// from groups it does not rewrite - and a bare `similar_group IS NOT NULL` would then show
+/// that survivor in Duplicates as a lone duplicate with no copy of any kind. Repeating the
+/// `HAVING COUNT(*) > 1` test over the *stored* groups makes this half self-correcting in
+/// exactly the way the identical half already is, so a stale column can only cost a photo
+/// its grouping until the next pass, never a wrong view. The requested passes
+/// (`Engine::request_similar_pass` after an edit or a folder removal) are what make the
+/// grouping right again; this is what keeps the view right in the meantime.
 ///
 /// `UNION ALL` inside an `IN`, not a plain `i.content_hash IN (...) OR i.similar_group IS NOT
 /// NULL`: the `OR` form plans as a scan of every live row with both halves checked in place,
@@ -59,7 +71,11 @@ pub(crate) const DUPLICATE_FILTER: &str = "AND i.id IN (
         WHERE content_hash IS NOT NULL AND missing_since IS NULL
         GROUP BY content_hash HAVING COUNT(*) > 1)
     UNION ALL
-    SELECT id FROM items WHERE similar_group IS NOT NULL AND missing_since IS NULL)";
+    SELECT id FROM items WHERE similar_group IS NOT NULL AND missing_since IS NULL
+      AND similar_group IN (
+        SELECT similar_group FROM items
+        WHERE similar_group IS NOT NULL AND missing_since IS NULL
+        GROUP BY similar_group HAVING COUNT(*) > 1))";
 
 /// Runs after every scan, so the size grouping has to come from `items_size` rather than
 /// a sort of the whole table; `the_candidate_query_groups_sizes_from_the_index` pins that.
@@ -128,8 +144,8 @@ impl Library {
         Ok(changed == 1)
     }
 
-    /// How many photos have a byte-identical twin. Counts photos, not groups, because it
-    /// labels a view that shows photos.
+    /// How many photos have a byte-identical twin or a look-alike. Counts photos, not
+    /// groups, because it labels a view that shows photos.
     pub fn duplicate_count(&self) -> Result<usize> {
         let conn = self.reader()?;
         let count: i64 = conn.query_row(&duplicate_count_sql(), [], |r| r.get(0))?;
@@ -261,6 +277,75 @@ mod tests {
             [alpha, zulu],
             "alpha's oldest *matching* photo (9) is newer than zulu's (5), so alpha leads; \
              by its oldest photo overall (1) it would trail"
+        );
+    }
+
+    /// A group's last survivor is not a duplicate. Both halves of the filter have to answer
+    /// that the same way, and only the identical half did so for free: `similar_group` is
+    /// left behind by writes that never run a hashing pass, and before the `HAVING` test was
+    /// added to the look-alike half this showed a lone photo in Duplicates - "1 photo",
+    /// nothing it resembles - until the app was restarted.
+    #[test]
+    fn a_look_alike_whose_only_partner_is_purged_stops_being_a_duplicate() {
+        let (_dir, lib) = temp_library();
+        let (_w, folder) = seed_folder(&lib, Path::new("/p"));
+        let ids = lib
+            .insert_items(&[
+                new_item(folder, "/p/a.jpg", 1),
+                new_item(folder, "/p/b.jpg", 2),
+            ])
+            .unwrap();
+        lib.set_similar_groups(&[(ids[0], ids[0]), (ids[1], ids[0])])
+            .unwrap();
+        assert_eq!(lib.duplicate_count().unwrap(), 2);
+
+        // What `remove_watched_folder`'s cascade does to a photo grouped with one in
+        // another root: the row goes, the survivor's stale column stays.
+        lib.purge_items(&[ids[1]]).unwrap();
+        assert_eq!(
+            lib.duplicate_count().unwrap(),
+            0,
+            "the survivor of a purged pair is a duplicate of nothing"
+        );
+        assert!(
+            lib.entries_for(GridView::Duplicates, "")
+                .unwrap()
+                .is_empty(),
+            "and the grid must agree with the count"
+        );
+    }
+
+    /// The same hole reached by the other route, and the common one: the user presses `R` in
+    /// the viewer. `set_item_edit` clears the edited row's group in its own transaction, so
+    /// the *partner* is the survivor here, and the grid re-renders immediately because the
+    /// edit refreshes it.
+    #[test]
+    fn a_look_alike_whose_only_partner_is_edited_stops_being_a_duplicate() {
+        let (_dir, lib) = temp_library();
+        let (_w, folder) = seed_folder(&lib, Path::new("/p"));
+        let ids = lib
+            .insert_items(&[
+                new_item(folder, "/p/a.jpg", 1),
+                new_item(folder, "/p/b.jpg", 2),
+            ])
+            .unwrap();
+        lib.set_similar_groups(&[(ids[0], ids[0]), (ids[1], ids[0])])
+            .unwrap();
+
+        assert!(
+            lib.set_item_edit(
+                ids[1],
+                crate::edit::Edit {
+                    turns: 1,
+                    crop: None
+                }
+            )
+            .unwrap()
+        );
+        assert_eq!(
+            lib.duplicate_count().unwrap(),
+            0,
+            "the unedited partner is a duplicate of nothing until the next pass regroups"
         );
     }
 }

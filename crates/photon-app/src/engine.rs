@@ -733,17 +733,26 @@ impl Engine {
     /// front - the user is looking at it - and the grid is rebuilt, because every tile and
     /// the viewer name a thumbnail by that key. An edit identical to the one in place does
     /// neither.
-    pub fn set_item_edit(&self, id: i64, edit: Edit) -> Result<()> {
+    pub fn set_item_edit(self: &Arc<Self>, id: i64, edit: Edit) -> Result<()> {
         let _serialised = self.edit_write.lock();
         self.write_edit(id, edit)
     }
 
     /// `set_item_edit` for a caller already holding `edit_write`.
-    fn write_edit(&self, id: i64, edit: Edit) -> Result<()> {
+    ///
+    /// The pass request is not about the edited row's own hash - that is cleared by the
+    /// write and picked up whenever a pass next runs. It is about the row's former
+    /// *partners*: `set_item_edit` clears one member out of a group without rewriting the
+    /// rest, so a pair becomes a survivor with a stale `similar_group`. `DUPLICATE_FILTER`
+    /// keeps the view honest meanwhile; this is what makes the grouping right again, and
+    /// soon, because an edit is not a file change and so no scan follows it to run a pass
+    /// of its own.
+    fn write_edit(self: &Arc<Self>, id: i64, edit: Edit) -> Result<()> {
         self.live_item(id)?;
         if self.lib.set_item_edit(id, edit)? {
             self.thumbs.prioritize(&[id], Priority::Visible);
             self.refresh_grid()?;
+            self.request_similar_pass();
         }
         Ok(())
     }
@@ -753,7 +762,7 @@ impl Engine {
     /// commands run on a thread pool, and two quick presses of `R` that both read the same
     /// starting edit would come out as one turn. `set_item_edit` takes the same lock, or an
     /// "Original" landing between this read and this write would be turned back on.
-    pub fn rotate_item(&self, id: i64, clockwise: bool) -> Result<()> {
+    pub fn rotate_item(self: &Arc<Self>, id: i64, clockwise: bool) -> Result<()> {
         let _serialised = self.edit_write.lock();
         let item = self.lib.item(id)?.ok_or(Error::NotFound(id))?;
         if item.missing_since.is_some() {
@@ -791,7 +800,7 @@ impl Engine {
 
     /// Stops any scan of the folder, forgets it and everything under it, unregisters its
     /// watch with the running watcher service (if any), and refreshes the grid.
-    pub fn remove_folder(&self, watched_id: i64) -> Result<()> {
+    pub fn remove_folder(self: &Arc<Self>, watched_id: i64) -> Result<()> {
         // Set before the scan is cancelled, so nothing can start one in the window between
         // that and the deletion; cleared however this ends, so a failed removal does not
         // leave the folder unable to scan for the rest of the session.
@@ -801,7 +810,10 @@ impl Engine {
         result
     }
 
-    fn remove_folder_inner(&self, watched_id: i64) -> Result<()> {
+    /// Ends with a look-alike pass for the same reason `write_edit` does: the cascade
+    /// deletes every item under the root, which can leave a photo in *another* root as the
+    /// last member of a group, and removing a folder starts no scan that would run one.
+    fn remove_folder_inner(self: &Arc<Self>, watched_id: i64) -> Result<()> {
         self.cancel_scan(watched_id);
         let path = self
             .lib
@@ -813,7 +825,9 @@ impl Engine {
         if let (Some(service), Some(path)) = (self.watcher_service(), path) {
             service.watch_removed(watched_id, Path::new(&path));
         }
-        self.refresh_grid()
+        self.refresh_grid()?;
+        self.request_similar_pass();
+        Ok(())
     }
 
     /// A clone of the running watcher service's handle, if one is currently running.
@@ -1604,6 +1618,102 @@ mod tests {
             f.ids().len(),
             0,
             "the setting change alone should have taken the pair out of the view"
+        );
+    }
+
+    /// A photo's stored `similar_group`, or `None`. The group column is what a pass leaves
+    /// behind, so it is what a test about *requesting* a pass has to read: the Duplicates
+    /// view itself is kept honest by `DUPLICATE_FILTER` whether or not a pass ever runs.
+    fn stored_group(f: &crate::testutil::Fixture, id: i64) -> Option<i64> {
+        f.engine
+            .lib
+            .similar_groups()
+            .unwrap()
+            .into_iter()
+            .find(|(item, _)| *item == id)
+            .map(|(_, group)| group)
+    }
+
+    /// An edit takes one photo out of its group, and nothing else. No file changed, so no
+    /// scan follows and no pass would otherwise run: the partner keeps a `similar_group`
+    /// naming a group it is now alone in, all session. `write_edit` requests a pass for
+    /// that reason, not for the edited row's own hash.
+    ///
+    /// Rotating is what makes the assertion stable: `dhash` is deliberately not
+    /// rotation-invariant, so even once the turned photo's thumbnail is re-rendered and
+    /// hashed, the two do not group again.
+    #[test]
+    fn an_edit_requests_a_pass_so_the_partner_loses_its_stale_group() {
+        let f = fixture(&[
+            ("a/big.jpg", &jpeg_pattern(180, 120)),
+            ("a/small.jpg", &jpeg_pattern(72, 48)),
+        ]);
+        let watched = f.add_photos();
+        f.engine.thumbs.wait_idle();
+        f.engine.start_scan(watched);
+        f.engine.wait_for_scans();
+        let ids = f.ids();
+        assert_eq!(ids.len(), 2);
+        assert!(
+            stored_group(&f, ids[0]).is_some(),
+            "not grouped to begin with"
+        );
+
+        f.engine.rotate_item(ids[0], true).unwrap();
+        f.engine.wait_for_similar_pass();
+
+        assert_eq!(
+            stored_group(&f, ids[1]),
+            None,
+            "the unedited partner kept a group it is the only member of"
+        );
+    }
+
+    /// The same hole by the other route, and the one that survives a restart least
+    /// gracefully: removing a root cascade-deletes its items, which can leave a photo in
+    /// *another* root as its group's last member. Two roots are the point - removing the
+    /// only root leaves no row to be wrong about.
+    #[test]
+    fn removing_a_folder_requests_a_pass_for_the_photos_left_in_other_roots() {
+        let f = fixture(&[("a/big.jpg", &jpeg_pattern(180, 120))]);
+        let other = f.dir.path().join("more-photos");
+        std::fs::create_dir_all(&other).unwrap();
+        std::fs::write(other.join("small.jpg"), jpeg_pattern(72, 48)).unwrap();
+        let first = f.add_photos();
+        let second = f.engine.add_folder(&other).unwrap();
+        f.engine.wait_for_scans();
+        f.engine.thumbs.wait_idle();
+        f.engine.start_scan(first);
+        f.engine.wait_for_scans();
+
+        let ids = f.ids();
+        assert_eq!(ids.len(), 2);
+        let survivors: Vec<i64> = ids
+            .iter()
+            .copied()
+            .filter(|id| {
+                !f.engine
+                    .lib
+                    .item(*id)
+                    .unwrap()
+                    .unwrap()
+                    .path
+                    .ends_with("small.jpg")
+            })
+            .collect();
+        assert_eq!(survivors.len(), 1);
+        assert!(
+            stored_group(&f, survivors[0]).is_some(),
+            "not grouped to begin with"
+        );
+
+        f.engine.remove_folder(second.id).unwrap();
+        f.engine.wait_for_similar_pass();
+
+        assert_eq!(
+            stored_group(&f, survivors[0]),
+            None,
+            "the photo in the surviving root kept a group whose other member is gone"
         );
     }
 

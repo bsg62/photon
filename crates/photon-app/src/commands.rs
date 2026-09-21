@@ -187,7 +187,7 @@ pub fn add_folder(engine: &Arc<Engine>, path: &str) -> CmdResult<WatchedFolder> 
     Ok(engine.add_folder(Path::new(path))?)
 }
 
-pub fn remove_folder(engine: &Engine, watched_id: i64) -> CmdResult<()> {
+pub fn remove_folder(engine: &Arc<Engine>, watched_id: i64) -> CmdResult<()> {
     Ok(engine.remove_folder(watched_id)?)
 }
 
@@ -556,14 +556,19 @@ pub fn viewer_item(engine: &Engine, id: i64) -> CmdResult<ViewerItem> {
 }
 
 /// Turns one photo a quarter, keeping its crop on the same part of the picture.
-pub fn rotate_item(engine: &Engine, id: i64, clockwise: bool) -> CmdResult<()> {
+pub fn rotate_item(engine: &Arc<Engine>, id: i64, clockwise: bool) -> CmdResult<()> {
     engine.rotate_item(id, clockwise)?;
     Ok(())
 }
 
 /// Replaces one photo's edit. `crop` is `[left, top, right, bottom]` in `CROP_UNIT`s of the
 /// turned picture; no turns and no crop is the original again.
-pub fn set_item_edit(engine: &Engine, id: i64, turns: u8, crop: Option<[u16; 4]>) -> CmdResult<()> {
+pub fn set_item_edit(
+    engine: &Arc<Engine>,
+    id: i64,
+    turns: u8,
+    crop: Option<[u16; 4]>,
+) -> CmdResult<()> {
     let crop = crop.map(|[left, top, right, bottom]| Crop {
         left,
         top,

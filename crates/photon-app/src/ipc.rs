@@ -247,7 +247,7 @@ pub fn viewer_item(engine: Eng<'_>, id: i64) -> Result<commands::ViewerItem, App
 
 #[tauri::command(async)]
 pub fn rotate_item(engine: Eng<'_>, id: i64, clockwise: bool) -> Result<(), AppError> {
-    commands::rotate_item(&engine, id, clockwise)
+    commands::rotate_item(engine.inner(), id, clockwise)
 }
 
 #[tauri::command(async)]
@@ -257,7 +257,7 @@ pub fn set_item_edit(
     turns: u8,
     crop: Option<[u16; 4]>,
 ) -> Result<(), AppError> {
-    commands::set_item_edit(&engine, id, turns, crop)
+    commands::set_item_edit(engine.inner(), id, turns, crop)
 }
 
 #[tauri::command(async)]
