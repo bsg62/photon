@@ -228,7 +228,7 @@ impl WatcherService {
 ///
 /// `JoinHandle` has no timed join, so this polls `is_finished` and joins whatever has
 /// finished — those joins return immediately and still surface a panicking thread.
-fn join_within(handles: Vec<JoinHandle<()>>, timeout: Duration) -> usize {
+pub(crate) fn join_within(handles: Vec<JoinHandle<()>>, timeout: Duration) -> usize {
     let deadline = Instant::now() + timeout;
     let mut waiting = handles;
     loop {

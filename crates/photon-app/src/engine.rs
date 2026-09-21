@@ -2,7 +2,7 @@
 //! background scans. Plain Rust, so it can be tested without a webview.
 
 use crate::events::{Events, ExportProgress, FolderStatus, LibraryChanged, ScanProgressEvent};
-use crate::watch::WatcherService;
+use crate::watch::{WatcherService, join_within};
 use parking_lot::{Mutex, RwLock};
 use photon_core::{
     Error, Result,
@@ -1205,20 +1205,48 @@ impl Engine {
         self.stop_watcher();
         self.thumbs.close();
         self.wait_for_startup();
-        self.wait_for_similar_pass();
-        // `wait_for_similar_pass` only joins the most recently *requested* thread, which -
-        // per its own doc - need not be the thread actually running the pass: a scan's own
-        // inline `hash_after_scan` never touches `similar_pass` at all, and a request that
-        // lost the race for `hashing` returns immediately, leaving the winner unrecorded.
-        // Taking and dropping `hashing` itself waits for whichever thread currently holds
-        // it, however it got there, which is what actually establishes "no pass is
-        // running". Bounded exactly as `watch::WatcherService::stop` bounds its own join:
-        // `hash_candidates` reads original files, and a thread stuck on a dead network
-        // mount would otherwise mean the app never quits.
-        match self.hashing.try_lock_for(SIMILAR_PASS_STOP_TIMEOUT) {
+        self.stop_similar_pass(SIMILAR_PASS_STOP_TIMEOUT);
+    }
+
+    /// Waits, within `budget` in total, for every look-alike pass to have stopped.
+    ///
+    /// Two waits, one deadline between them, because either alone is incomplete.
+    ///
+    /// Joining the recorded handle closes a sliver nothing else does: a thread already
+    /// spawned but not yet at its own `try_lock` holds nothing, so the wait on `hashing`
+    /// below would sail past it and it would go on to regroup after `shutdown` returned.
+    /// But the handle need not be the thread doing the work - per `wait_for_similar_pass`'s
+    /// doc, a scan's inline `hash_after_scan` never records one, and a request that lost
+    /// the race for `hashing` records a thread that did nothing - so taking and dropping
+    /// `hashing` itself is what establishes "no pass is running", whichever thread got
+    /// there.
+    ///
+    /// **Both are bounded, against one deadline.** An unbounded join here would defeat the
+    /// bound below in the single-request case, which is the common one: there the recorded
+    /// handle *is* the thread inside `similar::update`, so joining it waits for exactly the
+    /// thread the timeout exists to give up on. `hash_candidates` reads the original photo
+    /// files, so a root on a dead network mount would hang the quit forever - the scenario
+    /// `SIMILAR_PASS_STOP_TIMEOUT` was introduced for - and the bound would have been real
+    /// only in the interleaving where the recorded handle is a no-op thread. Sharing one
+    /// deadline keeps the total within the stated bound rather than twice it.
+    ///
+    /// `budget` is a parameter rather than the constant read directly so a test can drive
+    /// this with a short one; `shutdown` is its only caller.
+    fn stop_similar_pass(&self, budget: Duration) {
+        let deadline = Instant::now() + budget;
+        let handle = self.similar_pass.lock().take();
+        if let Some(handle) = handle
+            && join_within(
+                vec![handle],
+                deadline.saturating_duration_since(Instant::now()),
+            ) > 0
+        {
+            tracing::warn!("a requested look-alike pass did not stop in time; detaching it");
+        }
+        match self.hashing.try_lock_until(deadline) {
             Some(guard) => drop(guard),
             None => tracing::warn!(
-                "a look-alike pass did not stop within {SIMILAR_PASS_STOP_TIMEOUT:?}; \
+                "a look-alike pass did not stop within {budget:?}; \
                  leaving it to finish on its own"
             ),
         }
@@ -1762,6 +1790,51 @@ mod tests {
 
         drop(held);
         shutdown.join().unwrap();
+    }
+
+    /// The bound `shutdown` promises is over *both* its waits, and the join is the one that
+    /// could quietly remove it. In the single-request case - a distance change, then a quit
+    /// - the recorded handle is the thread running the pass, so an unbounded join would
+    /// wait for exactly the thread `SIMILAR_PASS_STOP_TIMEOUT` exists to give up on, and an
+    /// app whose photos are on a dead mount would never quit.
+    ///
+    /// Both halves are made to time out here: a recorded thread that will not finish until
+    /// the test releases it, and `hashing` held by the test thread. With both bounded
+    /// against one deadline the call returns after the budget; with the join unbounded it
+    /// never returns at all, and with two separate budgets it would take twice as long.
+    #[test]
+    fn stopping_a_pass_is_bounded_across_both_of_its_waits() {
+        let f = fixture(&[("a.jpg", &jpeg(4, 2))]);
+        f.add_photos();
+
+        let release = Arc::new(AtomicBool::new(false));
+        let stuck = Arc::clone(&release);
+        *f.engine.similar_pass.lock() = Some(std::thread::spawn(move || {
+            while !stuck.load(Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }));
+        let held = f.engine.hashing.lock();
+
+        let engine = Arc::clone(&f.engine);
+        let budget = Duration::from_millis(200);
+        let started = Instant::now();
+        let stopping = std::thread::spawn(move || engine.stop_similar_pass(budget));
+        while !stopping.is_finished() {
+            assert!(
+                started.elapsed() < Duration::from_secs(3),
+                "stop_similar_pass outran its budget of {budget:?}"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        stopping.join().unwrap();
+        assert!(
+            started.elapsed() < budget * 2,
+            "the two waits were budgeted separately, not against one deadline"
+        );
+
+        drop(held);
+        release.store(true, Ordering::SeqCst);
     }
 
     /// An IPC call can land after `shutdown` has already set `shutting_down` and run its
