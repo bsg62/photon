@@ -8,13 +8,13 @@ const sections = [
 
 describe('layout', () => {
   it('fits columns to the width', () => {
-    expect(columnsFor(800)).toBe(4);
-    expect(columnsFor(100)).toBe(1);
-    expect(columnsFor(0)).toBe(1);
+    expect(columnsFor(800, TILE_WIDTH.medium)).toBe(4);
+    expect(columnsFor(100, TILE_WIDTH.medium)).toBe(1);
+    expect(columnsFor(0, TILE_WIDTH.medium)).toBe(1);
   });
 
   it('builds header and tile rows per section', () => {
-    const rows = buildRows(sections, 2);
+    const rows = buildRows(sections, 2, true, TILE_WIDTH.medium);
     expect(rows.map((r) => [r.kind, r.first, r.count, r.top])).toEqual([
       ['header', 0, 0, 0],
       ['tiles', 0, 2, 32],
@@ -29,7 +29,7 @@ describe('layout', () => {
   });
 
   it('hit-tests rows by y', () => {
-    const rows = buildRows(sections, 2);
+    const rows = buildRows(sections, 2, true, TILE_WIDTH.medium);
     expect(rowIndexAt(rows, -5)).toBe(0);
     expect(rowIndexAt(rows, 31)).toBe(0);
     expect(rowIndexAt(rows, 32)).toBe(1);
@@ -38,7 +38,7 @@ describe('layout', () => {
   });
 
   it('finds visible ranges and their items', () => {
-    const rows = buildRows(sections, 2);
+    const rows = buildRows(sections, 2, true, TILE_WIDTH.medium);
     expect(visibleRange(rows, 200, 100, 0)).toEqual([2, 3]);
     expect(visibleRange(rows, 0, 10_000, 0)).toEqual([0, 7]);
     expect(visibleRange([], 0, 100, 0)).toEqual([0, 0]);
@@ -60,7 +60,7 @@ describe('layout', () => {
     const flat = layoutSections('recent', perPhoto, 5);
     expect(flat).toEqual([{ folderId: 10, offset: 0, count: 5, takenAtMin: 896 }]);
 
-    const rows = buildRows(flat, 2, false);
+    const rows = buildRows(flat, 2, false, TILE_WIDTH.medium);
     expect(rows.map((r) => [r.kind, r.first, r.count, r.top])).toEqual([
       ['tiles', 0, 2, 0],
       ['tiles', 2, 2, 168],
@@ -83,7 +83,7 @@ describe('layout', () => {
   it('names the folder at the top of the viewport', () => {
     // What gets remembered for the next launch: whichever folder the eye is on, whether
     // the user scrolled there or clicked it in the sidebar.
-    const rows = buildRows(sections, 2);
+    const rows = buildRows(sections, 2, true, TILE_WIDTH.medium);
     expect(topFolderId(rows, sections, 0)).toBe(1);
     // Still inside folder 1's last tile row.
     expect(topFolderId(rows, sections, 400)).toBe(1);
@@ -96,11 +96,11 @@ describe('layout', () => {
     // A launch before the first scan has produced anything: nothing to remember, and
     // nothing that should overwrite what the last session remembered.
     expect(topFolderId([], [], 0)).toBeNull();
-    expect(topFolderId(buildRows(sections, 2), [], 0)).toBeNull();
+    expect(topFolderId(buildRows(sections, 2, true, TILE_WIDTH.medium), [], 0)).toBeNull();
   });
 
   it('locates the row holding an item', () => {
-    const rows = buildRows(sections, 2);
+    const rows = buildRows(sections, 2, true, TILE_WIDTH.medium);
     expect(rowOfItem(rows, 0)).toBe(1);
     expect(rowOfItem(rows, 4)).toBe(3);
     expect(rowOfItem(rows, 5)).toBe(5);
@@ -111,17 +111,21 @@ describe('layout', () => {
 
 describe('itemsInRect', () => {
   // Two sections of 5 photos, 3 columns, no headers: rows at 0 and 168 (tileRow(TILE_WIDTH.medium)).
-  const rows = buildRows([{ folderId: 1, offset: 0, count: 5 }], 3, false);
+  const rows = buildRows([{ folderId: 1, offset: 0, count: 5 }], 3, false, TILE_WIDTH.medium);
   const rect = (x0: number, y0: number, x1: number, y1: number) => ({ x0, y0, x1, y1 });
 
   /** The point of returning ranges rather than one span: a band narrower than the grid
    *  takes a few photos from each row it crosses, and merging those into one range would
    *  select everything between them - the over-selection ids-not-offsets exists to stop. */
   it('keeps a narrow band down one column as one range per row', () => {
-    const tall = buildRows([{ folderId: 1, offset: 0, count: 9 }], 3, false);
+    const tall = buildRows([{ folderId: 1, offset: 0, count: 9 }], 3, false, TILE_WIDTH.medium);
     const column2 = GAP + 2 * tileRow(TILE_WIDTH.medium);
     expect(
-      itemsInRect(tall, rect(column2 + 1, 0, column2 + TILE_WIDTH.medium - 1, 3 * tileRow(TILE_WIDTH.medium))),
+      itemsInRect(
+        tall,
+        rect(column2 + 1, 0, column2 + TILE_WIDTH.medium - 1, 3 * tileRow(TILE_WIDTH.medium)),
+        TILE_WIDTH.medium,
+      ),
     ).toEqual([
       [2, 2],
       [5, 5],
@@ -134,24 +138,24 @@ describe('itemsInRect', () => {
    *  except here, which is why this case exists. */
   it('does not take the tile to the left of a band that starts in the gap', () => {
     const gapAfterTile0 = GAP + TILE_WIDTH.medium + 2;
-    expect(itemsInRect(rows, rect(gapAfterTile0, 10, 1000, 20))).toEqual([[1, 2]]);
+    expect(itemsInRect(rows, rect(gapAfterTile0, 10, 1000, 20), TILE_WIDTH.medium)).toEqual([[1, 2]]);
   });
 
   it('takes the tiles a rectangle touches in one row', () => {
     // Tile k spans x = GAP + k*tileRow(TILE_WIDTH.medium) .. + TILE_WIDTH.medium, so tile 1
     // starts at 176.
-    expect(itemsInRect(rows, rect(180, 10, 200, 20))).toEqual([[1, 1]]);
+    expect(itemsInRect(rows, rect(180, 10, 200, 20), TILE_WIDTH.medium)).toEqual([[1, 1]]);
   });
 
   it('merges rows that join up into one range', () => {
-    expect(itemsInRect(rows, rect(0, 0, 1000, 1000))).toEqual([[0, 4]]);
+    expect(itemsInRect(rows, rect(0, 0, 1000, 1000), TILE_WIDTH.medium)).toEqual([[0, 4]]);
   });
 
   /** The gap below a row belongs to no tile: a band that only grazes it selects nothing,
    *  or dragging between two rows would sweep up both. */
   it('selects nothing from a band inside the gap between rows', () => {
     expect(
-      itemsInRect(rows, rect(0, TILE_WIDTH.medium + 1, 1000, tileRow(TILE_WIDTH.medium) - 1)),
+      itemsInRect(rows, rect(0, TILE_WIDTH.medium + 1, 1000, tileRow(TILE_WIDTH.medium) - 1), TILE_WIDTH.medium),
     ).toEqual([]);
   });
 
@@ -161,19 +165,20 @@ describe('itemsInRect', () => {
       itemsInRect(
         rows,
         rect(0, tileRow(TILE_WIDTH.medium) + 1, 1000, tileRow(TILE_WIDTH.medium) + TILE_WIDTH.medium),
+        TILE_WIDTH.medium,
       ),
     ).toEqual([[3, 4]]);
   });
 
   it('ignores headers', () => {
-    const withHeaders = buildRows([{ folderId: 1, offset: 0, count: 2 }], 3, true);
-    expect(itemsInRect(withHeaders, rect(0, 0, 1000, HEADER - 1))).toEqual([]);
-    expect(itemsInRect(withHeaders, rect(0, 0, 1000, HEADER + TILE_WIDTH.medium))).toEqual([[0, 1]]);
+    const withHeaders = buildRows([{ folderId: 1, offset: 0, count: 2 }], 3, true, TILE_WIDTH.medium);
+    expect(itemsInRect(withHeaders, rect(0, 0, 1000, HEADER - 1), TILE_WIDTH.medium)).toEqual([]);
+    expect(itemsInRect(withHeaders, rect(0, 0, 1000, HEADER + TILE_WIDTH.medium), TILE_WIDTH.medium)).toEqual([[0, 1]]);
   });
 
   it('takes nothing from an empty rectangle or an empty grid', () => {
-    expect(itemsInRect(rows, rect(10, 10, 10, 10))).toEqual([[0, 0]]);
-    expect(itemsInRect([], rect(0, 0, 1000, 1000))).toEqual([]);
+    expect(itemsInRect(rows, rect(10, 10, 10, 10), TILE_WIDTH.medium)).toEqual([[0, 0]]);
+    expect(itemsInRect([], rect(0, 0, 1000, 1000), TILE_WIDTH.medium)).toEqual([]);
   });
 
   /** Two sections are two runs of rows; a band over both is two ranges only if the offsets
@@ -186,8 +191,9 @@ describe('itemsInRect', () => {
       ],
       3,
       false,
+      TILE_WIDTH.medium,
     );
-    expect(itemsInRect(two, rect(0, 0, 1000, 1000))).toEqual([[0, 5]]);
+    expect(itemsInRect(two, rect(0, 0, 1000, 1000), TILE_WIDTH.medium)).toEqual([[0, 5]]);
   });
 });
 
@@ -277,6 +283,7 @@ describe('keeping your place across a size change', () => {
     expect(firstVisibleOffset(medium, 2 * row)).toBe(6);
     expect(firstVisibleOffset(medium, 2 * row + row - 1)).toBe(6);
   });
+
 });
 
 describe('edgeScrollSpeed', () => {

@@ -40,7 +40,7 @@ export interface Row {
   height: number;
 }
 
-export function columnsFor(width: number, tile: number = TILE_WIDTH.medium): number {
+export function columnsFor(width: number, tile: number): number {
   return Math.max(1, Math.floor((width + GAP) / tileRow(tile)));
 }
 
@@ -73,8 +73,8 @@ export function layoutSections(view: GridView, sections: Section[], len: number)
 export function buildRows(
   sections: SectionLike[],
   columns: number,
-  headers = true,
-  tile: number = TILE_WIDTH.medium,
+  headers: boolean,
+  tile: number,
 ): Row[] {
   const rows: Row[] = [];
   let top = 0;
@@ -187,7 +187,7 @@ export interface Rect {
  *  neighbours. Headers are not photos and are skipped.
  *
  *  `rect` may be given in any corner order; it is normalised here. */
-export function itemsInRect(rows: Row[], rect: Rect, tile: number = TILE_WIDTH.medium): [number, number][] {
+export function itemsInRect(rows: Row[], rect: Rect, tile: number): [number, number][] {
   const left = Math.min(rect.x0, rect.x1);
   const right = Math.max(rect.x0, rect.x1);
   const top = Math.min(rect.y0, rect.y1);

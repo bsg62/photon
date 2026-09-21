@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Section } from './api';
-import { buildRows } from './layout';
+import { buildRows, TILE_WIDTH } from './layout';
 import { labelledMarks, scrollTopFor, stripY, yearAt, yearMarks } from './timeline';
 
 /** Noon on 1 July, so no timezone can move it into a neighbouring year. */
@@ -15,7 +15,7 @@ const section = (folderId: number, offset: number, count: number, year: number):
 describe('yearMarks', () => {
   it('marks the first header of each run of a year', () => {
     const sections = [section(1, 0, 3, 2024), section(2, 3, 2, 2024), section(3, 5, 4, 2019)];
-    const rows = buildRows(sections, 2);
+    const rows = buildRows(sections, 2, true, TILE_WIDTH.medium);
     // 2024: header at 0. Folder 1 is two tile rows, folder 2 a header and one: 2019's
     // header follows them.
     const top2019 = rows.find((r) => r.kind === 'header' && r.section === 2)!.top;
@@ -28,12 +28,12 @@ describe('yearMarks', () => {
 
   it('marks a year again when it comes back, as a search can make it', () => {
     const sections = [section(1, 0, 1, 2020), section(2, 1, 1, 2024), section(3, 2, 1, 2020)];
-    expect(yearMarks(sections, buildRows(sections, 4)).map((m) => m.year)).toEqual([2020, 2024, 2020]);
+    expect(yearMarks(sections, buildRows(sections, 4, true, TILE_WIDTH.medium)).map((m) => m.year)).toEqual([2020, 2024, 2020]);
   });
 
   it('has nothing to mark without headers', () => {
     const sections = [section(1, 0, 3, 2024)];
-    expect(yearMarks(sections, buildRows(sections, 2, false))).toEqual([]);
+    expect(yearMarks(sections, buildRows(sections, 2, false, TILE_WIDTH.medium))).toEqual([]);
   });
 });
 
