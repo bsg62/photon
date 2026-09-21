@@ -163,8 +163,18 @@ fn union(parent: &mut [usize], a: usize, b: usize) {
     }
 }
 
+/// What one pass did; see [`update`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PassOutcome {
+    /// How many rows took a new hash.
+    pub hashed: u64,
+    /// Whether the regroup changed which photos are in which group. Separate from `hashed`
+    /// because the two come apart: changing the distance setting regroups the whole library
+    /// having hashed nothing, and a photo purged out of a group does the same.
+    pub groups_changed: bool,
+}
+
 /// Hashes every photo that has a thumbnail but no hash, then regroups the whole library.
-/// Returns how many rows took a new hash.
 ///
 /// The hash comes from the **cached 256px grid thumbnail**, not from the photo: the
 /// thumbnail is the reduced image this hash wants, it is already on disk, and decoding it
@@ -181,7 +191,7 @@ pub fn update(
     cache: &ThumbCache,
     distance: u32,
     cancel: &AtomicBool,
-) -> Result<u64> {
+) -> Result<PassOutcome> {
     let mut hashed = 0;
     for candidate in lib.similar_candidates()? {
         if cancel.load(Ordering::Relaxed) {
@@ -204,8 +214,11 @@ pub fn update(
 
     // Regroup unconditionally, not only when something was hashed: the distance setting may
     // have changed, or a photo may have been purged out of a group since the last pass.
-    lib.set_similar_groups(&group(&lib.percep_hashes()?, distance))?;
-    Ok(hashed)
+    let groups_changed = lib.set_similar_groups(&group(&lib.percep_hashes()?, distance))?;
+    Ok(PassOutcome {
+        hashed,
+        groups_changed,
+    })
 }
 
 #[cfg(test)]
@@ -322,9 +335,9 @@ mod tests {
 
     #[test]
     fn a_photo_with_no_look_alike_is_not_in_any_group() {
-        // Two hashes as far apart as two hashes get, both with plenty of structure - a pair
-        // of featureless hashes would be left out by `is_featureless` before the distance
-        // was ever measured, and this test is about the distance.
+        // Two hashes as far apart as two hashes get, both with plenty of structure - an
+        // empty pair would be left out by `pairs_with_anything` before the distance was
+        // ever measured, and this test is about the distance.
         let out = group(&[(1, 0xffff_ffff_0000_0000), (2, 0x0000_0000_ffff_ffff)], 3);
         assert!(out.is_empty());
     }
@@ -341,8 +354,8 @@ mod tests {
     #[test]
     fn groups_are_transitive() {
         // A~B and B~C at distance 3 each, A~C at 6 - all three must land in one group.
-        // Built on a base with structure rather than on zero, which `is_featureless` drops
-        // before any of them is compared.
+        // Built on a base with structure rather than on zero, which `pairs_with_anything`
+        // drops before any of them is compared.
         let a = 0xffff_0000u64;
         let b = a ^ 0b111u64;
         let c = a ^ 0b111_111u64;
@@ -488,8 +501,9 @@ mod tests {
             lib.set_thumb_state(*id, ThumbState::Ready, None).unwrap();
         }
 
-        let hashed = update(&lib, &cache, EXACT_RECALL_DISTANCE, &AtomicBool::new(false)).unwrap();
-        assert_eq!(hashed, 3, "every thumbnailed photo takes a hash");
+        let outcome = update(&lib, &cache, EXACT_RECALL_DISTANCE, &AtomicBool::new(false)).unwrap();
+        assert_eq!(outcome.hashed, 3, "every thumbnailed photo takes a hash");
+        assert!(outcome.groups_changed, "the pair was not grouped");
 
         let alike = lib.similar_of(ids[0]).unwrap();
         assert_eq!(
@@ -502,11 +516,22 @@ mod tests {
             "an unrelated picture was grouped with them"
         );
 
-        // A second pass has nothing left to hash: a photo takes this path once.
+        // A second pass has nothing left to hash and nothing to regroup: a photo takes this
+        // path once, and the groups it computes are the ones already stored.
         assert_eq!(
             update(&lib, &cache, EXACT_RECALL_DISTANCE, &AtomicBool::new(false)).unwrap(),
-            0
+            PassOutcome::default()
         );
+
+        // Changing the distance is a regroup and nothing else - the case the grid refresh
+        // would miss if it were gated on rows hashed. Task 6 makes this a user setting.
+        let outcome = update(&lib, &cache, 0, &AtomicBool::new(false)).unwrap();
+        assert_eq!(outcome.hashed, 0);
+        assert!(
+            outcome.groups_changed,
+            "the distance changed the groups and the pass did not say so"
+        );
+        assert!(lib.similar_of(ids[0]).unwrap().is_empty());
     }
 
     /// A thumbnail that is not on disk yet leaves the row a candidate for the next pass,
@@ -524,7 +549,7 @@ mod tests {
 
         assert_eq!(
             update(&lib, &cache, EXACT_RECALL_DISTANCE, &AtomicBool::new(false)).unwrap(),
-            0
+            PassOutcome::default()
         );
         assert_eq!(lib.similar_candidates().unwrap().len(), 1);
     }
@@ -545,10 +570,9 @@ mod tests {
         lib.set_similar_groups(&[(ids[0], ids[0]), (ids[1], ids[0])])
             .unwrap();
 
-        assert_eq!(
-            update(&lib, &cache, EXACT_RECALL_DISTANCE, &AtomicBool::new(true)).unwrap(),
-            0
-        );
+        let outcome = update(&lib, &cache, EXACT_RECALL_DISTANCE, &AtomicBool::new(true)).unwrap();
+        assert_eq!(outcome.hashed, 0);
+        assert!(outcome.groups_changed, "the stale group was left in place");
         assert!(
             lib.similar_of(ids[0]).unwrap().is_empty(),
             "the regroup runs even when nothing was hashed"

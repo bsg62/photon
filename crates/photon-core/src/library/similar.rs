@@ -20,7 +20,8 @@ pub struct SimilarCandidate {
 }
 
 /// Live, thumbnailed, unhashed rows - rare once a library has settled, since a photo takes
-/// this path exactly once (a scan clears `percep_hash` only by resetting the row itself).
+/// this path once per picture: `update_items` clears `percep_hash` when the file behind the
+/// row changes, and `set_item_edit` clears it when the user changes what photon shows.
 const CANDIDATES_SQL: &str = "SELECT i.id, i.path, i.size, i.mtime_ms, i.edit_turns, i.edit_crop
      FROM items i
      JOIN folders f ON f.id = i.folder_id
@@ -28,6 +29,14 @@ const CANDIDATES_SQL: &str = "SELECT i.id, i.path, i.size, i.mtime_ms, i.edit_tu
      WHERE i.missing_since IS NULL AND i.percep_hash IS NULL
        AND i.thumb_state = 1 AND w.online = 1
      ORDER BY i.id";
+
+/// `group`'s output is in hash order, the stored rows are in index order, so neither side
+/// of the comparison can be trusted to arrive sorted.
+fn sorted(pairs: &[(i64, i64)]) -> Vec<(i64, i64)> {
+    let mut out = pairs.to_vec();
+    out.sort_unstable();
+    out
+}
 
 impl Library {
     /// Live photos whose thumbnail is ready but which have no perceptual hash yet.
@@ -93,13 +102,27 @@ impl Library {
         Ok(rows)
     }
 
-    /// Replaces every group in one transaction.
+    /// Replaces every group in one transaction, and says whether that changed anything.
     ///
     /// Wholesale rather than incremental: the pass recomputes the whole library, and
     /// clearing first is what lets a group *shrink* - a photo that no longer resembles
     /// anything must lose its group, and an UPDATE of only the new members would leave it
     /// pointing at a group it is no longer in.
-    pub fn set_similar_groups(&self, groups: &[(i64, i64)]) -> Result<()> {
+    ///
+    /// The comparison first is not a micro-optimisation. This runs at the end of every
+    /// scan, including the watcher's subtree scans two seconds after a single file lands,
+    /// and almost every one of those recomputes exactly the groups already stored; without
+    /// it, each writes every grouped row again for no change. It is affordable because both
+    /// the read and the write it replaces are bounded by the grouped rows rather than by
+    /// the library - `items_similar_group` is a partial index over just those.
+    ///
+    /// The answer is also what tells the caller whether the grid needs rebuilding: a
+    /// regroup that hashes nothing can still move photos into or out of the Duplicates
+    /// view, which is what changing the distance setting does.
+    pub fn set_similar_groups(&self, groups: &[(i64, i64)]) -> Result<bool> {
+        if self.similar_groups()? == sorted(groups) {
+            return Ok(false);
+        }
         let mut conn = self.writer();
         let tx = conn.transaction()?;
         tx.execute(
@@ -114,7 +137,20 @@ impl Library {
             }
         }
         tx.commit()?;
-        Ok(())
+        Ok(true)
+    }
+
+    /// Every stored `(item, group)` pair, sorted, for comparison with a freshly computed
+    /// set. Served by `items_similar_group`, so it reads the grouped rows and not the rest.
+    fn similar_groups(&self) -> Result<Vec<(i64, i64)>> {
+        let conn = self.reader()?;
+        let mut stmt = conn.prepare_cached(
+            "SELECT id, similar_group FROM items WHERE similar_group IS NOT NULL",
+        )?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(sorted(&rows))
     }
 
     /// The other live photos that look like `item_id`, by path.
@@ -250,6 +286,39 @@ mod tests {
         // A later pass finds nothing similar: the old groups must go, not linger.
         lib.set_similar_groups(&[]).unwrap();
         assert!(lib.similar_of(ids[0]).unwrap().is_empty());
+    }
+
+    /// The signal the grid refresh is gated on, and what keeps the watcher's two-second
+    /// subtree scans from rewriting every grouped row for no change: a regroup that
+    /// computes what is already stored must write nothing and say so.
+    #[test]
+    fn a_regroup_that_changes_nothing_writes_nothing() {
+        let (_dir, lib) = temp_library();
+        let (_w, folder) = seed_folder(&lib, Path::new("/pics"));
+        let ids = lib
+            .insert_items(&[
+                item_at(folder, "/pics/a.jpg", 10, 100),
+                item_at(folder, "/pics/b.jpg", 11, 101),
+            ])
+            .unwrap();
+        let groups = [(ids[0], ids[0]), (ids[1], ids[0])];
+
+        assert!(lib.set_similar_groups(&groups).unwrap());
+        let before = lib.writer().total_changes();
+
+        // The same set, handed over in the other order: `group` returns hash order, so the
+        // comparison cannot lean on the two sides arriving sorted.
+        assert!(!lib.set_similar_groups(&[groups[1], groups[0]]).unwrap());
+        assert_eq!(lib.writer().total_changes(), before, "it wrote anyway");
+        assert_eq!(
+            lib.similar_of(ids[0]).unwrap().len(),
+            1,
+            "the group is gone"
+        );
+
+        // And a real change is still a change, in both directions.
+        assert!(lib.set_similar_groups(&[]).unwrap());
+        assert!(!lib.set_similar_groups(&[]).unwrap());
     }
 
     #[test]

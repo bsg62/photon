@@ -1212,6 +1212,11 @@ impl Engine {
     /// (`photon_core::similar`, which hashes cached thumbnails and regroups) - and rebuilds
     /// the grid if either moved a row, since the view and its count are built from them.
     ///
+    /// "Moved a row" is not the same as "hashed something" for the look-alike pass: a
+    /// regroup that hashes nothing still moves photos into and out of the view, which is
+    /// exactly what changing the distance setting does. That is why it reports the two
+    /// separately and the refresh is gated on either.
+    ///
     /// Here rather than in the scanner because a duplicate is a fact about the whole
     /// library, not about the root or subtree one scan walked - and because `walk_tree` has
     /// two callers, which a pass wired into the scanner has to remember and this does not.
@@ -1252,12 +1257,12 @@ impl Engine {
                 // Task 6 replaces this with the user's setting, `self.lib.similar_distance()`.
                 let distance = photon_core::similar::EXACT_RECALL_DISTANCE;
                 match photon_core::similar::update(&self.lib, &self.cache, distance, cancel) {
-                    Ok(0) => {}
-                    Ok(_) => {
+                    Ok(pass) if pass.hashed > 0 || pass.groups_changed => {
                         if let Err(err) = self.refresh_grid() {
                             tracing::warn!(%err, "grid refresh failed");
                         }
                     }
+                    Ok(_) => {}
                     Err(err) => tracing::warn!(%err, "look-alike hashing failed"),
                 }
             }
@@ -1403,14 +1408,17 @@ mod tests {
     /// places: two files that are one picture at two sizes share no byte and no size, so
     /// only the look-alike pass can put them in the Duplicates view.
     ///
-    /// The two flat photos are the case `is_featureless` exists for: they are distance 0
-    /// from each other and from every other blank frame, and must be in no group at all.
+    /// The two flat photos are the case `pairs_with_anything` exists for: they are distance
+    /// 0 from each other and from every other blank frame, and must be in no group at all.
     /// They are different sizes, so nothing but the look-alike pass could pair them.
     ///
     /// The second scan is what makes this deterministic rather than a race: the pass hashes
     /// cached thumbnails, and the first scan's pass runs while the thumbnail workers are
     /// still going. By the time `wait_idle` returns every thumbnail is on disk, and the
-    /// scan after it has all three to hash.
+    /// scan after it has all four to hash. **Any future test that asserts on
+    /// `duplicate_count` with structured fixtures needs the same `wait_idle` and second
+    /// scan**: the race is not fixed, only invisible to fixtures whose flat colours are
+    /// never grouped whenever the pass happens to run.
     #[test]
     fn a_scan_finds_the_look_alikes_it_indexed() {
         let f = fixture(&[
@@ -1439,6 +1447,41 @@ mod tests {
             .collect();
         assert!(paths.iter().any(|p| p.ends_with("big.jpg")));
         assert!(paths.iter().any(|p| p.ends_with("small.jpg")));
+    }
+
+    /// A regroup that hashes nothing still moves photos into and out of the Duplicates
+    /// view, so it has to rebuild the grid too. Gated on rows hashed, as it was first
+    /// written, the view stays as it was until some unrelated scan happens to hash a row -
+    /// and changing the distance setting (Task 6) is precisely a regroup that hashes
+    /// nothing, so the user would change it and see the view not move.
+    ///
+    /// Staged rather than scanned, because the hashing is what has to be seen *not* to
+    /// happen: the groups are cleared behind the engine and the grid refreshed to match, so
+    /// the view genuinely holds nothing before the pass restores it.
+    #[test]
+    fn a_regroup_that_hashes_nothing_still_rebuilds_the_grid() {
+        let f = fixture(&[
+            ("a/big.jpg", &jpeg_pattern(180, 120)),
+            ("a/small.jpg", &jpeg_pattern(72, 48)),
+        ]);
+        let watched = f.add_photos();
+        f.engine.thumbs.wait_idle();
+        f.engine.start_scan(watched);
+        f.engine.wait_for_scans();
+        f.engine.set_view(GridView::Duplicates).unwrap();
+        assert_eq!(f.ids().len(), 2, "the pair was not grouped to begin with");
+
+        f.engine.lib.set_similar_groups(&[]).unwrap();
+        f.engine.refresh_grid().unwrap();
+        assert_eq!(f.ids().len(), 0);
+
+        f.engine.hash_after_scan(&AtomicBool::new(false));
+
+        assert_eq!(
+            f.ids().len(),
+            2,
+            "the regroup restored the groups but left the grid showing the old ones"
+        );
     }
 
     /// Both readers of `excluded` compare it against a canonical path - `add_watched_folder`
