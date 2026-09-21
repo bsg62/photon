@@ -29,6 +29,10 @@ const THEME: &str = "theme";
 /// choice about how the user works, not about one export.
 const EXPORT_APPLY_EDITS: &str = "export_apply_edits";
 
+/// How large the grid draws its tiles. Stored as the step's name rather than its pixel
+/// width, so changing what "Large" measures does not have to migrate anyone's setting.
+const GRID_TILE: &str = "grid_tile";
+
 /// The user's colour scheme: the desktop's, or one of the two pinned.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -55,6 +59,35 @@ impl ThemeChoice {
             "light" => Self::Light,
             "dark" => Self::Dark,
             _ => Self::System,
+        }
+    }
+}
+
+/// How large the grid draws its tiles. The widths themselves live in the UI
+/// (`ui/src/lib/layout.ts`), because they are a layout fact, not a stored one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum GridTile {
+    Small,
+    #[default]
+    Medium,
+    Large,
+}
+
+impl GridTile {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Small => "small",
+            Self::Medium => "medium",
+            Self::Large => "large",
+        }
+    }
+
+    fn parse(stored: &str) -> Self {
+        match stored {
+            "small" => Self::Small,
+            "large" => Self::Large,
+            _ => Self::Medium,
         }
     }
 }
@@ -180,6 +213,18 @@ impl Library {
     /// Stores the colour scheme.
     pub fn set_theme(&self, choice: ThemeChoice) -> Result<()> {
         self.set_setting(THEME, choice.as_str())
+    }
+
+    /// How large the grid draws its tiles; `Medium` when never set.
+    pub fn grid_tile(&self) -> Result<GridTile> {
+        Ok(self
+            .setting(GRID_TILE)?
+            .map_or(GridTile::Medium, |stored| GridTile::parse(&stored)))
+    }
+
+    /// Stores the grid's tile size.
+    pub fn set_grid_tile(&self, tile: GridTile) -> Result<()> {
+        self.set_setting(GRID_TILE, tile.as_str())
     }
 
     fn setting_i64(&self, key: &str) -> Result<Option<i64>> {
@@ -403,5 +448,30 @@ mod tests {
         lib.set_last_folder(second).unwrap();
 
         assert_eq!(lib.last_folder().unwrap(), Some(second));
+    }
+
+    #[test]
+    fn grid_tile_defaults_to_medium() {
+        let (_dir, lib) = temp_library();
+        assert_eq!(lib.grid_tile().unwrap(), GridTile::Medium);
+    }
+
+    #[test]
+    fn grid_tile_round_trips() {
+        let (_dir, lib) = temp_library();
+        for tile in [GridTile::Small, GridTile::Large, GridTile::Medium] {
+            lib.set_grid_tile(tile).unwrap();
+            assert_eq!(lib.grid_tile().unwrap(), tile, "{tile:?}");
+        }
+    }
+
+    /// The table is plain text an older or newer photon may have written, so an
+    /// unrecognised step falls back rather than erroring - the same rule
+    /// `ThemeChoice::parse` follows for an unknown theme.
+    #[test]
+    fn an_unknown_grid_tile_falls_back_to_medium() {
+        let (_dir, lib) = temp_library();
+        lib.set_setting(GRID_TILE, "enormous").unwrap();
+        assert_eq!(lib.grid_tile().unwrap(), GridTile::Medium);
     }
 }
