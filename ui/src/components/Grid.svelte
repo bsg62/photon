@@ -157,6 +157,14 @@
     } else if (row.top + row.height > viewport.scrollTop + height) {
       viewport.scrollTop = row.top + row.height - height;
     }
+    // Every programmatic scroll hands the pin over to where it just put the user, rather
+    // than leaving it saying where they were. The browser's scroll event is a task away, so
+    // until it arrives the pin would otherwise describe a place nobody is at any more - and
+    // a size change landing in that gap (on launch both sit behind IPC round trips) would
+    // scroll back to it. Read back from `viewport`, not from the value written above: the
+    // browser clamps a scroll past the end of the canvas, and the pin has to name the row
+    // that is actually at the top.
+    pinned = firstVisibleOffset(rows, viewport.scrollTop);
   }
 
   /** Keeping the user's place when the tile size changes.
@@ -168,7 +176,8 @@
    *  after, and one run of an effect can only ever see one of those: `rows` is a `$derived`,
    *  so the run woken by the new width already reads the new rows. The pin is kept current
    *  on every run where the width has *not* moved - a scroll, a resize, a rebuilt index -
-   *  and the run that sees a new width spends it instead of taking it again.
+   *  and by `scrollToOffset`, which re-pins whatever it scrolls to; the run that sees a new
+   *  width spends the pin instead of taking it again.
    *
    *  All three values are read on every run, the restoring one included: an effect depends
    *  only on what that run read, so a restoring run that skipped `scrollTop` would stop
@@ -178,31 +187,31 @@
    *  DOM catches up, and a scroll into the part that does not exist yet is clamped away. */
   let pinnedWidth = gridSize.width;
   let pinned: number | null = null;
-  let pinnedTop = 0;
   $effect(() => {
     const tile = gridSize.width;
     const layout = rows;
     const top = scrollTop;
     if (tile !== pinnedWidth) {
       pinnedWidth = tile;
-      // A programmatic scroll - the launch jump to last session's folder, App's jump to the
-      // top on a view change - moves the viewport now and reaches `scrollTop` only when the
-      // browser's scroll event arrives. Both of those sit behind IPC round trips, and so
-      // does the stored tile size, so on launch a width change can land in that gap: the pin
-      // would then still say offset 0 and this would drag the user off the folder they were
-      // restored to, back to the top. Worse, `library.restoring` is already false by then,
-      // so the effect above would write the library's first folder over the one they were
-      // actually browsing - the loss would survive the next launch too.
+      // The pin is spent unconditionally, and it is `scrollToOffset` that keeps it honest:
+      // every programmatic scroll re-pins (see there), so a jump the browser has not yet
+      // reported - the launch restore, App's jump to the top on a view change - has already
+      // handed this its own folder rather than leaving offset 0 behind to drag the user
+      // back to the top of the library.
       //
-      // `pinnedTop` is the scroll position the pin was taken at; a viewport that has since
-      // moved means the pin describes somewhere the user has already left. Staying put keeps
-      // the pixel position instead of the photo, and the pending scroll event re-pins a
-      // moment later. Do not simplify this to `pinned !== null`.
-      if (pinned !== null && viewport && viewport.scrollTop === pinnedTop) scrollToOffset(pinned, 'start');
+      // Do not guard this on the viewport still standing where the pin was taken, however
+      // obviously right that reads. By the time this runs Svelte's render effect has already
+      // written the new `style:height` onto `.canvas`, and when the tiles *shrink* the canvas
+      // shrinks with them: the browser then clamps `scrollTop` to the shorter canvas
+      // synchronously, during the very layout that reading `viewport.scrollTop` forces,
+      // before any scroll event exists. Measured in headless Chromium: a 600px-tall scroller
+      // at 5000 whose content went 10000 -> 3000 read back 2400 in the same task. So on every
+      // shrink deep enough to clamp, the comparison fails, the restore is skipped, and the
+      // user is left wherever the clamp dropped them - the end of the library.
+      if (pinned !== null) scrollToOffset(pinned, 'start');
       return;
     }
     pinned = firstVisibleOffset(layout, top);
-    pinnedTop = top;
   });
 
   export function focus() {
