@@ -1,7 +1,6 @@
 <script lang="ts">
   import { untrack } from 'svelte';
   import { mediaUrl, type GridEntry } from '../lib/api';
-  import { TILE_WIDTH } from '../lib/layout';
   import { library } from '../lib/library.svelte';
   import { createThumbRequest } from '../lib/thumb-request.svelte';
   import Icon from './Icon.svelte';
@@ -13,6 +12,7 @@
     onselect,
     onopen,
     onmenu,
+    tile,
   }: {
     entry: GridEntry | undefined;
     selected: boolean;
@@ -23,6 +23,10 @@
     onopen: () => void;
     /** Right-click. The grid owns the menu, since it knows the view and the albums. */
     onmenu: (e: MouseEvent) => void;
+    /** The tile's side in pixels, chosen by the user. The grid passes it because the same
+     *  number decides the row layout there: a tile that sized itself would be free to
+     *  disagree with the box the row reserved for it. */
+    tile: number;
   } = $props();
 
   const RETRY_MS = 2000;
@@ -83,13 +87,12 @@
   }
 </script>
 
-<!-- Task 6 replaces this with a prop. -->
 <button
   class="tile"
   class:selected
   class:dimmed
-  style:width="{TILE_WIDTH.medium}px"
-  style:height="{TILE_WIDTH.medium}px"
+  style:width="{tile}px"
+  style:height="{tile}px"
   tabindex="-1"
   onclick={onselect}
   ondblclick={onopen}

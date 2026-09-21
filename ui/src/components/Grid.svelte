@@ -1,7 +1,8 @@
 <script lang="ts">
   import { api } from '../lib/api';
   import { library } from '../lib/library.svelte';
-  import { buildRows, columnsFor, edgeScrollSpeed, GAP, itemSpan, itemsInRect, layoutSections, type Rect, rowOfItem, topFolderId, totalHeight, visibleRange } from '../lib/layout';
+  import { gridSize } from '../lib/app-grid-size.svelte';
+  import { buildRows, columnsFor, edgeScrollSpeed, firstVisibleOffset, GAP, itemSpan, itemsInRect, layoutSections, type Rect, rowOfItem, topFolderId, totalHeight, visibleRange } from '../lib/layout';
   import { move, type NavKey } from '../lib/nav';
   import { yearMarks } from '../lib/timeline';
   import Tile from './Tile.svelte';
@@ -24,9 +25,10 @@
   const BAND_THRESHOLD = 4;
   /** How close to the viewport's edge a band has to be dragged before the grid scrolls
    *  under it, and how fast it may scroll, in pixels **per second** - not per frame, or the
-   *  same gesture would scroll twice as far on a 120Hz screen as on a 60Hz one. A tile is
-   *  160px, so the margin is under a third of one: a band that stops short of the edge does
-   *  not creep. */
+   *  same gesture would scroll twice as far on a 120Hz screen as on a 60Hz one. It stays a
+   *  fixed number of pixels while the tile does not: the margin is a property of the
+   *  pointer's reach, not of the grid, and at the smallest tile it is still well under half
+   *  of one, so a band that stops short of the edge does not creep. */
   const BAND_EDGE = 48;
   const BAND_SCROLL_MAX = 1400;
   /** The longest frame the scroll will act on. A tab that was in the background, or a slow
@@ -39,7 +41,7 @@
   let height = $state(0);
   let scrollTop = $state(0);
 
-  const columns = $derived(columnsFor(Math.max(0, width - 2 * GAP)));
+  const columns = $derived(columnsFor(Math.max(0, width - 2 * GAP), gridSize.width));
   /** Recent is laid out as one continuous run of tiles with no folder headers; every other
    *  view keeps the index's folder sections. See `layoutSections` for why. Both the layout
    *  and the keyboard navigation read these rather than `library.info.sections`, so arrow
@@ -50,7 +52,7 @@
    *  most the first of them. */
   const sections = $derived(layoutSections(library.info.view, library.info.sections, library.info.len));
   const headers = $derived(library.info.view !== 'recent');
-  const rows = $derived(buildRows(sections, columns, headers));
+  const rows = $derived(buildRows(sections, columns, headers, gridSize.width));
   const total = $derived(totalHeight(rows));
   /** The year strip. It needs folder headers to mark (so Recent, which has none, never
    *  shows it), more than one year to choose between, and something to scroll. */
@@ -156,6 +158,45 @@
     }
   }
 
+  /** Keeping the user's place when the tile size changes.
+   *
+   *  Every row's `top` is computed from the tile width, so the pixel position the viewport
+   *  is holding names a different photo the instant the width moves - the grid jumps to
+   *  another year when the tiles grow. The photo to come back to therefore has to be read
+   *  from the layout as it was *before* the change and scrolled to in the layout as it is
+   *  after, and one run of an effect can only ever see one of those: `rows` is a `$derived`,
+   *  so the run woken by the new width already reads the new rows. The pin is kept current
+   *  on every run where the width has *not* moved - a scroll, a resize, a rebuilt index -
+   *  and the run that sees a new width spends it instead of taking it again.
+   *
+   *  All three values are read on every run, the restoring one included: an effect depends
+   *  only on what that run read, so a restoring run that skipped `scrollTop` would stop
+   *  hearing about scrolls and pin a stale offset for the next change.
+   *
+   *  `$effect`, not `$effect.pre`: the canvas is only as tall as the old layout until the
+   *  DOM catches up, and a scroll into the part that does not exist yet is clamped away. */
+  let pinnedWidth = gridSize.width;
+  let pinned: number | null = null;
+  let pinnedTop = 0;
+  $effect(() => {
+    const tile = gridSize.width;
+    const layout = rows;
+    const top = scrollTop;
+    if (tile !== pinnedWidth) {
+      pinnedWidth = tile;
+      // Only when the viewport is still where the pin was taken. A programmatic scroll -
+      // the launch jump to last session's folder, App's jump to the top on a view change -
+      // moves the viewport now and reaches `scrollTop` only when the browser's scroll event
+      // arrives, so a width change landing in between would find a pin describing somewhere
+      // the user has already left and drag them back to it. Staying put keeps the pixel
+      // position instead of the photo, which is the lesser of the two wrongs.
+      if (pinned !== null && viewport && viewport.scrollTop === pinnedTop) scrollToOffset(pinned, 'start');
+      return;
+    }
+    pinned = firstVisibleOffset(layout, top);
+    pinnedTop = top;
+  });
+
   export function focus() {
     viewport?.focus();
   }
@@ -259,7 +300,7 @@
   }
 
   function bandRanges(rect: Rect): [number, number][] {
-    return itemsInRect(rows, rect);
+    return itemsInRect(rows, rect, gridSize.width);
   }
 
   function bandDown(e: PointerEvent) {
@@ -542,6 +583,7 @@
                 onselect={(e) => tileClick(e, offset)}
                 onopen={() => onopen(offset)}
                 onmenu={(e) => tileMenu(e, offset)}
+                tile={gridSize.width}
               />
             {/each}
           </div>

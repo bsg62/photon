@@ -3,6 +3,7 @@
   // `open` is already this component's name for opening the viewer.
   import { open as pickFolder } from '@tauri-apps/plugin-dialog';
   import { api } from './lib/api';
+  import { gridSize } from './lib/app-grid-size.svelte';
   import { theme } from './lib/app-theme.svelte';
   import { locateItem } from './lib/folders';
   import { library } from './lib/library.svelte';
@@ -85,9 +86,13 @@
     library.init().catch(library.reportError);
     // `init` reports its own failures; theme-boot.js has already set the first frame.
     void theme.init();
+    // Same lifecycle as the theme, and for the same reason: a module singleton that has to
+    // come back to life when App remounts.
+    void gridSize.init();
     return () => {
       library.dispose();
       theme.dispose();
+      gridSize.dispose();
     };
   });
 
