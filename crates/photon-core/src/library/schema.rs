@@ -788,6 +788,10 @@ mod tests {
         assert_eq!(albums, 1);
     }
 
+    /// The columns arrive empty on a library that already has photos, and the photos
+    /// arrive intact. `content_hash` is set on the seeded row on purpose: it is the column
+    /// the look-alike columns sit beside, and an upgrade that rebuilt the table would lose
+    /// it - every duplicate in the library would have to be hashed again from disk.
     #[test]
     fn migration_12_adds_the_similarity_columns_to_an_existing_library() {
         let dir = tempfile::tempdir().unwrap();
@@ -797,22 +801,50 @@ mod tests {
             conn.execute_batch(sql).unwrap();
         }
         conn.pragma_update(None, "user_version", 11i64).unwrap();
+        conn.execute(
+            "INSERT INTO watched_folders (id, path) VALUES (1, '/p')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO folders (id, watched_id, parent_id, path, name, sort_key) \
+             VALUES (1, 1, NULL, '/p', 'p', 'p')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO items (id, folder_id, path, file_name, kind, size, mtime_ms, width, \
+             height, orientation, taken_at, content_hash) \
+             VALUES (1, 1, '/p/a.jpg', 'a.jpg', 0, 1, 1, 1, 1, 1, 1, x'0102')",
+            [],
+        )
+        .unwrap();
         drop(conn);
 
         let lib = crate::library::Library::open(&path).unwrap();
         let conn = lib.reader().unwrap();
-        // Both columns exist and are NULL for every pre-existing row.
-        let count: i64 = conn
+        let (percep, group, content): (Option<i64>, Option<i64>, Option<Vec<u8>>) = conn
             .query_row(
-                "SELECT COUNT(*) FROM items WHERE percep_hash IS NOT NULL OR similar_group IS NOT NULL",
+                "SELECT percep_hash, similar_group, content_hash FROM items WHERE id = 1",
                 [],
-                |r| r.get(0),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .unwrap();
-        assert_eq!(count, 0);
+        assert_eq!(
+            (percep, group),
+            (None, None),
+            "an existing photo must come out of the upgrade ungrouped and unhashed"
+        );
+        assert_eq!(
+            content,
+            Some(vec![1u8, 2]),
+            "the duplicate hash it already had was lost"
+        );
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, MIGRATIONS.len() as i64);
+        // Hardcoded, like every other version assertion here: `MIGRATIONS.len()` would
+        // agree with itself whatever the list did, which is the tripwire removed.
+        assert_eq!(version, 12);
     }
 }
