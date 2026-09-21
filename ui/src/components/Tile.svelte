@@ -1,7 +1,7 @@
 <script lang="ts">
   import { untrack } from 'svelte';
   import { mediaUrl, type GridEntry } from '../lib/api';
-  import { TILE } from '../lib/layout';
+  import { TILE_WIDTH } from '../lib/layout';
   import { library } from '../lib/library.svelte';
   import { createThumbRequest } from '../lib/thumb-request.svelte';
   import Icon from './Icon.svelte';
@@ -83,12 +83,13 @@
   }
 </script>
 
+<!-- Task 6 replaces this with a prop. -->
 <button
   class="tile"
   class:selected
   class:dimmed
-  style:width="{TILE}px"
-  style:height="{TILE}px"
+  style:width="{TILE_WIDTH.medium}px"
+  style:height="{TILE_WIDTH.medium}px"
   tabindex="-1"
   onclick={onselect}
   ondblclick={onopen}

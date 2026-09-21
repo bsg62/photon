@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildRows, columnsFor, edgeScrollSpeed, GAP, HEADER, itemSpan, itemsInRect, layoutSections, rowIndexAt, rowOfItem, TILE, TILE_ROW, topFolderId, totalHeight, visibleRange } from './layout';
+import { buildRows, columnsFor, edgeScrollSpeed, firstVisibleOffset, GAP, HEADER, itemSpan, itemsInRect, layoutSections, rowIndexAt, rowOfItem, scrollTopForOffset, tileRow, TILE_WIDTH, topFolderId, totalHeight, visibleRange } from './layout';
 
 const sections = [
   { folderId: 1, offset: 0, count: 5 },
@@ -118,8 +118,10 @@ describe('itemsInRect', () => {
    *  select everything between them - the over-selection ids-not-offsets exists to stop. */
   it('keeps a narrow band down one column as one range per row', () => {
     const tall = buildRows([{ folderId: 1, offset: 0, count: 9 }], 3, false);
-    const column2 = GAP + 2 * TILE_ROW;
-    expect(itemsInRect(tall, rect(column2 + 1, 0, column2 + TILE - 1, 3 * TILE_ROW))).toEqual([
+    const column2 = GAP + 2 * tileRow(TILE_WIDTH.medium);
+    expect(
+      itemsInRect(tall, rect(column2 + 1, 0, column2 + TILE_WIDTH.medium - 1, 3 * tileRow(TILE_WIDTH.medium))),
+    ).toEqual([
       [2, 2],
       [5, 5],
       [8, 8],
@@ -130,7 +132,7 @@ describe('itemsInRect', () => {
    *  after a tile does not take it. Measuring from the left edges instead agrees everywhere
    *  except here, which is why this case exists. */
   it('does not take the tile to the left of a band that starts in the gap', () => {
-    const gapAfterTile0 = GAP + TILE + 2;
+    const gapAfterTile0 = GAP + TILE_WIDTH.medium + 2;
     expect(itemsInRect(rows, rect(gapAfterTile0, 10, 1000, 20))).toEqual([[1, 2]]);
   });
 
@@ -146,18 +148,25 @@ describe('itemsInRect', () => {
   /** The gap below a row belongs to no tile: a band that only grazes it selects nothing,
    *  or dragging between two rows would sweep up both. */
   it('selects nothing from a band inside the gap between rows', () => {
-    expect(itemsInRect(rows, rect(0, TILE + 1, 1000, TILE_ROW - 1))).toEqual([]);
+    expect(
+      itemsInRect(rows, rect(0, TILE_WIDTH.medium + 1, 1000, tileRow(TILE_WIDTH.medium) - 1)),
+    ).toEqual([]);
   });
 
   it('stops at the last tile of a short row', () => {
     // The second row holds 2 of the 5 photos; a band across it cannot reach a third.
-    expect(itemsInRect(rows, rect(0, TILE_ROW + 1, 1000, TILE_ROW + TILE))).toEqual([[3, 4]]);
+    expect(
+      itemsInRect(
+        rows,
+        rect(0, tileRow(TILE_WIDTH.medium) + 1, 1000, tileRow(TILE_WIDTH.medium) + TILE_WIDTH.medium),
+      ),
+    ).toEqual([[3, 4]]);
   });
 
   it('ignores headers', () => {
     const withHeaders = buildRows([{ folderId: 1, offset: 0, count: 2 }], 3, true);
     expect(itemsInRect(withHeaders, rect(0, 0, 1000, HEADER - 1))).toEqual([]);
-    expect(itemsInRect(withHeaders, rect(0, 0, 1000, HEADER + TILE))).toEqual([[0, 1]]);
+    expect(itemsInRect(withHeaders, rect(0, 0, 1000, HEADER + TILE_WIDTH.medium))).toEqual([[0, 1]]);
   });
 
   it('takes nothing from an empty rectangle or an empty grid', () => {
@@ -177,6 +186,82 @@ describe('itemsInRect', () => {
       false,
     );
     expect(itemsInRect(two, rect(0, 0, 1000, 1000))).toEqual([[0, 5]]);
+  });
+});
+
+describe('tile size', () => {
+  it('columns depend on the tile size', () => {
+    // 800px of canvas: 168px rows at medium, 128 at small, 232 at large.
+    expect(columnsFor(800, TILE_WIDTH.medium)).toBe(4);
+    expect(columnsFor(800, TILE_WIDTH.small)).toBe(6);
+    expect(columnsFor(800, TILE_WIDTH.large)).toBe(3);
+  });
+
+  it('rows are taller at a larger tile size', () => {
+    const sections = [{ folderId: 1, offset: 0, count: 4 }];
+    const small = buildRows(sections, 2, false, TILE_WIDTH.small);
+    const large = buildRows(sections, 2, false, TILE_WIDTH.large);
+    expect(small[1].top).toBe(tileRow(TILE_WIDTH.small));
+    expect(large[1].top).toBe(tileRow(TILE_WIDTH.large));
+  });
+});
+
+describe('itemsInRect at other tile sizes', () => {
+  // The same shape as the medium-size block above: one section of 5 photos, 3 columns,
+  // no headers - re-run at both ends, because a band rule pinned only at 160 is pinned
+  // by the one size where a hardcoded 160 would still be right.
+  for (const size of ['small', 'large'] as const) {
+    const tile = TILE_WIDTH[size];
+    const row = tileRow(tile);
+    const rows = buildRows([{ folderId: 1, offset: 0, count: 5 }], 3, false, tile);
+    const rect = (x0: number, y0: number, x1: number, y1: number) => ({ x0, y0, x1, y1 });
+
+    it(`${size}: a band over a whole row takes the row`, () => {
+      expect(itemsInRect(rows, rect(0, 0, 1000, 1000), tile)).toEqual([[0, 4]]);
+    });
+
+    it(`${size}: a band starting in the gap after tile 0 starts at tile 1`, () => {
+      expect(itemsInRect(rows, rect(GAP + tile + 2, 10, 1000, 20), tile)).toEqual([[1, 2]]);
+    });
+
+    it(`${size}: a band wholly inside the gap below a row selects nothing`, () => {
+      expect(itemsInRect(rows, rect(0, tile + 1, 1000, row - 1), tile)).toEqual([]);
+    });
+
+    it(`${size}: a band over one column of two rows merges into one range`, () => {
+      const tall = buildRows([{ folderId: 1, offset: 0, count: 9 }], 3, false, tile);
+      expect(itemsInRect(tall, rect(0, 0, 1000, 2 * row), tile)).toEqual([[0, 5]]);
+    });
+
+    it(`${size}: the last short row does not run into the next section`, () => {
+      expect(itemsInRect(rows, rect(0, row + 1, 1000, row + tile), tile)).toEqual([[3, 4]]);
+    });
+  }
+});
+
+describe('keeping your place across a size change', () => {
+  const sections = [{ folderId: 1, offset: 0, count: 9 }];
+
+  it('reports the first item of the row at the top of the viewport', () => {
+    const rows = buildRows(sections, 3, false, TILE_WIDTH.medium);
+    expect(firstVisibleOffset(rows, 0)).toBe(0);
+    expect(firstVisibleOffset(rows, tileRow(TILE_WIDTH.medium))).toBe(3);
+    expect(firstVisibleOffset([], 0)).toBeNull();
+  });
+
+  it('finds the scroll position that puts an offset back at the top', () => {
+    const large = buildRows(sections, 3, false, TILE_WIDTH.large);
+    expect(scrollTopForOffset(large, 3)).toBe(tileRow(TILE_WIDTH.large));
+    expect(scrollTopForOffset(large, 999)).toBeNull();
+  });
+
+  it('round-trips an offset from one size to another', () => {
+    const medium = buildRows(sections, 3, false, TILE_WIDTH.medium);
+    const large = buildRows(sections, 2, false, TILE_WIDTH.large);
+    const offset = firstVisibleOffset(medium, 2 * tileRow(TILE_WIDTH.medium));
+    expect(offset).toBe(6);
+    // Row 3 of the two-column large layout holds offsets 6 and 7.
+    expect(scrollTopForOffset(large, offset!)).toBe(3 * tileRow(TILE_WIDTH.large));
   });
 });
 
