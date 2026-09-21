@@ -348,6 +348,16 @@ A new loop or timer is worth asking what already-known-broken path now drives it
 per-frame is worth the same question about time: multiply by the frame's own duration, or it
 runs twice as fast on a 120Hz screen as on a 60Hz one.
 
+**A shrinking scroll container clamps `scrollTop` for you, synchronously.** When a scroll
+container's content gets shorter, the browser clamps `scrollTop` to the new maximum during the
+very layout that reading `scrollTop` forces - before any script gets to react. A guard that
+asks "has the viewport moved since I pinned it?" by comparing a saved `scrollTop` to the
+current one is therefore always false on a size decrease: the browser already moved it, on the
+guard's own read, so the guard sees no movement to restore. That shipped to a whole-branch
+review before being caught, in the code that restores scroll position after the tile size
+changes. Anything that restores a scroll position after changing content height needs to ask
+what the *content* did, not what `scrollTop` reads now.
+
 The focus-ring suppression is `.focus-container[tabindex='-1']:focus-visible { outline: none }`,
 not the bare `[tabindex='-1']` it once was: a roving-tabindex widget's items carry
 `tabindex="-1"` too, and an unscoped rule strips their ring so the keyboard user cannot see
