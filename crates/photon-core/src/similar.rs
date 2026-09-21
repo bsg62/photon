@@ -80,13 +80,7 @@ pub fn group(hashes: &[(i64, u64)], distance: u32) -> Vec<(i64, i64)> {
     // different bands do not collide into one bucket.
     let mut buckets: HashMap<(u32, u16), Vec<usize>> = HashMap::new();
     for (index, (_, hash)) in hashes.iter().enumerate() {
-        // A picture with no structure is compared with nothing, so it never reaches a
-        // bucket and never lands in the output: every lens-cap shot, blank scan and
-        // near-black frame in a library hashes the same way, so they are all distance 0
-        // from each other, and one union-find group would swallow the lot. The user would
-        // be shown twenty unrelated dark frames as one set of look-alikes and asked which
-        // to delete - the opposite of the "never waste your time" this view promises.
-        if is_featureless(*hash) {
+        if pairs_with_anything(*hash, distance) {
             continue;
         }
         for band in 0..BANDS {
@@ -130,14 +124,28 @@ pub fn group(hashes: &[(i64, u64)], distance: u32) -> Vec<(i64, i64)> {
     out
 }
 
-/// Whether a hash says nothing about its picture.
+/// Whether `hash` would match another hash *whatever picture that one came from*.
 ///
-/// Both values mean "no pixel is brighter than its right-hand neighbour anywhere" - `0` as
-/// the comparison is written, `u64::MAX` as it would read with the sense reversed. Pinning
-/// the reversed value too costs one comparison and keeps this true of the hash's meaning
-/// rather than of today's spelling of `dhash`.
-fn is_featureless(hash: u64) -> bool {
-    hash == 0 || hash == u64::MAX
+/// `popcount(a ^ b) <= popcount(a) + popcount(b)`, so two hashes are within `distance` of
+/// each other for certain - regardless of what either photograph was - as soon as
+/// `popcount(a) + popcount(b) <= distance`. The single-hash form of that is this: a hash
+/// with `2 * popcount(h) <= distance` pairs with anything else that empty, and the same
+/// holds at the other end, where almost every bit is set.
+///
+/// A photo like that is compared with nothing and appears in no group. The worked case is
+/// the flat picture, whose hash is exactly 0 - no pixel is brighter than its right-hand
+/// neighbour anywhere - so every lens-cap shot, blank scan and near-black frame in a
+/// library is distance 0 from every other, and one union-find group would swallow the lot.
+/// The user would be shown twenty unrelated dark frames as one set of look-alikes and
+/// asked which to delete: the opposite of the "never waste your time" this view promises.
+///
+/// **This is not a popcount floor**, and turning it into one would throw away real matches.
+/// Two hashes at popcount 2 can be 4 bits apart, so they pair on their pictures rather than
+/// on their emptiness, and at a loose setting that pairing is a true one. The rule excludes
+/// only the hashes whose matching carries no information at the distance being asked for -
+/// which is why it takes `distance` rather than testing the hash alone.
+fn pairs_with_anything(hash: u64, distance: u32) -> bool {
+    2 * hash.count_ones() <= distance || 2 * (!hash).count_ones() <= distance
 }
 
 fn find(parent: &mut [usize], mut node: usize) -> usize {
@@ -377,9 +385,9 @@ mod tests {
     }
 
     /// Every flat picture hashes to the same value, so they are all distance 0 from each
-    /// other: without the featureless skip, one group swallows every lens-cap shot, blank
-    /// scan and near-black frame in the library, and the user is asked which of twenty
-    /// unrelated dark frames to delete.
+    /// other: without the skip, one group swallows every lens-cap shot, blank scan and
+    /// near-black frame in the library, and the user is asked which of twenty unrelated
+    /// dark frames to delete.
     #[test]
     fn a_picture_with_no_structure_is_a_look_alike_of_nothing() {
         let mut out = group(
@@ -399,6 +407,38 @@ mod tests {
             vec![(1, 1), (2, 1)],
             "a picture with no structure was grouped"
         );
+    }
+
+    /// The case an exact `0 || u64::MAX` test misses. Two hashes one bit from empty are two
+    /// bits apart, so at distance 3 they pair on their emptiness and on nothing else - and
+    /// a third, genuinely structured photo one bit from either of them would be dragged in
+    /// with them. `2 * popcount <= distance` is what catches the class rather than its
+    /// bottom value.
+    #[test]
+    fn two_almost_empty_pictures_do_not_pair_on_their_emptiness() {
+        let out = group(&[(1, 1 << 3), (2, 1 << 40)], EXACT_RECALL_DISTANCE);
+        assert!(out.is_empty(), "two near-empty hashes were paired");
+
+        // The mirror at the other end: one bit short of every bit set.
+        let out = group(
+            &[(1, !(1u64 << 3)), (2, !(1u64 << 40))],
+            EXACT_RECALL_DISTANCE,
+        );
+        assert!(out.is_empty(), "two near-full hashes were paired");
+    }
+
+    /// The rule is "would pair with anything", not "has few bits set": two hashes whose
+    /// popcounts sum past the automatic bound pair on their pictures, and a plain popcount
+    /// floor would throw that real match away. Five bits each at distance 8: 10 > 8, so
+    /// neither is automatic, and they are 4 bits apart.
+    #[test]
+    fn two_sparse_hashes_that_are_not_automatic_still_pair() {
+        let a = 0b1_1111u64;
+        let b = 0b111u64 | (0b11u64 << 30);
+        assert_eq!((a ^ b).count_ones(), 4);
+        let mut out = group(&[(1, a), (2, b)], 8);
+        out.sort();
+        assert_eq!(out, vec![(1, 1), (2, 1)]);
     }
 
     #[test]
