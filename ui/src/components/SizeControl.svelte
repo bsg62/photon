@@ -26,12 +26,23 @@
 </div>
 
 <style>
-  /* Copied verbatim from Settings.svelte's `.segmented` rules, so the top bar's control and
-     Settings' control are visually identical. */
+  /* The `.segmented`/`.segmented button` rules are copied from Settings.svelte. Svelte scopes
+     component styles, so this component does not inherit that file's generic `button` rule
+     the way its theme control does - `border`, `cursor` and `transition` below are restated
+     from that rule for exactly that reason, so the two controls compute to the same
+     appearance. Do not delete them as redundant; nothing else here supplies them. */
   .segmented { display: inline-flex; gap: 2px; padding: 2px; border-radius: var(--r-3); background: var(--field); }
-  .segmented button { padding: 4px 14px; border: 0; border-radius: var(--r-2); background: none; cursor: pointer; }
+  .segmented button {
+    padding: 4px 14px;
+    border: 0;
+    border-radius: var(--r-2);
+    background: none;
+    cursor: pointer;
+    transition: background-color 120ms ease-out;
+  }
   .segmented button:hover:not(:disabled) { background: var(--hover); }
   /* After the hover rule and spelled as long, so the chosen segment keeps its accent under
      the pointer by specificity rather than by source order alone. */
   .segmented button.checked, .segmented button.checked:hover:not(:disabled) { background: var(--accent); color: var(--on-accent); }
+  @media (prefers-reduced-motion: reduce) { .segmented button { transition: none; } }
 </style>
