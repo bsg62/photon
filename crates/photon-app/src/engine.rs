@@ -28,6 +28,12 @@ use std::{
 /// Minimum time between grid rebuilds and between progress events during one scan.
 const THROTTLE: Duration = Duration::from_millis(250);
 
+/// How long `shutdown` waits for a look-alike pass in progress to actually stop before
+/// giving up and leaving it to finish on its own. Bounded for the same reason
+/// `watch::STOP_TIMEOUT` is: the pass's `hash_candidates` reads the original photo files,
+/// so a thread stuck on a dead network mount would otherwise mean the app never quits.
+const SIMILAR_PASS_STOP_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// How old the last thumbnail collection may be before startup runs one regardless of
 /// whether anything has orphaned a thumbnail since. See `Library::thumb_gc_due`.
 const THUMB_GC_MAX_AGE: Duration = Duration::from_secs(7 * 24 * 3600);
@@ -1125,7 +1131,15 @@ impl Engine {
     /// Cancelled by `shutting_down` rather than a token of its own: a distance change has
     /// no scan to inherit a cancel from, and tying it to shutdown stops the walk on quit
     /// instead of grinding through a change nobody is left to see.
+    ///
+    /// Checked and refused here, not left to the cancel flag alone: `shutdown`'s bounded
+    /// wait on `hashing` (below) runs once, and an IPC call landing just after it - already
+    /// shutting down, but not yet exited - would otherwise spawn a fresh writer that wait
+    /// never accounted for.
     pub fn request_similar_pass(self: &Arc<Self>) {
+        if self.shutting_down.load(Ordering::SeqCst) {
+            return;
+        }
         let engine = Arc::clone(self);
         let handle = std::thread::Builder::new()
             .name("photon-similar-pass".into())
@@ -1134,10 +1148,21 @@ impl Engine {
         *self.similar_pass.lock() = Some(handle);
     }
 
-    /// Blocks until the thread spawned by `request_similar_pass` has finished, if one is
-    /// outstanding. Safe to call when none was ever spawned. Used by `shutdown`, so the
-    /// process never exits mid-regroup, and by tests that need the requested pass to have
-    /// landed before asserting on the grid.
+    /// Joins the thread spawned by the most recent `request_similar_pass` call, if one is
+    /// outstanding. Safe to call when none was ever spawned.
+    ///
+    /// This does **not** by itself prove no look-alike pass is still running.
+    /// `hash_after_scan` returns at once when `hashing` is already held elsewhere, so the
+    /// handle stored here can be a thread that did nothing while a different, unrecorded
+    /// thread does the actual work: two requests close together are exactly that case - the
+    /// first thread is still inside `similar::update` when the second overwrites
+    /// `similar_pass` with its own thread, which finds `hashing` held and returns at once.
+    /// Joining *that* handle finishes instantly and proves nothing about the first.
+    /// `shutdown` therefore does not rely on this call for correctness; it waits on
+    /// `hashing` itself afterwards, which identifies whichever thread is actually running
+    /// regardless of which request (or scan) started it. This call exists for the case
+    /// that does discriminate on it: a single request with nothing racing it, where the
+    /// spawned thread is necessarily the one that does the work.
     pub fn wait_for_similar_pass(&self) {
         let handle = self.similar_pass.lock().take();
         if let Some(handle) = handle {
@@ -1167,6 +1192,22 @@ impl Engine {
         self.thumbs.close();
         self.wait_for_startup();
         self.wait_for_similar_pass();
+        // `wait_for_similar_pass` only joins the most recently *requested* thread, which -
+        // per its own doc - need not be the thread actually running the pass: a scan's own
+        // inline `hash_after_scan` never touches `similar_pass` at all, and a request that
+        // lost the race for `hashing` returns immediately, leaving the winner unrecorded.
+        // Taking and dropping `hashing` itself waits for whichever thread currently holds
+        // it, however it got there, which is what actually establishes "no pass is
+        // running". Bounded exactly as `watch::WatcherService::stop` bounds its own join:
+        // `hash_candidates` reads original files, and a thread stuck on a dead network
+        // mount would otherwise mean the app never quits.
+        match self.hashing.try_lock_for(SIMILAR_PASS_STOP_TIMEOUT) {
+            Some(guard) => drop(guard),
+            None => tracing::warn!(
+                "a look-alike pass did not stop within {SIMILAR_PASS_STOP_TIMEOUT:?}; \
+                 leaving it to finish on its own"
+            ),
+        }
     }
 
     fn run_scan(&self, watched: &WatchedFolder, subtree: Option<PathBuf>, cancel: Arc<AtomicBool>) {
@@ -1532,9 +1573,10 @@ mod tests {
 
     /// Nothing but `request_similar_pass` runs a pass between scans, so a distance change
     /// on its own would sit unseen until an unrelated scan happened by. `set_similar_distance`
-    /// (`commands.rs`) calls it after writing the setting; this drives that same path and
-    /// waits for the spawned thread rather than calling `hash_after_scan` directly, so it
-    /// also proves the request does not run on the calling (IPC) thread.
+    /// (`commands.rs`) calls it after writing the setting; this drives that same path (not
+    /// `hash_after_scan` directly) and waits for the pass with `wait_for_similar_pass`,
+    /// which is safe here because nothing else is requesting a pass concurrently - see that
+    /// method's own doc for the case where it would not be.
     ///
     /// Distance 0 is "off": a resized copy is never pixel-identical to its original, so at
     /// distance 0 the pair that groups at the default distance 3 must not.
@@ -1562,6 +1604,70 @@ mod tests {
             f.ids().len(),
             0,
             "the setting change alone should have taken the pair out of the view"
+        );
+    }
+
+    /// `set_similar_distance` must return without waiting for the regroup: it runs on the
+    /// IPC dispatcher, and a whole-library pass blocking it would stall every other
+    /// command. Holding `hashing` here from the test thread makes that provable rather than
+    /// timed: the spawned pass thread can never acquire it and so can never finish, so if
+    /// the command waited for the pass inline it would deadlock and this test would hang
+    /// until the harness times it out, instead of returning.
+    #[test]
+    fn set_similar_distance_returns_without_waiting_for_the_pass() {
+        let f = fixture(&[("a.jpg", &jpeg(4, 2))]);
+        f.add_photos();
+
+        let held = f.engine.hashing.lock();
+        let clamped = crate::commands::set_similar_distance(&f.engine, 6).unwrap();
+        assert_eq!(clamped, 6, "the write itself still happens");
+        drop(held);
+
+        f.engine.wait_for_similar_pass();
+    }
+
+    /// The interleaving `wait_for_similar_pass` alone cannot cover: a thread (standing in
+    /// for one already inside `similar::update`) holds `hashing`, then a second
+    /// `request_similar_pass` call spawns a thread whose own `try_lock` fails at once and
+    /// which is therefore the handle `similar_pass` stores and `wait_for_similar_pass`
+    /// joins - instantly, having done nothing. If `shutdown` relied on that join alone it
+    /// would return while the first thread is still "running" (here, still holding the
+    /// lock); it must instead still be waiting on `hashing` itself.
+    #[test]
+    fn shutdown_waits_for_the_pass_actually_holding_hashing_not_just_the_latest_requested_thread() {
+        let f = fixture(&[("a.jpg", &jpeg(4, 2))]);
+        f.add_photos();
+
+        let held = f.engine.hashing.lock();
+        f.engine.request_similar_pass();
+        f.engine.wait_for_similar_pass(); // joins the no-op thread; proves nothing by itself
+
+        let engine = Arc::clone(&f.engine);
+        let shutdown = std::thread::spawn(move || engine.shutdown());
+        std::thread::sleep(Duration::from_millis(150));
+        assert!(
+            !shutdown.is_finished(),
+            "shutdown returned before the pass actually holding `hashing` had stopped"
+        );
+
+        drop(held);
+        shutdown.join().unwrap();
+    }
+
+    /// An IPC call can land after `shutdown` has already set `shutting_down` and run its
+    /// bounded wait on `hashing`, but before the process actually exits. Without this check
+    /// that call would spawn a fresh writer `shutdown` never accounted for.
+    #[test]
+    fn request_similar_pass_is_a_no_op_once_shutting_down() {
+        let f = fixture(&[("a.jpg", &jpeg(4, 2))]);
+        f.add_photos();
+        f.engine.shutdown();
+
+        f.engine.request_similar_pass();
+
+        assert!(
+            f.engine.similar_pass.lock().is_none(),
+            "a request arriving after shutdown must not spawn a thread"
         );
     }
 
