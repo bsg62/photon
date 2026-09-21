@@ -199,8 +199,10 @@ pub fn update(
         }
         let path = cache.path_for(candidate.thumb_key, ThumbSize::Grid);
         match image::open(&path) {
-            // False only when the row moved on while the thumbnail was being read, which is
-            // the row no longer being the one hashed rather than a failure.
+            // False when the row moved on while the thumbnail was being read - the file
+            // rewritten, or the user editing the photo, both of which make this the hash of
+            // a picture the row no longer shows. Not a failure: the write is refused, the
+            // row keeps its cleared `percep_hash`, and the next pass hashes the new picture.
             Ok(img) => {
                 if lib.set_percep_hash(&candidate, dhash(&img))? {
                     hashed += 1;

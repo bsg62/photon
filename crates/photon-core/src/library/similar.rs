@@ -5,6 +5,7 @@ use super::Library;
 use super::duplicates::ItemCopy;
 use super::items::edit_from_db;
 use crate::Result;
+use crate::edit::{Crop, Edit};
 use crate::media::fingerprint;
 use rusqlite::params;
 
@@ -17,6 +18,9 @@ pub struct SimilarCandidate {
     /// The fingerprint the hash will be stored against; see [`Library::set_percep_hash`].
     pub size: i64,
     pub mtime_ms: i64,
+    /// The edit the hash will be stored against - part of the same guard, because a
+    /// perceptual hash describes the photo *as shown*; see [`Library::set_percep_hash`].
+    pub edit: Edit,
 }
 
 /// Live, thumbnailed, unhashed rows - rare once a library has settled, since a photo takes
@@ -62,25 +66,41 @@ impl Library {
                     thumb_key: edit.thumb_key(fingerprint(&path, size, mtime_ms)),
                     size,
                     mtime_ms,
+                    edit,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
 
-    /// Stores a perceptual hash, but only against the fingerprint it was computed for -
-    /// the same guard [`Library::set_content_hash`] has, and for the same reason: the pass
-    /// reads the thumbnail long after the row was listed, and a hash of the old picture must
-    /// not land on a row whose file has since moved on.
+    /// Stores a perceptual hash, but only against the picture it was computed for - the
+    /// fingerprint **and the edit**, because the pass reads the thumbnail long after the row
+    /// was listed and a hash of the old picture must not land on a row that has since moved
+    /// on.
+    ///
+    /// The edit is where this parts company with [`Library::set_content_hash`], whose guard
+    /// it otherwise mirrors. A content hash is a fact about the *file*, so size and mtime
+    /// are the whole of it. A perceptual hash is a fact about the photo **as shown**, and
+    /// `set_item_edit` changes what is shown without touching either: a turn landing between
+    /// the listing and this write leaves every column `set_content_hash` checks unchanged,
+    /// while the thumbnail just hashed - still on disk, since the GC has not run and keys
+    /// recur by design - is of the *unturned* picture. `dhash` is deliberately not
+    /// rotation-invariant, so the row would take the hash of a picture photon no longer
+    /// shows, group with the wrong photos, and - `percep_hash` being non-NULL - never be a
+    /// candidate again. This is `set_thumb_state_if_unchanged`'s hazard exactly, and it
+    /// takes the same two extra columns to close.
     pub fn set_percep_hash(&self, candidate: &SimilarCandidate, hash: u64) -> Result<bool> {
         let changed = self.writer().execute(
             "UPDATE items SET percep_hash = ?2
-             WHERE id = ?1 AND size = ?3 AND mtime_ms = ?4 AND missing_since IS NULL",
+             WHERE id = ?1 AND size = ?3 AND mtime_ms = ?4 AND missing_since IS NULL
+               AND edit_turns = ?5 AND edit_crop IS ?6",
             params![
                 candidate.id,
                 hash as i64,
                 candidate.size,
-                candidate.mtime_ms
+                candidate.mtime_ms,
+                candidate.edit.turns,
+                candidate.edit.crop.map(Crop::to_db),
             ],
         )?;
         Ok(changed == 1)
@@ -371,6 +391,47 @@ mod tests {
         assert!(
             !plan.iter().any(|step| step.contains("SCAN i")),
             "items must be searched, not scanned: {plan:?}"
+        );
+    }
+
+    /// A perceptual hash is a fact about the photo *as shown*, so an edit landing between
+    /// the listing and the write must refuse the hash - and an edit moves no column
+    /// `set_content_hash`'s guard checks. The first pass after an upgrade lists the whole
+    /// library and runs for minutes, so "the user turned a photo while the pass was
+    /// running" is the ordinary case, not a contrived one. Taken, the row would carry the
+    /// hash of its unturned self forever: `dhash` is not rotation-invariant, and a non-NULL
+    /// `percep_hash` is never a candidate again.
+    #[test]
+    fn an_edit_between_listing_and_writing_refuses_the_hash() {
+        let (_dir, lib) = temp_library();
+        let (_w, folder) = seed_folder(&lib, Path::new("/pics"));
+        let ids = lib
+            .insert_items(&[item_at(folder, "/pics/a.jpg", 10, 100)])
+            .unwrap();
+        lib.writer()
+            .execute("UPDATE items SET thumb_state = 1 WHERE id = ?1", [ids[0]])
+            .unwrap();
+        let candidate = lib.similar_candidates().unwrap().remove(0);
+
+        // The user presses `R`: the picture changes, the file does not.
+        assert!(
+            lib.set_item_edit(
+                ids[0],
+                crate::edit::Edit {
+                    turns: 1,
+                    crop: None
+                }
+            )
+            .unwrap()
+        );
+
+        assert!(
+            !lib.set_percep_hash(&candidate, 0xdead_beef).unwrap(),
+            "a hash of the pre-edit thumbnail landed on the edited row"
+        );
+        assert!(
+            lib.percep_hashes().unwrap().is_empty(),
+            "and nothing was written"
         );
     }
 }
