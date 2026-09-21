@@ -6,6 +6,7 @@ mod items;
 mod schema;
 mod searches;
 mod settings;
+mod similar;
 mod tags;
 
 pub use albums::{Album, AlbumSummary};
@@ -15,6 +16,7 @@ pub use folders::{Folder, WatchedFolder};
 pub use items::{Item, KnownItem, NewItem, RECENT_LIMIT, is_starred};
 pub use searches::SavedSearch;
 pub use settings::{GridTile, ThemeChoice};
+pub use similar::SimilarCandidate;
 pub use tags::{TagCount, TagRule};
 
 use crate::Result;

@@ -16,23 +16,40 @@ pub struct HashCandidate {
     pub mtime_ms: i64,
 }
 
-/// Another file with the same bytes as the one asked about.
+/// Another file with the same bytes, or the same picture, as the one asked about.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ItemCopy {
     pub id: i64,
     pub path: String,
+    pub width: u32,
+    pub height: u32,
 }
 
-/// The photos that have at least one byte-identical twin, as a grid filter. Applied to the
-/// driver as well as the outer `WHERE`, like every membership view, so a folder is placed by
-/// its oldest *duplicated* photo and the sidebar agrees with the grid.
+/// The photos that have at least one byte-identical twin **or** a look-alike, as a grid
+/// filter. Applied to the driver as well as the outer `WHERE`, like every membership view,
+/// so a folder is placed by its oldest matching photo and the sidebar agrees with the grid.
 ///
-/// The subquery counts live rows only: a photo whose one twin has gone missing is no
-/// longer a duplicate of anything the user can find.
-pub(crate) const DUPLICATE_FILTER: &str = "AND i.content_hash IN (
-    SELECT content_hash FROM items
-    WHERE content_hash IS NOT NULL AND missing_since IS NULL
-    GROUP BY content_hash HAVING COUNT(*) > 1)";
+/// The identical half counts live rows only: a photo whose one twin has gone missing is no
+/// longer a duplicate of anything the user can find. The look-alike half is a single column
+/// read, because `crate::similar` has already done the grouping.
+///
+/// `UNION ALL` inside an `IN`, not a plain `i.content_hash IN (...) OR i.similar_group IS NOT
+/// NULL`: the `OR` form plans as a scan of every live row with both halves checked in place,
+/// `items_similar_group` untouched, because an `OR` of two unrelated conditions is not the
+/// rowid-merge case SQLite optimises. Two membership subqueries joined by `UNION ALL` are
+/// seeks against `items_content_hash` and `items_similar_group` each, materialised once into
+/// the list `i` is then looked up against by rowid;
+/// `the_widened_view_reaches_look_alikes_through_the_similar_index_too` pins that plan. `ALL`
+/// rather than a de-duplicating `UNION` because the outer `IN` only tests membership - a photo
+/// counted in both halves costs nothing extra, while a plain `UNION` forces a sort to
+/// de-duplicate that the `IN` never needed.
+pub(crate) const DUPLICATE_FILTER: &str = "AND i.id IN (
+    SELECT id FROM items WHERE content_hash IN (
+        SELECT content_hash FROM items
+        WHERE content_hash IS NOT NULL AND missing_since IS NULL
+        GROUP BY content_hash HAVING COUNT(*) > 1)
+    UNION ALL
+    SELECT id FROM items WHERE similar_group IS NOT NULL AND missing_since IS NULL)";
 
 /// Runs after every scan, so the size grouping has to come from `items_size` rather than
 /// a sort of the whole table; `the_candidate_query_groups_sizes_from_the_index` pins that.
@@ -48,7 +65,7 @@ const CANDIDATES_SQL: &str = "SELECT i.id, i.path, i.size, i.mtime_ms
 /// Runs for every photo the viewer opens, so it has to come from `items_content_hash`;
 /// `a_photos_copies_are_found_through_the_hash_index` pins that. An unhashed photo has no
 /// copies by construction: NULL equals nothing.
-const COPIES_SQL: &str = "SELECT o.id, o.path FROM items i
+const COPIES_SQL: &str = "SELECT o.id, o.path, o.width, o.height FROM items i
      JOIN items o ON o.content_hash = i.content_hash AND o.id <> i.id
      WHERE i.id = ?1 AND o.missing_since IS NULL
      ORDER BY o.path";
@@ -118,6 +135,8 @@ impl Library {
                 Ok(ItemCopy {
                     id: r.get(0)?,
                     path: r.get(1)?,
+                    width: r.get(2)?,
+                    height: r.get(3)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -156,6 +175,23 @@ mod tests {
         assert!(
             plan.iter().any(|step| step.contains("items_content_hash")),
             "expected the hash index, got {plan:?}"
+        );
+    }
+
+    #[test]
+    fn the_widened_view_reaches_look_alikes_through_the_similar_index_too() {
+        let (_dir, lib) = temp_library();
+        let sql = format!(
+            "SELECT COUNT(*) FROM items i WHERE i.missing_since IS NULL {DUPLICATE_FILTER}"
+        );
+        let plan = plan(&lib, &sql, &[]);
+        assert!(
+            plan.iter().any(|step| step.contains("items_similar_group")),
+            "expected the partial similar_group index, got {plan:?}"
+        );
+        assert!(
+            !plan.iter().any(|step| step.contains("TEMP B-TREE")),
+            "the two halves must be served by their own indexes, not a sort: {plan:?}"
         );
     }
 }

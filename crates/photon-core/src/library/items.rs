@@ -78,7 +78,7 @@ impl Item {
 /// The edit held in a row's `edit_turns` and `edit_crop`. A row that does not make a valid
 /// edit reads as untouched rather than failing the query it is part of: the photo then shows
 /// as it is on disk, which is never wrong.
-fn edit_from_db(turns: i64, crop: Option<i64>) -> Edit {
+pub(super) fn edit_from_db(turns: i64, crop: Option<i64>) -> Edit {
     Edit::new(turns.rem_euclid(4) as u8, crop.map(Crop::from_db)).unwrap_or_default()
 }
 
