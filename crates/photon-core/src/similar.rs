@@ -54,7 +54,11 @@ pub fn dhash(img: &DynamicImage) -> u64 {
 /// Candidate pairs are found by splitting each hash into four 16-bit bands and bucketing by
 /// band. Two hashes within Hamming distance 3 must agree exactly on at least one band -
 /// four bands, at most three differing bits, so some band has none. That makes the buckets
-/// an exact filter at this distance, not a heuristic. Above it, a pair is found only if it
+/// an exact filter at this distance, not a heuristic. Exact about *recall*, not about cost:
+/// `pairs_with_anything` keeps the pathological case (every blank frame sharing one hash)
+/// out of the buckets, but a bucket is a shared 16-bit band and not an excluded one, so a
+/// library with many near-identical-but-not-empty pictures can still put a large cluster in
+/// one bucket and pay its quadratic comparison. Usually bounded, not always. Above it, a pair is found only if it
 /// happens to share a band, which is why the UI says "finds most" rather than "finds all".
 pub const EXACT_RECALL_DISTANCE: u32 = 3;
 
@@ -193,7 +197,18 @@ pub fn update(
     cancel: &AtomicBool,
 ) -> Result<PassOutcome> {
     let mut hashed = 0;
-    for candidate in lib.similar_candidates()? {
+    // Off means off. The grouping below returns nothing at distance 0, so hashing first
+    // would be work no one can see - and it is the expensive half: on the first pass over
+    // an existing library every photo is a candidate, so a user who has turned the feature
+    // off would still pay a whole-library thumbnail decode at the end of every scan. The
+    // regroup below still runs, because turning it off has to *clear* the groups already
+    // stored.
+    let candidates = if distance == 0 {
+        Vec::new()
+    } else {
+        lib.similar_candidates()?
+    };
+    for candidate in candidates {
         if cancel.load(Ordering::Relaxed) {
             break;
         }
@@ -578,6 +593,57 @@ mod tests {
         assert!(
             lib.similar_of(ids[0]).unwrap().is_empty(),
             "the regroup runs even when nothing was hashed"
+        );
+    }
+
+    /// "Off restores exactly today's behaviour" is a promise about the *work*, not only
+    /// about the groups. The candidate loop opens and decodes a thumbnail per unhashed
+    /// photo, and on the first pass after an upgrade that is the whole library - paid at
+    /// the end of every scan by a user who has turned the feature off. The regroup still
+    /// has to run, or the groups from before Off was chosen would stay on screen.
+    #[test]
+    fn off_hashes_nothing_and_still_clears_the_groups() {
+        let (dir, lib) = temp_library();
+        let photos = dir.path().join("pics");
+        let (_w, folder) = seed_folder(&lib, &photos);
+        let cache = ThumbCache::new(dir.path().join("cache"));
+
+        // A real thumbnail under the key the pass would look for, so "nothing was hashed"
+        // is a decision and not just a missing file.
+        let src = write_file(
+            &photos,
+            "a.jpg",
+            &encode(&unrelated_pattern(180, 120), ImageFormat::Jpeg),
+        );
+        let path = src.to_str().unwrap().to_string();
+        cache
+            .generate(&src, 1, fingerprint(&path, 10, 100))
+            .unwrap();
+        let ids = lib
+            .insert_items(&[
+                item_at(folder, &path, 10, 100),
+                item_at(folder, "/pics/b.jpg", 11, 101),
+            ])
+            .unwrap();
+        lib.set_thumb_state(ids[0], ThumbState::Ready, None)
+            .unwrap();
+        lib.set_similar_groups(&[(ids[0], ids[0]), (ids[1], ids[0])])
+            .unwrap();
+
+        let outcome = update(&lib, &cache, 0, &AtomicBool::new(false)).unwrap();
+
+        assert_eq!(
+            outcome.hashed, 0,
+            "Off still decoded and hashed every thumbnail"
+        );
+        assert!(
+            lib.percep_hashes().unwrap().is_empty(),
+            "Off wrote a hash nothing will ever read"
+        );
+        assert!(outcome.groups_changed);
+        assert!(
+            lib.similar_of(ids[0]).unwrap().is_empty(),
+            "Off left the groups it was asked to clear"
         );
     }
 }
