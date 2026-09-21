@@ -348,12 +348,18 @@ A new loop or timer is worth asking what already-known-broken path now drives it
 per-frame is worth the same question about time: multiply by the frame's own duration, or it
 runs twice as fast on a 120Hz screen as on a 60Hz one.
 
-`[tabindex='-1']:focus-visible { outline: none }` is global, for script-focused containers. A
-roving-tabindex widget's items carry `tabindex="-1"` too and would silently lose their focus
-ring: scope the rule before adding one. For the same reason a tile's selection ring comes from
-`.selected`, not from focus - and it is drawn inside the tile, not as an outline around it,
-because the grid scrolls a row flush to the top of its container (ArrowUp, Home, Recent's
-first row), which clips anything sitting outside the tile's own box.
+The focus-ring suppression is `.focus-container[tabindex='-1']:focus-visible { outline: none }`,
+not the bare `[tabindex='-1']` it once was: a roving-tabindex widget's items carry
+`tabindex="-1"` too, and an unscoped rule strips their ring so the keyboard user cannot see
+where they are. A container focused from script - the viewer, a dialog, an open menu - therefore
+has to be given `.focus-container` itself, or it draws a ring around the whole window;
+`tokens.test.ts` is the tripwire, failing both on the unscoped form coming back and on the
+scoped one going away. A tile and the timeline are deliberately *not* classed: they are never
+script-focused, so they rely on that rather than on a ring hidden after the fact - which is why
+a tile's selection ring comes from `.selected` rather than from focus, as `Tile.svelte` says
+where it draws it. It is drawn inside the tile, not as an outline around it, because the grid
+scrolls a row flush to the top of its container (ArrowUp, Home, Recent's first row), which clips
+anything sitting outside the tile's own box.
 
 The look cannot be tested here, but it can be seen without launching the app: `cargo run -p xtask --
 screenshots` builds the UI, serves `ui/dist` itself with `mock.js` (in

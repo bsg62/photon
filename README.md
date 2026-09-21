@@ -93,6 +93,16 @@ done. And an album remembers photos by their library row, so a photo renamed or 
 disk leaves its albums once the old row is purged — stars survive that because they live
 in Picasa's INI, album membership does not.
 
+### Photo size
+
+The **Small / Medium / Large** control in the top bar — also under Settings → Appearance — sets
+how large the grid draws your photos. Medium is the size photon has always used. Small fits
+roughly twice as many photos on screen, Large makes faces and detail easier to judge at a
+glance. Changing it keeps your place: the photo at the top of the screen is still the photo at
+the top of the screen afterwards, whichever way the tiles go. The choice is remembered, so
+photon reopens at the size you left it, and it costs nothing to change your mind — the same
+thumbnails are drawn at every size, and nothing is read from or written to your photos.
+
 ### Rotating and cropping
 
 In the viewer, `R` and `Shift+R` (or ↻ ↺) turn a photo, and `C` (or ✂) opens the crop tool:
@@ -381,9 +391,10 @@ publishing it.
 - [ ] Click the sidebar, the status bar or a folder name and press Ctrl+A: **nothing**
       highlights. No blue wash over the chrome, no selected folder names. Then click into the
       search box, type a word and press Ctrl+A: the query is selected, as in any text field.
-- [ ] Scroll the grid to the middle of a folder and change the photo size in the top bar: the
-      photo that was at the top of the screen is still at the top afterwards — not a different
-      year, and not the top of the library. Try it again with a folder header the first thing
+- [ ] Scroll the grid past the middle of the library and make the tiles **smaller** in the top
+      bar (Large → Small is the strongest case): the photo that was at the top of the screen is
+      still at the top afterwards — not a different year, and not the end of the library. Then
+      make them bigger again and check the same. Try both with a folder header the first thing
       visible: the same header is still at the top.
 - [ ] Change the size in Recent (no headers) and in a Starred or search view too: your place is
       kept there as well. Try it scrolled to the very end of the library: it lands at the end,
