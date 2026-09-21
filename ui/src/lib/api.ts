@@ -86,7 +86,14 @@ export interface ViewerItem {
 }
 /** `crop` is `[left, top, right, bottom]` in 1/65535ths of the turned picture. */
 export interface ItemEdit { turns: number; crop: [number, number, number, number] | null }
-export interface ItemCopy { id: number; path: string }
+export type CopyKind = 'identical' | 'similar';
+export interface ItemCopy {
+  id: number;
+  path: string;
+  kind: CopyKind;
+  width: number;
+  height: number;
+}
 export interface Person { hash: string; name: string; count: number }
 /** What one export came to. Mirrors `ExportReport` in `commands.rs`. `failed` counts a photo
  *  that has gone from the library since the grid was built as well as one that could not be

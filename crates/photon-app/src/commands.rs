@@ -137,11 +137,24 @@ pub struct ItemEdit {
     pub crop: Option<[u16; 4]>,
 }
 
+/// What kind of relationship a listed copy has to the photo on screen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CopyKind {
+    /// The same bytes.
+    Identical,
+    /// The same picture, different bytes - a resize or a re-save.
+    Similar,
+}
+
 #[derive(Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ItemCopy {
     pub id: i64,
     pub path: String,
+    pub kind: CopyKind,
+    pub width: u32,
+    pub height: u32,
 }
 
 #[derive(Debug, Serialize, PartialEq, Eq)]
@@ -475,14 +488,33 @@ pub fn viewer_item(engine: &Engine, id: i64) -> CmdResult<ViewerItem> {
         (w, h, 1)
     };
     let albums = engine.lib.item_albums(item.id)?;
-    let copies = engine
-        .lib
-        .copies_of(item.id)?
+    let identical = engine.lib.copies_of(item.id)?;
+    let identical_ids: std::collections::HashSet<i64> = identical.iter().map(|c| c.id).collect();
+    let copies = identical
         .into_iter()
         .map(|c| ItemCopy {
             id: c.id,
             path: c.path,
+            kind: CopyKind::Identical,
+            width: c.width,
+            height: c.height,
         })
+        // A look-alike that is also a byte-identical twin is already listed above; a
+        // photo appearing twice in the info panel is a bug the user sees, not a detail.
+        .chain(
+            engine
+                .lib
+                .similar_of(item.id)?
+                .into_iter()
+                .filter(|c| !identical_ids.contains(&c.id))
+                .map(|c| ItemCopy {
+                    id: c.id,
+                    path: c.path,
+                    kind: CopyKind::Similar,
+                    width: c.width,
+                    height: c.height,
+                }),
+        )
         .collect();
     let thumb_key = hex_key(item.thumb_key());
     let camera = item.camera;
@@ -803,6 +835,43 @@ mod tests {
         assert_eq!(item.albums, vec![album.id]);
         assert_eq!(list_people(&f.engine).unwrap()[0].name, "Ada");
         assert_eq!(list_tags(&f.engine).unwrap()[0].tag, "beach");
+    }
+
+    /// The info panel tells a byte-identical twin from a look-alike, and lists the twins
+    /// first: `orig` and `identical` are the same bytes (`jpeg_pattern` is deterministic in
+    /// its inputs, so calling it twice with the same size produces the same file), while
+    /// `resized` is the same picture at a different size and different bytes - a look-alike,
+    /// not a copy. The second scan and `wait_idle` are load-bearing the way
+    /// `a_scan_finds_the_look_alikes_it_indexed` (`engine.rs`) explains: the look-alike pass
+    /// hashes cached thumbnails, and the first scan's pass can run before the thumbnail
+    /// workers have caught up.
+    #[test]
+    fn the_viewer_lists_identical_copies_before_look_alikes() {
+        use crate::testutil::jpeg_pattern;
+        let f = fixture(&[
+            ("a/orig.jpg", &jpeg_pattern(180, 120)),
+            ("a/identical.jpg", &jpeg_pattern(180, 120)),
+            ("a/resized.jpg", &jpeg_pattern(72, 48)),
+        ]);
+        let watched = f.add_photos();
+        f.engine.thumbs.wait_idle();
+        f.engine.start_scan(watched);
+        f.engine.wait_for_scans();
+
+        let path_of = |id: i64| f.engine.lib.item(id).unwrap().unwrap().path;
+        let orig_id = f
+            .ids()
+            .into_iter()
+            .find(|&id| path_of(id).ends_with("orig.jpg"))
+            .unwrap();
+
+        let item = viewer_item(&f.engine, orig_id).unwrap();
+        assert_eq!(item.copies.len(), 2, "expected one twin and one look-alike");
+        assert!(item.copies[0].path.ends_with("identical.jpg"));
+        assert!(matches!(item.copies[0].kind, CopyKind::Identical));
+        assert!(item.copies[1].path.ends_with("resized.jpg"));
+        assert!(matches!(item.copies[1].kind, CopyKind::Similar));
+        assert_eq!((item.copies[1].width, item.copies[1].height), (72, 48));
     }
 
     /// Gives a scanned photo keywords the way the scanner's metadata backfill writes them.
