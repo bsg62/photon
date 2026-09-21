@@ -62,7 +62,10 @@
       tags: ['alps', 'sunset'],
       faces: [{ hash: 'a', name: 'Anna', left: 0.3, top: 0.25, right: 0.42, bottom: 0.5 }],
       albums: [1],
-      copies: [],
+      copies: [
+        { id: 501, path: `/home/ada/Pictures/2026/Summer hike/IMG_48${id} copy.jpg`, kind: 'identical', width: 5472, height: 3648 },
+        { id: 502, path: `/home/ada/Pictures/2026/Summer hike/IMG_48${id} small.jpg`, kind: 'similar', width: 1600, height: 1067 },
+      ],
       uncroppedWidth: 5472,
       uncroppedHeight: 3648,
       edit: null,
@@ -122,6 +125,8 @@
     app_info: () => ({ version: '0.0.0', libraryPath: '/home/ada/.local/share/photon/library.db', licence: 'MIT' }),
     last_folder: () => null,
     slideshow_interval: () => 4,
+    similar_distance: () => 3,
+    set_similar_distance: (a) => a.distance,
     set_search_query: (args) => {
       searchQuery = args.query || '';
       return null;

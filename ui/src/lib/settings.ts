@@ -1,6 +1,6 @@
 import type { ScanProgressEvent, WatchedFolder } from './api';
 
-export type SettingsSection = 'folders' | 'appearance' | 'tags' | 'slideshow' | 'about';
+export type SettingsSection = 'folders' | 'appearance' | 'tags' | 'slideshow' | 'duplicates' | 'about';
 
 export type FolderStatus =
   | { kind: 'scanning'; label: string }

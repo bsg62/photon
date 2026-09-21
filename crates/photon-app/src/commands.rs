@@ -137,11 +137,24 @@ pub struct ItemEdit {
     pub crop: Option<[u16; 4]>,
 }
 
+/// What kind of relationship a listed copy has to the photo on screen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CopyKind {
+    /// The same bytes.
+    Identical,
+    /// The same picture, different bytes - a resize or a re-save.
+    Similar,
+}
+
 #[derive(Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ItemCopy {
     pub id: i64,
     pub path: String,
+    pub kind: CopyKind,
+    pub width: u32,
+    pub height: u32,
 }
 
 #[derive(Debug, Serialize, PartialEq, Eq)]
@@ -174,7 +187,7 @@ pub fn add_folder(engine: &Arc<Engine>, path: &str) -> CmdResult<WatchedFolder> 
     Ok(engine.add_folder(Path::new(path))?)
 }
 
-pub fn remove_folder(engine: &Engine, watched_id: i64) -> CmdResult<()> {
+pub fn remove_folder(engine: &Arc<Engine>, watched_id: i64) -> CmdResult<()> {
     Ok(engine.remove_folder(watched_id)?)
 }
 
@@ -398,6 +411,21 @@ pub fn set_slideshow_interval(engine: &Engine, seconds: i64) -> CmdResult<i64> {
     Ok(engine.lib.set_slideshow_interval_s(seconds)?)
 }
 
+/// How far apart two perceptual hashes may be and still count as the same picture.
+pub fn similar_distance(engine: &Engine) -> CmdResult<i64> {
+    Ok(engine.lib.similar_distance()?)
+}
+
+/// Stores the look-alike distance, returns the clamped value now in force, and requests a
+/// regroup at it: the pass that reaches the grid runs at the end of a scan, and nothing
+/// else runs one, so without the request a changed setting would sit unseen until the next
+/// unrelated scan.
+pub fn set_similar_distance(engine: &Arc<Engine>, distance: i64) -> CmdResult<i64> {
+    let clamped = engine.lib.set_similar_distance(distance)?;
+    engine.request_similar_pass();
+    Ok(clamped)
+}
+
 /// The colour scheme the user chose.
 pub fn theme(engine: &Engine) -> CmdResult<ThemeChoice> {
     Ok(engine.lib.theme()?)
@@ -460,14 +488,33 @@ pub fn viewer_item(engine: &Engine, id: i64) -> CmdResult<ViewerItem> {
         (w, h, 1)
     };
     let albums = engine.lib.item_albums(item.id)?;
-    let copies = engine
-        .lib
-        .copies_of(item.id)?
+    let identical = engine.lib.copies_of(item.id)?;
+    let identical_ids: std::collections::HashSet<i64> = identical.iter().map(|c| c.id).collect();
+    let copies = identical
         .into_iter()
         .map(|c| ItemCopy {
             id: c.id,
             path: c.path,
+            kind: CopyKind::Identical,
+            width: c.width,
+            height: c.height,
         })
+        // A look-alike that is also a byte-identical twin is already listed above; a
+        // photo appearing twice in the info panel is a bug the user sees, not a detail.
+        .chain(
+            engine
+                .lib
+                .similar_of(item.id)?
+                .into_iter()
+                .filter(|c| !identical_ids.contains(&c.id))
+                .map(|c| ItemCopy {
+                    id: c.id,
+                    path: c.path,
+                    kind: CopyKind::Similar,
+                    width: c.width,
+                    height: c.height,
+                }),
+        )
         .collect();
     let thumb_key = hex_key(item.thumb_key());
     let camera = item.camera;
@@ -509,14 +556,19 @@ pub fn viewer_item(engine: &Engine, id: i64) -> CmdResult<ViewerItem> {
 }
 
 /// Turns one photo a quarter, keeping its crop on the same part of the picture.
-pub fn rotate_item(engine: &Engine, id: i64, clockwise: bool) -> CmdResult<()> {
+pub fn rotate_item(engine: &Arc<Engine>, id: i64, clockwise: bool) -> CmdResult<()> {
     engine.rotate_item(id, clockwise)?;
     Ok(())
 }
 
 /// Replaces one photo's edit. `crop` is `[left, top, right, bottom]` in `CROP_UNIT`s of the
 /// turned picture; no turns and no crop is the original again.
-pub fn set_item_edit(engine: &Engine, id: i64, turns: u8, crop: Option<[u16; 4]>) -> CmdResult<()> {
+pub fn set_item_edit(
+    engine: &Arc<Engine>,
+    id: i64,
+    turns: u8,
+    crop: Option<[u16; 4]>,
+) -> CmdResult<()> {
     let crop = crop.map(|[left, top, right, bottom]| Crop {
         left,
         top,
@@ -788,6 +840,43 @@ mod tests {
         assert_eq!(item.albums, vec![album.id]);
         assert_eq!(list_people(&f.engine).unwrap()[0].name, "Ada");
         assert_eq!(list_tags(&f.engine).unwrap()[0].tag, "beach");
+    }
+
+    /// The info panel tells a byte-identical twin from a look-alike, and lists the twins
+    /// first: `orig` and `identical` are the same bytes (`jpeg_pattern` is deterministic in
+    /// its inputs, so calling it twice with the same size produces the same file), while
+    /// `resized` is the same picture at a different size and different bytes - a look-alike,
+    /// not a copy. The second scan and `wait_idle` are load-bearing the way
+    /// `a_scan_finds_the_look_alikes_it_indexed` (`engine.rs`) explains: the look-alike pass
+    /// hashes cached thumbnails, and the first scan's pass can run before the thumbnail
+    /// workers have caught up.
+    #[test]
+    fn the_viewer_lists_identical_copies_before_look_alikes() {
+        use crate::testutil::jpeg_pattern;
+        let f = fixture(&[
+            ("a/orig.jpg", &jpeg_pattern(180, 120)),
+            ("a/identical.jpg", &jpeg_pattern(180, 120)),
+            ("a/resized.jpg", &jpeg_pattern(72, 48)),
+        ]);
+        let watched = f.add_photos();
+        f.engine.thumbs.wait_idle();
+        f.engine.start_scan(watched);
+        f.engine.wait_for_scans();
+
+        let path_of = |id: i64| f.engine.lib.item(id).unwrap().unwrap().path;
+        let orig_id = f
+            .ids()
+            .into_iter()
+            .find(|&id| path_of(id).ends_with("orig.jpg"))
+            .unwrap();
+
+        let item = viewer_item(&f.engine, orig_id).unwrap();
+        assert_eq!(item.copies.len(), 2, "expected one twin and one look-alike");
+        assert!(item.copies[0].path.ends_with("identical.jpg"));
+        assert!(matches!(item.copies[0].kind, CopyKind::Identical));
+        assert!(item.copies[1].path.ends_with("resized.jpg"));
+        assert!(matches!(item.copies[1].kind, CopyKind::Similar));
+        assert_eq!((item.copies[1].width, item.copies[1].height), (72, 48));
     }
 
     /// Gives a scanned photo keywords the way the scanner's metadata backfill writes them.

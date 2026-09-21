@@ -198,6 +198,8 @@ pub fn run() {
             ipc::set_last_folder,
             ipc::slideshow_interval,
             ipc::set_slideshow_interval,
+            ipc::similar_distance,
+            ipc::set_similar_distance,
             ipc::theme,
             ipc::set_theme,
             ipc::grid_tile,

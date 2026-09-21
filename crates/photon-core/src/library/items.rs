@@ -78,7 +78,7 @@ impl Item {
 /// The edit held in a row's `edit_turns` and `edit_crop`. A row that does not make a valid
 /// edit reads as untouched rather than failing the query it is part of: the photo then shows
 /// as it is on disk, which is never wrong.
-fn edit_from_db(turns: i64, crop: Option<i64>) -> Edit {
+pub(super) fn edit_from_db(turns: i64, crop: Option<i64>) -> Edit {
     Edit::new(turns.rem_euclid(4) as u8, crop.map(Crop::from_db)).unwrap_or_default()
 }
 
@@ -131,7 +131,7 @@ fn folder_order(filter: &str) -> String {
 /// driver's filter and the outer filter are spelled, so they cannot drift apart - a
 /// driver placed by one set of rows and a result holding another is how Starred would
 /// silently sort by the wrong photo.
-fn grid_query(select: &str, filter: &str) -> String {
+pub(super) fn grid_query(select: &str, filter: &str) -> String {
     let driver = folder_order(filter);
     format!(
         "SELECT {select}
@@ -167,7 +167,7 @@ pub const RECENT_LIMIT: usize = 500;
 /// `search_entries` appends more columns after this prefix and reads them by index
 /// starting at `GRID_COLUMN_COUNT`: adding a column here shifts those indices, so keep
 /// the two in sync.
-const GRID_COLUMNS: &str = "i.id, i.folder_id, i.taken_at, i.width, i.height, i.orientation, i.kind, i.path, i.size, i.mtime_ms, i.rating, i.edit_turns, i.edit_crop";
+pub(super) const GRID_COLUMNS: &str = "i.id, i.folder_id, i.taken_at, i.width, i.height, i.orientation, i.kind, i.path, i.size, i.mtime_ms, i.rating, i.edit_turns, i.edit_crop";
 
 /// Number of columns selected by `GRID_COLUMNS`. `search_entries` uses this rather than a
 /// bare `13` so a future column added to `GRID_COLUMNS` can't silently shift `file_name`
@@ -333,7 +333,7 @@ impl Library {
                         make = ?12, model = ?13, lens = ?14, focal_mm = ?15, aperture = ?16, exposure_s = ?17, iso = ?18,
                         exif_version = ?19,
                         thumb_state = 0, thumb_error = NULL, missing_since = NULL,
-                        content_hash = NULL
+                        content_hash = NULL, percep_hash = NULL, similar_group = NULL
                  WHERE id = ?1",
             )?;
             for (id, it) in items {
@@ -571,8 +571,15 @@ impl Library {
     pub fn set_item_edit(&self, id: i64, edit: Edit) -> Result<bool> {
         let mut conn = self.writer();
         let tx = conn.transaction()?;
+        // The perceptual hash goes with the thumbnail it was taken from. An edit changes
+        // the picture photon shows - and a look-alike is a fact about the photo as shown -
+        // so a hash kept across one would describe whichever picture happened to be current
+        // when the row was first hashed: crop then hash and it is the crop, hash then crop
+        // and it is the uncropped frame. Clearing makes the row a candidate again, and the
+        // next pass re-hashes it from the thumbnail this write just invalidated.
         let changed = tx.execute(
-            "UPDATE items SET edit_turns = ?2, edit_crop = ?3, thumb_state = 0, thumb_error = NULL
+            "UPDATE items SET edit_turns = ?2, edit_crop = ?3, thumb_state = 0,
+                 thumb_error = NULL, percep_hash = NULL, similar_group = NULL
              WHERE id = ?1 AND NOT (edit_turns = ?2 AND edit_crop IS ?3)",
             params![id, edit.turns, edit.crop.map(Crop::to_db)],
         )?;
@@ -1427,6 +1434,104 @@ mod tests {
             lib.starred_count().unwrap(),
             1,
             "a rescan of the file must not clear a rating set_ratings wrote"
+        );
+    }
+
+    /// A rewritten file must lose both derived hashes, exactly as it loses `content_hash`.
+    /// A row that kept a stale perceptual hash would never be a candidate again, and one
+    /// that kept its group would stay grouped with photos it no longer resembles.
+    #[test]
+    fn replacing_a_file_clears_its_similarity_columns() {
+        let (_dir, lib) = temp_library();
+        let (_watched, folder) = seed_folder(&lib, Path::new("/pics"));
+        let ids = lib
+            .insert_items(&[new_item(folder, "/pics/a.jpg", 1)])
+            .unwrap();
+        let id = ids[0];
+        lib.writer()
+            .execute(
+                "UPDATE items SET percep_hash = 42, similar_group = 7 WHERE id = ?1",
+                [id],
+            )
+            .unwrap();
+
+        // The same row, with new bytes: a size the scanner would report as changed.
+        let replaced = NewItem {
+            size: 999,
+            ..new_item(folder, "/pics/a.jpg", 1)
+        };
+        lib.update_items(&[(id, replaced)]).unwrap();
+
+        let (ph, sg): (Option<i64>, Option<i64>) = lib
+            .reader()
+            .unwrap()
+            .query_row(
+                "SELECT percep_hash, similar_group FROM items WHERE id = ?1",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(ph, None, "percep_hash survived a replacement");
+        assert_eq!(sg, None, "similar_group survived a replacement");
+    }
+
+    /// A look-alike is a fact about the photo as photon shows it, and an edit changes that.
+    /// Kept across one, the stored hash would describe whichever picture was current when
+    /// the row was first hashed - so whether a crop is in the hash would depend on the
+    /// order the user did things in.
+    #[test]
+    fn an_edit_clears_the_photos_look_alike_hash() {
+        let (_dir, lib) = temp_library();
+        let (_watched, folder) = seed_folder(&lib, Path::new("/pics"));
+        let ids = lib
+            .insert_items(&[new_item(folder, "/pics/a.jpg", 1)])
+            .unwrap();
+        let id = ids[0];
+        let hashed = |lib: &crate::library::Library| -> (Option<i64>, Option<i64>) {
+            lib.reader()
+                .unwrap()
+                .query_row(
+                    "SELECT percep_hash, similar_group FROM items WHERE id = ?1",
+                    [id],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .unwrap()
+        };
+        let stamp = |lib: &crate::library::Library| {
+            lib.writer()
+                .execute(
+                    "UPDATE items SET percep_hash = 42, similar_group = 7 WHERE id = ?1",
+                    [id],
+                )
+                .unwrap();
+        };
+
+        stamp(&lib);
+        assert!(lib.set_item_edit(id, Edit::new(1, None).unwrap()).unwrap());
+        assert_eq!(hashed(&lib), (None, None), "a turn kept the old hash");
+
+        // And a crop, which changes the picture rather than only its orientation.
+        stamp(&lib);
+        let crop = Edit::new(
+            1,
+            Some(Crop {
+                left: 0,
+                top: 0,
+                right: (crate::edit::CROP_UNIT / 2) as u16,
+                bottom: crate::edit::CROP_UNIT as u16,
+            }),
+        )
+        .unwrap();
+        assert!(lib.set_item_edit(id, crop).unwrap());
+        assert_eq!(hashed(&lib), (None, None), "a crop kept the old hash");
+
+        // The same edit again writes nothing at all, so nothing to clear.
+        stamp(&lib);
+        assert!(!lib.set_item_edit(id, crop).unwrap());
+        assert_eq!(
+            hashed(&lib),
+            (Some(42), Some(7)),
+            "an edit that changed nothing cleared the hash anyway"
         );
     }
 

@@ -33,6 +33,18 @@ const EXPORT_APPLY_EDITS: &str = "export_apply_edits";
 /// width, so changing what "Large" measures does not have to migrate anyone's setting.
 const GRID_TILE: &str = "grid_tile";
 
+/// How far apart two perceptual hashes may be and still count as the same picture:
+/// 0 off, 3 conservative, 6 loose. Stored as the distance itself rather than a name,
+/// because the distance is what the pass uses and a name would need a second table to
+/// interpret it.
+const SIMILAR_DISTANCE: &str = "similar_distance";
+/// Conservative: the distance at which grouping has complete recall. Derived from that
+/// constant rather than written as 3 beside it - the default *is* that fact, and two copies
+/// of it could be changed apart.
+pub const SIMILAR_DISTANCE_DEFAULT: i64 = crate::similar::EXACT_RECALL_DISTANCE as i64;
+/// Off, conservative, loose. Clamped rather than refused, both ways.
+pub const SIMILAR_DISTANCE_RANGE: std::ops::RangeInclusive<i64> = 0..=6;
+
 /// The user's colour scheme: the desktop's, or one of the two pinned.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -128,6 +140,13 @@ fn clamp_interval(seconds: i64) -> i64 {
     seconds.clamp(
         *SLIDESHOW_INTERVAL_RANGE_S.start(),
         *SLIDESHOW_INTERVAL_RANGE_S.end(),
+    )
+}
+
+fn clamp_distance(distance: i64) -> i64 {
+    distance.clamp(
+        *SIMILAR_DISTANCE_RANGE.start(),
+        *SIMILAR_DISTANCE_RANGE.end(),
     )
 }
 
@@ -227,6 +246,24 @@ impl Library {
         self.set_setting(GRID_TILE, tile.as_str())
     }
 
+    /// How far apart two perceptual hashes may be and still be grouped, in force right now.
+    /// Conservative when never set, and clamped on the way out as well as on the way in:
+    /// the table is plain text an older or newer photon may have written.
+    pub fn similar_distance(&self) -> Result<i64> {
+        let stored = self
+            .setting_i64(SIMILAR_DISTANCE)?
+            .unwrap_or(SIMILAR_DISTANCE_DEFAULT);
+        Ok(clamp_distance(stored))
+    }
+
+    /// Stores the look-alike distance, clamped, and returns what was stored so the caller
+    /// can show the value in force rather than the one asked for.
+    pub fn set_similar_distance(&self, distance: i64) -> Result<i64> {
+        let distance = clamp_distance(distance);
+        self.set_setting(SIMILAR_DISTANCE, &distance.to_string())?;
+        Ok(distance)
+    }
+
     fn setting_i64(&self, key: &str) -> Result<Option<i64>> {
         Ok(self.setting(key)?.and_then(|v| v.parse().ok()))
     }
@@ -286,6 +323,29 @@ mod tests {
         // A value written by something other than the setter is clamped on read.
         lib.set_setting(SLIDESHOW_INTERVAL_S, "0").unwrap();
         assert_eq!(lib.slideshow_interval_s().unwrap(), 1);
+    }
+
+    #[test]
+    fn the_similar_distance_defaults_persists_and_is_clamped_both_ways() {
+        let (_dir, lib) = temp_library();
+        assert_eq!(
+            lib.similar_distance().unwrap(),
+            3,
+            "conservative is the default"
+        );
+        assert_eq!(lib.set_similar_distance(6).unwrap(), 6);
+        assert_eq!(lib.similar_distance().unwrap(), 6);
+        assert_eq!(
+            lib.set_similar_distance(0).unwrap(),
+            0,
+            "off is a real choice"
+        );
+        assert_eq!(lib.set_similar_distance(99).unwrap(), 6, "clamped to loose");
+        assert_eq!(lib.set_similar_distance(-1).unwrap(), 0, "clamped to off");
+        // Written by something other than the setter - clamped on read, as the table is
+        // plain text an older or newer photon may have written.
+        lib.set_setting(SIMILAR_DISTANCE, "40").unwrap();
+        assert_eq!(lib.similar_distance().unwrap(), 6);
     }
 
     #[test]

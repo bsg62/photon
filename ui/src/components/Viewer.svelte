@@ -6,7 +6,7 @@
   import { createTagEditor } from '../lib/tag-editor.svelte';
   import { formatCaption } from '../lib/caption';
   import { createCopyFeedback } from '../lib/copied.svelte';
-  import { cameraRows } from '../lib/exif';
+  import { cameraRows, copyGroups, formatDimensions } from '../lib/exif';
   import { ASPECTS, HANDLES, type Handle } from '../lib/crop';
   import { createCropTool } from '../lib/crop-tool.svelte';
   import { containedBox, faceBox } from '../lib/faces';
@@ -228,6 +228,7 @@
   }
 
   const camera = $derived(item ? cameraRows(item) : []);
+  const copies = $derived(item ? copyGroups(item.copies) : []);
   /** The photo as displayed, orientation applied: the coordinates Picasa's faces are in. */
   const oriented = $derived.by(() => {
     if (!item) return { width: 0, height: 0 };
@@ -800,16 +801,24 @@
       {:else}
         <p class="info-muted">No albums yet. Create one in the sidebar.</p>
       {/if}
-      {#if item.copies.length}
+      {#each copies as group (group.kind)}
         <!-- Absent rather than "none": nearly every photo has no copy, and the panel is
-             long enough. A click locates the copy in the grid, as the menu's Locate does. -->
-        <h3>Identical copies</h3>
+             long enough. A click locates the copy in the grid, as the menu's Locate does.
+             Dimensions are shown only for a look-alike: an identical copy has the same
+             dimensions by definition, but for a look-alike "which one is the big one?" is
+             almost always the next question. -->
+        <h3>{group.label}</h3>
         <ul class="copies">
-          {#each item.copies as copy (copy.id)}
-            <li><button class="info-link" onclick={() => onlocate(copy.id)} title="Locate in photon">{copy.path}</button></li>
+          {#each group.copies as copy (copy.id)}
+            <li>
+              <button class="info-link" onclick={() => onlocate(copy.id)} title="Locate in photon">{copy.path}</button>
+              {#if copy.kind === 'similar'}
+                <span class="info-muted">{formatDimensions(copy.width, copy.height)}</span>
+              {/if}
+            </li>
           {/each}
         </ul>
-      {/if}
+      {/each}
     </aside>
   {/if}
   <!-- The star and the caption share one bottom-centred row, so the star sits where the
@@ -1019,7 +1028,7 @@
   .chips li { display: inline-flex; align-items: center; padding: 2px var(--s-2); background: var(--field); border-radius: 999px; font-size: var(--t-2); }
   .albums { margin: 0; padding: 0; list-style: none; }
   .copies { margin: 0; padding: 0; list-style: none; font-size: var(--t-2); }
-  .copies li { padding: 2px 0; }
+  .copies li { display: flex; align-items: baseline; gap: 6px; padding: 2px 0; }
   .albums label { display: flex; align-items: center; gap: 8px; padding: 2px 0; cursor: pointer; }
   .chip-remove {
     display: grid;

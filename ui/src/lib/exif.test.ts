@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { cameraName, cameraRows, fieldQuery, formatAperture, formatExposure, formatFocal, formatIso } from './exif';
+import type { ItemCopy } from './api';
+import { cameraName, cameraRows, copyGroups, fieldQuery, formatAperture, formatDimensions, formatExposure, formatFocal, formatIso } from './exif';
 
 describe('cameraName', () => {
   it('does not repeat the make when the model already names it', () => {
@@ -69,5 +70,36 @@ describe('fieldQuery', () => {
   it('quotes the value and drops a quote the grammar could not escape', () => {
     expect(fieldQuery('camera', 'NIKON D750')).toBe('camera:"NIKON D750"');
     expect(fieldQuery('lens', ' 7" tele ')).toBe('lens:"7  tele"');
+  });
+});
+
+describe('formatDimensions', () => {
+  it('spells width and height with the multiplication sign', () => {
+    expect(formatDimensions(4000, 3000)).toBe('4000 × 3000');
+  });
+});
+
+describe('copy groups', () => {
+  it('splits copies into identical and look-alike, keeping order', () => {
+    const copies: ItemCopy[] = [
+      { id: 2, path: '/a/b.jpg', kind: 'identical', width: 4000, height: 3000 },
+      { id: 3, path: '/c/d.jpg', kind: 'similar', width: 2048, height: 1536 },
+      { id: 4, path: '/e/f.jpg', kind: 'similar', width: 800, height: 600 },
+    ];
+    expect(copyGroups(copies)).toEqual([
+      { kind: 'identical', label: 'Identical', copies: [copies[0]] },
+      { kind: 'similar', label: 'Looks the same', copies: [copies[1], copies[2]] },
+    ]);
+  });
+
+  it('omits a group with no members', () => {
+    const copies: ItemCopy[] = [
+      { id: 2, path: '/a/b.jpg', kind: 'identical', width: 10, height: 10 },
+    ];
+    expect(copyGroups(copies).map((g) => g.kind)).toEqual(['identical']);
+  });
+
+  it('has nothing to show for a photo with no copies', () => {
+    expect(copyGroups([])).toEqual([]);
   });
 });

@@ -224,6 +224,26 @@ CREATE TABLE saved_searches (
     created_ms INTEGER NOT NULL
 );
 "#,
+    r#"
+-- Look-alikes: photos that are the same picture without being the same bytes - a re-saved
+-- JPEG, an emailed copy at 2048px, a re-export from another program. `content_hash` cannot
+-- see those, and the README says so.
+--
+-- `percep_hash` is a 64-bit difference hash of the photo's own 256px grid thumbnail, so it
+-- costs no decode the thumbnail has not already paid for, and it is of the photo *as photon
+-- shows it* (the thumbnail is keyed by `Item::thumb_key()`, which mixes in the edit).
+-- NULL until that thumbnail exists.
+--
+-- `similar_group` holds the smallest item id in the photo's look-alike group, or NULL when
+-- the photo resembles nothing. It is recomputed wholesale after each scan rather than
+-- updated in place: an incremental version has to reason about a group *splitting* when a
+-- photo is purged, which is the kind of state that goes quietly wrong.
+ALTER TABLE items ADD COLUMN percep_hash INTEGER;
+ALTER TABLE items ADD COLUMN similar_group INTEGER;
+
+-- Serves the widened Duplicates filter. Partial, because almost every row is NULL.
+CREATE INDEX items_similar_group ON items(similar_group) WHERE similar_group IS NOT NULL;
+"#,
 ];
 
 pub fn migrate(conn: &Connection) -> Result<()> {
@@ -475,7 +495,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 11);
+        assert_eq!(version, 12);
         let rules: i64 = conn
             .query_row("SELECT count(*) FROM tag_rules", [], |r| r.get(0))
             .unwrap();
@@ -634,7 +654,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 11);
+        assert_eq!(version, 12);
         let overlay: i64 = conn
             .query_row("SELECT count(*) FROM item_user_tags", [], |r| r.get(0))
             .unwrap();
@@ -684,7 +704,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 11);
+        assert_eq!(version, 12);
         let hash: Option<Vec<u8>> = conn
             .query_row("SELECT content_hash FROM items WHERE id = 1", [], |r| {
                 r.get(0)
@@ -766,5 +786,65 @@ mod tests {
             .query_row("SELECT count(*) FROM albums", [], |r| r.get(0))
             .unwrap();
         assert_eq!(albums, 1);
+    }
+
+    /// The columns arrive empty on a library that already has photos, and the photos
+    /// arrive intact. `content_hash` is set on the seeded row on purpose: it is the column
+    /// the look-alike columns sit beside, and an upgrade that rebuilt the table would lose
+    /// it - every duplicate in the library would have to be hashed again from disk.
+    #[test]
+    fn migration_12_adds_the_similarity_columns_to_an_existing_library() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("library.db");
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        for sql in &MIGRATIONS[..11] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 11i64).unwrap();
+        conn.execute(
+            "INSERT INTO watched_folders (id, path) VALUES (1, '/p')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO folders (id, watched_id, parent_id, path, name, sort_key) \
+             VALUES (1, 1, NULL, '/p', 'p', 'p')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO items (id, folder_id, path, file_name, kind, size, mtime_ms, width, \
+             height, orientation, taken_at, content_hash) \
+             VALUES (1, 1, '/p/a.jpg', 'a.jpg', 0, 1, 1, 1, 1, 1, 1, x'0102')",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+
+        let lib = crate::library::Library::open(&path).unwrap();
+        let conn = lib.reader().unwrap();
+        let (percep, group, content): (Option<i64>, Option<i64>, Option<Vec<u8>>) = conn
+            .query_row(
+                "SELECT percep_hash, similar_group, content_hash FROM items WHERE id = 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            (percep, group),
+            (None, None),
+            "an existing photo must come out of the upgrade ungrouped and unhashed"
+        );
+        assert_eq!(
+            content,
+            Some(vec![1u8, 2]),
+            "the duplicate hash it already had was lost"
+        );
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        // Hardcoded, like every other version assertion here: `MIGRATIONS.len()` would
+        // agree with itself whatever the list did, which is the tripwire removed.
+        assert_eq!(version, 12);
     }
 }

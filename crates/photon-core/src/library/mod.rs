@@ -6,6 +6,7 @@ mod items;
 mod schema;
 mod searches;
 mod settings;
+mod similar;
 mod tags;
 
 pub use albums::{Album, AlbumSummary};
@@ -15,6 +16,7 @@ pub use folders::{Folder, WatchedFolder};
 pub use items::{Item, KnownItem, NewItem, RECENT_LIMIT, is_starred};
 pub use searches::SavedSearch;
 pub use settings::{GridTile, ThemeChoice};
+pub use similar::SimilarCandidate;
 pub use tags::{TagCount, TagRule};
 
 use crate::Result;
@@ -146,7 +148,7 @@ mod tests {
             .unwrap()
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 11);
+        assert_eq!(version, 12);
         let tables: i64 = lib
             .reader()
             .unwrap()
@@ -172,7 +174,7 @@ mod tests {
             Library::open(&path),
             Err(Error::SchemaTooNew {
                 found: 99,
-                supported: 11
+                supported: 12
             })
         ));
     }

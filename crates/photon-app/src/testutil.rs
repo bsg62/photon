@@ -18,6 +18,27 @@ pub fn jpeg(w: u32, h: u32) -> Vec<u8> {
     buf
 }
 
+/// A JPEG of a blocky pattern: the same picture at any size, and unlike `jpeg`'s flat
+/// colour it has structure to recognise it by. The blocks are laid out on the 9x8 grid the
+/// look-alike hash reduces to, so they survive that reduction instead of averaging away.
+/// Give it sizes that are whole multiples of 9 and 8, or the blocks straddle the grid.
+pub fn jpeg_pattern(w: u32, h: u32) -> Vec<u8> {
+    let mut img = image::RgbImage::new(w, h);
+    for (x, y, px) in img.enumerate_pixels_mut() {
+        let v = (((x * 9 / w) * 73 + (y * 8 / h) * 151 + 41) % 256) as u8;
+        *px = image::Rgb([v, 255 - v, v / 2]);
+    }
+    encode_jpeg(img)
+}
+
+fn encode_jpeg(img: image::RgbImage) -> Vec<u8> {
+    let mut buf = Vec::new();
+    image::DynamicImage::ImageRgb8(img)
+        .write_to(&mut Cursor::new(&mut buf), image::ImageFormat::Jpeg)
+        .unwrap();
+    buf
+}
+
 pub struct Fixture {
     pub dir: TempDir,
     pub photos: PathBuf,

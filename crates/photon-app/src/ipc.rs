@@ -91,6 +91,16 @@ pub fn set_slideshow_interval(engine: Eng<'_>, seconds: i64) -> Result<i64, AppE
 }
 
 #[tauri::command(async)]
+pub fn similar_distance(engine: Eng<'_>) -> Result<i64, AppError> {
+    commands::similar_distance(&engine)
+}
+
+#[tauri::command(async)]
+pub fn set_similar_distance(engine: Eng<'_>, distance: i64) -> Result<i64, AppError> {
+    commands::set_similar_distance(engine.inner(), distance)
+}
+
+#[tauri::command(async)]
 pub fn theme(engine: Eng<'_>) -> Result<photon_core::library::ThemeChoice, AppError> {
     commands::theme(&engine)
 }
@@ -237,7 +247,7 @@ pub fn viewer_item(engine: Eng<'_>, id: i64) -> Result<commands::ViewerItem, App
 
 #[tauri::command(async)]
 pub fn rotate_item(engine: Eng<'_>, id: i64, clockwise: bool) -> Result<(), AppError> {
-    commands::rotate_item(&engine, id, clockwise)
+    commands::rotate_item(engine.inner(), id, clockwise)
 }
 
 #[tauri::command(async)]
@@ -247,7 +257,7 @@ pub fn set_item_edit(
     turns: u8,
     crop: Option<[u16; 4]>,
 ) -> Result<(), AppError> {
-    commands::set_item_edit(&engine, id, turns, crop)
+    commands::set_item_edit(engine.inner(), id, turns, crop)
 }
 
 #[tauri::command(async)]

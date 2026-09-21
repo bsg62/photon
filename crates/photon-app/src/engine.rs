@@ -2,7 +2,7 @@
 //! background scans. Plain Rust, so it can be tested without a webview.
 
 use crate::events::{Events, ExportProgress, FolderStatus, LibraryChanged, ScanProgressEvent};
-use crate::watch::WatcherService;
+use crate::watch::{WatcherService, join_within};
 use parking_lot::{Mutex, RwLock};
 use photon_core::{
     Error, Result,
@@ -27,6 +27,12 @@ use std::{
 
 /// Minimum time between grid rebuilds and between progress events during one scan.
 const THROTTLE: Duration = Duration::from_millis(250);
+
+/// How long `shutdown` waits for a look-alike pass in progress to actually stop before
+/// giving up and leaving it to finish on its own. Bounded for the same reason
+/// `watch::STOP_TIMEOUT` is: the pass's `hash_candidates` reads the original photo files,
+/// so a thread stuck on a dead network mount would otherwise mean the app never quits.
+const SIMILAR_PASS_STOP_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// How old the last thumbnail collection may be before startup runs one regardless of
 /// whether anything has orphaned a thumbnail since. See `Library::thumb_gc_due`.
@@ -83,6 +89,9 @@ const EXPORT_PROGRESS_EVERY: Duration = Duration::from_millis(100);
 pub struct Engine {
     pub lib: Arc<Library>,
     pub thumbs: ThumbService,
+    /// The same cache the thumbnail service writes into. Held here because the look-alike
+    /// pass hashes the cached grid thumbnails rather than the photos.
+    cache: Arc<ThumbCache>,
     excluded: Vec<PathBuf>,
     grid: RwLock<(u64, Arc<GridIndex>)>,
     /// Which photos the grid shows (and the view's argument), and a counter that changes
@@ -115,6 +124,10 @@ pub struct Engine {
     /// The handle of the thread spawned by `startup`, if any is still outstanding.
     /// `wait_for_startup` takes it and joins it, and is safe to call more than once.
     startup: Mutex<Option<JoinHandle<()>>>,
+    /// The handle of the thread spawned by `request_similar_pass`, if any is still
+    /// outstanding. Mirrors `startup`: `wait_for_similar_pass` takes it and joins it, and
+    /// is safe to call when none was ever spawned.
+    similar_pass: Mutex<Option<JoinHandle<()>>>,
     /// The running watcher service, if one has been started. `start_watcher` and
     /// `stop_watcher` both take this lock for their whole check-then-act, so a `shutdown`
     /// racing `startup`'s call to `start_watcher` can never miss stopping a service that
@@ -133,7 +146,7 @@ pub struct Engine {
     /// Serialises every write of a photo's edit; see `rotate_item`. A leaf lock: taken
     /// before the library and view locks and never while holding them.
     edit_write: Mutex<()>,
-    /// Held by the one thread running the duplicate-hashing pass; see `hash_duplicates`.
+    /// Held by the one thread running the post-scan hashing passes; see `hash_after_scan`.
     hashing: Mutex<()>,
     /// Set by every scan that ends, cleared by the pass as it starts a round. A scan that
     /// finds the pass already running leaves this behind instead of starting a second one.
@@ -145,7 +158,7 @@ impl Engine {
         std::fs::create_dir_all(&config.cache_dir)?;
         let lib = Arc::new(Library::open(&config.db_path)?);
         let cache = Arc::new(ThumbCache::new(config.cache_dir.clone()));
-        let thumbs = ThumbService::start(lib.clone(), cache, config.workers);
+        let thumbs = ThumbService::start(lib.clone(), cache.clone(), config.workers);
         let mut excluded = vec![config.cache_dir.clone()];
         // The cache root too, not just the thumbnail directory inside it.
         if let Some(cache_root) = config.cache_dir.parent() {
@@ -171,6 +184,7 @@ impl Engine {
         Ok(Arc::new(Self {
             lib,
             thumbs,
+            cache,
             excluded,
             grid: RwLock::new((0, grid)),
             state: Mutex::new(ViewState {
@@ -186,6 +200,7 @@ impl Engine {
             next_token: AtomicU64::new(0),
             shutting_down: AtomicBool::new(false),
             startup: Mutex::new(None),
+            similar_pass: Mutex::new(None),
             watcher: Mutex::new(None),
             ini_write: Mutex::new(()),
             edit_write: Mutex::new(()),
@@ -718,17 +733,26 @@ impl Engine {
     /// front - the user is looking at it - and the grid is rebuilt, because every tile and
     /// the viewer name a thumbnail by that key. An edit identical to the one in place does
     /// neither.
-    pub fn set_item_edit(&self, id: i64, edit: Edit) -> Result<()> {
+    pub fn set_item_edit(self: &Arc<Self>, id: i64, edit: Edit) -> Result<()> {
         let _serialised = self.edit_write.lock();
         self.write_edit(id, edit)
     }
 
     /// `set_item_edit` for a caller already holding `edit_write`.
-    fn write_edit(&self, id: i64, edit: Edit) -> Result<()> {
+    ///
+    /// The pass request is not about the edited row's own hash - that is cleared by the
+    /// write and picked up whenever a pass next runs. It is about the row's former
+    /// *partners*: `set_item_edit` clears one member out of a group without rewriting the
+    /// rest, so a pair becomes a survivor with a stale `similar_group`. `DUPLICATE_FILTER`
+    /// keeps the view honest meanwhile; this is what makes the grouping right again, and
+    /// soon, because an edit is not a file change and so no scan follows it to run a pass
+    /// of its own.
+    fn write_edit(self: &Arc<Self>, id: i64, edit: Edit) -> Result<()> {
         self.live_item(id)?;
         if self.lib.set_item_edit(id, edit)? {
             self.thumbs.prioritize(&[id], Priority::Visible);
             self.refresh_grid()?;
+            self.request_similar_pass();
         }
         Ok(())
     }
@@ -738,7 +762,7 @@ impl Engine {
     /// commands run on a thread pool, and two quick presses of `R` that both read the same
     /// starting edit would come out as one turn. `set_item_edit` takes the same lock, or an
     /// "Original" landing between this read and this write would be turned back on.
-    pub fn rotate_item(&self, id: i64, clockwise: bool) -> Result<()> {
+    pub fn rotate_item(self: &Arc<Self>, id: i64, clockwise: bool) -> Result<()> {
         let _serialised = self.edit_write.lock();
         let item = self.lib.item(id)?.ok_or(Error::NotFound(id))?;
         if item.missing_since.is_some() {
@@ -776,7 +800,7 @@ impl Engine {
 
     /// Stops any scan of the folder, forgets it and everything under it, unregisters its
     /// watch with the running watcher service (if any), and refreshes the grid.
-    pub fn remove_folder(&self, watched_id: i64) -> Result<()> {
+    pub fn remove_folder(self: &Arc<Self>, watched_id: i64) -> Result<()> {
         // Set before the scan is cancelled, so nothing can start one in the window between
         // that and the deletion; cleared however this ends, so a failed removal does not
         // leave the folder unable to scan for the rest of the session.
@@ -786,7 +810,10 @@ impl Engine {
         result
     }
 
-    fn remove_folder_inner(&self, watched_id: i64) -> Result<()> {
+    /// Ends with a look-alike pass for the same reason `write_edit` does: the cascade
+    /// deletes every item under the root, which can leave a photo in *another* root as the
+    /// last member of a group, and removing a folder starts no scan that would run one.
+    fn remove_folder_inner(self: &Arc<Self>, watched_id: i64) -> Result<()> {
         self.cancel_scan(watched_id);
         let path = self
             .lib
@@ -798,7 +825,9 @@ impl Engine {
         if let (Some(service), Some(path)) = (self.watcher_service(), path) {
             service.watch_removed(watched_id, Path::new(&path));
         }
-        self.refresh_grid()
+        self.refresh_grid()?;
+        self.request_similar_pass();
+        Ok(())
     }
 
     /// A clone of the running watcher service's handle, if one is currently running.
@@ -1101,6 +1130,60 @@ impl Engine {
         }
     }
 
+    /// Requests a look-alike regroup at whatever distance is stored right now, on its own
+    /// thread. `set_similar_distance` calls this after writing the setting: the
+    /// `groups_changed` signal `hash_after_scan` already reports gets a regroup to the
+    /// grid, but nothing runs a pass on its own between scans, so without this a distance
+    /// change would sit unseen until some unrelated scan happened to hash something.
+    ///
+    /// Spawned rather than run inline because the caller is the IPC dispatcher, which must
+    /// return immediately - a whole-library regroup blocking it would stall every other
+    /// command. The spawned call goes through `hash_after_scan`'s own
+    /// `hash_requested`/`hashing` machinery, so a request arriving while a pass is already
+    /// running coalesces with it instead of doubling the work.
+    ///
+    /// Cancelled by `shutting_down` rather than a token of its own: a distance change has
+    /// no scan to inherit a cancel from, and tying it to shutdown stops the walk on quit
+    /// instead of grinding through a change nobody is left to see.
+    ///
+    /// Checked and refused here, not left to the cancel flag alone: `shutdown`'s bounded
+    /// wait on `hashing` (below) runs once, and an IPC call landing just after it - already
+    /// shutting down, but not yet exited - would otherwise spawn a fresh writer that wait
+    /// never accounted for.
+    pub fn request_similar_pass(self: &Arc<Self>) {
+        if self.shutting_down.load(Ordering::SeqCst) {
+            return;
+        }
+        let engine = Arc::clone(self);
+        let handle = std::thread::Builder::new()
+            .name("photon-similar-pass".into())
+            .spawn(move || engine.hash_after_scan(&engine.shutting_down))
+            .expect("failed to spawn similar-pass thread");
+        *self.similar_pass.lock() = Some(handle);
+    }
+
+    /// Joins the thread spawned by the most recent `request_similar_pass` call, if one is
+    /// outstanding. Safe to call when none was ever spawned.
+    ///
+    /// This does **not** by itself prove no look-alike pass is still running.
+    /// `hash_after_scan` returns at once when `hashing` is already held elsewhere, so the
+    /// handle stored here can be a thread that did nothing while a different, unrecorded
+    /// thread does the actual work: two requests close together are exactly that case - the
+    /// first thread is still inside `similar::update` when the second overwrites
+    /// `similar_pass` with its own thread, which finds `hashing` held and returns at once.
+    /// Joining *that* handle finishes instantly and proves nothing about the first.
+    /// `shutdown` therefore does not rely on this call for correctness; it waits on
+    /// `hashing` itself afterwards, which identifies whichever thread is actually running
+    /// regardless of which request (or scan) started it. This call exists for the case
+    /// that does discriminate on it: a single request with nothing racing it, where the
+    /// spawned thread is necessarily the one that does the work.
+    pub fn wait_for_similar_pass(&self) {
+        let handle = self.similar_pass.lock().take();
+        if let Some(handle) = handle {
+            let _ = handle.join();
+        }
+    }
+
     /// Stops new scans from starting, cancels every running scan (looping until none are
     /// left, since a scan or `startup` racing this can still insert one after the first
     /// pass), closes the thumbnail queue so its workers finish their current job and stop,
@@ -1122,6 +1205,51 @@ impl Engine {
         self.stop_watcher();
         self.thumbs.close();
         self.wait_for_startup();
+        self.stop_similar_pass(SIMILAR_PASS_STOP_TIMEOUT);
+    }
+
+    /// Waits, within `budget` in total, for every look-alike pass to have stopped.
+    ///
+    /// Two waits, one deadline between them, because either alone is incomplete.
+    ///
+    /// Joining the recorded handle closes a sliver nothing else does: a thread already
+    /// spawned but not yet at its own `try_lock` holds nothing, so the wait on `hashing`
+    /// below would sail past it and it would go on to regroup after `shutdown` returned.
+    /// But the handle need not be the thread doing the work - per `wait_for_similar_pass`'s
+    /// doc, a scan's inline `hash_after_scan` never records one, and a request that lost
+    /// the race for `hashing` records a thread that did nothing - so taking and dropping
+    /// `hashing` itself is what establishes "no pass is running", whichever thread got
+    /// there.
+    ///
+    /// **Both are bounded, against one deadline.** An unbounded join here would defeat the
+    /// bound below in the single-request case, which is the common one: there the recorded
+    /// handle *is* the thread inside `similar::update`, so joining it waits for exactly the
+    /// thread the timeout exists to give up on. `hash_candidates` reads the original photo
+    /// files, so a root on a dead network mount would hang the quit forever - the scenario
+    /// `SIMILAR_PASS_STOP_TIMEOUT` was introduced for - and the bound would have been real
+    /// only in the interleaving where the recorded handle is a no-op thread. Sharing one
+    /// deadline keeps the total within the stated bound rather than twice it.
+    ///
+    /// `budget` is a parameter rather than the constant read directly so a test can drive
+    /// this with a short one; `shutdown` is its only caller.
+    fn stop_similar_pass(&self, budget: Duration) {
+        let deadline = Instant::now() + budget;
+        let handle = self.similar_pass.lock().take();
+        if let Some(handle) = handle
+            && join_within(
+                vec![handle],
+                deadline.saturating_duration_since(Instant::now()),
+            ) > 0
+        {
+            tracing::warn!("a requested look-alike pass did not stop in time; detaching it");
+        }
+        match self.hashing.try_lock_until(deadline) {
+            Some(guard) => drop(guard),
+            None => tracing::warn!(
+                "a look-alike pass did not stop within {budget:?}; \
+                 leaving it to finish on its own"
+            ),
+        }
     }
 
     fn run_scan(&self, watched: &WatchedFolder, subtree: Option<PathBuf>, cancel: Arc<AtomicBool>) {
@@ -1199,13 +1327,29 @@ impl Engine {
         // library with many duplicates on a slow drive that is minutes during which the
         // status bar should not claim the folder is still being scanned.
         if !cancelled {
-            self.hash_duplicates(&cancel);
+            self.hash_after_scan(&cancel);
         }
     }
 
-    /// Hashes the files that may be duplicates (`photon_core::duplicates`) and rebuilds the
-    /// grid if any row took a hash, since the Duplicates view and its count are built from
-    /// them.
+    /// Runs the two passes the Duplicates view is built from - the byte-identical one
+    /// (`photon_core::duplicates`, which hashes files) and the look-alike one
+    /// (`photon_core::similar`, which hashes cached thumbnails and regroups) - and rebuilds
+    /// the grid if either changed what the view shows.
+    ///
+    /// The two passes are gated differently, and that asymmetry is load-bearing, not an
+    /// oversight to tidy up. `hash_candidates` (the byte-identical half) hashes rows whose
+    /// `content_hash` is read straight into `DUPLICATE_FILTER` at query time, so hashing a
+    /// row can by itself change who has a twin - `Ok(_)` there refreshes unconditionally.
+    /// `photon_core::similar::update`'s hash half writes `percep_hash`, which appears in no
+    /// view filter and no `GridInfo` field; membership in Duplicates comes only from the
+    /// *materialised* `similar_group` the regroup half writes. So `pass.hashed > 0` can
+    /// never itself change what any grid shows, and gating on it only rebuilt the grid for
+    /// no reason - which is what a rescan that hashes a newly-thumbnailed, unstarred photo
+    /// did, moving the version and failing
+    /// `a_rescan_after_set_star_agrees_with_what_photon_wrote`. `pass.groups_changed` is
+    /// the one signal that means the view moved: a regroup that hashes nothing still moves
+    /// photos into and out of the view (changing the distance setting is exactly that), so
+    /// the refresh is gated on `groups_changed` alone.
     ///
     /// Here rather than in the scanner because a duplicate is a fact about the whole
     /// library, not about the root or subtree one scan walked - and because `walk_tree` has
@@ -1213,6 +1357,10 @@ impl Engine {
     /// It runs after *every* scan, changed rows or not: the first scan after the upgrade
     /// that added the column touches nothing and still has the whole library to hash. With
     /// nothing to do it is one indexed query.
+    ///
+    /// One guard covers both passes, in order: a photo is a look-alike candidate only once
+    /// its thumbnail exists, and nothing in the duplicate pass changes that, so the order is
+    /// only about keeping the cheap whole-library regroup last.
     ///
     /// One pass at a time. Several roots finish their startup scans close together, and two
     /// passes would read the same files twice. A scan that finds the pass running sets
@@ -1224,7 +1372,7 @@ impl Engine {
     /// `cancel` is the calling scan's. Cancelling it (its folder is being removed, or photon
     /// is shutting down) stops the pass even though the files may belong to other roots;
     /// the next scan of anything picks the work up.
-    fn hash_duplicates(&self, cancel: &AtomicBool) {
+    fn hash_after_scan(&self, cancel: &AtomicBool) {
         self.hash_requested.store(true, Ordering::Release);
         loop {
             let Some(guard) = self.hashing.try_lock() else {
@@ -1239,6 +1387,22 @@ impl Engine {
                         }
                     }
                     Err(err) => tracing::warn!(%err, "duplicate hashing failed"),
+                }
+                let distance = match self.lib.similar_distance() {
+                    Ok(distance) => distance as u32,
+                    Err(err) => {
+                        tracing::warn!(%err, "could not read the look-alike distance setting");
+                        photon_core::similar::EXACT_RECALL_DISTANCE
+                    }
+                };
+                match photon_core::similar::update(&self.lib, &self.cache, distance, cancel) {
+                    Ok(pass) if pass.groups_changed => {
+                        if let Err(err) = self.refresh_grid() {
+                            tracing::warn!(%err, "grid refresh failed");
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(err) => tracing::warn!(%err, "look-alike hashing failed"),
                 }
             }
             drop(guard);
@@ -1318,7 +1482,7 @@ impl Drop for TestScanSlot {
 mod tests {
     use super::*;
     use crate::events::Recorded;
-    use crate::testutil::{fixture, jpeg};
+    use crate::testutil::{fixture, jpeg, jpeg_pattern};
     use photon_core::media::ThumbState;
 
     /// An edit travels the whole refresh chain: the row, a new grid version, and a tile
@@ -1377,6 +1541,327 @@ mod tests {
         let item = crate::commands::viewer_item(&f.engine, ids[0]).unwrap();
         assert_eq!(item.copies.len(), 1);
         assert_eq!(item.copies[0].id, ids[1]);
+    }
+
+    /// The look-alike pass is wired into the same end-of-scan guard, and reaches the same
+    /// places: two files that are one picture at two sizes share no byte and no size, so
+    /// only the look-alike pass can put them in the Duplicates view.
+    ///
+    /// The two flat photos are the case `pairs_with_anything` exists for: they are distance
+    /// 0 from each other and from every other blank frame, and must be in no group at all.
+    /// They are different sizes, so nothing but the look-alike pass could pair them.
+    ///
+    /// The second scan is what makes this deterministic rather than a race: the pass hashes
+    /// cached thumbnails, and the first scan's pass runs while the thumbnail workers are
+    /// still going. By the time `wait_idle` returns every thumbnail is on disk, and the
+    /// scan after it has all four to hash. **Any future test that asserts on
+    /// `duplicate_count` with structured fixtures needs the same `wait_idle` and second
+    /// scan**: the race is not fixed, only invisible to fixtures whose flat colours are
+    /// never grouped whenever the pass happens to run.
+    #[test]
+    fn a_scan_finds_the_look_alikes_it_indexed() {
+        let f = fixture(&[
+            ("a/big.jpg", &jpeg_pattern(180, 120)),
+            ("a/small.jpg", &jpeg_pattern(72, 48)),
+            ("a/blank.jpg", &jpeg(60, 40)),
+            ("a/blanker.jpg", &jpeg(30, 20)),
+        ]);
+        let watched = f.add_photos();
+        f.engine.thumbs.wait_idle();
+        f.engine.start_scan(watched);
+        f.engine.wait_for_scans();
+
+        let info = crate::commands::grid_info(&f.engine);
+        assert_eq!(
+            info.duplicate_count, 2,
+            "the resized copy is not a look-alike, or the blank frames were grouped"
+        );
+
+        f.engine.set_view(GridView::Duplicates).unwrap();
+        let ids = f.ids();
+        assert_eq!(ids.len(), 2);
+        let paths: Vec<String> = ids
+            .iter()
+            .map(|id| f.engine.lib.item(*id).unwrap().unwrap().path)
+            .collect();
+        assert!(paths.iter().any(|p| p.ends_with("big.jpg")));
+        assert!(paths.iter().any(|p| p.ends_with("small.jpg")));
+    }
+
+    /// A regroup that hashes nothing still moves photos into and out of the Duplicates
+    /// view, so it has to rebuild the grid too. Gated on rows hashed, as it was first
+    /// written, the view stays as it was until some unrelated scan happens to hash a row -
+    /// and changing the distance setting (Task 6) is precisely a regroup that hashes
+    /// nothing, so the user would change it and see the view not move.
+    ///
+    /// Staged rather than scanned, because the hashing is what has to be seen *not* to
+    /// happen: the groups are cleared behind the engine and the grid refreshed to match, so
+    /// the view genuinely holds nothing before the pass restores it.
+    #[test]
+    fn a_regroup_that_hashes_nothing_still_rebuilds_the_grid() {
+        let f = fixture(&[
+            ("a/big.jpg", &jpeg_pattern(180, 120)),
+            ("a/small.jpg", &jpeg_pattern(72, 48)),
+        ]);
+        let watched = f.add_photos();
+        f.engine.thumbs.wait_idle();
+        f.engine.start_scan(watched);
+        f.engine.wait_for_scans();
+        f.engine.set_view(GridView::Duplicates).unwrap();
+        assert_eq!(f.ids().len(), 2, "the pair was not grouped to begin with");
+
+        f.engine.lib.set_similar_groups(&[]).unwrap();
+        f.engine.refresh_grid().unwrap();
+        assert_eq!(f.ids().len(), 0);
+
+        f.engine.hash_after_scan(&AtomicBool::new(false));
+
+        assert_eq!(
+            f.ids().len(),
+            2,
+            "the regroup restored the groups but left the grid showing the old ones"
+        );
+    }
+
+    /// Nothing but `request_similar_pass` runs a pass between scans, so a distance change
+    /// on its own would sit unseen until an unrelated scan happened by. `set_similar_distance`
+    /// (`commands.rs`) calls it after writing the setting; this drives that same path (not
+    /// `hash_after_scan` directly) and waits for the pass with `wait_for_similar_pass`,
+    /// which is safe here because nothing else is requesting a pass concurrently - see that
+    /// method's own doc for the case where it would not be.
+    ///
+    /// Distance 0 is "off": a resized copy is never pixel-identical to its original, so at
+    /// distance 0 the pair that groups at the default distance 3 must not.
+    #[test]
+    fn changing_the_similar_distance_requests_its_own_regroup() {
+        let f = fixture(&[
+            ("a/big.jpg", &jpeg_pattern(180, 120)),
+            ("a/small.jpg", &jpeg_pattern(72, 48)),
+        ]);
+        let watched = f.add_photos();
+        f.engine.thumbs.wait_idle();
+        f.engine.start_scan(watched);
+        f.engine.wait_for_scans();
+        f.engine.set_view(GridView::Duplicates).unwrap();
+        assert_eq!(
+            f.ids().len(),
+            2,
+            "grouped at the default (conservative) distance"
+        );
+
+        crate::commands::set_similar_distance(&f.engine, 0).unwrap();
+        f.engine.wait_for_similar_pass();
+
+        assert_eq!(
+            f.ids().len(),
+            0,
+            "the setting change alone should have taken the pair out of the view"
+        );
+    }
+
+    /// A photo's stored `similar_group`, or `None`. The group column is what a pass leaves
+    /// behind, so it is what a test about *requesting* a pass has to read: the Duplicates
+    /// view itself is kept honest by `DUPLICATE_FILTER` whether or not a pass ever runs.
+    fn stored_group(f: &crate::testutil::Fixture, id: i64) -> Option<i64> {
+        f.engine
+            .lib
+            .similar_groups()
+            .unwrap()
+            .into_iter()
+            .find(|(item, _)| *item == id)
+            .map(|(_, group)| group)
+    }
+
+    /// An edit takes one photo out of its group, and nothing else. No file changed, so no
+    /// scan follows and no pass would otherwise run: the partner keeps a `similar_group`
+    /// naming a group it is now alone in, all session. `write_edit` requests a pass for
+    /// that reason, not for the edited row's own hash.
+    ///
+    /// Rotating is what makes the assertion stable: `dhash` is deliberately not
+    /// rotation-invariant, so even once the turned photo's thumbnail is re-rendered and
+    /// hashed, the two do not group again.
+    #[test]
+    fn an_edit_requests_a_pass_so_the_partner_loses_its_stale_group() {
+        let f = fixture(&[
+            ("a/big.jpg", &jpeg_pattern(180, 120)),
+            ("a/small.jpg", &jpeg_pattern(72, 48)),
+        ]);
+        let watched = f.add_photos();
+        f.engine.thumbs.wait_idle();
+        f.engine.start_scan(watched);
+        f.engine.wait_for_scans();
+        let ids = f.ids();
+        assert_eq!(ids.len(), 2);
+        assert!(
+            stored_group(&f, ids[0]).is_some(),
+            "not grouped to begin with"
+        );
+
+        f.engine.rotate_item(ids[0], true).unwrap();
+        f.engine.wait_for_similar_pass();
+
+        assert_eq!(
+            stored_group(&f, ids[1]),
+            None,
+            "the unedited partner kept a group it is the only member of"
+        );
+    }
+
+    /// The same hole by the other route, and the one that survives a restart least
+    /// gracefully: removing a root cascade-deletes its items, which can leave a photo in
+    /// *another* root as its group's last member. Two roots are the point - removing the
+    /// only root leaves no row to be wrong about.
+    #[test]
+    fn removing_a_folder_requests_a_pass_for_the_photos_left_in_other_roots() {
+        let f = fixture(&[("a/big.jpg", &jpeg_pattern(180, 120))]);
+        let other = f.dir.path().join("more-photos");
+        std::fs::create_dir_all(&other).unwrap();
+        std::fs::write(other.join("small.jpg"), jpeg_pattern(72, 48)).unwrap();
+        let first = f.add_photos();
+        let second = f.engine.add_folder(&other).unwrap();
+        f.engine.wait_for_scans();
+        f.engine.thumbs.wait_idle();
+        f.engine.start_scan(first);
+        f.engine.wait_for_scans();
+
+        let ids = f.ids();
+        assert_eq!(ids.len(), 2);
+        let survivors: Vec<i64> = ids
+            .iter()
+            .copied()
+            .filter(|id| {
+                !f.engine
+                    .lib
+                    .item(*id)
+                    .unwrap()
+                    .unwrap()
+                    .path
+                    .ends_with("small.jpg")
+            })
+            .collect();
+        assert_eq!(survivors.len(), 1);
+        assert!(
+            stored_group(&f, survivors[0]).is_some(),
+            "not grouped to begin with"
+        );
+
+        f.engine.remove_folder(second.id).unwrap();
+        f.engine.wait_for_similar_pass();
+
+        assert_eq!(
+            stored_group(&f, survivors[0]),
+            None,
+            "the photo in the surviving root kept a group whose other member is gone"
+        );
+    }
+
+    /// `set_similar_distance` must return without waiting for the regroup: it runs on the
+    /// IPC dispatcher, and a whole-library pass blocking it would stall every other
+    /// command. Holding `hashing` here from the test thread makes that provable rather than
+    /// timed: the spawned pass thread can never acquire it and so can never finish, so if
+    /// the command waited for the pass inline it would deadlock and this test would hang
+    /// until the harness times it out, instead of returning.
+    #[test]
+    fn set_similar_distance_returns_without_waiting_for_the_pass() {
+        let f = fixture(&[("a.jpg", &jpeg(4, 2))]);
+        f.add_photos();
+
+        let held = f.engine.hashing.lock();
+        let clamped = crate::commands::set_similar_distance(&f.engine, 6).unwrap();
+        assert_eq!(clamped, 6, "the write itself still happens");
+        drop(held);
+
+        f.engine.wait_for_similar_pass();
+    }
+
+    /// The interleaving `wait_for_similar_pass` alone cannot cover: a thread (standing in
+    /// for one already inside `similar::update`) holds `hashing`, then a second
+    /// `request_similar_pass` call spawns a thread whose own `try_lock` fails at once and
+    /// which is therefore the handle `similar_pass` stores and `wait_for_similar_pass`
+    /// joins - instantly, having done nothing. If `shutdown` relied on that join alone it
+    /// would return while the first thread is still "running" (here, still holding the
+    /// lock); it must instead still be waiting on `hashing` itself.
+    #[test]
+    fn shutdown_waits_for_the_pass_actually_holding_hashing_not_just_the_latest_requested_thread() {
+        let f = fixture(&[("a.jpg", &jpeg(4, 2))]);
+        f.add_photos();
+
+        let held = f.engine.hashing.lock();
+        f.engine.request_similar_pass();
+        f.engine.wait_for_similar_pass(); // joins the no-op thread; proves nothing by itself
+
+        let engine = Arc::clone(&f.engine);
+        let shutdown = std::thread::spawn(move || engine.shutdown());
+        std::thread::sleep(Duration::from_millis(150));
+        assert!(
+            !shutdown.is_finished(),
+            "shutdown returned before the pass actually holding `hashing` had stopped"
+        );
+
+        drop(held);
+        shutdown.join().unwrap();
+    }
+
+    /// The bound `shutdown` promises is over *both* its waits, and the join is the one that
+    /// could quietly remove it. In the single-request case (a distance change, then a
+    /// quit) the recorded handle is the thread running the pass, so an unbounded join would
+    /// wait for exactly the thread `SIMILAR_PASS_STOP_TIMEOUT` exists to give up on, and an
+    /// app whose photos are on a dead mount would never quit.
+    ///
+    /// Both halves are made to time out here: a recorded thread that will not finish until
+    /// the test releases it, and `hashing` held by the test thread. With both bounded
+    /// against one deadline the call returns after the budget; with the join unbounded it
+    /// never returns at all, and with two separate budgets it would take twice as long.
+    #[test]
+    fn stopping_a_pass_is_bounded_across_both_of_its_waits() {
+        let f = fixture(&[("a.jpg", &jpeg(4, 2))]);
+        f.add_photos();
+
+        let release = Arc::new(AtomicBool::new(false));
+        let stuck = Arc::clone(&release);
+        *f.engine.similar_pass.lock() = Some(std::thread::spawn(move || {
+            while !stuck.load(Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }));
+        let held = f.engine.hashing.lock();
+
+        let engine = Arc::clone(&f.engine);
+        let budget = Duration::from_millis(200);
+        let started = Instant::now();
+        let stopping = std::thread::spawn(move || engine.stop_similar_pass(budget));
+        while !stopping.is_finished() {
+            assert!(
+                started.elapsed() < Duration::from_secs(3),
+                "stop_similar_pass outran its budget of {budget:?}"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        stopping.join().unwrap();
+        assert!(
+            started.elapsed() < budget * 2,
+            "the two waits were budgeted separately, not against one deadline"
+        );
+
+        drop(held);
+        release.store(true, Ordering::SeqCst);
+    }
+
+    /// An IPC call can land after `shutdown` has already set `shutting_down` and run its
+    /// bounded wait on `hashing`, but before the process actually exits. Without this check
+    /// that call would spawn a fresh writer `shutdown` never accounted for.
+    #[test]
+    fn request_similar_pass_is_a_no_op_once_shutting_down() {
+        let f = fixture(&[("a.jpg", &jpeg(4, 2))]);
+        f.add_photos();
+        f.engine.shutdown();
+
+        f.engine.request_similar_pass();
+
+        assert!(
+            f.engine.similar_pass.lock().is_none(),
+            "a request arriving after shutdown must not spawn a thread"
+        );
     }
 
     /// Both readers of `excluded` compare it against a canonical path - `add_watched_folder`
@@ -1890,11 +2375,19 @@ mod tests {
         // by the next scan's Picasa pass, which sets every row from the file. A DB-only
         // implementation fails here twice over - the scan clears the star and, having
         // changed a row, bumps the version.
+        //
+        // `wait_idle` before the rescan is what makes this deterministic rather than a race
+        // against the thumbnail workers: it lets the rescan's look-alike pass find the
+        // photo's thumbnail already cached and hash it, which is exactly the case PR #70
+        // regressed on macOS CI - hashing a row through a gate reading `pass.hashed > 0`
+        // rebuilt the grid for nothing, since `percep_hash` decides no view. Without this
+        // call the pass sees no thumbnail yet on most runs and the bug is invisible here.
         let img = jpeg(16, 16);
         let f = fixture(&[("a.jpg", &img)]);
         let watched = f.add_photos();
         let id = f.ids()[0];
         f.engine.set_star(id, true).unwrap();
+        f.engine.thumbs.wait_idle();
         let version = f.engine.grid().0;
 
         f.engine.start_scan(watched);

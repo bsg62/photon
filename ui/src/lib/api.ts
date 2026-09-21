@@ -86,7 +86,14 @@ export interface ViewerItem {
 }
 /** `crop` is `[left, top, right, bottom]` in 1/65535ths of the turned picture. */
 export interface ItemEdit { turns: number; crop: [number, number, number, number] | null }
-export interface ItemCopy { id: number; path: string }
+export type CopyKind = 'identical' | 'similar';
+export interface ItemCopy {
+  id: number;
+  path: string;
+  kind: CopyKind;
+  width: number;
+  height: number;
+}
 export interface Person { hash: string; name: string; count: number }
 /** What one export came to. Mirrors `ExportReport` in `commands.rs`. `failed` counts a photo
  *  that has gone from the library since the grid was built as well as one that could not be
@@ -159,6 +166,9 @@ export const api = {
   slideshowInterval: () => invoke<number>('slideshow_interval'),
   /** Resolves to the clamped value the backend stored. */
   setSlideshowInterval: (seconds: number) => invoke<number>('set_slideshow_interval', { seconds }),
+  similarDistance: () => invoke<number>('similar_distance'),
+  /** Resolves to the clamped value the backend stored. */
+  setSimilarDistance: (distance: number) => invoke<number>('set_similar_distance', { distance }),
   theme: () => invoke<ThemeChoice>('theme'),
   setTheme: (choice: ThemeChoice) => invoke<void>('set_theme', { choice }),
   gridTile: () => invoke<GridTile>('grid_tile'),

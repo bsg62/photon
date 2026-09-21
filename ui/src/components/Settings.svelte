@@ -18,6 +18,15 @@
     { value: 'dark', label: 'Dark' },
   ];
 
+  /** The Hamming distance the backend stores directly (see the design doc): there is no
+   *  name-to-distance table to keep in step, and a value outside these three is clamped by
+   *  the backend the way an unknown theme falls back. */
+  const SIMILAR_DISTANCES: { value: number; label: string; hint: string }[] = [
+    { value: 0, label: 'Off', hint: 'Only byte-identical files count as duplicates.' },
+    { value: 3, label: 'Conservative', hint: 'Finds close look-alikes reliably. The default.' },
+    { value: 6, label: 'Loose', hint: 'Finds most look-alikes, not all of them.' },
+  ];
+
   // Seeded from the prop once: the dialog is mounted fresh each time it opens, and the
   // section list is the user's to drive after that.
   // svelte-ignore state_referenced_locally
@@ -89,6 +98,24 @@
       .then((s) => (interval = s))
       .catch(library.reportError);
   });
+
+  /** The Hamming distance Off/Conservative/Loose means. Null until read, for the same reason
+   *  `interval` is: the control must not show a value that is not the stored one. */
+  let similarDistance = $state<number | null>(null);
+
+  onMount(() => {
+    api
+      .similarDistance()
+      .then((d) => (similarDistance = d))
+      .catch(library.reportError);
+  });
+
+  function setSimilarDistance(distance: number) {
+    api
+      .setSimilarDistance(distance)
+      .then((stored) => (similarDistance = stored))
+      .catch(library.reportError);
+  }
 
   /** On `change`, not `input`: the backend clamps, and clamping "1" on the way to typing
    *  "15" would fight the user. What comes back is what was stored, so an out-of-range
@@ -243,6 +270,9 @@
         <button class:active={current === 'slideshow'} aria-current={current === 'slideshow'} onclick={() => (current = 'slideshow')}>
           Slideshow
         </button>
+        <button class:active={current === 'duplicates'} aria-current={current === 'duplicates'} onclick={() => (current = 'duplicates')}>
+          Duplicates
+        </button>
         <button class:active={current === 'about'} aria-current={current === 'about'} onclick={() => (current = 'about')}>
           About
         </button>
@@ -369,6 +399,29 @@
             <input type="number" min="1" max="60" step="1" value={interval ?? ''} disabled={interval === null} onchange={saveInterval} />
             seconds
           </label>
+        {:else if current === 'duplicates'}
+          <h2>Find look-alikes</h2>
+          <p class="hint">
+            The Duplicates view already finds files that are byte-for-byte the same. This widens it to
+            photos that are the same picture after a resize or a re-save, compared as shown - an edit
+            counts as the one photo it came from, not a look-alike of it.
+          </p>
+          <div class="segmented" role="group" aria-label="Find look-alikes">
+            {#each SIMILAR_DISTANCES as option (option.value)}
+              <button
+                aria-pressed={similarDistance === option.value}
+                class:checked={similarDistance === option.value}
+                disabled={similarDistance === null}
+                onclick={() => setSimilarDistance(option.value)}
+              >
+                {option.label}
+              </button>
+            {/each}
+          </div>
+          {#if similarDistance !== null}
+            {@const chosen = SIMILAR_DISTANCES.find((o) => o.value === similarDistance) ?? SIMILAR_DISTANCES[1]}
+            <p class="hint">{chosen.hint}</p>
+          {/if}
         {:else}
           <h2>About</h2>
           {#if info}
