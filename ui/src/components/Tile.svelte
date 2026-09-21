@@ -120,8 +120,10 @@
   /* Inside the box, not an outline around it: the grid scrolls a row flush to the top of
      its container on ArrowUp, and Recent's first row starts at 0, so anything outside the
      tile is clipped there. The thin surface-coloured line inside the accent keeps the ring
-     legible over a photo of the accent's own blue. From the class and not from focus -
-     tiles are tabindex="-1", and tokens.css takes the focus ring off those. */
+     legible over a photo of the accent's own blue. From the class and not from focus - a
+     tile is tabindex="-1" and never script-focused, so it deliberately carries no
+     `.focus-container` (tokens.css scopes the focus-ring suppression to that class): a
+     tile relies on never being focused, not on a ring being hidden after the fact. */
   .tile.selected::after {
     content: '';
     position: absolute;

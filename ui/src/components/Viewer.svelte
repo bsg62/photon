@@ -623,7 +623,7 @@
 <!-- Dark in both themes, so a photo is always judged against the same ground. tokens.css's
      theme blocks match any element, so this subtree resolves the dark tokens. -->
 <div
-  class="viewer"
+  class="viewer focus-container"
   class:quiet={slideshow.idle}
   data-theme="dark"
   role="dialog"
@@ -874,7 +874,7 @@
   {/if}
   {#if menu && item}
     <div
-      class="menu"
+      class="menu focus-container"
       role="menu"
       tabindex="-1"
       bind:this={menuEl}

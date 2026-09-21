@@ -96,7 +96,11 @@
   outline-offset: 2px;
 }
 /* Containers focused from script - the viewer, the settings dialog, an open menu - so that
-   keys reach them. A ring around the whole window says nothing. */
-[tabindex='-1']:focus-visible {
+   keys reach them. A ring around the whole window says nothing.
+
+   Scoped to `.focus-container` rather than to every `tabindex='-1'`: a roving-tabindex
+   widget's items carry that attribute too, and an unscoped rule takes their focus ring
+   away, which leaves a keyboard user with no indication of where they are. */
+.focus-container[tabindex='-1']:focus-visible {
   outline: none;
 }

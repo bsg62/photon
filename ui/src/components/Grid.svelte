@@ -557,7 +557,7 @@
 {#if menu}
   {@const albumId = library.info.view === 'album' ? library.info.album : null}
   <div
-    class="menu"
+    class="menu focus-container"
     role="menu"
     tabindex="-1"
     bind:this={menuEl}
