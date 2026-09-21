@@ -7,8 +7,8 @@ use photon_core::{
     edit::{Crop, Edit},
     grid::{GridEntry, GridView, Section, hex_key},
     library::{
-        Album, AlbumSummary, Folder, ItemFace, Person, SavedSearch, TagCount, TagRule, ThemeChoice,
-        WatchedFolder, is_starred,
+        Album, AlbumSummary, Folder, GridTile, ItemFace, Person, SavedSearch, TagCount, TagRule,
+        ThemeChoice, WatchedFolder, is_starred,
     },
     media::ThumbState,
     now_ms,
@@ -405,6 +405,15 @@ pub fn theme(engine: &Engine) -> CmdResult<ThemeChoice> {
 
 pub fn set_theme(engine: &Engine, choice: ThemeChoice) -> CmdResult<()> {
     Ok(engine.lib.set_theme(choice)?)
+}
+
+/// How large the grid draws its tiles.
+pub fn grid_tile(engine: &Engine) -> CmdResult<GridTile> {
+    Ok(engine.lib.grid_tile()?)
+}
+
+pub fn set_grid_tile(engine: &Engine, tile: GridTile) -> CmdResult<()> {
+    Ok(engine.lib.set_grid_tile(tile)?)
 }
 
 pub fn set_visible(engine: &Engine, ids: &[i64]) {

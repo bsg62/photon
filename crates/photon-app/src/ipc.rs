@@ -104,6 +104,19 @@ pub fn set_theme(
 }
 
 #[tauri::command(async)]
+pub fn grid_tile(engine: Eng<'_>) -> Result<photon_core::library::GridTile, AppError> {
+    commands::grid_tile(&engine)
+}
+
+#[tauri::command(async)]
+pub fn set_grid_tile(
+    engine: Eng<'_>,
+    tile: photon_core::library::GridTile,
+) -> Result<(), AppError> {
+    commands::set_grid_tile(&engine, tile)
+}
+
+#[tauri::command(async)]
 pub fn set_grid_view(engine: Eng<'_>, view: photon_core::grid::GridView) -> Result<(), AppError> {
     commands::set_grid_view(&engine, view)
 }

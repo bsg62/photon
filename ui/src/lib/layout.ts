@@ -3,10 +3,24 @@
 
 import type { GridView, Section } from './api';
 
-export const TILE = 160;
+export type TileSize = 'small' | 'medium' | 'large';
+
+/** How wide a tile is at each step, in CSS pixels.
+ *
+ *  Every step is at or below 256, which is `ThumbSize::Grid`'s maximum edge. The cache key
+ *  is the photo's fingerprint while the cache *directory* is what separates the sizes, so
+ *  raising that maximum without renaming the directory would silently serve already-cached
+ *  256px files at the new size - soft forever, with nothing to say why. A step above 256
+ *  needs its own `ThumbSize` variant, not a larger `Grid`. */
+export const TILE_WIDTH: Record<TileSize, number> = { small: 120, medium: 160, large: 224 };
+
 export const GAP = 8;
 export const HEADER = 32;
-export const TILE_ROW = TILE + GAP;
+
+/** A tile row's full height: the tile plus the gutter under it. */
+export function tileRow(tile: number): number {
+  return tile + GAP;
+}
 
 export interface SectionLike {
   folderId: number;
@@ -26,8 +40,8 @@ export interface Row {
   height: number;
 }
 
-export function columnsFor(width: number): number {
-  return Math.max(1, Math.floor((width + GAP) / TILE_ROW));
+export function columnsFor(width: number, tile: number): number {
+  return Math.max(1, Math.floor((width + GAP) / tileRow(tile)));
 }
 
 /** The sections the grid lays out for `view`, which are not always the index's own.
@@ -56,7 +70,12 @@ export function layoutSections(view: GridView, sections: Section[], len: number)
   ];
 }
 
-export function buildRows(sections: SectionLike[], columns: number, headers = true): Row[] {
+export function buildRows(
+  sections: SectionLike[],
+  columns: number,
+  headers: boolean,
+  tile: number,
+): Row[] {
   const rows: Row[] = [];
   let top = 0;
   sections.forEach((s, section) => {
@@ -66,8 +85,8 @@ export function buildRows(sections: SectionLike[], columns: number, headers = tr
     }
     const end = s.offset + s.count;
     for (let first = s.offset; first < end; first += columns) {
-      rows.push({ kind: 'tiles', section, first, count: Math.min(columns, end - first), top, height: TILE_ROW });
-      top += TILE_ROW;
+      rows.push({ kind: 'tiles', section, first, count: Math.min(columns, end - first), top, height: tileRow(tile) });
+      top += tileRow(tile);
     }
   });
   return rows;
@@ -163,12 +182,12 @@ export interface Rect {
  *  Ranges rather than a list of offsets because that is what the backend fetch takes
  *  (`fetchIds`), and because a band over a whole row is one range whatever the column count.
  *
- *  A row's tiles occupy `top..top + TILE`, not `top + TILE_ROW`: the gap below a row belongs
- *  to no tile, so a band drawn entirely inside it selects nothing rather than both
+ *  A row's tiles occupy `top..top + tile`, not `top + tileRow(tile)`: the gap below a row
+ *  belongs to no tile, so a band drawn entirely inside it selects nothing rather than both
  *  neighbours. Headers are not photos and are skipped.
  *
  *  `rect` may be given in any corner order; it is normalised here. */
-export function itemsInRect(rows: Row[], rect: Rect): [number, number][] {
+export function itemsInRect(rows: Row[], rect: Rect, tile: number): [number, number][] {
   const left = Math.min(rect.x0, rect.x1);
   const right = Math.max(rect.x0, rect.x1);
   const top = Math.min(rect.y0, rect.y1);
@@ -177,14 +196,14 @@ export function itemsInRect(rows: Row[], rect: Rect): [number, number][] {
   const ranges: [number, number][] = [];
   for (const row of rows) {
     if (row.kind !== 'tiles') continue;
-    if (row.top + TILE < top || row.top > bottom) continue;
-    // Tile k spans GAP + k*TILE_ROW .. + TILE, and touching counts. `firstColumn` measures
-    // from each tile's *right* edge, so a band whose left edge lies in the gap after tile k
-    // starts at k+1 rather than at k; `lastColumn` measures from the left edges and is
-    // clamped to what this row actually holds, which is what stops a band running off the
-    // end of a short last row into the next one's offsets.
-    const firstColumn = Math.max(0, Math.ceil((left - GAP - TILE) / TILE_ROW));
-    const lastColumn = Math.min(row.count - 1, Math.floor((right - GAP) / TILE_ROW));
+    if (row.top + tile < top || row.top > bottom) continue;
+    // Tile k spans GAP + k*tileRow(tile) .. + tile, and touching counts. `firstColumn`
+    // measures from each tile's *right* edge, so a band whose left edge lies in the gap
+    // after tile k starts at k+1 rather than at k; `lastColumn` measures from the left edges
+    // and is clamped to what this row actually holds, which is what stops a band running off
+    // the end of a short last row into the next one's offsets.
+    const firstColumn = Math.max(0, Math.ceil((left - GAP - tile) / tileRow(tile)));
+    const lastColumn = Math.min(row.count - 1, Math.floor((right - GAP) / tileRow(tile)));
     if (lastColumn < firstColumn) continue;
     const from = row.first + firstColumn;
     const to = row.first + lastColumn;
@@ -222,4 +241,20 @@ export function edgeScrollSpeed(
   if (y < top + band) return -max * Math.min(1, (top + band - y) / band);
   if (y > bottom - band) return max * Math.min(1, (y - (bottom - band)) / band);
   return 0;
+}
+
+/** The grid offset of the first photo in the row at the top of the viewport, or null when
+ *  the grid has no rows.
+ *
+ *  This is how the grid keeps your place when the tile size changes: every row's `top`
+ *  moves, so a scroll position kept as a number points somewhere else afterwards, and a
+ *  grid that jumps to a different year when the tiles grow is worse than no size control
+ *  at all. The offset is read here from the layout as it was, and `Grid.svelte` scrolls to
+ *  it in the layout as it is through its own `scrollToOffset(offset, 'start')` - which puts
+ *  a section's header back at the top rather than the first row under it, so a header row
+ *  answering with the offset of the section it heads (the photo the eye is on) round-trips
+ *  to what the eye actually saw. */
+export function firstVisibleOffset(rows: Row[], scrollTop: number): number | null {
+  if (rows.length === 0) return null;
+  return rows[rowIndexAt(rows, scrollTop)].first;
 }

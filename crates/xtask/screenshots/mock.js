@@ -133,6 +133,8 @@
     export_items: (args) => ({ written: (args.ids || []).length, failed: 0, reason: null }),
     remove_items_tag: (args) => ({ tag: args.tag, count: (args.ids || []).length }),
     theme: () => P.get('theme') || 'system',
+    grid_tile: () => P.get('tile') || 'medium',
+    set_grid_tile: () => null,
   };
 
   // Commands that change something: a screenshot never needs their answer, so they get null.

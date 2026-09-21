@@ -162,6 +162,13 @@ describe('the structure of tokens.css', () => {
       expect(css).not.toMatch(new RegExp(`${name}\\s*:`));
     }
   });
+
+  it('the focus-ring suppression is scoped to containers, not to every tabindex=-1', () => {
+    // A roving-tabindex widget's items carry tabindex="-1" too. An unscoped rule strips
+    // their focus ring and the keyboard user has no idea where they are.
+    expect(css).not.toMatch(/^\[tabindex='-1'\]:focus-visible/m);
+    expect(css).toMatch(/\.focus-container\[tabindex='-1'\]:focus-visible/);
+  });
 });
 
 describe('the two themes', () => {

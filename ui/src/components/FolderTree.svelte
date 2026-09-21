@@ -405,7 +405,7 @@
 {#if menu}
   {@const folder = menu.folder}
   <div
-    class="menu"
+    class="menu focus-container"
     role="menu"
     tabindex="-1"
     bind:this={menuEl}
@@ -428,7 +428,7 @@
 {#if albumMenu}
   {@const album = albumMenu.album}
   <div
-    class="menu"
+    class="menu focus-container"
     role="menu"
     tabindex="-1"
     bind:this={albumMenuEl}
@@ -444,7 +444,7 @@
 {#if searchMenu}
   {@const search = searchMenu.search}
   <div
-    class="menu"
+    class="menu focus-container"
     role="menu"
     tabindex="-1"
     bind:this={searchMenuEl}

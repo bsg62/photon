@@ -3,6 +3,7 @@
   // `open` is already this component's name for opening the viewer.
   import { open as pickFolder } from '@tauri-apps/plugin-dialog';
   import { api } from './lib/api';
+  import { gridSize } from './lib/app-grid-size.svelte';
   import { theme } from './lib/app-theme.svelte';
   import { locateItem } from './lib/folders';
   import { library } from './lib/library.svelte';
@@ -18,6 +19,7 @@
   import Grid from './components/Grid.svelte';
   import SearchBar from './components/SearchBar.svelte';
   import Settings from './components/Settings.svelte';
+  import SizeControl from './components/SizeControl.svelte';
   import ExportDialog from './components/ExportDialog.svelte';
   import StatusBar from './components/StatusBar.svelte';
   import TagPicker from './components/TagPicker.svelte';
@@ -85,9 +87,13 @@
     library.init().catch(library.reportError);
     // `init` reports its own failures; theme-boot.js has already set the first frame.
     void theme.init();
+    // Same lifecycle as the theme, and for the same reason: a module singleton that has to
+    // come back to life when App remounts.
+    void gridSize.init();
     return () => {
       library.dispose();
       theme.dispose();
+      gridSize.dispose();
     };
   });
 
@@ -228,6 +234,7 @@
 <div class="app" style:--sidebar-width="{sidebarWidth}px">
   <div class="topbar" inert={covered}>
     <SearchBar />
+    <SizeControl />
     <button class="gear" bind:this={gear} aria-label="Settings" title="Settings" onclick={() => openSettings('folders')}
       ><Icon name="settings" size={18} /></button
     >
@@ -293,6 +300,9 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
+    /* The size control sits between the search bar and the gear, and `space-between` alone
+       would leave it touching the gear: the gap is what keeps the three apart. */
+    gap: var(--s-2);
     padding-right: var(--s-2);
     background: var(--chrome);
     border-bottom: 1px solid var(--line);
