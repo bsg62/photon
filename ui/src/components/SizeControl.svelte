@@ -31,7 +31,10 @@
      the way its theme control does - `border`, `cursor` and `transition` below are restated
      from that rule for exactly that reason, so the two controls compute to the same
      appearance. Do not delete them as redundant; nothing else here supplies them. */
-  .segmented { display: inline-flex; gap: 2px; padding: 2px; border-radius: var(--r-3); background: var(--field); }
+  /* `flex: 0 0 auto` because this is a flex item of the top bar, whose other child (the
+     search bar) is the one meant to give: with the default `flex-shrink: 1` a narrow window
+     squeezes the three segments until "Medium" wraps onto two lines. */
+  .segmented { display: inline-flex; flex: 0 0 auto; gap: 2px; padding: 2px; border-radius: var(--r-3); background: var(--field); }
   .segmented button {
     padding: 4px 14px;
     border: 0;

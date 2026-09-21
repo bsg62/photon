@@ -300,6 +300,9 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
+    /* The size control sits between the search bar and the gear, and `space-between` alone
+       would leave it touching the gear: the gap is what keeps the three apart. */
+    gap: var(--s-2);
     padding-right: var(--s-2);
     background: var(--chrome);
     border-bottom: 1px solid var(--line);
