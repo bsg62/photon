@@ -1,7 +1,7 @@
 /** Formatting for the viewer's info panel. Pure, so every spelling is pinned by a test;
  *  the backend stores the raw numbers and derives nothing. */
 
-import type { ViewerItem } from './api';
+import type { CopyKind, ItemCopy, ViewerItem } from './api';
 
 /** One line of the info panel. */
 export interface InfoRow {
@@ -76,4 +76,33 @@ export function cameraRows(item: Pick<ViewerItem, 'make' | 'model' | 'lens' | 'f
   if (item.iso) exposure.push(formatIso(item.iso));
   if (exposure.length) rows.push({ label: 'Exposure', value: exposure.join(' · ') });
   return rows;
+}
+
+/** "4000 × 3000": kept out of component markup on purpose. `no-literals.test.ts` forbids the
+ *  `×` glyph in a `.svelte` file's text, so a look-alike's dimensions are spelled here, in a
+ *  module the test can see past. */
+export function formatDimensions(width: number, height: number): string {
+  return `${width} × ${height}`;
+}
+
+/** One section of the info panel's copies list. */
+export interface CopyGroup {
+  kind: CopyKind;
+  label: string;
+  copies: ItemCopy[];
+}
+
+const COPY_GROUP_LABELS: Record<CopyKind, string> = {
+  identical: 'Identical',
+  similar: 'Looks the same',
+};
+
+/** `copies` is already identical-first and de-duplicated (`viewer_item`); this only splits
+ *  it into the two sections the panel renders, keeping that order. A group with nothing in
+ *  it is left out rather than shown empty, the same way the panel omits the whole section
+ *  for a photo with no copies at all. */
+export function copyGroups(copies: ItemCopy[]): CopyGroup[] {
+  return (Object.keys(COPY_GROUP_LABELS) as CopyKind[])
+    .map((kind) => ({ kind, label: COPY_GROUP_LABELS[kind], copies: copies.filter((c) => c.kind === kind) }))
+    .filter((group) => group.copies.length > 0);
 }
