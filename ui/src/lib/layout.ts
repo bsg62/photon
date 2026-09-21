@@ -196,12 +196,7 @@ export function itemsInRect(rows: Row[], rect: Rect, tile: number = TILE_WIDTH.m
   const ranges: [number, number][] = [];
   for (const row of rows) {
     if (row.kind !== 'tiles') continue;
-    // Both ends need a genuine (non-zero-height) overlap with the tile, not just a touching
-    // boundary: a rect whose bottom edge lands exactly on the next row's top - the same pixel
-    // as the end of this row's own gap - shares no visible pixel with that row's tile, so it
-    // must not pull it in. `<=`/`>=` on both sides is what stops that row leaking into a
-    // range that never covered any of its height.
-    if (row.top + tile <= top || row.top >= bottom) continue;
+    if (row.top + tile < top || row.top > bottom) continue;
     // Tile k spans GAP + k*tileRow(tile) .. + tile, and touching counts. `firstColumn`
     // measures from each tile's *right* edge, so a band whose left edge lies in the gap
     // after tile k starts at k+1 rather than at k; `lastColumn` measures from the left edges

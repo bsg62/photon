@@ -230,13 +230,29 @@ describe('itemsInRect at other tile sizes', () => {
 
     it(`${size}: a band over one column of two rows merges into one range`, () => {
       const tall = buildRows([{ folderId: 1, offset: 0, count: 9 }], 3, false, tile);
-      expect(itemsInRect(tall, rect(0, 0, 1000, 2 * row), tile)).toEqual([[0, 5]]);
+      // 2 * row lands exactly on row 2's own top edge, and touching counts on the vertical
+      // axis (as it does on the horizontal one), so a bottom edge placed there would also
+      // take row 2 - not what this case means to show. Backing off by 1px keeps the band
+      // inside the gap after row 1, so it covers exactly the two rows the name promises.
+      expect(itemsInRect(tall, rect(0, 0, 1000, 2 * row - 1), tile)).toEqual([[0, 5]]);
     });
 
     it(`${size}: the last short row does not run into the next section`, () => {
       expect(itemsInRect(rows, rect(0, row + 1, 1000, row + tile), tile)).toEqual([[3, 4]]);
     });
   }
+});
+
+describe('itemsInRect touching a row edge', () => {
+  // Touching counts on the vertical axis as well as the horizontal one: a zero-height
+  // band - a click - on a tile's own top or bottom edge is on the tile. The first row's
+  // top edge is y=0, so a rule that excluded a touching edge would drop a click there.
+  it.each(['small', 'medium', 'large'] as const)('%s: a click on a row edge selects that row', (size) => {
+    const tile = TILE_WIDTH[size];
+    const rows = buildRows([{ folderId: 1, offset: 0, count: 3 }], 3, false, tile);
+    expect(itemsInRect(rows, { x0: 10, y0: 0, x1: 10, y1: 0 }, tile)).toEqual([[0, 0]]);
+    expect(itemsInRect(rows, { x0: 10, y0: tile, x1: 10, y1: tile }, tile)).toEqual([[0, 0]]);
+  });
 });
 
 describe('keeping your place across a size change', () => {
