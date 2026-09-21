@@ -59,7 +59,7 @@
 <!-- Not in the tab order: the grid already scrolls from the keyboard, and the sidebar's
      year groups are the keyboard's way to a year. The role is for what a pointer does. -->
 <div
-  class="timeline focus-container"
+  class="timeline"
   bind:this={el}
   bind:clientHeight={strip}
   role="slider"
