@@ -80,6 +80,15 @@ pub fn group(hashes: &[(i64, u64)], distance: u32) -> Vec<(i64, i64)> {
     // different bands do not collide into one bucket.
     let mut buckets: HashMap<(u32, u16), Vec<usize>> = HashMap::new();
     for (index, (_, hash)) in hashes.iter().enumerate() {
+        // A picture with no structure is compared with nothing, so it never reaches a
+        // bucket and never lands in the output: every lens-cap shot, blank scan and
+        // near-black frame in a library hashes the same way, so they are all distance 0
+        // from each other, and one union-find group would swallow the lot. The user would
+        // be shown twenty unrelated dark frames as one set of look-alikes and asked which
+        // to delete - the opposite of the "never waste your time" this view promises.
+        if is_featureless(*hash) {
+            continue;
+        }
         for band in 0..BANDS {
             let shift = band * BAND_BITS;
             let key = ((hash >> shift) & 0xffff) as u16;
@@ -119,6 +128,16 @@ pub fn group(hashes: &[(i64, u64)], distance: u32) -> Vec<(i64, i64)> {
         }
     }
     out
+}
+
+/// Whether a hash says nothing about its picture.
+///
+/// Both values mean "no pixel is brighter than its right-hand neighbour anywhere" - `0` as
+/// the comparison is written, `u64::MAX` as it would read with the sense reversed. Pinning
+/// the reversed value too costs one comparison and keeps this true of the hash's meaning
+/// rather than of today's spelling of `dhash`.
+fn is_featureless(hash: u64) -> bool {
+    hash == 0 || hash == u64::MAX
 }
 
 fn find(parent: &mut [usize], mut node: usize) -> usize {
@@ -295,7 +314,10 @@ mod tests {
 
     #[test]
     fn a_photo_with_no_look_alike_is_not_in_any_group() {
-        let out = group(&[(1, 0x0000_0000_0000_0000), (2, 0xffff_ffff_ffff_ffff)], 3);
+        // Two hashes as far apart as two hashes get, both with plenty of structure - a pair
+        // of featureless hashes would be left out by `is_featureless` before the distance
+        // was ever measured, and this test is about the distance.
+        let out = group(&[(1, 0xffff_ffff_0000_0000), (2, 0x0000_0000_ffff_ffff)], 3);
         assert!(out.is_empty());
     }
 
@@ -311,9 +333,11 @@ mod tests {
     #[test]
     fn groups_are_transitive() {
         // A~B and B~C at distance 3 each, A~C at 6 - all three must land in one group.
-        let a = 0u64;
-        let b = 0b111u64;
-        let c = 0b111_111u64;
+        // Built on a base with structure rather than on zero, which `is_featureless` drops
+        // before any of them is compared.
+        let a = 0xffff_0000u64;
+        let b = a ^ 0b111u64;
+        let c = a ^ 0b111_111u64;
         let mut out = group(&[(1, a), (2, b), (3, c)], 3);
         out.sort();
         assert_eq!(out, vec![(1, 1), (2, 1), (3, 1)]);
@@ -352,6 +376,31 @@ mod tests {
         }
     }
 
+    /// Every flat picture hashes to the same value, so they are all distance 0 from each
+    /// other: without the featureless skip, one group swallows every lens-cap shot, blank
+    /// scan and near-black frame in the library, and the user is asked which of twenty
+    /// unrelated dark frames to delete.
+    #[test]
+    fn a_picture_with_no_structure_is_a_look_alike_of_nothing() {
+        let mut out = group(
+            &[
+                (1, dhash(&picture(400, 300))),
+                (2, dhash(&picture(100, 75))),
+                (3, 0),        // a lens cap
+                (4, 0),        // and another, from a different day
+                (5, u64::MAX), // the same emptiness, with the comparison read the other way
+                (6, u64::MAX),
+            ],
+            EXACT_RECALL_DISTANCE,
+        );
+        out.sort();
+        assert_eq!(
+            out,
+            vec![(1, 1), (2, 1)],
+            "a picture with no structure was grouped"
+        );
+    }
+
     #[test]
     fn distance_zero_groups_nothing() {
         let out = group(&[(1, 5), (2, 5)], 0);
@@ -371,12 +420,16 @@ mod tests {
         let (_w, folder) = seed_folder(&lib, &photos);
         let cache = ThumbCache::new(dir.path().join("cache"));
 
-        // Small fixtures: a thin-ish pair proves the resize claim as well as a big one, and
-        // a debug build encodes and decodes these in milliseconds.
+        // The blocky pattern is the pair, not the gradient: `picture`'s hash has only two or
+        // three bits set, so a gradient pair would group partly for having nothing in it,
+        // and this test would still pass if `dhash` returned near-nothing for everything.
+        // The pattern's hash has 46 bits set, so the pair groups on structure that survived
+        // the resize. Their sizes are whole multiples of the 9x8 reduction grid, so the
+        // blocks land on it at both resolutions rather than straddling it.
         let files = [
-            ("big.jpg", picture(600, 400), 10, 100),
-            ("small.jpg", picture(150, 100), 11, 101),
-            ("other.jpg", unrelated_pattern(300, 200), 12, 102),
+            ("big.jpg", unrelated_pattern(180, 120), 10, 100),
+            ("small.jpg", unrelated_pattern(72, 48), 11, 101),
+            ("other.jpg", picture(300, 200), 12, 102),
         ];
         let mut items = Vec::new();
         for (name, img, size, mtime) in &files {

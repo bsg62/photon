@@ -1338,7 +1338,7 @@ impl Drop for TestScanSlot {
 mod tests {
     use super::*;
     use crate::events::Recorded;
-    use crate::testutil::{fixture, jpeg, jpeg_pattern, jpeg_picture};
+    use crate::testutil::{fixture, jpeg, jpeg_pattern};
     use photon_core::media::ThumbState;
 
     /// An edit travels the whole refresh chain: the row, a new grid version, and a tile
@@ -1378,12 +1378,7 @@ mod tests {
     #[test]
     fn a_scan_finds_the_duplicates_it_indexed() {
         let same = jpeg(4, 2);
-        // A different picture, not a padded copy of `same`: a flat colour is a look-alike of
-        // every other flat colour, so a third solid JPEG would join the pair through the
-        // look-alike pass and this test would stop being about byte-identical files. The
-        // padding stays, since two JPEGs can encode to the same byte size and only a file
-        // with a size of its own is left out of the duplicate pass on its own merits.
-        let mut padded = jpeg_pattern(36, 24);
+        let mut padded = same.clone();
         padded.extend_from_slice(b"a size of its own");
         let f = fixture(&[
             ("a/one.jpg", &same),
@@ -1408,6 +1403,10 @@ mod tests {
     /// places: two files that are one picture at two sizes share no byte and no size, so
     /// only the look-alike pass can put them in the Duplicates view.
     ///
+    /// The two flat photos are the case `is_featureless` exists for: they are distance 0
+    /// from each other and from every other blank frame, and must be in no group at all.
+    /// They are different sizes, so nothing but the look-alike pass could pair them.
+    ///
     /// The second scan is what makes this deterministic rather than a race: the pass hashes
     /// cached thumbnails, and the first scan's pass runs while the thumbnail workers are
     /// still going. By the time `wait_idle` returns every thumbnail is on disk, and the
@@ -1415,9 +1414,10 @@ mod tests {
     #[test]
     fn a_scan_finds_the_look_alikes_it_indexed() {
         let f = fixture(&[
-            ("a/big.jpg", &jpeg_picture(180, 120)),
-            ("a/small.jpg", &jpeg_picture(45, 30)),
-            ("a/other.jpg", &jpeg_pattern(60, 40)),
+            ("a/big.jpg", &jpeg_pattern(180, 120)),
+            ("a/small.jpg", &jpeg_pattern(72, 48)),
+            ("a/blank.jpg", &jpeg(60, 40)),
+            ("a/blanker.jpg", &jpeg(30, 20)),
         ]);
         let watched = f.add_photos();
         f.engine.thumbs.wait_idle();
@@ -1427,7 +1427,7 @@ mod tests {
         let info = crate::commands::grid_info(&f.engine);
         assert_eq!(
             info.duplicate_count, 2,
-            "the resized copy is not a look-alike"
+            "the resized copy is not a look-alike, or the blank frames were grouped"
         );
 
         f.engine.set_view(GridView::Duplicates).unwrap();
