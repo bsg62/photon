@@ -91,6 +91,16 @@ pub fn set_slideshow_interval(engine: Eng<'_>, seconds: i64) -> Result<i64, AppE
 }
 
 #[tauri::command(async)]
+pub fn similar_distance(engine: Eng<'_>) -> Result<i64, AppError> {
+    commands::similar_distance(&engine)
+}
+
+#[tauri::command(async)]
+pub fn set_similar_distance(engine: Eng<'_>, distance: i64) -> Result<i64, AppError> {
+    commands::set_similar_distance(engine.inner(), distance)
+}
+
+#[tauri::command(async)]
 pub fn theme(engine: Eng<'_>) -> Result<photon_core::library::ThemeChoice, AppError> {
     commands::theme(&engine)
 }

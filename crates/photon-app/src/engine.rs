@@ -118,6 +118,10 @@ pub struct Engine {
     /// The handle of the thread spawned by `startup`, if any is still outstanding.
     /// `wait_for_startup` takes it and joins it, and is safe to call more than once.
     startup: Mutex<Option<JoinHandle<()>>>,
+    /// The handle of the thread spawned by `request_similar_pass`, if any is still
+    /// outstanding. Mirrors `startup`: `wait_for_similar_pass` takes it and joins it, and
+    /// is safe to call when none was ever spawned.
+    similar_pass: Mutex<Option<JoinHandle<()>>>,
     /// The running watcher service, if one has been started. `start_watcher` and
     /// `stop_watcher` both take this lock for their whole check-then-act, so a `shutdown`
     /// racing `startup`'s call to `start_watcher` can never miss stopping a service that
@@ -190,6 +194,7 @@ impl Engine {
             next_token: AtomicU64::new(0),
             shutting_down: AtomicBool::new(false),
             startup: Mutex::new(None),
+            similar_pass: Mutex::new(None),
             watcher: Mutex::new(None),
             ini_write: Mutex::new(()),
             edit_write: Mutex::new(()),
@@ -1105,6 +1110,41 @@ impl Engine {
         }
     }
 
+    /// Requests a look-alike regroup at whatever distance is stored right now, on its own
+    /// thread. `set_similar_distance` calls this after writing the setting: the
+    /// `groups_changed` signal `hash_after_scan` already reports gets a regroup to the
+    /// grid, but nothing runs a pass on its own between scans, so without this a distance
+    /// change would sit unseen until some unrelated scan happened to hash something.
+    ///
+    /// Spawned rather than run inline because the caller is the IPC dispatcher, which must
+    /// return immediately - a whole-library regroup blocking it would stall every other
+    /// command. The spawned call goes through `hash_after_scan`'s own
+    /// `hash_requested`/`hashing` machinery, so a request arriving while a pass is already
+    /// running coalesces with it instead of doubling the work.
+    ///
+    /// Cancelled by `shutting_down` rather than a token of its own: a distance change has
+    /// no scan to inherit a cancel from, and tying it to shutdown stops the walk on quit
+    /// instead of grinding through a change nobody is left to see.
+    pub fn request_similar_pass(self: &Arc<Self>) {
+        let engine = Arc::clone(self);
+        let handle = std::thread::Builder::new()
+            .name("photon-similar-pass".into())
+            .spawn(move || engine.hash_after_scan(&engine.shutting_down))
+            .expect("failed to spawn similar-pass thread");
+        *self.similar_pass.lock() = Some(handle);
+    }
+
+    /// Blocks until the thread spawned by `request_similar_pass` has finished, if one is
+    /// outstanding. Safe to call when none was ever spawned. Used by `shutdown`, so the
+    /// process never exits mid-regroup, and by tests that need the requested pass to have
+    /// landed before asserting on the grid.
+    pub fn wait_for_similar_pass(&self) {
+        let handle = self.similar_pass.lock().take();
+        if let Some(handle) = handle {
+            let _ = handle.join();
+        }
+    }
+
     /// Stops new scans from starting, cancels every running scan (looping until none are
     /// left, since a scan or `startup` racing this can still insert one after the first
     /// pass), closes the thumbnail queue so its workers finish their current job and stop,
@@ -1126,6 +1166,7 @@ impl Engine {
         self.stop_watcher();
         self.thumbs.close();
         self.wait_for_startup();
+        self.wait_for_similar_pass();
     }
 
     fn run_scan(&self, watched: &WatchedFolder, subtree: Option<PathBuf>, cancel: Arc<AtomicBool>) {
@@ -1254,8 +1295,13 @@ impl Engine {
                     }
                     Err(err) => tracing::warn!(%err, "duplicate hashing failed"),
                 }
-                // Task 6 replaces this with the user's setting, `self.lib.similar_distance()`.
-                let distance = photon_core::similar::EXACT_RECALL_DISTANCE;
+                let distance = match self.lib.similar_distance() {
+                    Ok(distance) => distance as u32,
+                    Err(err) => {
+                        tracing::warn!(%err, "could not read the look-alike distance setting");
+                        photon_core::similar::EXACT_RECALL_DISTANCE
+                    }
+                };
                 match photon_core::similar::update(&self.lib, &self.cache, distance, cancel) {
                     Ok(pass) if pass.hashed > 0 || pass.groups_changed => {
                         if let Err(err) = self.refresh_grid() {
@@ -1481,6 +1527,41 @@ mod tests {
             f.ids().len(),
             2,
             "the regroup restored the groups but left the grid showing the old ones"
+        );
+    }
+
+    /// Nothing but `request_similar_pass` runs a pass between scans, so a distance change
+    /// on its own would sit unseen until an unrelated scan happened by. `set_similar_distance`
+    /// (`commands.rs`) calls it after writing the setting; this drives that same path and
+    /// waits for the spawned thread rather than calling `hash_after_scan` directly, so it
+    /// also proves the request does not run on the calling (IPC) thread.
+    ///
+    /// Distance 0 is "off": a resized copy is never pixel-identical to its original, so at
+    /// distance 0 the pair that groups at the default distance 3 must not.
+    #[test]
+    fn changing_the_similar_distance_requests_its_own_regroup() {
+        let f = fixture(&[
+            ("a/big.jpg", &jpeg_pattern(180, 120)),
+            ("a/small.jpg", &jpeg_pattern(72, 48)),
+        ]);
+        let watched = f.add_photos();
+        f.engine.thumbs.wait_idle();
+        f.engine.start_scan(watched);
+        f.engine.wait_for_scans();
+        f.engine.set_view(GridView::Duplicates).unwrap();
+        assert_eq!(
+            f.ids().len(),
+            2,
+            "grouped at the default (conservative) distance"
+        );
+
+        crate::commands::set_similar_distance(&f.engine, 0).unwrap();
+        f.engine.wait_for_similar_pass();
+
+        assert_eq!(
+            f.ids().len(),
+            0,
+            "the setting change alone should have taken the pair out of the view"
         );
     }
 

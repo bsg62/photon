@@ -122,6 +122,8 @@
     app_info: () => ({ version: '0.0.0', libraryPath: '/home/ada/.local/share/photon/library.db', licence: 'MIT' }),
     last_folder: () => null,
     slideshow_interval: () => 4,
+    similar_distance: () => 3,
+    set_similar_distance: (a) => a.distance,
     set_search_query: (args) => {
       searchQuery = args.query || '';
       return null;

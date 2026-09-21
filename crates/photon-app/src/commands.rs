@@ -398,6 +398,21 @@ pub fn set_slideshow_interval(engine: &Engine, seconds: i64) -> CmdResult<i64> {
     Ok(engine.lib.set_slideshow_interval_s(seconds)?)
 }
 
+/// How far apart two perceptual hashes may be and still count as the same picture.
+pub fn similar_distance(engine: &Engine) -> CmdResult<i64> {
+    Ok(engine.lib.similar_distance()?)
+}
+
+/// Stores the look-alike distance, returns the clamped value now in force, and requests a
+/// regroup at it: the pass that reaches the grid runs at the end of a scan, and nothing
+/// else runs one, so without the request a changed setting would sit unseen until the next
+/// unrelated scan.
+pub fn set_similar_distance(engine: &Arc<Engine>, distance: i64) -> CmdResult<i64> {
+    let clamped = engine.lib.set_similar_distance(distance)?;
+    engine.request_similar_pass();
+    Ok(clamped)
+}
+
 /// The colour scheme the user chose.
 pub fn theme(engine: &Engine) -> CmdResult<ThemeChoice> {
     Ok(engine.lib.theme()?)

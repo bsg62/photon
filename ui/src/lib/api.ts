@@ -159,6 +159,9 @@ export const api = {
   slideshowInterval: () => invoke<number>('slideshow_interval'),
   /** Resolves to the clamped value the backend stored. */
   setSlideshowInterval: (seconds: number) => invoke<number>('set_slideshow_interval', { seconds }),
+  similarDistance: () => invoke<number>('similar_distance'),
+  /** Resolves to the clamped value the backend stored. */
+  setSimilarDistance: (distance: number) => invoke<number>('set_similar_distance', { distance }),
   theme: () => invoke<ThemeChoice>('theme'),
   setTheme: (choice: ThemeChoice) => invoke<void>('set_theme', { choice }),
   gridTile: () => invoke<GridTile>('grid_tile'),
