@@ -333,7 +333,7 @@ impl Library {
                         make = ?12, model = ?13, lens = ?14, focal_mm = ?15, aperture = ?16, exposure_s = ?17, iso = ?18,
                         exif_version = ?19,
                         thumb_state = 0, thumb_error = NULL, missing_since = NULL,
-                        content_hash = NULL
+                        content_hash = NULL, percep_hash = NULL, similar_group = NULL
                  WHERE id = ?1",
             )?;
             for (id, it) in items {
@@ -1428,6 +1428,44 @@ mod tests {
             1,
             "a rescan of the file must not clear a rating set_ratings wrote"
         );
+    }
+
+    /// A rewritten file must lose both derived hashes, exactly as it loses `content_hash`.
+    /// A row that kept a stale perceptual hash would never be a candidate again, and one
+    /// that kept its group would stay grouped with photos it no longer resembles.
+    #[test]
+    fn replacing_a_file_clears_its_similarity_columns() {
+        let (_dir, lib) = temp_library();
+        let (_watched, folder) = seed_folder(&lib, Path::new("/pics"));
+        let ids = lib
+            .insert_items(&[new_item(folder, "/pics/a.jpg", 1)])
+            .unwrap();
+        let id = ids[0];
+        lib.writer()
+            .execute(
+                "UPDATE items SET percep_hash = 42, similar_group = 7 WHERE id = ?1",
+                [id],
+            )
+            .unwrap();
+
+        // The same row, with new bytes: a size the scanner would report as changed.
+        let replaced = NewItem {
+            size: 999,
+            ..new_item(folder, "/pics/a.jpg", 1)
+        };
+        lib.update_items(&[(id, replaced)]).unwrap();
+
+        let (ph, sg): (Option<i64>, Option<i64>) = lib
+            .reader()
+            .unwrap()
+            .query_row(
+                "SELECT percep_hash, similar_group FROM items WHERE id = ?1",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(ph, None, "percep_hash survived a replacement");
+        assert_eq!(sg, None, "similar_group survived a replacement");
     }
 
     #[test]
