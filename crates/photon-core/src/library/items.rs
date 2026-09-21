@@ -131,7 +131,7 @@ fn folder_order(filter: &str) -> String {
 /// driver's filter and the outer filter are spelled, so they cannot drift apart - a
 /// driver placed by one set of rows and a result holding another is how Starred would
 /// silently sort by the wrong photo.
-fn grid_query(select: &str, filter: &str) -> String {
+pub(super) fn grid_query(select: &str, filter: &str) -> String {
     let driver = folder_order(filter);
     format!(
         "SELECT {select}
@@ -167,7 +167,7 @@ pub const RECENT_LIMIT: usize = 500;
 /// `search_entries` appends more columns after this prefix and reads them by index
 /// starting at `GRID_COLUMN_COUNT`: adding a column here shifts those indices, so keep
 /// the two in sync.
-const GRID_COLUMNS: &str = "i.id, i.folder_id, i.taken_at, i.width, i.height, i.orientation, i.kind, i.path, i.size, i.mtime_ms, i.rating, i.edit_turns, i.edit_crop";
+pub(super) const GRID_COLUMNS: &str = "i.id, i.folder_id, i.taken_at, i.width, i.height, i.orientation, i.kind, i.path, i.size, i.mtime_ms, i.rating, i.edit_turns, i.edit_crop";
 
 /// Number of columns selected by `GRID_COLUMNS`. `search_entries` uses this rather than a
 /// bare `13` so a future column added to `GRID_COLUMNS` can't silently shift `file_name`

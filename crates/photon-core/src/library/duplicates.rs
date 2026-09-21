@@ -43,6 +43,16 @@ pub struct ItemCopy {
 /// rather than a de-duplicating `UNION` because the outer `IN` only tests membership - a photo
 /// counted in both halves costs nothing extra, while a plain `UNION` forces a sort to
 /// de-duplicate that the `IN` never needed.
+///
+/// In `grid_query` this is not a pure win: driving `i` from the materialised id list replaces
+/// the folder-driven walk `GRID_ORDER`'s own comment measured at 88->60->47ms, and the result
+/// still needs `USE TEMP B-TREE FOR ORDER BY` to put the matched rows into grid order (there is
+/// no index shaped like `GRID_ORDER` over an arbitrary id list). Judged worth it because the
+/// old `OR` form scanned every live row - twice, once for the driver's subquery and once for
+/// the outer `WHERE` - while this sorts only the matched subset, which for a duplicate/look-alike
+/// view is normally a small fraction of the library;
+/// `the_grid_query_also_reaches_look_alikes_through_the_similar_index` pins the index use, not
+/// the sort, since the sort is real and expected here rather than a defect to eliminate.
 pub(crate) const DUPLICATE_FILTER: &str = "AND i.id IN (
     SELECT id FROM items WHERE content_hash IN (
         SELECT content_hash FROM items
@@ -69,6 +79,12 @@ const COPIES_SQL: &str = "SELECT o.id, o.path, o.width, o.height FROM items i
      JOIN items o ON o.content_hash = i.content_hash AND o.id <> i.id
      WHERE i.id = ?1 AND o.missing_since IS NULL
      ORDER BY o.path";
+
+/// `duplicate_count`'s query, shared with its plan test so the two cannot drift onto two
+/// different strings that happen to look alike.
+fn duplicate_count_sql() -> String {
+    format!("SELECT COUNT(*) FROM items i WHERE i.missing_since IS NULL {DUPLICATE_FILTER}")
+}
 
 impl Library {
     /// Unhashed live files whose size another live file shares, in online folders only.
@@ -116,13 +132,7 @@ impl Library {
     /// labels a view that shows photos.
     pub fn duplicate_count(&self) -> Result<usize> {
         let conn = self.reader()?;
-        let count: i64 = conn.query_row(
-            &format!(
-                "SELECT COUNT(*) FROM items i WHERE i.missing_since IS NULL {DUPLICATE_FILTER}"
-            ),
-            [],
-            |r| r.get(0),
-        )?;
+        let count: i64 = conn.query_row(&duplicate_count_sql(), [], |r| r.get(0))?;
         Ok(count as usize)
     }
 
@@ -147,7 +157,10 @@ impl Library {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testutil::temp_library;
+    use crate::grid::GridView;
+    use crate::library::items::{GRID_COLUMNS, grid_query};
+    use crate::testutil::{new_item, seed_folder, temp_library};
+    use std::path::Path;
 
     fn plan(lib: &Library, sql: &str, params: &[&dyn rusqlite::ToSql]) -> Vec<String> {
         let conn = lib.reader().unwrap();
@@ -181,17 +194,73 @@ mod tests {
     #[test]
     fn the_widened_view_reaches_look_alikes_through_the_similar_index_too() {
         let (_dir, lib) = temp_library();
-        let sql = format!(
-            "SELECT COUNT(*) FROM items i WHERE i.missing_since IS NULL {DUPLICATE_FILTER}"
-        );
-        let plan = plan(&lib, &sql, &[]);
+        let plan = plan(&lib, &duplicate_count_sql(), &[]);
         assert!(
             plan.iter().any(|step| step.contains("items_similar_group")),
             "expected the partial similar_group index, got {plan:?}"
         );
+        // No `TEMP B-TREE` assertion here: `SELECT COUNT(*)` has no `ORDER BY` or `GROUP BY`
+        // of its own, so it cannot produce one either way - that check would pass whether or
+        // not the query is actually well-planned, which is not a check. See the grid-query
+        // test below for a query where a sort is real and worth naming.
+    }
+
+    /// The grid query is the one CLAUDE.md actually warns about: driver and outer filter
+    /// pinned to the same string, so a folder is placed by its oldest *matching* photo. The
+    /// `COUNT(*)` query above never runs the driver at all, so it cannot catch a driver that
+    /// silently stopped seeing look-alikes.
+    #[test]
+    fn the_grid_query_also_reaches_look_alikes_through_the_similar_index() {
+        let (_dir, lib) = temp_library();
+        let plan = plan(&lib, &grid_query(GRID_COLUMNS, DUPLICATE_FILTER), &[]);
         assert!(
-            !plan.iter().any(|step| step.contains("TEMP B-TREE")),
-            "the two halves must be served by their own indexes, not a sort: {plan:?}"
+            plan.iter().any(|step| step.contains("items_similar_group")),
+            "expected the partial similar_group index, got {plan:?}"
+        );
+        // Unlike `duplicate_count`, this query really does sort (`GRID_ORDER`) over the
+        // matched subset, so a bare `TEMP B-TREE` absence assertion here would fail today -
+        // see the widening comment on `DUPLICATE_FILTER` for why that sort is still cheaper
+        // than the alternative it replaced.
+    }
+
+    /// The analogue of `the_starred_view_places_a_folder_by_its_oldest_starred_photo`
+    /// (`items.rs`) for the widened Duplicates view: nothing else in this file discriminates
+    /// folder *placement*, only membership and counts, and the rewrite from a column test to
+    /// an `i.id IN (...)` subquery is exactly the kind of change that could stop reaching
+    /// `folder_order`'s copy of the filter while still reaching the outer one.
+    #[test]
+    fn the_duplicates_view_places_a_folder_by_its_oldest_matching_photo() {
+        let (_dir, lib) = temp_library();
+        let (watched, root) = seed_folder(&lib, Path::new("/p"));
+        let alpha = lib
+            .upsert_folder(watched, Some(root), "/p/alpha", 1)
+            .unwrap();
+        let zulu = lib
+            .upsert_folder(watched, Some(root), "/p/zulu", 1)
+            .unwrap();
+        let ids = lib
+            .insert_items(&[
+                // alpha's oldest photo overall predates zulu's, but is not a look-alike of
+                // anything; alpha's *matching* photo is newer than zulu's.
+                new_item(alpha, "/p/alpha/old-unmatched.jpg", 1),
+                new_item(alpha, "/p/alpha/new-matched.jpg", 9),
+                new_item(zulu, "/p/zulu/matched.jpg", 5),
+            ])
+            .unwrap();
+        lib.set_similar_groups(&[(ids[1], ids[1]), (ids[2], ids[1])])
+            .unwrap();
+
+        let folders: Vec<i64> = lib
+            .entries_for(GridView::Duplicates, "")
+            .unwrap()
+            .iter()
+            .map(|e| e.folder_id)
+            .collect();
+        assert_eq!(
+            folders,
+            [alpha, zulu],
+            "alpha's oldest *matching* photo (9) is newer than zulu's (5), so alpha leads; \
+             by its oldest photo overall (1) it would trail"
         );
     }
 }

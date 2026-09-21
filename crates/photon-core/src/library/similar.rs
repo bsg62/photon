@@ -189,6 +189,31 @@ mod tests {
         assert_eq!(lib.percep_hashes().unwrap(), vec![(ids[0], 0xdead_beef)]);
     }
 
+    /// SQLite has no unsigned integer column; `percep_hash` is stored as `i64` and cast at
+    /// the boundary. `0xdead_beef` alone never exercises the top bit, and a `dhash` sets it
+    /// about half the time - a lossy round-trip here would show up as photos silently
+    /// grouped by the wrong (truncated or sign-flipped) value on every other library.
+    #[test]
+    fn the_full_width_of_a_hash_survives_the_i64_column() {
+        let (_dir, lib) = temp_library();
+        let (_w, folder) = seed_folder(&lib, Path::new("/pics"));
+        let ids = lib
+            .insert_items(&[item_at(folder, "/pics/a.jpg", 10, 100)])
+            .unwrap();
+        lib.writer()
+            .execute("UPDATE items SET thumb_state = 1 WHERE id = ?1", [ids[0]])
+            .unwrap();
+        let candidate = lib.similar_candidates().unwrap().remove(0);
+        assert!(
+            lib.set_percep_hash(&candidate, 0xffff_ffff_ffff_ffff)
+                .unwrap()
+        );
+        assert_eq!(
+            lib.percep_hashes().unwrap(),
+            vec![(ids[0], 0xffff_ffff_ffff_ffff)]
+        );
+    }
+
     /// The same guard `set_content_hash` has: the pass reads long after the row was listed,
     /// and a hash computed from the old thumbnail must not land on a row whose file moved.
     #[test]
