@@ -1793,8 +1793,8 @@ mod tests {
     }
 
     /// The bound `shutdown` promises is over *both* its waits, and the join is the one that
-    /// could quietly remove it. In the single-request case - a distance change, then a quit
-    /// - the recorded handle is the thread running the pass, so an unbounded join would
+    /// could quietly remove it. In the single-request case (a distance change, then a
+    /// quit) the recorded handle is the thread running the pass, so an unbounded join would
     /// wait for exactly the thread `SIMILAR_PASS_STOP_TIMEOUT` exists to give up on, and an
     /// app whose photos are on a dead mount would never quit.
     ///
