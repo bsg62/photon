@@ -38,8 +38,10 @@ const GRID_TILE: &str = "grid_tile";
 /// because the distance is what the pass uses and a name would need a second table to
 /// interpret it.
 const SIMILAR_DISTANCE: &str = "similar_distance";
-/// Conservative: the distance at which grouping has complete recall.
-pub const SIMILAR_DISTANCE_DEFAULT: i64 = 3;
+/// Conservative: the distance at which grouping has complete recall. Derived from that
+/// constant rather than written as 3 beside it - the default *is* that fact, and two copies
+/// of it could be changed apart.
+pub const SIMILAR_DISTANCE_DEFAULT: i64 = crate::similar::EXACT_RECALL_DISTANCE as i64;
 /// Off, conservative, loose. Clamped rather than refused, both ways.
 pub const SIMILAR_DISTANCE_RANGE: std::ops::RangeInclusive<i64> = 0..=6;
 
