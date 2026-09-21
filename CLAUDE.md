@@ -61,7 +61,7 @@ cargo run -p xtask -- metadata            # licence and installer metadata are c
 **Seeing the UI without launching it** (not in CI; needs Chromium on `PATH` or in `CHROMIUM`):
 
 ```bash
-cargo run -p xtask -- screenshots                     # sixteen PNGs into target/screenshots/
+cargo run -p xtask -- screenshots                     # seventeen PNGs into target/screenshots/
 cargo run -p xtask -- screenshots --only viewer-info-light --no-build
 ```
 
@@ -271,14 +271,26 @@ closes the crop tool, so the comparison must stay exact: `thumbState` counts onl
 the window's own fullscreen, so quitting mid-show reopens fullscreen with no title bar. `F11`
 (global, `App.svelte`) is the way out and the reason it exists.
 
-**The duplicate finder hashes after the scan, in the engine.** `items.content_hash` (XXH3-128,
-NULL for almost every row) is filled by `photon_core::duplicates::hash_candidates`, which reads
-only files sharing a byte size with another live file. `Engine::hash_duplicates` runs it at the
-end of every `run_scan` - not inside the scanner, so neither of `walk_tree`'s callers can be
-forgotten, and because a duplicate is a fact about the whole library. Any write that replaces
-a file's fingerprint must set `content_hash = NULL` (today `update_items`); a row that keeps a
-stale hash is never a candidate again. `set_content_hash` refuses a row whose size or mtime
-moved since the candidate was listed.
+**The duplicate finder hashes after the scan, in the engine, in two passes.** `items.content_hash`
+(XXH3-128, NULL for almost every row) is filled by `photon_core::duplicates::hash_candidates`,
+which reads only files sharing a byte size with another live file - this finds byte-identical
+copies. `items.percep_hash` (a 64-bit difference hash, `photon_core::similar`) and
+`items.similar_group` (a union-find id) find look-alikes - the same picture after a resize or
+a re-save - and are filled by `photon_core::similar::update`. Both passes run inside
+`Engine::hash_after_scan` (once `hash_duplicates`) at the end of every `run_scan` - not inside
+the scanner, so neither of `walk_tree`'s callers can be forgotten, and because a duplicate or a
+look-alike is a fact about the whole library, not about one changed file. The perceptual hash
+is taken from the photo's **already-cached grid thumbnail**, not from the source file: the
+thumbnail renderer is skipped whenever a thumbnail is already cached, so a hash computed inside
+the renderer would never run for a single photo in an existing library, only for ones rendered
+after the feature shipped. Reading the cache instead means an upgraded library fills in for
+every photo whose thumbnail already exists, and a photo is never decoded a second time just to
+be hashed. Any write that replaces a file's fingerprint must set `content_hash = NULL` (today
+`update_items`, which also clears `percep_hash` and `similar_group` - a rewritten file has lost
+whatever picture those described); a row that keeps a stale hash is never a candidate again.
+`set_content_hash` refuses a row whose size or mtime moved since the candidate was listed.
+`set_item_edit` clears `percep_hash` and `similar_group` too, for the same reason it clears the
+thumbnail: a look-alike is a fact about the photo *as shown*, and an edit changes what that is.
 
 There is no `COLLATE NOCASE` anywhere and `lower()` is ASCII-only without ICU (a native
 dependency this project does not take), so **case-insensitive matching is done in Rust**, not
@@ -373,7 +385,7 @@ anything sitting outside the tile's own box.
 
 The look cannot be tested here, but it can be seen without launching the app: `cargo run -p xtask --
 screenshots` builds the UI, serves `ui/dist` itself with `mock.js` (in
-`crates/xtask/screenshots/`) standing in for Tauri's IPC, and writes sixteen PNGs, in both themes,
+`crates/xtask/screenshots/`) standing in for Tauri's IPC, and writes seventeen PNGs, in both themes,
 to `target/screenshots/` with headless Chromium. It claims a Windows user agent and maps
 `photon.localhost` to its own port, because `mediaUrl` uses `http://photon.localhost` there
 and no plain browser can load `photon://`. It is Chromium's rendering, not WebKitGTK's or

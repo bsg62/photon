@@ -30,8 +30,9 @@ const CANDIDATES_SQL: &str = "SELECT i.id, i.path, i.size, i.mtime_ms, i.edit_tu
        AND i.thumb_state = 1 AND w.online = 1
      ORDER BY i.id";
 
-/// `group`'s output is in hash order, the stored rows are in index order, so neither side
-/// of the comparison can be trusted to arrive sorted.
+/// `group`'s output follows `percep_hashes()`'s unordered query (effectively rowid), not
+/// hash order, and the stored rows are in index order, so neither side of the comparison
+/// can be trusted to arrive sorted.
 fn sorted(pairs: &[(i64, i64)]) -> Vec<(i64, i64)> {
     let mut out = pairs.to_vec();
     out.sort_unstable();
@@ -178,6 +179,7 @@ impl Library {
 
 #[cfg(test)]
 mod tests {
+    use super::CANDIDATES_SQL;
     use crate::library::NewItem;
     use crate::testutil::{new_item, seed_folder, temp_library};
     use std::path::Path;
@@ -306,8 +308,9 @@ mod tests {
         assert!(lib.set_similar_groups(&groups).unwrap());
         let before = lib.writer().total_changes();
 
-        // The same set, handed over in the other order: `group` returns hash order, so the
-        // comparison cannot lean on the two sides arriving sorted.
+        // The same set, handed over in the other order: `group`'s output follows
+        // `percep_hashes()`'s query order, not hash order, so the comparison cannot lean on
+        // the two sides arriving sorted.
         assert!(!lib.set_similar_groups(&[groups[1], groups[0]]).unwrap());
         assert_eq!(lib.writer().total_changes(), before, "it wrote anyway");
         assert_eq!(
@@ -338,6 +341,31 @@ mod tests {
             lib.duplicate_count().unwrap(),
             2,
             "look-alikes are not in the view"
+        );
+    }
+
+    /// Pins that the candidate list is found by probing `items_pending` rather than by
+    /// scanning every item and checking `percep_hash IS NULL` row by row - the same drift
+    /// `the_recent_view_is_served_by_its_index` guards against for the grid.
+    #[test]
+    fn the_candidate_list_is_served_by_its_index() {
+        let (_dir, lib) = temp_library();
+        let conn = lib.reader().unwrap();
+        let mut stmt = conn
+            .prepare(&format!("EXPLAIN QUERY PLAN {CANDIDATES_SQL}"))
+            .unwrap();
+        let plan: Vec<String> = stmt
+            .query_map([], |r| r.get::<_, String>(3))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert!(
+            plan.iter().any(|step| step.contains("items_pending")),
+            "expected an index probe, got {plan:?}"
+        );
+        assert!(
+            !plan.iter().any(|step| step.contains("SCAN i")),
+            "items must be searched, not scanned: {plan:?}"
         );
     }
 }

@@ -118,12 +118,27 @@ photon comes back unedited. Picasa's own crops and rotations are not imported.
 
 ### Duplicates
 
-photon finds byte-identical files. After each scan it reads only the files that share their
-exact size with another file, so on most libraries almost nothing is read. While any exist,
-a **Duplicates** row in the sidebar shows every photo that has an identical copy, folder by
-folder, and the viewer's info panel lists where a photo's copies are; clicking one locates it.
-photon never deletes anything: use "Reveal in file manager" and decide there. Resized or
-re-saved versions are different files and are not reported.
+photon finds two kinds of copy. Byte-identical files: after each scan it reads only the files
+that share their exact size with another file, so on most libraries almost nothing is read.
+And look-alikes: the same picture after a resize or a re-save, which is nothing like the same
+bytes but is still the photo you already have. Look-alikes are found from the thumbnails
+photon has already made for the grid, so no photo is read a second time to look for them.
+
+While any exist, a **Duplicates** row in the sidebar shows every photo that has a copy of
+either kind, folder by folder, and the viewer's info panel lists them under two headings,
+Identical first, with pixel dimensions shown next to a look-alike (not next to an identical
+copy, which is the same size by definition); clicking one locates it. photon never deletes
+anything: use "Reveal in file manager" and decide there.
+
+Settings → Duplicates → **Find look-alikes** has three settings: Off (byte-identical files
+only, today's behaviour), Conservative (the default: reliably finds close look-alikes — pairs
+that differ only by a resize or a re-save), and Loose (looks harder, at the cost of being
+best-effort: it finds most look-alikes, not all of them — a real limit, not a bug). Changing
+it regroups the library right away, without waiting for a scan.
+
+On a fresh library, the first scan's look-alike pass usually finishes before the thumbnails it
+needs have all been rendered, so newly indexed look-alikes tend to appear after the *next*
+scan rather than the first one.
 
 ### Slideshow and fullscreen
 
@@ -208,7 +223,11 @@ publishing it.
 - [ ] Turn a cropped photo: the same part of the picture stays framed. With the info panel open on a photo with Picasa faces, the outlines still sit on the faces after a turn, and a face cropped out of the frame has no outline.
 - [ ] "Original" appears in the bar only for an edited photo and restores it; its old thumbnail appears at once (it was still cached). A slideshow shows edited photos edited.
 - [ ] Upgrade a real library from schema 8: no thumbnail is regenerated (the grid fills from cache as before).
-- [ ] Copy a photo into another watched folder: within a scan the sidebar gains "⧉ Duplicates (2)", the view shows both files under their folders, and each one's info panel lists the other under "Identical copies"; clicking the path closes the viewer and lands on that copy. Edit or delete one of the two: after the next scan the row disappears.
+- [ ] Copy a photo into another watched folder: within a scan the sidebar gains "⧉ Duplicates (2)", the view shows both files under their folders, and each one's info panel lists the other under "Identical"; clicking the path closes the viewer and lands on that copy. Edit or delete one of the two: after the next scan the row disappears.
+- [ ] Save a copy of one photo at half its size into a watched folder, let the scan finish, and check both turn up under Duplicates with the copy marked "Looks the same" and its dimensions shown; clicking it locates it in the grid.
+- [ ] Open a photo that has both an identical copy and a look-alike: the info panel shows two headings, Identical first, and only the "Looks the same" entry shows dimensions.
+- [ ] Settings → Duplicates → Find look-alikes: click through Off / Conservative / Loose. Each becomes pressed, the hint text below changes, and the Loose hint reads "Finds most look-alikes, not all of them." With it set to Off, Duplicates falls back to byte-identical files only; set it back to Conservative and the look-alikes return without a scan.
+- [ ] Upgrade a real library indexed by an older photon: look-alikes appear without anything being re-scanned — the hashes come from thumbnails that already exist.
 - [ ] Upgrade a real library from schema 7: the first scans finish as quickly as before, and duplicates appear shortly after the status bar stops showing a scan.
 - [ ] In the viewer, `S` starts a slideshow: the window goes fullscreen, photos crossfade (no flash of black between them) at the interval from Settings → Slideshow, and the last photo is followed by the first. Space pauses and resumes; ←/→ step and the next photo then stays a full interval; the bar, zoom and ✕ fade out after the pointer rests about 2.5 s and return when it moves. Escape ends the show, leaves fullscreen and stays in the viewer; a second Escape closes the viewer.
 - [ ] Start a slideshow from a window that is already fullscreen (F11 first): ending the show leaves it fullscreen. F11 toggles fullscreen from the grid, the viewer and Settings.

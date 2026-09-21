@@ -122,6 +122,13 @@ pub const SHOTS: &[Shot] = &[
         query: "theme=dark&do=appearance",
         dark: true,
     },
+    // The Duplicates row in the sidebar (byte-identical files and look-alikes both counted
+    // in `duplicateCount`), with the info panel open on a photo that has one of each kind.
+    Shot {
+        name: "duplicates-light",
+        query: "theme=light&view=duplicates&do=info",
+        dark: false,
+    },
 ];
 
 #[derive(Debug, PartialEq)]

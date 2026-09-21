@@ -97,12 +97,19 @@ const COPY_GROUP_LABELS: Record<CopyKind, string> = {
   similar: 'Looks the same',
 };
 
+/** Identical first, as the panel must show it - spelled out rather than left to
+ *  `Object.keys(COPY_GROUP_LABELS)`'s insertion order, so the invariant reads here and does
+ *  not rely on object-key semantics the next person has to already know. */
+const COPY_GROUP_ORDER: CopyKind[] = ['identical', 'similar'];
+
 /** `copies` is already identical-first and de-duplicated (`viewer_item`); this only splits
  *  it into the two sections the panel renders, keeping that order. A group with nothing in
  *  it is left out rather than shown empty, the same way the panel omits the whole section
  *  for a photo with no copies at all. */
 export function copyGroups(copies: ItemCopy[]): CopyGroup[] {
-  return (Object.keys(COPY_GROUP_LABELS) as CopyKind[])
-    .map((kind) => ({ kind, label: COPY_GROUP_LABELS[kind], copies: copies.filter((c) => c.kind === kind) }))
-    .filter((group) => group.copies.length > 0);
+  return COPY_GROUP_ORDER.map((kind) => ({
+    kind,
+    label: COPY_GROUP_LABELS[kind],
+    copies: copies.filter((c) => c.kind === kind),
+  })).filter((group) => group.copies.length > 0);
 }
