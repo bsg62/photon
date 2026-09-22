@@ -164,6 +164,14 @@
   /** A camera or lens clicked in the viewer's info panel. Closes the viewer, since the
    *  photo it shows has no fixed place in the results, and hands the query to the search
    *  box so the box shows what the grid is filtered by. */
+  /** The info panel's "Show N duplicates in the grid". Closed first, like `locate`: the
+   *  viewer is an overlay, and the grid behind it is inert until it goes, so the selection
+   *  `showCopiesOf` lands would otherwise be focused into nothing. */
+  function showCopiesFromViewer(itemId: number) {
+    viewerAt = null;
+    void showCopiesOf(itemId);
+  }
+
   function searchFrom(query: string) {
     viewerAt = null;
     searchBox.search(query);
@@ -314,7 +322,7 @@
   </main>
   <div class="statusbar"><StatusBar /></div>
 </div>
-{#if viewerAt !== null}<Viewer offset={viewerAt} onclose={closeViewer} onlocate={locate} onsearch={searchFrom} />{/if}
+{#if viewerAt !== null}<Viewer offset={viewerAt} onclose={closeViewer} onlocate={locate} onsearch={searchFrom} onshowcopies={showCopiesFromViewer} />{/if}
 {#if settingsAt !== null}<Settings section={settingsAt} onclose={closeSettings} />{/if}
 {#if compareIds !== null}<Compare ids={compareIds} onclose={closeCompare} onopen={openFromCompare} />{/if}
 <TagPicker {picker} onclosed={closeKeywords} />

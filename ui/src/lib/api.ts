@@ -17,7 +17,9 @@ export interface AppInfo { version: string; libraryPath: string; licence: string
  *  1000 for a JS Date). The sidebar groups folders by the year it falls in. Oldest rather
  *  than newest, to match Picasa. */
 export interface Section { folderId: number; offset: number; count: number; takenAtMin: number }
-export interface GridEntry { id: number; folderId: number; takenAt: number; aspect: number; kind: 'image'; thumbKey: string; starred: boolean }
+/** `hasCopies`: another live file has the same bytes or is a look-alike, the same rule the
+ *  Duplicates view uses (`GridEntry::has_copies`). */
+export interface GridEntry { id: number; folderId: number; takenAt: number; aspect: number; kind: 'image'; thumbKey: string; starred: boolean; hasCopies: boolean }
 export type GridView = 'all' | 'starred' | 'recent' | 'search' | 'person' | 'album' | 'tag' | 'duplicates' | 'copies';
 /** Mirrors `commands::CopiesOf`. `fileName` is empty once the photo has left the library;
  *  `gone` is true once the anchor photo itself is gone (purged or missing) - the filter

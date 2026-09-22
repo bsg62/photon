@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { copiesNotice, keepCopiesName, showCopies, showCopiesLabel } from './copies';
+import { copiesMarkShown, copiesNotice, keepCopiesName, showCopies, showCopiesLabel } from './copies';
 
 describe('showCopies', () => {
   function spyDeps(at: number | null = 3) {
@@ -106,5 +106,19 @@ describe('copiesNotice', () => {
 
   it('says nothing while the view still holds more than the anchor', () => {
     expect(copiesNotice({ id: 7, fileName: 'a.jpg', gone: false }, 2, 7)).toBeNull();
+  });
+});
+
+describe('copiesMarkShown', () => {
+  it('marks a photo with copies in an ordinary view', () => {
+    expect(copiesMarkShown(true, 'all')).toBe(true);
+    expect(copiesMarkShown(true, 'search')).toBe(true);
+  });
+  it('never marks a photo without copies', () => {
+    expect(copiesMarkShown(false, 'all')).toBe(false);
+  });
+  it('leaves the mark off where every photo has copies anyway', () => {
+    expect(copiesMarkShown(true, 'duplicates')).toBe(false);
+    expect(copiesMarkShown(true, 'copies')).toBe(false);
   });
 });

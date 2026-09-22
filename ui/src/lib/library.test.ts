@@ -318,6 +318,7 @@ describe('LibraryStore', () => {
       kind: 'image' as const,
       thumbKey: '0',
       starred: false,
+      hasCopies: false,
     });
     vi.mocked(api.gridInfo).mockResolvedValue({
       version: 1,
@@ -671,6 +672,7 @@ describe('LibraryStore', () => {
       kind: 'image' as const,
       thumbKey: '0',
       starred: false,
+      hasCopies: false,
     });
 
     /** A store over `len` photos, with every page answerable. `sections` and `view` matter

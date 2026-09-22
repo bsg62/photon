@@ -83,8 +83,8 @@
   --shadow-dialog: 0 16px 48px #00000059;
   /* Ink for shadows cast onto photos, which are not themed: dark in both themes. */
   --shadow-ink: #000000b3;
-  /* Drawn onto a photo - face boxes, the crop rectangle and its handles. The same in both
-     themes, because the photo under it is. */
+  /* Drawn onto a photo - face boxes, the crop rectangle and its handles, a tile's copies
+     mark. The same in both themes, because the photo under it is. */
   --photo-line: #ffffffe6;
   /* Dims whatever is behind: the photo outside a crop, a face's name plate, and (from the
      reskin's last PR) the app behind a dialog. Dark in both themes. */

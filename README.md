@@ -146,7 +146,9 @@ While any exist, a **Duplicates** row in the sidebar shows every photo that has 
 either kind, folder by folder, and the viewer's info panel lists them under two headings,
 Identical first, with pixel dimensions shown next to a look-alike (not next to an identical
 copy, which is the same size by definition); clicking one locates it. Right-click a photo that
-has copies and choose **Show N duplicates** to see just that photo and its copies in the grid.
+has copies and choose **Show N duplicates** to see just that photo and its copies in the grid,
+or use the same link under the info panel's list. In the grid, a photo with a copy carries a
+small copy mark in its bottom-left corner.
 photon never deletes anything: use "Reveal in file manager" and decide there.
 
 Settings → Duplicates → **Find look-alikes** has three settings: Off (byte-identical files
@@ -246,6 +248,8 @@ publishing it.
 - [ ] Save a copy of one photo at half its size into a watched folder, let the scan finish, and check both turn up under Duplicates with the copy marked "Looks the same" and its dimensions shown; clicking it locates it in the grid.
 - [ ] Right-click a photo with copies: "Show N duplicates" appears with the right count, and does not appear for a photo without copies or for a multi-photo selection. Choose it: the grid holds the photo and its copies, the clicked photo is selected, and the sidebar shows "Copies of <name>" under Duplicates. Right-click one photo then quickly another: the item names the second one's count. Delete a copy on disk and wait for the rescan: the group shrinks, and with none left the grid says "No other copies of <name> any more."
 - [ ] Open the Copies view on a photo that has a byte-identical copy and a look-alike, delete that photo and wait for two scans: the identical copy stays, the look-alike leaves, and the grid says the photo is no longer in the library and points to Duplicates.
+- [ ] In All, a folder or a search, a photo with a copy shows a small copy mark bottom-left (a starred one shows both marks); a photo without one shows none, and in Duplicates and in a Copies view no tile is marked. Delete a photo's only copy and let the scan finish: its mark goes.
+- [ ] In the viewer's info panel, a photo with copies shows "Show N duplicates in the grid" under the copies list, with the same N as the tile menu; clicking it closes the viewer and lands the grid on the Copies view with that photo selected, and the arrow keys work straight away.
 - [ ] Open a photo that has both an identical copy and a look-alike: the info panel shows two headings, Identical first, and only the "Looks the same" entry shows dimensions.
 - [ ] Settings → Duplicates → Find look-alikes: click through Off / Conservative / Loose. Each becomes pressed, the hint text below changes, and the Loose hint reads "Finds most look-alikes, not all of them." With it set to Off, Duplicates falls back to byte-identical files only; set it back to Conservative and the look-alikes return without a scan.
 - [ ] Upgrade a real library indexed by an older photon: look-alikes appear without anything being re-scanned — the hashes come from thumbnails that already exist.
