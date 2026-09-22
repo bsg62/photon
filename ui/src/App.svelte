@@ -288,7 +288,7 @@
     onkeydown={keyResize}
   ></div>
   <main class="content" inert={covered}>
-    <Grid bind:this={grid} onopen={open} onkeywords={openKeywords} onexport={openExport} />
+    <Grid bind:this={grid} onopen={open} onkeywords={openKeywords} onexport={openExport} oncompare={openCompare} />
   </main>
   <div class="statusbar"><StatusBar /></div>
 </div>

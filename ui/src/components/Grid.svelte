@@ -1,5 +1,6 @@
 <script lang="ts">
   import { api } from '../lib/api';
+  import { canCompare } from '../lib/compare.svelte';
   import { library } from '../lib/library.svelte';
   import { gridSize } from '../lib/app-grid-size.svelte';
   import { buildRows, columnsFor, edgeScrollSpeed, firstVisibleOffset, GAP, itemSpan, itemsInRect, layoutSections, type Rect, rowOfItem, topFolderId, totalHeight, visibleRange } from '../lib/layout';
@@ -12,10 +13,12 @@
     onopen,
     onkeywords,
     onexport,
+    oncompare,
   }: {
     onopen: (offset: number) => void;
     onkeywords: (mode: 'add' | 'remove') => void;
     onexport: () => void;
+    oncompare: (ids: number[]) => void;
   } = $props();
 
   const NAV_KEYS = ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'];
@@ -255,6 +258,14 @@
     if (e.key === 'Enter') {
       e.preventDefault();
       if (sel !== null) onopen(sel);
+      return;
+    }
+    if (e.key.toLowerCase() === 'c') {
+      // Same 2-4 rule Compare enforces on its own panes (`canCompare`); consulted here
+      // rather than re-expressed, so the range lives in one place.
+      if (!canCompare(library.selectionCount)) return;
+      e.preventDefault();
+      oncompare(library.selectedItemIds);
       return;
     }
     if (!NAV_KEYS.includes(e.key) || library.info.len === 0) return;
@@ -630,6 +641,15 @@
     {/if}
     <button role="menuitem" onclick={() => withSelection((ids) => star(ids, true))}>Star {subject}</button>
     <button role="menuitem" onclick={() => withSelection((ids) => star(ids, false))}>Unstar {subject}</button>
+    {#if canCompare(count)}
+      <button
+        role="menuitem"
+        onclick={() => {
+          menu = null;
+          oncompare(library.selectedItemIds);
+        }}>Compare {subject}</button
+      >
+    {/if}
     <button role="menuitem" onclick={() => pickKeyword('add')}>Add keyword to {subject}…</button>
     <button role="menuitem" onclick={() => pickKeyword('remove')}>Remove keyword from {subject}…</button>
     <button
