@@ -65,8 +65,11 @@ export function resultsChanged(
 }
 
 /** The view and its argument as `resultsChanged` compares them: the query for Search, the
- *  contact for Person, the album id for Album, the keyword for Tag, and nothing else. */
-export function viewKey(info: Pick<GridInfo, 'view' | 'searchQuery' | 'person' | 'album' | 'tag'>): {
+ *  contact for Person, the album id for Album, the keyword for Tag, the anchor photo id for
+ *  Copies, and nothing else. */
+export function viewKey(
+  info: Pick<GridInfo, 'view' | 'searchQuery' | 'person' | 'album' | 'tag' | 'copiesOf'>,
+): {
   view: GridView;
   query: string;
 } {
@@ -75,6 +78,7 @@ export function viewKey(info: Pick<GridInfo, 'view' | 'searchQuery' | 'person' |
     : info.view === 'person' ? (info.person ?? '')
     : info.view === 'album' ? String(info.album ?? '')
     : info.view === 'tag' ? (info.tag ?? '')
+    : info.view === 'copies' ? String(info.copiesOf?.id ?? '')
     : '';
   return { view: info.view, query };
 }

@@ -1,7 +1,7 @@
 <script lang="ts">
   import { api } from '../lib/api';
   import { canCompare } from '../lib/compare.svelte';
-  import { showCopiesLabel } from '../lib/copies';
+  import { copiesNotice, showCopiesLabel } from '../lib/copies';
   import { library } from '../lib/library.svelte';
   import { gridSize } from '../lib/app-grid-size.svelte';
   import { buildRows, columnsFor, edgeScrollSpeed, firstVisibleOffset, GAP, itemSpan, itemsInRect, layoutSections, type Rect, rowOfItem, topFolderId, totalHeight, visibleRange } from '../lib/layout';
@@ -601,7 +601,7 @@
         {:else if library.info.view === 'duplicates'}
           No duplicates. Every photo in the library is the only copy of itself.
         {:else if library.info.view === 'copies'}
-          No other copies of {library.info.copiesOf?.fileName || 'this photo'} any more.
+          {copiesNotice(library.info.copiesOf, library.info.len, library.entry(0)?.id)}
         {:else if library.info.view === 'tag'}
           No photos tagged “{library.info.tag}”.
         {:else}
@@ -645,12 +645,15 @@
         {/if}
       {/each}
     </div>
-    {#if library.info.view === 'copies' && library.info.len === 1}
+    {#if library.info.view === 'copies' && library.info.len >= 1}
       <!-- The group has shrunk to the photo itself since the view opened (a copy was deleted
-           and the rescan purged it). The photo stays on screen; this says why it is alone.
-           Not `.empty`: that class overlays the whole viewport, which would sit on top of
-           the one tile still showing. This sits in normal flow, below the canvas. -->
-      <p class="lone">No other copies of {library.info.copiesOf?.fileName || 'this photo'} any more.</p>
+           and the rescan purged it), or the anchor itself is gone and its copies are what
+           remain on screen. Not `.empty`: that class overlays the whole viewport, which would
+           sit on top of the tiles still showing. This sits in normal flow, below the canvas. -->
+      {@const notice = copiesNotice(library.info.copiesOf, library.info.len, library.entry(0)?.id)}
+      {#if notice}
+        <p class="lone">{notice}</p>
+      {/if}
     {/if}
   </div>
   {#if scrubbable}
@@ -672,16 +675,6 @@
       <button role="menuitem" onclick={() => withSelection((ids) => api.revealInFileManager(ids[0]))}>
         Reveal in file manager
       </button>
-    {/if}
-    {#if count === 1 && menuCopies && menuCopies.count > 0}
-      {@const id = menuCopies.id}
-      <button
-        role="menuitem"
-        onclick={() => {
-          menu = null;
-          onshowcopies(id);
-        }}>{showCopiesLabel(menuCopies.count)}</button
-      >
     {/if}
     <button role="menuitem" onclick={() => withSelection((ids) => star(ids, true))}>Star {subject}</button>
     <button role="menuitem" onclick={() => withSelection((ids) => star(ids, false))}>Unstar {subject}</button>
@@ -707,6 +700,16 @@
       <button role="menuitem" onclick={() => withSelection((ids) => library.removeFromAlbum(albumId, ids))}>
         Remove {subject} from “{library.albumName(albumId)}”
       </button>
+    {/if}
+    {#if count === 1 && menuCopies && menuCopies.count > 0}
+      {@const id = menuCopies.id}
+      <button
+        role="menuitem"
+        onclick={() => {
+          menu = null;
+          onshowcopies(id);
+        }}>{showCopiesLabel(menuCopies.count)}</button
+      >
     {/if}
     <div class="heading">Add to album</div>
     {#each library.albums as album (album.id)}
@@ -757,8 +760,8 @@
   .header .path { flex: 1 1 auto; min-width: 0; color: var(--text-dim); font-size: var(--t-1); line-height: 20px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .row { display: flex; }
   .empty { position: absolute; inset: 0; display: grid; place-items: center; color: var(--text-dim); margin: 0; }
-  /* The Copies view's lone-photo line: in normal flow, below the one tile still on screen -
-     unlike `.empty`, which overlays the whole viewport and would sit on top of it. */
+  /* The Copies view's notice line: in normal flow, below the tile(s) still on screen -
+     unlike `.empty`, which overlays the whole viewport and would sit on top of them. */
   .lone { padding: var(--s-3); color: var(--text-dim); margin: 0; }
   .menu {
     position: fixed;

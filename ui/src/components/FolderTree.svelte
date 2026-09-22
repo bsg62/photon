@@ -254,10 +254,12 @@
       <span class="count">{library.info.duplicateCount.toLocaleString()}</span>
     </button>
     {#if library.info.view === 'copies'}
-      <!-- Not a saved place: it exists while the view is open, and leaving removes it. -->
-      <button class="root copies active" aria-current="true" title={library.info.copiesOf?.fileName}>
+      <!-- Not a saved place: it exists while the view is open, and leaving removes it. Not
+           a `<button>`: it does nothing on click (the view is already open), so a button
+           here was a dead tab stop announced as interactive with no action behind it. -->
+      <div class="root copies active" aria-current="true" title={library.info.copiesOf?.fileName}>
         <span class="name">Copies of {library.info.copiesOf?.fileName || 'a photo'}</span>
-      </button>
+      </div>
     {/if}
   {/if}
 

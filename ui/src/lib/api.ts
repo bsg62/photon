@@ -19,8 +19,11 @@ export interface AppInfo { version: string; libraryPath: string; licence: string
 export interface Section { folderId: number; offset: number; count: number; takenAtMin: number }
 export interface GridEntry { id: number; folderId: number; takenAt: number; aspect: number; kind: 'image'; thumbKey: string; starred: boolean }
 export type GridView = 'all' | 'starred' | 'recent' | 'search' | 'person' | 'album' | 'tag' | 'duplicates' | 'copies';
-/** Mirrors `commands::CopiesOf`. `fileName` is empty once the photo has left the library. */
-export interface CopiesOf { id: number; fileName: string }
+/** Mirrors `commands::CopiesOf`. `fileName` is empty once the photo has left the library;
+ *  `gone` is true once the anchor photo itself is gone (purged or missing) - the filter
+ *  keys off the anchor's own row, so once it is gone every branch matches nothing and the
+ *  grid empties even though the other copies are still live. */
+export interface CopiesOf { id: number; fileName: string; gone: boolean }
 /** Mirrors `photon_core::library::ThemeChoice` (serde lowercase). */
 export type ThemeChoice = 'system' | 'light' | 'dark';
 /** Mirrors `photon_core::library::GridTile` (serde lowercase). */

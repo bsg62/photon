@@ -3034,6 +3034,7 @@ mod tests {
         assert_eq!((info.view, info.len), (GridView::Copies, 3));
         let copies_of = info.copies_of.expect("reported while the view is open");
         assert_eq!((copies_of.id, copies_of.file_name), (orig, name(orig)));
+        assert!(!copies_of.gone, "the anchor photo is still in the library");
         assert_eq!(
             info.album, None,
             "the argument is a photo id, not an album id"
@@ -3051,6 +3052,84 @@ mod tests {
         // Re-entering without the setter must not bring the old photo back.
         f.engine.set_view(GridView::Copies).unwrap();
         assert_eq!(f.engine.grid().1.len(), 0);
+    }
+
+    /// `takes_argument` for Copies is what keeps the argument alive across a re-entry of the
+    /// same view without going through `set_copies_view` again - the grid's own "reopen the
+    /// same photo's tile menu" path does exactly this via `set_view`, not the setter. Probe:
+    /// removing `| Self::Copies` from `GridView::takes_argument` (grid.rs) makes this fail,
+    /// because `set_view` would then clear the argument even when re-entering the same view.
+    #[test]
+    fn the_copies_view_keeps_its_argument_when_re_entered() {
+        use photon_core::grid::GridView;
+        let f = fixture(&[
+            ("a/orig.jpg", &jpeg_pattern(180, 120)),
+            ("a/identical.jpg", &jpeg_pattern(180, 120)),
+            ("a/resized.jpg", &jpeg_pattern(72, 48)),
+            ("a/unrelated.jpg", &jpeg(64, 64)),
+        ]);
+        let watched = f.add_photos();
+        f.engine.thumbs.wait_idle();
+        f.engine.start_scan(watched);
+        f.engine.wait_for_scans();
+        let path_of = |id: i64| f.engine.lib.item(id).unwrap().unwrap().path;
+        let orig = f
+            .ids()
+            .into_iter()
+            .find(|&id| path_of(id).ends_with("orig.jpg"))
+            .unwrap();
+
+        f.engine.set_copies_view(orig).unwrap();
+        assert_eq!(f.engine.grid().1.len(), 3);
+
+        f.engine.set_view(GridView::Copies).unwrap();
+        assert_eq!(
+            f.engine.grid().1.len(),
+            3,
+            "re-entering the same parameterised view keeps its argument"
+        );
+    }
+
+    /// F1: once the anchor photo itself leaves the library, the filter (which keys off the
+    /// anchor's own row) matches nothing, so the grid empties even though the other copies
+    /// are still live. `gone` is what lets the UI tell that apart from "no copies any more" -
+    /// it must not silently read `false` once the anchor's row is purged. Probe: replacing
+    /// the `gone` computation in `commands::grid_info` with a bare `false` makes this fail.
+    #[test]
+    fn the_copies_view_reports_the_anchor_as_gone_once_its_row_is_purged() {
+        let f = fixture(&[
+            ("a/orig.jpg", &jpeg_pattern(180, 120)),
+            ("a/identical.jpg", &jpeg_pattern(180, 120)),
+            ("a/resized.jpg", &jpeg_pattern(72, 48)),
+            ("a/unrelated.jpg", &jpeg(64, 64)),
+        ]);
+        let watched = f.add_photos();
+        f.engine.thumbs.wait_idle();
+        f.engine.start_scan(watched);
+        f.engine.wait_for_scans();
+        let path_of = |id: i64| f.engine.lib.item(id).unwrap().unwrap().path;
+        let orig = f
+            .ids()
+            .into_iter()
+            .find(|&id| path_of(id).ends_with("orig.jpg"))
+            .unwrap();
+
+        f.engine.set_copies_view(orig).unwrap();
+        assert!(
+            !crate::commands::grid_info(&f.engine)
+                .copies_of
+                .unwrap()
+                .gone,
+            "the anchor is still live"
+        );
+
+        f.engine.lib.purge_items(&[orig]).unwrap();
+        f.engine.refresh_grid().unwrap();
+
+        let info = crate::commands::grid_info(&f.engine);
+        assert_eq!(info.len, 0, "the filter keys off the anchor's own row");
+        let copies_of = info.copies_of.expect("the argument is still held");
+        assert!(copies_of.gone, "the anchor's row is gone");
     }
 
     #[test]

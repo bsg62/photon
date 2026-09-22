@@ -111,10 +111,10 @@ pub(crate) const DUPLICATE_FILTER: &str = "AND i.id IN (
 pub(crate) const COPIES_FILTER: &str = "AND i.id IN (
     SELECT ?1
     UNION ALL
-    SELECT o.id FROM items a JOIN items o ON o.content_hash = a.content_hash
+    SELECT c.id FROM items a JOIN items c ON c.content_hash = a.content_hash
     WHERE a.id = ?1
     UNION ALL
-    SELECT o.id FROM items a JOIN items o ON o.similar_group = a.similar_group
+    SELECT c.id FROM items a JOIN items c ON c.similar_group = a.similar_group
     WHERE a.id = ?1)";
 
 /// Runs after every scan, so the size grouping has to come from `items_size` rather than

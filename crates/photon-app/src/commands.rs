@@ -85,6 +85,12 @@ pub struct CopiesOf {
     /// Empty when the photo has left the library since the view opened; the UI keeps the
     /// name it already had.
     pub file_name: String,
+    /// True once the anchor photo itself is gone - purged, or missing - from the library.
+    /// The membership filter keys off the anchor's own row (`COPIES_FILTER`), so once that
+    /// row is gone every branch matches nothing and the grid empties even though the other
+    /// copies are still live; this field is what lets the UI say *that*, rather than "no
+    /// other copies", which would be a lie about photos still sitting in the library.
+    pub gone: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -244,19 +250,23 @@ pub fn grid_info(engine: &Engine) -> GridInfo {
     let copies_of = (view == GridView::Copies)
         .then(|| arg.parse::<i64>().ok())
         .flatten()
-        .map(|id| CopiesOf {
-            id,
-            file_name: engine
-                .lib
-                .item(id)
-                .ok()
-                .flatten()
+        .map(|id| {
+            let item = engine.lib.item(id).ok().flatten();
+            let gone = item
+                .as_ref()
+                .is_none_or(|item| item.missing_since.is_some());
+            let file_name = item
                 .and_then(|item| {
                     Path::new(&item.path)
                         .file_name()
                         .map(|n| n.to_string_lossy().into_owned())
                 })
-                .unwrap_or_default(),
+                .unwrap_or_default();
+            CopiesOf {
+                id,
+                file_name,
+                gone,
+            }
         });
     GridInfo {
         version,
