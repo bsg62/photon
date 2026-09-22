@@ -187,6 +187,12 @@
   bind:this={root}
   {onkeydown}
 >
+  <!-- A person who opened compare from the tile menu has been given no reason to know that
+       Escape exists; the viewer answers this with the same button. It calls the factory's
+       `close`, which is the one exit Escape takes too. -->
+  <button class="close" onclick={() => compare.close()} aria-label="Close compare">
+    <Icon name="x" size={16} />
+  </button>
   {#if error}
     <p class="error">{error}</p>
   {:else}
@@ -246,6 +252,28 @@
     background: var(--surface);
     color: var(--text);
     overflow: hidden;
+  }
+  /* As the viewer's, top right. It sits over a pane rather than over empty chrome, so it
+     takes the same scrim every plate on a photo takes - a bare glyph over a bright photo
+     disappears. */
+  .close {
+    position: absolute;
+    top: var(--s-3);
+    right: var(--s-3);
+    z-index: 1;
+    display: grid;
+    place-items: center;
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    border: 0;
+    border-radius: 50%;
+    background: var(--scrim);
+    color: var(--text-dim);
+    cursor: pointer;
+  }
+  .close:hover {
+    color: var(--text);
   }
   .error {
     place-self: center;

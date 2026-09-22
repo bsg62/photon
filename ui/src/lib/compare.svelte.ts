@@ -178,7 +178,8 @@ export function createCompare(deps: CompareDeps) {
      *  At most one pane ever does. Full-size renders are serialised behind `RENDERING` in
      *  `protocol.rs`, so letting every pane upgrade would queue four 24 MP decodes and show
      *  nothing until the last finished; and below 100% the preview's pixels are all that can
-     *  be seen anyway. */
+     *  be seen anyway. Held by `only the focused pane asks for a full render, and only above
+     *  fit` in compare.svelte.test.ts. */
     needsFullImage(i: number): boolean {
       return i === focus && zoom > MIN_ZOOM;
     },
