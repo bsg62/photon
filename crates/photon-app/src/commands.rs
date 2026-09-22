@@ -7,8 +7,8 @@ use photon_core::{
     edit::{Crop, Edit},
     grid::{GridEntry, GridView, Section, hex_key},
     library::{
-        Album, AlbumSummary, Folder, GridTile, ItemFace, Person, SavedSearch, TagCount, TagRule,
-        ThemeChoice, WatchedFolder, is_starred,
+        Album, AlbumSummary, CopiesArg, Folder, GridTile, ItemFace, Person, SavedSearch, TagCount,
+        TagRule, ThemeChoice, WatchedFolder, is_starred,
     },
     media::ThumbState,
     now_ms,
@@ -248,9 +248,9 @@ pub fn grid_info(engine: &Engine) -> GridInfo {
     // One read of the pair, so the argument reported is the one the view was built with.
     let (view, arg) = engine.view_and_arg();
     let copies_of = (view == GridView::Copies)
-        .then(|| arg.parse::<i64>().ok())
+        .then(|| CopiesArg::parse(&arg))
         .flatten()
-        .map(|id| {
+        .map(|CopiesArg { anchor: id, .. }| {
             let item = engine.lib.item(id).ok().flatten();
             let gone = item
                 .as_ref()

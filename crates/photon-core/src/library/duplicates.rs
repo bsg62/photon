@@ -3,7 +3,7 @@
 
 use super::Library;
 use crate::Result;
-use rusqlite::params;
+use rusqlite::{OptionalExtension, params};
 
 /// A file the hashing pass should read: it shares its size with another live file and has
 /// no hash yet.
@@ -100,22 +100,81 @@ pub(crate) const DUPLICATE_FILTER: &str = "AND i.id IN (
         WHERE similar_group IS NOT NULL AND missing_since IS NULL
         GROUP BY similar_group HAVING COUNT(*) > 1))";
 
-/// One photo and its copies, as a grid filter: `?1` is the photo's id. The same two
-/// relations `copies_of` and `similar_of` list for the info panel, so the view and the panel
-/// cannot disagree about what a copy is.
+/// One photo and its copies, as a grid filter: `?1` is the photo's id and `?2` the hash it
+/// had when the view opened ([`CopiesArg`]). The same two relations `copies_of` and
+/// `similar_of` list for the info panel, so the view and the panel cannot disagree about
+/// what a copy is.
 ///
-/// `=` in the joins, never `IS`: a NULL hash names no group, and under `IS` every unhashed
-/// photo would be a copy of every other. `UNION ALL` inside an `IN` for the reason
-/// `DUPLICATE_FILTER` gives - an `OR` of the three plans as a scan of every live row.
-/// Missing rows are dropped by `grid_query`'s own `missing_since IS NULL`.
+/// The frozen hash is used **only once the photo's row is gone**. While the row exists its
+/// own current hash decides, even when that is NULL: a file rewritten with new bytes has its
+/// hash cleared, and the twins of its old bytes are not copies of it any more.
+///
+/// `=`, never `IS`: a NULL hash names no group, and under `IS` every unhashed photo would be
+/// a copy of every other. `UNION ALL` inside an `IN` for the reason `DUPLICATE_FILTER` gives:
+/// an `OR` of the three plans as a scan of every live row. Missing rows are dropped by
+/// `grid_query`'s own `missing_since IS NULL`.
 pub(crate) const COPIES_FILTER: &str = "AND i.id IN (
     SELECT ?1
     UNION ALL
-    SELECT c.id FROM items a JOIN items c ON c.content_hash = a.content_hash
-    WHERE a.id = ?1
+    SELECT c.id FROM items c WHERE c.content_hash =
+        CASE WHEN EXISTS (SELECT 1 FROM items WHERE id = ?1)
+             THEN (SELECT content_hash FROM items WHERE id = ?1)
+             ELSE ?2 END
     UNION ALL
     SELECT c.id FROM items a JOIN items c ON c.similar_group = a.similar_group
     WHERE a.id = ?1)";
+
+/// The Copies view's argument: the photo's id, and its content hash as it was when the
+/// view opened. The hash is carried because every other way to its twins goes through the
+/// photo's own row, and the commonest thing to do from this view - delete the copy you
+/// opened it on - purges that row at the next scan. `None` for a photo not hashed yet.
+///
+/// Held as text in `ViewState.arg`, like every view argument: `"<id>"` or
+/// `"<id>:<32 hex digits>"`. Anything else parses as `None`, which shows an empty grid.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CopiesArg {
+    pub anchor: i64,
+    pub hash: Option<[u8; 16]>,
+}
+
+impl CopiesArg {
+    pub fn parse(arg: &str) -> Option<Self> {
+        let (anchor, hash) = match arg.split_once(':') {
+            Some((anchor, hex)) => (anchor, Some(parse_hash(hex)?)),
+            None => (arg, None),
+        };
+        Some(Self {
+            anchor: anchor.parse().ok()?,
+            hash,
+        })
+    }
+}
+
+impl std::fmt::Display for CopiesArg {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.anchor)?;
+        if let Some(hash) = self.hash {
+            f.write_str(":")?;
+            for byte in hash {
+                write!(f, "{byte:02x}")?;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// 32 hex digits to 16 bytes. ASCII is checked first because the slicing below is by byte:
+/// multi-byte text of the right length would otherwise split a character and panic.
+fn parse_hash(hex: &str) -> Option<[u8; 16]> {
+    if hex.len() != 32 || !hex.is_ascii() {
+        return None;
+    }
+    let mut out = [0u8; 16];
+    for (i, byte) in out.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).ok()?;
+    }
+    Some(out)
+}
 
 /// Runs after every scan, so the size grouping has to come from `items_size` rather than
 /// a sort of the whole table; `the_candidate_query_groups_sizes_from_the_index` pins that.
@@ -194,6 +253,26 @@ impl Library {
         let conn = self.reader()?;
         let count: i64 = conn.query_row(&duplicate_count_sql(), [], |r| r.get(0))?;
         Ok(count as usize)
+    }
+
+    /// The argument that opens the Copies view on `item_id`, with the photo's hash frozen
+    /// into it (see [`CopiesArg`]). A photo with no row gets the bare id, which shows an
+    /// empty grid rather than refusing the view.
+    pub fn copies_view_arg(&self, item_id: i64) -> Result<String> {
+        let hash: Option<Vec<u8>> = self
+            .reader()?
+            .query_row(
+                "SELECT content_hash FROM items WHERE id = ?1",
+                [item_id],
+                |r| r.get(0),
+            )
+            .optional()?
+            .flatten();
+        Ok(CopiesArg {
+            anchor: item_id,
+            hash: hash.and_then(|h| h.try_into().ok()),
+        }
+        .to_string())
     }
 
     /// The other live files with the same bytes as `item_id`, by path.
@@ -399,8 +478,15 @@ mod tests {
     }
 
     fn copies_view(lib: &Library, anchor: i64) -> Vec<i64> {
+        let arg = lib.copies_view_arg(anchor).unwrap();
+        copies_view_of(lib, &arg)
+    }
+
+    /// The view as the engine builds it, from an argument taken earlier - which is the
+    /// whole point of the argument carrying a hash.
+    fn copies_view_of(lib: &Library, arg: &str) -> Vec<i64> {
         let mut ids: Vec<i64> = lib
-            .entries_for(GridView::Copies, &anchor.to_string())
+            .entries_for(GridView::Copies, arg)
             .unwrap()
             .iter()
             .map(|e| e.id)
@@ -463,8 +549,91 @@ mod tests {
         let (_w, folder) = seed_folder(&lib, Path::new("/p"));
         lib.insert_items(&[new_item(folder, "/p/a.jpg", 1)])
             .unwrap();
-        assert!(lib.entries_for(GridView::Copies, "").unwrap().is_empty());
-        assert!(lib.entries_for(GridView::Copies, "x").unwrap().is_empty());
+        for arg in [
+            "",
+            "x",
+            "1:",
+            "1:zz",
+            "1:00",
+            "x:00000000000000000000000000000000",
+        ] {
+            assert!(
+                lib.entries_for(GridView::Copies, arg).unwrap().is_empty(),
+                "{arg:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_copies_argument_round_trips_with_and_without_a_hash() {
+        let hashed = CopiesArg {
+            anchor: 7,
+            hash: Some([0xab; 16]),
+        };
+        assert_eq!(hashed.to_string(), format!("7:{}", "ab".repeat(16)));
+        assert_eq!(CopiesArg::parse(&hashed.to_string()), Some(hashed));
+        let bare = CopiesArg {
+            anchor: 7,
+            hash: None,
+        };
+        assert_eq!(bare.to_string(), "7");
+        assert_eq!(CopiesArg::parse("7"), Some(bare));
+        // Multi-byte text of the right byte length must be refused, not sliced mid-character:
+        // the leading "a" puts every "é" across a two-byte slice boundary.
+        assert_eq!(CopiesArg::parse(&format!("7:a{}a", "é".repeat(15))), None);
+    }
+
+    /// The case the frozen hash exists for: the user deletes the photo they opened the view
+    /// on, and once the scan purges its row, its twins are still each other's copies. The
+    /// look-alike half cannot be frozen - a group's id is its smallest member's, so purging
+    /// that member renumbers the group at the next pass - and drops out.
+    #[test]
+    fn the_copies_view_keeps_the_twins_of_a_purged_photo() {
+        let (_dir, lib) = temp_library();
+        let (_w, folder) = seed_folder(&lib, Path::new("/p"));
+        let paths = ["/p/anchor.jpg", "/p/twin.jpg", "/p/alike.jpg"];
+        let ids = lib
+            .insert_items(&[
+                new_item(folder, paths[0], 1),
+                new_item(folder, paths[1], 2),
+                new_item(folder, paths[2], 3),
+            ])
+            .unwrap();
+        let [anchor, twin, alike] = ids[..] else {
+            unreachable!()
+        };
+        hash(&lib, anchor, paths[0], 1);
+        hash(&lib, twin, paths[1], 1);
+        lib.set_similar_groups(&[(anchor, anchor), (alike, anchor)])
+            .unwrap();
+        let arg = lib.copies_view_arg(anchor).unwrap();
+
+        lib.purge_items(&[anchor]).unwrap();
+        assert_eq!(copies_view_of(&lib, &arg), vec![twin]);
+    }
+
+    /// While the photo is indexed its *current* hash decides, not the one the view opened
+    /// with: a file rewritten with new bytes has its hash cleared (`update_items`), and its
+    /// old twins are no longer copies of it.
+    #[test]
+    fn the_photos_own_hash_wins_while_it_is_indexed() {
+        let (_dir, lib) = temp_library();
+        let (_w, folder) = seed_folder(&lib, Path::new("/p"));
+        let paths = ["/p/anchor.jpg", "/p/twin.jpg"];
+        let ids = lib
+            .insert_items(&[new_item(folder, paths[0], 1), new_item(folder, paths[1], 2)])
+            .unwrap();
+        hash(&lib, ids[0], paths[0], 1);
+        hash(&lib, ids[1], paths[1], 1);
+        let arg = lib.copies_view_arg(ids[0]).unwrap();
+
+        lib.writer()
+            .execute(
+                "UPDATE items SET content_hash = NULL WHERE id = ?1",
+                [ids[0]],
+            )
+            .unwrap();
+        assert_eq!(copies_view_of(&lib, &arg), vec![ids[0]]);
     }
 
     /// The Copies analogue of `the_duplicates_view_places_a_folder_by_its_oldest_matching_photo`:
@@ -506,7 +675,11 @@ mod tests {
     #[test]
     fn the_copies_view_reaches_both_halves_through_their_indexes() {
         let (_dir, lib) = temp_library();
-        let plan = plan(&lib, &grid_query(GRID_COLUMNS, COPIES_FILTER), &[&1i64]);
+        let plan = plan(
+            &lib,
+            &grid_query(GRID_COLUMNS, COPIES_FILTER),
+            &[&1i64, &vec![7u8; 16]],
+        );
         for index in ["items_content_hash", "items_similar_group"] {
             assert!(
                 plan.iter().any(|step| step.contains(index)),
