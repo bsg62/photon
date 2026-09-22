@@ -1,5 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
-import { canCompare, createCompare, MAX_PANES, MIN_PANES, type ComparePane } from './compare.svelte';
+import {
+  canCompare,
+  createCompare,
+  differingFacts,
+  MAX_PANES,
+  MIN_PANES,
+  type ComparePane,
+} from './compare.svelte';
 import { MAX_ZOOM, MIN_ZOOM } from './nav';
 
 function pane(id: number): ComparePane {
@@ -191,5 +198,55 @@ describe('createCompare', () => {
     c.beginPan(7);
     await c.open([3, 4]);
     expect(c.panning).toBe(false);
+  });
+});
+
+describe('differingFacts', () => {
+  function sized(id: number, w: number, h: number, takenAt: number): ComparePane {
+    return { ...pane(id), width: w, height: h, takenAt };
+  }
+
+  it('says nothing when every pane carries the same facts', () => {
+    const facts = differingFacts([sized(1, 4000, 3000, 100), sized(2, 4000, 3000, 100)], 'en-US');
+    expect(facts).toEqual([
+      { size: '', taken: '' },
+      { size: '', taken: '' },
+    ]);
+  });
+
+  it('reports each pane’s dimensions once any pane differs', () => {
+    const facts = differingFacts([sized(1, 4000, 3000, 100), sized(2, 2000, 1500, 100)], 'en-US');
+    expect(facts.map((f) => f.size)).toEqual(['4000 × 3000', '2000 × 1500']);
+    expect(facts.map((f) => f.taken)).toEqual(['', '']);
+  });
+
+  it('reports each pane’s capture time once any pane differs', () => {
+    const facts = differingFacts(
+      [sized(1, 4000, 3000, 1_718_454_645), sized(2, 4000, 3000, 1_718_454_700)],
+      'en-US',
+    );
+    expect(facts.map((f) => f.size)).toEqual(['', '']);
+    expect(facts.map((f) => f.taken)).toEqual(['Jun 15, 2024, 12:30 PM', 'Jun 15, 2024, 12:31 PM']);
+  });
+
+  // A fact is shown on every pane or none: "4000 × 3000" next to a blank says nothing about
+  // the blank one, and the comparison is what the person came for.
+  it('reports a fact on every pane when only one of three differs', () => {
+    const facts = differingFacts(
+      [sized(1, 4000, 3000, 100), sized(2, 4000, 3000, 100), sized(3, 4000, 2250, 100)],
+      'en-US',
+    );
+    expect(facts.map((f) => f.size)).toEqual(['4000 × 3000', '4000 × 3000', '4000 × 2250']);
+  });
+
+  // The same height at a different width is a different picture, so both numbers count.
+  it('notices a difference in width alone', () => {
+    const facts = differingFacts([sized(1, 4000, 3000, 100), sized(2, 3000, 3000, 100)], 'en-US');
+    expect(facts.map((f) => f.size)).toEqual(['4000 × 3000', '3000 × 3000']);
+  });
+
+  it('has nothing to compare with fewer than two panes', () => {
+    expect(differingFacts([sized(1, 4000, 3000, 100)], 'en-US')).toEqual([{ size: '', taken: '' }]);
+    expect(differingFacts([], 'en-US')).toEqual([]);
   });
 });

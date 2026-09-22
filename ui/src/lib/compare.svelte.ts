@@ -1,3 +1,4 @@
+import { formatTaken } from './caption';
 import { MIN_ZOOM, clampPan, clampZoom } from './nav';
 
 /** Two is the fewest that is a comparison; four is where a 2x2 stops being legible at any
@@ -21,6 +22,41 @@ export interface ComparePane {
   thumbKey: string;
   edit: boolean;
   loaded: boolean;
+}
+
+/** What a pane says about itself beyond its file name. Empty where every pane agrees.
+ *
+ *  `'×'` lives here rather than in the component for the same reason `formatCaption`'s
+ *  does: `no-literals.test.ts` reads every `.svelte` file and fails on that glyph, because a
+ *  glyph in markup is how icons used to be drawn. */
+export interface PaneFacts {
+  /** `4000 × 3000`. */
+  size: string;
+  /** The capture time, formatted as the viewer's caption formats it. */
+  taken: string;
+}
+
+/** What distinguishes each pane from its neighbours.
+ *
+ *  Only a fact the panes disagree about is reported. Four identical `4000 × 3000` labels
+ *  are noise a person has to read past; the point of comparing is the fact that decides
+ *  between them, so a fact every pane shares is left off every pane. A fact that differs is
+ *  shown on *every* pane, not only the odd one out - a lone number beside three blanks says
+ *  nothing about the blanks.
+ *
+ *  `width`/`height` are the picture as shown: `viewer_item` reports an edited photo's
+ *  dimensions after its turns and crop, so there is no orientation swap to do here.
+ *
+ *  Pure, and the one rule in this overlay that a test can hold: the rest of Compare.svelte is
+ *  markup that vitest's node environment cannot render. */
+export function differingFacts(panes: ComparePane[], locale?: string): PaneFacts[] {
+  const differs = <T>(of: (p: ComparePane) => T) => panes.some((p) => of(p) !== of(panes[0]));
+  const sizes = differs((p) => `${p.width}x${p.height}`);
+  const takens = differs((p) => p.takenAt);
+  return panes.map((p) => ({
+    size: sizes ? `${p.width} × ${p.height}` : '',
+    taken: takens ? formatTaken(p.takenAt, locale) : '',
+  }));
 }
 
 export interface CompareDeps {
