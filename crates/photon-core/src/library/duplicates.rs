@@ -100,6 +100,23 @@ pub(crate) const DUPLICATE_FILTER: &str = "AND i.id IN (
         WHERE similar_group IS NOT NULL AND missing_since IS NULL
         GROUP BY similar_group HAVING COUNT(*) > 1))";
 
+/// One photo and its copies, as a grid filter: `?1` is the photo's id. The same two
+/// relations `copies_of` and `similar_of` list for the info panel, so the view and the panel
+/// cannot disagree about what a copy is.
+///
+/// `=` in the joins, never `IS`: a NULL hash names no group, and under `IS` every unhashed
+/// photo would be a copy of every other. `UNION ALL` inside an `IN` for the reason
+/// `DUPLICATE_FILTER` gives - an `OR` of the three plans as a scan of every live row.
+/// Missing rows are dropped by `grid_query`'s own `missing_since IS NULL`.
+pub(crate) const COPIES_FILTER: &str = "AND i.id IN (
+    SELECT ?1
+    UNION ALL
+    SELECT o.id FROM items a JOIN items o ON o.content_hash = a.content_hash
+    WHERE a.id = ?1
+    UNION ALL
+    SELECT o.id FROM items a JOIN items o ON o.similar_group = a.similar_group
+    WHERE a.id = ?1)";
+
 /// Runs after every scan, so the size grouping has to come from `items_size` rather than
 /// a sort of the whole table; `the_candidate_query_groups_sizes_from_the_index` pins that.
 const CANDIDATES_SQL: &str = "SELECT i.id, i.path, i.size, i.mtime_ms
@@ -367,5 +384,134 @@ mod tests {
             0,
             "the unedited partner is a duplicate of nothing until the next pass regroups"
         );
+    }
+
+    /// Hashes a row as the pass would: `new_item` fixes size/mtime at 100/1000, so the
+    /// candidate names that fingerprint.
+    fn hash(lib: &Library, id: i64, path: &str, hash: u8) {
+        let candidate = HashCandidate {
+            id,
+            path: path.to_string(),
+            size: 100,
+            mtime_ms: 1_000,
+        };
+        assert!(lib.set_content_hash(&candidate, &[hash; 16]).unwrap());
+    }
+
+    fn copies_view(lib: &Library, anchor: i64) -> Vec<i64> {
+        let mut ids: Vec<i64> = lib
+            .entries_for(GridView::Copies, &anchor.to_string())
+            .unwrap()
+            .iter()
+            .map(|e| e.id)
+            .collect();
+        ids.sort();
+        ids
+    }
+
+    /// The view is the photo plus exactly what its info panel lists: the same bytes, the
+    /// same look-alike group, live rows only. The unhashed pair is the input that tells
+    /// `=` from `IS`: two NULL hashes are "equal" under `IS`, and every unhashed photo in
+    /// the library would be shown as a copy of every other.
+    #[test]
+    fn the_copies_view_holds_the_photo_its_twins_and_its_look_alikes() {
+        let (_dir, lib) = temp_library();
+        let (_w, folder) = seed_folder(&lib, Path::new("/p"));
+        let paths = [
+            "/p/anchor.jpg",
+            "/p/twin.jpg",
+            "/p/alike.jpg",
+            "/p/other-twin-pair-a.jpg",
+            "/p/missing-twin.jpg",
+            "/p/unhashed-a.jpg",
+            "/p/unhashed-b.jpg",
+        ];
+        let ids = lib
+            .insert_items(
+                &paths
+                    .iter()
+                    .enumerate()
+                    .map(|(n, p)| new_item(folder, p, n as i64))
+                    .collect::<Vec<_>>(),
+            )
+            .unwrap();
+        let [anchor, twin, alike, other, missing, unhashed_a, _unhashed_b] = ids[..] else {
+            unreachable!()
+        };
+        hash(&lib, anchor, paths[0], 1);
+        hash(&lib, twin, paths[1], 1);
+        hash(&lib, missing, paths[4], 1);
+        // A different hash: identical to nothing here, so not a copy of the anchor.
+        hash(&lib, other, paths[3], 2);
+        lib.set_similar_groups(&[(anchor, anchor), (alike, anchor)])
+            .unwrap();
+        lib.mark_missing(&[missing], 5_000).unwrap();
+
+        assert_eq!(copies_view(&lib, anchor), vec![anchor, twin, alike]);
+        assert_eq!(
+            copies_view(&lib, unhashed_a),
+            vec![unhashed_a],
+            "an unhashed photo is a copy of nothing, least of all every other unhashed photo"
+        );
+    }
+
+    /// An argument that names no photo gives an empty grid, not an error: an error rolls the
+    /// view back (`rebuild_or_restore`), and a stale id is an ordinary thing to hold.
+    #[test]
+    fn a_copies_argument_that_is_not_an_id_shows_nothing() {
+        let (_dir, lib) = temp_library();
+        let (_w, folder) = seed_folder(&lib, Path::new("/p"));
+        lib.insert_items(&[new_item(folder, "/p/a.jpg", 1)])
+            .unwrap();
+        assert!(lib.entries_for(GridView::Copies, "").unwrap().is_empty());
+        assert!(lib.entries_for(GridView::Copies, "x").unwrap().is_empty());
+    }
+
+    /// The Copies analogue of `the_duplicates_view_places_a_folder_by_its_oldest_matching_photo`:
+    /// the filter has to reach `folder_order`'s copy as well as the outer `WHERE`.
+    #[test]
+    fn the_copies_view_places_a_folder_by_its_oldest_matching_photo() {
+        let (_dir, lib) = temp_library();
+        let (watched, root) = seed_folder(&lib, Path::new("/p"));
+        let alpha = lib
+            .upsert_folder(watched, Some(root), "/p/alpha", 1)
+            .unwrap();
+        let zulu = lib
+            .upsert_folder(watched, Some(root), "/p/zulu", 1)
+            .unwrap();
+        let ids = lib
+            .insert_items(&[
+                new_item(alpha, "/p/alpha/old-unrelated.jpg", 1),
+                new_item(alpha, "/p/alpha/anchor.jpg", 9),
+                new_item(zulu, "/p/zulu/alike.jpg", 5),
+            ])
+            .unwrap();
+        lib.set_similar_groups(&[(ids[1], ids[1]), (ids[2], ids[1])])
+            .unwrap();
+
+        let folders: Vec<i64> = lib
+            .entries_for(GridView::Copies, &ids[1].to_string())
+            .unwrap()
+            .iter()
+            .map(|e| e.folder_id)
+            .collect();
+        assert_eq!(
+            folders,
+            [alpha, zulu],
+            "alpha's oldest *matching* photo (9) is newer than zulu's (5), so alpha leads; \
+             by its oldest photo overall (1) it would trail"
+        );
+    }
+
+    #[test]
+    fn the_copies_view_reaches_both_halves_through_their_indexes() {
+        let (_dir, lib) = temp_library();
+        let plan = plan(&lib, &grid_query(GRID_COLUMNS, COPIES_FILTER), &[&1i64]);
+        for index in ["items_content_hash", "items_similar_group"] {
+            assert!(
+                plan.iter().any(|step| step.contains(index)),
+                "expected {index}, got {plan:?}"
+            );
+        }
     }
 }

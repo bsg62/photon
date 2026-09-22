@@ -27,13 +27,19 @@ pub enum GridView {
     /// Photos with a byte-identical twin elsewhere in the library (`duplicates.rs`). A
     /// filter like Starred, so it keeps the folder-first order and everything built on it.
     Duplicates,
+    /// One photo and its copies - the same bytes or the same picture - as its info panel
+    /// lists them. The photo's id is the view argument.
+    Copies,
 }
 
 impl GridView {
     /// Whether the view is selected by an argument held beside it on the engine. A view
     /// switch to one of these keeps the argument; a switch to any other clears it.
     pub fn takes_argument(self) -> bool {
-        matches!(self, Self::Search | Self::Person | Self::Album | Self::Tag)
+        matches!(
+            self,
+            Self::Search | Self::Person | Self::Album | Self::Tag | Self::Copies
+        )
     }
 }
 
