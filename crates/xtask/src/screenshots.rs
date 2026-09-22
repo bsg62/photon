@@ -130,16 +130,15 @@ pub const SHOTS: &[Shot] = &[
         dark: false,
     },
     // Three photos compared: a 2x2 with the fourth cell empty, on the dark ground compare
-    // always uses regardless of theme - the light shot is the one that proves it.
+    // always uses regardless of theme - the light shot is the one that proves it. No
+    // `compare-dark` counterpart, for the same reason there is no `viewer-info-dark`: the
+    // overlay's root is themed dark in both cases, so the two renders are byte-identical -
+    // checked with `cmp` after mock.js was changed to vary `viewerItem` per id, which rules
+    // out "identical because nothing differs between panes" as the explanation too.
     Shot {
         name: "compare-light",
         query: "theme=light&do=compare",
         dark: false,
-    },
-    Shot {
-        name: "compare-dark",
-        query: "theme=dark&do=compare",
-        dark: true,
     },
 ];
 

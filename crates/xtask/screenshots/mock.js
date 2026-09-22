@@ -39,14 +39,19 @@
   }
 
   function viewerItem(id) {
+    // Varies by id so a compare screenshot with several panes actually shows
+    // `differingFacts` at work - a fixed size/time made every prior compare shot render the
+    // always-blank case, the one `differingFacts` never gets exercised by a screenshot.
+    const width = id % 2 === 0 ? 5472 : 4032;
+    const height = id % 2 === 0 ? 3648 : 3024;
     return {
       id,
       path: `/home/ada/Pictures/2026/Summer hike/IMG_48${id}.jpg`,
       fileName: `IMG_48${id}.jpg`,
-      width: 5472,
-      height: 3648,
+      width,
+      height,
       orientation: 1,
-      takenAt: day(2026, 7, 14) + 70000,
+      takenAt: day(2026, 7, 14) + 70000 + id * 3600,
       size: 8123456,
       thumbKey: 'k' + (id - 1),
       thumbState: 'ready',
@@ -66,8 +71,8 @@
         { id: 501, path: `/home/ada/Pictures/2026/Summer hike/IMG_48${id} copy.jpg`, kind: 'identical', width: 5472, height: 3648 },
         { id: 502, path: `/home/ada/Pictures/2026/Summer hike/IMG_48${id} small.jpg`, kind: 'similar', width: 1600, height: 1067 },
       ],
-      uncroppedWidth: 5472,
-      uncroppedHeight: 3648,
+      uncroppedWidth: width,
+      uncroppedHeight: height,
       edit: null,
     };
   }
