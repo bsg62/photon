@@ -243,7 +243,7 @@
 
   <!-- Only while there is something in it, or while it is what the grid shows: most
        libraries have no duplicates, and a permanent "(0)" row is noise. -->
-  {#if library.info.duplicateCount > 0 || library.info.view === 'duplicates'}
+  {#if library.info.duplicateCount > 0 || library.info.view === 'duplicates' || library.info.view === 'copies'}
     <button
       class="root duplicates"
       class:active={library.info.view === 'duplicates'}
@@ -253,6 +253,14 @@
       <Icon name="copy" size={14} /><span class="name">Duplicates</span>
       <span class="count">{library.info.duplicateCount.toLocaleString()}</span>
     </button>
+    {#if library.info.view === 'copies'}
+      <!-- Not a saved place: it exists while the view is open, and leaving removes it. Not
+           a `<button>`: it does nothing on click (the view is already open), so a button
+           here was a dead tab stop announced as interactive with no action behind it. -->
+      <div class="root copies active" aria-current="true" title={library.info.copiesOf?.fileName}>
+        <span class="name">Copies of {library.info.copiesOf?.fileName || 'a photo'}</span>
+      </div>
+    {/if}
   {/if}
 
   <!-- Albums: photon's own, so the group is editable. -->
@@ -486,8 +494,10 @@
   }
   .chevron { display: grid; place-items: center; width: 12px; }
   .node { padding-left: 28px; }
+  /* Nested under Duplicates, the same depth as an album under its group. */
+  .copies { padding-left: 28px; }
   .root:hover, .node:hover, .group:hover { background: var(--hover); }
-  .starred.active, .recent.active, .duplicates.active, .node.active { background: var(--accent-soft); }
+  .starred.active, .recent.active, .duplicates.active, .node.active, .copies.active { background: var(--accent-soft); }
   /* --text-dim does not reach 4.5:1 over --accent-soft; --text does (tokens.test.ts). */
   .active .count { color: var(--text); }
   .add-album { color: var(--text-dim); }

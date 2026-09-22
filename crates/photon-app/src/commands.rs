@@ -72,6 +72,25 @@ pub struct GridInfo {
     pub album: Option<i64>,
     /// The keyword while `view` is `Tag`.
     pub tag: Option<String>,
+    /// The photo while `view` is `Copies`.
+    pub copies_of: Option<CopiesOf>,
+}
+
+/// The photo a Copies view is of. The name travels with the id because the sidebar labels
+/// the view by it, and asking again per render would be a round trip for a constant.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CopiesOf {
+    pub id: i64,
+    /// Empty when the photo has left the library since the view opened; the UI keeps the
+    /// name it already had.
+    pub file_name: String,
+    /// True once the anchor photo itself is gone - purged, or missing - from the library.
+    /// The membership filter keys off the anchor's own row (`COPIES_FILTER`), so once that
+    /// row is gone every branch matches nothing and the grid empties even though the other
+    /// copies are still live; this field is what lets the UI say *that*, rather than "no
+    /// other copies", which would be a lie about photos still sitting in the library.
+    pub gone: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -228,6 +247,27 @@ pub fn grid_info(engine: &Engine) -> GridInfo {
     let (version, grid) = engine.grid();
     // One read of the pair, so the argument reported is the one the view was built with.
     let (view, arg) = engine.view_and_arg();
+    let copies_of = (view == GridView::Copies)
+        .then(|| arg.parse::<i64>().ok())
+        .flatten()
+        .map(|id| {
+            let item = engine.lib.item(id).ok().flatten();
+            let gone = item
+                .as_ref()
+                .is_none_or(|item| item.missing_since.is_some());
+            let file_name = item
+                .and_then(|item| {
+                    Path::new(&item.path)
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                })
+                .unwrap_or_default();
+            CopiesOf {
+                id,
+                file_name,
+                gone,
+            }
+        });
     GridInfo {
         version,
         len: grid.len(),
@@ -251,6 +291,7 @@ pub fn grid_info(engine: &Engine) -> GridInfo {
             .then(|| arg.parse().ok())
             .flatten(),
         tag: (view == GridView::Tag).then_some(arg),
+        copies_of,
     }
 }
 
@@ -266,6 +307,50 @@ pub fn set_album_view(engine: &Engine, album_id: i64) -> CmdResult<()> {
 
 pub fn set_tag_view(engine: &Engine, tag: &str) -> CmdResult<()> {
     engine.set_tag_view(tag)?;
+    Ok(())
+}
+
+/// A photo's copies as its info panel lists them: byte-identical first, then look-alikes
+/// that are not already listed. The menu's count is this list's length, so the two cannot
+/// disagree about what a copy is.
+fn item_copies(engine: &Engine, id: i64) -> CmdResult<Vec<ItemCopy>> {
+    let identical = engine.lib.copies_of(id)?;
+    let identical_ids: std::collections::HashSet<i64> = identical.iter().map(|c| c.id).collect();
+    Ok(identical
+        .into_iter()
+        .map(|c| ItemCopy {
+            id: c.id,
+            path: c.path,
+            kind: CopyKind::Identical,
+            width: c.width,
+            height: c.height,
+        })
+        // A look-alike that is also a byte-identical twin is already listed above; a
+        // photo appearing twice in the info panel is a bug the user sees, not a detail.
+        .chain(
+            engine
+                .lib
+                .similar_of(id)?
+                .into_iter()
+                .filter(|c| !identical_ids.contains(&c.id))
+                .map(|c| ItemCopy {
+                    id: c.id,
+                    path: c.path,
+                    kind: CopyKind::Similar,
+                    width: c.width,
+                    height: c.height,
+                }),
+        )
+        .collect())
+}
+
+/// How many copies the tile menu may offer to show; 0 hides the item.
+pub fn copy_count(engine: &Engine, id: i64) -> CmdResult<usize> {
+    Ok(item_copies(engine, id)?.len())
+}
+
+pub fn set_copies_view(engine: &Engine, id: i64) -> CmdResult<()> {
+    engine.set_copies_view(id)?;
     Ok(())
 }
 
@@ -488,34 +573,7 @@ pub fn viewer_item(engine: &Engine, id: i64) -> CmdResult<ViewerItem> {
         (w, h, 1)
     };
     let albums = engine.lib.item_albums(item.id)?;
-    let identical = engine.lib.copies_of(item.id)?;
-    let identical_ids: std::collections::HashSet<i64> = identical.iter().map(|c| c.id).collect();
-    let copies = identical
-        .into_iter()
-        .map(|c| ItemCopy {
-            id: c.id,
-            path: c.path,
-            kind: CopyKind::Identical,
-            width: c.width,
-            height: c.height,
-        })
-        // A look-alike that is also a byte-identical twin is already listed above; a
-        // photo appearing twice in the info panel is a bug the user sees, not a detail.
-        .chain(
-            engine
-                .lib
-                .similar_of(item.id)?
-                .into_iter()
-                .filter(|c| !identical_ids.contains(&c.id))
-                .map(|c| ItemCopy {
-                    id: c.id,
-                    path: c.path,
-                    kind: CopyKind::Similar,
-                    width: c.width,
-                    height: c.height,
-                }),
-        )
-        .collect();
+    let copies = item_copies(engine, item.id)?;
     let thumb_key = hex_key(item.thumb_key());
     let camera = item.camera;
     Ok(ViewerItem {
@@ -877,6 +935,39 @@ mod tests {
         assert!(item.copies[1].path.ends_with("resized.jpg"));
         assert!(matches!(item.copies[1].kind, CopyKind::Similar));
         assert_eq!((item.copies[1].width, item.copies[1].height), (72, 48));
+    }
+
+    /// The menu's count is the info panel's list, counted: `identical.jpg` is both the same
+    /// bytes and the same picture as `orig.jpg`, and is one copy, not two. Same fixture and
+    /// the same reason for the second scan as the test above.
+    #[test]
+    fn the_copy_count_is_the_info_panels_list_counted_once() {
+        use crate::testutil::jpeg_pattern;
+        let f = fixture(&[
+            ("a/orig.jpg", &jpeg_pattern(180, 120)),
+            ("a/identical.jpg", &jpeg_pattern(180, 120)),
+            ("a/resized.jpg", &jpeg_pattern(72, 48)),
+            ("a/unrelated.jpg", &jpeg(64, 64)),
+        ]);
+        let watched = f.add_photos();
+        f.engine.thumbs.wait_idle();
+        f.engine.start_scan(watched);
+        f.engine.wait_for_scans();
+        let path_of = |id: i64| f.engine.lib.item(id).unwrap().unwrap().path;
+        let id_of = |name: &str| {
+            f.ids()
+                .into_iter()
+                .find(|&id| path_of(id).ends_with(name))
+                .unwrap()
+        };
+
+        let orig = id_of("orig.jpg");
+        assert_eq!(copy_count(&f.engine, orig).unwrap(), 2);
+        assert_eq!(
+            copy_count(&f.engine, orig).unwrap(),
+            viewer_item(&f.engine, orig).unwrap().copies.len()
+        );
+        assert_eq!(copy_count(&f.engine, id_of("unrelated.jpg")).unwrap(), 0);
     }
 
     /// Gives a scanned photo keywords the way the scanner's metadata backfill writes them.

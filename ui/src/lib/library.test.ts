@@ -84,6 +84,7 @@ describe('LibraryStore', () => {
       person: null,
       album: null,
       tag: null,
+      copiesOf: null,
     });
     vi.mocked(api.listFolders).mockResolvedValue({ watched: [], folders: [] });
     vi.mocked(api.listAlbums).mockResolvedValue([]);
@@ -329,6 +330,7 @@ describe('LibraryStore', () => {
       person: null,
       album: null,
       tag: null,
+      copiesOf: null,
     });
     vi.mocked(api.gridRows).mockResolvedValue({ version: 1, rows: [entry(10), entry(11)] });
     const store = new LibraryStore();
@@ -348,6 +350,7 @@ describe('LibraryStore', () => {
       person: null,
       album: null,
       tag: null,
+      copiesOf: null,
     });
     vi.mocked(api.gridOffsetOfItem).mockResolvedValue(2);
     await store.refresh();
@@ -371,6 +374,7 @@ describe('LibraryStore', () => {
       person: null,
       album: null,
       tag: null,
+      copiesOf: null,
     });
     const store = new LibraryStore();
     await store.init();
@@ -388,6 +392,7 @@ describe('LibraryStore', () => {
       person: null,
       album: null,
       tag: null,
+      copiesOf: null,
     });
     vi.mocked(api.gridOffsetOfItem).mockResolvedValue(4);
     await store.refresh();
@@ -409,6 +414,7 @@ describe('LibraryStore', () => {
       person: null,
       album: null,
       tag: null,
+      copiesOf: null,
     });
     const store = new LibraryStore();
     await store.init();
@@ -425,6 +431,7 @@ describe('LibraryStore', () => {
       person: null,
       album: null,
       tag: null,
+      copiesOf: null,
     });
     await store.refresh();
     expect(store.selected).toBe(1);
@@ -441,6 +448,7 @@ describe('LibraryStore', () => {
       person: null,
       album: null,
       tag: null,
+      copiesOf: null,
     });
     await store.refresh();
     expect(store.selected).toBeNull();
@@ -514,6 +522,7 @@ describe('LibraryStore', () => {
       person: null;
       album: null;
       tag: null;
+      copiesOf: null;
     }>();
     vi.mocked(api.gridInfo).mockReturnValueOnce(gridInfoGate.promise);
 
@@ -528,7 +537,7 @@ describe('LibraryStore', () => {
     const initPromise = store.init();
     store.dispose();
     listenGate.resolve();
-    gridInfoGate.resolve({ version: 1, len: 0, sections: [], starredCount: 0, duplicateCount: 0, view: 'all', searchQuery: '', person: null, album: null, tag: null });
+    gridInfoGate.resolve({ version: 1, len: 0, sections: [], starredCount: 0, duplicateCount: 0, view: 'all', searchQuery: '', person: null, album: null, tag: null, copiesOf: null });
     await initPromise;
 
     expect(unlistenCounts.libraryChanged).toBe(1);
@@ -557,7 +566,7 @@ describe('LibraryStore', () => {
     expect(api.setGridView).toHaveBeenCalledWith('starred');
     expect(resolved).toBe(false);
 
-    refreshGate.resolve({ version: 2, len: 0, sections: [], starredCount: 0, duplicateCount: 0, view: 'starred', searchQuery: '', person: null, album: null, tag: null });
+    refreshGate.resolve({ version: 2, len: 0, sections: [], starredCount: 0, duplicateCount: 0, view: 'starred', searchQuery: '', person: null, album: null, tag: null, copiesOf: null });
     await setViewPromise;
 
     expect(resolved).toBe(true);
@@ -592,6 +601,7 @@ describe('LibraryStore', () => {
       person: null,
       album: null,
       tag: null,
+      copiesOf: null,
     });
 
     await store.setSearchQuery('');
@@ -633,6 +643,7 @@ describe('LibraryStore', () => {
       person: null,
       album: null,
       tag: null,
+      copiesOf: null,
     });
 
     const p1 = store.setSearchQuery('b');
@@ -676,6 +687,7 @@ describe('LibraryStore', () => {
         person: null,
         album: null,
         tag: null,
+        copiesOf: null,
       });
       vi.mocked(api.gridRows).mockImplementation(async (offset: number, count: number) => ({
         version: 1,
@@ -921,6 +933,7 @@ describe('LibraryStore', () => {
         person: null,
         album: null,
         tag: null,
+        copiesOf: null,
       });
       vi.mocked(api.gridOffsetOfItem).mockResolvedValue(5);
       await store.refresh();
@@ -979,6 +992,7 @@ describe('LibraryStore', () => {
         person: null,
         album: null,
         tag: null,
+        copiesOf: null,
       });
       vi.mocked(api.gridOffsetOfItem).mockResolvedValue(4);
       // The rebuilt index answers version 2 now, so the range fetched below must match it too.
@@ -1017,6 +1031,7 @@ describe('LibraryStore', () => {
         person: null,
         album: null,
         tag: null,
+        copiesOf: null,
       });
       vi.mocked(api.gridRows).mockImplementation(async (offset: number, count: number) => ({
         version: 2,

@@ -18,14 +18,19 @@ export interface AppInfo { version: string; libraryPath: string; licence: string
  *  than newest, to match Picasa. */
 export interface Section { folderId: number; offset: number; count: number; takenAtMin: number }
 export interface GridEntry { id: number; folderId: number; takenAt: number; aspect: number; kind: 'image'; thumbKey: string; starred: boolean }
-export type GridView = 'all' | 'starred' | 'recent' | 'search' | 'person' | 'album' | 'tag' | 'duplicates';
+export type GridView = 'all' | 'starred' | 'recent' | 'search' | 'person' | 'album' | 'tag' | 'duplicates' | 'copies';
+/** Mirrors `commands::CopiesOf`. `fileName` is empty once the photo has left the library;
+ *  `gone` is true once the anchor photo itself is gone (purged or missing) - the filter
+ *  keys off the anchor's own row, so once it is gone every branch matches nothing and the
+ *  grid empties even though the other copies are still live. */
+export interface CopiesOf { id: number; fileName: string; gone: boolean }
 /** Mirrors `photon_core::library::ThemeChoice` (serde lowercase). */
 export type ThemeChoice = 'system' | 'light' | 'dark';
 /** Mirrors `photon_core::library::GridTile` (serde lowercase). */
 export type GridTile = 'small' | 'medium' | 'large';
-/** `searchQuery`, `person`, `album` and `tag` are the argument of the matching view and
- *  empty/null in every other view: the backend is the source of truth for which one is
- *  active, so the UI reads the argument from here rather than remembering what it asked for. */
+/** `searchQuery`, `person`, `album`, `tag` and `copiesOf` are the argument of the matching
+ *  view and empty/null in every other view: the backend is the source of truth for which one
+ *  is active, so the UI reads the argument from here rather than remembering what it asked for. */
 export interface GridInfo {
   version: number;
   len: number;
@@ -41,6 +46,8 @@ export interface GridInfo {
   album: number | null;
   /** Keyword while `view` is 'tag'. */
   tag: string | null;
+  /** The photo while `view` is 'copies'. */
+  copiesOf: CopiesOf | null;
 }
 export interface GridRows { version: number; rows: GridEntry[] }
 /** A named Picasa face; the rectangle is fractions of the displayed (oriented) image. */
@@ -181,6 +188,8 @@ export const api = {
   setPersonView: (contact: string) => invoke<void>('set_person_view', { contact }),
   setAlbumView: (albumId: number) => invoke<void>('set_album_view', { albumId }),
   setTagView: (tag: string) => invoke<void>('set_tag_view', { tag }),
+  copyCount: (id: number) => invoke<number>('copy_count', { id }),
+  setCopiesView: (id: number) => invoke<void>('set_copies_view', { id }),
   listPeople: () => invoke<Person[]>('list_people'),
   listTags: () => invoke<TagCount[]>('list_tags'),
   listTagRules: () => invoke<TagRule[]>('list_tag_rules'),
