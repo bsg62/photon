@@ -51,6 +51,12 @@
     },
     "macOS": {
       "minimumSystemVersion": "10.15"
+    },
+    "windows": {
+      "wix": {
+        "template": "windows/main.wxs",
+        "fragmentPaths": ["windows/install-dir-ui.wxs"]
+      }
     }
   }
 }

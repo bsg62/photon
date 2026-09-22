@@ -16,7 +16,7 @@ Download the installer for your system from the [latest release](https://github.
 | Linux | `.AppImage` | `chmod +x photon_*.AppImage && ./photon_*.AppImage` |
 | Linux (Debian, Ubuntu) | `.deb` | `sudo apt install ./photon_*.deb` — pulls in webkit2gtk-4.1 and libsoup-3 |
 | macOS | `.dmg` | Open it and drag photon to Applications. Take the `aarch64` file for Apple Silicon, `x64` for Intel. |
-| Windows | `.msi` | Run it. |
+| Windows | `.msi` | Run it. A desktop shortcut is made only if you tick the box on the install-folder page (or run `msiexec /i photon_*.msi DESKTOPSHORTCUT=1`); the Start menu entry is always there. |
 
 ### Upgrading to a version with Starred photos
 
@@ -338,6 +338,7 @@ publishing it.
 - [ ] Drag to pan, release, then drag again: the second drag still works (a leaked pointer capture would kill it). Click the ✕ in the corner instead of Escape: it closes compare the same way.
 - [ ] The downloaded installer runs, and photon starts from the installed location — not from a checkout.
 - [ ] photon appears in the applications menu (Start menu, Launchpad) with the right name and icon.
+- [ ] On Windows, the `.msi`'s install-folder page has an unticked "Create a desktop shortcut" box. Installing with it left unticked makes no desktop shortcut; installing again (over the top) with it ticked makes one; uninstalling removes it. Installing over 0.25.2 or older with it unticked removes the shortcut that version made.
 - [ ] A freshly installed photon watches the Pictures folder on first launch, with no folder added by hand.
 - [ ] On macOS, the permission prompt for the Pictures folder appears. Denying it shows "Live updates limited" in the status bar rather than silently indexing nothing.
 - [ ] On Linux, `sudo apt install ./photon_*.deb` pulls in the webview dependencies on a clean machine, and photon starts rather than failing on a missing library.

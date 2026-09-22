@@ -7,7 +7,7 @@ on:
   # A tag-only workflow cannot be tested before the tag that needs it, so changes to this
   # file build and verify on the pull request. The publish job stays tag-only.
   pull_request:
-    paths: ['.github/workflows/release.yml']
+    paths: ['.github/workflows/release.yml', 'crates/photon-app/windows/**']
 
 jobs:
   version-check:
@@ -161,6 +161,52 @@ jobs:
             *"$ver"*) ;;
             *) echo "::error::msi name does not carry version $ver: $msi"; exit 1 ;;
           esac
+      # The installer template is a copy of Tauri's (crates/photon-app/windows/), so a Tauri
+      # upgrade or a careless edit could quietly bring back the unasked-for desktop shortcut.
+      # Nothing else here builds an MSI, and nobody can click through one in CI, so read the
+      # built package's own tables instead.
+      - name: The desktop shortcut is opt-in
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $msi = (Get-ChildItem target/release/bundle/msi/*.msi)[0].FullName
+          $installer = New-Object -ComObject WindowsInstaller.Installer
+          $db = $installer.GetType().InvokeMember('OpenDatabase', 'InvokeMethod', $null, $installer, @($msi, 0))
+          function Rows([string]$sql, [int]$columns) {
+            $view = $db.GetType().InvokeMember('OpenView', 'InvokeMethod', $null, $db, @($sql))
+            [void]$view.GetType().InvokeMember('Execute', 'InvokeMethod', $null, $view, $null)
+            $out = @()
+            while ($rec = $view.GetType().InvokeMember('Fetch', 'InvokeMethod', $null, $view, $null)) {
+              # A plain [int] in a fresh object[]: a pipeline's $_ arrives wrapped, and COM
+              # answers the wrapper with DISP_E_TYPEMISMATCH.
+              $row = @()
+              for ([int]$i = 1; $i -le $columns; $i++) {
+                $arg = [object[]]::new(1); $arg[0] = $i
+                $row += $rec.GetType().InvokeMember('StringData', 'GetProperty', $null, $rec, $arg)
+              }
+              $out += ,$row
+            }
+            [void]$view.GetType().InvokeMember('Close', 'InvokeMethod', $null, $view, $null)
+            return ,$out
+          }
+          $failed = $false
+          function Expect([string]$what, $actual, $expected) {
+            if ("$actual" -ne "$expected") {
+              Write-Output "::error::$what is '$actual', expected '$expected'"
+              $script:failed = $true
+            } else { Write-Output "ok: $what = '$actual'" }
+          }
+          $cond = Rows "SELECT ``Condition`` FROM ``Component`` WHERE ``Component`` = 'ApplicationShortcutDesktop'" 1
+          Expect 'the desktop shortcut component condition' $cond[0][0] 'DESKTOPSHORTCUT'
+          $box = Rows "SELECT ``Type``, ``Property`` FROM ``Control`` WHERE ``Dialog_`` = 'PhotonInstallDirDlg' AND ``Control`` = 'DesktopShortcut'" 2
+          Expect 'the checkbox control' ($box[0] -join ',') 'CheckBox,DESKTOPSHORTCUT'
+          $default = Rows "SELECT ``Value`` FROM ``Property`` WHERE ``Property`` = 'DESKTOPSHORTCUT'" 1
+          Expect 'rows giving DESKTOPSHORTCUT a default' $default.Count 0
+          $secure = Rows "SELECT ``Value`` FROM ``Property`` WHERE ``Property`` = 'SecureCustomProperties'" 1
+          Expect 'DESKTOPSHORTCUT on the secure list' (($secure[0][0] -split ';') -contains 'DESKTOPSHORTCUT') 'True'
+          $next = Rows "SELECT ``Argument`` FROM ``ControlEvent`` WHERE ``Dialog_`` = 'LicenseAgreementDlg' AND ``Control_`` = 'Next' AND ``Event`` = 'NewDialog'" 1
+          Expect 'the page after the licence' $next[0][0] 'PhotonInstallDirDlg'
+          if ($failed) { exit 1 }
       - uses: actions/upload-artifact@v5
         with:
           name: photon-windows
