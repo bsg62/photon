@@ -1,7 +1,7 @@
 use criterion::{Criterion, criterion_group, criterion_main};
 use photon_core::{
     grid::GridIndex,
-    library::{Library, NewItem},
+    library::{HashCandidate, Library, NewItem},
     media::MediaKind,
 };
 use std::{hint::black_box, path::Path};
@@ -58,6 +58,29 @@ fn bench_grid(c: &mut Criterion) {
     let index = GridIndex::build(lib.grid_entries().unwrap());
     c.bench_function("grid_rows_page", |b| {
         b.iter(|| black_box(index.rows(black_box(50_000), 200).len()))
+    });
+
+    // The same library with one photo in ten a byte-identical pair, so the grid query's
+    // `has_copies` column has a real set to build and probe; the library above has no
+    // hashes at all and would measure it empty. Same budget as startup.
+    let dup_dir = tempfile::tempdir().unwrap();
+    let dup_lib = synthetic_library(dup_dir.path(), 1_000, 100);
+    let rows = dup_lib.grid_entries().unwrap();
+    for (n, entry) in rows.iter().enumerate().filter(|(n, _)| n % 10 < 1) {
+        let item = dup_lib.item(entry.id).unwrap().unwrap();
+        let candidate = HashCandidate {
+            id: item.id,
+            path: item.path,
+            size: item.size,
+            mtime_ms: item.mtime_ms,
+        };
+        // Pairs: rows 0 and 10 share a hash, 20 and 30, and so on.
+        dup_lib
+            .set_content_hash(&candidate, &((n / 20) as u128).to_le_bytes())
+            .unwrap();
+    }
+    c.bench_function("startup_grid_100k_with_duplicates", |b| {
+        b.iter(|| black_box(GridIndex::build(dup_lib.grid_entries().unwrap())))
     });
 }
 

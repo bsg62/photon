@@ -7,6 +7,7 @@
   import { formatCaption } from '../lib/caption';
   import { createCopyFeedback } from '../lib/copied.svelte';
   import { cameraRows, copyGroups, formatDimensions } from '../lib/exif';
+  import { showCopiesLabel } from '../lib/copies';
   import { ASPECTS, HANDLES, type Handle } from '../lib/crop';
   import { createCropTool } from '../lib/crop-tool.svelte';
   import { containedBox, faceBox } from '../lib/faces';
@@ -30,6 +31,7 @@
     onclose,
     onlocate,
     onsearch,
+    onshowcopies,
   }: {
     offset: number;
     onclose: (offset: number) => void;
@@ -37,6 +39,9 @@
     onlocate: (itemId: number) => void;
     /** A camera or lens in the info panel was clicked: leave the viewer for that search. */
     onsearch: (query: string) => void;
+    /** "Show N duplicates in the grid": the viewer closes and the grid holds this photo and
+     *  its copies, as the tile menu's item does. */
+    onshowcopies: (itemId: number) => void;
   } = $props();
 
   const PRELOAD_RADIUS = 2;
@@ -819,6 +824,14 @@
           {/each}
         </ul>
       {/each}
+      {#if item && item.copies.length > 0}
+        <!-- The same count and words as the tile menu's item, so the two read as one way in.
+             The list above locates one copy at a time; this shows them all together. -->
+        {@const id = item.id}
+        <p class="all-copies">
+          <button class="info-link" onclick={() => onshowcopies(id)}>{showCopiesLabel(item.copies.length)} in the grid</button>
+        </p>
+      {/if}
     </aside>
   {/if}
   <!-- The star and the caption share one bottom-centred row, so the star sits where the
@@ -1029,6 +1042,7 @@
   .albums { margin: 0; padding: 0; list-style: none; }
   .copies { margin: 0; padding: 0; list-style: none; font-size: var(--t-2); }
   .copies li { display: flex; align-items: baseline; gap: 6px; padding: 2px 0; }
+  .all-copies { margin: var(--s-2) 0 0; font-size: var(--t-2); }
   .albums label { display: flex; align-items: center; gap: 8px; padding: 2px 0; cursor: pointer; }
   .chip-remove {
     display: grid;

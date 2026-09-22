@@ -64,6 +64,9 @@ pub struct GridEntry {
     pub kind: MediaKind,
     /// True when the photo is starred in Picasa's per-directory `.picasa.ini`.
     pub starred: bool,
+    /// True when another live file has the same bytes or is a look-alike: membership of
+    /// the Duplicates view, so the tile's mark agrees with the menu's "Show duplicates".
+    pub has_copies: bool,
     /// Fingerprint of the file version. Part of thumbnail URLs, so they can be cached forever.
     #[serde(serialize_with = "serialize_hex")]
     pub thumb_key: u64,
@@ -184,6 +187,7 @@ mod tests {
             aspect: 1.5,
             kind: MediaKind::Image,
             starred: false,
+            has_copies: false,
             thumb_key: 42,
         }
     }
@@ -319,7 +323,7 @@ mod tests {
         let json = serde_json::to_string(&entry(7, 1)).unwrap();
         assert_eq!(
             json,
-            r#"{"id":7,"folderId":1,"takenAt":7,"aspect":1.5,"kind":"image","starred":false,"thumbKey":"000000000000002a"}"#
+            r#"{"id":7,"folderId":1,"takenAt":7,"aspect":1.5,"kind":"image","starred":false,"hasCopies":false,"thumbKey":"000000000000002a"}"#
         );
     }
 }

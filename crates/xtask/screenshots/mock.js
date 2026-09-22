@@ -35,6 +35,8 @@
       kind: 'image',
       thumbKey: 'k' + i,
       starred: i % 7 === 0,
+      // A different stride from the star, so some tiles carry each mark and some both.
+      hasCopies: i % 5 === 2,
     };
   }
 

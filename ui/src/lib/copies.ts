@@ -1,4 +1,4 @@
-import type { CopiesOf } from './api';
+import type { CopiesOf, GridView } from './api';
 
 /** "Show duplicates" from the tile menu: lands the grid on the Copies view with the photo
  *  selected. The same order as `locateItem`, for the same reason: an offset only means
@@ -49,4 +49,10 @@ export function copiesNotice(copiesOf: CopiesOf | null, len: number, firstId: nu
     return `No other copies of ${copiesOf.fileName || 'this photo'} any more.`;
   }
   return null;
+}
+
+/** Whether a tile draws its copies mark. Not in Duplicates or Copies: every photo there has
+ *  copies (that is what put it there), so a mark on every tile would say nothing. */
+export function copiesMarkShown(hasCopies: boolean, view: GridView): boolean {
+  return hasCopies && view !== 'duplicates' && view !== 'copies';
 }

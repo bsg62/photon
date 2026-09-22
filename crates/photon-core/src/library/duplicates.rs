@@ -88,8 +88,15 @@ pub(super) fn shown_copy(r: &rusqlite::Row<'_>) -> rusqlite::Result<ItemCopy> {
 /// view is normally a small fraction of the library;
 /// `the_grid_query_also_reaches_look_alikes_through_the_similar_index` pins the index use, not
 /// the sort, since the sort is real and expected here rather than a defect to eliminate.
-pub(crate) const DUPLICATE_FILTER: &str = "AND i.id IN (
-    SELECT id FROM items WHERE content_hash IN (
+pub(crate) const DUPLICATE_FILTER: &str = concat!("AND i.id IN (", duplicate_ids!(), ")");
+
+/// The ids of every photo with a copy: the body of [`DUPLICATE_FILTER`], and of the grid's
+/// `has_copies` column (`items::GRID_COLUMNS`). A macro because both are `const` strings
+/// built with `concat!`, which takes literals only; one text is what keeps a tile's mark and
+/// the Duplicates view from disagreeing about which photos have copies.
+macro_rules! duplicate_ids {
+    () => {
+        "SELECT id FROM items WHERE content_hash IN (
         SELECT content_hash FROM items
         WHERE content_hash IS NOT NULL AND missing_since IS NULL
         GROUP BY content_hash HAVING COUNT(*) > 1)
@@ -98,7 +105,10 @@ pub(crate) const DUPLICATE_FILTER: &str = "AND i.id IN (
       AND similar_group IN (
         SELECT similar_group FROM items
         WHERE similar_group IS NOT NULL AND missing_since IS NULL
-        GROUP BY similar_group HAVING COUNT(*) > 1))";
+        GROUP BY similar_group HAVING COUNT(*) > 1)"
+    };
+}
+pub(crate) use duplicate_ids;
 
 /// One photo and its copies, as a grid filter: `?1` is the photo's id and `?2` the hash it
 /// had when the view opened ([`CopiesArg`]). The same two relations `copies_of` and
@@ -539,6 +549,68 @@ mod tests {
             vec![unhashed_a],
             "an unhashed photo is a copy of nothing, least of all every other unhashed photo"
         );
+    }
+
+    /// The tile mark: a grid row says whether its photo has a copy, by the same rule the
+    /// Duplicates view uses, so a marked tile is exactly one whose menu offers "Show
+    /// duplicates". A lone hash, a twin that has gone missing and a photo never hashed are
+    /// the three ways to have a hash, or a group, and still no copy.
+    #[test]
+    fn grid_rows_carry_whether_the_photo_has_a_copy() {
+        let (_dir, lib) = temp_library();
+        let (_w, folder) = seed_folder(&lib, Path::new("/p"));
+        let paths = [
+            "/p/twin-a.jpg",
+            "/p/twin-b.jpg",
+            "/p/alike-a.jpg",
+            "/p/alike-b.jpg",
+            "/p/lone-hash.jpg",
+            "/p/survivor.jpg",
+            "/p/gone-twin.jpg",
+            "/p/unhashed.jpg",
+        ];
+        let ids = lib
+            .insert_items(
+                &paths
+                    .iter()
+                    .enumerate()
+                    .map(|(n, p)| new_item(folder, p, n as i64))
+                    .collect::<Vec<_>>(),
+            )
+            .unwrap();
+        hash(&lib, ids[0], paths[0], 1);
+        hash(&lib, ids[1], paths[1], 1);
+        lib.set_similar_groups(&[(ids[2], ids[2]), (ids[3], ids[2])])
+            .unwrap();
+        hash(&lib, ids[4], paths[4], 2);
+        hash(&lib, ids[5], paths[5], 3);
+        hash(&lib, ids[6], paths[6], 3);
+        lib.mark_missing(&[ids[6]], 5_000).unwrap();
+
+        let marked = |view: GridView, arg: &str| -> Vec<(i64, bool)> {
+            let mut rows: Vec<(i64, bool)> = lib
+                .entries_for(view, arg)
+                .unwrap()
+                .iter()
+                .map(|e| (e.id, e.has_copies))
+                .collect();
+            rows.sort();
+            rows
+        };
+        let expected: Vec<(i64, bool)> = vec![
+            (ids[0], true),
+            (ids[1], true),
+            (ids[2], true),
+            (ids[3], true),
+            (ids[4], false),
+            (ids[5], false),
+            (ids[7], false),
+        ];
+        assert_eq!(marked(GridView::All, ""), expected);
+        // Recent and Search build their rows from their own queries; both select the same
+        // column prefix, and a view that dropped the column would mark nothing.
+        assert_eq!(marked(GridView::Recent, ""), expected);
+        assert_eq!(marked(GridView::Search, "twin-a"), vec![(ids[0], true)]);
     }
 
     /// An argument that names no photo gives an empty grid, not an error: an error rolls the

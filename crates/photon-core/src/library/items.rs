@@ -1,5 +1,5 @@
 use super::Library;
-use super::duplicates::{COPIES_FILTER, CopiesArg, DUPLICATE_FILTER};
+use super::duplicates::{COPIES_FILTER, CopiesArg, DUPLICATE_FILTER, duplicate_ids};
 use super::tags::{EFFECTIVE_TAGS, TAG_FILTER};
 use crate::Result;
 use crate::edit::{Crop, Edit};
@@ -167,12 +167,24 @@ pub const RECENT_LIMIT: usize = 500;
 /// `search_entries` appends more columns after this prefix and reads them by index
 /// starting at `GRID_COLUMN_COUNT`: adding a column here shifts those indices, so keep
 /// the two in sync.
-pub(super) const GRID_COLUMNS: &str = "i.id, i.folder_id, i.taken_at, i.width, i.height, i.orientation, i.kind, i.path, i.size, i.mtime_ms, i.rating, i.edit_turns, i.edit_crop";
+///
+/// The last column is `has_copies`: membership of the same set the Duplicates view
+/// filters on (`duplicate_ids!`). The subquery does not mention `i`, so SQLite builds the
+/// set once per query and probes it per row, rather than re-running it for each photo.
+/// Measured on `startup_grid_100k` (2026-09-22): 49ms -> 55ms with no hashes at all, and
+/// 70ms (`..._with_duplicates`) with one photo in ten a byte-identical pair, against the
+/// one-second startup budget.
+pub(super) const GRID_COLUMNS: &str = concat!(
+    "i.id, i.folder_id, i.taken_at, i.width, i.height, i.orientation, i.kind, i.path, \
+     i.size, i.mtime_ms, i.rating, i.edit_turns, i.edit_crop, i.id IN (",
+    duplicate_ids!(),
+    ")"
+);
 
 /// Number of columns selected by `GRID_COLUMNS`. `search_entries` uses this rather than a
-/// bare `13` so a future column added to `GRID_COLUMNS` can't silently shift `file_name`
+/// bare `14` so a future column added to `GRID_COLUMNS` can't silently shift `file_name`
 /// and `folder name` into the wrong indices without also touching this constant.
-const GRID_COLUMN_COUNT: usize = 13;
+const GRID_COLUMN_COUNT: usize = 14;
 
 fn map_grid_row(r: &Row<'_>) -> rusqlite::Result<GridEntry> {
     let edit = edit_from_db(r.get(11)?, r.get(12)?);
@@ -189,6 +201,7 @@ fn map_grid_row(r: &Row<'_>) -> rusqlite::Result<GridEntry> {
         },
         kind: MediaKind::from_db(r.get(6)?).unwrap_or(MediaKind::Image),
         starred: is_starred(r.get(10)?),
+        has_copies: r.get(13)?,
         thumb_key: edit.thumb_key(fingerprint(&r.get::<_, String>(7)?, r.get(8)?, r.get(9)?)),
     })
 }

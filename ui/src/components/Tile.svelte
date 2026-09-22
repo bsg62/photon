@@ -3,6 +3,7 @@
   import { mediaUrl, type GridEntry } from '../lib/api';
   import { library } from '../lib/library.svelte';
   import { createThumbRequest } from '../lib/thumb-request.svelte';
+  import { copiesMarkShown } from '../lib/copies';
   import Icon from './Icon.svelte';
 
   let {
@@ -106,6 +107,11 @@
   {#if entry?.starred}
     <span class="star" aria-label="Starred"><Icon name="star" size={14} filled /></span>
   {/if}
+  <!-- A mark, not a control: the tile is itself a button, which cannot hold another. The
+       way to the copies is the menu's "Show duplicates", which this tells you is there. -->
+  {#if entry && copiesMarkShown(entry.hasCopies, library.info.view)}
+    <span class="copies" aria-label="Has copies" title="Has copies"><Icon name="copy" size={14} /></span>
+  {/if}
 </button>
 
 <style>
@@ -151,6 +157,17 @@
     right: 5px;
     bottom: 5px;
     color: var(--star);
+    filter: drop-shadow(0 0 2px var(--shadow-ink));
+    pointer-events: none;
+  }
+  /* The star's opposite corner, so a photo can carry both. Drawn onto the photo, like a
+     face box, so the same unthemed line colour, with the star's shadow to hold it on a
+     white one. */
+  .copies {
+    position: absolute;
+    left: 5px;
+    bottom: 5px;
+    color: var(--photo-line);
     filter: drop-shadow(0 0 2px var(--shadow-ink));
     pointer-events: none;
   }
