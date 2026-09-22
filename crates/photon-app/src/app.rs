@@ -209,6 +209,8 @@ pub fn run() {
             ipc::set_person_view,
             ipc::set_album_view,
             ipc::set_tag_view,
+            ipc::copy_count,
+            ipc::set_copies_view,
             ipc::list_people,
             ipc::list_tags,
             ipc::list_tag_rules,

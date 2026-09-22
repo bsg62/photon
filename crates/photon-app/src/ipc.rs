@@ -152,6 +152,16 @@ pub fn set_tag_view(engine: Eng<'_>, tag: String) -> Result<(), AppError> {
 }
 
 #[tauri::command(async)]
+pub fn copy_count(engine: Eng<'_>, id: i64) -> Result<usize, AppError> {
+    commands::copy_count(&engine, id)
+}
+
+#[tauri::command(async)]
+pub fn set_copies_view(engine: Eng<'_>, id: i64) -> Result<(), AppError> {
+    commands::set_copies_view(&engine, id)
+}
+
+#[tauri::command(async)]
 pub fn list_people(engine: Eng<'_>) -> Result<Vec<Person>, AppError> {
     commands::list_people(&engine)
 }
