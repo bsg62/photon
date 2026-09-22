@@ -148,15 +148,26 @@ export function createCompare(deps: CompareDeps) {
 
     /** Zooms by `factor` about a point `originX`/`originY` from the pane's centre.
      *
-     *  The pan correction is what keeps that point still: scaling by `k` moves a point at
-     *  offset `d` to `k*d`, so the pan must take back `d * (k - 1)`. Without it the photo
-     *  appears to slide out from under the pointer, which is exactly the feeling that makes
-     *  a shared zoom useless for comparing. */
+     *  The pan correction is what keeps that point still, and it has to be derived rather
+     *  than guessed at. The picture is drawn `translate(T) scale(z)` about
+     *  `transform-origin: center`, so a point `p` of the picture (measured from its centre)
+     *  lands at screen offset `T + z*p` from the pane's centre. To hold whatever is under
+     *  screen offset `d`:
+     *
+     *      p  = (d - T0) / z0            what is under the pointer now
+     *      T1 = d - z1*p = d - r*(d - T0)      where r = z1/z0
+     *
+     *  Note the `T0` inside the bracket. `T0 - d*(r - 1)` - the shape this started as - is
+     *  the same expression only while the pan is zero; it is off by `T0 * (r - 1)` otherwise,
+     *  so the photo slid out from under the pointer on every notch after the first, which is
+     *  exactly the feeling that makes a shared zoom useless for comparing. A single-zoom test
+     *  from `pan = {0, 0}` cannot see the difference, which is why the test beside it zooms
+     *  twice about the same point. */
     zoomAt(factor: number, originX: number, originY: number, width: number, height: number) {
       const next = clampZoom(zoom * factor);
       const k = next / zoom;
-      const x = pan.x - originX * (k - 1);
-      const y = pan.y - originY * (k - 1);
+      const x = originX - k * (originX - pan.x);
+      const y = originY - k * (originY - pan.y);
       zoom = next;
       pan = clampPan(x, y, next, width, height);
     },

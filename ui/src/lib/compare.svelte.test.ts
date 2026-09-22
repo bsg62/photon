@@ -106,6 +106,22 @@ describe('createCompare', () => {
     expect(c.pan.y).toBeCloseTo(-50, 5);
   });
 
+  /** The case above cannot discriminate the formula: from `pan = {0, 0}` the wrong
+   *  correction and the right one agree exactly. A second notch about the *same* point is
+   *  where they part - `T1 = d - r*(d - T0)` gives -300, and the `T0 - d*(r - 1)` shape the
+   *  branch shipped with gives -200, so the point the person is zooming into walks away
+   *  under the pointer. With the real 1.15 wheel factor the error is `pan * 0.15` a notch
+   *  and compounds smoothly, which is why it read as sloppiness rather than as a bug. */
+  it('a second zoom about the same point keeps it still too', async () => {
+    const c = createCompare(deps());
+    await c.open([1, 2]);
+    c.zoomAt(2, 100, 50, 800, 600);
+    c.zoomAt(2, 100, 50, 800, 600);
+    expect(c.zoom).toBe(4);
+    expect(c.pan.x).toBeCloseTo(-300, 5);
+    expect(c.pan.y).toBeCloseTo(-150, 5);
+  });
+
   it('pan is clamped so the photo keeps covering the pane', async () => {
     const c = createCompare(deps());
     await c.open([1, 2]);
