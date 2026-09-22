@@ -109,4 +109,70 @@ describe('createCompare', () => {
     expect(d.onerror).toHaveBeenCalled();
     expect(c.panes).toEqual([]);
   });
+
+  it('focus moves by index and wraps', async () => {
+    const c = createCompare(deps());
+    await c.open([1, 2, 3]);
+    c.focusPane(2);
+    expect(c.focus).toBe(2);
+    c.nextPane();
+    expect(c.focus).toBe(0);
+    // Out of range is ignored rather than throwing: `3` is a key a person can press.
+    c.focusPane(9);
+    expect(c.focus).toBe(0);
+  });
+
+  /** Fails if the upgrade rule is dropped - the change that would quietly serialise four
+   *  24 MP renders behind `RENDERING`. */
+  it('only the focused pane asks for a full render, and only above fit', async () => {
+    const c = createCompare(deps());
+    await c.open([1, 2, 3]);
+    // At fit, nobody needs one.
+    expect([0, 1, 2].map((i) => c.needsFullImage(i))).toEqual([false, false, false]);
+    c.zoomAt(2, 0, 0, 800, 600);
+    expect([0, 1, 2].map((i) => c.needsFullImage(i))).toEqual([true, false, false]);
+    c.focusPane(2);
+    expect([0, 1, 2].map((i) => c.needsFullImage(i))).toEqual([false, false, true]);
+    // At most one, always.
+    expect([0, 1, 2].filter((i) => c.needsFullImage(i))).toHaveLength(1);
+  });
+
+  // The three endings - pointerup, Escape, pointercancel - live in the component (Task 3),
+  // which has no test harness here; this factory has exactly one teardown, reachable
+  // repeatedly, which is the property that matters at this layer. Looping over three labels
+  // that all call the same `endPan` would be decorative, so this checks the one path twice
+  // instead of pretending to check three.
+  /** The bug class CLAUDE.md records from the rubber band: a drag that ends any way but
+   *  pointerup must still clear the pointer id, or every later drag is blocked. */
+  it('endPan is one teardown, reusable for a second gesture', async () => {
+    const c = createCompare(deps());
+    await c.open([1, 2]);
+    c.beginPan(7);
+    expect(c.panning).toBe(true);
+    c.endPan();
+    expect(c.panning).toBe(false);
+    // A second gesture must be able to start after the first ended, whichever way.
+    c.beginPan(8);
+    expect(c.panning).toBe(true);
+    c.endPan();
+    expect(c.panning).toBe(false);
+  });
+
+  it('closing while panning leaves no live gesture', async () => {
+    const c = createCompare(deps());
+    await c.open([1, 2]);
+    c.beginPan(7);
+    c.close();
+    expect(c.panning).toBe(false);
+  });
+
+  // Consistent with `open`'s own failure branch resetting zoom/pan/focus together (Task 1):
+  // a gesture left over from a previous comparison must not survive into the next one either.
+  it('opening a new comparison while panning leaves no live gesture', async () => {
+    const c = createCompare(deps());
+    await c.open([1, 2]);
+    c.beginPan(7);
+    await c.open([3, 4]);
+    expect(c.panning).toBe(false);
+  });
 });

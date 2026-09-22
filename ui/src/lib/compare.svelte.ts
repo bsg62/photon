@@ -43,6 +43,13 @@ export function createCompare(deps: CompareDeps) {
   let zoom = $state(MIN_ZOOM);
   let pan = $state({ x: 0, y: 0 });
 
+  /** The pointer id of a pan in progress, or null. A gesture has three endings - pointerup
+   *  finishes it, Escape abandons it, and a touchscreen sends pointercancel and nothing
+   *  else - and all three call `endPan`. A missed teardown here would leave a live id that
+   *  blocks every later drag, which is the failure this project has already shipped once in
+   *  the grid's rubber band. */
+  let panPointer: number | null = null;
+
   return {
     get panes() {
       return panes;
@@ -67,6 +74,7 @@ export function createCompare(deps: CompareDeps) {
         focus = 0;
         zoom = MIN_ZOOM;
         pan = { x: 0, y: 0 };
+        panPointer = null;
       } catch (e) {
         // Reset zoom/pan/focus too, not just panes: `panes: []` is meant to mean "closed",
         // the same state `close()` leaves - not "closed, but still carrying whatever zoom
@@ -76,6 +84,7 @@ export function createCompare(deps: CompareDeps) {
         focus = 0;
         zoom = MIN_ZOOM;
         pan = { x: 0, y: 0 };
+        panPointer = null;
         deps.onerror(e);
       }
     },
@@ -84,6 +93,7 @@ export function createCompare(deps: CompareDeps) {
       panes = [];
       zoom = MIN_ZOOM;
       pan = { x: 0, y: 0 };
+      panPointer = null;
       deps.onclose();
     },
 
@@ -122,6 +132,18 @@ export function createCompare(deps: CompareDeps) {
      *  be seen anyway. */
     needsFullImage(i: number): boolean {
       return i === focus && zoom > MIN_ZOOM;
+    },
+
+    get panning() {
+      return panPointer !== null;
+    },
+
+    beginPan(pointerId: number) {
+      panPointer = pointerId;
+    },
+
+    endPan() {
+      panPointer = null;
     },
   };
 }
