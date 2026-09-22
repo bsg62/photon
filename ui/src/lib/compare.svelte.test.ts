@@ -146,6 +146,23 @@ describe('createCompare', () => {
     expect(c.focus).toBe(0);
   });
 
+  // Shift+Tab is a backwards Tab: a roving focus that answers it by moving forwards is
+  // wrong in a way that only a wrap-around case catches, so this one starts at 0.
+  it('focus moves backwards and wraps the other way', async () => {
+    const c = createCompare(deps());
+    await c.open([1, 2, 3]);
+    c.prevPane();
+    expect(c.focus).toBe(2);
+    c.prevPane();
+    expect(c.focus).toBe(1);
+  });
+
+  it('moving focus backwards with nothing open does nothing', async () => {
+    const c = createCompare(deps());
+    c.prevPane();
+    expect(c.focus).toBe(0);
+  });
+
   /** Fails if the upgrade rule is dropped - the change that would quietly serialise four
    *  24 MP renders behind `RENDERING`. */
   it('only the focused pane asks for a full render, and only above fit', async () => {

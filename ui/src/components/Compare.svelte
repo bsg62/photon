@@ -22,7 +22,15 @@
   /** One star per pane, keyed by item id, each bound to what the load reported. The viewer's
    *  toggle is reused rather than calling `setStar` directly, because it is what makes the
    *  flip optimistic and the revert-on-failure safe; four of them because the focus moves
-   *  between four photos and a single toggle would need rebinding on every move. */
+   *  between four photos and a single toggle would need rebinding on every move.
+   *
+   *  A plain Map, not `$state`, and that is safe only because of how this component lives:
+   *  `open(ids)` runs once in `onMount` and awaits every load, so every entry exists before
+   *  first paint, and App mounts `<Compare>` under `{#if compareIds !== null}` so each
+   *  comparison gets its own instance. The badge then renders from each toggle's own rune.
+   *  A pane added after first paint - a `<Compare>` handed new `ids` without remounting -
+   *  would silently show no badge and keep the previous comparison's entries. That is the
+   *  assumption to check before making `ids` live. */
   const stars = new Map<number, StarToggle>();
 
   const compare = createCompare({
@@ -49,6 +57,11 @@
     onclose: () => onclose(),
     onerror: (e) => (error = errorMessage(e)),
   });
+
+  /** Ids whose full render failed. The overlay is dropped rather than left on top: it sits
+   *  at `inset: 0` over a preview that is fine, so a broken-image affordance there would
+   *  hide a picture the person can actually use. Per comparison, which is per mount. */
+  let fullBroken = $state<number[]>([]);
 
   /** Dimensions and capture time, blank where every pane agrees. The rule is in
    *  `compare.svelte.ts` so that it can be tested; here it is a lookup. */
@@ -139,11 +152,16 @@
     }
     if (e.key === 'Tab') {
       // The panes are the only things to move between, so Tab moves between them rather
-      // than walking out of the overlay.
+      // than walking out of the overlay - and Shift+Tab goes back, because a backwards Tab
+      // that moves forwards is wrong however few panes there are.
       e.preventDefault();
-      compare.nextPane();
+      if (e.shiftKey) compare.prevPane();
+      else compare.nextPane();
       return;
     }
+    // Everything below is an unmodified key, as Viewer.svelte's letter keys are: a modifier
+    // means the chord belongs to the webview or the OS, and Cmd+S is a reflex.
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
     if (e.key >= '1' && e.key <= '4') {
       e.preventDefault();
       compare.focusPane(Number(e.key) - 1);
@@ -217,19 +235,22 @@
             draggable="false"
             style="transform: translate({compare.pan.x}px, {compare.pan.y}px) scale({compare.zoom})"
           />
-          {#if compare.needsFullImage(i)}
+          {#if compare.needsFullImage(i) && !fullBroken.includes(p.id)}
             <img
               class="shot"
               src={fullSrc(p)}
               alt=""
               draggable="false"
               style="transform: translate({compare.pan.x}px, {compare.pan.y}px) scale({compare.zoom})"
+              onerror={() => (fullBroken = [...fullBroken, p.id])}
             />
           {/if}
           <p class="label">
             <span class="index" aria-hidden="true">{i + 1}</span>
             {#if stars.get(p.id)?.starred}
-              <span class="star" aria-label="Starred"><Icon name="star" size={13} filled={true} /></span>
+              <!-- `role="img"`, because an aria-label on a bare span is not reliably
+                   exposed; the icon inside is decorative. -->
+              <span class="star" role="img" aria-label="Starred"><Icon name="star" size={13} filled={true} /></span>
             {/if}
             <span class="name">{p.fileName}</span>
             {#if facts[i]?.size}<span class="fact">{facts[i].size}</span>{/if}

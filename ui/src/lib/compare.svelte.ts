@@ -173,6 +173,12 @@ export function createCompare(deps: CompareDeps) {
       if (panes.length > 0) focus = (focus + 1) % panes.length;
     },
 
+    /** Tab's partner. `+ panes.length` before the modulo because JavaScript's `%` keeps the
+     *  sign of its left operand, so `(0 - 1) % 3` is -1 rather than the last pane. */
+    prevPane() {
+      if (panes.length > 0) focus = (focus - 1 + panes.length) % panes.length;
+    },
+
     /** Whether pane `i` should ask for the full-size render rather than the preview.
      *
      *  At most one pane ever does. Full-size renders are serialised behind `RENDERING` in
