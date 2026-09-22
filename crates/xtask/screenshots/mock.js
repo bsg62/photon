@@ -96,6 +96,7 @@
       person: null,
       album: null,
       tag: null,
+      copiesOf: null,
     }),
     grid_rows: (a) => ({
       version: 1,
@@ -145,6 +146,7 @@
     theme: () => P.get('theme') || 'system',
     grid_tile: () => P.get('tile') || 'medium',
     set_grid_tile: () => null,
+    copy_count: () => 2,
   };
 
   // Commands that change something: a screenshot never needs their answer, so they get null.
@@ -156,7 +158,7 @@
     'reveal_library', 'reveal_watched', 'rotate_item', 'set_album_view', 'set_grid_view',
     'set_item_edit', 'set_last_folder', 'set_person_view',
     'check_export_dest', 'set_export_apply_edits', 'set_slideshow_interval', 'set_star', 'set_tag_view', 'set_theme',
-    'set_visible',
+    'set_visible', 'set_copies_view',
   ];
 
   let callbacks = 0;

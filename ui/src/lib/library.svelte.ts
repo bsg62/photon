@@ -14,6 +14,7 @@ import {
   type ScanProgressEvent,
   type TagCount,
 } from './api';
+import { keepCopiesName } from './copies';
 import { lastIndexAtOrBefore } from './layout';
 import { PageCache } from './pages';
 import type { UnlistenFn } from '@tauri-apps/api/event';
@@ -39,6 +40,7 @@ export class LibraryStore {
     person: null,
     album: null,
     tag: null,
+    copiesOf: null,
   });
   folders = $state<FolderList>({ watched: [], folders: [] });
   /** The sidebar's three collections. Refetched on every `library-changed` (a scan can
@@ -413,7 +415,7 @@ export class LibraryStore {
     const info = await api.gridInfo();
     if (info.version < this.info.version) return;
     this.pages.reset(info.version);
-    this.info = info;
+    this.info = { ...info, copiesOf: keepCopiesName(this.info.copiesOf, info.copiesOf) };
     this.pageTick++;
     await this.rebindSelection();
   }
@@ -543,6 +545,11 @@ export class LibraryStore {
   /** Shows the photos carrying one keyword. */
   async setTagView(tag: string): Promise<void> {
     await this.switchView(() => api.setTagView(tag));
+  }
+
+  /** Shows one photo and its copies. */
+  async setCopiesView(itemId: number): Promise<void> {
+    await this.switchView(() => api.setCopiesView(itemId));
   }
 
   /** One shape for every view switch: the command, then a refresh, with failures reported
