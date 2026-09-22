@@ -50,6 +50,27 @@ export function createCompare(deps: CompareDeps) {
    *  the grid's rubber band. */
   let panPointer: number | null = null;
 
+  /** The one place all five pieces of state return to their closed values, together.
+   *
+   *  This module has had the same bug three times at three different sites - `open`'s
+   *  failure branch resetting only `panes` and leaving `focus`/`zoom`/`pan` stale, `close`
+   *  resetting everything except `focus`, and `open`'s success branch never touching
+   *  `panPointer` - because each site re-listed the fields by hand and each one drifted on
+   *  its own. Every exit from an open comparison (`close`, and both branches of `open`) calls
+   *  this instead of assigning fields itself. A sixth piece of state belongs here too, or it
+   *  is the fourth instance of the same bug.
+   *
+   *  `panes = []` is what "closed" means to a caller that reads state before the next `open`;
+   *  the other four exist only to keep it from being "closed, but still carrying whatever
+   *  focus/zoom/pan/panPointer a previous comparison left behind". */
+  function reset() {
+    panes = [];
+    focus = 0;
+    zoom = MIN_ZOOM;
+    pan = { x: 0, y: 0 };
+    panPointer = null;
+  }
+
   return {
     get panes() {
       return panes;
@@ -65,35 +86,27 @@ export function createCompare(deps: CompareDeps) {
     },
 
     /** Loads every pane before showing any of them: half a comparison is worse than none,
-     *  and the panes are laid out by how many there are. */
+     *  and the panes are laid out by how many there are.
+     *
+     *  An invalid count (the early return) refuses rather than resetting: a stray `open([x])`
+     *  while three photos are already being compared is a no-op, not something that should
+     *  discard what the person is looking at. Everything past the guard - a load that
+     *  succeeds or fails - does go through `reset()`, because both of those really do replace
+     *  whatever comparison was open. */
     async open(ids: number[]) {
       if (!canCompare(ids.length)) return;
       try {
         const loaded = await Promise.all(ids.map((id) => deps.load(id)));
+        reset();
         panes = loaded;
-        focus = 0;
-        zoom = MIN_ZOOM;
-        pan = { x: 0, y: 0 };
-        panPointer = null;
       } catch (e) {
-        // Reset zoom/pan/focus too, not just panes: `panes: []` is meant to mean "closed",
-        // the same state `close()` leaves - not "closed, but still carrying whatever zoom
-        // and pan a previous, already-closed comparison left behind" for a caller that reads
-        // them before the next open.
-        panes = [];
-        focus = 0;
-        zoom = MIN_ZOOM;
-        pan = { x: 0, y: 0 };
-        panPointer = null;
+        reset();
         deps.onerror(e);
       }
     },
 
     close() {
-      panes = [];
-      zoom = MIN_ZOOM;
-      pan = { x: 0, y: 0 };
-      panPointer = null;
+      reset();
       deps.onclose();
     },
 

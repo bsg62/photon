@@ -54,6 +54,20 @@ describe('createCompare', () => {
     expect(d.load).not.toHaveBeenCalled();
   });
 
+  /** A stray invalid `open()` - a keypress or a stale caller passing the wrong count - is a
+   *  no-op, not a reason to discard whatever comparison is already open: refusing does not
+   *  mean resetting. */
+  it('an invalid open while comparing leaves the current comparison alone', async () => {
+    const c = createCompare(deps());
+    await c.open([1, 2, 3]);
+    c.focusPane(2);
+    c.zoomAt(2, 0, 0, 800, 600);
+    await c.open([9]);
+    expect(c.panes.map((p) => p.id)).toEqual([1, 2, 3]);
+    expect(c.focus).toBe(2);
+    expect(c.zoom).toBe(2);
+  });
+
   /** The whole feature: one zoom, read by every pane. Fails the moment zoom is stored per
    *  pane, which is the shape this would drift into. */
   it('zoom is shared across panes', async () => {
@@ -93,13 +107,16 @@ describe('createCompare', () => {
     expect(c.pan).toEqual({ x: 0, y: 0 });
   });
 
-  it('closing tells the caller and empties the panes', async () => {
+  it('closing tells the caller, empties the panes and resets focus', async () => {
     const d = deps();
     const c = createCompare(d);
-    await c.open([1, 2]);
+    await c.open([1, 2, 3]);
+    c.focusPane(2);
     c.close();
     expect(d.onclose).toHaveBeenCalledOnce();
     expect(c.panes).toEqual([]);
+    // Task 1's review found this stale: focus left at 2 against an empty `panes` array.
+    expect(c.focus).toBe(0);
   });
 
   it('a load failure closes rather than showing half a comparison', async () => {
