@@ -5,6 +5,7 @@
   import { api } from './lib/api';
   import { gridSize } from './lib/app-grid-size.svelte';
   import { theme } from './lib/app-theme.svelte';
+  import { showCopies } from './lib/copies';
   import { locateItem } from './lib/folders';
   import { library } from './lib/library.svelte';
   import { ownsSelectAll } from './lib/nav';
@@ -144,6 +145,20 @@
         grid?.focus();
       },
     });
+  }
+
+  /** "Show duplicates" from the tile menu; the switch-then-lookup order is `showCopies`'s. */
+  async function showCopiesOf(itemId: number) {
+    await showCopies(itemId, {
+      cancelSearch: () => searchBox.cancel(),
+      setCopiesView: (id) => library.setCopiesView(id),
+      offsetOfItem: (id) => api.gridOffsetOfItem(id).catch(() => null),
+      select: (offset, id) => {
+        library.selectItem(offset, id);
+        grid?.scrollToOffset(offset, 'nearest');
+        grid?.focus();
+      },
+    }).catch(library.reportError);
   }
 
   /** A camera or lens clicked in the viewer's info panel. Closes the viewer, since the
@@ -288,7 +303,14 @@
     onkeydown={keyResize}
   ></div>
   <main class="content" inert={covered}>
-    <Grid bind:this={grid} onopen={open} onkeywords={openKeywords} onexport={openExport} oncompare={openCompare} />
+    <Grid
+      bind:this={grid}
+      onopen={open}
+      onkeywords={openKeywords}
+      onexport={openExport}
+      oncompare={openCompare}
+      onshowcopies={showCopiesOf}
+    />
   </main>
   <div class="statusbar"><StatusBar /></div>
 </div>

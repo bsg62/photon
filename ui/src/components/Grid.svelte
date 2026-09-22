@@ -1,6 +1,7 @@
 <script lang="ts">
   import { api } from '../lib/api';
   import { canCompare } from '../lib/compare.svelte';
+  import { showCopiesLabel } from '../lib/copies';
   import { library } from '../lib/library.svelte';
   import { gridSize } from '../lib/app-grid-size.svelte';
   import { buildRows, columnsFor, edgeScrollSpeed, firstVisibleOffset, GAP, itemSpan, itemsInRect, layoutSections, type Rect, rowOfItem, topFolderId, totalHeight, visibleRange } from '../lib/layout';
@@ -14,11 +15,14 @@
     onkeywords,
     onexport,
     oncompare,
+    onshowcopies,
   }: {
     onopen: (offset: number) => void;
     onkeywords: (mode: 'add' | 'remove') => void;
     onexport: () => void;
     oncompare: (ids: number[]) => void;
+    /** "Show duplicates" on one photo. App owns the view switch and the selection after it. */
+    onshowcopies: (id: number) => void;
   } = $props();
 
   const NAV_KEYS = ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'];
@@ -282,6 +286,11 @@
 
   let menu = $state<{ x: number; y: number } | null>(null);
   let menuEl = $state<HTMLDivElement | undefined>();
+  /** The copy count of the one photo the menu was opened on, once the backend answers.
+   *  `menuSeq` makes a late answer harmless: one for a menu since closed, or reopened on a
+   *  different photo, would otherwise offer that photo's copies under this one. */
+  let menuCopies = $state<{ id: number; count: number } | null>(null);
+  let menuSeq = 0;
 
   $effect(() => {
     if (menu) menuEl?.focus();
@@ -492,6 +501,18 @@
     if (!entry) return;
     if (!library.isSelected(entry.id)) library.selected = offset;
     menu = { x: e.clientX, y: e.clientY };
+    const seq = ++menuSeq;
+    menuCopies = null;
+    if (library.selectionCount === 1) {
+      const id = entry.id;
+      api
+        .copyCount(id)
+        .then((count) => {
+          if (seq === menuSeq && menu) menuCopies = { id, count };
+        })
+        // No item is the right answer to a failed lookup: the menu's other verbs still work.
+        .catch(() => {});
+    }
   }
 
   function closeMenu() {
@@ -579,6 +600,8 @@
           No photos of {library.personName(library.info.person)}.
         {:else if library.info.view === 'duplicates'}
           No duplicates. Every photo in the library is the only copy of itself.
+        {:else if library.info.view === 'copies'}
+          No other copies of {library.info.copiesOf?.fileName || 'this photo'} any more.
         {:else if library.info.view === 'tag'}
           No photos tagged “{library.info.tag}”.
         {:else}
@@ -622,6 +645,13 @@
         {/if}
       {/each}
     </div>
+    {#if library.info.view === 'copies' && library.info.len === 1}
+      <!-- The group has shrunk to the photo itself since the view opened (a copy was deleted
+           and the rescan purged it). The photo stays on screen; this says why it is alone.
+           Not `.empty`: that class overlays the whole viewport, which would sit on top of
+           the one tile still showing. This sits in normal flow, below the canvas. -->
+      <p class="lone">No other copies of {library.info.copiesOf?.fileName || 'this photo'} any more.</p>
+    {/if}
   </div>
   {#if scrubbable}
     <Timeline {marks} {total} viewport={height} {scrollTop} onscrub={(top) => (viewport.scrollTop = top)} />
@@ -642,6 +672,16 @@
       <button role="menuitem" onclick={() => withSelection((ids) => api.revealInFileManager(ids[0]))}>
         Reveal in file manager
       </button>
+    {/if}
+    {#if count === 1 && menuCopies && menuCopies.count > 0}
+      {@const id = menuCopies.id}
+      <button
+        role="menuitem"
+        onclick={() => {
+          menu = null;
+          onshowcopies(id);
+        }}>{showCopiesLabel(menuCopies.count)}</button
+      >
     {/if}
     <button role="menuitem" onclick={() => withSelection((ids) => star(ids, true))}>Star {subject}</button>
     <button role="menuitem" onclick={() => withSelection((ids) => star(ids, false))}>Unstar {subject}</button>
@@ -717,6 +757,9 @@
   .header .path { flex: 1 1 auto; min-width: 0; color: var(--text-dim); font-size: var(--t-1); line-height: 20px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .row { display: flex; }
   .empty { position: absolute; inset: 0; display: grid; place-items: center; color: var(--text-dim); margin: 0; }
+  /* The Copies view's lone-photo line: in normal flow, below the one tile still on screen -
+     unlike `.empty`, which overlays the whole viewport and would sit on top of it. */
+  .lone { padding: var(--s-3); color: var(--text-dim); margin: 0; }
   .menu {
     position: fixed;
     z-index: 40;
