@@ -18,6 +18,7 @@
   import FolderTree from './components/FolderTree.svelte';
   import Grid from './components/Grid.svelte';
   import SearchBar from './components/SearchBar.svelte';
+  import Compare from './components/Compare.svelte';
   import Settings from './components/Settings.svelte';
   import SizeControl from './components/SizeControl.svelte';
   import ExportDialog from './components/ExportDialog.svelte';
@@ -29,6 +30,7 @@
   let grid: ReturnType<typeof Grid> | undefined = $state();
   let viewerAt = $state<number | null>(null);
   let settingsAt = $state<SettingsSection | null>(null);
+  let compareIds = $state<number[] | null>(null);
   let gear: HTMLButtonElement | undefined = $state();
   /** The keyword dialog for the grid's selection. It lives here, not in the grid, because
    *  it is an overlay: `covered` below makes everything behind one inert, and a dialog
@@ -53,7 +55,7 @@
   /** Everything behind an overlay is inert; the overlays never stack, because each one
    *  makes the other's opener inert. */
   const covered = $derived(
-    viewerAt !== null || settingsAt !== null || picker.visible || exporter.visible,
+    viewerAt !== null || settingsAt !== null || compareIds !== null || picker.visible || exporter.visible,
   );
   let sidebarWidth = $state(SIDEBAR_DEFAULT);
   let dragFrom: { x: number; width: number } | null = null;
@@ -179,6 +181,32 @@
     settingsAt = section;
   }
 
+  /** Opens the compare overlay for a selection. Called by the grid (Task 5). */
+  function openCompare(ids: number[]) {
+    compareIds = ids;
+  }
+
+  /** As `closeSettings`: `<main>` is still inert until the DOM catches up with `covered`,
+   *  and focusing an inert element silently does nothing. */
+  async function closeCompare() {
+    compareIds = null;
+    await tick();
+    grid?.focus();
+  }
+
+  /** Compare's Enter key: open the focused pane's photo in the viewer. Compare addresses a
+   *  photo by item id, the viewer by grid offset, so this is the same lookup `locate` does.
+   *  Unlike `locate`, compare never leaves the current view first - its panes are already
+   *  drawn from a selection in that view, so the photo is always findable in it. A lookup
+   *  that still comes back null (the photo was deleted from under the open overlay) opens
+   *  nothing; compare has already closed via its own `onclose`, so the grid is what is left
+   *  on screen, which is a reasonable place to land. */
+  async function openFromCompare(itemId: number) {
+    const at = await api.gridOffsetOfItem(itemId).catch(() => null);
+    if (at === null) return;
+    open(at);
+  }
+
   /** The top bar is still `inert` until the DOM catches up with `settingsAt`, and focusing
    *  an inert element silently does nothing — hence the tick before handing focus back. */
   async function closeSettings() {
@@ -266,6 +294,7 @@
 </div>
 {#if viewerAt !== null}<Viewer offset={viewerAt} onclose={closeViewer} onlocate={locate} onsearch={searchFrom} />{/if}
 {#if settingsAt !== null}<Settings section={settingsAt} onclose={closeSettings} />{/if}
+{#if compareIds !== null}<Compare ids={compareIds} onclose={closeCompare} onopen={openFromCompare} />{/if}
 <TagPicker {picker} onclosed={closeKeywords} />
 <ExportDialog dialog={exporter} onclosed={closeExport} />
 <Toasts />
