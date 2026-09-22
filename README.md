@@ -120,10 +120,12 @@ photon comes back unedited. Picasa's own crops and rotations are not imported.
 
 Select two to four photos in the grid and press `C` (or right-click → **Compare**) to see them
 side by side — two across, or a 2×2 for three or four. Zoom and pan move every pane together,
-about the same point in each photo: that is the point of comparing two shots of the same
-moment at 200% on the same eye, rather than juggling the zoom on each one separately. Each pane
-shows its file name, and — only where the panes actually differ — its pixel dimensions and
-capture time; identical values on every pane would just be noise.
+about the same point in each photo — exactly so for shots of the same shape, which is what a
+burst from one camera gives you, and approximately when you mix a portrait frame with a
+landscape one, since each photo is fitted into its own pane. That is the point of comparing
+two shots of the same moment at 200% on the same eye, rather than juggling the zoom on each
+one separately. Each pane shows its file name, and — only where the panes actually differ —
+its pixel dimensions and capture time; identical values on every pane would just be noise.
 
 One pane is focused at a time. `1`–`4` or Tab (Shift+Tab to go back) moves the focus, `S` stars
 the focused photo, Enter opens it in the viewer, and Escape (or the ✕ in the corner) closes

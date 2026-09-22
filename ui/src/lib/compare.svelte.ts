@@ -1,4 +1,4 @@
-import { formatTaken } from './caption';
+import { formatTaken, orientedDims } from './caption';
 import { MIN_ZOOM, clampPan, clampZoom } from './nav';
 
 /** Two is the fewest that is a comparison; four is where a 2x2 stops being legible at any
@@ -20,8 +20,10 @@ export interface ComparePane {
   height: number;
   takenAt: number;
   thumbKey: string;
+  /** The EXIF orientation `viewer_item` reported. Unedited photos arrive stored-side-up, so
+   *  every pair of dimensions printed here goes through `orientedDims` first. */
+  orientation: number;
   edit: boolean;
-  loaded: boolean;
 }
 
 /** What a pane says about itself beyond its file name. Empty where every pane agrees.
@@ -44,17 +46,21 @@ export interface PaneFacts {
  *  shown on *every* pane, not only the odd one out - a lone number beside three blanks says
  *  nothing about the blanks.
  *
- *  `width`/`height` are the picture as shown: `viewer_item` reports an edited photo's
- *  dimensions after its turns and crop, so there is no orientation swap to do here.
+ *  `width`/`height` are the *stored* dimensions for an unedited photo - `viewer_item`
+ *  normalises only when there is an edit to apply - so both the comparison and the printed
+ *  string go through `orientedDims`, exactly as `formatCaption` does. Comparing the raw pair
+ *  instead called a portrait 6000x4000 and a landscape 6000x4000 the same size and printed
+ *  neither, suppressing the one visibly different thing about the two pictures.
  *
  *  Pure, and the one rule in this overlay that a test can hold: the rest of Compare.svelte is
  *  markup that vitest's node environment cannot render. */
 export function differingFacts(panes: ComparePane[], locale?: string): PaneFacts[] {
   const differs = <T>(of: (p: ComparePane) => T) => panes.some((p) => of(p) !== of(panes[0]));
-  const sizes = differs((p) => `${p.width}x${p.height}`);
+  const dims = (p: ComparePane) => orientedDims(p.width, p.height, p.orientation);
+  const sizes = differs((p) => dims(p).join('x'));
   const takens = differs((p) => p.takenAt);
   return panes.map((p) => ({
-    size: sizes ? `${p.width} × ${p.height}` : '',
+    size: sizes ? `${dims(p)[0]} × ${dims(p)[1]}` : '',
     taken: takens ? formatTaken(p.takenAt, locale) : '',
   }));
 }
@@ -194,9 +200,13 @@ export function createCompare(deps: CompareDeps) {
      *
      *  At most one pane ever does. Full-size renders are serialised behind `RENDERING` in
      *  `protocol.rs`, so letting every pane upgrade would queue four 24 MP decodes and show
-     *  nothing until the last finished; and below 100% the preview's pixels are all that can
-     *  be seen anyway. Held by `only the focused pane asks for a full render, and only above
-     *  fit` in compare.svelte.test.ts. */
+     *  nothing until the last finished. The threshold is fit, which is where the app calls
+     *  100%, and it is deliberately conservative rather than tight: the preview is 1600px
+     *  (`thumbs/cache.rs`) in a pane around 694px, so its pixels actually hold up to roughly
+     *  2.3x and everything between fit and there is a full render nobody can see the benefit
+     *  of. Raising it would save those renders; it is an optimisation, not a correction, and
+     *  the simpler rule is the one the spec and the zoom readout agree on. Held by `only the
+     *  focused pane asks for a full render, and only above fit` in compare.svelte.test.ts. */
     needsFullImage(i: number): boolean {
       return i === focus && zoom > MIN_ZOOM;
     },

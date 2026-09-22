@@ -17,8 +17,8 @@ function pane(id: number): ComparePane {
     height: 3000,
     takenAt: 1_700_000_000 + id,
     thumbKey: `k${id}`,
+    orientation: 1,
     edit: false,
-    loaded: false,
   };
 }
 
@@ -270,6 +270,18 @@ describe('differingFacts', () => {
       'en-US',
     );
     expect(facts.map((f) => f.size)).toEqual(['4000 × 3000', '4000 × 3000', '4000 × 2250']);
+  });
+
+  /** `viewer_item` normalises `width`/`height` only for an *edited* photo, so an ordinary
+   *  portrait frame arrives as its stored landscape pair with `orientation: 6`. Comparing
+   *  the raw numbers made a portrait and a landscape from the same camera "the same size",
+   *  which printed nothing on either pane - suppressing the one fact that actually told them
+   *  apart - and printed a size the viewer's own caption contradicted. */
+  it('swaps the dimensions of a quarter-turned photo, in the comparison and in the text', () => {
+    const portrait = { ...sized(1, 4000, 3000, 100), orientation: 6 };
+    const landscape = sized(2, 4000, 3000, 100);
+    const facts = differingFacts([portrait, landscape], 'en-US');
+    expect(facts.map((f) => f.size)).toEqual(['3000 × 4000', '4000 × 3000']);
   });
 
   // The same height at a different width is a different picture, so both numbers count.

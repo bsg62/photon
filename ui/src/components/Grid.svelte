@@ -260,9 +260,11 @@
       if (sel !== null) onopen(sel);
       return;
     }
-    if (!e.ctrlKey && !e.metaKey && e.key.toLowerCase() === 'c') {
-      // The guard excludes Ctrl/Cmd so this never answers the browser's own copy chord -
-      // Ctrl+A and Ctrl+Shift+R above require their modifiers, this one requires their absence.
+    if (!e.ctrlKey && !e.metaKey && !e.altKey && e.key.toLowerCase() === 'c') {
+      // The guard excludes every modifier so this never answers a chord that belongs to the
+      // webview or the OS - the browser's copy chord, or Alt+C on a layout that composes with
+      // it. Ctrl+A and Ctrl+Shift+R above require their modifiers, this one requires their
+      // absence, which is the same rule Compare's own key handler applies to its letters.
       // Same 2-4 rule Compare enforces on its own panes (`canCompare`); consulted here
       // rather than re-expressed, so the range lives in one place.
       if (!canCompare(library.selectionCount)) return;

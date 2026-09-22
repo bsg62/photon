@@ -1,7 +1,12 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { api, errorMessage, mediaUrl, type ViewerItem } from '../lib/api';
-  import { createCompare, differingFacts, type ComparePane } from '../lib/compare.svelte';
+  import {
+    createCompare,
+    differingFacts,
+    MAX_PANES,
+    type ComparePane,
+  } from '../lib/compare.svelte';
   import { library } from '../lib/library.svelte';
   import { MIN_ZOOM } from '../lib/nav';
   import { createStarToggle, type StarToggle } from '../lib/star-toggle.svelte';
@@ -46,10 +51,12 @@
         height: it.height,
         takenAt: it.takenAt,
         thumbKey: it.thumbKey,
+        // Carried because `viewer_item` leaves an unedited photo's dimensions stored-side-up;
+        // `differingFacts` swaps them, the way the viewer's caption does.
+        orientation: it.orientation,
         // Only whether there is one: `thumbKey` already accounts for the edit, and the
         // full-size URL needs the key as a cache-buster when the photo carries one.
         edit: it.edit !== null,
-        loaded: true,
       };
     },
     // Through a closure, not by reference: a prop read at construction captures only its
@@ -62,6 +69,12 @@
    *  at `inset: 0` over a preview that is fine, so a broken-image affordance there would
    *  hide a picture the person can actually use. Per comparison, which is per mount. */
   let fullBroken = $state<number[]>([]);
+
+  /** Ids whose *preview* failed. `protocol.rs` answers 503 while a thumbnail is still being
+   *  rendered and 404 once the row is gone, so a photo deleted under an open comparison
+   *  would otherwise leave a broken-image glyph with nothing to explain it. Unlike
+   *  `fullBroken` the pane has nothing behind it to fall back to, so it says so in words. */
+  let previewBroken = $state<number[]>([]);
 
   /** Dimensions and capture time, blank where every pane agrees. The rule is in
    *  `compare.svelte.ts` so that it can be tested; here it is a lookup. */
@@ -113,6 +126,11 @@
     captured = { el: e.currentTarget, id: e.pointerId };
   }
 
+  /** The pan is one offset in pane pixels, shared by every pane - the same thing
+   *  `Viewer.svelte` does with its own rect. Each photo is `object-fit: contain`ed into its
+   *  pane, so where the panes hold different aspect ratios the letterboxing differs and
+   *  +100px is a different fraction of a landscape than of a portrait. For the burst of
+   *  same-camera frames compare is for, the aspects match and it lands exactly. */
   function onpointermove(e: PointerEvent & { currentTarget: HTMLElement }) {
     if (!compare.panning) return;
     const r = e.currentTarget.getBoundingClientRect();
@@ -162,7 +180,9 @@
     // Everything below is an unmodified key, as Viewer.svelte's letter keys are: a modifier
     // means the chord belongs to the webview or the OS, and Cmd+S is a reflex.
     if (e.ctrlKey || e.metaKey || e.altKey) return;
-    if (e.key >= '1' && e.key <= '4') {
+    // Against `MAX_PANES` rather than a literal '4', so the digit keys cannot outlive a
+    // change to how many panes a comparison holds.
+    if (e.key >= '1' && e.key <= String(MAX_PANES)) {
       e.preventDefault();
       compare.focusPane(Number(e.key) - 1);
       return;
@@ -228,13 +248,18 @@
         >
           <!-- The preview stays under the full render, so the pane never goes blank while
                the backend renders: full-size renders are serialised, so the gap is real. -->
-          <img
-            class="shot"
-            src={previewSrc(p)}
-            alt={p.fileName}
-            draggable="false"
-            style="transform: translate({compare.pan.x}px, {compare.pan.y}px) scale({compare.zoom})"
-          />
+          {#if previewBroken.includes(p.id)}
+            <p class="gone">Couldn’t load this photo</p>
+          {:else}
+            <img
+              class="shot"
+              src={previewSrc(p)}
+              alt={p.fileName}
+              draggable="false"
+              style="transform: translate({compare.pan.x}px, {compare.pan.y}px) scale({compare.zoom})"
+              onerror={() => (previewBroken = [...previewBroken, p.id])}
+            />
+          {/if}
           {#if compare.needsFullImage(i) && !fullBroken.includes(p.id)}
             <img
               class="shot"
@@ -246,7 +271,10 @@
             />
           {/if}
           <p class="label">
-            <span class="index" aria-hidden="true">{i + 1}</span>
+            <!-- Not `aria-hidden`: this digit is the only thing that says which number key
+                 focuses which pane, so hiding it hides the affordance itself. `role="img"`
+                 with a label for the same reason the star badge beside it has one. -->
+            <span class="index" role="img" aria-label="Pane {i + 1}">{i + 1}</span>
             {#if stars.get(p.id)?.starred}
               <!-- `role="img"`, because an aria-label on a bare span is not reliably
                    exposed; the icon inside is decorative. -->
@@ -304,7 +332,9 @@
     display: grid;
     /* Two columns always: two panes fall side by side in one row, three and four make a
        2x2. Three leaves the fourth cell empty rather than stretching one pane over it, so
-       every photo is shown at the same size - which is the comparison. */
+       every photo is shown at the same size - which is the comparison. Two columns and
+       auto rows is a 2x2 only because MAX_PANES is 4; raising it needs this rule revisited,
+       since a fifth pane would silently start a third row of half-height photos. */
     grid-template-columns: 1fr 1fr;
     grid-auto-rows: 1fr;
     gap: var(--s-1);
@@ -340,6 +370,18 @@
     object-fit: contain;
     transform-origin: center;
     user-select: none;
+  }
+  /* No photo behind it, so it sits where the photo would have been rather than over one. */
+  .gone {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    margin: 0;
+    padding: var(--s-3);
+    text-align: center;
+    font-size: var(--t-2);
+    color: var(--text-dim);
   }
   .label {
     position: absolute;
