@@ -177,7 +177,14 @@ jobs:
             [void]$view.GetType().InvokeMember('Execute', 'InvokeMethod', $null, $view, $null)
             $out = @()
             while ($rec = $view.GetType().InvokeMember('Fetch', 'InvokeMethod', $null, $view, $null)) {
-              $out += ,@(1..$columns | ForEach-Object { $rec.GetType().InvokeMember('StringData', 'GetProperty', $null, $rec, @($_)) })
+              # A plain [int] in a fresh object[]: a pipeline's $_ arrives wrapped, and COM
+              # answers the wrapper with DISP_E_TYPEMISMATCH.
+              $row = @()
+              for ([int]$i = 1; $i -le $columns; $i++) {
+                $arg = [object[]]::new(1); $arg[0] = $i
+                $row += $rec.GetType().InvokeMember('StringData', 'GetProperty', $null, $rec, $arg)
+              }
+              $out += ,$row
             }
             [void]$view.GetType().InvokeMember('Close', 'InvokeMethod', $null, $view, $null)
             return ,$out
