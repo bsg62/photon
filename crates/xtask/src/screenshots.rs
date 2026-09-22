@@ -129,6 +129,18 @@ pub const SHOTS: &[Shot] = &[
         query: "theme=light&view=duplicates&do=info",
         dark: false,
     },
+    // Three photos compared: a 2x2 with the fourth cell empty, on the dark ground compare
+    // always uses regardless of theme - the light shot is the one that proves it.
+    Shot {
+        name: "compare-light",
+        query: "theme=light&do=compare",
+        dark: false,
+    },
+    Shot {
+        name: "compare-dark",
+        query: "theme=dark&do=compare",
+        dark: true,
+    },
 ];
 
 #[derive(Debug, PartialEq)]

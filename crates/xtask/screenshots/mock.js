@@ -221,6 +221,20 @@
       box.value = 'lake OR pond';
       box.dispatchEvent(new Event('input', { bubbles: true }));
     },
+    // Three tiles selected with Ctrl-click (mirrors what a real multi-select looks like),
+    // then the context menu's own Compare item - not a synthetic `C` keydown, so this
+    // exercises the same path a person clicking through the menu takes.
+    compare: () => {
+      tile(3)?.click();
+      tile(4)?.dispatchEvent(new MouseEvent('click', { bubbles: true, ctrlKey: true }));
+      tile(5)?.dispatchEvent(new MouseEvent('click', { bubbles: true, ctrlKey: true }));
+      tile(5)?.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 700, clientY: 300 }));
+      later(100, () =>
+        [...document.querySelectorAll('[role="menuitem"]')]
+          .find((b) => b.textContent.trim().startsWith('Compare'))
+          ?.click(),
+      );
+    },
     viewer: () => open(2),
     info: () => {
       open(2);

@@ -116,6 +116,22 @@ still leads to the photo exactly as the camera wrote it, and other programs do n
 edit. An edit belongs to the file's entry in the library: a photo renamed or moved outside
 photon comes back unedited. Picasa's own crops and rotations are not imported.
 
+### Comparing photos
+
+Select two to four photos in the grid and press `C` (or right-click → **Compare**) to see them
+side by side — two across, or a 2×2 for three or four. Zoom and pan move every pane together,
+about the same point in each photo: that is the point of comparing two shots of the same
+moment at 200% on the same eye, rather than juggling the zoom on each one separately. Each pane
+shows its file name, and — only where the panes actually differ — its pixel dimensions and
+capture time; identical values on every pane would just be noise.
+
+One pane is focused at a time. `1`–`4` or Tab (Shift+Tab to go back) moves the focus, `S` stars
+the focused photo, Enter opens it in the viewer, and Escape (or the ✕ in the corner) closes
+compare and takes you back to the grid exactly as you left it.
+
+**photon does not delete.** Compare is for deciding which shot to keep; acting on that —
+deleting the others — is your call, made outside photon with your file manager.
+
 ### Duplicates
 
 photon finds two kinds of copy. Byte-identical files: after each scan it reads only the files
@@ -305,6 +321,16 @@ publishing it.
 - [ ] On a library large enough to exhaust the system's watch limit, the status bar says live updates are limited rather than silently missing changes.
 - [ ] A folder added with "Add folder…" while photon is running picks up changes on disk within a few seconds, with no restart.
 - [ ] Once a folder whose live updates were limited recovers, the status bar stops saying so without a restart.
+- [ ] Select three photos in the grid and press `C`. Zoom into one corner with the wheel and drag: all three should move together, over the same part of each photo.
+- [ ] Zoom past 100% on the focused pane and check it sharpens while the others stay as they were — only the focused pane asks for the full-size render.
+- [ ] Start a pan and press Escape: the pan should stop and compare should stay open. Press Escape again to leave.
+- [ ] Leave compare and check the grid's arrow keys, Enter and Escape still work without clicking first.
+- [ ] Select one photo, then five, and check `C` does nothing and the menu offers no Compare; right-click 2–4 selected photos instead and choose Compare from the menu — it opens the same overlay.
+- [ ] Select two photos with different pixel dimensions and press `C`: both panes print their size; select two with the same dimensions and it is left off both.
+- [ ] Press `1`–`4` and Tab/Shift+Tab: the focus ring moves pane to pane, and Tab cannot walk out of compare into the grid or topbar behind it.
+- [ ] Press `S` on the focused pane: a star badge appears on it, and the grid shows it starred after closing compare with Escape.
+- [ ] Press `Enter` on a pane: the viewer opens on that exact photo and compare is gone.
+- [ ] Drag to pan, release, then drag again: the second drag still works (a leaked pointer capture would kill it). Click the ✕ in the corner instead of Escape: it closes compare the same way.
 - [ ] The downloaded installer runs, and photon starts from the installed location — not from a checkout.
 - [ ] photon appears in the applications menu (Start menu, Launchpad) with the right name and icon.
 - [ ] A freshly installed photon watches the Pictures folder on first launch, with no folder added by hand.
