@@ -495,7 +495,10 @@
   .chevron { display: grid; place-items: center; width: 12px; }
   .node { padding-left: 28px; }
   /* Nested under Duplicates, the same depth as an album under its group. */
-  .copies { padding-left: 28px; }
+  /* Nothing happens on a click (see the markup), so it must not offer one: `.root` is
+     styled for the buttons it is otherwise always on. Its hover background is already
+     covered by `.copies.active`, which is declared after it. */
+  .copies { padding-left: 28px; cursor: default; }
   .root:hover, .node:hover, .group:hover { background: var(--hover); }
   .starred.active, .recent.active, .duplicates.active, .node.active, .copies.active { background: var(--accent-soft); }
   /* --text-dim does not reach 4.5:1 over --accent-soft; --text does (tokens.test.ts). */
