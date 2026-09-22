@@ -404,9 +404,13 @@ impl Engine {
     }
 
     /// Shows one photo and its copies. Rolls back on a failed refresh.
+    ///
+    /// The photo's hash is read now, into the argument, so its twins survive the photo
+    /// itself being deleted and purged while the view is open (`CopiesArg`).
     pub fn set_copies_view(&self, item_id: i64) -> Result<()> {
+        let arg = self.lib.copies_view_arg(item_id)?;
         self.rebuild_or_restore(|state| {
-            state.arg = item_id.to_string();
+            state.arg = arg;
             state.view = GridView::Copies;
         })
     }
@@ -3126,9 +3130,17 @@ mod tests {
         f.engine.lib.purge_items(&[orig]).unwrap();
         f.engine.refresh_grid().unwrap();
 
+        // The twin stays through the hash frozen into the argument; the look-alike cannot be
+        // frozen (see `CopiesArg`) and drops out.
         let info = crate::commands::grid_info(&f.engine);
-        assert_eq!(info.len, 0, "the filter keys off the anchor's own row");
+        let path_at = |offset: usize| path_of(f.engine.grid().1.rows(offset, 1)[0].id);
+        assert_eq!(info.len, 1);
+        assert!(path_at(0).ends_with("identical.jpg"));
         let copies_of = info.copies_of.expect("the argument is still held");
+        assert_eq!(
+            copies_of.id, orig,
+            "the id is read back out of the longer argument"
+        );
         assert!(copies_of.gone, "the anchor's row is gone");
     }
 

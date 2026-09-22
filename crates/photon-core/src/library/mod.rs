@@ -10,7 +10,7 @@ mod similar;
 mod tags;
 
 pub use albums::{Album, AlbumSummary};
-pub use duplicates::{HashCandidate, ItemCopy};
+pub use duplicates::{CopiesArg, HashCandidate, ItemCopy};
 pub use faces::{ItemFace, Person};
 pub use folders::{Folder, WatchedFolder};
 pub use items::{Item, KnownItem, NewItem, RECENT_LIMIT, is_starred};

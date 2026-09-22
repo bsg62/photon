@@ -149,3 +149,16 @@ selected; open the view, remove a copy on disk, rescan.
 - A *Show all in grid* link in the viewer's info panel beside the copies list.
 - A mark on grid tiles that have copies.
 - Anything that removes a copy. photon does not delete photos.
+
+## Addendum, 0.25.2: the frozen hash
+
+The whole-branch review found that deleting the photo a Copies view was opened on emptied
+the view at the next scan, because every branch of the filter went through the photo's own
+row. 0.25.0 made the message truthful; 0.25.2 keeps the twins. `set_copies_view` reads the
+photo's `content_hash` into the argument (`"<id>:<hex>"`, `CopiesArg`), and the filter uses
+it **only once the photo's row is gone**. While the row exists its own current hash
+decides, so a file rewritten with new bytes (hash cleared) stops matching its old twins.
+
+Look-alikes are not frozen. A group's id is its smallest member's id, so purging that
+member renumbers the group at the next pass, and a stored group id would name nothing, or
+later a different group. They drop out, and the view's notice points to Duplicates.

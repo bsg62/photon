@@ -1,5 +1,5 @@
 use super::Library;
-use super::duplicates::{COPIES_FILTER, DUPLICATE_FILTER};
+use super::duplicates::{COPIES_FILTER, CopiesArg, DUPLICATE_FILTER};
 use super::tags::{EFFECTIVE_TAGS, TAG_FILTER};
 use crate::Result;
 use crate::edit::{Crop, Edit};
@@ -708,8 +708,11 @@ impl Library {
             GridView::Copies => {
                 // Like Album: an argument that is not an id names nothing, and an empty grid
                 // says so rather than an error that would roll the view back.
-                let anchor: i64 = arg.parse().unwrap_or(-1);
-                self.entries_filtered(COPIES_FILTER, &[&anchor])
+                let Some(copies) = CopiesArg::parse(arg) else {
+                    return Ok(Vec::new());
+                };
+                let hash = copies.hash.map(|h| h.to_vec());
+                self.entries_filtered(COPIES_FILTER, &[&copies.anchor, &hash])
             }
         }
     }
