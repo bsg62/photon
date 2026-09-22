@@ -260,7 +260,9 @@
       if (sel !== null) onopen(sel);
       return;
     }
-    if (e.key.toLowerCase() === 'c') {
+    if (!e.ctrlKey && !e.metaKey && e.key.toLowerCase() === 'c') {
+      // The guard excludes Ctrl/Cmd so this never answers the browser's own copy chord -
+      // Ctrl+A and Ctrl+Shift+R above require their modifiers, this one requires their absence.
       // Same 2-4 rule Compare enforces on its own panes (`canCompare`); consulted here
       // rather than re-expressed, so the range lives in one place.
       if (!canCompare(library.selectionCount)) return;
