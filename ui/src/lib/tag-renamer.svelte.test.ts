@@ -3,8 +3,8 @@ import type { TagCount, TagRule } from './api';
 import { createTagRenamer } from './tag-renamer.svelte';
 
 const tags: TagCount[] = [
-  { tag: 'holiday', count: 1 },
-  { tag: 'vacation', count: 2 },
+  { tag: 'holiday', count: 1, total: 1 },
+  { tag: 'vacation', count: 2, total: 2 },
 ];
 const rules: TagRule[] = [{ tag: 'junk', target: null }];
 

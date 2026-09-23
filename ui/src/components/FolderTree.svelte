@@ -4,6 +4,7 @@
   import { api, type AlbumSummary, type Folder, type SavedSearch } from '../lib/api';
   import { createAlbumEditor } from '../lib/album-editor.svelte';
   import { enterFolder, folderRows, groupByYear } from '../lib/folders';
+  import { sidebarTags } from '../lib/tags';
   import { library } from '../lib/library.svelte';
   import { searchBox } from '../lib/search-box.svelte';
   import Icon from './Icon.svelte';
@@ -16,6 +17,7 @@
    *  a folder with items, which is what keeps empty intermediate folders out of the list.
    *  Watched roots with no photos of their own are managed from Settings instead. */
   const years = $derived(groupByYear(folderRows(library.info.sections, library.folders.folders)));
+  const shownTags = $derived(sidebarTags(library.tags));
 
   /** Which collection groups are open. Albums start open because they are the user's own;
    *  People and Tags start closed because a real library has hundreds of each, and the years
@@ -385,10 +387,10 @@
   <button class="group" aria-expanded={open.tags} onclick={() => (open.tags = !open.tags)}>
     <span class="chevron"><Icon name={open.tags ? 'chevron-down' : 'chevron-right'} size={12} /></span><Icon name="tag" size={14} />
     <span class="name">Tags</span>
-    <span class="count">{library.tags.length.toLocaleString()}</span>
+    <span class="count">{shownTags.length.toLocaleString()}</span>
   </button>
   {#if open.tags}
-    {#each library.tags as t (t.tag)}
+    {#each shownTags as t (t.tag)}
       <button
         class="node"
         class:active={library.info.view === 'tag' && library.info.tag === t.tag}

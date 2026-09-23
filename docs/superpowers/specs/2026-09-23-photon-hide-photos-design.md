@@ -111,6 +111,7 @@ toggle. Each is a follow-up if the user wants it. Two more, from the branch revi
   mirroring it would undo every unhide in photon on the next scan; following changes lets the
   most recent answer win. The first read follows `hidden=yes` but not a missing line, so a
   photo hidden in photon before the pass existed stays hidden.
-- **A keyword carried only by hidden photos** leaves the tag list, and the Settings tag
-  manager is fed from it, so renaming another keyword onto that name merges without the
-  merge prompt. The rename is a reversible rule, but the prompt is the safeguard.
+- **A keyword carried only by hidden photos** - done in a follow-up: `TagCount` carries
+  `count` (visible photos, the sidebar's number; the sidebar leaves out a 0) and `total` (the
+  tag manager's number). The list keeps every keyword, so the rename check still asks before
+  merging onto one only hidden photos carry, and the keyword suggestions still offer it.

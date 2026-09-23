@@ -115,9 +115,9 @@
       { hash: 'b', name: 'Jonas', count: 87 },
     ],
     list_tags: () => [
-      { tag: 'alps', count: 134 },
-      { tag: 'family', count: 310 },
-      { tag: 'sunset', count: 41 },
+      { tag: 'alps', count: 134, total: 134 },
+      { tag: 'family', count: 310, total: 310 },
+      { tag: 'sunset', count: 41, total: 41 },
     ],
     list_tag_rules: () => [{ tag: 'Alpen', target: 'alps' }],
     list_albums: () => [
