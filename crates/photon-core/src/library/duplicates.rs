@@ -96,15 +96,15 @@ pub(crate) const DUPLICATE_FILTER: &str = concat!("AND i.id IN (", duplicate_ids
 /// the Duplicates view from disagreeing about which photos have copies.
 macro_rules! duplicate_ids {
     () => {
-        "SELECT id FROM items WHERE content_hash IN (
+        "SELECT id FROM items WHERE hidden = 0 AND content_hash IN (
         SELECT content_hash FROM items
-        WHERE content_hash IS NOT NULL AND missing_since IS NULL
+        WHERE content_hash IS NOT NULL AND missing_since IS NULL AND hidden = 0
         GROUP BY content_hash HAVING COUNT(*) > 1)
     UNION ALL
     SELECT id FROM items WHERE similar_group IS NOT NULL AND missing_since IS NULL
-      AND similar_group IN (
+      AND hidden = 0 AND similar_group IN (
         SELECT similar_group FROM items
-        WHERE similar_group IS NOT NULL AND missing_since IS NULL
+        WHERE similar_group IS NOT NULL AND missing_since IS NULL AND hidden = 0
         GROUP BY similar_group HAVING COUNT(*) > 1)"
     };
 }
@@ -204,7 +204,7 @@ fn copies_sql() -> String {
     format!(
         "SELECT {COPY_COLUMNS} FROM items i
      JOIN items o ON o.content_hash = i.content_hash AND o.id <> i.id
-     WHERE i.id = ?1 AND o.missing_since IS NULL
+     WHERE i.id = ?1 AND o.missing_since IS NULL AND o.hidden = 0
      ORDER BY o.path"
     )
 }
@@ -300,7 +300,7 @@ impl Library {
 mod tests {
     use super::*;
     use crate::grid::GridView;
-    use crate::library::items::{GRID_COLUMNS, grid_query};
+    use crate::library::items::{GRID_COLUMNS, Shown, grid_query};
     use crate::testutil::{new_item, seed_folder, temp_library};
     use std::path::Path;
 
@@ -354,7 +354,11 @@ mod tests {
     #[test]
     fn the_grid_query_also_reaches_look_alikes_through_the_similar_index() {
         let (_dir, lib) = temp_library();
-        let plan = plan(&lib, &grid_query(GRID_COLUMNS, DUPLICATE_FILTER), &[]);
+        let plan = plan(
+            &lib,
+            &grid_query(GRID_COLUMNS, Shown::Visible, DUPLICATE_FILTER),
+            &[],
+        );
         assert!(
             plan.iter().any(|step| step.contains("items_similar_group")),
             "expected the partial similar_group index, got {plan:?}"
@@ -749,7 +753,7 @@ mod tests {
         let (_dir, lib) = temp_library();
         let plan = plan(
             &lib,
-            &grid_query(GRID_COLUMNS, COPIES_FILTER),
+            &grid_query(GRID_COLUMNS, Shown::Visible, COPIES_FILTER),
             &[&1i64, &vec![7u8; 16]],
         );
         for index in ["items_content_hash", "items_similar_group"] {

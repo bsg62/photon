@@ -30,6 +30,9 @@ pub enum GridView {
     /// One photo and its copies - the same bytes or the same picture - as its info panel
     /// lists them. The photo's id is the view argument.
     Copies,
+    /// The photos the user has hidden - the one view that shows them, and the only one
+    /// they are in (`library/hidden.rs`).
+    Hidden,
 }
 
 impl GridView {

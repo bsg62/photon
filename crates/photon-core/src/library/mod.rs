@@ -2,6 +2,7 @@ mod albums;
 mod duplicates;
 mod faces;
 mod folders;
+mod hidden;
 mod items;
 mod schema;
 mod searches;
@@ -148,7 +149,7 @@ mod tests {
             .unwrap()
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 12);
+        assert_eq!(version, 13);
         let tables: i64 = lib
             .reader()
             .unwrap()
@@ -174,7 +175,7 @@ mod tests {
             Library::open(&path),
             Err(Error::SchemaTooNew {
                 found: 99,
-                supported: 12
+                supported: 13
             })
         ));
     }

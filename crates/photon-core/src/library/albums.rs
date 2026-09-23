@@ -99,7 +99,7 @@ impl Library {
         let mut stmt = conn.prepare(
             "SELECT a.id, a.name,
                     (SELECT count(*) FROM album_items m JOIN items i ON i.id = m.item_id
-                     WHERE m.album_id = a.id AND i.missing_since IS NULL)
+                     WHERE m.album_id = a.id AND i.missing_since IS NULL AND i.hidden = 0)
              FROM albums a",
         )?;
         let mut albums = stmt
