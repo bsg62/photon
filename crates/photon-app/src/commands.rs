@@ -93,6 +93,9 @@ pub struct CopiesOf {
     /// copies are still live; this field is what lets the UI say *that*, rather than "no
     /// other copies", which would be a lie about photos still sitting in the library.
     pub gone: bool,
+    /// True once the user has hidden the anchor. Its copies stay in the view - the filter
+    /// still reads the anchor's row - but the anchor itself does not, and the UI says why.
+    pub hidden: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -260,6 +263,7 @@ pub fn grid_info(engine: &Engine) -> GridInfo {
             let gone = item
                 .as_ref()
                 .is_none_or(|item| item.missing_since.is_some());
+            let hidden = item.as_ref().is_some_and(|item| item.hidden);
             let file_name = item
                 .and_then(|item| {
                     Path::new(&item.path)
@@ -271,6 +275,7 @@ pub fn grid_info(engine: &Engine) -> GridInfo {
                 id,
                 file_name,
                 gone,
+                hidden,
             }
         });
     GridInfo {

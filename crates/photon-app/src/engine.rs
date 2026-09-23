@@ -3161,6 +3161,42 @@ mod tests {
     /// are still live. `gone` is what lets the UI tell that apart from "no copies any more" -
     /// it must not silently read `false` once the anchor's row is purged. Probe: replacing
     /// the `gone` computation in `commands::grid_info` with a bare `false` makes this fail.
+    /// Hiding the anchor of an open Copies view takes it out of the view and leaves its
+    /// copies, and `hidden` is what lets the UI say so rather than nothing.
+    #[test]
+    fn the_copies_view_reports_a_hidden_anchor_and_keeps_its_copies() {
+        let f = fixture(&[
+            ("a/orig.jpg", &jpeg_pattern(180, 120)),
+            ("a/identical.jpg", &jpeg_pattern(180, 120)),
+        ]);
+        let watched = f.add_photos();
+        f.engine.thumbs.wait_idle();
+        f.engine.start_scan(watched);
+        f.engine.wait_for_scans();
+        let path_of = |id: i64| f.engine.lib.item(id).unwrap().unwrap().path;
+        let orig = f
+            .ids()
+            .into_iter()
+            .find(|&id| path_of(id).ends_with("orig.jpg"))
+            .unwrap();
+        f.engine.set_copies_view(orig).unwrap();
+        let info = crate::commands::grid_info(&f.engine);
+        assert_eq!(info.len, 2);
+        assert!(!info.copies_of.unwrap().hidden);
+
+        f.engine.set_items_hidden(&[orig], true).unwrap();
+        let info = crate::commands::grid_info(&f.engine);
+        let copies = info.copies_of.unwrap();
+        assert!(copies.hidden, "the hidden anchor was not reported");
+        assert!(!copies.gone, "a hidden anchor is not gone");
+        assert_eq!(
+            info.len, 1,
+            "the copy left with the anchor, or the anchor stayed"
+        );
+        let only = f.engine.grid().1.rows(0, 1)[0].id;
+        assert!(path_of(only).ends_with("identical.jpg"));
+    }
+
     #[test]
     fn the_copies_view_reports_the_anchor_as_gone_once_its_row_is_purged() {
         let f = fixture(&[

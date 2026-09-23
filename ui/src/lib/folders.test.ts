@@ -128,6 +128,12 @@ describe('enterFolder', () => {
     await enterFolder(7, deps);
     expect(order).toEqual(['cancel', 'jump']);
   });
+
+  it('stays in Hidden, whose folders All may not hold at all', async () => {
+    const { order, deps } = spyDeps('hidden');
+    await enterFolder(7, deps);
+    expect(order).toEqual(['cancel', 'jump']);
+  });
 });
 
 describe('locateItem', () => {

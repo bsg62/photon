@@ -37,13 +37,18 @@ export function showCopiesLabel(n: number): string {
  *  Once the anchor photo itself is gone, the filter (keyed off the anchor's own row) matches
  *  nothing regardless of what its copies are doing, so `len` says nothing useful - the notice
  *  is about the anchor, not the count. Otherwise there is something to say only when the view
- *  has shrunk to the anchor alone or emptied outright: `len === 1` with a *different* photo
- *  as the sole entry (impossible today, since a live anchor is always its own first copy, but
- *  not a case this function should silently paper over) says nothing. */
+ *  has shrunk to the anchor alone or emptied outright. A hidden anchor is live but not in the
+ *  view (every view but Hidden leaves it out), so what is left is only its copies, and that
+ *  is what the notice says - whatever `len` is. Otherwise `len === 1` with a *different* photo
+ *  as the sole entry says nothing: the anchor is live, visible and not in the view, which the
+ *  filter cannot produce, and this should not paper over it with a claim about copies. */
 export function copiesNotice(copiesOf: CopiesOf | null, len: number, firstId: number | undefined): string | null {
   if (!copiesOf) return null;
   if (copiesOf.gone) {
     return `${copiesOf.fileName || 'This photo'} is no longer in the library; its copies are under Duplicates.`;
+  }
+  if (copiesOf.hidden && len > 0) {
+    return `${copiesOf.fileName || 'This photo'} is hidden; these are its copies. Unhide it from Hidden.`;
   }
   if (len === 0 || (len === 1 && firstId === copiesOf.id)) {
     return `No other copies of ${copiesOf.fileName || 'this photo'} any more.`;

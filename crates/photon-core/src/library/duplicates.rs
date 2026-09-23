@@ -204,7 +204,7 @@ fn copies_sql() -> String {
     format!(
         "SELECT {COPY_COLUMNS} FROM items i
      JOIN items o ON o.content_hash = i.content_hash AND o.id <> i.id
-     WHERE i.id = ?1 AND o.missing_since IS NULL AND o.hidden = 0
+     WHERE i.id = ?1 AND i.hidden = 0 AND o.missing_since IS NULL AND o.hidden = 0
      ORDER BY o.path"
     )
 }

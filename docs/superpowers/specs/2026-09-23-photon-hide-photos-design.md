@@ -67,9 +67,18 @@ serves the Hidden view and `hidden_count` without scanning the library.
   refreshes the grid when that is non-zero. Unknown and missing ids are skipped.
 - `GridInfo.hiddenCount`, `GridView::Hidden` (`'hidden'`), `ViewerItem.hidden` (the viewer's
   menu label, and Locate's target).
-- After a hide or unhide in the grid the selection is cleared: the selected ids have just left
-  the view, and a selection Set that still holds them would offer the next action to photos the
-  user can no longer see.
+- After a hide or unhide in the grid the selection moves to the nearest photo that stays - the
+  one after the lead, or before it at the end - as a file manager does after a delete, so the
+  arrow keys carry on through Duplicates. It is chosen from the index the user was looking at,
+  *before* the write (the rebuild's event can land before the command returns), and its new
+  offset is asked for by id. Nothing hidden stays selected, or the next action would reach
+  photos the user can no longer see. A lead that leaves the view some other way (hidden from
+  the viewer, unstarred in Starred) is dropped from the selection by `rebindSelection` too.
+- A hidden photo lists no copies (it has no copy mark either), so Hidden's tile menu offers no
+  "Show N duplicates". A Copies view whose anchor is hidden keeps the anchor's visible copies and
+  says "X is hidden; these are its copies" (`CopiesOf.hidden`).
+- A folder row clicked while Hidden is showing jumps within Hidden: the sidebar's folders are
+  the view's sections, and a folder whose photos are all hidden is not in All at all.
 - The viewer needs nothing new for the photo on screen leaving the view: its `orphaned` state
   (built for unstarring in Starred) keeps it on screen, drops the "n / m", and ArrowRight
   continues from where it was. `viewer_item` must keep answering for a hidden photo.
@@ -95,4 +104,11 @@ README's smoke checklist.
 ## Not in this design
 
 A keyboard shortcut; hiding a whole folder (Picasa could); a "show hidden photos in place"
-toggle. Each is a follow-up if the user wants it.
+toggle. Each is a follow-up if the user wants it. Two more, from the branch review:
+
+- **Picasa's own `hidden=yes`** in `.picasa.ini` is not read, though stars and faces are. A
+  Picasa user's hidden photos come back visible in photon. Reading it is a `picasa.rs` change
+  plus a rule for which side wins when both have an opinion.
+- **A keyword carried only by hidden photos** leaves the tag list, and the Settings tag
+  manager is fed from it, so renaming another keyword onto that name merges without the
+  merge prompt. The rename is a reversible rule, but the prompt is the safeguard.

@@ -24,8 +24,9 @@ export type GridView = 'all' | 'starred' | 'recent' | 'search' | 'person' | 'alb
 /** Mirrors `commands::CopiesOf`. `fileName` is empty once the photo has left the library;
  *  `gone` is true once the anchor photo itself is gone (purged or missing) - the filter
  *  keys off the anchor's own row, so once it is gone every branch matches nothing and the
- *  grid empties even though the other copies are still live. */
-export interface CopiesOf { id: number; fileName: string; gone: boolean }
+ *  grid empties even though the other copies are still live. `hidden` is true once the user
+ *  has hidden the anchor: its copies stay in the view, and it does not. */
+export interface CopiesOf { id: number; fileName: string; gone: boolean; hidden: boolean }
 /** Mirrors `photon_core::library::ThemeChoice` (serde lowercase). */
 export type ThemeChoice = 'system' | 'light' | 'dark';
 /** Mirrors `photon_core::library::GridTile` (serde lowercase). */

@@ -36,32 +36,36 @@ describe('showCopies', () => {
 
 describe('keepCopiesName', () => {
   it('keeps the name it had when the photo has since left the library', () => {
-    expect(keepCopiesName({ id: 7, fileName: 'a.jpg', gone: false }, { id: 7, fileName: '', gone: true })).toEqual({
+    expect(keepCopiesName({ id: 7, fileName: 'a.jpg', gone: false, hidden: false }, { id: 7, fileName: '', gone: true, hidden: false })).toEqual({
       id: 7,
       fileName: 'a.jpg',
       gone: true,
+      hidden: false,
     });
   });
   it('does not carry one photo’s name onto another', () => {
-    expect(keepCopiesName({ id: 7, fileName: 'a.jpg', gone: false }, { id: 8, fileName: '', gone: false })).toEqual({
+    expect(keepCopiesName({ id: 7, fileName: 'a.jpg', gone: false, hidden: false }, { id: 8, fileName: '', gone: false, hidden: false })).toEqual({
       id: 8,
       fileName: '',
       gone: false,
+      hidden: false,
     });
   });
   it('takes a fresh name, and leaves no view as no view', () => {
-    expect(keepCopiesName({ id: 7, fileName: 'a.jpg', gone: false }, { id: 7, fileName: 'b.jpg', gone: false })).toEqual({
+    expect(keepCopiesName({ id: 7, fileName: 'a.jpg', gone: false, hidden: false }, { id: 7, fileName: 'b.jpg', gone: false, hidden: false })).toEqual({
       id: 7,
       fileName: 'b.jpg',
       gone: false,
+      hidden: false,
     });
-    expect(keepCopiesName({ id: 7, fileName: 'a.jpg', gone: false }, null)).toBeNull();
+    expect(keepCopiesName({ id: 7, fileName: 'a.jpg', gone: false, hidden: false }, null)).toBeNull();
   });
   it('always takes `gone` from `next`, never from `prev`, even while keeping the old name', () => {
-    expect(keepCopiesName({ id: 7, fileName: 'a.jpg', gone: true }, { id: 7, fileName: '', gone: false })).toEqual({
+    expect(keepCopiesName({ id: 7, fileName: 'a.jpg', gone: true, hidden: false }, { id: 7, fileName: '', gone: false, hidden: false })).toEqual({
       id: 7,
       fileName: 'a.jpg',
       gone: false,
+      hidden: false,
     });
   });
 });
@@ -80,32 +84,47 @@ describe('copiesNotice', () => {
   });
 
   it('reports the anchor as gone regardless of how many rows are left, with a name fallback', () => {
-    expect(copiesNotice({ id: 7, fileName: 'a.jpg', gone: true }, 0, undefined)).toBe(
+    expect(copiesNotice({ id: 7, fileName: 'a.jpg', gone: true, hidden: false }, 0, undefined)).toBe(
       'a.jpg is no longer in the library; its copies are under Duplicates.',
     );
-    expect(copiesNotice({ id: 7, fileName: 'a.jpg', gone: true }, 2, 9)).toBe(
+    expect(copiesNotice({ id: 7, fileName: 'a.jpg', gone: true, hidden: false }, 2, 9)).toBe(
       'a.jpg is no longer in the library; its copies are under Duplicates.',
     );
-    expect(copiesNotice({ id: 7, fileName: '', gone: true }, 0, undefined)).toBe(
+    expect(copiesNotice({ id: 7, fileName: '', gone: true, hidden: false }, 0, undefined)).toBe(
       'This photo is no longer in the library; its copies are under Duplicates.',
     );
   });
 
   it('says there are no other copies when the view is empty', () => {
-    expect(copiesNotice({ id: 7, fileName: 'a.jpg', gone: false }, 0, undefined)).toBe('No other copies of a.jpg any more.');
-    expect(copiesNotice({ id: 7, fileName: '', gone: false }, 0, undefined)).toBe('No other copies of this photo any more.');
+    expect(copiesNotice({ id: 7, fileName: 'a.jpg', gone: false, hidden: false }, 0, undefined)).toBe('No other copies of a.jpg any more.');
+    expect(copiesNotice({ id: 7, fileName: '', gone: false, hidden: false }, 0, undefined)).toBe('No other copies of this photo any more.');
   });
 
   it('says there are no other copies when only the anchor itself is left', () => {
-    expect(copiesNotice({ id: 7, fileName: 'a.jpg', gone: false }, 1, 7)).toBe('No other copies of a.jpg any more.');
+    expect(copiesNotice({ id: 7, fileName: 'a.jpg', gone: false, hidden: false }, 1, 7)).toBe('No other copies of a.jpg any more.');
   });
 
   it('says nothing when one row is left but it is not the anchor', () => {
-    expect(copiesNotice({ id: 7, fileName: 'a.jpg', gone: false }, 1, 9)).toBeNull();
+    expect(copiesNotice({ id: 7, fileName: 'a.jpg', gone: false, hidden: false }, 1, 9)).toBeNull();
+  });
+
+  it('says the anchor is hidden while its copies are still in the view', () => {
+    expect(copiesNotice({ id: 7, fileName: 'a.jpg', gone: false, hidden: true }, 1, 9)).toBe(
+      'a.jpg is hidden; these are its copies. Unhide it from Hidden.',
+    );
+    expect(copiesNotice({ id: 7, fileName: 'a.jpg', gone: false, hidden: true }, 3, 9)).toBe(
+      'a.jpg is hidden; these are its copies. Unhide it from Hidden.',
+    );
+  });
+
+  it('says there are no other copies once a hidden anchor has none left either', () => {
+    expect(copiesNotice({ id: 7, fileName: 'a.jpg', gone: false, hidden: true }, 0, undefined)).toBe(
+      'No other copies of a.jpg any more.',
+    );
   });
 
   it('says nothing while the view still holds more than the anchor', () => {
-    expect(copiesNotice({ id: 7, fileName: 'a.jpg', gone: false }, 2, 7)).toBeNull();
+    expect(copiesNotice({ id: 7, fileName: 'a.jpg', gone: false, hidden: false }, 2, 7)).toBeNull();
   });
 });
 

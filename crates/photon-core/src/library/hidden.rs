@@ -272,6 +272,29 @@ mod tests {
         );
     }
 
+    /// A hidden photo is in no duplicate set - its tile carries no copy mark - so it lists
+    /// no copies either: otherwise the tile menu in Hidden offers "Show 1 duplicate" for a
+    /// photo the Copies view (which shows only visible photos) would then leave out.
+    #[test]
+    fn a_hidden_photo_lists_no_copies() {
+        let (_dir, lib) = temp_library();
+        let (_w, folder) = seed_folder(&lib, Path::new("/p"));
+        let ids = lib
+            .insert_items(&[
+                new_item(folder, "/p/a.jpg", 1),
+                new_item(folder, "/p/a-copy.jpg", 2),
+            ])
+            .unwrap();
+        lib.writer()
+            .execute("UPDATE items SET content_hash = x'0102'", [])
+            .unwrap();
+        lib.set_similar_groups(&[(ids[0], ids[0]), (ids[1], ids[0])])
+            .unwrap();
+        lib.set_hidden(&[ids[0]], true).unwrap();
+        assert!(lib.copies_of(ids[0]).unwrap().is_empty());
+        assert!(lib.similar_of(ids[0]).unwrap().is_empty());
+    }
+
     #[test]
     fn hidden_photos_are_not_counted() {
         let (_dir, lib) = temp_library();
@@ -309,6 +332,25 @@ mod tests {
             vec![ids[1], ids[2]],
             "a folder was placed by a photo the Hidden view does not show"
         );
+    }
+
+    /// The Hidden view shows thumbnails, and a look-alike is hashed from one, so a hidden
+    /// photo is still queued for them - including a folder whose every photo is hidden.
+    #[test]
+    fn a_hidden_photo_is_still_thumbnailed() {
+        let (_dir, lib) = temp_library();
+        let (w, root) = seed_folder(&lib, Path::new("/p"));
+        let all_hidden = lib.upsert_folder(w, Some(root), "/p/h", 2).unwrap();
+        let ids = lib
+            .insert_items(&[
+                new_item(root, "/p/a.jpg", 1),
+                new_item(all_hidden, "/p/h/b.jpg", 2),
+            ])
+            .unwrap();
+        lib.set_hidden(&[ids[1]], true).unwrap();
+        let mut pending = lib.pending_thumb_ids().unwrap();
+        pending.sort();
+        assert_eq!(pending, ids, "a hidden photo was left without a thumbnail");
     }
 
     /// The flag is on the row, like a star, and a file rewritten in place keeps its row.

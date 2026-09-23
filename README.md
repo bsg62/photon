@@ -378,10 +378,12 @@ publishing it.
 - [ ] On Windows, `.picasa.ini` is still hidden after a star is toggled.
 - [ ] The tile of a starred photo shows a ★ badge, which appears and disappears with the toggle, and the sidebar's Starred count follows.
 - [ ] Unstarring the photo on screen while Starred is showing keeps it on screen with no "n / m" in the caption; ArrowLeft goes to the previous starred photo, ArrowRight to the next, Escape returns to the grid.
-- [ ] Select three photos in All, right-click, **Hide 3 photos**: they leave the grid, the selection is cleared, and a **Hidden** row appears in the sidebar with a count of 3. Hidden shows exactly those three; **Unhide 3 photos** there brings them back, and the row disappears once nothing is hidden.
+- [ ] Select three photos in All, right-click, **Hide 3 photos**: they leave the grid, the photo after them is selected (ArrowRight carries on from there), and a **Hidden** row appears in the sidebar with a count of 3. Hidden shows exactly those three; **Unhide 3 photos** there brings them back, and the row disappears once nothing is hidden.
 - [ ] In Duplicates, hide one of two byte-identical copies: both leave Duplicates and its count drops by two. The same with two look-alikes.
 - [ ] In the viewer, right-click → **Hide photo**: the photo stays on screen without "n / m", ArrowRight goes on to the next photo, and the right-click menu now says **Unhide photo**. Escape: the grid no longer holds it.
-- [ ] Open a photo from Hidden, right-click → **Locate in photon**: the grid lands on it in Hidden, not in All.
+- [ ] Open a photo from Hidden, right-click → **Locate in photon**: the grid lands on it in Hidden, not in All. In Hidden, clicking a folder in the sidebar stays in Hidden.
+- [ ] Open the Copies view of a photo with one identical copy and hide the photo from its tile menu: the copy stays, with the line "… is hidden; these are its copies". In Hidden, that photo's menu offers no "Show 1 duplicate".
+- [ ] Open a photo in the viewer from a selection, **Hide photo**, Escape: nothing is selected, and Ctrl+clicking another photo says "1 selected", not 2.
 - [ ] Hide a starred photo that has a keyword and is in an album: Starred's, the keyword's and the album's counts in the sidebar each drop by one, and a search for its file name does not find it.
 - [ ] Clicking ★ while zoomed in toggles the star and does not start a pan.
 - [ ] In the viewer, `R` turns the photo clockwise and `Shift+R` anticlockwise, as do the ↻ and ↺ buttons; a landscape photo turned on its side fits the window's height rather than being clipped, zoom and pan still work on the turned photo, and the next photo opens upright. No file's modification time changes.

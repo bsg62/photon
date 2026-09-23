@@ -85,7 +85,12 @@ export function groupByYear(rows: FolderRow[]): YearGroup[] {
  *  Awaiting `setView` is what the jump itself depends on: `jump` looks the folder up in the
  *  grid's current index, and racing that lookup against an unawaited view switch can return
  *  a stale or mismatched offset (see the Important 1 writeup — awaiting here is load-bearing,
- *  not stylistic). */
+ *  not stylistic).
+ *
+ *  Hidden is the one view left as it is. The sidebar's folders are the current view's
+ *  sections, and every other view is a subset of All, so All holds the folder jumped to; the
+ *  Hidden view is disjoint from All, and a folder whose photos are all hidden is not in All
+ *  at all - the jump would land the user at the top of All with nothing selected. */
 export async function enterFolder(
   folderId: number,
   deps: {
@@ -96,7 +101,8 @@ export async function enterFolder(
   },
 ): Promise<void> {
   deps.cancelSearch();
-  if (deps.currentView() !== 'all') await deps.setView('all');
+  const view = deps.currentView();
+  if (view !== 'all' && view !== 'hidden') await deps.setView('all');
   deps.jump(folderId);
 }
 

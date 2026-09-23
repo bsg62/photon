@@ -132,7 +132,7 @@ describe('viewKey', () => {
     expect(viewKey({ ...base, view: 'person', person: 'abc' })).toEqual({ view: 'person', query: 'abc' });
     expect(viewKey({ ...base, view: 'album', album: 7 })).toEqual({ view: 'album', query: '7' });
     expect(viewKey({ ...base, view: 'tag', tag: 'beach' })).toEqual({ view: 'tag', query: 'beach' });
-    expect(viewKey({ ...base, view: 'copies', copiesOf: { id: 42, fileName: 'a.jpg', gone: false } })).toEqual({
+    expect(viewKey({ ...base, view: 'copies', copiesOf: { id: 42, fileName: 'a.jpg', gone: false, hidden: false } })).toEqual({
       view: 'copies',
       query: '42',
     });
@@ -145,8 +145,8 @@ describe('viewKey', () => {
   });
 
   it('so switching Copies anchors resets the scroll', () => {
-    const a = viewKey({ ...base, view: 'copies', copiesOf: { id: 1, fileName: 'a.jpg', gone: false } });
-    const b = viewKey({ ...base, view: 'copies', copiesOf: { id: 2, fileName: 'b.jpg', gone: false } });
+    const a = viewKey({ ...base, view: 'copies', copiesOf: { id: 1, fileName: 'a.jpg', gone: false, hidden: false } });
+    const b = viewKey({ ...base, view: 'copies', copiesOf: { id: 2, fileName: 'b.jpg', gone: false, hidden: false } });
     expect(resultsChanged(a, b)).toBe(true);
   });
 });

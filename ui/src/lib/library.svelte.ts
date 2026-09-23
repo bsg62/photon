@@ -458,7 +458,14 @@ export class LibraryStore {
     if (at === null) {
       // The lead's id no longer resolves to an offset in this view, so there is nothing to
       // re-find the anchor by either - the same reasoning as the id === null branch above,
-      // reached one step later.
+      // reached one step later. The id leaves the selection too: its photo has left the view
+      // (hidden from the viewer, unstarred in Starred), and a selection still holding it
+      // would hand the next action - Hide, Export, Compare - a photo no tile shows.
+      if (this.selection.has(id)) {
+        const rest = new Set(this.selection);
+        rest.delete(id);
+        this.selection = rest;
+      }
       this.selectedId = null;
       this.anchor = null;
       clamp();
@@ -619,15 +626,41 @@ export class LibraryStore {
     await this.refreshCollections();
   }
 
-  /** Hides or unhides photos; the backend's rebuild announces the change. The selection is
-   *  cleared once the write lands: its photos have just left the view, and `rebindSelection`
-   *  re-finds only the lead, so a selection still holding them would offer the next action -
-   *  "Hide 12 photos" - to photos the user can no longer see. A failed write keeps it, so
-   *  the user can try again. */
+  /** Hides or unhides photos; the backend's rebuild announces the change. Every photo acted
+   *  on leaves the view, so once the write lands the selection moves to the nearest photo
+   *  that stays - the next one after the lead, or the one before when nothing follows - as a
+   *  file manager does after a delete: working through Duplicates, the arrow keys carry on
+   *  from where the user was rather than from the top of the library. Nothing acted on stays
+   *  selected: `rebindSelection` re-finds only the lead, and a selection still holding them
+   *  would offer the next action - "Hide 12 photos" - to photos the user can no longer see.
+   *  A failed write keeps the selection, so the user can try again.
+   *
+   *  The photo to move to is chosen *before* the write, from the index the user was looking
+   *  at: the backend announces its rebuild before the command returns, so afterwards the
+   *  loaded pages may already be the new index, where "the next offset" is one photo further
+   *  on. Its new offset is then asked for by id, for the same reason. */
   async setHidden(itemIds: number[], hidden: boolean): Promise<void> {
+    const lead = this.selectedOffset;
+    const leaving = new Set(itemIds);
+    // Walks outward only through loaded pages: past one that is not loaded there is no id to
+    // select, and the selection is simply cleared.
+    const nearest = (from: number, step: 1 | -1): GridEntry | undefined => {
+      for (let at = from + step; at >= 0 && at < this.info.len; at += step) {
+        const entry = this.pages.get(at);
+        if (!entry) return undefined;
+        if (!leaving.has(entry.id)) return entry;
+      }
+      return undefined;
+    };
+    const next = lead === null ? undefined : (nearest(lead, 1) ?? nearest(lead, -1));
     await api.setItemsHidden(itemIds, hidden);
     this.clearSelection();
+    if (next && lead !== null) {
+      this.selectItem(lead, next.id);
+      await this.rebindSelection();
+    }
   }
+
 
   /** Tag rule changes. The backend's rebuild announces a library change, which refetches
    *  the collections too; refetching here as well means the caller's list is current when
