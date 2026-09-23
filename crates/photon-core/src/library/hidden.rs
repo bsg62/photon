@@ -33,8 +33,9 @@ impl Library {
     /// Hides or unhides a folder: the folder's own flag, which photos added to it later
     /// inherit (`insert_items`), and every live photo in it now - including, on unhide, photos
     /// hidden one by one before, since the folder's answer is the one asked for. Not its
-    /// subfolders: the sidebar lists each directory on its own. Returns how many photos
-    /// changed, or `NotFound` for a folder that does not exist.
+    /// subfolders: the sidebar lists each directory on its own. Missing photos take the answer
+    /// too, for when they come back. Returns how many live photos changed, or `NotFound` for
+    /// a folder that does not exist.
     pub fn set_folder_hidden(&self, folder_id: i64, hidden: bool) -> Result<usize> {
         let mut conn = self.writer();
         let tx = conn.transaction()?;
@@ -48,6 +49,15 @@ impl Library {
         let changed = tx.execute(
             "UPDATE items SET hidden = ?2
              WHERE folder_id = ?1 AND hidden <> ?2 AND missing_since IS NULL",
+            params![folder_id, hidden],
+        )?;
+        // Missing photos too, though they are not counted: a file caught missing (mid-way
+        // through an atomic save, or moved out and back) keeps its row, and `update_items`
+        // brings the row back without touching `hidden` - so it has to carry the folder's
+        // answer already, or it returns visible in a hidden folder, or hidden in a visible one.
+        tx.execute(
+            "UPDATE items SET hidden = ?2
+             WHERE folder_id = ?1 AND hidden <> ?2 AND missing_since IS NOT NULL",
             params![folder_id, hidden],
         )?;
         tx.commit()?;
@@ -477,6 +487,39 @@ mod tests {
         // And later arrivals are visible again.
         let added = lib.insert_items(&[new_item(root, "/p/c.jpg", 3)]).unwrap();
         assert!(view(&lib, GridView::All, "").contains(&added[0]));
+    }
+
+    /// A file caught missing when the folder is hidden - mid-way through an editor's atomic
+    /// save, or moved out and back - keeps its row, and `update_items` brings that row back
+    /// without touching `hidden`. It must come back with its folder's answer, both ways.
+    #[test]
+    fn a_photo_missing_when_its_folder_is_hidden_returns_with_the_folders_answer() {
+        let (_dir, lib) = temp_library();
+        let (_w, root) = seed_folder(&lib, Path::new("/p"));
+        let ids = lib
+            .insert_items(&[new_item(root, "/p/a.jpg", 1), new_item(root, "/p/b.jpg", 2)])
+            .unwrap();
+        lib.mark_missing(&[ids[1]], 5).unwrap();
+        assert_eq!(
+            lib.set_folder_hidden(root, true).unwrap(),
+            1,
+            "only live photos are counted as changed"
+        );
+        lib.update_items(&[(ids[1], new_item(root, "/p/b.jpg", 2))])
+            .unwrap();
+        assert!(
+            view(&lib, GridView::Hidden, "").contains(&ids[1]),
+            "a photo back from missing is visible in a hidden folder"
+        );
+
+        lib.mark_missing(&[ids[1]], 6).unwrap();
+        lib.set_folder_hidden(root, false).unwrap();
+        lib.update_items(&[(ids[1], new_item(root, "/p/b.jpg", 2))])
+            .unwrap();
+        assert!(
+            view(&lib, GridView::All, "").contains(&ids[1]),
+            "a photo back from missing is hidden in a visible folder"
+        );
     }
 
     #[test]

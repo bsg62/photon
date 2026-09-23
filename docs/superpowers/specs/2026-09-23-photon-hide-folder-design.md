@@ -28,13 +28,19 @@ second half explicitly over "hide what is there now".
   folder does not hide its subfolders, and a subfolder created later is not hidden.
 - **Picasa's `hidden=yes`** keeps acting per photo, followed on change as before.
 - **A folder whose directory disappears** loses its row when pruned, and with it the flag -
-  the same limitation a renamed photo's albums and edits have.
+  the same limitation a renamed photo's albums and edits have. Likewise a photo unhidden by
+  hand inside a hidden folder is hidden again if it is renamed: the rename is a new row, and
+  a new row inherits the folder's flag.
+- **Missing photos take the folder's answer too** (added after the branch review). A file
+  caught missing when the folder is hidden keeps its row, and `update_items` brings that row
+  back without touching `hidden`; without this it came back visible in a hidden folder.
 
 ## UI
 
 The sidebar folder row's context menu gains **Hide folder**, or **Unhide folder** on a
 flagged folder. Nothing else is new: sidebar folder rows are the current view's sections, so
-a hidden folder leaves All's list and appears in Hidden's without any code. `Folder` gains
+a hidden folder leaves All's list and appears in Hidden's without any code - unless a photo
+in it was unhidden by hand, which keeps the folder listed wherever that photo shows. `Folder` gains
 `hidden` in `api.ts` and `mock.js`; the engine rebuilds the grid after the write.
 
 ## Tests
@@ -43,7 +49,9 @@ a hidden folder leaves All's list and appears in Hidden's without any code. `Fol
   Hidden; a subfolder's photos and a sibling's do not.
 - `a_photo_added_to_a_hidden_folder_arrives_hidden` - through `insert_items`, and end to end
   through a scan and a subtree scan.
-- `a_photo_unhidden_inside_a_hidden_folder_stays_visible` across a rescan.
+- A photo unhidden inside a hidden folder stays visible across a rescan (part of the scanner
+  test `a_file_scanned_into_a_hidden_folder_arrives_hidden`).
+- `a_photo_missing_when_its_folder_is_hidden_returns_with_the_folders_answer`, both ways.
 - `unhiding_a_folder_shows_everything_in_it`.
 - Migration 16: an existing folder comes out visible; version tripwires move to 16.
 - Engine: the write rebuilds the grid; the UI's menu label is effect wiring, on the smoke list.

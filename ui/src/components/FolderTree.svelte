@@ -60,8 +60,9 @@
   }
 
   /** Hide folder: its photos, and any added to it later, until Unhide folder. The row then
-   *  leaves this list on its own - the rows are the view's sections, and a hidden folder has
-   *  none in any view but Hidden. */
+   *  leaves this list on its own - the rows are the view's sections, and a hidden folder's
+   *  photos are in no view but Hidden, unless the user unhid one by hand, which keeps the
+   *  folder listed (and its menu offering Unhide folder) wherever that photo shows. */
   async function toggleFolderHidden(f: Folder) {
     menu = null;
     await library.setFolderHidden(f.id, !f.hidden).catch(library.reportError);

@@ -129,7 +129,9 @@ user-visible query must filter on it too, or photos the user put away turn up ag
 photos are still scanned, thumbnailed and hashed, so unhiding is instant. **Hide folder** (schema
 16) is `folders.hidden` plus `items.hidden` on its photos, and `insert_items` gives a new row its
 folder's flag - so visibility stays that one column and no query joins `folders` to decide it.
-Any other writer that creates item rows must inherit the flag the same way.
+Any other writer that creates item rows must inherit the flag the same way, and
+`set_folder_hidden` writes missing rows too, since `update_items` revives a row without touching
+`hidden`.
 
 **Parameterised views.** `GridView::Search`, `Person`, `Album` and `Tag` are selected by an
 argument held beside the view in `ViewState.arg` (the query, a contact hash, an album id,
