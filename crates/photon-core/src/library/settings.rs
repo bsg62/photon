@@ -34,7 +34,8 @@ const EXPORT_APPLY_EDITS: &str = "export_apply_edits";
 const GRID_TILE: &str = "grid_tile";
 
 /// How far apart two perceptual hashes may be and still count as the same picture:
-/// 0 off, 3 conservative, 6 loose. Stored as the distance itself rather than a name,
+/// 0 off, 7 conservative, 10 loose. Migration 15 moved the 3 and 6 of before the probe widened
+/// exact recall (`similar::EXACT_RECALL_DISTANCE`) to what those choices mean now. Stored as the distance itself rather than a name,
 /// because the distance is what the pass uses and a name would need a second table to
 /// interpret it.
 const SIMILAR_DISTANCE: &str = "similar_distance";
@@ -43,7 +44,7 @@ const SIMILAR_DISTANCE: &str = "similar_distance";
 /// of it could be changed apart.
 pub const SIMILAR_DISTANCE_DEFAULT: i64 = crate::similar::EXACT_RECALL_DISTANCE as i64;
 /// Off, conservative, loose. Clamped rather than refused, both ways.
-pub const SIMILAR_DISTANCE_RANGE: std::ops::RangeInclusive<i64> = 0..=6;
+pub const SIMILAR_DISTANCE_RANGE: std::ops::RangeInclusive<i64> = 0..=10;
 
 /// The user's colour scheme: the desktop's, or one of the two pinned.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -330,22 +331,26 @@ mod tests {
         let (_dir, lib) = temp_library();
         assert_eq!(
             lib.similar_distance().unwrap(),
-            3,
+            7,
             "conservative is the default"
         );
-        assert_eq!(lib.set_similar_distance(6).unwrap(), 6);
-        assert_eq!(lib.similar_distance().unwrap(), 6);
+        assert_eq!(lib.set_similar_distance(10).unwrap(), 10);
+        assert_eq!(lib.similar_distance().unwrap(), 10);
         assert_eq!(
             lib.set_similar_distance(0).unwrap(),
             0,
             "off is a real choice"
         );
-        assert_eq!(lib.set_similar_distance(99).unwrap(), 6, "clamped to loose");
+        assert_eq!(
+            lib.set_similar_distance(99).unwrap(),
+            10,
+            "clamped to loose"
+        );
         assert_eq!(lib.set_similar_distance(-1).unwrap(), 0, "clamped to off");
         // Written by something other than the setter - clamped on read, as the table is
         // plain text an older or newer photon may have written.
         lib.set_setting(SIMILAR_DISTANCE, "40").unwrap();
-        assert_eq!(lib.similar_distance().unwrap(), 6);
+        assert_eq!(lib.similar_distance().unwrap(), 10);
     }
 
     #[test]

@@ -263,6 +263,15 @@ CREATE INDEX items_hidden ON items(folder_id, taken_at) WHERE hidden = 1 AND mis
 -- Picasa's own answer changes again.
 ALTER TABLE items ADD COLUMN picasa_hidden INTEGER;
 "#,
+    r#"
+-- The look-alike distance is stored as the number it means, and what Conservative and Loose
+-- mean moved: probing the buckets one bit away made grouping exact up to 7 bits, where it
+-- was exact only up to 3, so Conservative is 7 and Loose 10. A library that stored a choice
+-- keeps the choice, not the old number: left at 3, the Settings dialog would show neither
+-- option selected. Anything else stored (a hand edit, a newer photon) is left to the clamp.
+UPDATE settings SET value = CASE value WHEN '3' THEN '7' WHEN '6' THEN '10' ELSE value END
+ WHERE key = 'similar_distance';
+"#,
 ];
 
 pub fn migrate(conn: &Connection) -> Result<()> {
@@ -514,7 +523,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 14);
+        assert_eq!(version, 15);
         let rules: i64 = conn
             .query_row("SELECT count(*) FROM tag_rules", [], |r| r.get(0))
             .unwrap();
@@ -673,7 +682,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 14);
+        assert_eq!(version, 15);
         let overlay: i64 = conn
             .query_row("SELECT count(*) FROM item_user_tags", [], |r| r.get(0))
             .unwrap();
@@ -723,7 +732,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 14);
+        assert_eq!(version, 15);
         let hash: Option<Vec<u8>> = conn
             .query_row("SELECT content_hash FROM items WHERE id = 1", [], |r| {
                 r.get(0)
@@ -864,7 +873,42 @@ mod tests {
             .unwrap();
         // Hardcoded, like every other version assertion here: `MIGRATIONS.len()` would
         // agree with itself whatever the list did, which is the tripwire removed.
-        assert_eq!(version, 14);
+        assert_eq!(version, 15);
+    }
+
+    /// A stored Conservative or Loose keeps meaning Conservative or Loose.
+    #[test]
+    fn migration_15_moves_a_stored_look_alike_choice_to_its_new_distance() {
+        for (before, after) in [("0", "0"), ("3", "7"), ("6", "10"), ("5", "5")] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("library.db");
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            for sql in &MIGRATIONS[..14] {
+                conn.execute_batch(sql).unwrap();
+            }
+            conn.pragma_update(None, "user_version", 14i64).unwrap();
+            conn.execute(
+                "INSERT INTO settings (key, value) VALUES ('similar_distance', ?1), ('theme', '3')",
+                [before],
+            )
+            .unwrap();
+            drop(conn);
+
+            let lib = crate::library::Library::open(&path).unwrap();
+            let conn = lib.reader().unwrap();
+            let read = |key: &str| -> String {
+                conn.query_row("SELECT value FROM settings WHERE key = ?1", [key], |r| {
+                    r.get(0)
+                })
+                .unwrap()
+            };
+            assert_eq!(read("similar_distance"), after, "stored {before}");
+            assert_eq!(read("theme"), "3", "another setting was rewritten");
+            let version: i64 = conn
+                .query_row("PRAGMA user_version", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(version, 15);
+        }
     }
 
     /// Every photo in an existing library comes out of the upgrade visible - a default of
@@ -913,6 +957,6 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 14);
+        assert_eq!(version, 15);
     }
 }

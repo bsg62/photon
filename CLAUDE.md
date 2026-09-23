@@ -287,7 +287,16 @@ the window's own fullscreen, so quitting mid-show reopens fullscreen with no tit
 which reads only files sharing a byte size with another live file - this finds byte-identical
 copies. `items.percep_hash` (a 64-bit difference hash, `photon_core::similar`) and
 `items.similar_group` (a union-find id) find look-alikes - the same picture after a resize or
-a re-save - and are filled by `photon_core::similar::update`. Both passes run inside
+a re-save - and are filled by `photon_core::similar::update`. **The hash only nominates a
+pair; the pixels decide it.** At the hash's 9x8 resolution a second shot of the same pose *is*
+the same picture, so `group` unites a pair within the distance only when `same_picture`
+agrees - both cached grid thumbnails reduced to 32x32 greyscale, mean removed, mean absolute
+difference at most `SAME_PICTURE_MAX_DIFFERENCE` (measured: copies at or under 2.3, same-pose
+second shots 19 and up). The reductions are cached in the engine's `hashing` lock between
+passes, and confirming honours `cancel`: a cancelled regroup writes no groups. Candidates come
+from four 16-bit bands, each bucket also compared with those one bit away, which is exact up
+to `EXACT_RECALL_DISTANCE` (7) - Conservative. Treating the hash as the verdict brings the
+false pairs back. Both passes run inside
 `Engine::hash_after_scan` (once `hash_duplicates`) at the end of every `run_scan` - not inside
 the scanner, so neither of `walk_tree`'s callers can be forgotten, and because a duplicate or a
 look-alike is a fact about the whole library, not about one changed file. The perceptual hash
