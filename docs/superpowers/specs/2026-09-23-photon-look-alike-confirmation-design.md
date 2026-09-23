@@ -58,12 +58,18 @@ are, to a person, the same picture.
   runs after every scan, including the watcher's; without a cache every grouped photo's
   thumbnail is decoded again each time. The key already changes when the file or its edit
   does, so the cache needs no invalidation of its own; entries not used by a pass are
-  dropped at its end, so it is bounded by the photos that have a candidate pair. The cache
-  lives in the `hashing` mutex, which already serialises every pass.
+  dropped at its end, so it is bounded by the photos that have a candidate pair - 1 KB
+  each, greyscale bytes and their mean. The cache lives in the `hashing` mutex, which
+  already serialises every pass. It is memory only, so the first pass after each launch
+  decodes every nominated photo's thumbnail once.
+- **Confirming honours `cancel`.** That first pass is real work, where the regroup used to
+  be arithmetic, so a quit must not wait it out. A cancelled regroup writes nothing: the
+  stored groups stay as they were and the next pass does the work. Answering "not the same"
+  to the remaining pairs instead would dissolve real groups.
 - **No schema change, no setting change.** Conservative stays 3 and Loose stays 6. The probe
   showed genuine copies up to 6 bits apart, so Conservative misses some heavily shrunk
-  copies; with confirmation in place Loose no longer trades that recall for false pairs,
-  and its help text says so. Moving the default is a separate decision.
+  copies; with confirmation in place Loose no longer trades that recall for false pairs.
+  Moving the default, and rewording Loose's help text to match, is a separate decision.
 - Existing groups are corrected by the first pass after the upgrade: the regroup is
   whole-library and unconditional, and `set_similar_groups` writes only on a difference.
 
@@ -74,8 +80,8 @@ are, to a person, the same picture.
 - `a_pair_already_joined_is_not_confirmed_again` - counts calls to the check across a chain.
   Fails if union-find is not consulted first.
 - `a_copy_is_the_same_picture_and_a_moved_frame_is_not` - `picture_difference` on a textured
-  fixture: resized and re-encoded ≤ the limit, moved by a few percent > the limit. Fails if
-  the limit or the mean removal is wrong way round.
+  fixture: resized and re-encoded ≤ the limit, moved by 3% > the limit. Fails if the limit
+  is off by an order of magnitude either way.
 - `a_tone_change_is_still_the_same_picture` - fails without the mean removal.
 - `the_pass_does_not_group_two_shots_that_hash_alike` - end to end through `ThumbCache` and
   `update`: two JPEGs whose dHashes are within 3 but whose pictures differ at 32×32 stay
@@ -84,3 +90,9 @@ are, to a person, the same picture.
   the new check.
 - `the_pass_reuses_cached_reductions` - a second pass with the thumbnails deleted from disk
   still groups the pair. Fails if the cache is not consulted.
+- `the_limit_sits_between_the_heaviest_copy_and_a_barely_moved_frame` - a copy at a
+  sixteenth of the size (~2.3) passes, a frame moved by half a percent (~5.7) does not. The
+  test above only pins the limit's order of magnitude; this fails at 2.0 and at 6.0.
+- `an_unreadable_thumbnail_confirms_nothing`, `a_pass_cancelled_before_confirming_writes_no_groups`,
+  `two_edited_copies_still_group` (the key is the edited one), and
+  `a_pass_drops_the_reductions_it_did_not_use` (the cache's bound).

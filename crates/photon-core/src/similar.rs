@@ -81,10 +81,14 @@ const COMPARE_EDGE: u32 = 32;
 /// to a person too.
 pub const SAME_PICTURE_MAX_DIFFERENCE: f64 = 4.0;
 
-/// A thumbnail reduced for comparison: `COMPARE_EDGE` squared greyscale values, each less
-/// the picture's own mean brightness.
+/// A thumbnail reduced for comparison: `COMPARE_EDGE` squared greyscale values and their
+/// mean. Bytes rather than mean-centred floats, because [`Reductions`] keeps one for every
+/// photo with a candidate pair for the whole session: 1 KB each instead of 4.
 #[derive(Clone, Debug, PartialEq)]
-pub struct Reduction(Box<[f32]>);
+pub struct Reduction {
+    grey: Box<[u8]>,
+    mean: f32,
+}
 
 /// Reduces `img` for [`picture_difference`].
 ///
@@ -95,19 +99,21 @@ pub fn reduce(img: &DynamicImage) -> Reduction {
     let grey = img
         .resize_exact(COMPARE_EDGE, COMPARE_EDGE, FilterType::Triangle)
         .to_luma8();
-    let mean = grey.pixels().map(|p| f32::from(p.0[0])).sum::<f32>() / grey.len() as f32;
-    Reduction(grey.pixels().map(|p| f32::from(p.0[0]) - mean).collect())
+    let grey = grey.into_raw().into_boxed_slice();
+    let mean = grey.iter().map(|&v| f32::from(v)).sum::<f32>() / grey.len() as f32;
+    Reduction { grey, mean }
 }
 
 /// How far apart two reduced pictures are: the mean absolute difference per pixel, on the
 /// 0-255 greyscale.
 pub fn picture_difference(a: &Reduction, b: &Reduction) -> f64 {
-    let sum: f64 =
-        a.0.iter()
-            .zip(b.0.iter())
-            .map(|(x, y)| f64::from((x - y).abs()))
-            .sum();
-    sum / a.0.len() as f64
+    let sum: f64 = a
+        .grey
+        .iter()
+        .zip(b.grey.iter())
+        .map(|(&x, &y)| f64::from(((f32::from(x) - a.mean) - (f32::from(y) - b.mean)).abs()))
+        .sum();
+    sum / a.grey.len() as f64
 }
 
 /// Whether two reduced pictures are the same picture; see [`SAME_PICTURE_MAX_DIFFERENCE`].
@@ -323,7 +329,16 @@ pub fn update(
     // not retried for every pair it is in. It confirms nothing: a missed pair costs less than
     // a false one, and the next pass tries again.
     let mut seen: HashMap<u64, Option<Reduction>> = HashMap::new();
+    // Confirming decodes thumbnails, and on the first pass after a launch the cache is empty,
+    // so this half is no longer the pure arithmetic it was: it has to honour `cancel`, or a
+    // quit waits it out. A cancelled regroup writes nothing - answering "no" to the remaining
+    // pairs instead would dissolve real groups - and the next pass does the work.
+    let mut cancelled = false;
     let groups = group(&hashes, distance, |a, b| {
+        if cancelled || cancel.load(Ordering::Relaxed) {
+            cancelled = true;
+            return false;
+        }
         let keys = [photos[a].thumb_key, photos[b].thumb_key];
         for key in keys {
             seen.entry(key).or_insert_with(|| {
@@ -342,7 +357,7 @@ pub fn update(
         .into_iter()
         .filter_map(|(key, reduction)| Some((key, reduction?)))
         .collect();
-    let groups_changed = lib.set_similar_groups(&groups)?;
+    let groups_changed = !cancelled && lib.set_similar_groups(&groups)?;
     Ok(PassOutcome {
         hashed,
         groups_changed,
@@ -362,6 +377,7 @@ fn read_reduction(cache: &ThumbCache, key: u64) -> Option<Reduction> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::edit::Edit;
     use crate::library::NewItem;
     use crate::media::{ThumbState, fingerprint};
     use crate::testutil::{encode, new_item, seed_folder, temp_library, write_file};
@@ -740,6 +756,32 @@ mod tests {
         );
     }
 
+    /// The limit held between its two nearest neighbours: the heaviest copy measured
+    /// (a sixteenth of the size, re-encoded, about 2.3) and a frame moved by half a percent
+    /// (about 5.7). The copy/moved-frame test above only pins the limit's order of
+    /// magnitude; this is what fails if it drifts towards the unrelated photos at 7.5.
+    #[test]
+    fn the_limit_sits_between_the_heaviest_copy_and_a_barely_moved_frame() {
+        let original = textured(1200, 900, 0.0);
+        let r = reduce(&original);
+        let tiny = reduce(&jpeg_round_trip(&original.resize(
+            75,
+            56,
+            FilterType::Triangle,
+        )));
+        let nudged = reduce(&textured(1200, 900, 0.005));
+        assert!(
+            same_picture(&r, &tiny),
+            "a copy at a sixteenth of the size was {} apart",
+            picture_difference(&r, &tiny)
+        );
+        assert!(
+            !same_picture(&r, &nudged),
+            "a frame moved by half a percent was only {} apart",
+            picture_difference(&r, &nudged)
+        );
+    }
+
     /// A re-export with its exposure nudged is the same photo. Without the mean removed,
     /// the uniform shift counts at every pixel.
     #[test]
@@ -950,6 +992,135 @@ mod tests {
         assert!(
             lib.similar_of(ids[0]).unwrap().is_empty(),
             "a pair was confirmed without its thumbnails"
+        );
+    }
+
+    /// A pass cancelled while it still had pairs to confirm leaves the stored groups as
+    /// they were, rather than writing a regroup it only half did.
+    #[test]
+    fn a_pass_cancelled_before_confirming_writes_no_groups() {
+        let (dir, lib) = temp_library();
+        let photos = dir.path().join("pics");
+        let (_w, folder) = seed_folder(&lib, &photos);
+        let cache = ThumbCache::new(dir.path().join("cache"));
+        let ids = thumbnailed(
+            &lib,
+            &cache,
+            &photos,
+            folder,
+            &[
+                ("big.jpg", unrelated_pattern(180, 120)),
+                ("small.jpg", unrelated_pattern(72, 48)),
+            ],
+        );
+        let no = AtomicBool::new(false);
+        update(
+            &lib,
+            &cache,
+            EXACT_RECALL_DISTANCE,
+            &no,
+            &mut Reductions::default(),
+        )
+        .unwrap();
+        lib.set_similar_groups(&[]).unwrap();
+
+        let outcome = update(
+            &lib,
+            &cache,
+            EXACT_RECALL_DISTANCE,
+            &AtomicBool::new(true),
+            &mut Reductions::default(),
+        )
+        .unwrap();
+        assert!(!outcome.groups_changed);
+        assert!(
+            lib.similar_of(ids[0]).unwrap().is_empty(),
+            "a cancelled pass went on confirming and wrote its groups"
+        );
+    }
+
+    /// An edited photo's hash and thumbnail are both of the picture as shown, stored under
+    /// the edited key; confirming against the bare fingerprint's key would read the unedited
+    /// thumbnail, or nothing at all once it has been collected.
+    #[test]
+    fn two_edited_copies_still_group() {
+        let (dir, lib) = temp_library();
+        let photos = dir.path().join("pics");
+        let (_w, folder) = seed_folder(&lib, &photos);
+        let cache = ThumbCache::new(dir.path().join("cache"));
+        let turned = Edit::new(1, None).unwrap();
+        let mut items = Vec::new();
+        for (n, (name, img)) in [
+            ("big.jpg", unrelated_pattern(180, 120)),
+            ("small.jpg", unrelated_pattern(72, 48)),
+        ]
+        .iter()
+        .enumerate()
+        {
+            let src = write_file(&photos, name, &encode(img, ImageFormat::Jpeg));
+            let path = src.to_str().unwrap().to_string();
+            let (size, mtime) = (10 + n as i64, 100 + n as i64);
+            // Only the edited thumbnail exists, as it would once the unedited one had been
+            // collected.
+            let (preview, grid) = cache.render(&src, 1, turned).unwrap();
+            cache
+                .store(
+                    turned.thumb_key(fingerprint(&path, size, mtime)),
+                    &preview,
+                    &grid,
+                )
+                .unwrap();
+            items.push(item_at(folder, &path, size, mtime));
+        }
+        let ids = lib.insert_items(&items).unwrap();
+        for id in &ids {
+            lib.set_item_edit(*id, turned).unwrap();
+            lib.set_thumb_state(*id, ThumbState::Ready, None).unwrap();
+        }
+
+        let no = AtomicBool::new(false);
+        let outcome = update(
+            &lib,
+            &cache,
+            EXACT_RECALL_DISTANCE,
+            &no,
+            &mut Reductions::default(),
+        )
+        .unwrap();
+        assert_eq!(outcome.hashed, 2, "the edited thumbnails were not hashed");
+        assert_eq!(
+            lib.similar_of(ids[0]).unwrap().len(),
+            1,
+            "two edited copies were not confirmed against their edited thumbnails"
+        );
+    }
+
+    /// The cache holds what the last pass used and nothing older, so it is bounded by the
+    /// photos that have a candidate pair.
+    #[test]
+    fn a_pass_drops_the_reductions_it_did_not_use() {
+        let (dir, lib) = temp_library();
+        let photos = dir.path().join("pics");
+        let (_w, folder) = seed_folder(&lib, &photos);
+        let cache = ThumbCache::new(dir.path().join("cache"));
+        thumbnailed(
+            &lib,
+            &cache,
+            &photos,
+            folder,
+            &[
+                ("big.jpg", unrelated_pattern(180, 120)),
+                ("small.jpg", unrelated_pattern(72, 48)),
+            ],
+        );
+        let no = AtomicBool::new(false);
+        let mut reductions = Reductions::default();
+        update(&lib, &cache, EXACT_RECALL_DISTANCE, &no, &mut reductions).unwrap();
+        assert_eq!(reductions.by_key.len(), 2);
+        update(&lib, &cache, 0, &no, &mut reductions).unwrap();
+        assert!(
+            reductions.by_key.is_empty(),
+            "a pass that confirmed nothing kept the old reductions"
         );
     }
 
