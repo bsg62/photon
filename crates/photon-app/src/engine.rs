@@ -1846,6 +1846,12 @@ mod tests {
     /// the test releases it, and `hashing` held by the test thread. With both bounded
     /// against one deadline the call returns after the budget; with the join unbounded it
     /// never returns at all, and with two separate budgets it would take twice as long.
+    ///
+    /// The margin between "once" and "twice" has to survive a loaded CI runner: at a 200ms
+    /// budget with a 400ms bar, measured from outside the thread (its spawn and the 10ms
+    /// polling below included), macOS runners crossed the bar with the code correct. The
+    /// call is timed inside its own thread now, and the budget is a second, so the bar sits
+    /// half a second clear of either answer.
     #[test]
     fn stopping_a_pass_is_bounded_across_both_of_its_waits() {
         let f = fixture(&[("a.jpg", &jpeg(4, 2))]);
@@ -1861,20 +1867,24 @@ mod tests {
         let held = f.engine.hashing.lock();
 
         let engine = Arc::clone(&f.engine);
-        let budget = Duration::from_millis(200);
+        let budget = Duration::from_secs(1);
         let started = Instant::now();
-        let stopping = std::thread::spawn(move || engine.stop_similar_pass(budget));
+        let stopping = std::thread::spawn(move || {
+            let call = Instant::now();
+            engine.stop_similar_pass(budget);
+            call.elapsed()
+        });
         while !stopping.is_finished() {
             assert!(
-                started.elapsed() < Duration::from_secs(3),
+                started.elapsed() < Duration::from_secs(5),
                 "stop_similar_pass outran its budget of {budget:?}"
             );
             std::thread::sleep(Duration::from_millis(10));
         }
-        stopping.join().unwrap();
+        let took = stopping.join().unwrap();
         assert!(
-            started.elapsed() < budget * 2,
-            "the two waits were budgeted separately, not against one deadline"
+            took < budget * 3 / 2,
+            "the two waits were budgeted separately, not against one deadline: {took:?}"
         );
 
         drop(held);
