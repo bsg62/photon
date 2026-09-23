@@ -43,6 +43,7 @@ vi.mock('./api', () => ({
     hideTag: vi.fn(),
     restoreTagRule: vi.fn(),
     watchedFolderStats: vi.fn(),
+    setItemsHidden: vi.fn(),
   },
   events: {
     onLibraryChanged: vi.fn((cb: Handler) => {
@@ -79,6 +80,7 @@ describe('LibraryStore', () => {
       sections: [],
       starredCount: 0,
       duplicateCount: 0,
+      hiddenCount: 0,
       view: 'all',
       searchQuery: '',
       person: null,
@@ -326,6 +328,7 @@ describe('LibraryStore', () => {
       sections: [],
       starredCount: 0,
       duplicateCount: 0,
+      hiddenCount: 0,
       view: 'all',
       searchQuery: '',
       person: null,
@@ -346,6 +349,7 @@ describe('LibraryStore', () => {
       sections: [],
       starredCount: 0,
       duplicateCount: 0,
+      hiddenCount: 0,
       view: 'all',
       searchQuery: '',
       person: null,
@@ -370,6 +374,7 @@ describe('LibraryStore', () => {
       sections: [],
       starredCount: 0,
       duplicateCount: 0,
+      hiddenCount: 0,
       view: 'all',
       searchQuery: '',
       person: null,
@@ -388,6 +393,7 @@ describe('LibraryStore', () => {
       sections: [],
       starredCount: 0,
       duplicateCount: 0,
+      hiddenCount: 0,
       view: 'all',
       searchQuery: '',
       person: null,
@@ -410,6 +416,7 @@ describe('LibraryStore', () => {
       sections: [],
       starredCount: 0,
       duplicateCount: 0,
+      hiddenCount: 0,
       view: 'all',
       searchQuery: '',
       person: null,
@@ -427,6 +434,7 @@ describe('LibraryStore', () => {
       sections: [],
       starredCount: 0,
       duplicateCount: 0,
+      hiddenCount: 0,
       view: 'all',
       searchQuery: '',
       person: null,
@@ -444,6 +452,7 @@ describe('LibraryStore', () => {
       sections: [],
       starredCount: 0,
       duplicateCount: 0,
+      hiddenCount: 0,
       view: 'all',
       searchQuery: '',
       person: null,
@@ -518,6 +527,7 @@ describe('LibraryStore', () => {
       sections: never[];
       starredCount: number;
       duplicateCount: number;
+      hiddenCount: number;
       view: 'all';
       searchQuery: string;
       person: null;
@@ -538,7 +548,7 @@ describe('LibraryStore', () => {
     const initPromise = store.init();
     store.dispose();
     listenGate.resolve();
-    gridInfoGate.resolve({ version: 1, len: 0, sections: [], starredCount: 0, duplicateCount: 0, view: 'all', searchQuery: '', person: null, album: null, tag: null, copiesOf: null });
+    gridInfoGate.resolve({ version: 1, len: 0, sections: [], starredCount: 0, duplicateCount: 0, hiddenCount: 0, view: 'all', searchQuery: '', person: null, album: null, tag: null, copiesOf: null });
     await initPromise;
 
     expect(unlistenCounts.libraryChanged).toBe(1);
@@ -567,7 +577,7 @@ describe('LibraryStore', () => {
     expect(api.setGridView).toHaveBeenCalledWith('starred');
     expect(resolved).toBe(false);
 
-    refreshGate.resolve({ version: 2, len: 0, sections: [], starredCount: 0, duplicateCount: 0, view: 'starred', searchQuery: '', person: null, album: null, tag: null, copiesOf: null });
+    refreshGate.resolve({ version: 2, len: 0, sections: [], starredCount: 0, duplicateCount: 0, hiddenCount: 0, view: 'starred', searchQuery: '', person: null, album: null, tag: null, copiesOf: null });
     await setViewPromise;
 
     expect(resolved).toBe(true);
@@ -597,6 +607,7 @@ describe('LibraryStore', () => {
       sections: [],
       starredCount: 0,
       duplicateCount: 0,
+      hiddenCount: 0,
       view: 'all',
       searchQuery: '',
       person: null,
@@ -639,6 +650,7 @@ describe('LibraryStore', () => {
       sections: [],
       starredCount: 0,
       duplicateCount: 0,
+      hiddenCount: 0,
       view: 'search',
       searchQuery: 'beach',
       person: null,
@@ -684,6 +696,7 @@ describe('LibraryStore', () => {
         sections: opts.sections ?? [],
         starredCount: 0,
         duplicateCount: 0,
+        hiddenCount: 0,
         view: opts.view ?? 'all',
         searchQuery: '',
         person: null,
@@ -700,6 +713,96 @@ describe('LibraryStore', () => {
       await store.ensure(0, Math.min(len, 50));
       return store;
     }
+
+    it('hiding the selection moves it to the next photo still shown, and drops the hidden ones', async () => {
+      // The cleanup workflow: hide one, and the arrow keys carry on from where it was
+      // rather than from the top of the library; and nothing hidden stays selected, so
+      // the next action cannot reach a photo the user can no longer see.
+      const store = await storeOf(10);
+      store.selected = 2;
+      store.toggleSelected(5);
+      store.toggleSelected(6);
+      store.toggleSelected(5);
+      store.toggleSelected(5); // lead on 5, selection {2, 5, 6}
+      // Where the rebuilt index puts photo 7: after 0, 1, 3 and 4.
+      vi.mocked(api.gridOffsetOfItem).mockResolvedValue(4);
+      vi.mocked(api.setItemsHidden).mockImplementation(async () => {
+        // The backend announces its rebuild before the command returns, so the store can
+        // have reloaded the new index - where the offset after the lead is no longer the
+        // photo after it - by the time the write resolves.
+        const kept = [0, 1, 3, 4, 7, 8, 9];
+        vi.mocked(api.gridInfo).mockResolvedValue({
+          version: 2,
+          len: kept.length,
+          sections: [],
+          starredCount: 0,
+          duplicateCount: 0,
+          hiddenCount: 3,
+          view: 'all',
+          searchQuery: '',
+          person: null,
+          album: null,
+          tag: null,
+          copiesOf: null,
+        });
+        vi.mocked(api.gridRows).mockImplementation(async (offset: number, count: number) => ({
+          version: 2,
+          rows: kept.slice(offset, offset + count).map(entryAt),
+        }));
+        await store.refresh();
+        await store.ensure(0, kept.length);
+        return 3;
+      });
+      await store.setHidden(store.selectedItemIds, true);
+      expect(api.setItemsHidden).toHaveBeenCalledWith(expect.arrayContaining([idAt(2), idAt(5), idAt(6)]), true);
+      expect(store.selectedItemIds).toEqual([idAt(7)]);
+      expect(api.gridOffsetOfItem).toHaveBeenCalledWith(idAt(7));
+      expect(store.selected).toBe(4);
+    });
+
+    it('hiding the last photo moves the selection back to the one before it', async () => {
+      const store = await storeOf(10);
+      store.selected = 9;
+      vi.mocked(api.setItemsHidden).mockResolvedValue(1);
+      vi.mocked(api.gridOffsetOfItem).mockResolvedValue(8);
+      await store.setHidden(store.selectedItemIds, true);
+      expect(store.selectedItemIds).toEqual([idAt(8)]);
+      expect(store.selected).toBe(8);
+    });
+
+    it('a lead that has left the view is dropped from the selection too', async () => {
+      // Hiding (or unstarring in Starred) the photo open in the viewer: the rebuild cannot
+      // re-find the lead, and a selection still holding its id would offer "Hide 2 photos"
+      // or Compare to a photo that is no longer on screen.
+      const store = await storeOf(10);
+      store.selected = 3;
+      vi.mocked(api.gridInfo).mockResolvedValue({
+        version: 2,
+        len: 9,
+        sections: [],
+        starredCount: 0,
+        duplicateCount: 0,
+        hiddenCount: 1,
+        view: 'all',
+        searchQuery: '',
+        person: null,
+        album: null,
+        tag: null,
+        copiesOf: null,
+      });
+      vi.mocked(api.gridOffsetOfItem).mockResolvedValue(null);
+      await store.refresh();
+      expect(store.selectionCount).toBe(0);
+      expect(store.selectedItemIds).toEqual([]);
+    });
+
+    it('a hide that fails keeps the selection, so the user can try again', async () => {
+      const store = await storeOf(10);
+      store.selected = 2;
+      vi.mocked(api.setItemsHidden).mockRejectedValue(new Error('disk full'));
+      await expect(store.setHidden(store.selectedItemIds, true)).rejects.toThrow('disk full');
+      expect(store.selectedItemIds).toEqual([idAt(2)]);
+    });
 
     it('ctrl+click toggles a photo in and out, moving the lead each time', async () => {
       const store = await storeOf(10);
@@ -930,6 +1033,7 @@ describe('LibraryStore', () => {
         sections: [],
         starredCount: 0,
         duplicateCount: 0,
+        hiddenCount: 0,
         view: 'all',
         searchQuery: '',
         person: null,
@@ -989,6 +1093,7 @@ describe('LibraryStore', () => {
         sections: [],
         starredCount: 0,
         duplicateCount: 0,
+        hiddenCount: 0,
         view: 'all',
         searchQuery: '',
         person: null,
@@ -1028,6 +1133,7 @@ describe('LibraryStore', () => {
         sections: [],
         starredCount: 0,
         duplicateCount: 0,
+        hiddenCount: 0,
         view: 'all',
         searchQuery: '',
         person: null,

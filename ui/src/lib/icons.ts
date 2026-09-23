@@ -4,7 +4,7 @@
 // are reproduced in THIRD-PARTY-NOTICES.md at the repository root.
 //
 // Each value is the inside of the icon's <svg>, on Lucide's 24-unit grid. Vendored rather
-// than depended on: nineteen icons do not justify a package and its update churn.
+// than depended on: twenty icons do not justify a package and its update churn.
 
 export type IconName =
   | 'bookmark'
@@ -13,6 +13,7 @@ export type IconName =
   | 'clock'
   | 'copy'
   | 'crop'
+  | 'eye-off'
   | 'folder'
   | 'info'
   | 'pause'
@@ -34,6 +35,7 @@ export const ICONS: Record<IconName, string> = {
   clock: '<circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>',
   copy: '<rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>',
   crop: '<path d="M6 2v14a2 2 0 0 0 2 2h14"/><path d="M18 22V8a2 2 0 0 0-2-2H2"/>',
+  'eye-off': '<path d="M10.733 5.076a10.744 10.744 0 0 1 11.205 6.575 1 1 0 0 1 0 .696 10.747 10.747 0 0 1-1.444 2.49"/><path d="M14.084 14.158a3 3 0 0 1-4.242-4.242"/><path d="M17.479 17.499a10.75 10.75 0 0 1-15.417-5.151 1 1 0 0 1 0-.696 10.75 10.75 0 0 1 4.446-5.143"/><path d="m2 2 20 20"/>',
   folder:
     '<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>',
   info: '<circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>',

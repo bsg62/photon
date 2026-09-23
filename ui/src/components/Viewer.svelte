@@ -35,8 +35,9 @@
   }: {
     offset: number;
     onclose: (offset: number) => void;
-    /** "Locate in photon": the viewer closes and the grid lands on this photo. */
-    onlocate: (itemId: number) => void;
+    /** "Locate in photon": the viewer closes and the grid lands on this photo, looking for
+     *  it in the Hidden view when `hidden`. */
+    onlocate: (itemId: number, hidden?: boolean) => void;
     /** A camera or lens in the info panel was clicked: leave the viewer for that search. */
     onsearch: (query: string) => void;
     /** "Show N duplicates in the grid": the viewer closes and the grid holds this photo and
@@ -275,7 +276,16 @@
   function locate() {
     if (!item) return;
     closeMenu();
-    onlocate(item.id);
+    onlocate(item.id, item.hidden);
+  }
+
+  /** Hide or unhide the photo on screen. It leaves the view it is in either way, and the
+   *  viewer's `orphaned` state - built for unstarring in Starred - keeps it on screen with
+   *  the arrow keys carrying on from where it was, so nothing here has to move the viewer. */
+  function toggleHidden() {
+    if (!item) return;
+    closeMenu();
+    api.setItemsHidden([item.id], !item.hidden).catch(library.reportError);
   }
 
   function reveal() {
@@ -905,6 +915,7 @@
     >
       <button role="menuitem" onclick={locate}>Locate in photon</button>
       <button role="menuitem" onclick={reveal}>Reveal in file manager</button>
+      <button role="menuitem" onclick={toggleHidden}>{item.hidden ? 'Unhide photo' : 'Hide photo'}</button>
     </div>
   {/if}
   <div class="zoom" class:hidden={crop.active}>

@@ -244,6 +244,17 @@ ALTER TABLE items ADD COLUMN similar_group INTEGER;
 -- Serves the widened Duplicates filter. Partial, because almost every row is NULL.
 CREATE INDEX items_similar_group ON items(similar_group) WHERE similar_group IS NOT NULL;
 "#,
+    r#"
+-- Hidden photos: Picasa's Hide. A hidden photo leaves every view and count and waits in the
+-- Hidden view; the file is untouched. A flag on the row, like a star, so a rewritten file
+-- keeps it (`update_items` does not touch the column) and a renamed one loses it with its
+-- old row, as its albums and edits do.
+ALTER TABLE items ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0;
+
+-- Serves the Hidden view and its sidebar count without reading the rest of the library.
+-- Shaped like `items_folder`, which the grid's per-folder walk reads through.
+CREATE INDEX items_hidden ON items(folder_id, taken_at) WHERE hidden = 1 AND missing_since IS NULL;
+"#,
 ];
 
 pub fn migrate(conn: &Connection) -> Result<()> {
@@ -495,7 +506,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 12);
+        assert_eq!(version, 13);
         let rules: i64 = conn
             .query_row("SELECT count(*) FROM tag_rules", [], |r| r.get(0))
             .unwrap();
@@ -654,7 +665,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 12);
+        assert_eq!(version, 13);
         let overlay: i64 = conn
             .query_row("SELECT count(*) FROM item_user_tags", [], |r| r.get(0))
             .unwrap();
@@ -704,7 +715,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 12);
+        assert_eq!(version, 13);
         let hash: Option<Vec<u8>> = conn
             .query_row("SELECT content_hash FROM items WHERE id = 1", [], |r| {
                 r.get(0)
@@ -845,6 +856,55 @@ mod tests {
             .unwrap();
         // Hardcoded, like every other version assertion here: `MIGRATIONS.len()` would
         // agree with itself whatever the list did, which is the tripwire removed.
-        assert_eq!(version, 12);
+        assert_eq!(version, 13);
+    }
+
+    /// Every photo in an existing library comes out of the upgrade visible - a default of
+    /// anything else would empty the grid of everyone who upgrades.
+    #[test]
+    fn migration_13_leaves_every_existing_photo_visible() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("library.db");
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        for sql in &MIGRATIONS[..12] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 12i64).unwrap();
+        conn.execute(
+            "INSERT INTO watched_folders (id, path) VALUES (1, '/p')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO folders (id, watched_id, parent_id, path, name, sort_key) \
+             VALUES (1, 1, NULL, '/p', 'p', 'p')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO items (id, folder_id, path, file_name, kind, size, mtime_ms, width, \
+             height, orientation, taken_at, rating) \
+             VALUES (1, 1, '/p/a.jpg', 'a.jpg', 0, 1, 1, 1, 1, 1, 1, 1)",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+
+        let lib = crate::library::Library::open(&path).unwrap();
+        let conn = lib.reader().unwrap();
+        let (hidden, rating): (i64, i64) = conn
+            .query_row("SELECT hidden, rating FROM items WHERE id = 1", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(
+            hidden, 0,
+            "an existing photo came out of the upgrade hidden"
+        );
+        assert_eq!(rating, 1, "the star it already had was lost");
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, 13);
     }
 }

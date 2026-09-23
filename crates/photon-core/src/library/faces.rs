@@ -143,7 +143,7 @@ impl Library {
              FROM contacts c
              JOIN faces f ON f.contact = c.hash
              JOIN items i ON i.id = f.item_id
-             WHERE i.missing_since IS NULL
+             WHERE i.missing_since IS NULL AND i.hidden = 0
              GROUP BY c.hash",
         )?;
         let mut people = stmt

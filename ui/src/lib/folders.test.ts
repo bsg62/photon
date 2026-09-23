@@ -128,6 +128,12 @@ describe('enterFolder', () => {
     await enterFolder(7, deps);
     expect(order).toEqual(['cancel', 'jump']);
   });
+
+  it('stays in Hidden, whose folders All may not hold at all', async () => {
+    const { order, deps } = spyDeps('hidden');
+    await enterFolder(7, deps);
+    expect(order).toEqual(['cancel', 'jump']);
+  });
 });
 
 describe('locateItem', () => {
@@ -153,19 +159,31 @@ describe('locateItem', () => {
 
   it('leaves a subset view for All before looking the photo up, so the offset is against the right index', async () => {
     const { order, deps } = spyDeps('starred');
-    await locateItem(42, deps);
+    await locateItem(42, false, deps);
     expect(order).toEqual(['cancel', 'setView:all', 'find:42', 'select:5:42']);
   });
 
   it('does not switch views when already in All', async () => {
     const { order, deps } = spyDeps('all');
-    await locateItem(42, deps);
+    await locateItem(42, false, deps);
+    expect(order).toEqual(['cancel', 'find:42', 'select:5:42']);
+  });
+
+  it('looks for a hidden photo in Hidden, the one view that holds it', async () => {
+    const { order, deps } = spyDeps('all');
+    await locateItem(42, true, deps);
+    expect(order).toEqual(['cancel', 'setView:hidden', 'find:42', 'select:5:42']);
+  });
+
+  it('does not switch views when a hidden photo is located from Hidden', async () => {
+    const { order, deps } = spyDeps('hidden');
+    await locateItem(42, true, deps);
     expect(order).toEqual(['cancel', 'find:42', 'select:5:42']);
   });
 
   it('selects nothing when the photo is no longer in the library', async () => {
     const { order, deps } = spyDeps('all', null);
-    await locateItem(42, deps);
+    await locateItem(42, false, deps);
     expect(order).toEqual(['cancel', 'find:42']);
   });
 });

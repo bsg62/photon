@@ -20,12 +20,13 @@ export interface Section { folderId: number; offset: number; count: number; take
 /** `hasCopies`: another live file has the same bytes or is a look-alike, the same rule the
  *  Duplicates view uses (`GridEntry::has_copies`). */
 export interface GridEntry { id: number; folderId: number; takenAt: number; aspect: number; kind: 'image'; thumbKey: string; starred: boolean; hasCopies: boolean }
-export type GridView = 'all' | 'starred' | 'recent' | 'search' | 'person' | 'album' | 'tag' | 'duplicates' | 'copies';
+export type GridView = 'all' | 'starred' | 'recent' | 'search' | 'person' | 'album' | 'tag' | 'duplicates' | 'copies' | 'hidden';
 /** Mirrors `commands::CopiesOf`. `fileName` is empty once the photo has left the library;
  *  `gone` is true once the anchor photo itself is gone (purged or missing) - the filter
  *  keys off the anchor's own row, so once it is gone every branch matches nothing and the
- *  grid empties even though the other copies are still live. */
-export interface CopiesOf { id: number; fileName: string; gone: boolean }
+ *  grid empties even though the other copies are still live. `hidden` is true once the user
+ *  has hidden the anchor: its copies stay in the view, and it does not. */
+export interface CopiesOf { id: number; fileName: string; gone: boolean; hidden: boolean }
 /** Mirrors `photon_core::library::ThemeChoice` (serde lowercase). */
 export type ThemeChoice = 'system' | 'light' | 'dark';
 /** Mirrors `photon_core::library::GridTile` (serde lowercase). */
@@ -40,6 +41,8 @@ export interface GridInfo {
   starredCount: number;
   /** Photos with a byte-identical twin elsewhere in the library. */
   duplicateCount: number;
+  /** Photos the user has hidden; the sidebar shows the Hidden row only above 0. */
+  hiddenCount: number;
   view: GridView;
   searchQuery: string;
   /** Picasa contact hash while `view` is 'person'. */
@@ -68,6 +71,9 @@ export interface ViewerItem {
   thumbState: 'pending' | 'ready' | 'failed';
   thumbError: string | null;
   starred: boolean;
+  /** Whether the user has hidden the photo: the menu offers the opposite, and Locate
+   *  looks for it in the Hidden view. */
+  hidden: boolean;
   make: string | null;
   model: string | null;
   lens: string | null;
@@ -233,6 +239,8 @@ export const api = {
   /** Stars or unstars several photos at once, answering how many landed: a folder whose
    *  `.picasa.ini` cannot be written is skipped, and the caller says so. */
   setStars: (ids: number[], starred: boolean) => invoke<number>('set_stars', { ids, starred }),
+  /** Hides or unhides photos, returning how many changed. Nothing is written to the files. */
+  setItemsHidden: (ids: number[], hidden: boolean) => invoke<number>('set_items_hidden', { ids, hidden }),
   /** Turns the photo a quarter; the crop goes round with it. Nothing is written to the file. */
   rotateItem: (id: number, clockwise: boolean) => invoke<void>('rotate_item', { id, clockwise }),
   /** Replaces the photo's edit; no turns and no crop is the original again. */

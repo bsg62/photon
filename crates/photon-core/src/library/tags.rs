@@ -110,7 +110,7 @@ impl Library {
         let mut stmt = conn.prepare(&format!(
             "SELECT e.tag, count(DISTINCT e.item_id)
              FROM ({EFFECTIVE_TAGS}) e JOIN items i ON i.id = e.item_id
-             WHERE i.missing_since IS NULL
+             WHERE i.missing_since IS NULL AND i.hidden = 0
              GROUP BY e.tag"
         ))?;
         let mut tags = stmt

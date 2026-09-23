@@ -62,6 +62,8 @@ pub struct Item {
     pub camera: CameraMeta,
     /// What the user has done to the photo in photon; `Edit::default()` for nearly all.
     pub edit: Edit,
+    /// Whether the user has hidden the photo (`library/hidden.rs`).
+    pub hidden: bool,
 }
 
 impl Item {
@@ -110,17 +112,46 @@ pub(super) fn edit_from_db(turns: i64, crop: Option<i64>) -> Edit {
 /// order is byte-identical across all three, verified on the 100k bench library.
 pub(crate) const GRID_ORDER: &str = "ORDER BY o.oldest DESC, o.fpath, i.taken_at, i.file_name";
 
+/// Which photos a grid query may return, by the user's Hide.
+///
+/// An argument of its own rather than a clause each view folds into its filter, so that
+/// every caller of [`grid_query`] has to *say* which set it wants: a new view that forgot
+/// would show the photos the user put away, which is the one thing a hide must never do.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Shown {
+    /// Every view but Hidden.
+    Visible,
+    /// The Hidden view.
+    Hidden,
+    /// Bookkeeping that serves both - the thumbnail queue, whose Hidden view needs
+    /// thumbnails too.
+    Either,
+}
+
+impl Shown {
+    fn sql(self) -> &'static str {
+        match self {
+            Self::Visible => "AND i.hidden = 0",
+            Self::Hidden => "AND i.hidden = 1",
+            Self::Either => "",
+        }
+    }
+}
+
 /// The grid's driver: every folder with a matching live photo, placed by its oldest one and
 /// its path, already in grid order. Aliased `o` for [`GRID_ORDER`].
 ///
 /// `filter` is the same `AND …` fragment on `i` the caller's outer `WHERE` uses, so the
 /// minimum is taken over the rows the view shows rather than the whole folder; it may name
-/// only `items` columns, since inside this subquery `i` is the subquery's own alias.
-fn folder_order(filter: &str) -> String {
+/// only `items` columns, since inside this subquery `i` is the subquery's own alias. `shown`
+/// is part of that same filter, for the same reason: a folder is placed by its oldest photo
+/// the view actually shows.
+fn folder_order(shown: Shown, filter: &str) -> String {
+    let shown = shown.sql();
     format!(
         "(SELECT i.folder_id, MIN(i.taken_at) AS oldest, f.path AS fpath
           FROM items i JOIN folders f ON f.id = i.folder_id
-          WHERE i.missing_since IS NULL {filter}
+          WHERE i.missing_since IS NULL {shown} {filter}
           GROUP BY i.folder_id
           ORDER BY oldest DESC, fpath) o"
     )
@@ -131,14 +162,15 @@ fn folder_order(filter: &str) -> String {
 /// driver's filter and the outer filter are spelled, so they cannot drift apart - a
 /// driver placed by one set of rows and a result holding another is how Starred would
 /// silently sort by the wrong photo.
-pub(super) fn grid_query(select: &str, filter: &str) -> String {
-    let driver = folder_order(filter);
+pub(super) fn grid_query(select: &str, shown: Shown, filter: &str) -> String {
+    let driver = folder_order(shown, filter);
+    let shown = shown.sql();
     format!(
         "SELECT {select}
          FROM {driver}
          JOIN items i ON i.folder_id = o.folder_id
          JOIN folders f ON f.id = i.folder_id
-         WHERE i.missing_since IS NULL {filter}
+         WHERE i.missing_since IS NULL {shown} {filter}
          {GRID_ORDER}"
     )
 }
@@ -149,7 +181,7 @@ fn recent_sql() -> String {
     format!(
         "SELECT {GRID_COLUMNS}
          FROM items i
-         WHERE i.missing_since IS NULL
+         WHERE i.missing_since IS NULL AND i.hidden = 0
          ORDER BY i.taken_at DESC, i.file_name DESC, i.id DESC
          LIMIT {RECENT_LIMIT}"
     )
@@ -186,7 +218,7 @@ pub(super) const GRID_COLUMNS: &str = concat!(
 /// and `folder name` into the wrong indices without also touching this constant.
 const GRID_COLUMN_COUNT: usize = 14;
 
-fn map_grid_row(r: &Row<'_>) -> rusqlite::Result<GridEntry> {
+pub(super) fn map_grid_row(r: &Row<'_>) -> rusqlite::Result<GridEntry> {
     let edit = edit_from_db(r.get(11)?, r.get(12)?);
     let (w, h) = oriented_dims(r.get(3)?, r.get(4)?, r.get(5)?);
     let (w, h) = edit.dims(w, h);
@@ -254,6 +286,7 @@ fn row_to_item(r: &Row<'_>) -> rusqlite::Result<Item> {
         rating: r.get(13)?,
         camera: camera_from_row(r, 14)?,
         edit: edit_from_db(r.get(21)?, r.get(22)?),
+        hidden: r.get(23)?,
     })
 }
 
@@ -563,7 +596,7 @@ impl Library {
                 &format!(
                     "SELECT id, folder_id, path, kind, size, mtime_ms, width, height, orientation, taken_at,
                             thumb_state, thumb_error, missing_since, rating, {CAMERA_COLUMNS},
-                            edit_turns, edit_crop
+                            edit_turns, edit_crop, hidden
                      FROM items WHERE id = ?1"
                 ),
                 params![id],
@@ -652,7 +685,7 @@ impl Library {
     /// the planner walks from `items_pending` regardless, so the shape costs nothing.
     pub fn pending_thumb_ids(&self) -> Result<Vec<i64>> {
         let conn = self.reader()?;
-        let driver = folder_order("");
+        let driver = folder_order(Shown::Either, "");
         let mut stmt = conn.prepare(&format!(
             "SELECT i.id
              FROM {driver}
@@ -701,6 +734,7 @@ impl Library {
         match view {
             GridView::All => self.entries_filtered("", &[]),
             GridView::Starred => self.entries_filtered("AND i.rating >= 1", &[]),
+            GridView::Hidden => self.hidden_entries(),
             GridView::Recent => self.recent_entries(),
             GridView::Search => self.search_entries(arg),
             GridView::Person => self.entries_filtered(
@@ -742,7 +776,7 @@ impl Library {
     /// is what keeps a keyword or contact hash from ever being read as SQL.
     fn entries_filtered(&self, filter: &str, params: &[&dyn ToSql]) -> Result<Vec<GridEntry>> {
         let conn = self.reader()?;
-        let mut stmt = conn.prepare(&grid_query(GRID_COLUMNS, filter))?;
+        let mut stmt = conn.prepare(&grid_query(GRID_COLUMNS, Shown::Visible, filter))?;
         let rows = stmt
             .query_map(params, map_grid_row)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -801,6 +835,7 @@ impl Library {
                 "{GRID_COLUMNS}, i.file_name, f.name, i.make, i.model, i.lens, i.focal_mm, i.aperture, i.iso,
                  (SELECT group_concat(e.tag, ' ') FROM ({EFFECTIVE_TAGS}) e WHERE e.item_id = i.id)"
             ),
+            Shown::Visible,
             "",
         ))?;
         let rows = stmt
@@ -860,7 +895,7 @@ impl Library {
     pub fn starred_count(&self) -> Result<usize> {
         let conn = self.reader()?;
         let count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM items WHERE rating >= 1 AND missing_since IS NULL",
+            "SELECT COUNT(*) FROM items WHERE rating >= 1 AND missing_since IS NULL AND hidden = 0",
             [],
             |r| r.get(0),
         )?;
@@ -1665,7 +1700,7 @@ mod tests {
         let mut stmt = conn
             .prepare(&format!(
                 "EXPLAIN QUERY PLAN {}",
-                grid_query(GRID_COLUMNS, TAG_FILTER)
+                grid_query(GRID_COLUMNS, Shown::Visible, TAG_FILTER)
             ))
             .unwrap();
         let plan: Vec<String> = stmt

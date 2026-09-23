@@ -114,11 +114,19 @@ metadata backfill).
 **Grid order** (`items.rs`, `GRID_ORDER`) is the folder's oldest photo descending, then each
 folder's photos oldest to newest. The sidebar groups by the same value, so the list is an index
 of the grid. Changing one without the other splits them onto different axes. `GRID_ORDER` reads
-columns only `folder_order(filter)` supplies, and `grid_query(select, filter)` is the one place
+columns only `folder_order(shown, filter)` supplies, and `grid_query(select, shown, filter)` is the one place
 the two are paired: in a filtered view (Starred) the driver's filter must equal the outer
 `WHERE`, so a folder is placed by its oldest *matching* photo, which is what keeps the sidebar
 and the grid agreeing. A query assembled by hand with `GRID_ORDER` and no driver compiles and
 fails at `prepare`, only when that view is opened.
+
+**Hidden photos** (`library/hidden.rs`, schema 13) are in no view but `GridView::Hidden`.
+`grid_query` takes a `Shown` argument (`Visible`, `Hidden`, or `Either` for bookkeeping like the
+thumbnail queue) so every caller has to say which set it wants; the queries that do not go
+through it - Recent, every sidebar count, `duplicate_ids!`, `copies_of`, `similar_of` - each
+carry `hidden = 0` themselves, and `library/hidden.rs`'s tests pin every one. A new
+user-visible query must filter on it too, or photos the user put away turn up again. Hidden
+photos are still scanned, thumbnailed and hashed, so unhiding is instant.
 
 **Parameterised views.** `GridView::Search`, `Person`, `Album` and `Tag` are selected by an
 argument held beside the view in `ViewState.arg` (the query, a contact hash, an album id,

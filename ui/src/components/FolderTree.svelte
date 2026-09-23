@@ -263,6 +263,20 @@
     {/if}
   {/if}
 
+  <!-- Like Duplicates, only while there is something in it or it is showing: a library
+       nobody has hidden anything in needs no reminder that hiding exists. -->
+  {#if library.info.hiddenCount > 0 || library.info.view === 'hidden'}
+    <button
+      class="root hidden-view"
+      class:active={library.info.view === 'hidden'}
+      onclick={() => show(() => library.setView('hidden'))}
+      title="Photos you have hidden. They stay on disk; unhide them from here"
+    >
+      <Icon name="eye-off" size={14} /><span class="name">Hidden</span>
+      <span class="count">{library.info.hiddenCount.toLocaleString()}</span>
+    </button>
+  {/if}
+
   <!-- Albums: photon's own, so the group is editable. -->
   <button class="group" aria-expanded={open.albums} onclick={() => (open.albums = !open.albums)}>
     <span class="chevron"><Icon name={open.albums ? 'chevron-down' : 'chevron-right'} size={12} /></span><Icon name="folder" size={14} />
@@ -500,7 +514,7 @@
      covered by `.copies.active`, which is declared after it. */
   .copies { padding-left: 28px; cursor: default; }
   .root:hover, .node:hover, .group:hover { background: var(--hover); }
-  .starred.active, .recent.active, .duplicates.active, .node.active, .copies.active { background: var(--accent-soft); }
+  .starred.active, .recent.active, .duplicates.active, .hidden-view.active, .node.active, .copies.active { background: var(--accent-soft); }
   /* --text-dim does not reach 4.5:1 over --accent-soft; --text does (tokens.test.ts). */
   .active .count { color: var(--text); }
   .add-album { color: var(--text-dim); }

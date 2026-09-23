@@ -131,10 +131,12 @@
   }
 
   /** "Locate in photon" from the viewer. Closes it first so the grid is what lands on the
-   *  photo; the view switch and the lookup order are `locateItem`'s. */
-  async function locate(itemId: number) {
+   *  photo; the view switch and the lookup order are `locateItem`'s. `hidden` is the photo's
+   *  own flag - a copy listed in the info panel is never hidden, since hidden copies are not
+   *  listed. */
+  async function locate(itemId: number, hidden = false) {
     viewerAt = null;
-    await locateItem(itemId, {
+    await locateItem(itemId, hidden, {
       cancelSearch: () => searchBox.cancel(),
       currentView: () => library.info.view,
       setView: (view) => library.setView(view),

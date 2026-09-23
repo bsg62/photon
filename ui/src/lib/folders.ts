@@ -85,7 +85,12 @@ export function groupByYear(rows: FolderRow[]): YearGroup[] {
  *  Awaiting `setView` is what the jump itself depends on: `jump` looks the folder up in the
  *  grid's current index, and racing that lookup against an unawaited view switch can return
  *  a stale or mismatched offset (see the Important 1 writeup — awaiting here is load-bearing,
- *  not stylistic). */
+ *  not stylistic).
+ *
+ *  Hidden is the one view left as it is. The sidebar's folders are the current view's
+ *  sections, and every other view is a subset of All, so All holds the folder jumped to; the
+ *  Hidden view is disjoint from All, and a folder whose photos are all hidden is not in All
+ *  at all - the jump would land the user at the top of All with nothing selected. */
 export async function enterFolder(
   folderId: number,
   deps: {
@@ -96,7 +101,8 @@ export async function enterFolder(
   },
 ): Promise<void> {
   deps.cancelSearch();
-  if (deps.currentView() !== 'all') await deps.setView('all');
+  const view = deps.currentView();
+  if (view !== 'all' && view !== 'hidden') await deps.setView('all');
   deps.jump(folderId);
 }
 
@@ -106,9 +112,13 @@ export async function enterFolder(
  *  re-enter Search behind the jump, and the photo's offset is only meaningful against the
  *  index of the view it is looked up in, so a subset view (Starred, Search, Recent) is left
  *  for All *before* the lookup. Looking it up first and then switching would hand the grid
- *  an offset from the wrong index. A photo the library no longer holds selects nothing. */
+ *  an offset from the wrong index. A photo the library no longer holds selects nothing.
+ *
+ *  A hidden photo is in no view but Hidden, so that is where it is looked for: All would
+ *  answer "not here" and the click would silently do nothing. */
 export async function locateItem(
   itemId: number,
+  hidden: boolean,
   deps: {
     cancelSearch: () => void;
     currentView: () => GridView;
@@ -120,7 +130,8 @@ export async function locateItem(
   },
 ): Promise<void> {
   deps.cancelSearch();
-  if (deps.currentView() !== 'all') await deps.setView('all');
+  const home: GridView = hidden ? 'hidden' : 'all';
+  if (deps.currentView() !== home) await deps.setView(home);
   const at = await deps.offsetOfItem(itemId);
   if (at === null) return;
   deps.select(at, itemId);
