@@ -62,6 +62,8 @@ pub struct Item {
     pub camera: CameraMeta,
     /// What the user has done to the photo in photon; `Edit::default()` for nearly all.
     pub edit: Edit,
+    /// Whether the user has hidden the photo (`library/hidden.rs`).
+    pub hidden: bool,
 }
 
 impl Item {
@@ -284,6 +286,7 @@ fn row_to_item(r: &Row<'_>) -> rusqlite::Result<Item> {
         rating: r.get(13)?,
         camera: camera_from_row(r, 14)?,
         edit: edit_from_db(r.get(21)?, r.get(22)?),
+        hidden: r.get(23)?,
     })
 }
 
@@ -593,7 +596,7 @@ impl Library {
                 &format!(
                     "SELECT id, folder_id, path, kind, size, mtime_ms, width, height, orientation, taken_at,
                             thumb_state, thumb_error, missing_since, rating, {CAMERA_COLUMNS},
-                            edit_turns, edit_crop
+                            edit_turns, edit_crop, hidden
                      FROM items WHERE id = ?1"
                 ),
                 params![id],

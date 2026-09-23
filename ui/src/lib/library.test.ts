@@ -43,6 +43,7 @@ vi.mock('./api', () => ({
     hideTag: vi.fn(),
     restoreTagRule: vi.fn(),
     watchedFolderStats: vi.fn(),
+    setItemsHidden: vi.fn(),
   },
   events: {
     onLibraryChanged: vi.fn((cb: Handler) => {
@@ -79,6 +80,7 @@ describe('LibraryStore', () => {
       sections: [],
       starredCount: 0,
       duplicateCount: 0,
+      hiddenCount: 0,
       view: 'all',
       searchQuery: '',
       person: null,
@@ -326,6 +328,7 @@ describe('LibraryStore', () => {
       sections: [],
       starredCount: 0,
       duplicateCount: 0,
+      hiddenCount: 0,
       view: 'all',
       searchQuery: '',
       person: null,
@@ -346,6 +349,7 @@ describe('LibraryStore', () => {
       sections: [],
       starredCount: 0,
       duplicateCount: 0,
+      hiddenCount: 0,
       view: 'all',
       searchQuery: '',
       person: null,
@@ -370,6 +374,7 @@ describe('LibraryStore', () => {
       sections: [],
       starredCount: 0,
       duplicateCount: 0,
+      hiddenCount: 0,
       view: 'all',
       searchQuery: '',
       person: null,
@@ -388,6 +393,7 @@ describe('LibraryStore', () => {
       sections: [],
       starredCount: 0,
       duplicateCount: 0,
+      hiddenCount: 0,
       view: 'all',
       searchQuery: '',
       person: null,
@@ -410,6 +416,7 @@ describe('LibraryStore', () => {
       sections: [],
       starredCount: 0,
       duplicateCount: 0,
+      hiddenCount: 0,
       view: 'all',
       searchQuery: '',
       person: null,
@@ -427,6 +434,7 @@ describe('LibraryStore', () => {
       sections: [],
       starredCount: 0,
       duplicateCount: 0,
+      hiddenCount: 0,
       view: 'all',
       searchQuery: '',
       person: null,
@@ -444,6 +452,7 @@ describe('LibraryStore', () => {
       sections: [],
       starredCount: 0,
       duplicateCount: 0,
+      hiddenCount: 0,
       view: 'all',
       searchQuery: '',
       person: null,
@@ -518,6 +527,7 @@ describe('LibraryStore', () => {
       sections: never[];
       starredCount: number;
       duplicateCount: number;
+      hiddenCount: number;
       view: 'all';
       searchQuery: string;
       person: null;
@@ -538,7 +548,7 @@ describe('LibraryStore', () => {
     const initPromise = store.init();
     store.dispose();
     listenGate.resolve();
-    gridInfoGate.resolve({ version: 1, len: 0, sections: [], starredCount: 0, duplicateCount: 0, view: 'all', searchQuery: '', person: null, album: null, tag: null, copiesOf: null });
+    gridInfoGate.resolve({ version: 1, len: 0, sections: [], starredCount: 0, duplicateCount: 0, hiddenCount: 0, view: 'all', searchQuery: '', person: null, album: null, tag: null, copiesOf: null });
     await initPromise;
 
     expect(unlistenCounts.libraryChanged).toBe(1);
@@ -567,7 +577,7 @@ describe('LibraryStore', () => {
     expect(api.setGridView).toHaveBeenCalledWith('starred');
     expect(resolved).toBe(false);
 
-    refreshGate.resolve({ version: 2, len: 0, sections: [], starredCount: 0, duplicateCount: 0, view: 'starred', searchQuery: '', person: null, album: null, tag: null, copiesOf: null });
+    refreshGate.resolve({ version: 2, len: 0, sections: [], starredCount: 0, duplicateCount: 0, hiddenCount: 0, view: 'starred', searchQuery: '', person: null, album: null, tag: null, copiesOf: null });
     await setViewPromise;
 
     expect(resolved).toBe(true);
@@ -597,6 +607,7 @@ describe('LibraryStore', () => {
       sections: [],
       starredCount: 0,
       duplicateCount: 0,
+      hiddenCount: 0,
       view: 'all',
       searchQuery: '',
       person: null,
@@ -639,6 +650,7 @@ describe('LibraryStore', () => {
       sections: [],
       starredCount: 0,
       duplicateCount: 0,
+      hiddenCount: 0,
       view: 'search',
       searchQuery: 'beach',
       person: null,
@@ -684,6 +696,7 @@ describe('LibraryStore', () => {
         sections: opts.sections ?? [],
         starredCount: 0,
         duplicateCount: 0,
+        hiddenCount: 0,
         view: opts.view ?? 'all',
         searchQuery: '',
         person: null,
@@ -700,6 +713,25 @@ describe('LibraryStore', () => {
       await store.ensure(0, Math.min(len, 50));
       return store;
     }
+
+    it('hiding the selection clears it, so the next action cannot reach photos no longer shown', async () => {
+      const store = await storeOf(10);
+      store.selected = 2;
+      store.toggleSelected(5);
+      vi.mocked(api.setItemsHidden).mockResolvedValue(2);
+      await store.setHidden(store.selectedItemIds, true);
+      expect(api.setItemsHidden).toHaveBeenCalledWith(expect.arrayContaining([idAt(2), idAt(5)]), true);
+      expect(store.selectionCount).toBe(0);
+      expect(store.selectedItemIds).toEqual([]);
+    });
+
+    it('a hide that fails keeps the selection, so the user can try again', async () => {
+      const store = await storeOf(10);
+      store.selected = 2;
+      vi.mocked(api.setItemsHidden).mockRejectedValue(new Error('disk full'));
+      await expect(store.setHidden(store.selectedItemIds, true)).rejects.toThrow('disk full');
+      expect(store.selectedItemIds).toEqual([idAt(2)]);
+    });
 
     it('ctrl+click toggles a photo in and out, moving the lead each time', async () => {
       const store = await storeOf(10);
@@ -930,6 +962,7 @@ describe('LibraryStore', () => {
         sections: [],
         starredCount: 0,
         duplicateCount: 0,
+        hiddenCount: 0,
         view: 'all',
         searchQuery: '',
         person: null,
@@ -989,6 +1022,7 @@ describe('LibraryStore', () => {
         sections: [],
         starredCount: 0,
         duplicateCount: 0,
+        hiddenCount: 0,
         view: 'all',
         searchQuery: '',
         person: null,
@@ -1028,6 +1062,7 @@ describe('LibraryStore', () => {
         sections: [],
         starredCount: 0,
         duplicateCount: 0,
+        hiddenCount: 0,
         view: 'all',
         searchQuery: '',
         person: null,

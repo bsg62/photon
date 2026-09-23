@@ -164,6 +164,19 @@ On a fresh library, the first scan's look-alike pass usually finishes before the
 needs have all been rendered, so newly indexed look-alikes tend to appear after the *next*
 scan rather than the first one.
 
+### Hiding photos
+
+photon never deletes a photo, but it can put one away. Right-click a photo (or a selection)
+and choose **Hide photo**, or use the same item in the viewer's right-click menu. A hidden
+photo leaves every view, search, album, keyword and person, every count in the sidebar, and
+Duplicates: hide the copy you don't want and its twin, no longer having a visible copy,
+leaves Duplicates with it. The file is not touched.
+
+While anything is hidden, a **Hidden** row in the sidebar shows those photos; right-click
+there and choose **Unhide** to bring them back. The flag lives in photon's library, not in the
+file, so a photo renamed or moved outside photon comes back visible, as it loses its albums
+and edits.
+
 ### Slideshow and fullscreen
 
 Press `S` in the viewer (or the ▶ button) to play the current view from the photo on screen:
@@ -365,6 +378,11 @@ publishing it.
 - [ ] On Windows, `.picasa.ini` is still hidden after a star is toggled.
 - [ ] The tile of a starred photo shows a ★ badge, which appears and disappears with the toggle, and the sidebar's Starred count follows.
 - [ ] Unstarring the photo on screen while Starred is showing keeps it on screen with no "n / m" in the caption; ArrowLeft goes to the previous starred photo, ArrowRight to the next, Escape returns to the grid.
+- [ ] Select three photos in All, right-click, **Hide 3 photos**: they leave the grid, the selection is cleared, and a **Hidden** row appears in the sidebar with a count of 3. Hidden shows exactly those three; **Unhide 3 photos** there brings them back, and the row disappears once nothing is hidden.
+- [ ] In Duplicates, hide one of two byte-identical copies: both leave Duplicates and its count drops by two. The same with two look-alikes.
+- [ ] In the viewer, right-click → **Hide photo**: the photo stays on screen without "n / m", ArrowRight goes on to the next photo, and the right-click menu now says **Unhide photo**. Escape: the grid no longer holds it.
+- [ ] Open a photo from Hidden, right-click → **Locate in photon**: the grid lands on it in Hidden, not in All.
+- [ ] Hide a starred photo that has a keyword and is in an album: Starred's, the keyword's and the album's counts in the sidebar each drop by one, and a search for its file name does not find it.
 - [ ] Clicking ★ while zoomed in toggles the star and does not start a pan.
 - [ ] In the viewer, `R` turns the photo clockwise and `Shift+R` anticlockwise, as do the ↻ and ↺ buttons; a landscape photo turned on its side fits the window's height rather than being clipped, zoom and pan still work on the turned photo, and the next photo opens upright. No file's modification time changes.
 - [ ] The ⓘ button (or `I`) opens the info panel with the camera, lens and exposure line for a photo from a camera, and "No camera data" for a screenshot. Esc still closes the viewer with the panel open.

@@ -604,6 +604,8 @@
           {copiesNotice(library.info.copiesOf, library.info.len, library.entry(0)?.id)}
         {:else if library.info.view === 'tag'}
           No photos tagged “{library.info.tag}”.
+        {:else if library.info.view === 'hidden'}
+          No hidden photos. Right-click a photo and choose Hide to put it away here.
         {:else}
           No photos yet. Add a folder to get started.
         {/if}
@@ -699,6 +701,17 @@
     {#if albumId !== null}
       <button role="menuitem" onclick={() => withSelection((ids) => library.removeFromAlbum(albumId, ids))}>
         Remove {subject} from “{library.albumName(albumId)}”
+      </button>
+    {/if}
+    {#if library.info.view === 'hidden'}
+      <button role="menuitem" onclick={() => withSelection((ids) => library.setHidden(ids, false))}>
+        Unhide {subject}
+      </button>
+    {:else}
+      <!-- Not "Delete": photon never deletes a photo. The file stays where it is and the
+           Hidden view gives it back. -->
+      <button role="menuitem" onclick={() => withSelection((ids) => library.setHidden(ids, true))}>
+        Hide {subject}
       </button>
     {/if}
     {#if count === 1 && menuCopies && menuCopies.count > 0}

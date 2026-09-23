@@ -106,9 +106,13 @@ export async function enterFolder(
  *  re-enter Search behind the jump, and the photo's offset is only meaningful against the
  *  index of the view it is looked up in, so a subset view (Starred, Search, Recent) is left
  *  for All *before* the lookup. Looking it up first and then switching would hand the grid
- *  an offset from the wrong index. A photo the library no longer holds selects nothing. */
+ *  an offset from the wrong index. A photo the library no longer holds selects nothing.
+ *
+ *  A hidden photo is in no view but Hidden, so that is where it is looked for: All would
+ *  answer "not here" and the click would silently do nothing. */
 export async function locateItem(
   itemId: number,
+  hidden: boolean,
   deps: {
     cancelSearch: () => void;
     currentView: () => GridView;
@@ -120,7 +124,8 @@ export async function locateItem(
   },
 ): Promise<void> {
   deps.cancelSearch();
-  if (deps.currentView() !== 'all') await deps.setView('all');
+  const home: GridView = hidden ? 'hidden' : 'all';
+  if (deps.currentView() !== home) await deps.setView(home);
   const at = await deps.offsetOfItem(itemId);
   if (at === null) return;
   deps.select(at, itemId);

@@ -63,6 +63,8 @@ pub struct GridInfo {
     pub starred_count: usize,
     /// Photos with a byte-identical twin; the sidebar shows the Duplicates row only above 0.
     pub duplicate_count: usize,
+    /// Hidden photos; the sidebar shows the Hidden row only above 0.
+    pub hidden_count: usize,
     pub view: GridView,
     /// The query while `view` is `Search`, otherwise empty.
     pub search_query: String,
@@ -116,6 +118,9 @@ pub struct ViewerItem {
     pub thumb_state: &'static str,
     pub thumb_error: Option<String>,
     pub starred: bool,
+    /// Whether the user has hidden the photo: the viewer's menu offers the opposite, and
+    /// Locate looks for it in the Hidden view rather than in All.
+    pub hidden: bool,
     pub make: Option<String>,
     pub model: Option<String>,
     pub lens: Option<String>,
@@ -278,6 +283,10 @@ pub fn grid_info(engine: &Engine) -> GridInfo {
         }),
         duplicate_count: engine.lib.duplicate_count().unwrap_or_else(|err| {
             tracing::warn!(%err, "duplicate count query failed");
+            0
+        }),
+        hidden_count: engine.lib.hidden_count().unwrap_or_else(|err| {
+            tracing::warn!(%err, "hidden count query failed");
             0
         }),
         view,
@@ -592,6 +601,7 @@ pub fn viewer_item(engine: &Engine, id: i64) -> CmdResult<ViewerItem> {
         size: item.size,
         thumb_error: item.thumb_error,
         starred: is_starred(item.rating),
+        hidden: item.hidden,
         path: item.path,
         make: camera.make,
         model: camera.model,
@@ -664,6 +674,11 @@ pub fn remove_item_tag(engine: &Engine, id: i64, tag: &str) -> CmdResult<()> {
 pub fn add_items_tag(engine: &Engine, ids: &[i64], tag: &str) -> CmdResult<TagWrite> {
     let (tag, count) = engine.add_items_tag(ids, tag)?;
     Ok(TagWrite { tag, count })
+}
+
+/// Hides or unhides several photos, reporting how many changed.
+pub fn set_items_hidden(engine: &Engine, ids: &[i64], hidden: bool) -> CmdResult<usize> {
+    Ok(engine.set_items_hidden(ids, hidden)?)
 }
 
 /// Removes one keyword from several photos, reporting how many changed.

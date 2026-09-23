@@ -623,6 +623,19 @@ impl Engine {
         Ok((name, count))
     }
 
+    /// Hides or unhides several photos, returning how many changed. One write and one
+    /// refresh, as `add_items_tag`, and none when nothing changed.
+    ///
+    /// Always a whole `refresh_grid`, never a narrower update: a hidden photo leaves every
+    /// view and every count the sidebar shows, and all of them are read on the rebuild.
+    pub fn set_items_hidden(&self, ids: &[i64], hidden: bool) -> Result<usize> {
+        let count = self.lib.set_hidden(ids, hidden)?;
+        if count > 0 {
+            self.refresh_grid()?;
+        }
+        Ok(count)
+    }
+
     /// Removes the displayed name `tag` from several photos, returning how many changed.
     /// One write and one refresh, as `add_items_tag`.
     pub fn remove_items_tag(&self, ids: &[i64], tag: &str) -> Result<usize> {
@@ -2067,6 +2080,46 @@ mod tests {
         f.engine.lib.mark_missing(&[id], 1).unwrap();
         let err = crate::commands::viewer_item(&f.engine, id).unwrap_err();
         assert_eq!(err.kind, "notFound");
+    }
+
+    /// The Hidden view's viewer needs a hidden photo to answer, and so does the orphan
+    /// check when the photo on screen is hidden: refusing it like a missing photo would say
+    /// "no longer available" about a photo that is one click away.
+    #[test]
+    fn viewer_item_answers_for_a_hidden_photo() {
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a.jpg", &img)]);
+        f.add_photos();
+        let id = f.ids()[0];
+        assert!(!crate::commands::viewer_item(&f.engine, id).unwrap().hidden);
+        f.engine.set_items_hidden(&[id], true).unwrap();
+        assert!(crate::commands::viewer_item(&f.engine, id).unwrap().hidden);
+    }
+
+    #[test]
+    fn hiding_rebuilds_the_grid_and_a_no_op_does_not() {
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a.jpg", &img), ("b.jpg", &img)]);
+        f.add_photos();
+        let id = f.ids()[0];
+        let before = crate::commands::grid_info(&f.engine);
+        assert_eq!((before.len, before.hidden_count), (2, 0));
+
+        assert_eq!(f.engine.set_items_hidden(&[id], true).unwrap(), 1);
+        let after = crate::commands::grid_info(&f.engine);
+        assert_eq!((after.len, after.hidden_count), (1, 1));
+        assert!(after.version > before.version);
+
+        assert_eq!(f.engine.set_items_hidden(&[id], true).unwrap(), 0);
+        assert_eq!(
+            crate::commands::grid_info(&f.engine).version,
+            after.version,
+            "hiding a hidden photo rebuilt the grid"
+        );
+
+        f.engine.set_view(GridView::Hidden).unwrap();
+        let hidden = crate::commands::grid_info(&f.engine);
+        assert_eq!((hidden.view, hidden.len), (GridView::Hidden, 1));
     }
 
     #[test]

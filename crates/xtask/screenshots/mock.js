@@ -59,6 +59,7 @@
       thumbState: 'ready',
       thumbError: null,
       starred: true,
+      hidden: false,
       make: 'Canon',
       model: 'Canon EOS R6',
       lens: 'RF24-70mm F2.8 L IS USM',
@@ -93,6 +94,7 @@
       sections,
       starredCount: 13,
       duplicateCount: 4,
+      hiddenCount: 7,
       view: searchQuery === '' ? P.get('view') || 'all' : 'search',
       searchQuery,
       person: null,
@@ -140,6 +142,7 @@
       return null;
     },
     set_stars: (args) => (args.ids || []).length,
+    set_items_hidden: (args) => (args.ids || []).length,
     // The keyword dialog reports what landed, so these answer rather than staying silent.
     add_items_tag: (args) => ({ tag: args.tag, count: (args.ids || []).length }),
     export_apply_edits: () => true,

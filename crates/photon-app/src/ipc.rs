@@ -281,6 +281,11 @@ pub fn set_stars(engine: Eng<'_>, ids: Vec<i64>, starred: bool) -> Result<usize,
 }
 
 #[tauri::command(async)]
+pub fn set_items_hidden(engine: Eng<'_>, ids: Vec<i64>, hidden: bool) -> Result<usize, AppError> {
+    commands::set_items_hidden(&engine, &ids, hidden)
+}
+
+#[tauri::command(async)]
 pub fn add_item_tag(engine: Eng<'_>, id: i64, tag: String) -> Result<String, AppError> {
     commands::add_item_tag(&engine, id, &tag)
 }

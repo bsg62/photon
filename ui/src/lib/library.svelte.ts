@@ -35,6 +35,7 @@ export class LibraryStore {
     sections: [],
     starredCount: 0,
     duplicateCount: 0,
+    hiddenCount: 0,
     view: 'all',
     searchQuery: '',
     person: null,
@@ -616,6 +617,16 @@ export class LibraryStore {
   async removeFromAlbum(albumId: number, itemIds: number[]): Promise<void> {
     await api.removeFromAlbum(albumId, itemIds);
     await this.refreshCollections();
+  }
+
+  /** Hides or unhides photos; the backend's rebuild announces the change. The selection is
+   *  cleared once the write lands: its photos have just left the view, and `rebindSelection`
+   *  re-finds only the lead, so a selection still holding them would offer the next action -
+   *  "Hide 12 photos" - to photos the user can no longer see. A failed write keeps it, so
+   *  the user can try again. */
+  async setHidden(itemIds: number[], hidden: boolean): Promise<void> {
+    await api.setItemsHidden(itemIds, hidden);
+    this.clearSelection();
   }
 
   /** Tag rule changes. The backend's rebuild announces a library change, which refetches
