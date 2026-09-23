@@ -636,6 +636,17 @@ impl Engine {
         Ok(count)
     }
 
+    /// Hides or unhides a folder and every photo in it (`Library::set_folder_hidden`),
+    /// returning how many photos changed. The grid rebuilds only when some did: hiding an
+    /// empty folder changes what later arrivals get, not what any view shows now.
+    pub fn set_folder_hidden(&self, folder_id: i64, hidden: bool) -> Result<usize> {
+        let count = self.lib.set_folder_hidden(folder_id, hidden)?;
+        if count > 0 {
+            self.refresh_grid()?;
+        }
+        Ok(count)
+    }
+
     /// Removes the displayed name `tag` from several photos, returning how many changed.
     /// One write and one refresh, as `add_items_tag`.
     pub fn remove_items_tag(&self, ids: &[i64], tag: &str) -> Result<usize> {
@@ -2104,6 +2115,29 @@ mod tests {
         assert!(!crate::commands::viewer_item(&f.engine, id).unwrap().hidden);
         f.engine.set_items_hidden(&[id], true).unwrap();
         assert!(crate::commands::viewer_item(&f.engine, id).unwrap().hidden);
+    }
+
+    #[test]
+    fn hiding_a_folder_rebuilds_the_grid_and_reports_its_flag() {
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a.jpg", &img), ("b.jpg", &img)]);
+        f.add_photos();
+        let folder = f.engine.lib.folders().unwrap()[0].id;
+        let before = crate::commands::grid_info(&f.engine);
+
+        assert_eq!(f.engine.set_folder_hidden(folder, true).unwrap(), 2);
+        let after = crate::commands::grid_info(&f.engine);
+        assert_eq!((after.len, after.hidden_count), (0, 2));
+        assert!(after.version > before.version);
+        let listed = crate::commands::list_folders(&f.engine).unwrap();
+        assert!(listed.folders.iter().any(|x| x.id == folder && x.hidden));
+
+        assert_eq!(f.engine.set_folder_hidden(folder, true).unwrap(), 0);
+        assert_eq!(
+            crate::commands::grid_info(&f.engine).version,
+            after.version,
+            "hiding a hidden folder rebuilt the grid"
+        );
     }
 
     #[test]

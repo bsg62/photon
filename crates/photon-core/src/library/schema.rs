@@ -272,6 +272,12 @@ ALTER TABLE items ADD COLUMN picasa_hidden INTEGER;
 UPDATE settings SET value = CASE value WHEN '3' THEN '7' WHEN '6' THEN '10' ELSE value END
  WHERE key = 'similar_distance';
 "#,
+    r#"
+-- Picasa's Hide Folder. The flag is the folder's own answer; what it means is carried by
+-- `items.hidden` - hiding the folder hides its photos, and a photo inserted into a hidden
+-- folder is inserted hidden - so visibility stays one rule, read from one column.
+ALTER TABLE folders ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0;
+"#,
 ];
 
 pub fn migrate(conn: &Connection) -> Result<()> {
@@ -523,7 +529,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 15);
+        assert_eq!(version, 16);
         let rules: i64 = conn
             .query_row("SELECT count(*) FROM tag_rules", [], |r| r.get(0))
             .unwrap();
@@ -682,7 +688,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 15);
+        assert_eq!(version, 16);
         let overlay: i64 = conn
             .query_row("SELECT count(*) FROM item_user_tags", [], |r| r.get(0))
             .unwrap();
@@ -732,7 +738,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 15);
+        assert_eq!(version, 16);
         let hash: Option<Vec<u8>> = conn
             .query_row("SELECT content_hash FROM items WHERE id = 1", [], |r| {
                 r.get(0)
@@ -873,7 +879,45 @@ mod tests {
             .unwrap();
         // Hardcoded, like every other version assertion here: `MIGRATIONS.len()` would
         // agree with itself whatever the list did, which is the tripwire removed.
-        assert_eq!(version, 15);
+        assert_eq!(version, 16);
+    }
+
+    /// Every folder in an existing library comes out of the upgrade visible.
+    #[test]
+    fn migration_16_leaves_every_existing_folder_visible() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("library.db");
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        for sql in &MIGRATIONS[..15] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 15i64).unwrap();
+        conn.execute(
+            "INSERT INTO watched_folders (id, path) VALUES (1, '/p')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO folders (id, watched_id, parent_id, path, name, sort_key) \
+             VALUES (1, 1, NULL, '/p', 'p', 'p')",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+
+        let lib = crate::library::Library::open(&path).unwrap();
+        let conn = lib.reader().unwrap();
+        let hidden: i64 = conn
+            .query_row("SELECT hidden FROM folders WHERE id = 1", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            hidden, 0,
+            "an existing folder came out of the upgrade hidden"
+        );
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, 16);
     }
 
     /// A stored Conservative or Loose keeps meaning Conservative or Loose.
@@ -907,7 +951,7 @@ mod tests {
             let version: i64 = conn
                 .query_row("PRAGMA user_version", [], |r| r.get(0))
                 .unwrap();
-            assert_eq!(version, 15);
+            assert_eq!(version, 16);
         }
     }
 
@@ -957,6 +1001,6 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 15);
+        assert_eq!(version, 16);
     }
 }

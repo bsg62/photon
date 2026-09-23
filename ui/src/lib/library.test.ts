@@ -44,6 +44,7 @@ vi.mock('./api', () => ({
     restoreTagRule: vi.fn(),
     watchedFolderStats: vi.fn(),
     setItemsHidden: vi.fn(),
+    setFolderHidden: vi.fn(),
   },
   events: {
     onLibraryChanged: vi.fn((cb: Handler) => {
@@ -671,6 +672,21 @@ describe('LibraryStore', () => {
     await Promise.all([p1, p2]);
 
     expect(order).toEqual(['start:b', 'end:b', 'start:beach', 'end:beach']);
+  });
+
+  it('hiding a folder refetches the folder list, so its menu offers Unhide next time', async () => {
+    const store = new LibraryStore();
+    await store.init();
+    const folder = { id: 3, watchedId: 1, parentId: 1, path: '/p/a', name: 'a', hidden: false };
+    vi.mocked(api.listFolders).mockResolvedValue({ watched: [], folders: [folder] });
+    await store.refreshFolders();
+    expect(store.folderOf(3)?.hidden).toBe(false);
+
+    vi.mocked(api.setFolderHidden).mockResolvedValue(4);
+    vi.mocked(api.listFolders).mockResolvedValue({ watched: [], folders: [{ ...folder, hidden: true }] });
+    await store.setFolderHidden(3, true);
+    expect(api.setFolderHidden).toHaveBeenCalledWith(3, true);
+    expect(store.folderOf(3)?.hidden).toBe(true);
   });
 
   describe('multi-selection', () => {
