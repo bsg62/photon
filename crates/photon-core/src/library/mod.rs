@@ -16,7 +16,7 @@ pub use folders::{Folder, WatchedFolder};
 pub use items::{Item, KnownItem, NewItem, RECENT_LIMIT, is_starred};
 pub use searches::SavedSearch;
 pub use settings::{GridTile, ThemeChoice};
-pub use similar::SimilarCandidate;
+pub use similar::{HashedPhoto, SimilarCandidate};
 pub use tags::{TagCount, TagRule};
 
 use crate::Result;

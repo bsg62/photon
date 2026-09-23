@@ -147,7 +147,10 @@ pub struct Engine {
     /// before the library and view locks and never while holding them.
     edit_write: Mutex<()>,
     /// Held by the one thread running the post-scan hashing passes; see `hash_after_scan`.
-    hashing: Mutex<()>,
+    /// It holds the look-alike pass's thumbnail reductions, which live here rather than in
+    /// the pass because the pass runs again after every scan and confirms the same pairs
+    /// again; see `photon_core::similar::Reductions`.
+    hashing: Mutex<photon_core::similar::Reductions>,
     /// Set by every scan that ends, cleared by the pass as it starts a round. A scan that
     /// finds the pass already running leaves this behind instead of starting a second one.
     hash_requested: AtomicBool,
@@ -204,7 +207,7 @@ impl Engine {
             watcher: Mutex::new(None),
             ini_write: Mutex::new(()),
             edit_write: Mutex::new(()),
-            hashing: Mutex::new(()),
+            hashing: Mutex::new(Default::default()),
             hash_requested: AtomicBool::new(false),
         }))
     }
@@ -1387,7 +1390,7 @@ impl Engine {
     fn hash_after_scan(&self, cancel: &AtomicBool) {
         self.hash_requested.store(true, Ordering::Release);
         loop {
-            let Some(guard) = self.hashing.try_lock() else {
+            let Some(mut guard) = self.hashing.try_lock() else {
                 return;
             };
             while self.hash_requested.swap(false, Ordering::AcqRel) {
@@ -1407,7 +1410,13 @@ impl Engine {
                         photon_core::similar::EXACT_RECALL_DISTANCE
                     }
                 };
-                match photon_core::similar::update(&self.lib, &self.cache, distance, cancel) {
+                match photon_core::similar::update(
+                    &self.lib,
+                    &self.cache,
+                    distance,
+                    cancel,
+                    &mut guard,
+                ) {
                     Ok(pass) if pass.groups_changed => {
                         if let Err(err) = self.refresh_grid() {
                             tracing::warn!(%err, "grid refresh failed");

@@ -9,6 +9,16 @@ use crate::edit::{Crop, Edit};
 use crate::media::fingerprint;
 use rusqlite::params;
 
+/// A photo with a perceptual hash; see [`Library::percep_hashes`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HashedPhoto {
+    pub id: i64,
+    pub hash: u64,
+    /// The cache key of the grid thumbnail the hash was taken from - `Item::thumb_key()`'s
+    /// value.
+    pub thumb_key: u64,
+}
+
 /// A photo whose thumbnail exists but whose perceptual hash does not.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SimilarCandidate {
@@ -106,18 +116,31 @@ impl Library {
         Ok(changed == 1)
     }
 
-    /// Every live photo's perceptual hash. One integer per photo, so a 100k library is
-    /// 1.6 MB - which is what makes grouping in Rust affordable and an SQL index pointless.
-    pub fn percep_hashes(&self) -> Result<Vec<(i64, u64)>> {
+    /// Every live photo's perceptual hash, with the key of the thumbnail it was taken from.
+    /// A few integers per photo, so a 100k library is a few MB - which is what makes
+    /// grouping in Rust affordable and an SQL index pointless.
+    ///
+    /// The thumbnail key is here because a hash only nominates a pair: `similar::update`
+    /// confirms it against the two thumbnails themselves, and it must read the thumbnail of
+    /// the picture the row shows now. `set_percep_hash` only stores a hash against the
+    /// fingerprint and edit it was taken for, and both writers that move either clear the
+    /// hash, so a row with a hash has a key describing the same picture.
+    pub fn percep_hashes(&self) -> Result<Vec<HashedPhoto>> {
         let conn = self.reader()?;
         let mut stmt = conn.prepare_cached(
-            "SELECT id, percep_hash FROM items
+            "SELECT id, percep_hash, path, size, mtime_ms, edit_turns, edit_crop FROM items
              WHERE percep_hash IS NOT NULL AND missing_since IS NULL",
         )?;
         let rows = stmt
             .query_map([], |r| {
                 let hash: i64 = r.get(1)?;
-                Ok((r.get::<_, i64>(0)?, hash as u64))
+                let path: String = r.get(2)?;
+                let edit = edit_from_db(r.get(5)?, r.get(6)?);
+                Ok(HashedPhoto {
+                    id: r.get(0)?,
+                    hash: hash as u64,
+                    thumb_key: edit.thumb_key(fingerprint(&path, r.get(3)?, r.get(4)?)),
+                })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
@@ -242,7 +265,14 @@ mod tests {
             lib.similar_candidates().unwrap().is_empty(),
             "still a candidate after hashing"
         );
-        assert_eq!(lib.percep_hashes().unwrap(), vec![(ids[0], 0xdead_beef)]);
+        assert_eq!(
+            lib.percep_hashes()
+                .unwrap()
+                .iter()
+                .map(|p| (p.id, p.hash))
+                .collect::<Vec<_>>(),
+            vec![(ids[0], 0xdead_beef)]
+        );
     }
 
     /// SQLite has no unsigned integer column; `percep_hash` is stored as `i64` and cast at
@@ -265,7 +295,11 @@ mod tests {
                 .unwrap()
         );
         assert_eq!(
-            lib.percep_hashes().unwrap(),
+            lib.percep_hashes()
+                .unwrap()
+                .iter()
+                .map(|p| (p.id, p.hash))
+                .collect::<Vec<_>>(),
             vec![(ids[0], 0xffff_ffff_ffff_ffff)]
         );
     }
