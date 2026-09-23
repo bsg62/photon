@@ -51,16 +51,23 @@ pub fn dhash(img: &DynamicImage) -> u64 {
 
 /// The largest distance at which grouping has **complete** recall.
 ///
-/// Candidate pairs are found by splitting each hash into four 16-bit bands and bucketing by
-/// band. Two hashes within Hamming distance 3 must agree exactly on at least one band -
-/// four bands, at most three differing bits, so some band has none. That makes the buckets
-/// an exact filter at this distance, not a heuristic. Exact about *recall*, not about cost:
-/// `pairs_with_anything` keeps the pathological case (every blank frame sharing one hash)
-/// out of the buckets, but a bucket is a shared 16-bit band and not an excluded one, so a
-/// library with many near-identical-but-not-empty pictures can still put a large cluster in
-/// one bucket and pay its quadratic comparison. Usually bounded, not always. Above it, a pair is found only if it
-/// happens to share a band, which is why the UI says "finds most" rather than "finds all".
-pub const EXACT_RECALL_DISTANCE: u32 = 3;
+/// Candidate pairs are found by splitting each hash into four 16-bit bands, bucketing by
+/// band, and comparing each bucket with itself and with the sixteen buckets one bit away in
+/// the same band. Two hashes within Hamming distance 7 must be within one bit of each other
+/// on at least one band - four bands, at most seven differing bits, so some band has at most
+/// one. That makes the probe an exact filter at this distance, not a heuristic. It was 3
+/// with exact buckets alone (some band then has *no* differing bit), and genuine copies were
+/// measured up to 6 bits apart - a sixteenth-size re-encode - so the conservative setting
+/// missed them; the pixel check behind the hash (`same_picture`) is what makes a wider net
+/// safe to cast.
+///
+/// Exact about *recall*, not about cost: `pairs_with_anything` keeps the pathological case
+/// (every blank frame sharing one hash) out of the buckets, but a bucket is a shared 16-bit
+/// band and not an excluded one, so a library with many near-identical-but-not-empty
+/// pictures can still put a large cluster in one bucket and pay its quadratic comparison.
+/// Usually bounded, not always. Above it, a pair is found only if one of its bands happens
+/// to be that close, which is why the UI says "finds most" rather than "finds all".
+pub const EXACT_RECALL_DISTANCE: u32 = 7;
 
 const BANDS: u32 = 4;
 const BAND_BITS: u32 = 16;
@@ -175,14 +182,33 @@ pub fn group(
     }
 
     let mut parent: Vec<usize> = (0..hashes.len()).collect();
-    for indexes in buckets.values() {
+    let mut consider = |a: usize, b: usize| {
+        if a != b
+            && (hashes[a].1 ^ hashes[b].1).count_ones() <= distance
+            && find(&mut parent, a) != find(&mut parent, b)
+            && same_picture(a, b)
+        {
+            union(&mut parent, a, b);
+        }
+    };
+    for (&(band, key), indexes) in &buckets {
         for (i, &a) in indexes.iter().enumerate() {
             for &b in &indexes[i + 1..] {
-                if (hashes[a].1 ^ hashes[b].1).count_ones() <= distance
-                    && find(&mut parent, a) != find(&mut parent, b)
-                    && same_picture(a, b)
-                {
-                    union(&mut parent, a, b);
+                consider(a, b);
+            }
+        }
+        // The buckets one bit away, each neighbouring pair of buckets visited once: from
+        // the lower key.
+        for bit in 0..BAND_BITS {
+            let other = key ^ (1 << bit);
+            if other < key {
+                continue;
+            }
+            if let Some(neighbours) = buckets.get(&(band, other)) {
+                for &a in indexes {
+                    for &b in neighbours {
+                        consider(a, b);
+                    }
                 }
             }
         }
@@ -533,29 +559,63 @@ mod tests {
         let mut hashes: Vec<(i64, u64)> = Vec::new();
         let base = 0x0123_4567_89ab_cdefu64;
         for i in 0..64i64 {
-            // Flip up to three scattered bits, so pairs land at a range of small distances.
-            let h =
-                base ^ (1u64 << (i % 64)) ^ (1u64 << ((i * 7) % 64)) ^ (1u64 << ((i * 13) % 64));
-            hashes.push((i + 1, h));
-        }
-        let grouped = by_hash(&hashes, EXACT_RECALL_DISTANCE);
-        let in_a_group: std::collections::HashSet<i64> =
-            grouped.iter().map(|(id, _)| *id).collect();
-
-        for (ia, ha) in &hashes {
-            for (ib, hb) in &hashes {
-                if ia >= ib {
-                    continue;
-                }
-                if (ha ^ hb).count_ones() <= EXACT_RECALL_DISTANCE {
-                    assert!(
-                        in_a_group.contains(ia) && in_a_group.contains(ib),
-                        "pair ({ia}, {ib}) at distance {} was missed",
-                        (ha ^ hb).count_ones()
-                    );
+            // Each of the low four bits of `i` flips one bit in its own band, at a position
+            // that varies with `i`; the fifth adds a second flip in band 0. Two hashes then
+            // differ by 0, 1 or 2 bits per band, so the set holds pairs that differ in
+            // *every* band while staying within the exact-recall distance - the pairs only
+            // the one-bit probe finds - as well as pairs beyond it.
+            let mut h = base;
+            for band in 0..4i64 {
+                if (i >> band) & 1 == 1 {
+                    h ^= 1u64 << (16 * band + (i * (band + 3) + band) % 16);
                 }
             }
+            if (i >> 4) & 1 == 1 {
+                h ^= 1u64 << ((i * 11 + 7) % 16);
+            }
+            hashes.push((i + 1, h));
         }
+        // Each pair grouped on its own. Grouped all at once, union-find would join a missed
+        // pair through a third hash near both - the base is near everything here - and the
+        // test would pass with the probe gone; it did, until it was written this way.
+        let mut every_band = 0;
+        for (ia, ha) in &hashes {
+            for (ib, hb) in &hashes {
+                if ia >= ib || (ha ^ hb).count_ones() > EXACT_RECALL_DISTANCE {
+                    continue;
+                }
+                if (0..BANDS).all(|band| (ha ^ hb) >> (band * BAND_BITS) & 0xffff != 0) {
+                    every_band += 1;
+                }
+                assert_eq!(
+                    by_hash(&[(*ia, *ha), (*ib, *hb)], EXACT_RECALL_DISTANCE).len(),
+                    2,
+                    "pair ({ia}, {ib}) at distance {} was missed",
+                    (ha ^ hb).count_ones()
+                );
+            }
+        }
+        assert!(
+            every_band > 0,
+            "the fixture no longer has a pair that differs in every band"
+        );
+    }
+
+    /// The pair the probe exists for: six bits apart, spread so that every band differs -
+    /// two, two, one and one - so no bucket holds both and only the one-bit neighbours find
+    /// it. A sixteenth-size re-encode was measured at six bits from its original.
+    #[test]
+    fn a_pair_that_differs_in_every_band_is_still_found() {
+        let a = 0x0123_4567_89ab_cdefu64;
+        let b = a ^ 0b11 ^ (0b11 << 16) ^ (1 << 32) ^ (1 << 48);
+        assert_eq!(distance(a, b), 6);
+        for band in 0..BANDS {
+            let shift = band * BAND_BITS;
+            assert_ne!((a >> shift) & 0xffff, (b >> shift) & 0xffff);
+        }
+        let mut out = by_hash(&[(1, a), (2, b)], EXACT_RECALL_DISTANCE);
+        out.sort();
+        assert_eq!(out, vec![(1, 1), (2, 1)]);
     }
 
     /// Every flat picture hashes to the same value, so they are all distance 0 from each
@@ -566,8 +626,11 @@ mod tests {
     fn a_picture_with_no_structure_is_a_look_alike_of_nothing() {
         let mut out = by_hash(
             &[
-                (1, dhash(&picture(400, 300))),
-                (2, dhash(&picture(100, 75))),
+                // The blocky pattern, not the gradient: the gradient's hash has three bits
+                // set, and at the exact-recall distance of 7 that is itself too empty to
+                // mean anything - the rule this test is about would drop it too.
+                (1, dhash(&unrelated_pattern(180, 120))),
+                (2, dhash(&unrelated_pattern(72, 48))),
                 (3, 0),        // a lens cap
                 (4, 0),        // and another, from a different day
                 (5, u64::MAX), // the same emptiness, with the comparison read the other way

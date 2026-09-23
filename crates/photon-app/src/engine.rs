@@ -1801,8 +1801,8 @@ mod tests {
         f.add_photos();
 
         let held = f.engine.hashing.lock();
-        let clamped = crate::commands::set_similar_distance(&f.engine, 6).unwrap();
-        assert_eq!(clamped, 6, "the write itself still happens");
+        let clamped = crate::commands::set_similar_distance(&f.engine, 10).unwrap();
+        assert_eq!(clamped, 10, "the write itself still happens");
         drop(held);
 
         f.engine.wait_for_similar_pass();

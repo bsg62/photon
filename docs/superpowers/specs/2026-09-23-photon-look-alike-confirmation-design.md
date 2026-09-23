@@ -66,10 +66,12 @@ are, to a person, the same picture.
   be arithmetic, so a quit must not wait it out. A cancelled regroup writes nothing: the
   stored groups stay as they were and the next pass does the work. Answering "not the same"
   to the remaining pairs instead would dissolve real groups.
-- **No schema change, no setting change.** Conservative stays 3 and Loose stays 6. The probe
-  showed genuine copies up to 6 bits apart, so Conservative misses some heavily shrunk
-  copies; with confirmation in place Loose no longer trades that recall for false pairs.
-  Moving the default, and rewording Loose's help text to match, is a separate decision.
+- **No schema change, no setting change** in the first cut. The probe showed genuine copies
+  up to 6 bits apart, so Conservative at 3 missed some heavily shrunk copies. **Follow-up
+  (schema 15):** each bucket is now also compared with the sixteen one bit away in its band,
+  which makes grouping exact up to 7 bits (four bands, at most seven differing bits, so some
+  band differs by at most one). Conservative is 7, Loose 10 (best-effort above 7), and the
+  migration moves a stored 3 or 6 to 7 or 10 so a stored choice keeps its meaning.
 - Existing groups are corrected by the first pass after the upgrade: the regroup is
   whole-library and unconditional, and `set_similar_groups` writes only on a difference.
 

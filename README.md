@@ -155,10 +155,12 @@ small copy mark in its bottom-left corner.
 photon never deletes anything: use "Reveal in file manager" and decide there.
 
 Settings → Duplicates → **Find look-alikes** has three settings: Off (byte-identical files
-only, today's behaviour), Conservative (the default: reliably finds close look-alikes — pairs
-that differ only by a resize or a re-save), and Loose (looks harder, at the cost of being
-best-effort: it finds most look-alikes, not all of them — a real limit, not a bug). Changing
-it regroups the library right away, without waiting for a scan.
+only), Conservative (the default: finds every close copy — resized, even to a small fraction
+of its size, re-saved, or sent through a chat app), and Loose (also looks for more heavily
+altered copies, at the cost of being best-effort there: it finds most of those, not all — a
+real limit, not a bug). Either way a pair is only shown once the two pictures have been
+compared, so a second shot of the same scene is not a look-alike. Changing the setting
+regroups the library right away, without waiting for a scan.
 
 On a fresh library, the first scan's look-alike pass usually finishes before the thumbnails it
 needs have all been rendered, so newly indexed look-alikes tend to appear after the *next*

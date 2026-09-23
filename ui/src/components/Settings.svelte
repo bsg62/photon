@@ -23,8 +23,12 @@
    *  the backend the way an unknown theme falls back. */
   const SIMILAR_DISTANCES: { value: number; label: string; hint: string }[] = [
     { value: 0, label: 'Off', hint: 'Only byte-identical files count as duplicates.' },
-    { value: 3, label: 'Conservative', hint: 'Finds close look-alikes reliably. The default.' },
-    { value: 6, label: 'Loose', hint: 'Finds most look-alikes, not all of them.' },
+    {
+      value: 7,
+      label: 'Conservative',
+      hint: 'Finds every close copy: resized, re-saved, sent through a chat app. The default.',
+    },
+    { value: 10, label: 'Loose', hint: 'Also looks for more heavily altered copies, and finds most of those.' },
   ];
 
   // Seeded from the prop once: the dialog is mounted fresh each time it opens, and the
