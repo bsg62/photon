@@ -169,7 +169,8 @@ scan rather than the first one.
 ### Hiding photos
 
 photon never deletes a photo, but it can put one away. Right-click a photo (or a selection)
-and choose **Hide photo**, or use the same item in the viewer's right-click menu. A hidden
+and choose **Hide photo**, or press **H** - in the grid for the selection, in the viewer for
+the photo on screen (press it again there to undo). A hidden
 photo leaves every view, search, album, keyword and person, every count in the sidebar, and
 Duplicates: hide the copy you don't want and its twin, no longer having a visible copy,
 leaves Duplicates with it. The file is not touched.
@@ -385,7 +386,9 @@ publishing it.
 - [ ] Unstarring the photo on screen while Starred is showing keeps it on screen with no "n / m" in the caption; ArrowLeft goes to the previous starred photo, ArrowRight to the next, Escape returns to the grid.
 - [ ] Select three photos in All, right-click, **Hide 3 photos**: they leave the grid, the photo after them is selected (ArrowRight carries on from there), and a **Hidden** row appears in the sidebar with a count of 3. Hidden shows exactly those three; **Unhide 3 photos** there brings them back, and the row disappears once nothing is hidden.
 - [ ] In Duplicates, hide one of two byte-identical copies: both leave Duplicates and its count drops by two. The same with two look-alikes.
-- [ ] In the viewer, right-click → **Hide photo**: the photo stays on screen without "n / m", ArrowRight goes on to the next photo, and the right-click menu now says **Unhide photo**. Escape: the grid no longer holds it.
+- [ ] In the viewer, right-click → **Hide photo**: the photo stays on screen without "n / m", ArrowRight goes on to the next photo, and the right-click menu now says **Unhide photo (H)**. Escape: the grid no longer holds it.
+- [ ] In Duplicates, select a photo and press **H** a few times: each press hides the selected photo and selects the next one, and the grid scrolls to keep it in view. In Hidden, **H** unhides. With Ctrl, Alt or Cmd held, **H** does nothing.
+- [ ] In the viewer, **H** hides the photo on screen (it stays showing, the menu now says **Unhide photo (H)**) and a second **H** unhides it. With the zoom slider focused, **H** does nothing.
 - [ ] Open a photo from Hidden, right-click → **Locate in photon**: the grid lands on it in Hidden, not in All. In Hidden, clicking a folder in the sidebar stays in Hidden.
 - [ ] Open the Copies view of a photo with one identical copy and hide the photo from its tile menu: the copy stays, with the line "… is hidden; these are its copies". In Hidden, that photo's menu offers no "Show 1 duplicate".
 - [ ] Open a photo in the viewer from a selection, **Hide photo**, Escape: nothing is selected, and Ctrl+clicking another photo says "1 selected", not 2.

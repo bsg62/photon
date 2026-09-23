@@ -103,8 +103,10 @@ README's smoke checklist.
 
 ## Not in this design
 
-A keyboard shortcut; hiding a whole folder (Picasa could); a "show hidden photos in place"
-toggle. Each is a follow-up if the user wants it. Two more, from the branch review:
+Hiding a whole folder (Picasa could); a "show hidden photos in place" toggle. Each is a
+follow-up if the user wants it. The keyboard shortcut, left out of the first cut, followed:
+**H**, with no modifier, hides the grid's selection (unhides it in Hidden) and toggles the
+viewer's photo; the menus name the key. Two more, from the branch review:
 
 - **Picasa's own `hidden=yes`** - done in a follow-up (schema 14): read by the Picasa pass and
   followed on *change*, recorded in `items.picasa_hidden`. photon never writes the line, so

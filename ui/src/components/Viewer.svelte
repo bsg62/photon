@@ -533,6 +533,13 @@
         startCrop();
         return;
       }
+      if (e.key === 'h' || e.key === 'H') {
+        // Hide or unhide the photo on screen, as the right-click menu does. It stays on
+        // screen (see `toggleHidden`), so a second H undoes the first.
+        e.preventDefault();
+        toggleHidden();
+        return;
+      }
       if (e.key === 's' || e.key === 'S') {
         e.preventDefault();
         if (slideshow.active) stopSlideshow();
@@ -915,7 +922,7 @@
     >
       <button role="menuitem" onclick={locate}>Locate in photon</button>
       <button role="menuitem" onclick={reveal}>Reveal in file manager</button>
-      <button role="menuitem" onclick={toggleHidden}>{item.hidden ? 'Unhide photo' : 'Hide photo'}</button>
+      <button role="menuitem" onclick={toggleHidden}>{item.hidden ? 'Unhide photo (H)' : 'Hide photo (H)'}</button>
     </div>
   {/if}
   <div class="zoom" class:hidden={crop.active}>
