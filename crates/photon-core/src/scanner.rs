@@ -1078,6 +1078,44 @@ mod tests {
         assert!(lib.people_with_counts().unwrap().is_empty());
     }
 
+    /// End to end, on both of `walk_tree`'s callers: a file that lands in a hidden folder is
+    /// hidden when the scan indexes it, and a photo the user unhid inside that folder is
+    /// left visible by the rescan - only new rows inherit the folder's flag.
+    #[test]
+    fn a_file_scanned_into_a_hidden_folder_arrives_hidden() {
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        write_file(&root, "sub/a.jpg", &jpeg_bytes(4, 2));
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
+        scan(&lib, &watched, 1);
+        let sub = lib
+            .folders()
+            .unwrap()
+            .into_iter()
+            .find(|f| f.path.ends_with("sub"))
+            .unwrap()
+            .id;
+        lib.set_folder_hidden(sub, true).unwrap();
+        let first = lib.entries_for(crate::grid::GridView::Hidden, "").unwrap()[0].id;
+        lib.set_hidden(&[first], false).unwrap();
+
+        write_file(&root, "sub/b.jpg", &jpeg_bytes(4, 3));
+        scan(&lib, &watched, 2);
+        write_file(&root, "sub/c.jpg", &jpeg_bytes(4, 5));
+        scan_sub(&lib, &watched, &root.join("sub"), 3);
+
+        let hidden = lib.entries_for(crate::grid::GridView::Hidden, "").unwrap();
+        assert_eq!(
+            hidden.len(),
+            2,
+            "a file scanned into a hidden folder is visible"
+        );
+        assert!(
+            !is_hidden(&lib, first),
+            "a rescan re-hid a photo the user unhid"
+        );
+    }
+
     fn is_hidden(lib: &Library, id: i64) -> bool {
         lib.item(id).unwrap().unwrap().hidden
     }

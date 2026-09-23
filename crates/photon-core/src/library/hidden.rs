@@ -30,6 +30,30 @@ impl Library {
         Ok(changed)
     }
 
+    /// Hides or unhides a folder: the folder's own flag, which photos added to it later
+    /// inherit (`insert_items`), and every live photo in it now - including, on unhide, photos
+    /// hidden one by one before, since the folder's answer is the one asked for. Not its
+    /// subfolders: the sidebar lists each directory on its own. Returns how many photos
+    /// changed, or `NotFound` for a folder that does not exist.
+    pub fn set_folder_hidden(&self, folder_id: i64, hidden: bool) -> Result<usize> {
+        let mut conn = self.writer();
+        let tx = conn.transaction()?;
+        let found = tx.execute(
+            "UPDATE folders SET hidden = ?2 WHERE id = ?1",
+            params![folder_id, hidden],
+        )?;
+        if found == 0 {
+            return Err(crate::Error::NotFound(folder_id));
+        }
+        let changed = tx.execute(
+            "UPDATE items SET hidden = ?2
+             WHERE folder_id = ?1 AND hidden <> ?2 AND missing_since IS NULL",
+            params![folder_id, hidden],
+        )?;
+        tx.commit()?;
+        Ok(changed)
+    }
+
     /// What each of a folder's live photos last read from Picasa's INI said about hiding it:
     /// `None` until the Picasa pass has read it. See [`Library::apply_picasa_hidden`].
     pub fn folder_picasa_hidden(&self, folder_id: i64) -> Result<Vec<(i64, Option<bool>)>> {
@@ -379,6 +403,89 @@ mod tests {
             tags,
             vec![("sea".to_string(), 1, 2), ("secret".to_string(), 0, 1)]
         );
+    }
+
+    /// A root, a child of it, and a sibling child, each with one photo. Returns the three
+    /// folder ids and the three photo ids, in that order.
+    fn three_folders(lib: &Library) -> ([i64; 3], Vec<i64>) {
+        let (w, root) = seed_folder(lib, Path::new("/p"));
+        let child = lib.upsert_folder(w, Some(root), "/p/child", 1).unwrap();
+        let sibling = lib.upsert_folder(w, Some(root), "/p/sibling", 1).unwrap();
+        let ids = lib
+            .insert_items(&[
+                new_item(root, "/p/a.jpg", 1),
+                new_item(child, "/p/child/b.jpg", 2),
+                new_item(sibling, "/p/sibling/c.jpg", 3),
+            ])
+            .unwrap();
+        ([root, child, sibling], ids)
+    }
+
+    #[test]
+    fn hiding_a_folder_hides_its_photos_and_only_its_own() {
+        let (_dir, lib) = temp_library();
+        let ([root, _, _], ids) = three_folders(&lib);
+        assert_eq!(lib.set_folder_hidden(root, true).unwrap(), 1);
+        assert_eq!(view(&lib, GridView::Hidden, ""), vec![ids[0]]);
+        let mut all = view(&lib, GridView::All, "");
+        all.sort();
+        assert_eq!(
+            all,
+            vec![ids[1], ids[2]],
+            "a subfolder or a sibling was hidden with it"
+        );
+        let flagged: Vec<bool> = lib.folders().unwrap().iter().map(|f| f.hidden).collect();
+        assert_eq!(flagged.iter().filter(|h| **h).count(), 1);
+    }
+
+    #[test]
+    fn a_photo_added_to_a_hidden_folder_arrives_hidden() {
+        let (_dir, lib) = temp_library();
+        let ([root, child, _], _) = three_folders(&lib);
+        lib.set_folder_hidden(root, true).unwrap();
+        let added = lib
+            .insert_items(&[
+                new_item(root, "/p/new.jpg", 4),
+                new_item(child, "/p/child/new.jpg", 5),
+            ])
+            .unwrap();
+        let hidden = view(&lib, GridView::Hidden, "");
+        assert!(
+            hidden.contains(&added[0]),
+            "a new photo in a hidden folder is visible"
+        );
+        assert!(
+            !hidden.contains(&added[1]),
+            "a new photo in a subfolder inherited its parent's flag"
+        );
+    }
+
+    #[test]
+    fn unhiding_a_folder_shows_everything_in_it() {
+        let (_dir, lib) = temp_library();
+        let (w, root) = seed_folder(&lib, Path::new("/p"));
+        let _ = w;
+        let ids = lib
+            .insert_items(&[new_item(root, "/p/a.jpg", 1), new_item(root, "/p/b.jpg", 2)])
+            .unwrap();
+        // Hidden one by one first: the folder's answer overrides it on unhide.
+        lib.set_hidden(&[ids[1]], true).unwrap();
+        lib.set_folder_hidden(root, true).unwrap();
+        assert_eq!(lib.set_folder_hidden(root, false).unwrap(), 2);
+        assert!(view(&lib, GridView::Hidden, "").is_empty());
+        assert!(!lib.folders().unwrap()[0].hidden);
+        // And later arrivals are visible again.
+        let added = lib.insert_items(&[new_item(root, "/p/c.jpg", 3)]).unwrap();
+        assert!(view(&lib, GridView::All, "").contains(&added[0]));
+    }
+
+    #[test]
+    fn a_folder_that_does_not_exist_is_not_found() {
+        let (_dir, lib) = temp_library();
+        assert!(matches!(
+            lib.set_folder_hidden(999, true),
+            Err(crate::Error::NotFound(999))
+        ));
     }
 
     /// A folder is placed in the Hidden view by its oldest *hidden* photo, as Starred places

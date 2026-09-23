@@ -323,9 +323,13 @@ impl Library {
         let mut ids = Vec::with_capacity(items.len());
         {
             let mut stmt = tx.prepare_cached(
+                // `hidden` comes from the folder: a photo added to a folder the user hid -
+                // a new file, or one renamed or moved in, which is a new row - arrives hidden
+                // (`library/hidden.rs`, Hide folder).
                 "INSERT INTO items (folder_id, path, file_name, kind, size, mtime_ms, width, height, orientation, taken_at, rating,
-                                    make, model, lens, focal_mm, aperture, exposure_s, iso, exif_version)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
+                                    make, model, lens, focal_mm, aperture, exposure_s, iso, exif_version, hidden)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19,
+                         coalesce((SELECT hidden FROM folders WHERE id = ?1), 0))",
             )?;
             for it in items {
                 let c = &it.camera;

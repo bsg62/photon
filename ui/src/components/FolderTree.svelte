@@ -59,6 +59,14 @@
     await api.revealFolder(f.id).catch(library.reportError);
   }
 
+  /** Hide folder: its photos, and any added to it later, until Unhide folder. The row then
+   *  leaves this list on its own - the rows are the view's sections, and a hidden folder has
+   *  none in any view but Hidden. */
+  async function toggleFolderHidden(f: Folder) {
+    menu = null;
+    await library.setFolderHidden(f.id, !f.hidden).catch(library.reportError);
+  }
+
   function closeMenus() {
     menu = null;
     albumMenu = null;
@@ -446,6 +454,7 @@
       onclick={() => rescan(folder)}>Rescan</button
     >
     <button role="menuitem" onclick={() => reveal(folder)}>Reveal in file manager</button>
+    <button role="menuitem" onclick={() => toggleFolderHidden(folder)}>{folder.hidden ? 'Unhide folder' : 'Hide folder'}</button>
   </div>
 {/if}
 

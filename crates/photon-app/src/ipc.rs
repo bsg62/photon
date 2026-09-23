@@ -281,6 +281,11 @@ pub fn set_stars(engine: Eng<'_>, ids: Vec<i64>, starred: bool) -> Result<usize,
 }
 
 #[tauri::command(async)]
+pub fn set_folder_hidden(engine: Eng<'_>, folder_id: i64, hidden: bool) -> Result<usize, AppError> {
+    commands::set_folder_hidden(&engine, folder_id, hidden)
+}
+
+#[tauri::command(async)]
 pub fn set_items_hidden(engine: Eng<'_>, ids: Vec<i64>, hidden: bool) -> Result<usize, AppError> {
     commands::set_items_hidden(&engine, &ids, hidden)
 }

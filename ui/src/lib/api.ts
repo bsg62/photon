@@ -8,7 +8,8 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 export { mediaUrl } from './url';
 
 export interface WatchedFolder { id: number; path: string; online: boolean }
-export interface Folder { id: number; watchedId: number; parentId: number | null; path: string; name: string }
+/** `hidden`: the user hid the folder - its photos, and any added to it later, are hidden. */
+export interface Folder { id: number; watchedId: number; parentId: number | null; path: string; name: string; hidden: boolean }
 export interface FolderList { watched: WatchedFolder[]; folders: Folder[] }
 /** A root with no photos is absent from the list. */
 export interface WatchedFolderStats { watchedId: number; photoCount: number }
@@ -243,6 +244,8 @@ export const api = {
   setStars: (ids: number[], starred: boolean) => invoke<number>('set_stars', { ids, starred }),
   /** Hides or unhides photos, returning how many changed. Nothing is written to the files. */
   setItemsHidden: (ids: number[], hidden: boolean) => invoke<number>('set_items_hidden', { ids, hidden }),
+  /** Hides or unhides a folder: its photos now, and any added to it later. Not its subfolders. */
+  setFolderHidden: (folderId: number, hidden: boolean) => invoke<number>('set_folder_hidden', { folderId, hidden }),
   /** Turns the photo a quarter; the crop goes round with it. Nothing is written to the file. */
   rotateItem: (id: number, clockwise: boolean) => invoke<void>('rotate_item', { id, clockwise }),
   /** Replaces the photo's edit; no turns and no crop is the original again. */

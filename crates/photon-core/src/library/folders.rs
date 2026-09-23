@@ -129,6 +129,9 @@ pub struct Folder {
     pub parent_id: Option<i64>,
     pub path: String,
     pub name: String,
+    /// Whether the user hid the folder: its photos are hidden, and so is any photo added to
+    /// it later (`Library::set_folder_hidden`).
+    pub hidden: bool,
 }
 
 impl Library {
@@ -196,7 +199,7 @@ impl Library {
     pub fn folders(&self) -> Result<Vec<Folder>> {
         let conn = self.reader()?;
         let mut stmt = conn.prepare(
-            "SELECT id, watched_id, parent_id, path, name FROM folders ORDER BY sort_key, path",
+            "SELECT id, watched_id, parent_id, path, name, hidden FROM folders ORDER BY sort_key, path",
         )?;
         let rows = stmt
             .query_map([], |r| {
@@ -206,6 +209,7 @@ impl Library {
                     parent_id: r.get(2)?,
                     path: r.get(3)?,
                     name: r.get(4)?,
+                    hidden: r.get(5)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -353,6 +357,7 @@ mod tests {
             parent_id: None,
             path: "p".into(),
             name: "p".into(),
+            hidden: false,
         };
         let json = serde_json::to_string(&folder).unwrap();
         assert!(json.contains("\"watchedId\":2") && json.contains("\"parentId\":null"));
@@ -382,6 +387,7 @@ mod tests {
                 parent_id: Some(root),
                 path: "/photos/2024".into(),
                 name: "2024".into(),
+                hidden: false,
             }
         );
     }

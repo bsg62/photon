@@ -232,6 +232,7 @@ pub fn run() {
             ipc::set_star,
             ipc::set_stars,
             ipc::set_items_hidden,
+            ipc::set_folder_hidden,
             ipc::rotate_item,
             ipc::set_item_edit,
             ipc::add_item_tag,

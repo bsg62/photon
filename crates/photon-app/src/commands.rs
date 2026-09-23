@@ -681,6 +681,11 @@ pub fn add_items_tag(engine: &Engine, ids: &[i64], tag: &str) -> CmdResult<TagWr
     Ok(TagWrite { tag, count })
 }
 
+/// Hides or unhides a folder and the photos in it, reporting how many photos changed.
+pub fn set_folder_hidden(engine: &Engine, folder_id: i64, hidden: bool) -> CmdResult<usize> {
+    Ok(engine.set_folder_hidden(folder_id, hidden)?)
+}
+
 /// Hides or unhides several photos, reporting how many changed.
 pub fn set_items_hidden(engine: &Engine, ids: &[i64], hidden: bool) -> CmdResult<usize> {
     Ok(engine.set_items_hidden(ids, hidden)?)

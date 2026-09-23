@@ -180,6 +180,12 @@ there and choose **Unhide** to bring them back. The flag lives in photon's libra
 file, so a photo renamed or moved outside photon comes back visible, as it loses its albums
 and edits.
 
+To put a whole folder away, right-click it in the sidebar and choose **Hide folder**. Every
+photo in it is hidden, and so is anything added to that folder later, until you choose
+**Unhide folder** (from the folder's row under Hidden). Its subfolders are not affected; each
+folder is hidden on its own, as in Picasa. Unhiding the folder brings back every photo in it,
+including ones you had hidden one by one.
+
 Photos you hid in Picasa are hidden in photon too. photon never writes Picasa's hidden flag,
 so a photo you unhide in photon stays visible until you hide or unhide it in Picasa again.
 
@@ -389,6 +395,7 @@ publishing it.
 - [ ] In the viewer, right-click → **Hide photo**: the photo stays on screen without "n / m", ArrowRight goes on to the next photo, and the right-click menu now says **Unhide photo (H)**. Escape: the grid no longer holds it.
 - [ ] In Duplicates, select a photo and press **H** a few times: each press hides the selected photo and selects the next one, and the grid scrolls to keep it in view. In Hidden, **H** unhides. With Ctrl, Alt or Cmd held, **H** does nothing.
 - [ ] In the viewer, **H** hides the photo on screen (it stays showing, the menu now says **Unhide photo (H)**) and a second **H** unhides it. With the zoom slider focused, **H** does nothing.
+- [ ] Right-click a folder in the sidebar → **Hide folder**: it leaves the sidebar and its photos leave All; in Hidden the folder is listed and its right-click menu says **Unhide folder**. Copy a new photo into that folder: after the scan it is in Hidden, not All. A subfolder of it stays visible. **Unhide folder** brings every photo back.
 - [ ] Open a photo from Hidden, right-click → **Locate in photon**: the grid lands on it in Hidden, not in All. In Hidden, clicking a folder in the sidebar stays in Hidden.
 - [ ] Open the Copies view of a photo with one identical copy and hide the photo from its tile menu: the copy stays, with the line "… is hidden; these are its copies". In Hidden, that photo's menu offers no "Show 1 duplicate".
 - [ ] Open a photo in the viewer from a selection, **Hide photo**, Escape: nothing is selected, and Ctrl+clicking another photo says "1 selected", not 2.

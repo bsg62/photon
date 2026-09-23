@@ -626,6 +626,15 @@ export class LibraryStore {
     await this.refreshCollections();
   }
 
+  /** Hides or unhides a folder - its photos now, and any added to it later. The grid follows
+   *  the backend's rebuild; the folder list does not, since a library change refetches the
+   *  collections and not the folders, so it is refetched here: without it the folder's menu
+   *  would go on offering the action just taken. */
+  async setFolderHidden(folderId: number, hidden: boolean): Promise<void> {
+    await api.setFolderHidden(folderId, hidden);
+    await this.refreshFolders();
+  }
+
   /** Hides or unhides photos; the backend's rebuild announces the change. Every photo acted
    *  on leaves the view, so once the write lands the selection moves to the nearest photo
    *  that stays - the next one after the lead, or the one before when nothing follows - as a

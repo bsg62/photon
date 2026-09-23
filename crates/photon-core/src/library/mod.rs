@@ -149,7 +149,7 @@ mod tests {
             .unwrap()
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 15);
+        assert_eq!(version, 16);
         let tables: i64 = lib
             .reader()
             .unwrap()
@@ -175,7 +175,7 @@ mod tests {
             Library::open(&path),
             Err(Error::SchemaTooNew {
                 found: 99,
-                supported: 15
+                supported: 16
             })
         ));
     }
