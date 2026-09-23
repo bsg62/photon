@@ -65,6 +65,69 @@ pub const EXACT_RECALL_DISTANCE: u32 = 3;
 const BANDS: u32 = 4;
 const BAND_BITS: u32 = 16;
 
+/// The edge of the square two thumbnails are reduced to before their pixels are compared.
+/// Fine enough that a moved arm or a turned head shows, coarse enough that JPEG noise and a
+/// resize's resampling have averaged away.
+const COMPARE_EDGE: u32 = 32;
+
+/// The largest [`picture_difference`] at which two thumbnails are still the same picture.
+///
+/// Measured, not chosen (spec `2026-09-23-photon-look-alike-confirmation-design.md`): over
+/// real photographs, every genuine copy - down to 12.5% size, re-compressed at q50, through
+/// a chat app - came in at 2.3 or less, while real second shots of one person in a similar
+/// pose were 19 and more, and unrelated photos 7.5 and more. 4 leaves an encoder noisier
+/// than the ones measured some room without coming near the different shots. A frame moved
+/// by 1% (two pixels at thumbnail size) still passes: at that point it is the same picture
+/// to a person too.
+pub const SAME_PICTURE_MAX_DIFFERENCE: f64 = 4.0;
+
+/// A thumbnail reduced for comparison: `COMPARE_EDGE` squared greyscale values, each less
+/// the picture's own mean brightness.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Reduction(Box<[f32]>);
+
+/// Reduces `img` for [`picture_difference`].
+///
+/// The mean comes off because a re-export with its exposure nudged is still the same
+/// photo, and a uniform shift in brightness would otherwise count at every one of the
+/// 1024 pixels. What is left is the arrangement, which is what differs between two shots.
+pub fn reduce(img: &DynamicImage) -> Reduction {
+    let grey = img
+        .resize_exact(COMPARE_EDGE, COMPARE_EDGE, FilterType::Triangle)
+        .to_luma8();
+    let mean = grey.pixels().map(|p| f32::from(p.0[0])).sum::<f32>() / grey.len() as f32;
+    Reduction(grey.pixels().map(|p| f32::from(p.0[0]) - mean).collect())
+}
+
+/// How far apart two reduced pictures are: the mean absolute difference per pixel, on the
+/// 0-255 greyscale.
+pub fn picture_difference(a: &Reduction, b: &Reduction) -> f64 {
+    let sum: f64 =
+        a.0.iter()
+            .zip(b.0.iter())
+            .map(|(x, y)| f64::from((x - y).abs()))
+            .sum();
+    sum / a.0.len() as f64
+}
+
+/// Whether two reduced pictures are the same picture; see [`SAME_PICTURE_MAX_DIFFERENCE`].
+pub fn same_picture(a: &Reduction, b: &Reduction) -> bool {
+    picture_difference(a, b) <= SAME_PICTURE_MAX_DIFFERENCE
+}
+
+/// Reductions kept from one pass to the next, by thumbnail key.
+///
+/// The regroup runs after every scan - the watcher's too, seconds after a single file
+/// lands - and confirms every nominated pair again, so without this each pass would decode
+/// the thumbnail of every photo that has a look-alike. The key changes whenever the file or
+/// its edit does, so an entry can never describe a picture its row no longer shows, and
+/// needs no invalidation of its own. A pass keeps only the entries it used, which bounds
+/// the cache by the photos that have a candidate pair rather than letting old keys pile up.
+#[derive(Debug, Default)]
+pub struct Reductions {
+    by_key: HashMap<u64, Reduction>,
+}
+
 /// Groups look-alikes, returning `(item_id, group_id)` for every photo that has at least one.
 ///
 /// `group_id` is the smallest item id in the group, so a group has a stable name that does
@@ -73,9 +136,20 @@ const BAND_BITS: u32 = 16;
 ///
 /// `distance` of 0 turns the feature off and returns nothing.
 ///
+/// A hash within `distance` only *nominates* a pair; `same_picture` (called with the two
+/// indexes into `hashes`) decides it. The 9x8 reduction behind the hash cannot tell a copy
+/// from a second shot of the same pose, and the check can - see [`picture_difference`]. It
+/// is asked only about a pair that would join two groups, never about one already joined
+/// through a third photo: that saves the check's cost and cannot change the result, since
+/// the pair is connected either way. Chains still form, but only out of confirmed links.
+///
 /// Whole-library, not incremental: a union-find over 100k rows is milliseconds, and the
 /// incremental version has to reason about a group *splitting* when a photo is purged.
-pub fn group(hashes: &[(i64, u64)], distance: u32) -> Vec<(i64, i64)> {
+pub fn group(
+    hashes: &[(i64, u64)],
+    distance: u32,
+    mut same_picture: impl FnMut(usize, usize) -> bool,
+) -> Vec<(i64, i64)> {
     if distance == 0 || hashes.len() < 2 {
         return Vec::new();
     }
@@ -98,7 +172,10 @@ pub fn group(hashes: &[(i64, u64)], distance: u32) -> Vec<(i64, i64)> {
     for indexes in buckets.values() {
         for (i, &a) in indexes.iter().enumerate() {
             for &b in &indexes[i + 1..] {
-                if (hashes[a].1 ^ hashes[b].1).count_ones() <= distance {
+                if (hashes[a].1 ^ hashes[b].1).count_ones() <= distance
+                    && find(&mut parent, a) != find(&mut parent, b)
+                    && same_picture(a, b)
+                {
                     union(&mut parent, a, b);
                 }
             }
@@ -203,6 +280,7 @@ pub fn update(
     cache: &ThumbCache,
     distance: u32,
     cancel: &AtomicBool,
+    reductions: &mut Reductions,
 ) -> Result<PassOutcome> {
     let mut hashed = 0;
     // Off means off. The grouping below returns nothing at distance 0, so hashing first
@@ -239,11 +317,46 @@ pub fn update(
 
     // Regroup unconditionally, not only when something was hashed: the distance setting may
     // have changed, or a photo may have been purged out of a group since the last pass.
-    let groups_changed = lib.set_similar_groups(&group(&lib.percep_hashes()?, distance))?;
+    let photos = lib.percep_hashes()?;
+    let hashes: Vec<(i64, u64)> = photos.iter().map(|p| (p.id, p.hash)).collect();
+    // `None` is a thumbnail that could not be read, remembered for this pass only so it is
+    // not retried for every pair it is in. It confirms nothing: a missed pair costs less than
+    // a false one, and the next pass tries again.
+    let mut seen: HashMap<u64, Option<Reduction>> = HashMap::new();
+    let groups = group(&hashes, distance, |a, b| {
+        let keys = [photos[a].thumb_key, photos[b].thumb_key];
+        for key in keys {
+            seen.entry(key).or_insert_with(|| {
+                reductions
+                    .by_key
+                    .remove(&key)
+                    .or_else(|| read_reduction(cache, key))
+            });
+        }
+        match (&seen[&keys[0]], &seen[&keys[1]]) {
+            (Some(a), Some(b)) => same_picture(a, b),
+            _ => false,
+        }
+    });
+    reductions.by_key = seen
+        .into_iter()
+        .filter_map(|(key, reduction)| Some((key, reduction?)))
+        .collect();
+    let groups_changed = lib.set_similar_groups(&groups)?;
     Ok(PassOutcome {
         hashed,
         groups_changed,
     })
+}
+
+fn read_reduction(cache: &ThumbCache, key: u64) -> Option<Reduction> {
+    match image::open(cache.path_for(key, ThumbSize::Grid)) {
+        Ok(img) => Some(reduce(&img)),
+        Err(err) => {
+            tracing::debug!(key, %err, "could not read a thumbnail to confirm a look-alike");
+            None
+        }
+    }
 }
 
 #[cfg(test)]
@@ -281,6 +394,13 @@ mod tests {
             *px = Rgb([v, v.wrapping_add(20), 255 - v]);
         }
         DynamicImage::ImageRgb8(img)
+    }
+
+    /// Groups on the hash alone, confirming every pair it nominates: the tests of banding,
+    /// transitivity and emptiness are about the hash, and a picture check would only hide
+    /// what they measure.
+    fn by_hash(hashes: &[(i64, u64)], distance: u32) -> Vec<(i64, i64)> {
+        group(hashes, distance, |_, _| true)
     }
 
     fn distance(a: u64, b: u64) -> u32 {
@@ -363,14 +483,14 @@ mod tests {
         // Two hashes as far apart as two hashes get, both with plenty of structure - an
         // empty pair would be left out by `pairs_with_anything` before the distance was
         // ever measured, and this test is about the distance.
-        let out = group(&[(1, 0xffff_ffff_0000_0000), (2, 0x0000_0000_ffff_ffff)], 3);
+        let out = by_hash(&[(1, 0xffff_ffff_0000_0000), (2, 0x0000_0000_ffff_ffff)], 3);
         assert!(out.is_empty());
     }
 
     #[test]
     fn a_close_pair_shares_the_smaller_id_as_its_group() {
         // One bit apart.
-        let out = group(&[(7, 0b1010), (4, 0b1011)], 3);
+        let out = by_hash(&[(7, 0b1010), (4, 0b1011)], 3);
         let mut out = out;
         out.sort();
         assert_eq!(out, vec![(4, 4), (7, 4)]);
@@ -384,7 +504,7 @@ mod tests {
         let a = 0xffff_0000u64;
         let b = a ^ 0b111u64;
         let c = a ^ 0b111_111u64;
-        let mut out = group(&[(1, a), (2, b), (3, c)], 3);
+        let mut out = by_hash(&[(1, a), (2, b), (3, c)], 3);
         out.sort();
         assert_eq!(out, vec![(1, 1), (2, 1), (3, 1)]);
     }
@@ -402,7 +522,7 @@ mod tests {
                 base ^ (1u64 << (i % 64)) ^ (1u64 << ((i * 7) % 64)) ^ (1u64 << ((i * 13) % 64));
             hashes.push((i + 1, h));
         }
-        let grouped = group(&hashes, EXACT_RECALL_DISTANCE);
+        let grouped = by_hash(&hashes, EXACT_RECALL_DISTANCE);
         let in_a_group: std::collections::HashSet<i64> =
             grouped.iter().map(|(id, _)| *id).collect();
 
@@ -428,7 +548,7 @@ mod tests {
     /// dark frames to delete.
     #[test]
     fn a_picture_with_no_structure_is_a_look_alike_of_nothing() {
-        let mut out = group(
+        let mut out = by_hash(
             &[
                 (1, dhash(&picture(400, 300))),
                 (2, dhash(&picture(100, 75))),
@@ -454,11 +574,11 @@ mod tests {
     /// bottom value.
     #[test]
     fn two_almost_empty_pictures_do_not_pair_on_their_emptiness() {
-        let out = group(&[(1, 1 << 3), (2, 1 << 40)], EXACT_RECALL_DISTANCE);
+        let out = by_hash(&[(1, 1 << 3), (2, 1 << 40)], EXACT_RECALL_DISTANCE);
         assert!(out.is_empty(), "two near-empty hashes were paired");
 
         // The mirror at the other end: one bit short of every bit set.
-        let out = group(
+        let out = by_hash(
             &[(1, !(1u64 << 3)), (2, !(1u64 << 40))],
             EXACT_RECALL_DISTANCE,
         );
@@ -474,14 +594,14 @@ mod tests {
         let a = 0b1_1111u64;
         let b = 0b111u64 | (0b11u64 << 30);
         assert_eq!((a ^ b).count_ones(), 4);
-        let mut out = group(&[(1, a), (2, b)], 8);
+        let mut out = by_hash(&[(1, a), (2, b)], 8);
         out.sort();
         assert_eq!(out, vec![(1, 1), (2, 1)]);
     }
 
     #[test]
     fn distance_zero_groups_nothing() {
-        let out = group(&[(1, 5), (2, 5)], 0);
+        let out = by_hash(&[(1, 5), (2, 5)], 0);
         assert!(out.is_empty(), "distance 0 means the feature is off");
     }
 
@@ -526,7 +646,14 @@ mod tests {
             lib.set_thumb_state(*id, ThumbState::Ready, None).unwrap();
         }
 
-        let outcome = update(&lib, &cache, EXACT_RECALL_DISTANCE, &AtomicBool::new(false)).unwrap();
+        let outcome = update(
+            &lib,
+            &cache,
+            EXACT_RECALL_DISTANCE,
+            &AtomicBool::new(false),
+            &mut Reductions::default(),
+        )
+        .unwrap();
         assert_eq!(outcome.hashed, 3, "every thumbnailed photo takes a hash");
         assert!(outcome.groups_changed, "the pair was not grouped");
 
@@ -544,19 +671,286 @@ mod tests {
         // A second pass has nothing left to hash and nothing to regroup: a photo takes this
         // path once, and the groups it computes are the ones already stored.
         assert_eq!(
-            update(&lib, &cache, EXACT_RECALL_DISTANCE, &AtomicBool::new(false)).unwrap(),
+            update(
+                &lib,
+                &cache,
+                EXACT_RECALL_DISTANCE,
+                &AtomicBool::new(false),
+                &mut Reductions::default()
+            )
+            .unwrap(),
             PassOutcome::default()
         );
 
         // Changing the distance is a regroup and nothing else - the case the grid refresh
         // would miss if it were gated on rows hashed. Task 6 makes this a user setting.
-        let outcome = update(&lib, &cache, 0, &AtomicBool::new(false)).unwrap();
+        let outcome = update(
+            &lib,
+            &cache,
+            0,
+            &AtomicBool::new(false),
+            &mut Reductions::default(),
+        )
+        .unwrap();
         assert_eq!(outcome.hashed, 0);
         assert!(
             outcome.groups_changed,
             "the distance changed the groups and the pass did not say so"
         );
         assert!(lib.similar_of(ids[0]).unwrap().is_empty());
+    }
+
+    /// A photograph-like surface: 24x18 cells of unrelated brightness, sampled with the frame
+    /// moved right by `shift` (a fraction of the width). Fine enough that a 32x32 reduction
+    /// sees every cell, so moving the frame by a few percent is a different picture there -
+    /// the second shot the 9x8 hash cannot see.
+    fn textured(w: u32, h: u32, shift: f32) -> DynamicImage {
+        let mut img = RgbImage::new(w, h);
+        for (x, y, px) in img.enumerate_pixels_mut() {
+            let cx = ((x as f32 / w as f32 + shift) * 24.0) as u32;
+            let cy = y * 18 / h;
+            let v = ((cx * 97 + cy * 57 + cx * cy * 31 + 13) % 200 + 28) as u8;
+            *px = Rgb([v, v, v]);
+        }
+        DynamicImage::ImageRgb8(img)
+    }
+
+    fn jpeg_round_trip(img: &DynamicImage) -> DynamicImage {
+        image::load_from_memory(&encode(img, ImageFormat::Jpeg)).unwrap()
+    }
+
+    #[test]
+    fn a_copy_is_the_same_picture_and_a_moved_frame_is_not() {
+        let original = reduce(&textured(1200, 900, 0.0));
+        let copy = reduce(&jpeg_round_trip(&textured(1200, 900, 0.0).resize(
+            300,
+            225,
+            FilterType::Triangle,
+        )));
+        let moved = reduce(&textured(1200, 900, 0.03));
+        assert!(
+            same_picture(&original, &copy),
+            "a resized, re-encoded copy was {} apart",
+            picture_difference(&original, &copy)
+        );
+        assert!(
+            !same_picture(&original, &moved),
+            "a frame moved by 3% was only {} apart",
+            picture_difference(&original, &moved)
+        );
+    }
+
+    /// A re-export with its exposure nudged is the same photo. Without the mean removed,
+    /// the uniform shift counts at every pixel.
+    #[test]
+    fn a_tone_change_is_still_the_same_picture() {
+        let original = textured(400, 300, 0.0);
+        let brighter = original.brighten(20);
+        assert!(
+            same_picture(&reduce(&original), &reduce(&brighter)),
+            "a brightened copy was {} apart",
+            picture_difference(&reduce(&original), &reduce(&brighter))
+        );
+    }
+
+    #[test]
+    fn a_close_pair_that_is_not_the_same_picture_is_not_grouped() {
+        let a = 0xffff_0000u64;
+        let pair = [(1, a), (2, a ^ 1)];
+        assert_eq!(by_hash(&pair, 3).len(), 2, "the hash nominates the pair");
+        assert!(
+            group(&pair, 3, |_, _| false).is_empty(),
+            "a pair the picture check refused was grouped"
+        );
+    }
+
+    /// Three hashes within a bit of each other share three of their four bands, so the
+    /// buckets nominate every pair up to three times. Two confirmations join all three; any
+    /// further call is a thumbnail comparison that cannot change the answer.
+    #[test]
+    fn a_pair_already_joined_is_not_confirmed_again() {
+        let a = 0xffff_0000u64;
+        let mut calls = 0;
+        let mut out = group(&[(1, a), (2, a ^ 1), (3, a ^ 2)], 3, |_, _| {
+            calls += 1;
+            true
+        });
+        out.sort();
+        assert_eq!(out, vec![(1, 1), (2, 1), (3, 1)]);
+        assert_eq!(calls, 2, "a pair already in one group was confirmed again");
+    }
+
+    /// `unrelated_pattern` with a fine checkerboard laid over it, in one of two phases. The
+    /// checker's cells are a sixteenth of the frame: averaged away entirely by the 9x8 hash,
+    /// which sees only the blocks underneath, and plain at 32x32, where the two phases are
+    /// each other's negative. Two different pictures the hash cannot tell apart.
+    fn checkered(w: u32, h: u32, phase: u32) -> DynamicImage {
+        let mut img = unrelated_pattern(w, h).to_rgb8();
+        for (x, y, px) in img.enumerate_pixels_mut() {
+            let on = (x * 16 / w + y * 16 / h + phase).is_multiple_of(2);
+            for c in &mut px.0 {
+                *c = if on {
+                    c.saturating_add(40)
+                } else {
+                    c.saturating_sub(40)
+                };
+            }
+        }
+        DynamicImage::ImageRgb8(img)
+    }
+
+    /// Writes each image as a JPEG, thumbnails it through `ThumbCache` under the key its row
+    /// will have, and inserts the rows as thumbnailed.
+    fn thumbnailed(
+        lib: &Library,
+        cache: &ThumbCache,
+        photos: &Path,
+        folder: i64,
+        files: &[(&str, DynamicImage)],
+    ) -> Vec<i64> {
+        let mut items = Vec::new();
+        for (n, (name, img)) in files.iter().enumerate() {
+            let src = write_file(photos, name, &encode(img, ImageFormat::Jpeg));
+            let path = src.to_str().unwrap().to_string();
+            let (size, mtime) = (10 + n as i64, 100 + n as i64);
+            cache
+                .generate(&src, 1, fingerprint(&path, size, mtime))
+                .unwrap();
+            items.push(item_at(folder, &path, size, mtime));
+        }
+        let ids = lib.insert_items(&items).unwrap();
+        for id in &ids {
+            lib.set_thumb_state(*id, ThumbState::Ready, None).unwrap();
+        }
+        ids
+    }
+
+    /// The false positive this check exists for, end to end: two photos whose hashes are
+    /// within the conservative distance, and whose pictures are not the same.
+    #[test]
+    fn the_pass_does_not_group_two_shots_that_hash_alike() {
+        let (dir, lib) = temp_library();
+        let photos = dir.path().join("pics");
+        let (_w, folder) = seed_folder(&lib, &photos);
+        let cache = ThumbCache::new(dir.path().join("cache"));
+        let ids = thumbnailed(
+            &lib,
+            &cache,
+            &photos,
+            folder,
+            &[
+                ("a.jpg", checkered(288, 192, 0)),
+                ("b.jpg", checkered(288, 192, 1)),
+            ],
+        );
+
+        let mut reductions = Reductions::default();
+        let outcome = update(
+            &lib,
+            &cache,
+            EXACT_RECALL_DISTANCE,
+            &AtomicBool::new(false),
+            &mut reductions,
+        )
+        .unwrap();
+        assert_eq!(outcome.hashed, 2);
+        let hashes = lib.percep_hashes().unwrap();
+        assert!(
+            distance(hashes[0].hash, hashes[1].hash) <= EXACT_RECALL_DISTANCE,
+            "the fixture no longer hashes alike, so this test proves nothing: {} bits",
+            distance(hashes[0].hash, hashes[1].hash)
+        );
+        assert!(
+            lib.similar_of(ids[0]).unwrap().is_empty(),
+            "two different pictures were grouped on their hash alone"
+        );
+    }
+
+    /// A second pass confirms from what the first one reduced, not from the disk: here the
+    /// thumbnails are gone before it runs, and the pair still groups.
+    #[test]
+    fn the_pass_reuses_cached_reductions() {
+        let (dir, lib) = temp_library();
+        let photos = dir.path().join("pics");
+        let (_w, folder) = seed_folder(&lib, &photos);
+        let cache = ThumbCache::new(dir.path().join("cache"));
+        let ids = thumbnailed(
+            &lib,
+            &cache,
+            &photos,
+            folder,
+            &[
+                ("big.jpg", unrelated_pattern(180, 120)),
+                ("small.jpg", unrelated_pattern(72, 48)),
+            ],
+        );
+        let mut reductions = Reductions::default();
+        let no = AtomicBool::new(false);
+        update(&lib, &cache, EXACT_RECALL_DISTANCE, &no, &mut reductions).unwrap();
+        assert_eq!(
+            lib.similar_of(ids[0]).unwrap().len(),
+            1,
+            "the pair did not group"
+        );
+
+        std::fs::remove_dir_all(dir.path().join("cache")).unwrap();
+        lib.set_similar_groups(&[]).unwrap();
+        let outcome = update(&lib, &cache, EXACT_RECALL_DISTANCE, &no, &mut reductions).unwrap();
+        assert!(outcome.groups_changed);
+        assert_eq!(
+            lib.similar_of(ids[0]).unwrap().len(),
+            1,
+            "the second pass went back to the disk for thumbnails it had already reduced"
+        );
+    }
+
+    /// A pair whose thumbnails cannot be read is not confirmed, even when the hashes say it
+    /// is the same picture: a missed pair costs less than a false one, and the next pass
+    /// will try again once the thumbnails are back.
+    #[test]
+    fn an_unreadable_thumbnail_confirms_nothing() {
+        let (dir, lib) = temp_library();
+        let photos = dir.path().join("pics");
+        let (_w, folder) = seed_folder(&lib, &photos);
+        let cache = ThumbCache::new(dir.path().join("cache"));
+        let ids = thumbnailed(
+            &lib,
+            &cache,
+            &photos,
+            folder,
+            &[
+                ("big.jpg", unrelated_pattern(180, 120)),
+                ("small.jpg", unrelated_pattern(72, 48)),
+            ],
+        );
+        let no = AtomicBool::new(false);
+        update(
+            &lib,
+            &cache,
+            EXACT_RECALL_DISTANCE,
+            &no,
+            &mut Reductions::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            lib.similar_of(ids[0]).unwrap().len(),
+            1,
+            "the pair did not group"
+        );
+
+        std::fs::remove_dir_all(dir.path().join("cache")).unwrap();
+        update(
+            &lib,
+            &cache,
+            EXACT_RECALL_DISTANCE,
+            &no,
+            &mut Reductions::default(),
+        )
+        .unwrap();
+        assert!(
+            lib.similar_of(ids[0]).unwrap().is_empty(),
+            "a pair was confirmed without its thumbnails"
+        );
     }
 
     /// A thumbnail that is not on disk yet leaves the row a candidate for the next pass,
@@ -573,7 +967,14 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            update(&lib, &cache, EXACT_RECALL_DISTANCE, &AtomicBool::new(false)).unwrap(),
+            update(
+                &lib,
+                &cache,
+                EXACT_RECALL_DISTANCE,
+                &AtomicBool::new(false),
+                &mut Reductions::default()
+            )
+            .unwrap(),
             PassOutcome::default()
         );
         assert_eq!(lib.similar_candidates().unwrap().len(), 1);
@@ -595,7 +996,14 @@ mod tests {
         lib.set_similar_groups(&[(ids[0], ids[0]), (ids[1], ids[0])])
             .unwrap();
 
-        let outcome = update(&lib, &cache, EXACT_RECALL_DISTANCE, &AtomicBool::new(true)).unwrap();
+        let outcome = update(
+            &lib,
+            &cache,
+            EXACT_RECALL_DISTANCE,
+            &AtomicBool::new(true),
+            &mut Reductions::default(),
+        )
+        .unwrap();
         assert_eq!(outcome.hashed, 0);
         assert!(outcome.groups_changed, "the stale group was left in place");
         assert!(
@@ -638,7 +1046,14 @@ mod tests {
         lib.set_similar_groups(&[(ids[0], ids[0]), (ids[1], ids[0])])
             .unwrap();
 
-        let outcome = update(&lib, &cache, 0, &AtomicBool::new(false)).unwrap();
+        let outcome = update(
+            &lib,
+            &cache,
+            0,
+            &AtomicBool::new(false),
+            &mut Reductions::default(),
+        )
+        .unwrap();
 
         assert_eq!(
             outcome.hashed, 0,

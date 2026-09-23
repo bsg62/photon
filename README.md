@@ -141,6 +141,9 @@ that share their exact size with another file, so on most libraries almost nothi
 And look-alikes: the same picture after a resize or a re-save, which is nothing like the same
 bytes but is still the photo you already have. Look-alikes are found from the thumbnails
 photon has already made for the grid, so no photo is read a second time to look for them.
+A pair that looks alike at a glance is then compared picture to picture, so a second shot
+of the same scene - the same person in almost the same pose, a burst - is not a look-alike:
+it is a different photo, and you probably want to keep both.
 
 While any exist, a **Duplicates** row in the sidebar shows every photo that has a copy of
 either kind, folder by folder, and the viewer's info panel lists them under two headings,
