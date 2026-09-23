@@ -53,6 +53,9 @@ pub struct ScanReport {
     /// for photos the walk found unchanged: naming a face in Picasa rewrites the INI, not
     /// the photo.
     pub refaced: u64,
+    /// Items whose `hidden` the Picasa pass changed this scan, following a `hidden=` line
+    /// Picasa added or removed. Like `restarred`, the photo itself never changes.
+    pub rehidden: u64,
     /// Unchanged files re-read because their stored metadata predates the current reader
     /// (`items.exif_version` behind `metadata::EXIF_VERSION`). The backfill for a library
     /// indexed before a camera column existed.
@@ -70,9 +73,9 @@ impl ScanReport {
     /// and forgotten there compiles, passes every scanner test, and silently stops the grid
     /// from ever rebuilding for it - which is exactly what `restarred` did once.
     ///
-    /// `refaced` and `enriched` count because a view can be built from what they change:
-    /// the Person view from faces, the Tag and Search views from keywords and camera
-    /// columns.
+    /// `refaced`, `rehidden` and `enriched` count because a view can be built from what they
+    /// change: the Person view from faces, every view from the hidden flag, the Tag and
+    /// Search views from keywords and camera columns.
     pub fn touched_rows(&self) -> bool {
         self.added
             + self.changed
@@ -80,6 +83,7 @@ impl ScanReport {
             + self.purged
             + self.restarred
             + self.refaced
+            + self.rehidden
             + self.enriched
             > 0
     }
@@ -201,11 +205,12 @@ pub fn scan_watched(
         // this guard: the empty-root check below is what tells a live folder from an
         // unmounted volume, and an unmounted mount point reads as a folder whose INI is
         // gone - which would clear every star it has.
-        let (restarred, refaced) = apply_picasa(lib, &walked);
+        let applied = apply_picasa(lib, &walked);
         progress.progress(&seen);
         return Ok(ScanReport {
-            restarred,
-            refaced,
+            restarred: applied.restarred,
+            refaced: applied.refaced,
+            rehidden: applied.rehidden,
             ..report
         });
     }
@@ -222,7 +227,7 @@ pub fn scan_watched(
     }
     lib.set_watched_online(watched.id, true)?;
 
-    let (restarred, refaced) = apply_picasa(lib, &walked);
+    let applied = apply_picasa(lib, &walked);
 
     // Anything left in `known` was not found on this (reachable) scan: soft-delete it,
     // or purge it if it was already missing last time.
@@ -233,8 +238,9 @@ pub fn scan_watched(
     Ok(ScanReport {
         marked_missing: marked,
         purged,
-        restarred,
-        refaced,
+        restarred: applied.restarred,
+        refaced: applied.refaced,
+        rehidden: applied.rehidden,
         ..report
     })
 }
@@ -357,13 +363,14 @@ pub fn scan_subtree(
     // there is its empty-root check, and this function deliberately has none (see the doc
     // comment). Every non-cancelled walk applies the stars and faces of the folders it
     // reached.
-    let (restarred, refaced) = apply_picasa(lib, &outcome.walked);
+    let applied = apply_picasa(lib, &outcome.walked);
 
     if outcome.skip_mark_purge {
         progress.progress(&outcome.seen);
         return Ok(ScanReport {
-            restarred,
-            refaced,
+            restarred: applied.restarred,
+            refaced: applied.refaced,
+            rehidden: applied.rehidden,
             ..outcome.report
         });
     }
@@ -373,8 +380,9 @@ pub fn scan_subtree(
     lib.prune_folders_under(watched.id, scan_id, target_str)?;
     report.marked_missing = marked;
     report.purged = purged;
-    report.restarred = restarred;
-    report.refaced = refaced;
+    report.restarred = applied.restarred;
+    report.refaced = applied.refaced;
+    report.rehidden = applied.rehidden;
 
     progress.progress(&outcome.seen);
     Ok(report)
@@ -591,8 +599,16 @@ fn walk_tree(
 /// than aborting the whole scan, since that would also skip `finish_mark_purge` and
 /// `prune_folders` over an unrelated folder's transient failure. Nothing is lost — the next
 /// scan reapplies this folder's INI.
-fn apply_picasa(lib: &Library, walked: &[(PathBuf, i64)]) -> (u64, u64) {
-    let (mut restarred, mut refaced) = (0, 0);
+/// What the Picasa pass changed, for the report's counters.
+#[derive(Clone, Copy, Debug, Default)]
+struct PicasaApplied {
+    restarred: u64,
+    refaced: u64,
+    rehidden: u64,
+}
+
+fn apply_picasa(lib: &Library, walked: &[(PathBuf, i64)]) -> PicasaApplied {
+    let mut applied = PicasaApplied::default();
     for (dir, folder_id) in walked {
         let Some(ini) = crate::picasa::read_folder(dir) else {
             tracing::debug!(
@@ -602,9 +618,10 @@ fn apply_picasa(lib: &Library, walked: &[(PathBuf, i64)]) -> (u64, u64) {
             continue;
         };
         match apply_folder_ini(lib, *folder_id, &ini) {
-            Ok((stars, faces)) => {
-                restarred += stars;
-                refaced += faces;
+            Ok(folder) => {
+                applied.restarred += folder.restarred;
+                applied.refaced += folder.refaced;
+                applied.rehidden += folder.rehidden;
             }
             Err(err) => {
                 // One folder's transient failure (a busy database, say) must not cost the
@@ -614,17 +631,54 @@ fn apply_picasa(lib: &Library, walked: &[(PathBuf, i64)]) -> (u64, u64) {
             }
         }
     }
-    (restarred, refaced)
+    applied
 }
 
-/// Contacts first, so a face written below can already resolve its name; then stars and
-/// faces from one read of the folder's item names.
-fn apply_folder_ini(lib: &Library, folder_id: i64, ini: &FolderIni) -> Result<(u64, u64)> {
+/// Contacts first, so a face written below can already resolve its name; then stars, faces
+/// and hidden flags from one read of the folder's item names.
+fn apply_folder_ini(lib: &Library, folder_id: i64, ini: &FolderIni) -> Result<PicasaApplied> {
     lib.upsert_contacts(&ini.contacts)?;
     let names = lib.folder_item_names(folder_id)?;
-    let restarred = apply_folder_stars(lib, &names, &ini.stars)?;
-    let refaced = apply_folder_faces(lib, folder_id, &names, &ini.faces)?;
-    Ok((restarred, refaced))
+    Ok(PicasaApplied {
+        restarred: apply_folder_stars(lib, &names, &ini.stars)?,
+        refaced: apply_folder_faces(lib, folder_id, &names, &ini.faces)?,
+        rehidden: apply_folder_hidden(lib, folder_id, &names, &ini.hidden)?,
+    })
+}
+
+/// Follows Picasa's `hidden=yes` where it changed, and returns how many photos' `hidden`
+/// that moved.
+///
+/// The INI is followed on change, not mirrored (see `Library::apply_picasa_hidden`), with
+/// one exception: the first read of a photo (`picasa_hidden` still NULL) follows a
+/// `hidden=yes` - Picasa hid it, and a user coming from Picasa expects it hidden - but not
+/// a missing line, so a photo the user hid in photon before this pass existed stays hidden.
+/// Only rows whose INI answer differs from the recorded one are written, so an agreeing
+/// folder costs nothing, as with stars and faces.
+fn apply_folder_hidden(
+    lib: &Library,
+    folder_id: i64,
+    names: &[(i64, String, Option<i64>)],
+    hidden: &std::collections::HashSet<String>,
+) -> Result<u64> {
+    let recorded: HashMap<i64, Option<bool>> =
+        lib.folder_picasa_hidden(folder_id)?.into_iter().collect();
+    let changes: Vec<(i64, bool, bool)> = names
+        .iter()
+        .filter_map(|(id, name, _)| {
+            let says = hidden.contains(name);
+            match recorded.get(id).copied().flatten() {
+                Some(before) if before == says => None,
+                Some(_) => Some((*id, says, true)),
+                None => Some((*id, says, says)),
+            }
+        })
+        .collect();
+    let mut moved = 0;
+    for chunk in changes.chunks(BATCH) {
+        moved += lib.apply_picasa_hidden(chunk)?;
+    }
+    Ok(moved)
 }
 
 /// Sets `folder_id`'s items' ratings from `stars`, writing only the rows whose rating
@@ -1024,6 +1078,93 @@ mod tests {
         assert!(lib.people_with_counts().unwrap().is_empty());
     }
 
+    fn is_hidden(lib: &Library, id: i64) -> bool {
+        lib.item(id).unwrap().unwrap().hidden
+    }
+
+    #[test]
+    fn a_photo_hidden_in_picasa_is_hidden_in_photon() {
+        // Picasa's `hidden=yes` is the star pass's third twin: the INI changes, the photo
+        // does not, so only the post-walk pass sees it - and the grid must rebuild for it.
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        write_file(&root, "a.jpg", &jpeg_bytes(4, 2));
+        write_file(&root, "b.jpg", &jpeg_bytes(4, 3));
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
+        scan(&lib, &watched, 1);
+        assert_eq!(lib.hidden_count().unwrap(), 0);
+
+        write_file(&root, ".picasa.ini", b"[a.jpg]\nhidden=yes\n");
+        let report = scan(&lib, &watched, 2);
+        assert_eq!((report.unchanged, report.rehidden), (2, 1));
+        assert!(
+            report.touched_rows(),
+            "the grid must rebuild to drop the photo"
+        );
+        assert_eq!(lib.hidden_count().unwrap(), 1);
+
+        let report = scan(&lib, &watched, 3);
+        assert_eq!(report.rehidden, 0, "an agreeing folder writes nothing");
+
+        write_file(&root, ".picasa.ini", b"[a.jpg]\nbackuphash=1\n");
+        let report = scan(&lib, &watched, 4);
+        assert_eq!(report.rehidden, 1, "unhidden in Picasa, unhidden in photon");
+        assert_eq!(lib.hidden_count().unwrap(), 0);
+    }
+
+    #[test]
+    fn an_unhide_in_photon_holds_until_picasa_changes_its_answer() {
+        // photon never writes `hidden=`, so the INI keeps saying yes after the user unhides
+        // the photo here. Mirroring the INI would hide it again on every scan; following
+        // only its changes lets the user's answer stand until Picasa gives a new one.
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        write_file(&root, "a.jpg", &jpeg_bytes(4, 2));
+        write_file(&root, ".picasa.ini", b"[a.jpg]\nhidden=yes\n");
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
+        scan(&lib, &watched, 1);
+        let id = lib.entries_for(crate::grid::GridView::Hidden, "").unwrap()[0].id;
+
+        lib.set_hidden(&[id], false).unwrap();
+        let report = scan(&lib, &watched, 2);
+        assert_eq!(report.rehidden, 0);
+        assert!(!is_hidden(&lib, id), "a rescan undid the user's unhide");
+
+        // Picasa unhides and hides it again: a real change, so it is followed.
+        write_file(&root, ".picasa.ini", b"[a.jpg]\n");
+        scan(&lib, &watched, 3);
+        write_file(&root, ".picasa.ini", b"[a.jpg]\nhidden=yes\n");
+        scan(&lib, &watched, 4);
+        assert!(is_hidden(&lib, id));
+    }
+
+    #[test]
+    fn a_photo_hidden_in_photon_stays_hidden_when_picasa_never_hid_it() {
+        // The first read of a photo with no `hidden=` line records the answer and leaves the
+        // flag alone: the user hid it here, and Picasa has said nothing about it either way.
+        // A later hide in photon of a photo Picasa has read survives rescans too.
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        write_file(&root, "a.jpg", &jpeg_bytes(4, 2));
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
+        scan(&lib, &watched, 1);
+        let id = lib.entries_for(crate::grid::GridView::All, "").unwrap()[0].id;
+        lib.set_hidden(&[id], true).unwrap();
+        // A library upgraded from before the column: the INI never read for this photo.
+        rusqlite::Connection::open(dir.path().join("library.db"))
+            .unwrap()
+            .execute("UPDATE items SET picasa_hidden = NULL", [])
+            .unwrap();
+
+        scan(&lib, &watched, 2);
+        assert!(
+            is_hidden(&lib, id),
+            "the first read unhid a photo the user hid"
+        );
+        scan(&lib, &watched, 3);
+        assert!(is_hidden(&lib, id), "a rescan unhid a photo the user hid");
+    }
+
     #[test]
     fn a_photo_indexed_before_the_camera_columns_is_re_read_on_the_next_scan() {
         // The backfill. A row with `exif_version = 0` is what every photo indexed before
@@ -1197,6 +1338,23 @@ mod tests {
         scan_sub(&lib, &watched, &root.join("sub"), 2);
 
         assert_eq!(lib.starred_count().unwrap(), 1);
+    }
+
+    /// The watcher's path, for the hidden flag: hiding in Picasa rewrites one folder's INI,
+    /// and the report must say so or the grid never drops the photo.
+    #[test]
+    fn a_subtree_scan_applies_picasas_hidden_flag_too() {
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        write_file(&root, "sub/a.jpg", &jpeg_bytes(4, 2));
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
+        scan(&lib, &watched, 1);
+
+        write_file(&root, "sub/.picasa.ini", b"[a.jpg]\nhidden=yes\n");
+        let report = scan_sub(&lib, &watched, &root.join("sub"), 2);
+        assert_eq!(report.rehidden, 1);
+        assert!(report.touched_rows());
+        assert_eq!(lib.hidden_count().unwrap(), 1);
     }
 
     #[test]

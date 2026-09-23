@@ -177,6 +177,9 @@ there and choose **Unhide** to bring them back. The flag lives in photon's libra
 file, so a photo renamed or moved outside photon comes back visible, as it loses its albums
 and edits.
 
+Photos you hid in Picasa are hidden in photon too. photon never writes Picasa's hidden flag,
+so a photo you unhide in photon stays visible until you hide or unhide it in Picasa again.
+
 ### Slideshow and fullscreen
 
 Press `S` in the viewer (or the ▶ button) to play the current view from the photo on screen:
@@ -384,6 +387,7 @@ publishing it.
 - [ ] Open a photo from Hidden, right-click → **Locate in photon**: the grid lands on it in Hidden, not in All. In Hidden, clicking a folder in the sidebar stays in Hidden.
 - [ ] Open the Copies view of a photo with one identical copy and hide the photo from its tile menu: the copy stays, with the line "… is hidden; these are its copies". In Hidden, that photo's menu offers no "Show 1 duplicate".
 - [ ] Open a photo in the viewer from a selection, **Hide photo**, Escape: nothing is selected, and Ctrl+clicking another photo says "1 selected", not 2.
+- [ ] Add a folder whose `.picasa.ini` has `hidden=yes` for one photo: that photo is in Hidden, not in All. Unhide it in photon and rescan: it stays visible.
 - [ ] Hide a starred photo that has a keyword and is in an album: Starred's, the keyword's and the album's counts in the sidebar each drop by one, and a search for its file name does not find it.
 - [ ] Clicking ★ while zoomed in toggles the star and does not start a pan.
 - [ ] In the viewer, `R` turns the photo clockwise and `Shift+R` anticlockwise, as do the ↻ and ↺ buttons; a landscape photo turned on its side fits the window's height rather than being clipped, zoom and pan still work on the turned photo, and the next photo opens upright. No file's modification time changes.
