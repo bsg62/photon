@@ -106,9 +106,11 @@ README's smoke checklist.
 A keyboard shortcut; hiding a whole folder (Picasa could); a "show hidden photos in place"
 toggle. Each is a follow-up if the user wants it. Two more, from the branch review:
 
-- **Picasa's own `hidden=yes`** in `.picasa.ini` is not read, though stars and faces are. A
-  Picasa user's hidden photos come back visible in photon. Reading it is a `picasa.rs` change
-  plus a rule for which side wins when both have an opinion.
+- **Picasa's own `hidden=yes`** - done in a follow-up (schema 14): read by the Picasa pass and
+  followed on *change*, recorded in `items.picasa_hidden`. photon never writes the line, so
+  mirroring it would undo every unhide in photon on the next scan; following changes lets the
+  most recent answer win. The first read follows `hidden=yes` but not a missing line, so a
+  photo hidden in photon before the pass existed stays hidden.
 - **A keyword carried only by hidden photos** leaves the tag list, and the Settings tag
   manager is fed from it, so renaming another keyword onto that name merges without the
   merge prompt. The rename is a reversible rule, but the prompt is the safeguard.

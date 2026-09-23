@@ -1,4 +1,4 @@
-//! Reads Picasa's per-directory stars, faces and contacts, and writes star flags.
+//! Reads Picasa's per-directory stars, hidden flags, faces and contacts, and writes star flags.
 //!
 //! Picasa writes one INI per directory — `.picasa.ini` on newer versions, `Picasa.ini` on
 //! older ones — with a section per file. photon reads every star and face from it, and
@@ -42,6 +42,8 @@ pub struct Face {
 pub struct FolderIni {
     /// The starred file names, lowercased.
     pub stars: HashSet<String>,
+    /// The file names Picasa has hidden (`hidden=yes`), lowercased. Read, never written.
+    pub hidden: HashSet<String>,
     /// Faces per lowercased file name, in the order the INI lists them.
     pub faces: HashMap<String, Vec<Face>>,
     /// Contact hash to display name, from the `[Contacts2]` section.
@@ -247,6 +249,10 @@ fn parse_folder(text: &str) -> FolderIni {
                     }
                 } else if is_star_key(key) && is_star(value) {
                     ini.stars.insert(name.clone());
+                } else if key.eq_ignore_ascii_case("hidden") && is_star(value) {
+                    // The same truthy spellings as `star`: Picasa writes `yes`, and the
+                    // reader is as lenient about it as it is about stars.
+                    ini.hidden.insert(name.clone());
                 } else if key.eq_ignore_ascii_case("faces") {
                     let faces = parse_faces(value);
                     if !faces.is_empty() {
@@ -536,6 +542,25 @@ mod tests {
               [d.jpg]\nstar=no\n[e.jpg]\nstar=0\n[f.jpg]\nstar=\n",
         );
         assert_eq!(stars(dir.path()), vec!["a.jpg", "b.jpg", "c.jpg"]);
+    }
+
+    #[test]
+    fn reads_picasas_hidden_flag_apart_from_its_star() {
+        let dir = tempfile::tempdir().unwrap();
+        write_file(
+            dir.path(),
+            ".picasa.ini",
+            b"[a.jpg]\nhidden=yes\n[B.JPG]\nHidden=1\nstar=yes\n[c.jpg]\nhidden=no\n[d.jpg]\nstar=yes\n",
+        );
+        let ini = read_folder(dir.path()).unwrap();
+        let mut hidden: Vec<_> = ini.hidden.into_iter().collect();
+        hidden.sort();
+        assert_eq!(hidden, vec!["a.jpg", "b.jpg"]);
+        assert_eq!(
+            stars(dir.path()),
+            vec!["b.jpg", "d.jpg"],
+            "a hidden flag is not a star"
+        );
     }
 
     #[test]

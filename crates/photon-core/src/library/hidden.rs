@@ -30,6 +30,48 @@ impl Library {
         Ok(changed)
     }
 
+    /// What each of a folder's live photos last read from Picasa's INI said about hiding it:
+    /// `None` until the Picasa pass has read it. See [`Library::apply_picasa_hidden`].
+    pub fn folder_picasa_hidden(&self, folder_id: i64) -> Result<Vec<(i64, Option<bool>)>> {
+        let conn = self.reader()?;
+        let mut stmt = conn.prepare_cached(
+            "SELECT id, picasa_hidden FROM items WHERE folder_id = ?1 AND missing_since IS NULL",
+        )?;
+        let rows = stmt
+            .query_map(params![folder_id], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// Records what Picasa's INI now says about hiding each photo, and follows it where it
+    /// *changed*: `(id, ini_says_hidden, follow)`, where `follow` sets `hidden` to the INI's
+    /// answer and a row without it only records the answer. Returns how many photos' `hidden`
+    /// actually changed, which is what decides whether the grid rebuilds.
+    ///
+    /// Edge-triggered rather than mirrored, because photon never writes a `hidden=` line: a
+    /// mirror would undo every unhide in photon on the next scan, since the INI would still
+    /// say `hidden=yes`. The caller decides which rows follow (`scanner::apply_folder_hidden`).
+    pub fn apply_picasa_hidden(&self, changes: &[(i64, bool, bool)]) -> Result<u64> {
+        let mut conn = self.writer();
+        let tx = conn.transaction()?;
+        let mut moved = 0;
+        {
+            let mut record =
+                tx.prepare_cached("UPDATE items SET picasa_hidden = ?2 WHERE id = ?1")?;
+            let mut follow = tx.prepare_cached(
+                "UPDATE items SET hidden = ?2 WHERE id = ?1 AND hidden <> ?2 AND missing_since IS NULL",
+            )?;
+            for (id, hidden, follows) in changes {
+                record.execute(params![id, hidden])?;
+                if *follows {
+                    moved += follow.execute(params![id, hidden])? as u64;
+                }
+            }
+        }
+        tx.commit()?;
+        Ok(moved)
+    }
+
     /// How many live photos are hidden: the sidebar's Hidden row, which shows only while
     /// this is non-zero. Served by `items_hidden`.
     pub fn hidden_count(&self) -> Result<usize> {

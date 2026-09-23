@@ -255,6 +255,14 @@ ALTER TABLE items ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0;
 -- Shaped like `items_folder`, which the grid's per-folder walk reads through.
 CREATE INDEX items_hidden ON items(folder_id, taken_at) WHERE hidden = 1 AND missing_since IS NULL;
 "#,
+    r#"
+-- What Picasa's INI last said about hiding the photo (`hidden=yes`): NULL until the Picasa
+-- pass has read it, then 0 or 1. photon never writes that line, so the two sides cannot be
+-- kept equal the way stars are; instead the INI is followed on *change*, and this column is
+-- how a change is told from a repeat. A photo the user unhid in photon stays visible until
+-- Picasa's own answer changes again.
+ALTER TABLE items ADD COLUMN picasa_hidden INTEGER;
+"#,
 ];
 
 pub fn migrate(conn: &Connection) -> Result<()> {
@@ -506,7 +514,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 13);
+        assert_eq!(version, 14);
         let rules: i64 = conn
             .query_row("SELECT count(*) FROM tag_rules", [], |r| r.get(0))
             .unwrap();
@@ -665,7 +673,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 13);
+        assert_eq!(version, 14);
         let overlay: i64 = conn
             .query_row("SELECT count(*) FROM item_user_tags", [], |r| r.get(0))
             .unwrap();
@@ -715,7 +723,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 13);
+        assert_eq!(version, 14);
         let hash: Option<Vec<u8>> = conn
             .query_row("SELECT content_hash FROM items WHERE id = 1", [], |r| {
                 r.get(0)
@@ -856,7 +864,7 @@ mod tests {
             .unwrap();
         // Hardcoded, like every other version assertion here: `MIGRATIONS.len()` would
         // agree with itself whatever the list did, which is the tripwire removed.
-        assert_eq!(version, 13);
+        assert_eq!(version, 14);
     }
 
     /// Every photo in an existing library comes out of the upgrade visible - a default of
@@ -905,6 +913,6 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 13);
+        assert_eq!(version, 14);
     }
 }
