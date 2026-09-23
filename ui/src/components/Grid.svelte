@@ -276,6 +276,22 @@
       oncompare(library.selectedItemIds);
       return;
     }
+    if (!e.ctrlKey && !e.metaKey && !e.altKey && e.key.toLowerCase() === 'h') {
+      // The menu's Hide (or, in Hidden, Unhide), under the same no-modifier rule as C. Not
+      // Delete: photon never deletes, and a key that reads as "delete" would promise it.
+      // `setHidden` moves the selection to the next photo that stays, so this can be
+      // pressed again and again through Duplicates; the scroll follows it there.
+      const ids = library.selectedItemIds;
+      if (ids.length === 0) return;
+      e.preventDefault();
+      library
+        .setHidden(ids, library.info.view !== 'hidden')
+        .then(() => {
+          if (library.selected !== null) scrollToOffset(library.selected, 'nearest');
+        })
+        .catch(library.reportError);
+      return;
+    }
     if (!NAV_KEYS.includes(e.key) || library.info.len === 0) return;
     e.preventDefault();
     const next = move(sel, e.key as NavKey, sections, columns);
@@ -705,13 +721,13 @@
     {/if}
     {#if library.info.view === 'hidden'}
       <button role="menuitem" onclick={() => withSelection((ids) => library.setHidden(ids, false))}>
-        Unhide {subject}
+        Unhide {subject} (H)
       </button>
     {:else}
       <!-- Not "Delete": photon never deletes a photo. The file stays where it is and the
            Hidden view gives it back. -->
       <button role="menuitem" onclick={() => withSelection((ids) => library.setHidden(ids, true))}>
-        Hide {subject}
+        Hide {subject} (H)
       </button>
     {/if}
     {#if count === 1 && menuCopies && menuCopies.count > 0}
