@@ -138,7 +138,7 @@ describe('LibraryStore', () => {
 
     vi.mocked(api.listAlbums).mockResolvedValue([{ id: 1, name: 'Trip', count: 2 }]);
     vi.mocked(api.listPeople).mockResolvedValue([{ hash: 'abc', name: 'Ada', count: 1 }]);
-    vi.mocked(api.listTags).mockResolvedValue([{ tag: 'beach', count: 3 }]);
+    vi.mocked(api.listTags).mockResolvedValue([{ tag: 'beach', count: 3, total: 3 }]);
     vi.mocked(api.listSavedSearches).mockResolvedValue([
       { id: 7, name: 'Canon', query: 'camera:canon', createdMs: 0 },
     ]);
@@ -192,11 +192,11 @@ describe('LibraryStore', () => {
   it('tag rule changes refetch the collections', async () => {
     const store = new LibraryStore();
     await store.init();
-    vi.mocked(api.listTags).mockResolvedValue([{ tag: 'vacation', count: 1 }]);
+    vi.mocked(api.listTags).mockResolvedValue([{ tag: 'vacation', count: 1, total: 1 }]);
     vi.mocked(api.renameTag).mockResolvedValue();
     await store.renameTag('holiday', 'vacation');
     expect(api.renameTag).toHaveBeenCalledWith('holiday', 'vacation');
-    expect(store.tags).toEqual([{ tag: 'vacation', count: 1 }]);
+    expect(store.tags).toEqual([{ tag: 'vacation', count: 1, total: 1 }]);
 
     vi.mocked(api.listTags).mockResolvedValue([]);
     vi.mocked(api.hideTag).mockResolvedValue();
@@ -204,11 +204,11 @@ describe('LibraryStore', () => {
     expect(api.hideTag).toHaveBeenCalledWith('vacation');
     expect(store.tags).toEqual([]);
 
-    vi.mocked(api.listTags).mockResolvedValue([{ tag: 'holiday', count: 1 }]);
+    vi.mocked(api.listTags).mockResolvedValue([{ tag: 'holiday', count: 1, total: 1 }]);
     vi.mocked(api.restoreTagRule).mockResolvedValue();
     await store.restoreTagRule('holiday');
     expect(api.restoreTagRule).toHaveBeenCalledWith('holiday');
-    expect(store.tags).toEqual([{ tag: 'holiday', count: 1 }]);
+    expect(store.tags).toEqual([{ tag: 'holiday', count: 1, total: 1 }]);
   });
 
   it('a tag change that saved is not reported as failed when the refetch fails', async () => {

@@ -20,6 +20,13 @@ export function renameCheck(
   return existing.some((t) => t.tag === name) ? 'merge' : 'ok';
 }
 
+/** The keywords the sidebar lists: those on at least one photo that is not hidden. The rest
+ *  stay in `library.tags` - the tag manager and its rename check need them - but a sidebar
+ *  row would open an empty view. */
+export function sidebarTags(tags: readonly TagCount[]): TagCount[] {
+  return tags.filter((t) => t.count > 0);
+}
+
 /** The Settings list's filter: a case-insensitive substring. Done here rather than in the
  *  backend because the whole list is already on screen. */
 export function filterTags(tags: readonly TagCount[], query: string): TagCount[] {

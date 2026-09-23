@@ -135,7 +135,9 @@ export interface TagWrite {
   count: number;
 }
 
-export interface TagCount { tag: string; count: number }
+/** `count` is the photos carrying the keyword that are not hidden (the sidebar's number, and
+ *  0 hides it there); `total` includes hidden photos (the tag manager's number). */
+export interface TagCount { tag: string; count: number; total: number }
 /** A tag the user renamed (`target` set) or removed (`target` null). photon applies it
  *  when reading tags; the photo files keep their keywords. */
 export interface TagRule { tag: string; target: string | null }

@@ -32,7 +32,13 @@ fn valid_name(name: &str) -> Result<&str> {
 #[serde(rename_all = "camelCase")]
 pub struct TagCount {
     pub tag: String,
+    /// Photos carrying it that are not hidden: what the sidebar shows, and the sidebar
+    /// leaves out a keyword whose count is 0.
     pub count: i64,
+    /// Every live photo carrying it, hidden or not: what the tag manager shows. A keyword
+    /// carried only by hidden photos stays in this list, or renaming another keyword onto
+    /// its name would merge the two without asking.
+    pub total: i64,
 }
 
 /// Each effective keyword row with the rules applied: `(item_id, tag, src, seq)`. A
@@ -108,9 +114,11 @@ impl Library {
     pub fn tags_with_counts(&self) -> Result<Vec<TagCount>> {
         let conn = self.reader()?;
         let mut stmt = conn.prepare(&format!(
-            "SELECT e.tag, count(DISTINCT e.item_id)
+            "SELECT e.tag,
+                    count(DISTINCT CASE WHEN i.hidden = 0 THEN e.item_id END),
+                    count(DISTINCT e.item_id)
              FROM ({EFFECTIVE_TAGS}) e JOIN items i ON i.id = e.item_id
-             WHERE i.missing_since IS NULL AND i.hidden = 0
+             WHERE i.missing_since IS NULL
              GROUP BY e.tag"
         ))?;
         let mut tags = stmt
@@ -118,6 +126,7 @@ impl Library {
                 Ok(TagCount {
                     tag: r.get(0)?,
                     count: r.get(1)?,
+                    total: r.get(2)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;

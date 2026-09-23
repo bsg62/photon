@@ -344,7 +344,7 @@
                   {:else}
                     <div class="meta">
                       <span class="name">{tag.tag}</span>
-                      <span class="details">{photoCountLabel(tag.count)}</span>
+                      <span class="details">{photoCountLabel(tag.total)}</span>
                     </div>
                     <div class="actions">
                       <button onclick={() => startRename(tag)}>Rename</button>

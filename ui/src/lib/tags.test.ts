@@ -1,15 +1,29 @@
 import { describe, expect, it } from 'vitest';
 import type { TagCount, TagRule } from './api';
-import { filterTags, renameCheck, ruleLabel } from './tags';
+import { filterTags, renameCheck, ruleLabel, sidebarTags } from './tags';
 
 const tags: TagCount[] = [
-  { tag: 'Beach', count: 3 },
-  { tag: 'holiday', count: 1 },
+  { tag: 'Beach', count: 3, total: 3 },
+  { tag: 'holiday', count: 1, total: 1 },
 ];
 
 const rules: TagRule[] = [{ tag: 'junk', target: null }];
 
+describe('sidebarTags', () => {
+  it('leaves out a keyword carried only by hidden photos', () => {
+    const list: TagCount[] = [
+      { tag: 'sea', count: 1, total: 2 },
+      { tag: 'secret', count: 0, total: 1 },
+    ];
+    expect(sidebarTags(list).map((t) => t.tag)).toEqual(['sea']);
+  });
+});
+
 describe('renameCheck', () => {
+  it('asks before merging onto a keyword carried only by hidden photos', () => {
+    expect(renameCheck('holiday', 'secret', [...tags, { tag: 'secret', count: 0, total: 1 }], rules)).toBe('merge');
+  });
+
   it.each([
     ['a blank name is refused', 'holiday', '   ', 'blank'],
     ['the same name is no change', 'holiday', ' holiday ', 'same'],

@@ -352,6 +352,35 @@ mod tests {
         assert_eq!(lib.duplicate_count().unwrap(), 0);
     }
 
+    /// A keyword carried only by hidden photos is still a keyword: the tag manager and its
+    /// rename check read this list, and dropping it would let a rename onto that name merge
+    /// the two without the merge prompt. `count` is what the sidebar shows (visible photos),
+    /// `total` what the tag manager does.
+    #[test]
+    fn a_keyword_only_on_hidden_photos_is_still_listed() {
+        let (_dir, lib) = temp_library();
+        let (_w, folder) = seed_folder(&lib, Path::new("/p"));
+        let ids = lib
+            .insert_items(&[
+                new_item(folder, "/p/a.jpg", 1),
+                new_item(folder, "/p/b.jpg", 2),
+            ])
+            .unwrap();
+        lib.add_items_tag(&[ids[0]], "secret").unwrap();
+        lib.add_items_tag(&ids, "sea").unwrap();
+        lib.set_hidden(&[ids[0]], true).unwrap();
+        let tags: Vec<(String, i64, i64)> = lib
+            .tags_with_counts()
+            .unwrap()
+            .into_iter()
+            .map(|t| (t.tag, t.count, t.total))
+            .collect();
+        assert_eq!(
+            tags,
+            vec![("sea".to_string(), 1, 2), ("secret".to_string(), 0, 1)]
+        );
+    }
+
     /// A folder is placed in the Hidden view by its oldest *hidden* photo, as Starred places
     /// one by its oldest starred photo, so the sidebar's year groups agree with the grid.
     #[test]
