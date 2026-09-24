@@ -40,6 +40,10 @@ const SUSPECT_WAIT: Duration = Duration::from_secs(1);
 
 /// How long a suspect waits, after failing to get `decode_lock` in time, before it is even
 /// eligible to try again - doubling on each further timeout up to [`SUSPECT_BACKOFF_MAX`].
+/// `State::push` honours this too: a push for an id currently backing off only raises the
+/// priority it will run at, never readmitting it before `not_before` - so nothing that pushes
+/// (`ThumbService::request`'s own retry, `set_visible`, `prioritize`, a rescan's
+/// `enqueue_pending`) can make it eligible early either, which is what "even" means here.
 /// Without this, a suspect popped again the moment it's re-queued retries within about a
 /// millisecond, waits out another [`SUSPECT_WAIT`] as a writer - blocking every new `read()`
 /// behind it for that whole second, per parking_lot's task-fairness - times out again, and
@@ -98,8 +102,9 @@ struct Suspects {
 struct SuspectBackoff {
     steps: parking_lot::Mutex<std::collections::HashMap<i64, u32>>,
     /// Every timeout across every id, scoped to one `SuspectBackoff` (so one service's own
-    /// tests aren't disturbed by another running concurrently). Read-only outside tests - see
-    /// `bump`.
+    /// tests aren't disturbed by another running concurrently). Write-only outside tests:
+    /// production only ever increments it, from `bump`, and nothing there reads it back - a
+    /// test loads it to count how many real `decode_lock` attempts actually happened.
     attempts: std::sync::atomic::AtomicUsize,
 }
 
@@ -123,6 +128,21 @@ impl SuspectBackoff {
     /// on anything, so its next timeout (if there is one, some other day) starts fresh.
     fn reset(&self, id: i64) {
         self.steps.lock().remove(&id);
+    }
+}
+
+impl Suspects {
+    /// Clears every trace of `id`'s backoff - its step count (`SuspectBackoff::reset`) and
+    /// any pending `ThumbQueue::delayed` entry (`ThumbQueue::forget`) - once its fate no
+    /// longer depends on winning `decode_lock` again: it has decoded, or it has been found
+    /// gone, already failed, or failed outright (`DEATHS_TO_FAIL`). Without the queue half, a
+    /// delayed entry from before that happened would sit until its own deadline, waking a
+    /// worker for a job with nothing left to decide - and `get_or_generate` resolves an id
+    /// without ever going through the queue at all, so a delayed entry can genuinely outlive
+    /// the decision that makes it moot.
+    fn resolved(&self, id: i64, queue: &ThumbQueue) {
+        self.backoff.reset(id);
+        queue.forget(id);
     }
 }
 
@@ -275,12 +295,18 @@ impl ThumbService {
     pub fn request(&self, id: i64, size: ThumbSize, timeout: Duration) -> Result<PathBuf> {
         let deadline = Instant::now() + timeout;
         // Two rounds: the first may only wait out a job already running for an older
-        // version of the file.
+        // version of the file. A suspect currently backing off (`ThumbQueue::delayed`) is
+        // given up on immediately instead: `push_reporting_delay` left it exactly where it
+        // was rather than readmitting it (see `SUSPECT_BACKOFF_START`), so there is nothing
+        // here that will resolve before its own deadline, and a second round would only cost
+        // this request the wait without ever attempting `decode_lock` again.
         for _ in 0..2 {
             if let Some(path) = self.cached(id, size)? {
                 return Ok(path);
             }
-            self.queue.push(id, Priority::Visible);
+            if self.queue.push_reporting_delay(id, Priority::Visible) {
+                return Err(Error::ThumbUnavailable(id));
+            }
             if !self.queue.wait_for(id, deadline) {
                 return Err(Error::ThumbTimeout(id));
             }
@@ -379,9 +405,14 @@ fn process(
     render: RenderFn,
 ) -> Result<()> {
     let Some(item) = lib.item(id)? else {
+        // Purged out from under a queued job: gone, so any backoff held against it is moot.
+        suspects.resolved(id, queue);
         return Ok(());
     };
     if item.missing_since.is_some() || item.thumb_state == ThumbState::Failed {
+        // Already decided by some other means (a rescan, an earlier `get_or_generate` call
+        // that bypassed the queue) since whatever queued this job: see `Suspects::resolved`.
+        suspects.resolved(id, queue);
         return Ok(());
     }
     let key = item.thumb_key();
@@ -397,6 +428,7 @@ fn process(
             lib.set_thumb_state_if_unchanged(&item, ThumbState::Ready, None)?;
         }
         inflight.clear(id);
+        suspects.resolved(id, queue);
         return Ok(());
     }
     let deaths = inflight.deaths(id, key);
@@ -413,6 +445,7 @@ fn process(
         // refuses a record whose key doesn't match the item now at `id`, so the record could
         // never have blamed whatever is there after a change. This is just hygiene.
         inflight.clear(id);
+        suspects.resolved(id, queue);
         return Ok(());
     }
     // Acquired before `begin`, not after: a photo blocked here - waiting its turn behind a
@@ -423,7 +456,10 @@ fn process(
             Some(guard) => {
                 // No longer waiting on anything - a later timeout, if there ever is one,
                 // starts from the short wait again rather than wherever this run left off.
-                suspects.backoff.reset(id);
+                // Also drops any delayed entry this id might somehow still have (it
+                // shouldn't, having just been admitted to get here, but see
+                // `Suspects::resolved`).
+                suspects.resolved(id, queue);
                 DecodeGuard::Suspect(guard)
             }
             None => {
@@ -518,6 +554,57 @@ mod tests {
     use crate::library::NewItem;
     use crate::testutil::{jpeg_bytes, new_item, seed_folder, write_file};
     use tempfile::TempDir;
+
+    /// Pure logic, no real time needed: `bump` doubles the wait from `SUSPECT_BACKOFF_START`
+    /// on each call for the same id, stops climbing once it hits `SUSPECT_BACKOFF_MAX`,
+    /// `reset` starts that id's schedule over from the top, and a different id's schedule is
+    /// independent of it. Probe: change `*step += 1` to a no-op (so every call returns the
+    /// same wait) or drop the `.min(SUSPECT_BACKOFF_MAX)` cap, and this goes RED on the
+    /// doubling or the cap assertion respectively; drop the `steps.lock().remove` in `reset`
+    /// and it goes RED on the post-reset assertion instead.
+    #[test]
+    fn suspect_backoff_doubles_then_caps_then_resets_per_id() {
+        let backoff = SuspectBackoff::default();
+
+        assert_eq!(
+            backoff.bump(1),
+            SUSPECT_BACKOFF_START,
+            "first timeout: the short wait"
+        );
+        assert_eq!(
+            backoff.bump(1),
+            SUSPECT_BACKOFF_START * 2,
+            "second: doubled"
+        );
+        assert_eq!(
+            backoff.bump(1),
+            SUSPECT_BACKOFF_START * 4,
+            "third: doubled again"
+        );
+
+        // Enough further timeouts to run well past the cap.
+        for _ in 0..10 {
+            backoff.bump(1);
+        }
+        assert_eq!(
+            backoff.bump(1),
+            SUSPECT_BACKOFF_MAX,
+            "doubling stops climbing once it reaches the cap"
+        );
+
+        backoff.reset(1);
+        assert_eq!(
+            backoff.bump(1),
+            SUSPECT_BACKOFF_START,
+            "reset starts id 1's schedule over from the top"
+        );
+
+        assert_eq!(
+            backoff.bump(2),
+            SUSPECT_BACKOFF_START,
+            "a different id's schedule was never touched by id 1's climb"
+        );
+    }
 
     fn setup(files: &[(&str, Vec<u8>)]) -> (TempDir, Arc<Library>, Arc<ThumbCache>, Vec<i64>) {
         let dir = tempfile::tempdir().unwrap();
@@ -1126,11 +1213,15 @@ mod tests {
     ///
     /// The two spin loops below need a bound generous enough never to false-fail under a slow
     /// or loaded CI runner, so each has its own timeout that panics loudly (with a clear
-    /// message) rather than hanging the suite forever if its signal never arrives - the failure
-    /// mode of a wrong fix here is a hang, not a silent false pass, so a generous timeout costs
-    /// nothing except a slower failure. The final assertion's bound is untouched by that
-    /// generosity: nothing in the spin loops makes the ordinary decode start any later than the
-    /// fix actually allows, so it can still only ever false-*pass*, never false-*fail*.
+    /// message) rather than hanging the suite forever if its *own* signal never arrives - a
+    /// setup step silently broken some other way, not the fix this test is actually about. A
+    /// wrong fix here does not hang at all: both signals still arrive (the hang decode still
+    /// starts, the suspect still registers as a waiting writer), so the spin loops pass either
+    /// way, and the reverted code fails cleanly and quickly on the final timing assertion below
+    /// instead (reliably 3.003s, per the reviewer's measurement above). The final assertion's
+    /// bound is untouched by the spin loops' generosity: nothing in them makes the ordinary
+    /// decode start any later than the fix actually allows, so it can still only ever
+    /// false-*pass*, never false-*fail*.
     #[test]
     fn a_stuck_ordinary_decode_behind_a_waiting_suspect_does_not_stall_the_pool() {
         static HANG_STARTED: OnceLock<()> = OnceLock::new();
@@ -1267,6 +1358,139 @@ mod tests {
         );
 
         // Let the hang decode finish so the service can be dropped cleanly.
+        service.wait_idle();
+    }
+
+    /// The reviewer's exact defeat of the backoff: `request`'s own retries readmitting a
+    /// delayed suspect early. Same construction as the hammer test above - the hang decode's
+    /// render has actually started before the suspect is even queued - but here the suspect
+    /// is left to time out exactly once on its own (matching the "a suspect that has timed
+    /// out once" setup), and then `request` is called for it twice, the way `protocol.rs`'s
+    /// `thumb` handler would on two separate 503-triggered UI retries.
+    ///
+    /// Before the fix, each `request` call pushed the suspect back into `order` immediately
+    /// (`State::push` had no guard against readmitting a delayed id), and a free worker would
+    /// pop it and burn another `SUSPECT_WAIT` finding the write lock still held by the hang
+    /// decode - about 1s and one fresh `decode_lock` attempt per call, on top of the one from
+    /// setup. With the fix, that same `push` (inside `push_reporting_delay`) leaves the
+    /// suspect exactly where it was, so `request` gives up at once and no worker ever touches
+    /// it again until its own deadline.
+    ///
+    /// Probe: revert `State::push`'s delayed check (as in the queue-level test) and this goes
+    /// RED - not on the loop's own elapsed-time assertions, which `push_reporting_delay`'s
+    /// separate read of `delayed` still passes even with the readmission bug back (it isn't
+    /// what decides whether a worker was set loose on the id), but on the final
+    /// attempts-count assertion below: a free worker picks up the wrongly-readmitted job and
+    /// burns another `SUSPECT_WAIT` (up to 1s) attempting the lock, so the fixed-length wait
+    /// after the loop needs to be longer than that to reliably observe it - shorter windows
+    /// (tried down to 300ms) let the assertion complete before the attempt lands and pass by
+    /// accident.
+    #[test]
+    fn a_request_for_an_already_delayed_suspect_returns_promptly_without_a_new_attempt() {
+        static HANG_STARTED: OnceLock<()> = OnceLock::new();
+
+        fn probe(
+            cache: &ThumbCache,
+            source: &Path,
+            orientation: u8,
+            edit: Edit,
+        ) -> Result<(DynamicImage, DynamicImage)> {
+            if source.to_string_lossy().contains("hang") {
+                let _ = HANG_STARTED.set(());
+                std::thread::sleep(Duration::from_secs(6));
+            }
+            default_render(cache, source, orientation, edit)
+        }
+
+        let (_dir, lib, cache, ids) = setup(&[
+            ("a_hang.jpg", jpeg_bytes(40, 20)),
+            ("b_suspect.jpg", jpeg_bytes(40, 20)),
+        ]);
+        let (hang_id, suspect_id) = (ids[0], ids[1]);
+        let suspect_key = item_key(&lib, suspect_id);
+        let inflight = InFlight::new(cache.root());
+        std::mem::forget(inflight.begin(suspect_id, suspect_key));
+        inflight.recover();
+        // See `one_death_is_forgiven`'s comment: only one `InFlight` at a time can hold the
+        // cache root's lock file.
+        drop(inflight);
+
+        let service = ThumbService::start_with(lib.clone(), cache, 2, probe);
+
+        service.prioritize(&[hang_id], Priority::Background);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while HANG_STARTED.get().is_none() {
+            assert!(Instant::now() < deadline, "the hang decode never started");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+
+        // Let the suspect make exactly its one setup timeout, the way the hammer test's own
+        // sleep does, but stop as soon as it has happened rather than waiting out a fixed
+        // duration - this is standing in for "a suspect that has timed out once".
+        service.prioritize(&[suspect_id], Priority::Background);
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            if service
+                .suspects
+                .backoff
+                .attempts
+                .load(std::sync::atomic::Ordering::SeqCst)
+                >= 1
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the suspect never made its first attempt"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let attempts_after_setup = service
+            .suspects
+            .backoff
+            .attempts
+            .load(std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(
+            attempts_after_setup, 1,
+            "exactly the one attempt from the setup timeout"
+        );
+
+        for round in 0..2 {
+            let start = Instant::now();
+            assert!(
+                matches!(
+                    service.request(suspect_id, ThumbSize::Grid, Duration::from_secs(10)),
+                    Err(Error::ThumbUnavailable(_))
+                ),
+                "round {round}"
+            );
+            assert!(
+                start.elapsed() < Duration::from_millis(500),
+                "round {round} took {:?} - should return promptly while backing off, not wait \
+                 out another SUSPECT_WAIT",
+                start.elapsed()
+            );
+        }
+
+        // Longer than one `SUSPECT_WAIT`: on reverted code a free worker would pick up the
+        // wrongly-readmitted job and take up to a second finding the write lock still held
+        // by the hang decode before `bump` runs - too short a wait here would let this
+        // assertion pass by accident, exactly the failure mode this comment on the test
+        // itself exists to head off. On the fixed code nothing is running for this id at
+        // all, so the wait only ever costs time, never correctness in either direction.
+        std::thread::sleep(Duration::from_millis(1200));
+        assert_eq!(
+            service
+                .suspects
+                .backoff
+                .attempts
+                .load(std::sync::atomic::Ordering::SeqCst),
+            attempts_after_setup,
+            "neither request call made a fresh decode_lock attempt"
+        );
+
+        // Let the hang decode (and the suspect's eventual retry behind it) finish so the
+        // service can be dropped cleanly.
         service.wait_idle();
     }
 

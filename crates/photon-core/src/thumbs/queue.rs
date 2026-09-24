@@ -55,6 +55,20 @@ impl State {
             *held = (*held).min(priority);
             return;
         }
+        if let Some(entry) = self
+            .delayed
+            .iter_mut()
+            .find(|&&mut (_, existing, _)| existing == id)
+        {
+            // Already backing off: a push while it's delayed updates the priority it will
+            // run at once eligible (never lowering it - a Visible request must still beat
+            // a Background one when the deadline arrives), but never readmits it early.
+            // Ignoring `delayed` here is exactly what let `request`'s own retries, and
+            // `set_visible`/`prioritize`/`enqueue_pending`, defeat the backoff by popping
+            // the id again the moment they ran - see `SUSPECT_BACKOFF_START`.
+            entry.2 = entry.2.min(priority);
+            return;
+        }
         if let Some(&(current, seq)) = self.entries.get(&id) {
             if current <= priority {
                 return;
@@ -95,13 +109,19 @@ impl State {
         Some(id)
     }
 
-    /// Backs `id` off until `not_before`: removed from `order` if it's there (it never is, in
-    /// practice - `defer` is only called from inside a job already popped and in flight), and
-    /// any existing delay for the same id replaced rather than duplicated, so a job that keeps
-    /// timing out doesn't accumulate one entry per attempt.
+    /// Backs `id` off until `not_before`. `defer` is only called from inside a job already
+    /// popped and in flight, so `id` is already absent from `order` and `entries` by the
+    /// time this runs - there is nothing here to remove from either. Any existing delay for
+    /// the same id is replaced rather than duplicated, so a job that keeps timing out doesn't
+    /// accumulate one entry per attempt.
     fn delay(&mut self, id: i64, priority: Priority, not_before: Instant) {
         self.delayed.retain(|&(_, existing, _)| existing != id);
         self.delayed.push((not_before, id, priority));
+    }
+
+    /// Drops any pending backoff for `id` with no replacement - see `ThumbQueue::forget`.
+    fn forget(&mut self, id: i64) {
+        self.delayed.retain(|&(_, existing, _)| existing != id);
     }
 
     /// Moves every delayed job whose time has come into `order`, where `pop` can find it.
@@ -139,6 +159,19 @@ impl ThumbQueue {
     pub fn push(&self, id: i64, priority: Priority) {
         self.state.lock().push(id, priority);
         self.changed.notify_all();
+    }
+
+    /// Like `push`, but also reports whether `id` is (still) backing off (`State::delayed`)
+    /// once the push has been applied - so a caller with its own round-trip budget
+    /// (`ThumbService::request`) can give up immediately instead of waiting on a job that
+    /// cannot run before its own deadline.
+    pub fn push_reporting_delay(&self, id: i64, priority: Priority) -> bool {
+        let mut state = self.state.lock();
+        state.push(id, priority);
+        let delayed = state.delayed.iter().any(|&(_, existing, _)| existing == id);
+        drop(state);
+        self.changed.notify_all();
+        delayed
     }
 
     pub fn push_many(&self, ids: &[i64], priority: Priority) {
@@ -196,6 +229,16 @@ impl ThumbQueue {
     /// wait it out.
     pub fn defer(&self, id: i64, priority: Priority, not_before: Instant) {
         self.state.lock().delay(id, priority, not_before);
+        self.changed.notify_all();
+    }
+
+    /// Drops `id`'s pending backoff, if it has one - used once `id`'s fate no longer depends
+    /// on winning `decode_lock` again (it decoded, or was failed outright): see
+    /// `Suspects::resolved`. Without this, a delayed entry from before that happened would
+    /// sit in the queue until its own deadline, waking a worker for a job with nothing left
+    /// to decide.
+    pub fn forget(&self, id: i64) {
+        self.state.lock().forget(id);
         self.changed.notify_all();
     }
 
@@ -277,6 +320,15 @@ mod tests {
     impl ThumbQueue {
         fn has_waiter(&self, id: i64) -> bool {
             self.state.lock().waiters.contains_key(&id)
+        }
+
+        fn delayed_priority(&self, id: i64) -> Option<Priority> {
+            self.state
+                .lock()
+                .delayed
+                .iter()
+                .find(|&&(_, existing, _)| existing == id)
+                .map(|&(_, _, priority)| priority)
         }
     }
 
@@ -518,6 +570,84 @@ mod tests {
         let id = q.pop_blocking().unwrap();
         q.done(id);
         waiter.join().unwrap();
+    }
+
+    /// A push arriving while `id` is backing off (`defer`) must not readmit it before its
+    /// deadline - that was exactly what let `request`'s own retries (and `set_visible`,
+    /// `prioritize`, `enqueue_pending`) defeat `SUSPECT_BACKOFF_START`, popping the same
+    /// suspect again within about a millisecond of it having just timed out. The raised
+    /// priority still takes effect once the deadline arrives, and not a moment before.
+    ///
+    /// Probe: revert `State::push`'s delayed check (drop the `self.delayed.iter_mut().find`
+    /// branch) - `q.is_empty()` then fails RED, because the plain push readmits id 1 into
+    /// `order` immediately instead of leaving it delayed.
+    #[test]
+    fn a_push_of_a_delayed_id_raises_its_priority_without_readmitting_it_early() {
+        let q = Arc::new(ThumbQueue::new());
+        let not_before = Instant::now() + Duration::from_millis(80);
+        q.defer(1, Priority::Background, not_before);
+
+        q.push(1, Priority::Visible);
+        assert!(
+            q.is_empty(),
+            "still backing off - a later push must not readmit it early"
+        );
+        assert_eq!(
+            q.delayed_priority(1),
+            Some(Priority::Visible),
+            "but the priority it will run at is raised in place"
+        );
+
+        let worker = {
+            let q = q.clone();
+            std::thread::spawn(move || q.pop_blocking())
+        };
+        assert_eq!(worker.join().unwrap(), Some(1));
+        assert!(
+            Instant::now() >= not_before,
+            "served no earlier than its deadline"
+        );
+        q.done(1);
+    }
+
+    /// `push_reporting_delay` is what `request` uses to tell a delayed id apart from an
+    /// ordinary one without a second lock/state inspection: it must report the same
+    /// admission decision `push` itself makes.
+    #[test]
+    fn push_reporting_delay_tells_a_backing_off_id_from_an_ordinary_one() {
+        let q = ThumbQueue::new();
+        q.defer(
+            1,
+            Priority::Background,
+            Instant::now() + Duration::from_secs(5),
+        );
+
+        assert!(
+            q.push_reporting_delay(1, Priority::Visible),
+            "id 1 is still backing off"
+        );
+        assert!(
+            !q.push_reporting_delay(2, Priority::Visible),
+            "id 2 was never delayed, so it's admitted as usual"
+        );
+        assert_eq!(drain(&q), [2], "only the ordinary id was actually queued");
+    }
+
+    /// `forget` clears a pending backoff outright - used once an id's fate no longer depends
+    /// on winning `decode_lock` again, so a stale delayed entry doesn't sit around waking a
+    /// worker for a job that has already been decided some other way (`ThumbService`'s
+    /// `get_or_generate` bypasses the queue entirely, so this can happen for real).
+    #[test]
+    fn forget_drops_a_pending_backoff_with_no_replacement() {
+        let q = ThumbQueue::new();
+        q.defer(
+            1,
+            Priority::Background,
+            Instant::now() + Duration::from_secs(5),
+        );
+        q.forget(1);
+        assert!(q.delayed_priority(1).is_none());
+        assert!(q.is_empty(), "not admitted either - just gone");
     }
 
     #[test]

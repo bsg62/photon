@@ -3,6 +3,7 @@
   import { mediaUrl, type GridEntry } from '../lib/api';
   import { library } from '../lib/library.svelte';
   import { createThumbRequest } from '../lib/thumb-request.svelte';
+  import { createTileRetry } from '../lib/tile-retry.svelte';
   import { copiesMarkShown } from '../lib/copies';
   import Icon from './Icon.svelte';
 
@@ -30,14 +31,13 @@
     tile: number;
   } = $props();
 
-  const RETRY_MS = 2000;
-  let status = $state<'loading' | 'loaded' | 'broken'>('loading');
-  let attempt = $state(0);
-  let retryTimer: ReturnType<typeof setTimeout> | undefined;
   const key = $derived(entry ? `thumb/${entry.id}/grid/${entry.thumbKey}` : '');
   const request = createThumbRequest();
+  const retry = createTileRetry();
   const src = $derived(
-    request.requested ? mediaUrl(request.requested) + (attempt ? `?retry=${attempt}` : '') : undefined,
+    request.requested
+      ? mediaUrl(request.requested) + (retry.attempt ? `?retry=${retry.attempt}` : '')
+      : undefined,
   );
 
   // Tiles are keyed by grid offset, not photo id, so the entry changes under a live tile
@@ -56,35 +56,32 @@
   // and resetting it for a key the tile has not asked for yet would blank a loaded
   // thumbnail - including when a scroll comes straight back to the photo already showing,
   // where no new `src` is set and so no `onload` would ever arrive to clear it again.
-  // A pending retry belongs to the old photo, so it is cancelled here too.
+  // A pending retry belongs to the old photo, so it is cancelled here too - `retry.reset`
+  // itself covers that; see `createTileRetry`.
   $effect(() => {
     void request.requested;
-    status = 'loading';
-    attempt = 0;
-    return () => {
-      clearTimeout(retryTimer);
-      retryTimer = undefined;
-    };
+    retry.reset();
+    return () => retry.cancel();
   });
 
   // A tile can break for reasons that later go away: a thumbnail that was still queued
-  // when the tile scrolled out answers 503, and both attempts can fall in that window.
-  // Nothing else resets it (`key` doesn't change when the thumbnail becomes ready, and
-  // the component isn't remounted), so retry whenever the library moves on. Only a broken
-  // tile is touched: resetting a loading or loaded one would flicker.
-  // `status` is written here, so it is read through `untrack` — the effect depends on
-  // `pageTick` alone and cannot re-trigger itself.
+  // when the tile scrolled out answers 503, and both attempts can fall in that window - the
+  // common case `createTileRetry`'s own quick retry already covers. This effect is a second,
+  // independent path back to loading for the rarer case `retry`'s own slower retries don't
+  // (yet) reach on their own - `key` doesn't change when the thumbnail becomes ready, and
+  // the component isn't remounted, so an unrelated library change is worth trying again
+  // for too. Only a broken tile is touched: resetting a loading or loaded one would flicker.
+  // `retry.status` is written here (via `reset`), so it is read through `untrack` — the
+  // effect depends on `pageTick` alone and cannot re-trigger itself.
   $effect(() => {
     void library.pageTick;
-    if (untrack(() => status) === 'broken') {
-      status = 'loading';
-      attempt = 0;
+    if (untrack(() => retry.status) === 'broken') {
+      retry.reset();
     }
   });
 
   function onerror() {
-    if (attempt === 0) retryTimer = setTimeout(() => (attempt = 1), RETRY_MS);
-    else status = 'broken';
+    retry.failed();
   }
 </script>
 
@@ -99,9 +96,17 @@
   ondblclick={onopen}
   oncontextmenu={onmenu}
 >
-  {#if entry && src && status !== 'broken'}
-    <img {src} alt="" draggable="false" decoding="async" class:loaded={status === 'loaded'} onload={() => (status = 'loaded')} {onerror} />
-  {:else if status === 'broken'}
+  {#if entry && src && retry.status !== 'broken'}
+    <img
+      {src}
+      alt=""
+      draggable="false"
+      decoding="async"
+      class:loaded={retry.status === 'loaded'}
+      onload={() => retry.loaded()}
+      {onerror}
+    />
+  {:else if retry.status === 'broken'}
     <span class="broken" title="This photo can't be shown"><Icon name="triangle-alert" size={28} /></span>
   {/if}
   {#if entry?.starred}
