@@ -56,8 +56,10 @@ an INI, does not appear, and reading that database is its own project.
 faces, so the reader and the writer keep sharing one line classifier:
 
 - `albums: HashMap<String, String>` - token to name, from each `[.album:<token>]` section's
-  `name=`. An `.album` section with no `name=` is still an album, named by its token until some
-  INI names it.
+  `name=`. An `.album` section with no `name=` defines nothing: recorded under its token as a
+  name, it would rename an album another folder's INI had named, back and forth with every
+  scan. Its token is still an album as soon as a photo names it (below), listed under the
+  token until some INI gives it a name.
 - `item_albums: HashMap<String, Vec<String>>` - lowercased file name to its tokens, from
   `albums=`, split on commas and trimmed; empty tokens are dropped and repeats removed.
 
@@ -108,9 +110,10 @@ That is the faces rule: "the INI says nothing" is an answer, "the INI could not 
 This is the existing post-walk pass over `WalkOutcome.walked`, so `scan_watched` and
 `scan_subtree` both get it without new wiring.
 
-**`ScanReport::realbumed`** counts photos whose Picasa membership changed plus albums renamed,
-and is folded into `touched_rows` - a rename alone must refresh, because only the sidebar shows
-it. CLAUDE.md's list of counters gains it.
+**`ScanReport::realbumed`** counts photos whose Picasa membership changed plus albums inserted
+or renamed, and is folded into `touched_rows` - a rename alone must refresh, because only the
+sidebar shows it. A rescan of an unchanged INI must count 0, or the grid rebuilds after every
+scan forever. CLAUDE.md's list of counters gains it.
 
 **Reaching the screen** needs nothing new: `touched_rows` → the end-of-scan `refresh_grid` →
 `library_changed` → the UI re-reads the grid, and on every grid version it already runs
@@ -134,8 +137,10 @@ stays a list of ids and already includes Picasa albums.
 - **Sidebar (`FolderTree.svelte`).** One list, as today. A Picasa album carries a vendored
   Lucide icon after its name, titled "From Picasa. Change it in Picasa." It has no context
   menu: its only items would be Rename and Delete. Clicking it opens the Album view.
-- **Grid (`Grid.svelte`).** **Add to album** lists photon albums only. In a Picasa album's
-  view, **Remove … from** is not offered, and the empty message does not say "Right-click a
+- **Grid (`Grid.svelte`).** **Add to album** lists photon albums only. **Remove … from** is
+  offered only when the open album is one of photon's own - asked as "is it in the list and
+  not Picasa's", not "is it Picasa's", because a Picasa album that just lost its last photo
+  has left the list and would otherwise read as editable, and the empty message does not say "Right-click a
   photo to add it" (a Picasa album is empty on screen only in a race, since an empty one leaves
   the sidebar).
 - **Viewer info panel (`Viewer.svelte`).** Checkboxes for photon albums, as today. Below them,
