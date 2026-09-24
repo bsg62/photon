@@ -1229,6 +1229,14 @@ impl Engine {
     /// then waits for the startup thread to finish (it checks `shutting_down` at each of
     /// its own checkpoints, so this doesn't wait for it to run to completion).
     pub fn shutdown(&self) {
+        // Disarmed first, before anything below that can itself stall - `stop_watcher` has.
+        // A kill during that stretch is a deliberate quit already under way, not a crash;
+        // waiting until `thumbs.close()` (which disarms again - harmless, see its own doc)
+        // would leave every photo still in flight to be misread as having taken photon down
+        // with it. This still has to run *before* `stop_watcher`, not instead of the later
+        // `close()`: the queue itself must not stop taking jobs until after `stop_watcher`,
+        // so a watcher-driven scan racing this can't enqueue into a pool already gone.
+        self.thumbs.disarm();
         self.shutting_down.store(true, Ordering::SeqCst);
         loop {
             let ids: Vec<i64> = self.scans.lock().keys().copied().collect();

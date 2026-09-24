@@ -26,6 +26,14 @@ use std::{
 /// cap costs no throughput worth having.
 const MAX_WORKERS: usize = 8;
 
+/// How long a suspect's decode waits for `decode_lock` exclusively before backing off.
+/// parking_lot's `RwLock` is task-fair, so once the suspect is waiting on `write()`, every
+/// later `read()` queues behind that wait too, even for an unrelated photo; this is short
+/// enough that an ordinary decode stuck behind it does not stall the whole pool for long, and
+/// long enough that an ordinary decode taking its usual, brief time still lets the suspect
+/// through without a pointless retry. See `process`.
+const SUSPECT_WAIT: Duration = Duration::from_secs(1);
+
 /// Worker threads for thumbnail generation: all cores but one, so the UI stays responsive,
 /// and never more than [`MAX_WORKERS`].
 pub fn default_workers() -> usize {
@@ -104,7 +112,7 @@ impl ThumbService {
                         while let Some(id) = queue.pop_blocking() {
                             let _guard = DoneGuard(&queue, id);
                             if let Err(err) =
-                                process(&lib, &cache, &inflight, &decode_lock, id, render)
+                                process(&lib, &cache, &inflight, &decode_lock, &queue, id, render)
                             {
                                 tracing::warn!(id, %err, "thumbnail job failed");
                             }
@@ -139,11 +147,21 @@ impl ThumbService {
         self.queue.push_many(ids, priority);
     }
 
+    /// Disarms the crash-loop guard: a deliberate quit is not the kind of death it watches
+    /// for, so nothing from here on should be left for the next launch to misread as one.
+    /// Idempotent - `close` calls it again itself, right before the queue stops taking jobs;
+    /// a caller that needs the guard disarmed *earlier* than that (`Engine::shutdown` does,
+    /// because it does other things first that can themselves stall) calls this directly.
+    pub fn disarm(&self) {
+        self.inflight.disarm();
+    }
+
     /// Closes the queue so every worker finishes its current job and then stops.
     /// Does not join the workers itself; `Drop` still does that.
     ///
     /// Disarms the crash-loop guard first: a deliberate close is not the kind of death it
-    /// watches for, so no marker from it should survive to be misread as one.
+    /// watches for, so no marker from it should survive to be misread as one. Safe to call
+    /// even if `disarm` already ran - it just sweeps an already-empty directory again.
     pub fn close(&self) {
         self.inflight.disarm();
         self.queue.close();
@@ -170,6 +188,7 @@ impl ThumbService {
             &self.cache,
             &self.inflight,
             &self.decode_lock,
+            &self.queue,
             id,
             self.render,
         )?;
@@ -288,6 +307,7 @@ fn process(
     cache: &ThumbCache,
     inflight: &InFlight,
     decode_lock: &RwLock<()>,
+    queue: &ThumbQueue,
     id: i64,
     render: RenderFn,
 ) -> Result<()> {
@@ -298,6 +318,20 @@ fn process(
         return Ok(());
     }
     let key = item.thumb_key();
+    // No decoder will run for an already-cached photo, so there is nothing to mark in
+    // flight and nothing to guard: skip the marker and the lock entirely, rather than paying
+    // `begin`'s four filesystem operations for a decode that was never going to happen. The
+    // photo's fate is decided either way - `Ready` - so any death record still standing
+    // against it (photon died with it in flight once, then this attempt finds the thumbnail
+    // was already there - a scan re-touching an unchanged file, say) is resolved the same
+    // way a successful `Marker::resolve(true)` would have cleared it.
+    if cache.is_complete(key) {
+        if item.thumb_state != ThumbState::Ready {
+            lib.set_thumb_state_if_unchanged(&item, ThumbState::Ready, None)?;
+        }
+        inflight.clear(id);
+        return Ok(());
+    }
     let deaths = inflight.deaths(id, key);
     if deaths >= DEATHS_TO_FAIL {
         tracing::error!(
@@ -318,7 +352,27 @@ fn process(
     // suspect's exclusive decode - must never have a marker on disk for a decode that has not
     // actually started.
     let _decode_guard = if deaths >= 1 {
-        DecodeGuard::Suspect(decode_lock.write())
+        match decode_lock.try_write_for(SUSPECT_WAIT) {
+            Some(guard) => DecodeGuard::Suspect(guard),
+            None => {
+                // parking_lot's `RwLock` is task-fair: once a writer is waiting, every
+                // later `read()` queues behind it too, even one for an unrelated photo. A
+                // suspect stuck behind one slow ordinary decode (an unplugged network
+                // share, say) would otherwise stall the whole pool - every later ordinary
+                // decode waits on a write attempt that isn't even the one blocking it.
+                // Backing off after a bounded wait costs this one suspect a retry; nothing
+                // is decided (no marker was ever written, the death record stands), so the
+                // item stays `Pending` and goes back on the queue at `Background`, to run
+                // once the pool has drained rather than compete again right away.
+                tracing::warn!(
+                    id,
+                    path = %item.path,
+                    "suspect decode could not get exclusive access in time; retrying later"
+                );
+                queue.push(id, Priority::Background);
+                return Err(Error::ThumbUnavailable(id));
+            }
+        }
     } else {
         DecodeGuard::Ordinary(decode_lock.read())
     };
@@ -406,6 +460,7 @@ mod tests {
         lib.item(id).unwrap().unwrap().thumb_state
     }
 
+    use std::sync::OnceLock;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
 
@@ -738,8 +793,13 @@ mod tests {
         let inflight = InFlight::new(cache.root());
         std::mem::forget(inflight.begin(ids[0], key));
         inflight.recover();
-        // Starting the service runs its own `recover()`; no marker is left for it to find,
-        // so the one death already on record stands alone.
+        // Dropped before the service starts its own `InFlight`: it holds the cache root's
+        // lock file for as long as it lives, and only one `InFlight` at a time can hold it
+        // (see `InFlight::guarded`) - two live at once here would make the service's own
+        // instance run unguarded, the same as a real second photon process would. No marker
+        // is left for the service's own `recover()` to find either way, so the one death
+        // already on record stands alone.
+        drop(inflight);
         let service = ThumbService::start_with(lib.clone(), cache, 1, default_render);
         service.get_or_generate(ids[0], ThumbSize::Grid).unwrap();
         assert_eq!(state(&lib, ids[0]), ThumbState::Ready);
@@ -758,8 +818,10 @@ mod tests {
         std::mem::forget(inflight.begin(ids[0], key));
         inflight.recover();
         std::mem::forget(inflight.begin(ids[0], key));
-        // Starting the service runs its own `recover()`, turning this second marker into the
-        // second death against the same key.
+        // Dropped so the service's own `InFlight` can acquire the cache root's lock file
+        // itself (see `one_death_is_forgiven`'s comment on the same line) - its `recover()`
+        // is what turns this second marker into the second death against the same key.
+        drop(inflight);
         let service = ThumbService::start_with(lib.clone(), cache, 1, must_not_render);
         assert!(service.get_or_generate(ids[0], ThumbSize::Grid).is_err());
         let item = lib.item(ids[0]).unwrap().unwrap();
@@ -823,6 +885,9 @@ mod tests {
         let inflight = InFlight::new(cache.root());
         std::mem::forget(inflight.begin(ids[0], suspect_key));
         inflight.recover();
+        // See `one_death_is_forgiven`'s comment: only one `InFlight` at a time can hold the
+        // cache root's lock file.
+        drop(inflight);
 
         let service = ThumbService::start_with(lib.clone(), cache, 3, probe);
         service.enqueue_pending().unwrap();
@@ -889,6 +954,9 @@ mod tests {
             std::mem::forget(inflight.begin(id, key));
         }
         inflight.recover();
+        // See `one_death_is_forgiven`'s comment: only one `InFlight` at a time can hold the
+        // cache root's lock file.
+        drop(inflight);
 
         let service = ThumbService::start_with(lib.clone(), cache, 3, probe);
         service.enqueue_pending().unwrap();
@@ -919,6 +987,9 @@ mod tests {
         let inflight = InFlight::new(cache.root());
         std::mem::forget(inflight.begin(ids[0], key));
         inflight.recover();
+        // See `one_death_is_forgiven`'s comment: only one `InFlight` at a time can hold the
+        // cache root's lock file.
+        drop(inflight);
 
         let service = ThumbService::start_with(lib.clone(), cache, 1, default_render);
         assert!(matches!(
@@ -950,5 +1021,151 @@ mod tests {
         lib.purge_items(&[ids[1]]).unwrap();
         assert_eq!(service.collect_garbage().unwrap(), 2);
         assert!(service.get_or_generate(ids[0], ThumbSize::Grid).is_ok());
+    }
+
+    /// The reviewer's exact repro: an ordinary decode stuck for 3s (an unplugged network
+    /// share, say) holding `decode_lock` as a reader, a suspect queued behind it wanting the
+    /// lock exclusively, and an ordinary photo queued last. Before the fix, the suspect's
+    /// plain `write()` registered as a waiting writer as soon as it tried, and parking_lot's
+    /// `RwLock` is task-fair: every *later* `read()` - including the unrelated ordinary
+    /// photo's - then queues behind that wait too, so the ordinary photo did not even start
+    /// decoding until the stuck one finished, at 3.006s. With `try_write_for(SUSPECT_WAIT)`
+    /// the suspect gives up well before that, which stops registering as a waiting writer and
+    /// lets the ordinary photo's `read()` through.
+    ///
+    /// The bound below is generous on purpose - this can only ever false-*pass* on an
+    /// unusually slow CI runner (the ordinary photo simply starts a little later than on a
+    /// fast one, still comfortably under the 3s the bug would have produced), never
+    /// false-*fail*: nothing here makes the ordinary photo start any later than the fix
+    /// actually allows.
+    #[test]
+    fn a_stuck_ordinary_decode_behind_a_waiting_suspect_does_not_stall_the_pool() {
+        static PROBE_START: OnceLock<Instant> = OnceLock::new();
+        static ORDINARY_STARTED_AFTER: OnceLock<Duration> = OnceLock::new();
+
+        fn probe(
+            cache: &ThumbCache,
+            source: &Path,
+            orientation: u8,
+            edit: Edit,
+        ) -> Result<(DynamicImage, DynamicImage)> {
+            let name = source.to_string_lossy();
+            if name.contains("hang") {
+                std::thread::sleep(Duration::from_secs(3));
+            } else if name.contains("ordinary") {
+                let start = *PROBE_START
+                    .get()
+                    .expect("start recorded before the service ran");
+                let _ = ORDINARY_STARTED_AFTER.set(start.elapsed());
+            }
+            default_render(cache, source, orientation, edit)
+        }
+
+        let (_dir, lib, cache, ids) = setup(&[
+            ("a_hang.jpg", jpeg_bytes(40, 20)),
+            ("b_suspect.jpg", jpeg_bytes(40, 20)),
+            ("c_ordinary.jpg", jpeg_bytes(40, 20)),
+        ]);
+        let suspect_id = ids[1];
+        let suspect_key = item_key(&lib, suspect_id);
+        let inflight = InFlight::new(cache.root());
+        std::mem::forget(inflight.begin(suspect_id, suspect_key));
+        inflight.recover();
+        // See `one_death_is_forgiven`'s comment: only one `InFlight` at a time can hold the
+        // cache root's lock file.
+        drop(inflight);
+
+        PROBE_START.set(Instant::now()).unwrap();
+        let service = ThumbService::start_with(lib.clone(), cache, 3, probe);
+        service.enqueue_pending().unwrap();
+        service.wait_idle();
+
+        let started_after = ORDINARY_STARTED_AFTER
+            .get()
+            .expect("the ordinary photo never started decoding");
+        assert!(
+            *started_after < Duration::from_secs(2),
+            "the ordinary decode should start well before the 3s stuck one finishes, not \
+             queue behind the suspect's own wait for it; started after {started_after:?}"
+        );
+    }
+
+    /// A photo whose thumbnail is already cached - a rescan of an unchanged file, say - has
+    /// no decode to run, so it must never touch `decode_lock` or write a marker for one,
+    /// let alone reach `render`. Queued alongside an ordinary photo whose own decode sleeps
+    /// well past the point this one should have finished, a version that still takes the
+    /// lock (a suspect does, exclusively, since one death is recorded against it below) would
+    /// queue behind that sleep; skipping the lock entirely finishes near-instantly instead.
+    /// `must_not_render` on top proves `render` itself is never reached, which was already
+    /// true before this fix (`process_item`'s own `is_complete` check saw to that) - the
+    /// timing bound below is what actually distinguishes "skipped" from "took the lock,
+    /// found nothing to render, gave it back".
+    ///
+    /// The bound is generous - only a runner far slower than the sleep it is compared
+    /// against could ever make this false-pass, never false-fail.
+    #[test]
+    fn an_already_cached_photo_skips_the_marker_and_the_lock() {
+        fn probe(
+            cache: &ThumbCache,
+            source: &Path,
+            orientation: u8,
+            edit: Edit,
+        ) -> Result<(DynamicImage, DynamicImage)> {
+            if source.to_string_lossy().contains("hang") {
+                std::thread::sleep(Duration::from_millis(300));
+                default_render(cache, source, orientation, edit)
+            } else {
+                panic!("the already-cached photo's decoder must never run");
+            }
+        }
+
+        let (dir, lib, cache, ids) = setup(&[
+            ("a_hang.jpg", jpeg_bytes(40, 20)),
+            ("b_cached.jpg", jpeg_bytes(40, 20)),
+        ]);
+        let cached_id = ids[1];
+        let item = lib.item(cached_id).unwrap().unwrap();
+        let key = item.thumb_key();
+        cache
+            .generate(Path::new(&item.path), item.orientation, key)
+            .unwrap();
+        assert!(cache.is_complete(key));
+
+        let inflight = InFlight::new(cache.root());
+        std::mem::forget(inflight.begin(cached_id, key));
+        inflight.recover();
+        assert_eq!(inflight.deaths(cached_id, key), 1);
+        // See `one_death_is_forgiven`'s comment: only one `InFlight` at a time can hold the
+        // cache root's lock file.
+        drop(inflight);
+
+        let service = ThumbService::start_with(lib.clone(), cache, 2, probe);
+        let start = Instant::now();
+        service.enqueue_pending().unwrap();
+
+        let mut became_ready_after = None;
+        while start.elapsed() < Duration::from_secs(2) {
+            if state(&lib, cached_id) == ThumbState::Ready {
+                became_ready_after = Some(start.elapsed());
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        service.wait_idle();
+
+        let became_ready_after = became_ready_after.expect("the cached photo never reached Ready");
+        assert!(
+            became_ready_after < Duration::from_millis(200),
+            "took {became_ready_after:?} - should not have waited on decode_lock behind the \
+             hung ordinary decode at all"
+        );
+        assert!(
+            !marker(&dir, cached_id).exists(),
+            "no decode ran, so no marker"
+        );
+        assert!(
+            !death_record(&dir, cached_id).exists(),
+            "the record is resolved - Ready - not left standing"
+        );
     }
 }
