@@ -35,6 +35,7 @@
 //! a real death recorded earlier.
 
 use crate::grid::hex_key;
+use std::collections::HashSet;
 use std::fs::{self, File};
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
@@ -251,6 +252,40 @@ impl InFlight {
         }
     }
 
+    /// Removes every death record whose key no item has any more, and reports how many.
+    /// `deaths` matches on the key, so such a record can never blame anything again; it is
+    /// what a purged photo, a replaced file or a changed edit leaves behind, and nothing else
+    /// ever removes it. Keyed by the same `live` set as the thumbnail cache's own collection,
+    /// and run beside it, so a record goes when the thumbnails under its key do.
+    ///
+    /// Safe beside running workers: records are written only by `recover`, before any worker
+    /// starts, and a worker's `clear` racing this one removes the same file, which `remove`
+    /// already takes as done.
+    pub(crate) fn collect_garbage(&self, live: &HashSet<u64>) -> usize {
+        if !self.guarded {
+            // Not this instance's records - see `guarded`'s own comment.
+            return 0;
+        }
+        let Ok(entries) = fs::read_dir(&self.records) else {
+            return 0;
+        };
+        let mut removed = 0;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Some(id) = id_of(&path) else { continue };
+            let Some((_, key)) = self.read_record(id) else {
+                continue;
+            };
+            if u64::from_str_radix(&key, 16).is_ok_and(|key| live.contains(&key)) {
+                continue;
+            }
+            if fs::remove_file(&path).is_ok() {
+                removed += 1;
+            }
+        }
+        removed
+    }
+
     fn marker_path(&self, id: i64) -> PathBuf {
         self.markers.join(id.to_string())
     }
@@ -463,6 +498,41 @@ mod tests {
         std::mem::forget(inflight.begin(7, k2));
         inflight.recover();
         assert_eq!(inflight.deaths(7, k2), 1, "a new key starts a fresh count");
+    }
+
+    /// `deaths` compares the key, so a record whose key no live item has can never match
+    /// again: it is garbage, like a thumbnail under that key. Without this a purged photo's
+    /// record sat in `deaths/` forever.
+    #[test]
+    fn garbage_collection_keeps_only_records_under_a_live_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let inflight = InFlight::new(dir.path());
+        let (live, purged) = (0x1111_1111_1111_1111_u64, 0x2222_2222_2222_2222_u64);
+        std::mem::forget(inflight.begin(1, live));
+        std::mem::forget(inflight.begin(2, purged));
+        std::fs::write(dir.path().join("in-flight/3"), "torn").unwrap();
+        inflight.recover();
+
+        assert_eq!(inflight.collect_garbage(&HashSet::from([live])), 2);
+        assert_eq!(inflight.deaths(1, live), 1, "a live photo's record stays");
+        assert!(!dir.path().join("deaths/2").exists());
+        assert!(
+            !dir.path().join("deaths/3").exists(),
+            "a torn marker's record names no key at all"
+        );
+    }
+
+    /// The second instance on a cache root owns none of its records - see `guarded`.
+    #[test]
+    fn an_unguarded_instance_collects_no_records() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = InFlight::new(dir.path());
+        std::mem::forget(first.begin(2, 0x2222_2222_2222_2222));
+        first.recover();
+
+        let second = InFlight::new(dir.path());
+        assert_eq!(second.collect_garbage(&HashSet::new()), 0);
+        assert!(dir.path().join("deaths/2").exists());
     }
 
     /// A marker whose content is not a number (a torn write when the power went) still

@@ -3,7 +3,7 @@
   import { mediaUrl, type GridEntry } from '../lib/api';
   import { library } from '../lib/library.svelte';
   import { createThumbRequest } from '../lib/thumb-request.svelte';
-  import { createTileRetry } from '../lib/tile-retry.svelte';
+  import { createTileRetry, tileProblem } from '../lib/tile-retry.svelte';
   import { copiesMarkShown } from '../lib/copies';
   import Icon from './Icon.svelte';
 
@@ -34,6 +34,7 @@
   const key = $derived(entry ? `thumb/${entry.id}/grid/${entry.thumbKey}` : '');
   const request = createThumbRequest();
   const retry = createTileRetry();
+  const problem = $derived(tileProblem(retry.status));
   const src = $derived(
     request.requested
       ? mediaUrl(request.requested) + (retry.attempt ? `?retry=${retry.attempt}` : '')
@@ -118,8 +119,8 @@
       {onerror}
     />
   {/if}
-  {#if retry.status === 'broken' || retry.status === 'retrying'}
-    <span class="broken" title="This photo can't be shown"><Icon name="triangle-alert" size={28} /></span>
+  {#if problem}
+    <span class="broken" title={problem}><Icon name="triangle-alert" size={28} /></span>
   {/if}
   {#if entry?.starred}
     <span class="star" aria-label="Starred"><Icon name="star" size={14} filled /></span>

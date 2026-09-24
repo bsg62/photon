@@ -94,6 +94,16 @@ impl State {
             self.order.insert((priority, seq, id));
             self.entries.insert(id, (priority, seq));
         }
+        // A backing-off suspect is held here rather than in `order`, and `admit_due` pushes
+        // it back at whatever this says - left alone, a tile scrolled away returns from its
+        // back-off still `Visible`, ahead of the tiles actually on screen.
+        if let Some(entry) = self
+            .delayed
+            .iter_mut()
+            .find(|&&mut (_, existing, _)| existing == id)
+        {
+            entry.2 = entry.2.max(priority);
+        }
     }
 
     fn done(&mut self, id: i64) {
@@ -602,6 +612,25 @@ mod tests {
             "served no earlier than its deadline"
         );
         q.done(1);
+    }
+
+    /// A suspect backing off keeps the priority it will run at in `delayed`, not in `order`,
+    /// so scrolling its tile away has to lower it there too - or it comes back from its
+    /// back-off at `Visible` and goes ahead of the tiles actually on screen.
+    #[test]
+    fn scrolling_away_demotes_a_delayed_id_too() {
+        let q = ThumbQueue::new();
+        q.set_visible(&[1]);
+        let id = q.pop_blocking().unwrap();
+        q.defer(
+            id,
+            Priority::Visible,
+            Instant::now() + Duration::from_secs(5),
+        );
+        q.done(id);
+
+        q.set_visible(&[2]);
+        assert_eq!(q.delayed_priority(1), Some(Priority::Background));
     }
 
     /// `forget` clears a pending backoff outright - used once an id's fate no longer depends

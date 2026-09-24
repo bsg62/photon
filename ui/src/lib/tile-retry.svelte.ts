@@ -41,6 +41,17 @@ export type TileStatus =
    *  others) leaves it, but back at `'loading'`, not at another terminal state. */
   | 'broken';
 
+/** What the tile's warning icon says, or nothing when it shows none. `'retrying'` does not
+ *  say the photo can't be shown: that is usually a suspect waiting out the backend's
+ *  back-off, and the retries that follow usually load it. It cannot promise that either -
+ *  an `<img>` error carries no status, so a photo the crash guard has failed outright
+ *  retries the same way - hence "yet". */
+export function tileProblem(status: TileStatus): string | undefined {
+  if (status === 'retrying') return "Couldn't load this photo yet. Trying again…";
+  if (status === 'broken') return "This photo can't be shown";
+  return undefined;
+}
+
 /** Owns one tile's load/retry state machine, independent of the DOM.
  *
  *  The component pairs this with an `<img>`: `failed()` and `loaded()` are its `onerror`
