@@ -120,8 +120,12 @@ impl State {
     }
 
     /// Drops any pending backoff for `id` with no replacement - see `ThumbQueue::forget`.
-    fn forget(&mut self, id: i64) {
+    /// Reports whether anything was actually removed, so a caller doesn't have to wake
+    /// every waiter over a call that changed nothing.
+    fn forget(&mut self, id: i64) -> bool {
+        let before = self.delayed.len();
         self.delayed.retain(|&(_, existing, _)| existing != id);
+        self.delayed.len() != before
     }
 
     /// Moves every delayed job whose time has come into `order`, where `pop` can find it.
@@ -159,19 +163,6 @@ impl ThumbQueue {
     pub fn push(&self, id: i64, priority: Priority) {
         self.state.lock().push(id, priority);
         self.changed.notify_all();
-    }
-
-    /// Like `push`, but also reports whether `id` is (still) backing off (`State::delayed`)
-    /// once the push has been applied - so a caller with its own round-trip budget
-    /// (`ThumbService::request`) can give up immediately instead of waiting on a job that
-    /// cannot run before its own deadline.
-    pub fn push_reporting_delay(&self, id: i64, priority: Priority) -> bool {
-        let mut state = self.state.lock();
-        state.push(id, priority);
-        let delayed = state.delayed.iter().any(|&(_, existing, _)| existing == id);
-        drop(state);
-        self.changed.notify_all();
-        delayed
     }
 
     pub fn push_many(&self, ids: &[i64], priority: Priority) {
@@ -232,14 +223,17 @@ impl ThumbQueue {
         self.changed.notify_all();
     }
 
-    /// Drops `id`'s pending backoff, if it has one - used once `id`'s fate no longer depends
-    /// on winning `decode_lock` again (it decoded, or was failed outright): see
-    /// `Suspects::resolved`. Without this, a delayed entry from before that happened would
-    /// sit in the queue until its own deadline, waking a worker for a job with nothing left
-    /// to decide.
+    /// Drops `id`'s pending backoff, if it has one - see `Suspects::resolved`. A no-op for
+    /// a job reached through the queue itself: `admit_due` already moved `id` out of
+    /// `delayed` before `pop` ever handed it to a worker, so there is nothing here to
+    /// remove. The one caller that can actually find something to remove is
+    /// `ThumbService::get_or_generate`, which resolves an id by calling `process` directly,
+    /// bypassing the queue and its bookkeeping entirely - test-only today (see its own
+    /// doc), but cheap enough to guard against regardless.
     pub fn forget(&self, id: i64) {
-        self.state.lock().forget(id);
-        self.changed.notify_all();
+        if self.state.lock().forget(id) {
+            self.changed.notify_all();
+        }
     }
 
     /// Marks the popped job `id` finished and wakes idle-waiters and `wait_for` callers.
@@ -610,33 +604,12 @@ mod tests {
         q.done(1);
     }
 
-    /// `push_reporting_delay` is what `request` uses to tell a delayed id apart from an
-    /// ordinary one without a second lock/state inspection: it must report the same
-    /// admission decision `push` itself makes.
-    #[test]
-    fn push_reporting_delay_tells_a_backing_off_id_from_an_ordinary_one() {
-        let q = ThumbQueue::new();
-        q.defer(
-            1,
-            Priority::Background,
-            Instant::now() + Duration::from_secs(5),
-        );
-
-        assert!(
-            q.push_reporting_delay(1, Priority::Visible),
-            "id 1 is still backing off"
-        );
-        assert!(
-            !q.push_reporting_delay(2, Priority::Visible),
-            "id 2 was never delayed, so it's admitted as usual"
-        );
-        assert_eq!(drain(&q), [2], "only the ordinary id was actually queued");
-    }
-
     /// `forget` clears a pending backoff outright - used once an id's fate no longer depends
     /// on winning `decode_lock` again, so a stale delayed entry doesn't sit around waking a
-    /// worker for a job that has already been decided some other way (`ThumbService`'s
-    /// `get_or_generate` bypasses the queue entirely, so this can happen for real).
+    /// worker for a job that has already been decided some other way. A no-op for anything
+    /// reached through the queue itself (`admit_due` already emptied `delayed` of it before
+    /// `pop` handed it out) - `ThumbService::get_or_generate` bypassing the queue entirely
+    /// is the only way this situation arises today, and it's test-only (see its own doc).
     #[test]
     fn forget_drops_a_pending_backoff_with_no_replacement() {
         let q = ThumbQueue::new();

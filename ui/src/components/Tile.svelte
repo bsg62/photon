@@ -67,10 +67,12 @@
   // A tile can break for reasons that later go away: a thumbnail that was still queued
   // when the tile scrolled out answers 503, and both attempts can fall in that window - the
   // common case `createTileRetry`'s own quick retry already covers. This effect is a second,
-  // independent path back to loading for the rarer case `retry`'s own slower retries don't
-  // (yet) reach on their own - `key` doesn't change when the thumbnail becomes ready, and
-  // the component isn't remounted, so an unrelated library change is worth trying again
-  // for too. Only a broken tile is touched: resetting a loading or loaded one would flicker.
+  // independent path back to loading, for the terminal `'broken'` state only - `retry`
+  // already keeps retrying on its own schedule while it's `'retrying'`, so there's nothing
+  // for this to do there, and touching a loading or loaded tile would flicker it. Once
+  // `retry` has given up (`TILE_BROKEN_RETRY_ATTEMPTS` exhausted), this is what still
+  // brings a tile back once an unrelated library change happens to land - `key` doesn't
+  // change when the thumbnail becomes ready, and the component isn't remounted.
   // `retry.status` is written here (via `reset`), so it is read through `untrack` — the
   // effect depends on `pageTick` alone and cannot re-trigger itself.
   $effect(() => {
@@ -96,7 +98,13 @@
   ondblclick={onopen}
   oncontextmenu={onmenu}
 >
-  {#if entry && src && retry.status !== 'broken'}
+  <!-- Mounted for every status but never removed for 'retrying' or 'broken': a background
+       retry still needs a live <img> to actually reissue the request (`retry.attempt`
+       changing `src`), and it stays invisible (opacity 0) behind the icon below until an
+       `onload` promotes it. Splitting this into an `{:else if}` keyed on status - as it was
+       before `TileRetry` existed - is what caused the icon to flicker off during every
+       retry: removing the <img> was never the point, only ever showing its result was. -->
+  {#if entry && src}
     <img
       {src}
       alt=""
@@ -106,7 +114,8 @@
       onload={() => retry.loaded()}
       {onerror}
     />
-  {:else if retry.status === 'broken'}
+  {/if}
+  {#if retry.status === 'broken' || retry.status === 'retrying'}
     <span class="broken" title="This photo can't be shown"><Icon name="triangle-alert" size={28} /></span>
   {/if}
   {#if entry?.starred}
@@ -155,7 +164,16 @@
     transition: opacity 120ms ease-out;
   }
   img.loaded { opacity: 1; }
-  .broken { display: grid; place-items: center; height: 100%; color: var(--text-dim); }
+  /* Absolute, not a flow sibling: the <img> stays mounted (invisible) behind it during
+     'retrying' and 'broken' so a background retry can still fetch - see the template
+     comment above the <img>. */
+  .broken {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    color: var(--text-dim);
+  }
   /* The shadow keeps an amber star legible on a bright or amber photo. */
   .star {
     position: absolute;

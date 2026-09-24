@@ -129,17 +129,31 @@ impl SuspectBackoff {
     fn reset(&self, id: i64) {
         self.steps.lock().remove(&id);
     }
+
+    /// Whether `id` currently has a recorded backoff step - it has timed out on
+    /// `decode_lock` at least once since its last reset. `deaths`, which decides whether a
+    /// photo takes the suspect path at all, is keyed by the item's *current* `thumb_key()`,
+    /// but a step count is keyed by id alone - so an id whose file changed or was edited
+    /// can stop being a suspect (a fresh key has no death record) while still carrying a
+    /// step count from before the change. Used by the ordinary decode path to notice that
+    /// and clear it - see `process`.
+    fn has_steps(&self, id: i64) -> bool {
+        self.steps.lock().contains_key(&id)
+    }
 }
 
 impl Suspects {
     /// Clears every trace of `id`'s backoff - its step count (`SuspectBackoff::reset`) and
     /// any pending `ThumbQueue::delayed` entry (`ThumbQueue::forget`) - once its fate no
-    /// longer depends on winning `decode_lock` again: it has decoded, or it has been found
-    /// gone, already failed, or failed outright (`DEATHS_TO_FAIL`). Without the queue half, a
-    /// delayed entry from before that happened would sit until its own deadline, waking a
-    /// worker for a job with nothing left to decide - and `get_or_generate` resolves an id
-    /// without ever going through the queue at all, so a delayed entry can genuinely outlive
-    /// the decision that makes it moot.
+    /// longer depends on winning `decode_lock` again: it has decoded, it has been found
+    /// gone or already failed, it was failed outright (`DEATHS_TO_FAIL`), or it turned out
+    /// not to be a suspect any more (`SuspectBackoff::has_steps`, called from the ordinary
+    /// decode path). The queue half is a no-op for every one of those in the real queue
+    /// path - `admit_due` already took `id` out of `delayed` before `pop` handed the job to
+    /// a worker - so it only ever has something to remove for an id resolved through
+    /// `get_or_generate`, which bypasses the queue entirely (test-only today, see its own
+    /// doc); kept anyway since `ThumbQueue::forget` is cheap and a no-op is exactly as safe
+    /// as not calling it.
     fn resolved(&self, id: i64, queue: &ThumbQueue) {
         self.backoff.reset(id);
         queue.forget(id);
@@ -295,18 +309,16 @@ impl ThumbService {
     pub fn request(&self, id: i64, size: ThumbSize, timeout: Duration) -> Result<PathBuf> {
         let deadline = Instant::now() + timeout;
         // Two rounds: the first may only wait out a job already running for an older
-        // version of the file. A suspect currently backing off (`ThumbQueue::delayed`) is
-        // given up on immediately instead: `push_reporting_delay` left it exactly where it
-        // was rather than readmitting it (see `SUSPECT_BACKOFF_START`), so there is nothing
-        // here that will resolve before its own deadline, and a second round would only cost
-        // this request the wait without ever attempting `decode_lock` again.
+        // version of the file. A suspect currently backing off (`ThumbQueue::delayed`)
+        // costs this loop nothing extra: `push` leaves it exactly where it is rather than
+        // readmitting it (see `SUSPECT_BACKOFF_START`), so `wait_for` finds it neither
+        // queued nor in flight and returns at once - no worker is ever woken for it, so
+        // this never causes a fresh `decode_lock` attempt on the suspect's behalf.
         for _ in 0..2 {
             if let Some(path) = self.cached(id, size)? {
                 return Ok(path);
             }
-            if self.queue.push_reporting_delay(id, Priority::Visible) {
-                return Err(Error::ThumbUnavailable(id));
-            }
+            self.queue.push(id, Priority::Visible);
             if !self.queue.wait_for(id, deadline) {
                 return Err(Error::ThumbTimeout(id));
             }
@@ -405,13 +417,13 @@ fn process(
     render: RenderFn,
 ) -> Result<()> {
     let Some(item) = lib.item(id)? else {
-        // Purged out from under a queued job: gone, so any backoff held against it is moot.
+        // Purged: gone, so any backoff held against it is moot - see `Suspects::resolved`.
         suspects.resolved(id, queue);
         return Ok(());
     };
     if item.missing_since.is_some() || item.thumb_state == ThumbState::Failed {
-        // Already decided by some other means (a rescan, an earlier `get_or_generate` call
-        // that bypassed the queue) since whatever queued this job: see `Suspects::resolved`.
+        // Already decided by some other means (a rescan) since whatever queued this job -
+        // see `Suspects::resolved`.
         suspects.resolved(id, queue);
         return Ok(());
     }
@@ -490,6 +502,15 @@ fn process(
             }
         }
     } else {
+        // The file changed, or the photo was edited: `deaths` above is keyed by the item's
+        // *current* `thumb_key()`, so a fresh key with no death record takes this ordinary
+        // path even for an id that used to be a suspect - but `backoff`'s step count is
+        // keyed by id alone, so it wouldn't otherwise notice. Clear it (and any delayed
+        // entry, though `pop` already emptied that for this job - see `Suspects::resolved`)
+        // so it doesn't outlive the death record that justified it.
+        if suspects.backoff.has_steps(id) {
+            suspects.resolved(id, queue);
+        }
         DecodeGuard::Ordinary(suspects.lock.read())
     };
     // Held across the decode, so it is on disk if the decode takes the process down.
@@ -1372,19 +1393,18 @@ mod tests {
     /// (`State::push` had no guard against readmitting a delayed id), and a free worker would
     /// pop it and burn another `SUSPECT_WAIT` finding the write lock still held by the hang
     /// decode - about 1s and one fresh `decode_lock` attempt per call, on top of the one from
-    /// setup. With the fix, that same `push` (inside `push_reporting_delay`) leaves the
-    /// suspect exactly where it was, so `request` gives up at once and no worker ever touches
-    /// it again until its own deadline.
+    /// setup. With the fix, that same `push` leaves the suspect exactly where it was, so
+    /// `wait_for` finds it neither queued nor in flight and returns at once - no worker is
+    /// ever woken for it, and `request` gives up on the very first round.
     ///
     /// Probe: revert `State::push`'s delayed check (as in the queue-level test) and this goes
-    /// RED - not on the loop's own elapsed-time assertions, which `push_reporting_delay`'s
-    /// separate read of `delayed` still passes even with the readmission bug back (it isn't
-    /// what decides whether a worker was set loose on the id), but on the final
-    /// attempts-count assertion below: a free worker picks up the wrongly-readmitted job and
-    /// burns another `SUSPECT_WAIT` (up to 1s) attempting the lock, so the fixed-length wait
-    /// after the loop needs to be longer than that to reliably observe it - shorter windows
-    /// (tried down to 300ms) let the assertion complete before the attempt lands and pass by
-    /// accident.
+    /// RED - not on the loop's own elapsed-time assertions (`wait_for` still returns quickly
+    /// either way, since it only reads `entries`/`in_flight`, not `delayed`, so promptness by
+    /// itself isn't what distinguishes the bug), but on the final attempts-count assertion
+    /// below: a free worker picks up the wrongly-readmitted job and burns another
+    /// `SUSPECT_WAIT` (up to 1s) attempting the lock, so the fixed-length wait after the loop
+    /// needs to be longer than that to reliably observe it - shorter windows (tried down to
+    /// 300ms) let the assertion complete before the attempt lands and pass by accident.
     #[test]
     fn a_request_for_an_already_delayed_suspect_returns_promptly_without_a_new_attempt() {
         static HANG_STARTED: OnceLock<()> = OnceLock::new();
@@ -1492,6 +1512,204 @@ mod tests {
         // Let the hang decode (and the suspect's eventual retry behind it) finish so the
         // service can be dropped cleanly.
         service.wait_idle();
+    }
+
+    /// `SuspectBackoff::reset` (via `Suspects::resolved`) is a named requirement on its own:
+    /// winning `decode_lock` must clear the step count, not just leave the id delayed until
+    /// its next timeout. A suspect times out once against a blocking ordinary decode (steps
+    /// == 1), the blocking decode then finishes, and the suspect's own retry wins the lock -
+    /// asserted directly on `SuspectBackoff.steps` rather than by inference from timing, so
+    /// this is pinned regardless of how `resolved`'s other effects are implemented.
+    ///
+    /// Probe: replace `Suspects::resolved`'s body with a no-op (or drop the `Some(guard)`
+    /// branch's call to it) and this goes RED - `steps` still holds an entry for
+    /// `suspect_id` after it reached `Ready`.
+    #[test]
+    fn winning_the_lock_resets_the_suspects_backoff() {
+        static HANG_STARTED: OnceLock<()> = OnceLock::new();
+
+        fn probe(
+            cache: &ThumbCache,
+            source: &Path,
+            orientation: u8,
+            edit: Edit,
+        ) -> Result<(DynamicImage, DynamicImage)> {
+            if source.to_string_lossy().contains("hang") {
+                let _ = HANG_STARTED.set(());
+                // Long enough that the suspect's first `try_write_for(SUSPECT_WAIT)` (1s)
+                // times out while this is still running, short enough that it has finished
+                // well before the suspect's backed-off retry (>= SUSPECT_BACKOFF_START = 2s
+                // after the timeout) comes around, so that retry finds the lock free.
+                std::thread::sleep(Duration::from_millis(1_500));
+            }
+            default_render(cache, source, orientation, edit)
+        }
+
+        let (_dir, lib, cache, ids) = setup(&[
+            ("a_hang.jpg", jpeg_bytes(40, 20)),
+            ("b_suspect.jpg", jpeg_bytes(40, 20)),
+        ]);
+        let (hang_id, suspect_id) = (ids[0], ids[1]);
+        let suspect_key = item_key(&lib, suspect_id);
+        let inflight = InFlight::new(cache.root());
+        std::mem::forget(inflight.begin(suspect_id, suspect_key));
+        inflight.recover();
+        // See `one_death_is_forgiven`'s comment: only one `InFlight` at a time can hold the
+        // cache root's lock file.
+        drop(inflight);
+
+        let service = ThumbService::start_with(lib.clone(), cache, 2, probe);
+
+        service.prioritize(&[hang_id], Priority::Background);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while HANG_STARTED.get().is_none() {
+            assert!(Instant::now() < deadline, "the hang decode never started");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+
+        service.prioritize(&[suspect_id], Priority::Background);
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            if service
+                .suspects
+                .backoff
+                .attempts
+                .load(std::sync::atomic::Ordering::SeqCst)
+                >= 1
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the suspect never made its first attempt"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(
+            service.suspects.backoff.steps.lock().get(&suspect_id),
+            Some(&1),
+            "one recorded timeout before the blocking decode has even finished"
+        );
+
+        // Let the hang decode finish and the suspect's backed-off retry win the lock.
+        service.wait_idle();
+
+        assert_eq!(state(&lib, suspect_id), ThumbState::Ready);
+        assert!(
+            service
+                .suspects
+                .backoff
+                .steps
+                .lock()
+                .get(&suspect_id)
+                .is_none(),
+            "the step count must not outlive winning the lock"
+        );
+        assert_eq!(
+            service.suspects.backoff.bump(suspect_id),
+            SUSPECT_BACKOFF_START,
+            "confirms the reset from a second angle: a fresh timeout starts at the short wait"
+        );
+    }
+
+    /// `deaths` (and so which decode path an id takes) is keyed by the item's *current*
+    /// `thumb_key()`, but `SuspectBackoff`'s step count is keyed by id alone - so an edit
+    /// that changes the key can leave a stale step count (and, until its deadline, a stale
+    /// `ThumbQueue::delayed` entry) attached to an id that is not a suspect for its new key
+    /// at all. A suspect times out once (steps == 1) against a blocking decode; before its
+    /// backed-off retry comes due, the photo is edited - a new key with no death record, so
+    /// its eventual redecode takes the *ordinary* path, never touching `decode_lock`. That
+    /// ordinary path must still notice and clear the leftover step count.
+    ///
+    /// Probe: remove the `if suspects.backoff.has_steps(id) { suspects.resolved(id, queue); }`
+    /// guard from `process`'s ordinary branch and this goes RED - `steps` still holds an
+    /// entry for `suspect_id` after the edited photo reaches `Ready`.
+    #[test]
+    fn an_edit_clears_a_stale_backoff_left_by_the_photos_old_key() {
+        static HANG_STARTED: OnceLock<()> = OnceLock::new();
+
+        fn probe(
+            cache: &ThumbCache,
+            source: &Path,
+            orientation: u8,
+            edit: Edit,
+        ) -> Result<(DynamicImage, DynamicImage)> {
+            if source.to_string_lossy().contains("hang") {
+                let _ = HANG_STARTED.set(());
+                // Long enough for the suspect's one `try_write_for` to time out, short
+                // enough to be done well before the edit is applied and the suspect's
+                // (now ordinary) redecode is due - see `winning_the_lock_resets...` above.
+                std::thread::sleep(Duration::from_millis(1_500));
+            }
+            default_render(cache, source, orientation, edit)
+        }
+
+        let (_dir, lib, cache, ids) = setup(&[
+            ("a_hang.jpg", jpeg_bytes(40, 20)),
+            ("b_suspect.jpg", jpeg_bytes(40, 20)),
+        ]);
+        let (hang_id, suspect_id) = (ids[0], ids[1]);
+        let suspect_key = item_key(&lib, suspect_id);
+        let inflight = InFlight::new(cache.root());
+        std::mem::forget(inflight.begin(suspect_id, suspect_key));
+        inflight.recover();
+        // See `one_death_is_forgiven`'s comment: only one `InFlight` at a time can hold the
+        // cache root's lock file.
+        drop(inflight);
+
+        let service = ThumbService::start_with(lib.clone(), cache, 2, probe);
+
+        service.prioritize(&[hang_id], Priority::Background);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while HANG_STARTED.get().is_none() {
+            assert!(Instant::now() < deadline, "the hang decode never started");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+
+        service.prioritize(&[suspect_id], Priority::Background);
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            if service
+                .suspects
+                .backoff
+                .attempts
+                .load(std::sync::atomic::Ordering::SeqCst)
+                >= 1
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the suspect never made its first attempt"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(
+            service.suspects.backoff.steps.lock().get(&suspect_id),
+            Some(&1),
+            "one recorded timeout, well before the edit below"
+        );
+
+        // A turn changes `edit_turns`, part of `thumb_key()`: the redecode this schedules
+        // has a brand new key with no death record at all, so it is not a suspect.
+        lib.set_item_edit(suspect_id, Edit::new(1, None).unwrap())
+            .unwrap();
+
+        // Let the hang decode finish, the deferred (stale) entry become due, and the now-
+        // ordinary redecode run.
+        service.wait_idle();
+
+        assert_eq!(state(&lib, suspect_id), ThumbState::Ready);
+        assert!(
+            service
+                .suspects
+                .backoff
+                .steps
+                .lock()
+                .get(&suspect_id)
+                .is_none(),
+            "the old key's step count must not survive an edit that gave it a new one"
+        );
     }
 
     /// A photo whose thumbnail is already cached - a rescan of an unchanged file, say - has
