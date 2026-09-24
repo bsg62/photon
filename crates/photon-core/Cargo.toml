@@ -12,10 +12,12 @@ authors.workspace = true
 dunce = "1.0.5"
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "gif", "webp", "tiff", "bmp"] }
 kamadak-exif = "0.6.1"
+libc = "0.2"
 notify = "8.2.0"
 notify-debouncer-full = "0.7.0"
 parking_lot = "0.12.5"
 quick-xml = "0.42"
+rav1d = { version = "1.1.0", default-features = false, features = ["bitdepth_8", "bitdepth_16"] }
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 serde = { version = "1.0.229", features = ["derive"] }
 tempfile = "3.27.0"
@@ -24,6 +26,7 @@ tracing = "0.1.44"
 walkdir = "2.5.0"
 webp = "0.3.1"
 xxhash-rust = { version = "0.8.18", features = ["xxh3"] }
+zenavif-parse = "0.6.2"
 
 [dev-dependencies]
 criterion = "0.8.2"
