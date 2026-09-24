@@ -28,11 +28,32 @@ const MAX_WORKERS: usize = 8;
 
 /// How long a suspect's decode waits for `decode_lock` exclusively before backing off.
 /// parking_lot's `RwLock` is task-fair, so once the suspect is waiting on `write()`, every
-/// later `read()` queues behind that wait too, even for an unrelated photo; this is short
-/// enough that an ordinary decode stuck behind it does not stall the whole pool for long, and
-/// long enough that an ordinary decode taking its usual, brief time still lets the suspect
-/// through without a pointless retry. See `process`.
+/// later `read()` queues behind that wait too, even for an unrelated photo; backing off after
+/// this bound - rather than waiting indefinitely - is what stops a suspect stuck behind one
+/// slow ordinary decode from stalling the whole pool behind its own wait. It costs a suspect a
+/// retry whenever an *ordinary* decode legitimately takes longer than this (a large AVIF, a
+/// panorama): that photo was always going to take a while, so paying for one extra wait cycle
+/// on top is cheap, and correct - nothing here can wrongly fail it, only delay it. See
+/// `process` and `SUSPECT_BACKOFF_START`, which is what actually keeps a suspect from
+/// retrying again immediately once it does back off.
 const SUSPECT_WAIT: Duration = Duration::from_secs(1);
+
+/// How long a suspect waits, after failing to get `decode_lock` in time, before it is even
+/// eligible to try again - doubling on each further timeout up to [`SUSPECT_BACKOFF_MAX`].
+/// Without this, a suspect popped again the moment it's re-queued retries within about a
+/// millisecond, waits out another [`SUSPECT_WAIT`] as a writer - blocking every new `read()`
+/// behind it for that whole second, per parking_lot's task-fairness - times out again, and
+/// repeats for as long as the stuck decode lasts: busy work with nothing to show for it, and a
+/// warning logged roughly twice a second. Backing off costs the suspect nothing but time - it
+/// holds no lock and occupies no worker while it waits (`ThumbQueue::defer`) - and doubling
+/// means a decode stuck for a long time is retried less and less often rather than at a fixed
+/// rate forever.
+const SUSPECT_BACKOFF_START: Duration = Duration::from_secs(2);
+
+/// The most a suspect ever waits between retries, however many times it has already backed
+/// off. Unbounded doubling would eventually make a suspect wait longer than most stuck decodes
+/// plausibly last, which would cost real staleness for no benefit once the exponent gets large.
+const SUSPECT_BACKOFF_MAX: Duration = Duration::from_secs(30);
 
 /// Worker threads for thumbnail generation: all cores but one, so the UI stays responsive,
 /// and never more than [`MAX_WORKERS`].
@@ -51,12 +72,58 @@ pub struct ThumbService {
     workers: Vec<JoinHandle<()>>,
     render: RenderFn,
     inflight: Arc<InFlight>,
+    /// `decode_lock` and its backoff bookkeeping, grouped into one field so `process` takes
+    /// one parameter for both rather than two (and stays under clippy's argument-count lint).
+    suspects: Arc<Suspects>,
+}
+
+#[derive(Default)]
+struct Suspects {
     /// Excludes a suspect's decode from every other decode, so a group of photos queued
     /// together does not inherit one photo's deaths merely for having been in flight beside
     /// it when it died. A photo with at least one recorded death takes this exclusively
     /// (`write`); everything else only needs to keep other *exclusive* holders out, not each
     /// other, so it takes `read`. See `process`.
-    decode_lock: Arc<RwLock<()>>,
+    lock: RwLock<()>,
+    /// How long each suspect currently waits before its next retry - see `SUSPECT_BACKOFF_START`.
+    backoff: SuspectBackoff,
+}
+
+/// Per-id backoff for a suspect that has just failed to get `decode_lock` in time. Doubles
+/// from [`SUSPECT_BACKOFF_START`] on each further timeout, capped at [`SUSPECT_BACKOFF_MAX`],
+/// and forgotten once the id actually gets to decode - a later, unrelated suspect run (a fresh
+/// death recorded after an earlier retry succeeded) starts from the short wait again rather
+/// than wherever a previous run's timeouts left off.
+#[derive(Default)]
+struct SuspectBackoff {
+    steps: parking_lot::Mutex<std::collections::HashMap<i64, u32>>,
+    /// Every timeout across every id, scoped to one `SuspectBackoff` (so one service's own
+    /// tests aren't disturbed by another running concurrently). Read-only outside tests - see
+    /// `bump`.
+    attempts: std::sync::atomic::AtomicUsize,
+}
+
+impl SuspectBackoff {
+    /// Records another timeout for `id` and returns how long it should wait before its next
+    /// attempt.
+    fn bump(&self, id: i64) -> Duration {
+        self.attempts
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let mut steps = self.steps.lock();
+        let step = steps.entry(id).or_insert(0);
+        let wait = SUSPECT_BACKOFF_START
+            .checked_mul(1 << (*step).min(8))
+            .unwrap_or(SUSPECT_BACKOFF_MAX)
+            .min(SUSPECT_BACKOFF_MAX);
+        *step += 1;
+        wait
+    }
+
+    /// Forgets `id`'s backoff once it actually holds `decode_lock` - it is no longer waiting
+    /// on anything, so its next timeout (if there is one, some other day) starts fresh.
+    fn reset(&self, id: i64) {
+        self.steps.lock().remove(&id);
+    }
 }
 
 /// Decodes a source file into (preview, grid) images. A seam so tests can inject a
@@ -96,15 +163,15 @@ impl ThumbService {
         let inflight = Arc::new(InFlight::new(cache.root()));
         // Before any worker starts: a marker still here was in flight when a previous run died.
         inflight.recover();
-        let decode_lock = Arc::new(RwLock::new(()));
+        let suspects = Arc::new(Suspects::default());
         let workers = (0..workers.max(1))
             .map(|i| {
-                let (lib, cache, queue, inflight, decode_lock) = (
+                let (lib, cache, queue, inflight, suspects) = (
                     lib.clone(),
                     cache.clone(),
                     queue.clone(),
                     inflight.clone(),
-                    decode_lock.clone(),
+                    suspects.clone(),
                 );
                 std::thread::Builder::new()
                     .name(format!("photon-thumb-{i}"))
@@ -112,7 +179,7 @@ impl ThumbService {
                         while let Some(id) = queue.pop_blocking() {
                             let _guard = DoneGuard(&queue, id);
                             if let Err(err) =
-                                process(&lib, &cache, &inflight, &decode_lock, &queue, id, render)
+                                process(&lib, &cache, &inflight, &suspects, &queue, id, render)
                             {
                                 tracing::warn!(id, %err, "thumbnail job failed");
                             }
@@ -128,7 +195,7 @@ impl ThumbService {
             workers,
             render,
             inflight,
-            decode_lock,
+            suspects,
         }
     }
 
@@ -187,7 +254,7 @@ impl ThumbService {
             &self.lib,
             &self.cache,
             &self.inflight,
-            &self.decode_lock,
+            &self.suspects,
             &self.queue,
             id,
             self.render,
@@ -306,7 +373,7 @@ fn process(
     lib: &Library,
     cache: &ThumbCache,
     inflight: &InFlight,
-    decode_lock: &RwLock<()>,
+    suspects: &Suspects,
     queue: &ThumbQueue,
     id: i64,
     render: RenderFn,
@@ -352,8 +419,13 @@ fn process(
     // suspect's exclusive decode - must never have a marker on disk for a decode that has not
     // actually started.
     let _decode_guard = if deaths >= 1 {
-        match decode_lock.try_write_for(SUSPECT_WAIT) {
-            Some(guard) => DecodeGuard::Suspect(guard),
+        match suspects.lock.try_write_for(SUSPECT_WAIT) {
+            Some(guard) => {
+                // No longer waiting on anything - a later timeout, if there ever is one,
+                // starts from the short wait again rather than wherever this run left off.
+                suspects.backoff.reset(id);
+                DecodeGuard::Suspect(guard)
+            }
             None => {
                 // parking_lot's `RwLock` is task-fair: once a writer is waiting, every
                 // later `read()` queues behind it too, even one for an unrelated photo. A
@@ -362,19 +434,27 @@ fn process(
                 // decode waits on a write attempt that isn't even the one blocking it.
                 // Backing off after a bounded wait costs this one suspect a retry; nothing
                 // is decided (no marker was ever written, the death record stands), so the
-                // item stays `Pending` and goes back on the queue at `Background`, to run
-                // once the pool has drained rather than compete again right away.
+                // item stays `Pending`. It goes back on the queue *deferred*, not merely
+                // re-pushed: a plain `push` would be popped again within about a
+                // millisecond with the queue otherwise idle, retry the same doomed write,
+                // time out again, and repeat for as long as the stuck decode lasts - the
+                // busy-loop-with-a-log-line `SUSPECT_BACKOFF_START` exists to stop. The wait
+                // doubles on each further timeout for the same id, so it is retried less and
+                // less often rather than at a fixed rate for as long as the block lasts, and
+                // is forgotten (`backoff.reset`) the moment a retry actually succeeds.
+                let wait = suspects.backoff.bump(id);
                 tracing::warn!(
                     id,
                     path = %item.path,
-                    "suspect decode could not get exclusive access in time; retrying later"
+                    ?wait,
+                    "suspect decode could not get exclusive access in time; backing off"
                 );
-                queue.push(id, Priority::Background);
+                queue.defer(id, Priority::Background, Instant::now() + wait);
                 return Err(Error::ThumbUnavailable(id));
             }
         }
     } else {
-        DecodeGuard::Ordinary(decode_lock.read())
+        DecodeGuard::Ordinary(suspects.lock.read())
     };
     // Held across the decode, so it is on disk if the decode takes the process down.
     let marker = inflight.begin(id, key);
@@ -1033,14 +1113,28 @@ mod tests {
     /// the suspect gives up well before that, which stops registering as a waiting writer and
     /// lets the ordinary photo's `read()` through.
     ///
-    /// The bound below is generous on purpose - this can only ever false-*pass* on an
-    /// unusually slow CI runner (the ordinary photo simply starts a little later than on a
-    /// fast one, still comfortably under the 3s the bug would have produced), never
-    /// false-*fail*: nothing here makes the ordinary photo start any later than the fix
-    /// actually allows.
+    /// Made deterministic rather than relying on scheduling luck: the three photos are queued
+    /// one at a time, each only once the previous step has actually happened - the hang
+    /// decode's render literally started (a signal set at the top of the probe, before it
+    /// sleeps, not merely popped off the queue), then the suspect's write attempt is actually
+    /// registered (`suspects.lock.is_locked_exclusive()`, true the moment a writer is waiting -
+    /// parking_lot's `WRITER_BIT` - not only once one is granted). Only then is the ordinary
+    /// photo queued, so it can never by chance be popped, or the suspect's write attempted,
+    /// before the hang decode is holding the lock as a reader. The reviewer measured this
+    /// construction at 5/5 RED on the code before this fix (3.003s each run) and 1.0006s on
+    /// the fixed code.
+    ///
+    /// The two spin loops below need a bound generous enough never to false-fail under a slow
+    /// or loaded CI runner, so each has its own timeout that panics loudly (with a clear
+    /// message) rather than hanging the suite forever if its signal never arrives - the failure
+    /// mode of a wrong fix here is a hang, not a silent false pass, so a generous timeout costs
+    /// nothing except a slower failure. The final assertion's bound is untouched by that
+    /// generosity: nothing in the spin loops makes the ordinary decode start any later than the
+    /// fix actually allows, so it can still only ever false-*pass*, never false-*fail*.
     #[test]
     fn a_stuck_ordinary_decode_behind_a_waiting_suspect_does_not_stall_the_pool() {
-        static PROBE_START: OnceLock<Instant> = OnceLock::new();
+        static HANG_STARTED: OnceLock<()> = OnceLock::new();
+        static TEST_START: OnceLock<Instant> = OnceLock::new();
         static ORDINARY_STARTED_AFTER: OnceLock<Duration> = OnceLock::new();
 
         fn probe(
@@ -1051,9 +1145,10 @@ mod tests {
         ) -> Result<(DynamicImage, DynamicImage)> {
             let name = source.to_string_lossy();
             if name.contains("hang") {
+                let _ = HANG_STARTED.set(());
                 std::thread::sleep(Duration::from_secs(3));
             } else if name.contains("ordinary") {
-                let start = *PROBE_START
+                let start = *TEST_START
                     .get()
                     .expect("start recorded before the service ran");
                 let _ = ORDINARY_STARTED_AFTER.set(start.elapsed());
@@ -1066,7 +1161,7 @@ mod tests {
             ("b_suspect.jpg", jpeg_bytes(40, 20)),
             ("c_ordinary.jpg", jpeg_bytes(40, 20)),
         ]);
-        let suspect_id = ids[1];
+        let (hang_id, suspect_id, ordinary_id) = (ids[0], ids[1], ids[2]);
         let suspect_key = item_key(&lib, suspect_id);
         let inflight = InFlight::new(cache.root());
         std::mem::forget(inflight.begin(suspect_id, suspect_key));
@@ -1075,9 +1170,27 @@ mod tests {
         // cache root's lock file.
         drop(inflight);
 
-        PROBE_START.set(Instant::now()).unwrap();
+        TEST_START.set(Instant::now()).unwrap();
         let service = ThumbService::start_with(lib.clone(), cache, 3, probe);
-        service.enqueue_pending().unwrap();
+
+        service.prioritize(&[hang_id], Priority::Background);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while HANG_STARTED.get().is_none() {
+            assert!(Instant::now() < deadline, "the hang decode never started");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+
+        service.prioritize(&[suspect_id], Priority::Background);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !service.suspects.lock.is_locked_exclusive() {
+            assert!(
+                Instant::now() < deadline,
+                "the suspect never registered as a waiting writer"
+            );
+            std::thread::sleep(Duration::from_millis(2));
+        }
+
+        service.prioritize(&[ordinary_id], Priority::Visible);
         service.wait_idle();
 
         let started_after = ORDINARY_STARTED_AFTER
@@ -1090,21 +1203,20 @@ mod tests {
         );
     }
 
-    /// A photo whose thumbnail is already cached - a rescan of an unchanged file, say - has
-    /// no decode to run, so it must never touch `decode_lock` or write a marker for one,
-    /// let alone reach `render`. Queued alongside an ordinary photo whose own decode sleeps
-    /// well past the point this one should have finished, a version that still takes the
-    /// lock (a suspect does, exclusively, since one death is recorded against it below) would
-    /// queue behind that sleep; skipping the lock entirely finishes near-instantly instead.
-    /// `must_not_render` on top proves `render` itself is never reached, which was already
-    /// true before this fix (`process_item`'s own `is_complete` check saw to that) - the
-    /// timing bound below is what actually distinguishes "skipped" from "took the lock,
-    /// found nothing to render, gave it back".
-    ///
-    /// The bound is generous - only a runner far slower than the sleep it is compared
-    /// against could ever make this false-pass, never false-fail.
+    /// With the queue otherwise idle, the suspect from the test above must not hammer
+    /// `decode_lock` once a second for as long as the stuck ordinary decode lasts: that was
+    /// the bug this backoff exists to fix (two warnings a second, forever, for a merely slow
+    /// decode). Same construction as above - queued one step at a time, each only once the
+    /// previous one actually happened - but the hang decode here runs long enough (6s) that
+    /// the suspect can never succeed inside the measurement window, so every attempt in that
+    /// window is a timeout attributable purely to the backoff schedule: one immediately (at
+    /// the suspect's own first pop) and, after `SUSPECT_WAIT` fails, one no earlier than
+    /// `SUSPECT_BACKOFF_START` later - two attempts in a 4.5s window, never the four or five
+    /// the pre-fix code (retrying every ~`SUSPECT_WAIT`, back to back) would have produced.
     #[test]
-    fn an_already_cached_photo_skips_the_marker_and_the_lock() {
+    fn a_backed_off_suspect_does_not_hammer_the_lock() {
+        static HANG_STARTED: OnceLock<()> = OnceLock::new();
+
         fn probe(
             cache: &ThumbCache,
             source: &Path,
@@ -1112,6 +1224,84 @@ mod tests {
             edit: Edit,
         ) -> Result<(DynamicImage, DynamicImage)> {
             if source.to_string_lossy().contains("hang") {
+                let _ = HANG_STARTED.set(());
+                std::thread::sleep(Duration::from_secs(6));
+            }
+            default_render(cache, source, orientation, edit)
+        }
+
+        let (_dir, lib, cache, ids) = setup(&[
+            ("a_hang.jpg", jpeg_bytes(40, 20)),
+            ("b_suspect.jpg", jpeg_bytes(40, 20)),
+        ]);
+        let (hang_id, suspect_id) = (ids[0], ids[1]);
+        let suspect_key = item_key(&lib, suspect_id);
+        let inflight = InFlight::new(cache.root());
+        std::mem::forget(inflight.begin(suspect_id, suspect_key));
+        inflight.recover();
+        // See `one_death_is_forgiven`'s comment: only one `InFlight` at a time can hold the
+        // cache root's lock file.
+        drop(inflight);
+
+        let service = ThumbService::start_with(lib.clone(), cache, 2, probe);
+
+        service.prioritize(&[hang_id], Priority::Background);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while HANG_STARTED.get().is_none() {
+            assert!(Instant::now() < deadline, "the hang decode never started");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+
+        service.prioritize(&[suspect_id], Priority::Background);
+        std::thread::sleep(Duration::from_millis(4_500));
+
+        let attempts = service
+            .suspects
+            .backoff
+            .attempts
+            .load(std::sync::atomic::Ordering::SeqCst);
+        assert!(
+            attempts <= 2,
+            "the suspect attempted the write lock {attempts} times in 4.5s; the pre-backoff \
+             code attempted roughly once a second, so this would have been 4 or 5"
+        );
+
+        // Let the hang decode finish so the service can be dropped cleanly.
+        service.wait_idle();
+    }
+
+    /// A photo whose thumbnail is already cached - a rescan of an unchanged file, say - has
+    /// no decode to run, so it must never touch `decode_lock` or write a marker for one,
+    /// let alone reach `render`. Queued alongside an ordinary decode that holds `decode_lock`
+    /// for well past the point this one should have finished, a version that still took the
+    /// lock (a suspect does, exclusively, since one death is recorded against it below) would
+    /// queue behind that decode; skipping the lock entirely finishes near-instantly instead.
+    /// `must_not_render` on top proves `render` itself is never reached, which was already
+    /// true before this fix (`process_item`'s own `is_complete` check saw to that) - the
+    /// timing bound below is what actually distinguishes "skipped" from "took the lock, found
+    /// nothing to render, gave it back".
+    ///
+    /// Made deterministic the same way as the stall test above, and for the same reason: with
+    /// both jobs pushed together, `is_complete`'s early return makes the exact pop order
+    /// unobservable on the fixed code either way, so on the *old* code (no early return) this
+    /// would pass whenever the cached photo happened to be popped, and its `try_write_for`
+    /// happened to run, before the hang decode was actually holding `decode_lock` - nothing
+    /// would be blocking it yet. Queuing the hang photo alone, waiting for its render to
+    /// actually start (not merely to be popped), and only then queuing the cached one forces
+    /// the ordering that makes the old code's bug observable every run: `decode_lock` is
+    /// genuinely held as a reader by the time the cached photo is ever considered.
+    #[test]
+    fn an_already_cached_photo_skips_the_marker_and_the_lock() {
+        static HANG_STARTED: OnceLock<()> = OnceLock::new();
+
+        fn probe(
+            cache: &ThumbCache,
+            source: &Path,
+            orientation: u8,
+            edit: Edit,
+        ) -> Result<(DynamicImage, DynamicImage)> {
+            if source.to_string_lossy().contains("hang") {
+                let _ = HANG_STARTED.set(());
                 std::thread::sleep(Duration::from_millis(300));
                 default_render(cache, source, orientation, edit)
             } else {
@@ -1123,7 +1313,7 @@ mod tests {
             ("a_hang.jpg", jpeg_bytes(40, 20)),
             ("b_cached.jpg", jpeg_bytes(40, 20)),
         ]);
-        let cached_id = ids[1];
+        let (hang_id, cached_id) = (ids[0], ids[1]);
         let item = lib.item(cached_id).unwrap().unwrap();
         let key = item.thumb_key();
         cache
@@ -1140,8 +1330,16 @@ mod tests {
         drop(inflight);
 
         let service = ThumbService::start_with(lib.clone(), cache, 2, probe);
+
+        service.prioritize(&[hang_id], Priority::Background);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while HANG_STARTED.get().is_none() {
+            assert!(Instant::now() < deadline, "the hang decode never started");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+
         let start = Instant::now();
-        service.enqueue_pending().unwrap();
+        service.prioritize(&[cached_id], Priority::Visible);
 
         let mut became_ready_after = None;
         while start.elapsed() < Duration::from_secs(2) {
