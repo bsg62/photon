@@ -11,10 +11,26 @@
 //! Each leaves the photo `Pending`, so the next launch queues it again and dies again, with
 //! nothing naming the file. A marker file per in-flight decode survives all three, where a
 //! panic hook would see only the first.
+//!
+//! A marker is turned into a **death record**, under its own directory, the moment `recover`
+//! sees it - not left in place and re-read on every later launch. The first version of this
+//! guard kept counting by adding one to the marker itself at every `recover`, which blamed a
+//! photo that had only ever died once: a photo on an offline drive (never queued, so its
+//! marker - if it somehow had one - would sit untouched forever), a quick relaunch, an
+//! orphaned marker (`process` used to return before clearing one for a missing, purged or
+//! already-failed item), and SQLite id reuse (`items.id` is `INTEGER PRIMARY KEY` without
+//! `AUTOINCREMENT`, so a library rebuild can hand a healthy photo a dead one's id) would all
+//! gain a false death at every subsequent launch, forever, with nothing to reset the count. A
+//! record is written once per real death and the marker that produced it is deleted in the
+//! same pass, so a marker can never outlive the launch after the death that left it, and a
+//! record is keyed by the photo's `thumb_key()` so a reused id, a changed file, or a fresh
+//! edit never inherits someone else's deaths.
 
+use crate::grid::hex_key;
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// How many deaths with a photo in flight make it the suspect. One is not enough: quitting,
 /// a power cut or an unrelated crash while a photo happens to be decoding would blame it.
@@ -23,81 +39,211 @@ pub(crate) const DEATHS_TO_FAIL: u32 = 2;
 /// Shown where the photo's thumbnail would be, like any other decode failure.
 pub(crate) const CRASH_MESSAGE: &str = "photon closed unexpectedly while reading this photo";
 
+/// Extension of a temp file mid atomic-write. `recover` and `disarm` skip it when listing
+/// their directory: a write not yet renamed into place is not yet a marker or a record, and
+/// treating it as either would race the rename that is about to replace it.
+const TMP_EXT: &str = "tmp";
+
 pub(crate) struct InFlight {
-    dir: PathBuf,
+    markers: PathBuf,
+    records: PathBuf,
+    /// Set by `disarm` on a clean quit. `begin` then writes no marker: a deliberate exit
+    /// killed nothing, so nothing should be left for the next launch to misread as a death.
+    closing: AtomicBool,
 }
 
 impl InFlight {
     pub(crate) fn new(cache_root: &Path) -> Self {
         Self {
-            dir: cache_root.join("in-flight"),
+            markers: cache_root.join("in-flight"),
+            records: cache_root.join("deaths"),
+            closing: AtomicBool::new(false),
         }
     }
 
-    /// Counts one death for every marker a previous run left behind. Called once, before any
-    /// worker starts: a marker still present then was being decoded when the process ended.
+    /// Turns every marker a previous run left behind into a counted death, then deletes the
+    /// marker. Called once, before any worker starts: a marker still present then was being
+    /// decoded when the process ended. A death only counts against the record it matches -
+    /// same key, meaning the same photo as it stood at that death, not merely the same id -
+    /// so it carries forward correctly and it starts over at one otherwise.
+    ///
+    /// A marker that cannot be read, or whose content is not the 16 hex characters `begin`
+    /// writes (a torn write, if the power went mid-write despite the rename), still counts as
+    /// a death: `marker_key` reports it as the empty key. `deaths` can never match the empty
+    /// key against a real photo's `hex_key(...)`, so that death can never fail anything - it
+    /// is exactly as harmless as a marker with no photo behind it, which is the only thing it
+    /// could actually be. Deleting it either way is the point: nothing may wedge
+    /// `in-flight/` forever.
     pub(crate) fn recover(&self) {
-        let Ok(entries) = fs::read_dir(&self.dir) else {
+        let Ok(entries) = fs::read_dir(&self.markers) else {
             return;
         };
         for entry in entries.flatten() {
             let path = entry.path();
-            let deaths = read_count(&path).unwrap_or(0);
-            if let Err(err) = fs::write(&path, (deaths + 1).to_string()) {
-                tracing::warn!(%err, ?path, "could not record a death against an in-flight photo");
+            if is_tmp(&path) {
+                continue;
+            }
+            let Some(id) = id_of(&path) else { continue };
+            let key = marker_key(&path);
+            let count = match self.read_record(id) {
+                Some((previous, recorded_key)) if recorded_key == key => previous + 1,
+                _ => 1,
+            };
+            self.write_record(id, count, &key);
+            remove(&path);
+        }
+    }
+
+    /// Deaths recorded against `id` while its content matched `key`. Reports 0 for a record
+    /// left by a different photo now living at the same id (id reuse), or by an earlier
+    /// version of the same photo (a changed file, a fresh edit) - either way `key` no longer
+    /// matches what killed photon, so it must not blame what is there now.
+    pub(crate) fn deaths(&self, id: i64, key: u64) -> u32 {
+        let key = hex_key(key);
+        match self.read_record(id) {
+            Some((count, recorded_key)) if recorded_key == key => count,
+            _ => 0,
+        }
+    }
+
+    /// Marks `id` in flight, under `key`, until the returned guard drops. Writes nothing once
+    /// `disarm` has run - see its own comment for the narrow window that remains - and is
+    /// best-effort even before that: a cache that cannot be written loses the guard, not the
+    /// thumbnail.
+    pub(crate) fn begin(&self, id: i64, key: u64) -> Marker {
+        let marker = self.marker_path(id);
+        if !self.closing.load(Ordering::Acquire)
+            && let Err(err) = write_atomic(&self.markers, &marker, &hex_key(key))
+        {
+            tracing::warn!(%err, ?marker, "could not mark a photo in flight");
+        }
+        Marker {
+            marker,
+            record: self.record_path(id),
+        }
+    }
+
+    /// Forgets `id`'s death record. Called once its photo has either been failed for its
+    /// deaths or has just survived a fresh decode (`Marker::drop` does the latter case too;
+    /// this is `process`'s own call for the former). Safe even if the item underneath has
+    /// changed since: `deaths` already refuses a record whose key does not match the item
+    /// currently at `id`, so a record left behind for the old key could never have blamed the
+    /// new one anyway - clearing it early is hygiene, not correctness.
+    pub(crate) fn clear(&self, id: i64) {
+        remove(&self.record_path(id));
+    }
+
+    /// Disarms the guard for a clean quit: no marker is written from here on, and every
+    /// marker on disk right now is removed, because photon chose to stop - nothing killed it.
+    ///
+    /// A worker can still be between reading `closing` (false) and writing its marker when
+    /// this sweep runs, leaving a fresh one behind afterwards. That is not a hole:
+    /// `ThumbService::close` only stops the queue from handing out *new* jobs, so that
+    /// worker's job runs to completion exactly as it would have anyway, and its own `Marker`
+    /// removes the leftover on `Drop` once it does. Only a second, immediate kill inside that
+    /// one write's width of time would leave it behind for real - the same residual risk as
+    /// any crash at shutdown, and far narrower than the decode it would otherwise misattribute
+    /// a death to.
+    pub(crate) fn disarm(&self) {
+        self.closing.store(true, Ordering::Release);
+        let Ok(entries) = fs::read_dir(&self.markers) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !is_tmp(&path) {
+                remove(&path);
             }
         }
     }
 
-    /// Deaths recorded against `id` so far; none if it has no marker.
-    pub(crate) fn deaths(&self, id: i64) -> u32 {
-        read_count(&self.path(id)).unwrap_or(0)
+    fn marker_path(&self, id: i64) -> PathBuf {
+        self.markers.join(id.to_string())
     }
 
-    /// Marks `id` in flight until the returned guard drops. Best-effort: a cache that cannot
-    /// be written loses the guard, not the thumbnail.
-    pub(crate) fn begin(&self, id: i64, deaths: u32) -> Marker {
-        let path = self.path(id);
-        let written =
-            fs::create_dir_all(&self.dir).and_then(|()| fs::write(&path, deaths.to_string()));
-        if let Err(err) = written {
-            tracing::warn!(%err, ?path, "could not mark a photo in flight");
+    fn record_path(&self, id: i64) -> PathBuf {
+        self.records.join(id.to_string())
+    }
+
+    /// Parses a death record's `"<count> <key hex>"`. `None` for a missing or unreadable
+    /// file, or one whose count is not a plain integer - the same "not there" answer either
+    /// way, since a torn write here is no more informative than no record at all.
+    fn read_record(&self, id: i64) -> Option<(u32, String)> {
+        let text = fs::read_to_string(self.record_path(id)).ok()?;
+        let mut parts = text.trim().splitn(2, ' ');
+        let count = parts.next()?.parse().ok()?;
+        Some((count, parts.next().unwrap_or_default().to_string()))
+    }
+
+    fn write_record(&self, id: i64, count: u32, key: &str) {
+        let path = self.record_path(id);
+        if let Err(err) = write_atomic(&self.records, &path, &format!("{count} {key}")) {
+            tracing::warn!(%err, ?path, "could not record a death against a photo");
         }
-        Marker(path)
-    }
-
-    /// Forgets `id`'s deaths, once the photo has been failed for them.
-    pub(crate) fn clear(&self, id: i64) {
-        remove(&self.path(id));
-    }
-
-    fn path(&self, id: i64) -> PathBuf {
-        self.dir.join(id.to_string())
     }
 }
 
-/// Removes its marker when dropped: on success, on an ordinary error, and on a panic that
-/// `catch_unwind` caught, since unwinding runs `Drop`. An abort runs nothing, which is the
-/// point: that marker stays behind for `recover` to count.
-pub(crate) struct Marker(PathBuf);
+/// Removes its photo's marker and death record when dropped: on success, on an ordinary
+/// error, and on a panic that `catch_unwind` caught (unwinding runs `Drop`) - every path by
+/// which `process` finishes deciding the photo's fate itself, so there is nothing left for
+/// the next launch to misread as a leftover death. A caught panic already marks the item
+/// `Failed` on its own; this guard only ever clears the bookkeeping, never the item's state.
+/// An abort or the OOM killer runs no `Drop` at all, which is the one case this guard exists
+/// to survive: the marker stays, for `recover` to find.
+pub(crate) struct Marker {
+    marker: PathBuf,
+    record: PathBuf,
+}
 
 impl Drop for Marker {
     fn drop(&mut self) {
-        remove(&self.0);
+        remove(&self.marker);
+        remove(&self.record);
     }
 }
 
-/// A marker that cannot be parsed (a torn write) is still a death: `Some(0)`, not `None`.
-fn read_count(path: &Path) -> Option<u32> {
-    let text = fs::read_to_string(path).ok()?;
-    Some(text.trim().parse().unwrap_or(0))
+/// The key a marker file names, or the empty string if it is missing, unreadable, or not the
+/// 16 lowercase hex characters `begin` writes. `deaths` can never match the empty string
+/// against a real `hex_key(...)` (which is always exactly 16 hex characters), so folding
+/// every unreadable case into one sentinel is safe: it is counted as a death - the marker
+/// existing at all means something was in flight - but that death can never be pinned on any
+/// actual photo.
+fn marker_key(path: &Path) -> String {
+    fs::read_to_string(path)
+        .ok()
+        .map(|text| text.trim().to_string())
+        .filter(|text| text.len() == 16 && text.chars().all(|c| c.is_ascii_hexdigit()))
+        .unwrap_or_default()
+}
+
+fn id_of(path: &Path) -> Option<i64> {
+    path.file_name()?.to_str()?.parse().ok()
+}
+
+fn is_tmp(path: &Path) -> bool {
+    path.extension().and_then(|e| e.to_str()) == Some(TMP_EXT)
+}
+
+/// Writes `content` to `dest` through a temp file in the same directory, then renames it into
+/// place, so `recover`/`disarm`'s own directory listing - or a concurrent `deaths`/`recover`
+/// read of the same path - never sees a half-written marker or record. `fs::write` alone
+/// truncates before it writes, so a process killed mid-write (the same kind of death this
+/// whole guard exists for) would otherwise leave an empty file where a real count was.
+fn write_atomic(dir: &Path, dest: &Path, content: &str) -> std::io::Result<()> {
+    fs::create_dir_all(dir)?;
+    let tmp = dest.with_extension(TMP_EXT);
+    fs::write(&tmp, content)?;
+    fs::rename(&tmp, dest)
 }
 
 fn remove(path: &Path) {
     match fs::remove_file(path) {
         Ok(()) => {}
         Err(err) if err.kind() == ErrorKind::NotFound => {}
-        Err(err) => tracing::warn!(%err, ?path, "could not clear an in-flight marker"),
+        // Windows can fail this while another handle (an antivirus scan, say) has the file
+        // open. Best-effort is enough: at worst that one file becomes one false death at the
+        // next launch, which the two-strike rule already absorbs.
+        Err(err) => tracing::warn!(%err, ?path, "could not remove an in-flight file"),
     }
 }
 
@@ -106,19 +252,45 @@ mod tests {
     use super::*;
 
     #[test]
-    fn recover_counts_one_death_per_leftover_marker() {
+    fn recover_counts_each_death_once() {
         let dir = tempfile::tempdir().unwrap();
         let inflight = InFlight::new(dir.path());
+        let key = 0x1234_5678_9abc_def0_u64;
         // A leaked guard stands in for an abort, which never runs `Drop`.
-        std::mem::forget(inflight.begin(7, 0));
-        std::mem::forget(inflight.begin(8, 1));
+        std::mem::forget(inflight.begin(7, key));
         inflight.recover();
-        assert_eq!((inflight.deaths(7), inflight.deaths(8)), (1, 2));
-        assert_eq!(inflight.deaths(9), 0, "no marker, no deaths");
+        inflight.recover();
+        assert_eq!(
+            inflight.deaths(7, key),
+            1,
+            "the first version of this guard bumped the marker itself on every recover, so a \
+             second recover with no second death would have made this 2"
+        );
+        assert!(
+            !dir.path().join("in-flight/7").exists(),
+            "the marker must not outlive the launch that turned it into a record"
+        );
+    }
+
+    #[test]
+    fn a_record_for_another_photo_is_ignored() {
+        let dir = tempfile::tempdir().unwrap();
+        let inflight = InFlight::new(dir.path());
+        let (k1, k2) = (0x1111_1111_1111_1111_u64, 0x2222_2222_2222_2222_u64);
+        std::mem::forget(inflight.begin(7, k1));
+        inflight.recover();
+        assert_eq!(
+            inflight.deaths(7, k2),
+            0,
+            "a reused id, or a changed file, must not inherit a death from before"
+        );
+        std::mem::forget(inflight.begin(7, k2));
+        inflight.recover();
+        assert_eq!(inflight.deaths(7, k2), 1, "a new key starts a fresh count");
     }
 
     /// A marker whose content is not a number (a torn write when the power went) still
-    /// counts as a death rather than being ignored.
+    /// counts as a death, under a key nothing real can ever match, and is removed either way.
     #[test]
     fn an_unreadable_marker_counts_as_a_first_death() {
         let dir = tempfile::tempdir().unwrap();
@@ -126,21 +298,19 @@ mod tests {
         std::fs::write(dir.path().join("in-flight/5"), "garbage").unwrap();
         let inflight = InFlight::new(dir.path());
         inflight.recover();
-        assert_eq!(inflight.deaths(5), 1);
-    }
-
-    /// `read_count`'s own contract: an unparseable marker is a *counted* death (`Some(0)`),
-    /// distinct from no marker at all (`None`). Neither current caller of `read_count`
-    /// observes the difference directly - `deaths` and `recover` both fold the `Option` with
-    /// their own `unwrap_or(0)` - so a change collapsing `Some(0)` into `None` here is invisible
-    /// through them alone; this pins the distinction at its source instead.
-    #[test]
-    fn an_unparseable_marker_is_some_zero_not_none() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(dir.path().join("in-flight")).unwrap();
-        std::fs::write(dir.path().join("in-flight/5"), "garbage").unwrap();
-        assert_eq!(read_count(&dir.path().join("in-flight/5")), Some(0));
-        assert_eq!(read_count(&dir.path().join("in-flight/no-such-file")), None);
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("deaths/5"))
+                .unwrap()
+                .trim(),
+            "1",
+            "still a counted death"
+        );
+        assert_eq!(
+            inflight.deaths(5, 0),
+            0,
+            "but an empty key never matches a real one, even 0"
+        );
+        assert!(!dir.path().join("in-flight/5").exists());
     }
 
     #[test]
@@ -148,8 +318,27 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let inflight = InFlight::new(dir.path());
         let marker = inflight.begin(3, 1);
-        assert_eq!(inflight.deaths(3), 1);
+        assert_eq!(inflight.deaths(3, 1), 0, "not a death until recover runs");
         drop(marker);
         assert!(!dir.path().join("in-flight/3").exists());
+        assert!(!dir.path().join("deaths/3").exists());
+    }
+
+    #[test]
+    fn a_clean_close_leaves_no_marker_to_count() {
+        let dir = tempfile::tempdir().unwrap();
+        let inflight = InFlight::new(dir.path());
+        let key = 5_u64;
+        std::mem::forget(inflight.begin(3, key));
+        inflight.disarm();
+
+        // Stands in for the next launch: nothing survived disarm's sweep to be counted.
+        let next_launch = InFlight::new(dir.path());
+        next_launch.recover();
+        assert_eq!(next_launch.deaths(3, key), 0);
+
+        // And once disarmed, a new `begin` writes nothing at all.
+        std::mem::forget(inflight.begin(4, key));
+        assert!(!dir.path().join("in-flight/4").exists());
     }
 }

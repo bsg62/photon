@@ -174,11 +174,21 @@ by the crate's source being unmodified and published.
   entry point to call instead. That abort, an allocation failure, and the OOM killer would
   otherwise crash-loop photon on the same photo at every launch, since none of them run `Drop`
   for `catch_unwind` to contain. `thumbs/inflight.rs` guards against the loop rather than the
-  abort: a marker file per in-flight thumbnail decode, under the cache, counts one death for
-  every marker still present when the service next starts, and a photo that has died twice is
-  failed with `CRASH_MESSAGE` instead of being decoded a third time. A full-size render of an
-  edited photo and export can still abort photon this same way, but only when the user asks for
-  one, so neither can loop.
+  abort, keyed by the photo rather than the id: a marker file per in-flight thumbnail decode,
+  under the cache, is turned into a death record - `"<count> <thumb_key hex>"` - the moment the
+  service next starts, and the marker is deleted in that same pass, so a death is counted
+  exactly once no matter how many launches follow it. A record only ever matches the photo's
+  *current* `thumb_key()`, so a reused SQLite id, a changed file or a fresh edit never inherits
+  another photo's deaths. A photo whose record reaches two deaths is failed with
+  `CRASH_MESSAGE` instead of being decoded a third time; one death alone is forgiven, since
+  quitting, a power cut or an unrelated crash while a photo happened to be in flight would
+  otherwise blame it. A suspect (one recorded death) decodes under an exclusive lock that
+  every other decode only takes shared, so a batch of photos queued together does not all
+  inherit one photo's second death merely for having been in flight beside it - only the
+  actual culprit can reach two. A deliberate quit disarms the guard first (`ThumbService::close`),
+  so it never mistakes photon choosing to stop for a crash. A full-size render of an edited
+  photo and export can still abort photon this same way, but only when the user asks for one,
+  so neither can loop.
 
 ## Testing
 

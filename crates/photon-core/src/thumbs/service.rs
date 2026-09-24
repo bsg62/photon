@@ -7,6 +7,7 @@ use crate::{
     media::ThumbState,
 };
 use image::DynamicImage;
+use parking_lot::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::{
     panic::{AssertUnwindSafe, catch_unwind},
     path::{Path, PathBuf},
@@ -42,6 +43,12 @@ pub struct ThumbService {
     workers: Vec<JoinHandle<()>>,
     render: RenderFn,
     inflight: Arc<InFlight>,
+    /// Excludes a suspect's decode from every other decode, so a group of photos queued
+    /// together does not inherit one photo's deaths merely for having been in flight beside
+    /// it when it died. A photo with at least one recorded death takes this exclusively
+    /// (`write`); everything else only needs to keep other *exclusive* holders out, not each
+    /// other, so it takes `read`. See `process`.
+    decode_lock: Arc<RwLock<()>>,
 }
 
 /// Decodes a source file into (preview, grid) images. A seam so tests can inject a
@@ -81,16 +88,24 @@ impl ThumbService {
         let inflight = Arc::new(InFlight::new(cache.root()));
         // Before any worker starts: a marker still here was in flight when a previous run died.
         inflight.recover();
+        let decode_lock = Arc::new(RwLock::new(()));
         let workers = (0..workers.max(1))
             .map(|i| {
-                let (lib, cache, queue, inflight) =
-                    (lib.clone(), cache.clone(), queue.clone(), inflight.clone());
+                let (lib, cache, queue, inflight, decode_lock) = (
+                    lib.clone(),
+                    cache.clone(),
+                    queue.clone(),
+                    inflight.clone(),
+                    decode_lock.clone(),
+                );
                 std::thread::Builder::new()
                     .name(format!("photon-thumb-{i}"))
                     .spawn(move || {
                         while let Some(id) = queue.pop_blocking() {
                             let _guard = DoneGuard(&queue, id);
-                            if let Err(err) = process(&lib, &cache, &inflight, id, render) {
+                            if let Err(err) =
+                                process(&lib, &cache, &inflight, &decode_lock, id, render)
+                            {
                                 tracing::warn!(id, %err, "thumbnail job failed");
                             }
                         }
@@ -105,6 +120,7 @@ impl ThumbService {
             workers,
             render,
             inflight,
+            decode_lock,
         }
     }
 
@@ -125,7 +141,11 @@ impl ThumbService {
 
     /// Closes the queue so every worker finishes its current job and then stops.
     /// Does not join the workers itself; `Drop` still does that.
+    ///
+    /// Disarms the crash-loop guard first: a deliberate close is not the kind of death it
+    /// watches for, so no marker from it should survive to be misread as one.
     pub fn close(&self) {
+        self.inflight.disarm();
         self.queue.close();
     }
 
@@ -145,7 +165,14 @@ impl ThumbService {
         if path.is_file() {
             return Ok(path);
         }
-        process(&self.lib, &self.cache, &self.inflight, id, self.render)?;
+        process(
+            &self.lib,
+            &self.cache,
+            &self.inflight,
+            &self.decode_lock,
+            id,
+            self.render,
+        )?;
         if path.is_file() {
             return Ok(path);
         }
@@ -231,15 +258,27 @@ const PANIC_MESSAGE: &str = "decoder panicked";
 ///
 /// `catch_unwind` above only contains a panic that actually unwinds. A panic inside rav1d's
 /// `extern "C"` entry points cannot unwind and aborts, as can an allocation failure or the
-/// OOM killer; none of those run `Drop`, so `inflight` is what survives them: `deaths(id)` is
-/// read before the decode, and at [`DEATHS_TO_FAIL`] or more the photo is failed with
-/// [`CRASH_MESSAGE`] without calling `render` again, rather than dying the same way on every
-/// launch. Below that, `begin` holds a marker across the decode so a death leaves one behind
-/// for the next launch's `recover` to count.
+/// OOM killer; none of those run `Drop`, so `inflight`'s marker/record pair is what survives
+/// them: `deaths(id, key)` is read before the decode, keyed by the item's *current*
+/// `thumb_key()` so a reused id, a changed file or a fresh edit never inherits another
+/// photo's deaths. At [`DEATHS_TO_FAIL`] or more the photo is failed with [`CRASH_MESSAGE`]
+/// without calling `render` again, rather than dying the same way on every launch. Below
+/// that, `begin` holds a marker across the decode so a death leaves one behind for the next
+/// launch's `recover` to count, and turn into a record - `inflight` never re-counts a
+/// leftover marker itself, which is what let a single death compound into a false failure in
+/// this guard's first version.
+///
+/// A photo with at least one recorded death also takes `decode_lock` exclusively
+/// (`write`) across its render, where every other decode only takes `read`: without that, a
+/// batch of photos queued together dies as a group, and every one of them - not just the
+/// culprit - looks like a repeat suspect at the next launch, since they were all genuinely in
+/// flight together. Held outside `catch_unwind` so the lock guard's own unwind-drop runs
+/// during the panic that is being caught, same as everything else in scope.
 fn process(
     lib: &Library,
     cache: &ThumbCache,
     inflight: &InFlight,
+    decode_lock: &RwLock<()>,
     id: i64,
     render: RenderFn,
 ) -> Result<()> {
@@ -249,7 +288,8 @@ fn process(
     if item.missing_since.is_some() || item.thumb_state == ThumbState::Failed {
         return Ok(());
     }
-    let deaths = inflight.deaths(id);
+    let key = item.thumb_key();
+    let deaths = inflight.deaths(id, key);
     if deaths >= DEATHS_TO_FAIL {
         tracing::error!(
             id,
@@ -258,11 +298,20 @@ fn process(
             "photon died with this photo in flight; not decoding it again"
         );
         lib.set_thumb_state_if_unchanged(&item, ThumbState::Failed, Some(CRASH_MESSAGE))?;
+        // Clears the record even though `set_thumb_state_if_unchanged` may have left the
+        // item alone because it changed underneath (a rescan mid-call): `deaths` already
+        // refuses a record whose key doesn't match the item now at `id`, so the record could
+        // never have blamed whatever is there after a change. This is just hygiene.
         inflight.clear(id);
         return Ok(());
     }
     // Held across the decode, so it is on disk if the decode takes the process down.
-    let _marker = inflight.begin(id, deaths);
+    let _marker = inflight.begin(id, key);
+    let _decode_guard = if deaths >= 1 {
+        DecodeGuard::Suspect(decode_lock.write())
+    } else {
+        DecodeGuard::Ordinary(decode_lock.read())
+    };
     match catch_unwind(AssertUnwindSafe(|| process_item(lib, cache, &item, render))) {
         Ok(result) => result,
         Err(_) => {
@@ -271,6 +320,19 @@ fn process(
             Err(Error::ThumbFailed(PANIC_MESSAGE.into()))
         }
     }
+}
+
+/// Held across one decode: a suspect (at least one recorded death) takes the lock
+/// exclusively so no other decode runs beside it, and an ordinary photo only takes a shared
+/// read, which blocks a suspect's `write` but not another ordinary decode. Its only job is to
+/// stay alive until the decode finishes; nothing reads through it.
+#[allow(
+    dead_code,
+    reason = "held only for its Drop; nothing ever reads through it"
+)]
+enum DecodeGuard<'a> {
+    Suspect(RwLockWriteGuard<'a, ()>),
+    Ordinary(RwLockReadGuard<'a, ()>),
 }
 
 fn process_item(lib: &Library, cache: &ThumbCache, item: &Item, render: RenderFn) -> Result<()> {
@@ -595,6 +657,14 @@ mod tests {
             .join(id.to_string())
     }
 
+    fn death_record(dir: &TempDir, id: i64) -> std::path::PathBuf {
+        dir.path().join("cache").join("deaths").join(id.to_string())
+    }
+
+    fn item_key(lib: &Library, id: i64) -> u64 {
+        lib.item(id).unwrap().unwrap().thumb_key()
+    }
+
     /// Fails loudly if the service calls it: a photo marked failed by the guard must not be
     /// decoded again. A panic here is caught and recorded as "decoder panicked", which
     /// the tests below tell apart from the guard's own message.
@@ -628,6 +698,7 @@ mod tests {
         service.get_or_generate(ids[0], ThumbSize::Grid).unwrap();
         assert_eq!(state(&lib, ids[0]), ThumbState::Ready);
         assert!(!marker(&dir, ids[0]).exists());
+        assert!(!death_record(&dir, ids[0]).exists());
     }
 
     #[test]
@@ -637,35 +708,117 @@ mod tests {
         let service = ThumbService::start_with(lib.clone(), cache, 1, panicking_render);
         assert!(service.get_or_generate(ids[0], ThumbSize::Grid).is_err());
         assert!(!marker(&dir, ids[0]).exists());
+        assert!(!death_record(&dir, ids[0]).exists());
     }
 
-    /// Photon died once with this photo in flight (a marker at 0 left behind): that could be
+    /// Photon died once with this photo in flight (one marker, recovered once): that could be
     /// the user quitting, so the photo is decoded again, and succeeding clears the record.
     #[test]
     fn one_death_is_forgiven() {
         let (dir, lib, cache, ids) = setup(&[("a.jpg", jpeg_bytes(40, 20))]);
-        std::fs::create_dir_all(marker(&dir, ids[0]).parent().unwrap()).unwrap();
-        std::fs::write(marker(&dir, ids[0]), "0").unwrap();
+        let key = item_key(&lib, ids[0]);
+        let inflight = InFlight::new(cache.root());
+        std::mem::forget(inflight.begin(ids[0], key));
+        inflight.recover();
+        // Starting the service runs its own `recover()`; no marker is left for it to find,
+        // so the one death already on record stands alone.
         let service = ThumbService::start_with(lib.clone(), cache, 1, default_render);
         service.get_or_generate(ids[0], ThumbSize::Grid).unwrap();
         assert_eq!(state(&lib, ids[0]), ThumbState::Ready);
         assert!(!marker(&dir, ids[0]).exists());
+        assert!(!death_record(&dir, ids[0]).exists());
     }
 
-    /// Photon died a second time with this photo in flight (its marker already recorded one
-    /// death): the photo is failed with the guard's message, the decoder is not called, and
-    /// the marker is cleared.
+    /// Photon died a second time with this photo in flight (its death record already held
+    /// one, matching, death): the photo is failed with the guard's message, the decoder is
+    /// not called, and the record is cleared.
     #[test]
     fn two_deaths_fail_the_photo_without_decoding_it() {
         let (dir, lib, cache, ids) = setup(&[("a.jpg", jpeg_bytes(40, 20))]);
-        std::fs::create_dir_all(marker(&dir, ids[0]).parent().unwrap()).unwrap();
-        std::fs::write(marker(&dir, ids[0]), "1").unwrap();
+        let key = item_key(&lib, ids[0]);
+        let inflight = InFlight::new(cache.root());
+        std::mem::forget(inflight.begin(ids[0], key));
+        inflight.recover();
+        std::mem::forget(inflight.begin(ids[0], key));
+        // Starting the service runs its own `recover()`, turning this second marker into the
+        // second death against the same key.
         let service = ThumbService::start_with(lib.clone(), cache, 1, must_not_render);
         assert!(service.get_or_generate(ids[0], ThumbSize::Grid).is_err());
         let item = lib.item(ids[0]).unwrap().unwrap();
         assert_eq!(item.thumb_state, ThumbState::Failed);
         assert_eq!(item.thumb_error.as_deref(), Some(CRASH_MESSAGE));
         assert!(!marker(&dir, ids[0]).exists());
+        assert!(!death_record(&dir, ids[0]).exists());
+    }
+
+    /// A suspect's second death must not blame the photos merely queued alongside it: without
+    /// `decode_lock`, a batch dies together and every survivor looks like a repeat suspect at
+    /// the next launch too. This proves the exclusion directly: a render fn tracks whether the
+    /// suspect and any other photo were ever mid-render at the same time, using two static
+    /// flags rather than a single counter, because the claim is specifically "the suspect was
+    /// alone", not "no two decodes ever overlapped" - ordinary photos are still allowed to
+    /// overlap each other.
+    #[test]
+    fn a_suspect_decodes_alone() {
+        static SUSPECT_ACTIVE: std::sync::atomic::AtomicBool =
+            std::sync::atomic::AtomicBool::new(false);
+        static OTHERS_ACTIVE: AtomicUsize = AtomicUsize::new(0);
+        static OVERLAPPED: std::sync::atomic::AtomicBool =
+            std::sync::atomic::AtomicBool::new(false);
+
+        fn probe(
+            cache: &ThumbCache,
+            source: &Path,
+            orientation: u8,
+            edit: Edit,
+        ) -> Result<(DynamicImage, DynamicImage)> {
+            let is_suspect = source.to_string_lossy().contains("suspect");
+            if is_suspect {
+                if OTHERS_ACTIVE.load(Ordering::SeqCst) > 0 {
+                    OVERLAPPED.store(true, Ordering::SeqCst);
+                }
+                SUSPECT_ACTIVE.store(true, Ordering::SeqCst);
+                std::thread::sleep(Duration::from_millis(100));
+                SUSPECT_ACTIVE.store(false, Ordering::SeqCst);
+            } else {
+                OTHERS_ACTIVE.fetch_add(1, Ordering::SeqCst);
+                if SUSPECT_ACTIVE.load(Ordering::SeqCst) {
+                    OVERLAPPED.store(true, Ordering::SeqCst);
+                }
+                std::thread::sleep(Duration::from_millis(40));
+                OTHERS_ACTIVE.fetch_sub(1, Ordering::SeqCst);
+            }
+            default_render(cache, source, orientation, edit)
+        }
+
+        // Named to sort first under GRID_ORDER's filename tie-break, so the suspect is
+        // among the first jobs three workers pop, not queued behind the others: otherwise
+        // it would only ever run once everything else had already finished, and the lock
+        // would never be exercised.
+        let (_dir, lib, cache, ids) = setup(&[
+            ("a_suspect.jpg", jpeg_bytes(40, 20)),
+            ("b.jpg", jpeg_bytes(40, 20)),
+            ("c.jpg", jpeg_bytes(40, 20)),
+            ("d.jpg", jpeg_bytes(40, 20)),
+        ]);
+        let suspect_key = item_key(&lib, ids[0]);
+        let inflight = InFlight::new(cache.root());
+        std::mem::forget(inflight.begin(ids[0], suspect_key));
+        inflight.recover();
+
+        let service = ThumbService::start_with(lib.clone(), cache, 3, probe);
+        service.enqueue_pending().unwrap();
+        service.wait_idle();
+
+        assert!(
+            !OVERLAPPED.load(Ordering::SeqCst),
+            "the suspect decoded alongside another render"
+        );
+        assert_eq!(
+            state(&lib, ids[0]),
+            ThumbState::Ready,
+            "one death is still forgiven"
+        );
     }
 
     #[test]
