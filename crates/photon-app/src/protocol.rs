@@ -132,6 +132,7 @@ fn mime_for(path: &Path) -> &'static str {
         Some("png") => "image/png",
         Some("gif") => "image/gif",
         Some("webp") => "image/webp",
+        Some("avif") => "image/avif",
         _ => "application/octet-stream",
     }
 }
@@ -193,6 +194,14 @@ mod tests {
         assert_eq!(r.status(), 200);
         assert_eq!(header(&r, "content-type"), "image/jpeg");
         assert_eq!(r.body(), &img);
+    }
+
+    /// The unedited AVIF is served as itself: the webview decodes it natively where it can,
+    /// and the viewer keeps the preview where it cannot.
+    #[test]
+    fn serves_avif_as_avif() {
+        assert_eq!(mime_for(Path::new("a.avif")), "image/avif");
+        assert_eq!(mime_for(Path::new("B.AVIF")), "image/avif");
     }
 
     #[test]

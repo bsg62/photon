@@ -42,11 +42,15 @@ a message and nothing changes; try again once Picasa has finished.
 
 ### File formats
 
-photon indexes JPEG, PNG, GIF, WebP, TIFF and BMP. A TIFF holding several pages is shown as
-its first page. Camera RAW files and HEIC are not read: every way of decoding them means
-shipping a C library, and photon deliberately has no native dependencies.
+photon indexes JPEG, PNG, GIF, WebP, TIFF, BMP and AVIF. A TIFF holding several pages is shown
+as its first page. AVIF is decoded by photon itself, in pure Rust, including the tiled and
+10-bit photos phones write. An HDR AVIF is shown as standard range without tone mapping, so it
+may look flat, and an animated one shows its still image. The viewer shows full-size AVIFs
+where the system's web view can (Windows, macOS 13 and later, most Linux desktops) and the
+1600-pixel preview elsewhere. Camera RAW files and HEIC are not read: every way of decoding
+them means shipping a C library, and photon deliberately has no native dependencies.
 
-Adding TIFF and BMP does not disturb a library built by an earlier photon. Those files
+Adding TIFF, BMP and AVIF does not disturb a library built by an earlier photon. Those files
 simply appear as each folder is walked again, whether that scan is manual or triggered by
 the file watcher; nothing already indexed is re-read and no thumbnail is rebuilt.
 
@@ -234,7 +238,7 @@ Verify a download against the `SHA256SUMS` file attached to the release:
 ## Development
 
 Prerequisites:
-- Rust (stable, 1.88 or newer).
+- Rust (stable, 1.93 or newer).
 - Node.js 24 or newer (an LTS release; the UI toolchain — Vite 8, Vitest 5 and
   `@sveltejs/vite-plugin-svelte` — requires Node 22.12+, 24+ or 26+, so a plain "Node 22" install
   can be too old depending on its exact patch version. Node 24 is the current LTS line and is
@@ -308,6 +312,7 @@ publishing it.
 - [ ] Right-click a saved search → Rename…: the field opens with the name selected, Enter saves, Escape cancels. Delete… asks first; after deleting, the photos stay on screen and the box still holds the query. Both `lake OR pond` and `lake or pond` can be saved separately (capitals are operators, so they are different searches).
 - [ ] Upgrade a real library from schema 10: it opens, and an older photon then refuses it with a clear message rather than a crash.
 - [ ] Drop a `.tif` and a `.bmp` into a watched folder: both appear after the scan with correct thumbnails, and their tiles show the right shape (not stretched or letterboxed). Open each in the viewer at 100%. A TIFF the decoder cannot read (16-bit, CMYK, or JPEG-compressed — save one from GIMP or Photoshop to get one) shows the failed-thumbnail placeholder rather than an empty tile, and does not stall the folder's other thumbnails.
+- [ ] Drop AVIFs into a watched folder: one from a phone (tiled, rotated), one exported by an editor, one with transparency. All appear after the scan, upright, with thumbnails whose shape matches the tile. Open each in the viewer at 100% on Windows, macOS and Linux. The full-size picture must be framed the same as its thumbnail. On a system whose web view cannot show AVIF (macOS 12 or older), the viewer stays on the sharp preview with no error. Turn one and crop one: the edit shows in the grid and the viewer. A truncated `.avif` (cut a copy in half) shows the failed-thumbnail placeholder and does not stall its folder.
 - [ ] Ctrl/Cmd+Shift+R and "Reveal in file manager" open the system file manager at the file.
 - [ ] On Windows, add an SMB share (`\\server\photos` or by IP) as a watched folder: Settings → Folders shows it as `\\server\photos`, not `\\?\UNC\server\photos`, and "Reveal" there, on a sidebar folder and on a photo in it all open Explorer rather than failing. A library that already held the share from an older photon shows the same after the upgrade, with its photos, stars and albums intact (the share's thumbnails are rebuilt once).
 - [ ] The viewer's caption reads name, capture time, resolution, size and position, e.g. `IMG_1234.JPG · Jun 15, 2024, 12:30 PM · 4000 × 3000 · 3.2 MB · (12 / 240)`. The capture time matches what the camera wrote, not shifted by your time zone.

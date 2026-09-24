@@ -3,6 +3,7 @@
   import { mediaUrl, type GridEntry } from '../lib/api';
   import { library } from '../lib/library.svelte';
   import { createThumbRequest } from '../lib/thumb-request.svelte';
+  import { createTileRetry } from '../lib/tile-retry.svelte';
   import { copiesMarkShown } from '../lib/copies';
   import Icon from './Icon.svelte';
 
@@ -30,14 +31,13 @@
     tile: number;
   } = $props();
 
-  const RETRY_MS = 2000;
-  let status = $state<'loading' | 'loaded' | 'broken'>('loading');
-  let attempt = $state(0);
-  let retryTimer: ReturnType<typeof setTimeout> | undefined;
   const key = $derived(entry ? `thumb/${entry.id}/grid/${entry.thumbKey}` : '');
   const request = createThumbRequest();
+  const retry = createTileRetry();
   const src = $derived(
-    request.requested ? mediaUrl(request.requested) + (attempt ? `?retry=${attempt}` : '') : undefined,
+    request.requested
+      ? mediaUrl(request.requested) + (retry.attempt ? `?retry=${retry.attempt}` : '')
+      : undefined,
   );
 
   // Tiles are keyed by grid offset, not photo id, so the entry changes under a live tile
@@ -56,35 +56,34 @@
   // and resetting it for a key the tile has not asked for yet would blank a loaded
   // thumbnail - including when a scroll comes straight back to the photo already showing,
   // where no new `src` is set and so no `onload` would ever arrive to clear it again.
-  // A pending retry belongs to the old photo, so it is cancelled here too.
+  // A pending retry belongs to the old photo, so it is cancelled here too - `retry.reset`
+  // itself covers that; see `createTileRetry`.
   $effect(() => {
     void request.requested;
-    status = 'loading';
-    attempt = 0;
-    return () => {
-      clearTimeout(retryTimer);
-      retryTimer = undefined;
-    };
+    retry.reset();
+    return () => retry.cancel();
   });
 
   // A tile can break for reasons that later go away: a thumbnail that was still queued
-  // when the tile scrolled out answers 503, and both attempts can fall in that window.
-  // Nothing else resets it (`key` doesn't change when the thumbnail becomes ready, and
-  // the component isn't remounted), so retry whenever the library moves on. Only a broken
-  // tile is touched: resetting a loading or loaded one would flicker.
-  // `status` is written here, so it is read through `untrack` — the effect depends on
-  // `pageTick` alone and cannot re-trigger itself.
+  // when the tile scrolled out answers 503, and both attempts can fall in that window - the
+  // common case `createTileRetry`'s own quick retry already covers. This effect is a second,
+  // independent path back to loading, for the terminal `'broken'` state only - `retry`
+  // already keeps retrying on its own schedule while it's `'retrying'`, so there's nothing
+  // for this to do there, and touching a loading or loaded tile would flicker it. Once
+  // `retry` has given up (`TILE_BROKEN_RETRY_ATTEMPTS` exhausted), this is what still
+  // brings a tile back once an unrelated library change happens to land - `key` doesn't
+  // change when the thumbnail becomes ready, and the component isn't remounted.
+  // `retry.status` is written here (via `reset`), so it is read through `untrack` — the
+  // effect depends on `pageTick` alone and cannot re-trigger itself.
   $effect(() => {
     void library.pageTick;
-    if (untrack(() => status) === 'broken') {
-      status = 'loading';
-      attempt = 0;
+    if (untrack(() => retry.status) === 'broken') {
+      retry.reset();
     }
   });
 
   function onerror() {
-    if (attempt === 0) retryTimer = setTimeout(() => (attempt = 1), RETRY_MS);
-    else status = 'broken';
+    retry.failed();
   }
 </script>
 
@@ -99,9 +98,27 @@
   ondblclick={onopen}
   oncontextmenu={onmenu}
 >
-  {#if entry && src && status !== 'broken'}
-    <img {src} alt="" draggable="false" decoding="async" class:loaded={status === 'loaded'} onload={() => (status = 'loaded')} {onerror} />
-  {:else if status === 'broken'}
+  <!-- Mounted for every status, never removed for 'retrying' or 'broken': a background
+       retry still needs a live <img> to actually reissue the request (`retry.attempt`
+       changing `src`), and it stays invisible (opacity 0) behind the icon below until an
+       `onload` promotes it. Before `createTileRetry` grew a slow background retry, a
+       broken tile never had a request in flight to protect, and this same markup swapped
+       the <img> out for the icon on 'broken'; once retries started firing behind that
+       icon, each one's timer setting `status` back to `'loading'` (the bug `TileRetry`'s
+       own doc on `failed` describes) was what this unmount-on-broken markup then showed -
+       a blank <img> - until the next `onerror` swapped the icon back in. -->
+  {#if entry && src}
+    <img
+      {src}
+      alt=""
+      draggable="false"
+      decoding="async"
+      class:loaded={retry.status === 'loaded'}
+      onload={() => retry.loaded()}
+      {onerror}
+    />
+  {/if}
+  {#if retry.status === 'broken' || retry.status === 'retrying'}
     <span class="broken" title="This photo can't be shown"><Icon name="triangle-alert" size={28} /></span>
   {/if}
   {#if entry?.starred}
@@ -150,7 +167,16 @@
     transition: opacity 120ms ease-out;
   }
   img.loaded { opacity: 1; }
-  .broken { display: grid; place-items: center; height: 100%; color: var(--text-dim); }
+  /* Absolute, not a flow sibling: the <img> stays mounted (invisible) behind it during
+     'retrying' and 'broken' so a background retry can still fetch - see the template
+     comment above the <img>. */
+  .broken {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    color: var(--text-dim);
+  }
   /* The shadow keeps an amber star legible on a bright or amber photo. */
   .star {
     position: absolute;

@@ -1,5 +1,6 @@
 use parking_lot::{Condvar, Mutex};
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::time::Instant;
 
 /// Lower sorts first: visible grid cells beat viewer neighbours beat background fill.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -37,6 +38,14 @@ struct State {
     /// screen, and the workers decode invisible photos while the grid stays empty.
     waiters: HashMap<i64, usize>,
     closed: bool,
+    /// Jobs backed off by `defer`, not eligible to be popped until their `Instant` passes -
+    /// a suspect that lost the race for `decode_lock` and is waiting out its back-off rather
+    /// than an id that is merely low priority. Not `order`: something in `order` is ready to
+    /// run the moment a worker is free, where a delayed job must not be handed to a worker at
+    /// all until its time comes, or a worker would just spin popping it and re-deferring it
+    /// with nothing else to do in between - see `pop_blocking`, which waits on the earliest
+    /// one rather than polling.
+    delayed: Vec<(Instant, i64, Priority)>,
 }
 
 impl State {
@@ -44,6 +53,20 @@ impl State {
         if self.in_flight.contains(&id) {
             let held = self.deferred.entry(id).or_insert(priority);
             *held = (*held).min(priority);
+            return;
+        }
+        if let Some(entry) = self
+            .delayed
+            .iter_mut()
+            .find(|&&mut (_, existing, _)| existing == id)
+        {
+            // Already backing off: a push while it's delayed updates the priority it will
+            // run at once eligible (never lowering it - a Visible request must still beat
+            // a Background one when the deadline arrives), but never readmits it early.
+            // Ignoring `delayed` here is exactly what let `request`'s own retries, and
+            // `set_visible`/`prioritize`/`enqueue_pending`, defeat the backoff by popping
+            // the id again the moment they ran - see `SUSPECT_BACKOFF_START`.
+            entry.2 = entry.2.min(priority);
             return;
         }
         if let Some(&(current, seq)) = self.entries.get(&id) {
@@ -84,6 +107,43 @@ impl State {
         let (_, _, id) = self.order.pop_first()?;
         self.entries.remove(&id);
         Some(id)
+    }
+
+    /// Backs `id` off until `not_before`. `defer` is only called from inside a job already
+    /// popped and in flight, so `id` is already absent from `order` and `entries` by the
+    /// time this runs - there is nothing here to remove from either. Any existing delay for
+    /// the same id is replaced rather than duplicated, so a job that keeps timing out doesn't
+    /// accumulate one entry per attempt.
+    fn delay(&mut self, id: i64, priority: Priority, not_before: Instant) {
+        self.delayed.retain(|&(_, existing, _)| existing != id);
+        self.delayed.push((not_before, id, priority));
+    }
+
+    /// Drops any pending backoff for `id` with no replacement - see `ThumbQueue::forget`.
+    /// Reports whether anything was actually removed, so a caller doesn't have to wake
+    /// every waiter over a call that changed nothing.
+    fn forget(&mut self, id: i64) -> bool {
+        let before = self.delayed.len();
+        self.delayed.retain(|&(_, existing, _)| existing != id);
+        self.delayed.len() != before
+    }
+
+    /// Moves every delayed job whose time has come into `order`, where `pop` can find it.
+    fn admit_due(&mut self, now: Instant) {
+        let (due, still_delayed): (Vec<_>, Vec<_>) = self
+            .delayed
+            .drain(..)
+            .partition(|&(when, _, _)| when <= now);
+        self.delayed = still_delayed;
+        for (_, id, priority) in due {
+            self.push(id, priority);
+        }
+    }
+
+    /// The earliest time any delayed job becomes eligible, or `None` if there are none -
+    /// what `pop_blocking` and `wait_idle` wake up for instead of polling.
+    fn next_delayed(&self) -> Option<Instant> {
+        self.delayed.iter().map(|&(when, _, _)| when).min()
     }
 }
 
@@ -129,17 +189,50 @@ impl ThumbQueue {
     }
 
     /// Blocks until a job is available. Every `Some(id)` must be followed by `done(id)`.
+    ///
+    /// A delayed job (see `defer`) is never handed out before its time: rather than polling,
+    /// a worker with nothing else to do waits on the condvar with the earliest delayed job's
+    /// deadline, waking (via `wait_until`'s timeout, or a `notify_all` from a `push`/`defer`
+    /// elsewhere) to recheck rather than sleeping past it or spinning before it.
     pub fn pop_blocking(&self) -> Option<i64> {
         let mut state = self.state.lock();
         loop {
             if state.closed {
                 return None;
             }
+            state.admit_due(Instant::now());
             if let Some(id) = state.pop() {
                 state.in_flight.insert(id);
                 return Some(id);
             }
-            self.changed.wait(&mut state);
+            match state.next_delayed() {
+                Some(deadline) => {
+                    self.changed.wait_until(&mut state, deadline);
+                }
+                None => self.changed.wait(&mut state),
+            }
+        }
+    }
+
+    /// Backs `id` off until `not_before`: taken out of contention for a worker until then, but
+    /// not dropped - see `State::delay`. Used for a suspect that lost the race for
+    /// `decode_lock`, so it doesn't retry immediately and doesn't need a worker sleeping to
+    /// wait it out.
+    pub fn defer(&self, id: i64, priority: Priority, not_before: Instant) {
+        self.state.lock().delay(id, priority, not_before);
+        self.changed.notify_all();
+    }
+
+    /// Drops `id`'s pending backoff, if it has one - see `Suspects::resolved`. A no-op for
+    /// a job reached through the queue itself: `admit_due` already moved `id` out of
+    /// `delayed` before `pop` ever handed it to a worker, so there is nothing here to
+    /// remove. The one caller that can actually find something to remove is
+    /// `ThumbService::get_or_generate`, which resolves an id by calling `process` directly,
+    /// bypassing the queue and its bookkeeping entirely - test-only today (see its own
+    /// doc), but cheap enough to guard against regardless.
+    pub fn forget(&self, id: i64) {
+        if self.state.lock().forget(id) {
+            self.changed.notify_all();
         }
     }
 
@@ -149,10 +242,25 @@ impl ThumbQueue {
         self.changed.notify_all();
     }
 
+    /// Waits until nothing is queued, in flight, or backed off waiting for its delay to pass -
+    /// a deferred suspect is still work outstanding, even though no worker is holding it right
+    /// now, so this has to wait it out the same way `pop_blocking` does rather than declaring
+    /// idle as soon as `order` and `in_flight` are both empty.
     pub fn wait_idle(&self) {
         let mut state = self.state.lock();
-        while !state.closed && !(state.order.is_empty() && state.in_flight.is_empty()) {
-            self.changed.wait(&mut state);
+        loop {
+            state.admit_due(Instant::now());
+            let idle =
+                state.order.is_empty() && state.in_flight.is_empty() && state.delayed.is_empty();
+            if state.closed || idle {
+                return;
+            }
+            match state.next_delayed() {
+                Some(deadline) => {
+                    self.changed.wait_until(&mut state, deadline);
+                }
+                None => self.changed.wait(&mut state),
+            }
         }
     }
 
@@ -206,6 +314,15 @@ mod tests {
     impl ThumbQueue {
         fn has_waiter(&self, id: i64) -> bool {
             self.state.lock().waiters.contains_key(&id)
+        }
+
+        fn delayed_priority(&self, id: i64) -> Option<Priority> {
+            self.state
+                .lock()
+                .delayed
+                .iter()
+                .find(|&&(_, existing, _)| existing == id)
+                .map(|&(_, _, priority)| priority)
         }
     }
 
@@ -397,6 +514,113 @@ mod tests {
         for waiter in abandoned {
             assert!(waiter.join().unwrap());
         }
+    }
+
+    /// A deferred job is not handed to a worker before its time, but is neither dropped nor
+    /// left for a worker to poll for: `pop_blocking` wakes on its own once the deadline
+    /// passes, with no caller re-checking in a loop.
+    #[test]
+    fn defer_holds_a_job_back_until_its_time_and_then_serves_it() {
+        let q = Arc::new(ThumbQueue::new());
+        let not_before = Instant::now() + Duration::from_millis(80);
+        q.defer(1, Priority::Background, not_before);
+        assert!(q.is_empty(), "not eligible yet, so not counted as queued");
+
+        let worker = {
+            let q = q.clone();
+            std::thread::spawn(move || q.pop_blocking())
+        };
+        assert_eq!(worker.join().unwrap(), Some(1));
+        assert!(
+            Instant::now() >= not_before,
+            "served no earlier than its deadline"
+        );
+        q.done(1);
+    }
+
+    /// `wait_idle` must not declare the queue idle while a deferred job is still waiting out
+    /// its backoff - that job is still outstanding work, even with nothing in `order` or
+    /// `in_flight` right now.
+    #[test]
+    fn wait_idle_waits_out_a_deferred_job_too() {
+        let q = Arc::new(ThumbQueue::new());
+        q.defer(
+            1,
+            Priority::Background,
+            Instant::now() + Duration::from_millis(80),
+        );
+        let waiter = {
+            let q = q.clone();
+            std::thread::spawn(move || q.wait_idle())
+        };
+        // A worker that never shows up to pop it - wait_idle must still return once the
+        // deferred job's own deadline passes and it's admitted, then popped and finished by a
+        // second thread standing in for a real worker.
+        std::thread::sleep(Duration::from_millis(20));
+        assert!(
+            !waiter.is_finished(),
+            "must not report idle while a deferred job is still pending"
+        );
+        let id = q.pop_blocking().unwrap();
+        q.done(id);
+        waiter.join().unwrap();
+    }
+
+    /// A push arriving while `id` is backing off (`defer`) must not readmit it before its
+    /// deadline - that was exactly what let `request`'s own retries (and `set_visible`,
+    /// `prioritize`, `enqueue_pending`) defeat `SUSPECT_BACKOFF_START`, popping the same
+    /// suspect again within about a millisecond of it having just timed out. The raised
+    /// priority still takes effect once the deadline arrives, and not a moment before.
+    ///
+    /// Probe: revert `State::push`'s delayed check (drop the `self.delayed.iter_mut().find`
+    /// branch) - `q.is_empty()` then fails RED, because the plain push readmits id 1 into
+    /// `order` immediately instead of leaving it delayed.
+    #[test]
+    fn a_push_of_a_delayed_id_raises_its_priority_without_readmitting_it_early() {
+        let q = Arc::new(ThumbQueue::new());
+        let not_before = Instant::now() + Duration::from_millis(80);
+        q.defer(1, Priority::Background, not_before);
+
+        q.push(1, Priority::Visible);
+        assert!(
+            q.is_empty(),
+            "still backing off - a later push must not readmit it early"
+        );
+        assert_eq!(
+            q.delayed_priority(1),
+            Some(Priority::Visible),
+            "but the priority it will run at is raised in place"
+        );
+
+        let worker = {
+            let q = q.clone();
+            std::thread::spawn(move || q.pop_blocking())
+        };
+        assert_eq!(worker.join().unwrap(), Some(1));
+        assert!(
+            Instant::now() >= not_before,
+            "served no earlier than its deadline"
+        );
+        q.done(1);
+    }
+
+    /// `forget` clears a pending backoff outright - used once an id's fate no longer depends
+    /// on winning `decode_lock` again, so a stale delayed entry doesn't sit around waking a
+    /// worker for a job that has already been decided some other way. A no-op for anything
+    /// reached through the queue itself (`admit_due` already emptied `delayed` of it before
+    /// `pop` handed it out) - `ThumbService::get_or_generate` bypassing the queue entirely
+    /// is the only way this situation arises today, and it's test-only (see its own doc).
+    #[test]
+    fn forget_drops_a_pending_backoff_with_no_replacement() {
+        let q = ThumbQueue::new();
+        q.defer(
+            1,
+            Priority::Background,
+            Instant::now() + Duration::from_secs(5),
+        );
+        q.forget(1);
+        assert!(q.delayed_priority(1).is_none());
+        assert!(q.is_empty(), "not admitted either - just gone");
     }
 
     #[test]

@@ -445,6 +445,17 @@ action in `mock.js`.
   screen.
 - **No native library dependencies.** Nothing wrapping a C/C++ SDK. This is what made packaging
   tractable on three platforms, and it is why XMP and INI parsing are hand-rolled or pure-Rust.
+- **AVIF is decoded in `photon_core::avif`, not by `image`**, whose AVIF decoder is dav1d (C).
+  `zenavif-parse` reads the container, `rav1d` (built without its assembly) decodes the AV1, and
+  `avif/av1.rs` holds the only `unsafe` code in photon-core. Every full decode goes through
+  `decode::decode_image`, which sniffs the `ftyp` box; calling `ImageReader` directly skips
+  AVIF. The container's `irot`/`imir` are applied in the decoder, so an AVIF's stored
+  orientation is always 1 and its EXIF orientation is ignored. `imir` axis 1 is left-to-right,
+  as libavif reads it, whatever `zenavif-parse`'s doc comment says. A panic inside rav1d cannot
+  unwind out of its `extern "C"` entry points, so it aborts photon rather than failing one
+  thumbnail the way the thumbnail service's `catch_unwind` handles other formats (see
+  `crates/photon-core/src/avif/av1.rs`'s module doc and the spec's "Limits" section);
+  `thumbs/inflight.rs` keeps that from repeating on every launch.
 - **Never launch the GUI to verify a change.** Verification is the test suites plus
   `svelte-check`; anything needing eyes goes on the README's `## Manual smoke checklist`.
 - **A new test must be demonstrated to fail with its change reverted.** A compile error is not

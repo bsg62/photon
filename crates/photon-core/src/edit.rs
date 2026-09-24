@@ -7,7 +7,7 @@
 //! all go through this module, so they cannot disagree about what an edit means.
 
 use crate::{Result, decode::apply_orientation};
-use image::{DynamicImage, ImageReader};
+use image::DynamicImage;
 use std::path::Path;
 use xxhash_rust::xxh3::xxh3_64;
 
@@ -235,7 +235,7 @@ pub fn render_full(
     edit: Edit,
     quality: u8,
 ) -> Result<(Vec<u8>, &'static str)> {
-    let img = ImageReader::open(path)?.with_guessed_format()?.decode()?;
+    let img = crate::decode::decode_image(path)?;
     let img = edit.apply(apply_orientation(img, orientation));
     let mut bytes = Vec::new();
     let mime = if img.color().has_alpha() {
@@ -426,5 +426,25 @@ mod tests {
         assert_eq!(mime, "image/jpeg");
         let out = image::load_from_memory(&bytes).unwrap();
         assert_eq!((out.width(), out.height()), edit.dims(4, 2));
+    }
+
+    /// An edited AVIF renders through photon's own AVIF decoder: the viewer shows the
+    /// render, not the file, whenever the photo is edited.
+    #[test]
+    fn renders_an_edited_avif() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = crate::testutil::write_file(
+            dir.path(),
+            "a.avif",
+            &crate::testutil::avif_fixture("red_blue_444_full.avif"),
+        );
+        let turn = Edit {
+            turns: 1,
+            crop: None,
+        };
+        let (bytes, mime) = render_full(&path, 1, turn, FULL_QUALITY).unwrap();
+        assert_eq!(mime, "image/jpeg");
+        let out = image::load_from_memory(&bytes).unwrap();
+        assert_eq!((out.width(), out.height()), (32, 64));
     }
 }

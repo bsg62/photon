@@ -1,8 +1,4 @@
-use std::{
-    fs::File,
-    io::{BufReader, Seek, SeekFrom},
-    path::Path,
-};
+use std::{fs::File, io::BufReader, path::Path};
 
 /// The generation of [`read_image_meta`] a row was last read with, stored in
 /// `items.exif_version`. The scanner re-describes an unchanged file whose stored version is
@@ -79,7 +75,7 @@ pub fn read_image_meta(path: &Path) -> ImageMeta {
 
 /// [`read_image_meta`] with the clock passed in, so the future bound can be tested.
 pub(crate) fn read_image_meta_at(path: &Path, now: i64) -> ImageMeta {
-    let (dims, exif) = read_header(path);
+    let (dims, exif, avif) = read_header(path);
     let (width, height) = dims.unwrap_or((0, 0));
     let mut meta = ImageMeta {
         width,
@@ -90,9 +86,13 @@ pub(crate) fn read_image_meta_at(path: &Path, now: i64) -> ImageMeta {
         camera: CameraMeta::default(),
     };
     if let Some(exif) = exif {
-        if let Some(o) = exif
-            .get_field(exif::Tag::Orientation, exif::In::PRIMARY)
-            .and_then(|f| f.value.get_uint(0))
+        // An AVIF is turned by its container's `irot`/`imir`, which the decoder applies and
+        // `dims` already reflects. libavif keeps a phone's EXIF orientation beside the
+        // `irot` it derives from it, so honouring both would turn the photo twice.
+        if !avif
+            && let Some(o) = exif
+                .get_field(exif::Tag::Orientation, exif::In::PRIMARY)
+                .and_then(|f| f.value.get_uint(0))
             && (1..=8).contains(&o)
         {
             meta.orientation = o as u8;
@@ -182,29 +182,23 @@ pub fn oriented_dims(width: u32, height: u32, orientation: u8) -> (u32, u32) {
     }
 }
 
-/// Dimensions and EXIF from one open file.
+/// Dimensions, EXIF and whether the file is an AVIF, from one open file.
 ///
-/// Both are in the same leading bytes, and `describe()` runs this for every new or changed
-/// photo: opening and header-parsing the file twice doubled the syscalls of an import for
-/// nothing, which on a network share or a spinning archive drive is what the import costs.
-fn read_header(path: &Path) -> (Option<(u32, u32)>, Option<exif::Exif>) {
+/// Both are in the same leading bytes for every format but AVIF, whose `avif_dimensions`
+/// reads to the end of the file (see `decode::dimensions`); either way `describe()` runs
+/// this for every new or changed photo from one already-open file, not two: opening and
+/// header-parsing a file twice doubled the syscalls of an import for nothing, which on a
+/// network share or a spinning archive drive is what the import costs.
+fn read_header(path: &Path) -> (Option<(u32, u32)>, Option<exif::Exif>, bool) {
     let Ok(file) = File::open(path) else {
-        return (None, None);
+        return (None, None, false);
     };
     let mut reader = BufReader::new(file);
     let exif = exif::Reader::new().read_from_container(&mut reader).ok();
-    // Back to the start: the EXIF read consumed an unspecified amount, and a file with no
-    // EXIF at all leaves the cursor wherever the attempt gave up.
-    let dims = reader
-        .seek(SeekFrom::Start(0))
-        .ok()
-        .and_then(|_| {
-            image::ImageReader::new(&mut reader)
-                .with_guessed_format()
-                .ok()
-        })
-        .and_then(|r| r.into_dimensions().ok());
-    (dims, exif)
+    // `dimensions` rewinds first: the EXIF read consumed an unspecified amount, and a file
+    // with no EXIF at all leaves the cursor wherever the attempt gave up.
+    let (dims, avif) = crate::decode::dimensions(&mut reader);
+    (dims, exif, avif)
 }
 
 fn parse_exif_datetime(value: &exif::Value) -> Option<i64> {
@@ -269,7 +263,9 @@ pub fn date_text(secs: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testutil::{ExifSpec, jpeg_with_exif, jpeg_with_exif_spec, png_bytes, write_file};
+    use crate::testutil::{
+        ExifSpec, avif_fixture, jpeg_with_exif, jpeg_with_exif_spec, png_bytes, write_file,
+    };
 
     #[test]
     fn converts_naive_datetime_to_unix_seconds() {
@@ -461,6 +457,23 @@ mod tests {
             read_image_meta_at(&path, 1_800_000_000).taken_at,
             Some(1_718_454_645)
         );
+    }
+
+    /// libavif writes a phone's EXIF orientation into `irot` and keeps the EXIF as it was, so
+    /// this file says "rotate" twice. The decoder already applies `irot`; honouring the EXIF
+    /// as well would turn the photo a second time. Dimensions are the displayed ones, and
+    /// the date still comes from the EXIF.
+    #[test]
+    fn an_avif_is_oriented_by_its_container_not_its_exif() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_file(
+            dir.path(),
+            "phone.avif",
+            &avif_fixture("exif_orientation6.avif"),
+        );
+        let meta = read_image_meta(&path);
+        assert_eq!((meta.width, meta.height, meta.orientation), (32, 64, 1));
+        assert_eq!(meta.taken_at, Some(1_718_454_645));
     }
 
     #[test]

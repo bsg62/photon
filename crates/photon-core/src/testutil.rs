@@ -517,3 +517,11 @@ pub fn bmp_bytes(w: u32, h: u32) -> Vec<u8> {
     out.extend_from_slice(&pixels);
     out
 }
+
+/// One of the `avifenc`-made files in `testdata/avif` (see its README for what each holds).
+pub fn avif_fixture(name: &str) -> Vec<u8> {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("testdata/avif")
+        .join(name);
+    std::fs::read(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+}
