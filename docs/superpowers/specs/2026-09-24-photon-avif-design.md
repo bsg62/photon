@@ -171,8 +171,14 @@ by the crate's source being unmodified and published.
   thumbnail service's `catch_unwind` and costs one thumbnail, but rav1d's crates.io release
   exposes only `pub unsafe extern "C" fn`s, and a panic cannot unwind out of an `extern "C"`
   boundary (it aborts the process instead, since Rust 1.81); there is no other, safe-to-unwind
-  entry point to call instead. A crash-loop guard around opening an AVIF-heavy library is a
-  possible follow-up.
+  entry point to call instead. That abort, an allocation failure, and the OOM killer would
+  otherwise crash-loop photon on the same photo at every launch, since none of them run `Drop`
+  for `catch_unwind` to contain. `thumbs/inflight.rs` guards against the loop rather than the
+  abort: a marker file per in-flight thumbnail decode, under the cache, counts one death for
+  every marker still present when the service next starts, and a photo that has died twice is
+  failed with `CRASH_MESSAGE` instead of being decoded a third time. A full-size render of an
+  edited photo and export can still abort photon this same way, but only when the user asks for
+  one, so neither can loop.
 
 ## Testing
 

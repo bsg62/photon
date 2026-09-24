@@ -1,3 +1,4 @@
+use super::inflight::{CRASH_MESSAGE, DEATHS_TO_FAIL, InFlight};
 use super::{Priority, ThumbCache, ThumbQueue, ThumbSize};
 use crate::{
     Error, Result,
@@ -40,6 +41,7 @@ pub struct ThumbService {
     queue: Arc<ThumbQueue>,
     workers: Vec<JoinHandle<()>>,
     render: RenderFn,
+    inflight: Arc<InFlight>,
 }
 
 /// Decodes a source file into (preview, grid) images. A seam so tests can inject a
@@ -76,15 +78,19 @@ impl ThumbService {
         render: RenderFn,
     ) -> Self {
         let queue = Arc::new(ThumbQueue::new());
+        let inflight = Arc::new(InFlight::new(cache.root()));
+        // Before any worker starts: a marker still here was in flight when a previous run died.
+        inflight.recover();
         let workers = (0..workers.max(1))
             .map(|i| {
-                let (lib, cache, queue) = (lib.clone(), cache.clone(), queue.clone());
+                let (lib, cache, queue, inflight) =
+                    (lib.clone(), cache.clone(), queue.clone(), inflight.clone());
                 std::thread::Builder::new()
                     .name(format!("photon-thumb-{i}"))
                     .spawn(move || {
                         while let Some(id) = queue.pop_blocking() {
                             let _guard = DoneGuard(&queue, id);
-                            if let Err(err) = process(&lib, &cache, id, render) {
+                            if let Err(err) = process(&lib, &cache, &inflight, id, render) {
                                 tracing::warn!(id, %err, "thumbnail job failed");
                             }
                         }
@@ -98,6 +104,7 @@ impl ThumbService {
             queue,
             workers,
             render,
+            inflight,
         }
     }
 
@@ -138,7 +145,7 @@ impl ThumbService {
         if path.is_file() {
             return Ok(path);
         }
-        process(&self.lib, &self.cache, id, self.render)?;
+        process(&self.lib, &self.cache, &self.inflight, id, self.render)?;
         if path.is_file() {
             return Ok(path);
         }
@@ -221,13 +228,41 @@ const PANIC_MESSAGE: &str = "decoder panicked";
 ///
 /// State writes go through `set_thumb_state_if_unchanged` so a rescan that replaces this
 /// item mid-decode (resetting it to `Pending`) can't be clobbered by a stale result.
-fn process(lib: &Library, cache: &ThumbCache, id: i64, render: RenderFn) -> Result<()> {
+///
+/// `catch_unwind` above only contains a panic that actually unwinds. A panic inside rav1d's
+/// `extern "C"` entry points cannot unwind and aborts, as can an allocation failure or the
+/// OOM killer; none of those run `Drop`, so `inflight` is what survives them: `deaths(id)` is
+/// read before the decode, and at [`DEATHS_TO_FAIL`] or more the photo is failed with
+/// [`CRASH_MESSAGE`] without calling `render` again, rather than dying the same way on every
+/// launch. Below that, `begin` holds a marker across the decode so a death leaves one behind
+/// for the next launch's `recover` to count.
+fn process(
+    lib: &Library,
+    cache: &ThumbCache,
+    inflight: &InFlight,
+    id: i64,
+    render: RenderFn,
+) -> Result<()> {
     let Some(item) = lib.item(id)? else {
         return Ok(());
     };
     if item.missing_since.is_some() || item.thumb_state == ThumbState::Failed {
         return Ok(());
     }
+    let deaths = inflight.deaths(id);
+    if deaths >= DEATHS_TO_FAIL {
+        tracing::error!(
+            id,
+            path = %item.path,
+            deaths,
+            "photon died with this photo in flight; not decoding it again"
+        );
+        lib.set_thumb_state_if_unchanged(&item, ThumbState::Failed, Some(CRASH_MESSAGE))?;
+        inflight.clear(id);
+        return Ok(());
+    }
+    // Held across the decode, so it is on disk if the decode takes the process down.
+    let _marker = inflight.begin(id, deaths);
     match catch_unwind(AssertUnwindSafe(|| process_item(lib, cache, &item, render))) {
         Ok(result) => result,
         Err(_) => {
@@ -551,6 +586,86 @@ mod tests {
             Err(Error::ThumbFailed(_))
         ));
         assert_eq!(state(&lib, ids[0]), ThumbState::Failed);
+    }
+
+    fn marker(dir: &TempDir, id: i64) -> std::path::PathBuf {
+        dir.path()
+            .join("cache")
+            .join("in-flight")
+            .join(id.to_string())
+    }
+
+    /// Fails loudly if the service calls it: a photo marked failed by the guard must not be
+    /// decoded again. A panic here is caught and recorded as "decoder panicked", which
+    /// the tests below tell apart from the guard's own message.
+    fn must_not_render(
+        _: &ThumbCache,
+        _: &Path,
+        _: u8,
+        _: Edit,
+    ) -> Result<(DynamicImage, DynamicImage)> {
+        panic!("the guard should have stopped this decode");
+    }
+
+    /// Renders only if a marker is on disk while it runs, which is the guard's whole point:
+    /// the marker has to exist *during* the decode that might kill the process.
+    fn render_requiring_a_marker(
+        cache: &ThumbCache,
+        source: &Path,
+        orientation: u8,
+        edit: Edit,
+    ) -> Result<(DynamicImage, DynamicImage)> {
+        let marked = std::fs::read_dir(cache.root().join("in-flight"))
+            .is_ok_and(|mut entries| entries.next().is_some());
+        assert!(marked, "no in-flight marker while decoding");
+        default_render(cache, source, orientation, edit)
+    }
+
+    #[test]
+    fn a_marker_is_on_disk_while_rendering_and_gone_after() {
+        let (dir, lib, cache, ids) = setup(&[("a.jpg", jpeg_bytes(40, 20))]);
+        let service = ThumbService::start_with(lib.clone(), cache, 1, render_requiring_a_marker);
+        service.get_or_generate(ids[0], ThumbSize::Grid).unwrap();
+        assert_eq!(state(&lib, ids[0]), ThumbState::Ready);
+        assert!(!marker(&dir, ids[0]).exists());
+    }
+
+    #[test]
+    fn a_caught_panic_leaves_no_marker() {
+        // `panicking_render` only panics for a path containing "panic".
+        let (dir, lib, cache, ids) = setup(&[("a_panic.jpg", jpeg_bytes(40, 20))]);
+        let service = ThumbService::start_with(lib.clone(), cache, 1, panicking_render);
+        assert!(service.get_or_generate(ids[0], ThumbSize::Grid).is_err());
+        assert!(!marker(&dir, ids[0]).exists());
+    }
+
+    /// Photon died once with this photo in flight (a marker at 0 left behind): that could be
+    /// the user quitting, so the photo is decoded again, and succeeding clears the record.
+    #[test]
+    fn one_death_is_forgiven() {
+        let (dir, lib, cache, ids) = setup(&[("a.jpg", jpeg_bytes(40, 20))]);
+        std::fs::create_dir_all(marker(&dir, ids[0]).parent().unwrap()).unwrap();
+        std::fs::write(marker(&dir, ids[0]), "0").unwrap();
+        let service = ThumbService::start_with(lib.clone(), cache, 1, default_render);
+        service.get_or_generate(ids[0], ThumbSize::Grid).unwrap();
+        assert_eq!(state(&lib, ids[0]), ThumbState::Ready);
+        assert!(!marker(&dir, ids[0]).exists());
+    }
+
+    /// Photon died a second time with this photo in flight (its marker already recorded one
+    /// death): the photo is failed with the guard's message, the decoder is not called, and
+    /// the marker is cleared.
+    #[test]
+    fn two_deaths_fail_the_photo_without_decoding_it() {
+        let (dir, lib, cache, ids) = setup(&[("a.jpg", jpeg_bytes(40, 20))]);
+        std::fs::create_dir_all(marker(&dir, ids[0]).parent().unwrap()).unwrap();
+        std::fs::write(marker(&dir, ids[0]), "1").unwrap();
+        let service = ThumbService::start_with(lib.clone(), cache, 1, must_not_render);
+        assert!(service.get_or_generate(ids[0], ThumbSize::Grid).is_err());
+        let item = lib.item(ids[0]).unwrap().unwrap();
+        assert_eq!(item.thumb_state, ThumbState::Failed);
+        assert_eq!(item.thumb_error.as_deref(), Some(CRASH_MESSAGE));
+        assert!(!marker(&dir, ids[0]).exists());
     }
 
     #[test]

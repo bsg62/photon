@@ -62,6 +62,11 @@ impl ThumbCache {
         Self { root: root.into() }
     }
 
+    /// The cache directory, for the in-flight markers kept beside the thumbnails.
+    pub(crate) fn root(&self) -> &Path {
+        &self.root
+    }
+
     pub fn path_for(&self, fp: u64, size: ThumbSize) -> PathBuf {
         // The same spelling the UI sees as `thumbKey` and `collect_garbage` parses back, so
         // the directory layout, the wire format and the GC parser cannot drift apart.
