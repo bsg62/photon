@@ -5,6 +5,7 @@ import {
   TILE_BROKEN_RETRY_START_MS,
   TILE_RETRY_MS,
   createTileRetry,
+  tileProblem,
 } from './tile-retry.svelte';
 
 /** The same growth formula `failed` uses internally, so tests can advance exactly one
@@ -189,5 +190,19 @@ describe('createTileRetry', () => {
 
     vi.advanceTimersByTime(TILE_BROKEN_RETRY_MAX_MS * 3);
     expect(r.status).toBe('retrying'); // no more retries fire, but the icon stays as is
+  });
+});
+
+describe('tileProblem', () => {
+  // A suspect backing off in the backend is `'retrying'` for up to 95 seconds; telling the
+  // user it can't be shown then is wrong more often than not, since most of those load.
+  it('says a retrying tile is still being tried, and only a broken one cannot be shown', () => {
+    expect(tileProblem('retrying')).toBe("Couldn't load this photo yet. Trying again…");
+    expect(tileProblem('broken')).toBe("This photo can't be shown");
+  });
+
+  it('has nothing to say while loading or once loaded', () => {
+    expect(tileProblem('loading')).toBeUndefined();
+    expect(tileProblem('loaded')).toBeUndefined();
   });
 });

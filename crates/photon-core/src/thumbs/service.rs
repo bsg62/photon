@@ -349,9 +349,11 @@ impl ThumbService {
         self.queue.wait_idle();
     }
 
+    /// Thumbnails under no live key, and the crash guard's death records under one - the
+    /// same `live` set answers both, and both are left behind by the same writes.
     pub fn collect_garbage(&self) -> Result<usize> {
         let live = self.lib.live_fingerprints()?;
-        self.cache.collect_garbage(&live)
+        Ok(self.cache.collect_garbage(&live)? + self.inflight.collect_garbage(&live))
     }
 }
 
@@ -992,6 +994,24 @@ mod tests {
         service.get_or_generate(ids[0], ThumbSize::Grid).unwrap();
         assert_eq!(state(&lib, ids[0]), ThumbState::Ready);
         assert!(!marker(&dir, ids[0]).exists());
+        assert!(!death_record(&dir, ids[0]).exists());
+    }
+
+    /// A purged photo's death record goes with its thumbnails, in the same collection.
+    #[test]
+    fn garbage_collection_removes_a_purged_photos_death_record() {
+        let (dir, lib, cache, ids) = setup(&[("a.jpg", jpeg_bytes(40, 20))]);
+        let key = item_key(&lib, ids[0]);
+        let inflight = InFlight::new(cache.root());
+        std::mem::forget(inflight.begin(ids[0], key));
+        inflight.recover();
+        // Dropped before the service starts, as in `one_death_is_forgiven`.
+        drop(inflight);
+        lib.purge_items(&ids).unwrap();
+
+        let service = ThumbService::start_with(lib, cache, 1, must_not_render);
+        assert!(death_record(&dir, ids[0]).exists());
+        service.collect_garbage().unwrap();
         assert!(!death_record(&dir, ids[0]).exists());
     }
 
