@@ -447,7 +447,7 @@ action in `mock.js`.
   tractable on three platforms, and it is why XMP and INI parsing are hand-rolled or pure-Rust.
 - **AVIF is decoded in `photon_core::avif`, not by `image`**, whose AVIF decoder is dav1d (C).
   `zenavif-parse` reads the container, `rav1d` (built without its assembly) decodes the AV1, and
-  `avif/av1.rs` holds the only `unsafe` code in photon. Every full decode goes through
+  `avif/av1.rs` holds the only `unsafe` code in photon-core. Every full decode goes through
   `decode::decode_image`, which sniffs the `ftyp` box; calling `ImageReader` directly skips
   AVIF. The container's `irot`/`imir` are applied in the decoder, so an AVIF's stored
   orientation is always 1 and its EXIF orientation is ignored. `imir` axis 1 is left-to-right,
