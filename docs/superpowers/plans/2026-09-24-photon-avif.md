@@ -1725,3 +1725,358 @@ reviewer at:
   callers, which changes how a non-AVIF file is opened (one open, extension as fallback);
 - the metadata change for non-AVIF files: `dimensions` rewinds and reads exactly as the old
   block did.
+
+---
+
+### Task 6: The crash-loop guard (added 2026-09-24, after the whole-branch review)
+
+Approved in conversation on 2026-09-24. The spec's "A decoder panic aborts photon" limit left
+one consequence open. A photo whose decode kills the process stays `Pending`, so the next
+launch queues it again and dies again, with nothing naming the file. `catch_unwind` in
+`thumbs/service.rs` cannot help with three kinds of death: a panic inside rav1d (it cannot
+unwind out of rav1d's `extern "C"` entry points), an allocation failure (it aborts without
+unwinding), and the OOM killer. A panic hook would see only the first. A marker file per
+in-flight decode survives all three.
+
+**Files:**
+- Create: `crates/photon-core/src/thumbs/inflight.rs`
+- Modify: `crates/photon-core/src/thumbs/mod.rs` (`mod inflight;`)
+- Modify: `crates/photon-core/src/thumbs/cache.rs` (`pub(crate) fn root(&self) -> &Path`)
+- Modify: `crates/photon-core/src/thumbs/service.rs` (`ThumbService`, `start_with`, `process`, the worker loop, `get_or_generate`, tests)
+- Modify: `docs/superpowers/specs/2026-09-24-photon-avif-design.md` (the Limits bullet), `CLAUDE.md` (the AVIF paragraph's abort sentence)
+
+**Interfaces:**
+- Produces:
+  - `pub(crate) struct InFlight` with `new(cache_root: &Path) -> Self`, `recover(&self)`, `deaths(&self, id: i64) -> u32`, `begin(&self, id: i64, deaths: u32) -> Marker` and `clear(&self, id: i64)`.
+  - `pub(crate) struct Marker`, whose `Drop` removes the marker file.
+  - `pub(crate) const DEATHS_TO_FAIL: u32 = 2` and `pub(crate) const CRASH_MESSAGE: &str = "photon closed unexpectedly while reading this photo"`.
+- Consumes: `ThumbCache::root()` and `Library::set_thumb_state_if_unchanged`.
+
+**Behaviour:**
+- **The marker.** `in-flight/<item id>` under the thumbnail cache root holds a decimal count: the number of times photon has died while this photo was in flight.
+- **At service start.** `start_with` calls `recover()` before spawning any worker. It adds one to the count in every marker a previous run left behind.
+- **In `process`.** After the existing missing/`Failed` early return, `process` reads `deaths(id)`.
+  - At `DEATHS_TO_FAIL` or more, it records `Failed` with `CRASH_MESSAGE` through `set_thumb_state_if_unchanged`, calls `clear(id)` and returns `Ok(())` without calling the render.
+  - Otherwise it holds `begin(id, deaths)` across the existing `catch_unwind`, so the marker is removed whether the render succeeds, returns an error, or panics and is caught.
+- **Failure to write or remove a marker.** It is logged with `tracing::warn!` and never fails the thumbnail. A cache that cannot be written loses the guard, not the photo.
+- **Scope.** Every format. On-demand calls (`get_or_generate`) go through `process` too.
+
+- [ ] **Step 1: Write the failing tests**
+
+In `crates/photon-core/src/thumbs/inflight.rs`, next to the stubbed `InFlight`, add `#[cfg(test)] mod tests`:
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recover_counts_one_death_per_leftover_marker() {
+        let dir = tempfile::tempdir().unwrap();
+        let inflight = InFlight::new(dir.path());
+        // A leaked guard stands in for an abort, which never runs `Drop`.
+        std::mem::forget(inflight.begin(7, 0));
+        std::mem::forget(inflight.begin(8, 1));
+        inflight.recover();
+        assert_eq!((inflight.deaths(7), inflight.deaths(8)), (1, 2));
+        assert_eq!(inflight.deaths(9), 0, "no marker, no deaths");
+    }
+
+    /// A marker whose content is not a number (a torn write when the power went) still
+    /// counts as a death rather than being ignored.
+    #[test]
+    fn an_unreadable_marker_counts_as_a_first_death() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("in-flight")).unwrap();
+        std::fs::write(dir.path().join("in-flight/5"), "garbage").unwrap();
+        let inflight = InFlight::new(dir.path());
+        inflight.recover();
+        assert_eq!(inflight.deaths(5), 1);
+    }
+
+    #[test]
+    fn a_marker_disappears_when_its_guard_drops() {
+        let dir = tempfile::tempdir().unwrap();
+        let inflight = InFlight::new(dir.path());
+        let marker = inflight.begin(3, 1);
+        assert_eq!(inflight.deaths(3), 1);
+        drop(marker);
+        assert!(!dir.path().join("in-flight/3").exists());
+    }
+}
+```
+
+In `service.rs`'s test module, add:
+
+```rust
+    fn marker(dir: &TempDir, id: i64) -> std::path::PathBuf {
+        dir.path().join("cache").join("in-flight").join(id.to_string())
+    }
+
+    /// Fails loudly if the service calls it: a photo marked failed by the guard must not be
+    /// decoded again. A panic here is caught and recorded as "decoder panicked", which
+    /// the tests below tell apart from the guard's own message.
+    fn must_not_render(
+        _: &ThumbCache,
+        _: &Path,
+        _: u8,
+        _: Edit,
+    ) -> Result<(DynamicImage, DynamicImage)> {
+        panic!("the guard should have stopped this decode");
+    }
+
+    /// Renders only if a marker is on disk while it runs, which is the guard's whole point:
+    /// the marker has to exist *during* the decode that might kill the process.
+    fn render_requiring_a_marker(
+        cache: &ThumbCache,
+        source: &Path,
+        orientation: u8,
+        edit: Edit,
+    ) -> Result<(DynamicImage, DynamicImage)> {
+        let marked = std::fs::read_dir(cache.root().join("in-flight"))
+            .is_ok_and(|mut entries| entries.next().is_some());
+        assert!(marked, "no in-flight marker while decoding");
+        default_render(cache, source, orientation, edit)
+    }
+
+    #[test]
+    fn a_marker_is_on_disk_while_rendering_and_gone_after() {
+        let (dir, lib, cache, ids) = setup(&[("a.jpg", jpeg_bytes(40, 20))]);
+        let service = ThumbService::start_with(lib.clone(), cache, 1, render_requiring_a_marker);
+        service.get_or_generate(ids[0], ThumbSize::Grid).unwrap();
+        assert_eq!(state(&lib, ids[0]), ThumbState::Ready);
+        assert!(!marker(&dir, ids[0]).exists());
+    }
+
+    #[test]
+    fn a_caught_panic_leaves_no_marker() {
+        let (dir, lib, cache, ids) = setup(&[("a.jpg", jpeg_bytes(40, 20))]);
+        let service = ThumbService::start_with(lib.clone(), cache, 1, panicking_render);
+        assert!(service.get_or_generate(ids[0], ThumbSize::Grid).is_err());
+        assert!(!marker(&dir, ids[0]).exists());
+    }
+
+    /// Photon died once with this photo in flight (a marker at 0 left behind): that could be
+    /// the user quitting, so the photo is decoded again, and succeeding clears the record.
+    #[test]
+    fn one_death_is_forgiven() {
+        let (dir, lib, cache, ids) = setup(&[("a.jpg", jpeg_bytes(40, 20))]);
+        std::fs::create_dir_all(marker(&dir, ids[0]).parent().unwrap()).unwrap();
+        std::fs::write(marker(&dir, ids[0]), "0").unwrap();
+        let service = ThumbService::start_with(lib.clone(), cache, 1, default_render);
+        service.get_or_generate(ids[0], ThumbSize::Grid).unwrap();
+        assert_eq!(state(&lib, ids[0]), ThumbState::Ready);
+        assert!(!marker(&dir, ids[0]).exists());
+    }
+
+    /// Photon died a second time with this photo in flight (its marker already recorded one
+    /// death): the photo is failed with the guard's message, the decoder is not called, and
+    /// the marker is cleared.
+    #[test]
+    fn two_deaths_fail_the_photo_without_decoding_it() {
+        let (dir, lib, cache, ids) = setup(&[("a.jpg", jpeg_bytes(40, 20))]);
+        std::fs::create_dir_all(marker(&dir, ids[0]).parent().unwrap()).unwrap();
+        std::fs::write(marker(&dir, ids[0]), "1").unwrap();
+        let service = ThumbService::start_with(lib.clone(), cache, 1, must_not_render);
+        assert!(service.get_or_generate(ids[0], ThumbSize::Grid).is_err());
+        let item = lib.item(ids[0]).unwrap().unwrap();
+        assert_eq!(item.thumb_state, ThumbState::Failed);
+        assert_eq!(item.thumb_error.as_deref(), Some(CRASH_MESSAGE));
+        assert!(!marker(&dir, ids[0]).exists());
+    }
+```
+
+Adjust names to the test module's existing helpers (`setup`, `state`, `panicking_render`,
+`default_render`, `TempDir`), which are all already there. `get_or_generate` on an item
+already `Failed` returns `Err(ThumbFailed(thumb_error))`, which is what the last test's first
+assertion relies on. Check that path in `get_or_generate` first.
+
+Stub the new API (`InFlight` methods that do nothing, `deaths` returning 0, `ThumbCache::root`)
+so the tests compile, then run them.
+
+- [ ] **Step 2: Run the tests to see them fail**
+
+Run: `cargo test -p photon-core --lib thumbs`
+Expected: the new tests FAIL on their assertions: no marker while rendering, a count that is
+never recorded, and `two_deaths…` recording "decoder panicked" instead of `CRASH_MESSAGE`.
+
+- [ ] **Step 3: Implement `inflight.rs`**
+
+```rust
+//! Remembers which photos a thumbnail worker was decoding when photon died, so a photo
+//! that kills the process is not decoded again on every launch.
+//!
+//! `catch_unwind` in `service.rs` contains a decoder that panics, but three ways of dying
+//! get past it:
+//! - a panic inside rav1d, which cannot unwind out of its `extern "C"` entry points and
+//!   aborts (see `avif/av1.rs`);
+//! - an allocation failure, which aborts without unwinding;
+//! - the OOM killer.
+//!
+//! Each leaves the photo `Pending`, so the next launch queues it again and dies again, with
+//! nothing naming the file. A marker file per in-flight decode survives all three, where a
+//! panic hook would see only the first.
+
+use std::fs;
+use std::io::ErrorKind;
+use std::path::{Path, PathBuf};
+
+/// How many deaths with a photo in flight make it the suspect. One is not enough: quitting,
+/// a power cut or an unrelated crash while a photo happens to be decoding would blame it.
+pub(crate) const DEATHS_TO_FAIL: u32 = 2;
+
+/// Shown where the photo's thumbnail would be, like any other decode failure.
+pub(crate) const CRASH_MESSAGE: &str = "photon closed unexpectedly while reading this photo";
+
+pub(crate) struct InFlight {
+    dir: PathBuf,
+}
+
+impl InFlight {
+    pub(crate) fn new(cache_root: &Path) -> Self {
+        Self {
+            dir: cache_root.join("in-flight"),
+        }
+    }
+
+    /// Counts one death for every marker a previous run left behind. Called once, before any
+    /// worker starts: a marker still present then was being decoded when the process ended.
+    pub(crate) fn recover(&self) {
+        let Ok(entries) = fs::read_dir(&self.dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let deaths = read_count(&path).unwrap_or(0);
+            if let Err(err) = fs::write(&path, (deaths + 1).to_string()) {
+                tracing::warn!(%err, ?path, "could not record a death against an in-flight photo");
+            }
+        }
+    }
+
+    /// Deaths recorded against `id` so far; none if it has no marker.
+    pub(crate) fn deaths(&self, id: i64) -> u32 {
+        read_count(&self.path(id)).unwrap_or(0)
+    }
+
+    /// Marks `id` in flight until the returned guard drops. Best-effort: a cache that cannot
+    /// be written loses the guard, not the thumbnail.
+    pub(crate) fn begin(&self, id: i64, deaths: u32) -> Marker {
+        let path = self.path(id);
+        let written = fs::create_dir_all(&self.dir).and_then(|()| fs::write(&path, deaths.to_string()));
+        if let Err(err) = written {
+            tracing::warn!(%err, ?path, "could not mark a photo in flight");
+        }
+        Marker(path)
+    }
+
+    /// Forgets `id`'s deaths, once the photo has been failed for them.
+    pub(crate) fn clear(&self, id: i64) {
+        remove(&self.path(id));
+    }
+
+    fn path(&self, id: i64) -> PathBuf {
+        self.dir.join(id.to_string())
+    }
+}
+
+/// Removes its marker when dropped: on success, on an ordinary error, and on a panic that
+/// `catch_unwind` caught, since unwinding runs `Drop`. An abort runs nothing, which is the
+/// point: that marker stays behind for `recover` to count.
+pub(crate) struct Marker(PathBuf);
+
+impl Drop for Marker {
+    fn drop(&mut self) {
+        remove(&self.0);
+    }
+}
+
+/// A marker that cannot be parsed (a torn write) is still a death: `Some(0)`, not `None`.
+fn read_count(path: &Path) -> Option<u32> {
+    let text = fs::read_to_string(path).ok()?;
+    Some(text.trim().parse().unwrap_or(0))
+}
+
+fn remove(path: &Path) {
+    match fs::remove_file(path) {
+        Ok(()) => {}
+        Err(err) if err.kind() == ErrorKind::NotFound => {}
+        Err(err) => tracing::warn!(%err, ?path, "could not clear an in-flight marker"),
+    }
+}
+```
+
+Add `mod inflight;` to `thumbs/mod.rs`, and to `ThumbCache` add:
+
+```rust
+    /// The cache directory, for the in-flight markers kept beside the thumbnails.
+    pub(crate) fn root(&self) -> &Path {
+        &self.root
+    }
+```
+
+`collect_garbage` leaves the markers alone. It removes only `.webp` files and aged files whose
+names start with `TEMP_PREFIX`, and a marker's name is a bare item id.
+
+- [ ] **Step 4: Wire it into the service**
+
+In `service.rs`:
+- Add the field `inflight: Arc<InFlight>` to `ThumbService`.
+- In `start_with`, before spawning workers:
+  ```rust
+          let inflight = Arc::new(InFlight::new(cache.root()));
+          // Before any worker starts: a marker still here was in flight when a previous run died.
+          inflight.recover();
+  ```
+  Clone it into each worker closure and pass `&inflight` to `process`. Store it in `Self`.
+- In `get_or_generate`, pass `&self.inflight` to `process`.
+- Change `process` to `fn process(lib: &Library, cache: &ThumbCache, inflight: &InFlight, id: i64, render: RenderFn) -> Result<()>`,
+  and after the missing/`Failed` early return insert:
+  ```rust
+      let deaths = inflight.deaths(id);
+      if deaths >= DEATHS_TO_FAIL {
+          tracing::error!(id, path = %item.path, deaths, "photon died with this photo in flight; not decoding it again");
+          lib.set_thumb_state_if_unchanged(&item, ThumbState::Failed, Some(CRASH_MESSAGE))?;
+          inflight.clear(id);
+          return Ok(());
+      }
+      // Held across the decode, so it is on disk if the decode takes the process down.
+      let _marker = inflight.begin(id, deaths);
+  ```
+  followed by the existing `match catch_unwind(...)`.
+- Extend `process`'s doc comment with one paragraph on the guard: which deaths it catches that
+  `catch_unwind` does not, and the two-strike rule.
+
+- [ ] **Step 5: Run the tests to see them pass**
+
+Run: `cargo test -p photon-core --lib thumbs`
+Expected: all pass, the existing thumbnail tests included.
+
+- [ ] **Step 6: Revert probes**
+
+Make each change, confirm the named test FAILS, then undo it exactly:
+- Delete `inflight.recover();` → `two_deaths_fail_the_photo_without_decoding_it` fails with "decoder panicked".
+- Change `DEATHS_TO_FAIL` to `1` → `one_death_is_forgiven` fails.
+- Make `Marker::drop` empty → `a_marker_is_on_disk_while_rendering_and_gone_after` and `a_caught_panic_leaves_no_marker` fail.
+- Make `begin` skip the write → `a_marker_is_on_disk_while_rendering_and_gone_after` fails ("no in-flight marker while decoding").
+- Delete `inflight.clear(id);` → `two_deaths_fail_the_photo_without_decoding_it` fails on the marker assertion.
+- In `read_count`, change `unwrap_or(0)` to `ok()?` style (unparseable → `None`) → `an_unreadable_marker_counts_as_a_first_death` fails.
+
+- [ ] **Step 7: Docs**
+
+- In the spec's "## Limits, stated rather than hidden", rewrite the "A decoder panic aborts photon" bullet. Keep its first part, then say the crash loop it would cause is guarded. Name the mechanism (a marker per in-flight thumbnail decode under the cache, a death counted per leftover marker at startup, the photo failed with `CRASH_MESSAGE` after two), and add what remains: the full-size render of an edited photo and export can still abort photon once, but only when the user asks, so they cannot loop.
+- In `CLAUDE.md`'s AVIF bullet, change the abort sentence to point at the guard in one clause, e.g. "…aborts photon; `thumbs/inflight.rs` keeps that from repeating on every launch."
+- In `README.md`'s smoke checklist, no item: an abort cannot be produced on demand.
+
+- [ ] **Step 8: Rust gate, then commit**
+
+Run the Rust gate, then:
+
+```bash
+git add crates/photon-core/src/thumbs docs/superpowers/specs/2026-09-24-photon-avif-design.md CLAUDE.md
+git commit -m "feat(thumbs): stop a photo that kills photon from doing it on every launch
+
+<the three deaths catch_unwind misses; the two-strike rule and why; the probe results>
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
+```
