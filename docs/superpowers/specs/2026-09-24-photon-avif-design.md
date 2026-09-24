@@ -183,12 +183,19 @@ by the crate's source being unmodified and published.
   `CRASH_MESSAGE` instead of being decoded a third time; one death alone is forgiven, since
   quitting, a power cut or an unrelated crash while a photo happened to be in flight would
   otherwise blame it. A suspect (one recorded death) decodes under an exclusive lock that
-  every other decode only takes shared, so a batch of photos queued together does not all
-  inherit one photo's second death merely for having been in flight beside it - only the
-  actual culprit can reach two. A deliberate quit disarms the guard first (`ThumbService::close`),
-  so it never mistakes photon choosing to stop for a crash. A full-size render of an edited
-  photo and export can still abort photon this same way, but only when the user asks for one,
-  so neither can loop.
+  every other decode only takes shared - acquired *before* the photo is even marked in
+  flight, not after, so a photo merely queued behind the suspect's turn never has a marker on
+  disk for a decode that has not actually started, and only the actual culprit can ever reach
+  two. The marker is always cleared once a decode finishes, whatever it decided, but the death
+  record only when it decided the photo's fate one way or another (rendered, or explicitly
+  failed): a transient failure - the drive dropped out, the cache went unwritable - decides
+  nothing and leaves the item `Pending` for a retry, so a suspect's earlier death has to
+  survive it. A deliberate quit disarms the guard first (`ThumbService::close`), which the
+  real shutdown path (`RunEvent::Exit` -> `Engine::shutdown` -> `close()`, then tauri's own
+  `process::exit`, without joining the worker threads) requires to do the removing itself
+  rather than trust a worker to finish and clean up after itself. A full-size render of an
+  edited photo and export can still abort photon this same way, but only when the user asks
+  for one, so neither can loop.
 
 ## Testing
 

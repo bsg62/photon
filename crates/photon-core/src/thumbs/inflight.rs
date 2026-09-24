@@ -25,6 +25,14 @@
 //! same pass, so a marker can never outlive the launch after the death that left it, and a
 //! record is keyed by the photo's `thumb_key()` so a reused id, a changed file, or a fresh
 //! edit never inherits someone else's deaths.
+//!
+//! That second version still let `begin` write a marker before its photo's decode actually
+//! held `service.rs`'s exclusive decode lock, so every photo merely *waiting* for a suspect's
+//! turn already had a marker on disk - a second suspect, never actually decoding, could be
+//! blamed for the first one's death. `begin` is only ever called after the lock is held, and
+//! `Marker::resolve` now tells the guard whether the decode actually decided the photo's fate
+//! before it drops, so a transient failure (the drive dropped out, not a death) does not erase
+//! a real death recorded earlier.
 
 use crate::grid::hex_key;
 use std::fs;
@@ -74,13 +82,27 @@ impl InFlight {
     /// is exactly as harmless as a marker with no photo behind it, which is the only thing it
     /// could actually be. Deleting it either way is the point: nothing may wedge
     /// `in-flight/` forever.
+    ///
+    /// The marker is deleted *before* the record is written, not after: a death between the
+    /// two steps then loses this one count (an extra life the two-strike rule tolerates, and
+    /// no worse than a marker recover never got to see at all) rather than leaving the marker
+    /// behind for the *next* launch to count again on top of the record this launch already
+    /// wrote - which would double it, and risk a permanent false failure. Getting the crash
+    /// window wrong in the direction that only ever loses a count is the one that matters.
+    ///
+    /// Also clears any `.tmp` file left in either directory: nothing writes here before this
+    /// runs, so a `.tmp` name still present is a write a previous run's own death interrupted
+    /// mid-rename, not a real marker or record - and unlike a real marker, it names nothing
+    /// `deaths` could ever match, so leaving it in place would only wedge disk space forever.
     pub(crate) fn recover(&self) {
+        clear_tmp(&self.records);
         let Ok(entries) = fs::read_dir(&self.markers) else {
             return;
         };
         for entry in entries.flatten() {
             let path = entry.path();
             if is_tmp(&path) {
+                remove(&path);
                 continue;
             }
             let Some(id) = id_of(&path) else { continue };
@@ -89,8 +111,8 @@ impl InFlight {
                 Some((previous, recorded_key)) if recorded_key == key => previous + 1,
                 _ => 1,
             };
-            self.write_record(id, count, &key);
             remove(&path);
+            self.write_record(id, count, &key);
         }
     }
 
@@ -107,19 +129,30 @@ impl InFlight {
     }
 
     /// Marks `id` in flight, under `key`, until the returned guard drops. Writes nothing once
-    /// `disarm` has run - see its own comment for the narrow window that remains - and is
-    /// best-effort even before that: a cache that cannot be written loses the guard, not the
+    /// `disarm` has run, and - since a worker can be caught between reading `closing` and
+    /// finishing the write - checks again immediately after: if `disarm` set the flag while
+    /// this write was in flight, the marker just written is removed again right away, rather
+    /// than leaving it for `disarm`'s own sweep (already run by then) or a worker that, in
+    /// production, is never actually joined before `process::exit` to rely on. What remains
+    /// is the width of the second check itself, not a whole marker's lifetime - and even that
+    /// is covered from the other side: `disarm`'s sweep removes whatever it finds on disk
+    /// regardless of what this check saw, so a marker that lands on disk after the sweep
+    /// already ran is still caught here, and one that lands before is still caught there.
+    /// Best-effort throughout: a cache that cannot be written loses the guard, not the
     /// thumbnail.
     pub(crate) fn begin(&self, id: i64, key: u64) -> Marker {
         let marker = self.marker_path(id);
-        if !self.closing.load(Ordering::Acquire)
-            && let Err(err) = write_atomic(&self.markers, &marker, &hex_key(key))
-        {
-            tracing::warn!(%err, ?marker, "could not mark a photo in flight");
+        if !self.closing.load(Ordering::Acquire) {
+            match write_atomic(&self.markers, &marker, &hex_key(key)) {
+                Ok(()) if self.closing.load(Ordering::Acquire) => remove(&marker),
+                Ok(()) => {}
+                Err(err) => tracing::warn!(%err, ?marker, "could not mark a photo in flight"),
+            }
         }
         Marker {
             marker,
             record: self.record_path(id),
+            decided: false,
         }
     }
 
@@ -133,17 +166,16 @@ impl InFlight {
         remove(&self.record_path(id));
     }
 
-    /// Disarms the guard for a clean quit: no marker is written from here on, and every
-    /// marker on disk right now is removed, because photon chose to stop - nothing killed it.
+    /// Disarms the guard for a clean quit: no marker is written from here on (`begin` checks
+    /// `closing` both before writing and again right after, so a write racing this call
+    /// either never starts or is undone immediately - see its own comment), and every marker
+    /// on disk right now is removed, because photon chose to stop - nothing killed it.
     ///
-    /// A worker can still be between reading `closing` (false) and writing its marker when
-    /// this sweep runs, leaving a fresh one behind afterwards. That is not a hole:
-    /// `ThumbService::close` only stops the queue from handing out *new* jobs, so that
-    /// worker's job runs to completion exactly as it would have anyway, and its own `Marker`
-    /// removes the leftover on `Drop` once it does. Only a second, immediate kill inside that
-    /// one write's width of time would leave it behind for real - the same residual risk as
-    /// any crash at shutdown, and far narrower than the decode it would otherwise misattribute
-    /// a death to.
+    /// This has to be the one actually doing the removing, not merely trusting the worker to
+    /// clean up after itself: in production, `ThumbService::close` is followed by tauri's own
+    /// `process::exit`, with the worker threads never joined first (`RunEvent::Exit` ->
+    /// `Engine::shutdown` -> `close()`), so a worker cannot be relied on to run its job to
+    /// completion and drop its `Marker` the way it would on an ordinary, crash-free exit.
     pub(crate) fn disarm(&self) {
         self.closing.store(true, Ordering::Release);
         let Ok(entries) = fs::read_dir(&self.markers) else {
@@ -183,22 +215,43 @@ impl InFlight {
     }
 }
 
-/// Removes its photo's marker and death record when dropped: on success, on an ordinary
-/// error, and on a panic that `catch_unwind` caught (unwinding runs `Drop`) - every path by
-/// which `process` finishes deciding the photo's fate itself, so there is nothing left for
-/// the next launch to misread as a leftover death. A caught panic already marks the item
-/// `Failed` on its own; this guard only ever clears the bookkeeping, never the item's state.
-/// An abort or the OOM killer runs no `Drop` at all, which is the one case this guard exists
-/// to survive: the marker stays, for `recover` to find.
+/// Removes its photo's marker when dropped, always - the decode finished without taking
+/// photon down with it, whatever the outcome, so there is nothing left for the next launch to
+/// misread as a leftover death. An abort or the OOM killer runs no `Drop` at all, which is the
+/// one case this guard exists to survive: the marker stays, for `recover` to find.
+///
+/// The death *record* is a different question: it is only cleared when `resolve` was told the
+/// photo's fate was actually decided this attempt (rendered, or explicitly failed - a caught
+/// panic counts, since `process` marks the item `Failed` for it). A transient failure - the
+/// source unreachable, the cache unwritable - decides nothing and leaves the item `Pending`
+/// for a retry, so the record has to survive it: a suspect whose drive merely dropped out for
+/// a moment must not have its earlier death quietly forgotten by a retry that never even
+/// reached the decoder. `resolve` defaults to `false` (kept) precisely because forgetting a
+/// real death is the wrong direction to fail in - the two-strike rule already tolerates the
+/// occasional extra life a kept record costs an innocent photo.
 pub(crate) struct Marker {
     marker: PathBuf,
     record: PathBuf,
+    decided: bool,
+}
+
+impl Marker {
+    /// Tells the guard how this decode ended, before it drops: `true` once `process` knows
+    /// the photo's fate either way (`Ok`, or a caught panic - both explicit `Failed` writes go
+    /// through `set_thumb_state_if_unchanged` on their own), `false` for a transient error that
+    /// leaves the item `Pending`. Consumes the guard, so `Drop` - and the removals above -
+    /// run immediately.
+    pub(crate) fn resolve(mut self, decided: bool) {
+        self.decided = decided;
+    }
 }
 
 impl Drop for Marker {
     fn drop(&mut self) {
         remove(&self.marker);
-        remove(&self.record);
+        if self.decided {
+            remove(&self.record);
+        }
     }
 }
 
@@ -222,6 +275,22 @@ fn id_of(path: &Path) -> Option<i64> {
 
 fn is_tmp(path: &Path) -> bool {
     path.extension().and_then(|e| e.to_str()) == Some(TMP_EXT)
+}
+
+/// Removes every `.tmp` entry directly in `dir`. Only `recover` calls this, and only on the
+/// records directory (the markers directory's own `.tmp` entries are cleared inline, in the
+/// same pass that turns its real markers into records) - both are safe only because `recover`
+/// runs once, before any worker exists to be mid-write.
+fn clear_tmp(dir: &Path) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if is_tmp(&path) {
+            remove(&path);
+        }
+    }
 }
 
 /// Writes `content` to `dest` through a temp file in the same directory, then renames it into
@@ -322,6 +391,22 @@ mod tests {
         drop(marker);
         assert!(!dir.path().join("in-flight/3").exists());
         assert!(!dir.path().join("deaths/3").exists());
+    }
+
+    /// A `.tmp` file is a write a previous run's own death interrupted before the rename -
+    /// never a live marker or record, since nothing writes here before `recover` runs. Left
+    /// alone, it would wedge disk space forever with a name `deaths` can never match anyway.
+    #[test]
+    fn recover_clears_leftover_tmp_files_in_both_directories() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("in-flight")).unwrap();
+        std::fs::create_dir_all(dir.path().join("deaths")).unwrap();
+        std::fs::write(dir.path().join("in-flight/7.tmp"), "dead write").unwrap();
+        std::fs::write(dir.path().join("deaths/9.tmp"), "dead write").unwrap();
+        let inflight = InFlight::new(dir.path());
+        inflight.recover();
+        assert!(!dir.path().join("in-flight/7.tmp").exists());
+        assert!(!dir.path().join("deaths/9.tmp").exists());
     }
 
     #[test]

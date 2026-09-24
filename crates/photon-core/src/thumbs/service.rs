@@ -268,12 +268,21 @@ const PANIC_MESSAGE: &str = "decoder panicked";
 /// leftover marker itself, which is what let a single death compound into a false failure in
 /// this guard's first version.
 ///
-/// A photo with at least one recorded death also takes `decode_lock` exclusively
-/// (`write`) across its render, where every other decode only takes `read`: without that, a
-/// batch of photos queued together dies as a group, and every one of them - not just the
-/// culprit - looks like a repeat suspect at the next launch, since they were all genuinely in
-/// flight together. Held outside `catch_unwind` so the lock guard's own unwind-drop runs
-/// during the panic that is being caught, same as everything else in scope.
+/// A photo with at least one recorded death also takes `decode_lock` exclusively (`write`)
+/// across its render, where every other decode only takes `read`: without that, a batch of
+/// photos queued together dies as a group, and every one of them - not just the culprit -
+/// looks like a repeat suspect at the next launch, since they were all genuinely in flight
+/// together. `decode_lock` is acquired *before* `begin` is even called, not after: a photo
+/// merely waiting for a suspect's turn must never have a marker on disk for it - only the one
+/// actually decoding may. `marker.resolve(decided)` then removes it again before this
+/// function returns, so the lock is still held while that happens; only after does
+/// `decode_guard` itself drop and let the next waiter in.
+///
+/// `resolve`'s `decided` is `true` once this attempt settled the photo's fate one way or
+/// another (rendered, or a caught panic explicitly failed it) and `false` for a transient
+/// error that leaves the item `Pending` - the marker is always removed either way (the decode
+/// finished, whatever it decided), but the death *record* only when `decided`, so a suspect
+/// whose drive merely dropped out for a moment does not lose the death that made it a suspect.
 fn process(
     lib: &Library,
     cache: &ThumbCache,
@@ -305,21 +314,30 @@ fn process(
         inflight.clear(id);
         return Ok(());
     }
-    // Held across the decode, so it is on disk if the decode takes the process down.
-    let _marker = inflight.begin(id, key);
+    // Acquired before `begin`, not after: a photo blocked here - waiting its turn behind a
+    // suspect's exclusive decode - must never have a marker on disk for a decode that has not
+    // actually started.
     let _decode_guard = if deaths >= 1 {
         DecodeGuard::Suspect(decode_lock.write())
     } else {
         DecodeGuard::Ordinary(decode_lock.read())
     };
-    match catch_unwind(AssertUnwindSafe(|| process_item(lib, cache, &item, render))) {
-        Ok(result) => result,
-        Err(_) => {
-            tracing::error!(id, path = %item.path, "thumbnail decoder panicked");
-            lib.set_thumb_state_if_unchanged(&item, ThumbState::Failed, Some(PANIC_MESSAGE))?;
-            Err(Error::ThumbFailed(PANIC_MESSAGE.into()))
-        }
-    }
+    // Held across the decode, so it is on disk if the decode takes the process down.
+    let marker = inflight.begin(id, key);
+    let (result, decided) =
+        match catch_unwind(AssertUnwindSafe(|| process_item(lib, cache, &item, render))) {
+            Ok(Ok(())) => (Ok(()), true),
+            Ok(Err(err)) => (Err(err), false),
+            Err(_) => {
+                tracing::error!(id, path = %item.path, "thumbnail decoder panicked");
+                lib.set_thumb_state_if_unchanged(&item, ThumbState::Failed, Some(PANIC_MESSAGE))?;
+                (Err(Error::ThumbFailed(PANIC_MESSAGE.into())), true)
+            }
+        };
+    // Resolved (and so dropped) here, still inside `decode_guard`'s scope: the marker and, if
+    // decided, the record are both gone from disk before the lock lets the next photo through.
+    marker.resolve(decided);
+    result
 }
 
 /// Held across one decode: a suspect (at least one recorded death) takes the lock
@@ -818,6 +836,107 @@ mod tests {
             state(&lib, ids[0]),
             ThumbState::Ready,
             "one death is still forgiven"
+        );
+    }
+
+    /// The reviewer's exact repro for the ordering bug: two suspects (one death each) and one
+    /// ordinary photo, three workers, so all three can be popped and attempt to decode at
+    /// once. Before the fix, `begin` wrote its marker before the decode ever held the lock,
+    /// so every photo merely *blocked* on the suspect's exclusive write already had a marker
+    /// on disk - the reviewer's own worktree probe found 3 markers while one suspect decoded
+    /// alone, where there should be 1. A second suspect, never actually decoding, could then
+    /// be falsely failed if the first's decode killed the process. Fixed order: the lock is
+    /// acquired first, so a blocked photo never reaches `begin` at all until it actually
+    /// holds its turn.
+    #[test]
+    fn only_the_decoding_suspect_holds_a_marker() {
+        fn probe(
+            cache: &ThumbCache,
+            source: &Path,
+            orientation: u8,
+            edit: Edit,
+        ) -> Result<(DynamicImage, DynamicImage)> {
+            if source.to_string_lossy().contains("suspect") {
+                // Long enough for the other two workers to reach - and, before the fix,
+                // pass - their own `begin` while this one holds the lock alone.
+                std::thread::sleep(Duration::from_millis(80));
+                let markers = std::fs::read_dir(cache.root().join("in-flight"))
+                    .map(|entries| {
+                        entries
+                            .flatten()
+                            .filter(|e| {
+                                e.path().extension().and_then(|x| x.to_str()) != Some("tmp")
+                            })
+                            .count()
+                    })
+                    .unwrap_or(0);
+                assert_eq!(
+                    markers, 1,
+                    "more than one marker on disk while a suspect decodes alone"
+                );
+            }
+            default_render(cache, source, orientation, edit)
+        }
+
+        let (_dir, lib, cache, ids) = setup(&[
+            ("a_suspect1.jpg", jpeg_bytes(40, 20)),
+            ("a_suspect2.jpg", jpeg_bytes(40, 20)),
+            ("z_ordinary.jpg", jpeg_bytes(40, 20)),
+        ]);
+        let inflight = InFlight::new(cache.root());
+        for &id in &ids[..2] {
+            let key = item_key(&lib, id);
+            std::mem::forget(inflight.begin(id, key));
+        }
+        inflight.recover();
+
+        let service = ThumbService::start_with(lib.clone(), cache, 3, probe);
+        service.enqueue_pending().unwrap();
+        service.wait_idle();
+
+        for &id in &ids[..2] {
+            assert_eq!(
+                state(&lib, id),
+                ThumbState::Ready,
+                "one death is still forgiven"
+            );
+        }
+    }
+
+    /// A transient failure (the source unreachable, the cache unwritable) decides nothing
+    /// about the photo - the item stays `Pending` for a retry - so a suspect's death record
+    /// must survive it. Losing it here would let a photo that genuinely killed photon once
+    /// reset to a clean slate merely because its *next* attempt also failed before the
+    /// decoder was ever called.
+    #[test]
+    fn a_transient_failure_keeps_the_suspects_death_record() {
+        let (dir, lib, cache, ids) = setup(&[("a.jpg", jpeg_bytes(40, 20))]);
+        // Drive unplugged / file being replaced: the source can't be opened at all, an
+        // `Error::Io` that `process_item` propagates without deciding anything.
+        std::fs::remove_file(dir.path().join("photos").join("a.jpg")).unwrap();
+
+        let key = item_key(&lib, ids[0]);
+        let inflight = InFlight::new(cache.root());
+        std::mem::forget(inflight.begin(ids[0], key));
+        inflight.recover();
+
+        let service = ThumbService::start_with(lib.clone(), cache, 1, default_render);
+        assert!(matches!(
+            service.get_or_generate(ids[0], ThumbSize::Grid),
+            Err(Error::Io(_))
+        ));
+        assert_eq!(
+            state(&lib, ids[0]),
+            ThumbState::Pending,
+            "not decided, just couldn't even start"
+        );
+        assert!(
+            !marker(&dir, ids[0]).exists(),
+            "the marker itself is always cleared"
+        );
+        assert!(
+            death_record(&dir, ids[0]).exists(),
+            "but the death record survives a transient failure"
         );
     }
 
