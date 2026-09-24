@@ -71,9 +71,11 @@ pub(crate) struct InFlight {
     /// Never read; it exists to keep the lock alive, nothing else.
     _lock: Option<File>,
     /// Whether `_lock` was actually acquired. A second instance on the same cache root runs
-    /// with this `false`: `recover` reads nothing, `begin` writes no marker, and `disarm`
-    /// sweeps nothing, so it can neither corrupt nor be corrupted by the instance that does
-    /// hold the guard. It still decodes thumbnails - just without the crash-loop guard.
+    /// with this `false`: `recover` reads nothing, `begin` writes no marker, `disarm` sweeps
+    /// nothing, `clear` removes no record, and a `Marker` it hands out removes neither its
+    /// marker nor its record on drop - every one of those paths, if it exists, belongs to
+    /// whichever instance does hold the guard, so this instance can neither corrupt it nor be
+    /// corrupted by it. It still decodes thumbnails - just without the crash-loop guard.
     guarded: bool,
 }
 
@@ -194,6 +196,12 @@ impl InFlight {
             marker,
             record: self.record_path(id),
             decided: false,
+            // Only an instance that holds the lock ever wrote (or could write) anything for
+            // this id - see `guarded`'s own doc. An unguarded `Marker` must not remove either
+            // path on drop: the marker and the record at this id, if they exist at all, are
+            // the guarded instance's still-live decode and its death history, not this
+            // instance's to erase, and it never counted this attempt either way.
+            guarded: self.guarded,
         }
     }
 
@@ -204,6 +212,12 @@ impl InFlight {
     /// currently at `id`, so a record left behind for the old key could never have blamed the
     /// new one anyway - clearing it early is hygiene, not correctness.
     pub(crate) fn clear(&self, id: i64) {
+        if !self.guarded {
+            // Not this instance's record to erase - see `guarded`'s own comment. It never
+            // counts a death either way, so a record at this id belongs to whichever instance
+            // does hold the lock.
+            return;
+        }
         remove(&self.record_path(id));
     }
 
@@ -263,10 +277,13 @@ impl InFlight {
     }
 }
 
-/// Removes its photo's marker when dropped, always - the decode finished without taking
-/// photon down with it, whatever the outcome, so there is nothing left for the next launch to
-/// misread as a leftover death. An abort or the OOM killer runs no `Drop` at all, which is the
-/// one case this guard exists to survive: the marker stays, for `recover` to find.
+/// Removes its photo's marker when dropped - the decode finished without taking photon down
+/// with it, whatever the outcome, so there is nothing left for the next launch to misread as a
+/// leftover death. An abort or the OOM killer runs no `Drop` at all, which is the one case this
+/// guard exists to survive: the marker stays, for `recover` to find. Only when `guarded` is
+/// true, though: a `Marker` from an unguarded `InFlight` wrote no marker in `begin` and must
+/// remove nothing on drop either - the path at this id, if one exists, is the guarded
+/// instance's own live decode, not this one's to delete out from under it.
 ///
 /// The death *record* is a different question: it is only cleared when `resolve` was told the
 /// photo's fate was actually decided this attempt (rendered, or explicitly failed - a caught
@@ -281,6 +298,11 @@ pub(crate) struct Marker {
     marker: PathBuf,
     record: PathBuf,
     decided: bool,
+    /// Whether the `InFlight` that made this guard holds the cache root's lock. `false` for a
+    /// second instance on the same root (see `InFlight::guarded`): it wrote no marker for this
+    /// id and never counts a death, so on drop it must not remove either path - both, if they
+    /// exist, belong to whichever instance does hold the lock.
+    guarded: bool,
 }
 
 impl Marker {
@@ -296,6 +318,9 @@ impl Marker {
 
 impl Drop for Marker {
     fn drop(&mut self) {
+        if !self.guarded {
+            return;
+        }
         remove(&self.marker);
         if self.decided {
             remove(&self.record);
@@ -499,14 +524,20 @@ mod tests {
         std::mem::forget(inflight.begin(3, key));
         inflight.disarm();
 
+        // Once disarmed, a new `begin` writes nothing at all.
+        std::mem::forget(inflight.begin(4, key));
+        assert!(!dir.path().join("in-flight/4").exists());
+
+        // Release the lock file before the "next launch" acquires it - held both at once,
+        // the next launch would run unguarded (see `InFlight::guarded`) and its `recover()`
+        // would be a no-op regardless of whether `disarm`'s sweep actually ran, which is
+        // exactly what made this test pass with the sweep disabled.
+        drop(inflight);
+
         // Stands in for the next launch: nothing survived disarm's sweep to be counted.
         let next_launch = InFlight::new(dir.path());
         next_launch.recover();
         assert_eq!(next_launch.deaths(3, key), 0);
-
-        // And once disarmed, a new `begin` writes nothing at all.
-        std::mem::forget(inflight.begin(4, key));
-        assert!(!dir.path().join("in-flight/4").exists());
     }
 
     /// Two instances on one cache root, simulating a double-clicked launcher: the second
@@ -543,5 +574,54 @@ mod tests {
 
         // The first instance's own view is unaffected throughout.
         assert_eq!(first.deaths(1, key), 0, "not a death until recover runs");
+    }
+
+    /// An unguarded instance's own `Marker` must not erase what a guarded instance owns at
+    /// the same id: neither the guarded instance's still-live marker (a decode genuinely in
+    /// flight there) nor its death record, whether through the unguarded `Marker`'s own drop,
+    /// an explicit `resolve(true)`, or a direct `clear` call. Before this fix `Marker::drop`
+    /// removed its paths unconditionally, so an unguarded second instance racing a `begin` for
+    /// the same id as a guarded first instance's live decode deleted that decode's marker out
+    /// from under it, and any death record standing against it.
+    #[test]
+    fn an_unguarded_instances_marker_does_not_erase_the_guarded_ones_records() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = InFlight::new(dir.path());
+        let key = 0xaaaa_bbbb_cccc_dddd_u64;
+
+        // One death already on record for id 2, the way `recover` would leave it.
+        std::mem::forget(first.begin(2, key));
+        first.recover();
+        assert_eq!(first.deaths(2, key), 1);
+
+        // Stands in for a fresh decode of the same photo, genuinely in flight in the first
+        // (guarded) instance right now.
+        std::mem::forget(first.begin(2, key));
+        assert!(dir.path().join("in-flight/2").exists());
+        assert!(dir.path().join("deaths/2").exists());
+
+        // A second instance on the same root, unguarded because `first` still holds the lock
+        // file - simulating a double-clicked launcher racing a job for the very same id.
+        let second = InFlight::new(dir.path());
+        let marker = second.begin(2, key);
+        marker.resolve(true); // consumes and drops the guard, as a finished decode would.
+
+        assert!(
+            dir.path().join("in-flight/2").exists(),
+            "the unguarded instance's Marker must not delete the guarded instance's live marker"
+        );
+        assert!(
+            dir.path().join("deaths/2").exists(),
+            "nor the guarded instance's death record, even though this attempt was resolved"
+        );
+
+        second.clear(2);
+        assert!(
+            dir.path().join("deaths/2").exists(),
+            "and a direct clear() from the unguarded instance must not erase it either"
+        );
+
+        // The first instance's own view is unaffected throughout.
+        assert_eq!(first.deaths(2, key), 1);
     }
 }

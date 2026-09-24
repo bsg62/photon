@@ -1223,11 +1223,12 @@ impl Engine {
         }
     }
 
-    /// Stops new scans from starting, cancels every running scan (looping until none are
-    /// left, since a scan or `startup` racing this can still insert one after the first
-    /// pass), closes the thumbnail queue so its workers finish their current job and stop,
-    /// then waits for the startup thread to finish (it checks `shutting_down` at each of
-    /// its own checkpoints, so this doesn't wait for it to run to completion).
+    /// Disarms the thumbnail crash-loop guard first, then stops new scans from starting,
+    /// cancels every running scan (looping until none are left, since a scan or `startup`
+    /// racing this can still insert one after the first pass), stops the watcher, closes the
+    /// thumbnail queue so its workers finish their current job and stop, waits for the
+    /// startup thread to finish (it checks `shutting_down` at each of its own checkpoints, so
+    /// this doesn't wait for it to run to completion), then waits for any look-alike pass.
     pub fn shutdown(&self) {
         // Disarmed first, before anything below that can itself stall - `stop_watcher` has.
         // A kill during that stretch is a deliberate quit already under way, not a crash;
