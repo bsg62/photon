@@ -184,9 +184,11 @@ pub fn oriented_dims(width: u32, height: u32, orientation: u8) -> (u32, u32) {
 
 /// Dimensions, EXIF and whether the file is an AVIF, from one open file.
 ///
-/// Both are in the same leading bytes, and `describe()` runs this for every new or changed
-/// photo: opening and header-parsing the file twice doubled the syscalls of an import for
-/// nothing, which on a network share or a spinning archive drive is what the import costs.
+/// Both are in the same leading bytes for every format but AVIF, whose `avif_dimensions`
+/// reads to the end of the file (see `decode::dimensions`); either way `describe()` runs
+/// this for every new or changed photo from one already-open file, not two: opening and
+/// header-parsing a file twice doubled the syscalls of an import for nothing, which on a
+/// network share or a spinning archive drive is what the import costs.
 fn read_header(path: &Path) -> (Option<(u32, u32)>, Option<exif::Exif>, bool) {
     let Ok(file) = File::open(path) else {
         return (None, None, false);

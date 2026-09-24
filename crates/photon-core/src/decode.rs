@@ -5,17 +5,15 @@ use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
 
-/// How much of a file is read to tell an AVIF from anything else: enough for any `ftyp`
-/// box a still-image writer produces, brands and all.
+/// How much of a filled buffer counts as the file's head when telling an AVIF from anything
+/// else: enough for any `ftyp` box a still-image writer produces, brands and all. Sniffing
+/// never costs its own read: a `BufReader`'s first fill (its capacity, several KiB) already
+/// holds far more than this, so the check only slices the buffer `fill_buf` already has.
 const SNIFF_BYTES: u64 = 256;
 
-/// Whether the file under `reader` is an AVIF, leaving the reader where it was.
-fn sniff_avif<R: Read + Seek>(reader: &mut R) -> std::io::Result<bool> {
-    let start = reader.stream_position()?;
-    let mut head = Vec::with_capacity(SNIFF_BYTES as usize);
-    reader.by_ref().take(SNIFF_BYTES).read_to_end(&mut head)?;
-    reader.seek(SeekFrom::Start(start))?;
-    Ok(avif::is_avif(&head))
+/// Whether the head of `buf` (capped at [`SNIFF_BYTES`]) is an AVIF.
+fn sniffed_avif(buf: &[u8]) -> bool {
+    avif::is_avif(&buf[..buf.len().min(SNIFF_BYTES as usize)])
 }
 
 /// Decodes any photo photon indexes, recognising the format from its bytes. AVIF is photon's
@@ -23,7 +21,11 @@ fn sniff_avif<R: Read + Seek>(reader: &mut R) -> std::io::Result<bool> {
 /// `image`. Every full decode goes through here, so a new format is one branch in one place.
 pub fn decode_image(path: &Path) -> Result<DynamicImage> {
     let mut reader = BufReader::new(File::open(path)?);
-    if sniff_avif(&mut reader)? {
+    // `fill_buf` peeks without consuming: the sniff costs no seek and no re-read, unlike a
+    // take-and-rewind, which is what `read_header`'s "one open file, few syscalls" reasoning
+    // (metadata.rs) needs from this on every describe().
+    let is_avif = sniffed_avif(reader.fill_buf()?);
+    if is_avif {
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes)?;
         return Ok(avif::decode_avif(&bytes)?);
@@ -44,7 +46,10 @@ pub(crate) fn dimensions<R: BufRead + Seek>(reader: &mut R) -> (Option<(u32, u32
     if reader.seek(SeekFrom::Start(0)).is_err() {
         return (None, false);
     }
-    if sniff_avif(reader).unwrap_or(false) {
+    // Peeked, not consumed, for the same reason `decode_image` peeks: this runs once per
+    // new or changed file, so an extra seek-and-reread here is the whole scan paying for it.
+    let is_avif = reader.fill_buf().is_ok_and(sniffed_avif);
+    if is_avif {
         let mut bytes = Vec::new();
         let dims = reader
             .read_to_end(&mut bytes)
@@ -79,7 +84,10 @@ pub fn apply_orientation(img: DynamicImage, orientation: u8) -> DynamicImage {
 /// 512 MiB - roughly a 134 MP photo at RGBA8, so well clear of any camera photon will meet,
 /// while a header claiming absurd dimensions is refused before anything is allocated. That
 /// is a per-decode bound, not a total: what keeps the sum of the workers' decode buffers
-/// bounded is `MAX_WORKERS`, so the two belong together.
+/// bounded is `MAX_WORKERS`, so the two belong together. An AVIF is bounded the same way by
+/// `avif::DecodeConfig`'s own 512 MiB limit instead, and the file is read to the end first
+/// (the container has to be parsed before any pixel is decoded), so the bound there is on
+/// the decode's allocations, not on how much of the file is read.
 pub fn decode_oriented(path: &Path, orientation: u8, max_edge: u32) -> Result<DynamicImage> {
     let img = decode_image(path)?;
     let img = if img.width().max(img.height()) > max_edge {
@@ -200,7 +208,10 @@ mod tests {
     }
 
     /// A broken AVIF is a source defect (the failed-thumbnail placeholder), not an I/O error
-    /// the thumbnail service would retry.
+    /// the thumbnail service would retry: `is_source_defect` (thumbs/service.rs) treats
+    /// `ImageError::IoError` as retryable, so this pins the specific variant `decode_avif`
+    /// promises (`Decoding`), not merely `Error::Image(_)`, which an `Unsupported` would also
+    /// satisfy without proving the corrupt-file path at all.
     #[test]
     fn decode_reports_a_corrupt_avif_as_an_image_error() {
         let dir = tempfile::tempdir().unwrap();
@@ -208,7 +219,7 @@ mod tests {
         let path = write_file(dir.path(), "cut.avif", &bytes[..bytes.len() / 2]);
         assert!(matches!(
             decode_oriented(&path, 1, 100),
-            Err(Error::Image(_))
+            Err(Error::Image(image::ImageError::Decoding(_)))
         ));
     }
 }
