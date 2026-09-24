@@ -483,6 +483,9 @@
   }
   h1 { margin: 0; font-size: var(--t-4); font-weight: 600; }
   h2 { margin: 0 0 var(--s-1); font-size: var(--t-3); font-weight: 600; }
+  /* A second heading starts a new group within the section, so it stands clear of the
+     control above it rather than reading as that control's caption. */
+  h2:not(:first-child) { margin-top: var(--s-5); }
   button {
     padding: 5px var(--s-3);
     border: 0;
@@ -515,7 +518,9 @@
   .hint, .empty { margin: 0 0 var(--s-3); color: var(--text-dim); }
   .interval { display: flex; align-items: center; gap: 8px; }
   .interval input { width: 64px; padding: 5px var(--s-2); border: 0; border-radius: var(--r-2); background: var(--field); color: inherit; font: inherit; }
-  .segmented { display: inline-flex; gap: 2px; padding: 2px; border-radius: var(--r-3); background: var(--field); }
+  /* Block-level `flex` shrunk to fit rather than `inline-flex`: an inline box's margin adds
+     to its line instead of collapsing with the next heading's, doubling the gap. */
+  .segmented { display: flex; width: fit-content; margin-bottom: var(--s-3); gap: 2px; padding: 2px; border-radius: var(--r-3); background: var(--field); }
   .segmented button { padding: 4px 14px; border-radius: var(--r-2); background: none; }
   .segmented button:hover:not(:disabled) { background: var(--hover); }
   /* After the hover rule and spelled as long, so the chosen segment keeps its accent under
