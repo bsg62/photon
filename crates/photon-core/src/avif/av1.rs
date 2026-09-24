@@ -1,6 +1,16 @@
-//! The only `unsafe` code in photon: a wrapper over the dav1d-style API that `rav1d`'s
+//! The only `unsafe` code in photon-core: a wrapper over the dav1d-style API that `rav1d`'s
 //! crates.io release exports, which is the only way into it. Each resource it hands out is
 //! owned by a guard whose `Drop` gives it back, so no early return can leak one.
+//!
+//! A panic inside rav1d cannot be caught the way every other format's decoder panic is
+//! (`thumbs/service.rs`'s `catch_unwind`): rav1d's Rust functions are `pub unsafe extern "C"
+//! fn`s, and since Rust 1.81 a panic unwinding out of an `extern "C"` boundary aborts the
+//! process instead of unwinding through it - a language guarantee, not a bug to route around.
+//! The crates.io release exports no other entry point (every other Rust function in the crate
+//! is `pub(crate)`), so there is no safe-to-unwind call available to reach for instead. An AVIF
+//! that trips a rav1d panic therefore aborts photon, where every other format's decoder panic
+//! costs one thumbnail. This is accepted rather than hidden; a crash-loop guard around opening
+//! an AVIF-heavy library is a possible follow-up.
 
 use rav1d::include::dav1d::data::Dav1dData;
 use rav1d::include::dav1d::dav1d::{Dav1dContext, Dav1dSettings};
@@ -17,8 +27,11 @@ use std::ffi::c_void;
 use std::mem::MaybeUninit;
 use std::ptr::NonNull;
 
-/// The largest frame rav1d is allowed to allocate, in pixels: `image`'s 512 MiB decode
-/// bound at four bytes a pixel, so a header claiming absurd dimensions is refused up front.
+/// The largest frame rav1d is allowed to allocate, in pixels: the same pixel count as
+/// `image`'s 512 MiB RGBA8 decode bound, so a header claiming absurd dimensions is refused up
+/// front on the same footing as any other format - not a memory bound on AV1 decoding itself,
+/// which costs more per pixel at this cap than RGBA8 does (10/12-bit 4:4:4 planes inside
+/// rav1d, then `Planes` widening every sample to 2 bytes).
 const MAX_FRAME_PIXELS: u32 = 512 * 1024 * 1024 / 4;
 
 /// dav1d reports "not now" as `-EAGAIN`, and `EAGAIN` is 11 on Linux and Windows but 35 on
@@ -69,7 +82,9 @@ struct Data(Dav1dData);
 impl Drop for Data {
     fn drop(&mut self) {
         // SAFETY: `self.0` came from `dav1d_data_create`, or is what `dav1d_send_data` left
-        // of it; unreferencing an emptied buffer is a no-op.
+        // of it, or - when `data_create` itself returned null - the all-zero `Dav1dData` this
+        // `Data` was built from and never populated; unreferencing an emptied or still-zeroed
+        // buffer is a no-op.
         unsafe { dav1d_data_unref(NonNull::new(&mut self.0)) }
     }
 }
@@ -149,7 +164,13 @@ pub(crate) fn decode(obu: &[u8]) -> Result<Planes, String> {
 
 fn planes(picture: &Dav1dPicture) -> Result<Planes, String> {
     let p = &picture.p;
-    let (width, height, depth) = (p.w as usize, p.h as usize, p.bpc as u8);
+    let (Ok(width), Ok(height)) = (usize::try_from(p.w), usize::try_from(p.h)) else {
+        return Err(format!(
+            "unusable AV1 picture: {}x{} at {} bits",
+            p.w, p.h, p.bpc
+        ));
+    };
+    let depth = p.bpc as u8;
     let (mono, shift) = match p.layout {
         DAV1D_PIXEL_LAYOUT_I400 => (true, (0, 0)),
         DAV1D_PIXEL_LAYOUT_I420 => (false, (1, 1)),

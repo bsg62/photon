@@ -146,6 +146,12 @@ by the crate's source being unmodified and published.
 - **Decode cost.** Roughly 0.2-0.3 s per 12 MP photo, once, when its thumbnail is rendered.
   Enabling rav1d's assembly later is a feature flag plus `nasm` on the CI runners, if that ever
   matters.
+- **A decoder panic aborts photon.** Every other format's decoder panic is caught by the
+  thumbnail service's `catch_unwind` and costs one thumbnail, but rav1d's crates.io release
+  exposes only `pub unsafe extern "C" fn`s, and a panic cannot unwind out of an `extern "C"`
+  boundary (it aborts the process instead, since Rust 1.81); there is no other, safe-to-unwind
+  entry point to call instead. A crash-loop guard around opening an AVIF-heavy library is a
+  possible follow-up.
 
 ## Testing
 
