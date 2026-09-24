@@ -185,8 +185,12 @@ by the crate's source being unmodified and published.
   otherwise blame it. A suspect (one recorded death) decodes under an exclusive lock that
   every other decode only takes shared - acquired *before* the photo is even marked in
   flight, not after, so a photo merely queued behind the suspect's turn never has a marker on
-  disk for a decode that has not actually started, and only the actual culprit can ever reach
-  two. The marker is always cleared once a decode finishes, whatever it decided, but the death
+  disk for a decode that has not actually started: no photo reaches two deaths merely for
+  having been queued beside the culprit. It can still reach two some other way - an unrelated
+  abort during the suspect's own exclusive decode (a full-size render or an export, neither of
+  which takes `decode_lock`) or a plain power cut - the lock narrows *who else* a death can be
+  pinned on, not what can kill photon a second time. The marker is always cleared once a decode
+  finishes, whatever it decided, but the death
   record only when it decided the photo's fate one way or another (rendered, or explicitly
   failed): a transient failure - the drive dropped out, the cache went unwritable - decides
   nothing and leaves the item `Pending` for a retry, so a suspect's earlier death has to

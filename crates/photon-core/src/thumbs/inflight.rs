@@ -133,18 +133,26 @@ impl InFlight {
     /// finishing the write - checks again immediately after: if `disarm` set the flag while
     /// this write was in flight, the marker just written is removed again right away, rather
     /// than leaving it for `disarm`'s own sweep (already run by then) or a worker that, in
-    /// production, is never actually joined before `process::exit` to rely on. What remains
-    /// is the width of the second check itself, not a whole marker's lifetime - and even that
-    /// is covered from the other side: `disarm`'s sweep removes whatever it finds on disk
-    /// regardless of what this check saw, so a marker that lands on disk after the sweep
-    /// already ran is still caught here, and one that lands before is still caught there.
+    /// production, is never actually joined before `process::exit` to rely on.
+    ///
+    /// `closing` is `SeqCst`, not `Release`/`Acquire`, on every store and load: this is a
+    /// store-buffering (Dekker) pattern - `disarm` stores the flag and then lists the
+    /// directory, `begin` writes the marker and then reads the flag - and `Release`/`Acquire`
+    /// alone does not rule out *both* sides observing only the other's old value (no store
+    /// there yet, no marker there yet), which would let a marker survive a concurrent
+    /// `disarm` uncaught by either. `SeqCst` puts every access to `closing` into one global
+    /// order shared by both threads, so whichever of `disarm`'s store and this second load
+    /// happens second in that order is guaranteed to observe the other: if this load reads
+    /// `true`, `disarm` already ran and this call removes what it just wrote; if it reads
+    /// `false`, `disarm` has not stored yet, so its later sweep - which does not depend on
+    /// this check at all - still finds the marker already on disk by the time it runs.
     /// Best-effort throughout: a cache that cannot be written loses the guard, not the
     /// thumbnail.
     pub(crate) fn begin(&self, id: i64, key: u64) -> Marker {
         let marker = self.marker_path(id);
-        if !self.closing.load(Ordering::Acquire) {
+        if !self.closing.load(Ordering::SeqCst) {
             match write_atomic(&self.markers, &marker, &hex_key(key)) {
-                Ok(()) if self.closing.load(Ordering::Acquire) => remove(&marker),
+                Ok(()) if self.closing.load(Ordering::SeqCst) => remove(&marker),
                 Ok(()) => {}
                 Err(err) => tracing::warn!(%err, ?marker, "could not mark a photo in flight"),
             }
@@ -177,7 +185,9 @@ impl InFlight {
     /// `Engine::shutdown` -> `close()`), so a worker cannot be relied on to run its job to
     /// completion and drop its `Marker` the way it would on an ordinary, crash-free exit.
     pub(crate) fn disarm(&self) {
-        self.closing.store(true, Ordering::Release);
+        // SeqCst to pair with `begin`'s SeqCst loads - see `begin`'s own comment for why
+        // `Release` alone would not be enough here.
+        self.closing.store(true, Ordering::SeqCst);
         let Ok(entries) = fs::read_dir(&self.markers) else {
             return;
         };
