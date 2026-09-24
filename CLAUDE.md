@@ -426,6 +426,9 @@ action in `mock.js`.
 - **photon never writes to, moves or deletes photo files.** The one file it writes inside a
   watched folder is Picasa's own `.picasa.ini` (or `Picasa.ini`), through `picasa::set_star`
   only, to set or clear a single `star=` line; every other byte of that file is preserved.
+  An INI that is a symlink or not a regular file is refused, by the reader too: the writer
+  keeps every byte it reads and renames over the link, so following a planted
+  `.picasa.ini -> ~/.ssh/id_ed25519` in a shared folder copied the key into it on one star.
   Export (`photon_core::export`, spec `2026-09-20-photon-export-copies-design.md`, 2026-09-20)
   writes photo files, but only *new* ones, only where the user pointed a folder picker, and
   never inside a watched root - `Engine::export_items` refuses that destination, because the

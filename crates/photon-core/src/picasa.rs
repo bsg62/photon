@@ -61,7 +61,7 @@ pub fn read_folder(dir: &Path) -> Option<FolderIni> {
     let Some(path) = ini_path(dir).ok()? else {
         return Some(FolderIni::default());
     };
-    let bytes = read_capped(&path).ok()?;
+    let (bytes, _) = read_capped(&path).ok()?;
     Some(parse_folder(&String::from_utf8_lossy(&bytes)))
 }
 
@@ -101,8 +101,7 @@ pub fn set_star(dir: &Path, file_name: &str, starred: bool) -> io::Result<bool> 
 pub fn set_stars(dir: &Path, changes: &[(&str, bool)]) -> io::Result<bool> {
     let (path, mut bytes, template) = match ini_path(dir)? {
         Some(path) => {
-            let bytes = read_capped(&path)?;
-            let meta = fs::metadata(&path)?;
+            let (bytes, meta) = read_capped(&path)?;
             (path, bytes, Some(meta))
         }
         None if changes.iter().any(|&(_, starred)| starred) => {
@@ -141,6 +140,13 @@ pub fn ini_name(dir: &Path) -> String {
 /// case-insensitive: a library written on Windows and read on Linux may carry any casing,
 /// and a missed file means a whole folder silently loses its stars. `.picasa.ini` wins when
 /// both exist, and the two are never merged.
+///
+/// The chosen INI must be a regular file, and a symlink is refused (`Err`) rather than
+/// followed. A watched folder can be a share someone else writes to, and following a
+/// planted `.picasa.ini -> ~/.ssh/id_ed25519` let a single star copy the key into that
+/// folder: the writer keeps every byte it reads and renames its result over the link. An
+/// `Err` is what makes the reader leave the folder's stars alone and the writer fail
+/// loudly, where "no INI" would clear every star on the next scan.
 fn ini_path(dir: &Path) -> io::Result<Option<PathBuf>> {
     let mut dotted = None;
     let mut plain = None;
@@ -152,13 +158,26 @@ fn ini_path(dir: &Path) -> io::Result<Option<PathBuf>> {
         let Some(name) = name.to_str() else {
             continue;
         };
-        match name.to_lowercase().as_str() {
-            ".picasa.ini" => dotted = Some(entry.path()),
-            "picasa.ini" => plain = Some(entry.path()),
-            _ => {}
-        }
+        let slot = match name.to_lowercase().as_str() {
+            ".picasa.ini" => &mut dotted,
+            "picasa.ini" => &mut plain,
+            _ => continue,
+        };
+        // `DirEntry::file_type` does not follow a symlink, so a link reads as a link here.
+        *slot = Some((entry.path(), entry.file_type()?.is_file()));
     }
-    Ok(dotted.or(plain))
+    match dotted.or(plain) {
+        Some((path, true)) => Ok(Some(path)),
+        Some((path, false)) => Err(not_a_regular_file(&path)),
+        None => Ok(None),
+    }
+}
+
+fn not_a_regular_file(path: &Path) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidInput,
+        format!("{} is not a regular file", path.display()),
+    )
 }
 
 /// Reads the file, or fails if it is unreadable or larger than `MAX_INI`.
@@ -167,8 +186,20 @@ fn ini_path(dir: &Path) -> io::Result<Option<PathBuf>> {
 /// larger one, rather than silently treating "too big to read" as "read, and empty" —
 /// the distinction `read_stars`'s `Option` exists to carry, and one the writer needs even
 /// more: rewriting a partial read would throw away everything past the cut.
-fn read_capped(path: &Path) -> io::Result<Vec<u8>> {
+///
+/// Also returns the opened file's metadata, the writer's permission template: taken from the
+/// handle, not the path, so it describes the bytes that were read.
+fn read_capped(path: &Path) -> io::Result<(Vec<u8>, fs::Metadata)> {
     let mut file = fs::File::open(path)?;
+    let meta = file.metadata()?;
+    // `ini_path` saw a regular file, but the entry can be swapped for a link before the open
+    // follows it. Re-checking the path without following it, after the open, catches that:
+    // a link now is refused, and on unix a regular file that is not the one opened (a link
+    // at open time, put back since) differs in inode.
+    let at_path = fs::symlink_metadata(path)?;
+    if !at_path.file_type().is_file() || !same_file(&meta, &at_path) {
+        return Err(not_a_regular_file(path));
+    }
     let mut buf = Vec::new();
     Read::by_ref(&mut file)
         .take(MAX_INI + 1)
@@ -179,7 +210,21 @@ fn read_capped(path: &Path) -> io::Result<Vec<u8>> {
             format!("{} is larger than {MAX_INI} bytes", path.display()),
         ));
     }
-    Ok(buf)
+    Ok((buf, meta))
+}
+
+#[cfg(unix)]
+fn same_file(a: &fs::Metadata, b: &fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    a.dev() == b.dev() && a.ino() == b.ino()
+}
+
+/// Windows' file identity (`file_index`) is unstable in std, so only the link check above
+/// applies there; creating a symlink on Windows takes a privilege a share's other writers
+/// rarely have.
+#[cfg(not(unix))]
+fn same_file(_: &fs::Metadata, _: &fs::Metadata) -> bool {
+    true
 }
 
 /// One line of an INI, as both the reader and the writer see it.
@@ -998,6 +1043,67 @@ mod tests {
         assert_eq!(err.kind(), std::io::ErrorKind::FileTooLarge);
         assert_eq!(entries(dir.path()), vec![".picasa.ini"]);
         assert_eq!(ini(dir.path(), ".picasa.ini"), big);
+    }
+
+    /// A folder whose `.picasa.ini` is a symlink to a secret outside it, and the secret.
+    #[cfg(unix)]
+    fn folder_with_linked_ini() -> (tempfile::TempDir, tempfile::TempDir, std::path::PathBuf) {
+        let outside = tempfile::tempdir().unwrap();
+        let secret = outside.path().join("id_ed25519");
+        std::fs::write(&secret, b"-----BEGIN OPENSSH PRIVATE KEY-----\nAAAA=\n").unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(&secret, dir.path().join(".picasa.ini")).unwrap();
+        (dir, outside, secret)
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_symlinked_ini_is_never_rewritten_into_the_folder() {
+        // Starring used to read through the link, keep every byte and rename the result over
+        // the link: the secret landed in the (possibly shared) folder as a regular file.
+        let (dir, _outside, secret) = folder_with_linked_ini();
+        let err = set_star(dir.path(), "a.jpg", true).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+        let link = dir.path().join(".picasa.ini");
+        assert!(
+            std::fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(entries(dir.path()), vec![".picasa.ini"]);
+        assert_eq!(
+            std::fs::read(&secret).unwrap(),
+            b"-----BEGIN OPENSSH PRIVATE KEY-----\nAAAA=\n"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_symlinked_ini_is_no_evidence_to_the_reader() {
+        // `None`, not `Some(empty)`: the folder's stars are left alone, not cleared.
+        let (dir, _outside, secret) = folder_with_linked_ini();
+        std::fs::write(&secret, b"[a.jpg]\nstar=yes\n").unwrap();
+        assert_eq!(read_folder(dir.path()), None);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn listing_refuses_a_link_before_opening_it() {
+        // The first guard, which never opens the link: `read_capped` alone would, and a link
+        // to a FIFO blocks that open for good.
+        let (dir, _outside, _secret) = folder_with_linked_ini();
+        let err = ini_path(dir.path()).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn the_open_itself_refuses_a_link() {
+        // The second guard, for an entry swapped for a link after `ini_path` listed it.
+        let (dir, _outside, _secret) = folder_with_linked_ini();
+        let err = read_capped(&dir.path().join(".picasa.ini")).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
     }
 
     #[test]
