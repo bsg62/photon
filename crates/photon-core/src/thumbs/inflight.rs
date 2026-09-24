@@ -35,7 +35,7 @@
 //! a real death recorded earlier.
 
 use crate::grid::hex_key;
-use std::fs;
+use std::fs::{self, File};
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -52,20 +52,47 @@ pub(crate) const CRASH_MESSAGE: &str = "photon closed unexpectedly while reading
 /// treating it as either would race the rename that is about to replace it.
 const TMP_EXT: &str = "tmp";
 
+/// One exclusive lock file per cache root, held for the whole life of the `InFlight` that
+/// acquires it. Double-clicking a launcher starts a second instance pointed at the same
+/// library; without this, either instance's `recover()` would turn the *other's* live
+/// markers into deaths and delete them out from under its still-running decode, and either's
+/// `disarm()` would sweep the other's markers on its own clean quit. Named outside
+/// `in-flight/` itself so neither `recover` nor `disarm`'s directory listing ever has to
+/// know to skip it.
+const LOCK_FILE: &str = "in-flight.lock";
+
 pub(crate) struct InFlight {
     markers: PathBuf,
     records: PathBuf,
     /// Set by `disarm` on a clean quit. `begin` then writes no marker: a deliberate exit
     /// killed nothing, so nothing should be left for the next launch to misread as a death.
     closing: AtomicBool,
+    /// Held for as long as `self` lives, once acquired - dropping it releases the OS lock.
+    /// Never read; it exists to keep the lock alive, nothing else.
+    _lock: Option<File>,
+    /// Whether `_lock` was actually acquired. A second instance on the same cache root runs
+    /// with this `false`: `recover` reads nothing, `begin` writes no marker, and `disarm`
+    /// sweeps nothing, so it can neither corrupt nor be corrupted by the instance that does
+    /// hold the guard. It still decodes thumbnails - just without the crash-loop guard.
+    guarded: bool,
 }
 
 impl InFlight {
     pub(crate) fn new(cache_root: &Path) -> Self {
+        let lock = acquire_lock(cache_root);
+        let guarded = lock.is_some();
+        if !guarded {
+            tracing::warn!(
+                "another photon instance already guards this thumbnail cache; \
+                 running without the crash-loop guard"
+            );
+        }
         Self {
             markers: cache_root.join("in-flight"),
             records: cache_root.join("deaths"),
             closing: AtomicBool::new(false),
+            _lock: lock,
+            guarded,
         }
     }
 
@@ -95,6 +122,10 @@ impl InFlight {
     /// mid-rename, not a real marker or record - and unlike a real marker, it names nothing
     /// `deaths` could ever match, so leaving it in place would only wedge disk space forever.
     pub(crate) fn recover(&self) {
+        if !self.guarded {
+            // Not this instance's markers to judge - see `guarded`'s own comment.
+            return;
+        }
         clear_tmp(&self.records);
         let Ok(entries) = fs::read_dir(&self.markers) else {
             return;
@@ -128,8 +159,10 @@ impl InFlight {
         }
     }
 
-    /// Marks `id` in flight, under `key`, until the returned guard drops. Writes nothing once
-    /// `disarm` has run, and - since a worker can be caught between reading `closing` and
+    /// Marks `id` in flight, under `key`, until the returned guard drops. Writes nothing when
+    /// `guarded` is false (a second instance on this cache root - see the field's own
+    /// comment) or once `disarm` has run, and - since a worker can be caught between reading
+    /// `closing` and
     /// finishing the write - checks again immediately after: if `disarm` set the flag while
     /// this write was in flight, the marker just written is removed again right away, rather
     /// than leaving it for `disarm`'s own sweep (already run by then) or a worker that, in
@@ -150,7 +183,7 @@ impl InFlight {
     /// thumbnail.
     pub(crate) fn begin(&self, id: i64, key: u64) -> Marker {
         let marker = self.marker_path(id);
-        if !self.closing.load(Ordering::SeqCst) {
+        if self.guarded && !self.closing.load(Ordering::SeqCst) {
             match write_atomic(&self.markers, &marker, &hex_key(key)) {
                 Ok(()) if self.closing.load(Ordering::SeqCst) => remove(&marker),
                 Ok(()) => {}
@@ -188,6 +221,11 @@ impl InFlight {
         // SeqCst to pair with `begin`'s SeqCst loads - see `begin`'s own comment for why
         // `Release` alone would not be enough here.
         self.closing.store(true, Ordering::SeqCst);
+        if !self.guarded {
+            // Nothing on disk under `markers` is this instance's to sweep - it could belong
+            // to whichever instance does hold the lock, still decoding.
+            return;
+        }
         let Ok(entries) = fs::read_dir(&self.markers) else {
             return;
         };
@@ -281,6 +319,40 @@ fn marker_key(path: &Path) -> String {
 
 fn id_of(path: &Path) -> Option<i64> {
     path.file_name()?.to_str()?.parse().ok()
+}
+
+/// Opens (creating if needed) and locks [`LOCK_FILE`] under `cache_root`, exclusively and
+/// without blocking. `None` means another instance already holds it - `TryLockError::WouldBlock`
+/// on all three platforms per `std::fs::File::try_lock`'s docs - or the attempt failed some
+/// other way (the cache root could not be created, or `TryLockError::Error`, an I/O error);
+/// either way the caller falls back to running unguarded rather than risk treating a live
+/// decode of another instance as this one's to judge.
+fn acquire_lock(cache_root: &Path) -> Option<File> {
+    if let Err(err) = fs::create_dir_all(cache_root) {
+        tracing::warn!(%err, ?cache_root, "could not create the thumbnail cache root");
+        return None;
+    }
+    let path = cache_root.join(LOCK_FILE);
+    let file = match File::options()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)
+    {
+        Ok(file) => file,
+        Err(err) => {
+            tracing::warn!(%err, ?path, "could not open the in-flight lock file");
+            return None;
+        }
+    };
+    match file.try_lock() {
+        Ok(()) => Some(file),
+        Err(std::fs::TryLockError::WouldBlock) => None,
+        Err(std::fs::TryLockError::Error(err)) => {
+            tracing::warn!(%err, ?path, "could not lock the in-flight lock file");
+            None
+        }
+    }
 }
 
 fn is_tmp(path: &Path) -> bool {
@@ -435,5 +507,41 @@ mod tests {
         // And once disarmed, a new `begin` writes nothing at all.
         std::mem::forget(inflight.begin(4, key));
         assert!(!dir.path().join("in-flight/4").exists());
+    }
+
+    /// Two instances on one cache root, simulating a double-clicked launcher: the second
+    /// must not turn the first's still-live marker into a death (which would also delete
+    /// it out from under the first's still-running decode), and the second's own `disarm`
+    /// must not sweep it either. Before the lock, both of those happened: `recover` and
+    /// `disarm` had no way to tell "another instance's marker" from "a previous run's".
+    #[test]
+    fn a_second_instance_does_not_touch_the_firsts_markers() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = InFlight::new(dir.path());
+        let key = 0xdead_beef_0000_0001_u64;
+        // Stands in for a decode still genuinely running in the first instance.
+        std::mem::forget(first.begin(1, key));
+        assert!(dir.path().join("in-flight/1").exists());
+
+        let second = InFlight::new(dir.path());
+        second.recover();
+        assert!(
+            dir.path().join("in-flight/1").exists(),
+            "a second instance must not turn the first's live marker into a death"
+        );
+        assert_eq!(
+            second.deaths(1, key),
+            0,
+            "and must not have recorded one either"
+        );
+
+        second.disarm();
+        assert!(
+            dir.path().join("in-flight/1").exists(),
+            "a second instance's disarm must not sweep the first's marker"
+        );
+
+        // The first instance's own view is unaffected throughout.
+        assert_eq!(first.deaths(1, key), 0, "not a death until recover runs");
     }
 }

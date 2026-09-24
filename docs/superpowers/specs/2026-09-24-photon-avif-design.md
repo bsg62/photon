@@ -200,6 +200,15 @@ by the crate's source being unmodified and published.
   rather than trust a worker to finish and clean up after itself. A full-size render of an
   edited photo and export can still abort photon this same way, but only when the user asks
   for one, so neither can loop.
+- **A guard failure is permanent** until the file changes or the photo is edited, the same as
+  any other decode failure - there is no automatic retry once a photo has been failed with
+  `CRASH_MESSAGE`. Retrying such failures after a photon upgrade (the crash might have been
+  fixed) is a possible follow-up, not something this guard does on its own.
+- **Editing a guard-failed photo re-arms it.** An edit gives the photo a new thumbnail key
+  (`Item::thumb_key()`), and the guard's death record is keyed by that: a fresh key starts a
+  fresh count, so a photo already failed for crashing photon twice can crash it up to two more
+  times before being failed again. This is user-initiated, though - the user asked for the
+  edit - so it cannot loop the way an unattended retry would.
 
 ## Testing
 
