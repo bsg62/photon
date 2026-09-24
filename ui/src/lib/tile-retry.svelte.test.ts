@@ -81,6 +81,44 @@ describe('createTileRetry', () => {
     expect(r.attempt).toBe(3);
   });
 
+  // The other tests above advance by `brokenRetryWait(n)`, which computes the same doubling
+  // formula `failed` itself uses - so if that formula regressed to a constant pace, this
+  // helper would regress to compute the same (wrong) constant, and every test that only
+  // checks state *after* advancing by "however long the schedule says" would still pass:
+  // advancing the fake clock by N also fires any timer scheduled for less than N, so a
+  // constant, shorter-than-expected wait still elapses within a longer computed advance.
+  // This test hardcodes the real schedule instead, and checks each boundary from both
+  // sides, so a wrong pace - faster or slower - is caught rather than silently absorbed.
+  //
+  // Margin matters here: `TILE_BROKEN_RETRY_ATTEMPTS` retries growing 5s/10s/20s/30s/30s
+  // sum to 95s, which is what the doc on `TILE_BROKEN_RETRY_ATTEMPTS` claims outlasts
+  // `SUSPECT_BACKOFF_MAX` (30s) with margin; a regression to a constant 5s pace only sums
+  // to 25s, under the 31s that bound needs to clear - exactly what this test exists to
+  // catch. Probe: replace `TILE_BROKEN_RETRY_START_MS * 2 ** retries` in `failed` with a
+  // constant `TILE_BROKEN_RETRY_START_MS` - RED, at the third step's "not yet" assertion
+  // (`attempt` has already bumped at 1ms before the real 20s mark, since the constant pace
+  // fired it at 5s instead).
+  it('grows the retry pace exactly 5s, 10s, 20s, 30s, 30s - never earlier, never later', () => {
+    const r = createTileRetry();
+    r.failed();
+    vi.advanceTimersByTime(TILE_RETRY_MS);
+    r.failed(); // enters retrying; the first background retry (5s) is now scheduled
+
+    const schedule = [5000, 10000, 20000, 30000, 30000];
+    expect(schedule.length).toBe(TILE_BROKEN_RETRY_ATTEMPTS);
+
+    for (const wait of schedule) {
+      const before = r.attempt;
+      vi.advanceTimersByTime(wait - 1);
+      expect(r.attempt).toBe(before); // not yet
+      vi.advanceTimersByTime(1);
+      expect(r.attempt).toBe(before + 1); // now
+      r.failed(); // that retry failed too - schedules the next one, or gives up on the last
+    }
+
+    expect(r.status).toBe('broken'); // the budget (TILE_BROKEN_RETRY_ATTEMPTS) is spent
+  });
+
   it('shows the photo if a later background retry succeeds', () => {
     const r = createTileRetry();
     r.failed();

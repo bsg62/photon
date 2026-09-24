@@ -98,12 +98,15 @@
   ondblclick={onopen}
   oncontextmenu={onmenu}
 >
-  <!-- Mounted for every status but never removed for 'retrying' or 'broken': a background
+  <!-- Mounted for every status, never removed for 'retrying' or 'broken': a background
        retry still needs a live <img> to actually reissue the request (`retry.attempt`
        changing `src`), and it stays invisible (opacity 0) behind the icon below until an
-       `onload` promotes it. Splitting this into an `{:else if}` keyed on status - as it was
-       before `TileRetry` existed - is what caused the icon to flicker off during every
-       retry: removing the <img> was never the point, only ever showing its result was. -->
+       `onload` promotes it. Before `createTileRetry` grew a slow background retry, a
+       broken tile never had a request in flight to protect, and this same markup swapped
+       the <img> out for the icon on 'broken'; once retries started firing behind that
+       icon, each one's timer setting `status` back to `'loading'` (the bug `TileRetry`'s
+       own doc on `failed` describes) was what this unmount-on-broken markup then showed -
+       a blank <img> - until the next `onerror` swapped the icon back in. -->
   {#if entry && src}
     <img
       {src}

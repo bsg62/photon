@@ -1395,7 +1395,8 @@ mod tests {
     /// decode - about 1s and one fresh `decode_lock` attempt per call, on top of the one from
     /// setup. With the fix, that same `push` leaves the suspect exactly where it was, so
     /// `wait_for` finds it neither queued nor in flight and returns at once - no worker is
-    /// ever woken for it, and `request` gives up on the very first round.
+    /// ever woken for it, so `request` runs both of its rounds without ever waiting, and
+    /// returns `ThumbUnavailable`.
     ///
     /// Probe: revert `State::push`'s delayed check (as in the queue-level test) and this goes
     /// RED - not on the loop's own elapsed-time assertions (`wait_for` still returns quickly

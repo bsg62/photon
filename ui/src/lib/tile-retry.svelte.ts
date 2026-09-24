@@ -36,9 +36,9 @@ export type TileStatus =
   /** Retries exhausted (`TILE_BROKEN_RETRY_ATTEMPTS`) or the request is genuinely done for
    *  (a 422 for a photo the crash-loop guard failed outright, a 404 for one that's gone) -
    *  `failed` cannot tell those apart from a suspect merely still backing off, so it
-   *  schedules the same retries for all of them; only reaching the bound (or a 'broken' tile
-   *  being reset some other way, such as `library.pageTick`) ever produces this terminal
-   *  state. */
+   *  schedules the same retries for all of them; only reaching the bound produces this
+   *  terminal state. A reset (`reset()`, called by `Tile.svelte`'s `pageTick` effect among
+   *  others) leaves it, but back at `'loading'`, not at another terminal state. */
   | 'broken';
 
 /** Owns one tile's load/retry state machine, independent of the DOM.
@@ -46,9 +46,10 @@ export type TileStatus =
  *  The component pairs this with an `<img>`: `failed()` and `loaded()` are its `onerror`
  *  and `onload`, `attempt` feeds a cache-busting query param so a retry actually reissues
  *  the request, and `status` decides what the tile shows. The `<img>` itself should stay
- *  mounted (invisible) for every status but `'loaded'`, so a background retry's fetch can
- *  actually run - `Tile.svelte` renders it whenever there is a `src`, regardless of
- *  `status`, and overlays the broken icon only while `status` calls for it. */
+ *  mounted for every status, only made visible once `status` is `'loaded'` - so a
+ *  background retry's fetch can actually run while it's hidden behind the broken icon.
+ *  `Tile.svelte` renders it whenever there is a `src`, regardless of `status`, and overlays
+ *  the broken icon only while `status` calls for it. */
 export function createTileRetry() {
   let status = $state<TileStatus>('loading');
   let attempt = $state(0);
