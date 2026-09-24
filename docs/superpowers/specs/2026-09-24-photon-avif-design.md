@@ -125,6 +125,18 @@ by the crate's source being unmodified and published.
   still, since the two differ only when the bitstream's `frame_size_override_flag` is set,
   which a still-image encoder does not write - after `clap`, with width and height swapped
   for `irot` 90/270. This is what `read_header` stores.
+- **A grid's rows, columns and output size come from the grid item's own ImageGrid payload**
+  (`AvifParser::primary_data()` on a grid item), parsed by photon's `grid_layout` - not from
+  `AvifParser::grid_config()`. In zenavif-parse 0.6.2, `grid_config()` only reads an
+  `ImageGrid` *property* box, which no real file carries: HEIF stores the ImageGrid as the
+  grid item's own data. Lacking that property, it falls back to dividing the primary item's
+  `ispe` by a tile's `ispe`, and only when that division is exact; otherwise it reports
+  `rows = tile_count, columns = 1, output 0x0`. A grid padded to the tile size - the ordinary
+  phone-camera shape, whose declared output is not an exact multiple of the tile size - hits
+  that fallback and would be decoded as a vertical stack of full, unpadded tiles instead of
+  a canvas trimmed to its real dimensions. `grid_layout` parses the payload directly instead:
+  `version` (u8, must be 0), `flags` (u8, bit 0 selects u32 vs u16 output fields),
+  `rows_minus_one`, `columns_minus_one` (u8 each), then `output_width`/`output_height`.
 - The conversion is plain Rust, not the `yuv` crate: one more dependency buys SIMD speed for a
   step that costs a fraction of the AV1 decode.
 
@@ -174,6 +186,7 @@ flat colours so that position and colour can be asserted, not just size:
 |---|---|
 | 8-bit 4:2:0, red left / blue right | the plain path, the matrix and range (colours within a tolerance) |
 | 10-bit 2×2 grid, four quadrant colours | tiles stitched in the right order, output trimmed, >8-bit reduced |
+| 2×2 grid padded to a non-tile-multiple output (129×129 from 65×65 tiles) | `grid_layout` reads the ImageGrid payload's declared output directly, so a phone-camera-shaped grid is trimmed to its real size instead of stacked as an unpadded N×1 column |
 | `irot` 90 (`avifenc --irot 1`) | rotation applied, dimensions swapped in `avif_dimensions` too |
 | `imir` | mirroring applied on the right axis |
 | alpha | RGBA out, alpha values kept |

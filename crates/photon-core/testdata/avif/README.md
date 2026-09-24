@@ -21,5 +21,6 @@ are the source colours, within ±12: lossy AV1 moves a flat blue to about 243 un
 | `top_bottom_422.avif` | 32×32 | red top, blue bottom; 4:2:2 | `-y 422` |
 | `clap.avif` | 32×32 shown | green, red, blue columns (16, 32, 16 px) cropped by `clap` to the red middle | `-y 444 --crop 16,0,32,32` |
 | `progressive.avif` | 64×32 | red_blue, layered for progressive rendering; must decode at full size, not the low-resolution base layer | `--progressive` |
+| `grid_padded.avif` | 129×129 | 2×2 grid of 65×65 tiles (130×130 physical canvas) trimmed to a 129×129 output that is not a multiple of the tile size - the normal phone-camera shape; four quadrants: red, lime / blue, white | `magick` a 129×129 four-quadrant PNG (`-fill "#RRGGBB"`, not a named colour: ImageMagick's `green` is X11 `(0,128,0)`, not `(0,255,0)`), then `avifenc -s 8 -q 90 -y 444 --grid 2x2 src.png grid_padded.avif` from the single source image, letting libavif split and pad it. `-y 420` was tried first (matching the other grid fixture) but this libavif (1.4.2) refuses an odd overall width/height under 4:2:0 subsampling ("shall be even ... MIAF 7.3.11.4.2"), so this fixture is 4:4:4 instead - orthogonal to what it proves (the ImageGrid payload's declared, non-tile-multiple output size). |
 
 The full script is in `docs/superpowers/plans/2026-09-24-photon-avif.md`, Task 1.

@@ -9,9 +9,7 @@ use std::borrow::Cow;
 
 use image::error::{DecodingError, ImageFormatHint};
 use image::{DynamicImage, ImageError, ImageFormat, ImageResult, RgbImage, imageops};
-use zenavif_parse::{
-    AV1Metadata, AvifParser, ColorInformation, DecodeConfig, GridConfig, Unstoppable,
-};
+use zenavif_parse::{AvifParser, ColorInformation, DecodeConfig, Unstoppable};
 
 /// The bound `image`'s default limits put on every other format's decode, which
 /// `decode::decode_oriented`'s memory reasoning relies on. AVIF is *not* bounded by
@@ -85,13 +83,11 @@ pub fn avif_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
     let bytes = with_avif_major(bytes);
     let parser = parse(&bytes).ok()?;
     let (w, h) = if parser.grid_tile_count() > 0 {
-        // A grid item's own payload is the grid description, not AV1: the size comes from
-        // the layout, or from a tile when the layout leaves it at zero.
-        let tile = AV1Metadata::parse_av1_bitstream(&parser.tile_data(0).ok()?).ok()?;
-        grid_size(
-            parser.grid_config()?,
-            (tile.max_frame_width.get(), tile.max_frame_height.get()),
-        )
+        // A grid item's own payload (`primary_data()` on a grid item) is the ImageGrid
+        // description, not AV1 - see `grid_layout`'s doc for why this is read directly rather
+        // than through zenavif-parse's `grid_config()`.
+        let layout = grid_layout(&parser.primary_data().ok()?)?;
+        (layout.output_width, layout.output_height)
     } else {
         // The AV1 sequence header's `max_frame_width`/`max_frame_height`, not the container's
         // `ispe` property: equivalent for a still, since the two differ only when the
@@ -148,12 +144,11 @@ fn colour(parser: &AvifParser<'_>, planes: &av1::Planes) -> (u16, bool) {
 }
 
 fn grid(parser: &AvifParser<'_>) -> ImageResult<RgbImage> {
-    let config = parser
-        .grid_config()
-        .ok_or_else(|| failed("grid without a layout"))?;
-    let columns = u32::from(config.columns);
+    let payload = parser.primary_data().map_err(parse_failed)?;
+    let layout = grid_layout(&payload).ok_or_else(|| failed("grid without a layout"))?;
+    let columns = layout.columns;
     let count = parser.grid_tile_count();
-    if count != usize::from(config.rows) * usize::from(config.columns) {
+    if count != (layout.rows * layout.columns) as usize {
         return Err(failed("grid tile count does not match its layout"));
     }
     let mut canvas: Option<RgbImage> = None;
@@ -167,7 +162,7 @@ fn grid(parser: &AvifParser<'_>) -> ImageResult<RgbImage> {
             Some(canvas) => canvas,
             None => {
                 tile_size = tile.dimensions();
-                let (w, h) = grid_size(config, tile_size);
+                let (w, h) = (layout.output_width, layout.output_height);
                 // Checked before the tile-extent check below (and before allocating): each
                 // AV1 frame is bounded by rav1d's own `frame_size_limit`
                 // (`av1::MAX_FRAME_PIXELS`), but the *canvas* `RgbImage::new` allocates here is
@@ -179,7 +174,7 @@ fn grid(parser: &AvifParser<'_>) -> ImageResult<RgbImage> {
                 if u64::from(w) * u64::from(h) * 4 > MAX_DECODE_BYTES {
                     return Err(failed("grid larger than the decode bound"));
                 }
-                if w > columns * tile_size.0 || h > u32::from(config.rows) * tile_size.1 {
+                if w > columns * tile_size.0 || h > layout.rows * tile_size.1 {
                     return Err(failed("grid larger than its tiles"));
                 }
                 canvas.insert(RgbImage::new(w, h))
@@ -200,16 +195,56 @@ fn grid(parser: &AvifParser<'_>) -> ImageResult<RgbImage> {
     canvas.ok_or_else(|| failed("grid with no tiles"))
 }
 
-/// A grid's output size, or the tiles' extent when the file leaves it at zero.
-fn grid_size(config: &GridConfig, (tile_w, tile_h): (u32, u32)) -> (u32, u32) {
-    if config.output_width == 0 || config.output_height == 0 {
-        (
-            u32::from(config.columns) * tile_w,
-            u32::from(config.rows) * tile_h,
-        )
-    } else {
-        (config.output_width, config.output_height)
+/// A grid item's layout, read from the payload `parser.primary_data()` returns for a grid
+/// item (its own item data, not a property box).
+struct GridLayout {
+    rows: u32,
+    columns: u32,
+    output_width: u32,
+    output_height: u32,
+}
+
+/// Parses a grid item's ImageGrid payload (ISO/IEC 23008-12 `ImageGrid`):
+/// `version` (u8, must be 0), `flags` (u8, bit 0 set means `output_width`/`output_height` are
+/// u32, else u16), `rows_minus_one` (u8), `columns_minus_one` (u8), then `output_width` and
+/// `output_height` big-endian.
+///
+/// photon reads this itself rather than using zenavif-parse's `AvifParser::grid_config()`:
+/// in zenavif-parse 0.6.2, `calculate_grid_config` only looks for an `ImageGrid` *property*
+/// box in `ipco`, which no real file carries - HEIF stores the ImageGrid as the grid item's
+/// own data, as read here, not a property of it. Lacking that box, zenavif-parse falls back to
+/// dividing the primary item's `ispe` by a tile's `ispe`, and only when that division is exact;
+/// otherwise it guesses `rows = tile_count, columns = 1, output 0x0` - so a grid padded to the
+/// tile size (the normal phone layout, whose declared output is not an exact multiple of the
+/// tile size) is silently decoded as a vertical stack of full, unpadded tiles instead of being
+/// trimmed to its real, padded-out dimensions.
+fn grid_layout(payload: &[u8]) -> Option<GridLayout> {
+    if payload.len() < 4 {
+        return None;
     }
+    let (version, flags, rows_minus_one, columns_minus_one) =
+        (payload[0], payload[1], payload[2], payload[3]);
+    if version != 0 {
+        return None;
+    }
+    let rest = &payload[4..];
+    let field_size = if flags & 1 != 0 { 4 } else { 2 };
+    if rest.len() < field_size * 2 {
+        return None;
+    }
+    let read = |bytes: &[u8]| -> u32 {
+        if field_size == 4 {
+            u32::from_be_bytes(bytes.try_into().unwrap())
+        } else {
+            u32::from(u16::from_be_bytes(bytes.try_into().unwrap()))
+        }
+    };
+    Some(GridLayout {
+        rows: u32::from(rows_minus_one) + 1,
+        columns: u32::from(columns_minus_one) + 1,
+        output_width: read(&rest[..field_size]),
+        output_height: read(&rest[field_size..field_size * 2]),
+    })
 }
 
 /// `clap`, then `irot`, then `imir`: the order MIAF gives them.
@@ -456,28 +491,24 @@ mod tests {
 
     /// A container-declared grid canvas larger than the decode bound must be refused before
     /// `grid()` allocates it, not after: an oversized `RgbImage::new` aborts the process
-    /// instead of returning an error. `grid_10bit.avif` has no explicit `ImageGrid` property
-    /// box (its `mdat` item data - `version/flags/rows-1/cols-1/output_width/output_height` -
-    /// is present but, per `calculate_grid_config` in zenavif-parse 0.6.2, is only ever read
-    /// through the ipco *property* path, never from the item's own data; that path is dead for
-    /// every fixture here, confirmed empirically against this crate version), so its
-    /// `GridConfig` instead comes from dividing the primary item's `ispe` by a tile's `ispe`.
-    /// This test patches both `ispe` boxes rather than the inert `mdat` payload: the primary
-    /// item's declared size becomes 16384x16384 and a tile's becomes 8192x8192, so
-    /// `output_width`/`output_height` become 16384x16384 (exceeding `MAX_DECODE_BYTES` at 4
-    /// bytes/pixel) while `rows`/`columns` stay 2x2, matching the file's real 4 physical AV1
-    /// tiles - so the earlier "tile count matches its layout" check still passes and the loop
-    /// reaches the canvas-size check. `grid()` checks that cap *before* the pre-existing
-    /// `w > columns * tile_w` guard, and this test relies on that order: the patched
-    /// declaration (16384) also exceeds `columns * tile_w` (2 * 64 = 128, from the *real*
-    /// decoded AV1 tile size, unaffected by the `ispe` patch), so without the new check this
-    /// fixture would still be refused, just by the older guard - with a different message.
+    /// instead of returning an error. `grid_10bit.avif`'s ImageGrid payload declares a 2x2
+    /// grid of 64x64 tiles with a 128x128 output (`[0, 0, 1, 1, 0, 128, 0, 128]`, found in the
+    /// item data `grid()` now reads directly via `grid_layout`). This test patches that
+    /// payload's `output_width`/`output_height` fields (bytes 4..8) from 128 to 65535 each,
+    /// leaving `rows_minus_one`/`columns_minus_one` untouched so the tile count (4, the file's
+    /// real physical AV1 tiles) still matches the declared 2x2 layout and the loop reaches the
+    /// canvas-size check. 65535 fits the payload's 16-bit field (flags stay 0), and
+    /// 65535 * 65535 * 4 bytes is about 17 GB, comfortably past `MAX_DECODE_BYTES` - no need to
+    /// widen the fields to 32-bit via the flags byte. `grid()` checks that cap *before* the
+    /// pre-existing `w > columns * tile_w` guard, and this test relies on that order: the
+    /// patched declaration (65535) also exceeds `columns * tile_w` (2 * 64 = 128, from the
+    /// *real* decoded AV1 tile size, unaffected by the payload patch), so without the new check
+    /// this fixture would still be refused, just by the older guard - with a different message.
     /// Asserting the message pins that the new check is what actually fired.
     #[test]
     fn refuses_a_grid_canvas_larger_than_the_decode_bound() {
         let bytes = avif_fixture("grid_10bit.avif");
-        let bytes = patch_ispe_dimensions(&bytes, (128, 128), (16384, 16384));
-        let bytes = patch_ispe_dimensions(&bytes, (64, 64), (8192, 8192));
+        let bytes = patch_grid_payload_output(&bytes, (128, 128), (65535, 65535));
         let err = decode_avif(&bytes).unwrap_err();
         match &err {
             ImageError::Decoding(e) => assert!(
@@ -488,12 +519,15 @@ mod tests {
         }
     }
 
-    /// Rewrites one `ispe` (ImageSpatialExtents) property box's width/height from `old` to
-    /// `new`, both as big-endian `u32`s right after the box's 4-byte version/flags. Asserts
-    /// exactly one box in `bytes` declares `old`, so the patch cannot silently hit the wrong
-    /// item or (if the fixture ever changes) do nothing.
-    fn patch_ispe_dimensions(bytes: &[u8], old: (u32, u32), new: (u32, u32)) -> Vec<u8> {
-        let mut needle = b"ispe\0\0\0\0".to_vec();
+    /// Rewrites a grid item's ImageGrid payload's `output_width`/`output_height` (16-bit,
+    /// big-endian, right after the 4-byte version/flags/rows-1/columns-1 header) from `old` to
+    /// `new`. Asserts exactly one payload in `bytes` declares `old` (as
+    /// `[0, 0, rows-1, columns-1, ...old]` is not searched for directly; callers pass the
+    /// `output_width`/`output_height` pair, found via the fixed `rows_minus_one = 1,
+    /// columns_minus_one = 1` header this crate's grid fixtures share), so the patch cannot
+    /// silently hit the wrong bytes or (if the fixture ever changes) do nothing.
+    fn patch_grid_payload_output(bytes: &[u8], old: (u16, u16), new: (u16, u16)) -> Vec<u8> {
+        let mut needle = vec![0u8, 0, 1, 1];
         needle.extend_from_slice(&old.0.to_be_bytes());
         needle.extend_from_slice(&old.1.to_be_bytes());
         let matches: Vec<_> = bytes
@@ -505,13 +539,72 @@ mod tests {
         assert_eq!(
             matches.len(),
             1,
-            "expected exactly one ispe box declaring {old:?}, found {}",
+            "expected exactly one ImageGrid payload declaring {old:?}, found {}",
             matches.len()
         );
         let mut out = bytes.to_vec();
-        let at = matches[0] + 8; // past "ispe" + version/flags
-        out[at..at + 4].copy_from_slice(&new.0.to_be_bytes());
-        out[at + 4..at + 8].copy_from_slice(&new.1.to_be_bytes());
+        let at = matches[0] + 4; // past version/flags/rows_minus_one/columns_minus_one
+        out[at..at + 2].copy_from_slice(&new.0.to_be_bytes());
+        out[at + 2..at + 4].copy_from_slice(&new.1.to_be_bytes());
         out
+    }
+
+    /// `avifenc --grid 2x2` on a 129x129 four-quadrant source pads each tile to 65x65 (130x130
+    /// physical canvas) and declares a 129x129 output in the ImageGrid payload - the normal
+    /// phone-camera shape, where the output is not an exact multiple of the tile size. Before
+    /// the fix, zenavif-parse's `ispe`-division fallback (129 not divisible by 65) gave up and
+    /// reported `rows = 4, columns = 1, output = 0x0`, which `grid()`/`avif_dimensions` decoded
+    /// and reported as a 65x260 vertical stack of the four unpadded tiles instead of a trimmed
+    /// 129x129 picture.
+    #[test]
+    fn stitches_a_padded_grid() {
+        check(
+            "grid_padded.avif",
+            (129, 129),
+            &[
+                ((32, 32), RED),
+                ((96, 32), GREEN),
+                ((32, 96), BLUE),
+                ((96, 96), WHITE),
+            ],
+        );
+    }
+
+    #[test]
+    fn grid_layout_reads_16_bit_fields() {
+        // version 0, flags 0 (16-bit), rows-1 = 1 (2 rows), columns-1 = 2 (3 columns),
+        // output_width = 300, output_height = 200.
+        let payload = [0, 0, 1, 2, 0x01, 0x2C, 0x00, 0xC8];
+        let layout = grid_layout(&payload).unwrap();
+        assert_eq!(layout.rows, 2);
+        assert_eq!(layout.columns, 3);
+        assert_eq!(layout.output_width, 300);
+        assert_eq!(layout.output_height, 200);
+    }
+
+    #[test]
+    fn grid_layout_reads_32_bit_fields_when_flags_bit_0_is_set() {
+        // flags bit 0 set: output_width/output_height are u32, not u16. Using a value that
+        // does not fit 16 bits (70000) proves the 32-bit path was actually taken, not just
+        // permitted: reading it as two u16s would give the wrong number instead of failing.
+        let payload = [0, 1, 0, 0, 0x00, 0x01, 0x11, 0x70, 0x00, 0x00, 0x00, 0x64];
+        let layout = grid_layout(&payload).unwrap();
+        assert_eq!(layout.rows, 1);
+        assert_eq!(layout.columns, 1);
+        assert_eq!(layout.output_width, 70_000);
+        assert_eq!(layout.output_height, 100);
+    }
+
+    #[test]
+    fn grid_layout_rejects_a_short_payload() {
+        assert!(grid_layout(&[]).is_none());
+        assert!(grid_layout(&[0, 0, 0]).is_none());
+        // Header present, but only 3 of the required 4 output bytes.
+        assert!(grid_layout(&[0, 0, 1, 1, 0, 128, 0]).is_none());
+    }
+
+    #[test]
+    fn grid_layout_rejects_an_unknown_version() {
+        assert!(grid_layout(&[1, 0, 1, 1, 0, 128, 0, 128]).is_none());
     }
 }
