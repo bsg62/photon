@@ -1,6 +1,63 @@
 use crate::Result;
-use image::{DynamicImage, ImageReader, imageops::FilterType};
+use crate::avif;
+use image::{DynamicImage, ImageFormat, ImageReader, imageops::FilterType};
+use std::fs::File;
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
+
+/// How much of a file is read to tell an AVIF from anything else: enough for any `ftyp`
+/// box a still-image writer produces, brands and all.
+const SNIFF_BYTES: u64 = 256;
+
+/// Whether the file under `reader` is an AVIF, leaving the reader where it was.
+fn sniff_avif<R: Read + Seek>(reader: &mut R) -> std::io::Result<bool> {
+    let start = reader.stream_position()?;
+    let mut head = Vec::with_capacity(SNIFF_BYTES as usize);
+    reader.by_ref().take(SNIFF_BYTES).read_to_end(&mut head)?;
+    reader.seek(SeekFrom::Start(start))?;
+    Ok(avif::is_avif(&head))
+}
+
+/// Decodes any photo photon indexes, recognising the format from its bytes. AVIF is photon's
+/// own decoder (`avif`), since `image` reads it only through a C library; everything else is
+/// `image`. Every full decode goes through here, so a new format is one branch in one place.
+pub fn decode_image(path: &Path) -> Result<DynamicImage> {
+    let mut reader = BufReader::new(File::open(path)?);
+    if sniff_avif(&mut reader)? {
+        let mut bytes = Vec::new();
+        reader.read_to_end(&mut bytes)?;
+        return Ok(avif::decode_avif(&bytes)?);
+    }
+    let mut image = ImageReader::new(reader);
+    // The extension is only the fallback when the bytes say nothing, as with
+    // `ImageReader::open`, which this replaces so the file is opened once.
+    if let Ok(format) = ImageFormat::from_path(path) {
+        image.set_format(format);
+    }
+    Ok(image.with_guessed_format()?.decode()?)
+}
+
+/// Stored dimensions from a reader at any position (it is rewound first), and whether the
+/// file is an AVIF, whose orientation lives in its container rather than its EXIF. A header
+/// read, not a decode, as `describe()` needs.
+pub(crate) fn dimensions<R: BufRead + Seek>(reader: &mut R) -> (Option<(u32, u32)>, bool) {
+    if reader.seek(SeekFrom::Start(0)).is_err() {
+        return (None, false);
+    }
+    if sniff_avif(reader).unwrap_or(false) {
+        let mut bytes = Vec::new();
+        let dims = reader
+            .read_to_end(&mut bytes)
+            .ok()
+            .and_then(|_| avif::avif_dimensions(&bytes));
+        return (dims, true);
+    }
+    let dims = ImageReader::new(reader)
+        .with_guessed_format()
+        .ok()
+        .and_then(|r| r.into_dimensions().ok());
+    (dims, false)
+}
 
 /// Rotates/flips `img` so an image with EXIF `orientation` displays upright.
 pub fn apply_orientation(img: DynamicImage, orientation: u8) -> DynamicImage {
@@ -24,7 +81,7 @@ pub fn apply_orientation(img: DynamicImage, orientation: u8) -> DynamicImage {
 /// is a per-decode bound, not a total: what keeps the sum of the workers' decode buffers
 /// bounded is `MAX_WORKERS`, so the two belong together.
 pub fn decode_oriented(path: &Path, orientation: u8, max_edge: u32) -> Result<DynamicImage> {
-    let img = ImageReader::open(path)?.with_guessed_format()?.decode()?;
+    let img = decode_image(path)?;
     let img = if img.width().max(img.height()) > max_edge {
         img.resize(max_edge, max_edge, FilterType::Triangle)
     } else {
@@ -37,8 +94,10 @@ pub fn decode_oriented(path: &Path, orientation: u8, max_edge: u32) -> Result<Dy
 mod tests {
     use super::*;
     use crate::Error;
-    use crate::testutil::{bmp_bytes, jpeg_bytes, tiff_bytes, write_file};
+    use crate::testutil::{avif_fixture, bmp_bytes, jpeg_bytes, tiff_bytes, write_file};
     use image::{Rgba, RgbaImage};
+    use std::fs::File;
+    use std::io::BufReader;
 
     const RED: Rgba<u8> = Rgba([255, 0, 0, 255]);
     const BLUE: Rgba<u8> = Rgba([0, 0, 255, 255]);
@@ -113,5 +172,43 @@ mod tests {
             let img = decode_oriented(&path, 1, 100).expect(name);
             assert_eq!((img.width(), img.height()), (40, 20), "{name}");
         }
+    }
+
+    /// AVIF goes through photon's own decoder, whichever function the caller used.
+    #[test]
+    fn decodes_avif() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_file(dir.path(), "a.avif", &avif_fixture("irot90.avif"));
+        // Upright already: the container's rotation is part of the decode.
+        let img = decode_oriented(&path, 1, 100).unwrap();
+        assert_eq!((img.width(), img.height()), (32, 64));
+        let (dims, avif) = dimensions(&mut BufReader::new(File::open(&path).unwrap()));
+        assert_eq!((dims, avif), (Some((32, 64)), true));
+    }
+
+    /// Routing is by content, as for every other format: a JPEG named `.avif` is a JPEG,
+    /// and an AVIF named `.jpg` is an AVIF.
+    #[test]
+    fn routes_by_content_not_extension() {
+        let dir = tempfile::tempdir().unwrap();
+        let jpeg = write_file(dir.path(), "really-a-jpeg.avif", &jpeg_bytes(40, 20));
+        assert_eq!(decode_image(&jpeg).unwrap().width(), 40);
+        let (dims, avif) = dimensions(&mut BufReader::new(File::open(&jpeg).unwrap()));
+        assert_eq!((dims, avif), (Some((40, 20)), false));
+        let avif = write_file(dir.path(), "really-an-avif.jpg", &avif_fixture("mono.avif"));
+        assert_eq!(decode_image(&avif).unwrap().width(), 64);
+    }
+
+    /// A broken AVIF is a source defect (the failed-thumbnail placeholder), not an I/O error
+    /// the thumbnail service would retry.
+    #[test]
+    fn decode_reports_a_corrupt_avif_as_an_image_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let bytes = avif_fixture("red_blue_709_limited.avif");
+        let path = write_file(dir.path(), "cut.avif", &bytes[..bytes.len() / 2]);
+        assert!(matches!(
+            decode_oriented(&path, 1, 100),
+            Err(Error::Image(_))
+        ));
     }
 }

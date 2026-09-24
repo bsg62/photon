@@ -15,7 +15,7 @@ impl MediaKind {
         match ext.as_str() {
             // A multi-page TIFF shows its first page: photon has no notion of one file
             // holding several photos.
-            "jpg" | "jpeg" | "jpe" | "png" | "gif" | "webp" | "tif" | "tiff" | "bmp" => {
+            "jpg" | "jpeg" | "jpe" | "png" | "gif" | "webp" | "tif" | "tiff" | "bmp" | "avif" => {
                 Some(Self::Image)
             }
             _ => None,
@@ -79,6 +79,7 @@ mod tests {
     fn recognises_common_image_extensions_case_insensitively() {
         for name in [
             "a.jpg", "a.JPEG", "a.jpe", "a.png", "a.gif", "a.WebP", "a.tif", "a.TIFF", "a.bmp",
+            "a.avif", "a.AVIF",
         ] {
             assert_eq!(
                 MediaKind::from_path(Path::new(name)),

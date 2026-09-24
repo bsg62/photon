@@ -876,7 +876,7 @@ fn mtime_ms(md: &Metadata) -> i64 {
 mod tests {
     use super::*;
     use crate::testutil::{
-        ExifSpec, bmp_bytes, jpeg_bytes, jpeg_with_exif, jpeg_with_exif_spec,
+        ExifSpec, avif_fixture, bmp_bytes, jpeg_bytes, jpeg_with_exif, jpeg_with_exif_spec,
         jpeg_with_iptc_keywords, png_bytes, temp_library, tiff_bytes, write_file,
     };
     use std::fs;
@@ -1915,5 +1915,28 @@ mod tests {
         };
         assert_eq!(shape(&tif), (40, 10));
         assert_eq!(shape(&bmp), (12, 24));
+    }
+
+    /// An AVIF is indexed beside a JPEG with its displayed size: the grid photo at its
+    /// stitched size, the rotated one turned.
+    #[test]
+    fn indexes_avif_files() {
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        let grid = write_file(&root, "grid.avif", &avif_fixture("grid_10bit.avif"));
+        let turned = write_file(&root, "turned.avif", &avif_fixture("irot90.avif"));
+        write_file(&root, "plain.jpg", &jpeg_bytes(8, 8));
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
+
+        let report = scan(&lib, &watched, 1);
+        assert_eq!(report.added, 3);
+
+        let known = lib.known_items(watched.id).unwrap();
+        let shape = |path: &Path| {
+            let item = lib.item(known[&key(path)].id).unwrap().unwrap();
+            (item.width, item.height, item.orientation)
+        };
+        assert_eq!(shape(&grid), (128, 128, 1));
+        assert_eq!(shape(&turned), (32, 64, 1));
     }
 }

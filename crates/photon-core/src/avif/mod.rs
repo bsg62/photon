@@ -20,11 +20,6 @@ const MAX_DECODE_BYTES: u64 = 512 * 1024 * 1024;
 /// Whether `head`, the first bytes of a file, is an AVIF: an `ftyp` box whose major *or
 /// compatible* brands include `avif` (a still) or `avis` (a sequence). The compatible list
 /// matters: a file whose major brand is the generic `mif1` is still an AVIF.
-///
-/// Not yet called outside this module's own tests - Task 4 wires it into the format
-/// sniffer that dispatches to `decode_avif`. A narrow allow, not the module-level one Task 1
-/// left as a placeholder, because that call site does not exist yet.
-#[allow(dead_code)]
 pub(crate) fn is_avif(head: &[u8]) -> bool {
     brands(head).is_some_and(|(major, compatible)| {
         is_avif_brand(&major) || compatible.iter().any(is_avif_brand)
