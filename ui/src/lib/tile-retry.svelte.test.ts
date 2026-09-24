@@ -95,9 +95,10 @@ describe('createTileRetry', () => {
   // `SUSPECT_BACKOFF_MAX` (30s) with margin; a regression to a constant 5s pace only sums
   // to 25s, under the 31s that bound needs to clear - exactly what this test exists to
   // catch. Probe: replace `TILE_BROKEN_RETRY_START_MS * 2 ** retries` in `failed` with a
-  // constant `TILE_BROKEN_RETRY_START_MS` - RED, at the third step's "not yet" assertion
-  // (`attempt` has already bumped at 1ms before the real 20s mark, since the constant pace
-  // fired it at 5s instead).
+  // constant `TILE_BROKEN_RETRY_START_MS` - RED, at the second step's "not yet" assertion
+  // (the `schedule[1] = 10000` boundary): a constant 5000ms relative delay and the real
+  // 10000ms one first diverge there, so `attempt` has already bumped 1ms before that mark,
+  // and `expect` throws before the third step is ever reached.
   it('grows the retry pace exactly 5s, 10s, 20s, 30s, 30s - never earlier, never later', () => {
     const r = createTileRetry();
     r.failed();
