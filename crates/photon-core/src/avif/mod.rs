@@ -5,3 +5,4 @@
 #![allow(dead_code)] // Until decode_avif (Task 3) uses the wrapper.
 
 mod av1;
+mod yuv;
