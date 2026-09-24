@@ -104,6 +104,11 @@ impl State {
         {
             entry.2 = entry.2.max(priority);
         }
+        // Likewise a push that arrived while the job was running, which `done` queues at
+        // whatever this holds.
+        if let Some(held) = self.deferred.get_mut(&id) {
+            *held = (*held).max(priority);
+        }
     }
 
     fn done(&mut self, id: i64) {
@@ -631,6 +636,43 @@ mod tests {
 
         q.set_visible(&[2]);
         assert_eq!(q.delayed_priority(1), Some(Priority::Background));
+    }
+
+    /// A push that arrives while its id is in flight waits in `deferred` and is queued at
+    /// that priority once the job finishes. Scrolling away has to lower it there too, or the
+    /// photo is queued `Visible` ahead of the tiles actually on screen.
+    #[test]
+    fn scrolling_away_demotes_a_push_waiting_on_its_running_job() {
+        let q = ThumbQueue::new();
+        q.push(1, Priority::Background);
+        let id = q.pop_blocking().unwrap();
+        q.push(9, Priority::Background);
+        q.set_visible(&[1]);
+        q.set_visible(&[2]);
+        q.done(id);
+        assert_eq!(drain(&q), [2, 9, 1]);
+    }
+
+    /// The waiter floor holds there too: an id someone is waiting on is not dropped behind the
+    /// whole backlog just because its push arrived while it was running.
+    #[test]
+    fn a_waited_on_push_waiting_on_its_running_job_is_demoted_no_further_than_neighbour() {
+        let q = Arc::new(ThumbQueue::new());
+        q.push(1, Priority::Background);
+        let id = q.pop_blocking().unwrap();
+        q.push(9, Priority::Background);
+        q.set_visible(&[1]);
+        let waiter = {
+            let q = q.clone();
+            std::thread::spawn(move || q.wait_for(1, Instant::now() + Duration::from_secs(5)))
+        };
+        while !q.has_waiter(1) {
+            std::thread::yield_now();
+        }
+        q.set_visible(&[2]);
+        q.done(id);
+        assert_eq!(drain(&q), [2, 1, 9]);
+        assert!(waiter.join().unwrap());
     }
 
     /// `forget` clears a pending backoff outright - used once an id's fate no longer depends
