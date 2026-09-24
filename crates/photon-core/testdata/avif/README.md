@@ -20,5 +20,6 @@ are the source colours, within ±12: lossy AV1 moves a flat blue to about 243 un
 | `odd_420.avif` | 33×17 | red; odd size, so the 4:2:0 chroma plane rounds up | `-y 420` |
 | `top_bottom_422.avif` | 32×32 | red top, blue bottom; 4:2:2 | `-y 422` |
 | `clap.avif` | 32×32 shown | green, red, blue columns (16, 32, 16 px) cropped by `clap` to the red middle | `-y 444 --crop 16,0,32,32` |
+| `progressive.avif` | 64×32 | red_blue, layered for progressive rendering; must decode at full size, not the low-resolution base layer | `--progressive` |
 
 The full script is in `docs/superpowers/plans/2026-09-24-photon-avif.md`, Task 1.

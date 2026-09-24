@@ -84,10 +84,17 @@ pub fn apply_orientation(img: DynamicImage, orientation: u8) -> DynamicImage {
 /// 512 MiB - roughly a 134 MP photo at RGBA8, so well clear of any camera photon will meet,
 /// while a header claiming absurd dimensions is refused before anything is allocated. That
 /// is a per-decode bound, not a total: what keeps the sum of the workers' decode buffers
-/// bounded is `MAX_WORKERS`, so the two belong together. An AVIF is bounded the same way by
-/// `avif::DecodeConfig`'s own 512 MiB limit instead, and the file is read to the end first
-/// (the container has to be parsed before any pixel is decoded), so the bound there is on
-/// the decode's allocations, not on how much of the file is read.
+/// bounded is `MAX_WORKERS`, so the two belong together - and AVIF's own peak is roughly 3x a
+/// JPEG's for the same pixel count (a rav1d frame, then its planes widened to 16-bit samples,
+/// then the RGB8 output), which makes that per-worker bound matter more, not less, for AVIF.
+/// An AVIF is bounded differently: `zenavif_parse::DecodeConfig`'s `peak_memory_limit` and
+/// `total_megapixels_limit` are inert on the lazy parse path photon uses (see
+/// `avif::MAX_DECODE_BYTES`'s doc), so what actually bounds a decode there is rav1d's own
+/// per-frame pixel cap (`avif::av1::MAX_FRAME_PIXELS`) plus, for a grid, `avif::grid`'s own
+/// check of the declared canvas against `avif::MAX_DECODE_BYTES` before allocating it. The
+/// file is still read to the end first (the container has to be parsed before any pixel is
+/// decoded), so unlike every other format here, nothing bounds how much of an AVIF file is
+/// read into memory before decoding starts.
 pub fn decode_oriented(path: &Path, orientation: u8, max_edge: u32) -> Result<DynamicImage> {
     let img = decode_image(path)?;
     let img = if img.width().max(img.height()) > max_edge {

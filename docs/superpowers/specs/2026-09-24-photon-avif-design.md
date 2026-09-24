@@ -94,9 +94,15 @@ by the crate's source being unmodified and published.
   (Y, U, V; 8-bit or 16-bit samples), bit depth, chroma layout, and the sequence header's
   colour description and range.
 - **`decode_avif(bytes) -> Result<DynamicImage>`**, in order:
-  1. Parse with `DecodeConfig` limits: peak memory 512 MiB (the same bound `image`'s default
-     limits give every other decode, and `decode_oriented`'s comment relies on) and a tile
-     cap.
+  1. Parse with `DecodeConfig::default()`, whose tile and animation-frame caps apply on this
+     (lazy) parse path. Its `peak_memory_limit`/`total_megapixels_limit` do **not** apply here
+     - in zenavif-parse 0.6.2 those two are enforced only by the eager, deprecated path
+       (behind its `eager` feature, which photon does not enable) - so they are not set. What
+       actually bounds an AVIF decode is rav1d's own per-frame pixel cap
+       (`av1::MAX_FRAME_PIXELS`, the same bound `image`'s default limits give every other
+       decode) plus, for a grid, a check in `grid()` of the declared canvas against that same
+       bound before allocating it - a container-declared grid output size is otherwise
+       unbounded and unchecked before the allocation that uses it.
   2. Decode the primary item, or every grid tile.
   3. Convert YUV to RGB. Matrix coefficients come from the container's `colr` (nclx) box when
      present, otherwise from the AV1 sequence header, and default to BT.601 when both are
@@ -114,8 +120,11 @@ by the crate's source being unmodified and published.
   as the same `Error::Image` every other broken photo does, and a bad AVIF gets the
   failed-thumbnail placeholder without stalling its folder.
 - **`avif_dimensions(bytes) -> Option<(u32, u32)>`** answers from the container alone, with
-  no AV1 decode: the grid's output size or the primary item's `ispe`, after `clap`, with
-  width and height swapped for `irot` 90/270. This is what `read_header` stores.
+  no AV1 decode: the grid's output size or, for a single image, the AV1 sequence header's
+  `max_frame_width`/`max_frame_height` (not the `ispe` property) - equivalent to it for a
+  still, since the two differ only when the bitstream's `frame_size_override_flag` is set,
+  which a still-image encoder does not write - after `clap`, with width and height swapped
+  for `irot` 90/270. This is what `read_header` stores.
 - The conversion is plain Rust, not the `yuv` crate: one more dependency buys SIMD speed for a
   step that costs a fraction of the AV1 decode.
 

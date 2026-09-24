@@ -14,7 +14,15 @@ use zenavif_parse::{
 };
 
 /// The bound `image`'s default limits put on every other format's decode, which
-/// `decode::decode_oriented`'s memory reasoning relies on.
+/// `decode::decode_oriented`'s memory reasoning relies on. AVIF is *not* bounded by
+/// `zenavif_parse::DecodeConfig` at this size: in zenavif-parse 0.6.2 `peak_memory_limit` and
+/// `total_megapixels_limit` are enforced only by the eager, deprecated
+/// `read_avif`/`AvifData` path (behind the crate's `eager` feature, which photon does not
+/// enable); the lazy `AvifParser` photon uses applies only `max_grid_tiles` and the animation
+/// frame cap. This constant is reused here as the cap `grid()` checks a declared grid canvas
+/// against before allocating it - the actual bound on an AVIF decode is that check plus
+/// rav1d's own per-frame pixel limit (`av1::MAX_FRAME_PIXELS`), not anything zenavif-parse
+/// enforces.
 const MAX_DECODE_BYTES: u64 = 512 * 1024 * 1024;
 
 /// Whether `head`, the first bytes of a file, is an AVIF: an `ftyp` box whose major *or
@@ -85,6 +93,9 @@ pub fn avif_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
             (tile.max_frame_width.get(), tile.max_frame_height.get()),
         )
     } else {
+        // The AV1 sequence header's `max_frame_width`/`max_frame_height`, not the container's
+        // `ispe` property: equivalent for a still, since the two differ only when the
+        // bitstream sets `frame_size_override_flag`, which a still-image encoder does not.
         let meta = parser.primary_metadata().ok()?;
         (meta.max_frame_width.get(), meta.max_frame_height.get())
     };
@@ -114,9 +125,12 @@ fn with_avif_major(bytes: &[u8]) -> Cow<'_, [u8]> {
 }
 
 fn parse(bytes: &[u8]) -> ImageResult<AvifParser<'_>> {
-    let config = DecodeConfig::default()
-        .with_peak_memory_limit(MAX_DECODE_BYTES)
-        .with_total_megapixels_limit((MAX_DECODE_BYTES / 4 / 1_000_000) as u32);
+    // `DecodeConfig::default()`'s tile and animation-frame caps do apply on this (lazy) parse
+    // path. `with_peak_memory_limit`/`with_total_megapixels_limit` used to be set here too, but
+    // in zenavif-parse 0.6.2 those two are enforced only by the eager path this crate does not
+    // use (see `MAX_DECODE_BYTES`'s doc), so they were dead weight that read as a real bound;
+    // removed rather than kept with a comment, so there is nothing here to mistake for one.
+    let config = DecodeConfig::default();
     AvifParser::from_bytes_with_config(bytes, &config, &Unstoppable).map_err(parse_failed)
 }
 
@@ -154,6 +168,17 @@ fn grid(parser: &AvifParser<'_>) -> ImageResult<RgbImage> {
             None => {
                 tile_size = tile.dimensions();
                 let (w, h) = grid_size(config, tile_size);
+                // Checked before the tile-extent check below (and before allocating): each
+                // AV1 frame is bounded by rav1d's own `frame_size_limit`
+                // (`av1::MAX_FRAME_PIXELS`), but the *canvas* `RgbImage::new` allocates here is
+                // sized from the container-declared `output_width`/`output_height`, which
+                // nothing else bounds - zenavif-parse's `peak_memory_limit` and
+                // `total_megapixels_limit` are inert on this parse path (see
+                // `MAX_DECODE_BYTES`'s doc). An oversized declaration must be refused here,
+                // before the `RgbImage::new` below, or allocation failure aborts the process.
+                if u64::from(w) * u64::from(h) * 4 > MAX_DECODE_BYTES {
+                    return Err(failed("grid larger than the decode bound"));
+                }
                 if w > columns * tile_size.0 || h > u32::from(config.rows) * tile_size.1 {
                     return Err(failed("grid larger than its tiles"));
                 }
@@ -295,6 +320,18 @@ mod tests {
         );
     }
 
+    /// A progressive (layered) AVIF must decode at its full resolution, not its low-resolution
+    /// base layer: `dav1d_default_settings`'s `all_layers = 1` returns only the first spatial
+    /// layer, which is half the size on each axis for this fixture.
+    #[test]
+    fn decodes_a_progressive_avif_at_full_size() {
+        check(
+            "progressive.avif",
+            (64, 32),
+            &[((16, 16), RED), ((48, 16), BLUE)],
+        );
+    }
+
     #[test]
     fn decodes_full_range_444() {
         check(
@@ -415,5 +452,66 @@ mod tests {
             );
             assert_eq!(avif_dimensions(&bytes[..cut]), None, "cut at {cut}");
         }
+    }
+
+    /// A container-declared grid canvas larger than the decode bound must be refused before
+    /// `grid()` allocates it, not after: an oversized `RgbImage::new` aborts the process
+    /// instead of returning an error. `grid_10bit.avif` has no explicit `ImageGrid` property
+    /// box (its `mdat` item data - `version/flags/rows-1/cols-1/output_width/output_height` -
+    /// is present but, per `calculate_grid_config` in zenavif-parse 0.6.2, is only ever read
+    /// through the ipco *property* path, never from the item's own data; that path is dead for
+    /// every fixture here, confirmed empirically against this crate version), so its
+    /// `GridConfig` instead comes from dividing the primary item's `ispe` by a tile's `ispe`.
+    /// This test patches both `ispe` boxes rather than the inert `mdat` payload: the primary
+    /// item's declared size becomes 16384x16384 and a tile's becomes 8192x8192, so
+    /// `output_width`/`output_height` become 16384x16384 (exceeding `MAX_DECODE_BYTES` at 4
+    /// bytes/pixel) while `rows`/`columns` stay 2x2, matching the file's real 4 physical AV1
+    /// tiles - so the earlier "tile count matches its layout" check still passes and the loop
+    /// reaches the canvas-size check. `grid()` checks that cap *before* the pre-existing
+    /// `w > columns * tile_w` guard, and this test relies on that order: the patched
+    /// declaration (16384) also exceeds `columns * tile_w` (2 * 64 = 128, from the *real*
+    /// decoded AV1 tile size, unaffected by the `ispe` patch), so without the new check this
+    /// fixture would still be refused, just by the older guard - with a different message.
+    /// Asserting the message pins that the new check is what actually fired.
+    #[test]
+    fn refuses_a_grid_canvas_larger_than_the_decode_bound() {
+        let bytes = avif_fixture("grid_10bit.avif");
+        let bytes = patch_ispe_dimensions(&bytes, (128, 128), (16384, 16384));
+        let bytes = patch_ispe_dimensions(&bytes, (64, 64), (8192, 8192));
+        let err = decode_avif(&bytes).unwrap_err();
+        match &err {
+            ImageError::Decoding(e) => assert!(
+                e.to_string().contains("grid larger than the decode bound"),
+                "wrong guard fired: {err}"
+            ),
+            other => panic!("expected a Decoding error, got {other:?}"),
+        }
+    }
+
+    /// Rewrites one `ispe` (ImageSpatialExtents) property box's width/height from `old` to
+    /// `new`, both as big-endian `u32`s right after the box's 4-byte version/flags. Asserts
+    /// exactly one box in `bytes` declares `old`, so the patch cannot silently hit the wrong
+    /// item or (if the fixture ever changes) do nothing.
+    fn patch_ispe_dimensions(bytes: &[u8], old: (u32, u32), new: (u32, u32)) -> Vec<u8> {
+        let mut needle = b"ispe\0\0\0\0".to_vec();
+        needle.extend_from_slice(&old.0.to_be_bytes());
+        needle.extend_from_slice(&old.1.to_be_bytes());
+        let matches: Vec<_> = bytes
+            .windows(needle.len())
+            .enumerate()
+            .filter(|(_, w)| *w == needle.as_slice())
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(
+            matches.len(),
+            1,
+            "expected exactly one ispe box declaring {old:?}, found {}",
+            matches.len()
+        );
+        let mut out = bytes.to_vec();
+        let at = matches[0] + 8; // past "ispe" + version/flags
+        out[at..at + 4].copy_from_slice(&new.0.to_be_bytes());
+        out[at + 4..at + 8].copy_from_slice(&new.1.to_be_bytes());
+        out
     }
 }

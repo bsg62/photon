@@ -238,7 +238,7 @@ Verify a download against the `SHA256SUMS` file attached to the release:
 ## Development
 
 Prerequisites:
-- Rust (stable, 1.88 or newer).
+- Rust (stable, 1.93 or newer).
 - Node.js 24 or newer (an LTS release; the UI toolchain — Vite 8, Vitest 5 and
   `@sveltejs/vite-plugin-svelte` — requires Node 22.12+, 24+ or 26+, so a plain "Node 22" install
   can be too old depending on its exact patch version. Node 24 is the current LTS line and is

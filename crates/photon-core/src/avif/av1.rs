@@ -114,6 +114,11 @@ pub(crate) fn decode(obu: &[u8]) -> Result<Planes, String> {
     settings.n_threads = 1;
     settings.max_frame_delay = 1;
     settings.frame_size_limit = MAX_FRAME_PIXELS;
+    // dav1d's default (1) returns only the operating point's first spatial layer: a
+    // `--progressive`/`--layered` AVIF then decodes as its low-resolution base layer, half
+    // the size the container reports. 0 is what libavif itself passes, and gets every layer
+    // decoded and merged so `get_picture` returns the operating point's highest layer.
+    settings.all_layers = 0;
 
     let mut context = Context(None);
     // SAFETY: both pointers are to live locals; on success the new context is owned by
