@@ -177,6 +177,13 @@ fn grid(parser: &AvifParser<'_>) -> ImageResult<RgbImage> {
                 if w > columns * tile_size.0 || h > layout.rows * tile_size.1 {
                     return Err(failed("grid larger than its tiles"));
                 }
+                // libavif also refuses a grid whose last row or column of tiles does not
+                // overlap the declared canvas at all: a tile that would be clipped entirely is
+                // a malformed file (the browsers' AVIF decoders refuse it too), not a valid
+                // crop down to a single corner tile.
+                if (columns - 1) * tile_size.0 >= w || (layout.rows - 1) * tile_size.1 >= h {
+                    return Err(failed("grid tiles do not cover the declared output"));
+                }
                 canvas.insert(RgbImage::new(w, h))
             }
         };
@@ -239,11 +246,21 @@ fn grid_layout(payload: &[u8]) -> Option<GridLayout> {
             u32::from(u16::from_be_bytes(bytes.try_into().unwrap()))
         }
     };
+    let (output_width, output_height) = (
+        read(&rest[..field_size]),
+        read(&rest[field_size..field_size * 2]),
+    );
+    // libavif refuses a grid declaring a zero-pixel output ("Grid box contains illegal
+    // dimensions"); without this, `decode_avif` would return an empty 0x0 image as `Ok` and
+    // `avif_dimensions` would report `Some((0, 0))`.
+    if output_width == 0 || output_height == 0 {
+        return None;
+    }
     Some(GridLayout {
         rows: u32::from(rows_minus_one) + 1,
         columns: u32::from(columns_minus_one) + 1,
-        output_width: read(&rest[..field_size]),
-        output_height: read(&rest[field_size..field_size * 2]),
+        output_width,
+        output_height,
     })
 }
 
@@ -521,11 +538,12 @@ mod tests {
 
     /// Rewrites a grid item's ImageGrid payload's `output_width`/`output_height` (16-bit,
     /// big-endian, right after the 4-byte version/flags/rows-1/columns-1 header) from `old` to
-    /// `new`. Asserts exactly one payload in `bytes` declares `old` (as
-    /// `[0, 0, rows-1, columns-1, ...old]` is not searched for directly; callers pass the
-    /// `output_width`/`output_height` pair, found via the fixed `rows_minus_one = 1,
-    /// columns_minus_one = 1` header this crate's grid fixtures share), so the patch cannot
-    /// silently hit the wrong bytes or (if the fixture ever changes) do nothing.
+    /// `new`. The needle searched for directly is `[0, 0, 1, 1, ...old]`: version 0, flags 0
+    /// (16-bit fields), and `rows_minus_one`/`columns_minus_one` hardcoded to 1 - the 2x2 grid
+    /// this crate's grid fixtures share, so callers only need to pass the
+    /// `output_width`/`output_height` pair. Asserts exactly one payload in `bytes` matches that
+    /// needle, so the patch cannot silently hit the wrong bytes or (if a fixture's layout ever
+    /// changes) do nothing.
     fn patch_grid_payload_output(bytes: &[u8], old: (u16, u16), new: (u16, u16)) -> Vec<u8> {
         let mut needle = vec![0u8, 0, 1, 1];
         needle.extend_from_slice(&old.0.to_be_bytes());
@@ -606,5 +624,39 @@ mod tests {
     #[test]
     fn grid_layout_rejects_an_unknown_version() {
         assert!(grid_layout(&[1, 0, 1, 1, 0, 128, 0, 128]).is_none());
+    }
+
+    /// libavif refuses a grid whose declared output is zero wide ("Grid box contains illegal
+    /// dimensions"); photon must not decode a 0x0 image and call it Ok.
+    #[test]
+    fn grid_layout_rejects_a_zero_output_width() {
+        assert!(grid_layout(&[0, 0, 1, 1, 0, 0, 0, 128]).is_none());
+    }
+
+    #[test]
+    fn grid_layout_rejects_a_zero_output_height() {
+        assert!(grid_layout(&[0, 0, 1, 1, 0, 128, 0, 0]).is_none());
+    }
+
+    /// libavif refuses a grid whose last row or column of tiles does not overlap the declared
+    /// canvas: `(columns - 1) * tile_w < w` and `(rows - 1) * tile_h < h` must both hold.
+    /// `grid_padded.avif` is a 2x2 grid of 65x65 tiles declaring a 129x129 output
+    /// (`[0, 0, 1, 1, 0, 129, 0, 129]`); patching the declared output down to 10x10 leaves a
+    /// single 65x65 tile's top-left 10x10 corner "covering" the whole canvas, with column 1 and
+    /// row 1 entirely outside it - the shape libavif calls illegal, which photon silently
+    /// decoded as a 10x10 crop of the first tile.
+    #[test]
+    fn refuses_a_grid_whose_last_tile_does_not_cover_the_canvas() {
+        let bytes = avif_fixture("grid_padded.avif");
+        let bytes = patch_grid_payload_output(&bytes, (129, 129), (10, 10));
+        let err = decode_avif(&bytes).unwrap_err();
+        match &err {
+            ImageError::Decoding(e) => assert!(
+                e.to_string()
+                    .contains("grid tiles do not cover the declared output"),
+                "wrong guard fired: {err}"
+            ),
+            other => panic!("expected a Decoding error, got {other:?}"),
+        }
     }
 }
