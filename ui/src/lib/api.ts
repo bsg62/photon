@@ -87,6 +87,8 @@ export interface ViewerItem {
   iso: number | null;
   /** Keywords from the file's XMP and IPTC, in file order. */
   tags: string[];
+  /** The caption the photo carries (XMP or IPTC), shown under it. */
+  caption: string | null;
   faces: ItemFace[];
   /** Ids of the albums the photo is in. */
   albums: number[];

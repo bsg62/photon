@@ -68,6 +68,7 @@
       exposureS: 0.004,
       iso: 200,
       tags: ['alps', 'sunset'],
+      caption: id === 3 ? "Grandma's 80th, on the terrace in Lisbon" : null,
       faces: [{ hash: 'a', name: 'Anna', left: 0.3, top: 0.25, right: 0.42, bottom: 0.5 }],
       albums: [1, 3],
       copies: [
