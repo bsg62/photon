@@ -144,6 +144,63 @@ pub fn rating_from_xml(xml: &str) -> Option<u8> {
     }
 }
 
+/// The caption in an XMP packet: `dc:description`'s `rdf:Alt` entry whose `xml:lang` is
+/// `x-default`, or else its first entry, trimmed. `None` when there is no non-empty one.
+///
+/// `x-default` first because that is the entry a tool writes when the user typed one caption;
+/// the language-tagged ones are translations. Resolves references the way
+/// `subjects_from_xml` does, so a caption with an ampersand arrives whole.
+pub fn description_from_xml(xml: &str) -> Option<String> {
+    let mut reader = Reader::from_str(xml);
+    let mut in_description = false;
+    // Some(whether this entry is x-default) while inside an rdf:li of dc:description.
+    let mut item: Option<bool> = None;
+    let mut current = String::new();
+    let mut first: Option<String> = None;
+    loop {
+        match reader.read_event() {
+            Err(_) | Ok(Event::Eof) => break,
+            Ok(Event::Start(e)) => match e.name().as_ref() {
+                "dc:description" => in_description = true,
+                "rdf:li" if in_description => {
+                    let is_default = e.attributes().flatten().any(|attr| {
+                        attr.key.as_ref() == "xml:lang" && attr.value.as_ref() == "x-default"
+                    });
+                    item = Some(is_default);
+                    current.clear();
+                }
+                _ => {}
+            },
+            Ok(Event::End(e)) => match e.name().as_ref() {
+                "dc:description" => in_description = false,
+                "rdf:li" => {
+                    if let Some(is_default) = item.take() {
+                        let text = current.trim();
+                        if !text.is_empty() {
+                            if is_default {
+                                return Some(text.to_string());
+                            }
+                            first.get_or_insert_with(|| text.to_string());
+                        }
+                    }
+                }
+                _ => {}
+            },
+            Ok(Event::Text(t)) if item.is_some() => current.push_str(t.as_ref()),
+            Ok(Event::CData(t)) if item.is_some() => current.push_str(&t),
+            Ok(Event::GeneralRef(r)) if item.is_some() => {
+                if let Ok(Some(c)) = r.resolve_char_ref() {
+                    current.push(c);
+                } else if let Some(text) = quick_xml::escape::resolve_predefined_entity(&r) {
+                    current.push_str(text);
+                }
+            }
+            _ => {}
+        }
+    }
+    first
+}
+
 fn parse_rating(value: &str) -> Option<u8> {
     let n: i32 = value.trim().parse().ok()?;
     (0..=5).contains(&n).then_some(n as u8)
@@ -154,6 +211,7 @@ mod tests {
     use super::*;
     use crate::testutil::{
         gif_with_xmp, jpeg_bytes, jpeg_with_xmp, png_with_xmp, write_file, xmp_packet,
+        xmp_packet_with_description, xmp_packet_with_subjects,
     };
 
     #[test]
@@ -315,5 +373,34 @@ mod tests {
         bytes.extend_from_slice(br#" xmlns:x="adobe:ns:meta/" xmp:Rating="4"><rdf:RDF>"#);
         let path = write_file(dir.path(), "truncated.jpg", &bytes);
         assert_eq!(read_rating(&path), None);
+    }
+
+    #[test]
+    fn the_default_language_description_is_the_caption() {
+        let xml =
+            xmp_packet_with_description(&[(Some("de"), "Oma"), (Some("x-default"), "Grandma")]);
+        assert_eq!(description_from_xml(&xml).as_deref(), Some("Grandma"));
+    }
+
+    #[test]
+    fn without_a_default_language_the_first_entry_is_the_caption() {
+        let xml = xmp_packet_with_description(&[(Some("de"), "  Oma  "), (Some("fr"), "Mamie")]);
+        assert_eq!(description_from_xml(&xml).as_deref(), Some("Oma"));
+    }
+
+    #[test]
+    fn a_description_with_a_character_reference_is_read_whole() {
+        let xml = xmp_packet_with_description(&[(Some("x-default"), "Tom & Jerry")]);
+        assert_eq!(description_from_xml(&xml).as_deref(), Some("Tom & Jerry"));
+    }
+
+    #[test]
+    fn keywords_and_empty_descriptions_are_not_captions() {
+        assert_eq!(
+            description_from_xml(&xmp_packet_with_subjects(&["beach"])),
+            None
+        );
+        let blank = xmp_packet_with_description(&[(Some("x-default"), "   ")]);
+        assert_eq!(description_from_xml(&blank), None);
     }
 }

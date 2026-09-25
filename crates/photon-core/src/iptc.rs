@@ -12,10 +12,22 @@ pub fn keywords_in(prefix: &[u8]) -> Vec<String> {
     let mut keywords = Vec::new();
     for payload in app13_segments(prefix) {
         for resource in photoshop_resources(payload) {
-            iim_keywords(resource, &mut keywords);
+            iim_values(resource, KEYWORDS_DATASET, &mut keywords);
         }
     }
     keywords
+}
+
+/// The first IPTC caption (2:120, Caption-Abstract) in the leading bytes of a JPEG, decoded
+/// like keywords. Picasa writes a caption typed under a photo here.
+pub fn caption_in(prefix: &[u8]) -> Option<String> {
+    let mut captions = Vec::new();
+    for payload in app13_segments(prefix) {
+        for resource in photoshop_resources(payload) {
+            iim_values(resource, CAPTION_DATASET, &mut captions);
+        }
+    }
+    captions.into_iter().next()
 }
 
 const SOI: [u8; 2] = [0xFF, 0xD8];
@@ -26,6 +38,8 @@ const IPTC_RESOURCE: u16 = 0x0404;
 const IIM_MARKER: u8 = 0x1C;
 const KEYWORDS_RECORD: u8 = 2;
 const KEYWORDS_DATASET: u8 = 25;
+/// Caption-Abstract, where Picasa writes the caption.
+const CAPTION_DATASET: u8 = 120;
 
 /// Every APP13 "Photoshop 3.0" segment's resource bytes, walking the marker stream from
 /// SOI up to the scan data. A file that does not start with SOI is not a JPEG and yields
@@ -107,17 +121,18 @@ fn photoshop_resources(bytes: &[u8]) -> Vec<&[u8]> {
     found
 }
 
-/// Appends every 2:25 dataset in an IIM block. A record is `0x1C`, record number, dataset
-/// number, a two-byte size and the data; a size with its top bit set is the extended form,
-/// which no keyword uses, and ends the walk since its length cannot be read here.
-fn iim_keywords(bytes: &[u8], out: &mut Vec<String>) {
+/// Appends every record-2 value of the given dataset in an IIM block. A record is `0x1C`,
+/// record number, dataset number, a two-byte size and the data; a size with its top bit set
+/// is the extended form, which neither a keyword nor a caption uses, and ends the walk since
+/// its length cannot be read here.
+fn iim_values(bytes: &[u8], dataset: u8, out: &mut Vec<String>) {
     let mut at = 0;
     while at + 5 <= bytes.len() {
         if bytes[at] != IIM_MARKER {
             break;
         }
         let record = bytes[at + 1];
-        let dataset = bytes[at + 2];
+        let dataset_here = bytes[at + 2];
         let size = u16::from_be_bytes([bytes[at + 3], bytes[at + 4]]) as usize;
         if size & 0x8000 != 0 {
             break;
@@ -127,11 +142,11 @@ fn iim_keywords(bytes: &[u8], out: &mut Vec<String>) {
         if data_end > bytes.len() {
             break;
         }
-        if record == KEYWORDS_RECORD && dataset == KEYWORDS_DATASET {
-            let keyword = decode(&bytes[data_start..data_end]);
-            let keyword = keyword.trim();
-            if !keyword.is_empty() {
-                out.push(keyword.to_string());
+        if record == KEYWORDS_RECORD && dataset_here == dataset {
+            let value = decode(&bytes[data_start..data_end]);
+            let value = value.trim();
+            if !value.is_empty() {
+                out.push(value.to_string());
             }
         }
         at = data_end;
@@ -152,7 +167,9 @@ fn decode(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testutil::{iptc_app13, jpeg_bytes, jpeg_with_iptc_keywords, jpeg_with_segments};
+    use crate::testutil::{
+        iptc_app13, iptc_app13_datasets, jpeg_bytes, jpeg_with_iptc_keywords, jpeg_with_segments,
+    };
 
     #[test]
     fn reads_keywords_from_the_app13_iptc_block() {
@@ -219,5 +236,25 @@ mod tests {
         for cut in 0..jpeg.len() {
             let _ = keywords_in(&jpeg[..cut]);
         }
+    }
+
+    #[test]
+    fn the_caption_is_dataset_2_120_beside_the_keywords() {
+        let app13 =
+            iptc_app13_datasets(&[(25, b"lake"), (120, b"caf\xe9 at dawn"), (120, b"second")]);
+        let jpeg = jpeg_with_segments(8, 8, &[(0xED, &app13)]);
+        assert_eq!(
+            caption_in(&jpeg).as_deref(),
+            Some("café at dawn"),
+            "Latin-1, first record"
+        );
+        assert_eq!(keywords_in(&jpeg), ["lake"], "a caption is not a keyword");
+    }
+
+    #[test]
+    fn no_caption_dataset_is_no_caption() {
+        let jpeg = jpeg_with_segments(8, 8, &[(0xED, &iptc_app13_datasets(&[(25, b"lake")]))]);
+        assert_eq!(caption_in(&jpeg), None);
+        assert_eq!(caption_in(&jpeg_bytes(8, 8)), None);
     }
 }
