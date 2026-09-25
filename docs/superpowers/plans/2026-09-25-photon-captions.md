@@ -324,7 +324,21 @@ pub struct Embedded {
 
 /// The keywords and caption in `path`, from one bounded read. Never fails: an unreadable
 /// file has neither.
-pub fn read_embedded(path: &Path) -> Embedded { /* the body read_keywords has today, ending in embedded_in(&buf) */ }
+pub fn read_embedded(path: &Path) -> Embedded {
+    let Ok(mut file) = File::open(path) else {
+        return Embedded::default();
+    };
+    let mut buf = Vec::new();
+    if file
+        .by_ref()
+        .take(crate::xmp::MAX_PREFIX as u64)
+        .read_to_end(&mut buf)
+        .is_err()
+    {
+        return Embedded::default();
+    }
+    embedded_in(&buf)
+}
 
 /// [`read_embedded`] over bytes already read.
 pub fn embedded_in(prefix: &[u8]) -> Embedded {
