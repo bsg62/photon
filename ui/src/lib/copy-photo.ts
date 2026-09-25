@@ -28,11 +28,12 @@ export function isCopyPhotoShortcut(e: CopyKey, hasTextSelection: boolean): bool
   );
 }
 
-/** The C key: by the letter it types, or - when the layout types no Latin letter there
+/** The C key: by the letter it types, or - when the layout types a non-Latin letter there
  *  (Cyrillic, Greek) - by its position, since Ctrl+C still means copy on those layouts.
  *  Never by position when the key types a Latin letter: on Dvorak that position is J, and
- *  Ctrl+J is not copy. */
+ *  Ctrl+J is not copy. Nor when it types no single character at all: `Process` mid-IME
+ *  composition, `Unidentified` from a key the browser cannot name. */
 function isTheCKey(e: CopyKey): boolean {
   const key = e.key.toLowerCase();
-  return key === 'c' || (!/^[a-z]$/.test(key) && e.code === 'KeyC');
+  return key === 'c' || ([...key].length === 1 && !/^[a-z]$/.test(key) && e.code === 'KeyC');
 }

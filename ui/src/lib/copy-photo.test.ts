@@ -41,5 +41,8 @@ describe('isCopyPhotoShortcut', () => {
     expect(isCopyPhotoShortcut(key('с', { ctrlKey: true, code: 'KeyC' }), false)).toBe(true);
     // Dvorak: the key in C's position types "j" - Ctrl+J is not copy.
     expect(isCopyPhotoShortcut(key('j', { ctrlKey: true, code: 'KeyC' }), false)).toBe(false);
+    // Mid-IME composition, or a key the browser cannot name: not a character at all.
+    expect(isCopyPhotoShortcut(key('Process', { ctrlKey: true, code: 'KeyC' }), false)).toBe(false);
+    expect(isCopyPhotoShortcut(key('Unidentified', { ctrlKey: true, code: 'KeyC' }), false)).toBe(false);
   });
 });
