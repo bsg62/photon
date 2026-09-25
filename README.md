@@ -79,7 +79,9 @@ the info panel. photon reads it from the photo's XMP or IPTC; the text many came
 ("OLYMPUS DIGITAL CAMERA") is ignored. Search finds a word of it. photon does not edit
 captions: that would mean writing the photo.
 
-The sidebar lists **Albums**, **People** and **Tags** above the years. Albums are photon's
+**All photos**, at the top of the sidebar, goes back to the whole library from Starred, Recent,
+an album or a search, at the folder you were last browsing there - clicking a folder instead
+opens that folder at its top. The sidebar lists **Albums**, **People** and **Tags** above the years. Albums are photon's
 own and live only in its library: create one with "New album…", add photos from a tile's
 right-click menu or the info panel, and rename or delete from the album's right-click menu.
 Picasa's albums (see "Picasa albums" above) are read from its INI and cannot be edited here,
@@ -553,6 +555,8 @@ publishing it.
       Ctrl+C: the photo is copied, not the header text. Hold Ctrl+C down: one "Photo copied".
 - [ ] Select a caption's text in the info panel and press Ctrl+C: the text is copied, not the
       photo.
+- [ ] Scroll the full library to some folder, open Starred, then click All photos: the grid is
+      back at that folder, and All photos is highlighted. From a search, the search box empties.
 
 ## How watching works
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Folder, GridView } from './api';
-import { enterFolder, locateItem, folderRows, groupByYear } from './folders';
+import { enterFolder, locateItem, folderRows, groupByYear, returnToAll } from './folders';
 
 /** Seconds since the epoch, since that is what `takenAtMin` carries. */
 const at = (iso: string) => Math.floor(new Date(iso).getTime() / 1000);
@@ -185,6 +185,75 @@ describe('locateItem', () => {
     const { order, deps } = spyDeps('all', null);
     await locateItem(42, false, deps);
     expect(order).toEqual(['cancel', 'find:42']);
+  });
+});
+
+describe('returnToAll', () => {
+  function spyDeps(
+    view: GridView,
+    remembered: () => Promise<number | null> = () => Promise.resolve(7),
+    setView: () => Promise<void> = () => Promise.resolve(),
+  ) {
+    const order: string[] = [];
+    const jumped: number[] = [];
+    return {
+      order,
+      jumped,
+      deps: {
+        cancelSearch: () => order.push('cancel'),
+        currentView: () => view,
+        setView: (v: GridView) => {
+          order.push(`setView:${v}`);
+          return setView();
+        },
+        lastFolder: () => {
+          order.push('lastFolder');
+          return remembered();
+        },
+        jump: (id: number) => {
+          order.push('jump');
+          jumped.push(id);
+        },
+      },
+    };
+  }
+
+  it('leaves the excursion for All and lands on the folder last browsed there', async () => {
+    // Starred -> All photos: back where the gallery was left, not at a folder's top or the
+    // library's.
+    const { order, jumped, deps } = spyDeps('starred');
+    await returnToAll(deps);
+    expect(order).toEqual(['cancel', 'lastFolder', 'setView:all', 'jump']);
+    expect(jumped).toEqual([7]);
+  });
+
+  it('does not switch the view when All is already showing', async () => {
+    const { order, deps } = spyDeps('all');
+    await returnToAll(deps);
+    expect(order).toEqual(['cancel', 'lastFolder', 'jump']);
+  });
+
+  it('reads the remembered place before switching, and jumps only once the switch settles', async () => {
+    // Read first: the grid overwrites the remembered folder with its own top as soon as All
+    // shows. Jump last: the folder's offset is only meaningful against All's index.
+    let release!: () => void;
+    const pending = new Promise<void>((r) => (release = r));
+    const { order, deps } = spyDeps('recent', undefined, () => pending);
+    const done = returnToAll(deps);
+    for (let i = 0; i < 5; i++) await Promise.resolve();
+    expect(order).toEqual(['cancel', 'lastFolder', 'setView:all']);
+    release();
+    await done;
+    expect(order).toEqual(['cancel', 'lastFolder', 'setView:all', 'jump']);
+  });
+
+  it('opens at the top when nothing is remembered, or the lookup fails', async () => {
+    const none = spyDeps('starred', () => Promise.resolve(null));
+    await returnToAll(none.deps);
+    expect(none.jumped).toEqual([]);
+    const failing = spyDeps('starred', () => Promise.reject(new Error('db busy')));
+    await returnToAll(failing.deps);
+    expect(failing.jumped).toEqual([]);
   });
 });
 

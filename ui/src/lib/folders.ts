@@ -106,6 +106,34 @@ export async function enterFolder(
   deps.jump(folderId);
 }
 
+/** "All photos" in the sidebar: back to the whole library, at the folder last browsed there.
+ *
+ *  An excursion (Starred, Recent, an album, a search) leaves All's place alone - the grid
+ *  remembers the folder at the top of All for the next launch, and only while All is showing -
+ *  so that remembered folder is where the user left the gallery. Clicking a folder instead
+ *  lands on that folder's top, which is what made going back feel like a reset.
+ *
+ *  Like `enterFolder`, a pending search is cancelled first and the jump waits for the view
+ *  switch to settle, since the folder's offset is only meaningful against All's index.
+ *  Nothing remembered, or a lookup that fails, opens All wherever it opens. */
+export async function returnToAll(deps: {
+  cancelSearch: () => void;
+  currentView: () => GridView;
+  setView: (view: GridView) => Promise<void>;
+  lastFolder: () => Promise<number | null>;
+  jump: (folderId: number) => void;
+}): Promise<void> {
+  deps.cancelSearch();
+  // Read *before* the switch. The grid writes the folder at its top whenever All is showing,
+  // and a freshly rebuilt All sits at its first folder until the jump: read after the switch,
+  // the remembered place could already have been overwritten with the library's top - the
+  // very reset this exists to avoid. A folder id, unlike an offset, needs no index to be read
+  // against.
+  const folderId = await deps.lastFolder().catch(() => null);
+  if (deps.currentView() !== 'all') await deps.setView('all');
+  if (folderId !== null) deps.jump(folderId);
+}
+
 /** "Locate in photon" from the viewer: lands the grid on the photo, selected and in view.
  *
  *  The same shape as `enterFolder`, for the same two reasons: a pending search must not
