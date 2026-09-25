@@ -193,11 +193,14 @@ answers differently.
   is also what Picasa would then show.
 - `date=`, `location=` and `description=` of an album are not read.
 - Two INIs that define one token with different names (a backup copy of a folder written
-  before a rename in Picasa, say) take turns naming the album: the sidebar shows whichever
-  folder was scanned last, a watcher rescan of either folder flips the name back, and each such
-  scan counts as a rename and rebuilds the grid once. Accepted as "most recently read wins"; a
-  per-scan winner (preferring, say, the alphabetically first folder) would fix it but is not
-  worth the complexity for a case this narrow.
+  before a rename in Picasa, say) are settled by age, since 2026-09-26 (schema 19,
+  `albums.picasa_named_at`): a name is taken only from an INI newer than the one that named the
+  album last, so the rename - which Picasa writes into every member folder - wins and the stale
+  copy never renames it back. The remaining edge: a stale copy whose INI gets a *new* mtime (copied
+  back with a tool that does not preserve timestamps) is then the newest, and names the album
+  once, until Picasa next writes a newer INI.
+- The pass reads before it writes: an album INI that says what the library already holds takes
+  no write lock (also 2026-09-26).
 
 ## Not in this feature
 

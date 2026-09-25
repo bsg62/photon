@@ -674,7 +674,8 @@ fn apply_folder_albums(
     ini: &FolderIni,
 ) -> Result<u64> {
     let referenced: HashSet<String> = ini.item_albums.values().flatten().cloned().collect();
-    let (ids, upserted) = lib.upsert_picasa_albums(&ini.albums, &referenced, crate::now_ms())?;
+    let (ids, upserted) =
+        lib.upsert_picasa_albums(&ini.albums, &referenced, ini.modified_ms, crate::now_ms())?;
     let current = lib.folder_picasa_albums(folder_id)?;
     let none = BTreeSet::new();
     let changes: Vec<(i64, BTreeSet<i64>)> = names
@@ -910,7 +911,7 @@ fn is_hidden(entry: &DirEntry) -> bool {
         .is_some_and(|name| name.starts_with('.'))
 }
 
-fn mtime_ms(md: &Metadata) -> i64 {
+pub(crate) fn mtime_ms(md: &Metadata) -> i64 {
     md.modified()
         .ok()
         .map(|t| match t.duration_since(UNIX_EPOCH) {
@@ -1164,11 +1165,14 @@ mod tests {
         let report = scan(&lib, &watched, 3);
         assert_eq!(report.realbumed, 0, "an agreeing folder writes nothing");
 
-        write_file(
+        let ini = write_file(
             &root,
             ".picasa.ini",
             b"[.album:t]\nname=Summer\n[a.jpg]\nalbums=t\n",
         );
+        // Dated explicitly: a rename is only taken from a newer INI, and on a filesystem
+        // with one-second timestamps this rewrite could otherwise share the first one's mtime.
+        set_mtime(&ini, std::time::SystemTime::now() + Duration::from_secs(60));
         let report = scan(&lib, &watched, 4);
         assert_eq!(report.realbumed, 1, "the rename, and no membership moved");
         assert!(
@@ -1212,6 +1216,44 @@ mod tests {
             .map(|a| (a.name, a.count))
             .collect();
         assert_eq!(albums, vec![("Holiday".to_string(), 2)]);
+    }
+
+    #[test]
+    fn a_stale_copy_of_a_folder_does_not_take_turns_naming_its_album() {
+        // `b` is a backup of `a` taken before the album was renamed in Picasa: its INI is
+        // older and still says Holiday. The album must settle on the newer name whatever
+        // order the folders are walked in, and a rescan must count nothing - or the grid
+        // rebuilds after every scan and the sidebar shows whichever folder came last.
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        write_file(&root, "a/one.jpg", &jpeg_bytes(4, 2));
+        write_file(&root, "b/two.jpg", &jpeg_bytes(4, 3));
+        let renamed = write_file(
+            &root,
+            "a/.picasa.ini",
+            b"[.album:t]\nname=Summer\n[one.jpg]\nalbums=t\n",
+        );
+        let stale = write_file(
+            &root,
+            "b/.picasa.ini",
+            b"[.album:t]\nname=Holiday\n[two.jpg]\nalbums=t\n",
+        );
+        set_mtime(&stale, UNIX_EPOCH + Duration::from_secs(1_700_000_000));
+        set_mtime(&renamed, UNIX_EPOCH + Duration::from_secs(1_700_000_100));
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
+        scan(&lib, &watched, 1);
+        let names = |lib: &Library| -> Vec<String> {
+            lib.albums_with_counts()
+                .unwrap()
+                .into_iter()
+                .map(|a| a.name)
+                .collect()
+        };
+        assert_eq!(names(&lib), vec!["Summer"]);
+
+        let report = scan(&lib, &watched, 2);
+        assert_eq!(report.realbumed, 0, "a rescan settles, it does not flip");
+        assert_eq!(names(&lib), vec!["Summer"]);
     }
 
     #[test]

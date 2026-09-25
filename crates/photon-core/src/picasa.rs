@@ -55,6 +55,9 @@ pub struct FolderIni {
     /// The Picasa album tokens per lowercased file name, from `albums=`, lowercased,
     /// deduplicated, in the INI's order.
     pub item_albums: HashMap<String, Vec<String>>,
+    /// When the INI was last written, in ms (0 when the folder has none). How old a folder's
+    /// album names are: a stale copy of a folder must not rename an album a newer INI named.
+    pub modified_ms: i64,
 }
 
 /// The stars, faces and contacts in one directory's INI.
@@ -68,8 +71,11 @@ pub fn read_folder(dir: &Path) -> Option<FolderIni> {
     let Some(path) = ini_path(dir).ok()? else {
         return Some(FolderIni::default());
     };
-    let (bytes, _) = read_capped(&path).ok()?;
-    Some(parse_folder(&String::from_utf8_lossy(&bytes)))
+    let (bytes, meta) = read_capped(&path).ok()?;
+    Some(FolderIni {
+        modified_ms: crate::scanner::mtime_ms(&meta),
+        ..parse_folder(&String::from_utf8_lossy(&bytes))
+    })
 }
 
 /// The starred file names in one directory, lowercased. See [`read_folder`] for what
@@ -884,6 +890,26 @@ mod tests {
             stars(dir.path()),
             vec!["img_0412.jpg"],
             "the photo's star still reads"
+        );
+    }
+
+    #[test]
+    fn the_folder_reports_how_old_its_ini_is() {
+        // The age a folder's album names carry: a stale copy of a folder must not rename an
+        // album a newer INI named. A folder without an INI is 0, older than any real one.
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(read_folder(dir.path()).unwrap().modified_ms, 0);
+        let path = write_file(dir.path(), ".picasa.ini", b"[a.jpg]\nstar=yes\n");
+        let at = std::time::UNIX_EPOCH + std::time::Duration::from_millis(1_700_000_000_123);
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(at)
+            .unwrap();
+        assert_eq!(
+            read_folder(dir.path()).unwrap().modified_ms,
+            1_700_000_000_123
         );
     }
 
