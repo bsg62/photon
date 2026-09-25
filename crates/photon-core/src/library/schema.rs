@@ -291,6 +291,14 @@ CREATE UNIQUE INDEX albums_picasa_token ON albums(picasa_token);
 -- re-reads every unchanged photo once to fill it in.
 ALTER TABLE items ADD COLUMN caption TEXT;
 "#,
+    r#"
+-- When the INI that last named a Picasa album was written (its mtime, in ms). A name is only
+-- taken from an INI newer than this, so a stale copy of a folder - a backup made before a
+-- rename in Picasa - cannot take turns with the renamed folders on every scan. NULL for
+-- photon's own albums, for a token only referenced so far, and for albums named before
+-- this column existed: the next definition that differs names it once.
+ALTER TABLE albums ADD COLUMN picasa_named_at INTEGER;
+"#,
 ];
 
 pub fn migrate(conn: &Connection) -> Result<()> {
@@ -542,7 +550,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 18);
+        assert_eq!(version, 19);
         let rules: i64 = conn
             .query_row("SELECT count(*) FROM tag_rules", [], |r| r.get(0))
             .unwrap();
@@ -701,7 +709,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 18);
+        assert_eq!(version, 19);
         let overlay: i64 = conn
             .query_row("SELECT count(*) FROM item_user_tags", [], |r| r.get(0))
             .unwrap();
@@ -751,7 +759,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 18);
+        assert_eq!(version, 19);
         let hash: Option<Vec<u8>> = conn
             .query_row("SELECT content_hash FROM items WHERE id = 1", [], |r| {
                 r.get(0)
@@ -892,7 +900,7 @@ mod tests {
             .unwrap();
         // Hardcoded, like every other version assertion here: `MIGRATIONS.len()` would
         // agree with itself whatever the list did, which is the tripwire removed.
-        assert_eq!(version, 18);
+        assert_eq!(version, 19);
     }
 
     /// Every folder in an existing library comes out of the upgrade visible.
@@ -930,7 +938,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 18);
+        assert_eq!(version, 19);
     }
 
     /// Every album in an existing library comes out of the upgrade as photon's own.
@@ -963,7 +971,41 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 18);
+        assert_eq!(version, 19);
+    }
+
+    /// Every Picasa album in an existing library comes out of the upgrade with no recorded
+    /// INI age, so the next INI that names it differently renames it once.
+    #[test]
+    fn migration_19_leaves_existing_albums_without_a_naming_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("library.db");
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        for sql in &MIGRATIONS[..18] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 18i64).unwrap();
+        conn.execute(
+            "INSERT INTO albums (id, name, created_ms, picasa_token) VALUES (1, 'Holiday', 5, 't')",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+
+        let lib = crate::library::Library::open(&path).unwrap();
+        let conn = lib.reader().unwrap();
+        let (name, named_at): (String, Option<i64>) = conn
+            .query_row(
+                "SELECT name, picasa_named_at FROM albums WHERE id = 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((name.as_str(), named_at), ("Holiday", None));
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, 19);
     }
 
     /// Every photo in an existing library comes out of the upgrade uncaptioned, for the
@@ -1002,7 +1044,7 @@ mod tests {
             .unwrap()
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 18);
+        assert_eq!(version, 19);
     }
 
     /// A stored Conservative or Loose keeps meaning Conservative or Loose.
@@ -1036,7 +1078,7 @@ mod tests {
             let version: i64 = conn
                 .query_row("PRAGMA user_version", [], |r| r.get(0))
                 .unwrap();
-            assert_eq!(version, 18);
+            assert_eq!(version, 19);
         }
     }
 
@@ -1086,6 +1128,6 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 18);
+        assert_eq!(version, 19);
     }
 }

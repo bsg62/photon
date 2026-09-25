@@ -44,6 +44,9 @@ pub struct Library {
     path: PathBuf,
     write: Mutex<Connection>,
     readers: Mutex<Vec<Connection>>,
+    /// How many times the writer was taken, for tests that pin a path as write-free.
+    #[cfg(test)]
+    writes: std::sync::atomic::AtomicUsize,
 }
 
 /// A pooled read connection. Returned to the pool on drop.
@@ -88,6 +91,8 @@ impl Library {
             path: path.to_path_buf(),
             write: Mutex::new(write),
             readers: Mutex::new(vec![read]),
+            #[cfg(test)]
+            writes: std::sync::atomic::AtomicUsize::new(0),
         })
     }
 
@@ -97,7 +102,16 @@ impl Library {
     }
 
     fn writer(&self) -> MutexGuard<'_, Connection> {
+        #[cfg(test)]
+        self.writes
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.write.lock()
+    }
+
+    /// How many times the writer has been taken since the library was opened.
+    #[cfg(test)]
+    pub(crate) fn writes_for_test(&self) -> usize {
+        self.writes.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// A read connection: a pooled one if any is idle, otherwise a freshly opened one.
@@ -149,7 +163,7 @@ mod tests {
             .unwrap()
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 18);
+        assert_eq!(version, 19);
         let tables: i64 = lib
             .reader()
             .unwrap()
@@ -175,7 +189,7 @@ mod tests {
             Library::open(&path),
             Err(Error::SchemaTooNew {
                 found: 99,
-                supported: 18
+                supported: 19
             })
         ));
     }
