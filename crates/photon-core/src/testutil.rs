@@ -49,6 +49,7 @@ pub fn new_item(folder_id: i64, path: &str, taken_at: i64) -> NewItem {
         rating: None,
         camera: crate::metadata::CameraMeta::default(),
         tags: Vec::new(),
+        caption: None,
     }
 }
 
@@ -79,6 +80,8 @@ pub struct ExifSpec<'a> {
     pub datetime: Option<&'a str>,
     /// `DateTime` (the file-change date in IFD0), same format.
     pub modified: Option<&'a str>,
+    /// `ImageDescription` (IFD0 0x010E), ASCII - what cameras fill with their own name.
+    pub description: Option<&'a str>,
     pub make: Option<&'a str>,
     pub model: Option<&'a str>,
     pub lens: Option<&'a str>,
@@ -196,6 +199,9 @@ pub fn exif_tiff(spec: &ExifSpec<'_>) -> Vec<u8> {
     }
 
     let mut ifd0 = Vec::new();
+    if let Some(description) = spec.description {
+        ifd0.push(ascii_entry(0x010e, description));
+    }
     if let Some(make) = spec.make {
         ifd0.push(ascii_entry(0x010f, make));
     }
@@ -281,11 +287,17 @@ pub fn jpeg_with_exif(w: u32, h: u32, orientation: u16, datetime: &str) -> Vec<u
 /// An APP13 "Photoshop 3.0" segment payload holding one IPTC-NAA resource with the given
 /// keywords as dataset 2:25 records, each in the given raw bytes.
 pub fn iptc_app13(keywords: &[&[u8]]) -> Vec<u8> {
+    iptc_app13_datasets(&keywords.iter().map(|k| (25, *k)).collect::<Vec<_>>())
+}
+
+/// An APP13 payload carrying the given IIM record-2 datasets in order, e.g.
+/// `&[(120, b"caption"), (25, b"keyword")]`.
+pub fn iptc_app13_datasets(datasets: &[(u8, &[u8])]) -> Vec<u8> {
     let mut iim = Vec::new();
-    for kw in keywords {
-        iim.extend_from_slice(&[0x1C, 2, 25]);
-        iim.extend_from_slice(&(kw.len() as u16).to_be_bytes());
-        iim.extend_from_slice(kw);
+    for (dataset, value) in datasets {
+        iim.extend_from_slice(&[0x1C, 2, *dataset]);
+        iim.extend_from_slice(&(value.len() as u16).to_be_bytes());
+        iim.extend_from_slice(value);
     }
     let mut payload = b"Photoshop 3.0\0".to_vec();
     payload.extend_from_slice(b"8BIM");
@@ -333,6 +345,28 @@ pub fn xmp_packet_with_subjects(subjects: &[&str]) -> String {
     xmp_packet_with(
         r#"xmlns:dc="http://purl.org/dc/elements/1.1/""#,
         &format!("<dc:subject><rdf:Bag>{items}</rdf:Bag></dc:subject>"),
+    )
+}
+
+/// An XMP packet whose `dc:description` `rdf:Alt` holds `(xml:lang, text)` entries in order,
+/// the text XML-escaped. A `None` language writes the `rdf:li` without the attribute.
+pub fn xmp_packet_with_description(entries: &[(Option<&str>, &str)]) -> String {
+    let items: String = entries
+        .iter()
+        .map(|(lang, text)| {
+            let escaped = text
+                .replace('&', "&amp;")
+                .replace('<', "&lt;")
+                .replace('>', "&gt;");
+            match lang {
+                Some(lang) => format!(r#"<rdf:li xml:lang="{lang}">{escaped}</rdf:li>"#),
+                None => format!("<rdf:li>{escaped}</rdf:li>"),
+            }
+        })
+        .collect();
+    xmp_packet_with(
+        r#"xmlns:dc="http://purl.org/dc/elements/1.1/""#,
+        &format!("<dc:description><rdf:Alt>{items}</rdf:Alt></dc:description>"),
     )
 }
 

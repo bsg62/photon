@@ -1,6 +1,6 @@
 use crate::{
     Result,
-    keywords::read_keywords,
+    keywords::read_embedded,
     library::{KnownItem, Library, NewItem, WatchedFolder},
     media::MediaKind,
     metadata::{EXIF_VERSION, read_image_meta},
@@ -826,6 +826,7 @@ fn describe(
     mtime_ms: i64,
 ) -> NewItem {
     let meta = read_image_meta(entry.path());
+    let embedded = read_embedded(entry.path());
     NewItem {
         folder_id,
         path: path.to_string(),
@@ -840,7 +841,8 @@ fn describe(
         // Always `None` here; `apply_picasa` sets the real value after the walk.
         rating: meta.rating,
         camera: meta.camera,
-        tags: read_keywords(entry.path()),
+        tags: embedded.keywords,
+        caption: embedded.caption,
     }
 }
 
@@ -1428,6 +1430,59 @@ mod tests {
 
         let report = scan(&lib, &watched, 3);
         assert_eq!(report.enriched, 0, "read once, not on every scan");
+    }
+
+    #[test]
+    fn a_new_photo_is_stored_with_its_caption() {
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        let app13 = crate::testutil::iptc_app13_datasets(&[(120, b"Grandma's 80th")]);
+        let a = write_file(
+            &root,
+            "a.jpg",
+            &crate::testutil::jpeg_with_segments(4, 2, &[(0xED, &app13)]),
+        );
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
+        scan(&lib, &watched, 1);
+        let id = lib.known_items(watched.id).unwrap()[&key(&a)].id;
+        assert_eq!(
+            lib.item_caption(id).unwrap().as_deref(),
+            Some("Grandma's 80th")
+        );
+    }
+
+    #[test]
+    fn an_unchanged_photo_gains_its_caption_from_the_backfill() {
+        // A library indexed under EXIF_VERSION 2 has no caption column filled; the photo is
+        // unchanged, so only the backfill can read it - once.
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        let app13 = crate::testutil::iptc_app13_datasets(&[(120, b"Grandma's 80th")]);
+        let a = write_file(
+            &root,
+            "a.jpg",
+            &crate::testutil::jpeg_with_segments(4, 2, &[(0xED, &app13)]),
+        );
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
+        scan(&lib, &watched, 1);
+        let id = lib.known_items(watched.id).unwrap()[&key(&a)].id;
+        lib.forget_caption_for_test(id).unwrap();
+
+        let report = scan(&lib, &watched, 2);
+        assert_eq!(
+            (report.unchanged, report.changed, report.enriched),
+            (1, 0, 1)
+        );
+        assert!(report.touched_rows());
+        assert_eq!(
+            lib.item_caption(id).unwrap().as_deref(),
+            Some("Grandma's 80th")
+        );
+        assert_eq!(
+            scan(&lib, &watched, 3).enriched,
+            0,
+            "read once, not on every scan"
+        );
     }
 
     #[test]

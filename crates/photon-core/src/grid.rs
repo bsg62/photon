@@ -13,7 +13,7 @@ pub enum GridView {
     /// `library::items::RECENT_LIMIT`. Unlike every other view this one is a window rather
     /// than a filter: it is bounded by count, not by a property of the photos.
     Recent,
-    /// Photos whose file or folder name, camera, keywords or date contain the engine's
+    /// Photos whose file or folder name, camera, caption, keywords or date contain the engine's
     /// current search query. The query itself lives on the engine, not here: this enum is
     /// `Copy` and is mirrored in TypeScript as a union of plain strings.
     Search,

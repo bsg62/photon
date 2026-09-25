@@ -133,6 +133,8 @@ pub struct ViewerItem {
     pub iso: Option<i64>,
     /// Keywords from the file's XMP and IPTC, in file order.
     pub tags: Vec<String>,
+    /// The caption the photo carries, if any. Shown under the photo and in the info panel.
+    pub caption: Option<String>,
     /// Named Picasa faces, in INI order.
     pub faces: Vec<ItemFace>,
     /// Ids of the albums the photo is in.
@@ -560,6 +562,7 @@ pub fn viewer_item(engine: &Engine, id: i64) -> CmdResult<ViewerItem> {
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
     let tags = engine.lib.item_tags(item.id)?;
+    let caption = engine.lib.item_caption(item.id)?;
     let edit = item.edit;
     let faces = engine
         .lib
@@ -616,6 +619,7 @@ pub fn viewer_item(engine: &Engine, id: i64) -> CmdResult<ViewerItem> {
         exposure_s: camera.exposure_s,
         iso: camera.iso,
         tags,
+        caption,
         faces,
         albums,
         copies,
@@ -904,6 +908,7 @@ mod tests {
                 iso: Some(400),
             },
             tags: vec!["beach".into()],
+            caption: None,
         };
         f.engine.lib.update_item_meta(&[(id, described)]).unwrap();
         let album = f.engine.lib.create_album("Trip", 1).unwrap();
@@ -923,6 +928,48 @@ mod tests {
         assert_eq!(item.albums, vec![album.id]);
         assert_eq!(list_people(&f.engine).unwrap()[0].name, "Ada");
         assert_eq!(list_tags(&f.engine).unwrap()[0].tag, "beach");
+    }
+
+    #[test]
+    fn viewer_item_reports_the_caption() {
+        use photon_core::library::NewItem;
+        use photon_core::media::MediaKind;
+        use photon_core::metadata::CameraMeta;
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a.jpg", &img)]);
+        f.add_photos();
+        let id = f.ids()[0];
+        assert_eq!(viewer_item(&f.engine, id).unwrap().caption, None);
+        let row = f.engine.lib.item(id).unwrap().unwrap();
+        let described = NewItem {
+            folder_id: row.folder_id,
+            path: row.path.clone(),
+            file_name: "a.jpg".into(),
+            kind: MediaKind::Image,
+            size: row.size,
+            mtime_ms: row.mtime_ms,
+            width: row.width,
+            height: row.height,
+            orientation: row.orientation,
+            taken_at: row.taken_at,
+            rating: None,
+            camera: CameraMeta {
+                make: None,
+                model: None,
+                lens: None,
+                focal_mm: None,
+                aperture: None,
+                exposure_s: None,
+                iso: None,
+            },
+            tags: vec![],
+            caption: Some("Grandma".into()),
+        };
+        f.engine.lib.update_item_meta(&[(id, described)]).unwrap();
+        assert_eq!(
+            viewer_item(&f.engine, id).unwrap().caption.as_deref(),
+            Some("Grandma")
+        );
     }
 
     /// The info panel tells a byte-identical twin from a look-alike, and lists the twins
@@ -1090,6 +1137,7 @@ mod tests {
             rating: None,
             camera: Default::default(),
             tags: tags.iter().map(|t| t.to_string()).collect(),
+            caption: None,
         };
         f.engine.lib.update_item_meta(&[(id, described)]).unwrap();
     }

@@ -9,7 +9,9 @@ use std::{fs::File, io::BufReader, path::Path};
 /// 0 is reserved for rows that predate the camera columns (the migration's default).
 /// 2 is the first generation that refuses an implausible capture date (see
 /// [`plausible_taken_at`]); the bump is what re-dates photos indexed under 1.
-pub const EXIF_VERSION: i64 = 2;
+/// 3 is the first generation that reads the photo's caption (`keywords::read_embedded`);
+/// the bump is what captions photos indexed under 2.
+pub const EXIF_VERSION: i64 = 3;
 
 /// Capture dates earlier than this are refused: 1970-01-01, in naive-as-UTC seconds. A
 /// camera whose clock was never set writes 0000 or 1900-something, and no digital camera

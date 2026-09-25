@@ -38,6 +38,7 @@ fn synthetic_library(dir: &Path, folders: usize, per_folder: usize) -> Library {
                 rating: None,
                 camera: photon_core::metadata::CameraMeta::default(),
                 tags: Vec::new(),
+                caption: None,
             });
         }
     }
