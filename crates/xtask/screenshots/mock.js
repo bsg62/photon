@@ -162,7 +162,7 @@
 
   // Commands that change something: a screenshot never needs their answer, so they get null.
   const SILENT = [
-    'add_folder', 'add_item_tag', 'add_to_album', 'create_album', 'delete_album', 'hide_tag',
+    'add_folder', 'add_item_tag', 'add_to_album', 'copy_photo', 'create_album', 'delete_album', 'hide_tag',
     'remove_folder', 'remove_from_album', 'remove_item_tag', 'rename_album', 'rename_tag',
     'delete_saved_search', 'rename_saved_search',
     'rescan_folder', 'restore_tag_rule', 'reveal_folder', 'reveal_in_file_manager',

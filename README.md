@@ -137,6 +137,16 @@ still leads to the photo exactly as the camera wrote it, and other programs do n
 edit. An edit belongs to the file's entry in the library: a photo renamed or moved outside
 photon comes back unedited. Picasa's own crops and rotations are not imported.
 
+### Copying a photo
+
+**Ctrl+C** (**⌘C** on a Mac) in the viewer copies the photo on screen to the clipboard as a
+picture, ready to paste into a chat, a mail or a document; in the grid it copies the selected
+photo, and **Copy photo** in a tile's right-click menu does the same. The copy is the photo as
+photon shows it, turns and crops included, at most 2560 pixels on its long edge; for the
+full-size file use Export or Reveal in file manager. With text selected (a caption in the info
+panel, say), Ctrl+C copies the text instead. On Linux under X11, and with some Wayland
+compositors, the copied picture belongs to photon: paste it before you quit photon.
+
 ### Comparing photos
 
 Select two to four photos in the grid and press `C` (or right-click → **Compare**) to see them
@@ -536,6 +546,12 @@ publishing it.
       selection on screen at both sizes too.
 - [ ] Quit with a non-default size chosen and relaunch: the grid opens at the remembered
       folder, at the size you left it, with no visible jump to the top first.
+- [ ] In the viewer, Ctrl+C (⌘C on macOS) on a turned and cropped photo, then paste into a
+      chat app or document: the pasted picture is turned and cropped, and says "Photo copied".
+      Repeat from the grid (one photo selected, Ctrl+C and the menu's Copy photo); with two
+      selected, the menu has no Copy photo.
+- [ ] Select a caption's text in the info panel and press Ctrl+C: the text is copied, not the
+      photo.
 
 ## How watching works
 

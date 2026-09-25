@@ -755,6 +755,18 @@ export class LibraryStore {
     return this.folders.watched.some((w) => this.degraded[w.id]);
   }
 
+  /** Copies one photo to the clipboard and says so: a copy changes nothing on screen, and
+   *  without a word the user cannot tell a copy from a key that missed. Shared by the viewer
+   *  and the grid, so both say the same thing. */
+  copyPhoto = async (itemId: number): Promise<void> => {
+    try {
+      await api.copyPhoto(itemId);
+      this.notify('Photo copied');
+    } catch (e) {
+      this.reportError(e);
+    }
+  };
+
   reportError = (e: unknown): void => {
     this.toast(errorMessage(e), 'error');
   };

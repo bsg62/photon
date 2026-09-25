@@ -3,6 +3,7 @@
   import { canCompare } from '../lib/compare.svelte';
   import { copiesNotice, showCopiesLabel } from '../lib/copies';
   import { isOwnAlbum, ownAlbums } from '../lib/albums';
+  import { isCopyPhotoShortcut } from '../lib/copy-photo';
   import { library } from '../lib/library.svelte';
   import { gridSize } from '../lib/app-grid-size.svelte';
   import { buildRows, columnsFor, edgeScrollSpeed, firstVisibleOffset, GAP, itemSpan, itemsInRect, layoutSections, type Rect, rowOfItem, topFolderId, totalHeight, visibleRange } from '../lib/layout';
@@ -242,6 +243,15 @@
       if (library.selectionCount !== 1) return;
       const entry = sel === null ? undefined : library.entry(sel);
       if (entry) api.revealInFileManager(entry.id).catch(library.reportError);
+      return;
+    }
+    if (isCopyPhotoShortcut(e, (window.getSelection()?.toString() ?? '') !== '')) {
+      e.preventDefault();
+      // The clipboard holds one picture, so this follows the Reveal rule: exactly one photo
+      // selected, not just the lead of a wider selection.
+      if (library.selectionCount !== 1) return;
+      const entry = sel === null ? undefined : library.entry(sel);
+      if (entry) void library.copyPhoto(entry.id);
       return;
     }
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a') {
@@ -700,6 +710,8 @@
       <button role="menuitem" onclick={() => withSelection((ids) => api.revealInFileManager(ids[0]))}>
         Reveal in file manager
       </button>
+      <!-- One photo only: the clipboard holds one picture. -->
+      <button role="menuitem" onclick={() => withSelection((ids) => library.copyPhoto(ids[0]))}>Copy photo (Ctrl+C)</button>
     {/if}
     <button role="menuitem" onclick={() => withSelection((ids) => star(ids, true))}>Star {subject}</button>
     <button role="menuitem" onclick={() => withSelection((ids) => star(ids, false))}>Unstar {subject}</button>

@@ -235,8 +235,7 @@ pub fn render_full(
     edit: Edit,
     quality: u8,
 ) -> Result<(Vec<u8>, &'static str)> {
-    let img = crate::decode::decode_image(path)?;
-    let img = edit.apply(apply_orientation(img, orientation));
+    let img = render_picture(path, orientation, edit)?;
     let mut bytes = Vec::new();
     let mime = if img.color().has_alpha() {
         img.write_to(
@@ -252,6 +251,42 @@ pub fn render_full(
         "image/jpeg"
     };
     Ok((bytes, mime))
+}
+
+/// The photo as shown: decoded at full resolution, turned upright by its EXIF orientation,
+/// then turned and cropped by its edit. The one picture every full-size consumer draws from,
+/// so the viewer, an export and a copy can never disagree about what the photo looks like.
+pub fn render_picture(path: &Path, orientation: u8, edit: Edit) -> Result<DynamicImage> {
+    let img = crate::decode::decode_image(path)?;
+    Ok(edit.apply(apply_orientation(img, orientation)))
+}
+
+/// The longest edge a copied photo is given. Large enough for a chat, a mail or a document
+/// at full-screen size; a photo of a camera's full resolution is 96 MB of pixels on the
+/// clipboard and, on Linux, a PNG encode of several seconds before a paste works. The full
+/// file is what Export and Reveal are for.
+pub const CLIPBOARD_MAX_EDGE: u32 = 2560;
+
+/// RGBA pixels, row by row, as the clipboard takes them. Named here so the app crate can hold
+/// one without depending on `image` itself.
+pub type ClipboardPicture = image::RgbaImage;
+
+/// The photo as shown, as RGBA pixels for the clipboard, scaled down to
+/// [`CLIPBOARD_MAX_EDGE`] on its long edge if it is larger; a smaller photo keeps its size.
+pub fn clipboard_picture(path: &Path, orientation: u8, edit: Edit) -> Result<ClipboardPicture> {
+    let img = render_picture(path, orientation, edit)?;
+    let img = if img.width().max(img.height()) > CLIPBOARD_MAX_EDGE {
+        // Lanczos, not the Triangle the thumbnails use: this is a picture someone will look
+        // at full screen in another app, and it is made once per copy, not once per tile.
+        img.resize(
+            CLIPBOARD_MAX_EDGE,
+            CLIPBOARD_MAX_EDGE,
+            image::imageops::FilterType::Lanczos3,
+        )
+    } else {
+        img
+    };
+    Ok(img.into_rgba8())
 }
 
 /// High enough that a second generation is not visible at 100%, for a render the viewer
@@ -446,5 +481,48 @@ mod tests {
         assert_eq!(mime, "image/jpeg");
         let out = image::load_from_memory(&bytes).unwrap();
         assert_eq!((out.width(), out.height()), (32, 64));
+    }
+
+    #[test]
+    fn a_copied_picture_is_capped_at_its_long_edge() {
+        // Thin strips prove the cap as well as a square would, at a fraction of the decode.
+        let dir = tempfile::tempdir().unwrap();
+        let wide = crate::testutil::write_file(
+            dir.path(),
+            "wide.png",
+            &crate::testutil::png_bytes(5120, 20),
+        );
+        let tall = crate::testutil::write_file(
+            dir.path(),
+            "tall.png",
+            &crate::testutil::png_bytes(20, 5120),
+        );
+        let small = crate::testutil::write_file(
+            dir.path(),
+            "small.png",
+            &crate::testutil::png_bytes(100, 40),
+        );
+        let dims = |p: &Path| {
+            let img = clipboard_picture(p, 1, Edit::default()).unwrap();
+            (img.width(), img.height())
+        };
+        assert_eq!(dims(&wide), (CLIPBOARD_MAX_EDGE, 10), "aspect kept");
+        assert_eq!(dims(&tall), (10, CLIPBOARD_MAX_EDGE));
+        assert_eq!(
+            dims(&small),
+            (100, 40),
+            "a smaller photo is copied at its own size"
+        );
+    }
+
+    #[test]
+    fn a_copied_picture_is_the_photo_as_shown() {
+        // Orientation, then turns, then the crop - the same picture the viewer shows.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.png");
+        numbered().save(&path).unwrap();
+        let edit = Edit::new(1, Some(crop(0.0, 0.0, 1.0, 0.5))).unwrap();
+        let copied = clipboard_picture(&path, 1, edit).unwrap();
+        assert_eq!(copied, edit.apply(numbered()).to_rgba8());
     }
 }
