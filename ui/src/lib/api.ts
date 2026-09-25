@@ -143,7 +143,8 @@ export interface TagCount { tag: string; count: number; total: number }
  *  when reading tags; the photo files keep their keywords. */
 export interface TagRule { tag: string; target: string | null }
 export interface Album { id: number; name: string; createdMs: number }
-export interface AlbumSummary { id: number; name: string; count: number }
+/** `picasa`: mirrored from Picasa's INI by the scan - listed and viewable, never edited. */
+export interface AlbumSummary { id: number; name: string; count: number; picasa: boolean }
 /** A named query in the sidebar. No count: see `library/searches.rs` for why one would
  *  cost a full library pass per row on every change. */
 export interface SavedSearch { id: number; name: string; query: string; createdMs: number }

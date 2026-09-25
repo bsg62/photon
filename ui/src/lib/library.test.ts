@@ -137,7 +137,7 @@ describe('LibraryStore', () => {
     await store.init();
     expect(api.listAlbums).toHaveBeenCalledTimes(1);
 
-    vi.mocked(api.listAlbums).mockResolvedValue([{ id: 1, name: 'Trip', count: 2 }]);
+    vi.mocked(api.listAlbums).mockResolvedValue([{ id: 1, name: 'Trip', count: 2, picasa: false }]);
     vi.mocked(api.listPeople).mockResolvedValue([{ hash: 'abc', name: 'Ada', count: 1 }]);
     vi.mocked(api.listTags).mockResolvedValue([{ tag: 'beach', count: 3, total: 3 }]);
     vi.mocked(api.listSavedSearches).mockResolvedValue([
@@ -147,7 +147,7 @@ describe('LibraryStore', () => {
     await Promise.resolve();
     await Promise.resolve();
     await Promise.resolve();
-    expect(store.albums).toEqual([{ id: 1, name: 'Trip', count: 2 }]);
+    expect(store.albums).toEqual([{ id: 1, name: 'Trip', count: 2, picasa: false }]);
     expect(store.people[0]?.name).toBe('Ada');
     expect(store.tags[0]?.tag).toBe('beach');
     expect(store.albumName(1)).toBe('Trip');
@@ -157,8 +157,8 @@ describe('LibraryStore', () => {
 
     vi.mocked(api.createAlbum).mockResolvedValue({ id: 2, name: 'Zoo', createdMs: 0 });
     vi.mocked(api.listAlbums).mockResolvedValue([
-      { id: 1, name: 'Trip', count: 2 },
-      { id: 2, name: 'Zoo', count: 0 },
+      { id: 1, name: 'Trip', count: 2, picasa: false },
+      { id: 2, name: 'Zoo', count: 0, picasa: false },
     ]);
     await expect(store.createAlbum('Zoo')).resolves.toBe(2);
     expect(api.createAlbum).toHaveBeenCalledWith('Zoo');
