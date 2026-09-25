@@ -657,6 +657,28 @@ pub fn set_item_edit(
     Ok(())
 }
 
+/// The photo as the clipboard gets it: as shown, edits applied, capped at
+/// `edit::CLIPBOARD_MAX_EDGE`. The clipboard write itself is `ipc::copy_photo`'s, which holds
+/// the app handle this layer does not; here is everything a test can reach.
+pub fn copy_picture(engine: &Engine, id: i64) -> CmdResult<photon_core::edit::ClipboardPicture> {
+    let item = engine.lib.item(id)?.ok_or(Error::NotFound(id))?;
+    // One full-size decode at a time, the lock the viewer's render and export share. Held
+    // across the render only: the caller's clipboard write must not keep the next render,
+    // or the viewer's, waiting on the desktop's clipboard.
+    let _one_at_a_time = crate::protocol::RENDERING.lock();
+    photon_core::edit::clipboard_picture(Path::new(&item.path), item.orientation, item.edit)
+        .map_err(|err| match err {
+            Error::Io(io) if io.kind() == std::io::ErrorKind::NotFound => AppError {
+                kind: "notFound",
+                // Not "gone": a photo on an unmounted share reads as missing too, and is only
+                // offline. photon cannot tell the two apart from here.
+                message: "This photo can't be read: its file is gone, or its folder is offline."
+                    .into(),
+            },
+            err => err.into(),
+        })
+}
+
 pub fn set_star(engine: &Engine, id: i64, starred: bool) -> CmdResult<()> {
     engine.set_star(id, starred)?;
     Ok(())
@@ -928,6 +950,29 @@ mod tests {
         assert_eq!(item.albums, vec![album.id]);
         assert_eq!(list_people(&f.engine).unwrap()[0].name, "Ada");
         assert_eq!(list_tags(&f.engine).unwrap()[0].tag, "beach");
+    }
+
+    #[test]
+    fn a_copied_photo_is_the_edited_picture_and_a_missing_file_says_so() {
+        let f = fixture(&[("a.jpg", &jpeg(40, 20))]);
+        f.add_photos();
+        let id = f.ids()[0];
+        assert_eq!(copy_picture(&f.engine, id).unwrap().dimensions(), (40, 20));
+        set_item_edit(&f.engine, id, 1, None).unwrap();
+        assert_eq!(
+            copy_picture(&f.engine, id).unwrap().dimensions(),
+            (20, 40),
+            "turned, as the viewer shows it"
+        );
+        std::fs::remove_file(f.photos.join("a.jpg")).unwrap();
+        let err = copy_picture(&f.engine, id).unwrap_err();
+        assert_eq!(
+            (err.kind, err.message.as_str()),
+            (
+                "notFound",
+                "This photo can't be read: its file is gone, or its folder is offline."
+            )
+        );
     }
 
     #[test]

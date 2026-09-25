@@ -256,6 +256,8 @@ export const api = {
     invoke<void>('set_item_edit', { id, turns, crop }),
   neighbours: (id: number, radius: number) => invoke<number[]>('neighbours', { id, radius }),
   revealInFileManager: (id: number) => invoke<void>('reveal_in_file_manager', { id }),
+  /** Copies the photo, as shown and capped at 2560 px, to the clipboard as a picture. */
+  copyPhoto: (itemId: number) => invoke<void>('copy_photo', { itemId }),
   revealFolder: (folderId: number) => invoke<void>('reveal_folder', { folderId }),
 };
 

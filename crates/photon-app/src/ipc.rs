@@ -45,6 +45,33 @@ pub async fn remove_folder(engine: Eng<'_>, watched_id: i64) -> Result<(), AppEr
         .map_err(AppError::internal)?
 }
 
+/// Copies the photo, as shown, to the clipboard as a picture. An `async fn` that hands all of
+/// it to the blocking pool, like `add_folder`: the full-size decode takes a second or two and
+/// waits its turn behind any other full-size render, and the clipboard write is not cheap
+/// either - on Linux the clipboard library encodes a PNG inside it.
+#[tauri::command(async)]
+pub async fn copy_photo(
+    app: tauri::AppHandle,
+    engine: Eng<'_>,
+    item_id: i64,
+) -> Result<(), AppError> {
+    let engine = engine.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        use tauri_plugin_clipboard_manager::ClipboardExt;
+        // `copy_picture` drops the render lock when it returns: the write below must not
+        // hold up the viewer's next render.
+        let picture = commands::copy_picture(&engine, item_id)?;
+        let (width, height) = picture.dimensions();
+        let image = tauri::image::Image::new_owned(picture.into_raw(), width, height);
+        app.clipboard().write_image(&image).map_err(|err| AppError {
+            kind: "clipboard",
+            message: format!("Couldn't put the photo on the clipboard: {err}"),
+        })
+    })
+    .await
+    .map_err(AppError::internal)?
+}
+
 #[tauri::command(async)]
 pub fn rescan_folder(engine: Eng<'_>, watched_id: i64) -> Result<(), AppError> {
     commands::rescan_folder(engine.inner(), watched_id)

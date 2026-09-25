@@ -3,6 +3,7 @@
   import { canCompare } from '../lib/compare.svelte';
   import { copiesNotice, showCopiesLabel } from '../lib/copies';
   import { isOwnAlbum, ownAlbums } from '../lib/albums';
+  import { isCopyPhotoShortcut } from '../lib/copy-photo';
   import { library } from '../lib/library.svelte';
   import { gridSize } from '../lib/app-grid-size.svelte';
   import { buildRows, columnsFor, edgeScrollSpeed, firstVisibleOffset, GAP, itemSpan, itemsInRect, layoutSections, type Rect, rowOfItem, topFolderId, totalHeight, visibleRange } from '../lib/layout';
@@ -244,6 +245,15 @@
       if (entry) api.revealInFileManager(entry.id).catch(library.reportError);
       return;
     }
+    if (isCopyPhotoShortcut(e, (window.getSelection()?.toString() ?? '') !== '')) {
+      e.preventDefault();
+      // The clipboard holds one picture, so this follows the Reveal rule: exactly one photo
+      // selected, not just the lead of a wider selection.
+      if (library.selectionCount !== 1) return;
+      const entry = sel === null ? undefined : library.entry(sel);
+      if (entry) void library.copyPhoto(entry.id);
+      return;
+    }
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a') {
       // preventDefault or the webview selects the chrome's own text behind the grid.
       e.preventDefault();
@@ -376,6 +386,10 @@
     // The menu's own dismissal is the click that follows a press, and a band swallows that
     // click; left alone the menu would sit over the new selection describing the old one.
     menu = null;
+    // A press on the photos clears any text selection left on the folder headers: a click
+    // does not, and a stale selection would make the next Ctrl+C copy that text instead of
+    // the photo (isCopyPhotoShortcut), silently. A press on a header is someone selecting it.
+    if (!(e.target as HTMLElement).closest('.header')) window.getSelection()?.removeAllRanges();
     bandPointer = e.pointerId;
     bandAt = { x: e.clientX, y: e.clientY };
     const at = atCanvas(e.clientX, e.clientY);
@@ -700,6 +714,8 @@
       <button role="menuitem" onclick={() => withSelection((ids) => api.revealInFileManager(ids[0]))}>
         Reveal in file manager
       </button>
+      <!-- One photo only: the clipboard holds one picture. -->
+      <button role="menuitem" onclick={() => withSelection((ids) => library.copyPhoto(ids[0]))}>Copy photo</button>
     {/if}
     <button role="menuitem" onclick={() => withSelection((ids) => star(ids, true))}>Star {subject}</button>
     <button role="menuitem" onclick={() => withSelection((ids) => star(ids, false))}>Unstar {subject}</button>

@@ -7,6 +7,7 @@
   import { createTagEditor } from '../lib/tag-editor.svelte';
   import { formatCaption } from '../lib/caption';
   import { photoCaptionLine } from '../lib/photo-caption';
+  import { isCopyPhotoShortcut } from '../lib/copy-photo';
   import { createCopyFeedback } from '../lib/copied.svelte';
   import { cameraRows, copyGroups, formatDimensions } from '../lib/exif';
   import { showCopiesLabel } from '../lib/copies';
@@ -519,6 +520,13 @@
     // While the zoom slider has focus the arrow keys belong to it, which is how a range
     // input is expected to behave. Navigation stays available everywhere else.
     if (e.target instanceof HTMLInputElement) return;
+    // Ctrl+C / Cmd+C copies the photo on screen - after the input guard, so a caption or
+    // keyword field keeps its own copy, and never while text is selected (isCopyPhotoShortcut).
+    if (item && isCopyPhotoShortcut(e, (window.getSelection()?.toString() ?? '') !== '')) {
+      e.preventDefault();
+      void library.copyPhoto(item.id);
+      return;
+    }
     // Backspace closes as well, like the back button. Deliberately placed here: after the
     // input guard, so a text field gets its character deleted rather than the viewer
     // slammed shut; but before the empty-library check below, so it still closes when a
@@ -613,6 +621,9 @@
   }
 
   function onpointerdown(e: PointerEvent) {
+    // A press anywhere but the info panel clears a text selection left in it: a click does
+    // not, and the next Ctrl+C would copy that text instead of the photo, silently.
+    if (!(e.target as HTMLElement).closest('.info')) window.getSelection()?.removeAllRanges();
     // The zoom slider, the buttons and the info panel sit on the same surface: a press on
     // any of them is theirs, not the start of a pan.
     if ((e.target as HTMLElement).closest('.zoom, .close, .bar, .info')) return;
