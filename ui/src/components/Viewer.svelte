@@ -621,6 +621,9 @@
   }
 
   function onpointerdown(e: PointerEvent) {
+    // A press anywhere but the info panel clears a text selection left in it: a click does
+    // not, and the next Ctrl+C would copy that text instead of the photo, silently.
+    if (!(e.target as HTMLElement).closest('.info')) window.getSelection()?.removeAllRanges();
     // The zoom slider, the buttons and the info panel sit on the same surface: a press on
     // any of them is theirs, not the start of a pan.
     if ((e.target as HTMLElement).closest('.zoom, .close, .bar, .info')) return;

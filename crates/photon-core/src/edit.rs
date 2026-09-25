@@ -264,7 +264,9 @@ pub fn render_picture(path: &Path, orientation: u8, edit: Edit) -> Result<Dynami
 /// The longest edge a copied photo is given. Large enough for a chat, a mail or a document
 /// at full-screen size; a photo of a camera's full resolution is 96 MB of pixels on the
 /// clipboard and, on Linux, a PNG encode of several seconds before a paste works. The full
-/// file is what Export and Reveal are for.
+/// file is what Export and Reveal are for. The copy's peak memory is above the viewer's all the
+/// same - the Lanczos resize keeps a 32-bit float intermediate, about 245 MB for a 24 MP photo
+/// on top of its decode - and `protocol::RENDERING` is what keeps it to one at a time.
 pub const CLIPBOARD_MAX_EDGE: u32 = 2560;
 
 /// RGBA pixels, row by row, as the clipboard takes them. Named here so the app crate can hold
@@ -513,6 +515,24 @@ mod tests {
             (100, 40),
             "a smaller photo is copied at its own size"
         );
+    }
+
+    #[test]
+    fn a_copied_picture_turns_by_orientation_then_by_the_edit() {
+        // EXIF orientation 6 is a quarter turn clockwise, and one turn of the edit another:
+        // upside down in all. Compared against a picture rotated by hand, not through
+        // `apply_orientation`, so an orientation applied twice (three quarters) or not at all
+        // (one quarter) both fail - the full-size render had no orientation test before.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.png");
+        numbered().save(&path).unwrap();
+        let turn = Edit {
+            turns: 1,
+            crop: None,
+        };
+        let copied = clipboard_picture(&path, 6, turn).unwrap();
+        let upside_down = image::imageops::rotate180(&numbered().to_rgba8());
+        assert_eq!(copied, upside_down);
     }
 
     #[test]

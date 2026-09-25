@@ -45,6 +45,7 @@ vi.mock('./api', () => ({
     watchedFolderStats: vi.fn(),
     setItemsHidden: vi.fn(),
     setFolderHidden: vi.fn(),
+    copyPhoto: vi.fn(),
   },
   events: {
     onLibraryChanged: vi.fn((cb: Handler) => {
@@ -1297,4 +1298,25 @@ describe('LibraryStore', () => {
       });
     });
   });
+
+  it('drops a second copy of the same photo while the first is still rendering', async () => {
+    // A copy takes a second or two; an impatient second press must not queue another
+    // full-size decode of the same photo, nor say "Photo copied" twice.
+    let finish!: () => void;
+    vi.mocked(api.copyPhoto).mockReset().mockReturnValue(new Promise<void>((r) => (finish = r)));
+    const store = new LibraryStore();
+    const first = store.copyPhoto(7);
+    const second = store.copyPhoto(7);
+    await second;
+    expect(api.copyPhoto).toHaveBeenCalledTimes(1);
+    finish();
+    await first;
+    expect(store.toasts.map((t) => t.message)).toEqual(['Photo copied']);
+
+    // Once it has landed, the same photo can be copied again.
+    vi.mocked(api.copyPhoto).mockResolvedValue(undefined);
+    await store.copyPhoto(7);
+    expect(api.copyPhoto).toHaveBeenCalledTimes(2);
+  });
 });
+

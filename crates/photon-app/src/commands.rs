@@ -670,7 +670,10 @@ pub fn copy_picture(engine: &Engine, id: i64) -> CmdResult<photon_core::edit::Cl
         .map_err(|err| match err {
             Error::Io(io) if io.kind() == std::io::ErrorKind::NotFound => AppError {
                 kind: "notFound",
-                message: "This photo is no longer on disk.".into(),
+                // Not "gone": a photo on an unmounted share reads as missing too, and is only
+                // offline. photon cannot tell the two apart from here.
+                message: "This photo can't be read: its file is gone, or its folder is offline."
+                    .into(),
             },
             err => err.into(),
         })
@@ -965,7 +968,10 @@ mod tests {
         let err = copy_picture(&f.engine, id).unwrap_err();
         assert_eq!(
             (err.kind, err.message.as_str()),
-            ("notFound", "This photo is no longer on disk.")
+            (
+                "notFound",
+                "This photo can't be read: its file is gone, or its folder is offline."
+            )
         );
     }
 

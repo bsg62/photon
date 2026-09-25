@@ -144,8 +144,8 @@ picture, ready to paste into a chat, a mail or a document; in the grid it copies
 photo, and **Copy photo** in a tile's right-click menu does the same. The copy is the photo as
 photon shows it, turns and crops included, at most 2560 pixels on its long edge; for the
 full-size file use Export or Reveal in file manager. With text selected (a caption in the info
-panel, say), Ctrl+C copies the text instead. On Linux under X11, and with some Wayland
-compositors, the copied picture belongs to photon: paste it before you quit photon.
+panel, say), Ctrl+C copies the text instead. On Linux the picture is served by photon itself:
+unless a clipboard manager keeps a copy, paste it before you quit photon.
 
 ### Comparing photos
 
@@ -549,7 +549,8 @@ publishing it.
 - [ ] In the viewer, Ctrl+C (⌘C on macOS) on a turned and cropped photo, then paste into a
       chat app or document: the pasted picture is turned and cropped, and says "Photo copied".
       Repeat from the grid (one photo selected, Ctrl+C and the menu's Copy photo); with two
-      selected, the menu has no Copy photo.
+      selected, the menu has no Copy photo. Triple-click a folder header, click a photo, press
+      Ctrl+C: the photo is copied, not the header text. Hold Ctrl+C down: one "Photo copied".
 - [ ] Select a caption's text in the info panel and press Ctrl+C: the text is copied, not the
       photo.
 
