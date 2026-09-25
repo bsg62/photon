@@ -756,7 +756,7 @@
         {album.name}
       </button>
     {:else}
-      <div class="none">No albums yet — create one in the sidebar.</div>
+      <div class="none">No albums of your own yet — create one in the sidebar.</div>
     {/each}
   </div>
 {/if}

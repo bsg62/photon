@@ -76,8 +76,9 @@ written, and the next photo opens upright.
 The sidebar lists **Albums**, **People** and **Tags** above the years. Albums are photon's
 own and live only in its library: create one with "New album…", add photos from a tile's
 right-click menu or the info panel, and rename or delete from the album's right-click menu.
-People and Tags are read from Picasa's INI and from the photos themselves and cannot be
-edited here. The search box matches all of it: a camera or lens name, a keyword, `50mm`,
+Picasa's albums (see "Picasa albums" above) are read from its INI and cannot be edited here,
+and neither can People and Tags, which are read from Picasa's INI and from the photos
+themselves. The search box matches all of it: a camera or lens name, a keyword, `50mm`,
 `f/1.8`, `iso400`, or a date such as `2024-06`.
 
 Every word narrows the search: `italy lake` finds photos matching both, each word wherever

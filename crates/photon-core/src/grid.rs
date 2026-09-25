@@ -20,7 +20,8 @@ pub enum GridView {
     /// Photos with a face of one Picasa contact. The contact hash is the engine's view
     /// argument, like the search query.
     Person,
-    /// Photos in one of photon's albums. The album id is the view argument.
+    /// Photos in one of the library's albums, photon's own or Picasa's. The album id is the
+    /// view argument.
     Album,
     /// Photos carrying one keyword. The keyword is the view argument.
     Tag,

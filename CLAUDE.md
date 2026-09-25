@@ -442,9 +442,10 @@ action in `mock.js`.
   a writer with its own header/key logic drifts from the reader. Faces, contacts, albums and `hidden=` flags are read
   from the same INI and never written; keywords are read from the photo and never written (the user's renames and
   removals are `tag_rules` rows applied on read, `library/tags.rs`);
-  albums and edits (turns and crops) live only in `library.db` (both are by item id, so a
-  renamed file leaves its albums and loses its edit when its old row is purged — a recorded
-  limitation, not a bug). An edit never touches the photo: it is rendered on the way to the
+  photon's own albums and edits (turns and crops) live only in `library.db` (both are by item
+  id, so a renamed file leaves its albums and loses its edit when its old row is purged — a
+  recorded limitation, not a bug); Picasa's albums are read from its INI, as noted above, and
+  live nowhere else. An edit never touches the photo: it is rendered on the way to the
   screen.
 - **No native library dependencies.** Nothing wrapping a C/C++ SDK. This is what made packaging
   tractable on three platforms, and it is why XMP and INI parsing are hand-rolled or pure-Rust.

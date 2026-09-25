@@ -891,15 +891,16 @@ mod tests {
     fn an_album_section_is_never_a_photo() {
         // `[.album:t]` used to be read as a photo named `.album:t`. Its keys are the album's:
         // none of them may become a star, a hidden flag or a face. An `.album` section with no
-        // `name=`, or with an empty token, defines nothing - recorded under its token it would
-        // rename an album another folder named.
+        // `name=`, with an empty `name=`, or with an empty token, defines nothing - recorded
+        // under its token it would rename an album another folder named.
         let dir = tempfile::tempdir().unwrap();
         write_file(
             dir.path(),
             ".picasa.ini",
             b"[.album:t]\nstar=yes\nhidden=yes\nfaces=rect64(4000200080006000),abc\n\
               [.album:]\nname=No token\n\
-              [.album:u]\ntoken=u\n",
+              [.album:u]\ntoken=u\n\
+              [.album:v]\nname=\n",
         );
         let ini = read_folder(dir.path()).unwrap();
         assert!(ini.stars.is_empty(), "{:?}", ini.stars);

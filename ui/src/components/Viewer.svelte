@@ -827,7 +827,7 @@
           {/each}
         </ul>
       {:else if !picasaHere.length}
-        <p class="info-muted">No albums yet. Create one in the sidebar.</p>
+        <p class="info-muted">No albums of your own yet. Create one in the sidebar.</p>
       {/if}
       {#if picasaHere.length}
         <ul class="albums picasa-albums">

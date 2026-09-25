@@ -26,6 +26,7 @@ impl From<photon_core::Error> for AppError {
             NotFound(_) => "notFound",
             IniWrite { .. } => "iniWrite",
             EmptyAlbumName => "emptyAlbumName",
+            PicasaAlbum(_) => "picasaAlbum",
             EmptyTagName => "emptyTagName",
             EmptySearchName => "emptySearchName",
             EmptySearchQuery => "emptySearchQuery",

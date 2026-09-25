@@ -192,6 +192,12 @@ answers differently.
   Picasa rewrites the INI section too; a file renamed outside Picasa loses the membership, which
   is also what Picasa would then show.
 - `date=`, `location=` and `description=` of an album are not read.
+- Two INIs that define one token with different names (a backup copy of a folder written
+  before a rename in Picasa, say) take turns naming the album: the sidebar shows whichever
+  folder was scanned last, a watcher rescan of either folder flips the name back, and each such
+  scan counts as a rename and rebuilds the grid once. Accepted as "most recently read wins"; a
+  per-scan winner (preferring, say, the alphabetically first folder) would fix it but is not
+  worth the complexity for a case this narrow.
 
 ## Not in this feature
 

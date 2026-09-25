@@ -1,8 +1,13 @@
-//! photon's own albums: virtual collections that live only in `library.db`.
+//! Albums: virtual collections of photos, of two kinds.
 //!
-//! Nothing on disk changes when an album does. Membership is by item id, which is the one
-//! limitation worth knowing: a photo renamed on disk is a new row to the scanner, and the
-//! old row is purged two scans later with its memberships.
+//! photon's own albums live only in `library.db`, created, renamed and deleted here. Nothing
+//! on disk changes when one does. Membership is by item id, which is the one limitation worth
+//! knowing: a photo renamed on disk is a new row to the scanner, and the old row is purged two
+//! scans later with its memberships.
+//!
+//! Picasa's albums are mirrored by the scan from each folder's `.picasa.ini`, token-bearing
+//! (`picasa_token`) and read-only here: written only by the functions under "Picasa albums,
+//! written only by the scan" below, never by the user-facing create/rename/delete calls above.
 
 use super::Library;
 use crate::{Error, Result};
