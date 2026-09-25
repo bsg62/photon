@@ -53,9 +53,9 @@ ALTER TABLE items ADD COLUMN caption TEXT;
 
 NULL until a scan reads the photo. `NewItem` gains `caption: Option<String>`; every writer of an
 item row writes it - `insert_items`, `update_items` and `update_item_meta` (the backfill's
-writer). `Item` gains `caption` and every query that builds an `Item` selects it. The literal
-version numbers in `library/mod.rs` and `schema.rs` move to 18; the migration test seeds from
-`MIGRATIONS[..17]`.
+writer). `Library::item_caption(id)` reads it for the viewer; `Item` does not carry it, since
+only the viewer needs it. The literal version numbers in `library/mod.rs` and `schema.rs` move
+to 18; the migration test seeds from `MIGRATIONS[..17]`.
 
 **Backfill.** `metadata::EXIF_VERSION` 2 → 3, so the first scan after the upgrade re-describes
 every unchanged photo once and writes its caption through `update_item_meta`. Its doc comment

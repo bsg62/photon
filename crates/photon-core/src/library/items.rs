@@ -28,6 +28,8 @@ pub struct NewItem {
     pub camera: CameraMeta,
     /// Keywords read from the file's own XMP and IPTC.
     pub tags: Vec<String>,
+    /// The caption the file carries (`keywords::read_embedded`), `None` for none.
+    pub caption: Option<String>,
 }
 
 /// What the scanner needs to know about an indexed file to detect changes.
@@ -327,8 +329,8 @@ impl Library {
                 // a new file, or one renamed or moved in, which is a new row - arrives hidden
                 // (`library/hidden.rs`, Hide folder).
                 "INSERT INTO items (folder_id, path, file_name, kind, size, mtime_ms, width, height, orientation, taken_at, rating,
-                                    make, model, lens, focal_mm, aperture, exposure_s, iso, exif_version, hidden)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19,
+                                    make, model, lens, focal_mm, aperture, exposure_s, iso, exif_version, caption, hidden)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20,
                          coalesce((SELECT hidden FROM folders WHERE id = ?1), 0))",
             )?;
             for it in items {
@@ -353,6 +355,7 @@ impl Library {
                     c.exposure_s,
                     c.iso,
                     EXIF_VERSION,
+                    it.caption,
                 ])?;
                 let id = tx.last_insert_rowid();
                 write_tags(&tx, id, &it.tags)?;
@@ -381,7 +384,7 @@ impl Library {
                 "UPDATE items SET folder_id = ?2, path = ?3, file_name = ?4, kind = ?5, size = ?6, mtime_ms = ?7,
                         width = ?8, height = ?9, orientation = ?10, taken_at = ?11,
                         make = ?12, model = ?13, lens = ?14, focal_mm = ?15, aperture = ?16, exposure_s = ?17, iso = ?18,
-                        exif_version = ?19,
+                        exif_version = ?19, caption = ?20,
                         thumb_state = 0, thumb_error = NULL, missing_since = NULL,
                         content_hash = NULL, percep_hash = NULL, similar_group = NULL
                  WHERE id = ?1",
@@ -408,6 +411,7 @@ impl Library {
                     c.exposure_s,
                     c.iso,
                     EXIF_VERSION,
+                    it.caption,
                 ])?;
                 write_tags(&tx, *id, &it.tags)?;
             }
@@ -416,9 +420,9 @@ impl Library {
         Ok(())
     }
 
-    /// Rewrites only what `metadata::read_image_meta` and `keywords::read_keywords`
-    /// produce (the camera columns, the keywords and `exif_version`) for files the scanner
-    /// found unchanged but whose stored metadata predates the current reader.
+    /// Rewrites only what `metadata::read_image_meta` and `keywords::read_embedded`
+    /// produce (the camera columns, the keywords, the caption and `exif_version`) for files
+    /// the scanner found unchanged but whose stored metadata predates the current reader.
     ///
     /// Deliberately not `update_items`: that resets the thumbnail and bumps the garbage
     /// epoch because the file's fingerprint changed, and here it has not. Nor does this touch
@@ -435,7 +439,7 @@ impl Library {
         {
             let mut stmt = tx.prepare_cached(
                 "UPDATE items SET make = ?2, model = ?3, lens = ?4, focal_mm = ?5, aperture = ?6,
-                        exposure_s = ?7, iso = ?8, exif_version = ?9, taken_at = ?10
+                        exposure_s = ?7, iso = ?8, exif_version = ?9, taken_at = ?10, caption = ?11
                  WHERE id = ?1",
             )?;
             for (id, it) in items {
@@ -451,6 +455,7 @@ impl Library {
                     c.iso,
                     EXIF_VERSION,
                     it.taken_at,
+                    it.caption,
                 ])?;
                 write_tags(&tx, *id, &it.tags)?;
             }
@@ -480,6 +485,18 @@ impl Library {
         self.writer().execute(
             "UPDATE items SET taken_at = ?2, exif_version = 1 WHERE id = ?1",
             params![id, taken_at],
+        )?;
+        Ok(())
+    }
+
+    /// Test-only: makes a row look as it does after the caption column shipped, on a library
+    /// indexed under `EXIF_VERSION` 2 - caption unread, version behind - so the scanner's
+    /// backfill can be exercised on a file that has not changed.
+    #[cfg(test)]
+    pub(crate) fn forget_caption_for_test(&self, id: i64) -> Result<()> {
+        self.writer().execute(
+            "UPDATE items SET caption = NULL, exif_version = 2 WHERE id = ?1",
+            params![id],
         )?;
         Ok(())
     }
@@ -608,6 +625,20 @@ impl Library {
             )
             .optional()?;
         Ok(item)
+    }
+
+    /// The photo's caption, for the viewer. Not a field of `Item`: only the viewer reads it,
+    /// and every other query that builds an `Item` would carry it for nothing.
+    pub fn item_caption(&self, id: i64) -> Result<Option<String>> {
+        Ok(self
+            .reader()?
+            .query_row(
+                "SELECT caption FROM items WHERE id = ?1",
+                params![id],
+                |r| r.get(0),
+            )
+            .optional()?
+            .flatten())
     }
 
     /// Records the user's edit of one photo and sends its thumbnails back to be made.
@@ -932,6 +963,49 @@ mod tests {
         assert_eq!(item.missing_since, None);
         assert_eq!(item.thumb_key(), fingerprint("/p/a.jpg", 100, 1_000));
         assert!(lib.item(9_999).unwrap().is_none());
+    }
+
+    #[test]
+    fn insert_items_stores_the_caption() {
+        let (_dir, lib) = temp_library();
+        let (_w, folder) = seed_folder(&lib, Path::new("/p"));
+        let mut captioned = new_item(folder, "/p/a.jpg", 1);
+        captioned.caption = Some("Grandma's 80th".into());
+        let ids = lib
+            .insert_items(&[captioned, new_item(folder, "/p/b.jpg", 2)])
+            .unwrap();
+        assert_eq!(
+            lib.item_caption(ids[0]).unwrap().as_deref(),
+            Some("Grandma's 80th")
+        );
+        assert_eq!(lib.item_caption(ids[1]).unwrap(), None);
+    }
+
+    #[test]
+    fn update_items_rewrites_the_caption_including_to_none() {
+        // A file edited to remove its caption is a changed file; its row must lose it.
+        let (_dir, lib) = temp_library();
+        let (_w, folder) = seed_folder(&lib, Path::new("/p"));
+        let mut it = new_item(folder, "/p/a.jpg", 1);
+        it.caption = Some("old".into());
+        let id = lib.insert_items(&[it.clone()]).unwrap()[0];
+        it.caption = Some("new".into());
+        lib.update_items(&[(id, it.clone())]).unwrap();
+        assert_eq!(lib.item_caption(id).unwrap().as_deref(), Some("new"));
+        it.caption = None;
+        lib.update_items(&[(id, it)]).unwrap();
+        assert_eq!(lib.item_caption(id).unwrap(), None);
+    }
+
+    #[test]
+    fn update_item_meta_writes_the_caption() {
+        let (_dir, lib) = temp_library();
+        let (_w, folder) = seed_folder(&lib, Path::new("/p"));
+        let mut it = new_item(folder, "/p/a.jpg", 1);
+        let id = lib.insert_items(&[it.clone()]).unwrap()[0];
+        it.caption = Some("backfilled".into());
+        lib.update_item_meta(&[(id, it)]).unwrap();
+        assert_eq!(lib.item_caption(id).unwrap().as_deref(), Some("backfilled"));
     }
 
     #[test]

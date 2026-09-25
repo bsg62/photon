@@ -904,6 +904,7 @@ mod tests {
                 iso: Some(400),
             },
             tags: vec!["beach".into()],
+            caption: None,
         };
         f.engine.lib.update_item_meta(&[(id, described)]).unwrap();
         let album = f.engine.lib.create_album("Trip", 1).unwrap();
@@ -1090,6 +1091,7 @@ mod tests {
             rating: None,
             camera: Default::default(),
             tags: tags.iter().map(|t| t.to_string()).collect(),
+            caption: None,
         };
         f.engine.lib.update_item_meta(&[(id, described)]).unwrap();
     }

@@ -285,6 +285,12 @@ ALTER TABLE folders ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE albums ADD COLUMN picasa_token TEXT;
 CREATE UNIQUE INDEX albums_picasa_token ON albums(picasa_token);
 "#,
+    r#"
+-- The caption the photo carries (XMP dc:description, else IPTC 2:120), read by the
+-- scanner. NULL until a scan has read the file under EXIF_VERSION 3; the backfill
+-- re-reads every unchanged photo once to fill it in.
+ALTER TABLE items ADD COLUMN caption TEXT;
+"#,
 ];
 
 pub fn migrate(conn: &Connection) -> Result<()> {
@@ -536,7 +542,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 17);
+        assert_eq!(version, 18);
         let rules: i64 = conn
             .query_row("SELECT count(*) FROM tag_rules", [], |r| r.get(0))
             .unwrap();
@@ -695,7 +701,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 17);
+        assert_eq!(version, 18);
         let overlay: i64 = conn
             .query_row("SELECT count(*) FROM item_user_tags", [], |r| r.get(0))
             .unwrap();
@@ -745,7 +751,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 17);
+        assert_eq!(version, 18);
         let hash: Option<Vec<u8>> = conn
             .query_row("SELECT content_hash FROM items WHERE id = 1", [], |r| {
                 r.get(0)
@@ -886,7 +892,7 @@ mod tests {
             .unwrap();
         // Hardcoded, like every other version assertion here: `MIGRATIONS.len()` would
         // agree with itself whatever the list did, which is the tripwire removed.
-        assert_eq!(version, 17);
+        assert_eq!(version, 18);
     }
 
     /// Every folder in an existing library comes out of the upgrade visible.
@@ -924,7 +930,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 17);
+        assert_eq!(version, 18);
     }
 
     /// Every album in an existing library comes out of the upgrade as photon's own.
@@ -957,7 +963,46 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 17);
+        assert_eq!(version, 18);
+    }
+
+    /// Every photo in an existing library comes out of the upgrade uncaptioned, for the
+    /// backfill to fill in.
+    #[test]
+    fn migration_18_leaves_every_existing_photo_without_a_caption() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("library.db");
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        for sql in &MIGRATIONS[..17] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 17i64).unwrap();
+        conn.execute(
+            "INSERT INTO watched_folders (id, path) VALUES (1, '/p')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO folders (id, watched_id, parent_id, path, name, sort_key) VALUES (1, 1, NULL, '/p', 'p', 'p')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO items (id, folder_id, path, file_name, kind, size, mtime_ms, width, height, orientation, taken_at)
+             VALUES (1, 1, '/p/a.jpg', 'a.jpg', 0, 1, 1, 1, 1, 1, 1)",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+
+        let lib = crate::library::Library::open(&path).unwrap();
+        assert_eq!(lib.item_caption(1).unwrap(), None);
+        let version: i64 = lib
+            .reader()
+            .unwrap()
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, 18);
     }
 
     /// A stored Conservative or Loose keeps meaning Conservative or Loose.
@@ -991,7 +1036,7 @@ mod tests {
             let version: i64 = conn
                 .query_row("PRAGMA user_version", [], |r| r.get(0))
                 .unwrap();
-            assert_eq!(version, 17);
+            assert_eq!(version, 18);
         }
     }
 
@@ -1041,6 +1086,6 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 17);
+        assert_eq!(version, 18);
     }
 }
