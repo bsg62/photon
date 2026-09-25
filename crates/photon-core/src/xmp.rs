@@ -389,9 +389,23 @@ mod tests {
     }
 
     #[test]
-    fn a_description_with_a_character_reference_is_read_whole() {
+    fn a_description_with_an_entity_reference_is_read_whole() {
         let xml = xmp_packet_with_description(&[(Some("x-default"), "Tom & Jerry")]);
         assert_eq!(description_from_xml(&xml).as_deref(), Some("Tom & Jerry"));
+    }
+
+    #[test]
+    fn a_description_with_a_numeric_character_reference_is_read_whole() {
+        // `xmp_packet_with_description` escapes `&`, which would double-escape a numeric
+        // reference, so this packet is written out directly.
+        let xml = r#"<?xpacket begin="" id="W5M0MpCehiHzreSzNTczkc9d"?>
+<x:xmpmeta xmlns:x="adobe:ns:meta/">
+ <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+  <rdf:Description rdf:about="" xmlns:xmp="http://ns.adobe.com/xap/1.0/" xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:description><rdf:Alt><rdf:li xml:lang="x-default">Caf&#233; Lisboa</rdf:li></rdf:Alt></dc:description></rdf:Description>
+ </rdf:RDF>
+</x:xmpmeta>
+<?xpacket end="w"?>"#;
+        assert_eq!(description_from_xml(xml).as_deref(), Some("Café Lisboa"));
     }
 
     #[test]

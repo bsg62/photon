@@ -74,6 +74,9 @@ pub fn embedded_in(prefix: &[u8]) -> Embedded {
         .as_deref()
         .and_then(crate::xmp::description_from_xml)
         .or_else(|| crate::iptc::caption_in(prefix))
+        // Both current sources already trim and drop empties, so this holds `Embedded`'s
+        // contract (trimmed, never empty) for a future source that does not; it changes
+        // nothing for xmp::description_from_xml or iptc::caption_in today.
         .map(|c| c.trim().to_string())
         .filter(|c| !c.is_empty())
         .map(|c| c.chars().take(MAX_CAPTION_CHARS).collect());

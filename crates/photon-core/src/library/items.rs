@@ -905,7 +905,10 @@ impl Library {
                     haystacks.push(tags);
                 }
                 if let Some(caption) = r.get::<_, Option<String>>(base + 9)? {
-                    haystacks.push(caption);
+                    // A caption keeps its line breaks in storage, for the info panel to show
+                    // whole; a quoted phrase must still match across one, so the haystack
+                    // collapses runs of whitespace to single spaces.
+                    haystacks.push(caption.split_whitespace().collect::<Vec<_>>().join(" "));
                 }
                 haystacks.push(date_text(r.get(2)?));
                 let refs: Vec<&str> = haystacks.iter().map(String::as_str).collect();
@@ -1971,6 +1974,22 @@ mod tests {
             "words AND across the caption"
         );
         assert!(found("madrid").is_empty());
+    }
+
+    #[test]
+    fn a_quoted_phrase_matches_a_caption_across_a_stored_line_break() {
+        let (_dir, lib) = temp_library();
+        let (_w, folder) = seed_folder(&lib, Path::new("/p"));
+        let mut captioned = new_item(folder, "/p/IMG_1.jpg", 1);
+        captioned.caption = Some("on the\nterrace".into());
+        let ids = lib.insert_items(&[captioned]).unwrap();
+        let hits: Vec<i64> = lib
+            .entries_for(GridView::Search, "\"on the terrace\"")
+            .unwrap()
+            .into_iter()
+            .map(|e| e.id)
+            .collect();
+        assert_eq!(hits, vec![ids[0]]);
     }
 
     #[test]

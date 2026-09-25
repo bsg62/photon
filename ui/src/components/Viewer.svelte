@@ -872,8 +872,10 @@
   {/if}
   <!-- The photo's own caption, not the file-name line in the bar. A sibling of .bar, not
        inside it: the slideshow's quiet state fades the bar, and the caption is what a
-       slideshow is watched for. Hidden while cropping, when the space is the crop tool's. -->
-  {#if captionLine && !crop.active}
+       slideshow is watched for. Hidden while cropping, when the space is the crop tool's,
+       and hidden while the info panel is open: the panel shows the caption in full at its
+       top, and the strip would otherwise cross the panel. -->
+  {#if captionLine && !crop.active && !info}
     <p class="photo-caption" title={item?.caption ?? ''}>{captionLine}</p>
   {/if}
   <!-- The star and the caption share one bottom-centred row, so the star sits where the
@@ -1008,7 +1010,10 @@
     border-radius: var(--r-3); color: var(--text); font-size: var(--t-2); text-align: center;
     display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
   }
-  .info-caption { margin: 0; white-space: pre-line; }
+  /* The Camera section has no heading of its own, so unlike every other section - whose
+     gap above comes from its h3's margin-top - the caption has to supply that spacing
+     itself: the same var(--s-3) an h3 puts above the section that follows it. */
+  .info-caption { margin: 0 0 var(--s-3); white-space: pre-line; }
   /* Centred, with the zoom control's side kept clear on BOTH sides so it stays centred:
      the control measures 194px at 12px from the edge, and a little air after it makes 214.
      Without this the bar simply grows through it - the caption's old cap bounded the overlap

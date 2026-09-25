@@ -19,7 +19,8 @@ pub fn keywords_in(prefix: &[u8]) -> Vec<String> {
 }
 
 /// The first IPTC caption (2:120, Caption-Abstract) in the leading bytes of a JPEG, decoded
-/// like keywords. Picasa writes a caption typed under a photo here.
+/// like keywords. Picasa writes a caption typed under a photo here. A whitespace-only 2:120
+/// is skipped like an empty keyword, so the first *non-empty* caption record wins.
 pub fn caption_in(prefix: &[u8]) -> Option<String> {
     let mut captions = Vec::new();
     for payload in app13_segments(prefix) {
@@ -36,7 +37,9 @@ const SOS: u8 = 0xDA;
 const PHOTOSHOP_HEADER: &[u8] = b"Photoshop 3.0\0";
 const IPTC_RESOURCE: u16 = 0x0404;
 const IIM_MARKER: u8 = 0x1C;
-const KEYWORDS_RECORD: u8 = 2;
+/// IIM record 2, the application record: holds both the keywords dataset (2:25) and the
+/// caption dataset (2:120).
+const APPLICATION_RECORD: u8 = 2;
 const KEYWORDS_DATASET: u8 = 25;
 /// Caption-Abstract, where Picasa writes the caption.
 const CAPTION_DATASET: u8 = 120;
@@ -142,7 +145,7 @@ fn iim_values(bytes: &[u8], dataset: u8, out: &mut Vec<String>) {
         if data_end > bytes.len() {
             break;
         }
-        if record == KEYWORDS_RECORD && dataset_here == dataset {
+        if record == APPLICATION_RECORD && dataset_here == dataset {
             let value = decode(&bytes[data_start..data_end]);
             let value = value.trim();
             if !value.is_empty() {

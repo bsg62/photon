@@ -81,7 +81,15 @@ pub const SHOTS: &[Shot] = &[
         query: "theme=dark&do=menu",
         dark: true,
     },
-    // The viewer is dark in both themes; the light shot is the one that proves it.
+    // The viewer is dark in both themes; the light shot is the one that proves it. This one
+    // has neither the info panel nor the crop tool open, which is the state that shows the
+    // caption strip above the bar - `viewer-info-light` below hides it in favour of the
+    // panel's own Caption section.
+    Shot {
+        name: "viewer-light",
+        query: "theme=light&do=viewer",
+        dark: false,
+    },
     Shot {
         name: "viewer-info-light",
         query: "theme=light&do=info",
