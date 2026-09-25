@@ -50,6 +50,14 @@ fn takes_name(stored: &str, stored_at: Option<i64>, name: &str, named_at: i64) -
     stored != name && stored_at.is_none_or(|at| named_at > at)
 }
 
+/// Whether an INI written at `named_at` that agrees with the stored name makes the name
+/// younger. Stars and faces rewrite an INI as well as renames do; recording the rewrite of an
+/// agreeing INI is what keeps a stale copy written in between from renaming the album. Its
+/// SQL twin is the `freshen` statement in `upsert_picasa_albums`.
+fn freshens(stored: &str, stored_at: Option<i64>, name: &str, named_at: i64) -> bool {
+    stored == name && stored_at.is_none_or(|at| named_at > at)
+}
+
 impl Library {
     pub fn create_album(&self, name: &str, now_ms: i64) -> Result<Album> {
         let name = valid_name(name)?;
@@ -215,6 +223,8 @@ impl Library {
     /// the newest file, while a stale copy of a folder (a backup made before the rename)
     /// is older; without the age, the two took turns naming the album on every scan. A token
     /// that is only referenced is inserted under the token itself and never renames anything.
+    /// An INI that agrees with the name still records its age (uncounted), because stars and
+    /// faces rewrite INIs too: otherwise the stale copy, rewritten for a star, would be newest.
     /// A rescan of an unchanged INI writes nothing and counts 0 - counting it would rebuild
     /// the grid after every scan of a Picasa library.
     ///
@@ -233,6 +243,9 @@ impl Library {
         if defined.is_empty() && referenced.is_empty() {
             return Ok((ids, 0));
         }
+        // An INI dated in the future (a skewed clock, an archive with a 2099 mtime) is taken as
+        // written now, or it would refuse every real rename until its date came round.
+        let named_at = named_at.min(now_ms);
         let mut must_write = false;
         {
             let conn = self.reader()?;
@@ -256,7 +269,8 @@ impl Library {
                     None => must_write = true,
                     Some((id, stored, stored_at)) => {
                         if let Some(name) = defined.get(token)
-                            && takes_name(&stored, stored_at, name, named_at)
+                            && (takes_name(&stored, stored_at, name, named_at)
+                                || freshens(&stored, stored_at, name, named_at))
                         {
                             must_write = true;
                         }
@@ -286,9 +300,16 @@ impl Library {
                 "INSERT INTO albums (name, created_ms, picasa_token) VALUES (?1, ?2, ?1)
                  ON CONFLICT(picasa_token) DO NOTHING",
             )?;
+            // The same rule as `freshens`. Not counted: the name on screen does not change.
+            let mut freshen = tx.prepare_cached(
+                "UPDATE albums SET picasa_named_at = ?3
+                 WHERE picasa_token = ?1 AND name = ?2
+                   AND (picasa_named_at IS NULL OR picasa_named_at < ?3)",
+            )?;
             let mut id_of = tx.prepare_cached("SELECT id FROM albums WHERE picasa_token = ?1")?;
             for (token, name) in defined {
                 changed += define.execute(params![name, now_ms, token, named_at])? as u64;
+                freshen.execute(params![token, name, named_at])?;
             }
             for token in referenced.iter().filter(|t| !defined.contains_key(*t)) {
                 changed += refer.execute(params![token, now_ms])? as u64;
@@ -709,12 +730,12 @@ mod tests {
         // The newer INI first, the stale one second.
         let (_dir, lib) = temp_library();
         let (ids, _) = lib
-            .upsert_picasa_albums(&summer, &HashSet::new(), 200, 1)
+            .upsert_picasa_albums(&summer, &HashSet::new(), 200, 10_000 + 1)
             .unwrap();
         // The stale INI also names a new token, so the write happens and the SQL, not the
         // read, is what has to refuse the rename.
         let (_, changed) = lib
-            .upsert_picasa_albums(&holiday, &HashSet::from(["u".to_string()]), 100, 2)
+            .upsert_picasa_albums(&holiday, &HashSet::from(["u".to_string()]), 100, 10_000 + 2)
             .unwrap();
         assert_eq!(changed, 1, "only the new token is inserted");
         assert_eq!(lib.album(ids["t"]).unwrap().unwrap().name, "Summer");
@@ -722,20 +743,78 @@ mod tests {
         // The stale one first: the newer INI still wins.
         let (_dir2, lib2) = temp_library();
         let (ids, _) = lib2
-            .upsert_picasa_albums(&holiday, &HashSet::new(), 100, 1)
+            .upsert_picasa_albums(&holiday, &HashSet::new(), 100, 10_000 + 1)
             .unwrap();
         let (_, changed) = lib2
-            .upsert_picasa_albums(&summer, &HashSet::new(), 200, 2)
+            .upsert_picasa_albums(&summer, &HashSet::new(), 200, 10_000 + 2)
             .unwrap();
         assert_eq!(changed, 1);
         assert_eq!(lib2.album(ids["t"]).unwrap().unwrap().name, "Summer");
 
-        // Two INIs of the same age: the name read first stays, so nothing flips.
+        // Two INIs of the same age: the name read first stays, so nothing flips. Twice: once
+        // with nothing else to write, where the read must not even take the writer, and once
+        // with a new token beside it, where the write happens and the SQL must refuse the tie.
+        let before = lib2.writes_for_test();
         let (_, changed) = lib2
-            .upsert_picasa_albums(&holiday, &HashSet::new(), 200, 3)
+            .upsert_picasa_albums(&holiday, &HashSet::new(), 200, 10_000 + 3)
             .unwrap();
         assert_eq!(changed, 0);
+        assert_eq!(
+            lib2.writes_for_test(),
+            before,
+            "a same-age INI takes no writer"
+        );
+        let (_, changed) = lib2
+            .upsert_picasa_albums(&holiday, &HashSet::from(["v".to_string()]), 200, 10_000 + 4)
+            .unwrap();
+        assert_eq!(changed, 1, "only the new token");
         assert_eq!(lib2.album(ids["t"]).unwrap().unwrap().name, "Summer");
+    }
+
+    #[test]
+    fn an_agreeing_newer_ini_is_counted_as_nothing_but_keeps_the_name_fresh() {
+        // Stars and faces rewrite an INI too. When the rewritten INI agrees with the name, its
+        // age is recorded - uncounted, since nothing on screen changes - so a stale copy
+        // written in between cannot then rename the album.
+        let (_dir, lib) = temp_library();
+        let summer = HashMap::from([("t".to_string(), "Summer".to_string())]);
+        let holiday = HashMap::from([("t".to_string(), "Holiday".to_string())]);
+        let (ids, _) = lib
+            .upsert_picasa_albums(&summer, &HashSet::new(), 100, 10_000 + 1)
+            .unwrap();
+        let (_, changed) = lib
+            .upsert_picasa_albums(&summer, &HashSet::new(), 300, 10_000 + 2)
+            .unwrap();
+        assert_eq!(changed, 0, "an agreeing INI is not a rename");
+        let (_, changed) = lib
+            .upsert_picasa_albums(&holiday, &HashSet::new(), 200, 10_000 + 3)
+            .unwrap();
+        assert_eq!(changed, 0, "older than the agreeing rewrite");
+        assert_eq!(lib.album(ids["t"]).unwrap().unwrap().name, "Summer");
+
+        // On the write path (a new token beside it), an agreeing newer INI is still not a
+        // rename: the insert is the only change.
+        let (_, changed) = lib
+            .upsert_picasa_albums(&summer, &HashSet::from(["w".to_string()]), 400, 10_000 + 4)
+            .unwrap();
+        assert_eq!(changed, 1);
+    }
+
+    #[test]
+    fn an_ini_dated_in_the_future_cannot_pin_the_name() {
+        // A skewed clock, or an archive extracted with a year-2099 mtime: its age is taken as
+        // no later than now, or every real rename after it would be refused until 2099.
+        let (_dir, lib) = temp_library();
+        let future = HashMap::from([("t".to_string(), "From 2099".to_string())]);
+        let renamed = HashMap::from([("t".to_string(), "Renamed".to_string())]);
+        let (ids, _) = lib
+            .upsert_picasa_albums(&future, &HashSet::new(), 4_070_908_800_000, 1_000)
+            .unwrap();
+        let (_, changed) = lib
+            .upsert_picasa_albums(&renamed, &HashSet::new(), 2_000, 2_000)
+            .unwrap();
+        assert_eq!(changed, 1);
+        assert_eq!(lib.album(ids["t"]).unwrap().unwrap().name, "Renamed");
     }
 
     #[test]
