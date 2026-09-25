@@ -2,6 +2,7 @@
   import { api } from '../lib/api';
   import { canCompare } from '../lib/compare.svelte';
   import { copiesNotice, showCopiesLabel } from '../lib/copies';
+  import { isOwnAlbum, ownAlbums } from '../lib/albums';
   import { library } from '../lib/library.svelte';
   import { gridSize } from '../lib/app-grid-size.svelte';
   import { buildRows, columnsFor, edgeScrollSpeed, firstVisibleOffset, GAP, itemSpan, itemsInRect, layoutSections, type Rect, rowOfItem, topFolderId, totalHeight, visibleRange } from '../lib/layout';
@@ -611,7 +612,11 @@
         {:else if library.info.view === 'search'}
           No photos match “{library.info.searchQuery}”
         {:else if library.info.view === 'album'}
-          “{library.albumName(library.info.album)}” is empty. Right-click a photo to add it.
+          {#if isOwnAlbum(library.albums, library.info.album)}
+            “{library.albumName(library.info.album)}” is empty. Right-click a photo to add it.
+          {:else}
+            This album has no photos in the library.
+          {/if}
         {:else if library.info.view === 'person'}
           No photos of {library.personName(library.info.person)}.
         {:else if library.info.view === 'duplicates'}
@@ -680,7 +685,9 @@
 </div>
 
 {#if menu}
-  {@const albumId = library.info.view === 'album' ? library.info.album : null}
+  <!-- Only photon's own album offers "Remove from": Picasa's are changed in Picasa. -->
+  {@const albumId =
+    library.info.view === 'album' && isOwnAlbum(library.albums, library.info.album) ? library.info.album : null}
   <div
     class="menu focus-container"
     role="menu"
@@ -741,7 +748,7 @@
       >
     {/if}
     <div class="heading">Add to album</div>
-    {#each library.albums as album (album.id)}
+    {#each ownAlbums(library.albums) as album (album.id)}
       <!-- Adding is idempotent, so the album the photos are already in is not filtered out
            here: the grid rows do not know their memberships, and asking per photo for a
            menu would be a round trip for nothing. -->
@@ -749,7 +756,7 @@
         {album.name}
       </button>
     {:else}
-      <div class="none">No albums yet — create one in the sidebar.</div>
+      <div class="none">No albums of your own yet — create one in the sidebar.</div>
     {/each}
   </div>
 {/if}

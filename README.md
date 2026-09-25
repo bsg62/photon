@@ -40,6 +40,16 @@ first photo is starred; an old `Picasa.ini` is edited in place. On Windows the f
 hidden attribute is kept. If Picasa has the file open at that moment the write fails with
 a message and nothing changes; try again once Picasa has finished.
 
+### Picasa albums
+
+Albums you made in Picasa 3 appear in photon's **Albums** list, marked with a small
+stacked-photos icon, once the folders holding their photos have been scanned. photon reads
+them from the same `.picasa.ini` Picasa writes beside the photos and follows every change on
+the next scan, but never changes them: renaming, deleting, adding and removing are Picasa's.
+To make one editable, open it, select its photos and add them to an album of your own. An
+album Picasa kept only in its own database, never written into a folder's INI, does not
+appear.
+
 ### File formats
 
 photon indexes JPEG, PNG, GIF, WebP, TIFF, BMP and AVIF. A TIFF holding several pages is shown
@@ -59,15 +69,16 @@ the file watcher; nothing already indexed is re-read and no thumbnail is rebuilt
 The viewer's ⓘ button (or `I`) opens an info panel: camera, lens, focal length, aperture,
 shutter speed and ISO from the photo's EXIF; the keywords the photo carries in its XMP or
 IPTC (as written by Picasa, Lightroom, Bridge, digiKam and the like); the people Picasa
-named in the folder's `.picasa.ini`, outlined over the photo while the panel is open; and
-checkboxes for photon's albums. `R` and `Shift+R` turn the photo on screen; nothing is
+named in the folder's `.picasa.ini`, outlined over the photo while the panel is open;
+checkboxes for photon's albums; and the Picasa albums the photo is in. `R` and `Shift+R` turn the photo on screen; nothing is
 written, and the next photo opens upright.
 
 The sidebar lists **Albums**, **People** and **Tags** above the years. Albums are photon's
 own and live only in its library: create one with "New album…", add photos from a tile's
 right-click menu or the info panel, and rename or delete from the album's right-click menu.
-People and Tags are read from Picasa's INI and from the photos themselves and cannot be
-edited here. The search box matches all of it: a camera or lens name, a keyword, `50mm`,
+Picasa's albums (see "Picasa albums" above) are read from its INI and cannot be edited here,
+and neither can People and Tags, which are read from Picasa's INI and from the photos
+themselves. The search box matches all of it: a camera or lens name, a keyword, `50mm`,
 `f/1.8`, `iso400`, or a date such as `2024-06`.
 
 Every word narrows the search: `italy lake` finds photos matching both, each word wherever
@@ -412,6 +423,10 @@ publishing it.
 - [ ] A photo with keywords written by Picasa, Lightroom or digiKam lists them under Keywords in the info panel, and each appears under Tags in the sidebar with a count; clicking a tag shows exactly those photos.
 - [ ] A folder whose `.picasa.ini` names faces lists the names under People in the info panel, outlines each face over the photo while the panel is open (also after `R`), and lists the person in the sidebar's People group; clicking the person shows their photos. Naming a new face in Picasa appears within a rescan, without the photo changing.
 - [ ] "New album…" in the sidebar takes a name on Enter and cancels on Escape or an empty name. A tile's right-click menu adds the photo to an album; in the album view it offers "Remove from". The info panel's checkboxes add and remove too, and the sidebar count follows. Rename and Delete… work from the album's right-click menu, and deleting the album on screen returns to All.
+- [ ] On a real Picasa library, `grep -rl --include='*icasa.ini' '^\[\.album:' <library>` finds INIs, and their albums appear under Albums with the Picasa icon and Picasa's photo counts. **This confirms the INI album format, which was designed from documentation; if it fails, the parser changes before release.**
+- [ ] Right-clicking a Picasa album opens no menu; the grid's "Add to album" does not list it; its view offers no "Remove from".
+- [ ] The info panel lists the photo's Picasa albums below the album checkboxes, without checkboxes.
+- [ ] Renaming an album in Picasa and rescanning renames it in photon.
 - [ ] Typing a camera name, a lens, a keyword, `50mm`, `f/1.8`, `iso400` or a date like `2024-06` in the search box finds the matching photos.
 - [ ] On a library built by v0.12 or earlier, the first scan after upgrading fills in camera data and keywords for existing photos without changing their thumbnails, and the second scan does not re-read them.
 - [ ] Clicking Recent shows the newest photos first across folders, capped at 500, as one continuous run of tiles with no folder headers and no gaps where the folder changes.

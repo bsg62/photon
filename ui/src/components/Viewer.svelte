@@ -3,6 +3,7 @@
   import { writeText } from '@tauri-apps/plugin-clipboard-manager';
   import { api, errorMessage, mediaUrl, type ViewerItem } from '../lib/api';
   import { createAlbumMembership } from '../lib/album-membership.svelte';
+  import { ownAlbums, picasaAlbumsOf } from '../lib/albums';
   import { createTagEditor } from '../lib/tag-editor.svelte';
   import { formatCaption } from '../lib/caption';
   import { createCopyFeedback } from '../lib/copied.svelte';
@@ -152,6 +153,11 @@
   function toggleAlbum(albumId: number) {
     membership.toggle(albumId).catch(library.reportError);
   }
+
+  // The info panel's checkboxes are photon's albums only; Picasa's are listed read-only, and
+  // only the ones this photo is in - every one unchecked would bury photon's own.
+  const ownAlbumList = $derived(ownAlbums(library.albums));
+  const picasaHere = $derived(item ? picasaAlbumsOf(library.albums, item.albums) : []);
 
   // The tag editor in the info panel. Bound per photo with the star and the album
   // checkboxes, and optimistic for the same reason.
@@ -804,9 +810,9 @@
         {/each}
       </datalist>
       <h3>Albums</h3>
-      {#if library.albums.length}
+      {#if ownAlbumList.length}
         <ul class="albums">
-          {#each library.albums as album (album.id)}
+          {#each ownAlbumList as album (album.id)}
             <li>
               <label>
                 <input
@@ -820,8 +826,15 @@
             </li>
           {/each}
         </ul>
-      {:else}
-        <p class="info-muted">No albums yet. Create one in the sidebar.</p>
+      {:else if !picasaHere.length}
+        <p class="info-muted">No albums of your own yet. Create one in the sidebar.</p>
+      {/if}
+      {#if picasaHere.length}
+        <ul class="albums picasa-albums">
+          {#each picasaHere as album (album.id)}
+            <li title="From Picasa. Change it in Picasa."><Icon name="images" size={12} />{album.name}</li>
+          {/each}
+        </ul>
       {/if}
       {#each copies as group (group.kind)}
         <!-- Absent rather than "none": nearly every photo has no copy, and the panel is
@@ -1062,6 +1075,7 @@
   .copies li { display: flex; align-items: baseline; gap: 6px; padding: 2px 0; }
   .all-copies { margin: var(--s-2) 0 0; font-size: var(--t-2); }
   .albums label { display: flex; align-items: center; gap: 8px; padding: 2px 0; cursor: pointer; }
+  .picasa-albums li { display: flex; align-items: center; gap: 8px; padding: 2px 0; color: var(--text-dim); }
   .chip-remove {
     display: grid;
     place-items: center;

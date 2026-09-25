@@ -278,6 +278,13 @@ UPDATE settings SET value = CASE value WHEN '3' THEN '7' WHEN '6' THEN '10' ELSE
 -- folder is inserted hidden - so visibility stays one rule, read from one column.
 ALTER TABLE folders ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0;
 "#,
+    r#"
+-- Picasa's albums (`[.album:<token>]` in a folder's INI) are rows here too, so every reader
+-- of albums serves them unchanged. The token is what the scan matches an album by; NULL marks
+-- one of photon's own, and a unique index admits any number of NULLs.
+ALTER TABLE albums ADD COLUMN picasa_token TEXT;
+CREATE UNIQUE INDEX albums_picasa_token ON albums(picasa_token);
+"#,
 ];
 
 pub fn migrate(conn: &Connection) -> Result<()> {
@@ -529,7 +536,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 16);
+        assert_eq!(version, 17);
         let rules: i64 = conn
             .query_row("SELECT count(*) FROM tag_rules", [], |r| r.get(0))
             .unwrap();
@@ -688,7 +695,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 16);
+        assert_eq!(version, 17);
         let overlay: i64 = conn
             .query_row("SELECT count(*) FROM item_user_tags", [], |r| r.get(0))
             .unwrap();
@@ -738,7 +745,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 16);
+        assert_eq!(version, 17);
         let hash: Option<Vec<u8>> = conn
             .query_row("SELECT content_hash FROM items WHERE id = 1", [], |r| {
                 r.get(0)
@@ -879,7 +886,7 @@ mod tests {
             .unwrap();
         // Hardcoded, like every other version assertion here: `MIGRATIONS.len()` would
         // agree with itself whatever the list did, which is the tripwire removed.
-        assert_eq!(version, 16);
+        assert_eq!(version, 17);
     }
 
     /// Every folder in an existing library comes out of the upgrade visible.
@@ -917,7 +924,40 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 16);
+        assert_eq!(version, 17);
+    }
+
+    /// Every album in an existing library comes out of the upgrade as photon's own.
+    #[test]
+    fn migration_17_keeps_existing_albums_as_photons_own() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("library.db");
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        for sql in &MIGRATIONS[..16] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 16i64).unwrap();
+        conn.execute(
+            "INSERT INTO albums (id, name, created_ms) VALUES (1, 'Trip', 5)",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+
+        let lib = crate::library::Library::open(&path).unwrap();
+        let conn = lib.reader().unwrap();
+        let (name, token): (String, Option<String>) = conn
+            .query_row(
+                "SELECT name, picasa_token FROM albums WHERE id = 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((name.as_str(), token), ("Trip", None));
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, 17);
     }
 
     /// A stored Conservative or Loose keeps meaning Conservative or Loose.
@@ -951,7 +991,7 @@ mod tests {
             let version: i64 = conn
                 .query_row("PRAGMA user_version", [], |r| r.get(0))
                 .unwrap();
-            assert_eq!(version, 16);
+            assert_eq!(version, 17);
         }
     }
 
@@ -1001,6 +1041,6 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 16);
+        assert_eq!(version, 17);
     }
 }

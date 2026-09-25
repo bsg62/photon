@@ -1,13 +1,19 @@
-//! photon's own albums: virtual collections that live only in `library.db`.
+//! Albums: virtual collections of photos, of two kinds.
 //!
-//! Nothing on disk changes when an album does. Membership is by item id, which is the one
-//! limitation worth knowing: a photo renamed on disk is a new row to the scanner, and the
-//! old row is purged two scans later with its memberships.
+//! photon's own albums live only in `library.db`, created, renamed and deleted here. Nothing
+//! on disk changes when one does. Membership is by item id, which is the one limitation worth
+//! knowing: a photo renamed on disk is a new row to the scanner, and the old row is purged two
+//! scans later with its memberships.
+//!
+//! Picasa's albums are mirrored by the scan from each folder's `.picasa.ini`, token-bearing
+//! (`picasa_token`) and read-only here: written only by the functions under "Picasa albums,
+//! written only by the scan" below, never by the user-facing create/rename/delete calls above.
 
 use super::Library;
 use crate::{Error, Result};
 use rusqlite::{OptionalExtension, params};
 use serde::Serialize;
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -24,6 +30,8 @@ pub struct AlbumSummary {
     pub id: i64,
     pub name: String,
     pub count: i64,
+    /// Mirrored from Picasa's INI by the scan: listed and viewable, never edited here.
+    pub picasa: bool,
 }
 
 /// A trimmed, non-empty album name, or the error the UI shows.
@@ -50,8 +58,30 @@ impl Library {
         })
     }
 
+    /// Refuses anything but one of photon's own albums: `NotFound` for no album,
+    /// `PicasaAlbum` for one the scan mirrors from Picasa. Every photon write to an album
+    /// asks this first; the UI hides those actions on a Picasa album, and this is what makes
+    /// that true over IPC. The scan writes a Picasa album's members through
+    /// `set_picasa_album_items`, which never comes here.
+    fn own_album(&self, id: i64) -> Result<()> {
+        let token: Option<Option<String>> = self
+            .reader()?
+            .query_row(
+                "SELECT picasa_token FROM albums WHERE id = ?1",
+                params![id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        match token {
+            None => Err(Error::NotFound(id)),
+            Some(Some(_)) => Err(Error::PicasaAlbum(id)),
+            Some(None) => Ok(()),
+        }
+    }
+
     pub fn rename_album(&self, id: i64, name: &str) -> Result<()> {
         let name = valid_name(name)?;
+        self.own_album(id)?;
         let changed = self.writer().execute(
             "UPDATE albums SET name = ?2 WHERE id = ?1",
             params![id, name],
@@ -65,6 +95,7 @@ impl Library {
     /// Deletes an album and its memberships. Photos are untouched, on disk and in the
     /// library.
     pub fn delete_album(&self, id: i64) -> Result<()> {
+        self.own_album(id)?;
         let changed = self
             .writer()
             .execute("DELETE FROM albums WHERE id = ?1", params![id])?;
@@ -93,11 +124,12 @@ impl Library {
     }
 
     /// Every album with its live photo count, sorted by name in Rust (case-insensitively;
-    /// `lower()` is ASCII-only without ICU). An empty album is listed with a count of 0.
+    /// `lower()` is ASCII-only without ICU). An empty photon album is listed with a count of
+    /// 0; an empty Picasa album is left out, since it has lost every photo it once mirrored.
     pub fn albums_with_counts(&self) -> Result<Vec<AlbumSummary>> {
         let conn = self.reader()?;
         let mut stmt = conn.prepare(
-            "SELECT a.id, a.name,
+            "SELECT a.id, a.name, a.picasa_token IS NOT NULL,
                     (SELECT count(*) FROM album_items m JOIN items i ON i.id = m.item_id
                      WHERE m.album_id = a.id AND i.missing_since IS NULL AND i.hidden = 0)
              FROM albums a",
@@ -107,10 +139,15 @@ impl Library {
                 Ok(AlbumSummary {
                     id: r.get(0)?,
                     name: r.get(1)?,
-                    count: r.get(2)?,
+                    picasa: r.get(2)?,
+                    count: r.get(3)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
+        // A Picasa album with no live photo has left this library; its row stays, so a
+        // folder that comes back finds the same album. An empty photon album is one the user
+        // just made, and stays listed.
+        albums.retain(|a| !a.picasa || a.count > 0);
         albums.sort_by_cached_key(|a| (a.name.to_lowercase(), a.name.clone(), a.id));
         Ok(albums)
     }
@@ -118,9 +155,7 @@ impl Library {
     /// Adds photos to an album. Already-members are left alone, so adding twice is not an
     /// error and does not move the photo's `added_ms`.
     pub fn add_to_album(&self, album_id: i64, item_ids: &[i64], now_ms: i64) -> Result<()> {
-        if self.album(album_id)?.is_none() {
-            return Err(Error::NotFound(album_id));
-        }
+        self.own_album(album_id)?;
         let mut conn = self.writer();
         let tx = conn.transaction()?;
         {
@@ -136,6 +171,7 @@ impl Library {
     }
 
     pub fn remove_from_album(&self, album_id: i64, item_ids: &[i64]) -> Result<()> {
+        self.own_album(album_id)?;
         let mut conn = self.writer();
         let tx = conn.transaction()?;
         {
@@ -160,6 +196,110 @@ impl Library {
             .collect::<rusqlite::Result<Vec<i64>>>()?;
         Ok(ids)
     }
+
+    // ---- Picasa albums, written only by the scan ----
+
+    /// Inserts the albums one INI defines and the tokens its photos name, and returns every
+    /// one's id by token, with how many albums it inserted or renamed.
+    ///
+    /// A defined album takes the INI's name, so a rename in Picasa is followed. A token that
+    /// is only referenced is inserted under the token itself and never renames anything:
+    /// Picasa repeats an album's definition in every folder with a member, so whichever
+    /// folder is scanned first the name ends up the one the definitions give. A rescan of an
+    /// unchanged INI writes nothing and counts 0 - counting it would rebuild the grid after
+    /// every scan of a Picasa library.
+    pub fn upsert_picasa_albums(
+        &self,
+        defined: &HashMap<String, String>,
+        referenced: &HashSet<String>,
+        now_ms: i64,
+    ) -> Result<(HashMap<String, i64>, u64)> {
+        let mut ids = HashMap::new();
+        if defined.is_empty() && referenced.is_empty() {
+            return Ok((ids, 0));
+        }
+        let mut changed = 0u64;
+        let mut conn = self.writer();
+        let tx = conn.transaction()?;
+        {
+            let mut define = tx.prepare_cached(
+                "INSERT INTO albums (name, created_ms, picasa_token) VALUES (?1, ?2, ?3)
+                 ON CONFLICT(picasa_token) DO UPDATE SET name = excluded.name
+                 WHERE name != excluded.name",
+            )?;
+            let mut refer = tx.prepare_cached(
+                "INSERT INTO albums (name, created_ms, picasa_token) VALUES (?1, ?2, ?1)
+                 ON CONFLICT(picasa_token) DO NOTHING",
+            )?;
+            let mut id_of = tx.prepare_cached("SELECT id FROM albums WHERE picasa_token = ?1")?;
+            for (token, name) in defined {
+                changed += define.execute(params![name, now_ms, token])? as u64;
+            }
+            for token in referenced.iter().filter(|t| !defined.contains_key(*t)) {
+                changed += refer.execute(params![token, now_ms])? as u64;
+            }
+            for token in defined.keys().chain(referenced) {
+                if !ids.contains_key(token) {
+                    let id: i64 = id_of.query_row(params![token], |r| r.get(0))?;
+                    ids.insert(token.clone(), id);
+                }
+            }
+        }
+        tx.commit()?;
+        Ok((ids, changed))
+    }
+
+    /// The Picasa-album memberships of every live photo in one folder, by item id, for the
+    /// Picasa pass to diff against what the INI says now. photon's own albums are left out:
+    /// the pass never touches them.
+    pub fn folder_picasa_albums(&self, folder_id: i64) -> Result<HashMap<i64, BTreeSet<i64>>> {
+        let conn = self.reader()?;
+        let mut stmt = conn.prepare_cached(
+            "SELECT m.item_id, m.album_id
+             FROM album_items m
+             JOIN items i ON i.id = m.item_id
+             JOIN albums a ON a.id = m.album_id
+             WHERE i.folder_id = ?1 AND i.missing_since IS NULL AND a.picasa_token IS NOT NULL",
+        )?;
+        let mut memberships: HashMap<i64, BTreeSet<i64>> = HashMap::new();
+        for row in stmt.query_map(params![folder_id], |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))
+        })? {
+            let (item_id, album_id) = row?;
+            memberships.entry(item_id).or_default().insert(album_id);
+        }
+        Ok(memberships)
+    }
+
+    /// Replaces each listed photo's Picasa-album memberships with the given set, in one
+    /// transaction. Only Picasa albums' rows are deleted, so a photo keeps its photon albums.
+    /// The album ids come from `upsert_picasa_albums`, which is why they are not checked
+    /// here, and why this is the scan's writer and not a command's.
+    pub fn set_picasa_album_items(
+        &self,
+        items: &[(i64, BTreeSet<i64>)],
+        now_ms: i64,
+    ) -> Result<()> {
+        let mut conn = self.writer();
+        let tx = conn.transaction()?;
+        {
+            let mut clear = tx.prepare_cached(
+                "DELETE FROM album_items WHERE item_id = ?1
+                 AND album_id IN (SELECT id FROM albums WHERE picasa_token IS NOT NULL)",
+            )?;
+            let mut insert = tx.prepare_cached(
+                "INSERT OR IGNORE INTO album_items (album_id, item_id, added_ms) VALUES (?1, ?2, ?3)",
+            )?;
+            for (item_id, albums) in items {
+                clear.execute(params![item_id])?;
+                for album_id in albums {
+                    insert.execute(params![album_id, item_id, now_ms])?;
+                }
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -167,6 +307,7 @@ mod tests {
     use super::*;
     use crate::grid::GridView;
     use crate::testutil::{new_item, seed_folder, temp_library};
+    use std::collections::{BTreeSet, HashMap, HashSet};
     use std::path::Path;
 
     #[test]
@@ -186,12 +327,14 @@ mod tests {
                 AlbumSummary {
                     id: alpha.id,
                     name: "alpha".into(),
-                    count: 0
+                    count: 0,
+                    picasa: false
                 },
                 AlbumSummary {
                     id: trip.id,
                     name: "Trip".into(),
-                    count: 0
+                    count: 0,
+                    picasa: false
                 },
             ],
             "sorted case-insensitively, empties listed"
@@ -297,5 +440,205 @@ mod tests {
             .query_row("SELECT count(*) FROM album_items", [], |r| r.get(0))
             .unwrap();
         assert_eq!(rows, 0);
+    }
+
+    /// A Picasa album as the scan would leave it, before the scan's own writer exists.
+    fn picasa_album(lib: &Library, token: &str, name: &str) -> i64 {
+        let conn = lib.writer();
+        conn.execute(
+            "INSERT INTO albums (name, created_ms, picasa_token) VALUES (?1, 0, ?2)",
+            params![name, token],
+        )
+        .unwrap();
+        conn.last_insert_rowid()
+    }
+
+    #[test]
+    fn a_picasa_album_cannot_be_renamed() {
+        let (_dir, lib) = temp_library();
+        let id = picasa_album(&lib, "t", "Holiday");
+        assert!(matches!(
+            lib.rename_album(id, "Mine"),
+            Err(Error::PicasaAlbum(_))
+        ));
+        assert_eq!(lib.album(id).unwrap().unwrap().name, "Holiday");
+        let own = lib.create_album("Trip", 1).unwrap();
+        lib.rename_album(own.id, "Zurich").unwrap();
+    }
+
+    #[test]
+    fn a_picasa_album_cannot_be_deleted() {
+        let (_dir, lib) = temp_library();
+        let id = picasa_album(&lib, "t", "Holiday");
+        assert!(matches!(lib.delete_album(id), Err(Error::PicasaAlbum(_))));
+        assert!(lib.album(id).unwrap().is_some());
+        let own = lib.create_album("Trip", 1).unwrap();
+        lib.delete_album(own.id).unwrap();
+    }
+
+    #[test]
+    fn nothing_can_be_added_to_a_picasa_album() {
+        let (_dir, lib) = temp_library();
+        let (_watched, folder) = seed_folder(&lib, Path::new("/p"));
+        let ids = lib
+            .insert_items(&[new_item(folder, "/p/a.jpg", 1)])
+            .unwrap();
+        let id = picasa_album(&lib, "t", "Holiday");
+        assert!(matches!(
+            lib.add_to_album(id, &ids, 5),
+            Err(Error::PicasaAlbum(_))
+        ));
+        assert!(lib.item_albums(ids[0]).unwrap().is_empty());
+        let own = lib.create_album("Trip", 1).unwrap();
+        lib.add_to_album(own.id, &ids, 5).unwrap();
+    }
+
+    #[test]
+    fn nothing_can_be_removed_from_a_picasa_album() {
+        let (_dir, lib) = temp_library();
+        let (_watched, folder) = seed_folder(&lib, Path::new("/p"));
+        let ids = lib
+            .insert_items(&[new_item(folder, "/p/a.jpg", 1)])
+            .unwrap();
+        let id = picasa_album(&lib, "t", "Holiday");
+        lib.writer()
+            .execute(
+                "INSERT INTO album_items (album_id, item_id, added_ms) VALUES (?1, ?2, 0)",
+                params![id, ids[0]],
+            )
+            .unwrap();
+        assert!(matches!(
+            lib.remove_from_album(id, &ids),
+            Err(Error::PicasaAlbum(_))
+        ));
+        assert_eq!(lib.item_albums(ids[0]).unwrap(), vec![id]);
+        let own = lib.create_album("Trip", 1).unwrap();
+        lib.add_to_album(own.id, &ids, 5).unwrap();
+        lib.remove_from_album(own.id, &ids).unwrap();
+    }
+
+    #[test]
+    fn albums_with_counts_leaves_out_an_empty_picasa_album_only() {
+        // An empty Picasa album has lost every photo in this library and leaves the list; an
+        // empty photon album is one the user just made and stays. A Picasa album whose only
+        // member is hidden counts 0 like every hidden-aware count, and leaves too.
+        let (_dir, lib) = temp_library();
+        let (_watched, folder) = seed_folder(&lib, Path::new("/p"));
+        let ids = lib
+            .insert_items(&[
+                new_item(folder, "/p/a.jpg", 1),
+                new_item(folder, "/p/h.jpg", 2),
+            ])
+            .unwrap();
+        let (shown, hidden) = (ids[0], ids[1]);
+        lib.set_hidden(&[hidden], true).unwrap();
+        let empty_picasa = picasa_album(&lib, "e", "Gone");
+        let hidden_only = picasa_album(&lib, "h", "Only hidden");
+        let listed = picasa_album(&lib, "l", "Holiday");
+        let own = lib.create_album("Trip", 1).unwrap();
+        for (album, item) in [(listed, shown), (hidden_only, hidden)] {
+            lib.writer()
+                .execute(
+                    "INSERT INTO album_items (album_id, item_id, added_ms) VALUES (?1, ?2, 0)",
+                    params![album, item],
+                )
+                .unwrap();
+        }
+
+        let rows: Vec<(i64, bool, i64)> = lib
+            .albums_with_counts()
+            .unwrap()
+            .into_iter()
+            .map(|a| (a.id, a.picasa, a.count))
+            .collect();
+        assert_eq!(rows, vec![(listed, true, 1), (own.id, false, 0)]);
+        assert!(
+            lib.album(empty_picasa).unwrap().is_some(),
+            "left out, not deleted"
+        );
+    }
+
+    #[test]
+    fn a_referenced_token_never_replaces_a_real_name_in_either_order() {
+        let named = HashMap::from([("t".to_string(), "Holiday".to_string())]);
+        let only_t = HashSet::from(["t".to_string()]);
+
+        // The definition first, then a folder whose photo only names the token.
+        let (_dir, lib) = temp_library();
+        lib.upsert_picasa_albums(&named, &HashSet::new(), 1)
+            .unwrap();
+        let (ids, changed) = lib
+            .upsert_picasa_albums(&HashMap::new(), &only_t, 2)
+            .unwrap();
+        assert_eq!(changed, 0);
+        assert_eq!(lib.album(ids["t"]).unwrap().unwrap().name, "Holiday");
+
+        // The reference first: listed under its token until a definition names it.
+        let (_dir2, lib2) = temp_library();
+        let (first, changed) = lib2
+            .upsert_picasa_albums(&HashMap::new(), &only_t, 1)
+            .unwrap();
+        assert_eq!(changed, 1);
+        assert_eq!(lib2.album(first["t"]).unwrap().unwrap().name, "t");
+        let (second, changed) = lib2.upsert_picasa_albums(&named, &only_t, 2).unwrap();
+        assert_eq!(second["t"], first["t"], "the same album, not a second one");
+        assert_eq!(changed, 1);
+        assert_eq!(lib2.album(first["t"]).unwrap().unwrap().name, "Holiday");
+    }
+
+    #[test]
+    fn upserting_an_unchanged_definition_counts_nothing_and_a_rename_counts_one() {
+        // Counting a no-op would make every scan of a Picasa library rebuild the grid.
+        let (_dir, lib) = temp_library();
+        let holiday = HashMap::from([("t".to_string(), "Holiday".to_string())]);
+        assert_eq!(
+            lib.upsert_picasa_albums(&holiday, &HashSet::new(), 1)
+                .unwrap()
+                .1,
+            1
+        );
+        assert_eq!(
+            lib.upsert_picasa_albums(&holiday, &HashSet::new(), 2)
+                .unwrap()
+                .1,
+            0
+        );
+        let summer = HashMap::from([("t".to_string(), "Summer".to_string())]);
+        let (ids, changed) = lib
+            .upsert_picasa_albums(&summer, &HashSet::new(), 3)
+            .unwrap();
+        assert_eq!(changed, 1);
+        assert_eq!(lib.album(ids["t"]).unwrap().unwrap().name, "Summer");
+    }
+
+    #[test]
+    fn the_scans_membership_writer_never_touches_photons_albums() {
+        let (_dir, lib) = temp_library();
+        let (_watched, folder) = seed_folder(&lib, Path::new("/p"));
+        let ids = lib
+            .insert_items(&[new_item(folder, "/p/a.jpg", 1)])
+            .unwrap();
+        let own = lib.create_album("Trip", 1).unwrap();
+        lib.add_to_album(own.id, &ids, 1).unwrap();
+        let (picasa, _) = lib
+            .upsert_picasa_albums(
+                &HashMap::from([("t".to_string(), "Holiday".to_string())]),
+                &HashSet::new(),
+                1,
+            )
+            .unwrap();
+
+        lib.set_picasa_album_items(&[(ids[0], BTreeSet::from([picasa["t"]]))], 2)
+            .unwrap();
+        assert_eq!(lib.item_albums(ids[0]).unwrap(), vec![own.id, picasa["t"]]);
+        assert_eq!(
+            lib.folder_picasa_albums(folder).unwrap(),
+            HashMap::from([(ids[0], BTreeSet::from([picasa["t"]]))]),
+            "photon's album is not reported to the pass"
+        );
+
+        lib.set_picasa_album_items(&[(ids[0], BTreeSet::new())], 3)
+            .unwrap();
+        assert_eq!(lib.item_albums(ids[0]).unwrap(), vec![own.id]);
     }
 }

@@ -28,6 +28,8 @@ pub enum Error {
     FolderExcluded { path: String },
     #[error("an album needs a name")]
     EmptyAlbumName,
+    #[error("this album comes from Picasa; change it in Picasa")]
+    PicasaAlbum(i64),
     #[error("a tag needs a name")]
     EmptyTagName,
     #[error("a saved search needs a name")]

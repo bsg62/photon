@@ -1,4 +1,4 @@
-//! Reads Picasa's per-directory stars, hidden flags, faces and contacts, and writes star flags.
+//! Reads Picasa's per-directory stars, hidden flags, faces, contacts and albums, and writes star flags.
 //!
 //! Picasa writes one INI per directory — `.picasa.ini` on newer versions, `Picasa.ini` on
 //! older ones — with a section per file. photon reads every star and face from it, and
@@ -48,6 +48,13 @@ pub struct FolderIni {
     pub faces: HashMap<String, Vec<Face>>,
     /// Contact hash to display name, from the `[Contacts2]` section.
     pub contacts: HashMap<String, String>,
+    /// Picasa album token to name, from each `[.album:<token>]` section's `name=`. Tokens are
+    /// lowercased like every section name. An album section with no name defines nothing
+    /// here; its token still becomes an album once a photo names it (`item_albums`).
+    pub albums: HashMap<String, String>,
+    /// The Picasa album tokens per lowercased file name, from `albums=`, lowercased,
+    /// deduplicated, in the INI's order.
+    pub item_albums: HashMap<String, Vec<String>>,
 }
 
 /// The stars, faces and contacts in one directory's INI.
@@ -271,6 +278,10 @@ fn classify(line: &str) -> Line<'_> {
 /// The section Picasa 3.9 keeps its contacts in. Compared lowercased, like every header.
 const CONTACTS_SECTION: &str = "contacts2";
 
+/// The prefix of a Picasa album's section, `[.album:<token>]`. Compared lowercased, like every
+/// header. The section is the album's own, never a photo's.
+const ALBUM_SECTION_PREFIX: &str = ".album:";
+
 /// Picasa's hash for a face it detected but nobody named, or that was marked "ignore".
 /// Not a person, so never stored.
 const IGNORED_CONTACT: &str = "ffffffffffffffff";
@@ -285,6 +296,14 @@ fn parse_folder(text: &str) -> FolderIni {
                 let Some(name) = &section else {
                     continue;
                 };
+                if let Some(token) = name.strip_prefix(ALBUM_SECTION_PREFIX) {
+                    // An album's own keys: none of them is a photo's star, flag or face.
+                    let token = token.trim();
+                    if !token.is_empty() && key.eq_ignore_ascii_case("name") && !value.is_empty() {
+                        ini.albums.insert(token.to_string(), value.to_string());
+                    }
+                    continue;
+                }
                 if name == CONTACTS_SECTION {
                     // `hash=Name;email;…`: only the name is wanted, and an entry with no
                     // name would list a blank person.
@@ -302,6 +321,17 @@ fn parse_folder(text: &str) -> FolderIni {
                     let faces = parse_faces(value);
                     if !faces.is_empty() {
                         ini.faces.entry(name.clone()).or_default().extend(faces);
+                    }
+                } else if key.eq_ignore_ascii_case("albums") {
+                    let tokens = value
+                        .split(',')
+                        .map(|t| t.trim().to_lowercase())
+                        .filter(|t| !t.is_empty());
+                    for token in tokens {
+                        let list = ini.item_albums.entry(name.clone()).or_default();
+                        if !list.contains(&token) {
+                            list.push(token);
+                        }
                     }
                 }
             }
@@ -820,6 +850,78 @@ mod tests {
             read_folder(std::path::Path::new("/definitely/not/a/directory/here")),
             None
         );
+    }
+
+    #[test]
+    fn reads_picasa_albums_and_each_photos_membership() {
+        let dir = tempfile::tempdir().unwrap();
+        write_file(
+            dir.path(),
+            ".picasa.ini",
+            b"[.album:9C0E]\nname=Holiday 2009\ntoken=9c0e\ndate=2009-08-14T10:22:31+02:00\n\
+              [.album:1f2e]\nname=Wedding\n\
+              [IMG_0412.JPG]\nalbums= 9c0e , 1F2E,,9C0E\nstar=yes\n\
+              [b.jpg]\nalbums=\n",
+        );
+        let ini = read_folder(dir.path()).unwrap();
+        assert_eq!(
+            ini.albums,
+            HashMap::from([
+                ("9c0e".to_string(), "Holiday 2009".to_string()),
+                ("1f2e".to_string(), "Wedding".to_string()),
+            ]),
+            "tokens are lowercased like every section name; the name keeps its case"
+        );
+        assert_eq!(
+            ini.item_albums,
+            HashMap::from([(
+                "img_0412.jpg".to_string(),
+                vec!["9c0e".to_string(), "1f2e".to_string()]
+            )]),
+            "trimmed, lowercased, empties and repeats dropped; an empty albums= is no membership"
+        );
+        assert_eq!(
+            stars(dir.path()),
+            vec!["img_0412.jpg"],
+            "the photo's star still reads"
+        );
+    }
+
+    #[test]
+    fn an_album_section_is_never_a_photo() {
+        // `[.album:t]` used to be read as a photo named `.album:t`. Its keys are the album's:
+        // none of them may become a star, a hidden flag or a face. An `.album` section with no
+        // `name=`, with an empty `name=`, or with an empty token, defines nothing - recorded
+        // under its token it would rename an album another folder named.
+        let dir = tempfile::tempdir().unwrap();
+        write_file(
+            dir.path(),
+            ".picasa.ini",
+            b"[.album:t]\nstar=yes\nhidden=yes\nfaces=rect64(4000200080006000),abc\n\
+              [.album:]\nname=No token\n\
+              [.album:u]\ntoken=u\n\
+              [.album:v]\nname=\n",
+        );
+        let ini = read_folder(dir.path()).unwrap();
+        assert!(ini.stars.is_empty(), "{:?}", ini.stars);
+        assert!(ini.hidden.is_empty(), "{:?}", ini.hidden);
+        assert!(ini.faces.is_empty(), "{:?}", ini.faces);
+        assert!(ini.albums.is_empty(), "{:?}", ini.albums);
+    }
+
+    #[test]
+    fn starring_leaves_album_sections_byte_for_byte() {
+        // A pin, not a probe: `rewrite` already keeps every line it does not own, so this
+        // passes before the feature by design. It is here so a writer that later learns about
+        // albums cannot start rewriting them - photon never writes an album.
+        let dir = tempfile::tempdir().unwrap();
+        let before: &[u8] =
+            b"[.album:9c0e]\r\nname=Holiday\r\ntoken=9c0e\r\n[a.jpg]\r\nalbums=9c0e\r\n";
+        write_file(dir.path(), ".picasa.ini", before);
+        set_star(dir.path(), "b.jpg", true).unwrap();
+        let mut expected = before.to_vec();
+        expected.extend_from_slice(b"[b.jpg]\r\nstar=yes\r\n");
+        assert_eq!(ini(dir.path(), ".picasa.ini"), expected);
     }
 
     #[test]

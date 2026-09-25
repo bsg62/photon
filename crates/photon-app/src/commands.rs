@@ -1275,4 +1275,50 @@ mod tests {
             "deleting the bookmark leaves the photos it was pointing at on screen"
         );
     }
+
+    #[test]
+    fn a_picasa_album_reaches_the_sidebar_the_viewer_and_its_view() {
+        use photon_core::grid::GridView;
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a/one.jpg", &img), ("a/two.jpg", &img)]);
+        std::fs::write(
+            f.photos.join("a/.picasa.ini"),
+            b"[.album:t]\nname=Holiday\n[one.jpg]\nalbums=t\n",
+        )
+        .unwrap();
+        f.add_photos();
+
+        let album = list_albums(&f.engine)
+            .unwrap()
+            .into_iter()
+            .find(|a| a.picasa)
+            .expect("the scan imported the album");
+        assert_eq!((album.name.as_str(), album.count), ("Holiday", 1));
+
+        let one = f
+            .ids()
+            .into_iter()
+            .find(|&id| {
+                f.engine
+                    .lib
+                    .item(id)
+                    .unwrap()
+                    .unwrap()
+                    .path
+                    .ends_with("one.jpg")
+            })
+            .unwrap();
+        assert_eq!(viewer_item(&f.engine, one).unwrap().albums, vec![album.id]);
+
+        set_album_view(&f.engine, album.id).unwrap();
+        let info = grid_info(&f.engine);
+        assert_eq!(
+            (info.view, info.album, info.len),
+            (GridView::Album, Some(album.id), 1)
+        );
+        assert!(
+            add_to_album(&f.engine, album.id, &f.ids()).is_err(),
+            "the guard holds over IPC"
+        );
+    }
 }

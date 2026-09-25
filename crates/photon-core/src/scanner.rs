@@ -8,7 +8,7 @@ use crate::{
     picasa::{Face, FolderIni},
 };
 use std::{
-    collections::HashMap,
+    collections::{BTreeSet, HashMap, HashSet},
     fs::Metadata,
     path::{Path, PathBuf},
     sync::{
@@ -56,6 +56,10 @@ pub struct ScanReport {
     /// Items whose `hidden` the Picasa pass changed this scan, following a `hidden=` line
     /// Picasa added or removed. Like `restarred`, the photo itself never changes.
     pub rehidden: u64,
+    /// Photos whose Picasa-album memberships the Picasa pass changed this scan, plus Picasa
+    /// albums it inserted or renamed. Like `restarred`, the photo itself never changes; a
+    /// rename alone counts, because only the sidebar shows it.
+    pub realbumed: u64,
     /// Unchanged files re-read because their stored metadata predates the current reader
     /// (`items.exif_version` behind `metadata::EXIF_VERSION`). The backfill for a library
     /// indexed before a camera column existed.
@@ -73,9 +77,10 @@ impl ScanReport {
     /// and forgotten there compiles, passes every scanner test, and silently stops the grid
     /// from ever rebuilding for it - which is exactly what `restarred` did once.
     ///
-    /// `refaced`, `rehidden` and `enriched` count because a view can be built from what they
-    /// change: the Person view from faces, every view from the hidden flag, the Tag and
-    /// Search views from keywords and camera columns.
+    /// `refaced`, `rehidden`, `realbumed` and `enriched` count because a view can be built
+    /// from what they change: the Person view from faces, the Album view and its sidebar list
+    /// from Picasa's albums, every view from the hidden flag, the Tag and Search views from
+    /// keywords and camera columns.
     pub fn touched_rows(&self) -> bool {
         self.added
             + self.changed
@@ -84,6 +89,7 @@ impl ScanReport {
             + self.restarred
             + self.refaced
             + self.rehidden
+            + self.realbumed
             + self.enriched
             > 0
     }
@@ -211,6 +217,7 @@ pub fn scan_watched(
             restarred: applied.restarred,
             refaced: applied.refaced,
             rehidden: applied.rehidden,
+            realbumed: applied.realbumed,
             ..report
         });
     }
@@ -241,6 +248,7 @@ pub fn scan_watched(
         restarred: applied.restarred,
         refaced: applied.refaced,
         rehidden: applied.rehidden,
+        realbumed: applied.realbumed,
         ..report
     })
 }
@@ -371,6 +379,7 @@ pub fn scan_subtree(
             restarred: applied.restarred,
             refaced: applied.refaced,
             rehidden: applied.rehidden,
+            realbumed: applied.realbumed,
             ..outcome.report
         });
     }
@@ -383,6 +392,7 @@ pub fn scan_subtree(
     report.restarred = applied.restarred;
     report.refaced = applied.refaced;
     report.rehidden = applied.rehidden;
+    report.realbumed = applied.realbumed;
 
     progress.progress(&outcome.seen);
     Ok(report)
@@ -605,6 +615,7 @@ struct PicasaApplied {
     restarred: u64,
     refaced: u64,
     rehidden: u64,
+    realbumed: u64,
 }
 
 fn apply_picasa(lib: &Library, walked: &[(PathBuf, i64)]) -> PicasaApplied {
@@ -622,6 +633,7 @@ fn apply_picasa(lib: &Library, walked: &[(PathBuf, i64)]) -> PicasaApplied {
                 applied.restarred += folder.restarred;
                 applied.refaced += folder.refaced;
                 applied.rehidden += folder.rehidden;
+                applied.realbumed += folder.realbumed;
             }
             Err(err) => {
                 // One folder's transient failure (a busy database, say) must not cost the
@@ -634,16 +646,55 @@ fn apply_picasa(lib: &Library, walked: &[(PathBuf, i64)]) -> PicasaApplied {
     applied
 }
 
-/// Contacts first, so a face written below can already resolve its name; then stars, faces
-/// and hidden flags from one read of the folder's item names.
+/// Contacts first, so a face written below can already resolve its name; then albums, stars,
+/// faces and hidden flags from one read of the folder's item names.
 fn apply_folder_ini(lib: &Library, folder_id: i64, ini: &FolderIni) -> Result<PicasaApplied> {
     lib.upsert_contacts(&ini.contacts)?;
     let names = lib.folder_item_names(folder_id)?;
     Ok(PicasaApplied {
+        realbumed: apply_folder_albums(lib, folder_id, &names, ini)?,
         restarred: apply_folder_stars(lib, &names, &ini.stars)?,
         refaced: apply_folder_faces(lib, folder_id, &names, &ini.faces)?,
         rehidden: apply_folder_hidden(lib, folder_id, &names, &ini.hidden)?,
     })
+}
+
+/// Mirrors the folder's Picasa albums onto its photos, and returns how many photos'
+/// memberships moved plus how many albums were inserted or renamed.
+///
+/// Mirrored like faces, not followed on change like `hidden=`: photon never writes an album,
+/// so there is no photon-side answer to protect, and an INI that no longer lists a photo in an
+/// album means Picasa took it out. A photo's photon albums are out of reach of this:
+/// `set_picasa_album_items` deletes only Picasa albums' rows. Only photos that differ are
+/// written, so an agreeing folder costs nothing.
+fn apply_folder_albums(
+    lib: &Library,
+    folder_id: i64,
+    names: &[(i64, String, Option<i64>)],
+    ini: &FolderIni,
+) -> Result<u64> {
+    let referenced: HashSet<String> = ini.item_albums.values().flatten().cloned().collect();
+    let (ids, upserted) = lib.upsert_picasa_albums(&ini.albums, &referenced, crate::now_ms())?;
+    let current = lib.folder_picasa_albums(folder_id)?;
+    let none = BTreeSet::new();
+    let changes: Vec<(i64, BTreeSet<i64>)> = names
+        .iter()
+        .filter_map(|(id, name, _)| {
+            let wanted: BTreeSet<i64> = ini
+                .item_albums
+                .get(name)
+                .into_iter()
+                .flatten()
+                .filter_map(|token| ids.get(token).copied())
+                .collect();
+            (wanted != *current.get(id).unwrap_or(&none)).then_some((*id, wanted))
+        })
+        .collect();
+    let moved = changes.len() as u64;
+    for chunk in changes.chunks(BATCH) {
+        lib.set_picasa_album_items(chunk, crate::now_ms())?;
+    }
+    Ok(upserted + moved)
 }
 
 /// Follows Picasa's `hidden=yes` where it changed, and returns how many photos' `hidden`
@@ -1076,6 +1127,138 @@ mod tests {
         let report = scan(&lib, &watched, 4);
         assert_eq!(report.refaced, 1);
         assert!(lib.people_with_counts().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_picasa_album_follows_the_ini_without_the_photo_changing() {
+        // Like faces: an album is an INI change, so it takes the `unchanged` branch and only
+        // the post-walk pass sees it. An agreeing rescan counts nothing, or every scan of a
+        // Picasa library would rebuild the grid; a rename alone must refresh, because only
+        // the sidebar shows it.
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        write_file(&root, "a.jpg", &jpeg_bytes(4, 2));
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
+        scan(&lib, &watched, 1);
+
+        write_file(
+            &root,
+            ".picasa.ini",
+            b"[.album:t]\nname=Holiday\n[a.jpg]\nalbums=t\n",
+        );
+        let report = scan(&lib, &watched, 2);
+        assert_eq!(report.unchanged, 1, "the photo itself did not change");
+        assert!(report.realbumed > 0);
+        assert!(report.touched_rows());
+        let listed = |lib: &Library| -> Vec<(String, i64, bool)> {
+            lib.albums_with_counts()
+                .unwrap()
+                .into_iter()
+                .map(|a| (a.name, a.count, a.picasa))
+                .collect()
+        };
+        assert_eq!(listed(&lib), vec![("Holiday".to_string(), 1, true)]);
+
+        let report = scan(&lib, &watched, 3);
+        assert_eq!(report.realbumed, 0, "an agreeing folder writes nothing");
+
+        write_file(
+            &root,
+            ".picasa.ini",
+            b"[.album:t]\nname=Summer\n[a.jpg]\nalbums=t\n",
+        );
+        let report = scan(&lib, &watched, 4);
+        assert_eq!(report.realbumed, 1, "the rename, and no membership moved");
+        assert!(
+            report.touched_rows(),
+            "a rename alone refreshes the sidebar"
+        );
+        assert_eq!(listed(&lib), vec![("Summer".to_string(), 1, true)]);
+
+        write_file(
+            &root,
+            ".picasa.ini",
+            b"[.album:t]\nname=Summer\n[a.jpg]\nbackuphash=1\n",
+        );
+        let report = scan(&lib, &watched, 5);
+        assert_eq!(report.realbumed, 1);
+        assert!(
+            listed(&lib).is_empty(),
+            "Picasa took the photo out, and the album is empty"
+        );
+    }
+
+    #[test]
+    fn a_picasa_album_spanning_two_folders_is_one_album() {
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        write_file(&root, "a/one.jpg", &jpeg_bytes(4, 2));
+        write_file(&root, "b/two.jpg", &jpeg_bytes(4, 3));
+        write_file(
+            &root,
+            "a/.picasa.ini",
+            b"[.album:t]\nname=Holiday\n[one.jpg]\nalbums=t\n",
+        );
+        // The second folder only names the token: its name must not win.
+        write_file(&root, "b/.picasa.ini", b"[two.jpg]\nalbums=T\n");
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
+        scan(&lib, &watched, 1);
+        let albums: Vec<(String, i64)> = lib
+            .albums_with_counts()
+            .unwrap()
+            .into_iter()
+            .map(|a| (a.name, a.count))
+            .collect();
+        assert_eq!(albums, vec![("Holiday".to_string(), 2)]);
+    }
+
+    #[test]
+    fn a_subtree_scan_applies_picasa_albums_too() {
+        // The watcher's path. Passes only because `scan_subtree` shares `apply_picasa` with
+        // `scan_watched`; the mistake it catches is wiring the album pass into one of them.
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        write_file(&root, "sub/a.jpg", &jpeg_bytes(4, 2));
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
+        scan(&lib, &watched, 1);
+
+        write_file(
+            &root,
+            "sub/.picasa.ini",
+            b"[.album:t]\nname=Holiday\n[a.jpg]\nalbums=t\n",
+        );
+        let report = scan_sub(&lib, &watched, &root.join("sub"), 2);
+        assert!(report.realbumed > 0);
+        assert!(report.touched_rows());
+        assert_eq!(lib.albums_with_counts().unwrap().len(), 1);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn an_unreadable_ini_keeps_a_photos_picasa_albums() {
+        // A pin on the existing `None` branch of `apply_picasa`, for the new data: a symlinked
+        // INI is refused by the reader (v0.28.2) and must read as no evidence, not as "no
+        // albums". Passes before this task's code as long as the album pass sits inside
+        // `apply_folder_ini`, which is the point.
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        write_file(&root, "a.jpg", &jpeg_bytes(4, 2));
+        write_file(
+            &root,
+            ".picasa.ini",
+            b"[.album:t]\nname=Holiday\n[a.jpg]\nalbums=t\n",
+        );
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
+        scan(&lib, &watched, 1);
+        assert_eq!(lib.albums_with_counts().unwrap().len(), 1);
+
+        let elsewhere = dir.path().join("elsewhere.ini");
+        std::fs::write(&elsewhere, b"[a.jpg]\nbackuphash=1\n").unwrap();
+        std::fs::remove_file(root.join(".picasa.ini")).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, root.join(".picasa.ini")).unwrap();
+        let report = scan(&lib, &watched, 2);
+        assert_eq!(report.realbumed, 0);
+        assert_eq!(lib.albums_with_counts().unwrap().len(), 1);
     }
 
     /// End to end, on both of `walk_tree`'s callers: a file that lands in a hidden folder is

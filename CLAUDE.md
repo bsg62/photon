@@ -109,7 +109,7 @@ thread by a rebuild stamped after it, and the highest stamp always publishes.
 rows. A change that alters data by some *other* means must add its own counter to `ScanReport`
 and fold it into `touched_rows`, or the grid silently never rebuilds. Today the counters
 beyond the obvious four are `restarred`, `refaced` (Picasa faces), `rehidden` (Picasa's
-`hidden=yes`) and `enriched` (the metadata backfill).
+`hidden=yes`), `realbumed` (Picasa's albums) and `enriched` (the metadata backfill).
 
 **Grid order** (`items.rs`, `GRID_ORDER`) is the folder's oldest photo descending, then each
 folder's photos oldest to newest. The sidebar groups by the same value, so the list is an index
@@ -190,7 +190,7 @@ Picasa's per-directory `.picasa.ini` stars are the worked example — cannot be 
 watcher's path). Wiring a post-walk pass into only the first leaves the common case broken while
 every test passes. `scan_subtree`'s `folder_ids` is pre-seeded by `seed_ancestors` with every
 ancestor, so a per-folder pass must use `walked`, not `folder_ids`. The one post-walk pass
-today is `apply_picasa`, which applies stars, faces *and* hidden flags from one
+today is `apply_picasa`, which applies stars, faces, hidden flags *and* albums from one
 `picasa::read_folder`. The hidden flag is followed on *change* (`items.picasa_hidden` records
 the INI's last answer), not mirrored like a star: photon never writes `hidden=`, so a mirror
 would undo every unhide in photon on the next scan.
@@ -439,12 +439,13 @@ action in `mock.js`.
   This narrowed the older "never writes inside watched folders" promise on 2026-09-16 (spec
   `2026-09-16-photon-set-star-design.md`); any further write is a spec-level decision, not a
   code change. The writer and the reader in `picasa.rs` share one line classifier on purpose:
-  a writer with its own header/key logic drifts from the reader. Faces, contacts and `hidden=` flags are read
+  a writer with its own header/key logic drifts from the reader. Faces, contacts, albums and `hidden=` flags are read
   from the same INI and never written; keywords are read from the photo and never written (the user's renames and
   removals are `tag_rules` rows applied on read, `library/tags.rs`);
-  albums and edits (turns and crops) live only in `library.db` (both are by item id, so a
-  renamed file leaves its albums and loses its edit when its old row is purged — a recorded
-  limitation, not a bug). An edit never touches the photo: it is rendered on the way to the
+  photon's own albums and edits (turns and crops) live only in `library.db` (both are by item
+  id, so a renamed file leaves its albums and loses its edit when its old row is purged — a
+  recorded limitation, not a bug); Picasa's albums are read from its INI, as noted above, and
+  live nowhere else. An edit never touches the photo: it is rendered on the way to the
   screen.
 - **No native library dependencies.** Nothing wrapping a C/C++ SDK. This is what made packaging
   tractable on three platforms, and it is why XMP and INI parsing are hand-rolled or pure-Rust.
