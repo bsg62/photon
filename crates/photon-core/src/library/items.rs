@@ -868,7 +868,7 @@ impl Library {
         let mut stmt = conn.prepare(&grid_query(
             &format!(
                 "{GRID_COLUMNS}, i.file_name, f.name, i.make, i.model, i.lens, i.focal_mm, i.aperture, i.iso,
-                 (SELECT group_concat(e.tag, ' ') FROM ({EFFECTIVE_TAGS}) e WHERE e.item_id = i.id)"
+                 (SELECT group_concat(e.tag, ' ') FROM ({EFFECTIVE_TAGS}) e WHERE e.item_id = i.id), i.caption"
             ),
             Shown::Visible,
             "",
@@ -903,6 +903,9 @@ impl Library {
                 }
                 if let Some(tags) = r.get::<_, Option<String>>(base + 8)? {
                     haystacks.push(tags);
+                }
+                if let Some(caption) = r.get::<_, Option<String>>(base + 9)? {
+                    haystacks.push(caption);
                 }
                 haystacks.push(date_text(r.get(2)?));
                 let refs: Vec<&str> = haystacks.iter().map(String::as_str).collect();
@@ -1943,6 +1946,31 @@ mod tests {
                 .is_empty(),
             "a camera it was not shot with finds nothing"
         );
+    }
+
+    #[test]
+    fn search_finds_a_photo_by_a_word_of_its_caption() {
+        let (_dir, lib) = temp_library();
+        let (_w, folder) = seed_folder(&lib, Path::new("/p"));
+        let mut captioned = new_item(folder, "/p/IMG_1.jpg", 1);
+        captioned.caption = Some("Grandma's 80th, Lisbon".into());
+        let ids = lib
+            .insert_items(&[captioned, new_item(folder, "/p/IMG_2.jpg", 2)])
+            .unwrap();
+        let found = |q: &str| -> Vec<i64> {
+            lib.entries_for(GridView::Search, q)
+                .unwrap()
+                .into_iter()
+                .map(|e| e.id)
+                .collect()
+        };
+        assert_eq!(found("lisbon"), vec![ids[0]], "a caption word, any case");
+        assert_eq!(
+            found("grandma LISBON"),
+            vec![ids[0]],
+            "words AND across the caption"
+        );
+        assert!(found("madrid").is_empty());
     }
 
     #[test]

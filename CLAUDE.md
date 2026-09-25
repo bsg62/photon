@@ -143,7 +143,7 @@ views filter the driver as well as the outer `WHERE`, the same way Starred does,
 sidebar's year groups and the grid disagree.
 
 **Search** is one view, not a family of them. `search_entries` builds the haystacks — file
-and folder name, make, model, lens, `50mm`/`f/1.8`/`iso400`, keywords through `EFFECTIVE_TAGS`,
+and folder name, make, model, lens, `50mm`/`f/1.8`/`iso400`, keywords through `EFFECTIVE_TAGS`, the caption,
 and the capture date as `YYYY-MM-DD` — and `search::Query` holds the grammar: words AND,
 capitals-only `OR`/`AND`, quotes, `camera:`/`lens:` confined to `Fields.camera`/`.lens`, dangling
 pieces ignored. A new searchable fact is a haystack there, not a view; a new *filter* is a
