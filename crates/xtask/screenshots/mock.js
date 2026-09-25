@@ -69,7 +69,7 @@
       iso: 200,
       tags: ['alps', 'sunset'],
       faces: [{ hash: 'a', name: 'Anna', left: 0.3, top: 0.25, right: 0.42, bottom: 0.5 }],
-      albums: [1],
+      albums: [1, 3],
       copies: [
         { id: 501, path: `/home/ada/Pictures/2026/Summer hike/IMG_48${id} copy.jpg`, kind: 'identical', width: 5472, height: 3648 },
         { id: 502, path: `/home/ada/Pictures/2026/Summer hike/IMG_48${id} small.jpg`, kind: 'similar', width: 1600, height: 1067 },
@@ -121,8 +121,9 @@
     ],
     list_tag_rules: () => [{ tag: 'Alpen', target: 'alps' }],
     list_albums: () => [
-      { id: 1, name: 'Best of 2025', count: 96 },
-      { id: 2, name: 'Lisbon', count: 48 },
+      { id: 1, name: 'Best of 2025', count: 96, picasa: false },
+      { id: 3, name: 'Holiday 2009', count: 63, picasa: true },
+      { id: 2, name: 'Lisbon', count: 48, picasa: false },
     ],
     list_saved_searches: () => [
       { id: 1, name: 'Canon, 2019', query: 'camera:canon 2019', createdMs: 0 },

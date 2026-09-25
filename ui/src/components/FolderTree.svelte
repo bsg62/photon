@@ -288,7 +288,7 @@
     </button>
   {/if}
 
-  <!-- Albums: photon's own, so the group is editable. -->
+  <!-- Albums: photon's own, editable, and Picasa's, mirrored from its INI and read-only. -->
   <button class="group" aria-expanded={open.albums} onclick={() => (open.albums = !open.albums)}>
     <span class="chevron"><Icon name={open.albums ? 'chevron-down' : 'chevron-right'} size={12} /></span><Icon name="folder" size={14} />
     <span class="name">Albums</span>
@@ -312,9 +312,16 @@
           class:active={library.info.view === 'album' && library.info.album === album.id}
           title={album.name}
           onclick={() => show(() => library.setAlbumView(album.id))}
-          oncontextmenu={(e) => albumContextMenu(e, album)}
+          oncontextmenu={(e) => (album.picasa ? e.preventDefault() : albumContextMenu(e, album))}
         >
           <span class="name">{album.name}</span>
+          {#if album.picasa}
+            <!-- Picasa's own album, mirrored from its INI: no menu, since Rename and Delete
+                 are all it would hold and the backend refuses both. -->
+            <span class="picasa" role="img" aria-label="From Picasa" title="From Picasa. Change it in Picasa."
+              ><Icon name="images" size={12} /></span
+            >
+          {/if}
           <span class="count">{album.count.toLocaleString()}</span>
         </button>
       {/if}
@@ -553,6 +560,7 @@
     letter-spacing: 0.04em;
   }
   .name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .picasa { display: inline-flex; flex: none; color: var(--text-dim); margin-left: 4px; }
   .count {
     margin-left: auto;
     color: var(--text-dim);
