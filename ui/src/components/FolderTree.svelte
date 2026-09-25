@@ -3,7 +3,7 @@
   import { tick } from 'svelte';
   import { api, type AlbumSummary, type Folder, type SavedSearch } from '../lib/api';
   import { createAlbumEditor } from '../lib/album-editor.svelte';
-  import { enterFolder, folderRows, groupByYear } from '../lib/folders';
+  import { enterFolder, folderRows, groupByYear, returnToAll } from '../lib/folders';
   import { sidebarTags } from '../lib/tags';
   import { library } from '../lib/library.svelte';
   import { searchBox } from '../lib/search-box.svelte';
@@ -93,6 +93,16 @@
       cancelSearch: () => searchBox.cancel(),
       currentView: () => library.info.view,
       setView: (view) => library.setView(view),
+      jump: onjump,
+    });
+  }
+
+  function showAll(): Promise<void> {
+    return returnToAll({
+      cancelSearch: () => searchBox.cancel(),
+      currentView: () => library.info.view,
+      setView: (view) => library.setView(view),
+      lastFolder: () => api.lastFolder(),
       jump: onjump,
     });
   }
@@ -233,6 +243,18 @@
 <svelte:window onclick={closeMenus} onkeydown={(e) => e.key === 'Escape' && closeMenus()} />
 
 <nav class="tree" aria-label="Folders">
+  <!-- The way back from an excursion without losing your place: a folder click lands on that
+       folder's top, this lands where the gallery was left (returnToAll). No count: the grid
+       reports none for the whole library, and Recent has none either. -->
+  <button
+    class="root all"
+    class:active={library.info.view === 'all'}
+    onclick={showAll}
+    title="Every photo, back where you left the gallery"
+  >
+    <Icon name="layout-grid" size={14} /><span class="name">All photos</span>
+  </button>
+
   <button
     class="root starred"
     class:active={library.info.view === 'starred'}
