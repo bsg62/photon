@@ -73,6 +73,12 @@ named in the folder's `.picasa.ini`, outlined over the photo while the panel is 
 checkboxes for photon's albums; and the Picasa albums the photo is in. `R` and `Shift+R` turn the photo on screen; nothing is
 written, and the next photo opens upright.
 
+A photo's caption - what you typed under it in Picasa, or its description in Lightroom, Bridge
+or digiKam - is shown under the photo in the viewer and during a slideshow, and at the top of
+the info panel. photon reads it from the photo's XMP or IPTC; the text many cameras put in EXIF
+("OLYMPUS DIGITAL CAMERA") is ignored. Search finds a word of it. photon does not edit
+captions: that would mean writing the photo.
+
 The sidebar lists **Albums**, **People** and **Tags** above the years. Albums are photon's
 own and live only in its library: create one with "New album…", add photos from a tile's
 right-click menu or the info panel, and rename or delete from the album's right-click menu.
@@ -427,6 +433,9 @@ publishing it.
 - [ ] Right-clicking a Picasa album opens no menu; the grid's "Add to album" does not list it; its view offers no "Remove from".
 - [ ] The info panel lists the photo's Picasa albums below the album checkboxes, without checkboxes.
 - [ ] Renaming an album in Picasa and rescanning renames it in photon.
+- [ ] A photo captioned in Picasa shows its caption under the photo, at the top of the info panel, and during a slideshow after the controls fade.
+- [ ] Searching a word of that caption finds the photo.
+- [ ] A photo whose camera wrote only an EXIF description (e.g. "OLYMPUS DIGITAL CAMERA") shows no caption.
 - [ ] Typing a camera name, a lens, a keyword, `50mm`, `f/1.8`, `iso400` or a date like `2024-06` in the search box finds the matching photos.
 - [ ] On a library built by v0.12 or earlier, the first scan after upgrading fills in camera data and keywords for existing photos without changing their thumbnails, and the second scan does not re-read them.
 - [ ] Clicking Recent shows the newest photos first across folders, capped at 500, as one continuous run of tiles with no folder headers and no gaps where the folder changes.

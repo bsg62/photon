@@ -119,8 +119,8 @@ answers differently.
 - **Search:** a caption word finds the photo; the same library without the caption haystack
   finds nothing for it.
 - **App:** `viewer_item` reports the caption.
-- **UI:** `photoCaptionLine` rules. `pictureChanged` returns false for two items differing only
-  in caption (a pin: the function never compared it, and must not start).
+- **UI:** `photoCaptionLine` rules. `pictureChanged` takes `Pick<ViewerItem, …>` without
+  `caption`, so a caption cannot reach it without a type change; no test is needed.
 
 ## Smoke checklist additions
 

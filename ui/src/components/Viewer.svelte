@@ -6,6 +6,7 @@
   import { ownAlbums, picasaAlbumsOf } from '../lib/albums';
   import { createTagEditor } from '../lib/tag-editor.svelte';
   import { formatCaption } from '../lib/caption';
+  import { photoCaptionLine } from '../lib/photo-caption';
   import { createCopyFeedback } from '../lib/copied.svelte';
   import { cameraRows, copyGroups, formatDimensions } from '../lib/exif';
   import { showCopiesLabel } from '../lib/copies';
@@ -133,6 +134,7 @@
    *  count within and is numbered flat — see `positionInView`. */
   const position = $derived(positionInView(library.info.view, library.info.sections, current, library.info.len));
   const caption = $derived(item ? formatCaption(item, orphaned ? { index: 0, count: 0 } : position) : '');
+  const captionLine = $derived(item ? photoCaptionLine(item.caption) : null);
 
   // The star goes into the folder's Picasa INI, then the library; the rebind below sees the
   // rebuild that follows. In the Starred view that rebuild is the photo leaving the grid,
@@ -746,6 +748,10 @@
     <aside class="info" aria-label="Photo information">
       <h2 class="info-title">{item.fileName}</h2>
       <p class="info-path" title={item.path}>{item.path}</p>
+      {#if item.caption?.trim()}
+        <h3>Caption</h3>
+        <p class="info-caption">{item.caption.trim()}</p>
+      {/if}
       {#if camera.length}
         <dl>
           {#each camera as row (row.label)}
@@ -863,6 +869,12 @@
         </p>
       {/if}
     </aside>
+  {/if}
+  <!-- The photo's own caption, not the file-name line in the bar. A sibling of .bar, not
+       inside it: the slideshow's quiet state fades the bar, and the caption is what a
+       slideshow is watched for. Hidden while cropping, when the space is the crop tool's. -->
+  {#if captionLine && !crop.active}
+    <p class="photo-caption" title={item?.caption ?? ''}>{captionLine}</p>
   {/if}
   <!-- The star and the caption share one bottom-centred row, so the star sits where the
        eye already is for the file name rather than in a corner on its own. -->
@@ -982,12 +994,21 @@
   /* Glass: 90% opaque on its own, so it reads where backdrop-filter is slow or missing
      (some Linux GPUs); the blur is an enhancement on top. The opacity is set by contrast,
      not taste: dim text on it must still reach 4.5:1 over a white photo (tokens.test.ts). */
-  .bar, .zoom, .close, .info {
+  .bar, .zoom, .close, .info, .photo-caption {
     background: var(--glass);
     box-shadow: 0 0 0 1px var(--glass-line), var(--shadow-menu);
     -webkit-backdrop-filter: blur(18px);
     backdrop-filter: blur(18px);
   }
+  /* Above the bar, centred like it, and clear of the zoom control the same way. Two lines
+     at most: a long caption must not climb over the photo; the info panel has it whole. */
+  .photo-caption {
+    position: absolute; bottom: 64px; left: 50%; transform: translateX(-50%);
+    max-width: calc(100% - 428px); margin: 0; padding: var(--s-1) var(--s-3);
+    border-radius: var(--r-3); color: var(--text); font-size: var(--t-2); text-align: center;
+    display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+  }
+  .info-caption { margin: 0; white-space: pre-line; }
   /* Centred, with the zoom control's side kept clear on BOTH sides so it stays centred:
      the control measures 194px at 12px from the edge, and a little air after it makes 214.
      Without this the bar simply grows through it - the caption's old cap bounded the overlap
