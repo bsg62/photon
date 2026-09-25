@@ -227,10 +227,14 @@ describe('returnToAll', () => {
     expect(jumped).toEqual([7]);
   });
 
-  it('does not switch the view when All is already showing', async () => {
-    const { order, deps } = spyDeps('all');
+  it('leaves the grid where it is when All is already showing', async () => {
+    // The user is at their own place already. Reading the remembered folder here would race
+    // the write the grid made a moment ago on scrolling into a new folder, and jumping would
+    // snap them to a folder's top - so nothing but the search cancel happens.
+    const { order, jumped, deps } = spyDeps('all');
     await returnToAll(deps);
-    expect(order).toEqual(['cancel', 'lastFolder', 'jump']);
+    expect(order).toEqual(['cancel']);
+    expect(jumped).toEqual([]);
   });
 
   it('reads the remembered place before switching, and jumps only once the switch settles', async () => {

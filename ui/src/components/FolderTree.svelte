@@ -98,7 +98,6 @@
   }
 
   function showAll(): Promise<void> {
-    closeMenus();
     return returnToAll({
       cancelSearch: () => searchBox.cancel(),
       currentView: () => library.info.view,

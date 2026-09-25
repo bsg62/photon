@@ -124,13 +124,18 @@ export async function returnToAll(deps: {
   jump: (folderId: number) => void;
 }): Promise<void> {
   deps.cancelSearch();
+  // Already in All: the user is at their own place, so there is nothing to go back to. Not a
+  // re-read and a jump - the grid saves its place fire-and-forget as the scroll crosses a
+  // folder, a read right behind that save could still see the folder before, and the jump
+  // would land on a folder's top rather than where the user is.
+  if (deps.currentView() === 'all') return;
   // Read *before* the switch. The grid writes the folder at its top whenever All is showing,
   // and a freshly rebuilt All sits at its first folder until the jump: read after the switch,
   // the remembered place could already have been overwritten with the library's top - the
   // very reset this exists to avoid. A folder id, unlike an offset, needs no index to be read
   // against.
   const folderId = await deps.lastFolder().catch(() => null);
-  if (deps.currentView() !== 'all') await deps.setView('all');
+  await deps.setView('all');
   if (folderId !== null) deps.jump(folderId);
 }
 
