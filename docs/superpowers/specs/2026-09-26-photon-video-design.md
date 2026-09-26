@@ -130,8 +130,10 @@ existing prefixed terms. Camera search reaches iPhone videos through make and mo
 
 `photon-app/src/media_server.rs`, on `tiny_http` (pure Rust, synchronous), so photon owns no
 HTTP parser. It binds `127.0.0.1:0` - loopback only, a port the OS picks - and is started in
-`setup` beside `engine.startup`, with a small fixed pool of request threads holding an
-`Arc<Engine>`.
+`setup` beside `engine.startup`, and answers each request on a thread of its own, holding an
+`Arc<Engine>` - not a fixed pool, because a playing or paused `<video>` holds its connection
+open and tiny_http writes the body with no write timeout, so a fixed pool is exhausted by that
+many videos and every later request waits.
 
 **One route:** `GET` and `HEAD` `/<token>/video/<id>`. The id is looked up with
 `engine.lib.item`; it must be a live row (`missing_since IS NULL`) of kind `Video`, or the

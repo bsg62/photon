@@ -10,29 +10,31 @@
 //! `Host` check, which is what defeats rebinding (a rebound page sends its own host name);
 //! the exact origin in `Access-Control-Allow-Origin`; and one route that serves video rows
 //! by id and never turns any part of a URL into a path.
+//!
+//! Every request is answered on a thread of its own, not by a fixed pool. tiny_http writes a
+//! response body synchronously on the thread that answers it, with no write timeout and no
+//! access to the socket to set one, so a playing, paused or not-yet-collected `<video>` holds
+//! that thread for as long as its connection lives. A pool of any fixed size is exhausted by
+//! that many such videos, and then the thumbnailer's next job and the viewer's next seek wait
+//! forever. tiny_http already spends a thread per connection reading requests, so one more
+//! per request in flight is the same kind of cost.
 
 use crate::engine::Engine;
 use photon_core::media::MediaKind;
 use std::{
     fs::File,
-    io::{Read, Seek, SeekFrom},
+    io::{BufReader, Read, Seek, SeekFrom},
     panic::AssertUnwindSafe,
     path::Path,
     sync::Arc,
 };
 use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 
-/// Request threads. Each holds one response for as long as the player reads it, and a
-/// player that has buffered enough stops reading without hanging up, so this bounds how
-/// many videos can stream at once, not how many requests are parsed (tiny_http reads
-/// headers on its own per-connection threads).
-const WORKERS: usize = 4;
-
 pub struct MediaServer {
     pub(crate) port: u16,
     pub(crate) token: String,
     // Held so the listener lives as long as the app's managed state. Dropping it would stop
-    // the accept thread; the workers blocked on it keep their own `Arc`s regardless.
+    // the accept thread; the dispatcher blocked on it keeps its own `Arc` regardless.
     _server: Arc<Server>,
 }
 
@@ -59,33 +61,44 @@ impl MediaServer {
         getrandom::fill(&mut raw).map_err(|e| std::io::Error::other(e.to_string()))?;
         let token: String = raw.iter().map(|b| format!("{b:02x}")).collect();
         let host = format!("127.0.0.1:{port}");
-        for i in 0..WORKERS {
-            let (server, engine, token, host) =
-                (server.clone(), engine.clone(), token.clone(), host.clone());
-            std::thread::Builder::new()
-                .name(format!("photon-media-{i}"))
-                .spawn(move || {
-                    // Not `incoming_requests()`: that iterator ends on the first `Err` from
-                    // `recv`, which would silently retire this worker for good.
-                    loop {
-                        match server.recv() {
-                            // A panic would take the worker with it and shrink the pool
-                            // without a word; the request, dropped while unwinding, is
-                            // answered 500 by tiny_http's own `Drop`.
-                            Ok(request) => {
-                                let _ = std::panic::catch_unwind(AssertUnwindSafe(|| {
-                                    serve(&engine, &token, &host, request)
-                                }));
+        let dispatcher = server.clone();
+        let dispatch_token = token.clone();
+        std::thread::Builder::new()
+            .name("photon-media".to_owned())
+            .spawn(move || {
+                // Not `incoming_requests()`: that iterator ends on the first `Err` from `recv`,
+                // which would stop the server for good.
+                loop {
+                    match dispatcher.recv() {
+                        Ok(request) => {
+                            let (engine, token, host) =
+                                (engine.clone(), dispatch_token.clone(), host.clone());
+                            // A thread per request; the module doc says why. A panic costs
+                            // only its own request - dropped while unwinding, it is answered
+                            // 500 by tiny_http's own `Drop` - with or without `catch_unwind`,
+                            // which stays so that remains true if this closure ever does more
+                            // after `serve`.
+                            let spawned = std::thread::Builder::new()
+                                .name("photon-media-request".to_owned())
+                                .spawn(move || {
+                                    let _ = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                                        serve(&engine, &token, &host, request)
+                                    }));
+                                });
+                            // Out of threads: the request went down with the closure and was
+                            // answered 500 by its `Drop`. The next one may fare better.
+                            if let Err(err) = spawned {
+                                tracing::warn!(%err, "could not start a media request thread");
                             }
-                            // The only error `recv` returns is the accept thread's last
-                            // words: it stops listening after one failed `accept`. Nothing
-                            // more will arrive, but the thread has nothing better to do than
-                            // block here, and the app goes on without video.
-                            Err(err) => tracing::error!(%err, "the media server stopped accepting"),
                         }
+                        // The only error `recv` returns is the accept thread's last words: it
+                        // stops listening after one failed `accept`. Nothing more will arrive,
+                        // but this thread has nothing better to do than block here, and the
+                        // app goes on without video.
+                        Err(err) => tracing::error!(%err, "the media server stopped accepting"),
                     }
-                })?;
-        }
+                }
+            })?;
         Ok(Self {
             port,
             token,
@@ -249,16 +262,17 @@ fn serve(engine: &Engine, token: &str, host: &str, request: Request) {
     if file.seek(SeekFrom::Start(start)).is_err() {
         return not_found(request);
     }
-    // Streamed from the file, never built in memory. tiny_http sends no body for a HEAD
-    // itself, and never reads the file then. The threshold is lifted because above it
-    // (32 KB by default) tiny_http switches to a chunked body and drops `Content-Length`,
-    // which a HEAD then cannot answer and a player sizing its buffer wants. An error here
-    // is the player hanging up after a seek - the normal end of most requests, not
-    // something to log.
+    // Streamed from the file in 64 KB reads, never built in memory. tiny_http sends no body
+    // for a HEAD itself, and never reads the file then. The threshold is lifted because
+    // above it (32 KB by default) tiny_http switches to a chunked body and drops
+    // `Content-Length`, which a HEAD then cannot answer and a player sizing its buffer
+    // wants. That holds unless the client itself asks for chunks with a `TE` header, which
+    // tiny_http honours first; players do not send one. An error here is the player hanging
+    // up after a seek - the normal end of most requests, not something to log.
     let response = Response::new(
         StatusCode(status),
         headers,
-        file.take(count),
+        BufReader::with_capacity(64 * 1024, file).take(count),
         usize::try_from(count).ok(),
         None,
     )
@@ -487,13 +501,13 @@ mod tests {
     }
 
     #[test]
-    fn malformed_requests_leave_every_worker_serving() {
+    fn malformed_requests_leave_the_server_serving() {
         let (_f, server, id) = server_with(b"video bytes");
         let port = server.port;
         let path = format!("/{}/video/{id}", server.token);
-        // Several rounds of each, more than there are workers, so a worker that died on any
-        // of them would leave too few to answer the last request.
-        for _ in 0..WORKERS * 2 {
+        // Several rounds of each: a server that lost anything on one of them - a thread, a
+        // lock - would stop answering before the last.
+        for _ in 0..8 {
             for junk in [
                 "NONSENSE\r\n".to_owned(),
                 format!("GET {path} HTTP/1.1\r\nX-\u{e9}: 1\r\n"),
@@ -525,8 +539,8 @@ mod tests {
         let bytes = vec![7u8; 8_000_000];
         let (_f, server, id) = server_with(&bytes);
         let path = format!("/{}/video/{id}", server.token);
-        // More hang-ups than workers: each must free its worker.
-        for _ in 0..WORKERS + 1 {
+        // Several hang-ups in a row: each must end its request cleanly.
+        for _ in 0..5 {
             let mut s = TcpStream::connect(("127.0.0.1", server.port)).unwrap();
             write!(
                 s,
@@ -540,6 +554,38 @@ mod tests {
         }
         let (status, _, body) = get(server.port, &path, "Range: bytes=0-9\r\n");
         assert_eq!((status, body.len()), (206, 10));
+    }
+
+    #[test]
+    fn players_holding_connections_open_do_not_starve_the_next_request() {
+        // Larger than the loopback socket buffers on both ends, so a response nobody reads
+        // blocks its writer mid-body, which is what a paused `<video>` does.
+        let bytes = vec![5u8; 48_000_000];
+        let (_f, server, id) = server_with(&bytes);
+        let path = format!("/{}/video/{id}", server.token);
+        let held: Vec<TcpStream> = (0..10)
+            .map(|_| {
+                let mut s = TcpStream::connect(("127.0.0.1", server.port)).unwrap();
+                write!(
+                    s,
+                    "GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n\r\n",
+                    server.port
+                )
+                .unwrap();
+                s
+            })
+            .collect();
+        // Give every held request time to reach its handler and fill its socket.
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        let started = std::time::Instant::now();
+        let (status, _, body) = get(server.port, &path, "Range: bytes=0-9\r\n");
+        assert_eq!((status, body.len()), (206, 10));
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "answered only after {:?}",
+            started.elapsed()
+        );
+        drop(held);
     }
 
     #[test]
