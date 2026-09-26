@@ -17,10 +17,24 @@ export interface ThumbnailerDeps {
 }
 
 /** Draws videos' poster frames, one at a time - a WebKit media pipeline is heavy - for as
- *  long as it runs. Generation-counted, so a stop and a start in quick succession never
- *  leave two loops. */
+ *  long as it runs. Generation-counted, so a job answered late (`nextJob` was still
+ *  in-flight when `stop()` ran) is never drawn.
+ *
+ *  `stop()` is a disposal, not a pause: once called, `start()` is a permanent no-op and
+ *  the instance never runs again. `App.svelte` creates a fresh thumbnailer on every mount,
+ *  the same lifecycle `theme.svelte.ts` documents for its own singleton, so nothing needs
+ *  this one to come back to life. Treating it as resumable was the earlier bug: the async
+ *  setup in `App.svelte` awaits `mediaBase()`/`videoSessionStart()` before calling
+ *  `start()`, so `onMount`'s cleanup can run `stop()` first and `start()` can still land
+ *  after - a generation bump alone would have let that late `start()` spin up a loop with
+ *  nothing left to stop it. */
 export function createVideoThumbnailer(deps: ThumbnailerDeps) {
   let generation = 0;
+  let disposed = false;
+  /** The controller for whichever `draw()` is in flight, so `stop()` can cut it short
+   *  instead of leaving its `<video>` loading and its 15s timer armed until the tab-away
+   *  page is long gone. */
+  let active: AbortController | null = null;
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
   async function loop(mine: number) {
@@ -42,24 +56,49 @@ export function createVideoThumbnailer(deps: ThumbnailerDeps) {
 
   async function draw(job: VideoJob) {
     const controller = new AbortController();
+    active = controller;
     const timer = setTimeout(() => controller.abort(new DOMException('timeout', 'TimeoutError')), JOB_TIMEOUT_MS);
     try {
       const jpeg = await deps.grab(deps.url(job.id), controller.signal);
       await deps.put(job.id, job.key, jpeg);
     } catch (e) {
-      const reason: VideoFailure = controller.signal.aborted ? 'timeout' : e instanceof MediaUnsupported ? 'unsupported' : 'decode';
+      // A timeout and a stop both abort the same signal, but they are not the same fact:
+      // a timeout means this video's frame did not come in a reasonable time, which is
+      // worth remembering past this session. A stop means the page is going away mid-job -
+      // the file is fine and untouched, so it is reported `unsupported`, the reason that
+      // keeps the row Pending and lets a new session simply retry it, rather than marking a
+      // healthy video as a repeat failure because the tab happened to close on it.
+      const reason: VideoFailure = isTimeout(controller.signal)
+        ? 'timeout'
+        : isStop(controller.signal)
+          ? 'unsupported'
+          : e instanceof MediaUnsupported
+            ? 'unsupported'
+            : 'decode';
       await deps.fail(job.id, job.key, reason).catch(() => {});
     } finally {
       clearTimeout(timer);
+      if (active === controller) active = null;
     }
   }
 
   return {
     start() {
+      if (disposed) return;
       void loop(++generation);
     },
     stop() {
+      disposed = true;
       generation++;
+      active?.abort(new DOMException('stopped', 'AbortError'));
     },
   };
+}
+
+function isTimeout(signal: AbortSignal): boolean {
+  return signal.aborted && signal.reason instanceof DOMException && signal.reason.name === 'TimeoutError';
+}
+
+function isStop(signal: AbortSignal): boolean {
+  return signal.aborted && signal.reason instanceof DOMException && signal.reason.name === 'AbortError';
 }

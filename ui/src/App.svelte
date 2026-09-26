@@ -100,6 +100,13 @@
     // Videos: where they are served and whether this webview can play them, then the
     // session that tells the backend so - on Linux without GStreamer's plugins, playing one
     // would take the window down, and without a session no thumbnail request waits on us.
+    // `disposed` is this mount's own guard, the same pattern `theme.svelte.ts` uses for its
+    // generation: the setup below awaits two round trips before it ever calls
+    // `thumbnailer.start()`, so `onMount`'s cleanup can run first, and a `videoSessionStart`
+    // landing after that would tell a backend nobody is left to poll on behalf of.
+    // `createVideoThumbnailer` guards `start()` itself too, since `stop()` is a disposal -
+    // this mount creates a fresh thumbnailer, never reusing a stopped one.
+    let disposed = false;
     const thumbnailer = createVideoThumbnailer({
       nextJob: api.nextVideoJob,
       put: api.putVideoFrame,
@@ -109,15 +116,18 @@
     });
     void (async () => {
       const base = await api.mediaBase().catch(() => null);
+      if (disposed) return;
       videoState.base = base;
       videoState.supported = base !== null && mediaSupported((t) => document.createElement('video').canPlayType(t));
       await api.videoSessionStart(videoState.supported).catch(() => {});
+      if (disposed) return;
       if (videoState.supported) thumbnailer.start();
     })();
     return () => {
       library.dispose();
       theme.dispose();
       gridSize.dispose();
+      disposed = true;
       thumbnailer.stop();
     };
   });

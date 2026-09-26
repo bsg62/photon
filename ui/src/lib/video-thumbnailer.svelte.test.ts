@@ -83,4 +83,43 @@ describe('createVideoThumbnailer', () => {
     await settle();
     expect(deps.grab).not.toHaveBeenCalled();
   });
+
+  // Fix round 1: stop() is a disposal, not a pause. A start() that lands after dispose
+  // (App.svelte's async setup awaits mediaBase()/videoSessionStart() before calling
+  // start(), and onMount's cleanup can run stop() first) must never spin up a loop nothing
+  // is left to stop.
+  it('start() after stop() never calls nextJob', async () => {
+    const { t, deps } = setup([{ id: 1, key: 'a' }], async () => new Uint8Array());
+    t.stop();
+    t.start();
+    await settle();
+    expect(deps.nextJob).not.toHaveBeenCalled();
+  });
+
+  // Fix round 1: stop() must not leave a job's <video> loading and its 15s timer armed
+  // after the page that wanted the frame is gone. It aborts the in-flight grab; the
+  // reason reported is 'unsupported' (not 'timeout'), since the file is fine and a new
+  // session will simply retry it - a real timeout must still read 'timeout'.
+  it('stop() during a pending grab aborts its signal and reports unsupported, not timeout, with no timer left afterwards', async () => {
+    let capturedSignal: AbortSignal | undefined;
+    const deps = {
+      nextJob: vi.fn(async () => ({ id: 1, key: 'a' })),
+      put: vi.fn(async () => {}),
+      fail: vi.fn(async () => {}),
+      url: (id: number) => `u/${id}`,
+      grab: vi.fn((_url: string, signal: AbortSignal) => {
+        capturedSignal = signal;
+        return new Promise<Uint8Array>((_, reject) => signal.addEventListener('abort', () => reject(signal.reason)));
+      }),
+    };
+    const t = createVideoThumbnailer(deps);
+    t.start();
+    await settle();
+    expect(vi.getTimerCount()).toBeGreaterThan(0);
+    t.stop();
+    await settle();
+    expect(capturedSignal?.aborted).toBe(true);
+    expect(deps.fail.mock.calls).toEqual([[1, 'a', 'unsupported']]);
+    expect(vi.getTimerCount()).toBe(0);
+  });
 });
