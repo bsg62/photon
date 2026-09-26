@@ -675,6 +675,107 @@ describe('LibraryStore', () => {
     expect(order).toEqual(['start:b', 'end:b', 'start:beach', 'end:beach']);
   });
 
+  it('a view switch waits for a search already sent, so the search cannot land after it', async () => {
+    const store = new LibraryStore();
+    await store.init();
+
+    const order: string[] = [];
+    const search = deferred<void>();
+    vi.mocked(api.setSearchQuery).mockImplementationOnce(async (q: string) => {
+      order.push(`start:${q}`);
+      await search.promise;
+      order.push(`end:${q}`);
+    });
+    vi.mocked(api.setGridView).mockImplementationOnce(async (view: GridView) => {
+      order.push(`view:${view}`);
+    });
+
+    const p1 = store.setSearchQuery('beach');
+    const p2 = store.setView('starred');
+    await Promise.resolve();
+    await Promise.resolve();
+    search.resolve();
+    await Promise.all([p1, p2]);
+
+    // Unchained, Starred is applied while 'beach' is still in flight, and 'beach' then puts
+    // the backend back into Search under a box the switch has already emptied.
+    expect(order).toEqual(['start:beach', 'end:beach', 'view:starred']);
+  });
+
+  it('runs the view-switch hooks as the switch is issued, and takes them back only if it is refused', async () => {
+    const store = new LibraryStore();
+    await store.init();
+    const undo = vi.fn();
+    const hook = vi.fn(() => undo);
+    store.onViewSwitch(hook);
+
+    const command = deferred<void>();
+    vi.mocked(api.setGridView).mockReturnValueOnce(command.promise);
+    const switched = store.setView('starred');
+    // Before the backend has answered: text typed from here on belongs after the switch.
+    expect(hook).toHaveBeenCalledOnce();
+    command.resolve();
+    await switched;
+    expect(undo).not.toHaveBeenCalled();
+
+    vi.mocked(api.setGridView).mockRejectedValueOnce(new Error('refused'));
+    await store.setView('recent');
+    expect(undo).toHaveBeenCalledOnce();
+
+    // A refresh failing after the command succeeded is not a refusal: the backend has
+    // already moved, so the box must stay empty to match it.
+    vi.mocked(api.setGridView).mockResolvedValueOnce(undefined);
+    vi.mocked(api.gridInfo).mockRejectedValueOnce(new Error('refresh failed'));
+    await store.setView('starred');
+    expect(undo).toHaveBeenCalledOnce();
+  });
+
+  it('a refused switch does not take its hooks back once a later switch has been issued', async () => {
+    const store = new LibraryStore();
+    await store.init();
+    const undo = vi.fn();
+    store.onViewSwitch(() => undo);
+
+    const starred = deferred<void>();
+    vi.mocked(api.setGridView).mockReturnValueOnce(starred.promise);
+    vi.mocked(api.setGridView).mockResolvedValueOnce(undefined);
+    const first = store.setView('starred');
+    const second = store.setView('recent');
+    starred.reject(new Error('refused'));
+    await Promise.all([first, second]);
+
+    // Recent emptied the box and landed; Starred putting the search back would leave it
+    // over Recent's grid.
+    expect(undo).not.toHaveBeenCalled();
+  });
+
+  it('answers a refused search with the query the backend rolled back to', async () => {
+    const store = new LibraryStore();
+    await store.init();
+    vi.mocked(api.setSearchQuery).mockResolvedValueOnce(undefined);
+    vi.mocked(api.gridInfo).mockResolvedValueOnce({ version: 2, len: 0, sections: [], starredCount: 0, duplicateCount: 0, hiddenCount: 0, view: 'search', searchQuery: 'lake', person: null, album: null, tag: null, copiesOf: null });
+    await expect(store.setSearchQuery('lake')).resolves.toBe('lake');
+
+    vi.mocked(api.setSearchQuery).mockRejectedValueOnce(new Error('refused'));
+    await expect(store.setSearchQuery('beach')).resolves.toBe('lake');
+  });
+
+  it('reports the view only once the commands already issued have landed', async () => {
+    const store = new LibraryStore();
+    await store.init();
+    const search = deferred<void>();
+    vi.mocked(api.setSearchQuery).mockReturnValueOnce(search.promise);
+    vi.mocked(api.gridInfo).mockResolvedValueOnce({ version: 2, len: 0, sections: [], starredCount: 0, duplicateCount: 0, hiddenCount: 0, view: 'search', searchQuery: 'beach', person: null, album: null, tag: null, copiesOf: null });
+
+    void store.setSearchQuery('beach');
+    const view = store.settledView();
+    search.resolve();
+
+    // Read at the click, this is still All - and a folder jump from All skips the switch,
+    // leaving the search to land and carry the grid away from the folder.
+    await expect(view).resolves.toBe('search');
+  });
+
   it('hiding a folder refetches the folder list, so its menu offers Unhide next time', async () => {
     const store = new LibraryStore();
     await store.init();

@@ -536,40 +536,74 @@ export class LibraryStore {
 
   /** Switches which photos the grid shows. The backend rebuilds its index, so the grid is
    *  reloaded from scratch rather than patched. */
-  async setView(view: GridView): Promise<void> {
-    await this.switchView(() => api.setGridView(view));
+  setView(view: GridView): Promise<void> {
+    return this.switchView(() => api.setGridView(view));
   }
 
   /** Shows the photos of one Picasa contact. */
-  async setPersonView(hash: string): Promise<void> {
-    await this.switchView(() => api.setPersonView(hash));
+  setPersonView(hash: string): Promise<void> {
+    return this.switchView(() => api.setPersonView(hash));
   }
 
   /** Shows one album. */
-  async setAlbumView(albumId: number): Promise<void> {
-    await this.switchView(() => api.setAlbumView(albumId));
+  setAlbumView(albumId: number): Promise<void> {
+    return this.switchView(() => api.setAlbumView(albumId));
   }
 
   /** Shows the photos carrying one keyword. */
-  async setTagView(tag: string): Promise<void> {
-    await this.switchView(() => api.setTagView(tag));
+  setTagView(tag: string): Promise<void> {
+    return this.switchView(() => api.setTagView(tag));
   }
 
   /** Shows one photo and its copies. */
-  async setCopiesView(itemId: number): Promise<void> {
-    await this.switchView(() => api.setCopiesView(itemId));
+  setCopiesView(itemId: number): Promise<void> {
+    return this.switchView(() => api.setCopiesView(itemId));
+  }
+
+  /** What has to happen the moment a view switch is asked for, before the backend answers:
+   *  the search box empties itself here. Each hook returns how to take that back if the
+   *  switch is refused. */
+  private viewSwitchHooks = new Set<() => () => void>();
+
+  /** How many view switches have been issued; see `switchView`. */
+  private switchesIssued = 0;
+
+  /** Registers a view-switch hook; returns its unregistration. */
+  onViewSwitch(hook: () => () => void): () => void {
+    this.viewSwitchHooks.add(hook);
+    return () => this.viewSwitchHooks.delete(hook);
   }
 
   /** One shape for every view switch: the command, then a refresh, with failures reported
-   *  rather than thrown, since every caller is a click handler. */
-  private async switchView(command: () => Promise<void>): Promise<void> {
-    try {
-      await command();
-      this.clearSelection();
-      await this.refresh();
-    } catch (e) {
-      this.reportError(e);
-    }
+   *  rather than thrown, since every caller is a click handler.
+   *
+   *  The hooks run when the switch is *issued*, not when it lands. Anything typed into the
+   *  search box after the click is new text meant for after the switch, and the shared
+   *  `viewChain` sends it after the switch too; clearing the box once the switch landed
+   *  would wipe it while its send was still queued, and the grid would then show a search
+   *  the box no longer held. Only a refused command takes the hooks back: once it has
+   *  succeeded the backend is in the new view, whatever the refresh does. */
+  private switchView(command: () => Promise<void>): Promise<void> {
+    const undo = [...this.viewSwitchHooks].map((hook) => hook());
+    const switchId = ++this.switchesIssued;
+    return this.chain(async () => {
+      try {
+        await command();
+      } catch (e) {
+        // Only while no later switch has been issued: a click on Starred then Recent emptied
+        // the box twice, and Starred's refusal putting the search back would leave it over
+        // Recent's grid once Recent lands.
+        if (switchId === this.switchesIssued) for (const u of undo) u();
+        this.reportError(e);
+        return;
+      }
+      try {
+        this.clearSelection();
+        await this.refresh();
+      } catch (e) {
+        this.reportError(e);
+      }
+    });
   }
 
   albumName(albumId: number | null): string {
@@ -691,35 +725,59 @@ export class LibraryStore {
     await this.refreshCollections().catch(this.reportError);
   }
 
-  /** Chains each `setSearchQuery` call onto the previous one, so two `setSearchQuery` calls
-   *  issued close together (for example a debounced search followed by Escape clearing it)
-   *  apply to the backend in the order they were issued rather than in whatever order their
-   *  IPC round trips happen to finish. This says nothing about `setView`, which is not on
-   *  this chain. `cancel()` on the debouncer only stops a call that hasn't fired yet — a
-   *  call already dispatched cannot be cancelled, so ordering has to be guaranteed here
-   *  instead. */
-  private searchQueryChain: Promise<void> = Promise.resolve();
+  /** Every command that moves the backend's view - a search and a view switch alike - is
+   *  chained onto the previous one, so they apply in the order they were issued rather than
+   *  in whatever order their IPC round trips happen to finish. `cancel()` on the search
+   *  debouncer only stops a send that hasn't fired yet; one already dispatched cannot be
+   *  cancelled, so a click on Starred right after it has to wait for it here, or the search
+   *  lands last and the grid is left in Search under an empty box. */
+  private viewChain: Promise<void> = Promise.resolve();
 
-  /** Searches for `query`. A blank query returns the backend to the All view. */
-  setSearchQuery(query: string): Promise<void> {
-    const next = this.searchQueryChain.then(async () => {
+  private chain<T>(step: () => Promise<T>): Promise<T> {
+    const next = this.viewChain.then(step);
+    // Stored separately from what's returned: `next` never rejects today, because every
+    // step routes its failures into reportError, but the chain must not depend on that
+    // staying true. A bare `this.viewChain = next` would leave the chain permanently
+    // rejected after one throw, and every later search or view switch would reject with it
+    // - the grid would go silently dead for the rest of the session. Callers still see
+    // `next`, so a real failure still rejects for them.
+    this.viewChain = next.then(
+      () => {},
+      () => {},
+    );
+    return next;
+  }
+
+  /** Searches for `query`. A blank query returns the backend to the All view.
+   *
+   *  Resolves to the query the backend holds once this has been applied: `query` itself, or
+   *  - when the command is refused and the engine rolls back - the one it held before,
+   *  which is what the search box then shows. */
+  setSearchQuery(query: string): Promise<string> {
+    return this.chain(async () => {
       try {
         await api.setSearchQuery(query);
+      } catch (e) {
+        this.reportError(e);
+        // Nothing has refreshed since the last command on this chain landed, so this is the
+        // state the engine rolled back to.
+        return this.info.view === 'search' ? this.info.searchQuery : '';
+      }
+      try {
         this.clearSelection();
         await this.refresh();
       } catch (e) {
         this.reportError(e);
       }
+      return query;
     });
-    // Stored separately from what's returned: `next` never rejects today because the
-    // try/catch above routes every failure into reportError, but the chain must not depend
-    // on that staying true. If some future failure ever did throw past this point, a bare
-    // `this.searchQueryChain = next` would leave the chain permanently rejected and every
-    // later setSearchQuery call would reject with it — search would go silently dead for
-    // the rest of the session. `.catch(() => {})` keeps the chain alive regardless; callers
-    // still see `next`, so a real failure is still reported and still rejects for them.
-    this.searchQueryChain = next.catch(() => {});
-    return next;
+  }
+
+  /** The view once every view command already issued has landed. What a folder jump asks
+   *  before deciding whether it has to leave the view it is in. */
+  async settledView(): Promise<GridView> {
+    await this.viewChain;
+    return this.info.view;
   }
 
   async ensure(start: number, end: number): Promise<void> {

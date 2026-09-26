@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { debounce, resultsChanged, shouldAdoptBackendQuery, viewKey } from './search';
+import { debounce, resultsChanged, viewKey } from './search';
 
 describe('debounce', () => {
   beforeEach(() => {
@@ -68,24 +68,6 @@ describe('debounce', () => {
   });
 });
 
-describe('shouldAdoptBackendQuery', () => {
-  it('declines while a send is outstanding, even when the value differs — this is the blocker', () => {
-    // library.setSearchQuery serialises calls, so a second send can already be queued
-    // behind a first that hasn't settled. The first send's echo can then arrive while a
-    // later value is already in flight; adopting it here would snap the box backwards to
-    // that stale value while the correct one is still on its way.
-    expect(shouldAdoptBackendQuery('b', 'beach', 'beach', 1)).toBe(false);
-  });
-
-  it('adopts once the outstanding count reaches zero', () => {
-    expect(shouldAdoptBackendQuery('', 'beach', 'beach', 0)).toBe(true);
-  });
-
-  it('declines a value that has not changed, even with nothing outstanding', () => {
-    expect(shouldAdoptBackendQuery('beach', 'beach', null, 0)).toBe(false);
-  });
-});
-
 describe('resultsChanged', () => {
   it('is true when only the view differs', () => {
     expect(resultsChanged({ view: 'all', query: '' }, { view: 'starred', query: '' })).toBe(true);
@@ -97,30 +79,6 @@ describe('resultsChanged', () => {
 
   it('is false when neither the view nor the query differs', () => {
     expect(resultsChanged({ view: 'search', query: 'a' }, { view: 'search', query: 'a' })).toBe(false);
-  });
-});
-
-describe('shouldAdoptBackendQuery — the reported swallowing bug', () => {
-  it('declines our own echo once it settles, while the user has typed ahead of it', () => {
-    // The reported symptom: "the search input swallows inputs while typing". Type "b", the
-    // debounce fires and sends it; keep typing "each" so the box reads "beach". The send
-    // settles, `outstanding` drops to 0 and the effect wakes to a backend holding "b".
-    // Nothing is in flight and "b" differs from "beach", so a count-only guard adopts it and
-    // "each" vanishes. This is the case that shipped broken.
-    expect(shouldAdoptBackendQuery('b', 'beach', 'b', 0)).toBe(false);
-  });
-
-  it('still adopts a clear that came from somewhere else', () => {
-    // Clicking a folder or Starred clears the query server-side. That value is not one we
-    // sent, so it must reach the box — otherwise it keeps displaying text filtering nothing,
-    // which is the whole reason the sync exists.
-    expect(shouldAdoptBackendQuery('', 'beach', 'beach', 0)).toBe(true);
-  });
-
-  it('declines everything while a send is still in flight', () => {
-    // The ordering half: an echo arriving while another send is queued behind it may belong
-    // to a since-superseded value.
-    expect(shouldAdoptBackendQuery('b', 'beach', 'beach', 1)).toBe(false);
   });
 });
 

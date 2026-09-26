@@ -382,9 +382,10 @@ publishing it.
 - [ ] With photos from several years, a year strip shows right of the grid's scrollbar: years sit where they start, a line marks the current position and follows scrolling, hovering shows a year bubble, and pressing or dragging scrolls there — pressing on a printed year lands on that year's first folder, the same folder the sidebar lists first under it. The strip is absent in Recent, with a single year, and when everything fits on screen.
 - [ ] `lake bell` shows only photos matching both words; `lake OR bell` shows photos matching either; typing `lake OR` on the way there keeps showing the `lake` results rather than flashing empty.
 - [ ] In the viewer's info panel, click the camera (then, on another photo, the lens): the viewer closes, the search box reads `camera:"…"`, and the grid shows that camera's photos, the clicked one among them.
-- [ ] Clicking a folder in the sidebar while a search is active leaves search and lands on that folder.
+- [ ] Clicking a folder in the sidebar while a search is active leaves search and lands on that folder, and the search box empties. So does clicking Starred, Recent, an album, a person or a tag.
 - [ ] Type a query, pause briefly, then keep typing without pausing again (e.g. type "beach", wait, then add "es" to make "beaches"): the box keeps every character you typed and never snaps back to an earlier, shorter query.
 - [ ] Edit the search box, then immediately (within ~150ms) click a folder or Starred: the click's destination is what stays on screen — the grid must not jump back into a search a moment later.
+- [ ] Click Starred and start typing a search straight away: the typed text stays in the box and the grid ends up showing that search, not Starred under an empty box.
 - [ ] With Starred active and the search box empty, press Escape in the box: it stays on Starred rather than switching to All.
 - [ ] With Starred or a search active, click a watched root (a bold top-level row) rather than a year row: it lands on that root's photos, the same as a year row does.
 - [ ] Type text into the search box, then click a folder within about 150ms: the pending search is cancelled, so the box keeps the text (filtering nothing) until you clear it or press Escape.

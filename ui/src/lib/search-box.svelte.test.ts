@@ -1,11 +1,20 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createSearchBox } from './search-box.svelte';
+import { createSearchBox, searchBox } from './search-box.svelte';
 import { SEARCH_DEBOUNCE_MS } from './search';
 
 // The singleton at the bottom of the module wires itself to the real store on import, which
 // would drag the Tauri API in with it. Only the factory is under test here.
+// The hook the singleton registers, captured as it registers it: the module runs once, on
+// import, before any test does.
+const registered = vi.hoisted(() => ({ hooks: [] as (() => () => void)[] }));
 vi.mock('./library.svelte', () => ({
-  library: { info: { searchQuery: '' }, setSearchQuery: () => Promise.resolve() },
+  library: {
+    setSearchQuery: (q: string) => Promise.resolve(q),
+    onViewSwitch: (hook: () => () => void) => {
+      registered.hooks.push(hook);
+      return () => {};
+    },
+  },
 }));
 
 function deferred() {
@@ -26,7 +35,7 @@ describe('createSearchBox', () => {
   });
 
   it('sends the typed query once the debounce window elapses', () => {
-    const send = vi.fn(() => Promise.resolve());
+    const send = vi.fn((q: string) => Promise.resolve(q));
     const box = createSearchBox(send);
 
     box.query = 'beach';
@@ -37,7 +46,7 @@ describe('createSearchBox', () => {
   });
 
   it('drops a pending send on cancel, so a view switch is not undone by it', () => {
-    const send = vi.fn(() => Promise.resolve());
+    const send = vi.fn((q: string) => Promise.resolve(q));
     const box = createSearchBox(send);
 
     box.run('beach');
@@ -48,9 +57,10 @@ describe('createSearchBox', () => {
   });
 
   it('clear empties the box and sends the empty query, without the pending one landing after it', () => {
-    const send = vi.fn(() => Promise.resolve());
-    const box = createSearchBox(send, 'beach');
+    const send = vi.fn((q: string) => Promise.resolve(q));
+    const box = createSearchBox(send);
 
+    box.query = 'beach';
     box.run('beach');
     box.clear();
     vi.advanceTimersByTime(SEARCH_DEBOUNCE_MS * 10);
@@ -60,7 +70,7 @@ describe('createSearchBox', () => {
   });
 
   it('runs a linked search at once and drops what was half-typed before it', () => {
-    const send = vi.fn(() => Promise.resolve());
+    const send = vi.fn((q: string) => Promise.resolve(q));
     const box = createSearchBox(send);
 
     box.query = 'bea';
@@ -73,47 +83,75 @@ describe('createSearchBox', () => {
     expect(send).toHaveBeenCalledExactlyOnceWith('camera:"NIKON D750"');
   });
 
-  it('adopts a query the backend changed on its own — a folder jump clearing search', async () => {
-    const send = vi.fn(() => Promise.resolve());
-    const box = createSearchBox(send, 'beach');
-
-    box.syncFromBackend('');
-
-    expect(box.query).toBe('');
-  });
-
-  it('declines its own echo while the user types ahead of it', async () => {
-    const first = deferred();
-    const send = vi.fn(() => first.promise);
-    const box = createSearchBox(send);
-
-    // 'b' is sent and settles; the user has typed 'each' on top of it meanwhile.
-    box.query = 'b';
-    box.run('b');
-    vi.advanceTimersByTime(SEARCH_DEBOUNCE_MS);
-    box.query = 'beach';
-    first.resolve();
-    await first.promise;
-    await Promise.resolve();
-
-    box.syncFromBackend('b');
-
-    expect(box.query).toBe('beach');
-  });
-
-  it('declines any echo while a send is still in flight', async () => {
-    const pending = deferred();
-    const send = vi.fn(() => pending.promise);
+  it('empties the box when the view is left, and drops the send still pending', () => {
+    const send = vi.fn((q: string) => Promise.resolve(q));
     const box = createSearchBox(send);
 
     box.query = 'beach';
     box.run('beach');
-    vi.advanceTimersByTime(SEARCH_DEBOUNCE_MS);
+    box.leave();
+    vi.advanceTimersByTime(SEARCH_DEBOUNCE_MS * 10);
 
-    // An echo of an older send arriving while 'beach' is still outstanding.
-    box.syncFromBackend('bea');
+    // The backend clears its query on a view switch; a box still holding 'beach' would
+    // offer a search that no longer filters anything.
+    expect(box.query).toBe('');
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it('puts the text back when the switch is refused', () => {
+    const box = createSearchBox(vi.fn((q: string) => Promise.resolve(q)));
+
+    box.query = 'beach';
+    const undo = box.leave();
+    undo();
 
     expect(box.query).toBe('beach');
-    pending.resolve();
+  });
+
+  it('keeps what was typed after leaving when a refused switch is taken back', () => {
+    const box = createSearchBox(vi.fn((q: string) => Promise.resolve(q)));
+
+    box.query = 'beach';
+    const undo = box.leave();
+    box.query = 'hut';
+    undo();
+
+    expect(box.query).toBe('hut');
+  });
+
+  it('shows what the backend rolled back to when a search is refused', async () => {
+    const box = createSearchBox(() => Promise.resolve('lake'));
+
+    box.search('beach');
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // The grid is still showing 'lake'; a box left on 'beach' would offer to save a search
+    // that filters nothing, and Escape would then move the grid.
+    expect(box.query).toBe('lake');
+  });
+
+  it('keeps what was typed on after a refused search', async () => {
+    let refuse!: (held: string) => void;
+    const box = createSearchBox(() => new Promise<string>((res) => (refuse = res)));
+
+    box.search('beach');
+    box.query = 'beaches';
+    refuse('lake');
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(box.query).toBe('beaches');
+  });
+});
+
+describe('the search box singleton', () => {
+  it('empties itself on every view switch the store issues', () => {
+    // The only link between a view switch and the box: without it, clicking Starred during
+    // a search leaves the query in the box over Starred's grid.
+    expect(registered.hooks).toHaveLength(1);
+    searchBox.query = 'beach';
+    registered.hooks[0]();
+    expect(searchBox.query).toBe('');
   });
 });

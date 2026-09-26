@@ -91,7 +91,7 @@ describe('enterFolder', () => {
       order,
       deps: {
         cancelSearch: () => order.push('cancel'),
-        currentView: () => view,
+        currentView: () => Promise.resolve(view),
         setView: (v: GridView) => {
           order.push('setView');
           return setView(v);
@@ -143,7 +143,7 @@ describe('locateItem', () => {
       order,
       deps: {
         cancelSearch: () => order.push('cancel'),
-        currentView: () => view,
+        currentView: () => Promise.resolve(view),
         setView: (v: GridView) => {
           order.push(`setView:${v}`);
           return Promise.resolve();
@@ -201,7 +201,7 @@ describe('returnToAll', () => {
       jumped,
       deps: {
         cancelSearch: () => order.push('cancel'),
-        currentView: () => view,
+        currentView: () => Promise.resolve(view),
         setView: (v: GridView) => {
           order.push(`setView:${v}`);
           return setView();
