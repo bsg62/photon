@@ -138,7 +138,7 @@
     viewerAt = null;
     await locateItem(itemId, hidden, {
       cancelSearch: () => searchBox.cancel(),
-      currentView: () => library.info.view,
+      currentView: () => library.settledView(),
       setView: (view) => library.setView(view),
       offsetOfItem: (id) => api.gridOffsetOfItem(id).catch(() => null),
       select: (offset, id) => {

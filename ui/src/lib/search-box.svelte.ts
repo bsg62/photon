@@ -16,10 +16,19 @@ import { debounce, SEARCH_DEBOUNCE_MS } from './search';
  *  elsewhere - a guess that took three attempts and still swallowed characters.
  *
  *  `send` is injected so the machine can be tested without the backend. */
-export function createSearchBox(send: (query: string) => Promise<void>) {
+export function createSearchBox(send: (query: string) => Promise<string>) {
   let query = $state('');
 
-  const run = debounce((q: string) => void send(q), SEARCH_DEBOUNCE_MS);
+  /** Sends `q`. `send` answers with the query the backend holds afterwards, which differs
+   *  from `q` only when the search was refused and the engine rolled back; the box then
+   *  shows what the grid does - unless the user has typed on since, which is theirs. */
+  function dispatch(q: string): void {
+    void send(q).then((held) => {
+      if (held !== q && query === q) query = held;
+    });
+  }
+
+  const run = debounce((q: string) => dispatch(q), SEARCH_DEBOUNCE_MS);
 
   return {
     get query() {
@@ -47,7 +56,7 @@ export function createSearchBox(send: (query: string) => Promise<void>) {
     search(q: string) {
       run.cancel();
       query = q;
-      void send(q);
+      dispatch(q);
     },
 
     clear() {
@@ -56,7 +65,7 @@ export function createSearchBox(send: (query: string) => Promise<void>) {
       // cancelled; `LibraryStore` applies it before this one instead.
       run.cancel();
       query = '';
-      void send('');
+      dispatch('');
     },
 
     /** The view is switching away, which clears the backend's query: the box empties to

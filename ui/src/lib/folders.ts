@@ -82,6 +82,10 @@ export function groupByYear(rows: FolderRow[]): YearGroup[] {
  *  running, it fires after the view switch below has landed on `all` and re-enters Search
  *  with its captured text, replacing the grid the user just navigated to.
  *
+ *  The view is read once every view command already issued has landed (`currentView` is
+ *  `LibraryStore.settledView`): a search sent from All just before the click would
+ *  otherwise read as All, skip the switch, and then land and carry the grid into Search.
+ *
  *  Awaiting `setView` is what the jump itself depends on: `jump` looks the folder up in the
  *  grid's current index, and racing that lookup against an unawaited view switch can return
  *  a stale or mismatched offset (see the Important 1 writeup — awaiting here is load-bearing,
@@ -95,13 +99,13 @@ export async function enterFolder(
   folderId: number,
   deps: {
     cancelSearch: () => void;
-    currentView: () => GridView;
+    currentView: () => Promise<GridView>;
     setView: (view: GridView) => Promise<void>;
     jump: (folderId: number) => void;
   },
 ): Promise<void> {
   deps.cancelSearch();
-  const view = deps.currentView();
+  const view = await deps.currentView();
   if (view !== 'all' && view !== 'hidden') await deps.setView('all');
   deps.jump(folderId);
 }
@@ -118,7 +122,7 @@ export async function enterFolder(
  *  Nothing remembered, or a lookup that fails, opens All wherever it opens. */
 export async function returnToAll(deps: {
   cancelSearch: () => void;
-  currentView: () => GridView;
+  currentView: () => Promise<GridView>;
   setView: (view: GridView) => Promise<void>;
   lastFolder: () => Promise<number | null>;
   jump: (folderId: number) => void;
@@ -128,7 +132,7 @@ export async function returnToAll(deps: {
   // re-read and a jump - the grid saves its place fire-and-forget as the scroll crosses a
   // folder, a read right behind that save could still see the folder before, and the jump
   // would land on a folder's top rather than where the user is.
-  if (deps.currentView() === 'all') return;
+  if ((await deps.currentView()) === 'all') return;
   // Read *before* the switch. The grid writes the folder at its top whenever All is showing,
   // and a freshly rebuilt All sits at its first folder until the jump: read after the switch,
   // the remembered place could already have been overwritten with the library's top - the
@@ -154,7 +158,7 @@ export async function locateItem(
   hidden: boolean,
   deps: {
     cancelSearch: () => void;
-    currentView: () => GridView;
+    currentView: () => Promise<GridView>;
     setView: (view: GridView) => Promise<void>;
     offsetOfItem: (itemId: number) => Promise<number | null>;
     /** Given the id as well as the offset: the page at `offset` is not loaded at this
@@ -164,7 +168,7 @@ export async function locateItem(
 ): Promise<void> {
   deps.cancelSearch();
   const home: GridView = hidden ? 'hidden' : 'all';
-  if (deps.currentView() !== home) await deps.setView(home);
+  if ((await deps.currentView()) !== home) await deps.setView(home);
   const at = await deps.offsetOfItem(itemId);
   if (at === null) return;
   deps.select(at, itemId);

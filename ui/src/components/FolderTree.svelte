@@ -91,7 +91,7 @@
   function jumpToFolder(folderId: number): Promise<void> {
     return enterFolder(folderId, {
       cancelSearch: () => searchBox.cancel(),
-      currentView: () => library.info.view,
+      currentView: () => library.settledView(),
       setView: (view) => library.setView(view),
       jump: onjump,
     });
@@ -100,7 +100,7 @@
   function showAll(): Promise<void> {
     return returnToAll({
       cancelSearch: () => searchBox.cancel(),
-      currentView: () => library.info.view,
+      currentView: () => library.settledView(),
       setView: (view) => library.setView(view),
       lastFolder: () => api.lastFolder(),
       jump: onjump,

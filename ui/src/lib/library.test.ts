@@ -730,6 +730,52 @@ describe('LibraryStore', () => {
     expect(undo).toHaveBeenCalledOnce();
   });
 
+  it('a refused switch does not take its hooks back once a later switch has been issued', async () => {
+    const store = new LibraryStore();
+    await store.init();
+    const undo = vi.fn();
+    store.onViewSwitch(() => undo);
+
+    const starred = deferred<void>();
+    vi.mocked(api.setGridView).mockReturnValueOnce(starred.promise);
+    vi.mocked(api.setGridView).mockResolvedValueOnce(undefined);
+    const first = store.setView('starred');
+    const second = store.setView('recent');
+    starred.reject(new Error('refused'));
+    await Promise.all([first, second]);
+
+    // Recent emptied the box and landed; Starred putting the search back would leave it
+    // over Recent's grid.
+    expect(undo).not.toHaveBeenCalled();
+  });
+
+  it('answers a refused search with the query the backend rolled back to', async () => {
+    const store = new LibraryStore();
+    await store.init();
+    vi.mocked(api.setSearchQuery).mockResolvedValueOnce(undefined);
+    vi.mocked(api.gridInfo).mockResolvedValueOnce({ version: 2, len: 0, sections: [], starredCount: 0, duplicateCount: 0, hiddenCount: 0, view: 'search', searchQuery: 'lake', person: null, album: null, tag: null, copiesOf: null });
+    await expect(store.setSearchQuery('lake')).resolves.toBe('lake');
+
+    vi.mocked(api.setSearchQuery).mockRejectedValueOnce(new Error('refused'));
+    await expect(store.setSearchQuery('beach')).resolves.toBe('lake');
+  });
+
+  it('reports the view only once the commands already issued have landed', async () => {
+    const store = new LibraryStore();
+    await store.init();
+    const search = deferred<void>();
+    vi.mocked(api.setSearchQuery).mockReturnValueOnce(search.promise);
+    vi.mocked(api.gridInfo).mockResolvedValueOnce({ version: 2, len: 0, sections: [], starredCount: 0, duplicateCount: 0, hiddenCount: 0, view: 'search', searchQuery: 'beach', person: null, album: null, tag: null, copiesOf: null });
+
+    void store.setSearchQuery('beach');
+    const view = store.settledView();
+    search.resolve();
+
+    // Read at the click, this is still All - and a folder jump from All skips the switch,
+    // leaving the search to land and carry the grid away from the folder.
+    await expect(view).resolves.toBe('search');
+  });
+
   it('hiding a folder refetches the folder list, so its menu offers Unhide next time', async () => {
     const store = new LibraryStore();
     await store.init();
