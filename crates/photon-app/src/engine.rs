@@ -29,6 +29,13 @@ use std::{
 /// Minimum time between grid rebuilds and between progress events during one scan.
 const THROTTLE: Duration = Duration::from_millis(250);
 
+/// Minimum time between the grid rebuilds poster frames ask for. Longer than a scan's
+/// `THROTTLE`: a frame changes no row the grid lays out, only brings a tile that gave up
+/// back to asking (`Tile.svelte`'s `pageTick` effect), so a second's delay costs nothing
+/// visible, while a rebuild per frame is a whole-library query - 55-70 ms at 100k items,
+/// plus the UI's `gridInfo` and viewer re-reads - for every video in a folder of them.
+const FRAME_REFRESH_EVERY: Duration = Duration::from_secs(1);
+
 /// How long `shutdown` waits for a look-alike pass in progress to actually stop before
 /// giving up and leaving it to finish on its own. Bounded for the same reason
 /// `watch::STOP_TIMEOUT` is: the pass's `hash_candidates` reads the original photo files,
@@ -155,6 +162,15 @@ pub struct Engine {
     /// Set by every scan that ends, cleared by the pass as it starts a round. A scan that
     /// finds the pass already running leaves this behind instead of starting a second one.
     hash_requested: AtomicBool,
+    /// Coalesces the rebuilds poster frames ask for; see `frame_stored`.
+    frame_refresh: Mutex<FrameRefresh>,
+}
+
+/// When the last poster-frame rebuild ran, and whether a trailing one is already waiting.
+#[derive(Default)]
+struct FrameRefresh {
+    last: Option<Instant>,
+    scheduled: bool,
 }
 
 impl Engine {
@@ -213,6 +229,7 @@ impl Engine {
             edit_write: Mutex::new(()),
             hashing: Mutex::new(Default::default()),
             hash_requested: AtomicBool::new(false),
+            frame_refresh: Mutex::new(FrameRefresh::default()),
         }))
     }
 
@@ -239,6 +256,73 @@ impl Engine {
         let index = Arc::new(self.build_index(&rebuild.state)?);
         self.publish_if_current(index, &rebuild);
         Ok(())
+    }
+
+    /// A poster frame was stored: rebuild the grid, at most once per `FRAME_REFRESH_EVERY`.
+    ///
+    /// The scan's throttle is leading-edge only - it may skip the last tick because the end
+    /// of the scan refreshes anyway. Frames have no end to lean on: the webview draws them
+    /// one by one for as long as any are pending, and the last of a burst would be left
+    /// unshown. So the first frame after a quiet second rebuilds at once, and any frame
+    /// inside the second schedules one trailing rebuild at its end, which every later frame
+    /// in the window rides on. That trailing rebuild clears `scheduled` *before* it
+    /// snapshots, so a frame that found it scheduled was committed before the snapshot and
+    /// is in it - the same "every commit is followed by a later-stamped rebuild" promise
+    /// `publish_if_current` relies on.
+    ///
+    /// A failure is logged, not returned: the frame is already stored, and an error here
+    /// would reach the page as a failed `put`.
+    pub fn frame_stored(self: &Arc<Self>) {
+        let wait = {
+            let mut pending = self.frame_refresh.lock();
+            if pending.scheduled {
+                return;
+            }
+            let now = Instant::now();
+            match pending.last {
+                Some(last) if now < last + FRAME_REFRESH_EVERY => {
+                    pending.scheduled = true;
+                    last + FRAME_REFRESH_EVERY - now
+                }
+                _ => {
+                    pending.last = Some(now);
+                    Duration::ZERO
+                }
+            }
+        };
+        if wait.is_zero() {
+            self.refresh_for_frames();
+            return;
+        }
+        let engine = self.clone();
+        let spawned = std::thread::Builder::new()
+            .name("photon-frame-refresh".into())
+            .spawn(move || {
+                std::thread::sleep(wait);
+                engine.trailing_frame_refresh();
+            });
+        if let Err(err) = spawned {
+            tracing::warn!(%err, "could not schedule a grid refresh; refreshing now");
+            self.trailing_frame_refresh();
+        }
+    }
+
+    fn trailing_frame_refresh(&self) {
+        {
+            let mut pending = self.frame_refresh.lock();
+            pending.scheduled = false;
+            pending.last = Some(Instant::now());
+        }
+        self.refresh_for_frames();
+    }
+
+    fn refresh_for_frames(&self) {
+        if self.shutting_down.load(Ordering::SeqCst) {
+            return;
+        }
+        if let Err(err) = self.refresh_grid() {
+            tracing::warn!(%err, "grid refresh after a poster frame failed");
+        }
     }
 
     /// The index for one view state, laid out the way that view is drawn.
@@ -1608,6 +1692,35 @@ mod tests {
         f.engine.set_view(GridView::Duplicates).unwrap();
         let ids = f.ids();
         assert_eq!(ids.len(), 2);
+        let item = crate::commands::viewer_item(&f.engine, ids[0]).unwrap();
+        assert_eq!(item.copies.len(), 1);
+        assert_eq!(item.copies[0].id, ids[1]);
+    }
+
+    /// Videos are in content hashing (spec, *Duplicates*): a byte-identical copy of a video
+    /// is a real duplicate, found by the same end-of-scan pass as a photo's, even though the
+    /// look-alike pass leaves videos out. The third file shares the pair's size but not its
+    /// bytes, so the pass has to hash rather than trust the size.
+    #[test]
+    fn a_scan_finds_a_byte_identical_pair_of_videos() {
+        let f = fixture(&[
+            ("a/clip.mp4", b"the same video bytes"),
+            ("b/clip copy.mp4", b"the same video bytes"),
+            ("b/other.mp4", b"other video bytes!!!"),
+        ]);
+        f.add_photos();
+
+        let info = crate::commands::grid_info(&f.engine);
+        assert_eq!(info.duplicate_count, 2);
+        f.engine.set_view(GridView::Duplicates).unwrap();
+        let ids = f.ids();
+        assert_eq!(ids.len(), 2);
+        for &id in &ids {
+            assert_eq!(
+                f.engine.lib.item(id).unwrap().unwrap().kind,
+                MediaKind::Video
+            );
+        }
         let item = crate::commands::viewer_item(&f.engine, ids[0]).unwrap();
         assert_eq!(item.copies.len(), 1);
         assert_eq!(item.copies[0].id, ids[1]);

@@ -59,23 +59,38 @@ export function createVideoThumbnailer(deps: ThumbnailerDeps) {
     active = controller;
     const timer = setTimeout(() => controller.abort(new DOMException('timeout', 'TimeoutError')), JOB_TIMEOUT_MS);
     try {
-      const jpeg = await deps.grab(deps.url(job.id), controller.signal);
-      await deps.put(job.id, job.key, jpeg);
-    } catch (e) {
-      // A timeout and a stop both abort the same signal, but they are not the same fact:
-      // a timeout means this video's frame did not come in a reasonable time, which is
-      // worth remembering past this session. A stop means the page is going away mid-job -
-      // the file is fine and untouched, so it is reported `unsupported`, the reason that
-      // keeps the row Pending and lets a new session simply retry it, rather than marking a
-      // healthy video as a repeat failure because the tab happened to close on it.
-      const reason: VideoFailure = isTimeout(controller.signal)
-        ? 'timeout'
-        : isStop(controller.signal)
-          ? 'unsupported'
-          : e instanceof MediaUnsupported
+      let jpeg: Uint8Array;
+      try {
+        jpeg = await deps.grab(deps.url(job.id), controller.signal);
+      } catch (e) {
+        // A timeout and a stop both abort the same signal, but they are not the same fact:
+        // a timeout means this video's frame did not come in a reasonable time, which is
+        // worth remembering past this session. A stop means the page is going away mid-job -
+        // the file is fine and untouched, so it is reported `unsupported`, the reason that
+        // keeps the row Pending and lets a new session simply retry it, rather than marking a
+        // healthy video as a repeat failure because the tab happened to close on it.
+        const reason: VideoFailure = isTimeout(controller.signal)
+          ? 'timeout'
+          : isStop(controller.signal)
             ? 'unsupported'
-            : 'decode';
-      await deps.fail(job.id, job.key, reason).catch(() => {});
+            : e instanceof MediaUnsupported
+              ? 'unsupported'
+              : 'decode';
+        await deps.fail(job.id, job.key, reason).catch(() => {});
+        return;
+      }
+      try {
+        await deps.put(job.id, job.key, jpeg);
+      } catch {
+        // The frame was drawn, so the file is not what failed: a full disk, or a body the
+        // IPC layer refused, says nothing about the video, and `decode` here would fail a
+        // healthy video for good - on a row already Ready if the frame was stored first.
+        // `unsupported` keeps the row Pending for the next session, and it is sent rather
+        // than nothing because a `put` refused before it reached the backend leaves this job
+        // claimed: an unanswered claim is counted as a death when the next session starts,
+        // and two of those fail the video as one that crashed the window.
+        await deps.fail(job.id, job.key, 'unsupported').catch(() => {});
+      }
     } finally {
       clearTimeout(timer);
       if (active === controller) active = null;

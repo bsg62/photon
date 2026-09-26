@@ -33,3 +33,13 @@ export const PREVIEW_MAX_EDGE = 1600;
 export class MediaUnsupported extends Error {}
 /** The webview tried and failed: a fact about the file. */
 export class MediaDecodeError extends Error {}
+
+/** Refuses a video whose metadata loaded without a picture: `videoWidth`/`videoHeight` read
+ *  0 when the file has no video track the webview can decode - an audio-only `.mp4`, or HEVC
+ *  on Windows without Microsoft's extension. Drawn anyway it would be a 1x1 black frame,
+ *  stored as the poster and marked Ready, and nothing would ever draw it again. As
+ *  `MediaUnsupported` it stays Pending and is retried next session, so installing the codec
+ *  later still fills the poster in. */
+export function requirePicture(width: number, height: number): void {
+  if (!(width > 0 && height > 0)) throw new MediaUnsupported('no picture');
+}

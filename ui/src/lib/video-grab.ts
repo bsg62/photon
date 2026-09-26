@@ -1,4 +1,4 @@
-import { MediaDecodeError, MediaUnsupported, posterTime } from './video';
+import { MediaDecodeError, MediaUnsupported, posterTime, requirePicture } from './video';
 
 /** Loads `url` into a hidden, muted video, seeks to the poster time, and returns the frame
  *  as a JPEG no larger than `maxEdge`. The element is attached while it works - as it was in
@@ -12,6 +12,7 @@ export async function grabPoster(url: string, signal: AbortSignal, maxEdge: numb
   document.body.append(v);
   try {
     await until(v, 'loadedmetadata', signal, () => (v.src = url));
+    requirePicture(v.videoWidth, v.videoHeight);
     await until(v, 'seeked', signal, () => (v.currentTime = posterTime(v.duration)));
     const scale = Math.min(1, maxEdge / Math.max(v.videoWidth, v.videoHeight, 1));
     const canvas = document.createElement('canvas');

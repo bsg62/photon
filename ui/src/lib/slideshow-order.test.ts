@@ -20,4 +20,20 @@ describe('nextStill', () => {
     const kindAt = async (i: number) => (i === 1 ? undefined : i === 2 ? 'video' : 'image') as 'image' | 'video' | undefined;
     expect(await nextStill(0, 4, kindAt)).toBe(3);
   });
+  // Each case here answers differently forward: the first draft's cases all happened to
+  // agree with the forward answer, and passed with the direction ignored altogether.
+  it('goes backward, skipping videos and wrapping round the start', async () => {
+    expect(await nextStill(1, 4, kinds('pppp'), -1)).toBe(0);
+    expect(await nextStill(3, 4, kinds('ppvp'), -1)).toBe(1);
+    expect(await nextStill(0, 4, kinds('pvpv'), -1)).toBe(2);
+  });
+  it('comes round the start and the end alike', async () => {
+    expect(await nextStill(3, 4, kinds('pvvp'), -1)).toBe(0);
+    expect(await nextStill(0, 4, kinds('pvvp'), -1)).toBe(3);
+    expect(await nextStill(0, 5, kinds('ppvvv'), -1)).toBe(1);
+  });
+  it('backward comes back to itself as the only photo, and is null with none', async () => {
+    expect(await nextStill(1, 3, kinds('vpv'), -1)).toBe(1);
+    expect(await nextStill(2, 3, kinds('vvv'), -1)).toBeNull();
+  });
 });

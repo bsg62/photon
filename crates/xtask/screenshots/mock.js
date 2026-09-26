@@ -86,6 +86,7 @@
       faces: [{ hash: 'a', name: 'Anna', left: 0.3, top: 0.25, right: 0.42, bottom: 0.5 }],
       kind: id === 5 ? 'video' : 'image',
       durationMs: id === 5 ? 83_000 : null,
+      videoCrashed: false,
       albums: [1, 3],
       copies: [
         { id: 501, path: `/home/ada/Pictures/2026/Summer hike/IMG_48${id} copy.jpg`, kind: 'identical', width: 5472, height: 3648 },

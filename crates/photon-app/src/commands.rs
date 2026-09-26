@@ -145,6 +145,10 @@ pub struct ViewerItem {
     pub kind: MediaKind,
     /// The video's running time, or `None` for a photo.
     pub duration_ms: Option<i64>,
+    /// A video the window died opening, and must not open again: the viewer shows its
+    /// `thumb_error` instead of a `<video>`. Other failed videos are still offered, without
+    /// autoplay - their failure was the poster frame's, and playback may still work.
+    pub video_crashed: bool,
     /// Ids of the albums the photo is in.
     pub albums: Vec<i64>,
     /// Other files with the same bytes as this one.
@@ -601,6 +605,7 @@ pub fn viewer_item(engine: &Engine, id: i64) -> CmdResult<ViewerItem> {
     let albums = engine.lib.item_albums(item.id)?;
     let copies = item_copies(engine, item.id)?;
     let thumb_key = hex_key(item.thumb_key());
+    let video_crashed = photon_core::thumbs::video_crashed(&item);
     let camera = item.camera;
     let kind = item.kind;
     let duration_ms = item.duration_ms;
@@ -634,6 +639,7 @@ pub fn viewer_item(engine: &Engine, id: i64) -> CmdResult<ViewerItem> {
         faces,
         kind,
         duration_ms,
+        video_crashed,
         albums,
         copies,
         uncropped_width,
@@ -825,10 +831,12 @@ pub fn next_video_job(engine: &Engine, wait: Duration) -> CmdResult<Option<Video
     }))
 }
 
-pub fn put_video_frame(engine: &Engine, id: i64, key: &str, jpeg: &[u8]) -> CmdResult<()> {
+/// The grid rebuild is coalesced (`Engine::frame_stored`), and never an error of this call:
+/// the frame is stored by then, and a rejection would tell the page its `put` failed.
+pub fn put_video_frame(engine: &Arc<Engine>, id: i64, key: &str, jpeg: &[u8]) -> CmdResult<()> {
     let key = crate::protocol::parse_key(key).ok_or(Error::NotFound(id))?;
     if engine.thumbs.put_video_frame(id, key, jpeg)? {
-        engine.refresh_grid()?;
+        engine.frame_stored();
     }
     Ok(())
 }
@@ -1553,5 +1561,93 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(job.key, viewer_item(&f.engine, job.id).unwrap().thumb_key);
+    }
+
+    /// The viewer must never open a video the crash guard failed, and must still offer one
+    /// whose poster merely failed to decode: two Failed rows, told apart only by why.
+    #[test]
+    fn the_viewer_is_told_which_failed_video_crashed_the_window() {
+        let f = fixture(&[("a.mp4", b"video a"), ("b.mp4", b"video b")]);
+        f.add_photos();
+        let ids = f.ids();
+        // The page claims both and dies with them open, twice: the guard's own path.
+        for _ in 0..2 {
+            video_session_start(&f.engine, true).unwrap();
+            let mut claimed = 0;
+            while next_video_job(&f.engine, Duration::from_millis(100))
+                .unwrap()
+                .is_some()
+            {
+                claimed += 1;
+            }
+            assert_eq!(claimed, 2);
+        }
+        video_session_start(&f.engine, true).unwrap();
+        assert!(
+            next_video_job(&f.engine, Duration::from_millis(100))
+                .unwrap()
+                .is_none()
+        );
+        let crashed = viewer_item(&f.engine, ids[0]).unwrap();
+        assert_eq!(crashed.thumb_state, "failed");
+        assert!(crashed.video_crashed);
+
+        let g = fixture(&[("c.mp4", b"video c")]);
+        g.add_photos();
+        video_session_start(&g.engine, true).unwrap();
+        let job = next_video_job(&g.engine, Duration::from_millis(200))
+            .unwrap()
+            .unwrap();
+        video_frame_failed(
+            &g.engine,
+            job.id,
+            &job.key,
+            photon_core::thumbs::VideoFailure::Decode,
+        )
+        .unwrap();
+        let broken = viewer_item(&g.engine, job.id).unwrap();
+        assert_eq!(broken.thumb_state, "failed");
+        assert!(!broken.video_crashed);
+    }
+
+    /// A folder of videos is a burst of frames, one per video, and a grid rebuild per frame
+    /// is a whole-library query each. They coalesce - but onto the trailing edge as well,
+    /// since nothing else is coming to show the last one: the version must move again after
+    /// the last `put` has returned.
+    #[test]
+    fn a_burst_of_poster_frames_rebuilds_the_grid_once_or_twice_and_the_last_counts() {
+        use crate::events::Recorded;
+        let names: Vec<String> = (0..6).map(|n| format!("clip{n}.mp4")).collect();
+        let files: Vec<(&str, &[u8])> = names.iter().map(|n| (n.as_str(), &b"video"[..])).collect();
+        let f = fixture(&files);
+        f.add_photos();
+        video_session_start(&f.engine, true).unwrap();
+        let rebuilds = || {
+            f.events
+                .all()
+                .iter()
+                .filter(|e| matches!(e, Recorded::Library(_)))
+                .count()
+        };
+        let before = rebuilds();
+        let frame = jpeg(32, 18);
+        let mut drawn = 0;
+        while let Some(job) = next_video_job(&f.engine, Duration::from_millis(200)).unwrap() {
+            put_video_frame(&f.engine, job.id, &job.key, &frame).unwrap();
+            drawn += 1;
+        }
+        assert_eq!(drawn, names.len());
+        let after_last_put = f.engine.grid().0;
+
+        std::thread::sleep(Duration::from_millis(1_600));
+        let rebuilt = rebuilds() - before;
+        assert!(
+            (1..=2).contains(&rebuilt),
+            "{rebuilt} rebuilds for {drawn} frames"
+        );
+        assert!(
+            f.engine.grid().0 > after_last_put,
+            "the last frames of the burst were never shown"
+        );
     }
 }

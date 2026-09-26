@@ -40,6 +40,10 @@ pub struct MediaServer {
 
 /// The page's own origin, which is the only one allowed to read a response - and the one
 /// that keeps a canvas the frame was drawn on readable.
+///
+/// Deliberately exact, so `npm run dev` - whose page is `http://localhost:1420` - can neither
+/// play nor thumbnail a video: widening this for the dev server would widen it for anything
+/// else that can serve a page from that origin.
 pub(crate) fn app_origin() -> &'static str {
     if cfg!(windows) {
         "http://tauri.localhost"

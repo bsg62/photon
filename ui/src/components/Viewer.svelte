@@ -88,14 +88,17 @@
   /** Must match the `.outgoing` transition in the styles below. */
   const CROSSFADE_MS = 600;
 
+  /** The kind at grid offset `i`, loading its page first: what `nextStill` walks. */
+  async function kindAt(i: number) {
+    await library.ensure(i, i + 1);
+    return library.entry(i)?.kind;
+  }
+
   const slideshow = createSlideshow({
     advance: () => {
       const len = library.info.len;
       const from = current;
-      void nextStill(from, len, async (i) => {
-        await library.ensure(i, i + 1);
-        return library.entry(i)?.kind;
-      }).then((next) => {
+      void nextStill(from, len, kindAt).then((next) => {
         // The show may have been stopped, or the user may have navigated by hand, while this
         // awaited: either makes `current` no longer `from`, or the slideshow no longer
         // active, and a `goto` landing on top of either would be a stale write.
@@ -113,10 +116,7 @@
     if (item?.kind === 'video') {
       const from = current;
       const len = library.info.len;
-      const next = await nextStill(from, len, async (i) => {
-        await library.ensure(i, i + 1);
-        return library.entry(i)?.kind;
-      });
+      const next = await nextStill(from, len, kindAt);
       // The viewer may have closed, or the user may have navigated elsewhere, while this
       // awaited: closing stops nothing else running, and a late `goto` (and the fullscreen
       // `slideshow.start` below) would otherwise resurrect a slideshow on a viewer nobody is
@@ -134,6 +134,24 @@
   function stopSlideshow() {
     slideshow.stop();
     outgoing = null;
+  }
+
+  /** One step by hand - an arrow or the wheel. Outside a show it is `goto`, unchanged.
+   *  During one it skips videos in the direction of travel: the show never plays a video,
+   *  so landing on one by hand would leave it sitting on a still poster, its timer running,
+   *  until the next advance moved it on. It wraps as the show's own advance does, and it
+   *  takes the same two staleness guards as `advance`, for the same reason: the walk
+   *  awaits pages, and the show may have stopped or the user moved on meanwhile. */
+  function step(dir: 1 | -1) {
+    if (!slideshow.active) {
+      goto(current + dir);
+      return;
+    }
+    const from = current;
+    void nextStill(from, library.info.len, kindAt, dir).then((next) => {
+      if (!slideshow.active || current !== from) return;
+      if (next !== null && next !== current) goto(next);
+    });
   }
 
   // The countdown runs from the moment the photo is on screen; a photo that cannot be shown
@@ -285,6 +303,9 @@
 
   const isVideo = $derived(item?.kind === 'video');
   let videoEl = $state<HTMLVideoElement | null>(null);
+  /** The `<video>` on screen reported an error: it would otherwise sit there black, with
+   *  controls that do nothing. Reset by the loader for every photo it loads. */
+  let playbackFailed = $state(false);
 
   /** Why a video can't be played here, reactively: read directly in the derived's own
    *  synchronous body rather than inside the load effect's async chain, whose reads past its
@@ -293,17 +314,28 @@
    *  instead of being stuck on whatever it saw at load. `base === null` is the server not up
    *  yet (or never coming up); GStreamer's missing plugins are a Linux-only fix, so that
    *  wording is reserved for exactly that case. */
-  const videoIssue = $derived.by((): 'gstreamer' | 'generic' | null => {
+  const videoIssue = $derived.by((): 'crashed' | 'gstreamer' | 'generic' | 'playback' | null => {
     if (!item || item.kind !== 'video') return null;
-    if (videoState.supported && videoState.base) return null;
-    return !videoState.supported && isLinux() ? 'gstreamer' : 'generic';
+    // First, ahead of everything: a video the crash-loop guard failed took the window down
+    // when it was opened, so no `<video>` may be made for it, whatever else is true. The
+    // backend says so as a flag (`videoCrashed`) rather than the UI matching `thumbError`
+    // against a copy of the guard's sentence, which nothing would keep in step.
+    if (item.videoCrashed) return 'crashed';
+    if (!videoState.supported || !videoState.base) {
+      return !videoState.supported && isLinux() ? 'gstreamer' : 'generic';
+    }
+    return playbackFailed ? 'playback' : null;
   });
   const videoIssueMessage = $derived(
-    videoIssue === 'gstreamer'
-      ? "This system can't play videos. Install GStreamer's good and libav plugins (see the README's video section)."
-      : videoIssue === 'generic'
-        ? "This video can't be played here. See the README's video section for details."
-        : null,
+    videoIssue === 'crashed'
+      ? (item?.thumbError ?? "This video can't be opened.")
+      : videoIssue === 'gstreamer'
+        ? "This system can't play videos. Install GStreamer's good and libav plugins (see the README's video section)."
+        : videoIssue === 'generic'
+          ? "This video can't be played here. See the README's video section for details."
+          : videoIssue === 'playback'
+            ? "This video can't be played here."
+            : null,
   );
   /** The src the `<video>` plays, computed the same reactive way as `videoIssue`: a plain
    *  function of `item`, `videoState.base` and whether there is an issue, with nothing to
@@ -514,6 +546,7 @@
     item = null;
     fullSrc = null;
     error = null;
+    playbackFailed = false;
     orphaned = false;
     // Every photo opens fitted to the window: arriving at the next one already at 400% or
     // panned into a corner leaves you lost. A crop being drawn belonged to the last photo.
@@ -684,12 +717,12 @@
     }
     const last = library.info.len - 1;
     if (last < 0) return;
-    const next =
-      e.key === 'ArrowLeft' ? current - 1
-      : e.key === 'ArrowRight' ? current + 1
-      : e.key === 'Home' ? 0
-      : e.key === 'End' ? last
-      : null;
+    if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+      e.preventDefault();
+      step(e.key === 'ArrowLeft' ? -1 : 1);
+      return;
+    }
+    const next = e.key === 'Home' ? 0 : e.key === 'End' ? last : null;
     if (next !== null) {
       e.preventDefault();
       goto(next);
@@ -721,7 +754,9 @@
     if (crop.active) return;
     const stepped = wheelStep(wheelTotal, e.deltaY);
     wheelTotal = stepped.accumulated;
-    if (stepped.step !== 0) goto(current + stepped.step);
+    if (stepped.step === 0) return;
+    if (slideshow.active) step(stepped.step > 0 ? 1 : -1);
+    else goto(current + stepped.step);
   }
 
   function onzoom(e: Event & { currentTarget: HTMLInputElement }) {
@@ -856,17 +891,26 @@
                  of the tab order - a click still focuses it like any control - but the
                  viewer's own keys (arrows, Home, End, Escape, Space) live on
                  `<svelte:window>`, so they keep working over it regardless. -->
+            <!-- A Failed video that is not a crash is offered but not started: its failure was
+                 the poster frame's (a decode error, a timeout), which says the platform
+                 struggled with the file, so it waits for the user to ask. An error while
+                 playing swaps this element for the poster and a message (`playbackFailed`),
+                 rather than leave a black player; the element that fired it is checked, as
+                 one being unloaded on the way out is no longer the one on screen. -->
             <!-- svelte-ignore a11y_media_has_caption -->
             <video
               class="full"
               src={videoFullSrc}
               poster={mediaUrl(`thumb/${item.id}/preview/${item.thumbKey}`)}
               controls
-              autoplay
+              autoplay={item.thumbState !== 'failed'}
               preload="metadata"
               crossorigin="anonymous"
               tabindex="-1"
               bind:this={videoEl}
+              onerror={(e) => {
+                if (e.currentTarget === videoEl && videoFullSrc) playbackFailed = true;
+              }}
             ></video>
           {/if}
         {:else}

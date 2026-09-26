@@ -101,6 +101,9 @@ export interface ViewerItem {
   kind: 'image' | 'video';
   /** The video's running time, or null for a photo. */
   durationMs: number | null;
+  /** A video the window died opening: the viewer shows `thumbError` and never creates a
+   *  `<video>` for it. */
+  videoCrashed: boolean;
   /** Ids of the albums the photo is in. */
   albums: number[];
   /** Other files with the same bytes as this one. */

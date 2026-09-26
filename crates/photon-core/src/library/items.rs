@@ -1959,6 +1959,31 @@ mod tests {
         assert_eq!(hits, vec![ids[0]]);
     }
 
+    /// `search::Query` knows `video` and `photo`; this pins that the library hands it each
+    /// row's real kind (`GRID_COLUMNS`' seventh column), not a default. Neither file name
+    /// contains either word, so only the kind can answer.
+    #[test]
+    fn search_filters_on_the_rows_kind() {
+        let (_dir, lib) = temp_library();
+        let (_watched, folder) = seed_folder(&lib, Path::new("/p"));
+        let clip = NewItem {
+            kind: MediaKind::Video,
+            ..new_item(folder, "/p/b.mp4", 2)
+        };
+        let ids = lib
+            .insert_items(&[new_item(folder, "/p/a.jpg", 1), clip])
+            .unwrap();
+        let hits = |query: &str| -> Vec<i64> {
+            lib.entries_for(GridView::Search, query)
+                .unwrap()
+                .iter()
+                .map(|e| e.id)
+                .collect()
+        };
+        assert_eq!(hits("video"), vec![ids[1]]);
+        assert_eq!(hits("photo"), vec![ids[0]]);
+    }
+
     #[test]
     fn search_finds_a_photo_by_its_camera_lens_keyword_and_date() {
         // One haystack per field, each pinned by a query only it can answer. The file and

@@ -33,6 +33,17 @@ const WEBM_HEAD: u64 = 1 << 20;
 const EBML_MAGIC: [u8; 4] = [0x1A, 0x45, 0xDF, 0xA3];
 /// Seconds from 1904-01-01 (`mvhd`'s epoch) to 1970-01-01.
 const MAC_EPOCH: i64 = 2_082_844_800;
+/// The longest running time taken at its word. Past it the header is lying, or holds a
+/// placeholder - a live recording's WebM can say anything - and a tile reading "2378:12:05"
+/// is worse than one reading nothing.
+const MAX_DURATION_MS: i64 = 7 * 24 * 3600 * 1000;
+
+/// A running time that means something: zero is a writer that did not know (a fragmented
+/// MP4 leaves `mvhd` at 0, a WebM being recorded has no Duration yet), so it is `None`
+/// rather than a tile badged "0:00".
+fn plausible_duration(ms: i64) -> Option<i64> {
+    (ms > 0 && ms <= MAX_DURATION_MS).then_some(ms)
+}
 
 pub fn read_meta(path: &Path) -> VideoMeta {
     read_meta_with(path, &TimeZone::system(), crate::now_ms() / 1000)
@@ -161,8 +172,8 @@ fn read_moov(moov: &[u8], tz: &TimeZone, now: i64) -> VideoMeta {
     }
 }
 
-/// (creation time in 1904-epoch seconds, running time in ms). Zero, or an all-ones
-/// duration, means the writer did not say.
+/// (creation time in 1904-epoch seconds, running time in ms). A zero creation time, and a
+/// zero or all-ones duration, mean the writer did not say, and come back `None`.
 fn read_mvhd(b: &[u8]) -> Option<(Option<u64>, Option<i64>)> {
     let (created, timescale, duration, unknown) = match *b.first()? {
         1 => (be64(b, 4)?, be32(b, 20)?, be64(b, 24)?, u64::MAX),
@@ -175,7 +186,8 @@ fn read_mvhd(b: &[u8]) -> Option<(Option<u64>, Option<i64>)> {
     };
     let duration_ms = (timescale > 0 && duration != unknown)
         .then(|| i64::try_from(u128::from(duration) * 1000 / u128::from(timescale)).ok())
-        .flatten();
+        .flatten()
+        .and_then(plausible_duration);
     Some(((created != 0).then_some(created), duration_ms))
 }
 
@@ -319,9 +331,11 @@ fn read_webm(buf: &[u8]) -> Option<VideoMeta> {
             _ => {}
         }
     }
+    // No separate finiteness check: `as i64` turns NaN into 0 and saturates an infinity or
+    // an enormous float at an i64 extreme, and the bound refuses all three.
     meta.duration_ms = ticks
-        .filter(|t| t.is_finite() && *t >= 0.0)
-        .map(|t| (t * scale as f64 / 1e6) as i64);
+        .map(|t| (t * scale as f64 / 1e6) as i64)
+        .and_then(plausible_duration);
     Some(meta)
 }
 
@@ -547,6 +561,34 @@ mod tests {
             segment,
         ]
         .concat()
+    }
+
+    #[test]
+    fn a_zero_mvhd_duration_is_unknown_not_zero() {
+        let spec = Mp4Spec {
+            duration: 0,
+            ..base()
+        };
+        assert_eq!(read(&mp4_bytes(&spec), &plus_two()).duration_ms, None);
+    }
+
+    #[test]
+    fn a_webm_duration_that_is_zero_absurd_or_not_a_number_is_unknown() {
+        let eight_days = 8.0 * 24.0 * 3600.0 * 1000.0;
+        for ticks in [0.0, -5.0, f64::NAN, f64::INFINITY, eight_days] {
+            let meta = read(&webm(ticks), &plus_two());
+            assert_eq!(meta.duration_ms, None, "{ticks}");
+            assert_eq!(
+                (meta.width, meta.height),
+                (1280, 720),
+                "the rest still reads"
+            );
+        }
+        let six_days = 6.0 * 24.0 * 3600.0 * 1000.0;
+        assert_eq!(
+            read(&webm(six_days), &plus_two()).duration_ms,
+            Some(six_days as i64)
+        );
     }
 
     #[test]

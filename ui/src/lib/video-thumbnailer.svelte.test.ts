@@ -43,6 +43,18 @@ describe('createVideoThumbnailer', () => {
     expect(deps.fail.mock.calls).toEqual([[1, 'a', 'unsupported'], [2, 'b', 'decode'], [3, 'c', 'timeout']]);
   });
 
+  // Only `grab` speaks about the file. A `put` that rejects - a full disk, a refused IPC
+  // body - drew its frame fine, so reporting it `decode` would fail a healthy video for good;
+  // `unsupported` keeps it Pending and answers the claim.
+  it('reports a rejected put as unsupported, never as decode', async () => {
+    const { t, deps } = setup([{ id: 1, key: 'a' }], async () => new Uint8Array([1]));
+    deps.put.mockRejectedValueOnce(new Error('disk full'));
+    t.start();
+    await settle();
+    expect(deps.put).toHaveBeenCalledTimes(1);
+    expect(deps.fail.mock.calls).toEqual([[1, 'a', 'unsupported']]);
+  });
+
   it('does not ask again at once after an empty answer', async () => {
     const { t, deps } = setup([null, null], async () => new Uint8Array());
     t.start();

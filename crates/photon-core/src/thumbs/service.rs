@@ -100,6 +100,16 @@ enum Claim {
 
 pub(crate) const VIDEO_CRASH_MESSAGE: &str = "photon's window stopped while opening this video";
 
+/// Whether `item` is a video the crash-loop guard failed: one the window died opening, often
+/// enough that nothing may open it again - the viewer's `<video>` included. A predicate
+/// rather than the message made public, so the UI is told a fact instead of matching a
+/// sentence it would have to keep a copy of.
+pub fn video_crashed(item: &crate::library::Item) -> bool {
+    item.kind == MediaKind::Video
+        && item.thumb_state == ThumbState::Failed
+        && item.thumb_error.as_deref() == Some(VIDEO_CRASH_MESSAGE)
+}
+
 /// A frame bigger than this on either side is not one the webview drew at preview size.
 const MAX_FRAME_EDGE: u32 = 8192;
 
@@ -485,14 +495,24 @@ impl ThumbService {
         }
     }
 
-    /// Fails the row, reporting whether it did: not when the video changed since the job
-    /// was handed out, since the failure was of a file that is not there any more.
+    /// Fails the row, reporting whether the claim is settled: not when the video changed
+    /// since the job was handed out, since the failure was of a file that is not there any
+    /// more.
+    ///
+    /// A row already `Ready` is settled and left alone. Its frame is stored under this very
+    /// key, so whatever went wrong on the page afterwards - a `put` whose answer was lost, a
+    /// second report for one job - is not a fact about the file, and
+    /// `set_thumb_state_if_unchanged` compares the file, not the state, so without this it
+    /// would fail a video that has a poster, for good.
     fn fail_video(&self, id: i64, key: u64, reason: VideoFailure) -> Result<bool> {
         let Some(item) = self.lib.item(id)? else {
             return Ok(false);
         };
         if item.kind != MediaKind::Video || item.thumb_key() != key {
             return Ok(false);
+        }
+        if item.thumb_state == ThumbState::Ready {
+            return Ok(true);
         }
         let message = if reason == VideoFailure::Timeout {
             "This video took too long to open."
@@ -1100,6 +1120,26 @@ mod tests {
             first.id,
             "a new session tries again"
         );
+    }
+
+    /// A page that stored the frame and then reported a failure for the same job - the
+    /// `put`'s answer lost on the way back - must not undo the frame: the row keeps its poster.
+    #[test]
+    fn a_decode_failure_after_the_frame_landed_leaves_the_row_ready() {
+        let (_dir, lib, service, ids) = video_setup(&["a.mp4"]);
+        service.video_session_start(true).unwrap();
+        let job = service.next_video_job(SHORT).unwrap().unwrap();
+        assert!(
+            service
+                .put_video_frame(job.id, job.key, &jpeg_bytes(320, 180))
+                .unwrap()
+        );
+        service
+            .video_frame_failed(job.id, job.key, VideoFailure::Decode)
+            .unwrap();
+        let item = lib.item(ids[0]).unwrap().unwrap();
+        assert_eq!(item.thumb_state, ThumbState::Ready);
+        assert_eq!(item.thumb_error, None);
     }
 
     #[test]
