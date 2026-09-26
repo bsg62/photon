@@ -42,6 +42,8 @@ const CANDIDATES_SQL: &str = "SELECT i.id, i.path, i.size, i.mtime_ms, i.edit_tu
      JOIN watched_folders w ON w.id = f.watched_id
      WHERE i.missing_since IS NULL AND i.percep_hash IS NULL
        AND i.thumb_state = 1 AND w.online = 1
+       -- A poster frame is not the video; it would pair with the still taken beside it.
+       AND i.kind = 0
      ORDER BY i.id";
 
 /// `group`'s output follows `percep_hashes()`'s unordered query (effectively rowid), not
@@ -129,7 +131,9 @@ impl Library {
         let conn = self.reader()?;
         let mut stmt = conn.prepare_cached(
             "SELECT id, percep_hash, path, size, mtime_ms, edit_turns, edit_crop FROM items
-             WHERE percep_hash IS NOT NULL AND missing_since IS NULL",
+             WHERE percep_hash IS NOT NULL AND missing_since IS NULL
+               -- A poster frame is not the video; it would pair with the still taken beside it.
+               AND kind = 0",
         )?;
         let rows = stmt
             .query_map([], |r| {
@@ -223,6 +227,7 @@ impl Library {
 mod tests {
     use super::CANDIDATES_SQL;
     use crate::library::NewItem;
+    use crate::media::MediaKind;
     use crate::testutil::{new_item, seed_folder, temp_library};
     use std::path::Path;
 
@@ -245,6 +250,35 @@ mod tests {
             .unwrap();
         // thumb_state defaults to Pending, so nothing is ready to hash.
         assert!(lib.similar_candidates().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_video_is_never_a_look_alike_candidate() {
+        let (_dir, lib) = temp_library();
+        let (_w, folder) = seed_folder(&lib, Path::new("/pics"));
+        let video = NewItem {
+            kind: MediaKind::Video,
+            ..item_at(folder, "/pics/clip.mp4", 20, 100)
+        };
+        let ids = lib
+            .insert_items(&[item_at(folder, "/pics/a.jpg", 10, 100), video])
+            .unwrap();
+        lib.writer()
+            .execute("UPDATE items SET thumb_state = 1", [])
+            .unwrap();
+        let candidates: Vec<i64> = lib
+            .similar_candidates()
+            .unwrap()
+            .iter()
+            .map(|c| c.id)
+            .collect();
+        assert_eq!(candidates, [ids[0]], "a poster frame is not the video");
+        // A hash already stored against a video (a library from a build before this rule) is
+        // never compared either.
+        lib.writer()
+            .execute("UPDATE items SET percep_hash = 1 WHERE id = ?1", [ids[1]])
+            .unwrap();
+        assert!(lib.percep_hashes().unwrap().iter().all(|h| h.id != ids[1]));
     }
 
     #[test]

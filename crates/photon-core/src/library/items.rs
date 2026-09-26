@@ -929,6 +929,7 @@ impl Library {
                     camera: camera.as_deref(),
                     lens: lens.as_deref(),
                     taken: Some(taken),
+                    kind: MediaKind::from_db(r.get(6)?),
                 });
                 // No `Ok(…?)` wrapper here: the closure already returns this type, and
                 // wrapping it trips `clippy::needless_question_mark`, which the gate

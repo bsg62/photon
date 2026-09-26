@@ -21,6 +21,9 @@ impl MediaKind {
             "jpg" | "jpeg" | "jpe" | "png" | "gif" | "webp" | "tif" | "tiff" | "bmp" | "avif" => {
                 Some(Self::Image)
             }
+            // Only what all three webviews can plausibly play: a tile that will not play is
+            // worse than no tile (AVI, MKV and 3GP are out).
+            "mp4" | "m4v" | "mov" | "webm" => Some(Self::Video),
             _ => None,
         }
     }
@@ -93,6 +96,20 @@ mod tests {
             );
         }
         for name in ["a.txt", "a.heic", "a", ".jpg"] {
+            assert_eq!(MediaKind::from_path(Path::new(name)), None, "{name}");
+        }
+    }
+
+    #[test]
+    fn the_four_video_extensions_are_videos_in_any_case() {
+        for name in ["a.mp4", "b.M4V", "c.MOV", "d.webm"] {
+            assert_eq!(
+                MediaKind::from_path(Path::new(name)),
+                Some(MediaKind::Video),
+                "{name}"
+            );
+        }
+        for name in ["e.avi", "f.mkv", "g.3gp"] {
             assert_eq!(MediaKind::from_path(Path::new(name)), None, "{name}");
         }
     }

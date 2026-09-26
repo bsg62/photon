@@ -5,6 +5,8 @@
 //! folding outside ASCII, wildcard characters, an empty query - are testable without
 //! seeding a database and counting rows.
 
+use crate::media::MediaKind;
+
 /// A parsed search query: alternatives separated by `OR`, each a list of terms that must
 /// all match.
 ///
@@ -34,6 +36,8 @@
 ///   side, a prefix with no value. They are what a query looks like halfway through being
 ///   typed, and treating `lake OR` as "lake AND the word or" would flash an empty grid
 ///   between two keystrokes.
+/// - `video` and `photo`, unquoted, filter on what the file is rather than searching for the
+///   word: quoted (`"video"`) they are the word, for a folder actually named Videos.
 ///
 /// **Matching is done here rather than with SQL `LIKE`** for two reasons, both of which
 /// bite real libraries. SQLite folds case for ASCII only, so `MÜNCHEN` would never find
@@ -57,6 +61,8 @@ enum Term {
     /// Taken before this instant: the first second *after* the period `to:` named, so the
     /// whole of that period is in and `to:2019` ends exactly where `from:2020` begins.
     To(i64),
+    /// `video` or `photo`, unquoted: what the file is.
+    Kind(MediaKind),
 }
 
 /// What a photo offers the matcher. `any` is every searchable text, the camera and lens
@@ -70,6 +76,8 @@ pub struct Fields<'a> {
     pub lens: Option<&'a str>,
     /// The capture time, in the naive seconds `taken_at` holds, for `from:` and `to:`.
     pub taken: Option<i64>,
+    /// What the file is, for `video` and `photo`.
+    pub kind: Option<MediaKind>,
 }
 
 /// A whitespace-separated piece of the raw query, quotes removed.
@@ -174,6 +182,22 @@ impl Query {
                 }
             }
             let text = token.text.to_lowercase();
+            // `video` and `photo` filter on what the file is. Unquoted only: `"video"` is
+            // still the word, for a folder called Videos.
+            if token.unquoted_prefix.is_none() && (text == "video" || text == "photo") {
+                let kind = if text == "video" {
+                    MediaKind::Video
+                } else {
+                    MediaKind::Image
+                };
+                let current = alternatives
+                    .last_mut()
+                    .expect("starts with one alternative");
+                if !current.contains(&Term::Kind(kind)) {
+                    current.push(Term::Kind(kind));
+                }
+                continue;
+            }
             let prefixed = |prefix: &str| {
                 // Lowercasing never changes the length of these ASCII prefixes, so the
                 // offset recorded against the raw text still applies.
@@ -243,6 +267,7 @@ impl Query {
                 Term::Lens(needle) => within(&lens, needle),
                 Term::From(start) => fields.taken.is_some_and(|t| t >= *start),
                 Term::To(end) => fields.taken.is_some_and(|t| t < *end),
+                Term::Kind(kind) => fields.kind == Some(*kind),
             })
         })
     }
@@ -355,6 +380,7 @@ mod tests {
             camera: Some("NIKON CORPORATION NIKON D750"),
             lens: Some("50mm f/1.8"),
             taken: None,
+            kind: None,
         };
         assert!(Query::parse("canon").matches(&photo), "the folder name");
         assert!(!Query::parse("camera:canon").matches(&photo));
@@ -380,6 +406,7 @@ mod tests {
             camera: Some("NIKON CORPORATION NIKON D750"),
             lens: None,
             taken: None,
+            kind: None,
         };
         assert!(Query::parse("camera:\"corporation d750\"").matches(&photo));
         assert!(!Query::parse("camera:\"nikon d850\"").matches(&photo));
@@ -588,6 +615,32 @@ mod tests {
             assert_eq!(Query::parse(q), Query::parse("lake"), "{q}");
         }
         assert!(Query::parse("from:2019-1").is_empty());
+    }
+
+    #[test]
+    fn video_and_photo_filter_on_kind_and_quotes_make_them_words() {
+        let clip = Fields {
+            any: &["clip.mp4", "Trips"],
+            kind: Some(MediaKind::Video),
+            ..Fields::default()
+        };
+        let shot = Fields {
+            any: &["video night.jpg"],
+            kind: Some(MediaKind::Image),
+            ..Fields::default()
+        };
+        assert!(Query::parse("video").matches(&clip));
+        assert!(
+            !Query::parse("video").matches(&shot),
+            "a file named 'video' is not a video"
+        );
+        assert!(
+            Query::parse("\"video\"").matches(&shot),
+            "quoted, it is the word"
+        );
+        assert!(Query::parse("photo").matches(&shot));
+        assert!(!Query::parse("photo").matches(&clip));
+        assert!(Query::parse("video trips").matches(&clip));
     }
 
     #[test]
