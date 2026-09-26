@@ -205,4 +205,9 @@ describe('tileProblem', () => {
     expect(tileProblem('loading')).toBeUndefined();
     expect(tileProblem('loaded')).toBeUndefined();
   });
+
+  it('says video for a video tile, not photo', () => {
+    expect(tileProblem('retrying', 'video')).toBe("Couldn't load this video yet. Trying again…");
+    expect(tileProblem('broken', 'video')).toBe("This video can't be shown");
+  });
 });

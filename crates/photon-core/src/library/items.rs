@@ -30,6 +30,8 @@ pub struct NewItem {
     pub tags: Vec<String>,
     /// The caption the file carries (`keywords::read_embedded`), `None` for none.
     pub caption: Option<String>,
+    /// A video's running time; `None` for a photo, or a video whose container did not say.
+    pub duration_ms: Option<i64>,
 }
 
 /// What the scanner needs to know about an indexed file to detect changes.
@@ -66,6 +68,8 @@ pub struct Item {
     pub edit: Edit,
     /// Whether the user has hidden the photo (`library/hidden.rs`).
     pub hidden: bool,
+    /// A video's running time; `None` for a photo, or a video whose container did not say.
+    pub duration_ms: Option<i64>,
 }
 
 impl Item {
@@ -212,13 +216,14 @@ pub(super) const GRID_COLUMNS: &str = concat!(
     "i.id, i.folder_id, i.taken_at, i.width, i.height, i.orientation, i.kind, i.path, \
      i.size, i.mtime_ms, i.rating, i.edit_turns, i.edit_crop, i.id IN (",
     duplicate_ids!(),
-    ")"
+    ")",
+    ", i.duration_ms"
 );
 
 /// Number of columns selected by `GRID_COLUMNS`. `search_entries` uses this rather than a
-/// bare `14` so a future column added to `GRID_COLUMNS` can't silently shift `file_name`
+/// bare `15` so a future column added to `GRID_COLUMNS` can't silently shift `file_name`
 /// and `folder name` into the wrong indices without also touching this constant.
-const GRID_COLUMN_COUNT: usize = 14;
+const GRID_COLUMN_COUNT: usize = 15;
 
 pub(super) fn map_grid_row(r: &Row<'_>) -> rusqlite::Result<GridEntry> {
     let edit = edit_from_db(r.get(11)?, r.get(12)?);
@@ -237,6 +242,7 @@ pub(super) fn map_grid_row(r: &Row<'_>) -> rusqlite::Result<GridEntry> {
         starred: is_starred(r.get(10)?),
         has_copies: r.get(13)?,
         thumb_key: edit.thumb_key(fingerprint(&r.get::<_, String>(7)?, r.get(8)?, r.get(9)?)),
+        duration_ms: r.get(14)?,
     })
 }
 
@@ -289,6 +295,7 @@ fn row_to_item(r: &Row<'_>) -> rusqlite::Result<Item> {
         camera: camera_from_row(r, 14)?,
         edit: edit_from_db(r.get(21)?, r.get(22)?),
         hidden: r.get(23)?,
+        duration_ms: r.get(24)?,
     })
 }
 
@@ -329,8 +336,8 @@ impl Library {
                 // a new file, or one renamed or moved in, which is a new row - arrives hidden
                 // (`library/hidden.rs`, Hide folder).
                 "INSERT INTO items (folder_id, path, file_name, kind, size, mtime_ms, width, height, orientation, taken_at, rating,
-                                    make, model, lens, focal_mm, aperture, exposure_s, iso, exif_version, caption, hidden)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20,
+                                    make, model, lens, focal_mm, aperture, exposure_s, iso, exif_version, caption, duration_ms, hidden)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21,
                          coalesce((SELECT hidden FROM folders WHERE id = ?1), 0))",
             )?;
             for it in items {
@@ -356,6 +363,7 @@ impl Library {
                     c.iso,
                     EXIF_VERSION,
                     it.caption,
+                    it.duration_ms,
                 ])?;
                 let id = tx.last_insert_rowid();
                 write_tags(&tx, id, &it.tags)?;
@@ -384,7 +392,7 @@ impl Library {
                 "UPDATE items SET folder_id = ?2, path = ?3, file_name = ?4, kind = ?5, size = ?6, mtime_ms = ?7,
                         width = ?8, height = ?9, orientation = ?10, taken_at = ?11,
                         make = ?12, model = ?13, lens = ?14, focal_mm = ?15, aperture = ?16, exposure_s = ?17, iso = ?18,
-                        exif_version = ?19, caption = ?20,
+                        exif_version = ?19, caption = ?20, duration_ms = ?21,
                         thumb_state = 0, thumb_error = NULL, missing_since = NULL,
                         content_hash = NULL, percep_hash = NULL, similar_group = NULL
                  WHERE id = ?1",
@@ -412,6 +420,7 @@ impl Library {
                     c.iso,
                     EXIF_VERSION,
                     it.caption,
+                    it.duration_ms,
                 ])?;
                 write_tags(&tx, *id, &it.tags)?;
             }
@@ -617,7 +626,7 @@ impl Library {
                 &format!(
                     "SELECT id, folder_id, path, kind, size, mtime_ms, width, height, orientation, taken_at,
                             thumb_state, thumb_error, missing_since, rating, {CAMERA_COLUMNS},
-                            edit_turns, edit_crop, hidden
+                            edit_turns, edit_crop, hidden, duration_ms
                      FROM items WHERE id = ?1"
                 ),
                 params![id],
@@ -718,7 +727,10 @@ impl Library {
     /// Assembled by hand rather than through `grid_query`, because its outer filter reads
     /// `w.online`, which the driver cannot see. The driver is therefore unfiltered, and
     /// the planner walks from `items_pending` regardless, so the shape costs nothing.
-    pub fn pending_thumb_ids(&self) -> Result<Vec<i64>> {
+    ///
+    /// One `kind` at a time, because the two are made by different hands: a worker decodes
+    /// an image, the webview draws a video's frame, and each drains its own queue.
+    pub fn pending_thumb_ids(&self, kind: MediaKind) -> Result<Vec<i64>> {
         let conn = self.reader()?;
         let driver = folder_order(Shown::Either, "");
         let mut stmt = conn.prepare(&format!(
@@ -727,10 +739,11 @@ impl Library {
              JOIN items i ON i.folder_id = o.folder_id
              JOIN folders f ON f.id = i.folder_id
              JOIN watched_folders w ON w.id = f.watched_id
-             WHERE i.thumb_state = 0 AND i.missing_since IS NULL AND w.online = 1 {GRID_ORDER}"
+             WHERE i.thumb_state = 0 AND i.missing_since IS NULL AND w.online = 1
+               AND i.kind = ?1 {GRID_ORDER}"
         ))?;
         let ids = stmt
-            .query_map([], |r| r.get(0))?
+            .query_map(params![kind.to_db()], |r| r.get(0))?
             .collect::<rusqlite::Result<Vec<i64>>>()?;
         Ok(ids)
     }
@@ -916,6 +929,7 @@ impl Library {
                     camera: camera.as_deref(),
                     lens: lens.as_deref(),
                     taken: Some(taken),
+                    kind: MediaKind::from_db(r.get(6)?),
                 });
                 // No `Ok(…?)` wrapper here: the closure already returns this type, and
                 // wrapping it trips `clippy::needless_question_mark`, which the gate
@@ -969,6 +983,37 @@ mod tests {
         assert_eq!(item.missing_since, None);
         assert_eq!(item.thumb_key(), fingerprint("/p/a.jpg", 100, 1_000));
         assert!(lib.item(9_999).unwrap().is_none());
+    }
+
+    #[test]
+    fn a_video_row_keeps_its_kind_and_duration() {
+        let (_dir, lib) = temp_library();
+        let (_, folder) = seed_folder(&lib, Path::new("/photos"));
+        let mut video = new_item(folder, "/photos/clip.mp4", 100);
+        video.kind = MediaKind::Video;
+        video.duration_ms = Some(83_000);
+        let id = lib.insert_items(&[video.clone()]).unwrap()[0];
+
+        let item = lib.item(id).unwrap().unwrap();
+        assert_eq!(item.kind, MediaKind::Video);
+        assert_eq!(item.duration_ms, Some(83_000));
+        let row = lib
+            .grid_entries()
+            .unwrap()
+            .into_iter()
+            .find(|e| e.id == id)
+            .unwrap();
+        assert_eq!(row.kind, MediaKind::Video);
+        assert_eq!(row.duration_ms, Some(83_000));
+
+        // A rewrite carries the new running time; a photo's stays NULL.
+        video.duration_ms = Some(90_000);
+        lib.update_items(&[(id, video)]).unwrap();
+        assert_eq!(lib.item(id).unwrap().unwrap().duration_ms, Some(90_000));
+        let photo = lib
+            .insert_items(&[new_item(folder, "/photos/a.jpg", 100)])
+            .unwrap()[0];
+        assert_eq!(lib.item(photo).unwrap().unwrap().duration_ms, None);
     }
 
     #[test]
@@ -1298,11 +1343,14 @@ mod tests {
         // Grid order, which the thumbnail queue follows so tiles render roughly in the order
         // they will be scrolled past. Folder `a` starts at 2 and `b` at 1, so `a` — the newer
         // folder by its oldest photo — comes first, and within it 2 before 5.
-        assert_eq!(lib.pending_thumb_ids().unwrap(), [a1, a2, b1]);
+        assert_eq!(
+            lib.pending_thumb_ids(MediaKind::Image).unwrap(),
+            [a1, a2, b1]
+        );
 
         lib.set_thumb_state(a1, ThumbState::Ready, None).unwrap();
         lib.mark_missing(&[b1], 99).unwrap();
-        assert_eq!(lib.pending_thumb_ids().unwrap(), [a2]);
+        assert_eq!(lib.pending_thumb_ids(MediaKind::Image).unwrap(), [a2]);
     }
 
     #[test]
@@ -1317,10 +1365,23 @@ mod tests {
             ])
             .unwrap();
         lib.set_watched_online(off_w, false).unwrap();
-        assert_eq!(lib.pending_thumb_ids().unwrap(), [ids[0]]);
+        assert_eq!(lib.pending_thumb_ids(MediaKind::Image).unwrap(), [ids[0]]);
         lib.set_watched_online(off_w, true).unwrap();
         lib.set_watched_online(on_w, false).unwrap();
-        assert_eq!(lib.pending_thumb_ids().unwrap(), [ids[1]]);
+        assert_eq!(lib.pending_thumb_ids(MediaKind::Image).unwrap(), [ids[1]]);
+    }
+
+    #[test]
+    fn pending_ids_are_of_one_kind() {
+        let (_dir, lib) = temp_library();
+        let (_, folder) = seed_folder(&lib, Path::new("/p"));
+        let mut video = new_item(folder, "/p/b.mp4", 2);
+        video.kind = MediaKind::Video;
+        let ids = lib
+            .insert_items(&[new_item(folder, "/p/a.jpg", 1), video])
+            .unwrap();
+        assert_eq!(lib.pending_thumb_ids(MediaKind::Image).unwrap(), [ids[0]]);
+        assert_eq!(lib.pending_thumb_ids(MediaKind::Video).unwrap(), [ids[1]]);
     }
 
     #[test]
@@ -1896,6 +1957,31 @@ mod tests {
             .map(|e| e.id)
             .collect();
         assert_eq!(hits, vec![ids[0]]);
+    }
+
+    /// `search::Query` knows `video` and `photo`; this pins that the library hands it each
+    /// row's real kind (`GRID_COLUMNS`' seventh column), not a default. Neither file name
+    /// contains either word, so only the kind can answer.
+    #[test]
+    fn search_filters_on_the_rows_kind() {
+        let (_dir, lib) = temp_library();
+        let (_watched, folder) = seed_folder(&lib, Path::new("/p"));
+        let clip = NewItem {
+            kind: MediaKind::Video,
+            ..new_item(folder, "/p/b.mp4", 2)
+        };
+        let ids = lib
+            .insert_items(&[new_item(folder, "/p/a.jpg", 1), clip])
+            .unwrap();
+        let hits = |query: &str| -> Vec<i64> {
+            lib.entries_for(GridView::Search, query)
+                .unwrap()
+                .iter()
+                .map(|e| e.id)
+                .collect()
+        };
+        assert_eq!(hits("video"), vec![ids[1]]);
+        assert_eq!(hits("photo"), vec![ids[0]]);
     }
 
     #[test]

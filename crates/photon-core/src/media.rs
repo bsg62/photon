@@ -1,11 +1,14 @@
 use serde::Serialize;
 use std::path::Path;
 
-/// What kind of media a library item is. Plan 3 adds `Video`.
+/// What kind of media a library item is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum MediaKind {
     Image,
+    /// Played and poster-framed by the webview, never decoded by photon
+    /// (spec `2026-09-26-photon-video-design.md`).
+    Video,
 }
 
 impl MediaKind {
@@ -18,6 +21,9 @@ impl MediaKind {
             "jpg" | "jpeg" | "jpe" | "png" | "gif" | "webp" | "tif" | "tiff" | "bmp" | "avif" => {
                 Some(Self::Image)
             }
+            // Only what all three webviews can plausibly play: a tile that will not play is
+            // worse than no tile (AVI, MKV and 3GP are out).
+            "mp4" | "m4v" | "mov" | "webm" => Some(Self::Video),
             _ => None,
         }
     }
@@ -25,12 +31,14 @@ impl MediaKind {
     pub fn to_db(self) -> i64 {
         match self {
             Self::Image => 0,
+            Self::Video => 1,
         }
     }
 
     pub fn from_db(value: i64) -> Option<Self> {
         match value {
             0 => Some(Self::Image),
+            1 => Some(Self::Video),
             _ => None,
         }
     }
@@ -93,6 +101,20 @@ mod tests {
     }
 
     #[test]
+    fn the_four_video_extensions_are_videos_in_any_case() {
+        for name in ["a.mp4", "b.M4V", "c.MOV", "d.webm"] {
+            assert_eq!(
+                MediaKind::from_path(Path::new(name)),
+                Some(MediaKind::Video),
+                "{name}"
+            );
+        }
+        for name in ["e.avi", "f.mkv", "g.3gp"] {
+            assert_eq!(MediaKind::from_path(Path::new(name)), None, "{name}");
+        }
+    }
+
+    #[test]
     fn db_round_trips() {
         assert_eq!(
             MediaKind::from_db(MediaKind::Image.to_db()),
@@ -102,6 +124,22 @@ mod tests {
         for s in [ThumbState::Pending, ThumbState::Ready, ThumbState::Failed] {
             assert_eq!(ThumbState::from_db(s.to_db()), s);
         }
+    }
+
+    #[test]
+    fn video_round_trips_through_the_database_value() {
+        assert_eq!(MediaKind::Video.to_db(), 1);
+        assert_eq!(MediaKind::from_db(1), Some(MediaKind::Video));
+        assert_eq!(MediaKind::from_db(0), Some(MediaKind::Image));
+        assert_eq!(MediaKind::from_db(2), None);
+    }
+
+    #[test]
+    fn video_serialises_as_the_ui_expects() {
+        assert_eq!(
+            serde_json::to_string(&MediaKind::Video).unwrap(),
+            "\"video\""
+        );
     }
 
     #[test]

@@ -23,8 +23,9 @@ export interface Section { folderId: number | null; offset: number; count: numbe
  *  than newest, to match Picasa. */
 export interface FolderTally { folderId: number; count: number; takenAtMin: number }
 /** `hasCopies`: another live file has the same bytes or is a look-alike, the same rule the
- *  Duplicates view uses (`GridEntry::has_copies`). */
-export interface GridEntry { id: number; folderId: number; takenAt: number; aspect: number; kind: 'image'; thumbKey: string; starred: boolean; hasCopies: boolean }
+ *  Duplicates view uses (`GridEntry::has_copies`). `durationMs` is a video's running time;
+ *  null for a photo. */
+export interface GridEntry { id: number; folderId: number; takenAt: number; aspect: number; kind: 'image' | 'video'; durationMs: number | null; thumbKey: string; starred: boolean; hasCopies: boolean }
 export type GridView = 'all' | 'starred' | 'recent' | 'search' | 'person' | 'album' | 'tag' | 'duplicates' | 'copies' | 'hidden';
 /** Mirrors `commands::CopiesOf`. `fileName` is empty once the photo has left the library;
  *  `gone` is true once the anchor photo itself is gone (purged or missing) - the filter
@@ -96,6 +97,13 @@ export interface ViewerItem {
   /** The caption the photo carries (XMP or IPTC), shown under it. */
   caption: string | null;
   faces: ItemFace[];
+  /** A video plays; the viewer shows no zoom, crop or turn for it. */
+  kind: 'image' | 'video';
+  /** The video's running time, or null for a photo. */
+  durationMs: number | null;
+  /** A video the window died opening: the viewer shows `thumbError` and never creates a
+   *  `<video>` for it. */
+  videoCrashed: boolean;
   /** Ids of the albums the photo is in. */
   albums: number[];
   /** Other files with the same bytes as this one. */
@@ -167,6 +175,8 @@ export interface ScanProgressEvent {
 export interface FolderStatus { watchedId: number; online: boolean; degraded: boolean }
 export interface LibraryChanged { version: number; len: number }
 export interface AppError { kind: string; message: string }
+export interface VideoJob { id: number; key: string }
+export type VideoFailure = 'unsupported' | 'decode' | 'timeout';
 
 export const api = {
   listFolders: () => invoke<FolderList>('list_folders'),
@@ -267,6 +277,15 @@ export const api = {
   /** Copies the photo, as shown and capped at 2560 px, to the clipboard as a picture. */
   copyPhoto: (itemId: number) => invoke<void>('copy_photo', { itemId }),
   revealFolder: (folderId: number) => invoke<void>('reveal_folder', { folderId }),
+  mediaBase: () => invoke<string>('media_base'),
+  videoSessionStart: (supported: boolean) => invoke<void>('video_session_start', { supported }),
+  /** Long-polls: resolves with a job, or null after about 25 s with none. */
+  nextVideoJob: () => invoke<VideoJob | null>('next_video_job'),
+  /** The frame goes as the raw body, not JSON: a JSON number array of a JPEG is ~4x its size. */
+  putVideoFrame: (id: number, key: string, jpeg: Uint8Array) =>
+    invoke<void>('put_video_frame', jpeg, { headers: { 'x-photon-id': String(id), 'x-photon-key': key } }),
+  videoFrameFailed: (id: number, key: string, reason: VideoFailure) =>
+    invoke<void>('video_frame_failed', { id, key, reason }),
 };
 
 export const events = {

@@ -3,7 +3,7 @@ use crate::{
     keywords::read_embedded,
     library::{KnownItem, Library, NewItem, WatchedFolder},
     media::MediaKind,
-    metadata::{EXIF_VERSION, read_image_meta},
+    metadata::{CameraMeta, EXIF_VERSION, read_image_meta},
     paths,
     picasa::{Face, FolderIni},
 };
@@ -106,9 +106,13 @@ pub trait ScanSink {
     fn progress(&mut self, progress: &ScanProgress);
 
     /// Items just inserted or replaced. Each has `thumb_state = Pending`, so these are
-    /// exactly the rows `Library::pending_thumb_ids` would find, handed over without the
-    /// query: re-running it every 250ms of a scan sorted every pending row in grid order,
-    /// for the whole of an import, to learn what the scanner already knew.
+    /// exactly the rows `Library::pending_thumb_ids` would find for *some* `MediaKind` -
+    /// photos and videos alike, handed over without the query: re-running it every 250ms of
+    /// a scan sorted every pending row in grid order, for the whole of an import, to learn
+    /// what the scanner already knew. `Engine`'s consumer of this sink prioritises the ids
+    /// into the photo thumbnail queue regardless of kind; a video id lands there too, and
+    /// that queue's `process` simply ignores it, since videos are drained from their own
+    /// queue instead (see `thumbs`).
     fn indexed(&mut self, _ids: &[i64]) {}
 }
 
@@ -826,24 +830,56 @@ fn describe(
     size: i64,
     mtime_ms: i64,
 ) -> NewItem {
-    let meta = read_image_meta(entry.path());
-    let embedded = read_embedded(entry.path());
-    NewItem {
-        folder_id,
-        path: path.to_string(),
-        file_name: entry.file_name().to_string_lossy().into_owned(),
-        kind,
-        size,
-        mtime_ms,
-        width: meta.width,
-        height: meta.height,
-        orientation: meta.orientation,
-        taken_at: meta.taken_at.unwrap_or(mtime_ms.div_euclid(1000)),
-        // Always `None` here; `apply_picasa` sets the real value after the walk.
-        rating: meta.rating,
-        camera: meta.camera,
-        tags: embedded.keywords,
-        caption: embedded.caption,
+    let file_name = entry.file_name().to_string_lossy().into_owned();
+    let dated = |taken_at: Option<i64>| taken_at.unwrap_or(mtime_ms.div_euclid(1000));
+    match kind {
+        MediaKind::Image => {
+            let meta = read_image_meta(entry.path());
+            let embedded = read_embedded(entry.path());
+            NewItem {
+                folder_id,
+                path: path.to_string(),
+                file_name,
+                kind,
+                size,
+                mtime_ms,
+                width: meta.width,
+                height: meta.height,
+                orientation: meta.orientation,
+                taken_at: dated(meta.taken_at),
+                // Always `None` here; `apply_picasa` sets the real value after the walk.
+                rating: meta.rating,
+                camera: meta.camera,
+                tags: embedded.keywords,
+                caption: embedded.caption,
+                duration_ms: None,
+            }
+        }
+        MediaKind::Video => {
+            // Rotation is resolved into the size (`VideoMeta`), so orientation is always 1.
+            let meta = crate::video::read_meta(entry.path());
+            NewItem {
+                folder_id,
+                path: path.to_string(),
+                file_name,
+                kind,
+                size,
+                mtime_ms,
+                width: meta.width,
+                height: meta.height,
+                orientation: 1,
+                taken_at: dated(meta.taken_at),
+                rating: None,
+                camera: CameraMeta {
+                    make: meta.make,
+                    model: meta.model,
+                    ..CameraMeta::default()
+                },
+                tags: Vec::new(),
+                caption: None,
+                duration_ms: meta.duration_ms,
+            }
+        }
     }
 }
 
@@ -929,9 +965,11 @@ pub(crate) fn mtime_ms(md: &Metadata) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::metadata::naive_to_unix;
     use crate::testutil::{
-        ExifSpec, avif_fixture, bmp_bytes, jpeg_bytes, jpeg_with_exif, jpeg_with_exif_spec,
-        jpeg_with_iptc_keywords, png_bytes, temp_library, tiff_bytes, write_file,
+        ExifSpec, Mp4Spec, avif_fixture, bmp_bytes, jpeg_bytes, jpeg_with_exif,
+        jpeg_with_exif_spec, jpeg_with_iptc_keywords, mp4_bytes, png_bytes, temp_library,
+        tiff_bytes, write_file,
     };
     use std::fs;
     use std::time::Duration;
@@ -1001,6 +1039,61 @@ mod tests {
         assert_eq!(names, ["photos", "2024"]);
         let sub = &lib.folders().unwrap()[1];
         assert_eq!(sub.parent_id, Some(lib.folders().unwrap()[0].id));
+    }
+
+    #[test]
+    fn indexes_a_video_with_its_size_running_time_and_date() {
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        write_file(
+            &root,
+            "IMG_0001.MOV",
+            &mp4_bytes(&Mp4Spec {
+                width: 1920,
+                height: 1080,
+                rotation: 90,
+                timescale: 600,
+                duration: 600 * 12,
+                apple_date: Some("2024-06-15T12:30:45+0200"),
+                make: Some("Apple"),
+                model: Some("iPhone 15 Pro"),
+                ..Mp4Spec::default()
+            }),
+        );
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
+        scan(&lib, &watched, 1);
+
+        let id = lib
+            .known_items(watched.id)
+            .unwrap()
+            .values()
+            .next()
+            .unwrap()
+            .id;
+        let item = lib.item(id).unwrap().unwrap();
+        assert_eq!(item.kind, MediaKind::Video);
+        assert_eq!((item.width, item.height, item.orientation), (1080, 1920, 1));
+        assert_eq!(item.duration_ms, Some(12_000));
+        assert_eq!(item.taken_at, naive_to_unix(2024, 6, 15, 12, 30, 45));
+        assert_eq!(item.camera.model.as_deref(), Some("iPhone 15 Pro"));
+    }
+
+    #[test]
+    fn a_garbage_mp4_is_still_indexed() {
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        write_file(&root, "broken.mp4", b"");
+        write_file(&root, "junk.webm", b"\x1a\x45\xdf\xa3 and then nothing");
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
+        scan(&lib, &watched, 1);
+        let known = lib.known_items(watched.id).unwrap();
+        assert_eq!(known.len(), 2);
+        for k in known.values() {
+            let item = lib.item(k.id).unwrap().unwrap();
+            assert_eq!(item.kind, MediaKind::Video);
+            assert_eq!((item.width, item.height, item.duration_ms), (0, 0, None));
+            assert_eq!(item.taken_at, item.mtime_ms.div_euclid(1000));
+        }
     }
 
     /// A sink that keeps every id the scan reports as freshly indexed.

@@ -5,6 +5,7 @@
   import { createThumbRequest } from '../lib/thumb-request.svelte';
   import { createTileRetry, tileProblem } from '../lib/tile-retry.svelte';
   import { copiesMarkShown } from '../lib/copies';
+  import { formatDuration } from '../lib/video';
   import Icon from './Icon.svelte';
 
   let {
@@ -34,7 +35,7 @@
   const key = $derived(entry ? `thumb/${entry.id}/grid/${entry.thumbKey}` : '');
   const request = createThumbRequest();
   const retry = createTileRetry();
-  const problem = $derived(tileProblem(retry.status));
+  const problem = $derived(tileProblem(retry.status, entry?.kind));
   const src = $derived(
     request.requested
       ? mediaUrl(request.requested) + (retry.attempt ? `?retry=${retry.attempt}` : '')
@@ -120,7 +121,15 @@
     />
   {/if}
   {#if problem}
-    <span class="broken" title={problem}><Icon name="triangle-alert" size={28} /></span>
+    <!-- A video with no frame yet - no plugins, or the poster job hasn't run - reads as a
+         video, not as broken: the play glyph is what it will look like once it has one. -->
+    <span class="broken" title={problem}><Icon name={entry?.kind === 'video' ? 'play' : 'triangle-alert'} size={28} /></span>
+  {/if}
+  {#if entry?.kind === 'video'}
+    <span class="video-badge" aria-label="Video">
+      <Icon name="play" size={12} filled />
+      {#if entry.durationMs !== null}{formatDuration(entry.durationMs)}{/if}
+    </span>
   {/if}
   {#if entry?.starred}
     <span class="star" aria-label="Starred"><Icon name="star" size={14} filled /></span>
@@ -196,6 +205,23 @@
     bottom: 5px;
     color: var(--photo-line);
     filter: drop-shadow(0 0 2px var(--shadow-ink));
+    pointer-events: none;
+  }
+  /* Drawn onto the photo like the star, so the same technique (the shadow is what holds it
+     on a bright photo, in either theme). The star and the copies mark already own both
+     bottom corners, and the length text needs more width than a bare icon, so this one
+     takes the top-left instead. */
+  .video-badge {
+    position: absolute;
+    left: 5px;
+    top: 5px;
+    display: flex;
+    align-items: center;
+    gap: 3px;
+    color: var(--photo-line);
+    filter: drop-shadow(0 0 2px var(--shadow-ink));
+    font-size: var(--t-1);
+    font-variant-numeric: tabular-nums;
     pointer-events: none;
   }
 </style>

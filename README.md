@@ -64,6 +64,16 @@ Adding TIFF, BMP and AVIF does not disturb a library built by an earlier photon.
 simply appear as each folder is walked again, whether that scan is manual or triggered by
 the file watcher; nothing already indexed is re-read and no thumbnail is rebuilt.
 
+**Video:** MP4, M4V, MOV and WebM, played by the system's own video support - photon ships
+no decoder. On macOS everything an iPhone records plays. On Windows, iPhone video (HEVC)
+needs Microsoft's *HEVC Video Extensions* from the Store; without it such a video shows no
+preview and does not play. On Linux the `.deb` pulls in GStreamer's good and libav plugins;
+everywhere else, the AppImage included, photon uses the ones the system has, so install them
+(`gst-plugins-good` and `gst-libav` on Arch, `gstreamer1.0-plugins-good` and
+`gstreamer1.0-libav` on Debian and Ubuntu) - without them photon shows videos but cannot play
+them. The AppImage does not bundle them, and video in the AppImage has not been checked by
+hand yet. A video's preview is drawn while photon's window is open.
+
 ### Camera data, keywords, people and albums
 
 The viewer's ⓘ button (or `I`) opens an info panel: camera, lens, focal length, aperture,
@@ -562,6 +572,41 @@ publishing it.
       photo.
 - [ ] Scroll the full library to some folder, open Starred, then click All photos: the grid is
       back at that folder, and All photos is highlighted. From a search, the search box empties.
+- [ ] Put an iPhone `.MOV`, an Android `.mp4` and a `.webm` in a watched folder: each gets a tile
+      with a play badge and its length, sorted among the photos taken beside it (not hours away).
+      The preview frame is not black.
+- [ ] Open each: it plays at once with sound; the seek bar works, including a jump to the last
+      tenth of a long 4K video; Space pauses and resumes; ←/→ go to the neighbours and the video
+      stops; R and C do nothing; the zoom slider is gone. The info panel shows the length.
+- [ ] A slideshow started in a folder of photos and videos shows only the photos; started on a
+      video it begins at the next photo; in a folder of only videos it does not start and says
+      why.
+- [ ] Linux, without GStreamer's good plugins (remove them, or run on a fresh Arch): photon
+      starts, video tiles show the play icon, opening one says the plugins are missing, and the
+      window never goes blank.
+- [ ] The AppImage, on a machine with GStreamer's good and libav plugins installed, plays a
+      video; on one without them it shows the can't-play message and never goes blank.
+- [ ] macOS and Windows: a video plays (App Transport Security and WebView2 allow
+      `http://127.0.0.1`), and no firewall prompt appears when photon starts. **Blocking for the
+      release.**
+- [ ] Windows without the HEVC extension: an iPhone video shows the play icon and a message, not
+      a broken tile.
+- [ ] A video's poster frame actually appears (this exercises the raw-body `put_video_frame` IPC
+      path and CORS on the loopback server). If frames never appear, check whether WebKit sends a
+      CORS preflight (`OPTIONS`) for a `crossorigin` `<video>` with a `Range` header: the media
+      server answers `OPTIONS` with 404.
+- [ ] With the native video controls clicked (focused): the arrows, Home/End and Escape still
+      navigate the viewer; Space toggles playback once, not twice.
+- [ ] The native controls bar is fully visible above the viewer's own bottom bar, on a landscape
+      and a portrait video.
+- [ ] The mouse wheel over a playing video still moves to the next and previous item.
+- [ ] In the grid, right-clicking a video offers no "Copy photo", and Ctrl+C on a selected video
+      does nothing.
+- [ ] Pause a long video, open three more, then play one: playback starts at once.
+- [ ] Quit photon while poster frames are still being drawn, and relaunch: the frames carry on
+      being drawn, and no video shows "photon's window stopped while opening this video".
+- [ ] Tile badge placement: the play badge is top-left, because the star and the copies mark own
+      the bottom corners. Check that it stays legible on light and dark photos.
 
 ## How watching works
 

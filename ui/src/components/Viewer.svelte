@@ -2,6 +2,10 @@
   import { untrack } from 'svelte';
   import { writeText } from '@tauri-apps/plugin-clipboard-manager';
   import { api, errorMessage, mediaUrl, type ViewerItem } from '../lib/api';
+  import { isLinux } from '../lib/url';
+  import { videoState } from '../lib/video-state.svelte';
+  import { formatDuration, videoUrl } from '../lib/video';
+  import { nextStill } from '../lib/slideshow-order';
   import { createAlbumMembership } from '../lib/album-membership.svelte';
   import { ownAlbums, picasaAlbumsOf } from '../lib/albums';
   import { createTagEditor } from '../lib/tag-editor.svelte';
@@ -84,24 +88,70 @@
   /** Must match the `.outgoing` transition in the styles below. */
   const CROSSFADE_MS = 600;
 
+  /** The kind at grid offset `i`, loading its page first: what `nextStill` walks. */
+  async function kindAt(i: number) {
+    await library.ensure(i, i + 1);
+    return library.entry(i)?.kind;
+  }
+
   const slideshow = createSlideshow({
     advance: () => {
       const len = library.info.len;
-      // One photo has no next: `goto` would reload it, blanking the screen every interval.
-      if (len > 1) goto(current + 1 >= len ? 0 : current + 1);
+      const from = current;
+      void nextStill(from, len, kindAt).then((next) => {
+        // The show may have been stopped, or the user may have navigated by hand, while this
+        // awaited: either makes `current` no longer `from`, or the slideshow no longer
+        // active, and a `goto` landing on top of either would be a stale write.
+        if (!slideshow.active || current !== from) return;
+        // One photo has no next: `goto` would reload it, blanking the screen every interval.
+        if (next !== null && next !== current) goto(next);
+      });
     },
     interval: () => api.slideshowInterval(),
     fullscreen: { get: () => api.windowFullscreen(), set: (on) => api.setWindowFullscreen(on) },
   });
 
-  function startSlideshow() {
+  async function startSlideshow() {
     info = false;
+    if (item?.kind === 'video') {
+      const from = current;
+      const len = library.info.len;
+      const next = await nextStill(from, len, kindAt);
+      // The viewer may have closed, or the user may have navigated elsewhere, while this
+      // awaited: closing stops nothing else running, and a late `goto` (and the fullscreen
+      // `slideshow.start` below) would otherwise resurrect a slideshow on a viewer nobody is
+      // looking at, or hijack wherever the user has since navigated to.
+      if (destroyed || current !== from) return;
+      if (next === null) {
+        library.notify('There are no photos here to show.');
+        return;
+      }
+      goto(next);
+    }
     void slideshow.start(fullSrc !== null || error !== null);
   }
 
   function stopSlideshow() {
     slideshow.stop();
     outgoing = null;
+  }
+
+  /** One step by hand - an arrow or the wheel. Outside a show it is `goto`, unchanged.
+   *  During one it skips videos in the direction of travel: the show never plays a video,
+   *  so landing on one by hand would leave it sitting on a still poster, its timer running,
+   *  until the next advance moved it on. It wraps as the show's own advance does, and it
+   *  takes the same two staleness guards as `advance`, for the same reason: the walk
+   *  awaits pages, and the show may have stopped or the user moved on meanwhile. */
+  function step(dir: 1 | -1) {
+    if (!slideshow.active) {
+      goto(current + dir);
+      return;
+    }
+    const from = current;
+    void nextStill(from, library.info.len, kindAt, dir).then((next) => {
+      if (!slideshow.active || current !== from) return;
+      if (next !== null && next !== current) goto(next);
+    });
   }
 
   // The countdown runs from the moment the photo is on screen; a photo that cannot be shown
@@ -127,6 +177,15 @@
 
   // Closing by any route - Escape, the back button, the grid going away - leaves fullscreen.
   $effect(() => () => slideshow.stop());
+
+  /** Set once, on unmount: `startSlideshow`'s await for a still to land on can span the
+   *  viewer closing underneath it, and a `goto`/fullscreen landing afterwards on a viewer
+   *  nobody is looking at would never be stopped by anything. Not `$state`: nothing renders
+   *  it, and it must not itself wake the effect that sets it. */
+  let destroyed = false;
+  $effect(() => () => {
+    destroyed = true;
+  });
 
   /** Photos are numbered within their own folder, not across the library. In the All view
    *  that count matches what the file manager shows for that directory; in Starred or
@@ -242,6 +301,51 @@
     if (cropBox) crop.dragTo(e.clientX, e.clientY, cropBox.width, cropBox.height);
   }
 
+  const isVideo = $derived(item?.kind === 'video');
+  let videoEl = $state<HTMLVideoElement | null>(null);
+  /** The `<video>` on screen reported an error: it would otherwise sit there black, with
+   *  controls that do nothing. Reset by the loader for every photo it loads. */
+  let playbackFailed = $state(false);
+
+  /** Why a video can't be played here, reactively: read directly in the derived's own
+   *  synchronous body rather than inside the load effect's async chain, whose reads past its
+   *  first `await` Svelte no longer tracks - so a viewer opened before `App`'s `onMount` sets
+   *  `videoState` (base and support are both known late) notices the moment they land,
+   *  instead of being stuck on whatever it saw at load. `base === null` is the server not up
+   *  yet (or never coming up); GStreamer's missing plugins are a Linux-only fix, so that
+   *  wording is reserved for exactly that case. */
+  const videoIssue = $derived.by((): 'crashed' | 'gstreamer' | 'generic' | 'playback' | null => {
+    if (!item || item.kind !== 'video') return null;
+    // First, ahead of everything: a video the crash-loop guard failed took the window down
+    // when it was opened, so no `<video>` may be made for it, whatever else is true. The
+    // backend says so as a flag (`videoCrashed`) rather than the UI matching `thumbError`
+    // against a copy of the guard's sentence, which nothing would keep in step.
+    if (item.videoCrashed) return 'crashed';
+    if (!videoState.supported || !videoState.base) {
+      return !videoState.supported && isLinux() ? 'gstreamer' : 'generic';
+    }
+    return playbackFailed ? 'playback' : null;
+  });
+  const videoIssueMessage = $derived(
+    videoIssue === 'crashed'
+      ? (item?.thumbError ?? "This video can't be opened.")
+      : videoIssue === 'gstreamer'
+        ? "This system can't play videos. Install GStreamer's good and libav plugins (see the README's video section)."
+        : videoIssue === 'generic'
+          ? "This video can't be played here. See the README's video section for details."
+          : videoIssue === 'playback'
+            ? "This video can't be played here."
+            : null,
+  );
+  /** The src the `<video>` plays, computed the same reactive way as `videoIssue`: a plain
+   *  function of `item`, `videoState.base` and whether there is an issue, with nothing to
+   *  await. */
+  const videoFullSrc = $derived(
+    item && item.kind === 'video' && videoIssue === null && videoState.base
+      ? videoUrl(videoState.base, item.id)
+      : null,
+  );
+
   const camera = $derived(item ? cameraRows(item) : []);
   const copies = $derived(item ? copyGroups(item.copies) : []);
   /** The photo as displayed, orientation applied: the coordinates Picasa's faces are in. */
@@ -324,7 +428,10 @@
     // stay - assigning it the value it already has would wake nothing.
     if (orphaned && next === current + 1) next = current;
     const target = Math.min(last, Math.max(0, next));
-    if (slideshow.active && fullSrc && target !== current && zoom === MIN_ZOOM) {
+    // `!isVideo`, even though a video never sets `fullSrc` today: the crossfade layer is an
+    // `<img>` (see the markup below), so a video's URL painted into it would show nothing -
+    // this is the guard against that regressing if `fullSrc` is ever reused for one.
+    if (slideshow.active && fullSrc && !isVideo && target !== current && zoom === MIN_ZOOM) {
       outgoing = { src: fullSrc, fading: false };
     }
     if (target === current) reload++;
@@ -439,6 +546,7 @@
     item = null;
     fullSrc = null;
     error = null;
+    playbackFailed = false;
     orphaned = false;
     // Every photo opens fitted to the window: arriving at the next one already at 400% or
     // panned into a corner leaves you lost. A crop being drawn belonged to the last photo.
@@ -465,6 +573,13 @@
       star.bind(it.id, it.starred);
       membership.bind(it.id, it.albums);
       tags.bind(it.id, it.tags);
+      // A video plays through its own element below, or shows its poster with a message when
+      // it can't; both are read reactively from `videoIssue`/`videoFullSrc`, not decided
+      // here, and neither says anything about the Failed check that follows, so this skips
+      // it - and the still-image preload - entirely rather than running either.
+      if (it.kind === 'video') {
+        return; // no neighbour preload from a video, and nothing to decode
+      }
       if (it.thumbState === 'failed') {
         error = it.thumbError ?? "This photo can't be shown.";
         return;
@@ -489,6 +604,13 @@
     });
     return () => {
       cancelled = true;
+      // Leaving a video - navigation, close, or a reload of the same offset - must release
+      // its decode pipeline rather than leave it running behind a photo or an unmounted
+      // element: pause first (a `load()` alone can keep playing until it resets), drop the
+      // source so nothing is left to buffer, then load() to actually abandon it.
+      videoEl?.pause();
+      videoEl?.removeAttribute('src');
+      videoEl?.load();
     };
   });
 
@@ -528,7 +650,8 @@
     if (e.target instanceof HTMLInputElement) return;
     // Ctrl+C / Cmd+C copies the photo on screen - after the input guard, so a caption or
     // keyword field keeps its own copy, and never while text is selected (isCopyPhotoShortcut).
-    if (item && isCopyPhotoShortcut(e, (window.getSelection()?.toString() ?? '') !== '')) {
+    // The backend refuses to copy a video, so the shortcut is simply dead over one.
+    if (item && !isVideo && isCopyPhotoShortcut(e, (window.getSelection()?.toString() ?? '') !== '')) {
       e.preventDefault();
       void library.copyPhoto(item.id);
       return;
@@ -545,6 +668,12 @@
     }
     // Plain letters only: a modifier means the key belongs to the webview or the OS.
     if (!e.ctrlKey && !e.metaKey && !e.altKey) {
+      // A video has no turn or crop; swallow the keys rather than let them fall through to
+      // whatever else a plain letter might do below.
+      if (isVideo && ['r', 'R', 'c', 'C'].includes(e.key)) {
+        e.preventDefault();
+        return;
+      }
       if (e.key === 'r' || e.key === 'R') {
         e.preventDefault();
         rotate(e.key === 'r' ? 'cw' : 'ccw');
@@ -568,9 +697,16 @@
         else startSlideshow();
         return;
       }
-      if (e.key === ' ' && slideshow.active) {
+      if (e.key === ' ' && (slideshow.active || isVideo)) {
         e.preventDefault();
-        slideshow.toggle();
+        if (slideshow.active) slideshow.toggle();
+        else if (videoEl) {
+          // `play()` rejects when the browser aborts it (a fast Space-Space) or refuses it
+          // outright (autoplay policy); either way there is nothing to do about it here, but
+          // an uncaught rejection would otherwise surface as an unhandled promise warning.
+          if (videoEl.paused) videoEl.play().catch(() => {});
+          else videoEl.pause();
+        }
         return;
       }
       if (e.key === 'i' || e.key === 'I') {
@@ -581,12 +717,12 @@
     }
     const last = library.info.len - 1;
     if (last < 0) return;
-    const next =
-      e.key === 'ArrowLeft' ? current - 1
-      : e.key === 'ArrowRight' ? current + 1
-      : e.key === 'Home' ? 0
-      : e.key === 'End' ? last
-      : null;
+    if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+      e.preventDefault();
+      step(e.key === 'ArrowLeft' ? -1 : 1);
+      return;
+    }
+    const next = e.key === 'Home' ? 0 : e.key === 'End' ? last : null;
     if (next !== null) {
       e.preventDefault();
       goto(next);
@@ -612,13 +748,19 @@
 
   function onwheel(e: WheelEvent) {
     e.preventDefault();
+    // The wheel navigates between photos here, not zoom - zoom is the slider alone - and the
+    // spec drops only zoom, pan and crop for a video, so the wheel keeps moving between
+    // photos over one exactly as it does over a photo.
     if (crop.active) return;
     const stepped = wheelStep(wheelTotal, e.deltaY);
     wheelTotal = stepped.accumulated;
-    if (stepped.step !== 0) goto(current + stepped.step);
+    if (stepped.step === 0) return;
+    if (slideshow.active) step(stepped.step > 0 ? 1 : -1);
+    else goto(current + stepped.step);
   }
 
   function onzoom(e: Event & { currentTarget: HTMLInputElement }) {
+    if (isVideo) return;
     zoom = clampZoom(Number(e.currentTarget.value));
     const { width, height } = viewport();
     // Zooming back out shrinks how far the photo may travel, so a pan that was legal at 4x
@@ -627,6 +769,7 @@
   }
 
   function onpointerdown(e: PointerEvent) {
+    if (isVideo) return;
     // A press anywhere but the info panel clears a text selection left in it: a click does
     // not, and the next Ctrl+C would copy that text instead of the photo, silently.
     if (!(e.target as HTMLElement).closest('.info')) window.getSelection()?.removeAllRanges();
@@ -734,6 +877,42 @@
               {/each}
             </div>
           </div>
+        {:else if isVideo}
+          {#if videoIssue}
+            <!-- No picture to play, so the poster - the same frame a tile shows - stands in,
+                 with the reason lying over it like the face plate does, rather than an empty
+                 stage with nothing but text. -->
+            <img class="full" src={mediaUrl(`thumb/${item.id}/preview/${item.thumbKey}`)} alt="" draggable="false" />
+            <div class="video-issue">
+              <p>{videoIssueMessage}</p>
+            </div>
+          {:else}
+            <!-- Plays on open, with sound, as Picasa did. `tabindex="-1"` only takes it out
+                 of the tab order - a click still focuses it like any control - but the
+                 viewer's own keys (arrows, Home, End, Escape, Space) live on
+                 `<svelte:window>`, so they keep working over it regardless. -->
+            <!-- A Failed video that is not a crash is offered but not started: its failure was
+                 the poster frame's (a decode error, a timeout), which says the platform
+                 struggled with the file, so it waits for the user to ask. An error while
+                 playing swaps this element for the poster and a message (`playbackFailed`),
+                 rather than leave a black player; the element that fired it is checked, as
+                 one being unloaded on the way out is no longer the one on screen. -->
+            <!-- svelte-ignore a11y_media_has_caption -->
+            <video
+              class="full"
+              src={videoFullSrc}
+              poster={mediaUrl(`thumb/${item.id}/preview/${item.thumbKey}`)}
+              controls
+              autoplay={item.thumbState !== 'failed'}
+              preload="metadata"
+              crossorigin="anonymous"
+              tabindex="-1"
+              bind:this={videoEl}
+              onerror={(e) => {
+                if (e.currentTarget === videoEl && videoFullSrc) playbackFailed = true;
+              }}
+            ></video>
+          {/if}
         {:else}
           <img class="preview" src={mediaUrl(`thumb/${item.id}/preview/${item.thumbKey}`)} alt="" draggable="false" class:hidden={!!fullSrc} />
           {#if fullSrc}
@@ -769,7 +948,7 @@
         <h3>Caption</h3>
         <p class="info-caption">{item.caption.trim()}</p>
       {/if}
-      {#if camera.length}
+      {#if camera.length || (item.kind === 'video' && item.durationMs !== null)}
         <dl>
           {#each camera as row (row.label)}
             <dt>{row.label}</dt>
@@ -782,6 +961,10 @@
               {/if}
             </dd>
           {/each}
+          {#if item.kind === 'video' && item.durationMs !== null}
+            <dt>Length</dt>
+            <dd>{formatDuration(item.durationMs)}</dd>
+          {/if}
         </dl>
       {:else}
         <p class="info-muted">No camera data.</p>
@@ -920,12 +1103,14 @@
     >
       <Icon name="star" size={16} filled={star.starred} />
     </button>
-    <span class="sep" aria-hidden="true"></span>
-    <button class="tool" onclick={() => rotate('ccw')} disabled={!editable} aria-label="Rotate left" title="Rotate left (Shift+R)"><Icon name="rotate-ccw" size={16} /></button>
-    <button class="tool" onclick={() => rotate('cw')} disabled={!editable} aria-label="Rotate right" title="Rotate right (R)"><Icon name="rotate-cw" size={16} /></button>
-    <button class="tool" onclick={startCrop} disabled={!editable} aria-label="Crop" title="Crop (C)"><Icon name="crop" size={16} /></button>
-    {#if item?.edit}
-      <button class="tool wide" onclick={resetEdit} disabled={!editable} title="Undo every turn and crop. The file was never changed.">Original</button>
+    {#if !isVideo}
+      <span class="sep" aria-hidden="true"></span>
+      <button class="tool" onclick={() => rotate('ccw')} disabled={!editable} aria-label="Rotate left" title="Rotate left (Shift+R)"><Icon name="rotate-ccw" size={16} /></button>
+      <button class="tool" onclick={() => rotate('cw')} disabled={!editable} aria-label="Rotate right" title="Rotate right (R)"><Icon name="rotate-cw" size={16} /></button>
+      <button class="tool" onclick={startCrop} disabled={!editable} aria-label="Crop" title="Crop (C)"><Icon name="crop" size={16} /></button>
+      {#if item?.edit}
+        <button class="tool wide" onclick={resetEdit} disabled={!editable} title="Undo every turn and crop. The file was never changed.">Original</button>
+      {/if}
     {/if}
     <span class="sep" aria-hidden="true"></span>
     <button
@@ -970,18 +1155,20 @@
       <button role="menuitem" onclick={toggleHidden}>{item.hidden ? 'Unhide photo (H)' : 'Hide photo (H)'}</button>
     </div>
   {/if}
-  <div class="zoom" class:hidden={crop.active}>
-    <input
-      type="range"
-      min={MIN_ZOOM}
-      max={MAX_ZOOM}
-      step="0.05"
-      value={zoom}
-      oninput={onzoom}
-      aria-label="Zoom"
-    />
-    <span class="level">{Math.round(zoom * 100)}%</span>
-  </div>
+  {#if !isVideo}
+    <div class="zoom" class:hidden={crop.active}>
+      <input
+        type="range"
+        min={MIN_ZOOM}
+        max={MAX_ZOOM}
+        step="0.05"
+        value={zoom}
+        oninput={onzoom}
+        aria-label="Zoom"
+      />
+      <span class="level">{Math.round(zoom * 100)}%</span>
+    </div>
+  {/if}
   <button class="close" onclick={close} aria-label="Close viewer"><Icon name="x" size={16} /></button>
 </div>
 
@@ -1001,7 +1188,16 @@
   /* `draggable="false"` covers the drag itself; these stop WebKit — which is the webview on
      both Linux and macOS — from starting its own image drag or selecting the image instead
      of panning. */
-  img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; image-orientation: from-image; user-select: none; -webkit-user-drag: none; }
+  img, video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; image-orientation: from-image; user-select: none; -webkit-user-drag: none; }
+  /* The native control bar draws inside the video's own box, at its bottom edge; left at
+     `inset: 0` it would draw at the very bottom of the window, under our floating `.bar`
+     (which paints on top, later in the document, and would eat the controls' clicks without
+     ever showing them). Insetting the video above `.bar` - the same clearance
+     `.photo-caption` already keeps below it - is simpler than moving `.bar` itself out of a
+     region a photo never needed clear in the first place. `height: auto` lets the bottom
+     inset actually take effect: `inset: 0` above also sets an explicit height, and a
+     positioned box honours only one of a competing height/top+bottom pair. */
+  video.full { bottom: 64px; height: auto; }
   .hidden { visibility: hidden; }
   /* After the stage in the document and before the controls, so it paints between them
      without a z-index. The duration is `CROSSFADE_MS`. */
@@ -1090,6 +1286,17 @@
   .crop-handle.nw, .crop-handle.se { cursor: nwse-resize; }
   .crop-handle.ne, .crop-handle.sw { cursor: nesw-resize; }
   .error { color: var(--text-dim); }
+  /* Lies over the poster the way the face plate lies over a photo: the same glass and scrim
+     technique as `.bar`, so the reason reads over a bright frame as well as a dark one. */
+  .video-issue {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    padding: var(--s-4);
+    background: var(--scrim);
+  }
+  .video-issue p { max-width: 32em; margin: 0; padding: var(--s-2) var(--s-3); border-radius: var(--r-3); background: var(--glass); box-shadow: 0 0 0 1px var(--glass-line); color: var(--text); font-size: var(--t-3); text-align: center; }
   .info {
     position: absolute;
     top: 12px;

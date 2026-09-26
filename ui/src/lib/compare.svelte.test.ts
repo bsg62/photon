@@ -19,6 +19,7 @@ function pane(id: number): ComparePane {
     thumbKey: `k${id}`,
     orientation: 1,
     edit: false,
+    kind: 'image',
   };
 }
 

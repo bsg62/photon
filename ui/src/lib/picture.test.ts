@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { pictureChanged } from './picture';
 
-const shown = { thumbKey: 'aa', width: 40, height: 20, orientation: 1, thumbState: 'ready' as const };
+const shown = { thumbKey: 'aa', width: 40, height: 20, orientation: 1, thumbState: 'ready' as const, kind: 'image' as const };
 
 describe('pictureChanged', () => {
   it('is a new key, size or orientation', () => {
@@ -22,5 +22,14 @@ describe('pictureChanged', () => {
     expect(pictureChanged({ ...shown, thumbState: 'failed' }, shown)).toBe(true);
     expect(pictureChanged(shown, { ...shown, thumbState: 'failed' })).toBe(true);
     expect(pictureChanged({ ...shown, thumbState: 'failed' }, { ...shown, thumbState: 'failed' })).toBe(false);
+  });
+
+  it('ignores thumbState for a video: its poster failing or arriving must not pause and blank what is playing', () => {
+    const video = { ...shown, kind: 'video' as const };
+    expect(pictureChanged(video, { ...video, thumbState: 'failed' })).toBe(false);
+    expect(pictureChanged({ ...video, thumbState: 'failed' }, video)).toBe(false);
+    expect(pictureChanged({ ...video, thumbState: 'failed' }, { ...video, thumbState: 'failed' })).toBe(false);
+    // A video can still be reloaded by what actually changes it: a new file, or a redecode.
+    expect(pictureChanged(video, { ...video, thumbKey: 'bb' })).toBe(true);
   });
 });

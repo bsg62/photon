@@ -10,7 +10,7 @@ use photon_core::{
         Album, AlbumSummary, CopiesArg, Folder, GridTile, ItemFace, Person, SavedSearch, TagCount,
         TagRule, ThemeChoice, WatchedFolder, is_starred,
     },
-    media::ThumbState,
+    media::{MediaKind, ThumbState},
     now_ms,
     thumbs::Priority,
 };
@@ -18,6 +18,7 @@ use serde::Serialize;
 use std::{
     path::{Path, PathBuf},
     sync::Arc,
+    time::Duration,
 };
 
 pub const MAX_ROWS: usize = 1000;
@@ -140,6 +141,14 @@ pub struct ViewerItem {
     pub caption: Option<String>,
     /// Named Picasa faces, in INI order.
     pub faces: Vec<ItemFace>,
+    /// A video plays; the viewer shows no zoom, crop or turn for it.
+    pub kind: MediaKind,
+    /// The video's running time, or `None` for a photo.
+    pub duration_ms: Option<i64>,
+    /// A video the window died opening, and must not open again: the viewer shows its
+    /// `thumb_error` instead of a `<video>`. Other failed videos are still offered, without
+    /// autoplay - their failure was the poster frame's, and playback may still work.
+    pub video_crashed: bool,
     /// Ids of the albums the photo is in.
     pub albums: Vec<i64>,
     /// Other files with the same bytes as this one.
@@ -596,7 +605,10 @@ pub fn viewer_item(engine: &Engine, id: i64) -> CmdResult<ViewerItem> {
     let albums = engine.lib.item_albums(item.id)?;
     let copies = item_copies(engine, item.id)?;
     let thumb_key = hex_key(item.thumb_key());
+    let video_crashed = photon_core::thumbs::video_crashed(&item);
     let camera = item.camera;
+    let kind = item.kind;
+    let duration_ms = item.duration_ms;
     Ok(ViewerItem {
         id: item.id,
         thumb_key,
@@ -625,6 +637,9 @@ pub fn viewer_item(engine: &Engine, id: i64) -> CmdResult<ViewerItem> {
         tags,
         caption,
         faces,
+        kind,
+        duration_ms,
+        video_crashed,
         albums,
         copies,
         uncropped_width,
@@ -666,6 +681,9 @@ pub fn set_item_edit(
 /// the app handle this layer does not; here is everything a test can reach.
 pub fn copy_picture(engine: &Engine, id: i64) -> CmdResult<photon_core::edit::ClipboardPicture> {
     let item = engine.lib.item(id)?.ok_or(Error::NotFound(id))?;
+    if item.kind != MediaKind::Image {
+        return Err(Error::NotAPhoto(id).into());
+    }
     // One full-size decode at a time, the lock the viewer's render and export share. Held
     // across the render only: the caller's clipboard write must not keep the next render,
     // or the viewer's, waiting on the desktop's clipboard.
@@ -769,7 +787,8 @@ pub fn set_export_apply_edits(engine: &Engine, apply: bool) -> CmdResult<()> {
 /// The ids returned are the ones whose *full image* is worth fetching ahead, which leaves
 /// out edited photos: their full image is rendered per request and the viewer asks for it
 /// under a keyed URL, so a preload of the bare URL costs a full-size decode and encode whose
-/// result nothing ever reads. Their thumbnails are still queued.
+/// result nothing ever reads; and videos, which the viewer plays rather than preloads. Their
+/// thumbnails are still queued.
 pub fn neighbours(engine: &Engine, id: i64, radius: usize) -> Vec<i64> {
     let ids = engine.grid().1.neighbours(id, radius.min(MAX_RADIUS));
     engine.thumbs.prioritize(&ids, Priority::Neighbour);
@@ -780,9 +799,56 @@ pub fn neighbours(engine: &Engine, id: i64, radius: usize) -> Vec<i64> {
                 .item(id)
                 .ok()
                 .flatten()
-                .is_some_and(|item| item.edit.is_identity())
+                .is_some_and(|item| item.kind == MediaKind::Image && item.edit.is_identity())
         })
         .collect()
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VideoJobDto {
+    pub id: i64,
+    /// Hex, as `thumbKey` is everywhere else on the wire.
+    pub key: String,
+}
+
+/// How long `next_video_job` holds the call open waiting for a job. Under the webview's
+/// own IPC timeouts, and long enough that an idle page asks about twice a minute.
+pub const VIDEO_JOB_WAIT: Duration = Duration::from_secs(25);
+
+pub fn media_base(server: &crate::media_server::MediaServer) -> String {
+    server.base_url()
+}
+
+pub fn video_session_start(engine: &Engine, supported: bool) -> CmdResult<()> {
+    Ok(engine.thumbs.video_session_start(supported)?)
+}
+
+pub fn next_video_job(engine: &Engine, wait: Duration) -> CmdResult<Option<VideoJobDto>> {
+    Ok(engine.thumbs.next_video_job(wait)?.map(|job| VideoJobDto {
+        id: job.id,
+        key: hex_key(job.key),
+    }))
+}
+
+/// The grid rebuild is coalesced (`Engine::frame_stored`), and never an error of this call:
+/// the frame is stored by then, and a rejection would tell the page its `put` failed.
+pub fn put_video_frame(engine: &Arc<Engine>, id: i64, key: &str, jpeg: &[u8]) -> CmdResult<()> {
+    let key = crate::protocol::parse_key(key).ok_or(Error::NotFound(id))?;
+    if engine.thumbs.put_video_frame(id, key, jpeg)? {
+        engine.frame_stored();
+    }
+    Ok(())
+}
+
+pub fn video_frame_failed(
+    engine: &Engine,
+    id: i64,
+    key: &str,
+    reason: photon_core::thumbs::VideoFailure,
+) -> CmdResult<()> {
+    let key = crate::protocol::parse_key(key).ok_or(Error::NotFound(id))?;
+    Ok(engine.thumbs.video_frame_failed(id, key, reason)?)
 }
 
 pub fn item_path(engine: &Engine, id: i64) -> CmdResult<PathBuf> {
@@ -956,6 +1022,7 @@ mod tests {
             },
             tags: vec!["beach".into()],
             caption: None,
+            duration_ms: None,
         };
         f.engine.lib.update_item_meta(&[(id, described)]).unwrap();
         let album = f.engine.lib.create_album("Trip", 1).unwrap();
@@ -1034,6 +1101,7 @@ mod tests {
             },
             tags: vec![],
             caption: Some("Grandma".into()),
+            duration_ms: None,
         };
         f.engine.lib.update_item_meta(&[(id, described)]).unwrap();
         assert_eq!(
@@ -1208,6 +1276,7 @@ mod tests {
             camera: Default::default(),
             tags: tags.iter().map(|t| t.to_string()).collect(),
             caption: None,
+            duration_ms: None,
         };
         f.engine.lib.update_item_meta(&[(id, described)]).unwrap();
     }
@@ -1437,6 +1506,148 @@ mod tests {
         assert!(
             add_to_album(&f.engine, album.id, &f.ids()).is_err(),
             "the guard holds over IPC"
+        );
+    }
+
+    #[test]
+    fn a_video_refuses_edits_and_the_clipboard() {
+        let f = fixture(&[("clip.mp4", b"video")]);
+        f.add_photos();
+        let id = f.ids()[0];
+        let refused = |r: CmdResult<()>| {
+            matches!(
+                r,
+                Err(AppError {
+                    kind: "notAPhoto",
+                    ..
+                })
+            )
+        };
+        assert!(refused(rotate_item(&f.engine, id, true)));
+        assert!(refused(set_item_edit(&f.engine, id, 1, None)));
+        assert!(matches!(
+            copy_picture(&f.engine, id),
+            Err(AppError {
+                kind: "notAPhoto",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn the_viewer_is_told_it_is_a_video_and_neighbours_leave_it_out() {
+        let f = fixture(&[
+            ("a.jpg", &jpeg(8, 8)),
+            ("b.mp4", b"video"),
+            ("c.jpg", &jpeg(8, 8)),
+        ]);
+        f.add_photos();
+        let video = f
+            .ids()
+            .into_iter()
+            .find(|&id| f.engine.lib.item(id).unwrap().unwrap().kind == MediaKind::Video)
+            .unwrap();
+        let item = viewer_item(&f.engine, video).unwrap();
+        assert_eq!(item.kind, MediaKind::Video);
+        assert!(!neighbours(&f.engine, f.ids()[0], 2).contains(&video));
+    }
+
+    #[test]
+    fn next_video_job_speaks_the_ui_key() {
+        let f = fixture(&[("clip.mp4", b"video")]);
+        f.add_photos();
+        video_session_start(&f.engine, true).unwrap();
+        let job = next_video_job(&f.engine, Duration::from_millis(200))
+            .unwrap()
+            .unwrap();
+        assert_eq!(job.key, viewer_item(&f.engine, job.id).unwrap().thumb_key);
+    }
+
+    /// The viewer must never open a video the crash guard failed, and must still offer one
+    /// whose poster merely failed to decode: two Failed rows, told apart only by why.
+    #[test]
+    fn the_viewer_is_told_which_failed_video_crashed_the_window() {
+        let f = fixture(&[("a.mp4", b"video a"), ("b.mp4", b"video b")]);
+        f.add_photos();
+        let ids = f.ids();
+        // The page claims both and dies with them open, twice: the guard's own path.
+        for _ in 0..2 {
+            video_session_start(&f.engine, true).unwrap();
+            let mut claimed = 0;
+            while next_video_job(&f.engine, Duration::from_millis(100))
+                .unwrap()
+                .is_some()
+            {
+                claimed += 1;
+            }
+            assert_eq!(claimed, 2);
+        }
+        video_session_start(&f.engine, true).unwrap();
+        assert!(
+            next_video_job(&f.engine, Duration::from_millis(100))
+                .unwrap()
+                .is_none()
+        );
+        let crashed = viewer_item(&f.engine, ids[0]).unwrap();
+        assert_eq!(crashed.thumb_state, "failed");
+        assert!(crashed.video_crashed);
+
+        let g = fixture(&[("c.mp4", b"video c")]);
+        g.add_photos();
+        video_session_start(&g.engine, true).unwrap();
+        let job = next_video_job(&g.engine, Duration::from_millis(200))
+            .unwrap()
+            .unwrap();
+        video_frame_failed(
+            &g.engine,
+            job.id,
+            &job.key,
+            photon_core::thumbs::VideoFailure::Decode,
+        )
+        .unwrap();
+        let broken = viewer_item(&g.engine, job.id).unwrap();
+        assert_eq!(broken.thumb_state, "failed");
+        assert!(!broken.video_crashed);
+    }
+
+    /// A folder of videos is a burst of frames, one per video, and a grid rebuild per frame
+    /// is a whole-library query each. They coalesce - but onto the trailing edge as well,
+    /// since nothing else is coming to show the last one: the version must move again after
+    /// the last `put` has returned.
+    #[test]
+    fn a_burst_of_poster_frames_rebuilds_the_grid_once_or_twice_and_the_last_counts() {
+        use crate::events::Recorded;
+        let names: Vec<String> = (0..6).map(|n| format!("clip{n}.mp4")).collect();
+        let files: Vec<(&str, &[u8])> = names.iter().map(|n| (n.as_str(), &b"video"[..])).collect();
+        let f = fixture(&files);
+        f.add_photos();
+        video_session_start(&f.engine, true).unwrap();
+        let rebuilds = || {
+            f.events
+                .all()
+                .iter()
+                .filter(|e| matches!(e, Recorded::Library(_)))
+                .count()
+        };
+        let before = rebuilds();
+        let frame = jpeg(32, 18);
+        let mut drawn = 0;
+        while let Some(job) = next_video_job(&f.engine, Duration::from_millis(200)).unwrap() {
+            put_video_frame(&f.engine, job.id, &job.key, &frame).unwrap();
+            drawn += 1;
+        }
+        assert_eq!(drawn, names.len());
+        let after_last_put = f.engine.grid().0;
+
+        std::thread::sleep(Duration::from_millis(1_600));
+        let rebuilt = rebuilds() - before;
+        assert!(
+            (1..=2).contains(&rebuilt),
+            "{rebuilt} rebuilds for {drawn} frames"
+        );
+        assert!(
+            f.engine.grid().0 > after_last_put,
+            "the last frames of the burst were never shown"
         );
     }
 }

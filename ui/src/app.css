@@ -9,3 +9,6 @@
 * { box-sizing: border-box; }
 html, body, #app { margin: 0; height: 100%; overflow: hidden; }
 button { font: inherit; color: inherit; }
+/* video-grab.ts's hidden element: attached to the body, not rendered by any component, so
+   it needs a true global rule rather than a component's scoped <style>. */
+.poster-grab { position: fixed; left: 0; top: 0; width: 1px; height: 1px; opacity: 0; pointer-events: none; }

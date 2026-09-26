@@ -87,6 +87,8 @@ pub struct GridEntry {
     /// Displayed width / height (orientation applied); 1.0 when unknown.
     pub aspect: f32,
     pub kind: MediaKind,
+    /// A video's running time, for the tile's badge; `None` for a photo.
+    pub duration_ms: Option<i64>,
     /// True when the photo is starred in Picasa's per-directory `.picasa.ini`.
     pub starred: bool,
     /// True when another live file has the same bytes or is a look-alike: membership of
@@ -260,6 +262,7 @@ mod tests {
             taken_at: id,
             aspect: 1.5,
             kind: MediaKind::Image,
+            duration_ms: None,
             starred: false,
             has_copies: false,
             thumb_key: 42,
@@ -478,7 +481,7 @@ mod tests {
         let json = serde_json::to_string(&entry(7, 1)).unwrap();
         assert_eq!(
             json,
-            r#"{"id":7,"folderId":1,"takenAt":7,"aspect":1.5,"kind":"image","starred":false,"hasCopies":false,"thumbKey":"000000000000002a"}"#
+            r#"{"id":7,"folderId":1,"takenAt":7,"aspect":1.5,"kind":"image","durationMs":null,"starred":false,"hasCopies":false,"thumbKey":"000000000000002a"}"#
         );
     }
 }

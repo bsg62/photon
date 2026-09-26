@@ -418,3 +418,64 @@ pub fn reveal_library(engine: Eng<'_>) -> Result<(), AppError> {
     let path = commands::app_info(&engine).library_path;
     tauri_plugin_opener::reveal_item_in_dir(path).map_err(AppError::internal)
 }
+
+#[tauri::command(async)]
+pub fn media_base(server: State<'_, crate::media_server::MediaServer>) -> Result<String, AppError> {
+    Ok(commands::media_base(&server))
+}
+
+#[tauri::command(async)]
+pub fn video_session_start(engine: Eng<'_>, supported: bool) -> Result<(), AppError> {
+    commands::video_session_start(&engine, supported)
+}
+
+/// Holds the call open up to `VIDEO_JOB_WAIT`, so it runs on the blocking pool like
+/// `add_folder`: parked on a worker thread it would stall every other command's dispatch.
+#[tauri::command(async)]
+pub async fn next_video_job(engine: Eng<'_>) -> Result<Option<commands::VideoJobDto>, AppError> {
+    let engine = engine.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        commands::next_video_job(&engine, commands::VIDEO_JOB_WAIT)
+    })
+    .await
+    .map_err(AppError::internal)?
+}
+
+/// The frame arrives as the raw request body - a JPEG of a few hundred KB, which as a JSON
+/// number array would be several MB - with its id and key in headers.
+#[tauri::command(async)]
+pub async fn put_video_frame(
+    engine: Eng<'_>,
+    request: tauri::ipc::Request<'_>,
+) -> Result<(), AppError> {
+    let tauri::ipc::InvokeBody::Raw(jpeg) = request.body().clone() else {
+        return Err(AppError::internal("expected the frame as raw bytes"));
+    };
+    let get = |name: &str| {
+        request
+            .headers()
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned)
+    };
+    let id: i64 = get("x-photon-id")
+        .and_then(|v| v.parse().ok())
+        .ok_or_else(|| AppError::internal("missing x-photon-id"))?;
+    let key = get("x-photon-key").ok_or_else(|| AppError::internal("missing x-photon-key"))?;
+    let engine = engine.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        commands::put_video_frame(&engine, id, &key, &jpeg)
+    })
+    .await
+    .map_err(AppError::internal)?
+}
+
+#[tauri::command(async)]
+pub fn video_frame_failed(
+    engine: Eng<'_>,
+    id: i64,
+    key: String,
+    reason: photon_core::thumbs::VideoFailure,
+) -> Result<(), AppError> {
+    commands::video_frame_failed(&engine, id, &key, reason)
+}

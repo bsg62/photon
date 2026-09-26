@@ -31,6 +31,7 @@ impl From<photon_core::Error> for AppError {
             EmptySearchName => "emptySearchName",
             EmptySearchQuery => "emptySearchQuery",
             InvalidCrop => "invalidCrop",
+            NotAPhoto(_) => "notAPhoto",
             _ => "internal",
         };
         Self {

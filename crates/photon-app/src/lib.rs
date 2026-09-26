@@ -6,6 +6,7 @@ pub mod engine;
 pub mod error;
 pub mod events;
 mod ipc;
+pub mod media_server;
 pub mod protocol;
 pub mod watch;
 #[cfg(target_os = "linux")]

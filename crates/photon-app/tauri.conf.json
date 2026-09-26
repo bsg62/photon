@@ -22,7 +22,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; img-src 'self' photon: http://photon.localhost data: blob:; style-src 'self' 'unsafe-inline'; connect-src 'self' ipc: http://ipc.localhost photon: http://photon.localhost"
+      "csp": "default-src 'self'; img-src 'self' photon: http://photon.localhost data: blob:; style-src 'self' 'unsafe-inline'; connect-src 'self' ipc: http://ipc.localhost photon: http://photon.localhost; media-src 'self' http://127.0.0.1:*"
     }
   },
   "bundle": {
@@ -45,7 +45,7 @@
     ],
     "linux": {
       "deb": {
-        "depends": ["libwebkit2gtk-4.1-0", "libsoup-3.0-0"],
+        "depends": ["libwebkit2gtk-4.1-0", "libsoup-3.0-0", "gstreamer1.0-plugins-good", "gstreamer1.0-libav"],
         "section": "graphics"
       }
     },

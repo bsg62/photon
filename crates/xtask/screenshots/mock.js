@@ -7,6 +7,16 @@
 // Two lists below are read by a test in screenshots.rs, which fails when api.ts gains a
 // command that is in neither: `canned` (keys at four spaces' indent) and SILENT.
 (function () {
+  // The mock has no real video file to serve, so a `<video src>` here always fails to load -
+  // but which failure the app shows depends on whether *this* Chromium claims to support MP4:
+  // a build with proprietary codecs answers "maybe" to `canPlayType` and the viewer takes its
+  // native-`<video>` branch (which then just sits broken, nothing to look at); a build without
+  // them answers "" and the viewer shows its own "can't be played here" message over the
+  // poster, which is the state worth a screenshot. Forcing "" here makes `viewer-video-dark`
+  // render the same way on every machine, rather than depending on how this Chromium happens
+  // to have been packaged.
+  HTMLMediaElement.prototype.canPlayType = () => '';
+
   const P = new URLSearchParams(location.search);
   const day = (y, m, d) => Date.UTC(y, m - 1, d) / 1000;
 
@@ -32,7 +42,8 @@
       folderId: section.folderId,
       takenAt: section.takenAtMin + i * 600,
       aspect: [1.5, 0.67, 1.33, 1][i % 4],
-      kind: 'image',
+      kind: i % 9 === 4 ? 'video' : 'image',
+      durationMs: i % 9 === 4 ? 83_000 : null,
       thumbKey: 'k' + i,
       starred: i % 7 === 0,
       // A different stride from the star, so some tiles carry each mark and some both.
@@ -73,6 +84,9 @@
           ? "Grandma's 80th, on the terrace in Lisbon, everyone gathered right before sunset for cake and the last of the summer light over the river."
           : null,
       faces: [{ hash: 'a', name: 'Anna', left: 0.3, top: 0.25, right: 0.42, bottom: 0.5 }],
+      kind: id === 5 ? 'video' : 'image',
+      durationMs: id === 5 ? 83_000 : null,
+      videoCrashed: false,
       albums: [1, 3],
       copies: [
         { id: 501, path: `/home/ada/Pictures/2026/Summer hike/IMG_48${id} copy.jpg`, kind: 'identical', width: 5472, height: 3648 },
@@ -159,6 +173,8 @@
     grid_tile: () => P.get('tile') || 'medium',
     set_grid_tile: () => null,
     copy_count: () => 2,
+    media_base: () => 'http://127.0.0.1:9/0000',
+    next_video_job: () => null,
   };
 
   // Commands that change something: a screenshot never needs their answer, so they get null.
@@ -172,6 +188,7 @@
     'set_item_edit', 'set_last_folder', 'set_person_view',
     'check_export_dest', 'set_export_apply_edits', 'set_slideshow_interval', 'set_star', 'set_tag_view', 'set_theme',
     'set_visible', 'set_copies_view',
+    'put_video_frame', 'video_frame_failed', 'video_session_start',
   ];
 
   let callbacks = 0;
@@ -201,6 +218,7 @@
 
   const actions = {
     select: () => tile(7)?.click(),
+    video: () => open(4),
     menu: () => {
       tile(7)?.click();
       tile(7)?.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 700, clientY: 300 }));

@@ -50,6 +50,7 @@ pub fn new_item(folder_id: i64, path: &str, taken_at: i64) -> NewItem {
         camera: crate::metadata::CameraMeta::default(),
         tags: Vec::new(),
         caption: None,
+        duration_ms: None,
     }
 }
 
@@ -558,4 +559,133 @@ pub fn avif_fixture(name: &str) -> Vec<u8> {
         .join("testdata/avif")
         .join(name);
     std::fs::read(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+}
+
+/// One ISO-BMFF box: a 32-bit size, the four-character type, the body.
+pub fn mp4_box(kind: &[u8; 4], body: &[u8]) -> Vec<u8> {
+    let mut out = ((body.len() + 8) as u32).to_be_bytes().to_vec();
+    out.extend_from_slice(kind);
+    out.extend_from_slice(body);
+    out
+}
+
+/// What `mp4_bytes` writes. Hand-built, so no encoder is ever in the test path.
+#[derive(Clone, Debug, Default)]
+pub struct Mp4Spec<'a> {
+    pub width: u32,
+    pub height: u32,
+    /// The video track matrix's turn in degrees: 0, 90, 180 or 270.
+    pub rotation: u32,
+    pub timescale: u32,
+    pub duration: u32,
+    /// Seconds since 1904-01-01 UTC, as `mvhd` holds it; 0 is "not set".
+    pub mvhd_created: u32,
+    pub apple_date: Option<&'a str>,
+    pub make: Option<&'a str>,
+    pub model: Option<&'a str>,
+    /// Put a sound track ahead of the video track.
+    pub audio_first: bool,
+    /// Bytes of `mdat` before `moov`, as a camera that does not "fast start" writes them.
+    pub mdat_before: usize,
+}
+
+fn mp4_full(kind: &[u8; 4], body: &[u8]) -> Vec<u8> {
+    let mut with_version = vec![0, 0, 0, 0];
+    with_version.extend_from_slice(body);
+    mp4_box(kind, &with_version)
+}
+
+fn mp4_track(handler: &[u8; 4], width: u32, height: u32, rotation: u32) -> Vec<u8> {
+    const ONE: i32 = 0x0001_0000;
+    let (a, b, c, d) = match rotation {
+        90 => (0, ONE, -ONE, 0),
+        180 => (-ONE, 0, 0, -ONE),
+        270 => (0, -ONE, ONE, 0),
+        _ => (ONE, 0, 0, ONE),
+    };
+    let mut tkhd = vec![0u8; 20]; // created, modified, track id, reserved, duration
+    tkhd.extend_from_slice(&[0u8; 16]); // reserved, layer, group, volume, reserved
+    for v in [a, b, 0, c, d, 0, 0, 0, 0x4000_0000] {
+        tkhd.extend_from_slice(&v.to_be_bytes());
+    }
+    tkhd.extend_from_slice(&(width << 16).to_be_bytes());
+    tkhd.extend_from_slice(&(height << 16).to_be_bytes());
+    let mut hdlr = vec![0u8; 4];
+    hdlr.extend_from_slice(handler);
+    hdlr.extend_from_slice(&[0u8; 13]);
+    let mdia = mp4_box(b"mdia", &mp4_full(b"hdlr", &hdlr));
+    mp4_box(b"trak", &[mp4_full(b"tkhd", &tkhd), mdia].concat())
+}
+
+fn mp4_apple_meta(entries: &[(&str, &str)]) -> Vec<u8> {
+    let mut hdlr = vec![0u8; 4];
+    hdlr.extend_from_slice(b"mdta");
+    hdlr.extend_from_slice(&[0u8; 13]);
+    let mut keys = (entries.len() as u32).to_be_bytes().to_vec();
+    let mut ilst = Vec::new();
+    for (i, (key, value)) in entries.iter().enumerate() {
+        keys.extend_from_slice(&((key.len() + 8) as u32).to_be_bytes());
+        keys.extend_from_slice(b"mdta");
+        keys.extend_from_slice(key.as_bytes());
+        let mut data = 1u32.to_be_bytes().to_vec(); // well-known type 1: UTF-8
+        data.extend_from_slice(&[0u8; 4]); // locale
+        data.extend_from_slice(value.as_bytes());
+        ilst.extend(mp4_box(
+            &((i + 1) as u32).to_be_bytes(),
+            &mp4_box(b"data", &data),
+        ));
+    }
+    // QuickTime's `meta` is a plain box, not a full box: no version and flags.
+    mp4_box(
+        b"meta",
+        &[
+            mp4_full(b"hdlr", &hdlr),
+            mp4_full(b"keys", &keys),
+            mp4_box(b"ilst", &ilst),
+        ]
+        .concat(),
+    )
+}
+
+pub fn mp4_bytes(spec: &Mp4Spec<'_>) -> Vec<u8> {
+    let mut mvhd = Vec::new();
+    for v in [
+        spec.mvhd_created,
+        spec.mvhd_created,
+        spec.timescale,
+        spec.duration,
+    ] {
+        mvhd.extend_from_slice(&v.to_be_bytes());
+    }
+    mvhd.extend_from_slice(&[0u8; 80]);
+    let mut moov = mp4_full(b"mvhd", &mvhd);
+    let video = mp4_track(b"vide", spec.width, spec.height, spec.rotation);
+    let audio = mp4_track(b"soun", 0, 0, 0);
+    if spec.audio_first {
+        moov.extend(audio);
+        moov.extend(video);
+    } else {
+        moov.extend(video);
+        moov.extend(audio);
+    }
+    let apple: Vec<(&str, &str)> = [
+        ("com.apple.quicktime.creationdate", spec.apple_date),
+        ("com.apple.quicktime.make", spec.make),
+        ("com.apple.quicktime.model", spec.model),
+    ]
+    .into_iter()
+    .filter_map(|(k, v)| v.map(|v| (k, v)))
+    .collect();
+    if !apple.is_empty() {
+        moov.extend(mp4_apple_meta(&apple));
+    }
+    let mut file = mp4_box(b"ftyp", b"qt  \0\0\0\0qt  ");
+    if spec.mdat_before > 0 {
+        file.extend(mp4_box(b"mdat", &vec![0u8; spec.mdat_before]));
+    }
+    file.extend(mp4_box(b"moov", &moov));
+    if spec.mdat_before == 0 {
+        file.extend(mp4_box(b"mdat", &[0u8; 16]));
+    }
+    file
 }

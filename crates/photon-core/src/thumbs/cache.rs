@@ -116,6 +116,14 @@ impl ThumbCache {
         Ok((preview, grid))
     }
 
+    /// A poster frame the webview drew, as the preview and grid images. It arrives upright
+    /// and at most preview-sized, so this only shrinks.
+    pub(crate) fn render_frame(&self, frame: &DynamicImage) -> (DynamicImage, DynamicImage) {
+        let preview = shrink(frame, ThumbSize::Preview.max_edge());
+        let grid = shrink(&preview, ThumbSize::Grid.max_edge());
+        (preview, grid)
+    }
+
     /// Writes already-rendered thumbnails to the cache. Failures here mean the cache
     /// destination itself is unwritable (full disk, permissions), not that the source is bad.
     pub(crate) fn store(&self, fp: u64, preview: &DynamicImage, grid: &DynamicImage) -> Result<()> {

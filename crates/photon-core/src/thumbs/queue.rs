@@ -229,6 +229,28 @@ impl ThumbQueue {
         }
     }
 
+    /// `pop_blocking`, but giving up at `deadline`: for a consumer that is a person's
+    /// webview asking over IPC, not a worker thread that lives as long as the queue. Every
+    /// `Some(id)` must be followed by `done(id)`, as for `pop_blocking`.
+    pub fn pop_until(&self, deadline: Instant) -> Option<i64> {
+        let mut state = self.state.lock();
+        loop {
+            if state.closed {
+                return None;
+            }
+            state.admit_due(Instant::now());
+            if let Some(id) = state.pop() {
+                state.in_flight.insert(id);
+                return Some(id);
+            }
+            if Instant::now() >= deadline {
+                return None;
+            }
+            let wake = state.next_delayed().map_or(deadline, |d| d.min(deadline));
+            self.changed.wait_until(&mut state, wake);
+        }
+    }
+
     /// Backs `id` off until `not_before`: taken out of contention for a worker until then, but
     /// not dropped - see `State::delay`. Used for a suspect that lost the race for
     /// `decode_lock`, so it doesn't retry immediately and doesn't need a worker sleeping to
@@ -254,6 +276,19 @@ impl ThumbQueue {
     /// Marks the popped job `id` finished and wakes idle-waiters and `wait_for` callers.
     pub fn done(&self, id: i64) {
         self.state.lock().done(id);
+        self.changed.notify_all();
+    }
+
+    /// `done`, for a job that settled `id`'s fate, dropping any push held while it ran
+    /// rather than queueing it. A worker's re-run of a settled job costs a stat and ends at
+    /// once; a video's waits for the webview to poll again, and a `wait_for` caller whose
+    /// own push was held - a thumbnail requested while the frame was being drawn - would
+    /// wait with it, for a frame that is already in the cache.
+    pub fn done_settled(&self, id: i64) {
+        let mut state = self.state.lock();
+        state.deferred.remove(&id);
+        state.done(id);
+        drop(state);
         self.changed.notify_all();
     }
 
@@ -390,6 +425,49 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(50));
         q.close();
         assert_eq!(worker.join().unwrap(), None);
+    }
+
+    #[test]
+    fn done_settled_drops_a_push_held_while_the_job_ran() {
+        let q = ThumbQueue::new();
+        q.push(1, Priority::Background);
+        q.push(2, Priority::Background);
+        assert_eq!(q.pop_blocking(), Some(1));
+        assert_eq!(q.pop_blocking(), Some(2));
+        q.push(1, Priority::Visible);
+        q.push(2, Priority::Visible);
+        q.done_settled(1);
+        q.done(2);
+        assert!(
+            q.wait_for(1, Instant::now()),
+            "settled: neither queued nor in flight"
+        );
+        assert!(
+            !q.wait_for(2, Instant::now()),
+            "plain done queues the held push"
+        );
+    }
+
+    #[test]
+    fn pop_until_gives_up_at_its_deadline_and_takes_a_job_pushed_before_it() {
+        use std::time::Duration;
+        let q = Arc::new(ThumbQueue::new());
+        let started = Instant::now();
+        assert_eq!(q.pop_until(started + Duration::from_millis(50)), None);
+        assert!(started.elapsed() >= Duration::from_millis(50));
+
+        let popper = {
+            let q = q.clone();
+            std::thread::spawn(move || q.pop_until(Instant::now() + Duration::from_secs(5)))
+        };
+        std::thread::sleep(Duration::from_millis(50));
+        q.push(7, Priority::Background);
+        assert_eq!(popper.join().unwrap(), Some(7));
+        assert!(
+            !q.wait_for(7, Instant::now()),
+            "popped, so in flight until done"
+        );
+        q.done(7);
     }
 
     #[test]
