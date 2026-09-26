@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { clampPan, clampZoom, closesViewer, move, ownsSelectAll, positionInFolder, positionInView, wheelStep } from './nav';
+import { clampPan, clampZoom, closesViewer, move, ownsSelectAll, positionInSection, wheelStep } from './nav';
 
 const sections = [
   { folderId: 1, offset: 0, count: 5 },
@@ -35,47 +35,35 @@ describe('move', () => {
   });
 });
 
-describe('positionInFolder', () => {
+describe('positionInSection', () => {
   it('numbers a photo within its own folder, not the whole library', () => {
-    expect(positionInFolder(sections, 0)).toEqual({ index: 1, count: 5 });
-    expect(positionInFolder(sections, 4)).toEqual({ index: 5, count: 5 });
+    expect(positionInSection(sections, 0)).toEqual({ index: 1, count: 5 });
+    expect(positionInSection(sections, 4)).toEqual({ index: 5, count: 5 });
     // The first photo of the second folder restarts at 1 rather than continuing at 6.
-    expect(positionInFolder(sections, 5)).toEqual({ index: 1, count: 3 });
-    expect(positionInFolder(sections, 7)).toEqual({ index: 3, count: 3 });
+    expect(positionInSection(sections, 5)).toEqual({ index: 1, count: 3 });
+    expect(positionInSection(sections, 7)).toEqual({ index: 3, count: 3 });
   });
 
   it('reports nothing for an empty grid', () => {
-    expect(positionInFolder([], 0)).toEqual({ index: 0, count: 0 });
+    expect(positionInSection([], 0)).toEqual({ index: 0, count: 0 });
   });
 });
 
-describe('positionInFolder past the end', () => {
+describe('positionInSection past the end', () => {
   it('never counts past the section it lands in', () => {
     // The viewer's offset is not clamped by a rescan that shrinks the library, so it can
     // outrun the sections until the next keypress. "31 / 12" is not a number to show.
-    expect(positionInFolder(sections, 40)).toEqual({ index: 3, count: 3 });
+    expect(positionInSection(sections, 40)).toEqual({ index: 3, count: 3 });
   });
 });
 
-describe('positionInView', () => {
-  it('numbers within the folder in every folder-ordered view', () => {
-    expect(positionInView('all', sections, 5, 8)).toEqual({ index: 1, count: 3 });
-    expect(positionInView('starred', sections, 7, 8)).toEqual({ index: 3, count: 3 });
-    expect(positionInView('search', sections, 0, 8)).toEqual({ index: 1, count: 5 });
-  });
-
-  it('numbers within the whole list in Recent', () => {
-    // Recent orders by date across folders, so the index splits it into a section per photo
-    // wherever folders interleave — and counting within the folder then answered "1 / 1"
-    // for photo after photo. A flat list is counted flat.
-    const perPhoto = [0, 1, 2].map((i) => ({ folderId: 10 + i, offset: i, count: 1 }));
-    expect(positionInView('recent', perPhoto, 0, 3)).toEqual({ index: 1, count: 3 });
-    expect(positionInView('recent', perPhoto, 2, 3)).toEqual({ index: 3, count: 3 });
-  });
-
-  it('reports nothing for an empty grid', () => {
-    expect(positionInView('recent', [], 0, 0)).toEqual({ index: 0, count: 0 });
-    expect(positionInView('all', [], 0, 0)).toEqual({ index: 0, count: 0 });
+describe('positionInSection in a flat view', () => {
+  it('counts across the whole list', () => {
+    // Recent's one run spans every folder. Sectioned by folder, it split into a section per
+    // photo wherever folders interleave, and the caption answered "1 / 1" photo after photo.
+    const flat = [{ folderId: null, offset: 0, count: 3 }];
+    expect(positionInSection(flat, 0)).toEqual({ index: 1, count: 3 });
+    expect(positionInSection(flat, 2)).toEqual({ index: 3, count: 3 });
   });
 });
 
@@ -91,12 +79,6 @@ describe('move from no selection', () => {
   it('moves from the current selection when there is one', () => {
     expect(move(3, 'ArrowRight', sections, 4)).toBe(4);
     expect(move(3, 'End', sections, 4)).toBe(7);
-  });
-});
-
-describe('positionInView past the end', () => {
-  it('never counts past the view either', () => {
-    expect(positionInView('recent', [], 50, 20)).toEqual({ index: 20, count: 20 });
   });
 });
 

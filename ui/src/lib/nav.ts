@@ -110,10 +110,11 @@ function moveFrom(offset: number, key: NavKey, sections: SectionLike[], columns:
   return prev.offset + Math.min(prevLastRow + column, prev.count - 1);
 }
 
-/** Where a grid offset sits *within its own folder*. The viewer counts photos per folder
- *  rather than across the whole library, so "3 / 40" means the third of forty in this
- *  folder — the number a person can check against their file manager. */
-export function positionInFolder(sections: SectionLike[], offset: number): FolderPosition {
+/** Where a grid offset sits within its own section, which is the number the viewer's caption
+ *  shows. In a folder-first view that is its folder - "3 / 40" is the third of forty in this
+ *  folder, the number a person can check against their file manager. A flat view (Recent)
+ *  is one section, so it is counted flat: the photo's place among the newest. */
+export function positionInSection(sections: SectionLike[], offset: number): FolderPosition {
   if (sections.length === 0) return { index: 0, count: 0 };
   const s = sections[sectionIndexOf(sections, offset)];
   // Clamped, because the offset can outrun the sections: the viewer holds its own offset and
@@ -121,23 +122,6 @@ export function positionInFolder(sections: SectionLike[], offset: number): Folde
   // keypress to say "31 / 12". `sectionIndexOf` clamps to the last section, leaving the
   // index to run past its count.
   return { index: Math.min(offset - s.offset + 1, s.count), count: s.count };
-}
-
-/** The numbers the viewer's caption shows for `offset`.
- *
- *  Folder-relative in every view whose order is folder-first, which is the number a person
- *  can check against their file manager. Recent is not one of those: it orders by date
- *  across folders, so the index starts a section on every photo wherever folders interleave
- *  and `positionInFolder` answered "1 / 1" for photo after photo. A flat list is counted
- *  flat — the photo's place among the newest. */
-export function positionInView(
-  view: GridView,
-  sections: SectionLike[],
-  offset: number,
-  len: number,
-): FolderPosition {
-  if (view !== 'recent') return positionInFolder(sections, offset);
-  return len === 0 ? { index: 0, count: 0 } : { index: Math.min(offset + 1, len), count: len };
 }
 
 /** Folds one wheel event into a running total, emitting a step only once the total passes

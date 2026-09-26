@@ -183,7 +183,10 @@ impl Engine {
             .map(|p| photon_core::paths::canonicalize(&p).unwrap_or(p))
             .collect();
 
-        let grid = Arc::new(GridIndex::build(lib.grid_entries()?));
+        let grid = Arc::new(GridIndex::build(
+            lib.grid_entries()?,
+            GridView::All.layout(),
+        ));
         Ok(Arc::new(Self {
             lib,
             thumbs,
@@ -232,12 +235,17 @@ impl Engine {
     /// is the `epoch` check at publish time; see `publish_if_current`.
     pub fn refresh_grid(&self) -> Result<()> {
         let rebuild = self.snapshot();
-        let index = Arc::new(GridIndex::build(
-            self.lib
-                .entries_for(rebuild.state.view, &rebuild.state.arg)?,
-        ));
+        let index = Arc::new(self.build_index(&rebuild.state)?);
         self.publish_if_current(index, &rebuild);
         Ok(())
+    }
+
+    /// The index for one view state, laid out the way that view is drawn.
+    fn build_index(&self, state: &ViewState) -> Result<GridIndex> {
+        Ok(GridIndex::build(
+            self.lib.entries_for(state.view, &state.arg)?,
+            state.view.layout(),
+        ))
     }
 
     /// The state a rebuild is about to query for, stamped with its place in the sequence
@@ -2858,12 +2866,7 @@ mod tests {
 
         // A scan's rebuild reads the state and starts querying for All...
         let stale = f.engine.snapshot();
-        let stale_index = Arc::new(GridIndex::build(
-            f.engine
-                .lib
-                .entries_for(stale.state.view, &stale.state.arg)
-                .unwrap(),
-        ));
+        let stale_index = Arc::new(f.engine.build_index(&stale.state).unwrap());
         assert_eq!(stale_index.len(), 2);
         // ...and while it does, the user clicks Starred, whose rebuild lands first.
         f.engine.set_view(GridView::Starred).unwrap();
@@ -2937,12 +2940,7 @@ mod tests {
         for moved in ["view", "query"] {
             f.engine.set_view(GridView::All).unwrap();
             let stale = f.engine.snapshot();
-            let stale_index = Arc::new(GridIndex::build(
-                f.engine
-                    .lib
-                    .entries_for(stale.state.view, &stale.state.arg)
-                    .unwrap(),
-            ));
+            let stale_index = Arc::new(f.engine.build_index(&stale.state).unwrap());
             assert_eq!(stale_index.len(), 2, "{moved}: built for the whole library");
 
             // The setter has moved the state; its own rebuild is still querying.
@@ -2988,12 +2986,7 @@ mod tests {
 
         // A slow rebuild reads both rows...
         let early = f.engine.snapshot();
-        let early_index = Arc::new(GridIndex::build(
-            f.engine
-                .lib
-                .entries_for(early.state.view, &early.state.arg)
-                .unwrap(),
-        ));
+        let early_index = Arc::new(f.engine.build_index(&early.state).unwrap());
         assert_eq!(early_index.len(), 2);
         // ...then a purge commits and its own rebuild, stamped later, publishes first.
         f.engine.lib.purge_items(&[f.ids()[0]]).unwrap();

@@ -17,7 +17,11 @@ export interface AppInfo { version: string; libraryPath: string; licence: string
 /** `takenAtMin` is the capture time of the folder's OLDEST photo, in SECONDS (multiply by
  *  1000 for a JS Date). The sidebar groups folders by the year it falls in. Oldest rather
  *  than newest, to match Picasa. */
-export interface Section { folderId: number; offset: number; count: number; takenAtMin: number }
+/** Mirrors `grid::Section`: a run the grid lays out. `folderId` is null for a flat view's one
+ *  run, which spans many folders and is drawn with no header. */
+export interface Section { folderId: number | null; offset: number; count: number; takenAtMin: number }
+/** Mirrors `grid::FolderTally`: one folder's photos in the view, whatever the layout. */
+export interface FolderTally { folderId: number; count: number; takenAtMin: number }
 /** `hasCopies`: another live file has the same bytes or is a look-alike, the same rule the
  *  Duplicates view uses (`GridEntry::has_copies`). */
 export interface GridEntry { id: number; folderId: number; takenAt: number; aspect: number; kind: 'image'; thumbKey: string; starred: boolean; hasCopies: boolean }
@@ -39,6 +43,8 @@ export interface GridInfo {
   version: number;
   len: number;
   sections: Section[];
+  /** The folders the view's photos come from - the sidebar's list. */
+  folders: FolderTally[];
   starredCount: number;
   /** Photos with a byte-identical twin elsewhere in the library. */
   duplicateCount: number;

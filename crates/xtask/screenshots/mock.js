@@ -96,6 +96,7 @@
       version: 1,
       len,
       sections,
+      folders: sections.map(({ folderId, count, takenAtMin }) => ({ folderId, count, takenAtMin })),
       starredCount: 13,
       duplicateCount: 4,
       hiddenCount: 7,

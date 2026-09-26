@@ -824,12 +824,9 @@ impl Library {
     /// mean "in the newest folder", and the whole point of this list is the individual
     /// photos.
     ///
-    /// The consequence is that `GridIndex::build` starts a section on every photo wherever
-    /// folders overlap in time — 500 photos came back as 500 sections from a library of
-    /// twelve interleaved folders. These rows are therefore *not* laid out as folder runs:
-    /// the UI collapses them into one continuous run of tiles (`layout.ts`,
-    /// `layoutSections`). Anything else reading `sections` for this view has to expect a
-    /// folder to appear in many of them.
+    /// The consequence is that the rows are not folder runs: wherever folders overlap in time
+    /// a folder reappears every few photos, which is why this view is laid out flat
+    /// (`GridView::layout`) rather than one section per folder.
     ///
     /// `file_name` and `id` break ties so the cut at `RECENT_LIMIT` is deterministic:
     /// without them two photos sharing a capture time could swap across the boundary

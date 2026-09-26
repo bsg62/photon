@@ -16,7 +16,7 @@
    *  Drawn from the grid's sections rather than the folder table: a section exists only for
    *  a folder with items, which is what keeps empty intermediate folders out of the list.
    *  Watched roots with no photos of their own are managed from Settings instead. */
-  const years = $derived(groupByYear(folderRows(library.info.sections, library.folders.folders)));
+  const years = $derived(groupByYear(folderRows(library.info.folders, library.folders.folders)));
   const shownTags = $derived(sidebarTags(library.tags));
 
   /** Which collection groups are open. Albums start open because they are the user's own;

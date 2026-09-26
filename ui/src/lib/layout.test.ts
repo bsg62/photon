@@ -1,10 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { buildRows, columnsFor, edgeScrollSpeed, firstVisibleOffset, GAP, HEADER, itemSpan, itemsInRect, layoutSections, rowIndexAt, rowOfItem, tileRow, TILE_WIDTH, topFolderId, totalHeight, visibleRange } from './layout';
+import { buildRows, columnsFor, edgeScrollSpeed, firstVisibleOffset, GAP, HEADER, itemSpan, itemsInRect, rowIndexAt, rowOfItem, tileRow, TILE_WIDTH, topFolderId, totalHeight, visibleRange } from './layout';
 
 const sections = [
   { folderId: 1, offset: 0, count: 5 },
   { folderId: 2, offset: 5, count: 3 },
 ];
+
+/** The same runs drawn without headers, as a flat view's run is: geometry tests that want
+ *  tile rows only. */
+const headerless = <T extends { folderId: number | null }>(runs: T[]): T[] => runs.map((s) => ({ ...s, folderId: null }));
 
 describe('layout', () => {
   it('fits columns to the width', () => {
@@ -14,7 +18,7 @@ describe('layout', () => {
   });
 
   it('builds header and tile rows per section', () => {
-    const rows = buildRows(sections, 2, true, TILE_WIDTH.medium);
+    const rows = buildRows(sections, 2, TILE_WIDTH.medium);
     expect(rows.map((r) => [r.kind, r.first, r.count, r.top])).toEqual([
       ['header', 0, 0, 0],
       ['tiles', 0, 2, 32],
@@ -29,7 +33,7 @@ describe('layout', () => {
   });
 
   it('hit-tests rows by y', () => {
-    const rows = buildRows(sections, 2, true, TILE_WIDTH.medium);
+    const rows = buildRows(sections, 2, TILE_WIDTH.medium);
     expect(rowIndexAt(rows, -5)).toBe(0);
     expect(rowIndexAt(rows, 31)).toBe(0);
     expect(rowIndexAt(rows, 32)).toBe(1);
@@ -38,7 +42,7 @@ describe('layout', () => {
   });
 
   it('finds visible ranges and their items', () => {
-    const rows = buildRows(sections, 2, true, TILE_WIDTH.medium);
+    const rows = buildRows(sections, 2, TILE_WIDTH.medium);
     expect(visibleRange(rows, 200, 100, 0)).toEqual([2, 3]);
     expect(visibleRange(rows, 0, 10_000, 0)).toEqual([0, 7]);
     expect(visibleRange([], 0, 100, 0)).toEqual([0, 0]);
@@ -46,44 +50,27 @@ describe('layout', () => {
     expect(itemSpan(rows.slice(4, 5))).toBeNull();
   });
 
-  it('lays Recent out as one continuous run with no headers', () => {
-    // Recent orders photos by date across folders, so wherever folders overlap in time the
-    // index hands back a section per photo — 500 photos, 500 sections, measured against a
-    // library of 12 interleaved folders. Laid out as folder runs that is a header and a
-    // one-tile row each: a grid as tall as the whole library and five-sixths empty.
-    const perPhoto = [0, 1, 2, 3, 4].map((i) => ({
-      folderId: 10 + (i % 2),
-      offset: i,
-      count: 1,
-      takenAtMin: 900 - i,
-    }));
-    const flat = layoutSections('recent', perPhoto, 5);
-    expect(flat).toEqual([{ folderId: 10, offset: 0, count: 5, takenAtMin: 896 }]);
-
-    const rows = buildRows(flat, 2, false, TILE_WIDTH.medium);
+  it('draws a run that names no folder without a header', () => {
+    // A flat view's (Recent's) one run spans many folders, so there is no folder to name.
+    const rows = buildRows([{ folderId: null, offset: 0, count: 5 }], 2, TILE_WIDTH.medium);
     expect(rows.map((r) => [r.kind, r.first, r.count, r.top])).toEqual([
       ['tiles', 0, 2, 0],
       ['tiles', 2, 2, 168],
       ['tiles', 4, 1, 336],
     ]);
-    // Against 5 * (HEADER + tileRow(TILE_WIDTH.medium)) = 1000 for the same photos as
-    // folder sections.
     expect(totalHeight(rows)).toBe(504);
   });
 
-  it('leaves every other view grouped by folder', () => {
-    const withDates = sections.map((s) => ({ ...s, takenAtMin: 100 }));
-    expect(layoutSections('all', withDates, 8)).toBe(withDates);
-    expect(layoutSections('starred', withDates, 8)).toBe(withDates);
-    expect(layoutSections('search', withDates, 8)).toBe(withDates);
-    // An empty Recent view has nothing to lay out, and must not invent a run of zero.
-    expect(layoutSections('recent', [], 0)).toEqual([]);
+  it('names no folder at the top of a flat view', () => {
+    // Nothing to remember for the next launch - and the view is not All, where that is kept.
+    const rows = buildRows([{ folderId: null, offset: 0, count: 5 }], 2, TILE_WIDTH.medium);
+    expect(topFolderId(rows, [{ folderId: null, offset: 0, count: 5 }], 0)).toBeNull();
   });
 
   it('names the folder at the top of the viewport', () => {
     // What gets remembered for the next launch: whichever folder the eye is on, whether
     // the user scrolled there or clicked it in the sidebar.
-    const rows = buildRows(sections, 2, true, TILE_WIDTH.medium);
+    const rows = buildRows(sections, 2, TILE_WIDTH.medium);
     expect(topFolderId(rows, sections, 0)).toBe(1);
     // Still inside folder 1's last tile row.
     expect(topFolderId(rows, sections, 400)).toBe(1);
@@ -96,11 +83,11 @@ describe('layout', () => {
     // A launch before the first scan has produced anything: nothing to remember, and
     // nothing that should overwrite what the last session remembered.
     expect(topFolderId([], [], 0)).toBeNull();
-    expect(topFolderId(buildRows(sections, 2, true, TILE_WIDTH.medium), [], 0)).toBeNull();
+    expect(topFolderId(buildRows(sections, 2, TILE_WIDTH.medium), [], 0)).toBeNull();
   });
 
   it('locates the row holding an item', () => {
-    const rows = buildRows(sections, 2, true, TILE_WIDTH.medium);
+    const rows = buildRows(sections, 2, TILE_WIDTH.medium);
     expect(rowOfItem(rows, 0)).toBe(1);
     expect(rowOfItem(rows, 4)).toBe(3);
     expect(rowOfItem(rows, 5)).toBe(5);
@@ -111,14 +98,14 @@ describe('layout', () => {
 
 describe('itemsInRect', () => {
   // Two sections of 5 photos, 3 columns, no headers: rows at 0 and 168 (tileRow(TILE_WIDTH.medium)).
-  const rows = buildRows([{ folderId: 1, offset: 0, count: 5 }], 3, false, TILE_WIDTH.medium);
+  const rows = buildRows(headerless([{ folderId: 1, offset: 0, count: 5 }]), 3, TILE_WIDTH.medium);
   const rect = (x0: number, y0: number, x1: number, y1: number) => ({ x0, y0, x1, y1 });
 
   /** The point of returning ranges rather than one span: a band narrower than the grid
    *  takes a few photos from each row it crosses, and merging those into one range would
    *  select everything between them - the over-selection ids-not-offsets exists to stop. */
   it('keeps a narrow band down one column as one range per row', () => {
-    const tall = buildRows([{ folderId: 1, offset: 0, count: 9 }], 3, false, TILE_WIDTH.medium);
+    const tall = buildRows(headerless([{ folderId: 1, offset: 0, count: 9 }]), 3, TILE_WIDTH.medium);
     const column2 = GAP + 2 * tileRow(TILE_WIDTH.medium);
     expect(
       itemsInRect(
@@ -171,7 +158,7 @@ describe('itemsInRect', () => {
   });
 
   it('ignores headers', () => {
-    const withHeaders = buildRows([{ folderId: 1, offset: 0, count: 2 }], 3, true, TILE_WIDTH.medium);
+    const withHeaders = buildRows([{ folderId: 1, offset: 0, count: 2 }], 3, TILE_WIDTH.medium);
     expect(itemsInRect(withHeaders, rect(0, 0, 1000, HEADER - 1), TILE_WIDTH.medium)).toEqual([]);
     expect(itemsInRect(withHeaders, rect(0, 0, 1000, HEADER + TILE_WIDTH.medium), TILE_WIDTH.medium)).toEqual([[0, 1]]);
   });
@@ -184,14 +171,10 @@ describe('itemsInRect', () => {
   /** Two sections are two runs of rows; a band over both is two ranges only if the offsets
    *  do not run on. Here they do, so it is one. */
   it('joins ranges across sections when the offsets are contiguous', () => {
-    const two = buildRows(
-      [
+    const two = buildRows(headerless([
         { folderId: 1, offset: 0, count: 3 },
         { folderId: 2, offset: 3, count: 3 },
-      ],
-      3,
-      false,
-      TILE_WIDTH.medium,
+      ]), 3, TILE_WIDTH.medium,
     );
     expect(itemsInRect(two, rect(0, 0, 1000, 1000), TILE_WIDTH.medium)).toEqual([[0, 5]]);
   });
@@ -207,8 +190,8 @@ describe('tile size', () => {
 
   it('rows are taller at a larger tile size', () => {
     const sections = [{ folderId: 1, offset: 0, count: 4 }];
-    const small = buildRows(sections, 2, false, TILE_WIDTH.small);
-    const large = buildRows(sections, 2, false, TILE_WIDTH.large);
+    const small = buildRows(headerless(sections), 2, TILE_WIDTH.small);
+    const large = buildRows(headerless(sections), 2, TILE_WIDTH.large);
     expect(small[1].top).toBe(tileRow(TILE_WIDTH.small));
     expect(large[1].top).toBe(tileRow(TILE_WIDTH.large));
   });
@@ -221,7 +204,7 @@ describe('itemsInRect at other tile sizes', () => {
   for (const size of ['small', 'large'] as const) {
     const tile = TILE_WIDTH[size];
     const row = tileRow(tile);
-    const rows = buildRows([{ folderId: 1, offset: 0, count: 5 }], 3, false, tile);
+    const rows = buildRows(headerless([{ folderId: 1, offset: 0, count: 5 }]), 3, tile);
     const rect = (x0: number, y0: number, x1: number, y1: number) => ({ x0, y0, x1, y1 });
 
     it(`${size}: a band over a whole row takes the row`, () => {
@@ -237,7 +220,7 @@ describe('itemsInRect at other tile sizes', () => {
     });
 
     it(`${size}: a band over one column of two rows merges into one range`, () => {
-      const tall = buildRows([{ folderId: 1, offset: 0, count: 9 }], 3, false, tile);
+      const tall = buildRows(headerless([{ folderId: 1, offset: 0, count: 9 }]), 3, tile);
       // 2 * row lands exactly on row 2's own top edge, and touching counts on the vertical
       // axis (as it does on the horizontal one), so a bottom edge placed there would also
       // take row 2 - not what this case means to show. Backing off by 1px keeps the band
@@ -257,7 +240,7 @@ describe('itemsInRect touching a row edge', () => {
   // top edge is y=0, so a rule that excluded a touching edge would drop a click there.
   it.each(['small', 'medium', 'large'] as const)('%s: a click on a row edge selects that row', (size) => {
     const tile = TILE_WIDTH[size];
-    const rows = buildRows([{ folderId: 1, offset: 0, count: 3 }], 3, false, tile);
+    const rows = buildRows(headerless([{ folderId: 1, offset: 0, count: 3 }]), 3, tile);
     expect(itemsInRect(rows, { x0: 10, y0: 0, x1: 10, y1: 0 }, tile)).toEqual([[0, 0]]);
     expect(itemsInRect(rows, { x0: 10, y0: tile, x1: 10, y1: tile }, tile)).toEqual([[0, 0]]);
   });
@@ -267,7 +250,7 @@ describe('keeping your place across a size change', () => {
   const sections = [{ folderId: 1, offset: 0, count: 9 }];
 
   it('reports the first item of the row at the top of the viewport', () => {
-    const rows = buildRows(sections, 3, false, TILE_WIDTH.medium);
+    const rows = buildRows(headerless(sections), 3, TILE_WIDTH.medium);
     expect(firstVisibleOffset(rows, 0)).toBe(0);
     expect(firstVisibleOffset(rows, tileRow(TILE_WIDTH.medium))).toBe(3);
     expect(firstVisibleOffset([], 0)).toBeNull();
@@ -278,7 +261,7 @@ describe('keeping your place across a size change', () => {
   // within a row answers with that row's first offset, which is what makes the number
   // meaningful in a layout it was not measured in.
   it('names the photo, not the pixel, anywhere within a row', () => {
-    const medium = buildRows(sections, 3, false, TILE_WIDTH.medium);
+    const medium = buildRows(headerless(sections), 3, TILE_WIDTH.medium);
     const row = tileRow(TILE_WIDTH.medium);
     expect(firstVisibleOffset(medium, 2 * row)).toBe(6);
     expect(firstVisibleOffset(medium, 2 * row + row - 1)).toBe(6);
@@ -295,8 +278,8 @@ describe('keeping your place across a size change', () => {
   // in the one that replaces it, so it has to name a row *there*. Medium at three columns
   // and small at five share no row tops at all, which is the point.
   it('finds its row in the layout the pin was not taken in', () => {
-    const medium = buildRows(folders, 3, true, TILE_WIDTH.medium);
-    const small = buildRows(folders, 5, true, TILE_WIDTH.small);
+    const medium = buildRows(folders, 3, TILE_WIDTH.medium);
+    const small = buildRows(folders, 5, TILE_WIDTH.small);
     for (const top of [0, 40, 200, 500, totalHeight(medium) - 1]) {
       const offset = firstVisibleOffset(medium, top);
       expect(offset).not.toBeNull();
@@ -310,10 +293,10 @@ describe('keeping your place across a size change', () => {
   // folder - would scroll the user back into a folder they had already left. It round-trips
   // because `scrollToOffset(offset, 'start')` puts the header itself back at the top.
   it('answers a header with the section it heads, not the row above it', () => {
-    const medium = buildRows(folders, 3, true, TILE_WIDTH.medium);
+    const medium = buildRows(folders, 3, TILE_WIDTH.medium);
     const header = medium.find((r) => r.kind === 'header' && r.section === 1)!;
     expect(firstVisibleOffset(medium, header.top)).toBe(5);
-    expect(rowOfItem(buildRows(folders, 5, true, TILE_WIDTH.small), 5)).toBeGreaterThanOrEqual(0);
+    expect(rowOfItem(buildRows(folders, 5, TILE_WIDTH.small), 5)).toBeGreaterThanOrEqual(0);
   });
 });
 

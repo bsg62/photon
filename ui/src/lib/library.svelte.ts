@@ -33,6 +33,7 @@ export class LibraryStore {
     version: -1,
     len: 0,
     sections: [],
+    folders: [],
     starredCount: 0,
     duplicateCount: 0,
     hiddenCount: 0,

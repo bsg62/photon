@@ -80,6 +80,7 @@ describe('LibraryStore', () => {
       version: 1,
       len: 0,
       sections: [],
+      folders: [],
       starredCount: 0,
       duplicateCount: 0,
       hiddenCount: 0,
@@ -328,6 +329,7 @@ describe('LibraryStore', () => {
       version: 1,
       len: 2,
       sections: [],
+      folders: [],
       starredCount: 0,
       duplicateCount: 0,
       hiddenCount: 0,
@@ -349,6 +351,7 @@ describe('LibraryStore', () => {
       version: 2,
       len: 3,
       sections: [],
+      folders: [],
       starredCount: 0,
       duplicateCount: 0,
       hiddenCount: 0,
@@ -374,6 +377,7 @@ describe('LibraryStore', () => {
       version: 1,
       len: 5,
       sections: [],
+      folders: [],
       starredCount: 0,
       duplicateCount: 0,
       hiddenCount: 0,
@@ -393,6 +397,7 @@ describe('LibraryStore', () => {
       version: 2,
       len: 6,
       sections: [],
+      folders: [],
       starredCount: 0,
       duplicateCount: 0,
       hiddenCount: 0,
@@ -416,6 +421,7 @@ describe('LibraryStore', () => {
       version: 1,
       len: 5,
       sections: [],
+      folders: [],
       starredCount: 0,
       duplicateCount: 0,
       hiddenCount: 0,
@@ -434,6 +440,7 @@ describe('LibraryStore', () => {
       version: 2,
       len: 2,
       sections: [],
+      folders: [],
       starredCount: 0,
       duplicateCount: 0,
       hiddenCount: 0,
@@ -452,6 +459,7 @@ describe('LibraryStore', () => {
       version: 3,
       len: 0,
       sections: [],
+      folders: [],
       starredCount: 0,
       duplicateCount: 0,
       hiddenCount: 0,
@@ -527,6 +535,7 @@ describe('LibraryStore', () => {
       version: number;
       len: number;
       sections: never[];
+      folders: never[];
       starredCount: number;
       duplicateCount: number;
       hiddenCount: number;
@@ -550,7 +559,7 @@ describe('LibraryStore', () => {
     const initPromise = store.init();
     store.dispose();
     listenGate.resolve();
-    gridInfoGate.resolve({ version: 1, len: 0, sections: [], starredCount: 0, duplicateCount: 0, hiddenCount: 0, view: 'all', searchQuery: '', person: null, album: null, tag: null, copiesOf: null });
+    gridInfoGate.resolve({ version: 1, len: 0, sections: [], folders: [], starredCount: 0, duplicateCount: 0, hiddenCount: 0, view: 'all', searchQuery: '', person: null, album: null, tag: null, copiesOf: null });
     await initPromise;
 
     expect(unlistenCounts.libraryChanged).toBe(1);
@@ -579,7 +588,7 @@ describe('LibraryStore', () => {
     expect(api.setGridView).toHaveBeenCalledWith('starred');
     expect(resolved).toBe(false);
 
-    refreshGate.resolve({ version: 2, len: 0, sections: [], starredCount: 0, duplicateCount: 0, hiddenCount: 0, view: 'starred', searchQuery: '', person: null, album: null, tag: null, copiesOf: null });
+    refreshGate.resolve({ version: 2, len: 0, sections: [], folders: [], starredCount: 0, duplicateCount: 0, hiddenCount: 0, view: 'starred', searchQuery: '', person: null, album: null, tag: null, copiesOf: null });
     await setViewPromise;
 
     expect(resolved).toBe(true);
@@ -607,6 +616,7 @@ describe('LibraryStore', () => {
       version: 2,
       len: 2,
       sections: [],
+      folders: [],
       starredCount: 0,
       duplicateCount: 0,
       hiddenCount: 0,
@@ -650,6 +660,7 @@ describe('LibraryStore', () => {
       version: 2,
       len: 0,
       sections: [],
+      folders: [],
       starredCount: 0,
       duplicateCount: 0,
       hiddenCount: 0,
@@ -812,6 +823,7 @@ describe('LibraryStore', () => {
         version: 1,
         len,
         sections: opts.sections ?? [],
+        folders: [],
         starredCount: 0,
         duplicateCount: 0,
         hiddenCount: 0,
@@ -853,6 +865,7 @@ describe('LibraryStore', () => {
           version: 2,
           len: kept.length,
           sections: [],
+          folders: [],
           starredCount: 0,
           duplicateCount: 0,
           hiddenCount: 3,
@@ -898,6 +911,7 @@ describe('LibraryStore', () => {
         version: 2,
         len: 9,
         sections: [],
+        folders: [],
         starredCount: 0,
         duplicateCount: 0,
         hiddenCount: 1,
@@ -1149,6 +1163,7 @@ describe('LibraryStore', () => {
         version: 2,
         len: 11,
         sections: [],
+        folders: [],
         starredCount: 0,
         duplicateCount: 0,
         hiddenCount: 0,
@@ -1209,6 +1224,7 @@ describe('LibraryStore', () => {
         version: 2,
         len: 21,
         sections: [],
+        folders: [],
         starredCount: 0,
         duplicateCount: 0,
         hiddenCount: 0,
@@ -1249,6 +1265,7 @@ describe('LibraryStore', () => {
         version: 2,
         len: 11,
         sections: [],
+        folders: [],
         starredCount: 0,
         duplicateCount: 0,
         hiddenCount: 0,
