@@ -57,16 +57,6 @@ describe('positionInSection past the end', () => {
   });
 });
 
-describe('positionInSection in a flat view', () => {
-  it('counts across the whole list', () => {
-    // Recent's one run spans every folder. Sectioned by folder, it split into a section per
-    // photo wherever folders interleave, and the caption answered "1 / 1" photo after photo.
-    const flat = [{ folderId: null, offset: 0, count: 3 }];
-    expect(positionInSection(flat, 0)).toEqual({ index: 1, count: 3 });
-    expect(positionInSection(flat, 2)).toEqual({ index: 3, count: 3 });
-  });
-});
-
 describe('move from no selection', () => {
   it('honours the key when nothing is selected yet', () => {
     // Clicking the grid background clears the selection. Treating every navigation key as

@@ -14,13 +14,13 @@ export interface FolderList { watched: WatchedFolder[]; folders: Folder[] }
 /** A root with no photos is absent from the list. */
 export interface WatchedFolderStats { watchedId: number; photoCount: number }
 export interface AppInfo { version: string; libraryPath: string; licence: string }
-/** `takenAtMin` is the capture time of the folder's OLDEST photo, in SECONDS (multiply by
+/** Mirrors `grid::Section`: a run the grid lays out. `folderId` is null for a flat view's one
+ *  run, which spans many folders and is drawn with no header. `takenAtMin` is in SECONDS. */
+export interface Section { folderId: number | null; offset: number; count: number; takenAtMin: number }
+/** Mirrors `grid::FolderTally`: one folder's photos in the view, whatever the layout.
+ *  `takenAtMin` is the capture time of the folder's OLDEST photo, in SECONDS (multiply by
  *  1000 for a JS Date). The sidebar groups folders by the year it falls in. Oldest rather
  *  than newest, to match Picasa. */
-/** Mirrors `grid::Section`: a run the grid lays out. `folderId` is null for a flat view's one
- *  run, which spans many folders and is drawn with no header. */
-export interface Section { folderId: number | null; offset: number; count: number; takenAtMin: number }
-/** Mirrors `grid::FolderTally`: one folder's photos in the view, whatever the layout. */
 export interface FolderTally { folderId: number; count: number; takenAtMin: number }
 /** `hasCopies`: another live file has the same bytes or is a look-alike, the same rule the
  *  Duplicates view uses (`GridEntry::has_copies`). */

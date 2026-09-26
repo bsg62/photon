@@ -75,7 +75,7 @@ export function groupByYear(rows: FolderRow[]): YearGroup[] {
  *  not stylistic).
  *
  *  Hidden is the one view left as it is. The sidebar's folders are the current view's
- *  sections, and every other view is a subset of All, so All holds the folder jumped to; the
+ *  folders, and every other view is a subset of All, so All holds the folder jumped to; the
  *  Hidden view is disjoint from All, and a folder whose photos are all hidden is not in All
  *  at all - the jump would land the user at the top of All with nothing selected. */
 export async function enterFolder(
