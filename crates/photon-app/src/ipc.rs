@@ -381,6 +381,14 @@ pub fn reveal_in_file_manager(engine: Eng<'_>, id: i64) -> Result<(), AppError> 
     tauri_plugin_opener::reveal_item_in_dir(path).map_err(AppError::internal)
 }
 
+/// Hands the photo's file to whatever the system opens that kind of file with. photon
+/// registers no file types, so that is never photon itself.
+#[tauri::command(async)]
+pub fn open_in_default_app(engine: Eng<'_>, id: i64) -> Result<(), AppError> {
+    let path = commands::item_path(&engine, id)?;
+    tauri_plugin_opener::open_path(path, None::<&str>).map_err(AppError::internal)
+}
+
 #[tauri::command(async)]
 pub fn reveal_folder(engine: Eng<'_>, folder_id: i64) -> Result<(), AppError> {
     let path = commands::folder_path(&engine, folder_id)?;

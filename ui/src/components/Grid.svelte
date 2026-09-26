@@ -712,6 +712,13 @@
       <button role="menuitem" onclick={() => withSelection((ids) => api.revealInFileManager(ids[0]))}>
         Reveal in file manager
       </button>
+      <button
+        role="menuitem"
+        title="Opens the file itself; photon's turns and crop are not applied."
+        onclick={() => withSelection((ids) => api.openInDefaultApp(ids[0]))}
+      >
+        Open in default app
+      </button>
       <!-- One photo only: the clipboard holds one picture. -->
       <button role="menuitem" onclick={() => withSelection((ids) => library.copyPhoto(ids[0]))}>Copy photo</button>
     {/if}

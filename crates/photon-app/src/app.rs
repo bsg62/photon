@@ -246,6 +246,7 @@ pub fn run() {
             ipc::remove_items_tag,
             ipc::neighbours,
             ipc::reveal_in_file_manager,
+            ipc::open_in_default_app,
             ipc::reveal_folder,
             ipc::watched_folder_stats,
             ipc::app_info,
