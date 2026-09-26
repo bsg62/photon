@@ -3189,6 +3189,7 @@ dependencies = [
  "criterion",
  "dunce",
  "image",
+ "jiff",
  "kamadak-exif",
  "libc",
  "notify",

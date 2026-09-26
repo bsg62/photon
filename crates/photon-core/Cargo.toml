@@ -11,6 +11,7 @@ authors.workspace = true
 [dependencies]
 dunce = "1.0.5"
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "gif", "webp", "tiff", "bmp"] }
+jiff = "0.2.35"
 kamadak-exif = "0.6.1"
 libc = "0.2"
 notify = "8.2.0"

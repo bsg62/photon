@@ -18,6 +18,7 @@ pub mod scanner;
 pub mod search;
 pub mod similar;
 pub mod thumbs;
+pub mod video;
 pub mod watcher;
 pub mod xmp;
 
