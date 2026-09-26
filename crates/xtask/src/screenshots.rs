@@ -154,8 +154,11 @@ pub const SHOTS: &[Shot] = &[
         query: "theme=light",
         dark: false,
     },
-    // The viewer on a video. Chromium without proprietary codecs cannot play MP4, so this
-    // shows the unsupported message over the poster - which is the state worth seeing.
+    // The viewer on a video, showing its "can't be played here" message over the poster - the
+    // state worth seeing, since the mock has no real file to actually play regardless. Which
+    // branch the viewer takes would otherwise depend on whether the local Chromium build
+    // reports MP4 support, so `mock.js` stubs `canPlayType` to always deny it, making the
+    // shot the same on every machine rather than only some.
     Shot {
         name: "viewer-video-dark",
         query: "theme=dark&do=video",

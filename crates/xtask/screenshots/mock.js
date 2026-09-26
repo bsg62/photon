@@ -7,6 +7,16 @@
 // Two lists below are read by a test in screenshots.rs, which fails when api.ts gains a
 // command that is in neither: `canned` (keys at four spaces' indent) and SILENT.
 (function () {
+  // The mock has no real video file to serve, so a `<video src>` here always fails to load -
+  // but which failure the app shows depends on whether *this* Chromium claims to support MP4:
+  // a build with proprietary codecs answers "maybe" to `canPlayType` and the viewer takes its
+  // native-`<video>` branch (which then just sits broken, nothing to look at); a build without
+  // them answers "" and the viewer shows its own "can't be played here" message over the
+  // poster, which is the state worth a screenshot. Forcing "" here makes `viewer-video-dark`
+  // render the same way on every machine, rather than depending on how this Chromium happens
+  // to have been packaged.
+  HTMLMediaElement.prototype.canPlayType = () => '';
+
   const P = new URLSearchParams(location.search);
   const day = (y, m, d) => Date.UTC(y, m - 1, d) / 1000;
 
