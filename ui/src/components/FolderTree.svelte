@@ -274,6 +274,20 @@
     <Icon name="clock" size={14} /><span class="name">Recent</span>
   </button>
 
+  <!-- Only while the library has a video, or while the view is showing: a library of photos
+       alone would otherwise carry a permanent "0" row, the reason Duplicates hides too. -->
+  {#if library.info.videoCount > 0 || library.info.view === 'videos'}
+    <button
+      class="root videos"
+      class:active={library.info.view === 'videos'}
+      onclick={() => show(() => library.setView('videos'))}
+      title="Every video in the library"
+    >
+      <Icon name="play" size={14} /><span class="name">Videos</span>
+      <span class="count">{library.info.videoCount.toLocaleString()}</span>
+    </button>
+  {/if}
+
   <!-- Only while there is something in it, or while it is what the grid shows: most
        libraries have no duplicates, and a permanent "(0)" row is noise. -->
   {#if library.info.duplicateCount > 0 || library.info.view === 'duplicates' || library.info.view === 'copies'}

@@ -608,6 +608,9 @@ publishing it.
 - [ ] The picture is never covered by the controls or the bar, on a landscape and a portrait
       video.
 - [ ] The mouse wheel over a playing video still moves to the next and previous item.
+- [ ] The sidebar has a **Videos** row with the right count once the library has a video, and
+      none in a library of photos alone. It shows every video under its folder, sorted by each
+      folder's oldest video; hiding a video takes it out of the row's count and the view.
 - [ ] In the grid, right-clicking a video offers no "Copy photo", and Ctrl+C on a selected video
       does nothing.
 - [ ] Pause a long video, open three more, then play one: playback starts at once.

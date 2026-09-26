@@ -26,7 +26,7 @@ export interface FolderTally { folderId: number; count: number; takenAtMin: numb
  *  Duplicates view uses (`GridEntry::has_copies`). `durationMs` is a video's running time;
  *  null for a photo. */
 export interface GridEntry { id: number; folderId: number; takenAt: number; aspect: number; kind: 'image' | 'video'; durationMs: number | null; thumbKey: string; starred: boolean; hasCopies: boolean }
-export type GridView = 'all' | 'starred' | 'recent' | 'search' | 'person' | 'album' | 'tag' | 'duplicates' | 'copies' | 'hidden';
+export type GridView = 'all' | 'starred' | 'recent' | 'search' | 'person' | 'album' | 'tag' | 'duplicates' | 'copies' | 'hidden' | 'videos';
 /** Mirrors `commands::CopiesOf`. `fileName` is empty once the photo has left the library;
  *  `gone` is true once the anchor photo itself is gone (purged or missing) - the filter
  *  keys off the anchor's own row, so once it is gone every branch matches nothing and the
@@ -51,6 +51,8 @@ export interface GridInfo {
   duplicateCount: number;
   /** Photos the user has hidden; the sidebar shows the Hidden row only above 0. */
   hiddenCount: number;
+  /** Visible videos; the sidebar shows the Videos row only above 0. */
+  videoCount: number;
   view: GridView;
   searchQuery: string;
   /** Picasa contact hash while `view` is 'person'. */

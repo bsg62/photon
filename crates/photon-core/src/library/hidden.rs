@@ -614,4 +614,25 @@ mod tests {
             );
         }
     }
+
+    /// Like every other view and sidebar count: a hidden video is in neither.
+    #[test]
+    fn a_hidden_video_leaves_the_videos_view_and_its_count() {
+        let (_dir, lib) = temp_library();
+        let (_w, folder) = seed_folder(&lib, Path::new("/p"));
+        let video = |path: &str| NewItem {
+            kind: crate::media::MediaKind::Video,
+            ..new_item(folder, path, 1)
+        };
+        let ids = lib
+            .insert_items(&[video("/p/a.mp4"), video("/p/b.mp4")])
+            .unwrap();
+        assert_eq!(view(&lib, GridView::Videos, ""), ids);
+        assert_eq!(lib.video_count().unwrap(), 2);
+
+        lib.set_hidden(&[ids[0]], true).unwrap();
+        assert_eq!(view(&lib, GridView::Videos, ""), vec![ids[1]]);
+        assert_eq!(lib.video_count().unwrap(), 1);
+        assert_eq!(view(&lib, GridView::Hidden, ""), vec![ids[0]]);
+    }
 }

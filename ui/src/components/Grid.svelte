@@ -642,6 +642,8 @@
           {copiesNotice(library.info.copiesOf, library.info.len, library.entry(0)?.id)}
         {:else if library.info.view === 'tag'}
           No photos tagged “{library.info.tag}”.
+        {:else if library.info.view === 'videos'}
+          No videos. photon finds MP4, M4V, MOV and WebM files in your watched folders.
         {:else if library.info.view === 'hidden'}
           No hidden photos. Right-click a photo and choose Hide to put it away here.
         {:else}

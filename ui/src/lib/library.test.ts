@@ -84,6 +84,7 @@ describe('LibraryStore', () => {
       starredCount: 0,
       duplicateCount: 0,
       hiddenCount: 0,
+      videoCount: 0,
       view: 'all',
       searchQuery: '',
       person: null,
@@ -334,6 +335,7 @@ describe('LibraryStore', () => {
       starredCount: 0,
       duplicateCount: 0,
       hiddenCount: 0,
+      videoCount: 0,
       view: 'all',
       searchQuery: '',
       person: null,
@@ -356,6 +358,7 @@ describe('LibraryStore', () => {
       starredCount: 0,
       duplicateCount: 0,
       hiddenCount: 0,
+      videoCount: 0,
       view: 'all',
       searchQuery: '',
       person: null,
@@ -382,6 +385,7 @@ describe('LibraryStore', () => {
       starredCount: 0,
       duplicateCount: 0,
       hiddenCount: 0,
+      videoCount: 0,
       view: 'all',
       searchQuery: '',
       person: null,
@@ -402,6 +406,7 @@ describe('LibraryStore', () => {
       starredCount: 0,
       duplicateCount: 0,
       hiddenCount: 0,
+      videoCount: 0,
       view: 'all',
       searchQuery: '',
       person: null,
@@ -426,6 +431,7 @@ describe('LibraryStore', () => {
       starredCount: 0,
       duplicateCount: 0,
       hiddenCount: 0,
+      videoCount: 0,
       view: 'all',
       searchQuery: '',
       person: null,
@@ -445,6 +451,7 @@ describe('LibraryStore', () => {
       starredCount: 0,
       duplicateCount: 0,
       hiddenCount: 0,
+      videoCount: 0,
       view: 'all',
       searchQuery: '',
       person: null,
@@ -464,6 +471,7 @@ describe('LibraryStore', () => {
       starredCount: 0,
       duplicateCount: 0,
       hiddenCount: 0,
+      videoCount: 0,
       view: 'all',
       searchQuery: '',
       person: null,
@@ -540,6 +548,7 @@ describe('LibraryStore', () => {
       starredCount: number;
       duplicateCount: number;
       hiddenCount: number;
+      videoCount: number;
       view: 'all';
       searchQuery: string;
       person: null;
@@ -560,7 +569,7 @@ describe('LibraryStore', () => {
     const initPromise = store.init();
     store.dispose();
     listenGate.resolve();
-    gridInfoGate.resolve({ version: 1, len: 0, sections: [], folders: [], starredCount: 0, duplicateCount: 0, hiddenCount: 0, view: 'all', searchQuery: '', person: null, album: null, tag: null, copiesOf: null });
+    gridInfoGate.resolve({ version: 1, len: 0, sections: [], folders: [], starredCount: 0, duplicateCount: 0, hiddenCount: 0, videoCount: 0, view: 'all', searchQuery: '', person: null, album: null, tag: null, copiesOf: null });
     await initPromise;
 
     expect(unlistenCounts.libraryChanged).toBe(1);
@@ -589,7 +598,7 @@ describe('LibraryStore', () => {
     expect(api.setGridView).toHaveBeenCalledWith('starred');
     expect(resolved).toBe(false);
 
-    refreshGate.resolve({ version: 2, len: 0, sections: [], folders: [], starredCount: 0, duplicateCount: 0, hiddenCount: 0, view: 'starred', searchQuery: '', person: null, album: null, tag: null, copiesOf: null });
+    refreshGate.resolve({ version: 2, len: 0, sections: [], folders: [], starredCount: 0, duplicateCount: 0, hiddenCount: 0, videoCount: 0, view: 'starred', searchQuery: '', person: null, album: null, tag: null, copiesOf: null });
     await setViewPromise;
 
     expect(resolved).toBe(true);
@@ -621,6 +630,7 @@ describe('LibraryStore', () => {
       starredCount: 0,
       duplicateCount: 0,
       hiddenCount: 0,
+      videoCount: 0,
       view: 'all',
       searchQuery: '',
       person: null,
@@ -665,6 +675,7 @@ describe('LibraryStore', () => {
       starredCount: 0,
       duplicateCount: 0,
       hiddenCount: 0,
+      videoCount: 0,
       view: 'search',
       searchQuery: 'beach',
       person: null,
@@ -765,7 +776,7 @@ describe('LibraryStore', () => {
     const store = new LibraryStore();
     await store.init();
     vi.mocked(api.setSearchQuery).mockResolvedValueOnce(undefined);
-    vi.mocked(api.gridInfo).mockResolvedValueOnce({ version: 2, len: 0, sections: [], folders: [], starredCount: 0, duplicateCount: 0, hiddenCount: 0, view: 'search', searchQuery: 'lake', person: null, album: null, tag: null, copiesOf: null });
+    vi.mocked(api.gridInfo).mockResolvedValueOnce({ version: 2, len: 0, sections: [], folders: [], starredCount: 0, duplicateCount: 0, hiddenCount: 0, videoCount: 0, view: 'search', searchQuery: 'lake', person: null, album: null, tag: null, copiesOf: null });
     await expect(store.setSearchQuery('lake')).resolves.toBe('lake');
 
     vi.mocked(api.setSearchQuery).mockRejectedValueOnce(new Error('refused'));
@@ -777,7 +788,7 @@ describe('LibraryStore', () => {
     await store.init();
     const search = deferred<void>();
     vi.mocked(api.setSearchQuery).mockReturnValueOnce(search.promise);
-    vi.mocked(api.gridInfo).mockResolvedValueOnce({ version: 2, len: 0, sections: [], folders: [], starredCount: 0, duplicateCount: 0, hiddenCount: 0, view: 'search', searchQuery: 'beach', person: null, album: null, tag: null, copiesOf: null });
+    vi.mocked(api.gridInfo).mockResolvedValueOnce({ version: 2, len: 0, sections: [], folders: [], starredCount: 0, duplicateCount: 0, hiddenCount: 0, videoCount: 0, view: 'search', searchQuery: 'beach', person: null, album: null, tag: null, copiesOf: null });
 
     void store.setSearchQuery('beach');
     const view = store.settledView();
@@ -829,6 +840,7 @@ describe('LibraryStore', () => {
         starredCount: 0,
         duplicateCount: 0,
         hiddenCount: 0,
+      videoCount: 0,
         view: opts.view ?? 'all',
         searchQuery: '',
         person: null,
@@ -871,6 +883,7 @@ describe('LibraryStore', () => {
           starredCount: 0,
           duplicateCount: 0,
           hiddenCount: 3,
+          videoCount: 0,
           view: 'all',
           searchQuery: '',
           person: null,
@@ -917,6 +930,7 @@ describe('LibraryStore', () => {
         starredCount: 0,
         duplicateCount: 0,
         hiddenCount: 1,
+        videoCount: 0,
         view: 'all',
         searchQuery: '',
         person: null,
@@ -1169,6 +1183,7 @@ describe('LibraryStore', () => {
         starredCount: 0,
         duplicateCount: 0,
         hiddenCount: 0,
+      videoCount: 0,
         view: 'all',
         searchQuery: '',
         person: null,
@@ -1230,6 +1245,7 @@ describe('LibraryStore', () => {
         starredCount: 0,
         duplicateCount: 0,
         hiddenCount: 0,
+      videoCount: 0,
         view: 'all',
         searchQuery: '',
         person: null,
@@ -1271,6 +1287,7 @@ describe('LibraryStore', () => {
         starredCount: 0,
         duplicateCount: 0,
         hiddenCount: 0,
+      videoCount: 0,
         view: 'all',
         searchQuery: '',
         person: null,
