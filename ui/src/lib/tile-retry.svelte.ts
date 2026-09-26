@@ -46,9 +46,10 @@ export type TileStatus =
  *  back-off, and the retries that follow usually load it. It cannot promise that either -
  *  an `<img>` error carries no status, so a photo the crash guard has failed outright
  *  retries the same way - hence "yet". */
-export function tileProblem(status: TileStatus): string | undefined {
-  if (status === 'retrying') return "Couldn't load this photo yet. Trying again…";
-  if (status === 'broken') return "This photo can't be shown";
+export function tileProblem(status: TileStatus, kind: 'image' | 'video' = 'image'): string | undefined {
+  const noun = kind === 'video' ? 'video' : 'photo';
+  if (status === 'retrying') return `Couldn't load this ${noun} yet. Trying again…`;
+  if (status === 'broken') return `This ${noun} can't be shown`;
   return undefined;
 }
 

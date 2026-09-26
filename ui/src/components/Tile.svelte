@@ -35,7 +35,7 @@
   const key = $derived(entry ? `thumb/${entry.id}/grid/${entry.thumbKey}` : '');
   const request = createThumbRequest();
   const retry = createTileRetry();
-  const problem = $derived(tileProblem(retry.status));
+  const problem = $derived(tileProblem(retry.status, entry?.kind));
   const src = $derived(
     request.requested
       ? mediaUrl(request.requested) + (retry.attempt ? `?retry=${retry.attempt}` : '')

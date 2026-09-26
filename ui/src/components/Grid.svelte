@@ -248,7 +248,9 @@
       // selected, not just the lead of a wider selection.
       if (library.selectionCount !== 1) return;
       const entry = sel === null ? undefined : library.entry(sel);
-      if (entry) void library.copyPhoto(entry.id);
+      // The backend refuses to copy a video; the shortcut is simply dead over one, like the
+      // viewer's own Ctrl+C.
+      if (entry && entry.kind !== 'video') void library.copyPhoto(entry.id);
       return;
     }
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a') {
@@ -555,6 +557,10 @@
   const count = $derived(library.selectionCount);
   /** "photo" / "12 photos", for menu items that name what they will act on. */
   const subject = $derived(count === 1 ? 'photo' : counted(count));
+  /** The one selected photo, when the menu's single-photo items ("Reveal", "Copy photo")
+   *  apply at all - `count === 1` already gates those items in the markup, so this only
+   *  needs to say what kind that one photo is. */
+  const soleSelected = $derived(count === 1 && library.selected !== null ? library.entry(library.selected) : undefined);
 
   function withSelection(action: (ids: number[]) => Promise<unknown>) {
     const ids = library.selectedItemIds;
@@ -719,8 +725,10 @@
       >
         Open in default app
       </button>
-      <!-- One photo only: the clipboard holds one picture. -->
-      <button role="menuitem" onclick={() => withSelection((ids) => library.copyPhoto(ids[0]))}>Copy photo</button>
+      {#if soleSelected?.kind !== 'video'}
+        <!-- One photo only: the clipboard holds one picture. The backend refuses a video. -->
+        <button role="menuitem" onclick={() => withSelection((ids) => library.copyPhoto(ids[0]))}>Copy photo</button>
+      {/if}
     {/if}
     <button role="menuitem" onclick={() => withSelection((ids) => star(ids, true))}>Star {subject}</button>
     <button role="menuitem" onclick={() => withSelection((ids) => star(ids, false))}>Unstar {subject}</button>

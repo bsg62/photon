@@ -2,7 +2,7 @@
   import { untrack } from 'svelte';
   import { writeText } from '@tauri-apps/plugin-clipboard-manager';
   import { api, errorMessage, mediaUrl, type ViewerItem } from '../lib/api';
-  import { isWindows } from '../lib/url';
+  import { isLinux } from '../lib/url';
   import { videoState } from '../lib/video-state.svelte';
   import { formatDuration, videoUrl } from '../lib/video';
   import { nextStill } from '../lib/slideshow-order';
@@ -91,10 +91,15 @@
   const slideshow = createSlideshow({
     advance: () => {
       const len = library.info.len;
-      void nextStill(current, len, async (i) => {
+      const from = current;
+      void nextStill(from, len, async (i) => {
         await library.ensure(i, i + 1);
         return library.entry(i)?.kind;
       }).then((next) => {
+        // The show may have been stopped, or the user may have navigated by hand, while this
+        // awaited: either makes `current` no longer `from`, or the slideshow no longer
+        // active, and a `goto` landing on top of either would be a stale write.
+        if (!slideshow.active || current !== from) return;
         // One photo has no next: `goto` would reload it, blanking the screen every interval.
         if (next !== null && next !== current) goto(next);
       });
@@ -106,11 +111,17 @@
   async function startSlideshow() {
     info = false;
     if (item?.kind === 'video') {
+      const from = current;
       const len = library.info.len;
-      const next = await nextStill(current, len, async (i) => {
+      const next = await nextStill(from, len, async (i) => {
         await library.ensure(i, i + 1);
         return library.entry(i)?.kind;
       });
+      // The viewer may have closed, or the user may have navigated elsewhere, while this
+      // awaited: closing stops nothing else running, and a late `goto` (and the fullscreen
+      // `slideshow.start` below) would otherwise resurrect a slideshow on a viewer nobody is
+      // looking at, or hijack wherever the user has since navigated to.
+      if (destroyed || current !== from) return;
       if (next === null) {
         library.notify('There are no photos here to show.');
         return;
@@ -148,6 +159,15 @@
 
   // Closing by any route - Escape, the back button, the grid going away - leaves fullscreen.
   $effect(() => () => slideshow.stop());
+
+  /** Set once, on unmount: `startSlideshow`'s await for a still to land on can span the
+   *  viewer closing underneath it, and a `goto`/fullscreen landing afterwards on a viewer
+   *  nobody is looking at would never be stopped by anything. Not `$state`: nothing renders
+   *  it, and it must not itself wake the effect that sets it. */
+  let destroyed = false;
+  $effect(() => () => {
+    destroyed = true;
+  });
 
   /** Photos are numbered within their own folder, not across the library. In the All view
    *  that count matches what the file manager shows for that directory; in Starred or
@@ -266,6 +286,34 @@
   const isVideo = $derived(item?.kind === 'video');
   let videoEl = $state<HTMLVideoElement | null>(null);
 
+  /** Why a video can't be played here, reactively: read directly in the derived's own
+   *  synchronous body rather than inside the load effect's async chain, whose reads past its
+   *  first `await` Svelte no longer tracks - so a viewer opened before `App`'s `onMount` sets
+   *  `videoState` (base and support are both known late) notices the moment they land,
+   *  instead of being stuck on whatever it saw at load. `base === null` is the server not up
+   *  yet (or never coming up); GStreamer's missing plugins are a Linux-only fix, so that
+   *  wording is reserved for exactly that case. */
+  const videoIssue = $derived.by((): 'gstreamer' | 'generic' | null => {
+    if (!item || item.kind !== 'video') return null;
+    if (videoState.supported && videoState.base) return null;
+    return !videoState.supported && isLinux() ? 'gstreamer' : 'generic';
+  });
+  const videoIssueMessage = $derived(
+    videoIssue === 'gstreamer'
+      ? "This system can't play videos. Install GStreamer's good and libav plugins (see the README's video section)."
+      : videoIssue === 'generic'
+        ? "This video can't be played here. See the README's video section for details."
+        : null,
+  );
+  /** The src the `<video>` plays, computed the same reactive way as `videoIssue`: a plain
+   *  function of `item`, `videoState.base` and whether there is an issue, with nothing to
+   *  await. */
+  const videoFullSrc = $derived(
+    item && item.kind === 'video' && videoIssue === null && videoState.base
+      ? videoUrl(videoState.base, item.id)
+      : null,
+  );
+
   const camera = $derived(item ? cameraRows(item) : []);
   const copies = $derived(item ? copyGroups(item.copies) : []);
   /** The photo as displayed, orientation applied: the coordinates Picasa's faces are in. */
@@ -348,7 +396,10 @@
     // stay - assigning it the value it already has would wake nothing.
     if (orphaned && next === current + 1) next = current;
     const target = Math.min(last, Math.max(0, next));
-    if (slideshow.active && fullSrc && target !== current && zoom === MIN_ZOOM) {
+    // `!isVideo`, even though a video never sets `fullSrc` today: the crossfade layer is an
+    // `<img>` (see the markup below), so a video's URL painted into it would show nothing -
+    // this is the guard against that regressing if `fullSrc` is ever reused for one.
+    if (slideshow.active && fullSrc && !isVideo && target !== current && zoom === MIN_ZOOM) {
       outgoing = { src: fullSrc, fading: false };
     }
     if (target === current) reload++;
@@ -489,17 +540,11 @@
       star.bind(it.id, it.starred);
       membership.bind(it.id, it.albums);
       tags.bind(it.id, it.tags);
-      // A video plays through its own element below; a poster that failed to render says
-      // nothing about whether the file itself plays, so this has to come before the Failed
-      // check, and skips it - and the still-image preload - entirely.
+      // A video plays through its own element below, or shows its poster with a message when
+      // it can't; both are read reactively from `videoIssue`/`videoFullSrc`, not decided
+      // here, and neither says anything about the Failed check that follows, so this skips
+      // it - and the still-image preload - entirely rather than running either.
       if (it.kind === 'video') {
-        if (!videoState.supported || !videoState.base) {
-          error = isWindows()
-            ? "This video can't be played here."
-            : "This system can't play videos. Install GStreamer's good and libav plugins (see the README).";
-          return;
-        }
-        fullSrc = videoUrl(videoState.base, it.id);
         return; // no neighbour preload from a video, and nothing to decode
       }
       if (it.thumbState === 'failed') {
@@ -622,7 +667,13 @@
       if (e.key === ' ' && (slideshow.active || isVideo)) {
         e.preventDefault();
         if (slideshow.active) slideshow.toggle();
-        else if (videoEl) void (videoEl.paused ? videoEl.play() : videoEl.pause());
+        else if (videoEl) {
+          // `play()` rejects when the browser aborts it (a fast Space-Space) or refuses it
+          // outright (autoplay policy); either way there is nothing to do about it here, but
+          // an uncaught rejection would otherwise surface as an unhandled promise warning.
+          if (videoEl.paused) videoEl.play().catch(() => {});
+          else videoEl.pause();
+        }
         return;
       }
       if (e.key === 'i' || e.key === 'I') {
@@ -664,7 +715,9 @@
 
   function onwheel(e: WheelEvent) {
     e.preventDefault();
-    if (isVideo) return;
+    // The wheel navigates between photos here, not zoom - zoom is the slider alone - and the
+    // spec drops only zoom, pan and crop for a video, so the wheel keeps moving between
+    // photos over one exactly as it does over a photo.
     if (crop.active) return;
     const stepped = wheelStep(wheelTotal, e.deltaY);
     wheelTotal = stepped.accumulated;
@@ -790,20 +843,32 @@
             </div>
           </div>
         {:else if isVideo}
-          <!-- Plays on open, with sound, as Picasa did. Not focusable, so the viewer's own
-               keys (arrows, Home, End, Escape, Space) keep working over it. -->
-          <!-- svelte-ignore a11y_media_has_caption -->
-          <video
-            class="full"
-            src={fullSrc}
-            poster={mediaUrl(`thumb/${item.id}/preview/${item.thumbKey}`)}
-            controls
-            autoplay
-            preload="metadata"
-            crossorigin="anonymous"
-            tabindex="-1"
-            bind:this={videoEl}
-          ></video>
+          {#if videoIssue}
+            <!-- No picture to play, so the poster - the same frame a tile shows - stands in,
+                 with the reason lying over it like the face plate does, rather than an empty
+                 stage with nothing but text. -->
+            <img class="full" src={mediaUrl(`thumb/${item.id}/preview/${item.thumbKey}`)} alt="" draggable="false" />
+            <div class="video-issue">
+              <p>{videoIssueMessage}</p>
+            </div>
+          {:else}
+            <!-- Plays on open, with sound, as Picasa did. `tabindex="-1"` only takes it out
+                 of the tab order - a click still focuses it like any control - but the
+                 viewer's own keys (arrows, Home, End, Escape, Space) live on
+                 `<svelte:window>`, so they keep working over it regardless. -->
+            <!-- svelte-ignore a11y_media_has_caption -->
+            <video
+              class="full"
+              src={videoFullSrc}
+              poster={mediaUrl(`thumb/${item.id}/preview/${item.thumbKey}`)}
+              controls
+              autoplay
+              preload="metadata"
+              crossorigin="anonymous"
+              tabindex="-1"
+              bind:this={videoEl}
+            ></video>
+          {/if}
         {:else}
           <img class="preview" src={mediaUrl(`thumb/${item.id}/preview/${item.thumbKey}`)} alt="" draggable="false" class:hidden={!!fullSrc} />
           {#if fullSrc}
@@ -1079,7 +1144,16 @@
   /* `draggable="false"` covers the drag itself; these stop WebKit — which is the webview on
      both Linux and macOS — from starting its own image drag or selecting the image instead
      of panning. */
-  img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; image-orientation: from-image; user-select: none; -webkit-user-drag: none; }
+  img, video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; image-orientation: from-image; user-select: none; -webkit-user-drag: none; }
+  /* The native control bar draws inside the video's own box, at its bottom edge; left at
+     `inset: 0` it would draw at the very bottom of the window, under our floating `.bar`
+     (which paints on top, later in the document, and would eat the controls' clicks without
+     ever showing them). Insetting the video above `.bar` - the same clearance
+     `.photo-caption` already keeps below it - is simpler than moving `.bar` itself out of a
+     region a photo never needed clear in the first place. `height: auto` lets the bottom
+     inset actually take effect: `inset: 0` above also sets an explicit height, and a
+     positioned box honours only one of a competing height/top+bottom pair. */
+  video.full { bottom: 64px; height: auto; }
   .hidden { visibility: hidden; }
   /* After the stage in the document and before the controls, so it paints between them
      without a z-index. The duration is `CROSSFADE_MS`. */
@@ -1168,6 +1242,17 @@
   .crop-handle.nw, .crop-handle.se { cursor: nwse-resize; }
   .crop-handle.ne, .crop-handle.sw { cursor: nesw-resize; }
   .error { color: var(--text-dim); }
+  /* Lies over the poster the way the face plate lies over a photo: the same glass and scrim
+     technique as `.bar`, so the reason reads over a bright frame as well as a dark one. */
+  .video-issue {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    padding: var(--s-4);
+    background: var(--scrim);
+  }
+  .video-issue p { max-width: 32em; margin: 0; padding: var(--s-2) var(--s-3); border-radius: var(--r-3); background: var(--glass); box-shadow: 0 0 0 1px var(--glass-line); color: var(--text); font-size: var(--t-3); text-align: center; }
   .info {
     position: absolute;
     top: 12px;
