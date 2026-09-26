@@ -6,7 +6,7 @@
   import { isCopyPhotoShortcut } from '../lib/copy-photo';
   import { library } from '../lib/library.svelte';
   import { gridSize } from '../lib/app-grid-size.svelte';
-  import { buildRows, columnsFor, edgeScrollSpeed, firstVisibleOffset, GAP, itemSpan, itemsInRect, layoutSections, type Rect, rowOfItem, topFolderId, totalHeight, visibleRange } from '../lib/layout';
+  import { buildRows, columnsFor, edgeScrollSpeed, firstVisibleOffset, GAP, itemSpan, itemsInRect, type Rect, rowOfItem, topFolderId, totalHeight, visibleRange } from '../lib/layout';
   import { move, type NavKey } from '../lib/nav';
   import { yearMarks } from '../lib/timeline';
   import Tile from './Tile.svelte';
@@ -52,19 +52,16 @@
   let scrollTop = $state(0);
 
   const columns = $derived(columnsFor(Math.max(0, width - 2 * GAP), gridSize.width));
-  /** Recent is laid out as one continuous run of tiles with no folder headers; every other
-   *  view keeps the index's folder sections. See `layoutSections` for why. Both the layout
-   *  and the keyboard navigation read these rather than `library.info.sections`, so arrow
-   *  keys move along the rows the eye sees.
+  /** The index's own sections: one per folder run, or a single headerless run in a flat view
+   *  (Recent). Both the layout and the keyboard navigation read these, so arrow keys move
+   *  along the rows the eye sees.
    *
-   *  A tile's offline dimming follows the photo's own folder for the same reason: one
-   *  Recent row holds photos from several folders, so the section's folder answers for at
-   *  most the first of them. */
-  const sections = $derived(layoutSections(library.info.view, library.info.sections, library.info.len));
-  const headers = $derived(library.info.view !== 'recent');
-  const rows = $derived(buildRows(sections, columns, headers, gridSize.width));
+   *  A tile's offline dimming follows the photo's own folder, not its section's: one Recent
+   *  row holds photos from several folders, and its run names none of them. */
+  const sections = $derived(library.info.sections);
+  const rows = $derived(buildRows(sections, columns, gridSize.width));
   const total = $derived(totalHeight(rows));
-  /** The year strip. It needs folder headers to mark (so Recent, which has none, never
+  /** The year strip. It needs folder headers to mark (so a flat view, which has none, never
    *  shows it), more than one year to choose between, and something to scroll. */
   const marks = $derived(yearMarks(sections, rows));
   const scrubbable = $derived(marks.length > 1 && total > height);
@@ -658,7 +655,8 @@
       {/if}
       {#each rendered as row (row.top)}
         {#if row.kind === 'header'}
-          {@const folder = library.folderOf(sections[row.section].folderId)}
+          {@const folderId = sections[row.section].folderId}
+          {@const folder = folderId === null ? undefined : library.folderOf(folderId)}
           <div class="header" style:top="{row.top}px">
             <span class="name">{folder?.name ?? ''}</span>
             <span class="path">{folder?.path ?? ''}</span>

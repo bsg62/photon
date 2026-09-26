@@ -45,6 +45,27 @@ impl GridView {
             Self::Search | Self::Person | Self::Album | Self::Tag | Self::Copies
         )
     }
+
+    /// How the view's rows are arranged on screen. Every view but Recent is ordered folder
+    /// first (`GRID_ORDER`), so its rows fall into one run per folder, each under a header.
+    /// Recent orders by date across folders: sectioned by folder, it started a run on every
+    /// photo wherever folders interleave - 500 photos came back as 500 sections - and each
+    /// run took a header and a row of its own.
+    pub fn layout(self) -> Layout {
+        match self {
+            Self::Recent => Layout::Flat,
+            _ => Layout::Folders,
+        }
+    }
+}
+
+/// See `GridView::layout`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Layout {
+    /// One section per run of a folder's photos, each drawn under the folder's header.
+    Folders,
+    /// One section holding every row, belonging to no folder and drawn with no header.
+    Flat,
 }
 
 /// A u64 as 16 lowercase hex characters: exact in JavaScript, unlike a JSON number.
@@ -76,15 +97,31 @@ pub struct GridEntry {
     pub thumb_key: u64,
 }
 
-/// A run of consecutive grid entries from one folder, shown under one header.
+/// A run of consecutive grid entries laid out together: one folder's photos under its
+/// header, or, in a flat layout, every row under none.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Section {
-    pub folder_id: i64,
+    /// The folder whose header the run is drawn under; `None` in a flat layout, whose one
+    /// run spans many folders and has no header.
+    pub folder_id: Option<i64>,
     pub offset: usize,
     pub count: usize,
-    /// Capture time of the folder's **oldest** photo, in seconds. The sidebar groups folders
-    /// by the year this falls in, resolved in the viewer's local time rather than UTC.
+    /// Capture time of the run's oldest photo, in seconds. The timeline's year marks read it.
+    pub taken_at_min: i64,
+}
+
+/// One folder's share of the view: how many of its photos the view holds, and when the
+/// oldest of them was taken. What the sidebar lists, whatever the layout - in a flat view
+/// the folders are not sections, but the sidebar still names the ones the photos came from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FolderTally {
+    pub folder_id: i64,
+    pub count: usize,
+    /// Capture time of the folder's **oldest** photo in the view, in seconds. The sidebar
+    /// groups folders by the year this falls in, resolved in the viewer's local time rather
+    /// than UTC.
     ///
     /// Oldest rather than newest, to match Picasa — and because it is the sturdier of the
     /// two. A photo with no EXIF date falls back to the file's modification time
@@ -99,35 +136,61 @@ pub struct Section {
 pub struct GridIndex {
     entries: Vec<GridEntry>,
     sections: Vec<Section>,
+    folders: Vec<FolderTally>,
     positions: HashMap<i64, usize>,
 }
 
 impl GridIndex {
-    /// `entries` must already be in grid order (see `Library::grid_entries`).
-    pub fn build(entries: Vec<GridEntry>) -> Self {
+    /// `entries` must already be in grid order (see `Library::grid_entries`), and `layout`
+    /// is the view's (`GridView::layout`).
+    pub fn build(entries: Vec<GridEntry>, layout: Layout) -> Self {
         let mut sections: Vec<Section> = Vec::new();
+        let mut folders: Vec<FolderTally> = Vec::new();
+        let mut tally_of: HashMap<i64, usize> = HashMap::new();
         let mut positions = HashMap::with_capacity(entries.len());
+        let section_folder = |entry: &GridEntry| match layout {
+            Layout::Folders => Some(entry.folder_id),
+            Layout::Flat => None,
+        };
         for (index, entry) in entries.iter().enumerate() {
             positions.insert(entry.id, index);
+            // Real minimums, not "the run's first entry": entries are ordered by folder and
+            // then by capture date, but nothing here fixes the direction, and assuming it
+            // would silently file a folder under the wrong year.
             match sections.last_mut() {
-                Some(section) if section.folder_id == entry.folder_id => {
+                Some(section) if section.folder_id == section_folder(entry) => {
                     section.count += 1;
-                    // A real min, not "the run's first entry": entries are ordered by folder
-                    // and then by capture date, but nothing here fixes the direction, and
-                    // assuming it would silently file a folder under the wrong year.
                     section.taken_at_min = section.taken_at_min.min(entry.taken_at);
                 }
                 _ => sections.push(Section {
-                    folder_id: entry.folder_id,
+                    folder_id: section_folder(entry),
                     offset: index,
                     count: 1,
                     taken_at_min: entry.taken_at,
                 }),
             }
+            // Summed over every run of the folder, not per run: where a folder's photos are
+            // not contiguous, one row per run listed it once per run, each claiming a handful.
+            match tally_of.get(&entry.folder_id) {
+                Some(&at) => {
+                    let tally = &mut folders[at];
+                    tally.count += 1;
+                    tally.taken_at_min = tally.taken_at_min.min(entry.taken_at);
+                }
+                None => {
+                    tally_of.insert(entry.folder_id, folders.len());
+                    folders.push(FolderTally {
+                        folder_id: entry.folder_id,
+                        count: 1,
+                        taken_at_min: entry.taken_at,
+                    });
+                }
+            }
         }
         Self {
             entries,
             sections,
+            folders,
             positions,
         }
     }
@@ -150,10 +213,17 @@ impl GridIndex {
         &self.sections
     }
 
+    /// The view's folders, in the order the grid first reaches each.
+    pub fn folders(&self) -> &[FolderTally] {
+        &self.folders
+    }
+
+    /// Where the folder's header is. `None` in a flat layout, which has no headers to land
+    /// on - a folder jump switches to All first.
     pub fn offset_of_folder(&self, folder_id: i64) -> Option<usize> {
         self.sections
             .iter()
-            .find(|s| s.folder_id == folder_id)
+            .find(|s| s.folder_id == Some(folder_id))
             .map(|s| s.offset)
     }
 
@@ -206,13 +276,16 @@ mod tests {
     }
 
     fn sample() -> GridIndex {
-        GridIndex::build(vec![
-            entry(1, 10),
-            entry(2, 10),
-            entry(3, 20),
-            entry(4, 30),
-            entry(5, 30),
-        ])
+        GridIndex::build(
+            vec![
+                entry(1, 10),
+                entry(2, 10),
+                entry(3, 20),
+                entry(4, 30),
+                entry(5, 30),
+            ],
+            Layout::Folders,
+        )
     }
 
     #[test]
@@ -223,19 +296,19 @@ mod tests {
             grid.sections(),
             [
                 Section {
-                    folder_id: 10,
+                    folder_id: Some(10),
                     offset: 0,
                     count: 2,
                     taken_at_min: 1
                 },
                 Section {
-                    folder_id: 20,
+                    folder_id: Some(20),
                     offset: 2,
                     count: 1,
                     taken_at_min: 3
                 },
                 Section {
-                    folder_id: 30,
+                    folder_id: Some(30),
                     offset: 3,
                     count: 2,
                     taken_at_min: 4
@@ -246,6 +319,75 @@ mod tests {
         assert_eq!(grid.offset_of_folder(99), None);
     }
 
+    /// Recent interleaves folders. Laid out by folder, every photo would be a run of its own
+    /// with a header of its own; flat, the rows are one headerless run.
+    #[test]
+    fn a_flat_layout_is_one_run_under_no_folder() {
+        let rows = vec![
+            entry_at(1, 10, 500),
+            entry_at(2, 20, 400),
+            entry_at(3, 10, 300),
+            entry_at(4, 20, 200),
+        ];
+        assert_eq!(
+            GridIndex::build(rows.clone(), Layout::Folders)
+                .sections()
+                .len(),
+            4
+        );
+        let grid = GridIndex::build(rows, Layout::Flat);
+        assert_eq!(
+            grid.sections(),
+            [Section {
+                folder_id: None,
+                offset: 0,
+                count: 4,
+                taken_at_min: 200
+            }]
+        );
+        assert_eq!(grid.offset_of_folder(10), None, "no header to land on");
+    }
+
+    /// The sidebar lists a folder once, with every photo of it the view holds, however many
+    /// runs those photos are split into - in either layout.
+    #[test]
+    fn a_folder_is_tallied_once_across_all_of_its_runs() {
+        let rows = vec![
+            entry_at(1, 10, 500),
+            entry_at(2, 20, 400),
+            entry_at(3, 10, 300),
+            entry_at(4, 10, 200),
+        ];
+        let tallies = [
+            FolderTally {
+                folder_id: 10,
+                count: 3,
+                taken_at_min: 200,
+            },
+            FolderTally {
+                folder_id: 20,
+                count: 1,
+                taken_at_min: 400,
+            },
+        ];
+        assert_eq!(
+            GridIndex::build(rows.clone(), Layout::Folders).folders(),
+            tallies
+        );
+        assert_eq!(GridIndex::build(rows, Layout::Flat).folders(), tallies);
+    }
+
+    #[test]
+    fn only_recent_is_laid_out_flat() {
+        use GridView::*;
+        for view in [
+            All, Starred, Search, Person, Album, Tag, Duplicates, Copies, Hidden,
+        ] {
+            assert_eq!(view.layout(), Layout::Folders, "{view:?}");
+        }
+        assert_eq!(Recent.layout(), Layout::Flat);
+    }
+
     #[test]
     fn rows_are_clamped() {
         let grid = sample();
@@ -253,7 +395,11 @@ mod tests {
         assert_eq!(ids(grid.rows(1, 2)), [2, 3]);
         assert_eq!(ids(grid.rows(4, 10)), [5]);
         assert!(grid.rows(10, 5).is_empty());
-        assert!(GridIndex::build(Vec::new()).rows(0, 5).is_empty());
+        assert!(
+            GridIndex::build(Vec::new(), Layout::Folders)
+                .rows(0, 5)
+                .is_empty()
+        );
     }
 
     #[test]
@@ -271,13 +417,18 @@ mod tests {
     /// to cooperate, which nothing guarantees.
     #[test]
     fn a_sections_oldest_photo_need_not_be_its_first_entry() {
-        let grid = GridIndex::build(vec![
-            entry_at(1, 10, 900),
-            entry_at(2, 10, 100),
-            entry_at(3, 20, 50),
-        ]);
+        let grid = GridIndex::build(
+            vec![
+                entry_at(1, 10, 900),
+                entry_at(2, 10, 100),
+                entry_at(3, 20, 50),
+            ],
+            Layout::Folders,
+        );
         assert_eq!(grid.sections()[0].taken_at_min, 100);
         assert_eq!(grid.sections()[1].taken_at_min, 50);
+        assert_eq!(grid.folders()[0].taken_at_min, 100);
+        assert_eq!(grid.folders()[1].taken_at_min, 50);
     }
 
     #[test]
@@ -303,9 +454,9 @@ mod tests {
             taken_at,
             ..entry(id, 1)
         };
-        let grid = GridIndex::build(vec![dated(1, old), dated(2, copied_today)]);
+        let grid = GridIndex::build(vec![dated(1, old), dated(2, copied_today)], Layout::Folders);
         assert_eq!(
-            grid.sections()[0].taken_at_min,
+            grid.folders()[0].taken_at_min,
             old,
             "one file carrying today's mtime must not drag the folder out of its own era"
         );
@@ -314,7 +465,7 @@ mod tests {
     #[test]
     fn serialises_as_camel_case() {
         let json = serde_json::to_string(&Section {
-            folder_id: 1,
+            folder_id: Some(1),
             offset: 2,
             count: 3,
             taken_at_min: 4,

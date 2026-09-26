@@ -5,7 +5,7 @@ use crate::{engine::Engine, error::AppError};
 use photon_core::{
     Error,
     edit::{Crop, Edit},
-    grid::{GridEntry, GridView, Section, hex_key},
+    grid::{FolderTally, GridEntry, GridView, Section, hex_key},
     library::{
         Album, AlbumSummary, CopiesArg, Folder, GridTile, ItemFace, Person, SavedSearch, TagCount,
         TagRule, ThemeChoice, WatchedFolder, is_starred,
@@ -59,7 +59,10 @@ pub struct FolderList {
 pub struct GridInfo {
     pub version: u64,
     pub len: usize,
+    /// The runs the grid lays out: one per folder, or one headerless run in a flat view.
     pub sections: Vec<Section>,
+    /// The folders the view's photos come from, whatever the layout. The sidebar's list.
+    pub folders: Vec<FolderTally>,
     pub starred_count: usize,
     /// Photos with a byte-identical twin; the sidebar shows the Duplicates row only above 0.
     pub duplicate_count: usize,
@@ -284,6 +287,7 @@ pub fn grid_info(engine: &Engine) -> GridInfo {
         version,
         len: grid.len(),
         sections: grid.sections().to_vec(),
+        folders: grid.folders().to_vec(),
         starred_count: engine.lib.starred_count().unwrap_or_else(|err| {
             tracing::warn!(%err, "starred count query failed");
             0
@@ -831,6 +835,27 @@ mod tests {
         assert_eq!((info.len, info.sections.len()), (2, 2));
         let sub = list.folders.iter().find(|x| x.name == "sub").unwrap();
         assert_eq!(grid_offset_of_folder(&f.engine, sub.id), Some(1));
+    }
+
+    /// Recent is laid out as one headerless run whatever order its folders fall in, and the
+    /// sidebar still gets each folder the photos came from.
+    #[test]
+    fn recent_is_one_run_under_no_folder_and_still_lists_its_folders() {
+        use photon_core::grid::GridView;
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a.jpg", &img), ("sub/b.jpg", &img)]);
+        f.add_photos();
+        f.engine.set_view(GridView::Recent).unwrap();
+        let info = grid_info(&f.engine);
+        assert_eq!(
+            info.sections
+                .iter()
+                .map(|s| (s.folder_id, s.offset, s.count))
+                .collect::<Vec<_>>(),
+            [(None, 0, 2)]
+        );
+        assert_eq!(info.folders.len(), 2);
+        assert_eq!(info.folders.iter().map(|t| t.count).sum::<usize>(), 2);
     }
 
     #[test]

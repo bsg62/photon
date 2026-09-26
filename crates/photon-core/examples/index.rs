@@ -2,7 +2,7 @@
 //! Usage: cargo run --release --example index -- <library.db> <cache-dir> <photo-folder>
 
 use photon_core::{
-    grid::GridIndex,
+    grid::{GridIndex, Layout},
     library::Library,
     now_ms,
     scanner::{ScanOptions, progress_only, scan_watched},
@@ -35,7 +35,7 @@ fn main() -> photon_core::Result<()> {
     eprintln!("\n{report:?} in {:?}", started.elapsed());
 
     let started = Instant::now();
-    let grid = GridIndex::build(lib.grid_entries()?);
+    let grid = GridIndex::build(lib.grid_entries()?, Layout::Folders);
     eprintln!(
         "grid: {} items in {} sections, built in {:?}",
         grid.len(),

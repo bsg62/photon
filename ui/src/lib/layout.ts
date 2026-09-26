@@ -1,7 +1,7 @@
 /** Grid geometry. Square tiles in fixed-height rows, with one header row per folder
  *  section. Everything here is pure, so 100k items lay out in microseconds. */
 
-import type { GridView, Section } from './api';
+import type { Section } from './api';
 
 export type TileSize = 'small' | 'medium' | 'large';
 
@@ -23,7 +23,8 @@ export function tileRow(tile: number): number {
 }
 
 export interface SectionLike {
-  folderId: number;
+  /** Null for a run drawn with no header: a flat view's, which spans many folders. */
+  folderId: number | null;
   offset: number;
   count: number;
 }
@@ -44,42 +45,12 @@ export function columnsFor(width: number, tile: number): number {
   return Math.max(1, Math.floor((width + GAP) / tileRow(tile)));
 }
 
-/** The sections the grid lays out for `view`, which are not always the index's own.
- *
- *  Recent is a flat newest-first list rather than a folder listing, so wherever folders
- *  overlap in time `GridIndex::build` starts a new section on every photo — 500 photos came
- *  back as 500 sections from a library of twelve interleaved folders. Laid out as folder
- *  runs each of those takes a header and a row of its own, so the view rendered as tall as
- *  the entire library with one tile per row and the rest of every row blank. Collapsing them
- *  into one run (and dropping the headers, which would name a folder per photo) is what
- *  makes Recent read as the shortlist it is.
- *
- *  Only the grid's geometry is collapsed. `library.info.sections` stays as the index built
- *  it, because the sidebar still has to know which folders the view's photos came from. */
-export function layoutSections(view: GridView, sections: Section[], len: number): Section[] {
-  if (view !== 'recent' || len === 0) return sections;
-  return [
-    {
-      folderId: sections[0]?.folderId ?? 0,
-      offset: 0,
-      count: len,
-      // Nothing laid out here reads either field — the run has no header — but a section
-      // that lied about its folder or its date would be a trap for the next reader.
-      takenAtMin: Math.min(...sections.map((s) => s.takenAtMin)),
-    },
-  ];
-}
-
-export function buildRows(
-  sections: SectionLike[],
-  columns: number,
-  headers: boolean,
-  tile: number,
-): Row[] {
+/** A section gets a header row when it names a folder; a flat view's run names none. */
+export function buildRows(sections: SectionLike[], columns: number, tile: number): Row[] {
   const rows: Row[] = [];
   let top = 0;
   sections.forEach((s, section) => {
-    if (headers) {
+    if (s.folderId !== null) {
       rows.push({ kind: 'header', section, first: s.offset, count: 0, top, height: HEADER });
       top += HEADER;
     }

@@ -11,12 +11,12 @@
 
   let { onjump, onopensettings }: { onjump: (folderId: number) => void; onopensettings: () => void } = $props();
 
-  /** Folders that actually hold photos, grouped by the year of their newest one.
+  /** Folders that actually hold photos, grouped by the year of their oldest one.
    *
-   *  Drawn from the grid's sections rather than the folder table: a section exists only for
-   *  a folder with items, which is what keeps empty intermediate folders out of the list.
+   *  Drawn from the index's folder tallies rather than the folder table: a tally exists only
+   *  for a folder with items, which is what keeps empty intermediate folders out of the list.
    *  Watched roots with no photos of their own are managed from Settings instead. */
-  const years = $derived(groupByYear(folderRows(library.info.sections, library.folders.folders)));
+  const years = $derived(groupByYear(folderRows(library.info.folders, library.folders.folders)));
   const shownTags = $derived(sidebarTags(library.tags));
 
   /** Which collection groups are open. Albums start open because they are the user's own;
@@ -60,7 +60,7 @@
   }
 
   /** Hide folder: its photos, and any added to it later, until Unhide folder. The row then
-   *  leaves this list on its own - the rows are the view's sections, and a hidden folder's
+   *  leaves this list on its own - the rows are the view's folders, and a hidden folder's
    *  photos are in no view but Hidden, unless the user unhid one by hand, which keeps the
    *  folder listed (and its menu offering Unhide folder) wherever that photo shows. */
   async function toggleFolderHidden(f: Folder) {

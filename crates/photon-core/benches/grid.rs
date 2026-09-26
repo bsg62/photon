@@ -1,6 +1,6 @@
 use criterion::{Criterion, criterion_group, criterion_main};
 use photon_core::{
-    grid::GridIndex,
+    grid::{GridIndex, Layout},
     library::{HashCandidate, Library, NewItem},
     media::MediaKind,
 };
@@ -52,11 +52,16 @@ fn bench_grid(c: &mut Criterion) {
 
     // Spec budget: warm startup to first grid data < 1s.
     c.bench_function("startup_grid_100k", |b| {
-        b.iter(|| black_box(GridIndex::build(lib.grid_entries().unwrap())))
+        b.iter(|| {
+            black_box(GridIndex::build(
+                lib.grid_entries().unwrap(),
+                Layout::Folders,
+            ))
+        })
     });
 
     // Spec budget: grid_rows page query < 50ms.
-    let index = GridIndex::build(lib.grid_entries().unwrap());
+    let index = GridIndex::build(lib.grid_entries().unwrap(), Layout::Folders);
     c.bench_function("grid_rows_page", |b| {
         b.iter(|| black_box(index.rows(black_box(50_000), 200).len()))
     });
@@ -81,7 +86,12 @@ fn bench_grid(c: &mut Criterion) {
             .unwrap();
     }
     c.bench_function("startup_grid_100k_with_duplicates", |b| {
-        b.iter(|| black_box(GridIndex::build(dup_lib.grid_entries().unwrap())))
+        b.iter(|| {
+            black_box(GridIndex::build(
+                dup_lib.grid_entries().unwrap(),
+                Layout::Folders,
+            ))
+        })
     });
 }
 
