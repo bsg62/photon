@@ -172,6 +172,8 @@ export interface ScanProgressEvent {
 export interface FolderStatus { watchedId: number; online: boolean; degraded: boolean }
 export interface LibraryChanged { version: number; len: number }
 export interface AppError { kind: string; message: string }
+export interface VideoJob { id: number; key: string }
+export type VideoFailure = 'unsupported' | 'decode' | 'timeout';
 
 export const api = {
   listFolders: () => invoke<FolderList>('list_folders'),
@@ -272,6 +274,15 @@ export const api = {
   /** Copies the photo, as shown and capped at 2560 px, to the clipboard as a picture. */
   copyPhoto: (itemId: number) => invoke<void>('copy_photo', { itemId }),
   revealFolder: (folderId: number) => invoke<void>('reveal_folder', { folderId }),
+  mediaBase: () => invoke<string>('media_base'),
+  videoSessionStart: (supported: boolean) => invoke<void>('video_session_start', { supported }),
+  /** Long-polls: resolves with a job, or null after about 25 s with none. */
+  nextVideoJob: () => invoke<VideoJob | null>('next_video_job'),
+  /** The frame goes as the raw body, not JSON: a JSON number array of a JPEG is ~4x its size. */
+  putVideoFrame: (id: number, key: string, jpeg: Uint8Array) =>
+    invoke<void>('put_video_frame', jpeg, { headers: { 'x-photon-id': String(id), 'x-photon-key': key } }),
+  videoFrameFailed: (id: number, key: string, reason: VideoFailure) =>
+    invoke<void>('video_frame_failed', { id, key, reason }),
 };
 
 export const events = {

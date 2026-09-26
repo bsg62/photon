@@ -15,6 +15,10 @@
   import { clampSidebarWidth, SIDEBAR_DEFAULT, SIDEBAR_STEP } from './lib/sidebar';
   import { createExportDialog } from './lib/export-dialog.svelte';
   import { createTagPicker } from './lib/tag-picker.svelte';
+  import { grabPoster } from './lib/video-grab';
+  import { videoState } from './lib/video-state.svelte';
+  import { createVideoThumbnailer } from './lib/video-thumbnailer.svelte';
+  import { mediaSupported, videoUrl, PREVIEW_MAX_EDGE } from './lib/video';
   import Icon from './components/Icon.svelte';
   import FolderTree from './components/FolderTree.svelte';
   import Grid from './components/Grid.svelte';
@@ -93,10 +97,28 @@
     // Same lifecycle as the theme, and for the same reason: a module singleton that has to
     // come back to life when App remounts.
     void gridSize.init();
+    // Videos: where they are served and whether this webview can play them, then the
+    // session that tells the backend so - on Linux without GStreamer's plugins, playing one
+    // would take the window down, and without a session no thumbnail request waits on us.
+    const thumbnailer = createVideoThumbnailer({
+      nextJob: api.nextVideoJob,
+      put: api.putVideoFrame,
+      fail: api.videoFrameFailed,
+      url: (id) => videoUrl(videoState.base ?? '', id),
+      grab: (url, signal) => grabPoster(url, signal, PREVIEW_MAX_EDGE),
+    });
+    void (async () => {
+      const base = await api.mediaBase().catch(() => null);
+      videoState.base = base;
+      videoState.supported = base !== null && mediaSupported((t) => document.createElement('video').canPlayType(t));
+      await api.videoSessionStart(videoState.supported).catch(() => {});
+      if (videoState.supported) thumbnailer.start();
+    })();
     return () => {
       library.dispose();
       theme.dispose();
       gridSize.dispose();
+      thumbnailer.stop();
     };
   });
 
