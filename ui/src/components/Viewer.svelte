@@ -6,6 +6,7 @@
   import { videoState } from '../lib/video-state.svelte';
   import { formatDuration, videoUrl } from '../lib/video';
   import { nextStill } from '../lib/slideshow-order';
+  import { createVideoPlayer } from '../lib/video-player.svelte';
   import { createAlbumMembership } from '../lib/album-membership.svelte';
   import { ownAlbums, picasaAlbumsOf } from '../lib/albums';
   import { createTagEditor } from '../lib/tag-editor.svelte';
@@ -23,6 +24,7 @@
   import { library } from '../lib/library.svelte';
   import { pictureChanged } from '../lib/picture';
   import Icon from './Icon.svelte';
+  import VideoControls from './VideoControls.svelte';
   import {
     MAX_ZOOM,
     MIN_ZOOM,
@@ -303,6 +305,14 @@
 
   const isVideo = $derived(item?.kind === 'video');
   let videoEl = $state<HTMLVideoElement | null>(null);
+  /** photon's own controls for the video on screen (`VideoControls`). One player for the
+   *  viewer, following whichever element is mounted; loop, mute and volume live in
+   *  `sessionPrefs`, so they carry over from one video to the next. */
+  const player = createVideoPlayer();
+  $effect(() => {
+    const el = videoEl;
+    if (el) return player.attach(el);
+  });
   /** The `<video>` on screen reported an error: it would otherwise sit there black, with
    *  controls that do nothing. Reset by the loader for every photo it loads. */
   let playbackFailed = $state(false);
@@ -615,6 +625,15 @@
   });
 
   function onkeydown(e: KeyboardEvent) {
+    // A drag along the video's position bar owns the keyboard while it lasts: Escape puts the
+    // video back where the drag began, and nothing else may navigate away from under it.
+    if (player.scrubbing) {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        player.abandonScrub();
+      }
+      return;
+    }
     // An open menu takes Escape first, the way any menu does; the viewer is next.
     if (e.key === 'Escape' && menu) {
       e.preventDefault();
@@ -666,6 +685,13 @@
       close();
       return;
     }
+    // A playing video answers Space, L (loop), M (mute) and Shift+←/→ (seek); plain arrows
+    // fall through to move between items as they always have. Not during a slideshow, which
+    // never stops on a video and keeps Space for itself.
+    if (isVideo && videoFullSrc && !slideshow.active && player.handleKey(e)) {
+      e.preventDefault();
+      return;
+    }
     // Plain letters only: a modifier means the key belongs to the webview or the OS.
     if (!e.ctrlKey && !e.metaKey && !e.altKey) {
       // A video has no turn or crop; swallow the keys rather than let them fall through to
@@ -697,16 +723,9 @@
         else startSlideshow();
         return;
       }
-      if (e.key === ' ' && (slideshow.active || isVideo)) {
+      if (e.key === ' ' && slideshow.active) {
         e.preventDefault();
-        if (slideshow.active) slideshow.toggle();
-        else if (videoEl) {
-          // `play()` rejects when the browser aborts it (a fast Space-Space) or refuses it
-          // outright (autoplay policy); either way there is nothing to do about it here, but
-          // an uncaught rejection would otherwise surface as an unhandled promise warning.
-          if (videoEl.paused) videoEl.play().catch(() => {});
-          else videoEl.pause();
-        }
+        slideshow.toggle();
         return;
       }
       if (e.key === 'i' || e.key === 'I') {
@@ -887,10 +906,10 @@
               <p>{videoIssueMessage}</p>
             </div>
           {:else}
-            <!-- Plays on open, with sound, as Picasa did. `tabindex="-1"` only takes it out
-                 of the tab order - a click still focuses it like any control - but the
-                 viewer's own keys (arrows, Home, End, Escape, Space) live on
-                 `<svelte:window>`, so they keep working over it regardless. -->
+            <!-- Plays on open, with sound, as Picasa did. No `controls`: photon draws its own
+                 (`VideoControls`), which look the same in all three webviews; a click on the
+                 picture plays and pauses. `tabindex="-1"` only takes it out of the tab order -
+                 the viewer's own keys live on `<svelte:window>` and work over it regardless. -->
             <!-- A Failed video that is not a crash is offered but not started: its failure was
                  the poster frame's (a decode error, a timeout), which says the platform
                  struggled with the file, so it waits for the user to ask. An error while
@@ -902,12 +921,12 @@
               class="full"
               src={videoFullSrc}
               poster={mediaUrl(`thumb/${item.id}/preview/${item.thumbKey}`)}
-              controls
               autoplay={item.thumbState !== 'failed'}
               preload="metadata"
               crossorigin="anonymous"
               tabindex="-1"
               bind:this={videoEl}
+              onclick={() => player.toggle()}
               onerror={(e) => {
                 if (e.currentTarget === videoEl && videoFullSrc) playbackFailed = true;
               }}
@@ -1092,6 +1111,9 @@
       <button class="tool wide primary" onclick={applyCrop} title="Apply (Enter)">Apply</button>
     </div>
   {:else}
+  {#if isVideo && videoFullSrc}
+    <VideoControls {player} />
+  {/if}
   <div class="bar">
     <button
       class="star"
@@ -1189,15 +1211,12 @@
      both Linux and macOS — from starting its own image drag or selecting the image instead
      of panning. */
   img, video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; image-orientation: from-image; user-select: none; -webkit-user-drag: none; }
-  /* The native control bar draws inside the video's own box, at its bottom edge; left at
-     `inset: 0` it would draw at the very bottom of the window, under our floating `.bar`
-     (which paints on top, later in the document, and would eat the controls' clicks without
-     ever showing them). Insetting the video above `.bar` - the same clearance
-     `.photo-caption` already keeps below it - is simpler than moving `.bar` itself out of a
-     region a photo never needed clear in the first place. `height: auto` lets the bottom
-     inset actually take effect: `inset: 0` above also sets an explicit height, and a
-     positioned box honours only one of a competing height/top+bottom pair. */
-  video.full { bottom: 64px; height: auto; }
+  /* The video stops above photon's own controls (`VideoControls`, at 64px) and the bar below
+     them, so neither ever covers the picture - a subtitle burned in at the bottom edge, say.
+     `height: auto` lets the bottom inset actually take effect: `inset: 0` above also sets an
+     explicit height, and a positioned box honours only one of a competing height/top+bottom
+     pair. */
+  video.full { bottom: 112px; height: auto; }
   .hidden { visibility: hidden; }
   /* After the stage in the document and before the controls, so it paints between them
      without a z-index. The duration is `CROSSFADE_MS`. */

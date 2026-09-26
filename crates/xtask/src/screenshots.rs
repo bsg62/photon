@@ -164,6 +164,13 @@ pub const SHOTS: &[Shot] = &[
         query: "theme=dark&do=video",
         dark: true,
     },
+    // The viewer on a video it can play: photon's own controls above the bar, over the poster
+    // (the mock has no file to play, and swallows the load error for this shot alone).
+    Shot {
+        name: "viewer-video-controls-dark",
+        query: "theme=dark&do=videoplay",
+        dark: true,
+    },
 ];
 
 #[derive(Debug, PartialEq)]
