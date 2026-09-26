@@ -1,17 +1,19 @@
-use super::inflight::{CRASH_MESSAGE, DEATHS_TO_FAIL, InFlight};
+use super::inflight::{CRASH_MESSAGE, DEATHS_TO_FAIL, InFlight, Marker};
 use super::{Priority, ThumbCache, ThumbQueue, ThumbSize};
 use crate::{
     Error, Result,
     edit::Edit,
     library::{Item, Library},
-    media::ThumbState,
+    media::{MediaKind, ThumbState},
 };
 use image::DynamicImage;
-use parking_lot::{RwLock, RwLockReadGuard, RwLockWriteGuard};
+use parking_lot::{Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::{
+    collections::{HashMap, HashSet},
     panic::{AssertUnwindSafe, catch_unwind},
     path::{Path, PathBuf},
     sync::Arc,
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
     thread::JoinHandle,
     time::{Duration, Instant},
 };
@@ -69,6 +71,38 @@ fn worker_count(parallelism: usize) -> usize {
     parallelism.saturating_sub(1).clamp(1, MAX_WORKERS)
 }
 
+/// What the webview is asked to draw: the video, and the key its frame will be stored under.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct VideoJob {
+    pub id: i64,
+    pub key: u64,
+}
+
+/// Why the webview could not draw a frame. `Unsupported` is the platform's answer (no codec)
+/// and is not held against the file; the other two are.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum VideoFailure {
+    Unsupported,
+    Decode,
+    Timeout,
+}
+
+/// What a popped video id turned out to be for the page that popped it.
+enum Claim {
+    /// Draw this; the id stays in flight until the page answers or a session drains it.
+    Job(VideoJob),
+    /// Nothing to draw: gone, failed, skipped, or already cached.
+    Nothing,
+    /// A new session started while the caller waited, so the caller is the old page.
+    Stale,
+}
+
+pub(crate) const VIDEO_CRASH_MESSAGE: &str = "photon's window stopped while opening this video";
+
+/// A frame bigger than this on either side is not one the webview drew at preview size.
+const MAX_FRAME_EDGE: u32 = 8192;
+
 pub struct ThumbService {
     lib: Arc<Library>,
     cache: Arc<ThumbCache>,
@@ -79,6 +113,26 @@ pub struct ThumbService {
     /// `decode_lock` and its backoff bookkeeping, grouped into one field so `process` takes
     /// one parameter for both rather than two (and stays under clippy's argument-count lint).
     suspects: Arc<Suspects>,
+    /// Videos waiting for a poster frame. No worker pops it: the webview draws a video's
+    /// frame (`next_video_job`), and `request` waits on it exactly as it waits on `queue`.
+    videos: ThumbQueue,
+    /// The crash-loop guard for frames, under `<cache>/video`. Separate from `inflight`
+    /// because what dies is the web process, not photon: its window goes blank, the user
+    /// quits cleanly, and `disarm` - right for a worker - would sweep the evidence. This one
+    /// is never disarmed, and is judged by `recover` whenever a page starts a session.
+    video_inflight: InFlight,
+    /// The marker of every job handed to a page and not yet answered. An entry is what
+    /// stands for the id being in flight in `videos`: whoever removes it owes `videos` its
+    /// one `done`, and nobody else does - see `claim_video`.
+    video_claims: Mutex<HashMap<i64, Marker>>,
+    /// Ids the webview said it cannot play, skipped until the next session.
+    video_skipped: Mutex<HashSet<i64>>,
+    /// Whether a page is making frames. Without one, a thumbnail request for a video
+    /// answers at once rather than holding a protocol thread for `THUMB_TIMEOUT`.
+    video_session: AtomicBool,
+    /// Bumped by every `video_session_start`, under `video_claims`' lock, so a long-poll the
+    /// previous page left waiting cannot claim a job for a page that no longer exists.
+    video_generation: AtomicU64,
 }
 
 #[derive(Default)]
@@ -195,6 +249,7 @@ impl ThumbService {
     ) -> Self {
         let queue = Arc::new(ThumbQueue::new());
         let inflight = Arc::new(InFlight::new(cache.root()));
+        let cache_root_video = cache.root().join("video");
         // Before any worker starts: a marker still here was in flight when a previous run died.
         inflight.recover();
         let suspects = Arc::new(Suspects::default());
@@ -230,14 +285,222 @@ impl ThumbService {
             render,
             inflight,
             suspects,
+            videos: ThumbQueue::new(),
+            // No `recover` here: the first session judges what a previous run's page left.
+            video_inflight: InFlight::new(&cache_root_video),
+            video_claims: Mutex::default(),
+            video_skipped: Mutex::default(),
+            video_session: AtomicBool::new(false),
+            video_generation: AtomicU64::new(0),
         }
     }
 
-    /// Queues every item still waiting for thumbnails at background priority.
+    /// Queues every item still waiting for thumbnails at background priority: images for
+    /// the workers, and videos for the webview while a page is drawing them.
     pub fn enqueue_pending(&self) -> Result<usize> {
-        let ids = self.lib.pending_thumb_ids()?;
+        let ids = self.lib.pending_thumb_ids(MediaKind::Image)?;
         self.queue.push_many(&ids, Priority::Background);
+        let videos = if self.video_session.load(Ordering::SeqCst) {
+            self.enqueue_pending_videos()?
+        } else {
+            0
+        };
+        Ok(ids.len() + videos)
+    }
+
+    fn enqueue_pending_videos(&self) -> Result<usize> {
+        let ids = self.lib.pending_thumb_ids(MediaKind::Video)?;
+        self.videos.push_many(&ids, Priority::Background);
         Ok(ids.len())
+    }
+
+    /// A page has loaded and says whether it can play video. Every claim still open belongs
+    /// to a page that no longer exists - it reloaded, or its process died with the frame half
+    /// drawn - so `recover` turns their markers into deaths first, the judgement a worker's
+    /// marker gets at launch.
+    ///
+    /// `recover`, the generation bump and the drain happen under `video_claims`' lock, which
+    /// `claim_video` also holds while it writes a marker: a claim is therefore either made
+    /// before all three (and judged and drained here) or refused after them, never caught
+    /// with its marker written after `recover` looked and its entry left for the new page.
+    pub fn video_session_start(&self, supported: bool) -> Result<()> {
+        let abandoned: Vec<i64> = {
+            let mut claims = self.video_claims.lock();
+            self.video_inflight.recover();
+            self.video_generation.fetch_add(1, Ordering::SeqCst);
+            // Dropping a marker after `recover` removes nothing more: its file is already a
+            // record, and an unresolved marker never clears one.
+            claims.drain().map(|(id, _marker)| id).collect()
+        };
+        for id in abandoned {
+            self.videos.done(id);
+        }
+        self.video_skipped.lock().clear();
+        self.video_session.store(supported, Ordering::SeqCst);
+        if supported {
+            self.enqueue_pending_videos()?;
+        }
+        Ok(())
+    }
+
+    /// The next video to draw, waiting up to `wait` for one: a long-poll, so the page never
+    /// has to be told a job arrived.
+    pub fn next_video_job(&self, wait: Duration) -> Result<Option<VideoJob>> {
+        // Read before waiting: a session that starts while this call waits belongs to a new
+        // page, and this call to the one it replaced.
+        let generation = self.video_generation.load(Ordering::SeqCst);
+        let deadline = Instant::now() + wait;
+        while let Some(id) = self.videos.pop_until(deadline) {
+            match self.claim_video(id, generation) {
+                Ok(Claim::Job(job)) => return Ok(Some(job)),
+                Ok(Claim::Nothing) => self.videos.done(id),
+                Ok(Claim::Stale) => {
+                    // Not this caller's to draw: back on the queue for the page that is
+                    // there now. A push while in flight is held until `done`, which queues it.
+                    self.videos.push(id, Priority::Background);
+                    self.videos.done(id);
+                    return Ok(None);
+                }
+                Err(err) => {
+                    self.videos.done(id);
+                    return Err(err);
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    /// Decides whether the popped `id` is a job for the page that asked. Only `Claim::Job`
+    /// leaves `id` in flight, with its marker in `video_claims`; the caller owes `videos` its
+    /// `done` for everything else.
+    fn claim_video(&self, id: i64, generation: u64) -> Result<Claim> {
+        let Some(item) = self.lib.item(id)? else {
+            return Ok(Claim::Nothing);
+        };
+        if item.kind != MediaKind::Video
+            || item.missing_since.is_some()
+            || item.thumb_state == ThumbState::Failed
+            || self.video_skipped.lock().contains(&id)
+        {
+            return Ok(Claim::Nothing);
+        }
+        let key = item.thumb_key();
+        if self.cache.is_complete(key) {
+            if item.thumb_state != ThumbState::Ready {
+                self.lib
+                    .set_thumb_state_if_unchanged(&item, ThumbState::Ready, None)?;
+            }
+            self.video_inflight.clear(id);
+            return Ok(Claim::Nothing);
+        }
+        let deaths = self.video_inflight.deaths(id, key);
+        if deaths >= DEATHS_TO_FAIL {
+            tracing::error!(
+                id,
+                path = %item.path,
+                deaths,
+                "the window died with this video open; not opening it again"
+            );
+            self.lib.set_thumb_state_if_unchanged(
+                &item,
+                ThumbState::Failed,
+                Some(VIDEO_CRASH_MESSAGE),
+            )?;
+            self.video_inflight.clear(id);
+            return Ok(Claim::Nothing);
+        }
+        let mut claims = self.video_claims.lock();
+        if self.video_generation.load(Ordering::SeqCst) != generation {
+            return Ok(Claim::Stale);
+        }
+        claims.insert(id, self.video_inflight.begin(id, key));
+        Ok(Claim::Job(VideoJob { id, key }))
+    }
+
+    /// Stores the frame the webview drew for `id`. `false`, storing nothing, when the video
+    /// changed since the job was handed out - the frame is of a file that is not there.
+    /// The bytes came over IPC, so they are decoded as a JPEG of bounded size and nothing else.
+    pub fn put_video_frame(&self, id: i64, key: u64, jpeg: &[u8]) -> Result<bool> {
+        let claim = self.video_claims.lock().remove(&id);
+        let stored = self.store_video_frame(id, key, jpeg);
+        self.release_video_claim(id, claim, matches!(stored, Ok(true)));
+        stored
+    }
+
+    fn store_video_frame(&self, id: i64, key: u64, jpeg: &[u8]) -> Result<bool> {
+        let Some(item) = self.lib.item(id)? else {
+            return Ok(false);
+        };
+        if item.kind != MediaKind::Video || item.thumb_key() != key {
+            return Ok(false);
+        }
+        let mut reader =
+            image::ImageReader::with_format(std::io::Cursor::new(jpeg), image::ImageFormat::Jpeg);
+        let mut limits = image::Limits::default();
+        limits.max_image_width = Some(MAX_FRAME_EDGE);
+        limits.max_image_height = Some(MAX_FRAME_EDGE);
+        reader.limits(limits);
+        let frame = reader.decode()?;
+        let (preview, grid) = self.cache.render_frame(&frame);
+        self.cache.store(key, &preview, &grid)?;
+        self.lib
+            .set_thumb_state_if_unchanged(&item, ThumbState::Ready, None)
+    }
+
+    /// The page could not draw `id`'s frame. `Unsupported` skips it for the rest of the
+    /// session and leaves the row `Pending`, so a codec installed later still fills it;
+    /// `Decode` and `Timeout` fail the row, as a decode error fails a photo.
+    pub fn video_frame_failed(&self, id: i64, key: u64, reason: VideoFailure) -> Result<()> {
+        let claim = self.video_claims.lock().remove(&id);
+        let result = match reason {
+            VideoFailure::Unsupported => {
+                self.video_skipped.lock().insert(id);
+                Ok(true)
+            }
+            VideoFailure::Decode | VideoFailure::Timeout => self.fail_video(id, key, reason),
+        };
+        self.release_video_claim(id, claim, matches!(result, Ok(true)));
+        result.map(|_| ())
+    }
+
+    /// Ends a claim the page answered. The page lived to answer, so whatever it said, this
+    /// was not a death. `videos.done` only for a claim this call actually removed, so a claim
+    /// ends once whoever answers it: an answer that finds none - a second answer to one job,
+    /// or one from a page a session already wrote off and drained - owes nothing, and a
+    /// `done` from it could land while the id sits popped but not yet claimed by the page
+    /// that is there now, releasing that job's waiters before its frame exists.
+    ///
+    /// `settled` - a frame stored, the row failed, the video skipped - drops a push that
+    /// arrived while the page drew (`ThumbQueue::done_settled`): queued, it would hold a
+    /// `request` that made it until the page polled again, to learn what `cached` already
+    /// knows. Unsettled - the video changed underneath - it is queued, for the new file.
+    fn release_video_claim(&self, id: i64, claim: Option<Marker>, settled: bool) {
+        if let Some(marker) = claim {
+            marker.resolve(true);
+            if settled {
+                self.videos.done_settled(id);
+            } else {
+                self.videos.done(id);
+            }
+        }
+    }
+
+    /// Fails the row, reporting whether it did: not when the video changed since the job
+    /// was handed out, since the failure was of a file that is not there any more.
+    fn fail_video(&self, id: i64, key: u64, reason: VideoFailure) -> Result<bool> {
+        let Some(item) = self.lib.item(id)? else {
+            return Ok(false);
+        };
+        if item.kind != MediaKind::Video || item.thumb_key() != key {
+            return Ok(false);
+        }
+        let message = if reason == VideoFailure::Timeout {
+            "This video took too long to open."
+        } else {
+            "This video can't be read."
+        };
+        self.lib
+            .set_thumb_state_if_unchanged(&item, ThumbState::Failed, Some(message))
     }
 
     pub fn set_visible(&self, ids: &[i64]) {
@@ -263,9 +526,15 @@ impl ThumbService {
     /// Disarms the crash-loop guard first: a deliberate close is not the kind of death it
     /// watches for, so no marker from it should survive to be misread as one. Safe to call
     /// even if `disarm` already ran - it just sweeps an already-empty directory again.
+    ///
+    /// `video_inflight` is left armed. A web process that dies on a video leaves photon
+    /// running with a blank window, and the user's next move is a clean quit: disarming here
+    /// would sweep the marker that is the only evidence, and the next launch would open the
+    /// same video and die the same way. Closing `videos` returns a waiting `next_video_job`.
     pub fn close(&self) {
         self.inflight.disarm();
         self.queue.close();
+        self.videos.close();
     }
 
     /// Returns the cached thumbnail, generating it on the calling thread if needed.
@@ -314,12 +583,27 @@ impl ThumbService {
         // readmitting it (see `SUSPECT_BACKOFF_START`), so `wait_for` finds it neither
         // queued nor in flight and returns at once - no worker is ever woken for it, so
         // this never causes a fresh `decode_lock` attempt on the suspect's behalf.
+        //
+        // A video waits on `videos`, where the webview rather than a worker makes the frame.
+        let video = self
+            .lib
+            .item(id)?
+            .is_some_and(|item| item.kind == MediaKind::Video);
+        let queue = if video { &self.videos } else { &*self.queue };
         for _ in 0..2 {
             if let Some(path) = self.cached(id, size)? {
                 return Ok(path);
             }
-            self.queue.push(id, Priority::Visible);
-            if !self.queue.wait_for(id, deadline) {
+            if video
+                && (!self.video_session.load(Ordering::SeqCst)
+                    || self.video_skipped.lock().contains(&id))
+            {
+                // No page is drawing frames - the webview cannot play video here - or it
+                // could not draw this one: waiting would hold a protocol thread for nothing.
+                return Err(Error::ThumbUnavailable(id));
+            }
+            queue.push(id, Priority::Visible);
+            if !queue.wait_for(id, deadline) {
                 return Err(Error::ThumbTimeout(id));
             }
         }
@@ -360,15 +644,23 @@ impl ThumbService {
     /// same `live` set answers both, and both are left behind by the same writes.
     pub fn collect_garbage(&self) -> Result<usize> {
         let live = self.lib.live_fingerprints()?;
-        Ok(self.cache.collect_garbage(&live)? + self.inflight.collect_garbage(&live))
+        Ok(self.cache.collect_garbage(&live)?
+            + self.inflight.collect_garbage(&live)
+            + self.video_inflight.collect_garbage(&live))
     }
 }
 
 impl Drop for ThumbService {
     fn drop(&mut self) {
         self.queue.close();
+        self.videos.close();
         for handle in self.workers.drain(..) {
             let _ = handle.join();
+        }
+        // A claim still open here is a frame no page answered, and its marker is the
+        // evidence `close` keeps for the next launch; dropping it would delete the file.
+        for (_, marker) in self.video_claims.get_mut().drain() {
+            std::mem::forget(marker);
         }
     }
 }
@@ -433,6 +725,12 @@ fn process(
     if item.missing_since.is_some() || item.thumb_state == ThumbState::Failed {
         // Already decided by some other means (a rescan) since whatever queued this job -
         // see `Suspects::resolved`.
+        suspects.resolved(id, queue);
+        return Ok(());
+    }
+    if item.kind != MediaKind::Image {
+        // The webview draws a video's frame (`next_video_job`). `set_visible` and
+        // `prioritize` take ids without asking what they are, so one can still land here.
         suspects.resolved(id, queue);
         return Ok(());
     }
@@ -580,9 +878,11 @@ fn is_source_defect(err: &Error) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use super::VideoFailure;
     use super::*;
     use crate::library::NewItem;
-    use crate::testutil::{jpeg_bytes, new_item, seed_folder, write_file};
+    use crate::media::MediaKind;
+    use crate::testutil::{jpeg_bytes, new_item, png_bytes, seed_folder, write_file};
     use tempfile::TempDir;
 
     /// Pure logic, no real time needed: `bump` doubles the wait from `SUSPECT_BACKOFF_START`
@@ -655,6 +955,222 @@ mod tests {
 
     fn state(lib: &Library, id: i64) -> ThumbState {
         lib.item(id).unwrap().unwrap().thumb_state
+    }
+
+    fn video_setup(names: &[&str]) -> (TempDir, Arc<Library>, ThumbService, Vec<i64>) {
+        let dir = tempfile::tempdir().unwrap();
+        let lib = Arc::new(Library::open(&dir.path().join("library.db")).unwrap());
+        let photos = dir.path().join("photos");
+        let (_, folder) = seed_folder(&lib, &photos);
+        let items: Vec<NewItem> = names
+            .iter()
+            .map(|name| {
+                let path = write_file(&photos, name, b"not decoded by photon");
+                let mut item = new_item(folder, path.to_str().unwrap(), 0);
+                item.kind = MediaKind::Video;
+                item
+            })
+            .collect();
+        let ids = lib.insert_items(&items).unwrap();
+        let cache = Arc::new(ThumbCache::new(dir.path().join("cache")));
+        let service = ThumbService::start(lib.clone(), cache, 1);
+        (dir, lib, service, ids)
+    }
+
+    const SHORT: Duration = Duration::from_millis(50);
+
+    #[test]
+    fn workers_never_take_a_video() {
+        let (_dir, lib, service, ids) = video_setup(&["a.mp4"]);
+        service.enqueue_pending().unwrap();
+        service.prioritize(&ids, Priority::Visible); // what the viewer's neighbours do
+        service.queue.wait_idle();
+        assert_eq!(state(&lib, ids[0]), ThumbState::Pending);
+    }
+
+    #[test]
+    fn a_session_hands_out_pending_videos_and_a_frame_makes_them_ready() {
+        let (_dir, lib, service, ids) = video_setup(&["a.mp4"]);
+        service.video_session_start(true).unwrap();
+        let job = service.next_video_job(SHORT).unwrap().expect("a job");
+        assert_eq!(job.id, ids[0]);
+        assert!(
+            service
+                .put_video_frame(job.id, job.key, &jpeg_bytes(320, 180))
+                .unwrap()
+        );
+        let item = lib.item(ids[0]).unwrap().unwrap();
+        assert_eq!(item.thumb_state, ThumbState::Ready);
+        assert!(service.cache.is_complete(item.thumb_key()));
+        assert!(service.next_video_job(SHORT).unwrap().is_none());
+    }
+
+    #[test]
+    fn a_waiting_thumbnail_request_resolves_when_the_frame_lands() {
+        let (_dir, _lib, service, ids) = video_setup(&["a.mp4"]);
+        service.video_session_start(true).unwrap();
+        let service = Arc::new(service);
+        let waiter = {
+            let service = service.clone();
+            let id = ids[0];
+            std::thread::spawn(move || service.request(id, ThumbSize::Grid, Duration::from_secs(5)))
+        };
+        let job = service
+            .next_video_job(Duration::from_secs(5))
+            .unwrap()
+            .unwrap();
+        service
+            .put_video_frame(job.id, job.key, &jpeg_bytes(320, 180))
+            .unwrap();
+        assert!(waiter.join().unwrap().unwrap().is_file());
+    }
+
+    #[test]
+    fn a_video_request_without_a_session_answers_at_once() {
+        let (_dir, _lib, service, ids) = video_setup(&["a.mp4"]);
+        service.video_session_start(false).unwrap();
+        let started = Instant::now();
+        assert!(matches!(
+            service.request(ids[0], ThumbSize::Grid, Duration::from_secs(30)),
+            Err(Error::ThumbUnavailable(_))
+        ));
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn a_frame_for_a_changed_video_is_refused_and_releases_waiters() {
+        let (_dir, lib, service, ids) = video_setup(&["a.mp4"]);
+        service.video_session_start(true).unwrap();
+        let job = service.next_video_job(SHORT).unwrap().unwrap();
+        // The file is rewritten while the webview is still drawing it.
+        let item = lib.item(ids[0]).unwrap().unwrap();
+        let mut changed = new_item(item.folder_id, &item.path, 0);
+        changed.kind = MediaKind::Video;
+        changed.size = 999;
+        lib.update_items(&[(ids[0], changed)]).unwrap();
+        assert!(
+            !service
+                .put_video_frame(job.id, job.key, &jpeg_bytes(320, 180))
+                .unwrap()
+        );
+        assert_eq!(state(&lib, ids[0]), ThumbState::Pending);
+        // Released: a waiter would see the id neither queued nor in flight.
+        assert!(service.videos.wait_for(ids[0], Instant::now() + SHORT));
+    }
+
+    #[test]
+    fn a_frame_that_is_not_a_jpeg_is_refused() {
+        let (_dir, _lib, service, _ids) = video_setup(&["a.mp4"]);
+        service.video_session_start(true).unwrap();
+        let job = service.next_video_job(SHORT).unwrap().unwrap();
+        assert!(
+            service
+                .put_video_frame(job.id, job.key, &png_bytes(8, 8))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn unsupported_is_skipped_for_the_session_but_decode_fails_the_row() {
+        let (_dir, lib, service, _ids) = video_setup(&["a.mp4", "b.mp4"]);
+        service.video_session_start(true).unwrap();
+        let first = service.next_video_job(SHORT).unwrap().unwrap();
+        service
+            .video_frame_failed(first.id, first.key, VideoFailure::Unsupported)
+            .unwrap();
+        let second = service.next_video_job(SHORT).unwrap().unwrap();
+        service
+            .video_frame_failed(second.id, second.key, VideoFailure::Decode)
+            .unwrap();
+
+        assert_eq!(
+            state(&lib, first.id),
+            ThumbState::Pending,
+            "codecs installed later must still fill it"
+        );
+        assert_eq!(state(&lib, second.id), ThumbState::Failed);
+        service.enqueue_pending().unwrap();
+        assert!(
+            service.next_video_job(SHORT).unwrap().is_none(),
+            "skipped for the rest of the session"
+        );
+        service.video_session_start(true).unwrap();
+        assert_eq!(
+            service.next_video_job(SHORT).unwrap().unwrap().id,
+            first.id,
+            "a new session tries again"
+        );
+    }
+
+    #[test]
+    fn a_page_that_dies_twice_on_a_video_fails_it() {
+        let (_dir, lib, service, ids) = video_setup(&["a.mp4"]);
+        for _ in 0..DEATHS_TO_FAIL {
+            service.video_session_start(true).unwrap();
+            // The page claims the job and is never heard from again.
+            assert_eq!(service.next_video_job(SHORT).unwrap().unwrap().id, ids[0]);
+        }
+        service.video_session_start(true).unwrap();
+        assert!(service.next_video_job(SHORT).unwrap().is_none());
+        let item = lib.item(ids[0]).unwrap().unwrap();
+        assert_eq!(item.thumb_state, ThumbState::Failed);
+        assert_eq!(item.thumb_error.as_deref(), Some(VIDEO_CRASH_MESSAGE));
+    }
+
+    #[test]
+    fn a_clean_close_does_not_forgive_a_claimed_video() {
+        // A web process that dies leaves photon running; the user quits it cleanly. That quit
+        // must not sweep the video's marker, or the next launch replays the crash.
+        let (dir, lib, service, ids) = video_setup(&["a.mp4"]);
+        service.video_session_start(true).unwrap();
+        service.next_video_job(SHORT).unwrap().unwrap();
+        service.close();
+        drop(service);
+        let service = ThumbService::start(
+            lib.clone(),
+            Arc::new(ThumbCache::new(dir.path().join("cache"))),
+            1,
+        );
+        service.video_session_start(true).unwrap();
+        let key = lib.item(ids[0]).unwrap().unwrap().thumb_key();
+        assert_eq!(service.video_inflight.deaths(ids[0], key), 1);
+    }
+
+    /// The tile asks while the page is already drawing its frame, so the request's push is
+    /// held behind the running job. The frame settles it; queued again, the request would
+    /// wait for a poll that, here, never comes.
+    #[test]
+    fn a_request_made_while_the_frame_is_drawn_resolves_when_it_lands() {
+        let (_dir, _lib, service, ids) = video_setup(&["a.mp4"]);
+        service.video_session_start(true).unwrap();
+        let job = service.next_video_job(SHORT).unwrap().unwrap();
+        let service = Arc::new(service);
+        let waiter = {
+            let service = service.clone();
+            let id = ids[0];
+            std::thread::spawn(move || service.request(id, ThumbSize::Grid, Duration::from_secs(2)))
+        };
+        std::thread::sleep(Duration::from_millis(200));
+        service
+            .put_video_frame(job.id, job.key, &jpeg_bytes(320, 180))
+            .unwrap();
+        assert!(waiter.join().unwrap().unwrap().is_file());
+    }
+
+    /// A page that reloads leaves its long-poll blocked in `next_video_job`; the job the new
+    /// page's session queues must not go to it, where nothing will ever draw it.
+    #[test]
+    fn a_poll_left_over_from_the_previous_page_takes_no_job() {
+        let (_dir, _lib, service, ids) = video_setup(&["a.mp4"]);
+        let service = Arc::new(service);
+        let stale = {
+            let service = service.clone();
+            std::thread::spawn(move || service.next_video_job(Duration::from_secs(5)))
+        };
+        std::thread::sleep(Duration::from_millis(200));
+        service.video_session_start(true).unwrap();
+        assert_eq!(stale.join().unwrap().unwrap(), None);
+        assert_eq!(service.next_video_job(SHORT).unwrap().unwrap().id, ids[0]);
     }
 
     use std::sync::OnceLock;
@@ -760,7 +1276,7 @@ mod tests {
             assert_eq!(state(&lib, id), ThumbState::Ready);
             assert!(cache.is_complete(lib.item(id).unwrap().unwrap().thumb_key()));
         }
-        assert!(lib.pending_thumb_ids().unwrap().is_empty());
+        assert!(lib.pending_thumb_ids(MediaKind::Image).unwrap().is_empty());
     }
 
     #[test]
@@ -863,7 +1379,7 @@ mod tests {
         service.enqueue_pending().unwrap();
         service.wait_idle();
         assert_eq!(state(&lib, ids[0]), ThumbState::Pending);
-        assert_eq!(lib.pending_thumb_ids().unwrap(), ids);
+        assert_eq!(lib.pending_thumb_ids(MediaKind::Image).unwrap(), ids);
     }
 
     #[test]

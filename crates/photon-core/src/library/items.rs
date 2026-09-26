@@ -727,7 +727,10 @@ impl Library {
     /// Assembled by hand rather than through `grid_query`, because its outer filter reads
     /// `w.online`, which the driver cannot see. The driver is therefore unfiltered, and
     /// the planner walks from `items_pending` regardless, so the shape costs nothing.
-    pub fn pending_thumb_ids(&self) -> Result<Vec<i64>> {
+    ///
+    /// One `kind` at a time, because the two are made by different hands: a worker decodes
+    /// an image, the webview draws a video's frame, and each drains its own queue.
+    pub fn pending_thumb_ids(&self, kind: MediaKind) -> Result<Vec<i64>> {
         let conn = self.reader()?;
         let driver = folder_order(Shown::Either, "");
         let mut stmt = conn.prepare(&format!(
@@ -736,10 +739,11 @@ impl Library {
              JOIN items i ON i.folder_id = o.folder_id
              JOIN folders f ON f.id = i.folder_id
              JOIN watched_folders w ON w.id = f.watched_id
-             WHERE i.thumb_state = 0 AND i.missing_since IS NULL AND w.online = 1 {GRID_ORDER}"
+             WHERE i.thumb_state = 0 AND i.missing_since IS NULL AND w.online = 1
+               AND i.kind = ?1 {GRID_ORDER}"
         ))?;
         let ids = stmt
-            .query_map([], |r| r.get(0))?
+            .query_map(params![kind.to_db()], |r| r.get(0))?
             .collect::<rusqlite::Result<Vec<i64>>>()?;
         Ok(ids)
     }
@@ -1338,11 +1342,14 @@ mod tests {
         // Grid order, which the thumbnail queue follows so tiles render roughly in the order
         // they will be scrolled past. Folder `a` starts at 2 and `b` at 1, so `a` — the newer
         // folder by its oldest photo — comes first, and within it 2 before 5.
-        assert_eq!(lib.pending_thumb_ids().unwrap(), [a1, a2, b1]);
+        assert_eq!(
+            lib.pending_thumb_ids(MediaKind::Image).unwrap(),
+            [a1, a2, b1]
+        );
 
         lib.set_thumb_state(a1, ThumbState::Ready, None).unwrap();
         lib.mark_missing(&[b1], 99).unwrap();
-        assert_eq!(lib.pending_thumb_ids().unwrap(), [a2]);
+        assert_eq!(lib.pending_thumb_ids(MediaKind::Image).unwrap(), [a2]);
     }
 
     #[test]
@@ -1357,10 +1364,23 @@ mod tests {
             ])
             .unwrap();
         lib.set_watched_online(off_w, false).unwrap();
-        assert_eq!(lib.pending_thumb_ids().unwrap(), [ids[0]]);
+        assert_eq!(lib.pending_thumb_ids(MediaKind::Image).unwrap(), [ids[0]]);
         lib.set_watched_online(off_w, true).unwrap();
         lib.set_watched_online(on_w, false).unwrap();
-        assert_eq!(lib.pending_thumb_ids().unwrap(), [ids[1]]);
+        assert_eq!(lib.pending_thumb_ids(MediaKind::Image).unwrap(), [ids[1]]);
+    }
+
+    #[test]
+    fn pending_ids_are_of_one_kind() {
+        let (_dir, lib) = temp_library();
+        let (_, folder) = seed_folder(&lib, Path::new("/p"));
+        let mut video = new_item(folder, "/p/b.mp4", 2);
+        video.kind = MediaKind::Video;
+        let ids = lib
+            .insert_items(&[new_item(folder, "/p/a.jpg", 1), video])
+            .unwrap();
+        assert_eq!(lib.pending_thumb_ids(MediaKind::Image).unwrap(), [ids[0]]);
+        assert_eq!(lib.pending_thumb_ids(MediaKind::Video).unwrap(), [ids[1]]);
     }
 
     #[test]

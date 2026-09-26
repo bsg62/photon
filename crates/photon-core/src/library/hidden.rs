@@ -569,7 +569,9 @@ mod tests {
             ])
             .unwrap();
         lib.set_hidden(&[ids[1]], true).unwrap();
-        let mut pending = lib.pending_thumb_ids().unwrap();
+        let mut pending = lib
+            .pending_thumb_ids(crate::media::MediaKind::Image)
+            .unwrap();
         pending.sort();
         assert_eq!(pending, ids, "a hidden photo was left without a thumbnail");
     }
