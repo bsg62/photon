@@ -124,6 +124,7 @@
       starredCount: 13,
       duplicateCount: 4,
       hiddenCount: 7,
+      videoCount: 10,
       view: searchQuery === '' ? P.get('view') || 'all' : 'search',
       searchQuery,
       person: null,

@@ -34,6 +34,9 @@ pub enum GridView {
     /// The photos the user has hidden - the one view that shows them, and the only one
     /// they are in (`library/hidden.rs`).
     Hidden,
+    /// Every visible video. A filter like Starred, so a folder is placed by its oldest video
+    /// and the sidebar's year groups keep agreeing with the grid.
+    Videos,
 }
 
 impl GridView {

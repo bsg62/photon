@@ -69,6 +69,8 @@ pub struct GridInfo {
     pub duplicate_count: usize,
     /// Hidden photos; the sidebar shows the Hidden row only above 0.
     pub hidden_count: usize,
+    /// Visible videos; the sidebar shows the Videos row only above 0.
+    pub video_count: usize,
     pub view: GridView,
     /// The query while `view` is `Search`, otherwise empty.
     pub search_query: String,
@@ -307,6 +309,10 @@ pub fn grid_info(engine: &Engine) -> GridInfo {
         }),
         hidden_count: engine.lib.hidden_count().unwrap_or_else(|err| {
             tracing::warn!(%err, "hidden count query failed");
+            0
+        }),
+        video_count: engine.lib.video_count().unwrap_or_else(|err| {
+            tracing::warn!(%err, "video count query failed");
             0
         }),
         view,

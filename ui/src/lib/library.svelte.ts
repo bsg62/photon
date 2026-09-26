@@ -37,6 +37,7 @@ export class LibraryStore {
     starredCount: 0,
     duplicateCount: 0,
     hiddenCount: 0,
+    videoCount: 0,
     view: 'all',
     searchQuery: '',
     person: null,
