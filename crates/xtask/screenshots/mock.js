@@ -32,8 +32,8 @@
       folderId: section.folderId,
       takenAt: section.takenAtMin + i * 600,
       aspect: [1.5, 0.67, 1.33, 1][i % 4],
-      kind: 'image',
-      durationMs: null,
+      kind: i % 9 === 4 ? 'video' : 'image',
+      durationMs: i % 9 === 4 ? 83_000 : null,
       thumbKey: 'k' + i,
       starred: i % 7 === 0,
       // A different stride from the star, so some tiles carry each mark and some both.
@@ -74,8 +74,8 @@
           ? "Grandma's 80th, on the terrace in Lisbon, everyone gathered right before sunset for cake and the last of the summer light over the river."
           : null,
       faces: [{ hash: 'a', name: 'Anna', left: 0.3, top: 0.25, right: 0.42, bottom: 0.5 }],
-      kind: 'image',
-      durationMs: null,
+      kind: id === 5 ? 'video' : 'image',
+      durationMs: id === 5 ? 83_000 : null,
       albums: [1, 3],
       copies: [
         { id: 501, path: `/home/ada/Pictures/2026/Summer hike/IMG_48${id} copy.jpg`, kind: 'identical', width: 5472, height: 3648 },
@@ -207,6 +207,7 @@
 
   const actions = {
     select: () => tile(7)?.click(),
+    video: () => open(4),
     menu: () => {
       tile(7)?.click();
       tile(7)?.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 700, clientY: 300 }));

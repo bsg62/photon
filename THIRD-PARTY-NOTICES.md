@@ -124,3 +124,119 @@ This license governs use of the accompanying software. If you use the software, 
  (E) If you distribute any portion of the software in source code form, you may do so only under this license by including a complete copy of this license with your distribution. If you distribute any portion of the software in compiled or object code form, you may only do so under a license that complies with this license.
  (F) The software is licensed "as-is." You bear the risk of using it. The contributors give no express warranties, guarantees or conditions. You may have additional consumer rights under your local laws which this license cannot change. To the extent permitted under your local laws, the contributors exclude the implied warranties of merchantability, fitness for a particular purpose and non-infringement.
 ```
+
+## jiff
+
+`crates/photon-core` depends on jiff 0.2.35 (https://github.com/BurntSushi/jiff) for reading a
+video's `mvhd`/`mdhd` timestamps. Dual-licensed MIT or Unlicense; its MIT licence follows in
+full.
+
+```text
+The MIT License (MIT)
+
+Copyright (c) 2015 Andrew Gallant
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+```
+
+## tiny_http
+
+`crates/photon-app` depends on tiny_http 0.12.0 (https://github.com/tiny-http/tiny-http) for
+the loopback server that streams video and poster frames to the webview's `<video>` element.
+Dual-licensed MIT or Apache-2.0; its MIT licence follows in full.
+
+```text
+Copyright (c) 2014-2019 The tiny-http contributors
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+```
+
+## getrandom
+
+`crates/photon-app` depends on getrandom 0.3.4 (https://github.com/rust-random/getrandom) to
+generate the loopback server's per-launch token. Dual-licensed MIT or Apache-2.0; its MIT
+licence follows in full.
+
+```text
+Copyright (c) 2018-2025 The rust-random Project Developers
+Copyright (c) 2014 The Rust Project Developers
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+```
+
+## GStreamer plugins (AppImage only)
+
+The AppImage bundles GStreamer's "good" plugins and `gst-libav` so that video plays without
+the user installing anything; the `.deb` instead depends on the distribution's own packages,
+and everywhere else photon uses whatever GStreamer the system already has. Neither is compiled
+into photon or linked by it - the webview (WebKitGTK) loads them as shared libraries at
+runtime, the same way a browser would - but the AppImage carries their binaries, so their
+licence terms travel with it.
+
+Both are licensed LGPL-2.1-or-later. `gst-libav` additionally links FFmpeg, itself LGPL (or
+GPL, depending on how it was configured); the build used here is the LGPL configuration.
+Source for the exact versions bundled is published alongside each AppImage release, matching
+the upstream sources at https://gitlab.freedesktop.org/gstreamer/gstreamer (subprojects
+`gst-plugins-good` and `gst-libav`) and https://ffmpeg.org. The LGPL's full text is at
+https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html; as required by it, a user may replace
+the bundled plugin libraries with their own compatible build.

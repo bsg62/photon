@@ -148,6 +148,19 @@ pub const SHOTS: &[Shot] = &[
         query: "theme=light&do=compare",
         dark: false,
     },
+    // A grid holding videos: the play badge and its length on tiles 4, 13, 22...
+    Shot {
+        name: "grid-videos-light",
+        query: "theme=light",
+        dark: false,
+    },
+    // The viewer on a video. Chromium without proprietary codecs cannot play MP4, so this
+    // shows the unsupported message over the poster - which is the state worth seeing.
+    Shot {
+        name: "viewer-video-dark",
+        query: "theme=dark&do=video",
+        dark: true,
+    },
 ];
 
 #[derive(Debug, PartialEq)]
