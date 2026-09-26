@@ -21,6 +21,10 @@
 ///   parentheses.
 /// - `"double quotes"` make one term of several words and make an operator or a prefix
 ///   literal.
+/// - `from:` and `to:` take `YYYY`, `YYYY-MM` or `YYYY-MM-DD` and keep photos taken within
+///   or after, or within or before, the whole period named: `from:2019-06 to:2019-08` is
+///   June to August inclusive. Naming both ends inclusively leaves nothing to guess, which
+///   `after:`/`before:` would (is `after:2019` in 2019?).
 /// - `camera:` and `lens:` restrict a term to that field. A bare `canon` matches a folder
 ///   named Canon as readily as the camera; `camera:canon` does not. A quoted value with
 ///   several words (`camera:"canon eos 5d"`, which is what the info panel's links send)
@@ -48,6 +52,11 @@ enum Term {
     Any(String),
     Camera(String),
     Lens(String),
+    /// Taken at or after this instant: the first second of the period `from:` named.
+    From(i64),
+    /// Taken before this instant: the first second *after* the period `to:` named, so the
+    /// whole of that period is in and `to:2019` ends exactly where `from:2020` begins.
+    To(i64),
 }
 
 /// What a photo offers the matcher. `any` is every searchable text, the camera and lens
@@ -59,6 +68,8 @@ pub struct Fields<'a> {
     /// Make and model as one string, so `camera:` can match either or a word of each.
     pub camera: Option<&'a str>,
     pub lens: Option<&'a str>,
+    /// The capture time, in the naive seconds `taken_at` holds, for `from:` and `to:`.
+    pub taken: Option<i64>,
 }
 
 /// A whitespace-separated piece of the raw query, quotes removed.
@@ -96,6 +107,45 @@ fn tokenize(raw: &str) -> Vec<Token> {
     // An unclosed quote runs to the end of the input: the query is still being typed.
     flush(&mut text, &mut unquoted_prefix);
     tokens
+}
+
+/// The period a `from:` or `to:` value names - `YYYY`, `YYYY-MM` or `YYYY-MM-DD` - as its
+/// first second and the first second after it, in the naive wall-clock seconds `taken_at`
+/// holds (the same reading `metadata::date_text` makes, so `from:2019-06` and the typed
+/// `2019-06` agree about every photo).
+///
+/// Anything else is `None` and the term is dropped, like a prefix with no value: `2019-1`
+/// is how `2019-12` looks one keystroke early, and reading it as January would flash the
+/// wrong photos. The digits must be exactly the widths `date_text` writes for the same
+/// reason. A date that does not exist (`2019-02-30`, and month 0 or 13, or day 0) is
+/// refused by the round trip through `civil_from_unix`, which only ever answers a real
+/// date, rather than by range checks and a month-length table of its own.
+fn period(value: &str) -> Option<(i64, i64)> {
+    use crate::metadata::{civil_from_unix, naive_to_unix};
+    let number = |part: &str, width: usize| {
+        (part.len() == width && part.bytes().all(|b| b.is_ascii_digit()))
+            .then(|| part.parse::<u32>().ok())
+            .flatten()
+    };
+    let parts: Vec<&str> = value.split('-').collect();
+    let year = i64::from(number(parts.first()?, 4)?);
+    let month = parts.get(1).map(|p| number(p, 2)).unwrap_or(Some(1))?;
+    let day = parts.get(2).map(|p| number(p, 2)).unwrap_or(Some(1))?;
+    if parts.len() > 3 {
+        return None;
+    }
+    let start = naive_to_unix(year, month, day, 0, 0, 0);
+    if civil_from_unix(start) != (year, month, day) {
+        return None;
+    }
+    let end = match parts.len() {
+        1 => naive_to_unix(year + 1, 1, 1, 0, 0, 0),
+        // December needs no case of its own: days-from-civil counts months from March, so
+        // month 13 is January of the next year. `to:2019-12` is pinned by a test.
+        2 => naive_to_unix(year, month + 1, 1, 0, 0, 0),
+        _ => start + 86_400,
+    };
+    Some((start, end))
 }
 
 impl Query {
@@ -140,6 +190,16 @@ impl Query {
                     .split_whitespace()
                     .map(|w| Term::Lens(w.to_string()))
                     .collect()
+            } else if let Some(value) = prefixed("from:") {
+                period(value)
+                    .map(|(start, _)| Term::From(start))
+                    .into_iter()
+                    .collect()
+            } else if let Some(value) = prefixed("to:") {
+                period(value)
+                    .map(|(_, end)| Term::To(end))
+                    .into_iter()
+                    .collect()
             } else {
                 vec![Term::Any(text.clone())]
             };
@@ -181,6 +241,8 @@ impl Query {
                 Term::Any(needle) => any.iter().any(|h| h.contains(needle.as_str())),
                 Term::Camera(needle) => within(&camera, needle),
                 Term::Lens(needle) => within(&lens, needle),
+                Term::From(start) => fields.taken.is_some_and(|t| t >= *start),
+                Term::To(end) => fields.taken.is_some_and(|t| t < *end),
             })
         })
     }
@@ -292,6 +354,7 @@ mod tests {
             ],
             camera: Some("NIKON CORPORATION NIKON D750"),
             lens: Some("50mm f/1.8"),
+            taken: None,
         };
         assert!(Query::parse("canon").matches(&photo), "the folder name");
         assert!(!Query::parse("camera:canon").matches(&photo));
@@ -316,6 +379,7 @@ mod tests {
             any: &[],
             camera: Some("NIKON CORPORATION NIKON D750"),
             lens: None,
+            taken: None,
         };
         assert!(Query::parse("camera:\"corporation d750\"").matches(&photo));
         assert!(!Query::parse("camera:\"nikon d850\"").matches(&photo));
@@ -378,5 +442,157 @@ mod tests {
         assert_eq!(Query::parse("lake lake LAKE").term_count(), 1);
         assert_eq!(Query::parse("lake OR lake").term_count(), 2);
         assert!(names("lake lake", LAKE_BELL));
+    }
+
+    /// A photo taken at `y-m-d h:mi:s`, wall-clock time, carrying no names at all, so only a
+    /// date term can match it.
+    fn taken(y: i64, m: u32, d: u32, h: u32, mi: u32, s: u32) -> Fields<'static> {
+        Fields {
+            taken: Some(crate::metadata::naive_to_unix(y, m, d, h, mi, s)),
+            ..Fields::default()
+        }
+    }
+
+    fn dated(q: &str, photo: &Fields<'_>) -> bool {
+        Query::parse(q).matches(photo)
+    }
+
+    #[test]
+    fn from_and_to_take_in_the_whole_period_they_name() {
+        let photo = taken(2019, 6, 15, 12, 0, 0);
+        for q in [
+            "from:2019",
+            "from:2019-06",
+            "from:2019-06-15",
+            "to:2019-06-15",
+            "to:2019-06",
+            "to:2019",
+        ] {
+            assert!(dated(q, &photo), "{q} takes in 2019-06-15");
+        }
+        for q in [
+            "from:2019-06-16",
+            "from:2019-07",
+            "from:2020",
+            "to:2019-06-14",
+            "to:2019-05",
+            "to:2018",
+        ] {
+            assert!(!dated(q, &photo), "{q} leaves out 2019-06-15");
+        }
+    }
+
+    #[test]
+    fn a_period_ends_on_its_last_second_and_the_next_begins_on_its_first() {
+        // The last second of a day, a month and a year, and the first second after each:
+        // `to:` must end where the next `from:` begins, with nothing in both or in neither.
+        let edges = [
+            (
+                taken(2019, 6, 14, 23, 59, 59),
+                taken(2019, 6, 15, 0, 0, 0),
+                "2019-06-14",
+                "2019-06-15",
+            ),
+            (
+                taken(2019, 6, 30, 23, 59, 59),
+                taken(2019, 7, 1, 0, 0, 0),
+                "2019-06",
+                "2019-07",
+            ),
+            (
+                taken(2019, 12, 31, 23, 59, 59),
+                taken(2020, 1, 1, 0, 0, 0),
+                "2019",
+                "2020",
+            ),
+        ];
+        for (last, first, period, next) in edges {
+            assert!(
+                dated(&format!("to:{period}"), &last),
+                "to:{period} holds its last second"
+            );
+            assert!(
+                !dated(&format!("to:{period}"), &first),
+                "to:{period} stops before {next}"
+            );
+            assert!(
+                dated(&format!("from:{next}"), &first),
+                "from:{next} holds its first second"
+            );
+            assert!(
+                !dated(&format!("from:{next}"), &last),
+                "from:{next} starts after {period}"
+            );
+        }
+    }
+
+    #[test]
+    fn from_and_to_together_make_a_range() {
+        let q = "from:2019-06 to:2019-08";
+        assert!(dated(q, &taken(2019, 6, 1, 0, 0, 0)));
+        assert!(dated(q, &taken(2019, 8, 31, 23, 59, 59)));
+        assert!(!dated(q, &taken(2019, 5, 31, 23, 59, 59)));
+        assert!(!dated(q, &taken(2019, 9, 1, 0, 0, 0)));
+        // February's end moves with leap years.
+        assert!(dated("to:2020-02", &taken(2020, 2, 29, 12, 0, 0)));
+        assert!(!dated("to:2019-02", &taken(2019, 3, 1, 0, 0, 0)));
+        assert!(
+            dated("FROM:2019 TO:2019", &taken(2019, 3, 1, 0, 0, 0)),
+            "any case"
+        );
+    }
+
+    #[test]
+    fn a_date_term_narrows_and_widens_like_any_other() {
+        let photo = Fields {
+            any: &["lake.jpg"],
+            taken: Some(crate::metadata::naive_to_unix(2019, 6, 15, 12, 0, 0)),
+            ..Fields::default()
+        };
+        assert!(dated("lake from:2019", &photo));
+        assert!(!dated("lake from:2020", &photo));
+        assert!(!dated("pond from:2019", &photo));
+        assert!(dated("pond OR from:2019", &photo));
+        assert!(dated("from:2020 OR lake", &photo));
+    }
+
+    #[test]
+    fn a_photo_without_a_date_matches_no_date_term() {
+        let photo = Fields {
+            any: &["2019.jpg"],
+            ..Fields::default()
+        };
+        assert!(!dated("from:2019", &photo));
+        assert!(!dated("to:2019", &photo));
+    }
+
+    #[test]
+    fn a_value_that_is_not_a_date_yet_is_ignored() {
+        // What a date looks like halfway through being typed, and dates that do not exist,
+        // search for nothing rather than for the literal text or an empty grid.
+        for q in [
+            "lake from:",
+            "lake from:20",
+            "lake from:2019-",
+            "lake from:2019-1",
+            "lake from:2019-13",
+            "lake from:2019-00",
+            "lake to:2019-02-30",
+            "lake to:2019-06-1",
+            "lake to:2019-06-15x",
+            "lake to:2019-06-15-01",
+            "lake to:2019-06-00",
+            "lake from:abcd",
+            "lake from:\"2019 06\"",
+        ] {
+            assert_eq!(Query::parse(q), Query::parse("lake"), "{q}");
+        }
+        assert!(Query::parse("from:2019-1").is_empty());
+    }
+
+    #[test]
+    fn a_date_prefix_is_literal_inside_quotes() {
+        assert!(names("\"from:2019\"", &["from:2019.jpg"]));
+        assert!(!dated("\"from:2019\"", &taken(2019, 6, 15, 12, 0, 0)));
     }
 }

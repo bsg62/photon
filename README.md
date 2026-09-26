@@ -94,7 +94,9 @@ it likes (`lake.jpg` in the folder `2019 Italy`). `lake OR pond` widens it; `AND
 count as operators only in capitals, so `salt and pepper` still looks for the word. Double
 quotes make a phrase, and `camera:` or `lens:` confine a term to that field, so
 `camera:canon 2019` is the Canon's photos from 2019 and not a folder named Canon. A camera or
-lens in the viewer's info panel is a link to that search.
+lens in the viewer's info panel is a link to that search. `from:` and `to:` bound the date a
+photo was taken, each taking a year, a month or a day and including all of it:
+`from:2019-06 to:2019-08` is June to August, `to:2019` is everything up to the end of 2019.
 
 ### Saving a search
 
@@ -376,6 +378,7 @@ publishing it.
 - [ ] Renaming a folder on disk moves its photos in the tree within a few seconds.
 - [ ] Unplugging a watched drive dims it; plugging it back in restores it within about a minute, unattended.
 - [ ] Typing part of a folder's name in the search box finds its photos.
+- [ ] `from:2019 to:2019` shows only photos taken in 2019. Typing `from:2019-0` on the way to `from:2019-06` never blanks the grid or shows the wrong month in between: the half-typed term is ignored until it is a date.
 - [ ] The search box stays put at the top of the window while the folder list and the grid scroll.
 - [ ] The bar between the folder list and the grid resizes the list along its full height: dragging it stops at a minimum width and at half the window, the grid reflows to the new width, and with the bar focused (Tab) the arrow keys resize it too. The list's lower-right corner no longer has a resize grip.
 - [ ] Clearing the search box restores the full library.
