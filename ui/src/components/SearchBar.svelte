@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { untrack } from 'svelte';
   import { library } from '../lib/library.svelte';
   import { searchBox } from '../lib/search-box.svelte';
   import { canSaveSearch, defaultSearchName, savedSearchFor } from '../lib/searches';
@@ -7,20 +6,6 @@
 
   // This component only renders the machine in `search-box.svelte.ts`; the folder tree
   // drives the same instance, which is why none of that state lives here.
-  $effect(() => {
-    const backend = library.info.searchQuery;
-    // Registers `outstanding` as a dependency. `syncFromBackend` declines every echo until
-    // the count reaches zero, so the effect has to re-run when it gets there — and the read
-    // below is untracked, so this is the only place that dependency can be established.
-    void searchBox.outstanding;
-    // `syncFromBackend` reads `query`, and an untracked call keeps it out of this effect's
-    // dependencies. A direct dependency would re-run the effect on every keystroke (which
-    // writes `query` through `bind:value`) — and since the effect can also write `query`,
-    // that write would re-trigger the effect it happened inside. It would settle rather than
-    // loop (the second run sees backend === query and stops), but there is no reason to pay
-    // for it.
-    untrack(() => searchBox.syncFromBackend(backend));
-  });
 
   /** The saved search the box already holds, if any. Drives both the filled bookmark and
    *  the refusal to save the same query twice. */

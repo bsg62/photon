@@ -675,6 +675,61 @@ describe('LibraryStore', () => {
     expect(order).toEqual(['start:b', 'end:b', 'start:beach', 'end:beach']);
   });
 
+  it('a view switch waits for a search already sent, so the search cannot land after it', async () => {
+    const store = new LibraryStore();
+    await store.init();
+
+    const order: string[] = [];
+    const search = deferred<void>();
+    vi.mocked(api.setSearchQuery).mockImplementationOnce(async (q: string) => {
+      order.push(`start:${q}`);
+      await search.promise;
+      order.push(`end:${q}`);
+    });
+    vi.mocked(api.setGridView).mockImplementationOnce(async (view: GridView) => {
+      order.push(`view:${view}`);
+    });
+
+    const p1 = store.setSearchQuery('beach');
+    const p2 = store.setView('starred');
+    await Promise.resolve();
+    await Promise.resolve();
+    search.resolve();
+    await Promise.all([p1, p2]);
+
+    // Unchained, Starred is applied while 'beach' is still in flight, and 'beach' then puts
+    // the backend back into Search under a box the switch has already emptied.
+    expect(order).toEqual(['start:beach', 'end:beach', 'view:starred']);
+  });
+
+  it('runs the view-switch hooks as the switch is issued, and takes them back only if it is refused', async () => {
+    const store = new LibraryStore();
+    await store.init();
+    const undo = vi.fn();
+    const hook = vi.fn(() => undo);
+    store.onViewSwitch(hook);
+
+    const command = deferred<void>();
+    vi.mocked(api.setGridView).mockReturnValueOnce(command.promise);
+    const switched = store.setView('starred');
+    // Before the backend has answered: text typed from here on belongs after the switch.
+    expect(hook).toHaveBeenCalledOnce();
+    command.resolve();
+    await switched;
+    expect(undo).not.toHaveBeenCalled();
+
+    vi.mocked(api.setGridView).mockRejectedValueOnce(new Error('refused'));
+    await store.setView('recent');
+    expect(undo).toHaveBeenCalledOnce();
+
+    // A refresh failing after the command succeeded is not a refusal: the backend has
+    // already moved, so the box must stay empty to match it.
+    vi.mocked(api.setGridView).mockResolvedValueOnce(undefined);
+    vi.mocked(api.gridInfo).mockRejectedValueOnce(new Error('refresh failed'));
+    await store.setView('starred');
+    expect(undo).toHaveBeenCalledOnce();
+  });
+
   it('hiding a folder refetches the folder list, so its menu offers Unhide next time', async () => {
     const store = new LibraryStore();
     await store.init();
