@@ -24,6 +24,8 @@ export interface ComparePane {
    *  every pair of dimensions printed here goes through `orientedDims` first. */
   orientation: number;
   edit: boolean;
+  /** A video's full image is not served; `fullSrc` falls back to its poster. */
+  kind: 'image' | 'video';
 }
 
 /** What a pane says about itself beyond its file name. Empty where every pane agrees.

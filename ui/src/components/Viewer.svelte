@@ -2,6 +2,10 @@
   import { untrack } from 'svelte';
   import { writeText } from '@tauri-apps/plugin-clipboard-manager';
   import { api, errorMessage, mediaUrl, type ViewerItem } from '../lib/api';
+  import { isWindows } from '../lib/url';
+  import { videoState } from '../lib/video-state.svelte';
+  import { formatDuration, videoUrl } from '../lib/video';
+  import { nextStill } from '../lib/slideshow-order';
   import { createAlbumMembership } from '../lib/album-membership.svelte';
   import { ownAlbums, picasaAlbumsOf } from '../lib/albums';
   import { createTagEditor } from '../lib/tag-editor.svelte';
@@ -87,15 +91,32 @@
   const slideshow = createSlideshow({
     advance: () => {
       const len = library.info.len;
-      // One photo has no next: `goto` would reload it, blanking the screen every interval.
-      if (len > 1) goto(current + 1 >= len ? 0 : current + 1);
+      void nextStill(current, len, async (i) => {
+        await library.ensure(i, i + 1);
+        return library.entry(i)?.kind;
+      }).then((next) => {
+        // One photo has no next: `goto` would reload it, blanking the screen every interval.
+        if (next !== null && next !== current) goto(next);
+      });
     },
     interval: () => api.slideshowInterval(),
     fullscreen: { get: () => api.windowFullscreen(), set: (on) => api.setWindowFullscreen(on) },
   });
 
-  function startSlideshow() {
+  async function startSlideshow() {
     info = false;
+    if (item?.kind === 'video') {
+      const len = library.info.len;
+      const next = await nextStill(current, len, async (i) => {
+        await library.ensure(i, i + 1);
+        return library.entry(i)?.kind;
+      });
+      if (next === null) {
+        library.notify('There are no photos here to show.');
+        return;
+      }
+      goto(next);
+    }
     void slideshow.start(fullSrc !== null || error !== null);
   }
 
@@ -241,6 +262,9 @@
   function cropPointerMove(e: PointerEvent) {
     if (cropBox) crop.dragTo(e.clientX, e.clientY, cropBox.width, cropBox.height);
   }
+
+  const isVideo = $derived(item?.kind === 'video');
+  let videoEl = $state<HTMLVideoElement | null>(null);
 
   const camera = $derived(item ? cameraRows(item) : []);
   const copies = $derived(item ? copyGroups(item.copies) : []);
@@ -465,6 +489,19 @@
       star.bind(it.id, it.starred);
       membership.bind(it.id, it.albums);
       tags.bind(it.id, it.tags);
+      // A video plays through its own element below; a poster that failed to render says
+      // nothing about whether the file itself plays, so this has to come before the Failed
+      // check, and skips it - and the still-image preload - entirely.
+      if (it.kind === 'video') {
+        if (!videoState.supported || !videoState.base) {
+          error = isWindows()
+            ? "This video can't be played here."
+            : "This system can't play videos. Install GStreamer's good and libav plugins (see the README).";
+          return;
+        }
+        fullSrc = videoUrl(videoState.base, it.id);
+        return; // no neighbour preload from a video, and nothing to decode
+      }
       if (it.thumbState === 'failed') {
         error = it.thumbError ?? "This photo can't be shown.";
         return;
@@ -489,6 +526,13 @@
     });
     return () => {
       cancelled = true;
+      // Leaving a video - navigation, close, or a reload of the same offset - must release
+      // its decode pipeline rather than leave it running behind a photo or an unmounted
+      // element: pause first (a `load()` alone can keep playing until it resets), drop the
+      // source so nothing is left to buffer, then load() to actually abandon it.
+      videoEl?.pause();
+      videoEl?.removeAttribute('src');
+      videoEl?.load();
     };
   });
 
@@ -528,7 +572,8 @@
     if (e.target instanceof HTMLInputElement) return;
     // Ctrl+C / Cmd+C copies the photo on screen - after the input guard, so a caption or
     // keyword field keeps its own copy, and never while text is selected (isCopyPhotoShortcut).
-    if (item && isCopyPhotoShortcut(e, (window.getSelection()?.toString() ?? '') !== '')) {
+    // The backend refuses to copy a video, so the shortcut is simply dead over one.
+    if (item && !isVideo && isCopyPhotoShortcut(e, (window.getSelection()?.toString() ?? '') !== '')) {
       e.preventDefault();
       void library.copyPhoto(item.id);
       return;
@@ -545,6 +590,12 @@
     }
     // Plain letters only: a modifier means the key belongs to the webview or the OS.
     if (!e.ctrlKey && !e.metaKey && !e.altKey) {
+      // A video has no turn or crop; swallow the keys rather than let them fall through to
+      // whatever else a plain letter might do below.
+      if (isVideo && ['r', 'R', 'c', 'C'].includes(e.key)) {
+        e.preventDefault();
+        return;
+      }
       if (e.key === 'r' || e.key === 'R') {
         e.preventDefault();
         rotate(e.key === 'r' ? 'cw' : 'ccw');
@@ -568,9 +619,10 @@
         else startSlideshow();
         return;
       }
-      if (e.key === ' ' && slideshow.active) {
+      if (e.key === ' ' && (slideshow.active || isVideo)) {
         e.preventDefault();
-        slideshow.toggle();
+        if (slideshow.active) slideshow.toggle();
+        else if (videoEl) void (videoEl.paused ? videoEl.play() : videoEl.pause());
         return;
       }
       if (e.key === 'i' || e.key === 'I') {
@@ -612,6 +664,7 @@
 
   function onwheel(e: WheelEvent) {
     e.preventDefault();
+    if (isVideo) return;
     if (crop.active) return;
     const stepped = wheelStep(wheelTotal, e.deltaY);
     wheelTotal = stepped.accumulated;
@@ -619,6 +672,7 @@
   }
 
   function onzoom(e: Event & { currentTarget: HTMLInputElement }) {
+    if (isVideo) return;
     zoom = clampZoom(Number(e.currentTarget.value));
     const { width, height } = viewport();
     // Zooming back out shrinks how far the photo may travel, so a pan that was legal at 4x
@@ -627,6 +681,7 @@
   }
 
   function onpointerdown(e: PointerEvent) {
+    if (isVideo) return;
     // A press anywhere but the info panel clears a text selection left in it: a click does
     // not, and the next Ctrl+C would copy that text instead of the photo, silently.
     if (!(e.target as HTMLElement).closest('.info')) window.getSelection()?.removeAllRanges();
@@ -734,6 +789,21 @@
               {/each}
             </div>
           </div>
+        {:else if isVideo}
+          <!-- Plays on open, with sound, as Picasa did. Not focusable, so the viewer's own
+               keys (arrows, Home, End, Escape, Space) keep working over it. -->
+          <!-- svelte-ignore a11y_media_has_caption -->
+          <video
+            class="full"
+            src={fullSrc}
+            poster={mediaUrl(`thumb/${item.id}/preview/${item.thumbKey}`)}
+            controls
+            autoplay
+            preload="metadata"
+            crossorigin="anonymous"
+            tabindex="-1"
+            bind:this={videoEl}
+          ></video>
         {:else}
           <img class="preview" src={mediaUrl(`thumb/${item.id}/preview/${item.thumbKey}`)} alt="" draggable="false" class:hidden={!!fullSrc} />
           {#if fullSrc}
@@ -769,7 +839,7 @@
         <h3>Caption</h3>
         <p class="info-caption">{item.caption.trim()}</p>
       {/if}
-      {#if camera.length}
+      {#if camera.length || (item.kind === 'video' && item.durationMs !== null)}
         <dl>
           {#each camera as row (row.label)}
             <dt>{row.label}</dt>
@@ -782,6 +852,10 @@
               {/if}
             </dd>
           {/each}
+          {#if item.kind === 'video' && item.durationMs !== null}
+            <dt>Length</dt>
+            <dd>{formatDuration(item.durationMs)}</dd>
+          {/if}
         </dl>
       {:else}
         <p class="info-muted">No camera data.</p>
@@ -920,12 +994,14 @@
     >
       <Icon name="star" size={16} filled={star.starred} />
     </button>
-    <span class="sep" aria-hidden="true"></span>
-    <button class="tool" onclick={() => rotate('ccw')} disabled={!editable} aria-label="Rotate left" title="Rotate left (Shift+R)"><Icon name="rotate-ccw" size={16} /></button>
-    <button class="tool" onclick={() => rotate('cw')} disabled={!editable} aria-label="Rotate right" title="Rotate right (R)"><Icon name="rotate-cw" size={16} /></button>
-    <button class="tool" onclick={startCrop} disabled={!editable} aria-label="Crop" title="Crop (C)"><Icon name="crop" size={16} /></button>
-    {#if item?.edit}
-      <button class="tool wide" onclick={resetEdit} disabled={!editable} title="Undo every turn and crop. The file was never changed.">Original</button>
+    {#if !isVideo}
+      <span class="sep" aria-hidden="true"></span>
+      <button class="tool" onclick={() => rotate('ccw')} disabled={!editable} aria-label="Rotate left" title="Rotate left (Shift+R)"><Icon name="rotate-ccw" size={16} /></button>
+      <button class="tool" onclick={() => rotate('cw')} disabled={!editable} aria-label="Rotate right" title="Rotate right (R)"><Icon name="rotate-cw" size={16} /></button>
+      <button class="tool" onclick={startCrop} disabled={!editable} aria-label="Crop" title="Crop (C)"><Icon name="crop" size={16} /></button>
+      {#if item?.edit}
+        <button class="tool wide" onclick={resetEdit} disabled={!editable} title="Undo every turn and crop. The file was never changed.">Original</button>
+      {/if}
     {/if}
     <span class="sep" aria-hidden="true"></span>
     <button
@@ -970,18 +1046,20 @@
       <button role="menuitem" onclick={toggleHidden}>{item.hidden ? 'Unhide photo (H)' : 'Hide photo (H)'}</button>
     </div>
   {/if}
-  <div class="zoom" class:hidden={crop.active}>
-    <input
-      type="range"
-      min={MIN_ZOOM}
-      max={MAX_ZOOM}
-      step="0.05"
-      value={zoom}
-      oninput={onzoom}
-      aria-label="Zoom"
-    />
-    <span class="level">{Math.round(zoom * 100)}%</span>
-  </div>
+  {#if !isVideo}
+    <div class="zoom" class:hidden={crop.active}>
+      <input
+        type="range"
+        min={MIN_ZOOM}
+        max={MAX_ZOOM}
+        step="0.05"
+        value={zoom}
+        oninput={onzoom}
+        aria-label="Zoom"
+      />
+      <span class="level">{Math.round(zoom * 100)}%</span>
+    </div>
+  {/if}
   <button class="close" onclick={close} aria-label="Close viewer"><Icon name="x" size={16} /></button>
 </div>
 

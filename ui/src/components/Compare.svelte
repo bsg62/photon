@@ -57,6 +57,7 @@
         // Only whether there is one: `thumbKey` already accounts for the edit, and the
         // full-size URL needs the key as a cache-buster when the photo carries one.
         edit: it.edit !== null,
+        kind: it.kind,
       };
     },
     // Through a closure, not by reference: a prop read at construction captures only its
@@ -211,6 +212,9 @@
   /** The full render, for the one pane that needs it. The key is a cache-buster for an
    *  edited photo: `/image/<id>` is the same URL before and after a turn. */
   function fullSrc(p: ComparePane): string {
+    // A video's full image is not served (`protocol.rs`); Compare compares stills, so its
+    // poster stands in.
+    if (p.kind === 'video') return previewSrc(p);
     return mediaUrl(`image/${p.id}`) + (p.edit ? `?k=${p.thumbKey}` : '');
   }
 </script>
