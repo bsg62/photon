@@ -7,15 +7,25 @@
 // Two lists below are read by a test in screenshots.rs, which fails when api.ts gains a
 // command that is in neither: `canned` (keys at four spaces' indent) and SILENT.
 (function () {
-  // The mock has no real video file to serve, so a `<video src>` here always fails to load -
-  // but which failure the app shows depends on whether *this* Chromium claims to support MP4:
-  // a build with proprietary codecs answers "maybe" to `canPlayType` and the viewer takes its
-  // native-`<video>` branch (which then just sits broken, nothing to look at); a build without
-  // them answers "" and the viewer shows its own "can't be played here" message over the
-  // poster, which is the state worth a screenshot. Forcing "" here makes `viewer-video-dark`
-  // render the same way on every machine, rather than depending on how this Chromium happens
-  // to have been packaged.
-  HTMLMediaElement.prototype.canPlayType = () => '';
+  // The mock has no real video file to serve, so a `<video src>` here always fails to load,
+  // and which state the viewer shows would otherwise depend on whether *this* Chromium claims
+  // MP4 support. Both states worth seeing are forced instead, so every machine renders the
+  // same shots: `?do=videoplay` claims support and swallows the load error - the error event
+  // is stopped on its way down, in the capture phase at the window, before the viewer's own
+  // listener would swap the player for a message - which leaves the player and photon's own
+  // controls on screen over the poster; every other shot denies support, so `?do=video` shows
+  // the "can't be played here" message.
+  const PLAYABLE = new URLSearchParams(location.search).get('do') === 'videoplay';
+  HTMLMediaElement.prototype.canPlayType = () => (PLAYABLE ? 'maybe' : '');
+  if (PLAYABLE) {
+    window.addEventListener(
+      'error',
+      (e) => {
+        if (e.target instanceof HTMLMediaElement) e.stopImmediatePropagation();
+      },
+      true,
+    );
+  }
 
   const P = new URLSearchParams(location.search);
   const day = (y, m, d) => Date.UTC(y, m - 1, d) / 1000;
@@ -274,6 +284,7 @@
       );
     },
     viewer: () => open(2),
+    videoplay: () => open(4),
     info: () => {
       open(2);
       later(500, () => click('button[aria-label="Photo information"]'));

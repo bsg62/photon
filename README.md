@@ -595,10 +595,18 @@ publishing it.
       path and CORS on the loopback server). If frames never appear, check whether WebKit sends a
       CORS preflight (`OPTIONS`) for a `crossorigin` `<video>` with a `Range` header: the media
       server answers `OPTIONS` with 404.
-- [ ] With the native video controls clicked (focused): the arrows, Home/End and Escape still
-      navigate the viewer; Space toggles playback once, not twice.
-- [ ] The native controls bar is fully visible above the viewer's own bottom bar, on a landscape
-      and a portrait video.
+- [ ] photon's video controls sit above the viewer's bar and look the same on every OS. After
+      clicking any of them (play, mute, the volume slider, loop), the arrows, Home/End and
+      Escape still navigate the viewer and Space toggles playback once, not twice. Clicking the
+      picture plays and pauses.
+- [ ] Drag along the position bar: the picture follows the pointer, and letting go resumes
+      playback if it was playing. Press Escape mid-drag: the video jumps back to where the drag
+      began. Shift+←/→ moves 5 seconds.
+- [ ] Loop (the button or L): the video starts over at its end instead of stopping. Open another
+      video: loop, mute (M) and the volume are still as you left them; restart photon and they
+      are back to loop off, sound on.
+- [ ] The picture is never covered by the controls or the bar, on a landscape and a portrait
+      video.
 - [ ] The mouse wheel over a playing video still moves to the next and previous item.
 - [ ] In the grid, right-clicking a video offers no "Copy photo", and Ctrl+C on a selected video
       does nothing.

@@ -241,9 +241,15 @@ gains `kind` and `durationMs`. The Rust structs, the TS mirror and every literal
 `lucide-static`, colours from tokens. A video whose frame is not made yet shows a film
 placeholder rather than a broken image.
 
-**Viewer.** For a video, `<video controls preload="metadata" crossorigin="anonymous"
+**Viewer.** For a video, `<video preload="metadata" crossorigin="anonymous"
 poster={preview}>` takes the full `<img>`'s place, and **plays on open, with sound**, as Picasa
-did. Leaving it - navigation, closing, or a reload through `pictureChanged` - pauses it and
+did. It has no `controls` attribute: photon draws its own (`VideoControls.svelte` over
+`createVideoPlayer`, added 2026-09-27), because the webviews' built-in controls look different
+on each OS and sat in a strip of their own above photon's bar. The strip has play/pause, the
+time, a position bar to drag (Escape mid-drag puts the video back), the length, mute, volume and
+a loop toggle; a click on the picture plays and pauses. Keys: Space, L (loop), M (mute) and
+Shift+←/→ (5 s). Loop, mute and volume carry from one video to the next while photon is open,
+and are saved nowhere. Leaving it - navigation, closing, or a reload through `pictureChanged` - pauses it and
 unloads the source. There is no zoom, pan or crop; `R` and `C` do nothing for a video. A video the crash-loop
 guard failed never gets a `<video>`: the viewer shows its poster or placeholder and the
 guard's message, told by a `videoCrashed` flag on `ViewerItem`. Any other `Failed` video (a
