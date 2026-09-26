@@ -137,7 +137,7 @@ cropping what was left. **Original** undoes everything.
 
 None of this changes your files. photon remembers the edit in its library and applies it
 wherever it shows the photo — the grid, the viewer, a slideshow — so "Reveal in file manager"
-still leads to the photo exactly as the camera wrote it, and other programs do not see the
+and "Open in default app" still lead to the photo exactly as the camera wrote it, and other programs do not see the
 edit. An edit belongs to the file's entry in the library: a photo renamed or moved outside
 photon comes back unedited. Picasa's own crops and rotations are not imported.
 
@@ -348,6 +348,7 @@ publishing it.
 - [ ] On Windows, add an SMB share (`\\server\photos` or by IP) as a watched folder: Settings → Folders shows it as `\\server\photos`, not `\\?\UNC\server\photos`, and "Reveal" there, on a sidebar folder and on a photo in it all open Explorer rather than failing. A library that already held the share from an older photon shows the same after the upgrade, with its photos, stars and albums intact (the share's thumbnails are rebuilt once).
 - [ ] The viewer's caption reads name, capture time, resolution, size and position, e.g. `IMG_1234.JPG · Jun 15, 2024, 12:30 PM · 4000 × 3000 · 3.2 MB · (12 / 240)`. The capture time matches what the camera wrote, not shifted by your time zone.
 - [ ] Clicking the caption copies the file name to the clipboard and shows "Copied" for about a second. Paste somewhere to confirm.
+- [ ] Right-click a single photo in the grid, and right-click in the viewer: "Open in default app" opens the file in the system's image viewer (not in photon). It is missing from the grid's menu when several photos are selected. On a turned or cropped photo it opens the untouched file.
 - [ ] Right-click in the viewer: "Locate in photon" closes it and lands the grid on that photo, selected and in view — also from Starred, Recent or a search, where it switches back to All first. "Reveal in file manager" opens the file's folder. Escape closes the menu before it closes the viewer.
 - [ ] A library that cannot be opened (for example a corrupt database, or one written by a newer photon) shows an error dialog and photon exits, with no empty window sitting behind it.
 - [ ] A watched folder whose drive is offline and which has never been scanned appears in Settings → Folders as Offline, and can still be rescanned, revealed or removed from there.

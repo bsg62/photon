@@ -303,6 +303,12 @@
     api.revealInFileManager(item.id).catch(library.reportError);
   }
 
+  function openInApp() {
+    if (!item) return;
+    closeMenu();
+    api.openInDefaultApp(item.id).catch(library.reportError);
+  }
+
   function viewport(): { width: number; height: number } {
     return { width: stage?.clientWidth ?? 0, height: stage?.clientHeight ?? 0 };
   }
@@ -960,6 +966,7 @@
     >
       <button role="menuitem" onclick={locate}>Locate in photon</button>
       <button role="menuitem" onclick={reveal}>Reveal in file manager</button>
+      <button role="menuitem" title="Opens the file itself; photon's turns and crop are not applied." onclick={openInApp}>Open in default app</button>
       <button role="menuitem" onclick={toggleHidden}>{item.hidden ? 'Unhide photo (H)' : 'Hide photo (H)'}</button>
     </div>
   {/if}
