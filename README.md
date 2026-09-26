@@ -67,11 +67,12 @@ the file watcher; nothing already indexed is re-read and no thumbnail is rebuilt
 **Video:** MP4, M4V, MOV and WebM, played by the system's own video support - photon ships
 no decoder. On macOS everything an iPhone records plays. On Windows, iPhone video (HEVC)
 needs Microsoft's *HEVC Video Extensions* from the Store; without it such a video shows no
-preview and does not play. On Linux the `.deb` pulls in GStreamer's good and libav plugins
-and the AppImage carries its own; anywhere else install them (`gst-plugins-good` and
-`gst-libav` on Arch, `gstreamer1.0-plugins-good` and `gstreamer1.0-libav` on Debian and
-Ubuntu) - without them photon shows videos but cannot play them. A video's preview is drawn
-while photon's window is open.
+preview and does not play. On Linux the `.deb` pulls in GStreamer's good and libav plugins;
+everywhere else, the AppImage included, photon uses the ones the system has, so install them
+(`gst-plugins-good` and `gst-libav` on Arch, `gstreamer1.0-plugins-good` and
+`gstreamer1.0-libav` on Debian and Ubuntu) - without them photon shows videos but cannot play
+them. The AppImage does not bundle them, and video in the AppImage has not been checked by
+hand yet. A video's preview is drawn while photon's window is open.
 
 ### Camera data, keywords, people and albums
 
@@ -583,6 +584,8 @@ publishing it.
 - [ ] Linux, without GStreamer's good plugins (remove them, or run on a fresh Arch): photon
       starts, video tiles show the play icon, opening one says the plugins are missing, and the
       window never goes blank.
+- [ ] The AppImage, on a machine with GStreamer's good and libav plugins installed, plays a
+      video; on one without them it shows the can't-play message and never goes blank.
 - [ ] macOS and Windows: a video plays (App Transport Security and WebView2 allow
       `http://127.0.0.1`), and no firewall prompt appears when photon starts. **Blocking for the
       release.**
@@ -600,9 +603,8 @@ publishing it.
 - [ ] In the grid, right-clicking a video offers no "Copy photo", and Ctrl+C on a selected video
       does nothing.
 - [ ] Pause a long video, open three more, then play one: playback starts at once.
-- [ ] Quitting photon while poster frames are still being drawn, twice in a row, can mark that
-      one video as failed with "photon's window stopped while opening this video". This is a
-      known limit (a two-strike crash guard), not a bug.
+- [ ] Quit photon while poster frames are still being drawn, and relaunch: the frames carry on
+      being drawn, and no video shows "photon's window stopped while opening this video".
 - [ ] Tile badge placement: the play badge is top-left, because the star and the copies mark own
       the bottom corners. Check that it stays legible on light and dark photos.
 

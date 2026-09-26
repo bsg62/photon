@@ -223,20 +223,3 @@ OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
 IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
-
-## GStreamer plugins (AppImage only)
-
-The AppImage bundles GStreamer's "good" plugins and `gst-libav` so that video plays without
-the user installing anything; the `.deb` instead depends on the distribution's own packages,
-and everywhere else photon uses whatever GStreamer the system already has. Neither is compiled
-into photon or linked by it - the webview (WebKitGTK) loads them as shared libraries at
-runtime, the same way a browser would - but the AppImage carries their binaries, so their
-licence terms travel with it.
-
-Both are licensed LGPL-2.1-or-later. `gst-libav` additionally links FFmpeg, itself LGPL (or
-GPL, depending on how it was configured); the build used here is the LGPL configuration.
-Source for the exact versions bundled is published alongside each AppImage release, matching
-the upstream sources at https://gitlab.freedesktop.org/gstreamer/gstreamer (subprojects
-`gst-plugins-good` and `gst-libav`) and https://ffmpeg.org. The LGPL's full text is at
-https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html; as required by it, a user may replace
-the bundled plugin libraries with their own compatible build.

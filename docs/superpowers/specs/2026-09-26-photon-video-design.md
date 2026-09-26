@@ -184,7 +184,11 @@ job at a time - a WebKit media pipeline is heavy:
 3. It seeks to `min(1 s, duration / 10)` - the first frame is often black.
 4. It draws the frame at up to the preview's 1600 px long edge, encodes a JPEG, and sends it
    with `api.putVideoFrame(id, key, bytes)` as a raw IPC body, not base64.
-5. A media error, or 15 s without a frame, sends `api.videoFrameFailed(id, reason)`.
+5. A media error, or 15 s without a frame, sends `api.videoFrameFailed(id, reason)`. Only
+   drawing is classified: a `put` that rejects (a full disk, a refused IPC body) drew its
+   frame fine, so it is reported `unsupported`, which keeps the row `Pending` and answers the
+   claim. A file whose metadata loads with a zero `videoWidth`/`videoHeight` - audio-only,
+   or HEVC without the codec on Windows - is `unsupported` too, never a 1×1 black poster.
 
 After each job it unloads the element (`removeAttribute('src')`, `load()`), releasing the
 pipeline.
@@ -194,6 +198,11 @@ within a dimension bound, and go through the same resize-and-store path as `Thum
 output. The row is marked `Ready` with `set_thumb_state_if_unchanged` against the `key` the job
 was issued with, so a video rewritten while its frame was being made is refused, as a stale
 worker's render is. A video's thumbnail key is its bare fingerprint - videos have no edits.
+
+A stored frame asks for a grid rebuild, coalesced to about one a second with a trailing
+rebuild so the last frame of a burst is always shown (`Engine::frame_stored`); a failed
+rebuild is logged, not returned, since the frame is stored by then. `fail_video` leaves a
+row that is already `Ready` alone.
 
 **Failure reasons.** `unsupported` (`MEDIA_ERR_SRC_NOT_SUPPORTED`, or the capability check
 below says no) leaves the row `Pending` and skips it for the rest of the session, so installing
@@ -235,14 +244,19 @@ placeholder rather than a broken image.
 **Viewer.** For a video, `<video controls preload="metadata" crossorigin="anonymous"
 poster={preview}>` takes the full `<img>`'s place, and **plays on open, with sound**, as Picasa
 did. Leaving it - navigation, closing, or a reload through `pictureChanged` - pauses it and
-unloads the source. There is no zoom, pan or crop; `R` and `C` do nothing for a video. **Space**
+unloads the source. There is no zoom, pan or crop; `R` and `C` do nothing for a video. A video the crash-loop
+guard failed never gets a `<video>`: the viewer shows its poster or placeholder and the
+guard's message, told by a `videoCrashed` flag on `ViewerItem`. Any other `Failed` video (a
+decode error or a timeout on its poster) is offered without autoplay. A `<video>` that
+reports an error is replaced by the poster and "This video can't be played here." rather
+than left a black player. **Space**
 toggles playback (Space is otherwise bound only while a slideshow runs). Arrows, Home, End and
 Escape keep their viewer meaning: key handling stays on the viewer root and the video element is
 not made focusable. `neighbours` leaves videos out of the preload. The info panel shows the
 duration and dimensions, and the camera rows when present.
 
 **What refuses a video.** The slideshow skips videos, and does not start in a view holding only
-videos. `rotate_item` and `set_item_edit` refuse a video in the backend as well as the UI.
+videos. While it runs, the arrows and the wheel skip videos too, in the direction of travel. `rotate_item` and `set_item_edit` refuse a video in the backend as well as the UI.
 `copy_picture` refuses one, and the menu hides the item. Export copies bytes and works unchanged;
 reveal, open in the default app, star, hide, albums, keywords and captions are unchanged. Faces:
 none - Picasa wrote none for videos.
@@ -250,11 +264,17 @@ none - Picasa wrote none for videos.
 ## Packaging
 
 - `.deb`: `depends` gains `gstreamer1.0-plugins-good` and `gstreamer1.0-libav`.
-- AppImage: `bundleMediaFramework: true`, which bundles GStreamer and its plugins; the size cost
-  and the plugins' licences go in `THIRD-PARTY-NOTICES.md`.
+- AppImage: bundles no GStreamer, and relies on the system's good and libav plugins exactly
+  as any install outside the `.deb` does. *Amended 2026-09-26 after the whole-branch review;*
+  the design first set `bundleMediaFramework: true`, and it was dropped because it bundled
+  nothing true: `release.yml` installs no plugins on the build runner, so there would have
+  been nothing to bundle; Ubuntu's FFmpeg, which `gst-libav` links, is likely a GPL build;
+  and nothing publishes the bundled plugins' source, which the LGPL notice promised. A
+  licence claim that is not true is worse than a documented gap. Video in the AppImage is
+  unverified, and a smoke item covers it with and without the plugins.
 - `tiny_http` and `jiff` join `THIRD-PARTY-NOTICES.md`; `xtask metadata` enforces it.
 - README: *File formats* gains Video, including Windows needing the HEVC extension for iPhone
-  video and Linux needing the plugins for anything but the AppImage; the smoke checklist gains
+  video and Linux needing the plugins for anything but the `.deb`; the smoke checklist gains
   playback, seeking, poster frames, the Linux no-plugins message, and the macOS/Windows items
   under *Risks*.
 
@@ -292,6 +312,14 @@ none - Picasa wrote none for videos.
   iPhone video stays `Pending` with no poster and does not play; that is documented, not solved.
 - **Codec coverage differs by platform**, so one library can show a poster on one machine and
   a placeholder on another.
+- **Quitting twice while frames are being drawn can fail a video.** The crash-loop guard
+  cannot tell a quit from a death: a claim left open when the window goes away counts once
+  at the next launch, and at `DEATHS_TO_FAIL` (two) the video is Failed with the crash
+  message. A clean quit disarms the photo workers' guard but deliberately not the video
+  one, because a web process that dies leaves photon running and the user then quits it
+  cleanly (`a_clean_close_does_not_forgive_a_claimed_video`). Two quits in a row, each
+  landing on the same video mid-frame, is the price of that. A known limit, not a bug; the
+  README's smoke checklist keeps a single quit mid-frame as a check.
 
 ## Not in this design
 
