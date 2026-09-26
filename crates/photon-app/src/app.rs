@@ -149,6 +149,15 @@ pub fn run() {
                     let pictures = paths.picture_dir().ok();
                     app.manage(engine.clone());
                     engine.startup(pictures);
+                    // Videos play over loopback HTTP (`media_server.rs`). A failure to bind
+                    // costs video playback and poster frames, not the app: `media_base`
+                    // then errors and the UI treats video as unsupported.
+                    match crate::media_server::MediaServer::start(engine.clone()) {
+                        Ok(server) => {
+                            app.manage(server);
+                        }
+                        Err(err) => tracing::error!(%err, "could not start the media server"),
+                    }
                     Ok(())
                 }
                 Err(err) => {
