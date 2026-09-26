@@ -50,6 +50,7 @@ pub fn new_item(folder_id: i64, path: &str, taken_at: i64) -> NewItem {
         camera: crate::metadata::CameraMeta::default(),
         tags: Vec::new(),
         caption: None,
+        duration_ms: None,
     }
 }
 

@@ -299,6 +299,11 @@ ALTER TABLE items ADD COLUMN caption TEXT;
 -- this column existed: the next definition that differs names it once.
 ALTER TABLE albums ADD COLUMN picasa_named_at INTEGER;
 "#,
+    r#"
+-- A video's running time in milliseconds, from its container (`photon_core::video`). NULL for
+-- every photo, and for a video whose container did not say.
+ALTER TABLE items ADD COLUMN duration_ms INTEGER;
+"#,
 ];
 
 pub fn migrate(conn: &Connection) -> Result<()> {
@@ -550,7 +555,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 19);
+        assert_eq!(version, 20);
         let rules: i64 = conn
             .query_row("SELECT count(*) FROM tag_rules", [], |r| r.get(0))
             .unwrap();
@@ -709,7 +714,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 19);
+        assert_eq!(version, 20);
         let overlay: i64 = conn
             .query_row("SELECT count(*) FROM item_user_tags", [], |r| r.get(0))
             .unwrap();
@@ -759,7 +764,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 19);
+        assert_eq!(version, 20);
         let hash: Option<Vec<u8>> = conn
             .query_row("SELECT content_hash FROM items WHERE id = 1", [], |r| {
                 r.get(0)
@@ -900,7 +905,7 @@ mod tests {
             .unwrap();
         // Hardcoded, like every other version assertion here: `MIGRATIONS.len()` would
         // agree with itself whatever the list did, which is the tripwire removed.
-        assert_eq!(version, 19);
+        assert_eq!(version, 20);
     }
 
     /// Every folder in an existing library comes out of the upgrade visible.
@@ -938,7 +943,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 19);
+        assert_eq!(version, 20);
     }
 
     /// Every album in an existing library comes out of the upgrade as photon's own.
@@ -971,7 +976,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 19);
+        assert_eq!(version, 20);
     }
 
     /// Every Picasa album in an existing library comes out of the upgrade with no recorded
@@ -1005,7 +1010,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 19);
+        assert_eq!(version, 20);
     }
 
     /// Every photo in an existing library comes out of the upgrade uncaptioned, for the
@@ -1044,7 +1049,7 @@ mod tests {
             .unwrap()
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 19);
+        assert_eq!(version, 20);
     }
 
     /// A stored Conservative or Loose keeps meaning Conservative or Loose.
@@ -1078,7 +1083,7 @@ mod tests {
             let version: i64 = conn
                 .query_row("PRAGMA user_version", [], |r| r.get(0))
                 .unwrap();
-            assert_eq!(version, 19);
+            assert_eq!(version, 20);
         }
     }
 
@@ -1128,6 +1133,6 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 19);
+        assert_eq!(version, 20);
     }
 }

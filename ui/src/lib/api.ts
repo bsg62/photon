@@ -23,8 +23,9 @@ export interface Section { folderId: number | null; offset: number; count: numbe
  *  than newest, to match Picasa. */
 export interface FolderTally { folderId: number; count: number; takenAtMin: number }
 /** `hasCopies`: another live file has the same bytes or is a look-alike, the same rule the
- *  Duplicates view uses (`GridEntry::has_copies`). */
-export interface GridEntry { id: number; folderId: number; takenAt: number; aspect: number; kind: 'image'; thumbKey: string; starred: boolean; hasCopies: boolean }
+ *  Duplicates view uses (`GridEntry::has_copies`). `durationMs` is a video's running time;
+ *  null for a photo. */
+export interface GridEntry { id: number; folderId: number; takenAt: number; aspect: number; kind: 'image' | 'video'; durationMs: number | null; thumbKey: string; starred: boolean; hasCopies: boolean }
 export type GridView = 'all' | 'starred' | 'recent' | 'search' | 'person' | 'album' | 'tag' | 'duplicates' | 'copies' | 'hidden';
 /** Mirrors `commands::CopiesOf`. `fileName` is empty once the photo has left the library;
  *  `gone` is true once the anchor photo itself is gone (purged or missing) - the filter

@@ -33,6 +33,7 @@
       takenAt: section.takenAtMin + i * 600,
       aspect: [1.5, 0.67, 1.33, 1][i % 4],
       kind: 'image',
+      durationMs: null,
       thumbKey: 'k' + i,
       starred: i % 7 === 0,
       // A different stride from the star, so some tiles carry each mark and some both.

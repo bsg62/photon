@@ -844,6 +844,8 @@ fn describe(
         camera: meta.camera,
         tags: embedded.keywords,
         caption: embedded.caption,
+        // Videos are not indexed yet (Task 4); a described file is always a photo here.
+        duration_ms: None,
     }
 }
 

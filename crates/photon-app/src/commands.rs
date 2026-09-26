@@ -956,6 +956,7 @@ mod tests {
             },
             tags: vec!["beach".into()],
             caption: None,
+            duration_ms: None,
         };
         f.engine.lib.update_item_meta(&[(id, described)]).unwrap();
         let album = f.engine.lib.create_album("Trip", 1).unwrap();
@@ -1034,6 +1035,7 @@ mod tests {
             },
             tags: vec![],
             caption: Some("Grandma".into()),
+            duration_ms: None,
         };
         f.engine.lib.update_item_meta(&[(id, described)]).unwrap();
         assert_eq!(
@@ -1208,6 +1210,7 @@ mod tests {
             camera: Default::default(),
             tags: tags.iter().map(|t| t.to_string()).collect(),
             caption: None,
+            duration_ms: None,
         };
         f.engine.lib.update_item_meta(&[(id, described)]).unwrap();
     }
