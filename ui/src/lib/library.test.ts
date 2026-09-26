@@ -764,7 +764,7 @@ describe('LibraryStore', () => {
     const store = new LibraryStore();
     await store.init();
     vi.mocked(api.setSearchQuery).mockResolvedValueOnce(undefined);
-    vi.mocked(api.gridInfo).mockResolvedValueOnce({ version: 2, len: 0, sections: [], starredCount: 0, duplicateCount: 0, hiddenCount: 0, view: 'search', searchQuery: 'lake', person: null, album: null, tag: null, copiesOf: null });
+    vi.mocked(api.gridInfo).mockResolvedValueOnce({ version: 2, len: 0, sections: [], folders: [], starredCount: 0, duplicateCount: 0, hiddenCount: 0, view: 'search', searchQuery: 'lake', person: null, album: null, tag: null, copiesOf: null });
     await expect(store.setSearchQuery('lake')).resolves.toBe('lake');
 
     vi.mocked(api.setSearchQuery).mockRejectedValueOnce(new Error('refused'));
@@ -776,7 +776,7 @@ describe('LibraryStore', () => {
     await store.init();
     const search = deferred<void>();
     vi.mocked(api.setSearchQuery).mockReturnValueOnce(search.promise);
-    vi.mocked(api.gridInfo).mockResolvedValueOnce({ version: 2, len: 0, sections: [], starredCount: 0, duplicateCount: 0, hiddenCount: 0, view: 'search', searchQuery: 'beach', person: null, album: null, tag: null, copiesOf: null });
+    vi.mocked(api.gridInfo).mockResolvedValueOnce({ version: 2, len: 0, sections: [], folders: [], starredCount: 0, duplicateCount: 0, hiddenCount: 0, view: 'search', searchQuery: 'beach', person: null, album: null, tag: null, copiesOf: null });
 
     void store.setSearchQuery('beach');
     const view = store.settledView();
