@@ -1212,11 +1212,13 @@
      of panning. */
   img, video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; image-orientation: from-image; user-select: none; -webkit-user-drag: none; }
   /* The video stops above photon's own controls (`VideoControls`, at 64px) and the bar below
-     them, so neither ever covers the picture - a subtitle burned in at the bottom edge, say.
-     `height: auto` lets the bottom inset actually take effect: `inset: 0` above also sets an
-     explicit height, and a positioned box honours only one of a competing height/top+bottom
-     pair. */
-  video.full { bottom: 112px; height: auto; }
+     them, so neither ever covers the picture. The height is set outright: a `<video>` is a
+     replaced element, and absolutely positioned with `height: auto` its height comes from its
+     own aspect ratio while a `bottom` inset is ignored - a portrait video came out as wide as
+     the window and several screens tall, pinned to the top, most of it cut off
+     (lib/viewer-layout.test.ts). With the box's height given, `object-fit: contain` fits the
+     picture into it whatever its shape. */
+  video.full { height: calc(100% - 112px); }
   .hidden { visibility: hidden; }
   /* After the stage in the document and before the controls, so it paints between them
      without a z-index. The duration is `CROSSFADE_MS`. */
