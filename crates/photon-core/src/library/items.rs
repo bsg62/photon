@@ -845,7 +845,8 @@ impl Library {
     /// Photos matching `query` in their file name, folder name, camera, lens, keywords or
     /// capture date, case-insensitively.
     ///
-    /// Words narrow, `OR` widens, `camera:` and `lens:` confine a term to that field, and
+    /// Words narrow, `OR` widens, `camera:` and `lens:` confine a term to that field,
+    /// `from:` and `to:` bound the capture date, and
     /// the matching runs in Rust rather than as SQL `LIKE`; `search::Query` holds the
     /// grammar and the reasons for it. This is one pass over the same rows an index rebuild
     /// already reads, with a handful of short string compares per term added per row. The
@@ -907,12 +908,14 @@ impl Library {
                     // collapses runs of whitespace to single spaces.
                     haystacks.push(caption.split_whitespace().collect::<Vec<_>>().join(" "));
                 }
-                haystacks.push(date_text(r.get(2)?));
+                let taken: i64 = r.get(2)?;
+                haystacks.push(date_text(taken));
                 let refs: Vec<&str> = haystacks.iter().map(String::as_str).collect();
                 let hit = query.matches(&Fields {
                     any: &refs,
                     camera: camera.as_deref(),
                     lens: lens.as_deref(),
+                    taken: Some(taken),
                 });
                 // No `Ok(…?)` wrapper here: the closure already returns this type, and
                 // wrapping it trips `clippy::needless_question_mark`, which the gate
@@ -1946,6 +1949,28 @@ mod tests {
                 .is_empty(),
             "a camera it was not shot with finds nothing"
         );
+    }
+
+    #[test]
+    fn search_narrows_by_capture_date_with_from_and_to() {
+        let (_dir, lib) = temp_library();
+        let (_w, folder) = seed_folder(&lib, Path::new("/p"));
+        let ids = lib
+            .insert_items(&[
+                new_item(folder, "/p/a.jpg", 1_560_556_800), // 2019-06-15
+                new_item(folder, "/p/b.jpg", 1_577_836_800), // 2020-01-01
+            ])
+            .unwrap();
+        let found = |q: &str| -> Vec<i64> {
+            lib.entries_for(GridView::Search, q)
+                .unwrap()
+                .into_iter()
+                .map(|e| e.id)
+                .collect()
+        };
+        assert_eq!(found("to:2019"), vec![ids[0]]);
+        assert_eq!(found("from:2020"), vec![ids[1]]);
+        assert_eq!(found("from:2019-06 to:2019-06"), vec![ids[0]]);
     }
 
     #[test]
