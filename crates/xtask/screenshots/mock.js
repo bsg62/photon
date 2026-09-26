@@ -74,6 +74,8 @@
           ? "Grandma's 80th, on the terrace in Lisbon, everyone gathered right before sunset for cake and the last of the summer light over the river."
           : null,
       faces: [{ hash: 'a', name: 'Anna', left: 0.3, top: 0.25, right: 0.42, bottom: 0.5 }],
+      kind: 'image',
+      durationMs: null,
       albums: [1, 3],
       copies: [
         { id: 501, path: `/home/ada/Pictures/2026/Summer hike/IMG_48${id} copy.jpg`, kind: 'identical', width: 5472, height: 3648 },
@@ -160,6 +162,8 @@
     grid_tile: () => P.get('tile') || 'medium',
     set_grid_tile: () => null,
     copy_count: () => 2,
+    media_base: () => 'http://127.0.0.1:9/0000',
+    next_video_job: () => null,
   };
 
   // Commands that change something: a screenshot never needs their answer, so they get null.
@@ -173,6 +177,7 @@
     'set_item_edit', 'set_last_folder', 'set_person_view',
     'check_export_dest', 'set_export_apply_edits', 'set_slideshow_interval', 'set_star', 'set_tag_view', 'set_theme',
     'set_visible', 'set_copies_view',
+    'put_video_frame', 'video_frame_failed', 'video_session_start',
   ];
 
   let callbacks = 0;

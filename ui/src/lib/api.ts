@@ -97,6 +97,10 @@ export interface ViewerItem {
   /** The caption the photo carries (XMP or IPTC), shown under it. */
   caption: string | null;
   faces: ItemFace[];
+  /** A video plays; the viewer shows no zoom, crop or turn for it. */
+  kind: 'image' | 'video';
+  /** The video's running time, or null for a photo. */
+  durationMs: number | null;
   /** Ids of the albums the photo is in. */
   albums: number[];
   /** Other files with the same bytes as this one. */

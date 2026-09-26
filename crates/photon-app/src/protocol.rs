@@ -74,7 +74,7 @@ const FOREVER: &str = "public, max-age=31536000, immutable";
 
 /// The URL's thumbnail key, only in the exact spelling `hex_key` gives it. A looser parse
 /// would read `+1` as key 1 and cache key 1's picture under a URL the UI never asks for.
-fn parse_key(key: &str) -> Option<u64> {
+pub(crate) fn parse_key(key: &str) -> Option<u64> {
     u64::from_str_radix(key, 16)
         .ok()
         .filter(|&parsed| photon_core::grid::hex_key(parsed) == key)
@@ -99,6 +99,11 @@ fn image(engine: &Engine, id: &str, cropped: bool) -> Response<Vec<u8>> {
         Ok(_) => return text(StatusCode::NOT_FOUND, "not found"),
         Err(err) => return text(StatusCode::INTERNAL_SERVER_ERROR, &err.to_string()),
     };
+    // A video is served by `media_server.rs`, streamed; this handler reads the whole file
+    // into memory, which for a video is gigabytes.
+    if item.kind != photon_core::media::MediaKind::Image {
+        return text(StatusCode::NOT_FOUND, "not found");
+    }
     let edit = if cropped {
         item.edit
     } else {
@@ -359,5 +364,16 @@ mod tests {
         assert_eq!(handle(&f.engine, "/thumb/abc/grid/k").status(), 400);
         assert_eq!(handle(&f.engine, "/thumb/1/huge/k").status(), 400);
         assert_eq!(handle(&f.engine, "/nope").status(), 404);
+    }
+
+    #[test]
+    fn the_full_image_route_refuses_a_video() {
+        let f = fixture(&[("clip.mp4", &vec![0u8; 4096])]);
+        f.add_photos();
+        let id = f.ids()[0];
+        assert_eq!(
+            handle(&f.engine, &format!("image/{id}")).status(),
+            StatusCode::NOT_FOUND
+        );
     }
 }

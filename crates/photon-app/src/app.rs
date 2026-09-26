@@ -261,6 +261,11 @@ pub fn run() {
             ipc::app_info,
             ipc::reveal_watched,
             ipc::reveal_library,
+            ipc::media_base,
+            ipc::video_session_start,
+            ipc::next_video_job,
+            ipc::put_video_frame,
+            ipc::video_frame_failed,
         ])
         .build(tauri::generate_context!())
     {

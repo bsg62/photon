@@ -10,7 +10,7 @@ use photon_core::{
         Album, AlbumSummary, CopiesArg, Folder, GridTile, ItemFace, Person, SavedSearch, TagCount,
         TagRule, ThemeChoice, WatchedFolder, is_starred,
     },
-    media::ThumbState,
+    media::{MediaKind, ThumbState},
     now_ms,
     thumbs::Priority,
 };
@@ -18,6 +18,7 @@ use serde::Serialize;
 use std::{
     path::{Path, PathBuf},
     sync::Arc,
+    time::Duration,
 };
 
 pub const MAX_ROWS: usize = 1000;
@@ -140,6 +141,10 @@ pub struct ViewerItem {
     pub caption: Option<String>,
     /// Named Picasa faces, in INI order.
     pub faces: Vec<ItemFace>,
+    /// A video plays; the viewer shows no zoom, crop or turn for it.
+    pub kind: MediaKind,
+    /// The video's running time, or `None` for a photo.
+    pub duration_ms: Option<i64>,
     /// Ids of the albums the photo is in.
     pub albums: Vec<i64>,
     /// Other files with the same bytes as this one.
@@ -597,6 +602,8 @@ pub fn viewer_item(engine: &Engine, id: i64) -> CmdResult<ViewerItem> {
     let copies = item_copies(engine, item.id)?;
     let thumb_key = hex_key(item.thumb_key());
     let camera = item.camera;
+    let kind = item.kind;
+    let duration_ms = item.duration_ms;
     Ok(ViewerItem {
         id: item.id,
         thumb_key,
@@ -625,6 +632,8 @@ pub fn viewer_item(engine: &Engine, id: i64) -> CmdResult<ViewerItem> {
         tags,
         caption,
         faces,
+        kind,
+        duration_ms,
         albums,
         copies,
         uncropped_width,
@@ -666,6 +675,9 @@ pub fn set_item_edit(
 /// the app handle this layer does not; here is everything a test can reach.
 pub fn copy_picture(engine: &Engine, id: i64) -> CmdResult<photon_core::edit::ClipboardPicture> {
     let item = engine.lib.item(id)?.ok_or(Error::NotFound(id))?;
+    if item.kind != MediaKind::Image {
+        return Err(Error::NotAPhoto(id).into());
+    }
     // One full-size decode at a time, the lock the viewer's render and export share. Held
     // across the render only: the caller's clipboard write must not keep the next render,
     // or the viewer's, waiting on the desktop's clipboard.
@@ -769,7 +781,8 @@ pub fn set_export_apply_edits(engine: &Engine, apply: bool) -> CmdResult<()> {
 /// The ids returned are the ones whose *full image* is worth fetching ahead, which leaves
 /// out edited photos: their full image is rendered per request and the viewer asks for it
 /// under a keyed URL, so a preload of the bare URL costs a full-size decode and encode whose
-/// result nothing ever reads. Their thumbnails are still queued.
+/// result nothing ever reads; and videos, which the viewer plays rather than preloads. Their
+/// thumbnails are still queued.
 pub fn neighbours(engine: &Engine, id: i64, radius: usize) -> Vec<i64> {
     let ids = engine.grid().1.neighbours(id, radius.min(MAX_RADIUS));
     engine.thumbs.prioritize(&ids, Priority::Neighbour);
@@ -780,9 +793,54 @@ pub fn neighbours(engine: &Engine, id: i64, radius: usize) -> Vec<i64> {
                 .item(id)
                 .ok()
                 .flatten()
-                .is_some_and(|item| item.edit.is_identity())
+                .is_some_and(|item| item.kind == MediaKind::Image && item.edit.is_identity())
         })
         .collect()
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VideoJobDto {
+    pub id: i64,
+    /// Hex, as `thumbKey` is everywhere else on the wire.
+    pub key: String,
+}
+
+/// How long `next_video_job` holds the call open waiting for a job. Under the webview's
+/// own IPC timeouts, and long enough that an idle page asks about twice a minute.
+pub const VIDEO_JOB_WAIT: Duration = Duration::from_secs(25);
+
+pub fn media_base(server: &crate::media_server::MediaServer) -> String {
+    server.base_url()
+}
+
+pub fn video_session_start(engine: &Engine, supported: bool) -> CmdResult<()> {
+    Ok(engine.thumbs.video_session_start(supported)?)
+}
+
+pub fn next_video_job(engine: &Engine, wait: Duration) -> CmdResult<Option<VideoJobDto>> {
+    Ok(engine.thumbs.next_video_job(wait)?.map(|job| VideoJobDto {
+        id: job.id,
+        key: hex_key(job.key),
+    }))
+}
+
+pub fn put_video_frame(engine: &Engine, id: i64, key: &str, jpeg: &[u8]) -> CmdResult<()> {
+    let key = crate::protocol::parse_key(key).ok_or(Error::NotFound(id))?;
+    if engine.thumbs.put_video_frame(id, key, jpeg)? {
+        engine.refresh_grid()?;
+    }
+    Ok(())
+}
+
+pub fn video_frame_failed(
+    engine: &Engine,
+    id: i64,
+    key: &str,
+    reason: photon_core::thumbs::VideoFailure,
+) -> CmdResult<()> {
+    let key = crate::protocol::parse_key(key).ok_or(Error::NotFound(id))?;
+    Ok(engine.thumbs.video_frame_failed(id, key, reason)?)
 }
 
 pub fn item_path(engine: &Engine, id: i64) -> CmdResult<PathBuf> {
@@ -1441,5 +1499,59 @@ mod tests {
             add_to_album(&f.engine, album.id, &f.ids()).is_err(),
             "the guard holds over IPC"
         );
+    }
+
+    #[test]
+    fn a_video_refuses_edits_and_the_clipboard() {
+        let f = fixture(&[("clip.mp4", b"video")]);
+        f.add_photos();
+        let id = f.ids()[0];
+        let refused = |r: CmdResult<()>| {
+            matches!(
+                r,
+                Err(AppError {
+                    kind: "notAPhoto",
+                    ..
+                })
+            )
+        };
+        assert!(refused(rotate_item(&f.engine, id, true)));
+        assert!(refused(set_item_edit(&f.engine, id, 1, None)));
+        assert!(matches!(
+            copy_picture(&f.engine, id),
+            Err(AppError {
+                kind: "notAPhoto",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn the_viewer_is_told_it_is_a_video_and_neighbours_leave_it_out() {
+        let f = fixture(&[
+            ("a.jpg", &jpeg(8, 8)),
+            ("b.mp4", b"video"),
+            ("c.jpg", &jpeg(8, 8)),
+        ]);
+        f.add_photos();
+        let video = f
+            .ids()
+            .into_iter()
+            .find(|&id| f.engine.lib.item(id).unwrap().unwrap().kind == MediaKind::Video)
+            .unwrap();
+        let item = viewer_item(&f.engine, video).unwrap();
+        assert_eq!(item.kind, MediaKind::Video);
+        assert!(!neighbours(&f.engine, f.ids()[0], 2).contains(&video));
+    }
+
+    #[test]
+    fn next_video_job_speaks_the_ui_key() {
+        let f = fixture(&[("clip.mp4", b"video")]);
+        f.add_photos();
+        video_session_start(&f.engine, true).unwrap();
+        let job = next_video_job(&f.engine, Duration::from_millis(200))
+            .unwrap()
+            .unwrap();
+        assert_eq!(job.key, viewer_item(&f.engine, job.id).unwrap().thumb_key);
     }
 }

@@ -39,6 +39,10 @@ pub enum Error {
     /// A crop that is inverted, or too small to be anything but a slip of the pointer.
     #[error("that crop is not a usable rectangle")]
     InvalidCrop,
+    /// An edit, rotate or clipboard copy asked of a video: photon never decodes one, so it
+    /// cannot render one turned, cropped or copied.
+    #[error("This is a video; that only works on photos.")]
+    NotAPhoto(i64),
     /// An export aimed inside a watched folder. Copies written there would be scanned back
     /// in as new photos: one click would double the library and fill the duplicate finder.
     #[error(

@@ -10,6 +10,7 @@ use photon_core::{
     export::{self, Source},
     grid::{GridIndex, GridView},
     library::{Library, WatchedFolder},
+    media::MediaKind,
     now_ms, paths, picasa,
     scanner::{ScanOptions, ScanProgress, ScanSink, scan_subtree, scan_watched},
     thumbs::{Priority, ThumbCache, ThumbService},
@@ -795,7 +796,14 @@ impl Engine {
     /// soon, because an edit is not a file change and so no scan follows it to run a pass
     /// of its own.
     fn write_edit(self: &Arc<Self>, id: i64, edit: Edit) -> Result<()> {
-        self.live_item(id)?;
+        let item = self.lib.item(id)?.ok_or(Error::NotFound(id))?;
+        if item.missing_since.is_some() {
+            return Err(Error::NotFound(id));
+        }
+        // photon never decodes a video, so it cannot render one turned or cropped.
+        if item.kind != MediaKind::Image {
+            return Err(Error::NotAPhoto(id));
+        }
         if self.lib.set_item_edit(id, edit)? {
             self.thumbs.prioritize(&[id], Priority::Visible);
             self.refresh_grid()?;
