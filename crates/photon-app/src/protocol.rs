@@ -311,10 +311,9 @@ mod tests {
             handle(&f.engine, &format!("/thumb/{id}/grid/{key}")).status(),
             200
         );
-        let r = handle(
-            &f.engine,
-            &format!("/thumb/{id}/grid/{}", key.to_uppercase()),
-        );
+        // `+` always differs from the key's own spelling and `from_str_radix` accepts it;
+        // upper case would not differ for a key that happens to be all digits.
+        let r = handle(&f.engine, &format!("/thumb/{id}/grid/+{key}"));
         assert_eq!(r.status(), 200);
         assert_eq!(header(&r, "cache-control"), "no-store");
     }

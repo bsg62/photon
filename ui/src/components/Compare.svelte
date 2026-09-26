@@ -71,9 +71,12 @@
   let fullBroken = $state<number[]>([]);
 
   /** Ids whose *preview* failed. `protocol.rs` answers 503 while a thumbnail is still being
-   *  rendered and 404 once the row is gone, so a photo deleted under an open comparison
-   *  would otherwise leave a broken-image glyph with nothing to explain it. Unlike
-   *  `fullBroken` the pane has nothing behind it to fall back to, so it says so in words. */
+   *  rendered and 404 when the row is gone and nothing is cached under the key, so a photo
+   *  deleted under an open comparison before its preview was built would otherwise leave a
+   *  broken-image glyph with nothing to explain it. (One whose preview is cached goes on
+   *  showing it: the key alone answers that, the way a preview already loaded stays up.)
+   *  Unlike `fullBroken` the pane has nothing behind it to fall back to, so it says so in
+   *  words. */
   let previewBroken = $state<number[]>([]);
 
   /** Dimensions and capture time, blank where every pane agrees. The rule is in
