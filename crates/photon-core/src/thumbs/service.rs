@@ -345,6 +345,13 @@ impl ThumbService {
         Ok(path.is_file().then_some(path))
     }
 
+    /// Where the thumbnail of the picture `key` names is cached at `size`, whether or not it
+    /// has been built. A key names one picture - the file's fingerprint and its edit - so
+    /// what is cached there is that picture whichever item asks.
+    pub fn path_for(&self, key: u64, size: ThumbSize) -> PathBuf {
+        self.cache.path_for(key, size)
+    }
+
     pub fn wait_idle(&self) {
         self.queue.wait_idle();
     }

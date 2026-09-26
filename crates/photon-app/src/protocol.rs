@@ -1,7 +1,8 @@
 //! The `photon://` URI scheme: thumbnails and original images for the webview.
 //!
 //! - `/thumb/<id>/<grid|preview>/<thumbKey>`: WebP, built on demand, cached forever
-//!   (`thumbKey` changes when the file does).
+//!   (`thumbKey` changes when the file or its edit does). A thumbnail already cached under
+//!   the key is served from the key alone; the id is looked up only to build one.
 //! - `/image/<id>`: the original file - or, for a photo with an edit, the edited picture
 //!   rendered on the fly (`photon_core::edit::render_full`). The file itself is never what
 //!   an edited photo shows.
@@ -34,9 +35,28 @@ fn thumb(engine: &Engine, id: &str, size: &str, url_key: Option<&str>) -> Respon
         "preview" => ThumbSize::Preview,
         _ => return text(StatusCode::BAD_REQUEST, "bad size"),
     };
+    let url_key = url_key.and_then(parse_key);
+    // The key names the picture, so a thumbnail already cached under it is the answer
+    // without asking the database anything - this is every tile of a scroll through a
+    // library whose thumbnails exist. A read that fails (not built yet, or collected since)
+    // falls through to the item's own lookup below.
+    if let Some(key) = url_key
+        && let Ok(bytes) = std::fs::read(engine.thumbs.path_for(key, size))
+    {
+        return ok(bytes, "image/webp", FOREVER);
+    }
     match engine.thumbs.request(id, size, THUMB_TIMEOUT) {
         Ok(file) => match std::fs::read(&file) {
-            Ok(bytes) => ok(bytes, "image/webp", thumb_caching(engine, id, url_key)),
+            Ok(bytes) => {
+                // `request` serves the photo's *current* thumbnail whatever key was asked
+                // for, and keys can recur - "Original", or a fourth quarter turn, returns a
+                // photo to a key it has had before. Only a file that is the URL key's own may
+                // be kept: a request still carrying the original's key while the row holds an
+                // edit would otherwise pin the edited picture under the original's URL for a
+                // year.
+                let own = url_key.is_some_and(|key| engine.thumbs.path_for(key, size) == file);
+                ok(bytes, "image/webp", if own { FOREVER } else { "no-store" })
+            }
             Err(err) => text(StatusCode::INTERNAL_SERVER_ERROR, &err.to_string()),
         },
         Err(Error::NotFound(_)) => text(StatusCode::NOT_FOUND, "not found"),
@@ -48,25 +68,16 @@ fn thumb(engine: &Engine, id: &str, size: &str, url_key: Option<&str>) -> Respon
     }
 }
 
-/// How long the webview may keep a thumbnail it was just served.
-///
-/// Forever, if the key in the URL is the photo's current one: that is what the key is for.
-/// Not at all otherwise. The handler serves the photo's *current* thumbnail whatever key
-/// was asked for, and keys can recur - "Original", or a fourth quarter turn, returns a photo
-/// to a key it has had before. A request still carrying the original's key while the row
-/// holds an edit would otherwise pin the edited picture under the original's URL for a year.
-fn thumb_caching(engine: &Engine, id: i64, url_key: Option<&str>) -> &'static str {
-    let current = engine
-        .lib
-        .item(id)
+/// How long the webview may keep a thumbnail served under its own key: forever, since that
+/// is what the key is for - it changes whenever the picture does.
+const FOREVER: &str = "public, max-age=31536000, immutable";
+
+/// The URL's thumbnail key, only in the exact spelling `hex_key` gives it. A looser parse
+/// would read `+1` as key 1 and cache key 1's picture under a URL the UI never asks for.
+fn parse_key(key: &str) -> Option<u64> {
+    u64::from_str_radix(key, 16)
         .ok()
-        .flatten()
-        .map(|item| photon_core::grid::hex_key(item.thumb_key()));
-    if current.as_deref() == url_key && url_key.is_some() {
-        "public, max-age=31536000, immutable"
-    } else {
-        "no-store"
-    }
+        .filter(|&parsed| photon_core::grid::hex_key(parsed) == key)
 }
 
 /// One full-size render at a time. A render holds a whole decoded photo (150 MB and up
@@ -204,28 +215,107 @@ mod tests {
         assert_eq!(mime_for(Path::new("B.AVIF")), "image/avif");
     }
 
+    fn dims(r: &Response<Vec<u8>>) -> (u32, u32) {
+        let picture = image::load_from_memory(r.body()).unwrap();
+        (picture.width(), picture.height())
+    }
+
+    fn current_key(f: &crate::testutil::Fixture, id: i64) -> String {
+        crate::commands::viewer_item(&f.engine, id)
+            .unwrap()
+            .thumb_key
+    }
+
+    fn cached_file(f: &crate::testutil::Fixture, key: &str) -> std::path::PathBuf {
+        f.engine
+            .thumbs
+            .path_for(u64::from_str_radix(key, 16).unwrap(), ThumbSize::Grid)
+    }
+
+    /// A key names one picture, so a request is answered with the picture its URL names -
+    /// and only a response that *is* that picture may be kept.
     #[test]
-    fn a_thumbnail_is_cached_forever_only_under_its_current_key() {
+    fn a_thumbnail_is_cached_forever_only_under_its_own_key() {
         let f = fixture(&[("a.jpg", &jpeg(40, 20))]);
         f.add_photos();
         let id = f.ids()[0];
-        let key = |f: &crate::testutil::Fixture| {
-            crate::commands::viewer_item(&f.engine, id)
-                .unwrap()
-                .thumb_key
-        };
-        let original = key(&f);
+        let original = current_key(&f, id);
+        assert_eq!(
+            handle(&f.engine, &format!("/thumb/{id}/grid/{original}")).status(),
+            200
+        );
         crate::commands::rotate_item(&f.engine, id, true).unwrap();
 
-        // A tile that has not refetched yet still asks under the original's key. It gets
-        // the turned picture, and must not keep it: "Original" brings that key back.
+        // A tile that has not refetched yet still asks under the original's key, whose
+        // thumbnail is still cached: it gets the original picture, which is what that URL
+        // names, so it may keep it - "Original" brings that key back to that picture.
         let stale = handle(&f.engine, &format!("/thumb/{id}/grid/{original}"));
-        assert_eq!(stale.status(), 200);
-        assert_eq!(header(&stale, "cache-control"), "no-store");
-        let fresh = handle(&f.engine, &format!("/thumb/{id}/grid/{}", key(&f)));
+        assert_eq!(dims(&stale), (40, 20));
+        assert!(header(&stale, "cache-control").contains("immutable"));
+        let fresh = handle(
+            &f.engine,
+            &format!("/thumb/{id}/grid/{}", current_key(&f, id)),
+        );
+        assert_eq!(dims(&fresh), (20, 40));
         assert!(header(&fresh, "cache-control").contains("immutable"));
+
+        // Once the original's thumbnail is collected, the same stale URL can only be
+        // answered with the photo's current picture - which it must not keep.
+        std::fs::remove_file(cached_file(&f, &original)).unwrap();
+        let collected = handle(&f.engine, &format!("/thumb/{id}/grid/{original}"));
+        assert_eq!(dims(&collected), (20, 40));
+        assert_eq!(header(&collected, "cache-control"), "no-store");
         let keyless = handle(&f.engine, &format!("/thumb/{id}/grid"));
         assert_eq!(header(&keyless, "cache-control"), "no-store");
+    }
+
+    /// A thumbnail built on request, under the key the URL asked for, is that key's own.
+    #[test]
+    fn a_thumbnail_built_on_request_under_the_asked_key_is_kept() {
+        let f = fixture(&[("a.jpg", &jpeg(40, 20))]);
+        f.add_photos();
+        let id = f.ids()[0];
+        let key = current_key(&f, id);
+        let _ = std::fs::remove_file(cached_file(&f, &key));
+        let r = handle(&f.engine, &format!("/thumb/{id}/grid/{key}"));
+        assert_eq!(r.status(), 200);
+        assert!(header(&r, "cache-control").contains("immutable"));
+    }
+
+    /// A cached thumbnail is served from its key alone: the id is only looked up to build
+    /// one, so an id the library does not hold does not stop it.
+    #[test]
+    fn a_cached_thumbnail_is_served_without_looking_the_photo_up() {
+        let f = fixture(&[("a.jpg", &jpeg(40, 20))]);
+        f.add_photos();
+        let id = f.ids()[0];
+        let key = current_key(&f, id);
+        assert_eq!(
+            handle(&f.engine, &format!("/thumb/{id}/grid/{key}")).status(),
+            200
+        );
+        let r = handle(&f.engine, &format!("/thumb/9999/grid/{key}"));
+        assert_eq!(r.status(), 200);
+        assert!(header(&r, "cache-control").contains("immutable"));
+    }
+
+    /// Only the spelling the UI is given is a key: anything else is looked up by id, and
+    /// is not kept under a URL the UI never asks for.
+    #[test]
+    fn a_key_in_any_other_spelling_is_not_a_key() {
+        let f = fixture(&[("a.jpg", &jpeg(40, 20))]);
+        f.add_photos();
+        let id = f.ids()[0];
+        let key = current_key(&f, id);
+        assert_eq!(
+            handle(&f.engine, &format!("/thumb/{id}/grid/{key}")).status(),
+            200
+        );
+        // `+` always differs from the key's own spelling and `from_str_radix` accepts it;
+        // upper case would not differ for a key that happens to be all digits.
+        let r = handle(&f.engine, &format!("/thumb/{id}/grid/+{key}"));
+        assert_eq!(r.status(), 200);
+        assert_eq!(header(&r, "cache-control"), "no-store");
     }
 
     #[test]

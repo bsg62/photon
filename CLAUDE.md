@@ -270,8 +270,11 @@ fingerprint, as `map_grid_row` and `live_fingerprints` do); a bare `fingerprint`
 caches from before edits existed stay valid. `set_thumb_state_if_unchanged` compares the edit
 too, or a worker that rendered the pre-edit picture marks the row `Ready` with nothing cached
 under the new key. For an edited photo `ViewerItem` reports `width`/`height`/`orientation` and
-`faces` *as shown*. Keys can recur ("Original", a fourth turn), so the thumb handler answers
-`immutable` only when the URL's key is the photo's current one and `no-store` otherwise; and
+`faces` *as shown*. A key names one picture, so the thumb handler serves a
+thumbnail already cached under the URL's key from the key alone, with no database read, as
+`immutable`; only when none is cached does it look the photo up, and since that answers with
+the photo's *current* thumbnail and keys recur ("Original", a fourth turn), it is `immutable`
+only when the file served is the URL key's own and `no-store` otherwise; and
 every write of an edit takes `Engine.edit_write`, because a turn reads the edit it builds on.
 Full-size renders run one at a time (`protocol.rs`, `RENDERING`, which export shares - held
 across the render and never across the write), outside the thumbnail pool
