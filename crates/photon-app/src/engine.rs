@@ -3727,12 +3727,6 @@ mod tests {
         }
     }
 
-    /// The epoch only says which *view* an index was built for. Two rebuilds for the same
-    /// view run their queries unserialised, and the one that read the database earlier can
-    /// finish later: two startup scans, say, where the slower one's final rebuild lands
-    /// last without the rows the other had already committed - and with both scans done,
-    /// nothing rebuilds again. The sequence stamp taken at snapshot time is what orders
-    /// them: an index stamped earlier than one already published is dropped.
     /// The `data_changed` of the most recent `library_changed`.
     fn last_data_changed(f: &Fixture) -> bool {
         f.events
@@ -3825,6 +3819,12 @@ mod tests {
         assert!(!last_data_changed(&f));
     }
 
+    /// The epoch only says which *view* an index was built for. Two rebuilds for the same
+    /// view run their queries unserialised, and the one that read the database earlier can
+    /// finish later: two startup scans, say, where the slower one's final rebuild lands
+    /// last without the rows the other had already committed - and with both scans done,
+    /// nothing rebuilds again. The sequence stamp taken at snapshot time is what orders
+    /// them: an index stamped earlier than one already published is dropped.
     #[test]
     fn a_rebuild_snapshotted_earlier_is_not_published_over_a_later_one_for_the_same_view() {
         let img = jpeg(16, 16);
