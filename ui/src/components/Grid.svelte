@@ -709,6 +709,7 @@
                 onopen={() => onopen(offset)}
                 onmenu={(e) => tileMenu(e, offset)}
                 tile={gridSize.width}
+                defer={speed.fast}
               />
             {/each}
           </div>
