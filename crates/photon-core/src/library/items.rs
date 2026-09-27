@@ -5,11 +5,12 @@ use crate::Result;
 use crate::edit::{Crop, Edit};
 use crate::grid::{GridEntry, GridView};
 use crate::media::{MediaKind, ThumbState, fingerprint};
-use crate::metadata::{CameraMeta, EXIF_VERSION, date_text, oriented_dims};
-use crate::search::{Fields, Query};
+use crate::metadata::{CameraMeta, EXIF_VERSION, oriented_dims, write_date_text};
+use crate::search::{Haystacks, Query, fold_into};
 use crate::sort::{Sort, SortKey};
-use rusqlite::{OptionalExtension, Row, ToSql, params};
-use std::collections::{HashMap, HashSet};
+use rusqlite::{Connection, OptionalExtension, Row, ToSql, params};
+use std::collections::{HashMap, HashSet, hash_map::Entry};
+use std::fmt::Write;
 
 /// A file discovered by the scanner, ready to be inserted or to replace an existing row.
 #[derive(Clone, Debug, PartialEq)]
@@ -264,6 +265,56 @@ pub(super) fn map_grid_row(r: &Row<'_>) -> rusqlite::Result<GridEntry> {
         size,
         mtime_ms,
     })
+}
+
+/// A text column borrowed from the row rather than copied into a `String`: search reads
+/// several per photo over the whole library, and needs each only long enough to fold it.
+fn text<'r>(r: &'r Row<'_>, idx: usize) -> rusqlite::Result<Option<&'r str>> {
+    let value = r.get_ref(idx)?;
+    value
+        .as_str_or_null()
+        .map_err(|e| rusqlite::Error::FromSqlConversionFailure(idx, value.data_type(), Box::new(e)))
+}
+
+/// Every photo's keywords as search matches them: the rule-applied ones (`EFFECTIVE_TAGS`),
+/// lowercased, joined by a space, by item id.
+///
+/// One pass over the keywords, where search used to run a correlated subquery per photo:
+/// that was about 250ms of a 510ms search at 300k photos, while this is one scan and a
+/// hash probe per photo. Joined by a space as `group_concat(tag, ' ')` joined them, so a
+/// quoted phrase can still span two keywords, in the order the query yields them - the
+/// order neither form ever specified, since `group_concat` has none. Each keyword is folded on its own and the results joined, which
+/// equals folding the joined string: a space is neither a letter nor ignorable to the one
+/// context-sensitive rule `to_lowercase` has (the final sigma), so neither side of it
+/// changes how the other lowercases.
+///
+/// Every photo's keywords, hidden and missing ones too: the rows that need none cost one
+/// entry each, and filtering here would repeat the grid query's filter in a second place.
+fn search_tags(conn: &Connection) -> Result<HashMap<i64, String>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT e.item_id, e.tag FROM ({EFFECTIVE_TAGS}) e"
+    ))?;
+    let mut rows = stmt.query([])?;
+    let mut tags: HashMap<i64, String> = HashMap::new();
+    while let Some(r) = rows.next()? {
+        // Both tag columns are NOT NULL; skipped all the same, as `group_concat` skips one.
+        let Some(tag) = text(r, 1)? else {
+            continue;
+        };
+        match tags.entry(r.get(0)?) {
+            Entry::Occupied(mut joined) => {
+                let joined = joined.get_mut();
+                joined.push(' ');
+                fold_into(joined, tag);
+            }
+            Entry::Vacant(slot) => {
+                let mut joined = String::new();
+                fold_into(&mut joined, tag);
+                slot.insert(joined);
+            }
+        }
+    }
+    Ok(tags)
 }
 
 /// Shared by `known_items` and `known_items_under`, whose two queries select the same six
@@ -909,88 +960,102 @@ impl Library {
     /// `from:` and `to:` bound the capture date, and
     /// the matching runs in Rust rather than as SQL `LIKE`; `search::Query` holds the
     /// grammar and the reasons for it. This is one pass over the same rows an index rebuild
-    /// already reads, with a handful of short string compares per term added per row. The
-    /// keywords arrive joined by a correlated subquery over the rule-applied keywords
-    /// (`EFFECTIVE_TAGS`), one index probe per row, rather than a join that would multiply
-    /// the rows by their keyword count.
+    /// already reads, with a handful of short string compares per term added per row.
     ///
     /// The numeric fields are spelled the way a person types them - `50mm`, `f/1.8`,
     /// `iso400` - and the date as `YYYY-MM-DD`, so "2024" and "2024-06" work without a folder
     /// named so. `search_finds_a_photo_by_its_camera_lens_keyword_and_date` pins each.
+    ///
+    /// Every debounced keystroke runs this over the whole library, so it is written to cost
+    /// little per photo (measured on `search_100k`; the commit that made it so has the
+    /// numbers). The text is borrowed from the row rather than copied out, and folded into
+    /// one [`Haystacks`] reused from photo to photo; a folder's name and alias are folded
+    /// once per folder rather than once per photo.
     fn search_entries(&self, query: &str) -> Result<Vec<GridEntry>> {
         let query = Query::parse(query);
         if query.is_empty() {
             return Ok(Vec::new());
         }
         let conn = self.reader()?;
-        let mut stmt = conn.prepare(&grid_query(
+        // One snapshot for the keywords and the rows, as the single statement this replaced
+        // had: without it a tag written between the two reads could be matched against the
+        // other read's photos.
+        let tx = conn.unchecked_transaction()?;
+        let tags = search_tags(&tx)?;
+        let mut stmt = tx.prepare(&grid_query(
             &format!(
                 "{GRID_COLUMNS}, i.file_name, f.name, i.make, i.model, i.lens, i.focal_mm, i.aperture, i.iso,
-                 (SELECT group_concat(e.tag, ' ') FROM ({EFFECTIVE_TAGS}) e WHERE e.item_id = i.id), i.caption, f.alias"
+                 i.caption, f.alias"
             ),
             Shown::Visible,
             "",
         ))?;
-        let rows = stmt
-            .query_map([], |r| {
-                let base = GRID_COLUMN_COUNT;
-                let file_name: String = r.get(base)?;
-                let folder_name: String = r.get(base + 1)?;
-                let make: Option<String> = r.get(base + 2)?;
-                let model: Option<String> = r.get(base + 3)?;
-                let lens: Option<String> = r.get(base + 4)?;
-                // Make and model as one field, so `camera:` finds a word of either.
-                let camera = match (&make, &model) {
-                    (None, None) => None,
-                    _ => Some(format!(
-                        "{} {}",
-                        make.as_deref().unwrap_or(""),
-                        model.as_deref().unwrap_or("")
-                    )),
-                };
-                let mut haystacks: Vec<String> = vec![file_name, folder_name];
-                haystacks.extend([make, model, lens.clone()].into_iter().flatten());
-                if let Some(focal) = r.get::<_, Option<f64>>(base + 5)? {
-                    haystacks.push(format!("{}mm", focal.round() as i64));
-                }
-                if let Some(aperture) = r.get::<_, Option<f64>>(base + 6)? {
-                    haystacks.push(format!("f/{aperture}"));
-                }
-                if let Some(iso) = r.get::<_, Option<i64>>(base + 7)? {
-                    haystacks.push(format!("iso{iso}"));
-                }
-                if let Some(tags) = r.get::<_, Option<String>>(base + 8)? {
-                    haystacks.push(tags);
-                }
-                if let Some(caption) = r.get::<_, Option<String>>(base + 9)? {
-                    // A caption keeps its line breaks in storage, for the info panel to show
-                    // whole; a quoted phrase must still match across one, so the haystack
-                    // collapses runs of whitespace to single spaces.
-                    haystacks.push(caption.split_whitespace().collect::<Vec<_>>().join(" "));
-                }
-                if let Some(alias) = r.get::<_, Option<String>>(base + 10)? {
+        let base = GRID_COLUMN_COUNT;
+        let mut haystacks = Haystacks::default();
+        // The folder whose name and alias `haystacks` holds up to `folder_mark`. Rows arrive
+        // in folder runs, so this refolds once per folder; it compares every row all the
+        // same, so a folder that recurred would be refolded rather than misread.
+        let mut folder: Option<i64> = None;
+        let mut folder_mark = haystacks.mark();
+        let mut scratch = String::new();
+        let mut hits = Vec::new();
+        let mut rows = stmt.query([])?;
+        while let Some(r) = rows.next()? {
+            let folder_id: i64 = r.get(1)?;
+            if folder != Some(folder_id) {
+                haystacks.clear();
+                haystacks.push(text(r, base + 1)?.unwrap_or(""));
+                if let Some(alias) = text(r, base + 9)? {
                     haystacks.push(alias);
                 }
-                let taken: i64 = r.get(2)?;
-                haystacks.push(date_text(taken));
-                let refs: Vec<&str> = haystacks.iter().map(String::as_str).collect();
-                let hit = query.matches(&Fields {
-                    any: &refs,
-                    camera: camera.as_deref(),
-                    lens: lens.as_deref(),
-                    taken: Some(taken),
-                    kind: MediaKind::from_db(r.get(6)?),
+                folder = Some(folder_id);
+                folder_mark = haystacks.mark();
+            }
+            haystacks.truncate(folder_mark);
+            haystacks.push(text(r, base)?.unwrap_or(""));
+            let make = text(r, base + 2)?;
+            let model = text(r, base + 3)?;
+            let lens = text(r, base + 4)?;
+            for field in [make, model, lens].into_iter().flatten() {
+                haystacks.push(field);
+            }
+            haystacks.set_camera(make, model);
+            haystacks.set_lens(lens);
+            // Digits, `mm`, `f/`, `iso` and a date are lowercase as written, so they go
+            // straight into the buffer. The aperture is an `f64`, whose `Display` can spell
+            // `NaN` with capitals; SQLite stores a NaN as NULL, but it is folded all the same
+            // rather than trusted, since that costs next to nothing.
+            if let Some(focal) = r.get::<_, Option<f64>>(base + 5)? {
+                haystacks.push_with(|out| {
+                    let _ = write!(out, "{}mm", focal.round() as i64);
                 });
-                // No `Ok(…?)` wrapper here: the closure already returns this type, and
-                // wrapping it trips `clippy::needless_question_mark`, which the gate
-                // treats as an error.
-                hit.then(|| map_grid_row(r)).transpose()
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?
-            .into_iter()
-            .flatten()
-            .collect();
-        Ok(rows)
+            }
+            if let Some(aperture) = r.get::<_, Option<f64>>(base + 6)? {
+                scratch.clear();
+                let _ = write!(scratch, "f/{aperture}");
+                haystacks.push(&scratch);
+            }
+            if let Some(iso) = r.get::<_, Option<i64>>(base + 7)? {
+                haystacks.push_with(|out| {
+                    let _ = write!(out, "iso{iso}");
+                });
+            }
+            let id: i64 = r.get(0)?;
+            if let Some(tags) = tags.get(&id) {
+                haystacks.push_with(|out| out.push_str(tags));
+            }
+            if let Some(caption) = text(r, base + 8)? {
+                haystacks.push_caption(caption);
+            }
+            let taken: i64 = r.get(2)?;
+            haystacks.push_with(|out| write_date_text(out, taken));
+            haystacks.taken = Some(taken);
+            haystacks.kind = MediaKind::from_db(r.get(6)?);
+            if query.matches_folded(&haystacks) {
+                hits.push(map_grid_row(r)?);
+            }
+        }
+        Ok(hits)
     }
 
     /// How many visible videos there are: the sidebar's Videos row, shown only above 0.
@@ -2205,6 +2270,53 @@ mod tests {
         };
         assert_eq!(search("easter"), ids, "the alias did not match");
         assert_eq!(search("dcim"), ids, "the directory name stopped matching");
+    }
+
+    /// Search folds a folder's name and alias once per folder rather than once per photo,
+    /// and each photo reuses them. A folder that was not refolded would lend its name to the
+    /// next folder's photos, and a folder with an alias followed by one without (Gamma, then
+    /// Beta: the newest folder comes first) is what shows an alias left behind. Every other
+    /// search test passes with a cache that is never refreshed.
+    #[test]
+    fn search_reads_each_folders_own_name_and_alias_across_folder_runs() {
+        let (_dir, lib) = temp_library();
+        let (watched, root) = seed_folder(&lib, Path::new("/lib"));
+        let alpha = lib
+            .upsert_folder(watched, Some(root), "/lib/Alpha", 1)
+            .unwrap();
+        let beta = lib
+            .upsert_folder(watched, Some(root), "/lib/Beta", 1)
+            .unwrap();
+        let gamma = lib
+            .upsert_folder(watched, Some(root), "/lib/Gamma", 1)
+            .unwrap();
+        lib.set_folder_alias(alpha, Some("Spring")).unwrap();
+        lib.set_folder_alias(gamma, Some("Autumn")).unwrap();
+        let ids = lib
+            .insert_items(&[
+                new_item(alpha, "/lib/Alpha/a1.jpg", 1),
+                new_item(alpha, "/lib/Alpha/a2.jpg", 2),
+                new_item(beta, "/lib/Beta/b1.jpg", 10),
+                new_item(beta, "/lib/Beta/b2.jpg", 11),
+                new_item(gamma, "/lib/Gamma/g1.jpg", 20),
+                new_item(gamma, "/lib/Gamma/g2.jpg", 21),
+            ])
+            .unwrap();
+        let found = |q: &str| -> Vec<i64> {
+            let mut hits: Vec<i64> = lib
+                .entries_for(GridView::Search, q)
+                .unwrap()
+                .iter()
+                .map(|e| e.id)
+                .collect();
+            hits.sort_unstable();
+            hits
+        };
+        assert_eq!(found("alpha"), ids[0..2]);
+        assert_eq!(found("beta"), ids[2..4]);
+        assert_eq!(found("gamma"), ids[4..6]);
+        assert_eq!(found("spring"), ids[0..2]);
+        assert_eq!(found("autumn"), ids[4..6]);
     }
 
     #[test]

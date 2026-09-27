@@ -80,6 +80,173 @@ pub struct Fields<'a> {
     pub kind: Option<MediaKind>,
 }
 
+/// Appends `text` lowercased to `out`: exactly what `str::to_lowercase` would give, without
+/// its allocation when `text` is ASCII, which almost every file name, camera and lens is.
+///
+/// Only a wholly ASCII string takes the byte-wise path. Anything else goes through
+/// `to_lowercase` whole, because its answer for a letter depends on the letters around it:
+/// a capital sigma lowers to `ς` at the end of a word and to `σ` elsewhere, so folding a
+/// string in pieces - or the ASCII runs of it apart from the rest - would change the answer.
+pub fn fold_into(out: &mut String, text: &str) {
+    if text.is_ascii() {
+        let start = out.len();
+        out.push_str(text);
+        out[start..].make_ascii_lowercase();
+    } else {
+        out.push_str(&text.to_lowercase());
+    }
+}
+
+/// What a photo offers the matcher, lowercased once and held in buffers a search reuses from
+/// photo to photo, so a search over the whole library allocates per photo only for text
+/// outside ASCII. [`Fields`] is the same thing for a caller holding plain strings;
+/// [`Query::matches`] builds one of these from it.
+///
+/// **The `any` haystacks share one buffer, separated by `\0`,** so an unprefixed term is one
+/// `contains` over the photo rather than one per haystack. A needle must still be found
+/// within a single haystack, never across two: a match that does not contain the separator
+/// cannot span one, and a needle that does contain it (a query can hold any character) is
+/// looked for in each haystack in turn, by the recorded ends. A haystack that itself holds a
+/// `\0` needs nothing extra: it only splits into pieces a separator-free needle cannot span
+/// either.
+///
+/// Haystacks can be dropped from the end back to a [`Haystacks::mark`], which is how a search
+/// folds a folder's name and alias once for all its photos: they go in first, and each photo
+/// truncates back to them.
+#[derive(Debug, Default)]
+pub struct Haystacks {
+    any: String,
+    /// Where each haystack in `any` ends, its separator excluded.
+    ends: Vec<usize>,
+    /// The `camera:` field, meaningful only while `has_camera`: a flag beside the text
+    /// rather than an `Option`, so a photo without a camera does not free the buffer the
+    /// next photo's camera is written into.
+    camera: String,
+    has_camera: bool,
+    lens: String,
+    has_lens: bool,
+    /// The capture time, as [`Fields::taken`].
+    pub taken: Option<i64>,
+    /// What the file is, as [`Fields::kind`].
+    pub kind: Option<MediaKind>,
+    scratch: String,
+}
+
+/// A point in a [`Haystacks`] to truncate back to.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Mark {
+    len: usize,
+    count: usize,
+}
+
+const SEPARATOR: char = '\0';
+
+impl Haystacks {
+    /// The position after the last haystack pushed.
+    pub fn mark(&self) -> Mark {
+        Mark {
+            len: self.any.len(),
+            count: self.ends.len(),
+        }
+    }
+
+    /// Drops every haystack pushed after `mark`, and the camera, lens, date and kind, which
+    /// belong to one photo.
+    pub fn truncate(&mut self, mark: Mark) {
+        self.any.truncate(mark.len);
+        self.ends.truncate(mark.count);
+        self.has_camera = false;
+        self.has_lens = false;
+        self.taken = None;
+        self.kind = None;
+    }
+
+    /// Empties everything.
+    pub fn clear(&mut self) {
+        self.truncate(Mark::default());
+    }
+
+    /// Adds a haystack, lowercasing it.
+    pub fn push(&mut self, text: &str) {
+        self.push_with(|out| fold_into(out, text));
+    }
+
+    /// Adds a haystack `write` appends to the buffer, which it must write already lowercased:
+    /// for text lowercase by construction (`50mm`, `iso400`, a date), which would otherwise
+    /// be formatted into a string of its own only to be lowercased into another.
+    pub fn push_with(&mut self, write: impl FnOnce(&mut String)) {
+        if !self.ends.is_empty() {
+            self.any.push(SEPARATOR);
+        }
+        write(&mut self.any);
+        self.ends.push(self.any.len());
+    }
+
+    /// Adds a caption: lowercased, with runs of whitespace collapsed to one space. A caption
+    /// keeps its line breaks in storage, for the info panel to show whole; a quoted phrase
+    /// must still match across one. Collapsed first and lowercased whole, as one string,
+    /// for the reason on [`fold_into`].
+    pub fn push_caption(&mut self, caption: &str) {
+        let mut collapsed = std::mem::take(&mut self.scratch);
+        collapsed.clear();
+        for (n, word) in caption.split_whitespace().enumerate() {
+            if n > 0 {
+                collapsed.push(' ');
+            }
+            collapsed.push_str(word);
+        }
+        self.push(&collapsed);
+        self.scratch = collapsed;
+    }
+
+    /// Sets the field `camera:` terms are confined to: make and model, lowercased, as one
+    /// string with a space between, so a term can match either or a word of each. `None` for
+    /// both leaves the photo with no camera, which no camera term matches. It is not a
+    /// haystack of `any`: the caller pushes make and model there separately.
+    pub fn set_camera(&mut self, make: Option<&str>, model: Option<&str>) {
+        self.has_camera = make.is_some() || model.is_some();
+        self.camera.clear();
+        if self.has_camera {
+            // Folded apart and joined, where `Query::matches` folds `Fields::camera` joined:
+            // the same answer, because a space is neither a letter nor ignorable to the
+            // sigma rule, so neither side of it can change how the other lowercases.
+            fold_into(&mut self.camera, make.unwrap_or(""));
+            self.camera.push(' ');
+            fold_into(&mut self.camera, model.unwrap_or(""));
+        }
+    }
+
+    /// Sets the field `lens:` terms are confined to. Not a haystack of `any` either.
+    pub fn set_lens(&mut self, lens: Option<&str>) {
+        self.has_lens = lens.is_some();
+        self.lens.clear();
+        if let Some(lens) = lens {
+            fold_into(&mut self.lens, lens);
+        }
+    }
+
+    /// Whether some haystack of `any` contains `needle`.
+    fn any_contains(&self, needle: &str) -> bool {
+        if !needle.contains(SEPARATOR) {
+            return self.any.contains(needle);
+        }
+        let mut start = 0;
+        self.ends.iter().any(|&end| {
+            let found = self.any[start..end].contains(needle);
+            start = end + SEPARATOR.len_utf8();
+            found
+        })
+    }
+
+    fn camera_contains(&self, needle: &str) -> bool {
+        self.has_camera && self.camera.contains(needle)
+    }
+
+    fn lens_contains(&self, needle: &str) -> bool {
+        self.has_lens && self.lens.contains(needle)
+    }
+}
+
 /// A whitespace-separated piece of the raw query, quotes removed.
 struct Token {
     text: String,
@@ -250,24 +417,35 @@ impl Query {
 
     /// Whether some alternative has every one of its terms found, ignoring case.
     ///
-    /// The haystacks are lowercased once, up front, because with AND every term of an
-    /// alternative is tried and most rows fail on the first: lowercasing lazily per term
-    /// would redo the same allocation for each.
+    /// Folds `fields` into a [`Haystacks`] and asks [`Query::matches_folded`], so every test
+    /// written against this entry point runs the matcher a library search runs.
     pub fn matches(&self, fields: &Fields<'_>) -> bool {
-        let any: Vec<String> = fields.any.iter().map(|h| h.to_lowercase()).collect();
-        let camera = fields.camera.map(str::to_lowercase);
-        let lens = fields.lens.map(str::to_lowercase);
-        let within = |field: &Option<String>, needle: &str| {
-            field.as_deref().is_some_and(|text| text.contains(needle))
-        };
+        let mut haystacks = Haystacks::default();
+        for text in fields.any {
+            haystacks.push(text);
+        }
+        // `Fields::camera` is make and model already joined, so it is folded whole.
+        haystacks.has_camera = fields.camera.is_some();
+        fold_into(&mut haystacks.camera, fields.camera.unwrap_or(""));
+        haystacks.set_lens(fields.lens);
+        haystacks.taken = fields.taken;
+        haystacks.kind = fields.kind;
+        self.matches_folded(&haystacks)
+    }
+
+    /// Whether some alternative has every one of its terms found in `haystacks`, which are
+    /// lowercased already. They are folded once, up front, because with AND every term of
+    /// an alternative is tried and most photos fail on the first: folding lazily per term
+    /// would redo the same work for each.
+    pub fn matches_folded(&self, haystacks: &Haystacks) -> bool {
         self.alternatives.iter().any(|terms| {
             terms.iter().all(|term| match term {
-                Term::Any(needle) => any.iter().any(|h| h.contains(needle.as_str())),
-                Term::Camera(needle) => within(&camera, needle),
-                Term::Lens(needle) => within(&lens, needle),
-                Term::From(start) => fields.taken.is_some_and(|t| t >= *start),
-                Term::To(end) => fields.taken.is_some_and(|t| t < *end),
-                Term::Kind(kind) => fields.kind == Some(*kind),
+                Term::Any(needle) => haystacks.any_contains(needle),
+                Term::Camera(needle) => haystacks.camera_contains(needle),
+                Term::Lens(needle) => haystacks.lens_contains(needle),
+                Term::From(start) => haystacks.taken.is_some_and(|t| t >= *start),
+                Term::To(end) => haystacks.taken.is_some_and(|t| t < *end),
+                Term::Kind(kind) => haystacks.kind == Some(*kind),
             })
         })
     }
@@ -442,6 +620,43 @@ mod tests {
         // discriminates.
         assert!(names("MÜNCHEN", &["a.jpg", "München"]));
         assert!(names("münchen", &["a.jpg", "MÜNCHEN"]));
+    }
+
+    #[test]
+    fn folding_agrees_with_to_lowercase_on_ascii_and_everything_else() {
+        // `fold_into` takes a byte-wise path for ASCII only. Each non-ASCII case here is
+        // one that path, or folding in pieces, gets wrong: the capitals it cannot lower,
+        // a letter that lowers to two chars, and the sigma whose lowercase depends on
+        // whether a letter follows it - which is why a mixed string is folded whole.
+        for text in [
+            "IMG_0001.JPG",
+            "Canon EOS 5D Mark IV",
+            "50% OFF_[x]",
+            "",
+            "MÜNCHEN 2019",
+            "Straße ÅLESUND",
+            "İSTANBUL",
+            "ΟΔΟΣ ΣΑΣ",
+            "ΣΑΣ.jpg",
+            "Kraków ZAKOPANE",
+        ] {
+            let mut folded = String::from("kept ");
+            fold_into(&mut folded, text);
+            assert_eq!(folded, format!("kept {}", text.to_lowercase()), "{text:?}");
+        }
+    }
+
+    #[test]
+    fn a_needle_is_found_within_one_haystack_never_across_two() {
+        // The haystacks share one buffer, separated by a NUL. A query can hold a NUL too,
+        // and such a needle must still be looked for haystack by haystack, not in the
+        // joined buffer, where it would find the seam between two of them.
+        let photo = &["lake.jpg", "Trips"];
+        assert!(!names("jpg\0trips", photo), "spans two haystacks");
+        assert!(names("a\0b", &["x.jpg", "a\0b"]), "within one haystack");
+        assert!(!names("a\0b", &["a", "b"]), "spans two haystacks");
+        // A haystack holding a NUL of its own changes nothing for a needle without one.
+        assert!(names("b.jpg", &["a\0b.jpg"]));
     }
 
     #[test]

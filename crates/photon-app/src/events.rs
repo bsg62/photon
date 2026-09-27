@@ -8,6 +8,10 @@ use serde::Serialize;
 pub struct LibraryChanged {
     pub version: u64,
     pub len: usize,
+    /// Whether the data may have changed since the last event, rather than only the view,
+    /// the sort or the search: what tells the UI to refetch the sidebar's collections.
+    /// See `Engine::data_dirty`.
+    pub data_changed: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]

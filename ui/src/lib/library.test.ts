@@ -12,6 +12,9 @@ function makeUnlisten(name: string): () => void {
   };
 }
 
+/** Lets every pending promise callback run, however many hops deep. */
+const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+
 function deferred<T>() {
   let resolve!: (v: T) => void;
   let reject!: (e: unknown) => void;
@@ -139,7 +142,7 @@ describe('LibraryStore', () => {
     expect(store.expected[1]).toBe(5_300);
   });
 
-  it('refetches albums, saved searches, people and tags on every library change and after an album mutation', async () => {
+  it('refetches albums, saved searches, people and tags on every data change and after an album mutation', async () => {
     const store = new LibraryStore();
     await store.init();
     expect(api.listAlbums).toHaveBeenCalledTimes(1);
@@ -150,7 +153,7 @@ describe('LibraryStore', () => {
     vi.mocked(api.listSavedSearches).mockResolvedValue([
       { id: 7, name: 'Canon', query: 'camera:canon', createdMs: 0 },
     ]);
-    handlers.libraryChanged({ version: 2, len: 0 });
+    handlers.libraryChanged({ version: 2, len: 0, dataChanged: true });
     await Promise.resolve();
     await Promise.resolve();
     await Promise.resolve();
@@ -170,6 +173,108 @@ describe('LibraryStore', () => {
     await expect(store.createAlbum('Zoo')).resolves.toBe(2);
     expect(api.createAlbum).toHaveBeenCalledWith('Zoo');
     expect(store.albums).toHaveLength(2);
+  });
+
+  // The tag counts alone are a quarter of a second at 300k photos, and a scan announces a
+  // data change every 250ms: unserialised, the fetches stacked up faster than they answered.
+  it('fetches the collections one at a time, and an awaiting mutation still sees its own change', async () => {
+    const store = new LibraryStore();
+    await store.init();
+    const tags = () => vi.mocked(api.listTags).mock.calls.length;
+    const before = tags();
+
+    const slow = deferred<{ tag: string; count: number; total: number }[]>();
+    vi.mocked(api.listTags).mockReturnValueOnce(slow.promise);
+    handlers.libraryChanged({ version: 2, len: 0, dataChanged: true });
+    handlers.libraryChanged({ version: 3, len: 0, dataChanged: true });
+    handlers.libraryChanged({ version: 4, len: 0, dataChanged: true });
+    vi.mocked(api.createAlbum).mockResolvedValue({ id: 2, name: 'Zoo', createdMs: 0 });
+    // The fetch in flight read the albums before this one existed.
+    const created = store.createAlbum('Zoo');
+    await flush();
+    expect(tags()).toBe(before + 1);
+
+    vi.mocked(api.listAlbums).mockResolvedValue([{ id: 2, name: 'Zoo', count: 0, picasa: false }]);
+    slow.resolve([]);
+    await expect(created).resolves.toBe(2);
+    // Everything that arrived during the first fetch shared one more.
+    expect(tags()).toBe(before + 2);
+    expect(store.albums).toEqual([{ id: 2, name: 'Zoo', count: 0, picasa: false }]);
+  });
+
+  // A view switch awaits its own refresh, which usually lands before the event announcing the
+  // switch's rebuild; that event then has nothing to add, and fetching the whole grid again
+  // for it doubled the cost of every switch and every search keystroke.
+  it('does not refetch the grid for an event at a version it already shows', async () => {
+    const store = new LibraryStore();
+    await store.init();
+    expect(store.info.version).toBe(1);
+    const calls = vi.mocked(api.gridInfo).mock.calls.length;
+
+    handlers.libraryChanged({ version: 1, len: 0, dataChanged: false });
+    await flush();
+    expect(vi.mocked(api.gridInfo).mock.calls.length).toBe(calls);
+
+    vi.mocked(api.gridInfo).mockResolvedValue({ ...store.info, version: 2 });
+    handlers.libraryChanged({ version: 2, len: 0, dataChanged: false });
+    await flush();
+    expect(vi.mocked(api.gridInfo).mock.calls.length).toBe(calls + 1);
+    expect(store.info.version).toBe(2);
+  });
+
+  // Every page of a screenful answered at a newer version reports itself stale.
+  it('refetches the grid once for a screenful of stale pages, not once a page', async () => {
+    const info = (version: number) => ({
+      version,
+      len: 1000,
+      sections: [],
+      folders: [],
+      starredCount: 0,
+      duplicateCount: 0,
+      hiddenCount: 0,
+      videoCount: 0,
+      view: 'all' as const,
+      sort: { key: 'date' as const, reverse: false },
+      searchQuery: '',
+      person: null,
+      album: null,
+      tag: null,
+      copiesOf: null,
+    });
+    vi.mocked(api.gridInfo).mockResolvedValue(info(1));
+    const store = new LibraryStore();
+    await store.init();
+    const calls = vi.mocked(api.gridInfo).mock.calls.length;
+
+    // The backend has rebuilt; the event announcing it has not arrived yet.
+    vi.mocked(api.gridInfo).mockResolvedValue(info(2));
+    vi.mocked(api.gridRows).mockResolvedValue({ version: 2, rows: [] });
+    await store.ensure(0, 1000);
+    await flush();
+    // The first fetch lands at the version the pages reported, which answers the rest.
+    expect(vi.mocked(api.gridInfo).mock.calls.length).toBe(calls + 1);
+    expect(store.info.version).toBe(2);
+  });
+
+  // A view switch, a sort or a search rebuilds the grid and changes no data; refetching the
+  // collections for it cost a quarter of a second of tag counting per keystroke.
+  it('leaves the collections alone on a library change that moved no data', async () => {
+    const store = new LibraryStore();
+    await store.init();
+    const calls = () => [api.listAlbums, api.listSavedSearches, api.listPeople, api.listTags].map((f) => vi.mocked(f).mock.calls.length);
+    expect(calls()).toEqual([1, 1, 1, 1]);
+    const data = store.dataVersion;
+
+    handlers.libraryChanged({ version: 2, len: 0, dataChanged: false });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(calls()).toEqual([1, 1, 1, 1]);
+    expect(store.dataVersion).toBe(data);
+
+    handlers.libraryChanged({ version: 3, len: 0, dataChanged: true });
+    await Promise.resolve();
+    expect(calls()).toEqual([2, 2, 2, 2]);
+    expect(store.dataVersion).toBe(data + 1);
   });
 
   // None of the three changes the grid, so no `library_changed` is coming to refresh the
@@ -232,10 +337,8 @@ describe('LibraryStore', () => {
     const store = new LibraryStore();
     await store.init();
     vi.mocked(api.listAlbums).mockRejectedValueOnce(new Error('albums-fail'));
-    handlers.libraryChanged({ version: 2, len: 0 });
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
+    handlers.libraryChanged({ version: 2, len: 0, dataChanged: true });
+    await flush();
     expect(store.toasts.some((t) => t.message === 'albums-fail')).toBe(true);
   });
 
@@ -244,9 +347,8 @@ describe('LibraryStore', () => {
     await store.init();
 
     vi.mocked(api.gridInfo).mockRejectedValueOnce(new Error('boom'));
-    handlers.libraryChanged({ version: 2, len: 0 });
-    await Promise.resolve();
-    await Promise.resolve();
+    handlers.libraryChanged({ version: 2, len: 0, dataChanged: false });
+    await flush();
 
     expect(store.toasts).toHaveLength(1);
     expect(store.toasts[0]?.message).toBe('boom');
@@ -435,7 +537,10 @@ describe('LibraryStore', () => {
     expect(store.entry(2)?.id).toBe(11);
   });
 
-  it('a refresh whose rows arrive late does not overwrite a newer one', async () => {
+  // One grid fetch at a time: a scan announces a rebuild every 250ms, and unserialised
+  // fetches piled up. The one issued second still has to see the grid as it is after its
+  // call, so it runs once the first has landed rather than being folded into it.
+  it('a refresh issued while another is loading waits for it, then fetches again', async () => {
     const entry = (id: number) => ({
       id,
       folderId: 1,
@@ -473,17 +578,24 @@ describe('LibraryStore', () => {
     vi.mocked(api.gridInfo).mockResolvedValueOnce(info(2, 2));
     const late = deferred<{ version: number; rows: ReturnType<typeof entry>[] }>();
     vi.mocked(api.gridRows).mockReturnValueOnce(late.promise);
+    const calls = vi.mocked(api.gridInfo).mock.calls.length;
     const slow = store.refresh();
-    await Promise.resolve();
-    await Promise.resolve();
+    await flush();
 
     vi.mocked(api.gridInfo).mockResolvedValueOnce(info(3, 3));
     vi.mocked(api.gridRows).mockResolvedValueOnce({ version: 3, rows: [entry(8), entry(9), entry(10)] });
-    await store.refresh();
-    expect(store.info.version).toBe(3);
+    let landed = false;
+    const second = store.refresh().then(() => (landed = true));
+    const third = store.refresh();
+    await flush();
+    expect(vi.mocked(api.gridInfo).mock.calls.length).toBe(calls + 1);
+    expect(landed).toBe(false);
 
     late.resolve({ version: 2, rows: [entry(9), entry(10)] });
     await slow;
+    await Promise.all([second, third]);
+    // The two callers who arrived during the first fetch shared one more.
+    expect(vi.mocked(api.gridInfo).mock.calls.length).toBe(calls + 2);
     expect(store.info.version).toBe(3);
     expect(store.info.len).toBe(3);
     expect(store.entry(0)?.id).toBe(8);
@@ -809,6 +921,10 @@ describe('LibraryStore', () => {
     });
 
     const p1 = store.setSearchQuery('b');
+    // Sent before the second is issued: a search still waiting its turn would be replaced
+    // by the second rather than run before it.
+    await flush();
+    expect(order).toEqual(['start:b']);
     const p2 = store.setSearchQuery('beach');
 
     // Resolve the second (later-issued) call's IPC first — if calls weren't serialised,
@@ -820,6 +936,65 @@ describe('LibraryStore', () => {
     await Promise.all([p1, p2]);
 
     expect(order).toEqual(['start:b', 'end:b', 'start:beach', 'end:beach']);
+  });
+
+  // Each debounced keystroke used to queue a whole-library search behind the one running,
+  // to be thrown away the moment the next landed. A search still waiting its turn takes
+  // the newer query instead - but only while nothing else has been queued after it, or a
+  // view switch issued between two searches would be reordered around them.
+  it('replaces a search still waiting its turn instead of queueing another behind it', async () => {
+    const store = new LibraryStore();
+    await store.init();
+    const order: string[] = [];
+    const running = deferred<void>();
+    vi.mocked(api.setSearchQuery).mockImplementation(async (q: string) => {
+      order.push(`search:${q}`);
+      if (q === 'a') await running.promise;
+    });
+    vi.mocked(api.setGridView).mockImplementation(async (view: GridView) => {
+      order.push(`view:${view}`);
+    });
+
+    const a = store.setSearchQuery('a');
+    await flush();
+    expect(order).toEqual(['search:a']);
+
+    // Three keystrokes while 'a' runs: one step, holding the last.
+    const b = store.setSearchQuery('b');
+    const be = store.setSearchQuery('be');
+    const bea = store.setSearchQuery('bea');
+    // A switch after them, and a search after the switch: neither may merge across it.
+    const starred = store.setView('starred');
+    const x = store.setSearchQuery('x');
+    const xy = store.setSearchQuery('xy');
+
+    running.resolve();
+    await Promise.all([a, b, be, bea, starred, x, xy]);
+    expect(order).toEqual(['search:a', 'search:bea', 'view:starred', 'search:xy']);
+    // A replaced search answers with its own query: it was never refused, and answering
+    // 'bea' would hand that text back to a box the user may have typed on since.
+    await expect(b).resolves.toBe('b');
+    await expect(bea).resolves.toBe('bea');
+    await expect(x).resolves.toBe('x');
+  });
+
+  it('a refused search that replaced others rolls back only the caller whose query it sent', async () => {
+    const store = new LibraryStore();
+    await store.init();
+    const running = deferred<void>();
+    vi.mocked(api.setSearchQuery).mockImplementationOnce(() => running.promise);
+    vi.mocked(api.setSearchQuery).mockRejectedValueOnce(new Error('refused'));
+    const first = store.setSearchQuery('lake');
+    await flush();
+
+    const b = store.setSearchQuery('b');
+    const beach = store.setSearchQuery('beach');
+    vi.mocked(api.gridInfo).mockResolvedValue({ ...store.info, version: 2, view: 'search', searchQuery: 'lake' });
+    running.resolve();
+    await expect(first).resolves.toBe('lake');
+    await expect(beach).resolves.toBe('lake');
+    await expect(b).resolves.toBe('b');
+    expect(api.setSearchQuery).toHaveBeenCalledTimes(2);
   });
 
   it('a view switch waits for a search already sent, so the search cannot land after it', async () => {

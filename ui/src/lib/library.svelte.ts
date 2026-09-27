@@ -18,6 +18,7 @@ import {
 import { keepCopiesName } from './copies';
 import { lastIndexAtOrBefore } from './layout';
 import { PageCache } from './pages';
+import { singleFlight } from './single-flight';
 import type { UnlistenFn } from '@tauri-apps/api/event';
 
 /** `error` is a failure the user should see; `done` is an action reporting what it did.
@@ -30,7 +31,11 @@ const GRID_ROWS_CHUNK = 1000;
 
 /** App-wide reactive state: the grid snapshot, the folder tree, scan status and selection. */
 export class LibraryStore {
-  info = $state<GridInfo>({
+  /** `$state.raw`, as are the folder list and the collections below: each is only ever
+   *  replaced whole by a fetch, never written into, and a deep proxy re-wrapped every
+   *  section and folder of a large library on every refresh. A write into one of them would
+   *  now go unseen - replace it instead. */
+  info = $state.raw<GridInfo>({
     version: -1,
     len: 0,
     sections: [],
@@ -47,13 +52,14 @@ export class LibraryStore {
     tag: null,
     copiesOf: null,
   });
-  folders = $state<FolderList>({ watched: [], folders: [] });
-  /** The sidebar's three collections. Refetched on every `library-changed` (a scan can
-   *  add a face, a keyword or purge an album member) and after every album mutation. */
-  albums = $state<AlbumSummary[]>([]);
-  searches = $state<SavedSearch[]>([]);
-  people = $state<Person[]>([]);
-  tags = $state<TagCount[]>([]);
+  folders = $state.raw<FolderList>({ watched: [], folders: [] });
+  /** The sidebar's collections. Refetched on every `library-changed` that says the data
+   *  moved (a scan can add a face, a keyword or purge an album member) and after every
+   *  album, saved-search and tag mutation. */
+  albums = $state.raw<AlbumSummary[]>([]);
+  searches = $state.raw<SavedSearch[]>([]);
+  people = $state.raw<Person[]>([]);
+  tags = $state.raw<TagCount[]>([]);
   scans = $state<Record<number, ScanProgressEvent>>({});
   /** Watched folder ids the OS won't let photon watch live, from the most recent
    *  `folder-status` event for each: they fall back to periodic rescans instead. */
@@ -373,6 +379,10 @@ export class LibraryStore {
     return [...this.selection];
   }
 
+  /** Bumped by every `library-changed` that says the data may have moved, for what reads
+   *  the database beside the grid - Settings' photo counts and tag rules - and so has no
+   *  reason to refetch on a view switch, which bumps `info.version` all the same. */
+  dataVersion = $state(0);
   /** Bumped whenever pages arrive, so `entry()` readers re-run. */
   pageTick = $state(0);
   /** True until the grid has jumped to the folder the last session left it on — or has
@@ -387,7 +397,13 @@ export class LibraryStore {
 
   private folderById = $derived(new Map(this.folders.folders.map((f) => [f.id, f])));
   private onlineByWatched = $derived(new Map(this.folders.watched.map((w) => [w.id, w.online])));
-  private pages = new PageCache<GridEntry>((o, c) => api.gridRows(o, c), () => void this.refresh().catch(this.reportError));
+  /** A page answered at another version means the index moved under it; the refresh that
+   *  follows goes through the same single flight as every other and asks only for that
+   *  version, so a screenful of stale pages costs one fetch rather than one each. */
+  private pages = new PageCache<GridEntry>(
+    (o, c) => api.gridRows(o, c),
+    (version) => void this.refreshTo(version).catch(this.reportError),
+  );
   /** The range the grid last asked `ensure` for: what is on screen, plus its overscan. */
   private seen: [number, number] = [0, 0];
   private unlisten: UnlistenFn[] = [];
@@ -404,9 +420,15 @@ export class LibraryStore {
     const generation = ++this.generation;
     this.initPromise = (async () => {
       const unlisten = await Promise.all([
-        events.onLibraryChanged(() => {
-          void this.refresh().catch(this.reportError);
-          void this.refreshCollections().catch(this.reportError);
+        events.onLibraryChanged((e) => {
+          void this.refreshTo(e.version).catch(this.reportError);
+          // Only when the data may have moved: a view switch, a sort or a search keystroke
+          // leaves every collection as it was, and the tag list alone costs a quarter of a
+          // second on a large library.
+          if (e.dataChanged) {
+            this.dataVersion++;
+            void this.refreshCollections().catch(this.reportError);
+          }
         }),
         events.onFolderStatus((e) => {
           this.degraded[e.watchedId] = e.degraded;
@@ -443,8 +465,43 @@ export class LibraryStore {
     this.degraded = {};
   }
 
-  async refresh(): Promise<void> {
+  /** Refetches the grid. One fetch at a time, plus one queued behind it: during a scan
+   *  `library-changed` arrives every 250ms and each `gridInfo` carries every section and
+   *  folder and four counts, and unserialised they piled up behind one another. Resolves
+   *  once `info` reflects a fetch issued after this call - the view chain awaits it and
+   *  then relies on `info` showing the view it switched to. */
+  refresh(): Promise<void> {
+    return this.refreshFlight();
+  }
+
+  private refreshFlight = singleFlight(() => this.loadGrid());
+
+  /** Refetches the grid unless `info` is already at `version` or later: for a version
+   *  something has announced - a `library-changed`, a page answered at a newer version.
+   *  Also asked again when a queued fetch comes due, so one that landed at the version
+   *  meanwhile answers every announcement queued behind it.
+   *
+   *  `<=` is safe here because of how the two ends are ordered: the engine bumps the version
+   *  and swaps the index under its write lock and only then emits, and `grid_info` reads the
+   *  version first and everything else after it. An answer at `version` or later was
+   *  therefore read after that publish, and has seen everything the announcement is about.
+   *  A view switch's own awaited refresh usually lands before its event arrives, and this is
+   *  what stops the event fetching the same grid a second time.
+   *
+   *  Not the rule for `refresh()` itself: a same-version answer there is still applied (see
+   *  `loadGrid`), because the view, the argument and the counts in `GridInfo` are read live
+   *  beside the index and can move without a publish - a view switch whose rebuild and whose
+   *  rollback's rebuild both fail restores the old view without bumping the version. */
+  private refreshTo(version: number): Promise<void> {
+    return this.refreshFlight(() => version <= this.info.version);
+  }
+
+  private async loadGrid(): Promise<void> {
     const info = await api.gridInfo();
+    // Fetches no longer overlap, and versions only rise, so an older answer is not expected;
+    // this is the cheap guard that one could never undo a newer grid. A *same*-version answer
+    // is applied on purpose: `grid_info` reads the view and the counts live, beside the
+    // index, so it can say more than the last answer at that version did.
     if (info.version < this.info.version) return;
     // The rows on screen are fetched before anything is swapped, so the old version stays
     // up until the new one can replace it whole. Clearing first left every visible tile
@@ -455,8 +512,6 @@ export class LibraryStore {
     const seed = info.version === this.pages.version
       ? undefined
       : await this.pages.prefetch(info.version, start, Math.min(end, info.len));
-    // A newer refresh landed while the rows were loading; it has already swapped.
-    if (info.version < this.info.version) return;
     this.pages.reset(info.version, seed);
     this.info = { ...info, copiesOf: keepCopiesName(this.info.copiesOf, info.copiesOf) };
     this.pageTick++;
@@ -556,20 +611,25 @@ export class LibraryStore {
     this.folders = folders;
   }
 
-  /** Sequence of the most recently issued collections request; same rule as `folderSeq`. */
-  private collectionsSeq = 0;
+  /** Refetches albums, saved searches, people and tags together, one fetch at a time plus
+   *  one queued, like `refresh`: the tag counts alone are a quarter of a second on a large
+   *  library, and a scan used to stack them up faster than they answered. Resolves once
+   *  the collections reflect a fetch issued after this call, which is what a mutation
+   *  awaiting it needs to find its own change in the list. With no two fetches in flight at
+   *  once, an older answer can no longer land over a newer one. */
+  refreshCollections(): Promise<void> {
+    return this.collectionsFlight();
+  }
 
-  /** Refetches albums, saved searches, people and tags together. Only the newest request
-   *  may write. */
-  async refreshCollections(): Promise<void> {
-    const seq = ++this.collectionsSeq;
+  private collectionsFlight = singleFlight(() => this.loadCollections());
+
+  private async loadCollections(): Promise<void> {
     const [albums, searches, people, tags] = await Promise.all([
       api.listAlbums(),
       api.listSavedSearches(),
       api.listPeople(),
       api.listTags(),
     ]);
-    if (seq !== this.collectionsSeq) return;
     this.albums = albums;
     this.searches = searches;
     this.people = people;
@@ -829,7 +889,11 @@ export class LibraryStore {
    *  lands last and the grid is left in Search under an empty box. */
   private viewChain: Promise<void> = Promise.resolve();
 
+  /** How many steps have been appended to `viewChain`; see `setSearchQuery`. */
+  private chainSteps = 0;
+
   private chain<T>(step: () => Promise<T>): Promise<T> {
+    this.chainSteps++;
     const next = this.viewChain.then(step);
     // Stored separately from what's returned: `next` never rejects today, because every
     // step routes its failures into reportError, but the chain must not depend on that
@@ -848,25 +912,56 @@ export class LibraryStore {
    *
    *  Resolves to the query the backend holds once this has been applied: `query` itself, or
    *  - when the command is refused and the engine rolls back - the one it held before,
-   *  which is what the search box then shows. */
+   *  which is what the search box then shows. A search replaced by a later one before it
+   *  was sent resolves to its own query once the later one has landed. */
   setSearchQuery(query: string): Promise<string> {
-    return this.chain(async () => {
-      try {
-        await api.setSearchQuery(query);
-      } catch (e) {
-        this.reportError(e);
-        // Nothing has refreshed since the last command on this chain landed, so this is the
-        // state the engine rolled back to.
-        return this.info.view === 'search' ? this.info.searchQuery : '';
-      }
-      try {
-        this.clearSelection();
-        await this.refresh();
-      } catch (e) {
-        this.reportError(e);
-      }
-      return query;
-    });
+    let step = this.queuedSearch;
+    // Every debounced keystroke used to append a step, and each step waited for the one
+    // before it - a whole-library search rebuild - to finish, so a fast typist queued up a
+    // search per pause only to throw all but the last away. A search that has not started
+    // yet and is still the last step on the chain takes the new query instead. Only then:
+    // with a view switch or a sort appended after it, dropping it would reorder the two.
+    if (!step || step.seq !== this.chainSteps) {
+      const queued = { query, seq: 0, done: Promise.resolve('') };
+      queued.done = this.chain(() => {
+        // Started: from here the query it sends is fixed, and a later search queues anew.
+        if (this.queuedSearch === queued) this.queuedSearch = null;
+        return this.applySearchQuery(queued.query);
+      });
+      queued.seq = this.chainSteps;
+      this.queuedSearch = queued;
+      step = queued;
+    } else {
+      step.query = query;
+    }
+    const merged = step;
+    // A caller whose query was replaced answers with its own query: it was never refused,
+    // and the rolled-back query is for the box to take only while it still shows the query
+    // that was refused. Answering the later query here would put that text back into a box
+    // the user has since typed on.
+    return merged.done.then((held) => (merged.query === query ? held : query));
+  }
+
+  /** The search waiting on `viewChain` that has not started yet, while it is still the last
+   *  step appended (`seq`, against `chainSteps`); see `setSearchQuery`. */
+  private queuedSearch: { query: string; seq: number; done: Promise<string> } | null = null;
+
+  private async applySearchQuery(query: string): Promise<string> {
+    try {
+      await api.setSearchQuery(query);
+    } catch (e) {
+      this.reportError(e);
+      // Nothing has refreshed since the last command on this chain landed, so this is the
+      // state the engine rolled back to.
+      return this.info.view === 'search' ? this.info.searchQuery : '';
+    }
+    try {
+      this.clearSelection();
+      await this.refresh();
+    } catch (e) {
+      this.reportError(e);
+    }
+    return query;
   }
 
   /** The view once every view command already issued has landed. What a folder jump asks

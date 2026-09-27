@@ -105,6 +105,13 @@ covered every scenario written for it. A setter's own rebuild is the authority
 for a view change. A discarded rebuild never loses rows: every commit is followed on its own
 thread by a rebuild stamped after it, and the highest stamp always publishes.
 
+`LibraryChanged::data_changed` tells the UI whether to refetch the sidebar's collections
+(albums, people, tags - the tag counts alone are ~240ms at 300k photos). Every `refresh_grid`
+marks the engine-wide `data_dirty` before it snapshots; the view setters' rebuilds
+(`rebuild_or_restore`) do not; whichever rebuild *publishes* next swaps it back and sends it.
+Engine-wide rather than per rebuild, because a data rebuild discarded by a view switch would
+otherwise take its flag with it. A new writer calls `refresh_grid`, never the view-only path.
+
 `ScanReport::touched_rows` gates the end-of-scan refresh on whether a scan actually moved
 rows. A change that alters data by some *other* means must add its own counter to `ScanReport`
 and fold it into `touched_rows`, or the grid silently never rebuilds. Today the counters

@@ -52,11 +52,12 @@
     dialog?.focus();
   });
 
-  // Re-read on every grid version: a scan that adds or removes photos while the dialog is
-  // open bumps it, and the counts would otherwise stay at what they were on open.
+  // Re-read on every data change: a scan that adds or removes photos while the dialog is
+  // open announces one, and the counts would otherwise stay at what they were on open. Not
+  // on every grid version, which a view switch or a search keystroke bumps too.
   // `stale` drops a response that a later request has already overtaken.
   $effect(() => {
-    void library.info.version;
+    void library.dataVersion;
     let stale = false;
     api
       .watchedFolderStats()
@@ -69,10 +70,10 @@
     };
   });
 
-  // Every rule change rebuilds the grid, so keying on the version refetches after our own
-  // changes as well as any made elsewhere. `stale` as for the counts above.
+  // Every rule change rebuilds the grid as a data change, so keying on it refetches after
+  // our own changes as well as any made elsewhere. `stale` as for the counts above.
   $effect(() => {
-    void library.info.version;
+    void library.dataVersion;
     let stale = false;
     api
       .listTagRules()
