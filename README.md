@@ -393,6 +393,7 @@ publishing it.
 - [ ] Click the × on a keyword that came from the photo's own metadata: it goes from this photo only, and stays gone after the folder is rescanned.
 - [ ] Rename that keyword in Settings → Tags: the photo's chip follows to the new name.
 - [ ] With the viewer open on a photo, zoomed and panned, copying a photo into a folder that sorts *ahead* of it leaves the viewer on the same photo, at the same zoom and pan, with its caption renumbered. (The offset the viewer holds shifts when the grid is rebuilt; this is the check that it re-finds its photo rather than sliding onto the next one.)
+- [ ] Start an import of a few hundred photos into a folder that sorts *ahead* of the one you are viewing, and arrow through large photos while it runs: each one still turns sharp after the preview, rather than staying on the blurry preview. A video playing meanwhile keeps playing, and a slideshow started during the import keeps advancing.
 - [ ] Open a photo, arrow a few hundred photos on, star one (or resize the window), then press Escape: the grid lands on the photo you closed on, ringed, and Ctrl+C and H act on it straight away.
 - [ ] Copying a photo into a watched folder makes it appear in the grid within a few seconds, with no manual rescan.
 - [ ] Deleting a photo on disk removes it from the grid.

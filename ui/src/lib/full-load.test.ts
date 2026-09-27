@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createFullLoad, FULL_LOAD_SETTLE_MS } from './full-load';
+import { createFullLoad, createLoadSlot, FULL_LOAD_SETTLE_MS } from './full-load';
 
 beforeEach(() => vi.useFakeTimers());
 afterEach(() => vi.useRealTimers());
@@ -91,5 +91,55 @@ describe('createFullLoad', () => {
     await flush();
 
     expect(again.go).toBe(true);
+  });
+});
+
+describe('createLoadSlot', () => {
+  it('a renumbering keeps the load in flight; a real step tears it down', () => {
+    const slot = createLoadSlot();
+    const first = vi.fn();
+    expect(slot.begin(5)).toBe(true);
+    slot.hold(first);
+
+    // A rebuild moved the photo on screen from 5 to 6.
+    slot.rebind(6);
+    expect(slot.begin(6)).toBe(false);
+    expect(first).not.toHaveBeenCalled();
+
+    // An arrow key to 7: the load for the photo left behind is abandoned.
+    expect(slot.begin(7)).toBe(true);
+    expect(first).toHaveBeenCalledTimes(1);
+  });
+
+  it('a changed picture reloads at the same offset, tearing the old load down', () => {
+    const slot = createLoadSlot();
+    const first = vi.fn();
+    slot.begin(5);
+    slot.hold(first);
+    slot.rebind(5);
+    slot.forget();
+    expect(slot.begin(5)).toBe(true);
+    expect(first).toHaveBeenCalledTimes(1);
+  });
+
+  it('a renumbering overtaken by a step does not swallow a later run at its offset', () => {
+    const slot = createLoadSlot();
+    slot.begin(5);
+    slot.rebind(6);
+    expect(slot.begin(9)).toBe(true);
+    const second = vi.fn();
+    slot.hold(second);
+    expect(slot.begin(6)).toBe(true);
+    expect(second).toHaveBeenCalledTimes(1);
+  });
+
+  it('closing tears down the load in flight, once', () => {
+    const slot = createLoadSlot();
+    const first = vi.fn();
+    slot.begin(5);
+    slot.hold(first);
+    slot.end();
+    slot.end();
+    expect(first).toHaveBeenCalledTimes(1);
   });
 });

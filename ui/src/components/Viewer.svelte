@@ -21,7 +21,7 @@
   import { createCropTool } from '../lib/crop-tool.svelte';
   import { containedBox, faceBox } from '../lib/faces';
   import { createSlideshow } from '../lib/slideshow.svelte';
-  import { createFullLoad } from '../lib/full-load';
+  import { createFullLoad, createLoadSlot } from '../lib/full-load';
   import { createStarToggle } from '../lib/star-toggle.svelte';
   import { library } from '../lib/library.svelte';
   import { pictureChanged } from '../lib/picture';
@@ -480,10 +480,12 @@
   });
 
 
-  /** An offset the rebind below has already resolved, so the loader can tell "the same photo,
-   *  renumbered" from "a different photo". Deliberately not `$state`: writing it must not
-   *  wake anything, and it is always set immediately before the `current` that does. */
-  let rebound: number | null = null;
+  /** The load in flight, and the offset the rebind below has already resolved, so the loader
+   *  can tell "the same photo, renumbered" from "a different photo" and leave the first's
+   *  load running. Not `$state`: `rebind` must not wake anything, and it is always called
+   *  immediately before the `current` write that does. See `createLoadSlot`. */
+  const loads = createLoadSlot();
+  $effect(() => () => loads.end());
 
   // `current` is an index into a grid that is rebuilt whole whenever anything changes, so it
   // stops meaning "the photo the user opened" the moment a scan indexes something ahead of
@@ -511,7 +513,7 @@
     if (!old || old.id !== fresh.id) return;
     if (pictureChanged(old, fresh)) {
       if (canReload) {
-        rebound = null;
+        loads.forget();
         reload++;
       }
     } else {
@@ -555,7 +557,7 @@
       }
       orphaned = false;
       if (at !== untrack(() => current)) {
-        rebound = at;
+        loads.rebind(at);
         current = at;
       }
       // The photo is the same, but what the library says about it may not be: a renamed
@@ -573,9 +575,11 @@
     const at = current;
     void reload;
     // A renumbering, not a navigation: the photo on screen is already the right one, so
-    // reloading it would blank it and throw away the zoom and pan for nothing.
-    if (rebound === at) {
-      rebound = null;
+    // reloading it would blank it and throw away the zoom and pan for nothing - and its
+    // load, which may still be fetching the full image, is left to finish. Anything else
+    // tears the previous load down first. `untrack`: the teardown reads `videoEl`, which
+    // must not become a reason to reload.
+    if (!untrack(() => loads.begin(at))) {
       fullLoad.renumbered(at);
       return;
     }
@@ -598,6 +602,22 @@
     zoom = MIN_ZOOM;
     pan = { x: 0, y: 0 };
     crop.cancel();
+    // Not the effect's cleanup, which a renumbering would run too; see `createLoadSlot`.
+    loads.hold(() => {
+      cancelled = true;
+      fullLoad.cancel();
+      // Aborts the fetch and the decode if they have not finished; harmless if they have,
+      // since `fullSrc` holds the URL, not this element. Its `decode()` rejects, and that
+      // rejection is already swallowed.
+      if (full) full.src = '';
+      // Leaving a video - navigation, close, or a reload of the same offset - must release
+      // its decode pipeline rather than leave it running behind a photo or an unmounted
+      // element: pause first (a `load()` alone can keep playing until it resets), drop the
+      // source so nothing is left to buffer, then load() to actually abandon it.
+      videoEl?.pause();
+      videoEl?.removeAttribute('src');
+      videoEl?.load();
+    });
     (async () => {
       // `untrack`, because `ensure` reads `library.info.len` and this call is still inside
       // the effect's tracked window. `refresh()` assigns a new `info` object on every
@@ -649,21 +669,6 @@
     })().catch((e) => {
       if (!cancelled) error = errorMessage(e);
     });
-    return () => {
-      cancelled = true;
-      fullLoad.cancel();
-      // Aborts the fetch and the decode if they have not finished; harmless if they have,
-      // since `fullSrc` holds the URL, not this element. Its `decode()` rejects, and that
-      // rejection is already swallowed.
-      if (full) full.src = '';
-      // Leaving a video - navigation, close, or a reload of the same offset - must release
-      // its decode pipeline rather than leave it running behind a photo or an unmounted
-      // element: pause first (a `load()` alone can keep playing until it resets), drop the
-      // source so nothing is left to buffer, then load() to actually abandon it.
-      videoEl?.pause();
-      videoEl?.removeAttribute('src');
-      videoEl?.load();
-    };
   });
 
   function onkeydown(e: KeyboardEvent) {

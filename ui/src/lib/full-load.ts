@@ -63,3 +63,62 @@ export function createFullLoad() {
 }
 
 export type FullLoad = ReturnType<typeof createFullLoad>;
+
+/** The viewer's load in flight, held apart from the effect that starts it.
+ *
+ *  The loader effect re-runs whenever `current` changes, and a rebuild that renumbers the
+ *  photo on screen changes it too - without the photo changing. Were the load's teardown
+ *  the effect's own cleanup, Svelte would run it on that re-run: the full-size image still
+ *  fetching or decoding would be aborted, a playing video's source stripped, and the
+ *  re-run, rightly starting nothing for a photo already on screen, would leave the viewer
+ *  on the preview for good. During an import scan, rebuilding every 250ms and shifting
+ *  offsets as it goes, that was any photo opened - and a slideshow, whose countdown waits
+ *  on the full image, stalled.
+ *
+ *  So the teardown lives here: `begin` runs it only for a run that is not a renumbering,
+ *  and `end` on unmount. */
+export function createLoadSlot() {
+  let rebound: number | null = null;
+  let teardown: (() => void) | null = null;
+
+  function end() {
+    const t = teardown;
+    teardown = null;
+    t?.();
+  }
+
+  return {
+    /** A rebuild renumbered the photo on screen to `at`: the run that follows for `at` is
+     *  the same photo, not a step to another. */
+    rebind(at: number) {
+      rebound = at;
+    },
+
+    /** The photo on screen must load again at its offset (its picture changed): the next
+     *  run is a reload even if a renumbering to that offset was pending. */
+    forget() {
+      rebound = null;
+    },
+
+    /** The loader is running for `at`. False for a renumbering, leaving the load in flight
+     *  running, since it is the right photo's. Otherwise tears that load down and answers
+     *  true: the caller starts the new one and hands its teardown to `hold`. */
+    begin(at: number): boolean {
+      const renumbered = rebound === at;
+      // Consumed either way: a renumbering overtaken by a step must not match a later run
+      // that happens to land on the same offset.
+      rebound = null;
+      if (renumbered) return false;
+      end();
+      return true;
+    },
+
+    /** How to tear down the load `begin` just allowed. */
+    hold(t: () => void) {
+      teardown = t;
+    },
+
+    /** Tears down the load in flight: the viewer is closing. */
+    end,
+  };
+}
