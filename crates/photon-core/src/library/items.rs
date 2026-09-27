@@ -855,6 +855,21 @@ impl Library {
         Ok(entries)
     }
 
+    /// Compiles, without running, the All view's grid query. What `Engine::open` checks the
+    /// library with instead of building the first grid, which it leaves to the startup
+    /// thread: a library whose schema that query cannot be prepared against - a column gone,
+    /// a table renamed - still fails to open, with the error dialog, rather than opening
+    /// onto a grid that never arrives. Preparing resolves every table and column and reads
+    /// no rows, so it costs the same at 300k photos as at none.
+    ///
+    /// The name sort's side query (`FILE_NAMES_SQL`) is not prepared as well: every column
+    /// it reads, `file_name` included (`GRID_ORDER`), this query reads too.
+    pub fn check_grid_query(&self) -> Result<()> {
+        self.reader()?
+            .prepare(&grid_query(GRID_COLUMNS, Shown::Visible, ""))?;
+        Ok(())
+    }
+
     /// Every live item's file name, by id.
     fn file_names(&self) -> Result<HashMap<i64, String>> {
         let conn = self.reader()?;
