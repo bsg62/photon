@@ -52,6 +52,32 @@ describe('createStarToggle', () => {
     await first;
   });
 
+  it('stars the next photo while the previous photo’s write is still in flight', async () => {
+    // Star, ArrowRight, star: the first call is still waiting on its grid rebuild. The
+    // second photo has nothing in flight, so its click must land, and the first photo
+    // stays busy when the viewer comes back to it.
+    const first = deferred();
+    const second = deferred();
+    const setStar = vi.fn().mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+    const star = createStarToggle(setStar);
+    star.bind(7, false);
+    const one = star.toggle();
+
+    star.bind(8, false);
+    expect(star.busy).toBe(false);
+    const two = star.toggle();
+
+    expect(setStar).toHaveBeenNthCalledWith(2, 8, true);
+    expect(star.starred).toBe(true);
+    star.bind(7, true);
+    expect(star.busy).toBe(true);
+    first.resolve();
+    await one;
+    expect(star.busy).toBe(false);
+    second.resolve();
+    await two;
+  });
+
   it('reverts and rethrows when the write fails', async () => {
     const call = deferred();
     const star = createStarToggle(() => call.promise);
