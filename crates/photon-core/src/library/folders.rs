@@ -13,6 +13,13 @@ pub struct WatchedFolder {
     pub online: bool,
 }
 
+/// `watched_photo_counts`' query, shared with its plan test. The `+` keeps the planner from
+/// walking `items_size` to find the live photos; see `library/mod.rs`.
+const WATCHED_PHOTO_COUNTS_SQL: &str =
+    "SELECT f.watched_id, count(*) FROM items i JOIN folders f ON f.id = i.folder_id
+     WHERE +i.missing_since IS NULL
+     GROUP BY f.watched_id";
+
 impl Library {
     /// Registers a folder to watch after validating it. The path is canonicalised, and adding
     /// an already watched folder returns the existing entry. A folder that contains or sits
@@ -81,11 +88,7 @@ impl Library {
     /// root's items are not soft-deleted, so its count survives the drive going away.
     pub fn watched_photo_counts(&self) -> Result<Vec<(i64, i64)>> {
         let conn = self.reader()?;
-        let mut stmt = conn.prepare(
-            "SELECT f.watched_id, count(*) FROM items i JOIN folders f ON f.id = i.folder_id
-             WHERE i.missing_since IS NULL
-             GROUP BY f.watched_id",
-        )?;
+        let mut stmt = conn.prepare(WATCHED_PHOTO_COUNTS_SQL)?;
         let rows = stmt
             .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -596,5 +599,23 @@ mod tests {
         assert_eq!(lib.prune_folders_under(w.id, 2, "/p/a").unwrap(), 2);
         let paths: Vec<String> = lib.folders().unwrap().into_iter().map(|f| f.path).collect();
         assert_eq!(paths, ["/p", "/p/a"]);
+    }
+
+    /// Pins the `+` in `WATCHED_PHOTO_COUNTS_SQL`: without it the planner walks
+    /// `items_size` to find the live photos (`library/mod.rs`). Reaching them folder by
+    /// folder through `items_folder`, or scanning the table, are both fine; walking a
+    /// partial index end to end is what the `+` is there to stop.
+    #[test]
+    fn watched_photo_counts_do_not_walk_the_size_index() {
+        let (_dir, lib) = temp_library();
+        let plan = lib.query_plan(WATCHED_PHOTO_COUNTS_SQL, &[]);
+        assert!(
+            !plan.iter().any(|step| step.contains("items_size")),
+            "walks the size index: {plan:?}"
+        );
+        assert!(
+            !plan.iter().any(|step| step.starts_with("SCAN i USING")),
+            "photos must not be read in an index's order: {plan:?}"
+        );
     }
 }

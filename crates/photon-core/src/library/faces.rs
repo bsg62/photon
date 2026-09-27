@@ -33,6 +33,16 @@ pub struct ItemFace {
     pub bottom: f64,
 }
 
+/// `people_with_counts`' query, shared with its plan test. It is driven from `faces` and
+/// reaches each photo by its id; without the `+` the planner walks `items_size` instead and
+/// looks up each photo's faces from there (see `library/mod.rs`).
+const PEOPLE_SQL: &str = "SELECT c.hash, c.name, count(DISTINCT f.item_id)
+     FROM contacts c
+     JOIN faces f ON f.contact = c.hash
+     JOIN items i ON i.id = f.item_id
+     WHERE +i.missing_since IS NULL AND i.hidden = 0
+     GROUP BY c.hash";
+
 impl Library {
     /// Records or renames contacts. A name that has not changed is not written, so a
     /// folder whose INI agrees with the library costs no transaction here.
@@ -138,14 +148,7 @@ impl Library {
     /// Counts photos, not faces: a person twice in one frame is one photo of them.
     pub fn people_with_counts(&self) -> Result<Vec<Person>> {
         let conn = self.reader()?;
-        let mut stmt = conn.prepare(
-            "SELECT c.hash, c.name, count(DISTINCT f.item_id)
-             FROM contacts c
-             JOIN faces f ON f.contact = c.hash
-             JOIN items i ON i.id = f.item_id
-             WHERE i.missing_since IS NULL AND i.hidden = 0
-             GROUP BY c.hash",
-        )?;
+        let mut stmt = conn.prepare(PEOPLE_SQL)?;
         let mut people = stmt
             .query_map([], |r| {
                 Ok(Person {
@@ -323,6 +326,25 @@ mod tests {
         assert_eq!(
             orphans, 0,
             "ON DELETE CASCADE is on, and foreign keys are enforced"
+        );
+    }
+
+    /// Pins the `+` in `PEOPLE_SQL`: the list reads only the photos that have a face, each
+    /// by id. Without it the planner walks `items_size` over every photo in the library to
+    /// find their faces (`library/mod.rs`). Whether `faces` or `contacts` drives is left to
+    /// the planner; either reaches photos by id.
+    #[test]
+    fn the_people_list_reads_photos_by_id_not_through_the_size_index() {
+        let (_dir, lib) = temp_library();
+        let plan = lib.query_plan(PEOPLE_SQL, &[]);
+        assert!(
+            !plan.iter().any(|step| step.contains("items_size")),
+            "walks the size index: {plan:?}"
+        );
+        assert!(
+            plan.iter()
+                .any(|step| step == "SEARCH i USING INTEGER PRIMARY KEY (rowid=?)"),
+            "expected each photo to be found by id: {plan:?}"
         );
     }
 }

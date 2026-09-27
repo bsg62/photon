@@ -16,10 +16,11 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use image::{DynamicImage, imageops::FilterType};
+use xxhash_rust::xxh3::xxh3_128;
 
 use crate::{
     Result,
-    library::Library,
+    library::{HashedPhoto, Library},
     thumbs::{ThumbCache, ThumbSize},
 };
 
@@ -128,17 +129,69 @@ pub fn same_picture(a: &Reduction, b: &Reduction) -> bool {
     picture_difference(a, b) <= SAME_PICTURE_MAX_DIFFERENCE
 }
 
-/// Reductions kept from one pass to the next, by thumbnail key.
+/// What one pass leaves for the next: reductions by thumbnail key, and what the last
+/// regroup was asked.
 ///
-/// The regroup runs after every scan - the watcher's too, seconds after a single file
-/// lands - and confirms every nominated pair again, so without this each pass would decode
-/// the thumbnail of every photo that has a look-alike. The key changes whenever the file or
-/// its edit does, so an entry can never describe a picture its row no longer shows, and
-/// needs no invalidation of its own. A pass keeps only the entries it used, which bounds
-/// the cache by the photos that have a candidate pair rather than letting old keys pile up.
+/// The regroup runs again whenever its input moves - the watcher's scan of a single file
+/// that lands is enough - and confirms every nominated pair again, so without the
+/// reductions each such pass would decode the thumbnail of every photo that has a
+/// look-alike. The key changes whenever the file or its edit does, so an entry can never
+/// describe a picture its row no longer shows, and needs no invalidation of its own. A pass
+/// keeps only the entries it used, which bounds the cache by the photos that have a
+/// candidate pair rather than letting old keys pile up.
 #[derive(Debug, Default)]
 pub struct Reductions {
     by_key: HashMap<u64, Reduction>,
+    /// The last regroup this session that got to the end with every thumbnail it needed;
+    /// see [`update`]. `None` until there is one, so a session's first pass always
+    /// regroups. A regroup that does not finish leaves the one before it in place: an
+    /// input's answer does not change within a session, and a skip also asks that the
+    /// stored groups are still that answer.
+    last: Option<Regrouped>,
+}
+
+/// A finished regroup, as two digests: what it was asked, and what it stored.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Regrouped {
+    input: u128,
+    groups: u128,
+}
+
+/// A digest of everything a regroup's answer depends on: the distance, and every hashed
+/// photo's id, hash and thumbnail key. The key stands in for the pixels `same_picture`
+/// compares, which it names exactly - a key changes with the file and with its edit.
+///
+/// The key is the part that cannot be left out: at 9x8 a different picture can hash
+/// exactly like the one it replaced. The id and the hash are here because they are what
+/// `group` reads, not because a skip could go wrong without them - within a session a hash
+/// is taken from the thumbnail its key names, and a grouped row cannot change id without
+/// taking its stored group with it, which the skip's other check sees.
+///
+/// A sum of each row's digest rather than one stream, so it digests a *set*. The answer is
+/// one - a union-find's components, each named by its smallest id - whatever order the
+/// pairs are confirmed in, while the order `percep_hashes` returns rows in is only whatever
+/// its query plan happens to give.
+fn regroup_input(distance: u32, photos: &[HashedPhoto]) -> u128 {
+    photos
+        .iter()
+        .fold(xxh3_128(&distance.to_le_bytes()), |sum, photo| {
+            let mut row = [0u8; 24];
+            row[..8].copy_from_slice(&photo.id.to_le_bytes());
+            row[8..16].copy_from_slice(&photo.hash.to_le_bytes());
+            row[16..].copy_from_slice(&photo.thumb_key.to_le_bytes());
+            sum.wrapping_add(xxh3_128(&row))
+        })
+}
+
+/// A digest of a set of `(item, group)` pairs, in any order, so `group`'s unordered output
+/// and `similar_groups`' sorted rows agree when they hold the same pairs.
+fn groups_digest(groups: &[(i64, i64)]) -> u128 {
+    groups.iter().fold(0, |sum, (id, group)| {
+        let mut row = [0u8; 16];
+        row[..8].copy_from_slice(&id.to_le_bytes());
+        row[8..].copy_from_slice(&group.to_le_bytes());
+        sum.wrapping_add(xxh3_128(&row))
+    })
 }
 
 /// Groups look-alikes, returning `(item_id, group_id)` for every photo that has at least one.
@@ -293,6 +346,13 @@ pub struct PassOutcome {
     /// one signal that means the Duplicates view moved, and the only one
     /// `Engine::hash_after_scan` refreshes the grid on.
     pub groups_changed: bool,
+    /// Whether the regroup ran, finished or cancelled. False only when [`update`] skipped
+    /// it as a question already answered - the same distance, the same photos with the
+    /// same hashes and thumbnails, and the groups stored still the ones that regroup
+    /// wrote - so `groups_changed` is false with it. Nothing outside the tests reads it: a
+    /// skip leaves the groups exactly as a regroup would, which is what makes it safe, and
+    /// also why only this field can tell the two apart.
+    pub regrouped: bool,
 }
 
 /// Hashes every photo that has a thumbnail but no hash, then regroups the whole library.
@@ -307,6 +367,12 @@ pub struct PassOutcome {
 /// A thumbnail that cannot be read is skipped and the row stays a candidate: it is usually
 /// a cache still being written, and the next scan's pass tries again. Cancelling stops
 /// between photos; what was hashed so far is kept.
+///
+/// The regroup is skipped when it would be asked exactly what the last finished one was.
+/// Most passes follow a scan that hashed nothing - the echo of photon's own INI write on
+/// every star, a subtree scan that found nothing new - and banding 300,000 hashes, only to
+/// arrive at the groups already stored, measured half a second of a release build's CPU,
+/// against a millisecond for the digest that decides to skip it.
 pub fn update(
     lib: &Library,
     cache: &ThumbCache,
@@ -347,9 +413,29 @@ pub fn update(
         }
     }
 
-    // Regroup unconditionally, not only when something was hashed: the distance setting may
-    // have changed, or a photo may have been purged out of a group since the last pass.
+    // Whether to regroup is not whether something was hashed: the distance setting may have
+    // changed, or a photo may have been purged out of a group, with nothing hashed at all.
+    // Both move the digest of what the regroup reads; while it has not moved since the last
+    // finished regroup, the answer is the one that regroup stored.
+    //
+    // The stored groups are checked as well because they have writers of their own, which
+    // can leave the input as it was: `update_items` and `set_item_edit` clear a row's group
+    // with its hash, and a file that comes back unchanged - its thumbnail still cached - is
+    // hashed again to exactly what it was, an input identical to the last regroup's over
+    // groups that have lost a member. That read is the one `set_similar_groups` made on
+    // every pass anyway, and it is bounded by the grouped rows, not the library.
     let photos = lib.percep_hashes()?;
+    let input = regroup_input(distance, &photos);
+    if let Some(last) = reductions.last
+        && last.input == input
+        && groups_digest(&lib.similar_groups()?) == last.groups
+    {
+        return Ok(PassOutcome {
+            hashed,
+            groups_changed: false,
+            regrouped: false,
+        });
+    }
     let hashes: Vec<(i64, u64)> = photos.iter().map(|p| (p.id, p.hash)).collect();
     // `None` is a thumbnail that could not be read, remembered for this pass only so it is
     // not retried for every pair it is in. It confirms nothing: a missed pair costs less than
@@ -379,14 +465,25 @@ pub fn update(
             _ => false,
         }
     });
+    // Only a whole answer is remembered. A cancelled regroup stored nothing, and one that
+    // could not read a thumbnail answered "no" for that photo's pairs - an answer the next
+    // pass, with the thumbnail back, may not give - so either has to be asked again.
+    let finished = !cancelled && seen.values().all(Option::is_some);
     reductions.by_key = seen
         .into_iter()
         .filter_map(|(key, reduction)| Some((key, reduction?)))
         .collect();
     let groups_changed = !cancelled && lib.set_similar_groups(&groups)?;
+    if finished {
+        reductions.last = Some(Regrouped {
+            input,
+            groups: groups_digest(&groups),
+        });
+    }
     Ok(PassOutcome {
         hashed,
         groups_changed,
+        regrouped: true,
     })
 }
 
@@ -747,8 +844,9 @@ mod tests {
             "an unrelated picture was grouped with them"
         );
 
-        // A second pass has nothing left to hash and nothing to regroup: a photo takes this
-        // path once, and the groups it computes are the ones already stored.
+        // A second pass has nothing left to hash, and a regroup - a fresh session's, which
+        // always runs - changes nothing: a photo takes this path once, and the groups it
+        // computes are the ones already stored.
         assert_eq!(
             update(
                 &lib,
@@ -758,7 +856,10 @@ mod tests {
                 &mut Reductions::default()
             )
             .unwrap(),
-            PassOutcome::default()
+            PassOutcome {
+                regrouped: true,
+                ..PassOutcome::default()
+            }
         );
 
         // Changing the distance is a regroup and nothing else - the case the grid refresh
@@ -1209,7 +1310,10 @@ mod tests {
                 &mut Reductions::default()
             )
             .unwrap(),
-            PassOutcome::default()
+            PassOutcome {
+                regrouped: true,
+                ..PassOutcome::default()
+            }
         );
         assert_eq!(lib.similar_candidates().unwrap().len(), 1);
     }
@@ -1301,6 +1405,278 @@ mod tests {
         assert!(
             lib.similar_of(ids[0]).unwrap().is_empty(),
             "Off left the groups it was asked to clear"
+        );
+    }
+
+    /// One picture at two sizes, the pair the regroup tests below group.
+    fn a_pair() -> [(&'static str, DynamicImage); 2] {
+        [
+            ("big.jpg", unrelated_pattern(180, 120)),
+            ("small.jpg", unrelated_pattern(72, 48)),
+        ]
+    }
+
+    /// A library holding [`a_pair`], thumbnailed but not yet hashed, with the cache and the
+    /// folder it is in.
+    fn a_thumbnailed_pair() -> (tempfile::TempDir, Library, ThumbCache, i64, Vec<i64>) {
+        let (dir, lib) = temp_library();
+        let photos = dir.path().join("pics");
+        let (_w, folder) = seed_folder(&lib, &photos);
+        let cache = ThumbCache::new(dir.path().join("cache"));
+        let ids = thumbnailed(&lib, &cache, &photos, folder, &a_pair());
+        (dir, lib, cache, folder, ids)
+    }
+
+    /// Most passes follow a scan that hashed nothing, and regrouping then bands and
+    /// confirms the whole library only to arrive at the groups already stored.
+    #[test]
+    fn a_pass_with_nothing_new_does_not_regroup() {
+        let (_dir, lib, cache, _folder, ids) = a_thumbnailed_pair();
+        let no = AtomicBool::new(false);
+        let mut reductions = Reductions::default();
+        let first = update(&lib, &cache, EXACT_RECALL_DISTANCE, &no, &mut reductions).unwrap();
+        assert!(
+            first.regrouped && first.groups_changed,
+            "the pair did not group"
+        );
+
+        let second = update(&lib, &cache, EXACT_RECALL_DISTANCE, &no, &mut reductions).unwrap();
+        assert_eq!(
+            second,
+            PassOutcome {
+                hashed: 0,
+                groups_changed: false,
+                regrouped: false,
+            },
+            "a pass with nothing new regrouped the library"
+        );
+        assert_eq!(lib.similar_of(ids[0]).unwrap().len(), 1);
+    }
+
+    /// The distance is half of what a regroup is asked: the same hashes at another distance
+    /// are another question. Off shows it, since it has to clear the groups.
+    #[test]
+    fn a_distance_change_regroups_the_same_hashes() {
+        let (_dir, lib, cache, _folder, ids) = a_thumbnailed_pair();
+        let no = AtomicBool::new(false);
+        let mut reductions = Reductions::default();
+        update(&lib, &cache, EXACT_RECALL_DISTANCE, &no, &mut reductions).unwrap();
+        assert_eq!(
+            lib.similar_of(ids[0]).unwrap().len(),
+            1,
+            "the pair did not group"
+        );
+
+        let off = update(&lib, &cache, 0, &no, &mut reductions).unwrap();
+        assert!(
+            off.regrouped,
+            "a distance change was skipped as nothing new"
+        );
+        assert!(off.groups_changed);
+        assert!(
+            lib.similar_of(ids[0]).unwrap().is_empty(),
+            "Off left the groups of the distance before it"
+        );
+    }
+
+    /// A photo whose thumbnail became ready since the last pass is hashed by this one, and
+    /// its hash has to reach the groups in the same pass: no later scan is promised.
+    #[test]
+    fn a_new_hash_regroups() {
+        let (_dir, lib, cache, _folder, ids) = a_thumbnailed_pair();
+        lib.set_thumb_state(ids[1], ThumbState::Pending, None)
+            .unwrap();
+        let no = AtomicBool::new(false);
+        let mut reductions = Reductions::default();
+        let first = update(&lib, &cache, EXACT_RECALL_DISTANCE, &no, &mut reductions).unwrap();
+        assert_eq!(first.hashed, 1);
+        assert!(lib.similar_of(ids[0]).unwrap().is_empty());
+
+        lib.set_thumb_state(ids[1], ThumbState::Ready, None)
+            .unwrap();
+        let second = update(&lib, &cache, EXACT_RECALL_DISTANCE, &no, &mut reductions).unwrap();
+        assert_eq!(second.hashed, 1);
+        assert!(
+            second.regrouped,
+            "a pass that hashed a photo did not regroup"
+        );
+        assert_eq!(
+            lib.similar_of(ids[0]).unwrap().len(),
+            1,
+            "the new hash never reached the groups"
+        );
+    }
+
+    /// The thumbnail key is part of the question even where the hash does not move with
+    /// it. At 9x8 a different picture can hash exactly like the one it replaced, and the
+    /// pixel check behind the hash reads whatever thumbnail the key names. Two shots that
+    /// hash alike are left apart; then the second file is rewritten as a copy of the first,
+    /// which hashes as it did before and now is the same picture. Neither was ever
+    /// grouped, so the stored groups have nothing to show for it either.
+    #[test]
+    fn a_new_picture_under_an_unchanged_hash_regroups() {
+        let (dir, lib) = temp_library();
+        let photos = dir.path().join("pics");
+        let (_w, folder) = seed_folder(&lib, &photos);
+        let cache = ThumbCache::new(dir.path().join("cache"));
+        let ids = thumbnailed(
+            &lib,
+            &cache,
+            &photos,
+            folder,
+            &[
+                ("a.jpg", checkered(288, 192, 0)),
+                ("b.jpg", checkered(288, 192, 1)),
+            ],
+        );
+        let no = AtomicBool::new(false);
+        let mut reductions = Reductions::default();
+        update(&lib, &cache, EXACT_RECALL_DISTANCE, &no, &mut reductions).unwrap();
+        assert!(
+            lib.similar_of(ids[0]).unwrap().is_empty(),
+            "two different shots were grouped"
+        );
+        let hash_of = |id: i64| {
+            lib.percep_hashes()
+                .unwrap()
+                .into_iter()
+                .find(|p| p.id == id)
+                .map(|p| p.hash)
+        };
+        let before = hash_of(ids[1]);
+
+        // A new size and mtime, so a new thumbnail key, rendered from the copy.
+        let path = lib.item(ids[1]).unwrap().unwrap().path;
+        let src = write_file(
+            &photos,
+            "b.jpg",
+            &encode(&checkered(288, 192, 0), ImageFormat::Jpeg),
+        );
+        cache
+            .generate(&src, 1, fingerprint(&path, 20, 200))
+            .unwrap();
+        lib.update_items(&[(ids[1], item_at(folder, &path, 20, 200))])
+            .unwrap();
+        lib.set_thumb_state(ids[1], ThumbState::Ready, None)
+            .unwrap();
+
+        let outcome = update(&lib, &cache, EXACT_RECALL_DISTANCE, &no, &mut reductions).unwrap();
+        assert_eq!(outcome.hashed, 1);
+        assert_eq!(
+            hash_of(ids[1]),
+            before,
+            "the copy hashed differently, so this test proves nothing about the key"
+        );
+        assert_eq!(
+            lib.similar_of(ids[0]).unwrap().len(),
+            1,
+            "the copy was not grouped: its new thumbnail was never looked at"
+        );
+    }
+
+    /// A cancelled regroup stored nothing, so it must not be remembered as an answer. Here
+    /// it is a session's first regroup, over hashes an earlier session took and groups
+    /// cleared since: remembered, it would read as "these hashes group into nothing", and
+    /// the pass after it would skip.
+    #[test]
+    fn a_cancelled_regroup_is_asked_again() {
+        let (_dir, lib, cache, _folder, ids) = a_thumbnailed_pair();
+        let no = AtomicBool::new(false);
+        update(
+            &lib,
+            &cache,
+            EXACT_RECALL_DISTANCE,
+            &no,
+            &mut Reductions::default(),
+        )
+        .unwrap();
+        lib.set_similar_groups(&[]).unwrap();
+
+        let mut reductions = Reductions::default();
+        let cancelled = update(
+            &lib,
+            &cache,
+            EXACT_RECALL_DISTANCE,
+            &AtomicBool::new(true),
+            &mut reductions,
+        )
+        .unwrap();
+        assert!(!cancelled.groups_changed);
+        assert!(lib.similar_of(ids[0]).unwrap().is_empty());
+
+        let next = update(&lib, &cache, EXACT_RECALL_DISTANCE, &no, &mut reductions).unwrap();
+        assert!(
+            next.regrouped,
+            "a cancelled regroup was remembered as an answer"
+        );
+        assert_eq!(lib.similar_of(ids[0]).unwrap().len(), 1);
+    }
+
+    /// A regroup that could not read a thumbnail answered "no" for that photo's pairs, and
+    /// stores it - a missed pair costs less than a false one. It must not be remembered as
+    /// the answer, or the pair is never found once the thumbnail is readable again: the
+    /// hashes, and so the input, are the same either side.
+    #[test]
+    fn a_regroup_missing_a_thumbnail_is_asked_again() {
+        let (dir, lib, cache, _folder, ids) = a_thumbnailed_pair();
+        let no = AtomicBool::new(false);
+        update(
+            &lib,
+            &cache,
+            EXACT_RECALL_DISTANCE,
+            &no,
+            &mut Reductions::default(),
+        )
+        .unwrap();
+        let (cached, aside) = (dir.path().join("cache"), dir.path().join("aside"));
+        std::fs::rename(&cached, &aside).unwrap();
+
+        let mut reductions = Reductions::default();
+        update(&lib, &cache, EXACT_RECALL_DISTANCE, &no, &mut reductions).unwrap();
+        assert!(
+            lib.similar_of(ids[0]).unwrap().is_empty(),
+            "the pair was confirmed without its thumbnails"
+        );
+
+        std::fs::rename(&aside, &cached).unwrap();
+        let next = update(&lib, &cache, EXACT_RECALL_DISTANCE, &no, &mut reductions).unwrap();
+        assert!(
+            next.regrouped,
+            "a regroup that could not read a thumbnail was remembered as the answer"
+        );
+        assert_eq!(lib.similar_of(ids[0]).unwrap().len(), 1);
+    }
+
+    /// The stored groups have writers besides the regroup. `update_items` clears a row's
+    /// group along with its hash, and a file that comes back as it was - its thumbnail
+    /// still cached - is hashed again to exactly the same value: the input is the one the
+    /// last regroup answered, and the groups have lost a member since.
+    #[test]
+    fn a_group_cleared_under_an_unchanged_input_is_restored() {
+        let (_dir, lib, cache, folder, ids) = a_thumbnailed_pair();
+        let no = AtomicBool::new(false);
+        let mut reductions = Reductions::default();
+        update(&lib, &cache, EXACT_RECALL_DISTANCE, &no, &mut reductions).unwrap();
+        assert_eq!(
+            lib.similar_of(ids[1]).unwrap().len(),
+            1,
+            "the pair did not group"
+        );
+
+        // `thumbnailed` gave the first photo size 10 and mtime 100: the same fingerprint, so
+        // the same thumbnail key and, once hashed, the same hash.
+        let path = lib.item(ids[0]).unwrap().unwrap().path;
+        lib.update_items(&[(ids[0], item_at(folder, &path, 10, 100))])
+            .unwrap();
+        lib.set_thumb_state(ids[0], ThumbState::Ready, None)
+            .unwrap();
+
+        let outcome = update(&lib, &cache, EXACT_RECALL_DISTANCE, &no, &mut reductions).unwrap();
+        assert_eq!(outcome.hashed, 1);
+        assert_eq!(
+            lib.similar_of(ids[1]).unwrap().len(),
+            1,
+            "the photo that came back was left out of its group"
         );
     }
 }

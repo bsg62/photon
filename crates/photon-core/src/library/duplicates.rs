@@ -304,19 +304,10 @@ mod tests {
     use crate::testutil::{new_item, seed_folder, temp_library};
     use std::path::Path;
 
-    fn plan(lib: &Library, sql: &str, params: &[&dyn rusqlite::ToSql]) -> Vec<String> {
-        let conn = lib.reader().unwrap();
-        let mut stmt = conn.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
-        stmt.query_map(params, |r| r.get::<_, String>(3))
-            .unwrap()
-            .collect::<rusqlite::Result<_>>()
-            .unwrap()
-    }
-
     #[test]
     fn the_candidate_query_groups_sizes_from_the_index() {
         let (_dir, lib) = temp_library();
-        let plan = plan(&lib, CANDIDATES_SQL, &[]);
+        let plan = lib.query_plan(CANDIDATES_SQL, &[]);
         assert!(
             plan.iter().any(|step| step.contains("items_size")),
             "expected the size index, got {plan:?}"
@@ -326,7 +317,7 @@ mod tests {
     #[test]
     fn a_photos_copies_are_found_through_the_hash_index() {
         let (_dir, lib) = temp_library();
-        let plan = plan(&lib, &copies_sql(), &[&1i64]);
+        let plan = lib.query_plan(&copies_sql(), &[&1i64]);
         assert!(
             plan.iter().any(|step| step.contains("items_content_hash")),
             "expected the hash index, got {plan:?}"
@@ -336,7 +327,7 @@ mod tests {
     #[test]
     fn the_widened_view_reaches_look_alikes_through_the_similar_index_too() {
         let (_dir, lib) = temp_library();
-        let plan = plan(&lib, &duplicate_count_sql(), &[]);
+        let plan = lib.query_plan(&duplicate_count_sql(), &[]);
         assert!(
             plan.iter().any(|step| step.contains("items_similar_group")),
             "expected the partial similar_group index, got {plan:?}"
@@ -354,8 +345,7 @@ mod tests {
     #[test]
     fn the_grid_query_also_reaches_look_alikes_through_the_similar_index() {
         let (_dir, lib) = temp_library();
-        let plan = plan(
-            &lib,
+        let plan = lib.query_plan(
             &grid_query(GRID_COLUMNS, Shown::Visible, DUPLICATE_FILTER),
             &[],
         );
@@ -751,8 +741,7 @@ mod tests {
     #[test]
     fn the_copies_view_reaches_both_halves_through_their_indexes() {
         let (_dir, lib) = temp_library();
-        let plan = plan(
-            &lib,
+        let plan = lib.query_plan(
             &grid_query(GRID_COLUMNS, Shown::Visible, COPIES_FILTER),
             &[&1i64, &vec![7u8; 16]],
         );

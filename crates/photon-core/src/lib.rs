@@ -8,6 +8,7 @@ pub mod error;
 pub mod export;
 pub mod grid;
 pub mod iptc;
+mod jpeg;
 pub mod keywords;
 pub mod library;
 pub mod media;

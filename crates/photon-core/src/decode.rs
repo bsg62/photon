@@ -1,5 +1,6 @@
 use crate::Result;
 use crate::avif;
+use crate::jpeg;
 use image::{DynamicImage, ImageFormat, ImageReader, imageops::FilterType};
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
@@ -41,7 +42,14 @@ pub fn decode_image(path: &Path) -> Result<DynamicImage> {
 
 /// Stored dimensions from a reader at any position (it is rewound first), and whether the
 /// file is an AVIF, whose orientation lives in its container rather than its EXIF. A header
-/// read, not a decode, as `describe()` needs.
+/// read, not a decode, as `describe()` needs - except for an AVIF, whose container is
+/// read to the end before it is parsed.
+///
+/// A JPEG's size comes from `jpeg::dimensions`, not from `image`, whose JPEG decoder reads
+/// the whole file into memory before parsing a byte of it (`JpegDecoder::new` in image
+/// 0.25 starts with `read_to_end`). For a 20 MB photo on a network share or a spinning
+/// disk that read was nearly all an import paid per photo, and a metadata backfill paid it
+/// for dimensions it does not even store.
 pub(crate) fn dimensions<R: BufRead + Seek>(reader: &mut R) -> (Option<(u32, u32)>, bool) {
     if reader.seek(SeekFrom::Start(0)).is_err() {
         return (None, false);
@@ -56,6 +64,18 @@ pub(crate) fn dimensions<R: BufRead + Seek>(reader: &mut R) -> (Option<(u32, u32
             .ok()
             .and_then(|_| avif::avif_dimensions(&bytes));
         return (dims, true);
+    }
+    if reader.fill_buf().is_ok_and(jpeg::is_jpeg) {
+        if let Some(dims) = jpeg::dimensions(reader) {
+            return (Some(dims), false);
+        }
+        // The header walk gives up on some streams zune reads anyway - stray bytes between
+        // segments, which zune steps over, are one - so a JPEG it refuses still goes to
+        // `image` below: an odd file gets its size at the old cost of a full read, rather
+        // than no size at all.
+        if reader.seek(SeekFrom::Start(0)).is_err() {
+            return (None, false);
+        }
     }
     let dims = ImageReader::new(reader)
         .with_guessed_format()
@@ -109,7 +129,9 @@ pub fn decode_oriented(path: &Path, orientation: u8, max_edge: u32) -> Result<Dy
 mod tests {
     use super::*;
     use crate::Error;
-    use crate::testutil::{avif_fixture, bmp_bytes, jpeg_bytes, tiff_bytes, write_file};
+    use crate::testutil::{
+        avif_fixture, bmp_bytes, counted, jpeg_bytes, jpeg_with_segments, tiff_bytes, write_file,
+    };
     use image::{Rgba, RgbaImage};
     use std::fs::File;
     use std::io::BufReader;
@@ -212,6 +234,45 @@ mod tests {
         assert_eq!((dims, avif), (Some((40, 20)), false));
         let avif = write_file(dir.path(), "really-an-avif.jpg", &avif_fixture("mono.avif"));
         assert_eq!(decode_image(&avif).unwrap().width(), 64);
+    }
+
+    /// Sizing a JPEG reads its headers, not the file: behind a megabyte appended after the
+    /// end-of-image marker, `image`'s decoder read every byte of it to learn two numbers.
+    #[test]
+    fn a_jpeg_is_sized_from_its_headers_without_reading_the_rest() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut bytes = jpeg_bytes(40, 20);
+        bytes.resize(bytes.len() + 1024 * 1024, 0x5A);
+        let path = write_file(dir.path(), "a.jpg", &bytes);
+        let mut reader = counted(&path);
+        assert_eq!(dimensions(&mut reader), (Some((40, 20)), false));
+        let read = reader.get_ref().read;
+        assert!(read < 64 * 1024, "read {read} of {} bytes", bytes.len());
+    }
+
+    /// A JPEG the header walk gives up on still gets its size from `image`: zune steps over
+    /// stray bytes between segments, where the walk stops. A truncated one gets none from
+    /// either, and says so rather than failing.
+    #[test]
+    fn a_jpeg_the_header_walk_refuses_is_sized_by_image() {
+        let dir = tempfile::tempdir().unwrap();
+        // Two stray bytes after a comment segment (SOI, then FF FE 00 03 'x'), not straight
+        // after SOI, where they would stop the file starting the way a JPEG is recognised.
+        let jpeg = jpeg_with_segments(40, 20, &[(0xFE, b"x")]);
+        let stray = [&jpeg[..7], &[0x00, 0x00], &jpeg[7..]].concat();
+        assert_eq!(
+            jpeg::dimensions(&mut std::io::Cursor::new(&stray)),
+            None,
+            "the walk refuses it"
+        );
+        let path = write_file(dir.path(), "stray.jpg", &stray);
+        let (dims, avif) = dimensions(&mut BufReader::new(File::open(&path).unwrap()));
+        assert_eq!((dims, avif), (Some((40, 20)), false));
+
+        // Cut inside the JFIF segment, ahead of the frame header.
+        let path = write_file(dir.path(), "cut.jpg", &jpeg[..20]);
+        let (dims, avif) = dimensions(&mut BufReader::new(File::open(&path).unwrap()));
+        assert_eq!((dims, avif), (None, false));
     }
 
     /// A broken AVIF is a source defect (the failed-thumbnail placeholder), not an I/O error

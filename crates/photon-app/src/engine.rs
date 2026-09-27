@@ -3,7 +3,7 @@
 
 use crate::events::{Events, ExportProgress, FolderStatus, LibraryChanged, ScanProgressEvent};
 use crate::watch::{WatcherService, join_within};
-use parking_lot::{Mutex, RwLock};
+use parking_lot::{Mutex, MutexGuard, RwLock};
 use photon_core::{
     Error, Result,
     edit::Edit,
@@ -151,18 +151,23 @@ pub struct Engine {
     /// (dropping this `Arc`) before or as part of stopping it, so it never outlives an
     /// explicit stop.
     watcher: Mutex<Option<Arc<WatcherService>>>,
-    /// Serialises `set_star`. Tauri runs async commands concurrently on a worker pool, and
-    /// two stars into one folder are two read-modify-writes of the same INI: unserialised,
-    /// the second read would miss the first write and the rename would drop it. Held across
-    /// the database write too, so the rows land in the order the file did.
+    /// Serialises `set_star` and `set_stars`. Tauri runs async commands concurrently on a
+    /// worker pool, and two stars into one folder are two read-modify-writes of the same
+    /// INI: unserialised, the second read would miss the first write and the rename would
+    /// drop it. Held across the database write too, so the rows land in the order the file
+    /// did - and no further. The grid rebuild runs after it is released: rebuilds order
+    /// themselves (`publish_if_current`), and held across one, the next star waited out the
+    /// whole of the previous star's rebuild before it could even write its file.
     ini_write: Mutex<()>,
-    /// Serialises every write of a photo's edit; see `rotate_item`. A leaf lock: taken
-    /// before the library and view locks and never while holding them.
+    /// Serialises every write of a photo's edit; see `rotate_item`. Held from the read of
+    /// the edit to its write and released before the rebuild, as `ini_write` is. Taken
+    /// before the library's locks and never while holding any other.
     edit_write: Mutex<()>,
     /// Held by the one thread running the post-scan hashing passes; see `hash_after_scan`.
-    /// It holds the look-alike pass's thumbnail reductions, which live here rather than in
-    /// the pass because the pass runs again after every scan and confirms the same pairs
-    /// again; see `photon_core::similar::Reductions`.
+    /// It holds what the look-alike pass keeps between passes - its thumbnail reductions,
+    /// and what its last regroup was asked, which is how a pass with nothing new skips the
+    /// regroup - and lives here rather than in the pass because the pass runs again after
+    /// every scan; see `photon_core::similar::Reductions`.
     hashing: Mutex<photon_core::similar::Reductions>,
     /// Set by every scan that ends, cleared by the pass as it starts a round. A scan that
     /// finds the pass already running leaves this behind instead of starting a second one.
@@ -623,7 +628,7 @@ impl Engine {
     /// A photo the scanner has marked missing is refused: its folder may be an unmounted
     /// drive, and the INI photon would create there would be the only thing on it.
     pub fn set_star(&self, id: i64, starred: bool) -> Result<()> {
-        let _serialised = self.ini_write.lock();
+        let serialised = self.ini_write.lock();
         let item = self.lib.item(id)?.ok_or(Error::NotFound(id))?;
         if item.missing_since.is_some() {
             return Err(Error::NotFound(id));
@@ -638,6 +643,10 @@ impl Engine {
             source,
         })?;
         self.lib.set_ratings(&[(id, u8::from(starred))])?;
+        // The file and then its row are written, which is all the lock orders. The rebuild
+        // snapshots after this commit, on this thread, so it shows the star with no lock
+        // held; see `ini_write`.
+        drop(serialised);
         self.refresh_grid()
     }
 
@@ -657,7 +666,7 @@ impl Engine {
     /// not a failure of the other eleven. `set_star`, which acts on the photo the user is
     /// looking at, still refuses them - see `live_item` for why the two differ.
     pub fn set_stars(&self, ids: &[i64], starred: bool) -> Result<usize> {
-        let _serialised = self.ini_write.lock();
+        let serialised = self.ini_write.lock();
         let mut by_dir: BTreeMap<PathBuf, Vec<(i64, String)>> = BTreeMap::new();
         for &id in ids {
             let Some(item) = self.lib.item(id)? else {
@@ -704,6 +713,8 @@ impl Engine {
             };
         }
         self.lib.set_ratings(&ratings)?;
+        // Every file, then every row: the lock's work is done, as in `set_star`.
+        drop(serialised);
         self.refresh_grid()?;
         Ok(ratings.len())
     }
@@ -903,11 +914,11 @@ impl Engine {
     /// the viewer name a thumbnail by that key. An edit identical to the one in place does
     /// neither.
     pub fn set_item_edit(self: &Arc<Self>, id: i64, edit: Edit) -> Result<()> {
-        let _serialised = self.edit_write.lock();
-        self.write_edit(id, edit)
+        self.write_edit(self.edit_write.lock(), id, edit)
     }
 
-    /// `set_item_edit` for a caller already holding `edit_write`.
+    /// `set_item_edit` for a caller holding `edit_write`, who hands the guard over so the
+    /// lock ends at the commit rather than when the caller returns.
     ///
     /// The pass request is not about the edited row's own hash - that is cleared by the
     /// write and picked up whenever a pass next runs. It is about the row's former
@@ -916,7 +927,12 @@ impl Engine {
     /// keeps the view honest meanwhile; this is what makes the grouping right again, and
     /// soon, because an edit is not a file change and so no scan follows it to run a pass
     /// of its own.
-    fn write_edit(self: &Arc<Self>, id: i64, edit: Edit) -> Result<()> {
+    fn write_edit(
+        self: &Arc<Self>,
+        serialised: MutexGuard<'_, ()>,
+        id: i64,
+        edit: Edit,
+    ) -> Result<()> {
         let item = self.lib.item(id)?.ok_or(Error::NotFound(id))?;
         if item.missing_since.is_some() {
             return Err(Error::NotFound(id));
@@ -925,7 +941,13 @@ impl Engine {
         if item.kind != MediaKind::Image {
             return Err(Error::NotAPhoto(id));
         }
-        if self.lib.set_item_edit(id, edit)? {
+        let changed = self.lib.set_item_edit(id, edit)?;
+        // Committed: the next turn reads this edit to build on, which is all the lock
+        // serialises. Nothing below reads the edit to write one, and the rebuild snapshots
+        // after the commit, on this thread, so it shows the edit with no lock held. Held
+        // across it, a second press of R waited out this one's whole rebuild.
+        drop(serialised);
+        if changed {
             self.thumbs.prioritize(&[id], Priority::Visible);
             self.refresh_grid()?;
             self.request_similar_pass();
@@ -939,12 +961,12 @@ impl Engine {
     /// starting edit would come out as one turn. `set_item_edit` takes the same lock, or an
     /// "Original" landing between this read and this write would be turned back on.
     pub fn rotate_item(self: &Arc<Self>, id: i64, clockwise: bool) -> Result<()> {
-        let _serialised = self.edit_write.lock();
+        let serialised = self.edit_write.lock();
         let item = self.lib.item(id)?.ok_or(Error::NotFound(id))?;
         if item.missing_since.is_some() {
             return Err(Error::NotFound(id));
         }
-        self.write_edit(id, item.edit.turned(clockwise))
+        self.write_edit(serialised, id, item.edit.turned(clockwise))
     }
 
     /// `NotFound` for an id that has been purged or marked missing, so a stale viewer gets
@@ -1491,13 +1513,26 @@ impl Engine {
         {
             tracing::warn!(%err, "grid refresh failed");
         }
+        // A scan that found its root's drive still away: above all the 30-second poll of an
+        // unplugged drive, but also the startup scan of one, or the watcher's scan of a root
+        // already marked gone. It read no file and wrote no row, and a root going offline
+        // gives neither sweep below work - both look only at online folders - so they would
+        // find exactly what the last real scan left them, and pay for it twice a minute for
+        // as long as the drive stays unplugged, the look-alike regroup reading every hash in
+        // the library each time. What they would catch waits for the next real scan
+        // instead, which is what a library with no offline root does anyway. Only while it
+        // *stays* offline: the scan that flips the flag either way changes which folders
+        // both sweeps work on, so it runs them.
+        let still_offline = !online_changed && result.as_ref().is_ok_and(|r| r.offline);
         // Outside the guard, and the one full sweep a scan makes. New and replaced items
         // were queued as they were indexed (`ScanReporter::indexed`); this catches what
         // that cannot: an item whose render failed transiently and sits `Pending` with
         // nothing else to retry it, and a drive that came back online, whose items the
         // sweep skipped while it was away. Leaving it inside the guard meant such an item
-        // waited for an unrelated change, or a restart.
-        if let Err(err) = self.thumbs.enqueue_pending() {
+        // waited for an unrelated change, or a restart. It runs after every scan but one
+        // that found its root still offline (`still_offline`), which can have caused
+        // neither.
+        if !still_offline && let Err(err) = self.thumbs.enqueue_pending() {
             tracing::warn!(%err, "could not queue pending thumbnails");
         }
         if let Some(folder) = folder {
@@ -1511,7 +1546,7 @@ impl Engine {
         // After the scan has reported done, not before: the pass reads files, and on a
         // library with many duplicates on a slow drive that is minutes during which the
         // status bar should not claim the folder is still being scanned.
-        if !cancelled {
+        if !cancelled && !still_offline {
             self.hash_after_scan(&cancel);
         }
     }
@@ -1539,9 +1574,15 @@ impl Engine {
     /// Here rather than in the scanner because a duplicate is a fact about the whole
     /// library, not about the root or subtree one scan walked - and because `walk_tree` has
     /// two callers, which a pass wired into the scanner has to remember and this does not.
-    /// It runs after *every* scan, changed rows or not: the first scan after the upgrade
-    /// that added the column touches nothing and still has the whole library to hash. With
-    /// nothing to do it is one indexed query.
+    /// It runs after every scan, changed rows or not: the first scan after the upgrade that
+    /// added the column touches nothing and still has the whole library to hash, and a
+    /// thumbnail that became ready since the last pass is hashed only when some later pass
+    /// runs. The one exception is a scan that finds its root still offline (`run_scan`'s
+    /// `still_offline`), above all the poll of an unplugged drive: it read no file and wrote
+    /// no row, so it leaves the pass nothing the last real scan did not, and the poll
+    /// recurs every 30 seconds for as long as the drive is away. With nothing to do the pass is its two candidate queries, one
+    /// read of every perceptual hash and one of the stored groups: the regroup itself is
+    /// skipped when neither has moved since the last one (`photon_core::similar::update`).
     ///
     /// One guard covers both passes, in order: a photo is a look-alike candidate only once
     /// its thumbnail exists, and nothing in the duplicate pass changes that, so the order is
@@ -1673,7 +1714,7 @@ impl Drop for TestScanSlot {
 mod tests {
     use super::*;
     use crate::events::Recorded;
-    use crate::testutil::{fixture, jpeg, jpeg_pattern};
+    use crate::testutil::{Fixture, fixture, jpeg, jpeg_pattern};
     use photon_core::media::ThumbState;
 
     /// An edit travels the whole refresh chain: the row, a new grid version, and a tile
@@ -1704,6 +1745,161 @@ mod tests {
             f.engine.rotate_item(9_999, true),
             Err(Error::NotFound(9_999))
         ));
+    }
+
+    /// A sink that parks the first rebuild to publish after `arm` inside its
+    /// `library_changed`, until the test lets it go. That is the last step of
+    /// `refresh_grid`, run on the thread that committed the change, and parked there the
+    /// thread holds the engine's `refresh` lock and whatever its caller still holds: a
+    /// second rebuild gets as far as its own publish, and a second write needing no lock the
+    /// first still holds finishes outright.
+    #[derive(Default)]
+    struct ParkedPublish {
+        armed: AtomicBool,
+        channels: Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
+    }
+
+    /// The test's ends of an armed `ParkedPublish`. Dropping it lets the rebuild go, so an
+    /// assertion that fails while one is parked does not leave its thread parked for good.
+    struct Parked {
+        parked: std::sync::mpsc::Receiver<()>,
+        _release: std::sync::mpsc::Sender<()>,
+    }
+
+    impl ParkedPublish {
+        fn arm(&self) -> Parked {
+            let (parked_tx, parked) = std::sync::mpsc::channel();
+            let (release, release_rx) = std::sync::mpsc::channel();
+            *self.channels.lock() = Some((parked_tx, release_rx));
+            self.armed.store(true, Ordering::SeqCst);
+            Parked {
+                parked,
+                _release: release,
+            }
+        }
+    }
+
+    impl Events for ParkedPublish {
+        fn library_changed(&self, _: LibraryChanged) {
+            if self.armed.swap(false, Ordering::SeqCst) {
+                let (parked, release) = self.channels.lock().take().unwrap();
+                let _ = parked.send(());
+                // Nothing is ever sent: this returns when the test drops its `Parked`.
+                let _ = release.recv();
+            }
+        }
+        fn scan_progress(&self, _: ScanProgressEvent) {}
+        fn folder_status(&self, _: FolderStatus) {}
+        fn export_progress(&self, _: ExportProgress) {}
+    }
+
+    /// An engine over `f`'s photos, scanned, whose rebuilds `sink` can park. Nothing else
+    /// rebuilds once the scan is waited for - no watcher runs in a test - so the first
+    /// rebuild after `arm` is the one the test starts.
+    fn parkable_engine(f: &Fixture, sink: &Arc<ParkedPublish>) -> Arc<Engine> {
+        let engine = Engine::open(f.config(), sink.clone()).unwrap();
+        engine.add_folder(&f.photos).unwrap();
+        engine.wait_for_scans();
+        engine
+    }
+
+    /// Runs `first` on a thread and parks its rebuild, runs `second` on another, and
+    /// reports whether `landed` came true while `first` was still parked; then lets the
+    /// rebuild go and requires both calls to have succeeded.
+    ///
+    /// `landed` is polled rather than `second` joined: the parked rebuild holds `refresh`,
+    /// so the second call's own rebuild cannot publish and the call cannot return - only
+    /// its write can land. Ten seconds is generous on purpose: when the code is right the
+    /// answer arrives in milliseconds, and only a failing run waits the whole time.
+    fn lands_while_parked<A: Send + 'static, B: Send + 'static>(
+        sink: &ParkedPublish,
+        first: impl FnOnce() -> Result<A> + Send + 'static,
+        second: impl FnOnce() -> Result<B> + Send + 'static,
+        landed: impl Fn() -> bool,
+    ) -> bool {
+        let parked = sink.arm();
+        let first = std::thread::spawn(first);
+        parked
+            .parked
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the first call's rebuild reached its publish");
+        let second = std::thread::spawn(second);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut in_time = landed();
+        while !in_time && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+            in_time = landed();
+        }
+        drop(parked);
+        first.join().unwrap().unwrap();
+        second.join().unwrap().unwrap();
+        in_time
+    }
+
+    /// `ini_write` orders the INI and the rating, not the rebuild after them: the next star
+    /// must not wait out the last one's rebuild, which is ~200ms at 300k photos. Each round
+    /// parks one star in its publish and requires the next to write its file and its row
+    /// meanwhile - once with `set_star` parked and once with `set_stars`, since each
+    /// releases the lock itself. Let go, the rebuilds still show every star.
+    #[test]
+    fn a_star_does_not_wait_for_the_previous_stars_rebuild() {
+        let img = jpeg(16, 16);
+        let f = fixture(&[
+            ("a.jpg", &img),
+            ("b.jpg", &img),
+            ("c.jpg", &img),
+            ("d.jpg", &img),
+        ]);
+        let sink = Arc::new(ParkedPublish::default());
+        let engine = parkable_engine(&f, &sink);
+        let ids: Vec<i64> = engine.grid().1.rows(0, 4).iter().map(|e| e.id).collect();
+        let star = |id: i64| {
+            let engine = engine.clone();
+            move || engine.set_star(id, true)
+        };
+        let star_all = |id: i64| {
+            let engine = engine.clone();
+            move || engine.set_stars(&[id], true)
+        };
+        let starred = |id| engine.lib.item(id).unwrap().unwrap().rating == Some(1);
+
+        assert!(
+            lands_while_parked(&sink, star(ids[0]), star_all(ids[1]), || starred(ids[1])),
+            "a star waited for the rebuild of the `set_star` before it"
+        );
+        assert!(
+            lands_while_parked(&sink, star_all(ids[2]), star(ids[3]), || starred(ids[3])),
+            "a star waited for the rebuild of the `set_stars` before it"
+        );
+
+        assert_eq!(
+            std::fs::read(f.photos.join(".picasa.ini")).unwrap(),
+            b"[a.jpg]\r\nstar=yes\r\n[b.jpg]\r\nstar=yes\r\n\
+              [c.jpg]\r\nstar=yes\r\n[d.jpg]\r\nstar=yes\r\n"
+        );
+        assert!(engine.grid().1.rows(0, 4).iter().all(|e| e.starred));
+    }
+
+    /// The same for an edit: two presses of R on one photo, as in the viewer. The second
+    /// turn must land while the first's rebuild is parked.
+    #[test]
+    fn a_turn_does_not_wait_for_the_previous_turns_rebuild() {
+        let f = fixture(&[("a.jpg", &jpeg(40, 20))]);
+        let sink = Arc::new(ParkedPublish::default());
+        let engine = parkable_engine(&f, &sink);
+        let id = engine.grid().1.rows(0, 1)[0].id;
+        let turn = || {
+            let engine = engine.clone();
+            move || engine.rotate_item(id, true)
+        };
+        let turns = || engine.lib.item(id).unwrap().unwrap().edit.turns;
+
+        assert!(
+            lands_while_parked(&sink, turn(), turn(), || turns() == 2),
+            "the second turn waited for the first turn's rebuild"
+        );
+        // Each turn asked for a look-alike pass; stop it before the fixture's directory goes.
+        engine.shutdown();
     }
 
     /// The hashing pass is wired into the end of a scan, and its result reaches everything
@@ -2219,6 +2415,94 @@ mod tests {
             version,
             "a scan that changed nothing must not rebuild the grid"
         );
+    }
+
+    /// The same 30-second poll must not run the two library-wide sweeps either: a whole
+    /// library's look-alike regroup, and a sort of every pending thumbnail, twice a minute
+    /// for as long as a drive stays unplugged, having read nothing.
+    ///
+    /// Seen through work waiting in *another*, online root, which both sweeps would do: two
+    /// files of one size and different bytes (candidates for the byte-identical hash), and
+    /// thumbnails never queued. They are indexed by the scanner directly, not through the
+    /// engine, so no pass and no queue has seen them before the poll runs. The last scan
+    /// shows the work was there to be done, so "still undone" is the poll's doing.
+    #[test]
+    fn a_poll_of_a_root_still_offline_runs_no_post_scan_sweep() {
+        let f = fixture(&[("a.jpg", &jpeg(16, 16))]);
+        let away = f.add_photos();
+        std::fs::remove_dir_all(&f.photos).unwrap();
+        f.engine.start_scan(away.clone());
+        f.engine.wait_for_scans();
+        let away = f
+            .engine
+            .lib
+            .watched_folders()
+            .unwrap()
+            .into_iter()
+            .find(|w| w.id == away.id)
+            .unwrap();
+        assert!(!away.online);
+
+        let other = f.dir.path().join("more-photos");
+        std::fs::create_dir_all(&other).unwrap();
+        // Different bytes after the end-of-image marker: one size, two contents, and both
+        // still decode, so their thumbnails can be rendered.
+        for (name, tail) in [("one.jpg", b"one"), ("two.jpg", b"two")] {
+            let mut bytes = jpeg(16, 16);
+            bytes.extend_from_slice(tail);
+            std::fs::write(other.join(name), bytes).unwrap();
+        }
+        let online = f
+            .engine
+            .lib
+            .add_watched_folder(&other, f.engine.excluded())
+            .unwrap();
+        photon_core::scanner::scan_watched(
+            &f.engine.lib,
+            &online,
+            now_ms(),
+            &ScanOptions::default(),
+            &mut photon_core::scanner::progress_only(|_| {}),
+        )
+        .unwrap();
+        let waiting: Vec<i64> = f
+            .engine
+            .lib
+            .hash_candidates()
+            .unwrap()
+            .iter()
+            .map(|c| c.id)
+            .collect();
+        assert_eq!(waiting.len(), 2, "the fixture left nothing to hash");
+
+        f.engine.start_scan(away);
+        f.engine.wait_for_scans();
+        f.engine.thumbs.wait_idle();
+
+        assert_eq!(
+            f.engine.lib.hash_candidates().unwrap().len(),
+            2,
+            "a poll of a root still offline ran the duplicate pass"
+        );
+        for &id in &waiting {
+            assert_eq!(
+                f.engine.lib.item(id).unwrap().unwrap().thumb_state,
+                ThumbState::Pending,
+                "a poll of a root still offline swept the pending thumbnails"
+            );
+        }
+
+        // Both are real work a real scan does: the fixture is not merely unhashable.
+        f.engine.start_scan(online);
+        f.engine.wait_for_scans();
+        f.engine.thumbs.wait_idle();
+        assert!(f.engine.lib.hash_candidates().unwrap().is_empty());
+        for &id in &waiting {
+            assert_eq!(
+                f.engine.lib.item(id).unwrap().unwrap().thumb_state,
+                ThumbState::Ready
+            );
+        }
     }
 
     /// THE regression test for the star-only-scan bug: starring a photo in Picasa never
