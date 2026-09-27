@@ -529,10 +529,19 @@ mod tests {
                 s.set_read_timeout(Some(std::time::Duration::from_secs(20)))
                     .unwrap();
                 let _ = write!(s, "{junk}\r\n");
-                // Every one of them is answered - by tiny_http or by `serve` - and closed.
+                // Every one of them is answered - by tiny_http or by `serve` - and closed. A
+                // reset counts as closed: the server may answer and hang up before reading
+                // the rest of what was sent, and macOS then resets the connection rather than
+                // ending it, so the read fails with ECONNRESET where Linux reads to the end
+                // (it did, intermittently, on macOS CI). What the test is about - the server
+                // still serving afterwards - is the assertion after the loop. A server that
+                // never answered still fails here, on the read timeout.
                 let mut sink = Vec::new();
-                s.read_to_end(&mut sink)
-                    .unwrap_or_else(|err| panic!("no answer to {junk:.60?}: {err}"));
+                if let Err(err) = s.read_to_end(&mut sink)
+                    && err.kind() != std::io::ErrorKind::ConnectionReset
+                {
+                    panic!("no answer to {junk:.60?}: {err}");
+                }
             }
         }
         assert_eq!(get(port, &path, "").0, 200);
