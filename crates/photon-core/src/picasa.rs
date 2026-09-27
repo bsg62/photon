@@ -26,6 +26,9 @@ pub const MAX_INI: u64 = 8 * 1024 * 1024;
 /// The name photon creates when a folder has no INI yet: the one current Picasa writes.
 const NEW_INI: &str = ".picasa.ini";
 
+/// The name older Picasa versions wrote.
+const OLD_INI: &str = "Picasa.ini";
+
 /// One face Picasa recorded on a photo: the contact's hash and the rectangle as fractions
 /// of the displayed image's width and height, `0.0..=1.0`, left/top/right/bottom.
 #[derive(Clone, Debug, PartialEq)]
@@ -71,11 +74,110 @@ pub fn read_folder(dir: &Path) -> Option<FolderIni> {
     let Some(path) = ini_path(dir).ok()? else {
         return Some(FolderIni::default());
     };
-    let (bytes, meta) = read_capped(&path).ok()?;
-    Some(FolderIni {
+    read_ini(&path).ok()
+}
+
+/// Reads and parses one INI already chosen by name, refusing what `read_capped` refuses.
+fn read_ini(path: &Path) -> io::Result<FolderIni> {
+    let (bytes, meta) = read_capped(path)?;
+    Ok(FolderIni {
         modified_ms: crate::scanner::mtime_ms(&meta),
         ..parse_folder(&String::from_utf8_lossy(&bytes))
     })
+}
+
+/// Which of the two INI names a directory entry carries.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum IniName {
+    /// `.picasa.ini`, which wins when both exist.
+    Dotted,
+    /// `Picasa.ini`, what older versions wrote.
+    Plain,
+}
+
+/// Classifies a file name as one of the two INI names, in any casing.
+///
+/// The one place the names are matched, shared by `ini_path` and the scanner's walk, so the
+/// two cannot disagree about which file is a folder's INI. ASCII case folding gives the same
+/// answer `to_lowercase` would, without allocating for every entry the walk passes: the only
+/// non-ASCII character Unicode lowercases to plain ASCII is the Kelvin sign (to `k`), and
+/// neither name has a `k`.
+pub(crate) fn ini_name_of(name: &std::ffi::OsStr) -> Option<IniName> {
+    let name = name.to_str()?;
+    if name.eq_ignore_ascii_case(".picasa.ini") {
+        Some(IniName::Dotted)
+    } else if name.eq_ignore_ascii_case("picasa.ini") {
+        Some(IniName::Plain)
+    } else {
+        None
+    }
+}
+
+/// The INI entries one listing of a directory found: each name's path, and whether the
+/// entry is a regular file by its own type, which does not follow a link.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct IniListing {
+    dotted: Option<(PathBuf, bool)>,
+    plain: Option<(PathBuf, bool)>,
+}
+
+impl IniListing {
+    /// Records one entry `ini_name_of` classified as `name`.
+    pub(crate) fn record(&mut self, name: IniName, path: PathBuf, is_file: bool) {
+        let slot = match name {
+            IniName::Dotted => &mut self.dotted,
+            IniName::Plain => &mut self.plain,
+        };
+        *slot = Some((path, is_file));
+    }
+
+    /// The INI to read, by `ini_path`'s rules: the dotted name wins, the two are never
+    /// merged, and the winner must be a regular file.
+    fn chosen(&self) -> io::Result<Option<PathBuf>> {
+        match self.dotted.as_ref().or(self.plain.as_ref()) {
+            Some((path, true)) => Ok(Some(path.clone())),
+            Some((path, false)) => Err(not_a_regular_file(path)),
+            None => Ok(None),
+        }
+    }
+}
+
+/// [`read_folder`] for a directory the caller has already listed in full, without listing
+/// it a second time: on a network share that second listing is a round trip per folder.
+/// `listing` is what the caller's listing found - empty when it found no INI - and the
+/// answer means exactly what `read_folder`'s does.
+///
+/// The listing is older than this call (a scan's walk lists every folder before the pass
+/// that reads their INIs), so it is checked rather than trusted:
+/// - an INI it saw that has gone since falls back to `read_folder`, which sees the folder
+///   as it is now;
+/// - when it saw no INI, the two names photon and Picasa write are probed. `set_star` during
+///   a long scan creates `.picasa.ini` after the walk has passed its folder, and taking the
+///   stale "no INI" as the answer would clear the star the user just set. Anything found,
+///   or a probe that cannot tell, falls back to `read_folder`;
+/// - when it saw only `Picasa.ini`, `.picasa.ini` is probed the same way, since a dotted INI
+///   written since would win over it.
+pub(crate) fn read_folder_listed(dir: &Path, listing: &IniListing) -> Option<FolderIni> {
+    let absent = |name: &str| {
+        matches!(
+            fs::symlink_metadata(dir.join(name)),
+            Err(e) if e.kind() == io::ErrorKind::NotFound
+        )
+    };
+    let path = match listing.chosen() {
+        Err(_) => return None,
+        Ok(None) if absent(NEW_INI) && absent(OLD_INI) => return Some(FolderIni::default()),
+        Ok(None) => return read_folder(dir),
+        Ok(Some(path)) => path,
+    };
+    if listing.dotted.is_none() && !absent(NEW_INI) {
+        return read_folder(dir);
+    }
+    match read_ini(&path) {
+        Ok(ini) => Some(ini),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => read_folder(dir),
+        Err(_) => None,
+    }
 }
 
 /// The starred file names in one directory, lowercased. See [`read_folder`] for what
@@ -161,29 +263,33 @@ pub fn ini_name(dir: &Path) -> String {
 /// `Err` is what makes the reader leave the folder's stars alone and the writer fail
 /// loudly, where "no INI" would clear every star on the next scan.
 fn ini_path(dir: &Path) -> io::Result<Option<PathBuf>> {
-    let mut dotted = None;
-    let mut plain = None;
+    #[cfg(test)]
+    LISTINGS.with(|n| n.set(n.get() + 1));
+    let mut listing = IniListing::default();
     for entry in fs::read_dir(dir)? {
         // A mid-iteration error here must not be read as "no INI in this directory": that
         // would surface as `Some(empty)` and the reader would clear real stars on it.
         let entry = entry?;
-        let name = entry.file_name();
-        let Some(name) = name.to_str() else {
+        let Some(name) = ini_name_of(&entry.file_name()) else {
             continue;
         };
-        let slot = match name.to_lowercase().as_str() {
-            ".picasa.ini" => &mut dotted,
-            "picasa.ini" => &mut plain,
-            _ => continue,
-        };
         // `DirEntry::file_type` does not follow a symlink, so a link reads as a link here.
-        *slot = Some((entry.path(), entry.file_type()?.is_file()));
+        listing.record(name, entry.path(), entry.file_type()?.is_file());
     }
-    match dotted.or(plain) {
-        Some((path, true)) => Ok(Some(path)),
-        Some((path, false)) => Err(not_a_regular_file(&path)),
-        None => Ok(None),
-    }
+    listing.chosen()
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many directories `ini_path` has listed on this thread, for the scanner's tests
+    /// that show the Picasa pass does not list again what the walk already listed.
+    static LISTINGS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// How many directories `ini_path` has listed on this thread so far.
+#[cfg(test)]
+pub(crate) fn listings_for_test() -> usize {
+    LISTINGS.with(|n| n.get())
 }
 
 fn not_a_regular_file(path: &Path) -> io::Error {
