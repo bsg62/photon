@@ -73,6 +73,8 @@ export interface GridInfo {
   copiesOf: CopiesOf | null;
 }
 export interface GridRows { version: number; rows: GridEntry[] }
+/** Mirrors `commands::FolderIds`: one folder's photos, and the index version they are of. */
+export interface FolderIds { version: number; ids: number[] }
 /** A named Picasa face; the rectangle is fractions of the displayed (oriented) image. */
 export interface ItemFace { hash: string; name: string; left: number; top: number; right: number; bottom: number }
 export interface ViewerItem {
@@ -202,6 +204,7 @@ export const api = {
   gridInfo: () => invoke<GridInfo>('grid_info'),
   gridRows: (offset: number, count: number) => invoke<GridRows>('grid_rows', { offset, count }),
   gridOffsetOfFolder: (folderId: number) => invoke<number | null>('grid_offset_of_folder', { folderId }),
+  gridFolderIdsAt: (offset: number) => invoke<FolderIds | null>('grid_folder_ids_at', { offset }),
   /** Where an item sits in the current grid, or null if this view no longer holds it. The
    *  viewer uses it to re-find the photo it is showing after the index is rebuilt. */
   gridOffsetOfItem: (itemId: number) => invoke<number | null>('grid_offset_of_item', { itemId }),

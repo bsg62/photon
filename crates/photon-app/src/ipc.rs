@@ -88,6 +88,11 @@ pub fn grid_rows(engine: Eng<'_>, offset: usize, count: usize) -> commands::Grid
 }
 
 #[tauri::command(async)]
+pub fn grid_folder_ids_at(engine: Eng<'_>, offset: usize) -> Option<commands::FolderIds> {
+    commands::grid_folder_ids_at(&engine, offset)
+}
+
+#[tauri::command(async)]
 pub fn grid_offset_of_folder(engine: Eng<'_>, folder_id: i64) -> Option<usize> {
     commands::grid_offset_of_folder(&engine, folder_id)
 }

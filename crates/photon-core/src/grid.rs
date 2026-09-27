@@ -260,6 +260,20 @@ impl GridIndex {
         }
     }
 
+    /// The photos of the folder the photo at `offset` belongs to, in grid order; `None` past
+    /// the end. What Ctrl+A selects in All under a flat sort, where the folder's photos are
+    /// scattered through the run rather than a section a range could name.
+    pub fn folder_ids_at(&self, offset: usize) -> Option<Vec<i64>> {
+        let folder_id = self.entries.get(offset)?.folder_id;
+        Some(
+            self.entries
+                .iter()
+                .filter(|e| e.folder_id == folder_id)
+                .map(|e| e.id)
+                .collect(),
+        )
+    }
+
     pub fn position_of(&self, id: i64) -> Option<usize> {
         self.positions.get(&id).copied()
     }
@@ -403,6 +417,23 @@ mod tests {
         let folders = GridIndex::build(rows, Layout::Folders);
         assert_eq!(folders.offset_of_folder(20), Some(0));
         assert_eq!(folders.offset_of_folder(10), Some(2));
+    }
+
+    #[test]
+    fn a_folders_ids_are_found_wherever_the_flat_run_scattered_them() {
+        let grid = GridIndex::build(
+            vec![
+                entry_at(1, 20, 500),
+                entry_at(2, 10, 400),
+                entry_at(3, 20, 300),
+                entry_at(4, 30, 200),
+                entry_at(5, 20, 100),
+            ],
+            Layout::Flat,
+        );
+        assert_eq!(grid.folder_ids_at(2), Some(vec![1, 3, 5]));
+        assert_eq!(grid.folder_ids_at(1), Some(vec![2]));
+        assert_eq!(grid.folder_ids_at(5), None);
     }
 
     /// The sidebar's size and modified orders read these, summed and maxed over every run.

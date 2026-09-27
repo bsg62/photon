@@ -174,6 +174,11 @@ export class LibraryStore {
    *  moves to the start of what was selected, which is what a Shift+click afterwards extends
    *  from: the selection began there. */
   async selectAll(): Promise<void> {
+    // All under a flat sort: still the folder being looked at, but its photos are scattered
+    // through the list, so it is a set of ids rather than a range.
+    if (this.info.view === 'all' && this.info.sections[0]?.folderId === null) {
+      return this.selectFolderAt(this.selectedOffset ?? 0);
+    }
     const range = this.selectAllRange();
     if (!range) return;
     const [start, end] = range;
@@ -194,11 +199,8 @@ export class LibraryStore {
    *  it rather than a bound. All is the whole library, where the unit the user is actually
    *  looking at is one folder: on a fifty-thousand photo library, selecting every photo is
    *  never what this key was pressed for, and starring the result would be a long operation
-   *  nobody asked for.
-   *
-   *  All sorted by anything but date is the exception: it is one flat run with no folder to
-   *  be looking at, and the user asked for the whole library as one list - the largest
-   *  photos, the latest changed - so "all" is that list, like any other view's. */
+   *  nobody asked for. That holds under a flat sort too, where the folder is no longer a
+   *  range; `selectFolderAt` covers it. */
   private selectAllRange(): [number, number] | null {
     const len = this.info.len;
     if (len === 0) return null;
@@ -207,6 +209,25 @@ export class LibraryStore {
     const at = this.selectedOffset ?? 0;
     const section = sections[lastIndexAtOrBefore(sections, at, (s) => s.offset)];
     return [section.offset, Math.min(len - 1, section.offset + section.count - 1)];
+  }
+
+  /** Selects every photo of the folder the photo at `at` is in: Ctrl+A in a flat All. The
+   *  backend answers from one read of its index, with the version it read; an answer for
+   *  any other version than the one `at` was taken against names another grid's photos, and
+   *  is dropped, as is one a later range call has overtaken - the same two guards as
+   *  `fetchIdsOf`. */
+  private async selectFolderAt(at: number): Promise<void> {
+    const version = this.info.version;
+    const call = ++this.extendCall;
+    const folder = await api.gridFolderIdsAt(at);
+    if (!folder || folder.version !== version || this.info.version !== version) return;
+    if (call !== this.extendCall) return;
+    this.selection = new Set(folder.ids);
+    if (this.selectedOffset === null) {
+      this.selectedOffset = at;
+      this.selectedId = this.pages.get(at)?.id ?? null;
+    }
+    this.anchor = at;
   }
 
   /** The ids of every photo in `start..end`, or `null` when this fetch has been overtaken

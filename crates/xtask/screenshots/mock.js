@@ -145,6 +145,7 @@
     }),
     grid_offset_of_item: (a) => a.itemId - 1,
     grid_offset_of_folder: () => 0,
+    grid_folder_ids_at: () => null,
     neighbours: () => [],
     viewer_item: (a) => viewerItem(a.id ?? a.itemId ?? 3),
     list_people: () => [
