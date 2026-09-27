@@ -596,6 +596,11 @@ fn walk_tree(
     // all: `.picasa.ini` is a dot-file, and the filter drops it. Recording it there is what
     // lets the Picasa pass skip listing every folder a second time.
     let inis: RefCell<HashMap<PathBuf, IniListing>> = RefCell::default();
+    let excluded: Vec<paths::Folder> = options
+        .excluded
+        .iter()
+        .map(|x| paths::Folder::new(x))
+        .collect();
 
     let walker = WalkDir::new(root)
         .follow_links(false)
@@ -612,11 +617,11 @@ fn walk_tree(
                     .or_default()
                     .record(name, e.path().to_path_buf(), e.file_type().is_file());
             }
+            // Only a directory is checked against the excluded folders: a file inside one
+            // can only be reached through it, and it was pruned here first. An excluded
+            // folder is a directory by definition (`ScanOptions::excluded`).
             (e.depth() == 0 || !is_hidden(e))
-                && !options
-                    .excluded
-                    .iter()
-                    .any(|x| crate::paths::is_within(e.path(), x))
+                && !(e.file_type().is_dir() && excluded.iter().any(|x| x.contains(e.path())))
         });
     for entry in walker {
         if options.cancel.load(Ordering::Relaxed) {
