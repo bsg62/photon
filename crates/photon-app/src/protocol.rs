@@ -134,8 +134,8 @@ pub(crate) fn parse_key(key: &str) -> Option<u64> {
         .filter(|&parsed| photon_core::grid::hex_key(parsed) == key)
 }
 
-/// One full-size render at a time. A render holds a whole decoded photo (150 MB and up
-/// for 24 MP) on a protocol thread, outside the thumbnail pool whose `MAX_WORKERS` is what
+/// One full-size render at a time. A render holds a whole decoded photo (about 100 MB at its
+/// peak for 24 MP) on a protocol thread, outside the thumbnail pool whose `MAX_WORKERS` is what
 /// bounds decode memory; flicking through a run of edited photos would otherwise start one
 /// per photo passed.
 ///
@@ -183,6 +183,7 @@ fn image(
             item.orientation,
             edit,
             photon_core::edit::FULL_QUALITY,
+            photon_core::edit::Chroma::Half,
         ) {
             Ok((bytes, mime)) => with_etag(ok(bytes, mime, "no-cache"), &etag),
             Err(Error::Io(err)) if err.kind() == std::io::ErrorKind::NotFound => {

@@ -58,6 +58,7 @@ fn bench_render(c: &mut Criterion) {
     noisy_jpeg(&path);
     let decoded = decode::decode_image(&path).unwrap();
 
+    // `image`'s resize and `thumbnail` are here as the references `fit_within` replaced.
     let mut g = c.benchmark_group("thumbnail_24mp");
     g.sample_size(10).measurement_time(Duration::from_secs(8));
     g.bench_function("decode", |b| {
@@ -84,14 +85,28 @@ fn bench_render(c: &mut Criterion) {
     let edit = edited();
     let mut g = c.benchmark_group("render_full_24mp");
     g.sample_size(10).measurement_time(Duration::from_secs(10));
-    g.bench_function("orient_turn_crop", |b| {
+    g.bench_function("place", |b| {
         b.iter_batched(
             || decoded.clone(),
-            |img| black_box(edit.apply(decode::apply_orientation(img, 6))),
+            |img| black_box(edit.place(img, 6)),
             criterion::BatchSize::PerIteration,
         )
     });
     let picture = edit::render_picture(&path, 6, edit).unwrap();
+    let rgb = picture.to_rgb8();
+    for (name, chroma) in [
+        ("encode_jpeg_420", edit::Chroma::Half),
+        ("encode_jpeg_444", edit::Chroma::Full),
+    ] {
+        g.bench_function(name, |b| {
+            b.iter(|| {
+                let mut bytes = Vec::new();
+                edit::encode_jpeg(&rgb, edit::FULL_QUALITY, chroma, &mut bytes).unwrap();
+                black_box(bytes)
+            })
+        });
+    }
+    // What `render_full` encoded with before: `image`'s own encoder, which writes 4:4:4.
     g.bench_function("encode_image_jpeg", |b| {
         b.iter(|| {
             let mut bytes = Vec::new();
@@ -102,7 +117,11 @@ fn bench_render(c: &mut Criterion) {
         })
     });
     g.bench_function("render_full", |b| {
-        b.iter(|| black_box(edit::render_full(&path, 6, edit, edit::FULL_QUALITY).unwrap()))
+        b.iter(|| {
+            black_box(
+                edit::render_full(&path, 6, edit, edit::FULL_QUALITY, edit::Chroma::Half).unwrap(),
+            )
+        })
     });
     g.finish();
     drop::<DynamicImage>(picture);

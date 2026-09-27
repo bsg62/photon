@@ -68,6 +68,23 @@ pub fn jpeg_bytes(w: u32, h: u32) -> Vec<u8> {
     encode(&solid(w, h), ImageFormat::Jpeg)
 }
 
+/// The sampling factors of a JPEG's first component, as its frame header writes them:
+/// `0x22` when colour is stored at half resolution each way (4:2:0), `0x11` when at full
+/// resolution (4:4:4). Walks the marker segments to the frame header; `None` if there is none.
+pub fn jpeg_luma_sampling(bytes: &[u8]) -> Option<u8> {
+    let mut at = 2;
+    while at + 4 <= bytes.len() && bytes[at] == 0xFF {
+        let marker = bytes[at + 1];
+        let len = u16::from_be_bytes([bytes[at + 2], bytes[at + 3]]) as usize;
+        if matches!(marker, 0xC0..=0xC2) {
+            // Length, precision, height, width, component count, then id and sampling.
+            return bytes.get(at + 4 + 7).copied();
+        }
+        at += 2 + len;
+    }
+    None
+}
+
 pub fn png_bytes(w: u32, h: u32) -> Vec<u8> {
     encode(&solid(w, h), ImageFormat::Png)
 }
