@@ -160,9 +160,10 @@ impl Library {
     /// anything must lose its group, and an UPDATE of only the new members would leave it
     /// pointing at a group it is no longer in.
     ///
-    /// The comparison first is not a micro-optimisation. This runs at the end of every
-    /// scan, including the watcher's subtree scans two seconds after a single file lands,
-    /// and almost every one of those recomputes exactly the groups already stored; without
+    /// The comparison first is not a micro-optimisation. This runs after every regroup, and
+    /// `similar::update` skips a regroup only when its input has not moved - the watcher's
+    /// subtree scan two seconds after a single file lands still gets here - and almost every
+    /// one of those recomputes exactly the groups already stored; without
     /// it, each writes every grouped row again for no change. It is affordable because both
     /// the read and the write it replaces are bounded by the grouped rows rather than by
     /// the library - `items_similar_group` is a partial index over just those.

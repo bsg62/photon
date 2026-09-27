@@ -256,7 +256,11 @@ twice (the opened version and `SchemaTooNew`'s `supported`) and the table count 
 migration tests seed from `MIGRATIONS[..N-1]`. Update the numbers rather than loosening them
 to `MIGRATIONS.len()`; the hardcoding is the tripwire. An index that serves a
 specific query gets a plan test (`the_recent_view_is_served_by_its_index`), so drift between the
-index and the `ORDER BY` fails rather than silently regressing.
+index and the `ORDER BY` fails rather than silently regressing. A query that reads *every* live
+photo writes `+missing_since IS NULL`: photon never runs `ANALYZE`, and without statistics the
+bare term makes SQLite walk a partial index on that predicate - `items_size`, in random table
+order, 7-12x slower at 300k photos. `library/mod.rs` has the reasoning; each such query has a
+plan test, and a new one needs its own.
 
 **Reads are pooled, writes are one connection.** `Library::reader()` returns a `Result` and never
 waits on another reader: it hands out an idle pooled connection or opens one (at most eight are
@@ -312,13 +316,16 @@ the same picture, so `group` unites a pair within the distance only when `same_p
 agrees - both cached grid thumbnails reduced to 32x32 greyscale, mean removed, mean absolute
 difference at most `SAME_PICTURE_MAX_DIFFERENCE` (measured: copies at or under 2.3, same-pose
 second shots 19 and up). The reductions are cached in the engine's `hashing` lock between
-passes, and confirming honours `cancel`: a cancelled regroup writes no groups. Candidates come
+passes, and confirming honours `cancel`: a cancelled regroup writes no groups. The same lock
+holds a digest of the last finished regroup's input (distance, and every `(id, hash, thumb_key)`)
+and of the groups it stored; a pass whose input and stored groups both still match skips the
+regroup, which is what keeps a no-op scan from banding the whole library. Candidates come
 from four 16-bit bands, each bucket also compared with those one bit away, which is exact up
 to `EXACT_RECALL_DISTANCE` (7) - Conservative. Treating the hash as the verdict brings the
 false pairs back. Both passes run inside
 `Engine::hash_after_scan` (once `hash_duplicates`) at the end of every `run_scan` but the
-30-second poll that finds an offline root still offline, which read and changed nothing - not inside
-the scanner, so neither of `walk_tree`'s callers can be forgotten, and because a duplicate or a
+30-second poll that finds an offline root still offline, which read and changed nothing - not
+inside the scanner, so neither of `walk_tree`'s callers can be forgotten, and because a duplicate or a
 look-alike is a fact about the whole library, not about one changed file. The perceptual hash
 is taken from the photo's **already-cached grid thumbnail**, not from the source file: the
 thumbnail renderer is skipped whenever a thumbnail is already cached, so a hash computed inside
