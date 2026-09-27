@@ -5,7 +5,7 @@ use notify::{
     RecursiveMode,
     event::{AccessKind, AccessMode, EventKind},
 };
-use notify_debouncer_full::{DebounceEventResult, Debouncer, RecommendedCache, new_debouncer};
+use notify_debouncer_full::{DebounceEventResult, Debouncer, NoCache, new_debouncer_opt};
 use std::{
     collections::HashSet,
     path::{Path, PathBuf},
@@ -22,7 +22,7 @@ pub struct WatchError {
 }
 
 pub struct Watcher {
-    debouncer: Debouncer<notify::RecommendedWatcher, RecommendedCache>,
+    debouncer: Debouncer<notify::RecommendedWatcher, NoCache>,
 }
 
 impl Watcher {
@@ -39,7 +39,7 @@ impl Watcher {
     ) -> crate::Result<(Self, Receiver<Vec<PathBuf>>, Receiver<Vec<WatchError>>)> {
         let (tx, rx) = channel::<Vec<PathBuf>>();
         let (error_tx, error_rx) = channel::<Vec<WatchError>>();
-        let debouncer = new_debouncer(debounce, None, move |result: DebounceEventResult| {
+        let handler = move |result: DebounceEventResult| {
             match result {
                 Ok(events) => {
                     // Both sets are what keeps a bulk import cheap here: this callback runs
@@ -108,7 +108,25 @@ impl Watcher {
                     }
                 }
             }
-        })
+        };
+        // `NoCache`, not the debouncer's `RecommendedCache`. On Windows and macOS that is a
+        // file-id map, which `watch` fills by walking the whole root and reading the id of
+        // every file in it - opening each one on Windows, a stat on macOS - while holding
+        // the debouncer's lock; it walks again on every rescan flag and beneath every new
+        // path an event names, and prunes the whole map on every removal. On a network
+        // share the launch walk alone is minutes of round trips. All of it serves one
+        // thing: stitching the two halves of a rename into a single event. photon has no
+        // use for that - every path the handler sees, from either half, is reduced to a
+        // directory to rescan, so a rename rescans the same directories stitched or not.
+        // Linux's recommended cache is already `NoCache`; this makes the other two
+        // platforms match it.
+        let debouncer = new_debouncer_opt::<_, notify::RecommendedWatcher, NoCache>(
+            debounce,
+            None,
+            handler,
+            NoCache,
+            notify::Config::default(),
+        )
         .map_err(|err| std::io::Error::other(err.to_string()))?;
         Ok((Self { debouncer }, rx, error_rx))
     }
