@@ -1,4 +1,8 @@
-use crate::{Result, decode::decode_oriented, edit::Edit};
+use crate::{
+    Result,
+    decode::{decode_oriented, fit_within},
+    edit::Edit,
+};
 use image::DynamicImage;
 use std::{
     collections::HashSet,
@@ -108,7 +112,7 @@ impl ThumbCache {
         let preview_edge = ThumbSize::Preview.max_edge();
         let preview = if edit.crop.is_some() {
             let full = decode_oriented(source, orientation, u32::MAX)?;
-            shrink(&edit.apply(full), preview_edge)
+            fit_within(edit.apply(full), preview_edge)
         } else {
             edit.apply(decode_oriented(source, orientation, preview_edge)?)
         };

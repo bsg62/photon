@@ -264,9 +264,9 @@ pub fn render_picture(path: &Path, orientation: u8, edit: Edit) -> Result<Dynami
 /// The longest edge a copied photo is given. Large enough for a chat, a mail or a document
 /// at full-screen size; a photo of a camera's full resolution is 96 MB of pixels on the
 /// clipboard and, on Linux, a PNG encode of several seconds before a paste works. The full
-/// file is what Export and Reveal are for. The copy's peak memory is above the viewer's all the
-/// same - the Lanczos resize keeps a 32-bit float intermediate, about 245 MB for a 24 MP photo
-/// on top of its decode - and `protocol::RENDERING` is what keeps it to one at a time.
+/// file is what Export and Reveal are for. The copy's peak memory is the viewer's plus the
+/// resize's 8-bit intermediate (the source's width by the copy's height, ~30 MB for a 24 MP
+/// photo), and `protocol::RENDERING` is what keeps it to one at a time.
 pub const CLIPBOARD_MAX_EDGE: u32 = 2560;
 
 /// RGBA pixels, row by row, as the clipboard takes them. Named here so the app crate can hold
@@ -277,17 +277,13 @@ pub type ClipboardPicture = image::RgbaImage;
 /// [`CLIPBOARD_MAX_EDGE`] on its long edge if it is larger; a smaller photo keeps its size.
 pub fn clipboard_picture(path: &Path, orientation: u8, edit: Edit) -> Result<ClipboardPicture> {
     let img = render_picture(path, orientation, edit)?;
-    let img = if img.width().max(img.height()) > CLIPBOARD_MAX_EDGE {
-        // Lanczos, not the Triangle the thumbnails use: this is a picture someone will look
-        // at full screen in another app, and it is made once per copy, not once per tile.
-        img.resize(
-            CLIPBOARD_MAX_EDGE,
-            CLIPBOARD_MAX_EDGE,
-            image::imageops::FilterType::Lanczos3,
-        )
-    } else {
-        img
-    };
+    // Lanczos, not the bilinear filter the thumbnails use: this is a picture someone will
+    // look at full screen in another app, and it is made once per copy, not once per tile.
+    let img = crate::decode::fit_within_by(
+        img,
+        CLIPBOARD_MAX_EDGE,
+        fast_image_resize::FilterType::Lanczos3,
+    );
     Ok(img.into_rgba8())
 }
 

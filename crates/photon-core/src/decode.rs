@@ -1,7 +1,8 @@
 use crate::Result;
 use crate::avif;
 use crate::jpeg;
-use image::{DynamicImage, ImageFormat, ImageReader, imageops::FilterType};
+use fast_image_resize::{FilterType, ResizeAlg, ResizeOptions, Resizer};
+use image::{DynamicImage, ImageFormat, ImageReader};
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
@@ -115,14 +116,64 @@ pub fn apply_orientation(img: DynamicImage, orientation: u8) -> DynamicImage {
 /// file is still read to the end first (the container has to be parsed before any pixel is
 /// decoded), so unlike every other format here, nothing bounds how much of an AVIF file is
 /// read into memory before decoding starts.
+///
+/// The shrink that follows adds to the decode: [`fit_within`] works in the source's width at
+/// the preview's height, in the decode's own 8-bit pixels - about a quarter of a 24 MP decode,
+/// an eighth of a 134 MP one. `image`'s resize, before it, did the same in 32-bit float RGBA,
+/// five times as much and more than the decode itself at 24 MP. At the 512 MiB limit that
+/// takes one worker's worst case from about 770 MiB to about 560. `MAX_WORKERS` stays where it
+/// is all the same: the cap is there because more workers than the disk can feed buy nothing,
+/// and a smaller peak per worker does not change that.
 pub fn decode_oriented(path: &Path, orientation: u8, max_edge: u32) -> Result<DynamicImage> {
-    let img = decode_image(path)?;
-    let img = if img.width().max(img.height()) > max_edge {
-        img.resize(max_edge, max_edge, FilterType::Triangle)
-    } else {
-        img
-    };
+    let img = fit_within(decode_image(path)?, max_edge);
     Ok(apply_orientation(img, orientation))
+}
+
+/// `img` shrunk to fit within `max_edge` on its long side, with a bilinear filter; an image
+/// already that small is returned as it is, never enlarged.
+///
+/// Not `image`'s own `resize`, which is what this replaced: that is scalar code, and it
+/// resamples through a 32-bit float RGBA intermediate as wide as the *source* - ~100 MB for
+/// a 24 MP photo shrunk to a preview, on top of the decode, per worker. `fast_image_resize`
+/// is pure Rust, picks its SIMD path at run time, and keeps its intermediate in the source's
+/// own 8-bit pixels at the *destination's* height (~19 MB for the same photo). The filter is
+/// the same tent `image` called `Triangle`, so a thumbnail rendered now and one cached before
+/// are the same picture to `similar::same_picture` (a test in this module holds that).
+pub fn fit_within(img: DynamicImage, max_edge: u32) -> DynamicImage {
+    fit_within_by(img, max_edge, FilterType::Bilinear)
+}
+
+/// [`fit_within`] with the caller's filter, for a picture made to be looked at rather than
+/// tiled (the clipboard's Lanczos).
+pub(crate) fn fit_within_by(img: DynamicImage, max_edge: u32, filter: FilterType) -> DynamicImage {
+    if img.width().max(img.height()) <= max_edge {
+        return img;
+    }
+    let (width, height) = fitted(img.width(), img.height(), max_edge);
+    let mut out = DynamicImage::new(width, height, img.color());
+    // Alpha is resampled as it is stored, as `image` did, rather than premultiplied: that
+    // would take a premultiplied copy of the whole source first, a second full-size buffer
+    // for every transparent PNG, to change nothing for the JPEGs that are nearly every photo.
+    let options = ResizeOptions::new()
+        .resize_alg(ResizeAlg::Convolution(filter))
+        .use_alpha(false);
+    match Resizer::new().resize(&img, &mut out, &options) {
+        Ok(()) => out,
+        // Only a pixel layout the crate does not know refuses (`DynamicImage` is
+        // non-exhaustive, so a future `image` can add one): slower, but still a thumbnail.
+        Err(_) => img.resize(width, height, image::imageops::FilterType::Triangle),
+    }
+}
+
+/// The size `image`'s `resize(max_edge, max_edge, _)` gives `width` by `height`: the aspect
+/// kept, each edge rounded to the nearest pixel and never below one. Every thumbnail already
+/// in a cache was made at this size, so a photo rendered now matches the ones beside it
+/// rather than coming out a pixel narrower.
+fn fitted(width: u32, height: u32, max_edge: u32) -> (u32, u32) {
+    let ratio =
+        (f64::from(max_edge) / f64::from(width)).min(f64::from(max_edge) / f64::from(height));
+    let edge = |v: u32| ((f64::from(v) * ratio).round() as u32).max(1);
+    (edge(width), edge(height))
 }
 
 #[cfg(test)]
@@ -174,6 +225,59 @@ mod tests {
         assert_eq!((img.width(), img.height()), (100, 50));
         let img = decode_oriented(&path, 6, 100).unwrap();
         assert_eq!((img.width(), img.height()), (50, 100));
+    }
+
+    /// `fit_within` computes its own output size rather than asking `image`, so this holds it
+    /// to `image`'s rounding: across every width from just over the edge to four times it,
+    /// on strips of several aspect ratios, both ways round.
+    #[test]
+    fn a_fitted_picture_is_the_size_images_resize_made_it() {
+        let edge = 100;
+        for long in edge + 1..=4 * edge {
+            for short in [1, 2, 3, 7, 33, 67, 99] {
+                for (w, h) in [(long, short), (short, long)] {
+                    let img = DynamicImage::new_rgb8(w, h);
+                    let theirs = img.resize(edge, edge, image::imageops::FilterType::Nearest);
+                    let ours = fit_within(img, edge);
+                    assert_eq!(
+                        (ours.width(), ours.height()),
+                        (theirs.width(), theirs.height()),
+                        "{w}x{h}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// A library's cache mixes thumbnails made before `fit_within` replaced `image`'s resize
+    /// with ones made after, and the look-alike check compares them with each other. The two
+    /// resamplers must therefore make the same picture as far as `same_picture` can tell.
+    ///
+    /// The picture is stripes finer than the preview can hold - 0.7975 cycles a pixel, just
+    /// under the 0.8 samples a pixel of a 2000-to-1600 shrink - over a gradient and a block.
+    /// A filter removes the stripes; a resampler that merely samples (nearest neighbour, say)
+    /// folds them into a wave 400 pixels long, which survives down to the 32-pixel comparison.
+    #[test]
+    fn a_preview_is_the_same_picture_as_the_one_images_resize_made() {
+        let (w, h) = (2000, 1000);
+        let img = DynamicImage::ImageRgb8(image::RgbImage::from_fn(w, h, |x, y| {
+            let wave = (x as f64 * 0.7975 * std::f64::consts::TAU).sin();
+            let stripe = (127.0 + 100.0 * wave) as u8;
+            let block = if (500..900).contains(&x) && (300..700).contains(&y) {
+                40
+            } else {
+                (x * 255 / w) as u8
+            };
+            image::Rgb([stripe, block, (y * 255 / h) as u8])
+        }));
+        let grid = |preview: DynamicImage| crate::similar::reduce(&preview.thumbnail(256, 256));
+        let before = grid(img.resize(1600, 1600, image::imageops::FilterType::Triangle));
+        let after = grid(fit_within(img, 1600));
+        let difference = crate::similar::picture_difference(&before, &after);
+        assert!(
+            difference < crate::similar::SAME_PICTURE_MAX_DIFFERENCE / 4.0,
+            "{difference}"
+        );
     }
 
     #[test]
