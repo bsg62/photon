@@ -51,4 +51,27 @@ describe('PageCache', () => {
     cache.reset(2);
     expect(cache.get(0)).toBeUndefined();
   });
+
+  it('prefetches a version without disturbing the current one, and installs it on reset', async () => {
+    let version = 1;
+    const onStale = vi.fn();
+    const cache = new PageCache<number>(async (offset, count) => ({
+      version,
+      rows: Array.from({ length: count }, (_, i) => version * 1000 + offset + i),
+    }), onStale);
+    cache.reset(1);
+    await cache.ensure(0, 10);
+
+    version = 2;
+    const seed = await cache.prefetch(2, 0, 10);
+    expect(cache.get(0)).toBe(1000);
+    cache.reset(2, seed);
+    expect(cache.version).toBe(2);
+    expect(cache.get(0)).toBe(2000);
+
+    // A page answered by a still newer index is not installed as this one.
+    version = 3;
+    expect((await cache.prefetch(2, 0, 10)).size).toBe(0);
+    expect(onStale).toHaveBeenCalledWith(3);
+  });
 });

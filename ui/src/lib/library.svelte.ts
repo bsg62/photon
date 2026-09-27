@@ -361,6 +361,8 @@ export class LibraryStore {
   private folderById = $derived(new Map(this.folders.folders.map((f) => [f.id, f])));
   private onlineByWatched = $derived(new Map(this.folders.watched.map((w) => [w.id, w.online])));
   private pages = new PageCache<GridEntry>((o, c) => api.gridRows(o, c), () => void this.refresh().catch(this.reportError));
+  /** The range the grid last asked `ensure` for: what is on screen, plus its overscan. */
+  private seen: [number, number] = [0, 0];
   private unlisten: UnlistenFn[] = [];
   private nextToast = 0;
   private initPromise: Promise<void> | null = null;
@@ -417,7 +419,18 @@ export class LibraryStore {
   async refresh(): Promise<void> {
     const info = await api.gridInfo();
     if (info.version < this.info.version) return;
-    this.pages.reset(info.version);
+    // The rows on screen are fetched before anything is swapped, so the old version stays
+    // up until the new one can replace it whole. Clearing first left every visible tile
+    // empty for a round trip, which a scan - rebuilding every `THROTTLE` - turned into
+    // flicker. `seen` is the old version's range: a rebuild that inserts above it moves the
+    // on-screen offsets, but by fewer than the page and the overscan around it absorb.
+    const [start, end] = this.seen;
+    const seed = info.version === this.pages.version
+      ? undefined
+      : await this.pages.prefetch(info.version, start, Math.min(end, info.len));
+    // A newer refresh landed while the rows were loading; it has already swapped.
+    if (info.version < this.info.version) return;
+    this.pages.reset(info.version, seed);
     this.info = { ...info, copiesOf: keepCopiesName(this.info.copiesOf, info.copiesOf) };
     this.pageTick++;
     await this.rebindSelection();
@@ -783,6 +796,7 @@ export class LibraryStore {
   }
 
   async ensure(start: number, end: number): Promise<void> {
+    this.seen = [start, end];
     if (await this.pages.ensure(start, Math.min(end, this.info.len))) this.pageTick++;
   }
 

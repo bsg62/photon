@@ -311,6 +311,7 @@ done from a real installer, so run them against the draft release's artifacts be
 publishing it.
 
 - [ ] On first launch with a fresh profile, the Pictures folder is added and scanned without asking.
+- [ ] Copy a few hundred photos into a watched folder while the grid shows it: as the scan adds them, the tiles already on screen never blink blank - they stay until the new rows replace them.
 - [ ] Thumbnails appear within seconds, and scrolling stays smooth while indexing continues.
 - [ ] In the viewer press `R`: within about half a second the photo is shown turned (preview first, then sharp), the caption's pixel size swaps, and back in the grid its tile is turned too. Press `R` four times quickly: it ends upright, not one turn short. Close and reopen photon: the turn is still there. The file on disk is unchanged (same size and date in the file manager).
 - [ ] Press `C`: the whole photo shows with a bright rectangle and the rest dimmed; the eight handles resize, dragging inside moves, and nothing can be dragged off the photo. Choose 1:1: the rectangle becomes square *on screen* and stays square from every handle. Enter applies: the viewer shows only the crop, sharp at 100%, and the grid tile matches. `C` again shows the whole photo with the same rectangle. "Whole photo" then Enter removes the crop. Escape cancels without saving, and a second Escape is needed to close the viewer.
