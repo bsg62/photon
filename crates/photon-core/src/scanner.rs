@@ -174,6 +174,7 @@ pub fn scan_watched(
 
     let mut known = lib.known_items(watched.id)?;
     let mut folder_ids: HashMap<PathBuf, i64> = HashMap::new();
+    let mut rows = FolderRows::load(lib, watched.id)?;
 
     let WalkOutcome {
         report,
@@ -190,6 +191,7 @@ pub fn scan_watched(
         None,
         &mut known,
         &mut folder_ids,
+        &mut rows,
         scan_id,
         options,
         progress,
@@ -360,7 +362,8 @@ pub fn scan_subtree(
         .to_str()
         .ok_or_else(|| crate::Error::NonUtf8Path(target.clone()))?;
     let mut known = lib.known_items_under(watched.id, target_str)?;
-    let (mut folder_ids, parent_id) = seed_ancestors(lib, watched, relative, scan_id)?;
+    let mut rows = FolderRows::load(lib, watched.id)?;
+    let (mut folder_ids, parent_id) = seed_ancestors(lib, watched, relative, &mut rows, scan_id)?;
 
     let outcome = walk_tree(
         lib,
@@ -369,6 +372,7 @@ pub fn scan_subtree(
         parent_id,
         &mut known,
         &mut folder_ids,
+        &mut rows,
         scan_id,
         options,
         progress,
@@ -416,10 +420,15 @@ pub fn scan_subtree(
 /// can attach the target to its real parent rather than treating it as a root. `relative` is
 /// the target's path relative to the watched root (i.e. `target.strip_prefix(root)`).
 /// Returns the ids it created, and the id of the target's parent.
+///
+/// An ancestor whose row already agrees is not written, and its `seen_scan` is left alone:
+/// this scan prunes only inside the target (`prune_folders_under`), so nothing reads an
+/// ancestor's marker against this scan's id.
 fn seed_ancestors(
     lib: &Library,
     watched: &WatchedFolder,
     relative: &Path,
+    rows: &mut FolderRows,
     scan_id: i64,
 ) -> Result<(HashMap<PathBuf, i64>, Option<i64>)> {
     let root = Path::new(&watched.path);
@@ -427,8 +436,9 @@ fn seed_ancestors(
         .to_str()
         .ok_or_else(|| crate::Error::NonUtf8Path(root.to_path_buf()))?;
     let mut ids = HashMap::new();
-    let mut parent = Some(lib.upsert_folder(watched.id, None, root_str, scan_id)?);
-    ids.insert(root.to_path_buf(), parent.expect("just inserted"));
+    let (root_id, _) = rows.ensure(lib, watched.id, None, root_str, scan_id)?;
+    let mut parent = Some(root_id);
+    ids.insert(root.to_path_buf(), root_id);
 
     let mut components: Vec<_> = relative.components().collect();
     components.pop(); // `target` itself is upserted by the walk.
@@ -438,11 +448,51 @@ fn seed_ancestors(
         let current_str = current
             .to_str()
             .ok_or_else(|| crate::Error::NonUtf8Path(current.clone()))?;
-        let id = lib.upsert_folder(watched.id, parent, current_str, scan_id)?;
+        let (id, _) = rows.ensure(lib, watched.id, parent, current_str, scan_id)?;
         ids.insert(current.clone(), id);
         parent = Some(id);
     }
     Ok((ids, parent))
+}
+
+/// A watched folder's folder rows as the scan began, so the walk writes only the folders
+/// that are new or whose parent changed.
+///
+/// Before this every walked folder was upserted on every scan, one transaction each - and
+/// since the upsert set `seen_scan` to the new scan's id, every one of them really changed.
+/// On a network share of thousands of folders that was thousands of commits for a rescan
+/// that found nothing. The `seen_scan` bump the prune needs is done in bulk at the end of
+/// the walk instead (`walk_tree`).
+struct FolderRows {
+    stored: HashMap<String, (i64, Option<i64>)>,
+}
+
+impl FolderRows {
+    fn load(lib: &Library, watched_id: i64) -> Result<Self> {
+        Ok(Self {
+            stored: lib.folder_rows(watched_id)?,
+        })
+    }
+
+    /// The folder's id, and whether its row already agreed - in which case nothing was
+    /// written and its `seen_scan` still names an older scan.
+    fn ensure(
+        &mut self,
+        lib: &Library,
+        watched_id: i64,
+        parent: Option<i64>,
+        path: &str,
+        scan_id: i64,
+    ) -> Result<(i64, bool)> {
+        if let Some(&(id, stored_parent)) = self.stored.get(path)
+            && stored_parent == parent
+        {
+            return Ok((id, true));
+        }
+        let id = lib.upsert_folder(watched_id, parent, path, scan_id)?;
+        self.stored.insert(path.to_string(), (id, parent));
+        Ok((id, false))
+    }
 }
 
 /// The result of walking a subtree: what was found, and whether the walk was complete
@@ -526,6 +576,7 @@ fn walk_tree(
     root_parent_id: Option<i64>,
     known: &mut HashMap<String, KnownItem>,
     folder_ids: &mut HashMap<PathBuf, i64>,
+    rows: &mut FolderRows,
     scan_id: i64,
     options: &ScanOptions,
     progress: &mut dyn ScanSink,
@@ -536,6 +587,8 @@ fn walk_tree(
     let mut changed_batch: Vec<(i64, NewItem)> = Vec::new();
     let mut meta_batch: Vec<(i64, NewItem)> = Vec::new();
     let mut walked: Vec<(PathBuf, i64)> = Vec::new();
+    // Walked folders whose row already agreed: bumped to this scan in bulk after the walk.
+    let mut unwritten: Vec<i64> = Vec::new();
     let mut incomplete_prefixes: Vec<PathBuf> = Vec::new();
     let mut skip_mark_purge = false;
     let mut cancelled = false;
@@ -593,7 +646,10 @@ fn walk_tree(
             } else {
                 path.parent().and_then(|p| folder_ids.get(p)).copied()
             };
-            let id = lib.upsert_folder(watched_id, parent, path_str, scan_id)?;
+            let (id, agreed) = rows.ensure(lib, watched_id, parent, path_str, scan_id)?;
+            if agreed {
+                unwritten.push(id);
+            }
             folder_ids.insert(path.to_path_buf(), id);
             walked.push((path.to_path_buf(), id));
             continue;
@@ -660,6 +716,12 @@ fn walk_tree(
     flush_new(lib, &mut new_batch, &mut report, &mut seen, progress)?;
     flush_changed(lib, &mut changed_batch, &mut report, &mut seen, progress)?;
     flush_meta(lib, &mut meta_batch, &mut report)?;
+    // Here rather than in either caller, because both prune afterwards and the prune deletes
+    // every empty folder whose `seen_scan` is older than this scan: a folder the walk reached
+    // but did not write must be marked before that, by whichever caller walked it.
+    for chunk in unwritten.chunks(BATCH) {
+        lib.mark_folders_seen(chunk, scan_id)?;
+    }
 
     Ok(WalkOutcome {
         report,
@@ -1449,6 +1511,86 @@ mod tests {
         }
         let mut sink = AfterWalk(after_walk);
         scan_watched(lib, watched, scan_id, &ScanOptions::default(), &mut sink).unwrap()
+    }
+
+    /// A rescan that finds nothing changed used to take the writer once per folder (the
+    /// folder upsert, which rewrote `seen_scan` every time) and once more per INI listing
+    /// contacts. Now it takes it a fixed number of times however many folders there are:
+    /// the watched folder's online flag, one chunk of `seen_scan` bumps, and the prune.
+    /// Reverting the walk to `upsert_folder` for every folder fails this with one write per
+    /// folder; reverting the contacts' read-before-write, with one more.
+    #[test]
+    fn an_unchanged_rescan_writes_a_fixed_amount_however_many_folders() {
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        write_file(&root, "f00/a.jpg", &jpeg_bytes(4, 2));
+        write_file(
+            &root,
+            "f00/.picasa.ini",
+            b"[Contacts2]\nb5d3a7e4f1c2d9a8=Ada;;\n\
+              [a.jpg]\nstar=yes\nfaces=rect64(4000200080006000),b5d3a7e4f1c2d9a8\n",
+        );
+        for i in 1..40 {
+            fs::create_dir_all(root.join(format!("f{i:02}/deeper"))).unwrap();
+        }
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
+        scan(&lib, &watched, 1);
+        assert_eq!(lib.starred_count().unwrap(), 1);
+
+        let before = lib.writes_for_test();
+        let report = scan(&lib, &watched, 2);
+        assert!(!report.touched_rows());
+        assert_eq!(lib.writes_for_test() - before, 3);
+        assert_eq!(
+            lib.folders().unwrap().len(),
+            1 + 40 + 39,
+            "no folder was pruned"
+        );
+    }
+
+    /// The bump is what keeps the prune off a folder the walk reached but did not write: an
+    /// empty folder is pruned exactly when a scan did not see it. Without the bump every
+    /// empty folder that was already known disappears on the next scan.
+    #[test]
+    fn an_empty_folder_a_rescan_reaches_is_kept_and_one_it_does_not_is_pruned() {
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        write_file(&root, "a.jpg", &jpeg_bytes(4, 2));
+        fs::create_dir_all(root.join("kept")).unwrap();
+        fs::create_dir_all(root.join("gone")).unwrap();
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
+        scan(&lib, &watched, 1);
+        fs::remove_dir(root.join("gone")).unwrap();
+
+        scan(&lib, &watched, 2);
+        let mut names: Vec<String> = lib.folders().unwrap().into_iter().map(|f| f.name).collect();
+        names.sort();
+        assert_eq!(names, ["kept", "photos"]);
+
+        // The subtree scan's walk goes through the same bump before its own prune.
+        let sub = root.join("kept");
+        fs::create_dir_all(sub.join("inner")).unwrap();
+        scan_subtree(
+            &lib,
+            &watched,
+            &sub,
+            3,
+            &ScanOptions::default(),
+            &mut progress_only(|_| {}),
+        )
+        .unwrap();
+        scan_subtree(
+            &lib,
+            &watched,
+            &sub,
+            4,
+            &ScanOptions::default(),
+            &mut progress_only(|_| {}),
+        )
+        .unwrap();
+        let mut names: Vec<String> = lib.folders().unwrap().into_iter().map(|f| f.name).collect();
+        names.sort();
+        assert_eq!(names, ["inner", "kept", "photos"]);
     }
 
     /// Writes `n` folders `f00`.. under `root`, a photo in each.
