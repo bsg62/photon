@@ -21,11 +21,44 @@ export class PageCache<T> {
     this.onStale = onStale;
   }
 
-  reset(version: number): void {
+  /** Moves to `version`, dropping every page of the old one. `seed` is pages already loaded
+   *  at `version` (see `prefetch`), installed in the same step so the rows on screen are
+   *  never momentarily missing. */
+  reset(version: number, seed?: Map<number, T[]>): void {
     if (version === this.version) return;
     this.version = version;
-    this.pages.clear();
+    this.pages = seed ?? new Map();
     this.loading.clear();
+  }
+
+  /** Loads the pages covering `[start, end)` at `version` without touching the current ones,
+   *  for `reset` to install. Clearing first and loading after is what made every rebuild
+   *  during a scan blank the whole screen of tiles for a round trip. A page answered at any
+   *  other version is left out and reported, as `ensure` does. */
+  async prefetch(version: number, start: number, end: number): Promise<Map<number, T[]>> {
+    const seed = new Map<number, T[]>();
+    if (end <= start) return seed;
+    const first = Math.floor(start / PAGE_SIZE);
+    const last = Math.floor((end - 1) / PAGE_SIZE);
+    const wanted: number[] = [];
+    for (let p = first; p <= last; p++) wanted.push(p);
+    const results = await Promise.all(
+      wanted.map((p) =>
+        this.load(p * PAGE_SIZE, PAGE_SIZE).then(
+          (page) => [p, page] as const,
+          () => [p, null] as const,
+        ),
+      ),
+    );
+    for (const [p, page] of results) {
+      if (!page) continue;
+      if (page.version !== version) {
+        this.onStale(page.version);
+        continue;
+      }
+      seed.set(p, page.rows);
+    }
+    return seed;
   }
 
   get(offset: number): T | undefined {

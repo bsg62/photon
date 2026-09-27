@@ -373,6 +373,114 @@ describe('LibraryStore', () => {
     expect(store.selected).toBe(2);
   });
 
+  it('keeps the rows on screen until the rebuilt index can replace them', async () => {
+    // A scan rebuilds the grid every couple of seconds. Dropping the loaded rows before the
+    // new ones arrived left every visible tile empty for a round trip on each rebuild.
+    const entry = (id: number) => ({
+      id,
+      folderId: 1,
+      takenAt: 0,
+      aspect: 1,
+      kind: 'image' as const,
+      durationMs: null,
+      thumbKey: '0',
+      starred: false,
+      hasCopies: false,
+    });
+    const info = (version: number, len: number) => ({
+      version,
+      len,
+      sections: [],
+      folders: [],
+      starredCount: 0,
+      duplicateCount: 0,
+      hiddenCount: 0,
+      videoCount: 0,
+      view: 'all' as const,
+      searchQuery: '',
+      person: null,
+      album: null,
+      tag: null,
+      copiesOf: null,
+    });
+    vi.mocked(api.gridInfo).mockResolvedValue(info(1, 2));
+    vi.mocked(api.gridRows).mockResolvedValue({ version: 1, rows: [entry(10), entry(11)] });
+    const store = new LibraryStore();
+    await store.init();
+    await store.ensure(0, 2);
+
+    // A new photo sorts first.
+    vi.mocked(api.gridInfo).mockResolvedValue(info(2, 3));
+    const rows = deferred<{ version: number; rows: ReturnType<typeof entry>[] }>();
+    vi.mocked(api.gridRows).mockReturnValue(rows.promise);
+    const refreshed = store.refresh();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(api.gridRows).toHaveBeenCalledWith(0, 200);
+    // Still loading: the old version is what shows, rows and length together.
+    expect(store.entry(0)?.id).toBe(10);
+    expect(store.info.len).toBe(2);
+
+    rows.resolve({ version: 2, rows: [entry(9), entry(10), entry(11)] });
+    await refreshed;
+    expect(store.info.len).toBe(3);
+    expect(store.entry(0)?.id).toBe(9);
+    expect(store.entry(2)?.id).toBe(11);
+  });
+
+  it('a refresh whose rows arrive late does not overwrite a newer one', async () => {
+    const entry = (id: number) => ({
+      id,
+      folderId: 1,
+      takenAt: 0,
+      aspect: 1,
+      kind: 'image' as const,
+      durationMs: null,
+      thumbKey: '0',
+      starred: false,
+      hasCopies: false,
+    });
+    const info = (version: number, len: number) => ({
+      version,
+      len,
+      sections: [],
+      folders: [],
+      starredCount: 0,
+      duplicateCount: 0,
+      hiddenCount: 0,
+      videoCount: 0,
+      view: 'all' as const,
+      searchQuery: '',
+      person: null,
+      album: null,
+      tag: null,
+      copiesOf: null,
+    });
+    vi.mocked(api.gridInfo).mockResolvedValue(info(1, 1));
+    vi.mocked(api.gridRows).mockResolvedValue({ version: 1, rows: [entry(10)] });
+    const store = new LibraryStore();
+    await store.init();
+    await store.ensure(0, 1);
+
+    vi.mocked(api.gridInfo).mockResolvedValueOnce(info(2, 2));
+    const late = deferred<{ version: number; rows: ReturnType<typeof entry>[] }>();
+    vi.mocked(api.gridRows).mockReturnValueOnce(late.promise);
+    const slow = store.refresh();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    vi.mocked(api.gridInfo).mockResolvedValueOnce(info(3, 3));
+    vi.mocked(api.gridRows).mockResolvedValueOnce({ version: 3, rows: [entry(8), entry(9), entry(10)] });
+    await store.refresh();
+    expect(store.info.version).toBe(3);
+
+    late.resolve({ version: 2, rows: [entry(9), entry(10)] });
+    await slow;
+    expect(store.info.version).toBe(3);
+    expect(store.info.len).toBe(3);
+    expect(store.entry(0)?.id).toBe(8);
+  });
+
   it('a selection made by id is re-found after a rebuild even when its page was never loaded', async () => {
     // "Locate in photon" and closing the viewer both know the photo's id but land on an
     // offset whose page the grid has not fetched yet. Recording only the offset would leave
