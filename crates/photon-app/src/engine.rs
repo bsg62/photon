@@ -27,8 +27,17 @@ use std::{
     time::{Duration, Instant},
 };
 
-/// Minimum time between grid rebuilds and between progress events during one scan.
+/// Minimum time between progress events during one scan, and the floor under the time
+/// between the grid rebuilds scans make as they go (see `RebuildPacer`).
 const THROTTLE: Duration = Duration::from_millis(250);
+
+/// How many times its own cost a scan's intermediate rebuild waits, after it ends, before
+/// the next may start. A rebuild is a whole-library query and index build - 55 ms at 100k
+/// photos, about 200 ms at 300k, more in Search - and it runs on the scan thread, so on a
+/// large import a fixed 250 ms throttle spent close to half the scan rebuilding. Waiting
+/// `K` times the cost keeps rebuilds to at most `1 / (K + 1)` of the time: 4 is 20%, while
+/// a library small enough to rebuild in under 62 ms still refreshes every `THROTTLE`.
+const REBUILD_COST_FACTOR: u32 = 4;
 
 /// Minimum time between the grid rebuilds poster frames ask for. Longer than a scan's
 /// `THROTTLE`: a frame changes no row the grid lays out, only brings a tile that gave up
@@ -174,6 +183,51 @@ pub struct Engine {
     hash_requested: AtomicBool,
     /// Coalesces the rebuilds poster frames ask for; see `frame_stored`.
     frame_refresh: Mutex<FrameRefresh>,
+    /// Paces the rebuilds scans make as they go. One for the engine, not one per scan:
+    /// several roots scanning at once are one library to rebuild, and a pacer each would
+    /// rebuild it once per root per window.
+    scan_rebuilds: Mutex<RebuildPacer>,
+}
+
+/// When a scan's next intermediate grid rebuild is due: no sooner than `THROTTLE`, or
+/// `REBUILD_COST_FACTOR` times the last one's measured cost, after the last one ended.
+///
+/// Those rebuilds are best-effort - the end-of-scan `refresh_grid` in `run_scan` is the one
+/// every commit relies on - so a tick skipped here only shows new photos a little later.
+#[derive(Debug, Default)]
+struct RebuildPacer {
+    /// When the last rebuild ended, or, while one runs, when it was claimed.
+    last_end: Option<Instant>,
+    last_cost: Duration,
+}
+
+impl RebuildPacer {
+    fn due(&self, now: Instant) -> bool {
+        let Some(last_end) = self.last_end else {
+            return true;
+        };
+        let gap = THROTTLE.max(self.last_cost * REBUILD_COST_FACTOR);
+        now.saturating_duration_since(last_end) >= gap
+    }
+
+    /// Takes the next rebuild if it is due. Claiming moves `last_end` to `now`, so a
+    /// second scan asking while this rebuild runs is told to wait the same gap from its
+    /// start. That is an estimate rather than a "running" flag on purpose: there is no flag
+    /// for a rebuild that never records to leave set, and all overrunning it costs - a
+    /// rebuild four times slower than the last - is one redundant rebuild, which
+    /// `publish_if_current` orders like any other.
+    fn claim(&mut self, now: Instant) -> bool {
+        if !self.due(now) {
+            return false;
+        }
+        self.last_end = Some(now);
+        true
+    }
+
+    fn record(&mut self, start: Instant, end: Instant) {
+        self.last_end = Some(end);
+        self.last_cost = end.saturating_duration_since(start);
+    }
 }
 
 /// When the last poster-frame rebuild ran, and whether a trailing one is already waiting.
@@ -242,6 +296,7 @@ impl Engine {
             hashing: Mutex::new(Default::default()),
             hash_requested: AtomicBool::new(false),
             frame_refresh: Mutex::new(FrameRefresh::default()),
+            scan_rebuilds: Mutex::new(RebuildPacer::default()),
         }))
     }
 
@@ -1468,7 +1523,7 @@ impl Engine {
             engine: self,
             watched_id: watched.id,
             last: ScanProgress::default(),
-            last_refresh: Instant::now(),
+            started: Instant::now(),
             refreshed_total: 0,
             last_progress: None,
         };
@@ -1645,14 +1700,16 @@ impl Engine {
     }
 }
 
-/// What one running scan reports back into the engine: the grid rebuilds and progress
-/// events, throttled to [`THROTTLE`], and the ids of freshly indexed items for the
-/// thumbnail queue.
+/// What one running scan reports back into the engine: grid rebuilds, paced by the
+/// engine's shared [`RebuildPacer`], progress events, throttled to [`THROTTLE`], and the
+/// ids of freshly indexed items for the thumbnail queue.
 struct ScanReporter<'a> {
     engine: &'a Engine,
     watched_id: i64,
     last: ScanProgress,
-    last_refresh: Instant,
+    /// No intermediate rebuild in a scan's first `THROTTLE`: one shorter than that - the
+    /// watcher's scan of one new file - is refreshed by its end-of-scan rebuild alone.
+    started: Instant,
     refreshed_total: u64,
     last_progress: Option<Instant>,
 }
@@ -1661,11 +1718,23 @@ impl ScanSink for ScanReporter<'_> {
     fn progress(&mut self, p: &ScanProgress) {
         self.last = *p;
         let total = p.added + p.changed;
-        if total != self.refreshed_total && self.last_refresh.elapsed() >= THROTTLE {
+        // Inline, on the scan thread, rather than on a thread of its own. The pacer already
+        // holds rebuilds to a fifth of the scan's time; a background one would need an
+        // `Arc<Engine>` this borrow does not have, and threads `shutdown` would have to find
+        // and wait out. `publish_if_current` would keep it correct - it is the bookkeeping
+        // that is not worth the remaining fifth.
+        if total != self.refreshed_total
+            && self.started.elapsed() >= THROTTLE
+            && self.engine.scan_rebuilds.lock().claim(Instant::now())
+        {
+            let start = Instant::now();
             if let Err(err) = self.engine.refresh_grid() {
                 tracing::warn!(%err, "grid refresh failed");
             }
-            self.last_refresh = Instant::now();
+            self.engine
+                .scan_rebuilds
+                .lock()
+                .record(start, Instant::now());
             self.refreshed_total = total;
         }
         if self.last_progress.is_none_or(|t| t.elapsed() >= THROTTLE) {
@@ -1716,6 +1785,109 @@ mod tests {
     use crate::events::Recorded;
     use crate::testutil::{Fixture, fixture, jpeg, jpeg_pattern};
     use photon_core::media::ThumbState;
+
+    const MS: Duration = Duration::from_millis(1);
+
+    #[test]
+    fn a_pacer_that_never_rebuilt_is_due_at_once() {
+        assert!(RebuildPacer::default().due(Instant::now()));
+    }
+
+    #[test]
+    fn a_costly_rebuild_pushes_the_next_one_back_by_its_cost() {
+        let t0 = Instant::now();
+        let mut pacer = RebuildPacer::default();
+        pacer.record(t0, t0 + 100 * MS);
+        let end = t0 + 100 * MS;
+        assert!(
+            !pacer.due(end + 300 * MS),
+            "a 100 ms rebuild waits 400 ms, not THROTTLE"
+        );
+        assert!(!pacer.due(end + 399 * MS));
+        assert!(pacer.due(end + 400 * MS));
+        assert!(pacer.due(end + 1000 * MS));
+    }
+
+    #[test]
+    fn a_cheap_rebuild_waits_for_the_throttle() {
+        let t0 = Instant::now();
+        let mut pacer = RebuildPacer::default();
+        pacer.record(t0, t0 + 5 * MS);
+        let end = t0 + 5 * MS;
+        assert!(!pacer.due(end + THROTTLE - MS));
+        assert!(pacer.due(end + THROTTLE));
+    }
+
+    #[test]
+    fn a_claimed_rebuild_holds_off_the_next_claim_until_it_is_recorded() {
+        let t0 = Instant::now();
+        let mut pacer = RebuildPacer::default();
+        pacer.record(t0, t0 + 100 * MS);
+        let start = t0 + 600 * MS;
+        assert!(pacer.claim(start));
+        assert!(!pacer.claim(start + 10 * MS), "one rebuild at a time");
+        pacer.record(start, start + 100 * MS);
+        assert!(!pacer.claim(start + 400 * MS));
+        assert!(pacer.claim(start + 500 * MS));
+    }
+
+    /// Two roots scanning at once share one rebuild budget: the second reporter's tick,
+    /// straight after the first's rebuild, is not another rebuild. Not timing-sensitive in
+    /// practice: the second tick comes microseconds after the first rebuild ends, against a
+    /// `THROTTLE` of 250 ms.
+    #[test]
+    fn concurrent_scans_share_one_rebuild_budget() {
+        let f = fixture(&[]);
+        let started = Instant::now()
+            .checked_sub(THROTTLE * 4)
+            .expect("the clock is past the throttle");
+        let reporter = |watched_id| ScanReporter {
+            engine: &f.engine,
+            watched_id,
+            last: ScanProgress::default(),
+            started,
+            refreshed_total: 0,
+            last_progress: None,
+        };
+        let (mut a, mut b) = (reporter(1), reporter(2));
+        let progress = ScanProgress {
+            files_seen: 1,
+            added: 1,
+            changed: 0,
+        };
+        let before = f.engine.grid().0;
+        a.progress(&progress);
+        assert_eq!(f.engine.grid().0, before + 1, "the first tick rebuilds");
+        b.progress(&progress);
+        assert_eq!(
+            f.engine.grid().0,
+            before + 1,
+            "the second root's tick rides on the first's rebuild"
+        );
+    }
+
+    /// A scan younger than `THROTTLE` leaves its rows to the end-of-scan rebuild, even with
+    /// the shared pacer due: the watcher's scan of one new file would otherwise rebuild the
+    /// whole library twice.
+    #[test]
+    fn a_scan_younger_than_the_throttle_makes_no_intermediate_rebuild() {
+        let f = fixture(&[]);
+        let mut reporter = ScanReporter {
+            engine: &f.engine,
+            watched_id: 1,
+            last: ScanProgress::default(),
+            started: Instant::now(),
+            refreshed_total: 0,
+            last_progress: None,
+        };
+        let before = f.engine.grid().0;
+        reporter.progress(&ScanProgress {
+            files_seen: 1,
+            added: 1,
+            changed: 0,
+        });
+        assert_eq!(f.engine.grid().0, before);
+    }
 
     /// An edit travels the whole refresh chain: the row, a new grid version, and a tile
     /// that names a different thumbnail. Two turns are two turns - `rotate_item` reads the
