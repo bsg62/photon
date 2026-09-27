@@ -139,7 +139,7 @@ describe('LibraryStore', () => {
     expect(store.expected[1]).toBe(5_300);
   });
 
-  it('refetches albums, saved searches, people and tags on every library change and after an album mutation', async () => {
+  it('refetches albums, saved searches, people and tags on every data change and after an album mutation', async () => {
     const store = new LibraryStore();
     await store.init();
     expect(api.listAlbums).toHaveBeenCalledTimes(1);
@@ -150,7 +150,7 @@ describe('LibraryStore', () => {
     vi.mocked(api.listSavedSearches).mockResolvedValue([
       { id: 7, name: 'Canon', query: 'camera:canon', createdMs: 0 },
     ]);
-    handlers.libraryChanged({ version: 2, len: 0 });
+    handlers.libraryChanged({ version: 2, len: 0, dataChanged: true });
     await Promise.resolve();
     await Promise.resolve();
     await Promise.resolve();
@@ -170,6 +170,27 @@ describe('LibraryStore', () => {
     await expect(store.createAlbum('Zoo')).resolves.toBe(2);
     expect(api.createAlbum).toHaveBeenCalledWith('Zoo');
     expect(store.albums).toHaveLength(2);
+  });
+
+  // A view switch, a sort or a search rebuilds the grid and changes no data; refetching the
+  // collections for it cost a quarter of a second of tag counting per keystroke.
+  it('leaves the collections alone on a library change that moved no data', async () => {
+    const store = new LibraryStore();
+    await store.init();
+    const calls = () => [api.listAlbums, api.listSavedSearches, api.listPeople, api.listTags].map((f) => vi.mocked(f).mock.calls.length);
+    expect(calls()).toEqual([1, 1, 1, 1]);
+    const data = store.dataVersion;
+
+    handlers.libraryChanged({ version: 2, len: 0, dataChanged: false });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(calls()).toEqual([1, 1, 1, 1]);
+    expect(store.dataVersion).toBe(data);
+
+    handlers.libraryChanged({ version: 3, len: 0, dataChanged: true });
+    await Promise.resolve();
+    expect(calls()).toEqual([2, 2, 2, 2]);
+    expect(store.dataVersion).toBe(data + 1);
   });
 
   // None of the three changes the grid, so no `library_changed` is coming to refresh the
@@ -232,7 +253,7 @@ describe('LibraryStore', () => {
     const store = new LibraryStore();
     await store.init();
     vi.mocked(api.listAlbums).mockRejectedValueOnce(new Error('albums-fail'));
-    handlers.libraryChanged({ version: 2, len: 0 });
+    handlers.libraryChanged({ version: 2, len: 0, dataChanged: true });
     await Promise.resolve();
     await Promise.resolve();
     await Promise.resolve();

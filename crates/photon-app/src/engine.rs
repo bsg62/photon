@@ -130,6 +130,21 @@ pub struct Engine {
     refresh: Mutex<u64>,
     /// Source of `Rebuild::seq`. Taken at snapshot time, before the query begins.
     next_rebuild: AtomicU64,
+    /// Set by every rebuild that follows a change to the data (`data_snapshot`), before it
+    /// snapshots; taken back to false by whichever rebuild publishes next, which tells the
+    /// UI so in `LibraryChanged::data_changed`. The UI refetches its sidebar collections -
+    /// albums, people, tags, the slowest of them hundreds of milliseconds at 300k photos -
+    /// only then, and not for the rebuilds of a view switch, a sort or a search keystroke.
+    ///
+    /// Engine-wide rather than carried by each `Rebuild`, because a rebuild can be
+    /// discarded: a scan's rebuild overtaken by a view switch never publishes, and a flag it
+    /// carried would be lost with it while the switch's own publish said nothing had
+    /// changed. Left here, the flag rides on the next publish instead. What makes that
+    /// enough: the flag is set after the commit, and it is cleared only by a publish, which
+    /// then emits it - so for every commit some event saying `data_changed` is emitted after
+    /// it, and the UI's collections are read from the database, not from the index, so any
+    /// fetch that event triggers sees the commit.
+    data_dirty: AtomicBool,
     events: Arc<dyn Events>,
     scans: Mutex<HashMap<i64, RunningScan>>,
     /// Watched ids whose removal is under way. Per folder what `shutting_down` is for the
@@ -283,6 +298,7 @@ impl Engine {
             }),
             refresh: Mutex::new(0),
             next_rebuild: AtomicU64::new(1),
+            data_dirty: AtomicBool::new(false),
             events,
             scans: Mutex::new(HashMap::new()),
             removing: Mutex::new(HashSet::new()),
@@ -318,8 +334,15 @@ impl Engine {
     /// UI thread - which needs the write side - stalled behind every scan-triggered rebuild:
     /// ~60ms per tick on a 100k library, for as long as the scan ran. What makes that safe
     /// is the `epoch` check at publish time; see `publish_if_current`.
+    ///
+    /// For callers that changed the data, which is every caller but the view setters: the
+    /// event this publishes tells the UI to refetch the collections as well as the grid.
     pub fn refresh_grid(&self) -> Result<()> {
-        let rebuild = self.snapshot();
+        self.rebuild(self.data_snapshot())
+    }
+
+    /// Builds the index for `rebuild`'s snapshot and publishes it unless overtaken.
+    fn rebuild(&self, rebuild: Rebuild) -> Result<()> {
         let index = Arc::new(self.build_index(&rebuild.state)?);
         self.publish_if_current(index, &rebuild);
         Ok(())
@@ -410,6 +433,14 @@ impl Engine {
         Rebuild { state, seq }
     }
 
+    /// `snapshot`, for a rebuild that follows a change to the data: marks `data_dirty`
+    /// first. Set here, not when this rebuild publishes, so that a rebuild discarded on
+    /// the way still leaves it for the publish that overtook it; see `data_dirty`.
+    fn data_snapshot(&self) -> Rebuild {
+        self.data_dirty.store(true, Ordering::SeqCst);
+        self.snapshot()
+    }
+
     /// Publishes `index`, built from `rebuild`'s snapshot, unless it has been overtaken.
     /// Returns whether it published.
     ///
@@ -444,7 +475,15 @@ impl Engine {
             grid.1 = index;
             (grid.0, grid.1.len())
         };
-        self.events.library_changed(LibraryChanged { version, len });
+        // Taken only by a rebuild that publishes, and under the `refresh` lock, so the
+        // value and the version it is sent with are one publish's. A rebuild discarded
+        // above leaves it for the next one.
+        let data_changed = self.data_dirty.swap(false, Ordering::SeqCst);
+        self.events.library_changed(LibraryChanged {
+            version,
+            len,
+            data_changed,
+        });
         true
     }
 
@@ -521,7 +560,10 @@ impl Engine {
             state.epoch += 1;
             previous
         };
-        if let Err(err) = self.refresh_grid() {
+        // `snapshot`, not `data_snapshot`: moving the view changes no data, so its publish
+        // does not ask the UI to refetch the collections - unless a data rebuild it
+        // overtook left `data_dirty` set, which it then carries.
+        if let Err(err) = self.rebuild(self.snapshot()) {
             {
                 // The whole state rather than field by field, so a field added to it cannot
                 // be left out of the rollback. Only the epoch moves on.
@@ -535,8 +577,8 @@ impl Engine {
             // so rows a scan committed meanwhile would otherwise wait for its next tick. A
             // best-effort rebuild for the restored state closes that; it is the query that
             // was working a moment ago, and if it fails too there is nothing better to do
-            // than log it.
-            if let Err(err) = self.refresh_grid() {
+            // than log it. A view rebuild too: a scan's commit marked the data itself.
+            if let Err(err) = self.rebuild(self.snapshot()) {
                 tracing::warn!(%err, "grid refresh for the restored view failed");
             }
             return Err(err);
@@ -2540,7 +2582,11 @@ mod tests {
         assert_eq!(grid.len(), 2);
         assert!(version >= 1);
         let events = f.events.all();
-        assert!(events.contains(&Recorded::Library(LibraryChanged { version, len: 2 })));
+        assert!(events.contains(&Recorded::Library(LibraryChanged {
+            version,
+            len: 2,
+            data_changed: true
+        })));
         assert!(events.iter().any(|e| matches!(e,
             Recorded::Scan(s) if s.watched_id == watched.id && s.done && !s.cancelled && s.added == 2)));
         assert!(events.contains(&Recorded::Folder(FolderStatus {
@@ -3687,6 +3733,98 @@ mod tests {
     /// last without the rows the other had already committed - and with both scans done,
     /// nothing rebuilds again. The sequence stamp taken at snapshot time is what orders
     /// them: an index stamped earlier than one already published is dropped.
+    /// The `data_changed` of the most recent `library_changed`.
+    fn last_data_changed(f: &Fixture) -> bool {
+        f.events
+            .all()
+            .iter()
+            .rev()
+            .find_map(|e| match e {
+                Recorded::Library(e) => Some(e.data_changed),
+                _ => None,
+            })
+            .expect("a library_changed was sent")
+    }
+
+    /// A view switch, a sort change and a search keystroke rebuild the grid and change no
+    /// data, so their events must not send the UI to refetch the sidebar's collections:
+    /// that refetch is the slowest thing a rebuild triggers (the tag list alone is
+    /// ~240ms at 300k photos), and every keystroke of a search would pay for it.
+    #[test]
+    fn a_view_change_does_not_announce_a_data_change() {
+        use photon_core::grid::GridView;
+        use photon_core::sort::{Sort, SortKey};
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a/beach.jpg", &img), ("a/mountain.jpg", &img)]);
+        f.add_photos();
+        f.engine.wait_for_scans();
+        assert!(last_data_changed(&f), "the scan's own rebuild changed data");
+
+        f.engine.set_view(GridView::Starred).unwrap();
+        assert!(!last_data_changed(&f), "a view switch");
+        f.engine.set_search_query("beach").unwrap();
+        assert!(!last_data_changed(&f), "a search");
+        f.engine
+            .set_sort(Sort {
+                key: SortKey::Name,
+                reverse: true,
+            })
+            .unwrap();
+        assert!(!last_data_changed(&f), "a sort");
+    }
+
+    /// A star moves the data - and `refresh_grid` stands for every writer like it.
+    #[test]
+    fn a_star_announces_a_data_change() {
+        use photon_core::grid::GridView;
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a/one.jpg", &img)]);
+        f.add_photos();
+        f.engine.wait_for_scans();
+        // The flag is known to be clear, and the last event said so.
+        f.engine.set_view(GridView::All).unwrap();
+        assert!(!last_data_changed(&f));
+
+        f.engine.set_star(f.ids()[0], true).unwrap();
+        assert!(last_data_changed(&f));
+    }
+
+    /// The race the engine-wide flag exists for. A scan commits and its rebuild snapshots,
+    /// then the user switches view: the switch publishes first and the scan's index is
+    /// discarded by the epoch, so it never sends an event of its own. Had the flag
+    /// travelled with the scan's rebuild, the only event after the commit would be the
+    /// switch's, saying nothing changed, and the sidebar would miss the commit until some
+    /// unrelated change came along.
+    #[test]
+    fn a_data_rebuild_overtaken_by_a_view_switch_still_announces_its_change() {
+        use photon_core::grid::GridView;
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a/one.jpg", &img), ("a/two.jpg", &img)]);
+        f.add_photos();
+        f.engine.wait_for_scans();
+        f.engine.set_view(GridView::All).unwrap();
+        assert!(!last_data_changed(&f));
+
+        // A commit, and the rebuild that follows it starts querying...
+        f.engine.lib.set_ratings(&[(f.ids()[0], 2)]).unwrap();
+        let stale = f.engine.data_snapshot();
+        let stale_index = Arc::new(f.engine.build_index(&stale.state).unwrap());
+        // ...when the view switch lands first.
+        f.engine.set_view(GridView::Starred).unwrap();
+        assert!(
+            !f.engine.publish_if_current(stale_index, &stale),
+            "the scan's rebuild is discarded, so it sends nothing"
+        );
+        assert!(
+            last_data_changed(&f),
+            "the switch's publish carries the change the discarded rebuild could not"
+        );
+
+        // And it was carried once: the next switch is a view change again.
+        f.engine.set_view(GridView::All).unwrap();
+        assert!(!last_data_changed(&f));
+    }
+
     #[test]
     fn a_rebuild_snapshotted_earlier_is_not_published_over_a_later_one_for_the_same_view() {
         let img = jpeg(16, 16);

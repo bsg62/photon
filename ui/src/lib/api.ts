@@ -187,7 +187,9 @@ export interface ScanProgressEvent {
   cancelled: boolean;
 }
 export interface FolderStatus { watchedId: number; online: boolean; degraded: boolean }
-export interface LibraryChanged { version: number; len: number }
+/** `dataChanged`: the data may have moved since the last event, not only the view, the sort
+ *  or the search - what the sidebar's collections are refetched on (`Engine::data_dirty`). */
+export interface LibraryChanged { version: number; len: number; dataChanged: boolean }
 export interface AppError { kind: string; message: string }
 export interface VideoJob { id: number; key: string }
 export type VideoFailure = 'unsupported' | 'decode' | 'timeout';

@@ -48,8 +48,9 @@ export class LibraryStore {
     copiesOf: null,
   });
   folders = $state<FolderList>({ watched: [], folders: [] });
-  /** The sidebar's three collections. Refetched on every `library-changed` (a scan can
-   *  add a face, a keyword or purge an album member) and after every album mutation. */
+  /** The sidebar's collections. Refetched on every `library-changed` that says the data
+   *  moved (a scan can add a face, a keyword or purge an album member) and after every
+   *  album, saved-search and tag mutation. */
   albums = $state<AlbumSummary[]>([]);
   searches = $state<SavedSearch[]>([]);
   people = $state<Person[]>([]);
@@ -373,6 +374,10 @@ export class LibraryStore {
     return [...this.selection];
   }
 
+  /** Bumped by every `library-changed` that says the data may have moved, for what reads
+   *  the database beside the grid - Settings' photo counts and tag rules - and so has no
+   *  reason to refetch on a view switch, which bumps `info.version` all the same. */
+  dataVersion = $state(0);
   /** Bumped whenever pages arrive, so `entry()` readers re-run. */
   pageTick = $state(0);
   /** True until the grid has jumped to the folder the last session left it on — or has
@@ -404,9 +409,15 @@ export class LibraryStore {
     const generation = ++this.generation;
     this.initPromise = (async () => {
       const unlisten = await Promise.all([
-        events.onLibraryChanged(() => {
+        events.onLibraryChanged((e) => {
           void this.refresh().catch(this.reportError);
-          void this.refreshCollections().catch(this.reportError);
+          // Only when the data may have moved: a view switch, a sort or a search keystroke
+          // leaves every collection as it was, and the tag list alone costs a quarter of a
+          // second on a large library.
+          if (e.dataChanged) {
+            this.dataVersion++;
+            void this.refreshCollections().catch(this.reportError);
+          }
         }),
         events.onFolderStatus((e) => {
           this.degraded[e.watchedId] = e.degraded;
