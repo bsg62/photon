@@ -116,7 +116,10 @@ webview can load - costs a library open, not a whole-library query. `startup` bu
 thing. The UI treats that version as "not known yet" (`grid-state.ts`): no empty-library
 notice, no photo count, and no last-folder restore, whose `len === 0` guard waits for it.
 `open` still fails on a library the grid query cannot run against, through
-`check_grid_query`, which prepares the query without running it.
+`check_grid_query`, which prepares the query without running it. A first build that fails
+anyway is retried (`FIRST_GRID_BACKOFF`) and then published *empty* (`build_first_grid`):
+left at `NOT_BUILT` the window drew nothing, and an unchanged library rebuilt only on a view
+switch.
 
 `LibraryChanged::data_changed` tells the UI whether to refetch the sidebar's collections
 (albums, people, tags - the tag counts alone are ~240ms at 300k photos). Every `refresh_grid`

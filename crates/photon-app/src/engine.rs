@@ -62,6 +62,29 @@ const THUMB_GC_MAX_AGE: Duration = Duration::from_secs(7 * 24 * 3600);
 /// holds the same number).
 pub const NOT_BUILT: u64 = 0;
 
+/// The waits before each retry of the first grid build: three attempts in all, over about
+/// a second and a half. Enough to ride out a database that is briefly busy or unreadable
+/// at launch; short enough that a lasting fault reaches the window before it looks hung.
+const FIRST_GRID_BACKOFF: &[Duration] = &[Duration::from_millis(250), Duration::from_millis(1000)];
+
+/// Runs `attempt`, and again after each wait in `backoff` while it keeps failing, unless
+/// `stop` says to give up. Returns the last attempt's answer.
+fn retry_after(
+    backoff: &[Duration],
+    stop: impl Fn() -> bool,
+    mut attempt: impl FnMut() -> Result<()>,
+) -> Result<()> {
+    let mut result = attempt();
+    for wait in backoff {
+        if result.is_ok() || stop() {
+            break;
+        }
+        std::thread::sleep(*wait);
+        result = attempt();
+    }
+    result
+}
+
 pub struct EngineConfig {
     pub db_path: PathBuf,
     pub cache_dir: PathBuf,
@@ -1351,6 +1374,33 @@ impl Engine {
         }
     }
 
+    /// Builds the grid `open` left unbuilt, retrying after each wait in `backoff`, and
+    /// publishes an empty one if every attempt fails.
+    ///
+    /// A failure left alone kept the grid at `NOT_BUILT`, which the UI draws as nothing at
+    /// all - no photos, no empty notice, no count - and an unchanged library then rebuilds
+    /// only on a view switch, since a scan that moves no rows rebuilds nothing. Before
+    /// `open` stopped building the grid, the same failure was the error dialog at launch.
+    /// `open` has shown the query compiles, so what is left is mostly transient - a busy or
+    /// briefly unreadable database - and a few retries answer that.
+    ///
+    /// When they do not, an empty index is published so the window leaves the not-built
+    /// state: it says the view is empty, and the next rebuild that succeeds (a view switch,
+    /// a scan that moves rows) puts the photos back. That says something untrue about the
+    /// library, but a blank window says nothing and looks hung; carrying the failure itself
+    /// to the UI would take a new event or a `GridInfo` field for a fault this rare, and
+    /// the log has it. Published like any rebuild, so a view switch that has landed
+    /// meanwhile, with its own grid, is not overwritten.
+    fn build_first_grid(&self, backoff: &[Duration]) {
+        let stopping = || self.shutting_down.load(Ordering::SeqCst);
+        if let Err(err) = retry_after(backoff, stopping, || self.refresh_grid()) {
+            tracing::error!(%err, "could not build the grid at startup; showing it empty");
+            let rebuild = self.data_snapshot();
+            let empty = GridIndex::build(Vec::new(), rebuild.state.sort.layout(rebuild.state.view));
+            self.publish_if_current(Arc::new(empty), &rebuild);
+        }
+    }
+
     /// Background start-up work: build the first grid, watch `pictures` if the library is
     /// empty, queue pending thumbnails, rescan every folder, then collect thumbnail garbage.
     ///
@@ -1371,12 +1421,8 @@ impl Engine {
                 // later at best. An ordinary rebuild, so a view switch the UI makes
                 // meanwhile is ordered against it by `publish_if_current` like any other:
                 // the switch bumps the epoch, and whichever of the two snapshotted the
-                // switched-to view with the higher stamp publishes. A failure leaves the grid
-                // unbuilt until the next rebuild that succeeds - a view switch, a scan that
-                // moved rows - since `open` has already shown the query compiles.
-                if let Err(err) = engine.refresh_grid() {
-                    tracing::error!(%err, "could not build the grid at startup");
-                }
+                // switched-to view with the higher stamp publishes.
+                engine.build_first_grid(FIRST_GRID_BACKOFF);
                 if shutting_down() {
                     return;
                 }
@@ -3426,6 +3472,77 @@ mod tests {
                 if *v == version
         )));
         reopened.shutdown();
+    }
+
+    /// Left at `NOT_BUILT`, the window drew nothing at all - no photos, no notice, no
+    /// count - until a view switch.
+    #[test]
+    fn a_first_grid_that_cannot_be_built_is_published_empty_rather_than_left_unbuilt() {
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a.jpg", &img)]);
+        f.add_photos();
+        let events = Arc::new(crate::events::Recorder::default());
+        let reopened = Engine::open(f.config(), events.clone()).unwrap();
+        // After `open`'s check, so the query compiles there and fails every time here.
+        rusqlite::Connection::open(&f.config().db_path)
+            .unwrap()
+            .execute_batch("ALTER TABLE items RENAME COLUMN file_name TO renamed")
+            .unwrap();
+
+        reopened.build_first_grid(&[Duration::ZERO, Duration::ZERO]);
+
+        let (version, grid) = reopened.grid();
+        assert!(version > NOT_BUILT);
+        assert_eq!(grid.len(), 0);
+        assert!(events.all().iter().any(|e| matches!(
+            e,
+            Recorded::Library(LibraryChanged { version: v, len: 0, .. }) if *v == version
+        )));
+        reopened.shutdown();
+    }
+
+    /// Only the first attempts may fail: once one succeeds, nothing is tried again, and
+    /// its answer is the one returned.
+    #[test]
+    fn retry_after_retries_a_failure_once_per_wait_then_gives_up() {
+        let fail = || Err(Error::ThumbFailed("busy".into()));
+
+        let mut calls = 0;
+        let result = retry_after(
+            &[Duration::ZERO; 3],
+            || false,
+            || {
+                calls += 1;
+                if calls < 3 { fail() } else { Ok(()) }
+            },
+        );
+        assert!(result.is_ok());
+        assert_eq!(calls, 3);
+
+        let mut calls = 0;
+        let result = retry_after(
+            &[Duration::ZERO; 2],
+            || false,
+            || {
+                calls += 1;
+                fail()
+            },
+        );
+        assert!(result.is_err());
+        assert_eq!(calls, 3);
+
+        // Shutting down: no second attempt.
+        let mut calls = 0;
+        let result = retry_after(
+            &[Duration::ZERO; 2],
+            || true,
+            || {
+                calls += 1;
+                fail()
+            },
+        );
+        assert!(result.is_err());
+        assert_eq!(calls, 1);
     }
 
     /// Building the first grid in `open` also refused a library the grid query could not
