@@ -394,9 +394,12 @@ export class LibraryStore {
   private folderById = $derived(new Map(this.folders.folders.map((f) => [f.id, f])));
   private onlineByWatched = $derived(new Map(this.folders.watched.map((w) => [w.id, w.online])));
   /** A page answered at another version means the index moved under it; the refresh that
-   *  follows goes through the same single flight as every other, so a screenful of stale
-   *  pages costs one fetch and one queued behind it rather than one each. */
-  private pages = new PageCache<GridEntry>((o, c) => api.gridRows(o, c), () => void this.refresh().catch(this.reportError));
+   *  follows goes through the same single flight as every other and asks only for that
+   *  version, so a screenful of stale pages costs one fetch rather than one each. */
+  private pages = new PageCache<GridEntry>(
+    (o, c) => api.gridRows(o, c),
+    (version) => void this.refreshTo(version).catch(this.reportError),
+  );
   /** The range the grid last asked `ensure` for: what is on screen, plus its overscan. */
   private seen: [number, number] = [0, 0];
   private unlisten: UnlistenFn[] = [];
@@ -414,7 +417,7 @@ export class LibraryStore {
     this.initPromise = (async () => {
       const unlisten = await Promise.all([
         events.onLibraryChanged((e) => {
-          void this.refresh().catch(this.reportError);
+          void this.refreshTo(e.version).catch(this.reportError);
           // Only when the data may have moved: a view switch, a sort or a search keystroke
           // leaves every collection as it was, and the tag list alone costs a quarter of a
           // second on a large library.
@@ -468,6 +471,26 @@ export class LibraryStore {
   }
 
   private refreshFlight = singleFlight(() => this.loadGrid());
+
+  /** Refetches the grid unless `info` is already at `version` or later: for a version
+   *  something has announced - a `library-changed`, a page answered at a newer version.
+   *  Also asked again when a queued fetch comes due, so one that landed at the version
+   *  meanwhile answers every announcement queued behind it.
+   *
+   *  `<=` is safe here because of how the two ends are ordered: the engine bumps the version
+   *  and swaps the index under its write lock and only then emits, and `grid_info` reads the
+   *  version first and everything else after it. An answer at `version` or later was
+   *  therefore read after that publish, and has seen everything the announcement is about.
+   *  A view switch's own awaited refresh usually lands before its event arrives, and this is
+   *  what stops the event fetching the same grid a second time.
+   *
+   *  Not the rule for `refresh()` itself: a same-version answer there is still applied (see
+   *  `loadGrid`), because the view, the argument and the counts in `GridInfo` are read live
+   *  beside the index and can move without a publish - a view switch whose rebuild and whose
+   *  rollback's rebuild both fail restores the old view without bumping the version. */
+  private refreshTo(version: number): Promise<void> {
+    return this.refreshFlight(() => version <= this.info.version);
+  }
 
   private async loadGrid(): Promise<void> {
     const info = await api.gridInfo();

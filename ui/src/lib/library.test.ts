@@ -202,6 +202,26 @@ describe('LibraryStore', () => {
     expect(store.albums).toEqual([{ id: 2, name: 'Zoo', count: 0, picasa: false }]);
   });
 
+  // A view switch awaits its own refresh, which usually lands before the event announcing the
+  // switch's rebuild; that event then has nothing to add, and fetching the whole grid again
+  // for it doubled the cost of every switch and every search keystroke.
+  it('does not refetch the grid for an event at a version it already shows', async () => {
+    const store = new LibraryStore();
+    await store.init();
+    expect(store.info.version).toBe(1);
+    const calls = vi.mocked(api.gridInfo).mock.calls.length;
+
+    handlers.libraryChanged({ version: 1, len: 0, dataChanged: false });
+    await flush();
+    expect(vi.mocked(api.gridInfo).mock.calls.length).toBe(calls);
+
+    vi.mocked(api.gridInfo).mockResolvedValue({ ...store.info, version: 2 });
+    handlers.libraryChanged({ version: 2, len: 0, dataChanged: false });
+    await flush();
+    expect(vi.mocked(api.gridInfo).mock.calls.length).toBe(calls + 1);
+    expect(store.info.version).toBe(2);
+  });
+
   // Every page of a screenful answered at a newer version reports itself stale.
   it('refetches the grid once for a screenful of stale pages, not once a page', async () => {
     const info = (version: number) => ({
@@ -231,7 +251,8 @@ describe('LibraryStore', () => {
     vi.mocked(api.gridRows).mockResolvedValue({ version: 2, rows: [] });
     await store.ensure(0, 1000);
     await flush();
-    expect(vi.mocked(api.gridInfo).mock.calls.length).toBe(calls + 2);
+    // The first fetch lands at the version the pages reported, which answers the rest.
+    expect(vi.mocked(api.gridInfo).mock.calls.length).toBe(calls + 1);
     expect(store.info.version).toBe(2);
   });
 
