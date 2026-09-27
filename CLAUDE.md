@@ -34,7 +34,12 @@ npm test -w ui -- src/lib/nav.test.ts            # one UI file
 ```
 
 **There is no component test harness.** vitest runs with `environment: 'node'`, so a
-`.svelte` file cannot be rendered or asserted on. Logic that needs a test goes in a
+`.svelte` file cannot be rendered or asserted on. A `.svelte.ts` module compiles there for
+Svelte's *server* runtime, where effects never run; a test that needs real reactivity
+(an effect, a derived depending on state it reads) is named `*.client.test.ts` and runs in the
+`client` vitest project (`ui/vite.config.ts`), still in Node but with the client runtime -
+`page-signals.client.test.ts` is why: a lazily created per-page signal passed every
+server-runtime test and left every tile deaf to its page. Logic that needs a test goes in a
 `.svelte.ts` factory tested with fake timers (`createSearchBox`, `createThumbRequest`,
 `createSlideshow`, `createCropTool`) or a pure module (`timeline.ts`, `crop.ts`, `picture.ts`);
 what is left in the component is effect wiring, verified by `svelte-check` and the README's
@@ -104,6 +109,17 @@ moved, its rebuild not yet landed) went untested for months while the `seq` stam
 covered every scenario written for it. A setter's own rebuild is the authority
 for a view change. A discarded rebuild never loses rows: every commit is followed on its own
 thread by a rebuild stamped after it, and the highest stamp always publishes.
+
+`Engine::open` does not build the grid: it publishes an empty index at `NOT_BUILT` (version 0,
+which no real publish reaches, since each adds one) so `setup` - on the main thread, before the
+webview can load - costs a library open, not a whole-library query. `startup` builds it first
+thing. The UI treats that version as "not known yet" (`grid-state.ts`): no empty-library
+notice, no photo count, and no last-folder restore, whose `len === 0` guard waits for it.
+`open` still fails on a library the grid query cannot run against, through
+`check_grid_query`, which prepares the query without running it. A first build that fails
+anyway is retried (`FIRST_GRID_BACKOFF`) and then published *empty* (`build_first_grid`):
+left at `NOT_BUILT` the window drew nothing, and an unchanged library rebuilt only on a view
+switch.
 
 `LibraryChanged::data_changed` tells the UI whether to refetch the sidebar's collections
 (albums, people, tags - the tag counts alone are ~240ms at 300k photos). Every `refresh_grid`
@@ -208,8 +224,12 @@ Picasa's per-directory `.picasa.ini` stars are the worked example — cannot be 
 watcher's path). Wiring a post-walk pass into only the first leaves the common case broken while
 every test passes. `scan_subtree`'s `folder_ids` is pre-seeded by `seed_ancestors` with every
 ancestor, so a per-folder pass must use `walked`, not `folder_ids`. The one post-walk pass
-today is `apply_picasa`, which applies stars, faces, hidden flags *and* albums from one
-`picasa::read_folder`. The hidden flag is followed on *change* (`items.picasa_hidden` records
+today is `apply_picasa`, which applies stars, faces, hidden flags *and* albums from one read
+of the folder's INI. It finds that INI from the walk's own listing (`read_folder_listed`), not
+by listing the directory again - but a listing is a snapshot, and a star photon writes during
+a long scan lands after it, so an INI the walk did not see is still probed for, and one it
+did see and is gone falls back to `read_folder`; so does any folder whose listing the walk
+could not complete. A pass that trusted the listing alone would zero that star. The hidden flag is followed on *change* (`items.picasa_hidden` records
 the INI's last answer), not mirrored like a star: photon never writes `hidden=`, so a mirror
 would undo every unhide in photon on the next scan.
 

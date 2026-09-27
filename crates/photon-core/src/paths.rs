@@ -67,6 +67,36 @@ pub fn is_within(child: &Path, parent: &Path) -> bool {
     child.len() >= parent.len() && child[..parent.len()] == parent[..]
 }
 
+/// One folder, split once, for asking [`is_within`] of many children.
+///
+/// `is_within` builds both paths' component lists on every call, which a scan that asks it
+/// of every directory it walks, once per excluded folder, paid for thousands of times over.
+/// On a case-sensitive platform this compares without allocating at all.
+pub(crate) struct Folder(Vec<String>);
+
+impl Folder {
+    pub(crate) fn new(path: &Path) -> Self {
+        Self(keys(path))
+    }
+
+    /// `is_within(child, self)`.
+    pub(crate) fn contains(&self, child: &Path) -> bool {
+        let mut components = child
+            .components()
+            .filter(|c| !matches!(c, Component::CurDir));
+        self.0.iter().all(|key| {
+            components.next().is_some_and(|c| {
+                let s = c.as_os_str().to_string_lossy();
+                if cfg!(any(target_os = "macos", windows)) {
+                    s.to_lowercase() == *key
+                } else {
+                    s == key.as_str()
+                }
+            })
+        })
+    }
+}
+
 /// True when `a` and `b` are the same folder or one contains the other.
 pub(crate) fn overlaps(a: &Path, b: &Path) -> bool {
     is_within(a, b) || is_within(b, a)
@@ -114,6 +144,28 @@ mod tests {
         assert!(overlaps(Path::new("/a/b"), Path::new("/a")));
         assert!(!overlaps(Path::new("/a/b"), Path::new("/a/c")));
         assert!(same_path(Path::new("/a/./b"), Path::new("/a/b")));
+    }
+
+    #[test]
+    fn a_folder_split_once_answers_as_is_within_does() {
+        let cases = [
+            ("/a/b", "/a"),
+            ("/a", "/a"),
+            ("/ab", "/a"),
+            ("/a", "/a/b"),
+            ("/a/./b", "/a/b"),
+            ("/a/b/c", "/a/./b"),
+            ("a/b", "a"),
+            ("/A/b", "/a"),
+        ];
+        for (child, parent) in cases {
+            let (child, parent) = (Path::new(child), Path::new(parent));
+            assert_eq!(
+                Folder::new(parent).contains(child),
+                is_within(child, parent),
+                "{child:?} in {parent:?}"
+            );
+        }
     }
 
     #[cfg(any(target_os = "macos", windows))]

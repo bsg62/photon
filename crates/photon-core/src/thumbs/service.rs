@@ -138,7 +138,7 @@ pub struct ThumbService {
     /// Ids the webview said it cannot play, skipped until the next session.
     video_skipped: Mutex<HashSet<i64>>,
     /// Whether a page is making frames. Without one, a thumbnail request for a video
-    /// answers at once rather than holding a protocol thread for `THUMB_TIMEOUT`.
+    /// answers at once rather than holding the request open for `THUMB_TIMEOUT`.
     video_session: AtomicBool,
     /// Bumped by every `video_session_start`, under `video_claims`' lock, so a long-poll the
     /// previous page left waiting cannot claim a job for a page that no longer exists.
@@ -592,15 +592,26 @@ impl ThumbService {
         ))
     }
 
+    /// `request_async`, blocking this thread for at most `timeout`: for a caller that is not
+    /// on an async runtime.
+    pub fn request(&self, id: i64, size: ThumbSize, timeout: Duration) -> Result<PathBuf> {
+        super::queue::block_on_until(self.request_async(id, size), Instant::now() + timeout)
+            .unwrap_or(Err(Error::ThumbTimeout(id)))
+    }
+
     /// Returns the cached thumbnail, or moves the item to the front of the queue and waits
     /// for a worker to build it. Concurrent requests for one item share the same decode,
-    /// and CPU use stays within the worker pool. Used by the `photon://` protocol.
-    pub fn request(&self, id: i64, size: ThumbSize, timeout: Duration) -> Result<PathBuf> {
-        let deadline = Instant::now() + timeout;
+    /// and CPU use stays within the worker pool. Used by the `photon://` protocol, which
+    /// bounds it with `THUMB_TIMEOUT`: the wait itself holds no thread (`ThumbQueue::wait`),
+    /// and dropping the future is how it gives up.
+    ///
+    /// The database reads around the wait are made inline, on whatever thread polls this -
+    /// a primary-key lookup and a stat, the same work every async IPC command does.
+    pub async fn request_async(&self, id: i64, size: ThumbSize) -> Result<PathBuf> {
         // Two rounds: the first may only wait out a job already running for an older
         // version of the file. A suspect currently backing off (`ThumbQueue::delayed`)
         // costs this loop nothing extra: `push` leaves it exactly where it is rather than
-        // readmitting it (see `SUSPECT_BACKOFF_START`), so `wait_for` finds it neither
+        // readmitting it (see `SUSPECT_BACKOFF_START`), so `wait` finds it neither
         // queued nor in flight and returns at once - no worker is ever woken for it, so
         // this never causes a fresh `decode_lock` attempt on the suspect's behalf.
         //
@@ -619,13 +630,11 @@ impl ThumbService {
                     || self.video_skipped.lock().contains(&id))
             {
                 // No page is drawing frames - the webview cannot play video here - or it
-                // could not draw this one: waiting would hold a protocol thread for nothing.
+                // could not draw this one: waiting would hold the request open for nothing.
                 return Err(Error::ThumbUnavailable(id));
             }
             queue.push(id, Priority::Visible);
-            if !queue.wait_for(id, deadline) {
-                return Err(Error::ThumbTimeout(id));
-            }
+            queue.wait(id).await;
         }
         self.cached(id, size)?.ok_or(Error::ThumbUnavailable(id))
     }
@@ -1977,12 +1986,12 @@ mod tests {
     /// pop it and burn another `SUSPECT_WAIT` finding the write lock still held by the hang
     /// decode - about 1s and one fresh `decode_lock` attempt per call, on top of the one from
     /// setup. With the fix, that same `push` leaves the suspect exactly where it was, so
-    /// `wait_for` finds it neither queued nor in flight and returns at once - no worker is
+    /// `wait` finds it neither queued nor in flight and returns at once - no worker is
     /// ever woken for it, so `request` runs both of its rounds without ever waiting, and
     /// returns `ThumbUnavailable`.
     ///
     /// Probe: revert `State::push`'s delayed check (as in the queue-level test) and this goes
-    /// RED - not on the loop's own elapsed-time assertions (`wait_for` still returns quickly
+    /// RED - not on the loop's own elapsed-time assertions (`wait` still returns quickly
     /// either way, since it only reads `entries`/`in_flight`, not `delayed`, so promptness by
     /// itself isn't what distinguishes the bug), but on the final attempts-count assertion
     /// below: a free worker picks up the wrongly-readmitted job and burns another

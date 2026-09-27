@@ -6,8 +6,8 @@
 //! looking at when they drew it. Thumbnails, the viewer's full image and the face outlines
 //! all go through this module, so they cannot disagree about what an edit means.
 
-use crate::{Result, decode::apply_orientation};
-use image::DynamicImage;
+use crate::Result;
+use image::{DynamicImage, metadata::Orientation};
 use std::path::Path;
 use xxhash_rust::xxh3::xxh3_64;
 
@@ -151,19 +151,41 @@ impl Edit {
 
     /// Turns and crops an already oriented image.
     pub fn apply(self, img: DynamicImage) -> DynamicImage {
-        let img = match self.turns {
-            1 => img.rotate90(),
-            2 => img.rotate180(),
-            3 => img.rotate270(),
-            _ => img,
-        };
-        match self.crop {
+        self.place(img, 1)
+    }
+
+    /// Orients `img` by its EXIF `orientation`, then turns and crops it: the photo as shown.
+    ///
+    /// Not done in that order, though the result is the same to the pixel. Orientation and
+    /// turns are both a quarter turn with or without a mirror, so together they are one
+    /// ([`Placement`]), applied once - where the three steps, done as written, made up to
+    /// three full-size copies of a picture that can be 45 MP. The crop is mapped back
+    /// through that placement onto the decoded picture and taken there first, so only the
+    /// kept pixels are ever turned, and the full decode is dropped before they are.
+    /// Exact because a placement moves whole pixels: the rectangle `Crop::pixels` picks in
+    /// the placed picture is the image of exactly one rectangle of the unplaced one. The
+    /// tests hold it to the three steps done as written, for every orientation, turn and
+    /// several crops.
+    pub fn place(self, img: DynamicImage, orientation: u8) -> DynamicImage {
+        let placement = Placement::of(orientation, self.turns);
+        let mut img = match self.crop {
             None => img,
             Some(c) => {
-                let (x0, y0, x1, y1) = c.pixels(img.width(), img.height());
-                img.crop_imm(x0, y0, x1 - x0, y1 - y0)
+                let (w, h) = (img.width(), img.height());
+                let (pw, ph) = placement.dims(w, h);
+                let (x0, y0, x1, y1) = c.pixels(pw, ph);
+                let (ax, ay) = placement.source_of(w, h, x0, y0);
+                let (bx, by) = placement.source_of(w, h, x1 - 1, y1 - 1);
+                let (left, top) = (ax.min(bx), ay.min(by));
+                let kept = img.crop_imm(left, top, ax.abs_diff(bx) + 1, ay.abs_diff(by) + 1);
+                // Explicitly: a binding only borrowed in this arm would otherwise live to the
+                // end of the function, holding the full decode through the turn below.
+                drop(img);
+                kept
             }
-        }
+        };
+        img.apply_orientation(placement.orientation());
+        img
     }
 
     /// Only the turn, for the crop tool: it shows the whole picture with the current crop
@@ -219,21 +241,109 @@ impl Crop {
     }
 }
 
-/// The full-size edited picture, encoded: JPEG at `quality`, or PNG when the source has
-/// transparency to keep. Returns the bytes and their MIME type.
+/// An EXIF orientation followed by an edit's turns, as one motion: mirror left to right if
+/// `mirrored`, then turn `quarters` clockwise. Every one of the eight orientations is a
+/// mirror-then-turn, and turning afterwards only adds quarters, so no combination needs more
+/// than one turn and one mirror - where applying them one after the other can rotate a
+/// full-size picture twice.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Placement {
+    mirrored: bool,
+    quarters: u8,
+}
+
+impl Placement {
+    fn of(orientation: u8, turns: u8) -> Self {
+        // The same reading of the tag as `decode::apply_orientation`: 5 and 7 are a quarter
+        // turn and then a mirror there, which is the mirror first and the opposite turn.
+        let (mirrored, quarters) = match orientation {
+            2 => (true, 0),
+            3 => (false, 2),
+            4 => (true, 2),
+            5 => (true, 3),
+            6 => (false, 1),
+            7 => (true, 1),
+            8 => (false, 3),
+            _ => (false, 0),
+        };
+        Placement {
+            mirrored,
+            quarters: (quarters + turns) % 4,
+        }
+    }
+
+    /// The size of a `w` by `h` picture once placed.
+    fn dims(self, w: u32, h: u32) -> (u32, u32) {
+        if self.quarters % 2 == 1 {
+            (h, w)
+        } else {
+            (w, h)
+        }
+    }
+
+    /// The pixel of a `w` by `h` picture that lands at `(x, y)` once it is placed: the turn
+    /// undone, then the mirror. Each arm is the inverse of `image`'s own `rotate90`,
+    /// `rotate180` and `rotate270`.
+    fn source_of(self, w: u32, h: u32, x: u32, y: u32) -> (u32, u32) {
+        let (x, y) = match self.quarters {
+            1 => (y, h - 1 - x),
+            2 => (w - 1 - x, h - 1 - y),
+            3 => (w - 1 - y, x),
+            _ => (x, y),
+        };
+        if self.mirrored {
+            (w - 1 - x, y)
+        } else {
+            (x, y)
+        }
+    }
+
+    /// As `image` spells it, whose `apply_orientation` mirrors and half-turns in place and
+    /// makes a single copy for a quarter turn.
+    fn orientation(self) -> Orientation {
+        match (self.mirrored, self.quarters) {
+            (false, 1) => Orientation::Rotate90,
+            (false, 2) => Orientation::Rotate180,
+            (false, 3) => Orientation::Rotate270,
+            (true, 0) => Orientation::FlipHorizontal,
+            // A mirror then a quarter clockwise is a quarter anticlockwise then the mirror.
+            (true, 1) => Orientation::Rotate270FlipH,
+            (true, 2) => Orientation::FlipVertical,
+            (true, 3) => Orientation::Rotate90FlipH,
+            _ => Orientation::NoTransforms,
+        }
+    }
+}
+
+/// How much colour detail a JPEG render keeps.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Chroma {
+    /// 4:2:0, colour at half the resolution each way, as most cameras store a JPEG: no loss
+    /// worth having for a render the viewer shows once and throws away, and half the
+    /// samples to encode and for the webview to decode.
+    Half,
+    /// 4:4:4, colour at full resolution: for a copy the user keeps, which may be edited
+    /// again and re-encoded by something else.
+    Full,
+}
+
+/// The full-size edited picture, encoded: JPEG at `quality` and `chroma`, or PNG when the
+/// source has transparency to keep. Returns the bytes and their MIME type.
 ///
 /// Decoded at full resolution, under the same allocation limits as a thumbnail decode
 /// (`decode::decode_oriented`). The caller serves the *file* for an untouched photo; this is
 /// only ever asked for an edit, where there is no file that holds the picture.
 ///
-/// `quality` is the caller's because the two callers want different things from it: the
-/// viewer throws its render away after one look (`FULL_QUALITY`), and an export is the copy
-/// the user keeps (`export::EXPORT_QUALITY`).
+/// `quality` and `chroma` are the caller's because the two callers want different things
+/// from them: the viewer throws its render away after one look (`FULL_QUALITY`,
+/// [`Chroma::Half`]), and an export is the copy the user keeps (`export::EXPORT_QUALITY`,
+/// [`Chroma::Full`]).
 pub fn render_full(
     path: &Path,
     orientation: u8,
     edit: Edit,
     quality: u8,
+    chroma: Chroma,
 ) -> Result<(Vec<u8>, &'static str)> {
     let img = render_picture(path, orientation, edit)?;
     let mut bytes = Vec::new();
@@ -244,29 +354,61 @@ pub fn render_full(
         )?;
         "image/png"
     } else {
-        let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut bytes, quality);
         // `into_rgb8` hands back the buffer of a photo that already is RGB8, which a JPEG
         // is; `to_rgb8` would copy all of it.
-        img.into_rgb8().write_with_encoder(encoder)?;
+        encode_jpeg(&img.into_rgb8(), quality, chroma, &mut bytes)?;
         "image/jpeg"
     };
     Ok((bytes, mime))
+}
+
+/// Encodes with `jpeg-encoder` rather than `image`'s own encoder, which is scalar and only
+/// writes 4:4:4, and was the slowest stage of rendering an edited photo - slower than the
+/// decode. This one is pure Rust and takes an AVX2 path, through `std::arch`, where the CPU
+/// has one. Subsampled colour is averaged over each 2x2 block, as libjpeg does, rather than
+/// taken from the block's top-left pixel, the crate's default, which frays coloured edges.
+pub fn encode_jpeg(
+    img: &image::RgbImage,
+    quality: u8,
+    chroma: Chroma,
+    out: &mut Vec<u8>,
+) -> Result<()> {
+    use jpeg_encoder::{ChromaSubsamplingMethod, ColorType, Encoder, SamplingFactor};
+    let failed = |err: Box<dyn std::error::Error + Send + Sync>| {
+        image::ImageError::Encoding(image::error::EncodingError::new(
+            image::ImageFormat::Jpeg.into(),
+            err,
+        ))
+    };
+    let (Ok(width), Ok(height)) = (u16::try_from(img.width()), u16::try_from(img.height())) else {
+        return Err(failed("wider or taller than a JPEG can be".into()).into());
+    };
+    let mut encoder = Encoder::new(out, quality);
+    match chroma {
+        Chroma::Half => {
+            encoder.set_sampling_factor(SamplingFactor::R_4_2_0);
+            encoder.set_chroma_subsampling_method(ChromaSubsamplingMethod::Average);
+        }
+        Chroma::Full => encoder.set_sampling_factor(SamplingFactor::R_4_4_4),
+    }
+    encoder
+        .encode(img.as_raw(), width, height, ColorType::Rgb)
+        .map_err(|err| failed(err.into()).into())
 }
 
 /// The photo as shown: decoded at full resolution, turned upright by its EXIF orientation,
 /// then turned and cropped by its edit. The one picture every full-size consumer draws from,
 /// so the viewer, an export and a copy can never disagree about what the photo looks like.
 pub fn render_picture(path: &Path, orientation: u8, edit: Edit) -> Result<DynamicImage> {
-    let img = crate::decode::decode_image(path)?;
-    Ok(edit.apply(apply_orientation(img, orientation)))
+    Ok(edit.place(crate::decode::decode_image(path)?, orientation))
 }
 
 /// The longest edge a copied photo is given. Large enough for a chat, a mail or a document
 /// at full-screen size; a photo of a camera's full resolution is 96 MB of pixels on the
 /// clipboard and, on Linux, a PNG encode of several seconds before a paste works. The full
-/// file is what Export and Reveal are for. The copy's peak memory is above the viewer's all the
-/// same - the Lanczos resize keeps a 32-bit float intermediate, about 245 MB for a 24 MP photo
-/// on top of its decode - and `protocol::RENDERING` is what keeps it to one at a time.
+/// file is what Export and Reveal are for. The copy's peak memory is the viewer's plus the
+/// resize's 8-bit intermediate (the source's width by the copy's height, ~30 MB for a 24 MP
+/// photo), and `protocol::RENDERING` is what keeps it to one at a time.
 pub const CLIPBOARD_MAX_EDGE: u32 = 2560;
 
 /// RGBA pixels, row by row, as the clipboard takes them. Named here so the app crate can hold
@@ -277,17 +419,13 @@ pub type ClipboardPicture = image::RgbaImage;
 /// [`CLIPBOARD_MAX_EDGE`] on its long edge if it is larger; a smaller photo keeps its size.
 pub fn clipboard_picture(path: &Path, orientation: u8, edit: Edit) -> Result<ClipboardPicture> {
     let img = render_picture(path, orientation, edit)?;
-    let img = if img.width().max(img.height()) > CLIPBOARD_MAX_EDGE {
-        // Lanczos, not the Triangle the thumbnails use: this is a picture someone will look
-        // at full screen in another app, and it is made once per copy, not once per tile.
-        img.resize(
-            CLIPBOARD_MAX_EDGE,
-            CLIPBOARD_MAX_EDGE,
-            image::imageops::FilterType::Lanczos3,
-        )
-    } else {
-        img
-    };
+    // Lanczos, not the bilinear filter the thumbnails use: this is a picture someone will
+    // look at full screen in another app, and it is made once per copy, not once per tile.
+    let img = crate::decode::fit_within_by(
+        img,
+        CLIPBOARD_MAX_EDGE,
+        fast_image_resize::FilterType::Lanczos3,
+    );
     Ok(img.into_rgba8())
 }
 
@@ -451,7 +589,7 @@ mod tests {
         let path = dir.path().join("a.png");
         numbered().save(&path).unwrap();
         let edit = Edit::new(1, Some(crop(0.0, 0.0, 1.0, 0.5))).unwrap();
-        let (bytes, mime) = render_full(&path, 1, edit, FULL_QUALITY).unwrap();
+        let (bytes, mime) = render_full(&path, 1, edit, FULL_QUALITY, Chroma::Half).unwrap();
         // The fixture is RGBA, so the render stays lossless and can be compared exactly.
         assert_eq!(mime, "image/png");
         let out = image::load_from_memory(&bytes).unwrap();
@@ -459,7 +597,7 @@ mod tests {
 
         let opaque = dir.path().join("b.jpg");
         numbered().to_rgb8().save(&opaque).unwrap();
-        let (bytes, mime) = render_full(&opaque, 1, edit, FULL_QUALITY).unwrap();
+        let (bytes, mime) = render_full(&opaque, 1, edit, FULL_QUALITY, Chroma::Half).unwrap();
         assert_eq!(mime, "image/jpeg");
         let out = image::load_from_memory(&bytes).unwrap();
         assert_eq!((out.width(), out.height()), edit.dims(4, 2));
@@ -479,7 +617,7 @@ mod tests {
             turns: 1,
             crop: None,
         };
-        let (bytes, mime) = render_full(&path, 1, turn, FULL_QUALITY).unwrap();
+        let (bytes, mime) = render_full(&path, 1, turn, FULL_QUALITY, Chroma::Half).unwrap();
         assert_eq!(mime, "image/jpeg");
         let out = image::load_from_memory(&bytes).unwrap();
         assert_eq!((out.width(), out.height()), (32, 64));
@@ -544,5 +682,104 @@ mod tests {
         let edit = Edit::new(1, Some(crop(0.0, 0.0, 1.0, 0.5))).unwrap();
         let copied = clipboard_picture(&path, 1, edit).unwrap();
         assert_eq!(copied, edit.apply(numbered()).to_rgba8());
+    }
+
+    /// Every pixel different, and `w` by `h`.
+    fn numbered_of(w: u32, h: u32) -> DynamicImage {
+        DynamicImage::ImageRgb8(image::RgbImage::from_fn(w, h, |x, y| {
+            image::Rgb([x as u8, y as u8, (x * 7 + y * 13) as u8])
+        }))
+    }
+
+    /// `place` crops first and turns once; the definition is orient, then turn, then crop.
+    /// Held to the definition done literally, one step after the other as `render_picture`
+    /// did before, for every orientation and turn, crops at the corners, the middle and a
+    /// single pixel, on pictures of odd sizes both ways round and one pixel wide.
+    #[test]
+    fn placing_a_picture_is_orienting_then_turning_then_cropping() {
+        let as_written = |img: DynamicImage, orientation: u8, edit: Edit| {
+            let img = crate::decode::apply_orientation(img, orientation);
+            let img = match edit.turns {
+                1 => img.rotate90(),
+                2 => img.rotate180(),
+                3 => img.rotate270(),
+                _ => img,
+            };
+            match edit.crop {
+                None => img,
+                Some(c) => {
+                    let (x0, y0, x1, y1) = c.pixels(img.width(), img.height());
+                    img.crop_imm(x0, y0, x1 - x0, y1 - y0)
+                }
+            }
+        };
+        let crops = [
+            None,
+            Some(crop(0.0, 0.0, 0.5, 0.5)),
+            Some(crop(0.5, 0.0, 1.0, 0.4)),
+            Some(crop(0.1, 0.6, 0.3, 1.0)),
+            Some(crop(0.25, 0.3, 0.8, 0.9)),
+            Some(crop(0.9, 0.9, 1.0, 1.0)),
+        ];
+        for (w, h) in [(7, 4), (4, 7), (5, 5), (1, 6), (6, 1)] {
+            for orientation in 0..=9 {
+                for turns in 0..4 {
+                    for c in crops {
+                        let edit = Edit::new(turns, c).unwrap();
+                        assert_eq!(
+                            edit.place(numbered_of(w, h), orientation).to_rgb8(),
+                            as_written(numbered_of(w, h), orientation, edit).to_rgb8(),
+                            "{w}x{h}, orientation {orientation}, {edit:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// The viewer's render stores colour at half resolution, the way a camera does; an
+    /// export's keeps it at full resolution. `image`'s encoder, before, wrote 4:4:4 for both.
+    #[test]
+    fn a_viewer_render_halves_its_colour_and_a_kept_one_does_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.jpg");
+        numbered_of(64, 48).save(&path).unwrap();
+        let edit = Edit::new(1, None).unwrap();
+        let sampling = |chroma| {
+            let (bytes, mime) = render_full(&path, 1, edit, FULL_QUALITY, chroma).unwrap();
+            assert_eq!(mime, "image/jpeg");
+            crate::testutil::jpeg_luma_sampling(&bytes)
+        };
+        assert_eq!(sampling(Chroma::Half), Some(0x22));
+        assert_eq!(sampling(Chroma::Full), Some(0x11));
+    }
+
+    /// Halved colour is the average of each 2x2 block, not one pixel of it. Each block here
+    /// is one red pixel and three blue: averaged, a quarter of the red survives; sampled, the
+    /// whole block takes the sampled pixel's colour. The red is top-left as drawn and
+    /// bottom-right after a half turn, so a sampler of any one fixed pixel fails one of the
+    /// two.
+    #[test]
+    fn halved_colour_is_averaged_over_its_block() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.png");
+        let img = image::RgbImage::from_fn(64, 64, |x, y| {
+            if x % 2 == 0 && y % 2 == 0 {
+                image::Rgb([255, 0, 0])
+            } else {
+                image::Rgb([0, 0, 255])
+            }
+        });
+        DynamicImage::ImageRgb8(img).save(&path).unwrap();
+        for edit in [Edit::default(), Edit::new(2, None).unwrap()] {
+            let (bytes, _) = render_full(&path, 1, edit, 100, Chroma::Half).unwrap();
+            let out = image::load_from_memory(&bytes).unwrap().to_rgb8();
+            let mean = |c: usize| {
+                out.pixels().map(|p| f64::from(p.0[c])).sum::<f64>() / f64::from(64 * 64)
+            };
+            // The source's means are 64 red and 191 blue.
+            assert!((mean(0) - 64.0).abs() < 20.0, "{edit:?}: red {}", mean(0));
+            assert!((mean(2) - 191.0).abs() < 20.0, "{edit:?}: blue {}", mean(2));
+        }
     }
 }

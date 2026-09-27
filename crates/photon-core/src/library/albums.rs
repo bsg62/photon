@@ -58,6 +58,16 @@ fn freshens(stored: &str, stored_at: Option<i64>, name: &str, named_at: i64) -> 
     stored == name && stored_at.is_none_or(|at| named_at > at)
 }
 
+/// `folders_with_picasa_albums`' query, shared with its plan test. Driven from the
+/// memberships, like `FOLDERS_WITH_FACES_SQL`: far fewer than photos, each reaching its
+/// photo and album by id. The planner picks that order here unaided (the membership table's
+/// own index covers it); the plan test is what would notice it stop doing so.
+const FOLDERS_WITH_PICASA_ALBUMS_SQL: &str = "SELECT DISTINCT i.folder_id
+     FROM album_items m
+     JOIN albums a ON a.id = m.album_id
+     JOIN items i ON i.id = m.item_id
+     WHERE a.picasa_token IS NOT NULL";
+
 impl Library {
     pub fn create_album(&self, name: &str, now_ms: i64) -> Result<Album> {
         let name = valid_name(name)?;
@@ -324,6 +334,19 @@ impl Library {
         }
         tx.commit()?;
         Ok((ids, changed))
+    }
+
+    /// The folders holding at least one photo in a Picasa album, for the Picasa pass to skip
+    /// the per-folder membership query where neither the INI nor the library has any.
+    /// Missing photos are counted too: a folder listed needlessly costs one query, a folder
+    /// left out would keep memberships its INI dropped.
+    pub fn folders_with_picasa_albums(&self) -> Result<HashSet<i64>> {
+        let conn = self.reader()?;
+        let mut stmt = conn.prepare_cached(FOLDERS_WITH_PICASA_ALBUMS_SQL)?;
+        let ids = stmt
+            .query_map([], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        Ok(ids)
     }
 
     /// The Picasa-album memberships of every live photo in one folder, by item id, for the
@@ -849,5 +872,19 @@ mod tests {
         lib.upsert_picasa_albums(&summer, &only_u, 2, 4).unwrap();
         assert_eq!(lib.writes_for_test(), before + 1, "a rename still writes");
         assert_eq!(lib.album(ids["t"]).unwrap().unwrap().name, "Summer");
+    }
+
+    /// `folders_with_picasa_albums` runs once per scan over every membership in the library.
+    /// Driven from `items` instead, it would read every photo. The planner chooses the
+    /// memberships today without being told; the faces twin needed a `CROSS JOIN` for it.
+    #[test]
+    fn the_folders_with_picasa_albums_are_found_from_the_memberships() {
+        let (_dir, lib) = temp_library();
+        let plan = lib.query_plan(FOLDERS_WITH_PICASA_ALBUMS_SQL, &[]);
+        assert!(
+            plan.iter()
+                .any(|step| step == "SEARCH i USING INTEGER PRIMARY KEY (rowid=?)"),
+            "expected each photo to be found by id: {plan:?}"
+        );
     }
 }

@@ -16,6 +16,7 @@
     onopen,
     onmenu,
     tile,
+    defer = false,
   }: {
     entry: GridEntry | undefined;
     selected: boolean;
@@ -30,6 +31,9 @@
      *  number decides the row layout there: a tile that sized itself would be free to
      *  disagree with the box the row reserved for it. */
     tile: number;
+    /** The grid is scrolling fast: a photo this tile is given now is asked for only once
+     *  the tile has held it for a moment. See `createThumbRequest`. */
+    defer?: boolean;
   } = $props();
 
   const key = $derived(entry ? `thumb/${entry.id}/grid/${entry.thumbKey}` : '');
@@ -42,14 +46,18 @@
       : undefined,
   );
 
-  // Tiles are keyed by grid offset, not photo id, so the entry changes under a live tile
-  // without it unmounting - every frame of a fast scroll. `request` is what decides when
-  // that becomes an actual round trip; see `createThumbRequest` for why asking for each one
-  // starves the tiles that finally stop on screen. The cancel covers both a key that moves
-  // on again before it settles and the tile unmounting.
+  // The entry can change under a live tile without it unmounting - its page arriving, a
+  // rebuild moving another photo to its offset. `request` is what decides when that becomes
+  // an actual round trip; see `createThumbRequest` for why asking for each one starves the
+  // tiles that finally stop on screen. The cancel covers both a key that moves on again
+  // before it settles and the tile unmounting.
+  //
+  // `defer` is read untracked: the grid settling must not re-run this for every tile on
+  // screen. A deferred request fires on its own once the tile has held its photo for
+  // `TILE_SETTLE_MS`, which is sooner than the grid calls a fast scroll over.
   $effect(() => {
     const assigned = key;
-    if (assigned) request.show(assigned);
+    if (assigned) request.show(assigned, { defer: untrack(() => defer) });
     return () => request.cancel();
   });
 
@@ -76,9 +84,11 @@
   // brings a tile back once an unrelated library change happens to land - `key` doesn't
   // change when the thumbnail becomes ready, and the component isn't remounted.
   // `retry.status` is written here (via `reset`), so it is read through `untrack` — the
-  // effect depends on `pageTick` alone and cannot re-trigger itself.
+  // effect depends on the grid's version alone and cannot re-trigger itself. Not on pages
+  // arriving: those land on every frame of a scroll, for tiles long gone as often as not,
+  // and are no sign that a thumbnail has become ready.
   $effect(() => {
-    void library.pageTick;
+    void library.info.version;
     if (untrack(() => retry.status) === 'broken') {
       retry.reset();
     }

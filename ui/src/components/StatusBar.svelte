@@ -1,6 +1,9 @@
 <script lang="ts">
   import { library } from '../lib/library.svelte';
   import { scanStatus } from '../lib/status';
+  import { photoCount } from '../lib/grid-state';
+
+  const count = $derived(photoCount(library.info));
 
   /** One entry per running scan, in watched-folder order, each with a bar. */
   const scans = $derived(
@@ -37,7 +40,7 @@
     {/each}
   </span>
   <span>
-    {#if library.selectionCount > 1}<span class="selected">{library.selectionCount.toLocaleString()} selected</span> · {/if}{library.info.len.toLocaleString()} photos
+    {#if library.selectionCount > 1}<span class="selected">{library.selectionCount.toLocaleString()} selected</span> · {/if}{count ?? ''}
   </span>
 </footer>
 

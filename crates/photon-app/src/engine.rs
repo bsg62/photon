@@ -56,6 +56,35 @@ const SIMILAR_PASS_STOP_TIMEOUT: Duration = Duration::from_secs(5);
 /// whether anything has orphaned a thumbnail since. See `Library::thumb_gc_due`.
 const THUMB_GC_MAX_AGE: Duration = Duration::from_secs(7 * 24 * 3600);
 
+/// The grid version of the empty index `open` starts with, before `startup` has built the
+/// first real one. Every publish adds one to the version, so no built grid is ever at it,
+/// and the UI can tell "not read yet" from "nothing to show" (`ui/src/lib/grid-state.ts`
+/// holds the same number).
+pub const NOT_BUILT: u64 = 0;
+
+/// The waits before each retry of the first grid build: three attempts in all, over about
+/// a second and a half. Enough to ride out a database that is briefly busy or unreadable
+/// at launch; short enough that a lasting fault reaches the window before it looks hung.
+const FIRST_GRID_BACKOFF: &[Duration] = &[Duration::from_millis(250), Duration::from_millis(1000)];
+
+/// Runs `attempt`, and again after each wait in `backoff` while it keeps failing, unless
+/// `stop` says to give up. Returns the last attempt's answer.
+fn retry_after(
+    backoff: &[Duration],
+    stop: impl Fn() -> bool,
+    mut attempt: impl FnMut() -> Result<()>,
+) -> Result<()> {
+    let mut result = attempt();
+    for wait in backoff {
+        if result.is_ok() || stop() {
+            break;
+        }
+        std::thread::sleep(*wait);
+        result = attempt();
+    }
+    result
+}
+
 pub struct EngineConfig {
     pub db_path: PathBuf,
     pub cache_dir: PathBuf,
@@ -280,16 +309,27 @@ impl Engine {
             .collect();
 
         let sort = lib.grid_sort()?;
-        let grid = Arc::new(GridIndex::build(
-            lib.sorted_entries(GridView::All, "", sort)?,
-            sort.layout(GridView::All),
-        ));
+        // The first grid is not built here. `open` runs inside Tauri's `setup`, on the main
+        // thread, before the webview can load: a full read of the library and its index -
+        // 200ms warm at 300k photos, far longer on a cold disk or a network share - held
+        // the window blank for all of it. `startup` builds it instead, as an ordinary
+        // `refresh_grid`, and until then the engine holds an empty index at version 0,
+        // which no publish produces (the first is 1): the UI reads version 0 as "not built
+        // yet" rather than "no photos" (`ui/src/lib/grid-state.ts`).
+        //
+        // Building it here also refused a library the grid query cannot run against, with
+        // the error dialog. Preparing the query keeps that for every schema fault, at a
+        // cost that does not grow with the library.
+        lib.check_grid_query()?;
         Ok(Arc::new(Self {
             lib,
             thumbs,
             cache,
             excluded,
-            grid: RwLock::new((0, grid)),
+            grid: RwLock::new((
+                NOT_BUILT,
+                Arc::new(GridIndex::build(Vec::new(), sort.layout(GridView::All))),
+            )),
             state: Mutex::new(ViewState {
                 view: GridView::All,
                 arg: String::new(),
@@ -1334,8 +1374,35 @@ impl Engine {
         }
     }
 
-    /// Background start-up work: watch `pictures` if the library is empty, queue pending
-    /// thumbnails, rescan every folder, then collect thumbnail garbage.
+    /// Builds the grid `open` left unbuilt, retrying after each wait in `backoff`, and
+    /// publishes an empty one if every attempt fails.
+    ///
+    /// A failure left alone kept the grid at `NOT_BUILT`, which the UI draws as nothing at
+    /// all - no photos, no empty notice, no count - and an unchanged library then rebuilds
+    /// only on a view switch, since a scan that moves no rows rebuilds nothing. Before
+    /// `open` stopped building the grid, the same failure was the error dialog at launch.
+    /// `open` has shown the query compiles, so what is left is mostly transient - a busy or
+    /// briefly unreadable database - and a few retries answer that.
+    ///
+    /// When they do not, an empty index is published so the window leaves the not-built
+    /// state: it says the view is empty, and the next rebuild that succeeds (a view switch,
+    /// a scan that moves rows) puts the photos back. That says something untrue about the
+    /// library, but a blank window says nothing and looks hung; carrying the failure itself
+    /// to the UI would take a new event or a `GridInfo` field for a fault this rare, and
+    /// the log has it. Published like any rebuild, so a view switch that has landed
+    /// meanwhile, with its own grid, is not overwritten.
+    fn build_first_grid(&self, backoff: &[Duration]) {
+        let stopping = || self.shutting_down.load(Ordering::SeqCst);
+        if let Err(err) = retry_after(backoff, stopping, || self.refresh_grid()) {
+            tracing::error!(%err, "could not build the grid at startup; showing it empty");
+            let rebuild = self.data_snapshot();
+            let empty = GridIndex::build(Vec::new(), rebuild.state.sort.layout(rebuild.state.view));
+            self.publish_if_current(Arc::new(empty), &rebuild);
+        }
+    }
+
+    /// Background start-up work: build the first grid, watch `pictures` if the library is
+    /// empty, queue pending thumbnails, rescan every folder, then collect thumbnail garbage.
     ///
     /// Checks `shutting_down` before each step, and before garbage collection, so a
     /// `shutdown` racing start-up stops it promptly instead of letting it run to
@@ -1346,6 +1413,16 @@ impl Engine {
             .name("photon-startup".into())
             .spawn(move || {
                 let shutting_down = || engine.shutting_down.load(Ordering::SeqCst);
+                if shutting_down() {
+                    return;
+                }
+                // The grid `open` left unbuilt, first and before any scan: it is what the
+                // window is waiting on, and a scan's first rebuild would come a throttle
+                // later at best. An ordinary rebuild, so a view switch the UI makes
+                // meanwhile is ordered against it by `publish_if_current` like any other:
+                // the switch bumps the epoch, and whichever of the two snapshotted the
+                // switched-to view with the higher stamp publishes.
+                engine.build_first_grid(FIRST_GRID_BACKOFF);
                 if shutting_down() {
                     return;
                 }
@@ -3337,7 +3414,11 @@ mod tests {
         let reopened =
             Engine::open(f.config(), Arc::new(crate::events::Recorder::default())).unwrap();
         assert_eq!(reopened.sort(), by_name);
+        // The first grid is `startup`'s to build, in the remembered sort.
+        reopened.startup(None);
+        reopened.wait_for_startup();
         assert_eq!(reopened.grid().1.sections()[0].folder_id, None);
+        reopened.shutdown();
     }
 
     /// The rollback restores the whole view state, the sort included, and a sort that
@@ -3363,14 +3444,120 @@ mod tests {
         assert_eq!(f.engine.lib.grid_sort().unwrap(), Sort::default());
     }
 
+    /// `open` runs on the main thread before the window can draw, so it leaves the first
+    /// grid - a read of the whole library - to `startup`, and says so with the version.
+    /// Startup's scan of the unchanged folder moves no rows and so rebuilds nothing: the
+    /// grid that arrives is startup's own build.
     #[test]
-    fn open_loads_the_existing_grid_without_scanning() {
+    fn open_leaves_the_first_grid_to_startup() {
         let img = jpeg(16, 16);
         let f = fixture(&[("a.jpg", &img)]);
         f.add_photos();
-        let reopened =
-            Engine::open(f.config(), Arc::new(crate::events::Recorder::default())).unwrap();
-        assert_eq!(reopened.grid().1.len(), 1);
+        let events = Arc::new(crate::events::Recorder::default());
+        let reopened = Engine::open(f.config(), events.clone()).unwrap();
+        let (version, grid) = reopened.grid();
+        assert_eq!(version, NOT_BUILT);
+        assert_eq!(grid.len(), 0);
+
+        reopened.startup(None);
+        reopened.wait_for_startup();
+        let (version, grid) = reopened.grid();
+        assert!(version > NOT_BUILT);
+        assert_eq!(grid.len(), 1);
+        // Announced like any rebuild, and as a change to the data, so the UI fetches the
+        // sidebar's collections with it.
+        assert!(events.all().iter().any(|e| matches!(
+            e,
+            Recorded::Library(LibraryChanged { version: v, len: 1, data_changed: true })
+                if *v == version
+        )));
+        reopened.shutdown();
+    }
+
+    /// Left at `NOT_BUILT`, the window drew nothing at all - no photos, no notice, no
+    /// count - until a view switch.
+    #[test]
+    fn a_first_grid_that_cannot_be_built_is_published_empty_rather_than_left_unbuilt() {
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a.jpg", &img)]);
+        f.add_photos();
+        let events = Arc::new(crate::events::Recorder::default());
+        let reopened = Engine::open(f.config(), events.clone()).unwrap();
+        // After `open`'s check, so the query compiles there and fails every time here.
+        rusqlite::Connection::open(&f.config().db_path)
+            .unwrap()
+            .execute_batch("ALTER TABLE items RENAME COLUMN file_name TO renamed")
+            .unwrap();
+
+        reopened.build_first_grid(&[Duration::ZERO, Duration::ZERO]);
+
+        let (version, grid) = reopened.grid();
+        assert!(version > NOT_BUILT);
+        assert_eq!(grid.len(), 0);
+        assert!(events.all().iter().any(|e| matches!(
+            e,
+            Recorded::Library(LibraryChanged { version: v, len: 0, .. }) if *v == version
+        )));
+        reopened.shutdown();
+    }
+
+    /// Only the first attempts may fail: once one succeeds, nothing is tried again, and
+    /// its answer is the one returned.
+    #[test]
+    fn retry_after_retries_a_failure_once_per_wait_then_gives_up() {
+        let fail = || Err(Error::ThumbFailed("busy".into()));
+
+        let mut calls = 0;
+        let result = retry_after(
+            &[Duration::ZERO; 3],
+            || false,
+            || {
+                calls += 1;
+                if calls < 3 { fail() } else { Ok(()) }
+            },
+        );
+        assert!(result.is_ok());
+        assert_eq!(calls, 3);
+
+        let mut calls = 0;
+        let result = retry_after(
+            &[Duration::ZERO; 2],
+            || false,
+            || {
+                calls += 1;
+                fail()
+            },
+        );
+        assert!(result.is_err());
+        assert_eq!(calls, 3);
+
+        // Shutting down: no second attempt.
+        let mut calls = 0;
+        let result = retry_after(
+            &[Duration::ZERO; 2],
+            || true,
+            || {
+                calls += 1;
+                fail()
+            },
+        );
+        assert!(result.is_err());
+        assert_eq!(calls, 1);
+    }
+
+    /// Building the first grid in `open` also refused a library the grid query could not
+    /// run against, with the error dialog; leaving the build to `startup` must not lose that.
+    #[test]
+    fn open_refuses_a_library_the_grid_query_cannot_run_against() {
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a.jpg", &img)]);
+        f.add_photos();
+        f.engine.shutdown();
+        rusqlite::Connection::open(&f.config().db_path)
+            .unwrap()
+            .execute_batch("ALTER TABLE items RENAME COLUMN edit_crop TO renamed")
+            .unwrap();
+        assert!(Engine::open(f.config(), Arc::new(crate::events::Recorder::default())).is_err());
     }
 
     #[test]

@@ -319,6 +319,7 @@ publishing it.
 - [ ] On first launch with a fresh profile, the Pictures folder is added and scanned without asking.
 - [ ] Copy a few hundred photos into a watched folder while the grid shows it: as the scan adds them, the tiles already on screen never blink blank - they stay until the new rows replace them.
 - [ ] Thumbnails appear within seconds, and scrolling stays smooth while indexing continues.
+- [ ] In a large library, drag the grid's scrollbar (or the year strip) from one end to the other and let go: the photos on screen fill in within a moment of stopping. A slow wheel scroll shows each row's thumbnails as it arrives, with no wait, and End, Home and a sidebar folder click fill the screen at once. Open a photo, step through a few with the arrow keys, close it: the grid behind shows its thumbnails straight away.
 - [ ] In the viewer press `R`: within about half a second the photo is shown turned (preview first, then sharp), the caption's pixel size swaps, and back in the grid its tile is turned too. Press `R` four times quickly: it ends upright, not one turn short. Close and reopen photon: the turn is still there. The file on disk is unchanged (same size and date in the file manager).
 - [ ] Press `C`: the whole photo shows with a bright rectangle and the rest dimmed; the eight handles resize, dragging inside moves, and nothing can be dragged off the photo. Choose 1:1: the rectangle becomes square *on screen* and stays square from every handle. Enter applies: the viewer shows only the crop, sharp at 100%, and the grid tile matches. `C` again shows the whole photo with the same rectangle. "Whole photo" then Enter removes the crop. Escape cancels without saving, and a second Escape is needed to close the viewer.
 - [ ] Turn a cropped photo: the same part of the picture stays framed. With the info panel open on a photo with Picasa faces, the outlines still sit on the faces after a turn, and a face cropped out of the frame has no outline.
@@ -341,6 +342,7 @@ publishing it.
 - [ ] Shrink the window to its minimum width with the viewer open on a photo with a long file name: the toolbar's buttons stay clear of the zoom slider and the name ellipsises. Widen it again and the whole name comes back.
 - [ ] Open the info panel over a bright, nearly white photo: the camera, lens and duplicate-path links and the "Add a keyword" placeholder are all comfortably readable against the glass.
 - [ ] Double-click or Enter opens the viewer with an image in about 100 ms. The full resolution follows. ←/→, Home/End, Esc and Backspace work.
+- [ ] In a folder of large photos, hold → for two seconds and let go: the previews flick past, and the photo it stops on turns sharp within about half a second rather than after a wait for every photo passed. A single → shows the next photo's preview at once and the sharp one a moment later.
 - [ ] The mouse's back side button closes the viewer, and does not navigate the page or leave a blank frame. Worth checking on each OS: the three webviews deliver side buttons differently, and some consume them for history before the page sees them.
 - [ ] The gear at the right of the top bar opens Settings. Escape, the close button and a click outside the dialog close it, and focus returns to the gear.
 - [ ] Settings → Folders lists every watched folder with its path, photo count and status, and the status shows scan progress live.
@@ -391,6 +393,8 @@ publishing it.
 - [ ] Click the × on a keyword that came from the photo's own metadata: it goes from this photo only, and stays gone after the folder is rescanned.
 - [ ] Rename that keyword in Settings → Tags: the photo's chip follows to the new name.
 - [ ] With the viewer open on a photo, zoomed and panned, copying a photo into a folder that sorts *ahead* of it leaves the viewer on the same photo, at the same zoom and pan, with its caption renumbered. (The offset the viewer holds shifts when the grid is rebuilt; this is the check that it re-finds its photo rather than sliding onto the next one.)
+- [ ] Start an import of a few hundred photos into a folder that sorts *ahead* of the one you are viewing, and arrow through large photos while it runs: each one still turns sharp after the preview, rather than staying on the blurry preview. A video playing meanwhile keeps playing, and a slideshow started during the import keeps advancing.
+- [ ] Open a photo, arrow a few hundred photos on, star one (or resize the window), then press Escape: the grid lands on the photo you closed on, ringed, and Ctrl+C and H act on it straight away.
 - [ ] Copying a photo into a watched folder makes it appear in the grid within a few seconds, with no manual rescan.
 - [ ] Deleting a photo on disk removes it from the grid.
 - [ ] Renaming a folder on disk moves its photos in the tree within a few seconds.
@@ -399,6 +403,7 @@ publishing it.
 - [ ] `from:2019 to:2019` shows only photos taken in 2019. Typing `from:2019-0` on the way to `from:2019-06` never blanks the grid or shows the wrong month in between: the half-typed term is ignored until it is a date.
 - [ ] The search box stays put at the top of the window while the folder list and the grid scroll.
 - [ ] The bar between the folder list and the grid resizes the list along its full height: dragging it stops at a minimum width and at half the window, the grid reflows to the new width, and with the bar focused (Tab) the arrow keys resize it too. The list's lower-right corner no longer has a resize grip.
+- [ ] With a few thousand folders, dragging that bar stays smooth. Scroll the folder list end to end: nothing jumps or resizes as years come into view. Tab through the folders: the focus ring is whole on the first and last folder of every year, and on folders far below the part of the list already shown.
 - [ ] Clearing the search box restores the full library.
 - [ ] With photos from several years, a year strip shows right of the grid's scrollbar: years sit where they start, a line marks the current position and follows scrolling, hovering shows a year bubble, and pressing or dragging scrolls there — pressing on a printed year lands on that year's first folder, the same folder the sidebar lists first under it. The strip is absent in Recent, with a single year, and when everything fits on screen.
 - [ ] `lake bell` shows only photos matching both words; `lake OR bell` shows photos matching either; typing `lake OR` on the way there keeps showing the `lake` results rather than flashing empty.

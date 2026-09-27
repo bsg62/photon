@@ -3,6 +3,7 @@ use crate::paths;
 use crate::{Error, Result};
 use rusqlite::{OptionalExtension, Row, params};
 use serde::Serialize;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -156,15 +157,47 @@ impl Library {
             .and_then(|n| n.to_str())
             .unwrap_or(path)
             .to_string();
-        let id = self.writer().query_row(
+        let conn = self.writer();
+        let mut stmt = conn.prepare_cached(
             "INSERT INTO folders (watched_id, parent_id, path, name, sort_key, seen_scan)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)
              ON CONFLICT(path) DO UPDATE SET parent_id = excluded.parent_id, seen_scan = excluded.seen_scan
              RETURNING id",
+        )?;
+        let id = stmt.query_row(
             params![watched_id, parent_id, path, name, sort_key(path), scan_id],
             |r| r.get(0),
         )?;
         Ok(id)
+    }
+
+    /// Every folder row under one watched folder, as `path -> (id, parent_id)`: what a scan
+    /// compares its walk against, so it writes only the folders that are new or moved.
+    pub fn folder_rows(&self, watched_id: i64) -> Result<HashMap<String, (i64, Option<i64>)>> {
+        let conn = self.reader()?;
+        let mut stmt =
+            conn.prepare_cached("SELECT path, id, parent_id FROM folders WHERE watched_id = ?1")?;
+        let rows = stmt
+            .query_map(params![watched_id], |r| {
+                Ok((r.get(0)?, (r.get(1)?, r.get(2)?)))
+            })?
+            .collect::<rusqlite::Result<_>>()?;
+        Ok(rows)
+    }
+
+    /// Marks folders as seen by scan `scan_id`, which is what keeps `prune_folders` off them,
+    /// in one transaction. The caller chunks.
+    pub fn mark_folders_seen(&self, ids: &[i64], scan_id: i64) -> Result<()> {
+        let mut conn = self.writer();
+        let tx = conn.transaction()?;
+        {
+            let mut stmt = tx.prepare_cached("UPDATE folders SET seen_scan = ?2 WHERE id = ?1")?;
+            for id in ids {
+                stmt.execute(params![id, scan_id])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
     }
 
     /// Deletes folders not seen in scan `scan_id` that hold no items and no subfolders.

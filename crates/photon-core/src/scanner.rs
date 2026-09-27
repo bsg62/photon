@@ -1,13 +1,14 @@
 use crate::{
     Result,
     keywords::read_embedded,
-    library::{KnownItem, Library, NewItem, WatchedFolder},
+    library::{FolderItem, KnownItem, Library, NewItem, WatchedFolder},
     media::MediaKind,
     metadata::{CameraMeta, EXIF_VERSION, read_image_meta},
     paths,
-    picasa::{Face, FolderIni},
+    picasa::{Face, FolderIni, IniListing},
 };
 use std::{
+    cell::RefCell,
     collections::{BTreeSet, HashMap, HashSet},
     fs::Metadata,
     path::{Path, PathBuf},
@@ -173,11 +174,13 @@ pub fn scan_watched(
 
     let mut known = lib.known_items(watched.id)?;
     let mut folder_ids: HashMap<PathBuf, i64> = HashMap::new();
+    let mut rows = FolderRows::load(lib, watched.id)?;
 
     let WalkOutcome {
         report,
         seen,
         walked,
+        inis,
         incomplete_prefixes,
         skip_mark_purge,
         cancelled,
@@ -188,6 +191,7 @@ pub fn scan_watched(
         None,
         &mut known,
         &mut folder_ids,
+        &mut rows,
         scan_id,
         options,
         progress,
@@ -215,7 +219,11 @@ pub fn scan_watched(
         // this guard: the empty-root check below is what tells a live folder from an
         // unmounted volume, and an unmounted mount point reads as a folder whose INI is
         // gone - which would clear every star it has.
-        let applied = apply_picasa(lib, &walked);
+        let applied = apply_picasa(
+            lib,
+            &walked,
+            &IniEvidence::new(&inis, &incomplete_prefixes, skip_mark_purge),
+        );
         progress.progress(&seen);
         return Ok(ScanReport {
             restarred: applied.restarred,
@@ -238,7 +246,11 @@ pub fn scan_watched(
     }
     lib.set_watched_online(watched.id, true)?;
 
-    let applied = apply_picasa(lib, &walked);
+    let applied = apply_picasa(
+        lib,
+        &walked,
+        &IniEvidence::new(&inis, &incomplete_prefixes, skip_mark_purge),
+    );
 
     // Anything left in `known` was not found on this (reachable) scan: soft-delete it,
     // or purge it if it was already missing last time.
@@ -350,7 +362,8 @@ pub fn scan_subtree(
         .to_str()
         .ok_or_else(|| crate::Error::NonUtf8Path(target.clone()))?;
     let mut known = lib.known_items_under(watched.id, target_str)?;
-    let (mut folder_ids, parent_id) = seed_ancestors(lib, watched, relative, scan_id)?;
+    let mut rows = FolderRows::load(lib, watched.id)?;
+    let (mut folder_ids, parent_id) = seed_ancestors(lib, watched, relative, &mut rows, scan_id)?;
 
     let outcome = walk_tree(
         lib,
@@ -359,6 +372,7 @@ pub fn scan_subtree(
         parent_id,
         &mut known,
         &mut folder_ids,
+        &mut rows,
         scan_id,
         options,
         progress,
@@ -375,7 +389,7 @@ pub fn scan_subtree(
     // there is its empty-root check, and this function deliberately has none (see the doc
     // comment). Every non-cancelled walk applies the stars and faces of the folders it
     // reached.
-    let applied = apply_picasa(lib, &outcome.walked);
+    let applied = apply_picasa(lib, &outcome.walked, &outcome.ini_evidence());
 
     if outcome.skip_mark_purge {
         progress.progress(&outcome.seen);
@@ -406,10 +420,15 @@ pub fn scan_subtree(
 /// can attach the target to its real parent rather than treating it as a root. `relative` is
 /// the target's path relative to the watched root (i.e. `target.strip_prefix(root)`).
 /// Returns the ids it created, and the id of the target's parent.
+///
+/// An ancestor whose row already agrees is not written, and its `seen_scan` is left alone:
+/// this scan prunes only inside the target (`prune_folders_under`), so nothing reads an
+/// ancestor's marker against this scan's id.
 fn seed_ancestors(
     lib: &Library,
     watched: &WatchedFolder,
     relative: &Path,
+    rows: &mut FolderRows,
     scan_id: i64,
 ) -> Result<(HashMap<PathBuf, i64>, Option<i64>)> {
     let root = Path::new(&watched.path);
@@ -417,8 +436,9 @@ fn seed_ancestors(
         .to_str()
         .ok_or_else(|| crate::Error::NonUtf8Path(root.to_path_buf()))?;
     let mut ids = HashMap::new();
-    let mut parent = Some(lib.upsert_folder(watched.id, None, root_str, scan_id)?);
-    ids.insert(root.to_path_buf(), parent.expect("just inserted"));
+    let (root_id, _) = rows.ensure(lib, watched.id, None, root_str, scan_id)?;
+    let mut parent = Some(root_id);
+    ids.insert(root.to_path_buf(), root_id);
 
     let mut components: Vec<_> = relative.components().collect();
     components.pop(); // `target` itself is upserted by the walk.
@@ -428,11 +448,51 @@ fn seed_ancestors(
         let current_str = current
             .to_str()
             .ok_or_else(|| crate::Error::NonUtf8Path(current.clone()))?;
-        let id = lib.upsert_folder(watched.id, parent, current_str, scan_id)?;
+        let (id, _) = rows.ensure(lib, watched.id, parent, current_str, scan_id)?;
         ids.insert(current.clone(), id);
         parent = Some(id);
     }
     Ok((ids, parent))
+}
+
+/// A watched folder's folder rows as the scan began, so the walk writes only the folders
+/// that are new or whose parent changed.
+///
+/// Before this every walked folder was upserted on every scan, one transaction each - and
+/// since the upsert set `seen_scan` to the new scan's id, every one of them really changed.
+/// On a network share of thousands of folders that was thousands of commits for a rescan
+/// that found nothing. The `seen_scan` bump the prune needs is done in bulk at the end of
+/// the walk instead (`walk_tree`).
+struct FolderRows {
+    stored: HashMap<String, (i64, Option<i64>)>,
+}
+
+impl FolderRows {
+    fn load(lib: &Library, watched_id: i64) -> Result<Self> {
+        Ok(Self {
+            stored: lib.folder_rows(watched_id)?,
+        })
+    }
+
+    /// The folder's id, and whether its row already agreed - in which case nothing was
+    /// written and its `seen_scan` still names an older scan.
+    fn ensure(
+        &mut self,
+        lib: &Library,
+        watched_id: i64,
+        parent: Option<i64>,
+        path: &str,
+        scan_id: i64,
+    ) -> Result<(i64, bool)> {
+        if let Some(&(id, stored_parent)) = self.stored.get(path)
+            && stored_parent == parent
+        {
+            return Ok((id, true));
+        }
+        let id = lib.upsert_folder(watched_id, parent, path, scan_id)?;
+        self.stored.insert(path.to_string(), (id, parent));
+        Ok((id, false))
+    }
 }
 
 /// The result of walking a subtree: what was found, and whether the walk was complete
@@ -444,6 +504,9 @@ struct WalkOutcome {
     /// pre-inserted into `folder_ids`. The Picasa pass must only touch these: a subtree
     /// scan that rewrote its ancestors' ratings would break its own isolation contract.
     walked: Vec<(PathBuf, i64)>,
+    /// The Picasa INIs the walk's own listings saw, by directory. A walked directory with
+    /// no entry here had none when it was listed.
+    inis: HashMap<PathBuf, IniListing>,
     /// Subtrees we could not fully walk: anything `known` claims to live under one of
     /// these might still exist, so it must not be marked missing or purged this scan.
     incomplete_prefixes: Vec<PathBuf>,
@@ -452,6 +515,54 @@ struct WalkOutcome {
     /// entirely.
     skip_mark_purge: bool,
     cancelled: bool,
+}
+
+impl WalkOutcome {
+    fn ini_evidence(&self) -> IniEvidence<'_> {
+        IniEvidence::new(&self.inis, &self.incomplete_prefixes, self.skip_mark_purge)
+    }
+}
+
+/// What the walk's listings say about each walked directory's INI, and when they cannot be
+/// taken as the whole answer.
+struct IniEvidence<'a> {
+    listed: &'a HashMap<PathBuf, IniListing>,
+    incomplete: &'a [PathBuf],
+    /// False when some walk error carried no path: any directory's listing may have been
+    /// cut short, and nothing says which.
+    whole: bool,
+}
+
+impl<'a> IniEvidence<'a> {
+    fn new(
+        listed: &'a HashMap<PathBuf, IniListing>,
+        incomplete: &'a [PathBuf],
+        skip_mark_purge: bool,
+    ) -> Self {
+        Self {
+            listed,
+            incomplete,
+            whole: !skip_mark_purge,
+        }
+    }
+
+    /// What `dir`'s listing saw, or `None` when that listing may be incomplete and the
+    /// directory must be listed again. An error at `p` means `p`'s own contents are unknown,
+    /// and also that its parent's listing may have lost an entry: an entry whose type could
+    /// not be read is reported by its own path, and that entry may be the INI. An
+    /// incomplete listing taken as whole would read "no INI" and clear the folder's stars.
+    fn listing_of(&self, dir: &Path) -> Option<&'a IniListing> {
+        static NONE: std::sync::LazyLock<IniListing> =
+            std::sync::LazyLock::new(IniListing::default);
+        let cut_short = self
+            .incomplete
+            .iter()
+            .any(|p| dir.starts_with(p) || p.parent() == Some(dir));
+        if !self.whole || cut_short {
+            return None;
+        }
+        Some(self.listed.get(dir).unwrap_or(&NONE))
+    }
 }
 
 /// Walks `root`, upserting folders and files into the library and removing matches from
@@ -465,6 +576,7 @@ fn walk_tree(
     root_parent_id: Option<i64>,
     known: &mut HashMap<String, KnownItem>,
     folder_ids: &mut HashMap<PathBuf, i64>,
+    rows: &mut FolderRows,
     scan_id: i64,
     options: &ScanOptions,
     progress: &mut dyn ScanSink,
@@ -475,19 +587,41 @@ fn walk_tree(
     let mut changed_batch: Vec<(i64, NewItem)> = Vec::new();
     let mut meta_batch: Vec<(i64, NewItem)> = Vec::new();
     let mut walked: Vec<(PathBuf, i64)> = Vec::new();
+    // Walked folders whose row already agreed: bumped to this scan in bulk after the walk.
+    let mut unwritten: Vec<i64> = Vec::new();
     let mut incomplete_prefixes: Vec<PathBuf> = Vec::new();
     let mut skip_mark_purge = false;
     let mut cancelled = false;
+    // Filled from inside `filter_entry`, which is the only place the walk sees the INI at
+    // all: `.picasa.ini` is a dot-file, and the filter drops it. Recording it there is what
+    // lets the Picasa pass skip listing every folder a second time.
+    let inis: RefCell<HashMap<PathBuf, IniListing>> = RefCell::default();
+    let excluded: Vec<paths::Folder> = options
+        .excluded
+        .iter()
+        .map(|x| paths::Folder::new(x))
+        .collect();
 
     let walker = WalkDir::new(root)
         .follow_links(false)
         .into_iter()
         .filter_entry(|e| {
+            if e.depth() > 0
+                && let Some(name) = crate::picasa::ini_name_of(e.file_name())
+                && let Some(dir) = e.path().parent()
+            {
+                // `file_type()` is the entry's own type and does not follow a link, the
+                // same answer `picasa::ini_path` reads, so a symlinked INI is still refused.
+                inis.borrow_mut()
+                    .entry(dir.to_path_buf())
+                    .or_default()
+                    .record(name, e.path().to_path_buf(), e.file_type().is_file());
+            }
+            // Only a directory is checked against the excluded folders: a file inside one
+            // can only be reached through it, and it was pruned here first. An excluded
+            // folder is a directory by definition (`ScanOptions::excluded`).
             (e.depth() == 0 || !is_hidden(e))
-                && !options
-                    .excluded
-                    .iter()
-                    .any(|x| crate::paths::is_within(e.path(), x))
+                && !(e.file_type().is_dir() && excluded.iter().any(|x| x.contains(e.path())))
         });
     for entry in walker {
         if options.cancel.load(Ordering::Relaxed) {
@@ -517,7 +651,10 @@ fn walk_tree(
             } else {
                 path.parent().and_then(|p| folder_ids.get(p)).copied()
             };
-            let id = lib.upsert_folder(watched_id, parent, path_str, scan_id)?;
+            let (id, agreed) = rows.ensure(lib, watched_id, parent, path_str, scan_id)?;
+            if agreed {
+                unwritten.push(id);
+            }
             folder_ids.insert(path.to_path_buf(), id);
             walked.push((path.to_path_buf(), id));
             continue;
@@ -584,20 +721,78 @@ fn walk_tree(
     flush_new(lib, &mut new_batch, &mut report, &mut seen, progress)?;
     flush_changed(lib, &mut changed_batch, &mut report, &mut seen, progress)?;
     flush_meta(lib, &mut meta_batch, &mut report)?;
+    // Here rather than in either caller, because both prune afterwards and the prune deletes
+    // every empty folder whose `seen_scan` is older than this scan: a folder the walk reached
+    // but did not write must be marked before that, by whichever caller walked it.
+    for chunk in unwritten.chunks(BATCH) {
+        lib.mark_folders_seen(chunk, scan_id)?;
+    }
 
     Ok(WalkOutcome {
         report,
         seen,
         walked,
+        inis: inis.into_inner(),
         incomplete_prefixes,
         skip_mark_purge,
         cancelled,
     })
 }
 
-/// Applies each walked folder's Picasa stars, faces and contacts to its photos. Returns how
-/// many items' ratings and how many items' faces actually changed, for
-/// [`ScanReport::restarred`] and [`ScanReport::refaced`].
+/// What the Picasa pass changed, for the report's counters.
+#[derive(Clone, Copy, Debug, Default)]
+struct PicasaApplied {
+    restarred: u64,
+    refaced: u64,
+    rehidden: u64,
+    realbumed: u64,
+}
+
+/// Below this many walked folders the Picasa pass asks each folder for its faces and album
+/// memberships rather than loading which folders have any. Those two lookups read every
+/// face and every membership in the library, which a watcher's one-folder subtree scan
+/// should not pay for to save itself two indexed queries.
+const PRESENCE_MIN_FOLDERS: usize = 16;
+
+/// Which folders hold any faces or Picasa-album memberships, so a folder that has none and
+/// whose INI names none can skip the query that would only find nothing. `None` asks every
+/// folder.
+struct PicasaPresence {
+    faces: Option<HashSet<i64>>,
+    albums: Option<HashSet<i64>>,
+}
+
+impl PicasaPresence {
+    fn load(lib: &Library, walked: usize) -> Self {
+        if walked < PRESENCE_MIN_FOLDERS {
+            return Self::unknown();
+        }
+        // A failed lookup costs only the queries it would have saved.
+        Self {
+            faces: lib.folders_with_faces().ok(),
+            albums: lib.folders_with_picasa_albums().ok(),
+        }
+    }
+
+    fn unknown() -> Self {
+        Self {
+            faces: None,
+            albums: None,
+        }
+    }
+
+    fn may_have_faces(&self, folder_id: i64) -> bool {
+        self.faces.as_ref().is_none_or(|f| f.contains(&folder_id))
+    }
+
+    fn may_have_albums(&self, folder_id: i64) -> bool {
+        self.albums.as_ref().is_none_or(|a| a.contains(&folder_id))
+    }
+}
+
+/// Applies each walked folder's Picasa stars, faces, contacts, hidden flags and albums to its
+/// photos, and returns how many items each actually changed, for [`ScanReport::restarred`]
+/// and its siblings.
 ///
 /// Runs after the walk rather than inside `describe()`, which is called only for photos
 /// whose size or mtime changed. Starring a photo or naming a face in Picasa rewrites the
@@ -609,30 +804,35 @@ fn walk_tree(
 /// cannot be read is skipped instead, because failing to read is not evidence that they
 /// are gone.
 ///
+/// Each folder's INI is found from what the walk's own listing of it recorded
+/// ([`IniEvidence`]), not by listing the folder again: see `picasa::read_folder_listed` for
+/// why that listing is checked rather than trusted. A folder whose listing may have been cut
+/// short is listed again by `read_folder`, as before.
+///
 /// Infallible: a per-folder DB error (a busy database, say) is logged and skipped rather
 /// than aborting the whole scan, since that would also skip `finish_mark_purge` and
 /// `prune_folders` over an unrelated folder's transient failure. Nothing is lost — the next
 /// scan reapplies this folder's INI.
-/// What the Picasa pass changed, for the report's counters.
-#[derive(Clone, Copy, Debug, Default)]
-struct PicasaApplied {
-    restarred: u64,
-    refaced: u64,
-    rehidden: u64,
-    realbumed: u64,
-}
-
-fn apply_picasa(lib: &Library, walked: &[(PathBuf, i64)]) -> PicasaApplied {
+fn apply_picasa(
+    lib: &Library,
+    walked: &[(PathBuf, i64)],
+    evidence: &IniEvidence<'_>,
+) -> PicasaApplied {
     let mut applied = PicasaApplied::default();
+    let presence = PicasaPresence::load(lib, walked.len());
     for (dir, folder_id) in walked {
-        let Some(ini) = crate::picasa::read_folder(dir) else {
+        let ini = match evidence.listing_of(dir) {
+            Some(listing) => crate::picasa::read_folder_listed(dir, listing),
+            None => crate::picasa::read_folder(dir),
+        };
+        let Some(ini) = ini else {
             tracing::debug!(
                 ?dir,
                 "leaving stars and faces alone for an unreadable folder"
             );
             continue;
         };
-        match apply_folder_ini(lib, *folder_id, &ini) {
+        match apply_folder_ini(lib, *folder_id, &ini, &presence) {
             Ok(folder) => {
                 applied.restarred += folder.restarred;
                 applied.refaced += folder.refaced;
@@ -651,15 +851,28 @@ fn apply_picasa(lib: &Library, walked: &[(PathBuf, i64)]) -> PicasaApplied {
 }
 
 /// Contacts first, so a face written below can already resolve its name; then albums, stars,
-/// faces and hidden flags from one read of the folder's item names.
-fn apply_folder_ini(lib: &Library, folder_id: i64, ini: &FolderIni) -> Result<PicasaApplied> {
+/// faces and hidden flags from one read of the folder's items.
+fn apply_folder_ini(
+    lib: &Library,
+    folder_id: i64,
+    ini: &FolderIni,
+    presence: &PicasaPresence,
+) -> Result<PicasaApplied> {
     lib.upsert_contacts(&ini.contacts)?;
-    let names = lib.folder_item_names(folder_id)?;
+    let items = lib.folder_item_names(folder_id)?;
+    // Where the INI names no face and the library holds none, the mirror has nothing to
+    // compare, so the query that would find nothing is skipped. The same for albums.
+    let faces = !ini.faces.is_empty() || presence.may_have_faces(folder_id);
+    let albums = !ini.item_albums.is_empty() || presence.may_have_albums(folder_id);
     Ok(PicasaApplied {
-        realbumed: apply_folder_albums(lib, folder_id, &names, ini)?,
-        restarred: apply_folder_stars(lib, &names, &ini.stars)?,
-        refaced: apply_folder_faces(lib, folder_id, &names, &ini.faces)?,
-        rehidden: apply_folder_hidden(lib, folder_id, &names, &ini.hidden)?,
+        realbumed: apply_folder_albums(lib, folder_id, &items, ini, albums)?,
+        restarred: apply_folder_stars(lib, &items, &ini.stars)?,
+        refaced: if faces {
+            apply_folder_faces(lib, folder_id, &items, &ini.faces)?
+        } else {
+            0
+        },
+        rehidden: apply_folder_hidden(lib, &items, &ini.hidden)?,
     })
 }
 
@@ -671,28 +884,36 @@ fn apply_folder_ini(lib: &Library, folder_id: i64, ini: &FolderIni) -> Result<Pi
 /// album means Picasa took it out. A photo's photon albums are out of reach of this:
 /// `set_picasa_album_items` deletes only Picasa albums' rows. Only photos that differ are
 /// written, so an agreeing folder costs nothing.
+///
+/// `memberships` false says the INI assigns no photo to an album and the library holds no
+/// Picasa membership in this folder: there is nothing to mirror, though the INI's album
+/// names are still recorded.
 fn apply_folder_albums(
     lib: &Library,
     folder_id: i64,
-    names: &[(i64, String, Option<i64>)],
+    items: &[FolderItem],
     ini: &FolderIni,
+    memberships: bool,
 ) -> Result<u64> {
     let referenced: HashSet<String> = ini.item_albums.values().flatten().cloned().collect();
     let (ids, upserted) =
         lib.upsert_picasa_albums(&ini.albums, &referenced, ini.modified_ms, crate::now_ms())?;
+    if !memberships {
+        return Ok(upserted);
+    }
     let current = lib.folder_picasa_albums(folder_id)?;
     let none = BTreeSet::new();
-    let changes: Vec<(i64, BTreeSet<i64>)> = names
+    let changes: Vec<(i64, BTreeSet<i64>)> = items
         .iter()
-        .filter_map(|(id, name, _)| {
+        .filter_map(|item| {
             let wanted: BTreeSet<i64> = ini
                 .item_albums
-                .get(name)
+                .get(&item.name)
                 .into_iter()
                 .flatten()
                 .filter_map(|token| ids.get(token).copied())
                 .collect();
-            (wanted != *current.get(id).unwrap_or(&none)).then_some((*id, wanted))
+            (wanted != *current.get(&item.id).unwrap_or(&none)).then_some((item.id, wanted))
         })
         .collect();
     let moved = changes.len() as u64;
@@ -713,20 +934,17 @@ fn apply_folder_albums(
 /// folder costs nothing, as with stars and faces.
 fn apply_folder_hidden(
     lib: &Library,
-    folder_id: i64,
-    names: &[(i64, String, Option<i64>)],
+    items: &[FolderItem],
     hidden: &std::collections::HashSet<String>,
 ) -> Result<u64> {
-    let recorded: HashMap<i64, Option<bool>> =
-        lib.folder_picasa_hidden(folder_id)?.into_iter().collect();
-    let changes: Vec<(i64, bool, bool)> = names
+    let changes: Vec<(i64, bool, bool)> = items
         .iter()
-        .filter_map(|(id, name, _)| {
-            let says = hidden.contains(name);
-            match recorded.get(id).copied().flatten() {
+        .filter_map(|item| {
+            let says = hidden.contains(&item.name);
+            match item.picasa_hidden {
                 Some(before) if before == says => None,
-                Some(_) => Some((*id, says, true)),
-                None => Some((*id, says, says)),
+                Some(_) => Some((item.id, says, true)),
+                None => Some((item.id, says, says)),
             }
         })
         .collect();
@@ -743,14 +961,14 @@ fn apply_folder_hidden(
 /// real star change from a no-op scan.
 fn apply_folder_stars(
     lib: &Library,
-    names: &[(i64, String, Option<i64>)],
+    items: &[FolderItem],
     stars: &std::collections::HashSet<String>,
 ) -> Result<u64> {
-    let ratings: Vec<(i64, u8)> = names
+    let ratings: Vec<(i64, u8)> = items
         .iter()
-        .filter_map(|(id, name, current)| {
-            let wanted = u8::from(stars.contains(name));
-            (*current != Some(wanted as i64)).then_some((*id, wanted))
+        .filter_map(|item| {
+            let wanted = u8::from(stars.contains(&item.name));
+            (item.rating != Some(wanted as i64)).then_some((item.id, wanted))
         })
         .collect();
     let changed = ratings.len() as u64;
@@ -766,17 +984,17 @@ fn apply_folder_stars(
 fn apply_folder_faces(
     lib: &Library,
     folder_id: i64,
-    names: &[(i64, String, Option<i64>)],
+    items: &[FolderItem],
     faces: &HashMap<String, Vec<Face>>,
 ) -> Result<u64> {
     let current = lib.folder_faces(folder_id)?;
     let empty: Vec<Face> = Vec::new();
-    let changes: Vec<(i64, Vec<Face>)> = names
+    let changes: Vec<(i64, Vec<Face>)> = items
         .iter()
-        .filter_map(|(id, name, _)| {
-            let wanted = faces.get(name).unwrap_or(&empty);
-            let stored = current.get(id).unwrap_or(&empty);
-            (wanted != stored).then(|| (*id, wanted.clone()))
+        .filter_map(|item| {
+            let wanted = faces.get(&item.name).unwrap_or(&empty);
+            let stored = current.get(&item.id).unwrap_or(&empty);
+            (wanted != stored).then(|| (item.id, wanted.clone()))
         })
         .collect();
     let changed = changes.len() as u64;
@@ -1185,6 +1403,265 @@ mod tests {
 
         assert_eq!(report.unchanged, 1, "the photo itself did not change");
         assert_eq!(lib.starred_count().unwrap(), 1);
+    }
+
+    /// On a network share every directory listing is a round trip, and the Picasa pass used
+    /// to list each walked folder again to find its INI. The walk has already seen every
+    /// entry, so the pass reads what it recorded: no folder is listed a second time, whether
+    /// it has a dotted INI, an old-style one, or none. Reverting `apply_picasa` to call
+    /// `read_folder` for every folder lists all four here.
+    #[test]
+    fn the_picasa_pass_does_not_list_the_walked_folders_again() {
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        write_file(&root, "a/one.jpg", &jpeg_bytes(4, 2));
+        write_file(&root, "a/.picasa.ini", b"[one.jpg]\nstar=yes\n");
+        write_file(&root, "b/two.jpg", &jpeg_bytes(4, 2));
+        write_file(&root, "b/Picasa.ini", b"[two.jpg]\nstar=yes\n");
+        write_file(&root, "c/three.jpg", &jpeg_bytes(4, 2));
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
+
+        let before = crate::picasa::listings_for_test();
+        scan(&lib, &watched, 1);
+        assert_eq!(lib.starred_count().unwrap(), 2, "both INIs were read");
+        fs::remove_file(root.join("b/Picasa.ini")).unwrap();
+        scan(&lib, &watched, 2);
+        assert_eq!(
+            lib.starred_count().unwrap(),
+            1,
+            "a deleted INI still clears"
+        );
+        assert_eq!(crate::picasa::listings_for_test() - before, 0);
+    }
+
+    /// The walk's listing is older than the Picasa pass that uses it. A star set in photon
+    /// while a long scan runs creates `.picasa.ini` after the walk passed the folder; taking
+    /// the listing's "no INI" as the answer would clear that star at the end of the same
+    /// scan. Here the INI appears once the walk is done, as the scan hands over the photo it
+    /// indexed. Returning "no INI" without probing the names fails this.
+    #[test]
+    fn an_ini_written_after_the_walk_listed_its_folder_is_still_read() {
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        write_file(&root, "a.jpg", &jpeg_bytes(4, 2));
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
+
+        let ini = root.join(".picasa.ini");
+        let report = scan_after_the_walk(&lib, &watched, 1, || {
+            fs::write(&ini, b"[a.jpg]\nstar=yes\n").unwrap()
+        });
+
+        assert_eq!(report.added, 1);
+        assert_eq!(lib.starred_count().unwrap(), 1);
+    }
+
+    /// The same staleness the other way round: the walk saw the INI, and it has gone by the
+    /// time the pass reads it. Gone is an answer - the folder has no stars now - where
+    /// treating the failed open as unreadable would keep the stars it no longer lists.
+    /// Reading the listed path without falling back on `NotFound` fails this.
+    #[test]
+    fn an_ini_deleted_after_the_walk_listed_its_folder_clears_its_stars() {
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        write_file(&root, "a.jpg", &jpeg_bytes(4, 2));
+        write_file(&root, ".picasa.ini", b"[a.jpg]\nstar=yes\n");
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
+        scan(&lib, &watched, 1);
+        assert_eq!(lib.starred_count().unwrap(), 1);
+
+        write_file(&root, "b.jpg", &jpeg_bytes(4, 3));
+        let ini = root.join(".picasa.ini");
+        scan_after_the_walk(&lib, &watched, 2, || fs::remove_file(&ini).unwrap());
+
+        assert_eq!(lib.starred_count().unwrap(), 0);
+    }
+
+    /// A folder the walk saw with only an old-style `Picasa.ini` can gain a `.picasa.ini`
+    /// before the pass reads it, and the dotted one wins, as `read_folder` would decide.
+    /// Reading the listed `Picasa.ini` without probing for the dotted name fails this.
+    #[test]
+    fn a_dotted_ini_written_after_the_walk_wins_over_the_old_one_it_saw() {
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        write_file(&root, "a.jpg", &jpeg_bytes(4, 2));
+        write_file(&root, "b.jpg", &jpeg_bytes(4, 3));
+        write_file(&root, "Picasa.ini", b"[a.jpg]\nstar=yes\n");
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
+
+        let ini = root.join(".picasa.ini");
+        scan_after_the_walk(&lib, &watched, 1, || {
+            fs::write(&ini, b"[b.jpg]\nstar=yes\n").unwrap()
+        });
+
+        let b = lib.known_items(watched.id).unwrap()[&key(&root.join("b.jpg"))].id;
+        assert_eq!(lib.starred_count().unwrap(), 1);
+        assert_eq!(lib.item(b).unwrap().unwrap().rating, Some(1));
+    }
+
+    /// Scans `watched`, running `after_walk` once the walk has listed every folder and before
+    /// the Picasa pass reads them: the scan's last flush of new photos falls between the two.
+    /// Only a scan that indexes something new reaches it.
+    fn scan_after_the_walk(
+        lib: &Library,
+        watched: &WatchedFolder,
+        scan_id: i64,
+        after_walk: impl FnMut(),
+    ) -> ScanReport {
+        struct AfterWalk<F>(F);
+        impl<F: FnMut()> ScanSink for AfterWalk<F> {
+            fn progress(&mut self, _: &ScanProgress) {}
+            fn indexed(&mut self, _: &[i64]) {
+                (self.0)()
+            }
+        }
+        let mut sink = AfterWalk(after_walk);
+        scan_watched(lib, watched, scan_id, &ScanOptions::default(), &mut sink).unwrap()
+    }
+
+    /// A rescan that finds nothing changed used to take the writer once per folder (the
+    /// folder upsert, which rewrote `seen_scan` every time) and once more per INI listing
+    /// contacts. Now it takes it a fixed number of times however many folders there are:
+    /// the watched folder's online flag, one chunk of `seen_scan` bumps, and the prune.
+    /// Reverting the walk to `upsert_folder` for every folder fails this with one write per
+    /// folder; reverting the contacts' read-before-write, with one more.
+    #[test]
+    fn an_unchanged_rescan_writes_a_fixed_amount_however_many_folders() {
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        write_file(&root, "f00/a.jpg", &jpeg_bytes(4, 2));
+        write_file(
+            &root,
+            "f00/.picasa.ini",
+            b"[Contacts2]\nb5d3a7e4f1c2d9a8=Ada;;\n\
+              [a.jpg]\nstar=yes\nfaces=rect64(4000200080006000),b5d3a7e4f1c2d9a8\n",
+        );
+        for i in 1..40 {
+            fs::create_dir_all(root.join(format!("f{i:02}/deeper"))).unwrap();
+        }
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
+        scan(&lib, &watched, 1);
+        assert_eq!(lib.starred_count().unwrap(), 1);
+
+        let before = lib.writes_for_test();
+        let report = scan(&lib, &watched, 2);
+        assert!(!report.touched_rows());
+        assert_eq!(lib.writes_for_test() - before, 3);
+        assert_eq!(
+            lib.folders().unwrap().len(),
+            1 + 40 + 39,
+            "no folder was pruned"
+        );
+    }
+
+    /// The bump is what keeps the prune off a folder the walk reached but did not write: an
+    /// empty folder is pruned exactly when a scan did not see it. Without the bump every
+    /// empty folder that was already known disappears on the next scan.
+    #[test]
+    fn an_empty_folder_a_rescan_reaches_is_kept_and_one_it_does_not_is_pruned() {
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        write_file(&root, "a.jpg", &jpeg_bytes(4, 2));
+        fs::create_dir_all(root.join("kept")).unwrap();
+        fs::create_dir_all(root.join("gone")).unwrap();
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
+        scan(&lib, &watched, 1);
+        fs::remove_dir(root.join("gone")).unwrap();
+
+        scan(&lib, &watched, 2);
+        let mut names: Vec<String> = lib.folders().unwrap().into_iter().map(|f| f.name).collect();
+        names.sort();
+        assert_eq!(names, ["kept", "photos"]);
+
+        // The subtree scan's walk goes through the same bump before its own prune.
+        let sub = root.join("kept");
+        fs::create_dir_all(sub.join("inner")).unwrap();
+        scan_subtree(
+            &lib,
+            &watched,
+            &sub,
+            3,
+            &ScanOptions::default(),
+            &mut progress_only(|_| {}),
+        )
+        .unwrap();
+        scan_subtree(
+            &lib,
+            &watched,
+            &sub,
+            4,
+            &ScanOptions::default(),
+            &mut progress_only(|_| {}),
+        )
+        .unwrap();
+        let mut names: Vec<String> = lib.folders().unwrap().into_iter().map(|f| f.name).collect();
+        names.sort();
+        assert_eq!(names, ["inner", "kept", "photos"]);
+    }
+
+    /// Writes `n` folders `f00`.. under `root`, a photo in each.
+    fn folders_of_one_photo(root: &Path, range: std::ops::Range<usize>) {
+        for i in range {
+            write_file(root, &format!("f{i:02}/a.jpg"), &jpeg_bytes(4, 2));
+        }
+    }
+
+    /// The Picasa pass used to make four queries per folder: its photos' names and ratings,
+    /// their Picasa albums, their faces, and their hidden answers - on every scan, for a
+    /// folder with no INI and nothing in the library. Now the names, ratings and hidden
+    /// answers are one query, and the face and album queries run only where the INI or the
+    /// library has any. What this pins is the cost of one more such folder: one query.
+    /// Reverting the merge makes it two; reverting the presence check, three.
+    #[test]
+    fn a_folder_with_no_picasa_data_costs_the_picasa_pass_one_query() {
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        folders_of_one_photo(&root, 0..PRESENCE_MIN_FOLDERS + 4);
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
+        scan(&lib, &watched, 1);
+        let before = lib.reads_for_test();
+        scan(&lib, &watched, 2);
+        let fewer = lib.reads_for_test() - before;
+
+        let more = PRESENCE_MIN_FOLDERS + 4;
+        folders_of_one_photo(&root, more..2 * more);
+        scan(&lib, &watched, 3);
+        let before = lib.reads_for_test();
+        scan(&lib, &watched, 4);
+        let many = lib.reads_for_test() - before;
+
+        assert_eq!(many - fewer, more);
+    }
+
+    /// The presence check skips a folder's face and album queries only where the library
+    /// has none: a folder whose INI drops the faces and albums it had must still be compared,
+    /// or they stay forever. Enough folders that the check is loaded at all. Treating every
+    /// folder as empty in the library fails the second half; ignoring what the INI names
+    /// fails the first.
+    #[test]
+    fn faces_and_albums_an_ini_drops_are_cleared_when_most_folders_have_none() {
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        folders_of_one_photo(&root, 0..PRESENCE_MIN_FOLDERS);
+        write_file(
+            &root,
+            "f03/.picasa.ini",
+            b"[Contacts2]\nb5d3a7e4f1c2d9a8=Ada;;\n[.album:t]\nname=Holiday\n\
+              [a.jpg]\nfaces=rect64(4000200080006000),b5d3a7e4f1c2d9a8\nalbums=t\n",
+        );
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
+        let report = scan(&lib, &watched, 1);
+        assert_eq!((report.refaced, report.realbumed), (1, 2));
+        assert_eq!(lib.people_with_counts().unwrap().len(), 1);
+        assert_eq!(lib.albums_with_counts().unwrap()[0].count, 1);
+
+        write_file(&root, "f03/.picasa.ini", b"[a.jpg]\nbackuphash=1\n");
+        let report = scan(&lib, &watched, 2);
+        assert_eq!((report.refaced, report.realbumed), (1, 1));
+        assert!(lib.people_with_counts().unwrap().is_empty());
+        assert!(
+            lib.albums_with_counts().unwrap().is_empty(),
+            "the album is empty"
+        );
     }
 
     #[test]

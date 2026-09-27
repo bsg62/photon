@@ -8,7 +8,7 @@
 //! (`Engine::export_items`); this module would happily write there, and the scanner would
 //! then index the copies as new photos.
 
-use crate::edit::{Edit, render_full};
+use crate::edit::{Chroma, Edit, render_full};
 use crate::error::Result;
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -44,7 +44,13 @@ impl Source {
 /// at once, and by the time the bytes are on their way to a slow USB stick the picture has
 /// already been dropped.
 pub fn render_for_export(src: &Source) -> Result<(Vec<u8>, &'static str)> {
-    render_full(&src.path, src.orientation, src.edit, EXPORT_QUALITY)
+    render_full(
+        &src.path,
+        src.orientation,
+        src.edit,
+        EXPORT_QUALITY,
+        Chroma::Full,
+    )
 }
 
 /// Writes an already rendered picture into `dir`, returning the path written.
@@ -205,6 +211,17 @@ mod tests {
 
         let copied = export_one(&src, out_dir.path(), false).unwrap();
         assert_eq!(std::fs::read(&copied).unwrap(), original);
+    }
+
+    /// An export is the copy the user keeps, so its colour is kept at full resolution; only
+    /// the viewer's throwaway render halves it.
+    #[test]
+    fn an_exported_render_keeps_its_colour_at_full_resolution() {
+        let src_dir = TempDir::new().unwrap();
+        let src = source(src_dir.path(), "a.jpg", quarter_turn());
+        let (bytes, mime) = render_for_export(&src).unwrap();
+        assert_eq!(mime, "image/jpeg");
+        assert_eq!(crate::testutil::jpeg_luma_sampling(&bytes), Some(0x11));
     }
 
     #[test]

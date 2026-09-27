@@ -36,7 +36,7 @@ pub use albums::{Album, AlbumSummary};
 pub use duplicates::{CopiesArg, HashCandidate, ItemCopy};
 pub use faces::{ItemFace, Person};
 pub use folders::{Folder, WatchedFolder};
-pub use items::{Item, KnownItem, NewItem, RECENT_LIMIT, is_starred};
+pub use items::{FolderItem, Item, KnownItem, NewItem, RECENT_LIMIT, is_starred};
 pub use searches::SavedSearch;
 pub use settings::{GridTile, ThemeChoice};
 pub use similar::{HashedPhoto, SimilarCandidate};
@@ -69,6 +69,9 @@ pub struct Library {
     /// How many times the writer was taken, for tests that pin a path as write-free.
     #[cfg(test)]
     writes: std::sync::atomic::AtomicUsize,
+    /// How many times a reader was handed out, for tests that count a path's queries.
+    #[cfg(test)]
+    reads: std::sync::atomic::AtomicUsize,
 }
 
 /// A pooled read connection. Returned to the pool on drop.
@@ -115,6 +118,8 @@ impl Library {
             readers: Mutex::new(vec![read]),
             #[cfg(test)]
             writes: std::sync::atomic::AtomicUsize::new(0),
+            #[cfg(test)]
+            reads: std::sync::atomic::AtomicUsize::new(0),
         })
     }
 
@@ -136,6 +141,12 @@ impl Library {
         self.writes.load(std::sync::atomic::Ordering::Relaxed)
     }
 
+    /// How many times a reader has been handed out since the library was opened.
+    #[cfg(test)]
+    pub(crate) fn reads_for_test(&self) -> usize {
+        self.reads.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     /// The steps of `sql`'s query plan, for the tests that pin which index serves a query.
     /// With no statistics the planner never looks at the data, so an empty library plans a
     /// query exactly as a full one does.
@@ -152,6 +163,9 @@ impl Library {
     /// A read connection: a pooled one if any is idle, otherwise a freshly opened one.
     /// Never waits for another reader to finish.
     fn reader(&self) -> Result<Reader<'_>> {
+        #[cfg(test)]
+        self.reads
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let pooled = self.readers.lock().pop();
         let conn = match pooled {
             Some(conn) => conn,

@@ -5,10 +5,12 @@
   import { isOwnAlbum, ownAlbums } from '../lib/albums';
   import { isCopyPhotoShortcut } from '../lib/copy-photo';
   import { folderLabel } from '../lib/folders';
+  import { showEmptyNotice } from '../lib/grid-state';
   import { library } from '../lib/library.svelte';
   import { fitMenu } from '../lib/menu-place';
   import { gridSize } from '../lib/app-grid-size.svelte';
-  import { buildRows, columnsFor, edgeScrollSpeed, firstVisibleOffset, GAP, itemSpan, itemsInRect, type Rect, rowOfItem, topFolderId, totalHeight, visibleRange } from '../lib/layout';
+  import { buildRows, columnsFor, edgeScrollSpeed, fetchSpan, firstVisibleOffset, GAP, itemSpan, itemsInRect, type Rect, renderRange, rowOfItem, topFolderId, totalHeight, visibleRange } from '../lib/layout';
+  import { createScrollSpeed } from '../lib/scroll-speed.svelte';
   import { move, type NavKey } from '../lib/nav';
   import { yearMarks } from '../lib/timeline';
   import Tile from './Tile.svelte';
@@ -67,25 +69,41 @@
    *  shows it), more than one year to choose between, and something to scroll. */
   const marks = $derived(yearMarks(sections, rows));
   const scrubbable = $derived(marks.length > 1 && total > height);
-  const rendered = $derived.by(() => {
-    const [start, end] = visibleRange(rows, scrollTop, height, height * 2);
-    return rows.slice(start, end);
-  });
+  const speed = createScrollSpeed();
+  $effect(() => () => speed.dispose());
+  /** What is mounted, as two numbers rather than one tuple: a `$derived` stops at an equal
+   *  value, and a fresh `[start, end]` is never equal to the last one, so a tuple would
+   *  re-slice `rows` - and re-run the `{#each}` over it - on every scroll event, including
+   *  the many that move less than a row. */
+  const renderSpan = $derived(renderRange(rows, scrollTop, height, speed.fast));
+  const renderStart = $derived(renderSpan[0]);
+  const renderEnd = $derived(renderSpan[1]);
+  const rendered = $derived(rows.slice(renderStart, renderEnd));
+  /** The pages to hold, which reach further than what is mounted: see `FETCH_OVERSCAN`.
+   *  Split the same way, so `ensure` is asked again only when the span has moved. */
+  const fetched = $derived(fetchSpan(rows, scrollTop, height));
+  const fetchStart = $derived(fetched?.[0] ?? -1);
+  const fetchEnd = $derived(fetched?.[1] ?? -1);
   const onScreen = $derived.by(() => {
     const [start, end] = visibleRange(rows, scrollTop, height, 0);
     return itemSpan(rows.slice(start, end));
   });
 
+  // The version is read as well as the span: a rebuild usually leaves the span's numbers
+  // exactly where they were, and a page `refresh` failed to prefetch for the new version
+  // would then never be asked for again until the user scrolled.
   $effect(() => {
-    const span = itemSpan(rendered);
-    if (span) void library.ensure(span[0], span[1]);
+    void library.info.version;
+    if (fetchStart >= 0) void library.ensure(fetchStart, fetchEnd);
   });
 
   // Jump to the folder the last session ended on, once there is something to jump to.
   //
-  // Both guards are load-bearing. `len === 0` waits for the first grid: on a first run the
-  // scan is still working when this mounts, and asking an empty index for a folder's offset
-  // answers null, which is indistinguishable from "that folder is gone". `width === 0`
+  // Both guards are load-bearing. `len === 0` waits for the first grid: the engine starts on
+  // an empty, unbuilt index (`grid-state.ts`) and builds the real one on its startup thread,
+  // and on a first run the scan is still working when this mounts; asking an empty index
+  // for a folder's offset answers null, which is indistinguishable from "that folder is
+  // gone". An unbuilt index is always empty, so this one guard covers both. `width === 0`
   // waits for the first layout pass: row tops are computed from the column count, so a jump
   // measured before the viewport has a width lands somewhere else once it gets one.
   //
@@ -137,17 +155,20 @@
     api.setLastFolder(folderId).catch(() => {});
   });
 
-  // Tell the thumbnail queue what's on screen once scrolling settles.
+  // Tell the thumbnail queue what's on screen once scrolling settles. The ids are read here
+  // rather than in the timer, so this re-runs when a page on screen arrives - and only then,
+  // not for every page the wider fetch window brings in.
   $effect(() => {
     const span = onScreen;
-    void library.pageTick;
-    const timer = setTimeout(() => {
-      if (!span) return;
-      const ids: number[] = [];
+    const ids: number[] = [];
+    if (span) {
       for (let o = span[0]; o < span[1]; o++) {
         const e = library.entry(o);
         if (e) ids.push(e.id);
       }
+    }
+    const timer = setTimeout(() => {
+      if (!span) return;
       api.setVisible(ids).catch(() => {});
     }, VISIBLE_DEBOUNCE_MS);
     return () => clearTimeout(timer);
@@ -614,7 +635,10 @@
     bind:this={viewport}
     bind:clientWidth={width}
     bind:clientHeight={height}
-    onscroll={() => (scrollTop = viewport.scrollTop)}
+    onscroll={(e) => {
+      scrollTop = viewport.scrollTop;
+      speed.sample(scrollTop, e.timeStamp);
+    }}
     onpointerdown={bandDown}
     onpointermove={bandMove}
     onpointercancel={abandonBand}
@@ -628,7 +652,7 @@
     role="grid"
     aria-label="Photos"
   >
-    {#if library.info.len === 0}
+    {#if showEmptyNotice(library.info)}
       <p class="empty">
         {#if library.info.view === 'starred'}
           No starred photos. Star one in the viewer, or in Picasa.
@@ -688,6 +712,7 @@
                 onopen={() => onopen(offset)}
                 onmenu={(e) => tileMenu(e, offset)}
                 tile={gridSize.width}
+                defer={speed.fast}
               />
             {/each}
           </div>

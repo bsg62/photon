@@ -21,6 +21,7 @@
   import { createCropTool } from '../lib/crop-tool.svelte';
   import { containedBox, faceBox } from '../lib/faces';
   import { createSlideshow } from '../lib/slideshow.svelte';
+  import { createFullLoad, createLoadSlot } from '../lib/full-load';
   import { createStarToggle } from '../lib/star-toggle.svelte';
   import { library } from '../lib/library.svelte';
   import { pictureChanged } from '../lib/picture';
@@ -49,7 +50,9 @@
     onshowcopies,
   }: {
     offset: number;
-    onclose: (offset: number) => void;
+    /** The offset to hand back to the grid, and the photo shown there - `null` when the
+     *  viewer showed nothing this view still holds. */
+    onclose: (offset: number, itemId: number | null) => void;
     /** "Locate in photon": the viewer closes and the grid lands on this photo, looking for
      *  it in the Hidden view when `hidden`. */
     onlocate: (itemId: number, hidden?: boolean) => void;
@@ -61,6 +64,9 @@
   } = $props();
 
   const PRELOAD_RADIUS = 2;
+  /** Holds back the full-size file (and the neighbour preload) until a step by hand has
+   *  come to rest; see `createFullLoad`. */
+  const fullLoad = createFullLoad();
   let current = $state(untrack(() => offset));
   let item = $state<ViewerItem | null>(null);
   let fullSrc = $state<string | null>(null);
@@ -79,6 +85,9 @@
    *  Starred is showing. It stays up - the user is looking at it - without a position in
    *  the caption, until the next navigation. */
   let orphaned = $state(false);
+  /** The photo on screen has left the library altogether. Plain: only `close` reads it,
+   *  and the error message is what draws it. */
+  let gone = false;
   /** Bumped to make the loader run again for an offset `current` already holds. */
   let reload = $state(0);
   /** Deliberately not `$state`: nothing renders from a partial wheel total, and making it
@@ -98,7 +107,7 @@
 
   /** The kind at grid offset `i`, loading its page first: what `nextStill` walks. */
   async function kindAt(i: number) {
-    await library.ensure(i, i + 1);
+    await library.ensureAt(i);
     return library.entry(i)?.kind;
   }
 
@@ -455,18 +464,28 @@
     else current = target;
   }
 
-  /** The offset handed back to the grid on close. An orphaned photo's offset can sit past
-   *  the end of the view that dropped it. */
+  /** The offset handed back to the grid on close, with the photo on screen so the grid can
+   *  select it by id. An orphaned photo's offset can sit past the end of the view that
+   *  dropped it, and whatever sits at its offset now is another photo, so it hands back no
+   *  id: the selection must not hold a photo no tile shows. */
   function close() {
     stopSlideshow();
-    onclose(Math.max(0, Math.min(current, library.info.len - 1)));
+    onclose(Math.max(0, Math.min(current, library.info.len - 1)), orphaned || gone ? null : (item?.id ?? null));
   }
 
+  // The grid keeps this photo's page, and a rebuild prefetches it, for as long as it shows.
+  $effect(() => {
+    library.setViewing(current);
+    return () => library.setViewing(null);
+  });
 
-  /** An offset the rebind below has already resolved, so the loader can tell "the same photo,
-   *  renumbered" from "a different photo". Deliberately not `$state`: writing it must not
-   *  wake anything, and it is always set immediately before the `current` that does. */
-  let rebound: number | null = null;
+
+  /** The load in flight, and the offset the rebind below has already resolved, so the loader
+   *  can tell "the same photo, renumbered" from "a different photo" and leave the first's
+   *  load running. Not `$state`: `rebind` must not wake anything, and it is always called
+   *  immediately before the `current` write that does. See `createLoadSlot`. */
+  const loads = createLoadSlot();
+  $effect(() => () => loads.end());
 
   // `current` is an index into a grid that is rebuilt whole whenever anything changes, so it
   // stops meaning "the photo the user opened" the moment a scan indexes something ahead of
@@ -494,7 +513,7 @@
     if (!old || old.id !== fresh.id) return;
     if (pictureChanged(old, fresh)) {
       if (canReload) {
-        rebound = null;
+        loads.forget();
         reload++;
       }
     } else {
@@ -530,12 +549,15 @@
         if (fresh) {
           orphaned = true;
           refreshDetails(fresh, false);
-        } else error = 'This photo is no longer available.';
+        } else {
+          gone = true;
+          error = 'This photo is no longer available.';
+        }
         return;
       }
       orphaned = false;
       if (at !== untrack(() => current)) {
-        rebound = at;
+        loads.rebind(at);
         current = at;
       }
       // The photo is the same, but what the library says about it may not be: a renamed
@@ -553,23 +575,49 @@
     const at = current;
     void reload;
     // A renumbering, not a navigation: the photo on screen is already the right one, so
-    // reloading it would blank it and throw away the zoom and pan for nothing.
-    if (rebound === at) {
-      rebound = null;
+    // reloading it would blank it and throw away the zoom and pan for nothing - and its
+    // load, which may still be fetching the full image, is left to finish. Anything else
+    // tears the previous load down first. `untrack`: the teardown reads `videoEl`, which
+    // must not become a reason to reload.
+    if (!untrack(() => loads.begin(at))) {
+      fullLoad.renumbered(at);
       return;
     }
     let cancelled = false;
+    // The full-size image in flight, held here so leaving can abort it: a photo arrowed
+    // past must not go on fetching and decoding its whole file behind the one stopped on.
+    let full: HTMLImageElement | null = null;
+    // Started now, so the rest overlaps the item lookup below. `untrack`: a slideshow
+    // starting or stopping is not a reason to reload the photo on screen.
+    const rested = fullLoad.wait(at, { slideshow: untrack(() => slideshow.active) });
     slideshow.changed();
     item = null;
     fullSrc = null;
     error = null;
     playbackFailed = false;
     orphaned = false;
+    gone = false;
     // Every photo opens fitted to the window: arriving at the next one already at 400% or
     // panned into a corner leaves you lost. A crop being drawn belonged to the last photo.
     zoom = MIN_ZOOM;
     pan = { x: 0, y: 0 };
     crop.cancel();
+    // Not the effect's cleanup, which a renumbering would run too; see `createLoadSlot`.
+    loads.hold(() => {
+      cancelled = true;
+      fullLoad.cancel();
+      // Aborts the fetch and the decode if they have not finished; harmless if they have,
+      // since `fullSrc` holds the URL, not this element. Its `decode()` rejects, and that
+      // rejection is already swallowed.
+      if (full) full.src = '';
+      // Leaving a video - navigation, close, or a reload of the same offset - must release
+      // its decode pipeline rather than leave it running behind a photo or an unmounted
+      // element: pause first (a `load()` alone can keep playing until it resets), drop the
+      // source so nothing is left to buffer, then load() to actually abandon it.
+      videoEl?.pause();
+      videoEl?.removeAttribute('src');
+      videoEl?.load();
+    });
     (async () => {
       // `untrack`, because `ensure` reads `library.info.len` and this call is still inside
       // the effect's tracked window. `refresh()` assigns a new `info` object on every
@@ -577,7 +625,7 @@
       // watched file changing - re-runs this effect, blanking the photo on screen and
       // throwing away the zoom and pan the user set, although nothing about that photo
       // changed. The one dependency this effect wants is `current`.
-      await untrack(() => library.ensure(at, at + 1));
+      await untrack(() => library.ensureAt(at));
       const entry = library.entry(at);
       if (cancelled) return;
       if (!entry) {
@@ -605,7 +653,9 @@
       // an `<img>` handed the URL it already has shows the picture it already has. The
       // untouched photo keeps the bare URL the neighbour preload below warms.
       const url = mediaUrl(`image/${it.id}`) + (it.edit ? `?k=${it.thumbKey}` : '');
-      const full = new Image();
+      // The preview thumbnail is already up; the full file waits for the viewer to rest.
+      if (!(await rested) || cancelled) return;
+      full = new Image();
       full.src = url;
       full.decode().then(
         () => {
@@ -619,16 +669,6 @@
     })().catch((e) => {
       if (!cancelled) error = errorMessage(e);
     });
-    return () => {
-      cancelled = true;
-      // Leaving a video - navigation, close, or a reload of the same offset - must release
-      // its decode pipeline rather than leave it running behind a photo or an unmounted
-      // element: pause first (a `load()` alone can keep playing until it resets), drop the
-      // source so nothing is left to buffer, then load() to actually abandon it.
-      videoEl?.pause();
-      videoEl?.removeAttribute('src');
-      videoEl?.load();
-    };
   });
 
   function onkeydown(e: KeyboardEvent) {

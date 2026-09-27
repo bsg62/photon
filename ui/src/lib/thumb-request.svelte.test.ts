@@ -18,6 +18,29 @@ describe('createThumbRequest', () => {
     expect(req.requested).toBe('7/abc');
   });
 
+  it('defers the first photo when asked, until the tile holds it', () => {
+    // A tile mounted mid-flick: it is on screen for a frame or two, and asking for its
+    // thumbnail then is a render nobody sees.
+    const req = createThumbRequest();
+
+    req.show('1/a', { defer: true });
+    vi.advanceTimersByTime(TILE_SETTLE_MS - 1);
+    expect(req.requested).toBeNull();
+
+    vi.advanceTimersByTime(1);
+    expect(req.requested).toBe('1/a');
+  });
+
+  it('asks for nothing when a deferred tile goes away before it settles', () => {
+    const req = createThumbRequest();
+
+    req.show('1/a', { defer: true });
+    req.cancel();
+    vi.advanceTimersByTime(TILE_SETTLE_MS * 10);
+
+    expect(req.requested).toBeNull();
+  });
+
   it('requests only the photo a reused tile settles on', () => {
     // Tiles are keyed by grid offset, so a fast scroll changes the photo under a live tile
     // every frame. Each `src` swap is a round trip the webview gives us no way to cancel,

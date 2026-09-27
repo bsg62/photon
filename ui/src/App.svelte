@@ -154,11 +154,12 @@
     viewerAt = offset;
   }
 
-  function closeViewer(at: number) {
+  function closeViewer(at: number, itemId: number | null) {
     viewerAt = null;
     // Same rule, the other way round: closing on the photo the viewer was opened with
     // leaves the selection alone; closing after navigating collapses to what is on screen.
-    if (library.selected !== at) library.selected = at;
+    // By id, because the page holding `at` may be long gone; see `closeViewerOn`.
+    library.closeViewerOn(at, itemId);
     grid?.scrollToOffset(at, 'nearest');
     grid?.focus();
   }
