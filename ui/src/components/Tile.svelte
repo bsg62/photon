@@ -84,9 +84,11 @@
   // brings a tile back once an unrelated library change happens to land - `key` doesn't
   // change when the thumbnail becomes ready, and the component isn't remounted.
   // `retry.status` is written here (via `reset`), so it is read through `untrack` — the
-  // effect depends on `pageTick` alone and cannot re-trigger itself.
+  // effect depends on the grid's version alone and cannot re-trigger itself. Not on pages
+  // arriving: those land on every frame of a scroll, for tiles long gone as often as not,
+  // and are no sign that a thumbnail has become ready.
   $effect(() => {
-    void library.pageTick;
+    void library.info.version;
     if (untrack(() => retry.status) === 'broken') {
       retry.reset();
     }

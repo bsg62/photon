@@ -22,8 +22,8 @@ export const TILE_BROKEN_RETRY_MAX_MS = 30000;
  *  Growing 5s, 10s, 20s, 30s, 30s sums to 95s - over three times `SUSPECT_BACKOFF_MAX`
  *  (30s), which is margin enough that a suspect stuck at the backend's own cap for a full
  *  cycle is still caught before the tile stops asking. Past that bound this gives up
- *  rather than retrying forever: `library.pageTick` (`Tile.svelte`'s own effect) is what
- *  brings it back after that, same as before this schedule existed. */
+ *  rather than retrying forever: the grid's next version (`Tile.svelte`'s own effect) is
+ *  what brings it back after that, same as before this schedule existed. */
 export const TILE_BROKEN_RETRY_ATTEMPTS = 5;
 
 export type TileStatus =
@@ -37,7 +37,7 @@ export type TileStatus =
    *  (a 422 for a photo the crash-loop guard failed outright, a 404 for one that's gone) -
    *  `failed` cannot tell those apart from a suspect merely still backing off, so it
    *  schedules the same retries for all of them; only reaching the bound produces this
-   *  terminal state. A reset (`reset()`, called by `Tile.svelte`'s `pageTick` effect among
+   *  terminal state. A reset (`reset()`, called by `Tile.svelte`'s grid-version effect among
    *  others) leaves it, but back at `'loading'`, not at another terminal state. */
   | 'broken';
 
@@ -92,7 +92,7 @@ export function createTileRetry() {
     },
 
     /** A different photo, or a fresh attempt forced from outside (the library moved on
-     *  while this tile was broken - see `Tile.svelte`'s `pageTick` effect). Cancels any
+     *  while this tile was broken - see `Tile.svelte`'s grid-version effect). Cancels any
      *  retry already scheduled for whatever this tile was showing before. */
     reset() {
       clear();

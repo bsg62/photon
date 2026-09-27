@@ -13,11 +13,11 @@ describe('PageCache', () => {
     const load = loader(1);
     const cache = new PageCache<number>(load);
     cache.reset(1);
-    expect(await cache.ensure(150, 250)).toBe(true);
+    expect(await cache.ensure(150, 250)).toEqual([0, 1]);
     expect(load).toHaveBeenCalledTimes(2);
     expect(cache.get(0)).toBe(0);
     expect(cache.get(PAGE_SIZE + 5)).toBe(PAGE_SIZE + 5);
-    expect(await cache.ensure(0, 10)).toBe(false);
+    expect(await cache.ensure(0, 10)).toEqual([]);
     expect(load).toHaveBeenCalledTimes(2);
   });
 
@@ -33,7 +33,7 @@ describe('PageCache', () => {
     const onStale = vi.fn();
     const cache = new PageCache<number>(loader(2), onStale);
     cache.reset(1);
-    expect(await cache.ensure(0, 10)).toBe(false);
+    expect(await cache.ensure(0, 10)).toEqual([]);
     expect(cache.get(0)).toBeUndefined();
     expect(onStale).toHaveBeenCalledWith(2);
   });
@@ -45,11 +45,46 @@ describe('PageCache', () => {
       return { version: 1, rows: Array.from({ length: count }, (_, i) => offset + i) };
     });
     cache.reset(1);
-    expect(await cache.ensure(0, 1)).toBe(false);
+    expect(await cache.ensure(0, 1)).toEqual([]);
     fail = false;
-    expect(await cache.ensure(0, 1)).toBe(true);
+    expect(await cache.ensure(0, 1)).toEqual([0]);
     cache.reset(2);
     expect(cache.get(0)).toBeUndefined();
+  });
+
+  it('drops only the pages outside every range it is told to keep', async () => {
+    const cache = new PageCache<number>(loader(1));
+    cache.reset(1);
+    await cache.ensure(0, 10 * PAGE_SIZE);
+    expect(cache.size).toBe(10);
+
+    // Keep pages 3-4 (a range ending inside page 4) and page 8 (a single offset in it).
+    const dropped = cache.evict([
+      [3 * PAGE_SIZE + 10, 4 * PAGE_SIZE + 1],
+      [8 * PAGE_SIZE + 5, 8 * PAGE_SIZE + 6],
+    ]);
+
+    expect(dropped.sort((a, b) => a - b)).toEqual([0, 1, 2, 5, 6, 7, 9]);
+    expect(cache.size).toBe(3);
+    expect(cache.get(3 * PAGE_SIZE)).toBe(3 * PAGE_SIZE);
+    expect(cache.get(4 * PAGE_SIZE + 199)).toBe(4 * PAGE_SIZE + 199);
+    expect(cache.get(8 * PAGE_SIZE)).toBe(8 * PAGE_SIZE);
+    // A range ending exactly where a page starts does not keep that page.
+    expect(cache.evict([[0, 3 * PAGE_SIZE]])).toEqual(expect.arrayContaining([3, 4, 8]));
+    expect(cache.size).toBe(0);
+  });
+
+  it('loads a dropped page again when it is asked for', async () => {
+    const load = loader(1);
+    const cache = new PageCache<number>(load);
+    cache.reset(1);
+    await cache.ensure(0, PAGE_SIZE);
+    cache.evict([]);
+    expect(cache.get(0)).toBeUndefined();
+
+    expect(await cache.ensure(0, 1)).toEqual([0]);
+    expect(cache.get(0)).toBe(0);
+    expect(load).toHaveBeenCalledTimes(2);
   });
 
   it('prefetches a version without disturbing the current one, and installs it on reset', async () => {

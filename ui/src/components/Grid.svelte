@@ -155,17 +155,20 @@
     api.setLastFolder(folderId).catch(() => {});
   });
 
-  // Tell the thumbnail queue what's on screen once scrolling settles.
+  // Tell the thumbnail queue what's on screen once scrolling settles. The ids are read here
+  // rather than in the timer, so this re-runs when a page on screen arrives - and only then,
+  // not for every page the wider fetch window brings in.
   $effect(() => {
     const span = onScreen;
-    void library.pageTick;
-    const timer = setTimeout(() => {
-      if (!span) return;
-      const ids: number[] = [];
+    const ids: number[] = [];
+    if (span) {
       for (let o = span[0]; o < span[1]; o++) {
         const e = library.entry(o);
         if (e) ids.push(e.id);
       }
+    }
+    const timer = setTimeout(() => {
+      if (!span) return;
       api.setVisible(ids).catch(() => {});
     }, VISIBLE_DEBOUNCE_MS);
     return () => clearTimeout(timer);

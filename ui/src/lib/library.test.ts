@@ -1298,6 +1298,62 @@ describe('LibraryStore', () => {
       expect(store.selected).toBe(8);
     });
 
+    it('lets go of pages far outside the window, and fetches them again on the way back', async () => {
+      // A scrub through a large library held every page it passed until the next rebuild.
+      const store = await storeOf(5000);
+      expect(store.entry(0)?.id).toBe(idAt(0));
+
+      await store.ensure(4000, 4050);
+      expect(store.entry(0)).toBeUndefined();
+      expect(store.entry(4000)?.id).toBe(idAt(4000));
+
+      vi.mocked(api.gridRows).mockClear();
+      await store.ensure(0, 50);
+      expect(api.gridRows).toHaveBeenCalledWith(0, 200);
+      expect(store.entry(0)?.id).toBe(idAt(0));
+      // Near the window is kept: scrolling back a little costs no fetch.
+      await store.ensure(3000, 3050);
+      vi.mocked(api.gridRows).mockClear();
+      await store.ensure(2400, 2450);
+      await store.ensure(3000, 3050);
+      expect(api.gridRows).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps the pages around the lead wherever the grid scrolls, so H still moves on from it', async () => {
+      // The lead is the last photo of its page: the photo to move on to is on the next one.
+      const store = await storeOf(5000);
+      await store.ensure(150, 250);
+      store.selected = 199;
+      await store.ensure(4000, 4050);
+      expect(store.entry(199)?.id).toBe(idAt(199));
+
+      vi.mocked(api.setItemsHidden).mockResolvedValue(1);
+      vi.mocked(api.gridOffsetOfItem).mockResolvedValue(199);
+      await store.setHidden(store.selectedItemIds, true);
+      expect(store.selectedItemIds).toEqual([idAt(200)]);
+    });
+
+    it('a band autoscrolled far from where it began still leads with its first photo', async () => {
+      // By the release the grid's window is thousands of photos below the band's first page,
+      // which the window has let go; the lead's id must come from the fetch, or the next
+      // rebuild clamps the lead instead of re-finding it.
+      const store = await storeOf(5000);
+      store.beginBand(false);
+      await store.ensure(4000, 4050);
+      await store.endBand([[10, 4020]]);
+      expect(store.selected).toBe(10);
+
+      vi.mocked(api.gridInfo).mockResolvedValue({ ...(await api.gridInfo()), version: 2 });
+      vi.mocked(api.gridRows).mockImplementation(async (offset: number, count: number) => ({
+        version: 2,
+        rows: Array.from({ length: Math.min(count, 5000 - offset) }, (_, i) => entryAt(offset + i)),
+      }));
+      vi.mocked(api.gridOffsetOfItem).mockResolvedValue(11);
+      await store.refresh();
+      expect(api.gridOffsetOfItem).toHaveBeenCalledWith(idAt(10));
+      expect(store.selected).toBe(11);
+    });
+
     it('a lead that has left the view is dropped from the selection too', async () => {
       // Hiding (or unstarring in Starred) the photo open in the viewer: the rebuild cannot
       // re-find the lead, and a selection still holding its id would offer "Hide 2 photos"

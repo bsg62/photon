@@ -2,6 +2,15 @@
 
 export const PAGE_SIZE = 200;
 
+/** How far past the grid's window loaded pages are kept, in grid offsets, before `evict`
+ *  lets them go: enough that scrolling back a little does not fetch again. */
+export const KEEP_SLACK = 5 * PAGE_SIZE;
+
+/** The page holding grid offset `offset`. */
+export function pageOf(offset: number): number {
+  return Math.floor(offset / PAGE_SIZE);
+}
+
 export interface Page<T> {
   version: number;
   rows: T[];
@@ -62,18 +71,40 @@ export class PageCache<T> {
   }
 
   get(offset: number): T | undefined {
-    return this.pages.get(Math.floor(offset / PAGE_SIZE))?.[offset % PAGE_SIZE];
+    return this.pages.get(pageOf(offset))?.[offset % PAGE_SIZE];
   }
 
-  /** Loads the missing pages covering `[start, end)`. Resolves true if anything new was stored. */
-  async ensure(start: number, end: number): Promise<boolean> {
+  /** How many pages are held: what `evict` keeps bounded. */
+  get size(): number {
+    return this.pages.size;
+  }
+
+  /** Drops every loaded page that touches none of the `keep` ranges (grid offsets,
+   *  `[start, end)`), and returns the pages dropped. Within one version nothing else ever
+   *  drops a page, so without this a scrub from one end of a large library to the other
+   *  held every row of it. A page still loading is left to land; the next call drops it if
+   *  it is still out of reach. */
+  evict(keep: [number, number][]): number[] {
+    const dropped: number[] = [];
+    for (const p of this.pages.keys()) {
+      const first = p * PAGE_SIZE;
+      const end = first + PAGE_SIZE;
+      if (!keep.some(([s, e]) => first < e && s < end)) dropped.push(p);
+    }
+    for (const p of dropped) this.pages.delete(p);
+    return dropped;
+  }
+
+  /** Loads the missing pages covering `[start, end)`. Resolves with the pages it stored,
+   *  for a caller that tells each page's readers apart. */
+  async ensure(start: number, end: number): Promise<number[]> {
     const first = Math.floor(start / PAGE_SIZE);
     const last = Math.floor(Math.max(start, end - 1) / PAGE_SIZE);
     const wanted: number[] = [];
     for (let p = first; p <= last; p++) {
       if (!this.pages.has(p) && !this.loading.has(p)) wanted.push(p);
     }
-    if (wanted.length === 0) return false;
+    if (wanted.length === 0) return [];
     const version = this.version;
     for (const p of wanted) this.loading.add(p);
     const results = await Promise.all(
@@ -84,8 +115,8 @@ export class PageCache<T> {
         ),
       ),
     );
-    if (version !== this.version) return false;
-    let stored = false;
+    if (version !== this.version) return [];
+    const stored: number[] = [];
     for (const [p, page] of results) {
       this.loading.delete(p);
       if (!page) continue;
@@ -94,7 +125,7 @@ export class PageCache<T> {
         continue;
       }
       this.pages.set(p, page.rows);
-      stored = true;
+      stored.push(p);
     }
     return stored;
   }

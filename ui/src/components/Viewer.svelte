@@ -102,7 +102,7 @@
 
   /** The kind at grid offset `i`, loading its page first: what `nextStill` walks. */
   async function kindAt(i: number) {
-    await library.ensure(i, i + 1);
+    await library.ensureAt(i);
     return library.entry(i)?.kind;
   }
 
@@ -588,7 +588,7 @@
       // watched file changing - re-runs this effect, blanking the photo on screen and
       // throwing away the zoom and pan the user set, although nothing about that photo
       // changed. The one dependency this effect wants is `current`.
-      await untrack(() => library.ensure(at, at + 1));
+      await untrack(() => library.ensureAt(at));
       const entry = library.entry(at);
       if (cancelled) return;
       if (!entry) {

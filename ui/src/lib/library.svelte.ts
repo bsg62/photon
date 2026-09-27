@@ -15,9 +15,11 @@ import {
   type ScanProgressEvent,
   type TagCount,
 } from './api';
+import { untrack } from 'svelte';
 import { keepCopiesName } from './copies';
 import { lastIndexAtOrBefore } from './layout';
-import { PageCache } from './pages';
+import { PageSignals } from './page-signals.svelte';
+import { KEEP_SLACK, PAGE_SIZE, PageCache, pageOf } from './pages';
 import { singleFlight } from './single-flight';
 import type { UnlistenFn } from '@tauri-apps/api/event';
 
@@ -331,11 +333,16 @@ export class LibraryStore {
       this.selection = previous;
       return;
     }
+    // The ranges are in grid order and fetched in order, so the first id is the photo at
+    // `first`. Taken from the fetch, not the pages: a band autoscrolled a long way has left
+    // its first page behind the grid's window, where `ensure` lets pages go - and a lead
+    // with no id is clamped by the next rebuild instead of re-found.
+    const firstId: number | undefined = ids.values().next().value;
     for (const id of base) ids.add(id);
     this.selection = ids;
     const first = ranges[0][0];
     this.selectedOffset = first;
-    this.selectedId = this.pages.get(first)?.id ?? null;
+    this.selectedId = firstId ?? this.pages.get(first)?.id ?? null;
     this.anchor = first;
   }
 
@@ -383,8 +390,8 @@ export class LibraryStore {
    *  the database beside the grid - Settings' photo counts and tag rules - and so has no
    *  reason to refetch on a view switch, which bumps `info.version` all the same. */
   dataVersion = $state(0);
-  /** Bumped whenever pages arrive, so `entry()` readers re-run. */
-  pageTick = $state(0);
+  /** What `entry()` readers depend on: the page they read, not the whole cache. */
+  private pageSignals = new PageSignals();
   /** True until the grid has jumped to the folder the last session left it on — or has
    *  established there is none. The grid does not record a new folder while this is set: a
    *  freshly built grid starts at offset 0, and remembering that would overwrite the stored
@@ -514,7 +521,7 @@ export class LibraryStore {
       : await this.pages.prefetch(info.version, start, Math.min(end, info.len));
     this.pages.reset(info.version, seed);
     this.info = { ...info, copiesOf: keepCopiesName(this.info.copiesOf, info.copiesOf) };
-    this.pageTick++;
+    this.pageSignals.touchAll();
     await this.rebindSelection();
   }
 
@@ -971,13 +978,31 @@ export class LibraryStore {
     return this.info.view;
   }
 
+  /** The grid's window: loads the pages covering `[start, end)` and lets go of the ones
+   *  far outside it. Only the grid calls this - it is what `seen`, and so the prefetch in
+   *  `loadGrid`, follows. A lookup of one photo elsewhere is `ensureAt`.
+   *
+   *  The lead's page is kept wherever the grid has scrolled to: Ctrl+Shift+R, Ctrl+C, H
+   *  and the menu all act on the selection without scrolling back to it, and `setHidden`
+   *  finds the photo to move on to through the loaded pages. */
   async ensure(start: number, end: number): Promise<void> {
     this.seen = [start, end];
-    if (await this.pages.ensure(start, Math.min(end, this.info.len))) this.pageTick++;
+    const lead = untrack(() => this.selectedOffset);
+    const keep: [number, number][] = [[start - KEEP_SLACK, end + KEEP_SLACK]];
+    if (lead !== null) keep.push([lead - PAGE_SIZE, lead + PAGE_SIZE + 1]);
+    this.pageSignals.touch(this.pages.evict(keep));
+    this.pageSignals.touch(await this.pages.ensure(start, Math.min(end, this.info.len)));
+  }
+
+  /** Loads the page holding `offset`, without moving the grid's window: the viewer's
+   *  lookups, which would otherwise have the next rebuild prefetch the viewer's one page
+   *  instead of the screenful of tiles behind it. */
+  async ensureAt(offset: number): Promise<void> {
+    this.pageSignals.touch(await this.pages.ensure(offset, Math.min(offset + 1, this.info.len)));
   }
 
   entry(offset: number): GridEntry | undefined {
-    void this.pageTick;
+    this.pageSignals.track(pageOf(offset));
     return this.pages.get(offset);
   }
 
