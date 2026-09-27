@@ -6,6 +6,7 @@
   import { isCopyPhotoShortcut } from '../lib/copy-photo';
   import { folderLabel } from '../lib/folders';
   import { library } from '../lib/library.svelte';
+  import { fitMenu } from '../lib/menu-place';
   import { gridSize } from '../lib/app-grid-size.svelte';
   import { buildRows, columnsFor, edgeScrollSpeed, firstVisibleOffset, GAP, itemSpan, itemsInRect, type Rect, rowOfItem, topFolderId, totalHeight, visibleRange } from '../lib/layout';
   import { move, type NavKey } from '../lib/nav';
@@ -718,8 +719,7 @@
     role="menu"
     tabindex="-1"
     bind:this={menuEl}
-    style:left="{menu.x}px"
-    style:top="{menu.y}px"
+    use:fitMenu={menu}
   >
     {#if count === 1}
       <button role="menuitem" onclick={() => withSelection((ids) => api.revealInFileManager(ids[0]))}>

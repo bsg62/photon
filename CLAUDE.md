@@ -384,6 +384,12 @@ closes - after `await tick()`, because `<main>` is inert until the DOM catches u
 an inert element silently does nothing. The grid's keys live on its viewport, so a dialog that
 closes onto `<body>` leaves the arrow keys, Enter and Escape dead until the user clicks.
 
+**A context menu is placed by `use:fitMenu`** (`lib/menu-place.ts`), never by binding
+`left`/`top` to the pointer: it opens down-right and flips on an axis where that would leave
+the window, re-placing itself when it grows (the tile menu's copies line arrives after it
+opens) or the window resizes. A menu bound straight to the pointer is clipped when opened near
+the bottom or right edge; every menu was, until the folder menu grew to five items.
+
 **A pointer gesture has three endings, not two.** `pointerup` finishes it and Escape abandons
 it, but a browser that claims the gesture for itself - a touchscreen pan, which Windows
 laptops have - sends **`pointercancel`** and nothing else. Every drag needs one teardown that

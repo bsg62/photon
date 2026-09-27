@@ -13,6 +13,7 @@
   import { formatCaption } from '../lib/caption';
   import { photoCaptionLine } from '../lib/photo-caption';
   import { isCopyPhotoShortcut } from '../lib/copy-photo';
+  import { fitMenu } from '../lib/menu-place';
   import { createCopyFeedback } from '../lib/copied.svelte';
   import { cameraRows, copyGroups, formatDimensions } from '../lib/exif';
   import { showCopiesLabel } from '../lib/copies';
@@ -1174,8 +1175,7 @@
       role="menu"
       tabindex="-1"
       bind:this={menuEl}
-      style:left="{menu.x}px"
-      style:top="{menu.y}px"
+      use:fitMenu={menu}
     >
       <button role="menuitem" onclick={locate}>Locate in photon</button>
       <button role="menuitem" onclick={reveal}>Reveal in file manager</button>
@@ -1274,6 +1274,9 @@
     display: flex;
     flex-direction: column;
     min-width: 200px;
+    /* Never taller than the window, so `fitMenu` can always place all of it on screen. */
+    max-height: calc(100vh - 8px);
+    overflow-y: auto;
     padding: var(--s-1);
     background: var(--raised);
     border-radius: var(--r-3);
