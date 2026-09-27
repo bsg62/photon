@@ -6,6 +6,7 @@
   import { arrangeFolders, enterFolder, folderLabel, folderRows, returnToAll } from '../lib/folders';
   import { sidebarTags } from '../lib/tags';
   import { library } from '../lib/library.svelte';
+  import { fitMenu } from '../lib/menu-place';
   import { searchBox } from '../lib/search-box.svelte';
   import Icon from './Icon.svelte';
 
@@ -541,8 +542,7 @@
     role="menu"
     tabindex="-1"
     bind:this={menuEl}
-    style:left="{menu.x}px"
-    style:top="{menu.y}px"
+    use:fitMenu={menu}
     onkeydown={onMenuKeydown}
   >
     <!-- `rescan_folder` is a no-op while a scan of that folder is running, and reports
@@ -570,8 +570,7 @@
     role="menu"
     tabindex="-1"
     bind:this={albumMenuEl}
-    style:left="{albumMenu.x}px"
-    style:top="{albumMenu.y}px"
+    use:fitMenu={albumMenu}
     onkeydown={onMenuKeydown}
   >
     <button role="menuitem" onclick={() => startRename(album)}>Rename…</button>
@@ -586,8 +585,7 @@
     role="menu"
     tabindex="-1"
     bind:this={searchMenuEl}
-    style:left="{searchMenu.x}px"
-    style:top="{searchMenu.y}px"
+    use:fitMenu={searchMenu}
     onkeydown={onMenuKeydown}
   >
     <button role="menuitem" onclick={() => startSearchRename(search)}>Rename…</button>
@@ -681,6 +679,9 @@
     display: flex;
     flex-direction: column;
     min-width: 200px;
+    /* Never taller than the window, so `fitMenu` can always place all of it on screen. */
+    max-height: calc(100vh - 8px);
+    overflow-y: auto;
     padding: var(--s-1);
     background: var(--raised);
     border-radius: var(--r-3);
