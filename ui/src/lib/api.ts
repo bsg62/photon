@@ -281,6 +281,7 @@ export const api = {
   setItemsHidden: (ids: number[], hidden: boolean) => invoke<number>('set_items_hidden', { ids, hidden }),
   /** Hides or unhides a folder: its photos now, and any added to it later. Not its subfolders. */
   setFolderHidden: (folderId: number, hidden: boolean) => invoke<number>('set_folder_hidden', { folderId, hidden }),
+  setFolderAlias: (folderId: number, alias: string | null) => invoke<boolean>('set_folder_alias', { folderId, alias }),
   /** Turns the photo a quarter; the crop goes round with it. Nothing is written to the file. */
   rotateItem: (id: number, clockwise: boolean) => invoke<void>('rotate_item', { id, clockwise }),
   /** Replaces the photo's edit; no turns and no crop is the original again. */

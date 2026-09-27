@@ -183,6 +183,7 @@
     set_stars: (args) => (args.ids || []).length,
     set_items_hidden: (args) => (args.ids || []).length,
     set_folder_hidden: () => 1,
+    set_folder_alias: () => true,
     // The keyword dialog reports what landed, so these answer rather than staying silent.
     add_items_tag: (args) => ({ tag: args.tag, count: (args.ids || []).length }),
     export_apply_edits: () => true,

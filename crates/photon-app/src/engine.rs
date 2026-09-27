@@ -765,6 +765,18 @@ impl Engine {
         Ok(count)
     }
 
+    /// Names a folder in photon (`Library::set_folder_alias`), reporting whether the name
+    /// changed. The grid rebuilds when it did: search reads the alias as a haystack, so an
+    /// open Search view has to follow, and no item row moved to make the refresh chain run
+    /// on its own.
+    pub fn set_folder_alias(&self, folder_id: i64, alias: Option<&str>) -> Result<bool> {
+        let changed = self.lib.set_folder_alias(folder_id, alias)?;
+        if changed {
+            self.refresh_grid()?;
+        }
+        Ok(changed)
+    }
+
     /// Removes the displayed name `tag` from several photos, returning how many changed.
     /// One write and one refresh, as `add_items_tag`.
     pub fn remove_items_tag(&self, ids: &[i64], tag: &str) -> Result<usize> {
@@ -2278,6 +2290,36 @@ mod tests {
         assert!(!crate::commands::viewer_item(&f.engine, id).unwrap().hidden);
         f.engine.set_items_hidden(&[id], true).unwrap();
         assert!(crate::commands::viewer_item(&f.engine, id).unwrap().hidden);
+    }
+
+    #[test]
+    fn aliasing_a_folder_rebuilds_the_grid_and_search_follows() {
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a.jpg", &img), ("b.jpg", &img)]);
+        f.add_photos();
+        let folder = f.engine.lib.folders().unwrap()[0].id;
+        f.engine.set_search_query("easter").unwrap();
+        let before = crate::commands::grid_info(&f.engine);
+        assert_eq!(before.len, 0);
+
+        assert!(f.engine.set_folder_alias(folder, Some("Easter")).unwrap());
+        let after = crate::commands::grid_info(&f.engine);
+        assert_eq!(after.len, 2, "an open search did not follow the alias");
+        assert!(after.version > before.version);
+        let listed = crate::commands::list_folders(&f.engine).unwrap();
+        assert!(
+            listed
+                .folders
+                .iter()
+                .any(|x| x.id == folder && x.alias.as_deref() == Some("Easter"))
+        );
+
+        assert!(!f.engine.set_folder_alias(folder, Some("Easter")).unwrap());
+        assert_eq!(
+            crate::commands::grid_info(&f.engine).version,
+            after.version,
+            "an unchanged alias rebuilt the grid"
+        );
     }
 
     #[test]

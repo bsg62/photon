@@ -768,6 +768,12 @@ pub fn set_folder_hidden(engine: &Engine, folder_id: i64, hidden: bool) -> CmdRe
     Ok(engine.set_folder_hidden(folder_id, hidden)?)
 }
 
+/// Names a folder in photon, or clears the name with `None`, reporting whether it changed.
+/// See `Library::set_folder_alias` for how the name is normalised.
+pub fn set_folder_alias(engine: &Engine, folder_id: i64, alias: Option<String>) -> CmdResult<bool> {
+    Ok(engine.set_folder_alias(folder_id, alias.as_deref())?)
+}
+
 /// Hides or unhides several photos, reporting how many changed.
 pub fn set_items_hidden(engine: &Engine, ids: &[i64], hidden: bool) -> CmdResult<usize> {
     Ok(engine.set_items_hidden(ids, hidden)?)
