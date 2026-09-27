@@ -5,6 +5,7 @@
   import { isOwnAlbum, ownAlbums } from '../lib/albums';
   import { isCopyPhotoShortcut } from '../lib/copy-photo';
   import { folderLabel } from '../lib/folders';
+  import { showEmptyNotice } from '../lib/grid-state';
   import { library } from '../lib/library.svelte';
   import { fitMenu } from '../lib/menu-place';
   import { gridSize } from '../lib/app-grid-size.svelte';
@@ -83,9 +84,11 @@
 
   // Jump to the folder the last session ended on, once there is something to jump to.
   //
-  // Both guards are load-bearing. `len === 0` waits for the first grid: on a first run the
-  // scan is still working when this mounts, and asking an empty index for a folder's offset
-  // answers null, which is indistinguishable from "that folder is gone". `width === 0`
+  // Both guards are load-bearing. `len === 0` waits for the first grid: the engine starts on
+  // an empty, unbuilt index (`grid-state.ts`) and builds the real one on its startup thread,
+  // and on a first run the scan is still working when this mounts; asking an empty index
+  // for a folder's offset answers null, which is indistinguishable from "that folder is
+  // gone". An unbuilt index is always empty, so this one guard covers both. `width === 0`
   // waits for the first layout pass: row tops are computed from the column count, so a jump
   // measured before the viewport has a width lands somewhere else once it gets one.
   //
@@ -628,7 +631,7 @@
     role="grid"
     aria-label="Photos"
   >
-    {#if library.info.len === 0}
+    {#if showEmptyNotice(library.info)}
       <p class="empty">
         {#if library.info.view === 'starred'}
           No starred photos. Star one in the viewer, or in Picasa.
