@@ -64,19 +64,6 @@ impl Library {
         Ok(changed)
     }
 
-    /// What each of a folder's live photos last read from Picasa's INI said about hiding it:
-    /// `None` until the Picasa pass has read it. See [`Library::apply_picasa_hidden`].
-    pub fn folder_picasa_hidden(&self, folder_id: i64) -> Result<Vec<(i64, Option<bool>)>> {
-        let conn = self.reader()?;
-        let mut stmt = conn.prepare_cached(
-            "SELECT id, picasa_hidden FROM items WHERE folder_id = ?1 AND missing_since IS NULL",
-        )?;
-        let rows = stmt
-            .query_map(params![folder_id], |r| Ok((r.get(0)?, r.get(1)?)))?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(rows)
-    }
-
     /// Records what Picasa's INI now says about hiding each photo, and follows it where it
     /// *changed*: `(id, ini_says_hidden, follow)`, where `follow` sets `hidden` to the INI's
     /// answer and a row without it only records the answer. Returns how many photos' `hidden`

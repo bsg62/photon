@@ -48,6 +48,17 @@ pub struct KnownItem {
     pub exif_version: i64,
 }
 
+/// One live photo in a folder, as the scanner's Picasa pass compares it with the INI.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FolderItem {
+    pub id: i64,
+    /// The file name, lowercased the way the INI's names are.
+    pub name: String,
+    pub rating: Option<i64>,
+    /// What the INI said about hiding it when the pass last read it; `None` until then.
+    pub picasa_hidden: Option<bool>,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Item {
     pub id: i64,
@@ -581,25 +592,28 @@ impl Library {
         Ok(())
     }
 
-    /// Every live item in one folder, as `(id, lowercased file name, current rating)`.
+    /// Every live item in one folder, with what the Picasa pass compares against its INI.
     ///
-    /// Lowercased here because Picasa's INI may disagree in case with the files on disk, and
-    /// this codebase folds case in Rust rather than in SQL: there is no `COLLATE NOCASE` on
-    /// `file_name` and `lower()` is ASCII-only in SQLite without the ICU extension, which is a
-    /// native dependency photon does not take. The current rating is included so the Picasa
-    /// pass can write only the rows that actually change, rather than every row every scan.
-    pub fn folder_item_names(&self, folder_id: i64) -> Result<Vec<(i64, String, Option<i64>)>> {
+    /// The name is lowercased here because Picasa's INI may disagree in case with the files
+    /// on disk, and this codebase folds case in Rust rather than in SQL: there is no `COLLATE
+    /// NOCASE` on `file_name` and `lower()` is ASCII-only in SQLite without the ICU extension,
+    /// which is a native dependency photon does not take. The current rating and the INI's
+    /// last hidden answer are included so the pass can write only the rows that actually
+    /// change, and read the folder's rows once for both.
+    pub fn folder_item_names(&self, folder_id: i64) -> Result<Vec<FolderItem>> {
         let conn = self.reader()?;
         let mut stmt = conn.prepare_cached(
-            "SELECT id, file_name, rating FROM items WHERE folder_id = ?1 AND missing_since IS NULL",
+            "SELECT id, file_name, rating, picasa_hidden
+             FROM items WHERE folder_id = ?1 AND missing_since IS NULL",
         )?;
         let rows = stmt
             .query_map(params![folder_id], |r| {
-                Ok((
-                    r.get::<_, i64>(0)?,
-                    r.get::<_, String>(1)?.to_lowercase(),
-                    r.get::<_, Option<i64>>(2)?,
-                ))
+                Ok(FolderItem {
+                    id: r.get(0)?,
+                    name: r.get::<_, String>(1)?.to_lowercase(),
+                    rating: r.get(2)?,
+                    picasa_hidden: r.get(3)?,
+                })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
@@ -1249,7 +1263,7 @@ mod tests {
     }
 
     #[test]
-    fn folder_item_names_lowercases_excludes_missing_rows_and_reports_the_current_rating() {
+    fn folder_item_names_lowercases_excludes_missing_rows_and_reports_the_current_answers() {
         let (_dir, lib) = temp_library();
         let (_watched, folder) = seed_folder(&lib, Path::new("/p"));
         let ids = lib
@@ -1261,10 +1275,18 @@ mod tests {
         let (a, b) = (ids[0], ids[1]);
         lib.mark_missing(&[b], 50).unwrap();
         lib.set_ratings(&[(a, 1)]).unwrap();
+        lib.apply_picasa_hidden(&[(a, true, false)]).unwrap();
 
-        let mut names = lib.folder_item_names(folder).unwrap();
-        names.sort();
-        assert_eq!(names, vec![(a, "dsc_0001.jpg".to_string(), Some(1))]);
+        let names = lib.folder_item_names(folder).unwrap();
+        assert_eq!(
+            names,
+            vec![FolderItem {
+                id: a,
+                name: "dsc_0001.jpg".to_string(),
+                rating: Some(1),
+                picasa_hidden: Some(true),
+            }]
+        );
     }
 
     #[test]

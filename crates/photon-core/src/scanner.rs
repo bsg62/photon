@@ -1,7 +1,7 @@
 use crate::{
     Result,
     keywords::read_embedded,
-    library::{KnownItem, Library, NewItem, WatchedFolder},
+    library::{FolderItem, KnownItem, Library, NewItem, WatchedFolder},
     media::MediaKind,
     metadata::{CameraMeta, EXIF_VERSION, read_image_meta},
     paths,
@@ -672,9 +672,60 @@ fn walk_tree(
     })
 }
 
-/// Applies each walked folder's Picasa stars, faces and contacts to its photos. Returns how
-/// many items' ratings and how many items' faces actually changed, for
-/// [`ScanReport::restarred`] and [`ScanReport::refaced`].
+/// What the Picasa pass changed, for the report's counters.
+#[derive(Clone, Copy, Debug, Default)]
+struct PicasaApplied {
+    restarred: u64,
+    refaced: u64,
+    rehidden: u64,
+    realbumed: u64,
+}
+
+/// Below this many walked folders the Picasa pass asks each folder for its faces and album
+/// memberships rather than loading which folders have any. Those two lookups read every
+/// face and every membership in the library, which a watcher's one-folder subtree scan
+/// should not pay for to save itself two indexed queries.
+const PRESENCE_MIN_FOLDERS: usize = 16;
+
+/// Which folders hold any faces or Picasa-album memberships, so a folder that has none and
+/// whose INI names none can skip the query that would only find nothing. `None` asks every
+/// folder.
+struct PicasaPresence {
+    faces: Option<HashSet<i64>>,
+    albums: Option<HashSet<i64>>,
+}
+
+impl PicasaPresence {
+    fn load(lib: &Library, walked: usize) -> Self {
+        if walked < PRESENCE_MIN_FOLDERS {
+            return Self::unknown();
+        }
+        // A failed lookup costs only the queries it would have saved.
+        Self {
+            faces: lib.folders_with_faces().ok(),
+            albums: lib.folders_with_picasa_albums().ok(),
+        }
+    }
+
+    fn unknown() -> Self {
+        Self {
+            faces: None,
+            albums: None,
+        }
+    }
+
+    fn may_have_faces(&self, folder_id: i64) -> bool {
+        self.faces.as_ref().is_none_or(|f| f.contains(&folder_id))
+    }
+
+    fn may_have_albums(&self, folder_id: i64) -> bool {
+        self.albums.as_ref().is_none_or(|a| a.contains(&folder_id))
+    }
+}
+
+/// Applies each walked folder's Picasa stars, faces, contacts, hidden flags and albums to its
+/// photos, and returns how many items each actually changed, for [`ScanReport::restarred`]
+/// and its siblings.
 ///
 /// Runs after the walk rather than inside `describe()`, which is called only for photos
 /// whose size or mtime changed. Starring a photo or naming a face in Picasa rewrites the
@@ -686,29 +737,22 @@ fn walk_tree(
 /// cannot be read is skipped instead, because failing to read is not evidence that they
 /// are gone.
 ///
-/// Infallible: a per-folder DB error (a busy database, say) is logged and skipped rather
-/// than aborting the whole scan, since that would also skip `finish_mark_purge` and
-/// `prune_folders` over an unrelated folder's transient failure. Nothing is lost — the next
-/// scan reapplies this folder's INI.
-/// What the Picasa pass changed, for the report's counters.
-#[derive(Clone, Copy, Debug, Default)]
-struct PicasaApplied {
-    restarred: u64,
-    refaced: u64,
-    rehidden: u64,
-    realbumed: u64,
-}
-
 /// Each folder's INI is found from what the walk's own listing of it recorded
 /// ([`IniEvidence`]), not by listing the folder again: see `picasa::read_folder_listed` for
 /// why that listing is checked rather than trusted. A folder whose listing may have been cut
 /// short is listed again by `read_folder`, as before.
+///
+/// Infallible: a per-folder DB error (a busy database, say) is logged and skipped rather
+/// than aborting the whole scan, since that would also skip `finish_mark_purge` and
+/// `prune_folders` over an unrelated folder's transient failure. Nothing is lost — the next
+/// scan reapplies this folder's INI.
 fn apply_picasa(
     lib: &Library,
     walked: &[(PathBuf, i64)],
     evidence: &IniEvidence<'_>,
 ) -> PicasaApplied {
     let mut applied = PicasaApplied::default();
+    let presence = PicasaPresence::load(lib, walked.len());
     for (dir, folder_id) in walked {
         let ini = match evidence.listing_of(dir) {
             Some(listing) => crate::picasa::read_folder_listed(dir, listing),
@@ -721,7 +765,7 @@ fn apply_picasa(
             );
             continue;
         };
-        match apply_folder_ini(lib, *folder_id, &ini) {
+        match apply_folder_ini(lib, *folder_id, &ini, &presence) {
             Ok(folder) => {
                 applied.restarred += folder.restarred;
                 applied.refaced += folder.refaced;
@@ -740,15 +784,28 @@ fn apply_picasa(
 }
 
 /// Contacts first, so a face written below can already resolve its name; then albums, stars,
-/// faces and hidden flags from one read of the folder's item names.
-fn apply_folder_ini(lib: &Library, folder_id: i64, ini: &FolderIni) -> Result<PicasaApplied> {
+/// faces and hidden flags from one read of the folder's items.
+fn apply_folder_ini(
+    lib: &Library,
+    folder_id: i64,
+    ini: &FolderIni,
+    presence: &PicasaPresence,
+) -> Result<PicasaApplied> {
     lib.upsert_contacts(&ini.contacts)?;
-    let names = lib.folder_item_names(folder_id)?;
+    let items = lib.folder_item_names(folder_id)?;
+    // Where the INI names no face and the library holds none, the mirror has nothing to
+    // compare, so the query that would find nothing is skipped. The same for albums.
+    let faces = !ini.faces.is_empty() || presence.may_have_faces(folder_id);
+    let albums = !ini.item_albums.is_empty() || presence.may_have_albums(folder_id);
     Ok(PicasaApplied {
-        realbumed: apply_folder_albums(lib, folder_id, &names, ini)?,
-        restarred: apply_folder_stars(lib, &names, &ini.stars)?,
-        refaced: apply_folder_faces(lib, folder_id, &names, &ini.faces)?,
-        rehidden: apply_folder_hidden(lib, folder_id, &names, &ini.hidden)?,
+        realbumed: apply_folder_albums(lib, folder_id, &items, ini, albums)?,
+        restarred: apply_folder_stars(lib, &items, &ini.stars)?,
+        refaced: if faces {
+            apply_folder_faces(lib, folder_id, &items, &ini.faces)?
+        } else {
+            0
+        },
+        rehidden: apply_folder_hidden(lib, &items, &ini.hidden)?,
     })
 }
 
@@ -760,28 +817,36 @@ fn apply_folder_ini(lib: &Library, folder_id: i64, ini: &FolderIni) -> Result<Pi
 /// album means Picasa took it out. A photo's photon albums are out of reach of this:
 /// `set_picasa_album_items` deletes only Picasa albums' rows. Only photos that differ are
 /// written, so an agreeing folder costs nothing.
+///
+/// `memberships` false says the INI assigns no photo to an album and the library holds no
+/// Picasa membership in this folder: there is nothing to mirror, though the INI's album
+/// names are still recorded.
 fn apply_folder_albums(
     lib: &Library,
     folder_id: i64,
-    names: &[(i64, String, Option<i64>)],
+    items: &[FolderItem],
     ini: &FolderIni,
+    memberships: bool,
 ) -> Result<u64> {
     let referenced: HashSet<String> = ini.item_albums.values().flatten().cloned().collect();
     let (ids, upserted) =
         lib.upsert_picasa_albums(&ini.albums, &referenced, ini.modified_ms, crate::now_ms())?;
+    if !memberships {
+        return Ok(upserted);
+    }
     let current = lib.folder_picasa_albums(folder_id)?;
     let none = BTreeSet::new();
-    let changes: Vec<(i64, BTreeSet<i64>)> = names
+    let changes: Vec<(i64, BTreeSet<i64>)> = items
         .iter()
-        .filter_map(|(id, name, _)| {
+        .filter_map(|item| {
             let wanted: BTreeSet<i64> = ini
                 .item_albums
-                .get(name)
+                .get(&item.name)
                 .into_iter()
                 .flatten()
                 .filter_map(|token| ids.get(token).copied())
                 .collect();
-            (wanted != *current.get(id).unwrap_or(&none)).then_some((*id, wanted))
+            (wanted != *current.get(&item.id).unwrap_or(&none)).then_some((item.id, wanted))
         })
         .collect();
     let moved = changes.len() as u64;
@@ -802,20 +867,17 @@ fn apply_folder_albums(
 /// folder costs nothing, as with stars and faces.
 fn apply_folder_hidden(
     lib: &Library,
-    folder_id: i64,
-    names: &[(i64, String, Option<i64>)],
+    items: &[FolderItem],
     hidden: &std::collections::HashSet<String>,
 ) -> Result<u64> {
-    let recorded: HashMap<i64, Option<bool>> =
-        lib.folder_picasa_hidden(folder_id)?.into_iter().collect();
-    let changes: Vec<(i64, bool, bool)> = names
+    let changes: Vec<(i64, bool, bool)> = items
         .iter()
-        .filter_map(|(id, name, _)| {
-            let says = hidden.contains(name);
-            match recorded.get(id).copied().flatten() {
+        .filter_map(|item| {
+            let says = hidden.contains(&item.name);
+            match item.picasa_hidden {
                 Some(before) if before == says => None,
-                Some(_) => Some((*id, says, true)),
-                None => Some((*id, says, says)),
+                Some(_) => Some((item.id, says, true)),
+                None => Some((item.id, says, says)),
             }
         })
         .collect();
@@ -832,14 +894,14 @@ fn apply_folder_hidden(
 /// real star change from a no-op scan.
 fn apply_folder_stars(
     lib: &Library,
-    names: &[(i64, String, Option<i64>)],
+    items: &[FolderItem],
     stars: &std::collections::HashSet<String>,
 ) -> Result<u64> {
-    let ratings: Vec<(i64, u8)> = names
+    let ratings: Vec<(i64, u8)> = items
         .iter()
-        .filter_map(|(id, name, current)| {
-            let wanted = u8::from(stars.contains(name));
-            (*current != Some(wanted as i64)).then_some((*id, wanted))
+        .filter_map(|item| {
+            let wanted = u8::from(stars.contains(&item.name));
+            (item.rating != Some(wanted as i64)).then_some((item.id, wanted))
         })
         .collect();
     let changed = ratings.len() as u64;
@@ -855,17 +917,17 @@ fn apply_folder_stars(
 fn apply_folder_faces(
     lib: &Library,
     folder_id: i64,
-    names: &[(i64, String, Option<i64>)],
+    items: &[FolderItem],
     faces: &HashMap<String, Vec<Face>>,
 ) -> Result<u64> {
     let current = lib.folder_faces(folder_id)?;
     let empty: Vec<Face> = Vec::new();
-    let changes: Vec<(i64, Vec<Face>)> = names
+    let changes: Vec<(i64, Vec<Face>)> = items
         .iter()
-        .filter_map(|(id, name, _)| {
-            let wanted = faces.get(name).unwrap_or(&empty);
-            let stored = current.get(id).unwrap_or(&empty);
-            (wanted != stored).then(|| (*id, wanted.clone()))
+        .filter_map(|item| {
+            let wanted = faces.get(&item.name).unwrap_or(&empty);
+            let stored = current.get(&item.id).unwrap_or(&empty);
+            (wanted != stored).then(|| (item.id, wanted.clone()))
         })
         .collect();
     let changed = changes.len() as u64;
@@ -1387,6 +1449,72 @@ mod tests {
         }
         let mut sink = AfterWalk(after_walk);
         scan_watched(lib, watched, scan_id, &ScanOptions::default(), &mut sink).unwrap()
+    }
+
+    /// Writes `n` folders `f00`.. under `root`, a photo in each.
+    fn folders_of_one_photo(root: &Path, range: std::ops::Range<usize>) {
+        for i in range {
+            write_file(root, &format!("f{i:02}/a.jpg"), &jpeg_bytes(4, 2));
+        }
+    }
+
+    /// The Picasa pass used to make four queries per folder: its photos' names and ratings,
+    /// their Picasa albums, their faces, and their hidden answers - on every scan, for a
+    /// folder with no INI and nothing in the library. Now the names, ratings and hidden
+    /// answers are one query, and the face and album queries run only where the INI or the
+    /// library has any. What this pins is the cost of one more such folder: one query.
+    /// Reverting the merge makes it two; reverting the presence check, three.
+    #[test]
+    fn a_folder_with_no_picasa_data_costs_the_picasa_pass_one_query() {
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        folders_of_one_photo(&root, 0..PRESENCE_MIN_FOLDERS + 4);
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
+        scan(&lib, &watched, 1);
+        let before = lib.reads_for_test();
+        scan(&lib, &watched, 2);
+        let fewer = lib.reads_for_test() - before;
+
+        let more = PRESENCE_MIN_FOLDERS + 4;
+        folders_of_one_photo(&root, more..2 * more);
+        scan(&lib, &watched, 3);
+        let before = lib.reads_for_test();
+        scan(&lib, &watched, 4);
+        let many = lib.reads_for_test() - before;
+
+        assert_eq!(many - fewer, more);
+    }
+
+    /// The presence check skips a folder's face and album queries only where the library
+    /// has none: a folder whose INI drops the faces and albums it had must still be compared,
+    /// or they stay forever. Enough folders that the check is loaded at all. Treating every
+    /// folder as empty in the library fails the second half; ignoring what the INI names
+    /// fails the first.
+    #[test]
+    fn faces_and_albums_an_ini_drops_are_cleared_when_most_folders_have_none() {
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        folders_of_one_photo(&root, 0..PRESENCE_MIN_FOLDERS);
+        write_file(
+            &root,
+            "f03/.picasa.ini",
+            b"[Contacts2]\nb5d3a7e4f1c2d9a8=Ada;;\n[.album:t]\nname=Holiday\n\
+              [a.jpg]\nfaces=rect64(4000200080006000),b5d3a7e4f1c2d9a8\nalbums=t\n",
+        );
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
+        let report = scan(&lib, &watched, 1);
+        assert_eq!((report.refaced, report.realbumed), (1, 2));
+        assert_eq!(lib.people_with_counts().unwrap().len(), 1);
+        assert_eq!(lib.albums_with_counts().unwrap()[0].count, 1);
+
+        write_file(&root, "f03/.picasa.ini", b"[a.jpg]\nbackuphash=1\n");
+        let report = scan(&lib, &watched, 2);
+        assert_eq!((report.refaced, report.realbumed), (1, 1));
+        assert!(lib.people_with_counts().unwrap().is_empty());
+        assert!(
+            lib.albums_with_counts().unwrap().is_empty(),
+            "the album is empty"
+        );
     }
 
     #[test]

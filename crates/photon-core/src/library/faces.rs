@@ -7,9 +7,9 @@
 use super::Library;
 use crate::Result;
 use crate::picasa::Face;
-use rusqlite::params;
+use rusqlite::{OptionalExtension, params};
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// One person in the People list: a contact with at least one face on a live photo.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -43,11 +43,40 @@ const PEOPLE_SQL: &str = "SELECT c.hash, c.name, count(DISTINCT f.item_id)
      WHERE +i.missing_since IS NULL AND i.hidden = 0
      GROUP BY c.hash";
 
+/// `folders_with_faces`' query, shared with its plan test. Driven from `faces`, the small
+/// side: a library has far fewer faces than photos, and each face reaches its photo by id.
+/// The `CROSS JOIN` is what holds that order - SQLite never reorders one. With a plain
+/// `JOIN` and no statistics the planner scans every photo through `items_folder` and looks
+/// up each one's faces, once per scan.
+const FOLDERS_WITH_FACES_SQL: &str =
+    "SELECT DISTINCT i.folder_id FROM faces f CROSS JOIN items i ON i.id = f.item_id";
+
 impl Library {
-    /// Records or renames contacts. A name that has not changed is not written, so a
-    /// folder whose INI agrees with the library costs no transaction here.
+    /// Records or renames contacts. Reads before it writes: a folder whose INI agrees with
+    /// the library - nearly every folder on nearly every scan - takes no writer and no
+    /// transaction. The writer is one connection every other write queues behind, and a
+    /// folder INI that names a face carries a `[Contacts2]` section, rescanned every scan.
+    ///
+    /// The write repeats the comparison in SQL, so a race between the read and the write
+    /// still only renames a name that differs.
     pub fn upsert_contacts(&self, contacts: &HashMap<String, String>) -> Result<()> {
         if contacts.is_empty() {
+            return Ok(());
+        }
+        let differ: Vec<(&String, &String)> = {
+            let conn = self.reader()?;
+            let mut stmt = conn.prepare_cached("SELECT name FROM contacts WHERE hash = ?1")?;
+            let mut differ = Vec::new();
+            for (hash, name) in contacts {
+                let stored: Option<String> =
+                    stmt.query_row(params![hash], |r| r.get(0)).optional()?;
+                if stored.as_ref() != Some(name) {
+                    differ.push((hash, name));
+                }
+            }
+            differ
+        };
+        if differ.is_empty() {
             return Ok(());
         }
         let mut conn = self.writer();
@@ -57,12 +86,25 @@ impl Library {
                 "INSERT INTO contacts (hash, name) VALUES (?1, ?2)
                  ON CONFLICT(hash) DO UPDATE SET name = excluded.name WHERE name != excluded.name",
             )?;
-            for (hash, name) in contacts {
+            for (hash, name) in differ {
                 stmt.execute(params![hash, name])?;
             }
         }
         tx.commit()?;
         Ok(())
+    }
+
+    /// The folders holding at least one photo with a face, for the Picasa pass to skip the
+    /// per-folder face query where neither the INI nor the library has any. Missing photos
+    /// are counted too: a folder listed needlessly costs one query, a folder left out would
+    /// keep faces its INI dropped.
+    pub fn folders_with_faces(&self) -> Result<HashSet<i64>> {
+        let conn = self.reader()?;
+        let mut stmt = conn.prepare_cached(FOLDERS_WITH_FACES_SQL)?;
+        let ids = stmt
+            .query_map([], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        Ok(ids)
     }
 
     /// The faces currently stored for every live item in one folder, keyed by item id and
@@ -341,6 +383,53 @@ mod tests {
             !plan.iter().any(|step| step.contains("items_size")),
             "walks the size index: {plan:?}"
         );
+        assert!(
+            plan.iter()
+                .any(|step| step == "SEARCH i USING INTEGER PRIMARY KEY (rowid=?)"),
+            "expected each photo to be found by id: {plan:?}"
+        );
+    }
+
+    /// Every folder INI that names a face carries a `[Contacts2]` section, and taking
+    /// the writer for each one queued every scan's folders behind one transaction apiece -
+    /// even though the `WHERE` in the upsert then changed nothing. Reverting the read before
+    /// the write takes the writer here once more.
+    #[test]
+    fn contacts_the_library_already_has_take_no_writer() {
+        let (_dir, lib) = temp_library();
+        let contacts = HashMap::from([
+            ("ada".to_string(), "Ada".to_string()),
+            ("bob".to_string(), "Bob".to_string()),
+        ]);
+        lib.upsert_contacts(&contacts).unwrap();
+
+        let before = lib.writes_for_test();
+        lib.upsert_contacts(&contacts).unwrap();
+        assert_eq!(
+            lib.writes_for_test(),
+            before,
+            "an agreeing list writes nothing"
+        );
+
+        let renamed = HashMap::from([("bob".to_string(), "Robert".to_string())]);
+        lib.upsert_contacts(&renamed).unwrap();
+        assert_eq!(lib.writes_for_test(), before + 1, "a rename still writes");
+        let name: String = lib
+            .reader()
+            .unwrap()
+            .query_row("SELECT name FROM contacts WHERE hash = 'bob'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(name, "Robert");
+    }
+
+    /// `folders_with_faces` reads every face in the library, once per scan. Pins the `CROSS
+    /// JOIN`: with a plain one the planner scans every photo instead.
+    #[test]
+    fn the_folders_with_faces_are_found_from_the_faces() {
+        let (_dir, lib) = temp_library();
+        let plan = lib.query_plan(FOLDERS_WITH_FACES_SQL, &[]);
         assert!(
             plan.iter()
                 .any(|step| step == "SEARCH i USING INTEGER PRIMARY KEY (rowid=?)"),
