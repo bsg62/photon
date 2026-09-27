@@ -889,7 +889,11 @@ export class LibraryStore {
    *  lands last and the grid is left in Search under an empty box. */
   private viewChain: Promise<void> = Promise.resolve();
 
+  /** How many steps have been appended to `viewChain`; see `setSearchQuery`. */
+  private chainSteps = 0;
+
   private chain<T>(step: () => Promise<T>): Promise<T> {
+    this.chainSteps++;
     const next = this.viewChain.then(step);
     // Stored separately from what's returned: `next` never rejects today, because every
     // step routes its failures into reportError, but the chain must not depend on that
@@ -908,25 +912,56 @@ export class LibraryStore {
    *
    *  Resolves to the query the backend holds once this has been applied: `query` itself, or
    *  - when the command is refused and the engine rolls back - the one it held before,
-   *  which is what the search box then shows. */
+   *  which is what the search box then shows. A search replaced by a later one before it
+   *  was sent resolves to its own query once the later one has landed. */
   setSearchQuery(query: string): Promise<string> {
-    return this.chain(async () => {
-      try {
-        await api.setSearchQuery(query);
-      } catch (e) {
-        this.reportError(e);
-        // Nothing has refreshed since the last command on this chain landed, so this is the
-        // state the engine rolled back to.
-        return this.info.view === 'search' ? this.info.searchQuery : '';
-      }
-      try {
-        this.clearSelection();
-        await this.refresh();
-      } catch (e) {
-        this.reportError(e);
-      }
-      return query;
-    });
+    let step = this.queuedSearch;
+    // Every debounced keystroke used to append a step, and each step waited for the one
+    // before it - a whole-library search rebuild - to finish, so a fast typist queued up a
+    // search per pause only to throw all but the last away. A search that has not started
+    // yet and is still the last step on the chain takes the new query instead. Only then:
+    // with a view switch or a sort appended after it, dropping it would reorder the two.
+    if (!step || step.seq !== this.chainSteps) {
+      const queued = { query, seq: 0, done: Promise.resolve('') };
+      queued.done = this.chain(() => {
+        // Started: from here the query it sends is fixed, and a later search queues anew.
+        if (this.queuedSearch === queued) this.queuedSearch = null;
+        return this.applySearchQuery(queued.query);
+      });
+      queued.seq = this.chainSteps;
+      this.queuedSearch = queued;
+      step = queued;
+    } else {
+      step.query = query;
+    }
+    const merged = step;
+    // A caller whose query was replaced answers with its own query: it was never refused,
+    // and the rolled-back query is for the box to take only while it still shows the query
+    // that was refused. Answering the later query here would put that text back into a box
+    // the user has since typed on.
+    return merged.done.then((held) => (merged.query === query ? held : query));
+  }
+
+  /** The search waiting on `viewChain` that has not started yet, while it is still the last
+   *  step appended (`seq`, against `chainSteps`); see `setSearchQuery`. */
+  private queuedSearch: { query: string; seq: number; done: Promise<string> } | null = null;
+
+  private async applySearchQuery(query: string): Promise<string> {
+    try {
+      await api.setSearchQuery(query);
+    } catch (e) {
+      this.reportError(e);
+      // Nothing has refreshed since the last command on this chain landed, so this is the
+      // state the engine rolled back to.
+      return this.info.view === 'search' ? this.info.searchQuery : '';
+    }
+    try {
+      this.clearSelection();
+      await this.refresh();
+    } catch (e) {
+      this.reportError(e);
+    }
+    return query;
   }
 
   /** The view once every view command already issued has landed. What a folder jump asks

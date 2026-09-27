@@ -921,6 +921,10 @@ describe('LibraryStore', () => {
     });
 
     const p1 = store.setSearchQuery('b');
+    // Sent before the second is issued: a search still waiting its turn would be replaced
+    // by the second rather than run before it.
+    await flush();
+    expect(order).toEqual(['start:b']);
     const p2 = store.setSearchQuery('beach');
 
     // Resolve the second (later-issued) call's IPC first — if calls weren't serialised,
@@ -932,6 +936,65 @@ describe('LibraryStore', () => {
     await Promise.all([p1, p2]);
 
     expect(order).toEqual(['start:b', 'end:b', 'start:beach', 'end:beach']);
+  });
+
+  // Each debounced keystroke used to queue a whole-library search behind the one running,
+  // to be thrown away the moment the next landed. A search still waiting its turn takes
+  // the newer query instead - but only while nothing else has been queued after it, or a
+  // view switch issued between two searches would be reordered around them.
+  it('replaces a search still waiting its turn instead of queueing another behind it', async () => {
+    const store = new LibraryStore();
+    await store.init();
+    const order: string[] = [];
+    const running = deferred<void>();
+    vi.mocked(api.setSearchQuery).mockImplementation(async (q: string) => {
+      order.push(`search:${q}`);
+      if (q === 'a') await running.promise;
+    });
+    vi.mocked(api.setGridView).mockImplementation(async (view: GridView) => {
+      order.push(`view:${view}`);
+    });
+
+    const a = store.setSearchQuery('a');
+    await flush();
+    expect(order).toEqual(['search:a']);
+
+    // Three keystrokes while 'a' runs: one step, holding the last.
+    const b = store.setSearchQuery('b');
+    const be = store.setSearchQuery('be');
+    const bea = store.setSearchQuery('bea');
+    // A switch after them, and a search after the switch: neither may merge across it.
+    const starred = store.setView('starred');
+    const x = store.setSearchQuery('x');
+    const xy = store.setSearchQuery('xy');
+
+    running.resolve();
+    await Promise.all([a, b, be, bea, starred, x, xy]);
+    expect(order).toEqual(['search:a', 'search:bea', 'view:starred', 'search:xy']);
+    // A replaced search answers with its own query: it was never refused, and answering
+    // 'bea' would hand that text back to a box the user may have typed on since.
+    await expect(b).resolves.toBe('b');
+    await expect(bea).resolves.toBe('bea');
+    await expect(x).resolves.toBe('x');
+  });
+
+  it('a refused search that replaced others rolls back only the caller whose query it sent', async () => {
+    const store = new LibraryStore();
+    await store.init();
+    const running = deferred<void>();
+    vi.mocked(api.setSearchQuery).mockImplementationOnce(() => running.promise);
+    vi.mocked(api.setSearchQuery).mockRejectedValueOnce(new Error('refused'));
+    const first = store.setSearchQuery('lake');
+    await flush();
+
+    const b = store.setSearchQuery('b');
+    const beach = store.setSearchQuery('beach');
+    vi.mocked(api.gridInfo).mockResolvedValue({ ...store.info, version: 2, view: 'search', searchQuery: 'lake' });
+    running.resolve();
+    await expect(first).resolves.toBe('lake');
+    await expect(beach).resolves.toBe('lake');
+    await expect(b).resolves.toBe('b');
+    expect(api.setSearchQuery).toHaveBeenCalledTimes(2);
   });
 
   it('a view switch waits for a search already sent, so the search cannot land after it', async () => {
