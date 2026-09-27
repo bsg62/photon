@@ -100,6 +100,23 @@ pub const SHOTS: &[Shot] = &[
         query: "theme=dark&do=crop",
         dark: true,
     },
+    // photon's own dropdown open, in both themes of the top bar and on the viewer's bar,
+    // where it opens upwards.
+    Shot {
+        name: "sort-menu-light",
+        query: "theme=light&do=sortmenu",
+        dark: false,
+    },
+    Shot {
+        name: "sort-menu-dark",
+        query: "theme=dark&do=sortmenu",
+        dark: true,
+    },
+    Shot {
+        name: "crop-menu-dark",
+        query: "theme=dark&do=cropmenu",
+        dark: true,
+    },
     Shot {
         name: "band-light",
         query: "theme=light&do=band",

@@ -302,6 +302,12 @@
       open(2);
       later(500, () => click('button[aria-label="Crop"]'));
     },
+    // photon's own dropdowns, open: the list is drawn by photon, so this is what it looks like.
+    sortmenu: () => click('[role="combobox"][aria-label="Sort by"]'),
+    cropmenu: () => {
+      actions.crop();
+      later(900, () => click('[role="combobox"][aria-label="Crop ratio"]'));
+    },
     settings: () => click('button[aria-label="Settings"]'),
     appearance: () => {
       click('button[aria-label="Settings"]');
