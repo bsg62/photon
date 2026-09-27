@@ -32,10 +32,10 @@
 
   const folders = [
     { id: 1, watchedId: 1, parentId: null, path: '/home/ada/Pictures', name: 'Pictures', hidden: false, alias: null },
-    { id: 2, watchedId: 1, parentId: 1, path: '/home/ada/Pictures/2026/Summer hike', name: 'Summer hike', hidden: false, alias: null },
+    { id: 2, watchedId: 1, parentId: 1, path: '/home/ada/Pictures/2026/Summer hike', name: 'Summer hike', hidden: false, alias: 'Up the Hohe Tauern' },
     { id: 3, watchedId: 1, parentId: 1, path: '/home/ada/Pictures/2026/Birthday', name: 'Birthday', hidden: false, alias: null },
     { id: 4, watchedId: 1, parentId: 1, path: '/home/ada/Pictures/2025/Christmas', name: 'Christmas', hidden: false, alias: null },
-    { id: 5, watchedId: 1, parentId: 1, path: '/home/ada/Pictures/2025/Lisbon', name: 'Lisbon', hidden: false, alias: 'Lisbon with the Silvas' },
+    { id: 5, watchedId: 1, parentId: 1, path: '/home/ada/Pictures/2025/Lisbon', name: 'Lisbon', hidden: false, alias: null },
   ];
   const sections = [
     { folderId: 2, offset: 0, count: 23, takenAtMin: day(2026, 7, 14) },
@@ -242,6 +242,13 @@
     menu: () => {
       tile(7)?.click();
       tile(7)?.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 700, clientY: 300 }));
+    },
+    // The aliased folder's row (folder 2, whose directory is "Summer hike"), so the menu holds
+    // both Rename in photon… and Use folder name.
+    foldermenu: () => {
+      const row = [...document.querySelectorAll('nav .node')].find((b) => b.textContent.includes('Up the Hohe Tauern'));
+      const box = row?.getBoundingClientRect();
+      row?.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: box?.left + 60, clientY: box?.top + 10 }));
     },
     band: () => {
       // A drag across the second and third rows of tiles, in three moves so the threshold

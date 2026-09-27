@@ -756,6 +756,15 @@ export class LibraryStore {
     await this.refreshFolders();
   }
 
+  /** Names a folder in photon, or clears the name with `null` or `''`. The grid follows the
+   *  backend's rebuild; the folder list is refetched here, as after `setFolderHidden`,
+   *  because a library change refetches the collections and not the folders - and the
+   *  sidebar's rows take their names from the folder list. */
+  async setFolderAlias(folderId: number, alias: string | null): Promise<void> {
+    await api.setFolderAlias(folderId, alias || null);
+    await this.refreshFolders();
+  }
+
   /** Hides or unhides photos; the backend's rebuild announces the change. Every photo acted
    *  on leaves the view, so once the write lands the selection moves to the nearest photo
    *  that stays - the next one after the lead, or the one before when nothing follows - as a

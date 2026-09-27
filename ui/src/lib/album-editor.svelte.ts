@@ -5,10 +5,16 @@
  *  rather than stacking. The commit is what talks to the backend, and the caller decides
  *  what to refetch afterwards.
  *
- *  `create` and `rename` are injected so the machine can be tested without the backend. */
+ *  `create` and `rename` are injected so the machine can be tested without the backend.
+ *
+ *  `blankClears` is for a name the backend can take away - a folder's alias, which falls back
+ *  to the directory name: there a blank rename is how the user asks for that, so it is sent
+ *  as `''` rather than cancelled. An album or a saved search cannot be nameless, so theirs
+ *  stays a cancel. */
 export function createAlbumEditor(deps: {
   create: (name: string) => Promise<unknown>;
   rename: (albumId: number, name: string) => Promise<unknown>;
+  blankClears?: boolean;
 }) {
   type Mode = { kind: 'idle' } | { kind: 'new' } | { kind: 'rename'; albumId: number };
   let mode = $state<Mode>({ kind: 'idle' });
@@ -60,7 +66,7 @@ export function createAlbumEditor(deps: {
       const name = text.trim();
       const current = mode;
       if (current.kind === 'idle') return false;
-      if (!name) {
+      if (!name && !(deps.blankClears && current.kind === 'rename')) {
         this.cancel();
         return false;
       }

@@ -3,7 +3,7 @@
   import { tick } from 'svelte';
   import { api, type AlbumSummary, type Folder, type SavedSearch } from '../lib/api';
   import { createAlbumEditor } from '../lib/album-editor.svelte';
-  import { arrangeFolders, enterFolder, folderRows, returnToAll } from '../lib/folders';
+  import { arrangeFolders, enterFolder, folderLabel, folderRows, returnToAll } from '../lib/folders';
   import { sidebarTags } from '../lib/tags';
   import { library } from '../lib/library.svelte';
   import { searchBox } from '../lib/search-box.svelte';
@@ -33,6 +33,7 @@
   let searchMenuEl = $state<HTMLDivElement | undefined>();
   let editorInput = $state<HTMLInputElement | undefined>();
   let searchEditorInput = $state<HTMLInputElement | undefined>();
+  let folderEditorInput = $state<HTMLInputElement | undefined>();
 
   $effect(() => {
     if (menu) menuEl?.focus();
@@ -67,6 +68,46 @@
   async function toggleFolderHidden(f: Folder) {
     menu = null;
     await library.setFolderHidden(f.id, !f.hidden).catch(library.reportError);
+  }
+
+  // ---- folder names ----
+
+  /** A third editor, for the same reason as `searchEditor`: folder ids collide with album
+   *  and search ids. `blankClears`, because an emptied field is how the user asks for the
+   *  directory's own name back; the backend also stores the directory's name as no alias,
+   *  so committing the pre-filled field unchanged leaves nothing behind. Nothing creates a
+   *  folder from here. */
+  const folderEditor = createAlbumEditor({
+    create: async () => {},
+    rename: (folderId, name) => library.setFolderAlias(folderId, name),
+    blankClears: true,
+  });
+
+  async function startFolderRename(f: Folder) {
+    menu = null;
+    folderEditor.startRename(f.id, folderLabel(f));
+    await tick();
+    folderEditorInput?.focus();
+    folderEditorInput?.select();
+  }
+
+  async function useFolderName(f: Folder) {
+    menu = null;
+    await library.setFolderAlias(f.id, null).catch(library.reportError);
+  }
+
+  function commitFolderEditor() {
+    folderEditor.commit().catch(library.reportError);
+  }
+
+  function onFolderEditorKeydown(e: KeyboardEvent) {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      commitFolderEditor();
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      folderEditor.cancel();
+    }
   }
 
   function closeMenus() {
@@ -462,15 +503,28 @@
   {#each years as group (group.year)}
     {#if group.year !== null}<h2 class="year">{group.year}</h2>{/if}
     {#each group.rows as row (row.folderId)}
-      <button
-        class="node"
-        title={folderById(row.folderId)?.path}
-        onclick={() => jumpToFolder(row.folderId)}
-        oncontextmenu={(e) => folderMenu(e, row.folderId)}
-      >
-        <span class="name">{row.name}</span>
-        <span class="count">{row.count.toLocaleString()}</span>
-      </button>
+      {#if folderEditor.editing(row.folderId)}
+        <input
+          class="editor"
+          bind:this={folderEditorInput}
+          bind:value={folderEditor.text}
+          disabled={folderEditor.busy}
+          aria-label="Folder name in photon"
+          title={folderById(row.folderId)?.path}
+          onkeydown={onFolderEditorKeydown}
+          onblur={commitFolderEditor}
+        />
+      {:else}
+        <button
+          class="node"
+          title={folderById(row.folderId)?.path}
+          onclick={() => jumpToFolder(row.folderId)}
+          oncontextmenu={(e) => folderMenu(e, row.folderId)}
+        >
+          <span class="name">{row.name}</span>
+          <span class="count">{row.count.toLocaleString()}</span>
+        </button>
+      {/if}
     {/each}
   {/each}
 
@@ -500,6 +554,11 @@
       onclick={() => rescan(folder)}>Rescan</button
     >
     <button role="menuitem" onclick={() => reveal(folder)}>Reveal in file manager</button>
+    <!-- "in photon": the directory keeps its name; only photon's label for it changes. -->
+    <button role="menuitem" onclick={() => startFolderRename(folder)}>Rename in photon…</button>
+    {#if folder.alias !== null}
+      <button role="menuitem" title={`Show it as “${folder.name}” again`} onclick={() => useFolderName(folder)}>Use folder name</button>
+    {/if}
     <button role="menuitem" onclick={() => toggleFolderHidden(folder)}>{folder.hidden ? 'Unhide folder' : 'Hide folder'}</button>
   </div>
 {/if}

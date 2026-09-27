@@ -44,6 +44,30 @@ describe('createAlbumEditor', () => {
     await expect(ed.commit()).resolves.toBe(false);
   });
 
+  it('treats a blank rename as a cancel too', async () => {
+    const { rename, ed } = editor();
+    ed.startRename(4, 'Trip');
+    ed.text = '  ';
+    await expect(ed.commit()).resolves.toBe(false);
+    expect(rename).not.toHaveBeenCalled();
+  });
+
+  it('with blankClears, sends a blank rename as an empty name, and still cancels a blank new one', async () => {
+    const create = vi.fn(async (_name: string) => ({}));
+    const rename = vi.fn(async (_id: number, _name: string) => {});
+    const ed = createAlbumEditor({ create, rename, blankClears: true });
+    ed.startRename(4, 'Easter');
+    ed.text = '  ';
+    await expect(ed.commit()).resolves.toBe(true);
+    expect(rename).toHaveBeenCalledWith(4, '');
+    expect(ed.mode.kind).toBe('idle');
+
+    ed.startNew();
+    ed.text = '';
+    await expect(ed.commit()).resolves.toBe(false);
+    expect(create).not.toHaveBeenCalled();
+  });
+
   it('keeps the field open when the backend refuses, so the name can be fixed', async () => {
     const { ed } = editor();
     const failing = createAlbumEditor({
