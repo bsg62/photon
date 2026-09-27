@@ -141,6 +141,21 @@ export class LibraryStore {
     this.anchor = offset;
   }
 
+  /** The viewer closed on grid offset `offset`, showing photo `id` - or `null` when it
+   *  showed none this view still holds (an error, or a photo that has left the view).
+   *
+   *  By id wherever there is one, never through the plain setter: the viewer reaches its
+   *  photos through `ensureAt`, which moves nothing the grid keeps, so after a rebuild or a
+   *  scroll of the grid behind it the page holding `offset` may be gone. The plain setter
+   *  would then record no id, emptying the selection - Ctrl+C, H and the menu act on
+   *  nothing - and the next rebuild would clamp the lead instead of re-finding it. */
+  closeViewerOn(offset: number, id: number | null): void {
+    if (id !== null) this.selectItem(offset, id);
+    // Only when it is not already the lead: closing where the viewer opened keeps a
+    // multi-selection, as `selectItem` does by id.
+    else if (this.selectedOffset !== offset) this.selected = offset;
+  }
+
   /** Ctrl/Cmd+click: adds or removes one photo. The lead and the anchor move to it either
    *  way, so the next Shift+click extends from where the user last clicked. */
   toggleSelected(offset: number): void {
@@ -518,11 +533,29 @@ export class LibraryStore {
     const [start, end] = this.seen;
     const seed = info.version === this.pages.version
       ? undefined
-      : await this.pages.prefetch(info.version, start, Math.min(end, info.len));
+      : await this.prefetch(info.version, start, end, info.len);
     this.pages.reset(info.version, seed);
     this.info = { ...info, copiesOf: keepCopiesName(this.info.copiesOf, info.copiesOf) };
     this.pageSignals.touchAll();
     await this.rebindSelection();
+  }
+
+  /** The pages a rebuild installs with it: the grid's window, and the viewer's page while
+   *  it is open - its next step and the slideshow's walk read from there, and the viewer
+   *  moves nothing `seen` follows. */
+  private async prefetch(version: number, start: number, end: number, len: number): Promise<Map<number, GridEntry[]>> {
+    end = Math.min(end, len);
+    const at = this.viewing;
+    // Nothing of its own to fetch when a page of the window already holds it, or it is
+    // past the end.
+    const covered = at !== null && end > start && pageOf(at) >= pageOf(start) && pageOf(at) <= pageOf(end - 1);
+    const viewer = at === null || at >= len || covered ? null : at;
+    const [seed, own] = await Promise.all([
+      this.pages.prefetch(version, start, end),
+      viewer === null ? new Map<number, GridEntry[]>() : this.pages.prefetch(version, viewer, viewer + 1),
+    ]);
+    for (const [p, rows] of own) seed.set(p, rows);
+    return seed;
   }
 
   /** Puts the selection back on the photo it was on, after the index has been rebuilt.
@@ -990,8 +1023,22 @@ export class LibraryStore {
     const lead = untrack(() => this.selectedOffset);
     const keep: [number, number][] = [[start - KEEP_SLACK, end + KEEP_SLACK]];
     if (lead !== null) keep.push([lead - PAGE_SIZE, lead + PAGE_SIZE + 1]);
+    // The viewer's photo and its neighbours: the grid behind an open viewer still scrolls -
+    // a resize, a rebuild - and evicting the page under it costs the next arrow a fetch.
+    if (this.viewing !== null) keep.push([this.viewing - PAGE_SIZE, this.viewing + PAGE_SIZE + 1]);
     this.pageSignals.touch(this.pages.evict(keep));
     this.pageSignals.touch(await this.pages.ensure(start, Math.min(end, this.info.len)));
+  }
+
+  /** The grid offset the viewer shows, while it is open; see `setViewing`. Plain, not
+   *  `$state`: nothing renders from it. */
+  private viewing: number | null = null;
+
+  /** The viewer is showing grid offset `offset`, or has closed (`null`). Its page is kept
+   *  by `ensure` and prefetched by a rebuild while it does, as the lead's and the grid
+   *  window's are. */
+  setViewing(offset: number | null): void {
+    this.viewing = offset;
   }
 
   /** Loads the page holding `offset`, without moving the grid's window: the viewer's

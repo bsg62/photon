@@ -50,7 +50,9 @@
     onshowcopies,
   }: {
     offset: number;
-    onclose: (offset: number) => void;
+    /** The offset to hand back to the grid, and the photo shown there - `null` when the
+     *  viewer showed nothing this view still holds. */
+    onclose: (offset: number, itemId: number | null) => void;
     /** "Locate in photon": the viewer closes and the grid lands on this photo, looking for
      *  it in the Hidden view when `hidden`. */
     onlocate: (itemId: number, hidden?: boolean) => void;
@@ -83,6 +85,9 @@
    *  Starred is showing. It stays up - the user is looking at it - without a position in
    *  the caption, until the next navigation. */
   let orphaned = $state(false);
+  /** The photo on screen has left the library altogether. Plain: only `close` reads it,
+   *  and the error message is what draws it. */
+  let gone = false;
   /** Bumped to make the loader run again for an offset `current` already holds. */
   let reload = $state(0);
   /** Deliberately not `$state`: nothing renders from a partial wheel total, and making it
@@ -459,12 +464,20 @@
     else current = target;
   }
 
-  /** The offset handed back to the grid on close. An orphaned photo's offset can sit past
-   *  the end of the view that dropped it. */
+  /** The offset handed back to the grid on close, with the photo on screen so the grid can
+   *  select it by id. An orphaned photo's offset can sit past the end of the view that
+   *  dropped it, and whatever sits at its offset now is another photo, so it hands back no
+   *  id: the selection must not hold a photo no tile shows. */
   function close() {
     stopSlideshow();
-    onclose(Math.max(0, Math.min(current, library.info.len - 1)));
+    onclose(Math.max(0, Math.min(current, library.info.len - 1)), orphaned || gone ? null : (item?.id ?? null));
   }
+
+  // The grid keeps this photo's page, and a rebuild prefetches it, for as long as it shows.
+  $effect(() => {
+    library.setViewing(current);
+    return () => library.setViewing(null);
+  });
 
 
   /** An offset the rebind below has already resolved, so the loader can tell "the same photo,
@@ -534,7 +547,10 @@
         if (fresh) {
           orphaned = true;
           refreshDetails(fresh, false);
-        } else error = 'This photo is no longer available.';
+        } else {
+          gone = true;
+          error = 'This photo is no longer available.';
+        }
         return;
       }
       orphaned = false;
@@ -576,6 +592,7 @@
     error = null;
     playbackFailed = false;
     orphaned = false;
+    gone = false;
     // Every photo opens fitted to the window: arriving at the next one already at 400% or
     // panned into a corner leaves you lost. A crop being drawn belonged to the last photo.
     zoom = MIN_ZOOM;

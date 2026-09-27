@@ -1778,6 +1778,68 @@ describe('LibraryStore', () => {
       expect(store.selectedItemIds).toEqual([idAt(8)]);
     });
 
+    it('the viewer closing far from the grid selects its photo by id, and a rebuild re-finds it', async () => {
+      // The viewer reached photo 3000 through ensureAt; the grid behind it never went there,
+      // and a rebuild dropped every page but the grid's window. The page holding 3000 is gone.
+      const store = await storeOf(5000);
+      store.selected = 10;
+      await store.ensureAt(3000);
+      vi.mocked(api.gridInfo).mockResolvedValue({ ...(await api.gridInfo()), version: 2 });
+      vi.mocked(api.gridRows).mockImplementation(async (offset: number, count: number) => ({
+        version: 2,
+        rows: Array.from({ length: Math.min(count, 5000 - offset) }, (_, i) => entryAt(offset + i)),
+      }));
+      vi.mocked(api.gridOffsetOfItem).mockResolvedValue(10);
+      await store.refresh();
+      expect(store.entry(3000)).toBeUndefined();
+
+      store.closeViewerOn(3000, idAt(3000));
+      expect(store.selectedItemIds).toEqual([idAt(3000)]);
+
+      // A photo indexed ahead of it: the lead follows it by id rather than clamping.
+      vi.mocked(api.gridInfo).mockResolvedValue({ ...(await api.gridInfo()), version: 3 });
+      vi.mocked(api.gridRows).mockImplementation(async (offset: number, count: number) => ({
+        version: 3,
+        rows: Array.from({ length: Math.min(count, 5000 - offset) }, (_, i) => entryAt(offset + i)),
+      }));
+      vi.mocked(api.gridOffsetOfItem).mockResolvedValue(3001);
+      await store.refresh();
+      expect(api.gridOffsetOfItem).toHaveBeenLastCalledWith(idAt(3000));
+      expect(store.selected).toBe(3001);
+    });
+
+    it('the viewer closing with no photo to name falls back to the offset', async () => {
+      const store = await storeOf(10);
+      store.selected = 3;
+      store.toggleSelected(4);
+      store.closeViewerOn(4, null); // closed on the lead: the selection stays
+      expect(store.selectionCount).toBe(2);
+      store.closeViewerOn(6, null);
+      expect(store.selectedItemIds).toEqual([idAt(6)]);
+    });
+
+    it('keeps the viewer’s page while it is open: through the grid scrolling, and across a rebuild', async () => {
+      const store = await storeOf(5000);
+      store.setViewing(3000);
+      await store.ensureAt(3000);
+      await store.ensure(0, 50);
+      expect(store.entry(3000)?.id).toBe(idAt(3000));
+
+      vi.mocked(api.gridInfo).mockResolvedValue({ ...(await api.gridInfo()), version: 2 });
+      vi.mocked(api.gridRows).mockImplementation(async (offset: number, count: number) => ({
+        version: 2,
+        rows: Array.from({ length: Math.min(count, 5000 - offset) }, (_, i) => entryAt(offset + i)),
+      }));
+      await store.refresh();
+      expect(store.entry(3000)?.id).toBe(idAt(3000));
+      expect(store.entry(0)?.id).toBe(idAt(0));
+
+      // Closed: its page is the grid's to let go of again.
+      store.setViewing(null);
+      await store.ensure(0, 50);
+      expect(store.entry(3000)).toBeUndefined();
+    });
+
     describe('select all', () => {
       /** Three folders: 0..4, 5..11, 12..14. */
       const folders: Section[] = [
