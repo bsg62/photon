@@ -18,6 +18,13 @@
    *  Drawn from the index's folder tallies rather than the folder table: a tally exists only
    *  for a folder with items, which is what keeps empty intermediate folders out of the list.
    *  Watched roots with no photos of their own are managed from Settings instead. */
+  /** One formatter for every count in the list, rather than a `toLocaleString()` per row,
+   *  each of which looks the locale up again: the folder list alone can be thousands long. */
+  const counted = new Intl.NumberFormat();
+  /** A row's height, as `.node` and `.editor` draw it below: what a year group that has not
+   *  been laid out yet is assumed to be tall (`contain-intrinsic-block-size`). */
+  const ROW = 28;
+
   const years = $derived(arrangeFolders(folderRows(library.info.folders, library.folders.folders), library.info.sort));
   const shownTags = $derived(sidebarTags(library.tags));
 
@@ -306,7 +313,7 @@
     title="Starred photos"
   >
     <Icon name="star" size={14} /><span class="name">Starred</span>
-    <span class="count">{library.info.starredCount.toLocaleString()}</span>
+    <span class="count">{counted.format(library.info.starredCount)}</span>
   </button>
 
   <button
@@ -328,7 +335,7 @@
       title="Every video in the library"
     >
       <Icon name="play" size={14} /><span class="name">Videos</span>
-      <span class="count">{library.info.videoCount.toLocaleString()}</span>
+      <span class="count">{counted.format(library.info.videoCount)}</span>
     </button>
   {/if}
 
@@ -342,7 +349,7 @@
       title="Photos with a byte-identical copy elsewhere in the library"
     >
       <Icon name="copy" size={14} /><span class="name">Duplicates</span>
-      <span class="count">{library.info.duplicateCount.toLocaleString()}</span>
+      <span class="count">{counted.format(library.info.duplicateCount)}</span>
     </button>
     {#if library.info.view === 'copies'}
       <!-- Not a saved place: it exists while the view is open, and leaving removes it. Not
@@ -364,7 +371,7 @@
       title="Photos you have hidden. They stay on disk; unhide them from here"
     >
       <Icon name="eye-off" size={14} /><span class="name">Hidden</span>
-      <span class="count">{library.info.hiddenCount.toLocaleString()}</span>
+      <span class="count">{counted.format(library.info.hiddenCount)}</span>
     </button>
   {/if}
 
@@ -372,7 +379,7 @@
   <button class="group" aria-expanded={open.albums} onclick={() => (open.albums = !open.albums)}>
     <span class="chevron"><Icon name={open.albums ? 'chevron-down' : 'chevron-right'} size={12} /></span><Icon name="folder" size={14} />
     <span class="name">Albums</span>
-    <span class="count">{library.albums.length.toLocaleString()}</span>
+    <span class="count">{counted.format(library.albums.length)}</span>
   </button>
   {#if open.albums}
     {#each library.albums as album (album.id)}
@@ -402,7 +409,7 @@
               ><Icon name="images" size={12} /></span
             >
           {/if}
-          <span class="count">{album.count.toLocaleString()}</span>
+          <span class="count">{counted.format(album.count)}</span>
         </button>
       {/if}
     {/each}
@@ -428,7 +435,7 @@
     <button class="group" aria-expanded={open.searches} onclick={() => (open.searches = !open.searches)}>
       <span class="chevron"><Icon name={open.searches ? 'chevron-down' : 'chevron-right'} size={12} /></span><Icon name="bookmark" size={14} />
       <span class="name">Searches</span>
-      <span class="count">{library.searches.length.toLocaleString()}</span>
+      <span class="count">{counted.format(library.searches.length)}</span>
     </button>
     {#if open.searches}
       {#each library.searches as search (search.id)}
@@ -461,7 +468,7 @@
   <button class="group" aria-expanded={open.people} onclick={() => (open.people = !open.people)}>
     <span class="chevron"><Icon name={open.people ? 'chevron-down' : 'chevron-right'} size={12} /></span><Icon name="user" size={14} />
     <span class="name">People</span>
-    <span class="count">{library.people.length.toLocaleString()}</span>
+    <span class="count">{counted.format(library.people.length)}</span>
   </button>
   {#if open.people}
     {#each library.people as person (person.hash)}
@@ -472,7 +479,7 @@
         onclick={() => show(() => library.setPersonView(person.hash))}
       >
         <span class="name">{person.name}</span>
-        <span class="count">{person.count.toLocaleString()}</span>
+        <span class="count">{counted.format(person.count)}</span>
       </button>
     {:else}
       <p class="empty small">No people. photon reads face names from Picasa’s .picasa.ini.</p>
@@ -483,7 +490,7 @@
   <button class="group" aria-expanded={open.tags} onclick={() => (open.tags = !open.tags)}>
     <span class="chevron"><Icon name={open.tags ? 'chevron-down' : 'chevron-right'} size={12} /></span><Icon name="tag" size={14} />
     <span class="name">Tags</span>
-    <span class="count">{shownTags.length.toLocaleString()}</span>
+    <span class="count">{counted.format(shownTags.length)}</span>
   </button>
   {#if open.tags}
     {#each shownTags as t (t.tag)}
@@ -494,7 +501,7 @@
         onclick={() => show(() => library.setTagView(t.tag))}
       >
         <span class="name">{t.tag}</span>
-        <span class="count">{t.count.toLocaleString()}</span>
+        <span class="count">{counted.format(t.count)}</span>
       </button>
     {:else}
       <p class="empty small">No keywords. photon reads them from the photos themselves.</p>
@@ -503,30 +510,32 @@
 
   {#each years as group (group.year)}
     {#if group.year !== null}<h2 class="year">{group.year}</h2>{/if}
-    {#each group.rows as row (row.folderId)}
-      {#if folderEditor.editing(row.folderId)}
-        <input
-          class="editor"
-          bind:this={folderEditorInput}
-          bind:value={folderEditor.text}
-          disabled={folderEditor.busy}
-          aria-label="Folder name in photon"
-          title={folderById(row.folderId)?.path}
-          onkeydown={onFolderEditorKeydown}
-          onblur={commitFolderEditor}
-        />
-      {:else}
-        <button
-          class="node"
-          title={folderById(row.folderId)?.path}
-          onclick={() => jumpToFolder(row.folderId)}
-          oncontextmenu={(e) => folderMenu(e, row.folderId)}
-        >
-          <span class="name">{row.name}</span>
-          <span class="count">{row.count.toLocaleString()}</span>
-        </button>
-      {/if}
-    {/each}
+    <div class="folders" style:contain-intrinsic-block-size="auto {group.rows.length * ROW}px">
+      {#each group.rows as row (row.folderId)}
+        {#if folderEditor.editing(row.folderId)}
+          <input
+            class="editor"
+            bind:this={folderEditorInput}
+            bind:value={folderEditor.text}
+            disabled={folderEditor.busy}
+            aria-label="Folder name in photon"
+            title={folderById(row.folderId)?.path}
+            onkeydown={onFolderEditorKeydown}
+            onblur={commitFolderEditor}
+          />
+        {:else}
+          <button
+            class="node"
+            title={folderById(row.folderId)?.path}
+            onclick={() => jumpToFolder(row.folderId)}
+            oncontextmenu={(e) => folderMenu(e, row.folderId)}
+          >
+            <span class="name">{row.name}</span>
+            <span class="count">{counted.format(row.count)}</span>
+          </button>
+        {/if}
+      {/each}
+    </div>
   {/each}
 
   {#if library.folders.watched.length === 0}
@@ -622,6 +631,28 @@
   }
   .chevron { display: grid; place-items: center; width: 12px; }
   .node { padding-left: 28px; }
+  /* A library can have thousands of folders, and the list is laid out again on every frame
+     of a splitter drag. `content-visibility: auto` skips the layout and paint of whatever is
+     off screen while keeping every row in the accessibility tree and focusable - unlike
+     `display: none` or `hidden` - and the intrinsic size keeps the scroll height exact, since
+     every row is 28px (ROW in the script). Measured in headless Chromium on 5000 folders in
+     25 years, a width change and its layout: 35-42ms with neither, 4-6ms per row alone,
+     0.2ms with the year groups too - the scroll height and every row's position unchanged.
+
+     Both, because each covers what the other cannot: a flat sort has one group holding every
+     folder, always on screen, and People and Tags are `.node` lists with no group at all.
+
+     The group's containment clips paint to its own box, and the global focus ring sits 4px
+     outside a row (a 2px outline, 2px off): the padding makes room for the first and last
+     rows' rings, and the negative margin takes it back out of the layout. */
+  .node { content-visibility: auto; contain-intrinsic-block-size: auto 28px; }
+  .folders {
+    display: flex;
+    flex-direction: column;
+    content-visibility: auto;
+    padding-block: 4px;
+    margin-block: -4px;
+  }
   /* Nested under Duplicates, the same depth as an album under its group. */
   /* Nothing happens on a click (see the markup), so it must not offer one: `.root` is
      styled for the buttons it is otherwise always on. Its hover background is already
