@@ -6,10 +6,10 @@ import { arrangeFolders, enterFolder, locateItem, folderRows, groupByYear, retur
 const at = (iso: string) => Math.floor(new Date(iso).getTime() / 1000);
 
 const folders = [
-  { id: 1, watchedId: 1, parentId: null, path: '/photos', name: 'photos', hidden: false },
-  { id: 2, watchedId: 1, parentId: 1, path: '/photos/rome', name: 'rome', hidden: false },
-  { id: 3, watchedId: 1, parentId: 1, path: '/photos/oslo', name: 'oslo', hidden: false },
-  { id: 4, watchedId: 1, parentId: 1, path: '/photos/old', name: 'old', hidden: false },
+  { id: 1, watchedId: 1, parentId: null, path: '/photos', name: 'photos', hidden: false, alias: null },
+  { id: 2, watchedId: 1, parentId: 1, path: '/photos/rome', name: 'rome', hidden: false, alias: null },
+  { id: 3, watchedId: 1, parentId: 1, path: '/photos/oslo', name: 'oslo', hidden: false, alias: null },
+  { id: 4, watchedId: 1, parentId: 1, path: '/photos/old', name: 'old', hidden: false, alias: null },
 ];
 
 const tallies = [

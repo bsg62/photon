@@ -1436,6 +1436,40 @@ mod tests {
         );
     }
 
+    /// A rescan refreshes a folder's row in place (`upsert_folder`), and neither of
+    /// `walk_tree`'s callers may take the user's name for it with the refresh.
+    #[test]
+    fn a_folder_alias_survives_a_scan_and_a_subtree_scan() {
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        write_file(&root, "sub/a.jpg", &jpeg_bytes(4, 2));
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
+        scan(&lib, &watched, 1);
+        let sub = |lib: &Library| {
+            lib.folders()
+                .unwrap()
+                .into_iter()
+                .find(|f| f.path.ends_with("sub"))
+                .unwrap()
+        };
+        lib.set_folder_alias(sub(&lib).id, Some("Easter")).unwrap();
+
+        write_file(&root, "sub/b.jpg", &jpeg_bytes(4, 3));
+        scan(&lib, &watched, 2);
+        assert_eq!(
+            sub(&lib).alias.as_deref(),
+            Some("Easter"),
+            "a scan cleared the alias"
+        );
+        write_file(&root, "sub/c.jpg", &jpeg_bytes(4, 5));
+        scan_sub(&lib, &watched, &root.join("sub"), 3);
+        assert_eq!(
+            sub(&lib).alias.as_deref(),
+            Some("Easter"),
+            "a subtree scan cleared the alias"
+        );
+    }
+
     fn is_hidden(lib: &Library, id: i64) -> bool {
         lib.item(id).unwrap().unwrap().hidden
     }

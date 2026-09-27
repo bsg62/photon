@@ -31,11 +31,11 @@
   const day = (y, m, d) => Date.UTC(y, m - 1, d) / 1000;
 
   const folders = [
-    { id: 1, watchedId: 1, parentId: null, path: '/home/ada/Pictures', name: 'Pictures', hidden: false },
-    { id: 2, watchedId: 1, parentId: 1, path: '/home/ada/Pictures/2026/Summer hike', name: 'Summer hike', hidden: false },
-    { id: 3, watchedId: 1, parentId: 1, path: '/home/ada/Pictures/2026/Birthday', name: 'Birthday', hidden: false },
-    { id: 4, watchedId: 1, parentId: 1, path: '/home/ada/Pictures/2025/Christmas', name: 'Christmas', hidden: false },
-    { id: 5, watchedId: 1, parentId: 1, path: '/home/ada/Pictures/2025/Lisbon', name: 'Lisbon', hidden: false },
+    { id: 1, watchedId: 1, parentId: null, path: '/home/ada/Pictures', name: 'Pictures', hidden: false, alias: null },
+    { id: 2, watchedId: 1, parentId: 1, path: '/home/ada/Pictures/2026/Summer hike', name: 'Summer hike', hidden: false, alias: null },
+    { id: 3, watchedId: 1, parentId: 1, path: '/home/ada/Pictures/2026/Birthday', name: 'Birthday', hidden: false, alias: null },
+    { id: 4, watchedId: 1, parentId: 1, path: '/home/ada/Pictures/2025/Christmas', name: 'Christmas', hidden: false, alias: null },
+    { id: 5, watchedId: 1, parentId: 1, path: '/home/ada/Pictures/2025/Lisbon', name: 'Lisbon', hidden: false, alias: 'Lisbon with the Silvas' },
   ];
   const sections = [
     { folderId: 2, offset: 0, count: 23, takenAtMin: day(2026, 7, 14) },

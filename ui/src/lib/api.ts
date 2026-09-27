@@ -9,7 +9,9 @@ export { mediaUrl } from './url';
 
 export interface WatchedFolder { id: number; path: string; online: boolean }
 /** `hidden`: the user hid the folder - its photos, and any added to it later, are hidden. */
-export interface Folder { id: number; watchedId: number; parentId: number | null; path: string; name: string; hidden: boolean }
+/** `alias` is the user's name for the folder in photon, shown in place of `name` (see
+ *  `folderLabel`); null for none. */
+export interface Folder { id: number; watchedId: number; parentId: number | null; path: string; name: string; hidden: boolean; alias: string | null }
 export interface FolderList { watched: WatchedFolder[]; folders: Folder[] }
 /** A root with no photos is absent from the list. */
 export interface WatchedFolderStats { watchedId: number; photoCount: number }

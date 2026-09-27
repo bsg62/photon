@@ -992,7 +992,7 @@ describe('LibraryStore', () => {
   it('hiding a folder refetches the folder list, so its menu offers Unhide next time', async () => {
     const store = new LibraryStore();
     await store.init();
-    const folder = { id: 3, watchedId: 1, parentId: 1, path: '/p/a', name: 'a', hidden: false };
+    const folder = { id: 3, watchedId: 1, parentId: 1, path: '/p/a', name: 'a', hidden: false, alias: null };
     vi.mocked(api.listFolders).mockResolvedValue({ watched: [], folders: [folder] });
     await store.refreshFolders();
     expect(store.folderOf(3)?.hidden).toBe(false);

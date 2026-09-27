@@ -15,7 +15,7 @@
 - Work on branch `feat/folder-alias`. Every commit message ends with `Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>`.
 - **photon never renames a directory.** The alias lives only in `library.db`. No task touches the filesystem or the Picasa INI.
 - The TypeScript mirror (`ui/src/lib/api.ts`) changes in the same commit as the Rust struct it mirrors. `tsconfig` typechecks the tests, so every `Folder` literal in `ui/src/**/*.test.ts` and in `mock.js` gains `alias: null` in that commit too.
-- The schema bump updates the hardcoded `20` literals to `21`. Do not change them to `MIGRATIONS.len()`. There are ten: `library/mod.rs` lines 166 and 192, plus eight `assert_eq!(version, 20)` in `library/schema.rs`. The table count stays at 12, since this adds a column, not a table.
+- The schema bump updates the hardcoded `20` literals to `21`. Do not change them to `MIGRATIONS.len()`. There are twelve: `library/mod.rs` lines 166 and 192, plus ten `assert_eq!(version, 20)` in `library/schema.rs`. The table count stays at 12, since this adds a column, not a table.
 - Case-insensitive matching stays in Rust. The search haystack is compared by `search::Query`, as the folder name already is.
 - **A new test must be demonstrated to fail with its change reverted**, by an exact replacement, and the probe is recorded in the commit message. A compile error is not proof. Each task names its probe.
 - The Rust gate runs before every commit: `cargo fmt --all`, `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`, `cargo bench -p photon-core --bench grid --no-run`. Commits that touch `ui/` also run the UI gate: `npm run check` (0 errors, 0 warnings) and `npm test`.
@@ -53,7 +53,7 @@ ALTER TABLE folders ADD COLUMN alias TEXT;
 "#,
 ```
 
-  Move the ten version literals to 21. Add `migration_21_leaves_existing_folders_without_an_alias`, modelled on `migration_17_keeps_existing_albums_as_photons_own`. It seeds `MIGRATIONS[..20]`, sets `user_version` to 20, inserts a watched folder and a folder, opens the library, and asserts that `alias` is NULL and the version is 21.
+  Move the twelve version literals to 21. Add `migration_21_leaves_existing_folders_without_an_alias`, modelled on `migration_17_keeps_existing_albums_as_photons_own`. It seeds `MIGRATIONS[..20]`, sets `user_version` to 20, inserts a watched folder and a folder, opens the library, and asserts that `alias` is NULL and the version is 21.
 
 - [ ] **Step 2: `Folder.alias`.** Add the field with this doc comment:
 

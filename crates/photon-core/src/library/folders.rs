@@ -1,7 +1,7 @@
 use super::Library;
 use crate::paths;
 use crate::{Error, Result};
-use rusqlite::{Row, params};
+use rusqlite::{OptionalExtension, Row, params};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 
@@ -132,7 +132,12 @@ pub struct Folder {
     /// Whether the user hid the folder: its photos are hidden, and so is any photo added to
     /// it later (`Library::set_folder_hidden`).
     pub hidden: bool,
+    /// The user's name for the folder in photon, shown in place of `name`; `None` for none.
+    pub alias: Option<String>,
 }
+
+/// The longest alias kept, in characters: a folder name, not a caption.
+pub const MAX_FOLDER_ALIAS_CHARS: usize = 255;
 
 impl Library {
     /// Inserts a folder, or refreshes its parent and scan marker if it already exists.
@@ -199,7 +204,7 @@ impl Library {
     pub fn folders(&self) -> Result<Vec<Folder>> {
         let conn = self.reader()?;
         let mut stmt = conn.prepare(
-            "SELECT id, watched_id, parent_id, path, name, hidden FROM folders ORDER BY sort_key, path",
+            "SELECT id, watched_id, parent_id, path, name, hidden, alias FROM folders ORDER BY sort_key, path",
         )?;
         let rows = stmt
             .query_map([], |r| {
@@ -210,10 +215,47 @@ impl Library {
                     path: r.get(3)?,
                     name: r.get(4)?,
                     hidden: r.get(5)?,
+                    alias: r.get(6)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
+    }
+
+    /// Names a folder in photon, or clears the name with `None`. The input is trimmed and
+    /// cut to `MAX_FOLDER_ALIAS_CHARS` on a character boundary. An empty result, or one equal
+    /// to the directory's own name, is stored as NULL: "renaming it back" must not leave an
+    /// alias that merely repeats the name, which would go on matching search as a second
+    /// copy and outlive a later rename of the directory's row. Returns whether the stored
+    /// value changed, so the engine rebuilds only when something did; `NotFound` for a
+    /// folder that does not exist.
+    pub fn set_folder_alias(&self, folder_id: i64, alias: Option<&str>) -> Result<bool> {
+        let mut conn = self.writer();
+        let tx = conn.transaction()?;
+        let (name, current): (String, Option<String>) = tx
+            .query_row(
+                "SELECT name, alias FROM folders WHERE id = ?1",
+                params![folder_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?
+            .ok_or(Error::NotFound(folder_id))?;
+        // Trimmed again after the cut, which can land just after a space.
+        let alias = alias
+            .map(|a| {
+                let cut: String = a.trim().chars().take(MAX_FOLDER_ALIAS_CHARS).collect();
+                cut.trim_end().to_string()
+            })
+            .filter(|a| !a.is_empty() && *a != name);
+        if alias == current {
+            return Ok(false);
+        }
+        tx.execute(
+            "UPDATE folders SET alias = ?2 WHERE id = ?1",
+            params![folder_id, alias],
+        )?;
+        tx.commit()?;
+        Ok(true)
     }
 }
 
@@ -358,6 +400,7 @@ mod tests {
             path: "p".into(),
             name: "p".into(),
             hidden: false,
+            alias: None,
         };
         let json = serde_json::to_string(&folder).unwrap();
         assert!(json.contains("\"watchedId\":2") && json.contains("\"parentId\":null"));
@@ -388,8 +431,75 @@ mod tests {
                 path: "/photos/2024".into(),
                 name: "2024".into(),
                 hidden: false,
+                alias: None,
             }
         );
+    }
+
+    fn alias_of(lib: &Library, folder_id: i64) -> Option<String> {
+        let folders = lib.folders().unwrap();
+        folders
+            .into_iter()
+            .find(|f| f.id == folder_id)
+            .unwrap()
+            .alias
+    }
+
+    #[test]
+    fn a_folder_alias_is_trimmed_and_cleared_by_empty_or_the_real_name() {
+        let (_dir, lib) = temp_library();
+        let w = watch(&lib, "/p");
+        let folder = lib.upsert_folder(w.id, None, "/p/dcim-0412", 1).unwrap();
+
+        assert!(lib.set_folder_alias(folder, Some("  Easter  ")).unwrap());
+        assert_eq!(alias_of(&lib, folder).as_deref(), Some("Easter"));
+        assert!(
+            !lib.set_folder_alias(folder, Some("Easter")).unwrap(),
+            "the same alias again reported a change"
+        );
+
+        assert!(lib.set_folder_alias(folder, Some("   ")).unwrap());
+        assert_eq!(alias_of(&lib, folder), None, "a blank alias was kept");
+
+        lib.set_folder_alias(folder, Some("Easter")).unwrap();
+        assert!(lib.set_folder_alias(folder, Some("dcim-0412")).unwrap());
+        assert_eq!(
+            alias_of(&lib, folder),
+            None,
+            "an alias equal to the directory name was kept"
+        );
+
+        lib.set_folder_alias(folder, Some("Easter")).unwrap();
+        assert!(lib.set_folder_alias(folder, None).unwrap());
+        assert_eq!(alias_of(&lib, folder), None);
+
+        assert!(matches!(
+            lib.set_folder_alias(999, Some("x")),
+            Err(Error::NotFound(999))
+        ));
+    }
+
+    #[test]
+    fn a_long_folder_alias_is_cut_on_a_character_boundary() {
+        let (_dir, lib) = temp_library();
+        let w = watch(&lib, "/p");
+        let folder = lib.upsert_folder(w.id, None, "/p/a", 1).unwrap();
+        lib.set_folder_alias(folder, Some(&"é".repeat(300)))
+            .unwrap();
+        assert_eq!(
+            alias_of(&lib, folder),
+            Some("é".repeat(MAX_FOLDER_ALIAS_CHARS))
+        );
+    }
+
+    #[test]
+    fn an_alias_survives_upsert_folder() {
+        let (_dir, lib) = temp_library();
+        let w = watch(&lib, "/p");
+        let folder = lib.upsert_folder(w.id, None, "/p/a", 1).unwrap();
+        lib.set_folder_alias(folder, Some("Easter")).unwrap();
+        assert_eq!(lib.upsert_folder(w.id, None, "/p/a", 2).unwrap(), folder);
+        assert_eq!(alias_of(&lib, folder).as_deref(), Some("Easter"));
     }
 
     #[test]
