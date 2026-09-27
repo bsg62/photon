@@ -164,9 +164,10 @@ pub struct Engine {
     /// before the library's locks and never while holding any other.
     edit_write: Mutex<()>,
     /// Held by the one thread running the post-scan hashing passes; see `hash_after_scan`.
-    /// It holds the look-alike pass's thumbnail reductions, which live here rather than in
-    /// the pass because the pass runs again after every scan and confirms the same pairs
-    /// again; see `photon_core::similar::Reductions`.
+    /// It holds what the look-alike pass keeps between passes - its thumbnail reductions,
+    /// and what its last regroup was asked, which is how a pass with nothing new skips the
+    /// regroup - and lives here rather than in the pass because the pass runs again after
+    /// every scan; see `photon_core::similar::Reductions`.
     hashing: Mutex<photon_core::similar::Reductions>,
     /// Set by every scan that ends, cleared by the pass as it starts a round. A scan that
     /// finds the pass already running leaves this behind instead of starting a second one.
@@ -1577,7 +1578,9 @@ impl Engine {
     /// runs. The one exception is a poll that finds an offline root still offline
     /// (`run_scan`'s `still_offline`): it read no file and wrote no row, so it leaves the
     /// pass nothing the last real scan did not, and it recurs every 30 seconds for as long
-    /// as the drive is away.
+    /// as the drive is away. With nothing to do the pass is its two candidate queries, one
+    /// read of every perceptual hash and one of the stored groups: the regroup itself is
+    /// skipped when neither has moved since the last one (`photon_core::similar::update`).
     ///
     /// One guard covers both passes, in order: a photo is a look-alike candidate only once
     /// its thumbnail exists, and nothing in the duplicate pass changes that, so the order is
