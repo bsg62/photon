@@ -4,6 +4,7 @@
   import { copiesNotice, showCopiesLabel } from '../lib/copies';
   import { isOwnAlbum, ownAlbums } from '../lib/albums';
   import { isCopyPhotoShortcut } from '../lib/copy-photo';
+  import { folderLabel } from '../lib/folders';
   import { library } from '../lib/library.svelte';
   import { gridSize } from '../lib/app-grid-size.svelte';
   import { buildRows, columnsFor, edgeScrollSpeed, firstVisibleOffset, GAP, itemSpan, itemsInRect, type Rect, rowOfItem, topFolderId, totalHeight, visibleRange } from '../lib/layout';
@@ -670,7 +671,7 @@
           {@const folderId = sections[row.section].folderId}
           {@const folder = folderId === null ? undefined : library.folderOf(folderId)}
           <div class="header" style:top="{row.top}px">
-            <span class="name">{folder?.name ?? ''}</span>
+            <span class="name">{folder ? folderLabel(folder) : ''}</span>
             <span class="path">{folder?.path ?? ''}</span>
           </div>
         {:else}

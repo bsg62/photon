@@ -26,6 +26,13 @@ export function yearOf(takenAtMin: number): number {
   return new Date(takenAtMin * 1000).getFullYear();
 }
 
+/** What photon calls a folder: the user's alias, else its directory name. The one place that
+ *  decides it, so the sidebar, its name sort and the grid header cannot disagree. The path,
+ *  shown beside the header and as the sidebar row's tooltip, keeps the real name visible. */
+export function folderLabel(f: Pick<Folder, 'name' | 'alias'>): string {
+  return f.alias ?? f.name;
+}
+
 /** One row per folder that actually holds photos in the view.
  *
  *  Drawn from the index's tallies rather than `list_folders`, which is what excludes the
@@ -33,7 +40,7 @@ export function yearOf(takenAtMin: number): number {
  *  those. One tally per folder however its photos are arranged: in Recent a folder
  *  reappears every time its photos are the newest again, and the tally already sums them. */
 export function folderRows(tallies: FolderTally[], folders: Folder[]): FolderRow[] {
-  const names = new Map(folders.map((f) => [f.id, f.name]));
+  const names = new Map(folders.map((f) => [f.id, folderLabel(f)]));
   return tallies.map((t) => ({
     folderId: t.folderId,
     // A tally implies an item, which implies a folder row — but a tally can arrive before

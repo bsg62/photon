@@ -27,6 +27,11 @@ describe('folderRows', () => {
     ]);
   });
 
+  it('shows a folder by its alias, in place of its directory name', () => {
+    const aliased = folders.map((f) => (f.id === 3 ? { ...f, alias: 'Aarhus trip' } : f));
+    expect(folderRows(tallies, aliased).map((r) => r.name)).toEqual(['rome', 'Aarhus trip', 'old']);
+  });
+
   it('lists only folders that have photos', () => {
     // Folder 1 holds no photos of its own — it has no tally — so it must not appear,
     // which is the whole point of listing tallies rather than the folder table.
@@ -86,6 +91,12 @@ describe('arrangeFolders', () => {
     expect(names(bySize)).toEqual([['oslo', 'rome', 'old']]);
     expect(names(arrangeFolders(rows, { key: 'size', reverse: true }))).toEqual([['old', 'rome', 'oslo']]);
     expect(names(arrangeFolders(rows, { key: 'modified', reverse: false }))).toEqual([['rome', 'old', 'oslo']]);
+  });
+
+  it('sorts an aliased folder by its alias', () => {
+    const aliased = folders.map((f) => (f.id === 3 ? { ...f, alias: 'Aarhus trip' } : f));
+    const rows = folderRows(tallies, aliased);
+    expect(names(arrangeFolders(rows, { key: 'name', reverse: false }))).toEqual([['Aarhus trip', 'old', 'rome']]);
   });
 
   it('sorts names ignoring case and reading numbers', () => {
