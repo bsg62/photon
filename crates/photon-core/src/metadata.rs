@@ -283,8 +283,19 @@ pub fn civil_from_unix(secs: i64) -> (i64, u32, u32) {
 
 /// A capture time as `YYYY-MM-DD`, for search.
 pub fn date_text(secs: i64) -> String {
+    let mut out = String::with_capacity(10);
+    write_date_text(&mut out, secs);
+    out
+}
+
+/// [`date_text`] appended to `out`, for search, which writes it once per photo into a
+/// buffer it reuses rather than allocating a string each time. One spelling, so the two
+/// cannot drift apart.
+pub fn write_date_text(out: &mut String, secs: i64) {
+    use std::fmt::Write;
     let (y, m, d) = civil_from_unix(secs);
-    format!("{y:04}-{m:02}-{d:02}")
+    // Writing to a `String` cannot fail.
+    let _ = write!(out, "{y:04}-{m:02}-{d:02}");
 }
 
 #[cfg(test)]
