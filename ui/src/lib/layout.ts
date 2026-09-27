@@ -16,6 +16,11 @@ export const TILE_WIDTH: Record<TileSize, number> = { small: 120, medium: 160, l
 
 export const GAP = 8;
 export const HEADER = 32;
+/** Extra space above every folder's header but the first, on top of the gutter under the
+ *  last row before it, so one folder reads as ending before the next begins. Space between
+ *  rows rather than part of the header row: a jump to a folder puts its header, not this
+ *  gap, at the top of the grid. */
+export const SECTION_GAP = 24;
 
 /** A tile row's full height: the tile plus the gutter under it. */
 export function tileRow(tile: number): number {
@@ -51,6 +56,7 @@ export function buildRows(sections: SectionLike[], columns: number, tile: number
   let top = 0;
   sections.forEach((s, section) => {
     if (s.folderId !== null) {
+      if (rows.length > 0) top += SECTION_GAP;
       rows.push({ kind: 'header', section, first: s.offset, count: 0, top, height: HEADER });
       top += HEADER;
     }

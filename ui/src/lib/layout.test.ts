@@ -24,11 +24,12 @@ describe('layout', () => {
       ['tiles', 0, 2, 32],
       ['tiles', 2, 2, 200],
       ['tiles', 4, 1, 368],
-      ['header', 5, 0, 536],
-      ['tiles', 5, 2, 568],
-      ['tiles', 7, 1, 736],
+      // SECTION_GAP (24) above every header but the first: folder 1 ends at 536.
+      ['header', 5, 0, 560],
+      ['tiles', 5, 2, 592],
+      ['tiles', 7, 1, 760],
     ]);
-    expect(totalHeight(rows)).toBe(904);
+    expect(totalHeight(rows)).toBe(928);
     expect(totalHeight([])).toBe(0);
   });
 
@@ -74,8 +75,10 @@ describe('layout', () => {
     expect(topFolderId(rows, sections, 0)).toBe(1);
     // Still inside folder 1's last tile row.
     expect(topFolderId(rows, sections, 400)).toBe(1);
-    // Folder 2's header is at 536.
-    expect(topFolderId(rows, sections, 536)).toBe(2);
+    // The gap between the two folders still belongs to folder 1: nothing of 2 is up yet.
+    expect(topFolderId(rows, sections, 545)).toBe(1);
+    // Folder 2's header is at 560.
+    expect(topFolderId(rows, sections, 560)).toBe(2);
     expect(topFolderId(rows, sections, 10_000)).toBe(2);
   });
 
