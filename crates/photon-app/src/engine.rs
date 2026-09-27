@@ -1512,13 +1512,24 @@ impl Engine {
         {
             tracing::warn!(%err, "grid refresh failed");
         }
+        // The 30-second poll of a root whose drive is still away. It read no file and wrote
+        // no row, so the two library-wide sweeps below would find exactly what the last
+        // real scan left them - and would pay for it twice a minute for as long as the
+        // drive stays unplugged, the look-alike regroup reading every hash in the library
+        // each time. What they would catch waits for the next real scan instead, which is
+        // what a library with no offline root does anyway. Only while it *stays* offline:
+        // the poll that flips the flag either way changes which folders both sweeps work
+        // on, so it runs them.
+        let still_offline = !online_changed && result.as_ref().is_ok_and(|r| r.offline);
         // Outside the guard, and the one full sweep a scan makes. New and replaced items
         // were queued as they were indexed (`ScanReporter::indexed`); this catches what
         // that cannot: an item whose render failed transiently and sits `Pending` with
         // nothing else to retry it, and a drive that came back online, whose items the
         // sweep skipped while it was away. Leaving it inside the guard meant such an item
-        // waited for an unrelated change, or a restart.
-        if let Err(err) = self.thumbs.enqueue_pending() {
+        // waited for an unrelated change, or a restart. It runs after every scan but a
+        // poll of a root that is still offline (`still_offline`), which can have caused
+        // neither.
+        if !still_offline && let Err(err) = self.thumbs.enqueue_pending() {
             tracing::warn!(%err, "could not queue pending thumbnails");
         }
         if let Some(folder) = folder {
@@ -1532,7 +1543,7 @@ impl Engine {
         // After the scan has reported done, not before: the pass reads files, and on a
         // library with many duplicates on a slow drive that is minutes during which the
         // status bar should not claim the folder is still being scanned.
-        if !cancelled {
+        if !cancelled && !still_offline {
             self.hash_after_scan(&cancel);
         }
     }
@@ -1560,9 +1571,13 @@ impl Engine {
     /// Here rather than in the scanner because a duplicate is a fact about the whole
     /// library, not about the root or subtree one scan walked - and because `walk_tree` has
     /// two callers, which a pass wired into the scanner has to remember and this does not.
-    /// It runs after *every* scan, changed rows or not: the first scan after the upgrade
-    /// that added the column touches nothing and still has the whole library to hash. With
-    /// nothing to do it is one indexed query.
+    /// It runs after every scan, changed rows or not: the first scan after the upgrade that
+    /// added the column touches nothing and still has the whole library to hash, and a
+    /// thumbnail that became ready since the last pass is hashed only when some later pass
+    /// runs. The one exception is a poll that finds an offline root still offline
+    /// (`run_scan`'s `still_offline`): it read no file and wrote no row, so it leaves the
+    /// pass nothing the last real scan did not, and it recurs every 30 seconds for as long
+    /// as the drive is away.
     ///
     /// One guard covers both passes, in order: a photo is a look-alike candidate only once
     /// its thumbnail exists, and nothing in the duplicate pass changes that, so the order is
@@ -2395,6 +2410,94 @@ mod tests {
             version,
             "a scan that changed nothing must not rebuild the grid"
         );
+    }
+
+    /// The same 30-second poll must not run the two library-wide sweeps either: a whole
+    /// library's look-alike regroup, and a sort of every pending thumbnail, twice a minute
+    /// for as long as a drive stays unplugged, having read nothing.
+    ///
+    /// Seen through work waiting in *another*, online root, which both sweeps would do: two
+    /// files of one size and different bytes (candidates for the byte-identical hash), and
+    /// thumbnails never queued. They are indexed by the scanner directly, not through the
+    /// engine, so no pass and no queue has seen them before the poll runs. The last scan
+    /// shows the work was there to be done, so "still undone" is the poll's doing.
+    #[test]
+    fn a_poll_of_a_root_still_offline_runs_no_post_scan_sweep() {
+        let f = fixture(&[("a.jpg", &jpeg(16, 16))]);
+        let away = f.add_photos();
+        std::fs::remove_dir_all(&f.photos).unwrap();
+        f.engine.start_scan(away.clone());
+        f.engine.wait_for_scans();
+        let away = f
+            .engine
+            .lib
+            .watched_folders()
+            .unwrap()
+            .into_iter()
+            .find(|w| w.id == away.id)
+            .unwrap();
+        assert!(!away.online);
+
+        let other = f.dir.path().join("more-photos");
+        std::fs::create_dir_all(&other).unwrap();
+        // Different bytes after the end-of-image marker: one size, two contents, and both
+        // still decode, so their thumbnails can be rendered.
+        for (name, tail) in [("one.jpg", b"one"), ("two.jpg", b"two")] {
+            let mut bytes = jpeg(16, 16);
+            bytes.extend_from_slice(tail);
+            std::fs::write(other.join(name), bytes).unwrap();
+        }
+        let online = f
+            .engine
+            .lib
+            .add_watched_folder(&other, f.engine.excluded())
+            .unwrap();
+        photon_core::scanner::scan_watched(
+            &f.engine.lib,
+            &online,
+            now_ms(),
+            &ScanOptions::default(),
+            &mut photon_core::scanner::progress_only(|_| {}),
+        )
+        .unwrap();
+        let waiting: Vec<i64> = f
+            .engine
+            .lib
+            .hash_candidates()
+            .unwrap()
+            .iter()
+            .map(|c| c.id)
+            .collect();
+        assert_eq!(waiting.len(), 2, "the fixture left nothing to hash");
+
+        f.engine.start_scan(away);
+        f.engine.wait_for_scans();
+        f.engine.thumbs.wait_idle();
+
+        assert_eq!(
+            f.engine.lib.hash_candidates().unwrap().len(),
+            2,
+            "a poll of a root still offline ran the duplicate pass"
+        );
+        for &id in &waiting {
+            assert_eq!(
+                f.engine.lib.item(id).unwrap().unwrap().thumb_state,
+                ThumbState::Pending,
+                "a poll of a root still offline swept the pending thumbnails"
+            );
+        }
+
+        // Both are real work a real scan does: the fixture is not merely unhashable.
+        f.engine.start_scan(online);
+        f.engine.wait_for_scans();
+        f.engine.thumbs.wait_idle();
+        assert!(f.engine.lib.hash_candidates().unwrap().is_empty());
+        for &id in &waiting {
+            assert_eq!(
+                f.engine.lib.item(id).unwrap().unwrap().thumb_state,
+                ThumbState::Ready
+            );
+        }
     }
 
     /// THE regression test for the star-only-scan bug: starring a photo in Picasa never

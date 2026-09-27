@@ -316,7 +316,8 @@ passes, and confirming honours `cancel`: a cancelled regroup writes no groups. C
 from four 16-bit bands, each bucket also compared with those one bit away, which is exact up
 to `EXACT_RECALL_DISTANCE` (7) - Conservative. Treating the hash as the verdict brings the
 false pairs back. Both passes run inside
-`Engine::hash_after_scan` (once `hash_duplicates`) at the end of every `run_scan` - not inside
+`Engine::hash_after_scan` (once `hash_duplicates`) at the end of every `run_scan` but the
+30-second poll that finds an offline root still offline, which read and changed nothing - not inside
 the scanner, so neither of `walk_tree`'s callers can be forgotten, and because a duplicate or a
 look-alike is a fact about the whole library, not about one changed file. The perceptual hash
 is taken from the photo's **already-cached grid thumbnail**, not from the source file: the
