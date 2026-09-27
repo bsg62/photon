@@ -57,10 +57,11 @@ read for one nor written.
   `f.name` for display.
 - The sidebar folder row's context menu gains **Rename in photon…** (the label says where the rename happens: the directory keeps its name). It opens an inline field in place of
   the row's name, pre-filled with the current label and selected. Enter commits and Escape
-  cancels, the same as the album editor. The editor is `createAlbumEditor` generalised to hold
-  any id (the plan decides whether that means a rename or a second factory). The sidebar still
-  has room for exactly one field, so starting a folder rename replaces an album edit in
-  progress, and the other way round.
+  cancels, the same as the album editor. The field is a third `createAlbumEditor` instance, with
+  `blankClears`. As with the album and saved-search fields, only one field is open at a time
+  because opening another blurs the first, and a blur *commits* it: starting a folder rename
+  saves a half-typed album name rather than discarding it, and the other way round. (Written
+  first as "replaces"; corrected after the branch review to what the three editors do.)
 - When the folder has an alias, the menu also offers **Use folder name**, which clears it.
 - After the write, `library.setFolderAlias` calls `refreshFolders()`, as `setFolderHidden` does:
   a library change refetches collections, not folders.

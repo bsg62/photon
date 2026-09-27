@@ -77,8 +77,13 @@ export function createAlbumEditor(deps: {
       } finally {
         busy = false;
       }
-      mode = { kind: 'idle' };
-      text = '';
+      // Only if the field is still the one committed. A folder's commit waits on a grid
+      // rebuild, long enough for the blur that sent it to be followed by a rename of another
+      // row; closing that newer field here made the user's click look like it did nothing.
+      if (mode === current) {
+        mode = { kind: 'idle' };
+        text = '';
+      }
       return true;
     },
   };

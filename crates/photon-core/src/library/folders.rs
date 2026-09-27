@@ -490,6 +490,14 @@ mod tests {
             alias_of(&lib, folder),
             Some("é".repeat(MAX_FOLDER_ALIAS_CHARS))
         );
+
+        // A cut landing just after a space leaves no trailing space behind.
+        let spaced = format!("{} tail", "a".repeat(MAX_FOLDER_ALIAS_CHARS - 1));
+        lib.set_folder_alias(folder, Some(&spaced)).unwrap();
+        assert_eq!(
+            alias_of(&lib, folder),
+            Some("a".repeat(MAX_FOLDER_ALIAS_CHARS - 1))
+        );
     }
 
     #[test]

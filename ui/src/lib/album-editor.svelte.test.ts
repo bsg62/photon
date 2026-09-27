@@ -68,6 +68,21 @@ describe('createAlbumEditor', () => {
     expect(create).not.toHaveBeenCalled();
   });
 
+  it('leaves a field started during a slow commit open when that commit lands', async () => {
+    let land = () => {};
+    const rename = vi.fn((_id: number, _name: string) => new Promise<void>((resolve) => (land = resolve)));
+    const ed = createAlbumEditor({ create: async () => ({}), rename });
+    ed.startRename(1, 'A');
+    ed.text = 'Alpha';
+    const first = ed.commit();
+    ed.startRename(2, 'B');
+    land();
+    await expect(first).resolves.toBe(true);
+    expect(rename).toHaveBeenCalledWith(1, 'Alpha');
+    expect(ed.editing(2)).toBe(true);
+    expect(ed.text).toBe('B');
+  });
+
   it('keeps the field open when the backend refuses, so the name can be fixed', async () => {
     const { ed } = editor();
     const failing = createAlbumEditor({
