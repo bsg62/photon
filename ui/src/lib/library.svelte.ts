@@ -31,7 +31,11 @@ const GRID_ROWS_CHUNK = 1000;
 
 /** App-wide reactive state: the grid snapshot, the folder tree, scan status and selection. */
 export class LibraryStore {
-  info = $state<GridInfo>({
+  /** `$state.raw`, as are the folder list and the collections below: each is only ever
+   *  replaced whole by a fetch, never written into, and a deep proxy re-wrapped every
+   *  section and folder of a large library on every refresh. A write into one of them would
+   *  now go unseen - replace it instead. */
+  info = $state.raw<GridInfo>({
     version: -1,
     len: 0,
     sections: [],
@@ -48,14 +52,14 @@ export class LibraryStore {
     tag: null,
     copiesOf: null,
   });
-  folders = $state<FolderList>({ watched: [], folders: [] });
+  folders = $state.raw<FolderList>({ watched: [], folders: [] });
   /** The sidebar's collections. Refetched on every `library-changed` that says the data
    *  moved (a scan can add a face, a keyword or purge an album member) and after every
    *  album, saved-search and tag mutation. */
-  albums = $state<AlbumSummary[]>([]);
-  searches = $state<SavedSearch[]>([]);
-  people = $state<Person[]>([]);
-  tags = $state<TagCount[]>([]);
+  albums = $state.raw<AlbumSummary[]>([]);
+  searches = $state.raw<SavedSearch[]>([]);
+  people = $state.raw<Person[]>([]);
+  tags = $state.raw<TagCount[]>([]);
   scans = $state<Record<number, ScanProgressEvent>>({});
   /** Watched folder ids the OS won't let photon watch live, from the most recent
    *  `folder-status` event for each: they fall back to periodic rescans instead. */
