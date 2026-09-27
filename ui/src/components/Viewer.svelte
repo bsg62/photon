@@ -1102,11 +1102,14 @@
        eye already is for the file name rather than in a corner on its own. -->
   {#if crop.active}
     <div class="bar">
-      <select class="aspect" aria-label="Crop ratio" value={crop.aspect} onchange={(e) => crop.setAspect(Number(e.currentTarget.value))}>
-        {#each ASPECTS as aspect, i (aspect.label)}
-          <option value={i}>{aspect.label}</option>
-        {/each}
-      </select>
+      <span class="aspect-picker">
+        <select class="aspect" aria-label="Crop ratio" value={crop.aspect} onchange={(e) => crop.setAspect(Number(e.currentTarget.value))}>
+          {#each ASPECTS as aspect, i (aspect.label)}
+            <option value={i}>{aspect.label}</option>
+          {/each}
+        </select>
+        <span class="aspect-chevron"><Icon name="chevron-down" size={12} /></span>
+      </span>
       <button class="tool wide" onclick={() => crop.clear()} title="Select the whole photo, which removes the crop">Whole photo</button>
       <button class="tool wide" onclick={() => crop.cancel()} title="Cancel (Esc)">Cancel</button>
       <button class="tool wide primary" onclick={applyCrop} title="Apply (Enter)">Apply</button>
@@ -1291,7 +1294,14 @@
   .star:disabled, .tool:disabled { cursor: default; opacity: 0.4; }
   .tool.wide { width: auto; padding: 0 var(--s-3); color: var(--text); }
   .tool.primary, .tool.primary:hover:not(:disabled) { background: var(--accent); color: var(--on-accent); }
-  .aspect { height: 30px; padding: 0 var(--s-2); border: 0; border-radius: var(--r-3); background: var(--field); color: var(--text); font: inherit; font-size: var(--t-2); }
+  /* `appearance: none` and a chevron of our own, as in SortControl.svelte: WebKitGTK and
+     WebView2 draw a native select in the platform's control theme, so on Linux and Windows
+     this was a light system button on the viewer's dark bar. The options are themed for the
+     webviews that honour it (WebView2); GTK's popup follows the desktop's theme. */
+  .aspect-picker { position: relative; display: inline-flex; align-items: center; }
+  .aspect-chevron { position: absolute; right: var(--s-2); display: inline-flex; pointer-events: none; color: var(--text); }
+  .aspect { appearance: none; height: 30px; padding: 0 26px 0 var(--s-2); border: 0; border-radius: var(--r-3); background: var(--field); color: var(--text); font: inherit; font-size: var(--t-2); cursor: pointer; }
+  .aspect option { background: var(--surface); color: var(--text); }
   @media (prefers-reduced-motion: reduce) { .star, .tool { transition: none; } }
   /* The crop rectangle. The shadow is the dimming: one element, clipped by the area to the
      photo's own box. Handles are larger than they look, so they can be caught. */

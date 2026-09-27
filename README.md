@@ -626,6 +626,8 @@ publishing it.
       headers, oldest folder first. On Linux and Windows (whose webviews draw a native select
       in the platform's own theme), the closed menu matches the size control beside it in
       the dark theme, and its open list is readable in both themes.
+- [ ] On Linux and Windows, the crop tool's ratio menu (the viewer's crop bar) is dark like the
+      bar around it, not a light system button, and its open list is readable.
 - [ ] In All sorted by Size, select a photo and press Ctrl+A: only that photo's folder is
       selected, wherever its photos sit in the list.
 - [ ] Choose a sort, quit and relaunch: photon opens in the same sort. Back on Date taken, the
