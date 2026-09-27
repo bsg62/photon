@@ -34,7 +34,12 @@ npm test -w ui -- src/lib/nav.test.ts            # one UI file
 ```
 
 **There is no component test harness.** vitest runs with `environment: 'node'`, so a
-`.svelte` file cannot be rendered or asserted on. Logic that needs a test goes in a
+`.svelte` file cannot be rendered or asserted on. A `.svelte.ts` module compiles there for
+Svelte's *server* runtime, where effects never run; a test that needs real reactivity
+(an effect, a derived depending on state it reads) is named `*.client.test.ts` and runs in the
+`client` vitest project (`ui/vite.config.ts`), still in Node but with the client runtime -
+`page-signals.client.test.ts` is why: a lazily created per-page signal passed every
+server-runtime test and left every tile deaf to its page. Logic that needs a test goes in a
 `.svelte.ts` factory tested with fake timers (`createSearchBox`, `createThumbRequest`,
 `createSlideshow`, `createCropTool`) or a pure module (`timeline.ts`, `crop.ts`, `picture.ts`);
 what is left in the component is effect wiring, verified by `svelte-check` and the README's
