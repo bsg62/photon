@@ -28,6 +28,7 @@ vi.mock('./api', () => ({
     listFolders: vi.fn(),
     gridRows: vi.fn(),
     gridOffsetOfItem: vi.fn(),
+    gridFolderIdsAt: vi.fn(),
     setGridView: vi.fn(),
     setSort: vi.fn(),
     setSearchQuery: vi.fn(),
@@ -1553,6 +1554,32 @@ describe('LibraryStore', () => {
         expect(store.isSelected(idAt(4))).toBe(false);
         expect(store.isSelected(idAt(12))).toBe(false);
         expect(store.selected).toBe(7);
+      });
+
+      it('takes the lead photo\'s folder under a flat sort, wherever its photos are', async () => {
+        // Sorted by size, All is one headerless run and a folder's photos are scattered
+        // through it: still the folder, never the library.
+        const flat = [{ folderId: null, offset: 0, count: 15, takenAtMin: 0 }];
+        const store = await storeOf(15, { sections: flat });
+        store.selected = 7;
+        vi.mocked(api.gridFolderIdsAt).mockResolvedValueOnce({ version: 1, ids: [idAt(2), idAt(7), idAt(12)] });
+
+        await store.selectAll();
+
+        expect(api.gridFolderIdsAt).toHaveBeenCalledWith(7);
+        expect([...store.selectedItemIds].sort((a, b) => a - b)).toEqual([2, 7, 12].map(idAt));
+        expect(store.selected).toBe(7);
+      });
+
+      it('drops a flat folder answered against another version of the grid', async () => {
+        const flat = [{ folderId: null, offset: 0, count: 15, takenAtMin: 0 }];
+        const store = await storeOf(15, { sections: flat });
+        store.selected = 7;
+        vi.mocked(api.gridFolderIdsAt).mockResolvedValueOnce({ version: 2, ids: [idAt(2), idAt(7), idAt(12)] });
+
+        await store.selectAll();
+
+        expect(store.selectionCount).toBe(1);
       });
 
       it('takes the first folder when nothing is selected yet', async () => {

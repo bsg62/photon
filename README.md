@@ -623,7 +623,11 @@ publishing it.
       with no folder headers and no year strip, and the sidebar lists folders without year
       headings, by name, by total size or by newest change. Clicking a folder there scrolls to
       its first photo. The reverse button turns both over; Date taken reversed keeps the folder
-      headers, oldest folder first. The menu's list is readable in both themes.
+      headers, oldest folder first. On Linux and Windows (whose webviews draw a native select
+      in the platform's own theme), the closed menu matches the size control beside it in
+      the dark theme, and its open list is readable in both themes.
+- [ ] In All sorted by Size, select a photo and press Ctrl+A: only that photo's folder is
+      selected, wherever its photos sit in the list.
 - [ ] Choose a sort, quit and relaunch: photon opens in the same sort. Back on Date taken, the
       grid opens at the folder last browsed, as before.
 - [ ] Changing the sort with text in the search box keeps the search, now in the new order.

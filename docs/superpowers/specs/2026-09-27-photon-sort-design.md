@@ -45,8 +45,10 @@ and the sidebar's folder list, in every view, and is remembered across launches 
 - `LibraryStore.sort` is the sort last asked for while a change is in flight, else the grid's:
   the control builds the next change on it, so two quick clicks compose, and a refused change
   puts the control back.
-- Ctrl+A in All selects one folder's section by date; in a flat sort it selects the whole list,
-  as in any other view, since there is no folder to scope it to.
+- Ctrl+A in All selects the lead photo's folder under every sort. By date that is a section,
+  a range; in a flat sort the folder's photos are scattered, so the backend answers its ids
+  (`grid_folder_ids_at`) from one read of the index, with the version they belong to. (0.35.0
+  selected the whole list here; 0.35.1 went back to the folder.)
 
 ## Known limits
 

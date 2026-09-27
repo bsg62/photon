@@ -115,6 +115,14 @@ pub struct GridRows {
     pub rows: Vec<GridEntry>,
 }
 
+/// One folder's photos in the grid, and the index version they were read from.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FolderIds {
+    pub version: u64,
+    pub ids: Vec<i64>,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ViewerItem {
@@ -502,6 +510,16 @@ pub fn grid_rows(engine: &Engine, offset: usize, count: usize) -> GridRows {
         version,
         rows: grid.rows(offset, clamp_count(count)).to_vec(),
     }
+}
+
+/// The photos of the folder the photo at `offset` is in, read with the version of the index
+/// the offset is resolved against: an offset is only meaningful against one version, so the
+/// two come from one read and the UI discards an answer for a version it has moved past.
+/// `None` when the offset is past the end.
+pub fn grid_folder_ids_at(engine: &Engine, offset: usize) -> Option<FolderIds> {
+    let (version, grid) = engine.grid();
+    let ids = grid.folder_ids_at(offset)?;
+    Some(FolderIds { version, ids })
 }
 
 pub fn grid_offset_of_folder(engine: &Engine, folder_id: i64) -> Option<usize> {
