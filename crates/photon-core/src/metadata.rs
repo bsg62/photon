@@ -377,6 +377,33 @@ mod tests {
         }
     }
 
+    /// A defect between the frame header and a misplaced EXIF block does not cost the
+    /// photo its EXIF: kamadak-exif's search steps over stray bytes the header walk refuses,
+    /// so the walk hands such a file back to it instead of reading it as having none.
+    #[test]
+    fn exif_behind_a_defect_after_the_frame_header_is_still_read() {
+        let camera = jpeg_with_exif(40, 20, 6, "2024:06:15 12:30:45");
+        let len = usize::from(u16::from_be_bytes([camera[4], camera[5]]));
+        let app1 = &camera[2..4 + len]; // the whole segment, marker included
+        let plain = jpeg_bytes(40, 20);
+        // Past the fixture's baseline frame header: its marker (2) and 17-byte segment.
+        let after = plain
+            .windows(4)
+            .position(|w| w == [0xFF, 0xC0, 0x00, 0x11])
+            .unwrap()
+            + 2
+            + 0x11;
+        let bytes = [&plain[..after], &[0x00, 0x00], app1, &plain[after..]].concat();
+        let (dims, exif, _) = read_header_from(&mut std::io::Cursor::new(&bytes));
+        assert_eq!(dims, Some((40, 20)));
+        let exif = exif.expect("the EXIF behind the stray bytes");
+        assert_eq!(
+            exif.get_field(exif::Tag::Orientation, exif::In::PRIMARY)
+                .and_then(|f| f.value.get_uint(0)),
+            Some(6)
+        );
+    }
+
     #[test]
     fn reads_the_camera_lens_and_exposure_fields() {
         let dir = tempfile::tempdir().unwrap();

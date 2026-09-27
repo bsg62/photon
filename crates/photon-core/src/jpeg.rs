@@ -46,9 +46,32 @@ pub(crate) fn read_soi<R: Read>(r: &mut R) -> bool {
 /// length too short to count its own two bytes. Every call consumes at least two bytes, so
 /// a walk over any input ends.
 pub(crate) fn next_segment<R: BufRead>(r: &mut R) -> Option<Segment> {
+    match next(r) {
+        Next::Segment(segment) => Some(segment),
+        Next::End | Next::Broken => None,
+    }
+}
+
+/// Where one step of the walk lands, for the caller that has to tell the two ends of a
+/// walk apart; [`next_segment`] for the rest.
+enum Next {
+    Segment(Segment),
+    /// SOS or EOI: every header segment has been seen.
+    End,
+    /// Something the walk cannot follow: no marker where one has to be, a length too short
+    /// to count its own two bytes, or the end of the stream.
+    Broken,
+}
+
+fn next<R: BufRead>(r: &mut R) -> Next {
+    step(r).unwrap_or(Next::Broken)
+}
+
+/// [`next`], with the end of the stream as `None`.
+fn step<R: BufRead>(r: &mut R) -> Option<Next> {
     loop {
         if read_u8(r)? != 0xFF {
-            return None;
+            return Some(Next::Broken);
         }
         let mut marker = read_u8(r)?;
         // Any number of 0xFF fill bytes may precede a marker code (T.81 B.1.1.2).
@@ -57,20 +80,22 @@ pub(crate) fn next_segment<R: BufRead>(r: &mut R) -> Option<Segment> {
         }
         match marker {
             // Stuffing inside entropy-coded data, never a marker here.
-            0x00 => return None,
+            0x00 => return Some(Next::Broken),
             // Standalone markers carry no length (T.81 B.1.1.4): reading one would take the
             // next marker's two bytes as a length and skip to somewhere arbitrary.
             TEM | RST0..=RST7 | SOI => continue,
-            SOS | EOI => return None,
+            SOS | EOI => return Some(Next::End),
             _ => {}
         }
         let mut len = [0; 2];
         r.read_exact(&mut len).ok()?;
-        let len = u16::from_be_bytes(len).checked_sub(2)?;
-        return Some(Segment {
+        let Some(len) = u16::from_be_bytes(len).checked_sub(2) else {
+            return Some(Next::Broken);
+        };
+        return Some(Next::Segment(Segment {
             marker,
             len: usize::from(len),
-        });
+        }));
     }
 }
 
@@ -112,19 +137,28 @@ pub(crate) struct Head {
 /// the first scan, so in a JPEG with no EXIF - an export, a download, a messenger's copy -
 /// it looks through the compressed data to the end of the file, and sizing the photo from
 /// its headers would still leave a whole-file read behind it. This takes the first `Exif`
-/// APP1 segment as that search does, and stops at the scan.
+/// APP1 segment as that search does, but stops at the scan: a block after it, which that
+/// search would still reach, is not found. EXIF belongs at the head of the file, and
+/// reading past the scan is the whole-file read this is here to avoid.
 ///
 /// The walk goes on past the frame header until it has the EXIF block or reaches the scan:
 /// EXIF belongs straight after SOI, but kamadak-exif also finds one misplaced after the
 /// frame header, and a photo's date is worth the table segments between the two. `None`
-/// when there is no usable frame header, as for [`dimensions`].
+/// when there is no usable frame header, as for [`dimensions`] - and when a defect stops
+/// the walk before the EXIF block has turned up, since kamadak-exif's search steps over
+/// bytes this refuses and may find one behind it.
 pub(crate) fn head<R: BufRead + Seek>(r: &mut R) -> Option<Head> {
     if !read_soi(r) {
         return None;
     }
     let mut dims = None;
     let mut exif = None;
-    while let Some(segment) = next_segment(r) {
+    loop {
+        let segment = match next(r) {
+            Next::Segment(segment) => segment,
+            Next::End => return dims.map(|dims| Head { dims, exif }),
+            Next::Broken => return None,
+        };
         let mut rest = segment.len;
         if dims.is_none() && is_sof(segment.marker) {
             dims = Some(frame_size(r, segment.len)?);
@@ -146,7 +180,6 @@ pub(crate) fn head<R: BufRead + Seek>(r: &mut R) -> Option<Head> {
         }
         skip(r, rest)?;
     }
-    dims.map(|dims| Head { dims, exif })
 }
 
 /// The start-of-frame markers, SOF0 to SOF15, less the three codes inside that range that

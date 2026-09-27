@@ -329,21 +329,17 @@ mod tests {
         );
     }
 
-    /// Pins the `+` in `PEOPLE_SQL`: the list is driven from `faces` and reads only the
-    /// photos that have one, by id. Without it the planner walks `items_size` over every
-    /// photo in the library to find their faces (`library/mod.rs`).
+    /// Pins the `+` in `PEOPLE_SQL`: the list reads only the photos that have a face, each
+    /// by id. Without it the planner walks `items_size` over every photo in the library to
+    /// find their faces (`library/mod.rs`). Whether `faces` or `contacts` drives is left to
+    /// the planner; either reaches photos by id.
     #[test]
-    fn the_people_list_is_driven_from_faces_not_the_size_index() {
+    fn the_people_list_reads_photos_by_id_not_through_the_size_index() {
         let (_dir, lib) = temp_library();
         let plan = lib.query_plan(PEOPLE_SQL, &[]);
         assert!(
             !plan.iter().any(|step| step.contains("items_size")),
             "walks the size index: {plan:?}"
-        );
-        assert_eq!(
-            plan.first().map(String::as_str),
-            Some("SCAN f"),
-            "expected faces to drive: {plan:?}"
         );
         assert!(
             plan.iter()

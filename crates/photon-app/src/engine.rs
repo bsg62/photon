@@ -1513,22 +1513,24 @@ impl Engine {
         {
             tracing::warn!(%err, "grid refresh failed");
         }
-        // The 30-second poll of a root whose drive is still away. It read no file and wrote
-        // no row, so the two library-wide sweeps below would find exactly what the last
-        // real scan left them - and would pay for it twice a minute for as long as the
-        // drive stays unplugged, the look-alike regroup reading every hash in the library
-        // each time. What they would catch waits for the next real scan instead, which is
-        // what a library with no offline root does anyway. Only while it *stays* offline:
-        // the poll that flips the flag either way changes which folders both sweeps work
-        // on, so it runs them.
+        // A scan that found its root's drive still away: above all the 30-second poll of an
+        // unplugged drive, but also the startup scan of one, or the watcher's scan of a root
+        // already marked gone. It read no file and wrote no row, and a root going offline
+        // gives neither sweep below work - both look only at online folders - so they would
+        // find exactly what the last real scan left them, and pay for it twice a minute for
+        // as long as the drive stays unplugged, the look-alike regroup reading every hash in
+        // the library each time. What they would catch waits for the next real scan
+        // instead, which is what a library with no offline root does anyway. Only while it
+        // *stays* offline: the scan that flips the flag either way changes which folders
+        // both sweeps work on, so it runs them.
         let still_offline = !online_changed && result.as_ref().is_ok_and(|r| r.offline);
         // Outside the guard, and the one full sweep a scan makes. New and replaced items
         // were queued as they were indexed (`ScanReporter::indexed`); this catches what
         // that cannot: an item whose render failed transiently and sits `Pending` with
         // nothing else to retry it, and a drive that came back online, whose items the
         // sweep skipped while it was away. Leaving it inside the guard meant such an item
-        // waited for an unrelated change, or a restart. It runs after every scan but a
-        // poll of a root that is still offline (`still_offline`), which can have caused
+        // waited for an unrelated change, or a restart. It runs after every scan but one
+        // that found its root still offline (`still_offline`), which can have caused
         // neither.
         if !still_offline && let Err(err) = self.thumbs.enqueue_pending() {
             tracing::warn!(%err, "could not queue pending thumbnails");
@@ -1575,10 +1577,10 @@ impl Engine {
     /// It runs after every scan, changed rows or not: the first scan after the upgrade that
     /// added the column touches nothing and still has the whole library to hash, and a
     /// thumbnail that became ready since the last pass is hashed only when some later pass
-    /// runs. The one exception is a poll that finds an offline root still offline
-    /// (`run_scan`'s `still_offline`): it read no file and wrote no row, so it leaves the
-    /// pass nothing the last real scan did not, and it recurs every 30 seconds for as long
-    /// as the drive is away. With nothing to do the pass is its two candidate queries, one
+    /// runs. The one exception is a scan that finds its root still offline (`run_scan`'s
+    /// `still_offline`), above all the poll of an unplugged drive: it read no file and wrote
+    /// no row, so it leaves the pass nothing the last real scan did not, and the poll
+    /// recurs every 30 seconds for as long as the drive is away. With nothing to do the pass is its two candidate queries, one
     /// read of every perceptual hash and one of the stored groups: the regroup itself is
     /// skipped when neither has moved since the last one (`photon_core::similar::update`).
     ///
