@@ -341,6 +341,7 @@ publishing it.
 - [ ] Shrink the window to its minimum width with the viewer open on a photo with a long file name: the toolbar's buttons stay clear of the zoom slider and the name ellipsises. Widen it again and the whole name comes back.
 - [ ] Open the info panel over a bright, nearly white photo: the camera, lens and duplicate-path links and the "Add a keyword" placeholder are all comfortably readable against the glass.
 - [ ] Double-click or Enter opens the viewer with an image in about 100 ms. The full resolution follows. ←/→, Home/End, Esc and Backspace work.
+- [ ] In a folder of large photos, hold → for two seconds and let go: the previews flick past, and the photo it stops on turns sharp within about half a second rather than after a wait for every photo passed. A single → shows the next photo's preview at once and the sharp one a moment later.
 - [ ] The mouse's back side button closes the viewer, and does not navigate the page or leave a blank frame. Worth checking on each OS: the three webviews deliver side buttons differently, and some consume them for history before the page sees them.
 - [ ] The gear at the right of the top bar opens Settings. Escape, the close button and a click outside the dialog close it, and focus returns to the gear.
 - [ ] Settings → Folders lists every watched folder with its path, photo count and status, and the status shows scan progress live.

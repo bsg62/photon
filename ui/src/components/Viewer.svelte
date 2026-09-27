@@ -21,6 +21,7 @@
   import { createCropTool } from '../lib/crop-tool.svelte';
   import { containedBox, faceBox } from '../lib/faces';
   import { createSlideshow } from '../lib/slideshow.svelte';
+  import { createFullLoad } from '../lib/full-load';
   import { createStarToggle } from '../lib/star-toggle.svelte';
   import { library } from '../lib/library.svelte';
   import { pictureChanged } from '../lib/picture';
@@ -61,6 +62,9 @@
   } = $props();
 
   const PRELOAD_RADIUS = 2;
+  /** Holds back the full-size file (and the neighbour preload) until a step by hand has
+   *  come to rest; see `createFullLoad`. */
+  const fullLoad = createFullLoad();
   let current = $state(untrack(() => offset));
   let item = $state<ViewerItem | null>(null);
   let fullSrc = $state<string | null>(null);
@@ -556,9 +560,16 @@
     // reloading it would blank it and throw away the zoom and pan for nothing.
     if (rebound === at) {
       rebound = null;
+      fullLoad.renumbered(at);
       return;
     }
     let cancelled = false;
+    // The full-size image in flight, held here so leaving can abort it: a photo arrowed
+    // past must not go on fetching and decoding its whole file behind the one stopped on.
+    let full: HTMLImageElement | null = null;
+    // Started now, so the rest overlaps the item lookup below. `untrack`: a slideshow
+    // starting or stopping is not a reason to reload the photo on screen.
+    const rested = fullLoad.wait(at, { slideshow: untrack(() => slideshow.active) });
     slideshow.changed();
     item = null;
     fullSrc = null;
@@ -605,7 +616,9 @@
       // an `<img>` handed the URL it already has shows the picture it already has. The
       // untouched photo keeps the bare URL the neighbour preload below warms.
       const url = mediaUrl(`image/${it.id}`) + (it.edit ? `?k=${it.thumbKey}` : '');
-      const full = new Image();
+      // The preview thumbnail is already up; the full file waits for the viewer to rest.
+      if (!(await rested) || cancelled) return;
+      full = new Image();
       full.src = url;
       full.decode().then(
         () => {
@@ -621,6 +634,11 @@
     });
     return () => {
       cancelled = true;
+      fullLoad.cancel();
+      // Aborts the fetch and the decode if they have not finished; harmless if they have,
+      // since `fullSrc` holds the URL, not this element. Its `decode()` rejects, and that
+      // rejection is already swallowed.
+      if (full) full.src = '';
       // Leaving a video - navigation, close, or a reload of the same offset - must release
       // its decode pipeline rather than leave it running behind a photo or an unmounted
       // element: pause first (a `load()` alone can keep playing until it resets), drop the
