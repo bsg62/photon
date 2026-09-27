@@ -159,6 +159,11 @@ pub fn set_grid_view(engine: Eng<'_>, view: photon_core::grid::GridView) -> Resu
 }
 
 #[tauri::command(async)]
+pub fn set_sort(engine: Eng<'_>, sort: photon_core::sort::Sort) -> Result<(), AppError> {
+    commands::set_sort(&engine, sort)
+}
+
+#[tauri::command(async)]
 pub fn set_search_query(engine: Eng<'_>, query: String) -> Result<(), AppError> {
     commands::set_search_query(&engine, &query)
 }

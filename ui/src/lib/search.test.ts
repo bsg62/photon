@@ -70,36 +70,45 @@ describe('debounce', () => {
 
 describe('resultsChanged', () => {
   it('is true when only the view differs', () => {
-    expect(resultsChanged({ view: 'all', query: '' }, { view: 'starred', query: '' })).toBe(true);
+    expect(resultsChanged({ view: 'all', query: '', order: 'date' }, { view: 'starred', query: '', order: 'date' })).toBe(true);
   });
 
   it('is true when only the query differs', () => {
-    expect(resultsChanged({ view: 'search', query: 'a' }, { view: 'search', query: 'ab' })).toBe(true);
+    expect(resultsChanged({ view: 'search', query: 'a', order: 'date' }, { view: 'search', query: 'ab', order: 'date' })).toBe(true);
   });
 
   it('is false when neither the view nor the query differs', () => {
-    expect(resultsChanged({ view: 'search', query: 'a' }, { view: 'search', query: 'a' })).toBe(false);
+    expect(resultsChanged({ view: 'search', query: 'a', order: 'date' }, { view: 'search', query: 'a', order: 'date' })).toBe(false);
   });
 });
 
 describe('viewKey', () => {
-  const base = { searchQuery: '', person: null, album: null, tag: null, copiesOf: null };
+  const base = { sort: { key: 'date' as const, reverse: false }, searchQuery: '', person: null, album: null, tag: null, copiesOf: null };
 
   it('takes the argument that belongs to the active view', () => {
-    expect(viewKey({ ...base, view: 'search', searchQuery: 'lake' })).toEqual({ view: 'search', query: 'lake' });
-    expect(viewKey({ ...base, view: 'person', person: 'abc' })).toEqual({ view: 'person', query: 'abc' });
-    expect(viewKey({ ...base, view: 'album', album: 7 })).toEqual({ view: 'album', query: '7' });
-    expect(viewKey({ ...base, view: 'tag', tag: 'beach' })).toEqual({ view: 'tag', query: 'beach' });
+    expect(viewKey({ ...base, view: 'search', searchQuery: 'lake' })).toEqual({ view: 'search', query: 'lake', order: 'date' });
+    expect(viewKey({ ...base, view: 'person', person: 'abc' })).toEqual({ view: 'person', query: 'abc', order: 'date' });
+    expect(viewKey({ ...base, view: 'album', album: 7 })).toEqual({ view: 'album', query: '7', order: 'date' });
+    expect(viewKey({ ...base, view: 'tag', tag: 'beach' })).toEqual({ view: 'tag', query: 'beach', order: 'date' });
     expect(viewKey({ ...base, view: 'copies', copiesOf: { id: 42, fileName: 'a.jpg', gone: false, hidden: false } })).toEqual({
       view: 'copies',
       query: '42',
+      order: 'date',
     });
-    expect(viewKey({ ...base, view: 'all' })).toEqual({ view: 'all', query: '' });
+    expect(viewKey({ ...base, view: 'all' })).toEqual({ view: 'all', query: '', order: 'date' });
   });
 
   it('so switching albums resets the scroll, and one album re-published does not', () => {
     expect(resultsChanged(viewKey({ ...base, view: 'album', album: 1 }), viewKey({ ...base, view: 'album', album: 2 }))).toBe(true);
     expect(resultsChanged(viewKey({ ...base, view: 'album', album: 1 }), viewKey({ ...base, view: 'album', album: 1 }))).toBe(false);
+  });
+
+  it('so a new sort resets the scroll, and the same sort re-published does not', () => {
+    const bySize = { ...base, view: 'all' as const, sort: { key: 'size' as const, reverse: false } };
+    const bySizeReversed = { ...bySize, sort: { key: 'size' as const, reverse: true } };
+    expect(resultsChanged(viewKey({ ...base, view: 'all' }), viewKey(bySize))).toBe(true);
+    expect(resultsChanged(viewKey(bySize), viewKey(bySizeReversed))).toBe(true);
+    expect(resultsChanged(viewKey(bySize), viewKey({ ...bySize }))).toBe(false);
   });
 
   it('so switching Copies anchors resets the scroll', () => {

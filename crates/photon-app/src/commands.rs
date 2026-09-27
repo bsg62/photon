@@ -12,6 +12,7 @@ use photon_core::{
     },
     media::{MediaKind, ThumbState},
     now_ms,
+    sort::Sort,
     thumbs::Priority,
 };
 use serde::Serialize;
@@ -72,6 +73,9 @@ pub struct GridInfo {
     /// Visible videos; the sidebar shows the Videos row only above 0.
     pub video_count: usize,
     pub view: GridView,
+    /// What every view is sorted by. By date the grid keeps its folder sections; by any
+    /// other key it is one flat run, and the sidebar drops its year groups to match.
+    pub sort: Sort,
     /// The query while `view` is `Search`, otherwise empty.
     pub search_query: String,
     /// The contact hash while `view` is `Person`.
@@ -316,6 +320,7 @@ pub fn grid_info(engine: &Engine) -> GridInfo {
             0
         }),
         view,
+        sort: engine.sort(),
         search_query: if view == GridView::Search {
             arg.clone()
         } else {
@@ -478,6 +483,11 @@ pub fn remove_from_album(engine: &Engine, album_id: i64, item_ids: &[i64]) -> Cm
 
 pub fn set_grid_view(engine: &Engine, view: GridView) -> CmdResult<()> {
     engine.set_view(view)?;
+    Ok(())
+}
+
+pub fn set_sort(engine: &Engine, sort: Sort) -> CmdResult<()> {
+    engine.set_sort(sort)?;
     Ok(())
 }
 

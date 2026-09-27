@@ -7,6 +7,7 @@ use crate::grid::{GridEntry, GridView};
 use crate::media::{MediaKind, ThumbState, fingerprint};
 use crate::metadata::{CameraMeta, EXIF_VERSION, date_text, oriented_dims};
 use crate::search::{Fields, Query};
+use crate::sort::{Sort, SortKey};
 use rusqlite::{OptionalExtension, Row, ToSql, params};
 use std::collections::{HashMap, HashSet};
 
@@ -233,6 +234,7 @@ pub(super) fn map_grid_row(r: &Row<'_>) -> rusqlite::Result<GridEntry> {
     let edit = edit_from_db(r.get(11)?, r.get(12)?);
     let (w, h) = oriented_dims(r.get(3)?, r.get(4)?, r.get(5)?);
     let (w, h) = edit.dims(w, h);
+    let (size, mtime_ms) = (r.get(8)?, r.get(9)?);
     Ok(GridEntry {
         id: r.get(0)?,
         folder_id: r.get(1)?,
@@ -245,8 +247,10 @@ pub(super) fn map_grid_row(r: &Row<'_>) -> rusqlite::Result<GridEntry> {
         kind: MediaKind::from_db(r.get(6)?).unwrap_or(MediaKind::Image),
         starred: is_starred(r.get(10)?),
         has_copies: r.get(13)?,
-        thumb_key: edit.thumb_key(fingerprint(&r.get::<_, String>(7)?, r.get(8)?, r.get(9)?)),
+        thumb_key: edit.thumb_key(fingerprint(&r.get::<_, String>(7)?, size, mtime_ms)),
         duration_ms: r.get(14)?,
+        size,
+        mtime_ms,
     })
 }
 
@@ -772,6 +776,31 @@ impl Library {
     /// folder's photos oldest to newest.
     pub fn grid_entries(&self) -> Result<Vec<GridEntry>> {
         self.entries_for(GridView::All, "")
+    }
+
+    /// The grid's rows for one view, in `sort`'s order (`sort::Sort::arrange`): what the
+    /// engine builds its index from. The file names a name sort compares are read by a
+    /// query of their own rather than carried on every `GridEntry`, which is `Copy` because
+    /// a whole library of them stays in memory.
+    pub fn sorted_entries(&self, view: GridView, arg: &str, sort: Sort) -> Result<Vec<GridEntry>> {
+        let mut entries = self.entries_for(view, arg)?;
+        let names = match sort.key {
+            SortKey::Name => self.file_names()?,
+            _ => HashMap::new(),
+        };
+        sort.arrange(&mut entries, |id| names.get(&id).map_or("", String::as_str));
+        Ok(entries)
+    }
+
+    /// Every live item's file name, by id.
+    fn file_names(&self) -> Result<HashMap<i64, String>> {
+        let conn = self.reader()?;
+        let mut stmt =
+            conn.prepare("SELECT id, file_name FROM items WHERE missing_since IS NULL")?;
+        let names = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<HashMap<i64, String>>>()?;
+        Ok(names)
     }
 
     /// The grid's rows for one view. `arg` is the view's argument - the query for `Search`,
@@ -2277,6 +2306,43 @@ mod tests {
         // `mountain.jpg` matches neither side and is dropped, leaving one row per folder,
         // so within-folder order does not come into play here.
         assert_eq!(hits, vec![ids[2], ids[0]]);
+    }
+
+    /// Each key reads its own column - a size sort ordered by mtime would pass a test whose
+    /// two columns agreed, so here they run opposite ways - and the name sort crosses
+    /// folders, ignores case and reads numbers.
+    #[test]
+    fn sorted_entries_order_every_photo_by_the_key_across_folders() {
+        use crate::sort::{Sort, SortKey};
+        let (_dir, lib) = temp_library();
+        let (watched, old_folder) = seed_folder(&lib, Path::new("/p/old"));
+        let new_folder = lib.upsert_folder(watched, None, "/p/new", 1).unwrap();
+        let sized = |folder, path: &str, taken_at, size, mtime_ms| NewItem {
+            size,
+            mtime_ms,
+            ..new_item(folder, path, taken_at)
+        };
+        let ids = lib
+            .insert_items(&[
+                sized(old_folder, "/p/old/IMG_10.jpg", 1, 300, 1_000),
+                sized(old_folder, "/p/old/beach.jpg", 2, 100, 3_000),
+                sized(new_folder, "/p/new/img_2.jpg", 10, 200, 2_000),
+            ])
+            .unwrap();
+        let order = |key, reverse| -> Vec<i64> {
+            lib.sorted_entries(GridView::All, "", Sort { key, reverse })
+                .unwrap()
+                .iter()
+                .map(|e| e.id)
+                .collect()
+        };
+        // By date, the view's own order: `/p/new` first, by its oldest photo.
+        assert_eq!(order(SortKey::Date, false), [ids[2], ids[0], ids[1]]);
+        assert_eq!(order(SortKey::Date, true), [ids[1], ids[0], ids[2]]);
+        assert_eq!(order(SortKey::Name, false), [ids[1], ids[2], ids[0]]);
+        assert_eq!(order(SortKey::Size, false), [ids[0], ids[2], ids[1]]);
+        assert_eq!(order(SortKey::Modified, false), [ids[1], ids[2], ids[0]]);
+        assert_eq!(order(SortKey::Modified, true), [ids[0], ids[2], ids[1]]);
     }
 
     #[test]

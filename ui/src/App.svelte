@@ -26,6 +26,7 @@
   import Compare from './components/Compare.svelte';
   import Settings from './components/Settings.svelte';
   import SizeControl from './components/SizeControl.svelte';
+  import SortControl from './components/SortControl.svelte';
   import ExportDialog from './components/ExportDialog.svelte';
   import StatusBar from './components/StatusBar.svelte';
   import TagPicker from './components/TagPicker.svelte';
@@ -132,8 +133,8 @@
     };
   });
 
-  // Spec §5: the grid returns to the top whenever the result set changes — a new view, or
-  // a refined query within Search — since a scroll position from one set of photos is
+  // Spec §5: the grid returns to the top whenever the result set changes — a new view, a
+  // refined query within Search, or a new sort — since a scroll position from one set of photos is
   // arbitrary against another's. Tracked here rather than in FolderTree because App owns
   // the `grid` binding and its scroll helper.
   let last = viewKey(library.info);
@@ -319,6 +320,7 @@
 <div class="app" style:--sidebar-width="{sidebarWidth}px">
   <div class="topbar" inert={covered}>
     <SearchBar />
+    <SortControl />
     <SizeControl />
     <button class="gear" bind:this={gear} aria-label="Settings" title="Settings" onclick={() => openSettings('folders')}
       ><Icon name="settings" size={18} /></button

@@ -3,7 +3,7 @@
   import { tick } from 'svelte';
   import { api, type AlbumSummary, type Folder, type SavedSearch } from '../lib/api';
   import { createAlbumEditor } from '../lib/album-editor.svelte';
-  import { enterFolder, folderRows, groupByYear, returnToAll } from '../lib/folders';
+  import { arrangeFolders, enterFolder, folderRows, returnToAll } from '../lib/folders';
   import { sidebarTags } from '../lib/tags';
   import { library } from '../lib/library.svelte';
   import { searchBox } from '../lib/search-box.svelte';
@@ -11,12 +11,13 @@
 
   let { onjump, onopensettings }: { onjump: (folderId: number) => void; onopensettings: () => void } = $props();
 
-  /** Folders that actually hold photos, grouped by the year of their oldest one.
+  /** Folders that actually hold photos, in the user's sort: grouped by the year of their
+   *  oldest one by date, one headerless list otherwise (`arrangeFolders`).
    *
    *  Drawn from the index's folder tallies rather than the folder table: a tally exists only
    *  for a folder with items, which is what keeps empty intermediate folders out of the list.
    *  Watched roots with no photos of their own are managed from Settings instead. */
-  const years = $derived(groupByYear(folderRows(library.info.folders, library.folders.folders)));
+  const years = $derived(arrangeFolders(folderRows(library.info.folders, library.folders.folders), library.info.sort));
   const shownTags = $derived(sidebarTags(library.tags));
 
   /** Which collection groups are open. Albums start open because they are the user's own;
@@ -103,6 +104,7 @@
       currentView: () => library.settledView(),
       setView: (view) => library.setView(view),
       lastFolder: () => api.lastFolder(),
+      sortedByDate: () => library.info.sort.key === 'date',
       jump: onjump,
     });
   }
@@ -458,7 +460,7 @@
   {/if}
 
   {#each years as group (group.year)}
-    <h2 class="year">{group.year}</h2>
+    {#if group.year !== null}<h2 class="year">{group.year}</h2>{/if}
     {#each group.rows as row (row.folderId)}
       <button
         class="node"

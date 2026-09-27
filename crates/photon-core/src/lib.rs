@@ -17,6 +17,7 @@ pub mod picasa;
 pub mod scanner;
 pub mod search;
 pub mod similar;
+pub mod sort;
 pub mod thumbs;
 pub mod video;
 pub mod watcher;

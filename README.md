@@ -619,6 +619,14 @@ publishing it.
       being drawn, and no video shows "photon's window stopped while opening this video".
 - [ ] Tile badge placement: the play badge is top-left, because the star and the copies mark own
       the bottom corners. Check that it stays legible on light and dark photos.
+- [ ] Sort (the menu beside the photo sizes): Name, Size and Date modified each show one grid
+      with no folder headers and no year strip, and the sidebar lists folders without year
+      headings, by name, by total size or by newest change. Clicking a folder there scrolls to
+      its first photo. The reverse button turns both over; Date taken reversed keeps the folder
+      headers, oldest folder first. The menu's list is readable in both themes.
+- [ ] Choose a sort, quit and relaunch: photon opens in the same sort. Back on Date taken, the
+      grid opens at the folder last browsed, as before.
+- [ ] Changing the sort with text in the search box keeps the search, now in the new order.
 
 ## How watching works
 

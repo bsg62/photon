@@ -62,10 +62,11 @@ impl GridView {
     }
 }
 
-/// See `GridView::layout`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// See `GridView::layout` and `sort::Sort::layout`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Layout {
     /// One section per run of a folder's photos, each drawn under the folder's header.
+    #[default]
     Folders,
     /// One section holding every row, belonging to no folder and drawn with no header.
     Flat,
@@ -100,6 +101,13 @@ pub struct GridEntry {
     /// Fingerprint of the file version. Part of thumbnail URLs, so they can be cached forever.
     #[serde(serialize_with = "serialize_hex")]
     pub thumb_key: u64,
+    /// The file's size in bytes and modification time, for `sort::Sort` and the sidebar's
+    /// folder totals. Not sent to the UI: it pages through rows in the order they are
+    /// already in, and nothing on a tile shows either.
+    #[serde(skip)]
+    pub size: i64,
+    #[serde(skip)]
+    pub mtime_ms: i64,
 }
 
 /// A run of consecutive grid entries laid out together: one folder's photos under its
@@ -134,6 +142,14 @@ pub struct FolderTally {
     /// today's date; under a newest-wins rule one such file files a folder of 1997 scans
     /// under the current year. A recent mtime cannot drag the minimum forward.
     pub taken_at_min: i64,
+    /// The folder's photos in the view, in bytes. What the sidebar orders by under a size
+    /// sort: the folder that holds the most, as a total, since that is the question a size
+    /// sort of folders answers.
+    pub bytes: i64,
+    /// The newest modification time among the folder's photos in the view, in
+    /// milliseconds. What the sidebar orders by under a modified sort: the folder most
+    /// recently touched.
+    pub modified_ms: i64,
 }
 
 /// Ordered in-memory index the UI pages through by position.
@@ -143,6 +159,7 @@ pub struct GridIndex {
     sections: Vec<Section>,
     folders: Vec<FolderTally>,
     positions: HashMap<i64, usize>,
+    layout: Layout,
 }
 
 impl GridIndex {
@@ -181,6 +198,8 @@ impl GridIndex {
                     let tally = &mut folders[at];
                     tally.count += 1;
                     tally.taken_at_min = tally.taken_at_min.min(entry.taken_at);
+                    tally.bytes += entry.size;
+                    tally.modified_ms = tally.modified_ms.max(entry.mtime_ms);
                 }
                 None => {
                     tally_of.insert(entry.folder_id, folders.len());
@@ -188,6 +207,8 @@ impl GridIndex {
                         folder_id: entry.folder_id,
                         count: 1,
                         taken_at_min: entry.taken_at,
+                        bytes: entry.size,
+                        modified_ms: entry.mtime_ms,
                     });
                 }
             }
@@ -197,6 +218,7 @@ impl GridIndex {
             sections,
             folders,
             positions,
+            layout,
         }
     }
 
@@ -223,13 +245,19 @@ impl GridIndex {
         &self.folders
     }
 
-    /// Where the folder's header is. `None` in a flat layout, which has no headers to land
-    /// on - a folder jump switches to All first.
+    /// Where a jump to the folder lands: its header, or in a flat layout, which has no
+    /// headers, the first of its photos the grid reaches. The flat answer is what makes a
+    /// sidebar click do something under a sort other than date, where All itself is flat;
+    /// Recent, the other flat view, is never asked, since a folder jump switches to All.
     pub fn offset_of_folder(&self, folder_id: i64) -> Option<usize> {
-        self.sections
-            .iter()
-            .find(|s| s.folder_id == Some(folder_id))
-            .map(|s| s.offset)
+        match self.layout {
+            Layout::Folders => self
+                .sections
+                .iter()
+                .find(|s| s.folder_id == Some(folder_id))
+                .map(|s| s.offset),
+            Layout::Flat => self.entries.iter().position(|e| e.folder_id == folder_id),
+        }
     }
 
     pub fn position_of(&self, id: i64) -> Option<usize> {
@@ -269,6 +297,8 @@ mod tests {
             starred: false,
             has_copies: false,
             thumb_key: 42,
+            size: 0,
+            mtime_ms: 0,
         }
     }
 
@@ -351,7 +381,53 @@ mod tests {
                 taken_at_min: 200
             }]
         );
-        assert_eq!(grid.offset_of_folder(10), None, "no header to land on");
+        // No header to land on: a jump lands on the first of the folder's photos instead.
+        assert_eq!(grid.offset_of_folder(10), Some(0));
+        assert_eq!(grid.offset_of_folder(20), Some(1));
+        assert_eq!(grid.offset_of_folder(99), None);
+    }
+
+    /// Under a sort other than date a folder's first photo need not be its first run's
+    /// first photo, nor where its header would have been: the flat answer is a position in
+    /// the rows, not in the sections.
+    #[test]
+    fn a_flat_jump_lands_on_the_folders_first_photo_wherever_it_is() {
+        let rows = vec![
+            entry_at(1, 20, 500),
+            entry_at(2, 20, 400),
+            entry_at(3, 10, 300),
+            entry_at(4, 20, 200),
+        ];
+        let grid = GridIndex::build(rows.clone(), Layout::Flat);
+        assert_eq!(grid.offset_of_folder(10), Some(2));
+        let folders = GridIndex::build(rows, Layout::Folders);
+        assert_eq!(folders.offset_of_folder(20), Some(0));
+        assert_eq!(folders.offset_of_folder(10), Some(2));
+    }
+
+    /// The sidebar's size and modified orders read these, summed and maxed over every run.
+    #[test]
+    fn a_folder_totals_its_bytes_and_keeps_its_newest_modification() {
+        let sized = |id: i64, folder_id: i64, size: i64, mtime_ms: i64| GridEntry {
+            size,
+            mtime_ms,
+            ..entry(id, folder_id)
+        };
+        let grid = GridIndex::build(
+            vec![
+                sized(1, 10, 100, 7_000),
+                sized(2, 20, 5, 1_000),
+                sized(3, 10, 40, 9_000),
+                sized(4, 10, 1, 8_000),
+            ],
+            Layout::Flat,
+        );
+        let totals: Vec<_> = grid
+            .folders()
+            .iter()
+            .map(|t| (t.folder_id, t.bytes, t.modified_ms))
+            .collect();
+        assert_eq!(totals, [(10, 141, 9_000), (20, 5, 1_000)]);
     }
 
     /// The sidebar lists a folder once, with every photo of it the view holds, however many
@@ -369,11 +445,15 @@ mod tests {
                 folder_id: 10,
                 count: 3,
                 taken_at_min: 200,
+                bytes: 0,
+                modified_ms: 0,
             },
             FolderTally {
                 folder_id: 20,
                 count: 1,
                 taken_at_min: 400,
+                bytes: 0,
+                modified_ms: 0,
             },
         ];
         assert_eq!(

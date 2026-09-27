@@ -7,6 +7,7 @@
 
 use super::Library;
 use crate::Result;
+use crate::sort::Sort;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -32,6 +33,10 @@ const EXPORT_APPLY_EDITS: &str = "export_apply_edits";
 /// How large the grid draws its tiles. Stored as the step's name rather than its pixel
 /// width, so changing what "Large" measures does not have to migrate anyone's setting.
 const GRID_TILE: &str = "grid_tile";
+
+/// What the grid and the sidebar are sorted by, in `Sort::to_setting`'s form. One setting
+/// for every view: a sort is how the user likes to browse, not a property of one album.
+const GRID_SORT: &str = "grid_sort";
 
 /// How far apart two perceptual hashes may be and still count as the same picture:
 /// 0 off, 7 conservative, 10 loose. Migration 15 moved the 3 and 6 of before the probe widened
@@ -245,6 +250,18 @@ impl Library {
     /// Stores the grid's tile size.
     pub fn set_grid_tile(&self, tile: GridTile) -> Result<()> {
         self.set_setting(GRID_TILE, tile.as_str())
+    }
+
+    /// What the grid is sorted by; by date when never set.
+    pub fn grid_sort(&self) -> Result<Sort> {
+        Ok(self
+            .setting(GRID_SORT)?
+            .map_or_else(Sort::default, |stored| Sort::from_setting(&stored)))
+    }
+
+    /// Stores what the grid is sorted by.
+    pub fn set_grid_sort(&self, sort: Sort) -> Result<()> {
+        self.set_setting(GRID_SORT, &sort.to_setting())
     }
 
     /// How far apart two perceptual hashes may be and still be grouped, in force right now.
@@ -538,5 +555,20 @@ mod tests {
         let (_dir, lib) = temp_library();
         lib.set_setting(GRID_TILE, "enormous").unwrap();
         assert_eq!(lib.grid_tile().unwrap(), GridTile::Medium);
+    }
+
+    #[test]
+    fn grid_sort_defaults_to_date_and_round_trips() {
+        use crate::sort::SortKey;
+        let (_dir, lib) = temp_library();
+        assert_eq!(lib.grid_sort().unwrap(), Sort::default());
+        let by_name_reversed = Sort {
+            key: SortKey::Name,
+            reverse: true,
+        };
+        lib.set_grid_sort(by_name_reversed).unwrap();
+        assert_eq!(lib.grid_sort().unwrap(), by_name_reversed);
+        lib.set_setting(GRID_SORT, "rating").unwrap();
+        assert_eq!(lib.grid_sort().unwrap(), Sort::default());
     }
 }

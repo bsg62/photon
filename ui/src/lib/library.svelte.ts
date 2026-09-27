@@ -9,6 +9,7 @@ import {
   type GridEntry,
   type GridInfo,
   type GridView,
+  type Sort,
   type ExportProgress,
   type Person,
   type ScanProgressEvent,
@@ -39,6 +40,7 @@ export class LibraryStore {
     hiddenCount: 0,
     videoCount: 0,
     view: 'all',
+    sort: { key: 'date', reverse: false },
     searchQuery: '',
     person: null,
     album: null,
@@ -192,7 +194,11 @@ export class LibraryStore {
    *  it rather than a bound. All is the whole library, where the unit the user is actually
    *  looking at is one folder: on a fifty-thousand photo library, selecting every photo is
    *  never what this key was pressed for, and starring the result would be a long operation
-   *  nobody asked for. */
+   *  nobody asked for.
+   *
+   *  All sorted by anything but date is the exception: it is one flat run with no folder to
+   *  be looking at, and the user asked for the whole library as one list - the largest
+   *  photos, the latest changed - so "all" is that list, like any other view's. */
   private selectAllRange(): [number, number] | null {
     const len = this.info.len;
     if (len === 0) return null;
@@ -553,6 +559,51 @@ export class LibraryStore {
    *  reloaded from scratch rather than patched. */
   setView(view: GridView): Promise<void> {
     return this.switchView(() => api.setGridView(view));
+  }
+
+  /** Sorts every view. Not a view switch: the search box keeps its text and the view keeps
+   *  its argument, so none of the switch hooks run. It shares the view chain all the same,
+   *  since it rebuilds the same index and a refresh racing a switch's could land either's
+   *  rows under the other's info. */
+  setSort(sort: Sort): Promise<void> {
+    const issued = ++this.sortsIssued;
+    this.requestedSort = sort;
+    return this.chain(async () => {
+      try {
+        try {
+          await api.setSort(sort);
+        } catch (e) {
+          this.reportError(e);
+          return;
+        }
+        try {
+          // As a view switch does: the Shift+click anchor is an offset, and in the new
+          // order it names a different photo.
+          this.clearSelection();
+          await this.refresh();
+        } catch (e) {
+          this.reportError(e);
+        }
+      } finally {
+        // Only the latest: an earlier change landing must not hand the control back to
+        // `info` while a later one is still queued behind it.
+        if (issued === this.sortsIssued) this.requestedSort = null;
+      }
+    });
+  }
+
+  /** The sort last asked for, while any change is still in flight. */
+  private requestedSort = $state<Sort | null>(null);
+  /** How many sort changes have been issued; see `setSort`. */
+  private sortsIssued = 0;
+
+  /** The sort the control shows and the next change is built from: the last one asked for
+   *  until the changes in flight have landed, then the grid's own. Built from `info` alone,
+   *  a second click before the first had landed read the old sort - choosing Name and then
+   *  reversing sent "date, reversed" and threw Name away. And once they have landed it is
+   *  `info` again, so a refused change puts the control back on what the grid really is. */
+  get sort(): Sort {
+    return this.requestedSort ?? this.info.sort;
   }
 
   /** Shows the photos of one Picasa contact. */

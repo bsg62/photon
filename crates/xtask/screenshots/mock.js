@@ -112,20 +112,27 @@
   // Without the echo the search box adopts the empty string the moment its send settles and
   // wipes what was typed - which is the box working correctly against a mock that was not.
   let searchQuery = '';
+  // The sort the UI last set, echoed back the same way: the control reads it from grid_info.
+  let sort = { key: 'date', reverse: false };
 
   // Commands whose answer the UI draws.
   const canned = {
     list_folders: () => ({ watched: [{ id: 1, path: '/home/ada/Pictures', online: true }], folders }),
+    set_sort: (a) => {
+      sort = a.sort;
+      return null;
+    },
     grid_info: () => ({
       version: 1,
       len,
       sections,
-      folders: sections.map(({ folderId, count, takenAtMin }) => ({ folderId, count, takenAtMin })),
+      folders: sections.map(({ folderId, count, takenAtMin }) => ({ folderId, count, takenAtMin, bytes: count * 4_000_000, modifiedMs: takenAtMin * 1000 })),
       starredCount: 13,
       duplicateCount: 4,
       hiddenCount: 7,
       videoCount: 10,
       view: searchQuery === '' ? P.get('view') || 'all' : 'search',
+      sort,
       searchQuery,
       person: null,
       album: null,

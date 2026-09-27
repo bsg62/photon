@@ -192,8 +192,9 @@
   /** Photos are numbered within their own folder, not across the library. In the All view
    *  that count matches what the file manager shows for that directory; in Starred or
    *  Search it is the folder's position among the current view's results instead, since
-   *  those views only show a subset of the folder's photos. Recent is laid out as one run
-   *  and so is numbered flat — see `positionInSection`. */
+   *  those views only show a subset of the folder's photos. Recent, and every view under a
+   *  sort other than date, is laid out as one run and so is numbered flat — see
+   *  `positionInSection`. */
   const position = $derived(positionInSection(library.info.sections, current));
   const caption = $derived(item ? formatCaption(item, orphaned ? { index: 0, count: 0 } : position) : '');
   const captionLine = $derived(item ? photoCaptionLine(item.caption) : null);

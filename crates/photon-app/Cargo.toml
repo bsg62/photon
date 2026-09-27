@@ -43,4 +43,7 @@ getrandom = "0.3"
 
 [dev-dependencies]
 image = { version = "0.25.10", default-features = false, features = ["jpeg"] }
+# Only to break a library on purpose: a rebuild that fails is the one thing a rollback test
+# cannot get from the engine's own API. The same version and features photon-core builds.
+rusqlite = { version = "0.40.2", features = ["bundled"] }
 tempfile = "3.27.0"

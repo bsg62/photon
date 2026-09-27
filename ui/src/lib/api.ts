@@ -20,8 +20,15 @@ export interface Section { folderId: number | null; offset: number; count: numbe
 /** Mirrors `grid::FolderTally`: one folder's photos in the view, whatever the layout.
  *  `takenAtMin` is the capture time of the folder's OLDEST photo, in SECONDS (multiply by
  *  1000 for a JS Date). The sidebar groups folders by the year it falls in. Oldest rather
- *  than newest, to match Picasa. */
-export interface FolderTally { folderId: number; count: number; takenAtMin: number }
+ *  than newest, to match Picasa.
+ *  `bytes` totals the folder's photos in the view and `modifiedMs` is the newest file
+ *  modification among them, in MILLISECONDS: the sidebar's size and modified orders. */
+export interface FolderTally { folderId: number; count: number; takenAtMin: number; bytes: number; modifiedMs: number }
+/** Mirrors `sort::SortKey`. */
+export type SortKey = 'date' | 'modified' | 'name' | 'size';
+/** Mirrors `sort::Sort`: what every view is sorted by. `date` keeps the folder sections;
+ *  any other key lays the grid out flat. `reverse` turns the whole order over. */
+export interface Sort { key: SortKey; reverse: boolean }
 /** `hasCopies`: another live file has the same bytes or is a look-alike, the same rule the
  *  Duplicates view uses (`GridEntry::has_copies`). `durationMs` is a video's running time;
  *  null for a photo. */
@@ -54,6 +61,7 @@ export interface GridInfo {
   /** Visible videos; the sidebar shows the Videos row only above 0. */
   videoCount: number;
   view: GridView;
+  sort: Sort;
   searchQuery: string;
   /** Picasa contact hash while `view` is 'person'. */
   person: string | null;
@@ -216,6 +224,7 @@ export const api = {
    *  `capabilities/default.json`. */
   setWindowTheme: (theme: 'light' | 'dark' | null) => getCurrentWindow().setTheme(theme),
   setGridView: (view: GridView) => invoke<void>('set_grid_view', { view }),
+  setSort: (sort: Sort) => invoke<void>('set_sort', { sort }),
   setSearchQuery: (query: string) => invoke<void>('set_search_query', { query }),
   setPersonView: (contact: string) => invoke<void>('set_person_view', { contact }),
   setAlbumView: (albumId: number) => invoke<void>('set_album_view', { albumId }),
