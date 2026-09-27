@@ -12,6 +12,9 @@ function makeUnlisten(name: string): () => void {
   };
 }
 
+/** Lets every pending promise callback run, however many hops deep. */
+const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+
 function deferred<T>() {
   let resolve!: (v: T) => void;
   let reject!: (e: unknown) => void;
@@ -172,6 +175,66 @@ describe('LibraryStore', () => {
     expect(store.albums).toHaveLength(2);
   });
 
+  // The tag counts alone are a quarter of a second at 300k photos, and a scan announces a
+  // data change every 250ms: unserialised, the fetches stacked up faster than they answered.
+  it('fetches the collections one at a time, and an awaiting mutation still sees its own change', async () => {
+    const store = new LibraryStore();
+    await store.init();
+    const tags = () => vi.mocked(api.listTags).mock.calls.length;
+    const before = tags();
+
+    const slow = deferred<{ tag: string; count: number; total: number }[]>();
+    vi.mocked(api.listTags).mockReturnValueOnce(slow.promise);
+    handlers.libraryChanged({ version: 2, len: 0, dataChanged: true });
+    handlers.libraryChanged({ version: 3, len: 0, dataChanged: true });
+    handlers.libraryChanged({ version: 4, len: 0, dataChanged: true });
+    vi.mocked(api.createAlbum).mockResolvedValue({ id: 2, name: 'Zoo', createdMs: 0 });
+    // The fetch in flight read the albums before this one existed.
+    const created = store.createAlbum('Zoo');
+    await flush();
+    expect(tags()).toBe(before + 1);
+
+    vi.mocked(api.listAlbums).mockResolvedValue([{ id: 2, name: 'Zoo', count: 0, picasa: false }]);
+    slow.resolve([]);
+    await expect(created).resolves.toBe(2);
+    // Everything that arrived during the first fetch shared one more.
+    expect(tags()).toBe(before + 2);
+    expect(store.albums).toEqual([{ id: 2, name: 'Zoo', count: 0, picasa: false }]);
+  });
+
+  // Every page of a screenful answered at a newer version reports itself stale.
+  it('refetches the grid once for a screenful of stale pages, not once a page', async () => {
+    const info = (version: number) => ({
+      version,
+      len: 1000,
+      sections: [],
+      folders: [],
+      starredCount: 0,
+      duplicateCount: 0,
+      hiddenCount: 0,
+      videoCount: 0,
+      view: 'all' as const,
+      sort: { key: 'date' as const, reverse: false },
+      searchQuery: '',
+      person: null,
+      album: null,
+      tag: null,
+      copiesOf: null,
+    });
+    vi.mocked(api.gridInfo).mockResolvedValue(info(1));
+    const store = new LibraryStore();
+    await store.init();
+    const calls = vi.mocked(api.gridInfo).mock.calls.length;
+
+    // The backend has rebuilt; the event announcing it has not arrived yet.
+    vi.mocked(api.gridInfo).mockResolvedValue(info(2));
+    vi.mocked(api.gridRows).mockResolvedValue({ version: 2, rows: [] });
+    await store.ensure(0, 1000);
+    await flush();
+    expect(vi.mocked(api.gridInfo).mock.calls.length).toBe(calls + 2);
+    expect(store.info.version).toBe(2);
+  });
+
   // A view switch, a sort or a search rebuilds the grid and changes no data; refetching the
   // collections for it cost a quarter of a second of tag counting per keystroke.
   it('leaves the collections alone on a library change that moved no data', async () => {
@@ -254,9 +317,7 @@ describe('LibraryStore', () => {
     await store.init();
     vi.mocked(api.listAlbums).mockRejectedValueOnce(new Error('albums-fail'));
     handlers.libraryChanged({ version: 2, len: 0, dataChanged: true });
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
+    await flush();
     expect(store.toasts.some((t) => t.message === 'albums-fail')).toBe(true);
   });
 
@@ -265,9 +326,8 @@ describe('LibraryStore', () => {
     await store.init();
 
     vi.mocked(api.gridInfo).mockRejectedValueOnce(new Error('boom'));
-    handlers.libraryChanged({ version: 2, len: 0 });
-    await Promise.resolve();
-    await Promise.resolve();
+    handlers.libraryChanged({ version: 2, len: 0, dataChanged: false });
+    await flush();
 
     expect(store.toasts).toHaveLength(1);
     expect(store.toasts[0]?.message).toBe('boom');
@@ -456,7 +516,10 @@ describe('LibraryStore', () => {
     expect(store.entry(2)?.id).toBe(11);
   });
 
-  it('a refresh whose rows arrive late does not overwrite a newer one', async () => {
+  // One grid fetch at a time: a scan announces a rebuild every 250ms, and unserialised
+  // fetches piled up. The one issued second still has to see the grid as it is after its
+  // call, so it runs once the first has landed rather than being folded into it.
+  it('a refresh issued while another is loading waits for it, then fetches again', async () => {
     const entry = (id: number) => ({
       id,
       folderId: 1,
@@ -494,17 +557,24 @@ describe('LibraryStore', () => {
     vi.mocked(api.gridInfo).mockResolvedValueOnce(info(2, 2));
     const late = deferred<{ version: number; rows: ReturnType<typeof entry>[] }>();
     vi.mocked(api.gridRows).mockReturnValueOnce(late.promise);
+    const calls = vi.mocked(api.gridInfo).mock.calls.length;
     const slow = store.refresh();
-    await Promise.resolve();
-    await Promise.resolve();
+    await flush();
 
     vi.mocked(api.gridInfo).mockResolvedValueOnce(info(3, 3));
     vi.mocked(api.gridRows).mockResolvedValueOnce({ version: 3, rows: [entry(8), entry(9), entry(10)] });
-    await store.refresh();
-    expect(store.info.version).toBe(3);
+    let landed = false;
+    const second = store.refresh().then(() => (landed = true));
+    const third = store.refresh();
+    await flush();
+    expect(vi.mocked(api.gridInfo).mock.calls.length).toBe(calls + 1);
+    expect(landed).toBe(false);
 
     late.resolve({ version: 2, rows: [entry(9), entry(10)] });
     await slow;
+    await Promise.all([second, third]);
+    // The two callers who arrived during the first fetch shared one more.
+    expect(vi.mocked(api.gridInfo).mock.calls.length).toBe(calls + 2);
     expect(store.info.version).toBe(3);
     expect(store.info.len).toBe(3);
     expect(store.entry(0)?.id).toBe(8);
