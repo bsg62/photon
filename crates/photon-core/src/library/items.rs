@@ -889,8 +889,10 @@ impl Library {
         Ok(rows)
     }
 
-    /// Photos matching `query` in their file name, folder name, camera, lens, keywords or
-    /// capture date, case-insensitively.
+    /// Photos matching `query` in their file name, folder name or the folder's alias,
+    /// camera, lens, keywords, caption or capture date, case-insensitively. The alias is a
+    /// haystack beside the name rather than in place of it: the name is still on screen, in
+    /// the grid header's path.
     ///
     /// Words narrow, `OR` widens, `camera:` and `lens:` confine a term to that field,
     /// `from:` and `to:` bound the capture date, and
@@ -913,7 +915,7 @@ impl Library {
         let mut stmt = conn.prepare(&grid_query(
             &format!(
                 "{GRID_COLUMNS}, i.file_name, f.name, i.make, i.model, i.lens, i.focal_mm, i.aperture, i.iso,
-                 (SELECT group_concat(e.tag, ' ') FROM ({EFFECTIVE_TAGS}) e WHERE e.item_id = i.id), i.caption"
+                 (SELECT group_concat(e.tag, ' ') FROM ({EFFECTIVE_TAGS}) e WHERE e.item_id = i.id), i.caption, f.alias"
             ),
             Shown::Visible,
             "",
@@ -954,6 +956,9 @@ impl Library {
                     // whole; a quoted phrase must still match across one, so the haystack
                     // collapses runs of whitespace to single spaces.
                     haystacks.push(caption.split_whitespace().collect::<Vec<_>>().join(" "));
+                }
+                if let Some(alias) = r.get::<_, Option<String>>(base + 10)? {
+                    haystacks.push(alias);
                 }
                 let taken: i64 = r.get(2)?;
                 haystacks.push(date_text(taken));
@@ -2150,6 +2155,23 @@ mod tests {
             .map(|e| e.id)
             .collect();
         assert_eq!(hits, vec![ids[0]]);
+    }
+
+    #[test]
+    fn search_matches_a_folders_alias_and_still_its_name() {
+        let (_dir, lib) = temp_library();
+        let (_watched, folder) = seed_folder(&lib, Path::new("/dcim-0412"));
+        let ids = lib
+            .insert_items(&[new_item(folder, "/dcim-0412/a.jpg", 1)])
+            .unwrap();
+        lib.set_folder_alias(folder, Some("Easter")).unwrap();
+
+        let search = |q: &str| -> Vec<i64> {
+            let entries = lib.entries_for(GridView::Search, q).unwrap();
+            entries.iter().map(|e| e.id).collect()
+        };
+        assert_eq!(search("easter"), ids, "the alias did not match");
+        assert_eq!(search("dcim"), ids, "the directory name stopped matching");
     }
 
     #[test]
