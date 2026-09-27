@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildRows, columnsFor, edgeScrollSpeed, firstVisibleOffset, GAP, HEADER, itemSpan, itemsInRect, rowIndexAt, rowOfItem, tileRow, TILE_WIDTH, topFolderId, totalHeight, visibleRange } from './layout';
+import { buildRows, columnsFor, edgeScrollSpeed, fetchSpan, firstVisibleOffset, GAP, HEADER, itemSpan, itemsInRect, renderRange, rowIndexAt, rowOfItem, tileRow, TILE_WIDTH, topFolderId, totalHeight, visibleRange } from './layout';
 
 const sections = [
   { folderId: 1, offset: 0, count: 5 },
@@ -49,6 +49,30 @@ describe('layout', () => {
     expect(visibleRange([], 0, 100, 0)).toEqual([0, 0]);
     expect(itemSpan(rows.slice(0, 3))).toEqual([0, 4]);
     expect(itemSpan(rows.slice(4, 5))).toBeNull();
+  });
+
+  it('mounts half a viewport past the edges but fetches two viewports', () => {
+    // One flat run of 1000 rows, 168px each: a 1680px viewport is ten rows, so half a
+    // viewport is five rows either side and two viewports twenty.
+    const rows = buildRows([{ folderId: null, offset: 0, count: 1000 }], 1, TILE_WIDTH.medium);
+    const row = tileRow(TILE_WIDTH.medium);
+    const viewport = 10 * row;
+    const top = 100 * row;
+
+    expect(renderRange(rows, top, viewport, false)).toEqual([95, 116]);
+    expect(fetchSpan(rows, top, viewport)).toEqual([80, 131]);
+  });
+
+  it('mounts only what is on screen while scrolling fast', () => {
+    const rows = buildRows([{ folderId: null, offset: 0, count: 1000 }], 1, TILE_WIDTH.medium);
+    const row = tileRow(TILE_WIDTH.medium);
+    const viewport = 10 * row;
+    const top = 100 * row;
+
+    expect(renderRange(rows, top, viewport, true)).toEqual([100, 111]);
+    // The fetch does not narrow with it: pages are what the tiles show once it stops.
+    expect(fetchSpan(rows, top, viewport)).toEqual([80, 131]);
+    expect(fetchSpan([], 0, viewport)).toBeNull();
   });
 
   it('draws a run that names no folder without a header', () => {

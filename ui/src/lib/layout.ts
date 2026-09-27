@@ -103,6 +103,31 @@ export function visibleRange(rows: Row[], scrollTop: number, viewport: number, o
   return [start, Math.min(end, rows.length)];
 }
 
+/** How far past the viewport tiles are mounted, in viewports: enough that a wheel notch or
+ *  an arrow key lands on rows already in the DOM, no more. Every mounted tile carries its
+ *  own deriveds and effects, and rows are keyed by position, so a jump (End, a folder
+ *  jump, a scrollbar drag, a timeline scrub) mounts the whole window again: at two
+ *  viewports either side that was five screens of tiles per jump. */
+export const RENDER_OVERSCAN = 0.5;
+/** How far past the viewport pages are fetched, in viewports. Wider than what is rendered
+ *  on purpose: a page is cheap to hold and costs a round trip to miss, and it is also the
+ *  range `LibraryStore.refresh` prefetches before it swaps a rebuilt grid in. */
+export const FETCH_OVERSCAN = 2;
+
+/** The rows to mount, as `[start, end)`. While the grid is scrolling fast the overscan is
+ *  dropped entirely: rows scrolled into and straight out of the overscan in the same frame
+ *  are mounted for nothing. */
+export function renderRange(rows: Row[], scrollTop: number, viewport: number, fast: boolean): [number, number] {
+  return visibleRange(rows, scrollTop, viewport, fast ? 0 : viewport * RENDER_OVERSCAN);
+}
+
+/** The photos whose pages should be loaded, as `[start, end)` grid offsets, or null for a
+ *  grid with no tiles in reach. */
+export function fetchSpan(rows: Row[], scrollTop: number, viewport: number): [number, number] | null {
+  const [start, end] = visibleRange(rows, scrollTop, viewport, viewport * FETCH_OVERSCAN);
+  return itemSpan(rows.slice(start, end));
+}
+
 /** The folder whose section is at the top of the viewport, or null when the grid is empty.
  *
  *  This is what photon remembers across a restart. It follows the eye rather than the last
