@@ -46,6 +46,14 @@ const CANDIDATES_SQL: &str = "SELECT i.id, i.path, i.size, i.mtime_ms, i.edit_tu
        AND i.kind = 0
      ORDER BY i.id";
 
+/// `percep_hashes`' query, shared with its plan test. The `+` keeps it a scan in table
+/// order rather than a walk of `items_size`; see `library/mod.rs`.
+const PERCEP_HASHES_SQL: &str =
+    "SELECT id, percep_hash, path, size, mtime_ms, edit_turns, edit_crop FROM items
+     WHERE percep_hash IS NOT NULL AND +missing_since IS NULL
+       -- A poster frame is not the video; it would pair with the still taken beside it.
+       AND kind = 0";
+
 /// `group`'s output follows `percep_hashes()`'s unordered query (effectively rowid), not
 /// hash order, and the stored rows are in index order, so neither side of the comparison
 /// can be trusted to arrive sorted.
@@ -129,12 +137,7 @@ impl Library {
     /// hash, so a row with a hash has a key describing the same picture.
     pub fn percep_hashes(&self) -> Result<Vec<HashedPhoto>> {
         let conn = self.reader()?;
-        let mut stmt = conn.prepare_cached(
-            "SELECT id, percep_hash, path, size, mtime_ms, edit_turns, edit_crop FROM items
-             WHERE percep_hash IS NOT NULL AND missing_since IS NULL
-               -- A poster frame is not the video; it would pair with the still taken beside it.
-               AND kind = 0",
-        )?;
+        let mut stmt = conn.prepare_cached(PERCEP_HASHES_SQL)?;
         let rows = stmt
             .query_map([], |r| {
                 let hash: i64 = r.get(1)?;
@@ -225,7 +228,7 @@ impl Library {
 
 #[cfg(test)]
 mod tests {
-    use super::CANDIDATES_SQL;
+    use super::{CANDIDATES_SQL, PERCEP_HASHES_SQL};
     use crate::library::NewItem;
     use crate::media::MediaKind;
     use crate::testutil::{new_item, seed_folder, temp_library};
@@ -454,6 +457,20 @@ mod tests {
             !plan.iter().any(|step| step.contains("SCAN i")),
             "items must be searched, not scanned: {plan:?}"
         );
+    }
+
+    /// The other side of the same predicate: `percep_hashes` reads the whole library, and
+    /// the `+` in `PERCEP_HASHES_SQL` keeps that a scan in table order. Without it the
+    /// planner walks `items_size`, a B-tree descent per photo (`library/mod.rs`).
+    #[test]
+    fn the_hashes_are_read_by_a_scan_not_through_the_size_index() {
+        let (_dir, lib) = temp_library();
+        let plan = lib.query_plan(PERCEP_HASHES_SQL, &[]);
+        assert!(
+            !plan.iter().any(|step| step.contains("items_size")),
+            "walks the size index: {plan:?}"
+        );
+        assert_eq!(plan, ["SCAN items"], "expected a scan in table order");
     }
 
     /// A perceptual hash is a fact about the photo *as shown*, so an edit landing between

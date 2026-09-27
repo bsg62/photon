@@ -1,3 +1,25 @@
+//! The library database: one SQLite file, read through a pool and written through one
+//! connection.
+//!
+//! A query that reads every live photo writes its liveness test with a unary plus,
+//! `+missing_since IS NULL`. The plus changes no result; it only stops SQLite from choosing
+//! an index by that term. `items_size`, `items_pending` and `items_recent` are all partial
+//! on exactly that predicate, and photon never runs `ANALYZE`, so the planner has no
+//! statistics and assumes a partial index holds half the table: walking one looks cheaper
+//! than reading every row, and the bare term is all it takes to make it walk one. Without
+//! `items_size` it walks `items_pending`, which costs little - nearly every row has the same
+//! `thumb_state`, so that index's order is nearly table order. The duplicate finder's
+//! `items_size` is the one it picks now, and size order is random against table order, so
+//! every row becomes its own B-tree descent: on a synthetic 300k-photo library (2026-09-27)
+//! the Videos count took 232ms walking it and 25ms as a scan.
+//!
+//! A query meant to be served by a partial index whose predicate includes the term - Recent,
+//! the thumbnail queue, the Starred and Hidden counts, the look-alike and duplicate
+//! candidates - keeps the bare form: with the plus it could not use its own index either.
+//! `ANALYZE` is not the fix: statistics would re-plan every query here at once, and the plan
+//! tests that pin today's plans run without them. Every whole-library read has a plan test
+//! that fails when its plus goes.
+
 mod albums;
 mod duplicates;
 mod faces;
@@ -112,6 +134,19 @@ impl Library {
     #[cfg(test)]
     pub(crate) fn writes_for_test(&self) -> usize {
         self.writes.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// The steps of `sql`'s query plan, for the tests that pin which index serves a query.
+    /// With no statistics the planner never looks at the data, so an empty library plans a
+    /// query exactly as a full one does.
+    #[cfg(test)]
+    pub(crate) fn query_plan(&self, sql: &str, params: &[&dyn rusqlite::ToSql]) -> Vec<String> {
+        let conn = self.reader().unwrap();
+        let mut stmt = conn.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
+        stmt.query_map(params, |r| r.get::<_, String>(3))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
     }
 
     /// A read connection: a pooled one if any is idle, otherwise a freshly opened one.

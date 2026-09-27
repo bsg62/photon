@@ -6,6 +6,17 @@ use photon_core::{
 };
 use std::{hint::black_box, path::Path};
 
+/// A file size between 1 and 8 MB that changes from photo to photo with no relation to
+/// insertion order, as a real library's do. With one size for every photo, size order is
+/// table order, and a query that walks `items_size` runs here as fast as a scan while taking
+/// seven to twelve times as long once sizes vary - which is how five of them went unnoticed
+/// (see photon-core's `library/mod.rs`).
+fn file_size(n: usize) -> i64 {
+    // Fibonacci hashing: the high bits of n * 2^64/phi spread consecutive n across the range.
+    let spread = (n as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 32;
+    1_000_000 + (spread % 7_000_000) as i64
+}
+
 /// 1,000 folders × 100 photos = 100k items, the spec's target library size.
 fn synthetic_library(dir: &Path, folders: usize, per_folder: usize) -> Library {
     let lib = Library::open(&dir.join("bench.db")).unwrap();
@@ -29,7 +40,7 @@ fn synthetic_library(dir: &Path, folders: usize, per_folder: usize) -> Library {
                 path: folder_path.join(&name).to_str().unwrap().to_string(),
                 file_name: name,
                 kind: MediaKind::Image,
-                size: 4_000_000,
+                size: file_size(f * per_folder + i),
                 mtime_ms: 1_700_000_000_000 + i as i64,
                 width: 4000,
                 height: 3000,
@@ -81,10 +92,14 @@ fn bench_grid(c: &mut Criterion) {
             size: item.size,
             mtime_ms: item.mtime_ms,
         };
-        // Pairs: rows 0 and 10 share a hash, 20 and 30, and so on.
-        dup_lib
+        // Pairs: rows 0 and 10 share a hash, 20 and 30, and so on. Real copies would share
+        // a size as well; these need not, because `has_copies` reads only the hash. Checked,
+        // because the store is guarded by each row's own size and mtime, and a refusal here
+        // would leave the set empty and the benchmark measuring the library above again.
+        let stored = dup_lib
             .set_content_hash(&candidate, &((n / 20) as u128).to_le_bytes())
             .unwrap();
+        assert!(stored, "row {n} refused its hash");
     }
     c.bench_function("startup_grid_100k_with_duplicates", |b| {
         b.iter(|| {

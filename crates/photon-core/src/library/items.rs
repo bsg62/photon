@@ -225,6 +225,18 @@ pub(super) const GRID_COLUMNS: &str = concat!(
 /// opens cannot count different things.
 const VIDEO_FILTER: &str = "AND i.kind = 1";
 
+/// `video_count`'s query, shared with its plan test. The `+` keeps it a scan in table order
+/// rather than a walk of `items_size`; see `library/mod.rs`.
+fn video_count_sql() -> String {
+    format!(
+        "SELECT COUNT(*) FROM items i WHERE +i.missing_since IS NULL AND i.hidden = 0 {VIDEO_FILTER}"
+    )
+}
+
+/// `file_names`' query, shared with its plan test. The `+` keeps it a scan in table order
+/// rather than a walk of `items_size`; see `library/mod.rs`.
+const FILE_NAMES_SQL: &str = "SELECT id, file_name FROM items WHERE +missing_since IS NULL";
+
 /// Number of columns selected by `GRID_COLUMNS`. `search_entries` uses this rather than a
 /// bare `15` so a future column added to `GRID_COLUMNS` can't silently shift `file_name`
 /// and `folder name` into the wrong indices without also touching this constant.
@@ -795,8 +807,7 @@ impl Library {
     /// Every live item's file name, by id.
     fn file_names(&self) -> Result<HashMap<i64, String>> {
         let conn = self.reader()?;
-        let mut stmt =
-            conn.prepare("SELECT id, file_name FROM items WHERE missing_since IS NULL")?;
+        let mut stmt = conn.prepare(FILE_NAMES_SQL)?;
         let names = stmt
             .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
             .collect::<rusqlite::Result<HashMap<i64, String>>>()?;
@@ -984,19 +995,15 @@ impl Library {
 
     /// How many visible videos there are: the sidebar's Videos row, shown only above 0.
     ///
-    /// No index serves it: it scans `items` once per `grid_info`. Measured 2026-09-27 at 100k
-    /// items (release build): 4.6ms a call, against 2.1ms for `starred_count` on its partial
-    /// index - small beside the grid rebuild the same refresh does (55-70ms), so not worth a
-    /// schema bump for an index.
+    /// No index serves it: it scans `items` once per `grid_info`. Measured 2026-09-27 on a
+    /// synthetic 300k-photo library: 25ms a call, small beside the grid rebuild the same
+    /// refresh does, so not worth a schema bump for an index. An earlier 4.6ms at 100k was
+    /// wrong for real libraries: it was taken on the benchmark's library, where every photo
+    /// had the same size, while the query walked `items_size` (see `library/mod.rs`) - and
+    /// with one size, size order is table order. With sizes that vary, the walk took 232ms.
     pub fn video_count(&self) -> Result<usize> {
         let conn = self.reader()?;
-        let count: i64 = conn.query_row(
-            &format!(
-                "SELECT COUNT(*) FROM items i WHERE i.missing_since IS NULL AND i.hidden = 0 {VIDEO_FILTER}"
-            ),
-            [],
-            |r| r.get(0),
-        )?;
+        let count: i64 = conn.query_row(&video_count_sql(), [], |r| r.get(0))?;
         Ok(count as usize)
     }
 
@@ -1949,6 +1956,32 @@ mod tests {
             !plan.iter().any(|step| step.contains("TEMP B-TREE")),
             "the order must come from the index, not a sort: {plan:?}"
         );
+    }
+
+    /// Pins the `+` in `video_count_sql`: without it the sidebar's count walks `items_size`,
+    /// a B-tree descent per photo, where a scan reads the table in order (`library/mod.rs`).
+    #[test]
+    fn the_video_count_scans_rather_than_walking_the_size_index() {
+        let (_dir, lib) = temp_library();
+        let plan = lib.query_plan(&video_count_sql(), &[]);
+        assert!(
+            !plan.iter().any(|step| step.contains("items_size")),
+            "walks the size index: {plan:?}"
+        );
+        assert_eq!(plan, ["SCAN i"], "expected a scan in table order");
+    }
+
+    /// Pins the `+` in `FILE_NAMES_SQL`, which a name sort reads on every rebuild: without
+    /// it the planner walks `items_size` (`library/mod.rs`).
+    #[test]
+    fn the_file_names_are_read_by_a_scan_not_through_the_size_index() {
+        let (_dir, lib) = temp_library();
+        let plan = lib.query_plan(FILE_NAMES_SQL, &[]);
+        assert!(
+            !plan.iter().any(|step| step.contains("items_size")),
+            "walks the size index: {plan:?}"
+        );
+        assert_eq!(plan, ["SCAN items"], "expected a scan in table order");
     }
 
     #[test]
