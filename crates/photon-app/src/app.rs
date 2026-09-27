@@ -214,6 +214,7 @@ pub fn run() {
             ipc::grid_tile,
             ipc::set_grid_tile,
             ipc::set_grid_view,
+            ipc::set_sort,
             ipc::set_search_query,
             ipc::set_person_view,
             ipc::set_album_view,

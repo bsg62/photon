@@ -28,22 +28,24 @@ export function debounce<T extends (...args: never[]) => void>(
 /** Whether the grid is showing a different set of photos than it was. Used to decide
  *  whether to reset scroll: keying on `view` alone would miss a refined query staying
  *  within the Search view (spec §5), or one album replacing another. */
-export function resultsChanged(
-  prev: { view: GridView; query: string },
-  next: { view: GridView; query: string },
-): boolean {
-  return prev.view !== next.view || prev.query !== next.query;
+export function resultsChanged(prev: ViewKey, next: ViewKey): boolean {
+  return prev.view !== next.view || prev.query !== next.query || prev.order !== next.order;
+}
+
+/** What `resultsChanged` compares. `order` is the sort, as one string: the same photos in
+ *  another order are another list, and a scroll position in one is arbitrary in the other. */
+export interface ViewKey {
+  view: GridView;
+  query: string;
+  order: string;
 }
 
 /** The view and its argument as `resultsChanged` compares them: the query for Search, the
  *  contact for Person, the album id for Album, the keyword for Tag, the anchor photo id for
- *  Copies, and nothing else. */
+ *  Copies, and nothing else - plus the sort, which reorders every view. */
 export function viewKey(
-  info: Pick<GridInfo, 'view' | 'searchQuery' | 'person' | 'album' | 'tag' | 'copiesOf'>,
-): {
-  view: GridView;
-  query: string;
-} {
+  info: Pick<GridInfo, 'view' | 'sort' | 'searchQuery' | 'person' | 'album' | 'tag' | 'copiesOf'>,
+): ViewKey {
   const query =
     info.view === 'search' ? info.searchQuery
     : info.view === 'person' ? (info.person ?? '')
@@ -51,5 +53,5 @@ export function viewKey(
     : info.view === 'tag' ? (info.tag ?? '')
     : info.view === 'copies' ? String(info.copiesOf?.id ?? '')
     : '';
-  return { view: info.view, query };
+  return { view: info.view, query, order: `${info.sort.reverse ? '-' : ''}${info.sort.key}` };
 }

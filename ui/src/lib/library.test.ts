@@ -29,6 +29,7 @@ vi.mock('./api', () => ({
     gridRows: vi.fn(),
     gridOffsetOfItem: vi.fn(),
     setGridView: vi.fn(),
+    setSort: vi.fn(),
     setSearchQuery: vi.fn(),
     listAlbums: vi.fn(),
     listSavedSearches: vi.fn(),
@@ -86,6 +87,7 @@ describe('LibraryStore', () => {
       hiddenCount: 0,
       videoCount: 0,
       view: 'all',
+      sort: { key: 'date' as const, reverse: false },
       searchQuery: '',
       person: null,
       album: null,
@@ -337,6 +339,7 @@ describe('LibraryStore', () => {
       hiddenCount: 0,
       videoCount: 0,
       view: 'all',
+      sort: { key: 'date' as const, reverse: false },
       searchQuery: '',
       person: null,
       album: null,
@@ -360,6 +363,7 @@ describe('LibraryStore', () => {
       hiddenCount: 0,
       videoCount: 0,
       view: 'all',
+      sort: { key: 'date' as const, reverse: false },
       searchQuery: '',
       person: null,
       album: null,
@@ -397,6 +401,7 @@ describe('LibraryStore', () => {
       hiddenCount: 0,
       videoCount: 0,
       view: 'all' as const,
+      sort: { key: 'date' as const, reverse: false },
       searchQuery: '',
       person: null,
       album: null,
@@ -450,6 +455,7 @@ describe('LibraryStore', () => {
       hiddenCount: 0,
       videoCount: 0,
       view: 'all' as const,
+      sort: { key: 'date' as const, reverse: false },
       searchQuery: '',
       person: null,
       album: null,
@@ -495,6 +501,7 @@ describe('LibraryStore', () => {
       hiddenCount: 0,
       videoCount: 0,
       view: 'all',
+      sort: { key: 'date' as const, reverse: false },
       searchQuery: '',
       person: null,
       album: null,
@@ -516,6 +523,7 @@ describe('LibraryStore', () => {
       hiddenCount: 0,
       videoCount: 0,
       view: 'all',
+      sort: { key: 'date' as const, reverse: false },
       searchQuery: '',
       person: null,
       album: null,
@@ -541,6 +549,7 @@ describe('LibraryStore', () => {
       hiddenCount: 0,
       videoCount: 0,
       view: 'all',
+      sort: { key: 'date' as const, reverse: false },
       searchQuery: '',
       person: null,
       album: null,
@@ -561,6 +570,7 @@ describe('LibraryStore', () => {
       hiddenCount: 0,
       videoCount: 0,
       view: 'all',
+      sort: { key: 'date' as const, reverse: false },
       searchQuery: '',
       person: null,
       album: null,
@@ -581,6 +591,7 @@ describe('LibraryStore', () => {
       hiddenCount: 0,
       videoCount: 0,
       view: 'all',
+      sort: { key: 'date' as const, reverse: false },
       searchQuery: '',
       person: null,
       album: null,
@@ -658,6 +669,7 @@ describe('LibraryStore', () => {
       hiddenCount: number;
       videoCount: number;
       view: 'all';
+      sort: { key: 'date'; reverse: boolean };
       searchQuery: string;
       person: null;
       album: null;
@@ -677,7 +689,7 @@ describe('LibraryStore', () => {
     const initPromise = store.init();
     store.dispose();
     listenGate.resolve();
-    gridInfoGate.resolve({ version: 1, len: 0, sections: [], folders: [], starredCount: 0, duplicateCount: 0, hiddenCount: 0, videoCount: 0, view: 'all', searchQuery: '', person: null, album: null, tag: null, copiesOf: null });
+    gridInfoGate.resolve({ version: 1, len: 0, sections: [], folders: [], starredCount: 0, duplicateCount: 0, hiddenCount: 0, videoCount: 0, view: 'all', sort: { key: 'date', reverse: false }, searchQuery: '', person: null, album: null, tag: null, copiesOf: null });
     await initPromise;
 
     expect(unlistenCounts.libraryChanged).toBe(1);
@@ -706,7 +718,7 @@ describe('LibraryStore', () => {
     expect(api.setGridView).toHaveBeenCalledWith('starred');
     expect(resolved).toBe(false);
 
-    refreshGate.resolve({ version: 2, len: 0, sections: [], folders: [], starredCount: 0, duplicateCount: 0, hiddenCount: 0, videoCount: 0, view: 'starred', searchQuery: '', person: null, album: null, tag: null, copiesOf: null });
+    refreshGate.resolve({ version: 2, len: 0, sections: [], folders: [], starredCount: 0, duplicateCount: 0, hiddenCount: 0, videoCount: 0, view: 'starred', sort: { key: 'date', reverse: false }, searchQuery: '', person: null, album: null, tag: null, copiesOf: null });
     await setViewPromise;
 
     expect(resolved).toBe(true);
@@ -740,6 +752,7 @@ describe('LibraryStore', () => {
       hiddenCount: 0,
       videoCount: 0,
       view: 'all',
+      sort: { key: 'date' as const, reverse: false },
       searchQuery: '',
       person: null,
       album: null,
@@ -785,6 +798,7 @@ describe('LibraryStore', () => {
       hiddenCount: 0,
       videoCount: 0,
       view: 'search',
+      sort: { key: 'date' as const, reverse: false },
       searchQuery: 'beach',
       person: null,
       album: null,
@@ -831,6 +845,73 @@ describe('LibraryStore', () => {
     // Unchained, Starred is applied while 'beach' is still in flight, and 'beach' then puts
     // the backend back into Search under a box the switch has already emptied.
     expect(order).toEqual(['start:beach', 'end:beach', 'view:starred']);
+  });
+
+  it('setSort reloads the grid in the new order without running the view-switch hooks', async () => {
+    const store = new LibraryStore();
+    await store.init();
+    const hook = vi.fn(() => () => {});
+    store.onViewSwitch(hook);
+    store.selectItem(3, 42);
+
+    const bySize = { key: 'size' as const, reverse: true };
+    vi.mocked(api.setSort).mockResolvedValueOnce(undefined);
+    vi.mocked(api.gridInfo).mockResolvedValueOnce({ version: 2, len: 0, sections: [], folders: [], starredCount: 0, duplicateCount: 0, hiddenCount: 0, videoCount: 0, view: 'search', sort: bySize, searchQuery: 'lake', person: null, album: null, tag: null, copiesOf: null });
+    await store.setSort(bySize);
+
+    expect(api.setSort).toHaveBeenCalledWith(bySize);
+    expect(store.info.sort).toEqual(bySize);
+    // A sort is not a view switch: the search box keeps what it holds.
+    expect(hook).not.toHaveBeenCalled();
+    // The Shift+click anchor is an offset, and in the new order it names another photo. The
+    // id set is what a refresh never prunes, so it is what shows the clear happened.
+    expect(store.selectionCount).toBe(0);
+    expect(store.isSelected(42)).toBe(false);
+  });
+
+  it('builds a second sort change on the first while the first is still in flight', async () => {
+    const store = new LibraryStore();
+    await store.init();
+    const first = deferred<void>();
+    const second = deferred<void>();
+    vi.mocked(api.setSort).mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+    const info = (sort: { key: 'name'; reverse: boolean }) => ({ version: 2, len: 0, sections: [], folders: [], starredCount: 0, duplicateCount: 0, hiddenCount: 0, videoCount: 0, view: 'all' as const, sort, searchQuery: '', person: null, album: null, tag: null, copiesOf: null });
+    vi.mocked(api.gridInfo)
+      .mockResolvedValueOnce(info({ key: 'name', reverse: false }))
+      .mockResolvedValueOnce(info({ key: 'name', reverse: true }));
+
+    const byName = store.setSort({ ...store.sort, key: 'name' });
+    const reversed = store.setSort({ ...store.sort, reverse: !store.sort.reverse });
+    expect(store.sort).toEqual({ key: 'name', reverse: true });
+    first.resolve();
+    await byName;
+    // The first has landed and `info` says Name ascending, but the reversal is still queued:
+    // the control must keep showing it, or a third click would build on the wrong sort.
+    expect(store.info.sort).toEqual({ key: 'name', reverse: false });
+    expect(store.sort).toEqual({ key: 'name', reverse: true });
+    second.resolve();
+    await reversed;
+
+    expect(vi.mocked(api.setSort).mock.calls.map((c) => c[0])).toEqual([
+      { key: 'name', reverse: false },
+      { key: 'name', reverse: true },
+    ]);
+    expect(store.sort).toEqual({ key: 'name', reverse: true });
+  });
+
+  it('routes a refused sort into reportError and leaves the grid as it was', async () => {
+    const store = new LibraryStore();
+    await store.init();
+    const calls = vi.mocked(api.gridInfo).mock.calls.length;
+
+    vi.mocked(api.setSort).mockRejectedValueOnce(new Error('sort-fail'));
+    await expect(store.setSort({ key: 'name', reverse: false })).resolves.toBeUndefined();
+
+    expect(store.toasts.some((t) => t.message === 'sort-fail')).toBe(true);
+    expect(vi.mocked(api.gridInfo).mock.calls.length).toBe(calls);
+    expect(store.info.sort).toEqual({ key: 'date', reverse: false });
+    // And the control, which showed Name while it was asked for, is back on the grid's sort.
+    expect(store.sort).toEqual({ key: 'date', reverse: false });
   });
 
   it('runs the view-switch hooks as the switch is issued, and takes them back only if it is refused', async () => {
@@ -884,7 +965,7 @@ describe('LibraryStore', () => {
     const store = new LibraryStore();
     await store.init();
     vi.mocked(api.setSearchQuery).mockResolvedValueOnce(undefined);
-    vi.mocked(api.gridInfo).mockResolvedValueOnce({ version: 2, len: 0, sections: [], folders: [], starredCount: 0, duplicateCount: 0, hiddenCount: 0, videoCount: 0, view: 'search', searchQuery: 'lake', person: null, album: null, tag: null, copiesOf: null });
+    vi.mocked(api.gridInfo).mockResolvedValueOnce({ version: 2, len: 0, sections: [], folders: [], starredCount: 0, duplicateCount: 0, hiddenCount: 0, videoCount: 0, view: 'search', sort: { key: 'date', reverse: false }, searchQuery: 'lake', person: null, album: null, tag: null, copiesOf: null });
     await expect(store.setSearchQuery('lake')).resolves.toBe('lake');
 
     vi.mocked(api.setSearchQuery).mockRejectedValueOnce(new Error('refused'));
@@ -896,7 +977,7 @@ describe('LibraryStore', () => {
     await store.init();
     const search = deferred<void>();
     vi.mocked(api.setSearchQuery).mockReturnValueOnce(search.promise);
-    vi.mocked(api.gridInfo).mockResolvedValueOnce({ version: 2, len: 0, sections: [], folders: [], starredCount: 0, duplicateCount: 0, hiddenCount: 0, videoCount: 0, view: 'search', searchQuery: 'beach', person: null, album: null, tag: null, copiesOf: null });
+    vi.mocked(api.gridInfo).mockResolvedValueOnce({ version: 2, len: 0, sections: [], folders: [], starredCount: 0, duplicateCount: 0, hiddenCount: 0, videoCount: 0, view: 'search', sort: { key: 'date', reverse: false }, searchQuery: 'beach', person: null, album: null, tag: null, copiesOf: null });
 
     void store.setSearchQuery('beach');
     const view = store.settledView();
@@ -950,6 +1031,7 @@ describe('LibraryStore', () => {
         hiddenCount: 0,
       videoCount: 0,
         view: opts.view ?? 'all',
+        sort: { key: 'date' as const, reverse: false },
         searchQuery: '',
         person: null,
         album: null,
@@ -993,6 +1075,7 @@ describe('LibraryStore', () => {
           hiddenCount: 3,
           videoCount: 0,
           view: 'all',
+          sort: { key: 'date' as const, reverse: false },
           searchQuery: '',
           person: null,
           album: null,
@@ -1040,6 +1123,7 @@ describe('LibraryStore', () => {
         hiddenCount: 1,
         videoCount: 0,
         view: 'all',
+        sort: { key: 'date' as const, reverse: false },
         searchQuery: '',
         person: null,
         album: null,
@@ -1293,6 +1377,7 @@ describe('LibraryStore', () => {
         hiddenCount: 0,
       videoCount: 0,
         view: 'all',
+        sort: { key: 'date' as const, reverse: false },
         searchQuery: '',
         person: null,
         album: null,
@@ -1355,6 +1440,7 @@ describe('LibraryStore', () => {
         hiddenCount: 0,
       videoCount: 0,
         view: 'all',
+        sort: { key: 'date' as const, reverse: false },
         searchQuery: '',
         person: null,
         album: null,
@@ -1397,6 +1483,7 @@ describe('LibraryStore', () => {
         hiddenCount: 0,
       videoCount: 0,
         view: 'all',
+        sort: { key: 'date' as const, reverse: false },
         searchQuery: '',
         person: null,
         album: null,

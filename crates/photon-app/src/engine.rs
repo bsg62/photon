@@ -13,6 +13,7 @@ use photon_core::{
     media::MediaKind,
     now_ms, paths, picasa,
     scanner::{ScanOptions, ScanProgress, ScanSink, scan_subtree, scan_watched},
+    sort::Sort,
     thumbs::{Priority, ThumbCache, ThumbService},
 };
 use std::{
@@ -70,6 +71,10 @@ struct RunningScan {
 struct ViewState {
     view: GridView,
     arg: String,
+    /// The user's sort, which every view is shown in. Part of the state a rebuild snapshots
+    /// rather than read at query time, so a rebuild started before a sort change is
+    /// discarded by the epoch like one started before a view switch.
+    sort: Sort,
     epoch: u64,
 }
 
@@ -200,9 +205,10 @@ impl Engine {
             .map(|p| photon_core::paths::canonicalize(&p).unwrap_or(p))
             .collect();
 
+        let sort = lib.grid_sort()?;
         let grid = Arc::new(GridIndex::build(
-            lib.grid_entries()?,
-            GridView::All.layout(),
+            lib.sorted_entries(GridView::All, "", sort)?,
+            sort.layout(GridView::All),
         ));
         Ok(Arc::new(Self {
             lib,
@@ -213,6 +219,7 @@ impl Engine {
             state: Mutex::new(ViewState {
                 view: GridView::All,
                 arg: String::new(),
+                sort,
                 epoch: 0,
             }),
             refresh: Mutex::new(0),
@@ -328,8 +335,9 @@ impl Engine {
     /// The index for one view state, laid out the way that view is drawn.
     fn build_index(&self, state: &ViewState) -> Result<GridIndex> {
         Ok(GridIndex::build(
-            self.lib.entries_for(state.view, &state.arg)?,
-            state.view.layout(),
+            self.lib
+                .sorted_entries(state.view, &state.arg, state.sort)?,
+            state.sort.layout(state.view),
         ))
     }
 
@@ -384,6 +392,19 @@ impl Engine {
         self.state.lock().view
     }
 
+    /// What the grid is sorted by.
+    pub fn sort(&self) -> Sort {
+        self.state.lock().sort
+    }
+
+    /// Sorts every view by `sort`, rebuilds the grid, and remembers the choice for the next
+    /// launch. Stored only once the rebuild has succeeded: a sort that could not be shown
+    /// is rolled back, and remembering it would bring the failure back at startup.
+    pub fn set_sort(&self, sort: Sort) -> Result<()> {
+        self.rebuild_or_restore(|state| state.sort = sort)?;
+        self.lib.set_grid_sort(sort)
+    }
+
     /// The active search query, or the empty string when no search is active.
     pub fn search_query(&self) -> String {
         let state = self.state.lock();
@@ -424,10 +445,11 @@ impl Engine {
         })
     }
 
-    /// Applies `mutate` to the view/query pair, rebuilds the grid, and puts both back if
+    /// Applies `mutate` to the view state, rebuilds the grid, and puts the state back if
     /// that fails. One place rather than one per setter: the rollback is what keeps the
-    /// invariant above true, and a third setter (a sort order, a date filter) copying it a
-    /// third time is how one of the copies ends up missing a field.
+    /// invariant above true, and a setter copying it is how one of the copies ends up
+    /// missing a field - the rollback here once restored the view and query by name, and
+    /// the sort, added later, would have stayed at the value that failed.
     ///
     /// Both the change and the rollback bump the epoch, so a rebuild in flight for either
     /// superseded state is discarded rather than published.
@@ -441,10 +463,13 @@ impl Engine {
         };
         if let Err(err) = self.refresh_grid() {
             {
+                // The whole state rather than field by field, so a field added to it cannot
+                // be left out of the rollback. Only the epoch moves on.
                 let mut state = self.state.lock();
-                state.view = previous.view;
-                state.arg = previous.arg;
-                state.epoch += 1;
+                *state = ViewState {
+                    epoch: state.epoch + 1,
+                    ..previous
+                };
             }
             // The bump above discards every rebuild in flight for the state just restored,
             // so rows a scan committed meanwhile would otherwise wait for its next tick. A
@@ -2726,6 +2751,72 @@ mod tests {
         assert!(err.message.contains(".picasa.ini"), "{}", err.message);
         assert_ne!(f.engine.lib.item(id).unwrap().unwrap().rating, Some(1));
         assert_eq!(f.engine.grid().0, version);
+    }
+
+    /// A sort by anything but date is about the photos, not the folders: the grid is one
+    /// flat run in the key's order, a folder jump lands on the folder's first photo in it,
+    /// and the choice outlives the process.
+    #[test]
+    fn a_sort_by_name_lays_the_grid_out_flat_and_is_remembered() {
+        use photon_core::sort::{Sort, SortKey};
+        let img = jpeg(16, 16);
+        let f = fixture(&[
+            ("a/Cove.jpg", &img),
+            ("a/apple.jpg", &img),
+            ("b/beach.jpg", &img),
+        ]);
+        f.add_photos();
+        let name_of = |id: i64| {
+            let path = f.engine.lib.item(id).unwrap().unwrap().path;
+            Path::new(&path)
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned()
+        };
+        let by_name = Sort {
+            key: SortKey::Name,
+            reverse: false,
+        };
+
+        f.engine.set_sort(by_name).unwrap();
+
+        let names: Vec<String> = f.ids().into_iter().map(name_of).collect();
+        assert_eq!(names, ["apple.jpg", "beach.jpg", "Cove.jpg"]);
+        let (_, grid) = f.engine.grid();
+        assert_eq!(grid.sections().len(), 1);
+        assert_eq!(grid.sections()[0].folder_id, None);
+        let b = grid.rows(1, 1)[0].folder_id;
+        assert_eq!(grid.offset_of_folder(b), Some(1));
+        assert_eq!(crate::commands::grid_info(&f.engine).sort, by_name);
+
+        let reopened =
+            Engine::open(f.config(), Arc::new(crate::events::Recorder::default())).unwrap();
+        assert_eq!(reopened.sort(), by_name);
+        assert_eq!(reopened.grid().1.sections()[0].folder_id, None);
+    }
+
+    /// The rollback restores the whole view state, the sort included, and a sort that
+    /// could not be shown is not stored for the next launch to trip over.
+    #[test]
+    fn a_sort_whose_rebuild_fails_is_rolled_back_and_not_remembered() {
+        use photon_core::sort::{Sort, SortKey};
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a/one.jpg", &img)]);
+        f.add_photos();
+        // Every grid query names the column, so every rebuild from here on fails.
+        rusqlite::Connection::open(&f.config().db_path)
+            .unwrap()
+            .execute_batch("ALTER TABLE items RENAME COLUMN file_name TO renamed")
+            .unwrap();
+
+        let by_size = Sort {
+            key: SortKey::Size,
+            reverse: true,
+        };
+        assert!(f.engine.set_sort(by_size).is_err());
+        assert_eq!(f.engine.sort(), Sort::default());
+        assert_eq!(f.engine.lib.grid_sort().unwrap(), Sort::default());
     }
 
     #[test]

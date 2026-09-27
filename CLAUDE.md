@@ -120,6 +120,17 @@ the two are paired: in a filtered view (Starred) the driver's filter must equal 
 and the grid agreeing. A query assembled by hand with `GRID_ORDER` and no driver compiles and
 fails at `prepare`, only when that view is opened.
 
+**The user's sort** (`photon_core::sort`, `ViewState.sort`, the `grid_sort` setting) is applied
+*after* the view's query, in Rust, by `Library::sorted_entries`. Date is the view's own order
+(`GRID_ORDER`, or Recent's), untouched; `reverse` turns the whole list over, so folder runs stay
+contiguous. Modified, name and size sort every photo together and lay the grid out flat
+(`Sort::layout`), which has no headers, no timeline, and a folder jump that lands on the
+folder's first photo (`offset_of_folder`); the sidebar then drops its year groups and orders
+folders by `FolderTally`'s `bytes`/`modified_ms` or by name (`arrangeFolders`). The sort is part
+of the `ViewState` a rebuild snapshots, so a sort change is guarded by the epoch like a view
+switch; do not read it at query time instead. `GridEntry` carries `size`/`mtime_ms` unserialized
+for it, and a name sort reads the names in a side query, because `GridEntry` is `Copy`.
+
 **Hidden photos** (`library/hidden.rs`, schema 13) are in no view but `GridView::Hidden`.
 `grid_query` takes a `Shown` argument (`Visible`, `Hidden`, or `Either` for bookkeeping like the
 thumbnail queue) so every caller has to say which set it wants; the queries that do not go

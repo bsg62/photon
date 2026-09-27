@@ -7,6 +7,7 @@
 // than depended on: twenty icons do not justify a package and its update churn.
 
 export type IconName =
+  | 'arrow-down-up'
   | 'bookmark'
   | 'chevron-down'
   | 'chevron-right'
@@ -34,6 +35,7 @@ export type IconName =
   | 'x';
 
 export const ICONS: Record<IconName, string> = {
+  'arrow-down-up': '<path d="m3 16 4 4 4-4"/><path d="M7 20V4"/><path d="m21 8-4-4-4 4"/><path d="M17 4v16"/>',
   bookmark: '<path d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16z"/>',
   'chevron-down': '<path d="m6 9 6 6 6-6"/>',
   'chevron-right': '<path d="m9 18 6-6-6-6"/>',

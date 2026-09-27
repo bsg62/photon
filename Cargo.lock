@@ -3188,6 +3188,7 @@ dependencies = [
  "image",
  "parking_lot",
  "photon-core",
+ "rusqlite",
  "serde",
  "serde_json",
  "tauri",

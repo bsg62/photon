@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Folder, GridView } from './api';
-import { enterFolder, locateItem, folderRows, groupByYear, returnToAll } from './folders';
+import { arrangeFolders, enterFolder, locateItem, folderRows, groupByYear, returnToAll, type FolderRow } from './folders';
 
 /** Seconds since the epoch, since that is what `takenAtMin` carries. */
 const at = (iso: string) => Math.floor(new Date(iso).getTime() / 1000);
@@ -13,17 +13,17 @@ const folders = [
 ];
 
 const tallies = [
-  { folderId: 2, count: 12, takenAtMin: at('2024-06-01T12:00:00') },
-  { folderId: 3, count: 3, takenAtMin: at('2024-11-20T12:00:00') },
-  { folderId: 4, count: 40, takenAtMin: at('2019-02-02T12:00:00') },
+  { folderId: 2, count: 12, takenAtMin: at('2024-06-01T12:00:00'), bytes: 500, modifiedMs: 3_000 },
+  { folderId: 3, count: 3, takenAtMin: at('2024-11-20T12:00:00'), bytes: 900, modifiedMs: 1_000 },
+  { folderId: 4, count: 40, takenAtMin: at('2019-02-02T12:00:00'), bytes: 100, modifiedMs: 2_000 },
 ];
 
 describe('folderRows', () => {
   it('names each folder that has photos, and carries its count', () => {
     expect(folderRows(tallies, folders)).toEqual([
-      { folderId: 2, name: 'rome', count: 12, year: 2024, takenAtMin: tallies[0].takenAtMin },
-      { folderId: 3, name: 'oslo', count: 3, year: 2024, takenAtMin: tallies[1].takenAtMin },
-      { folderId: 4, name: 'old', count: 40, year: 2019, takenAtMin: tallies[2].takenAtMin },
+      { folderId: 2, name: 'rome', count: 12, year: 2024, takenAtMin: tallies[0].takenAtMin, bytes: 500, modifiedMs: 3_000 },
+      { folderId: 3, name: 'oslo', count: 3, year: 2024, takenAtMin: tallies[1].takenAtMin, bytes: 900, modifiedMs: 1_000 },
+      { folderId: 4, name: 'old', count: 40, year: 2019, takenAtMin: tallies[2].takenAtMin, bytes: 100, modifiedMs: 2_000 },
     ]);
   });
 
@@ -38,8 +38,9 @@ describe('folderRows', () => {
     // An item implies a folder row, but a tally can arrive before the folder list is
     // refreshed. There is no path to fall back to in that case, so the name is blank —
     // which beats throwing and losing the whole sidebar.
-    const rows = folderRows([{ folderId: 99, count: 1, takenAtMin: at('2024-01-01T12:00:00') }], folders);
-    expect(rows).toEqual([{ folderId: 99, name: '', count: 1, year: 2024, takenAtMin: at('2024-01-01T12:00:00') }]);
+    const tally = { folderId: 99, count: 1, takenAtMin: at('2024-01-01T12:00:00'), bytes: 1, modifiedMs: 1 };
+    const rows = folderRows([tally], folders);
+    expect(rows).toEqual([{ folderId: 99, name: '', count: 1, year: 2024, takenAtMin: tally.takenAtMin, bytes: 1, modifiedMs: 1 }]);
   });
 
   it('handles an empty grid', () => {
@@ -64,6 +65,47 @@ describe('groupByYear', () => {
 
   it('handles no folders at all', () => {
     expect(groupByYear([])).toEqual([]);
+  });
+});
+
+describe('arrangeFolders', () => {
+  const names = (groups: { rows: FolderRow[] }[]) => groups.map((g) => g.rows.map((r) => r.name));
+
+  it('keeps the year groups by date, and turns them over when reversed', () => {
+    const rows = folderRows(tallies, folders);
+    expect(arrangeFolders(rows, { key: 'date', reverse: false })).toEqual(groupByYear(rows));
+    const reversed = arrangeFolders(rows, { key: 'date', reverse: true });
+    expect(reversed.map((g) => g.year)).toEqual([2019, 2024]);
+    expect(names(reversed)).toEqual([['old'], ['rome', 'oslo']]);
+  });
+
+  it('lists every folder under one headerless group by size and by modified', () => {
+    const rows = folderRows(tallies, folders);
+    const bySize = arrangeFolders(rows, { key: 'size', reverse: false });
+    expect(bySize.map((g) => g.year)).toEqual([null]);
+    expect(names(bySize)).toEqual([['oslo', 'rome', 'old']]);
+    expect(names(arrangeFolders(rows, { key: 'size', reverse: true }))).toEqual([['old', 'rome', 'oslo']]);
+    expect(names(arrangeFolders(rows, { key: 'modified', reverse: false }))).toEqual([['rome', 'old', 'oslo']]);
+  });
+
+  it('sorts names ignoring case and reading numbers', () => {
+    const row = (folderId: number, name: string): FolderRow => ({ folderId, name, count: 1, year: 2024, takenAtMin: 0, bytes: 0, modifiedMs: 0 });
+    const rows = [row(1, 'Trip 10'), row(2, 'beach'), row(3, 'trip 2'), row(4, 'Attic')];
+    expect(names(arrangeFolders(rows, { key: 'name', reverse: false }))).toEqual([['Attic', 'beach', 'trip 2', 'Trip 10']]);
+    expect(names(arrangeFolders(rows, { key: 'name', reverse: true }))).toEqual([['Trip 10', 'trip 2', 'beach', 'Attic']]);
+  });
+
+  it('keeps the grid order between folders that tie, reversed or not', () => {
+    // Reversed, the tallies already arrive in the reversed grid's order; ties must keep it.
+    const row = (folderId: number, name: string): FolderRow => ({ folderId, name, count: 1, year: 2024, takenAtMin: 0, bytes: 7, modifiedMs: 0 });
+    const rows = [row(1, 'c'), row(2, 'a'), row(3, 'b')];
+    expect(names(arrangeFolders(rows, { key: 'size', reverse: false }))).toEqual([['c', 'a', 'b']]);
+    expect(names(arrangeFolders(rows, { key: 'size', reverse: true }))).toEqual([['c', 'a', 'b']]);
+    expect(names(arrangeFolders(rows, { key: 'date', reverse: true }))).toEqual([['c', 'a', 'b']]);
+  });
+
+  it('lists nothing, not an empty group, when no folder has photos', () => {
+    expect(arrangeFolders([], { key: 'name', reverse: false })).toEqual([]);
   });
 });
 
@@ -193,6 +235,7 @@ describe('returnToAll', () => {
           order.push('lastFolder');
           return remembered();
         },
+        sortedByDate: () => true,
         jump: (id: number) => {
           order.push('jump');
           jumped.push(id);
@@ -232,6 +275,13 @@ describe('returnToAll', () => {
     release();
     await done;
     expect(order).toEqual(['cancel', 'lastFolder', 'setView:all', 'jump']);
+  });
+
+  it('opens at the top under a sort other than date, whose grid has no folder place', async () => {
+    const { order, jumped, deps } = spyDeps('starred');
+    await returnToAll({ ...deps, sortedByDate: () => false });
+    expect(order).toEqual(['cancel', 'setView:all']);
+    expect(jumped).toEqual([]);
   });
 
   it('opens at the top when nothing is remembered, or the lookup fails', async () => {

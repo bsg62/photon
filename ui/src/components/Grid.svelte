@@ -95,6 +95,10 @@
     started = true;
     void (async () => {
       try {
+        // The folder remembered is a place in the date order, written only while All is laid
+        // out by folder. In a flat sort a jump would still land - on the folder's first photo
+        // wherever the key put it - which is somewhere, not where the user left off.
+        if (library.info.sort.key !== 'date') return;
         const folderId = await api.lastFolder();
         if (folderId === null) return;
         const offset = await api.gridOffsetOfFolder(folderId);
