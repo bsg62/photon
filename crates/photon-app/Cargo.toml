@@ -40,6 +40,9 @@ tauri-plugin-window-state = "2.4.1"
 tauri-plugin-clipboard-manager = "2.3.3"
 tiny_http = "0.12"
 getrandom = "0.3"
+# Tauri's own runtime, named for its timer: the protocol handler bounds a thumbnail wait with
+# `tokio::time::timeout`. Tauri builds that runtime with every driver its features enable.
+tokio = { version = "1", features = ["rt-multi-thread", "time"] }
 
 [dev-dependencies]
 image = { version = "0.25.10", default-features = false, features = ["jpeg"] }

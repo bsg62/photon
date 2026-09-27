@@ -1,5 +1,9 @@
 use parking_lot::{Condvar, Mutex};
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::Arc;
+use std::task::{Context, Poll, Wake, Waker};
 use std::time::Instant;
 
 /// Lower sorts first: visible grid cells beat viewer neighbours beat background fill.
@@ -26,7 +30,7 @@ struct State {
     /// `request`'s rounds behind it. Re-running a job that did succeed costs a stat of the
     /// cache file, since `process_item` short-circuits on a complete fingerprint.
     deferred: HashMap<i64, Priority>,
-    /// Number of live `wait_for` callers per id. An id someone is waiting on is demoted no
+    /// Number of live `wait` futures per id. An id someone is waiting on is demoted no
     /// further than `Neighbour`: it may have scrolled out of the strictly-visible span while
     /// its request was still in the queue, and dropping it to `Background` would park it
     /// behind the whole backlog until the waiter times out.
@@ -37,6 +41,15 @@ struct State {
     /// the full request timeout. Exempting them outranks the tiles that are actually on
     /// screen, and the workers decode invisible photos while the grid stays empty.
     waiters: HashMap<i64, usize>,
+    /// The wakers of the `WaitFor`s parked on each id, by their token, woken only by that
+    /// id's `done` (or `close`). Per id rather than one broadcast: a waiter parks for up to
+    /// the whole request timeout, hundreds can be parked at once during a fast scroll, and
+    /// waking every one of them on every finished job only for all but one to re-check and
+    /// park again is work that grows with the backlog it is meant to serve.
+    wakers: HashMap<i64, Vec<(u64, Waker)>>,
+    /// The next `WaitFor`'s token, which is how a re-polled waiter replaces its own waker
+    /// rather than adding another.
+    next_waiter: u64,
     closed: bool,
     /// Jobs backed off by `defer`, not eligible to be popped until their `Instant` passes -
     /// a suspect that lost the race for `decode_lock` and is waiting out its back-off rather
@@ -116,6 +129,21 @@ impl State {
         if let Some(priority) = self.deferred.remove(&id) {
             self.push(id, priority);
         }
+    }
+
+    /// Queued or being processed: what a `WaitFor` waits out.
+    fn busy(&self, id: i64) -> bool {
+        self.entries.contains_key(&id) || self.in_flight.contains(&id)
+    }
+
+    /// The wakers parked on `id`, to be woken once the lock is released. Taken whether or
+    /// not `id` is still busy - a push held while its job ran is queued again by `done` -
+    /// since each waiter re-checks and re-registers on its own poll.
+    fn take_wakers(&mut self, id: i64) -> Vec<Waker> {
+        self.wakers
+            .remove(&id)
+            .map(|parked| parked.into_iter().map(|(_, waker)| waker).collect())
+            .unwrap_or_default()
     }
 
     fn pop(&mut self) -> Option<i64> {
@@ -273,23 +301,29 @@ impl ThumbQueue {
         }
     }
 
-    /// Marks the popped job `id` finished and wakes idle-waiters and `wait_for` callers.
+    /// Marks the popped job `id` finished and wakes idle-waiters, and the waiters on `id`.
     pub fn done(&self, id: i64) {
-        self.state.lock().done(id);
+        let mut state = self.state.lock();
+        state.done(id);
+        let wakers = state.take_wakers(id);
+        drop(state);
         self.changed.notify_all();
+        wakers.into_iter().for_each(Waker::wake);
     }
 
     /// `done`, for a job that settled `id`'s fate, dropping any push held while it ran
     /// rather than queueing it. A worker's re-run of a settled job costs a stat and ends at
-    /// once; a video's waits for the webview to poll again, and a `wait_for` caller whose
+    /// once; a video's waits for the webview to poll again, and a `wait` whose
     /// own push was held - a thumbnail requested while the frame was being drawn - would
     /// wait with it, for a frame that is already in the cache.
     pub fn done_settled(&self, id: i64) {
         let mut state = self.state.lock();
         state.deferred.remove(&id);
         state.done(id);
+        let wakers = state.take_wakers(id);
         drop(state);
         self.changed.notify_all();
+        wakers.into_iter().for_each(Waker::wake);
     }
 
     /// Waits until nothing is queued, in flight, or backed off waiting for its delay to pass -
@@ -314,32 +348,35 @@ impl ThumbQueue {
         }
     }
 
-    /// Blocks until `id` is neither queued nor being processed, the queue closes, or
-    /// `deadline` passes. Returns false only on timeout.
+    /// A future that is ready once `id` is neither queued nor being processed, or the queue
+    /// closes. It has no deadline of its own: the caller bounds it, and dropping it is how a
+    /// wait gives up.
     ///
-    /// While waiting, `id` cannot be demoted past `Neighbour` (see `State::waiters`); the
-    /// protection is dropped on every exit path, including the timeout, so a later
-    /// `set_visible` demotes the id normally once nobody is waiting for it.
-    pub fn wait_for(&self, id: i64, deadline: std::time::Instant) -> bool {
+    /// For as long as it exists, `id` cannot be demoted past `Neighbour` (see
+    /// `State::waiters`); the protection goes with the future, however it ends - ready,
+    /// timed out, or its request abandoned - so a later `set_visible` demotes the id
+    /// normally once nobody is waiting for it.
+    ///
+    /// Awaiting it holds no thread. The `photon://` handler awaits one per thumbnail not
+    /// built yet, for up to `THUMB_TIMEOUT`; parked on a blocking thread instead, a fast
+    /// scroll's worth of them filled Tokio's blocking pool and queued every cached thumbnail,
+    /// full-size image and blocking IPC command behind waits that were only going to time out.
+    pub fn wait(&self, id: i64) -> WaitFor<'_> {
         let mut state = self.state.lock();
         *state.waiters.entry(id).or_insert(0) += 1;
-        let done = loop {
-            let busy = state.entries.contains_key(&id) || state.in_flight.contains(&id);
-            if state.closed || !busy {
-                break true;
-            }
-            if self.changed.wait_until(&mut state, deadline).timed_out() {
-                let busy = state.entries.contains_key(&id) || state.in_flight.contains(&id);
-                break !busy;
-            }
-        };
-        if let std::collections::hash_map::Entry::Occupied(mut waiters) = state.waiters.entry(id) {
-            *waiters.get_mut() -= 1;
-            if *waiters.get() == 0 {
-                waiters.remove();
-            }
+        let token = state.next_waiter;
+        state.next_waiter += 1;
+        WaitFor {
+            queue: self,
+            id,
+            token,
         }
-        done
+    }
+
+    /// `wait`, blocking this thread until `id` is done, the queue closes, or `deadline`
+    /// passes. Returns false only on timeout.
+    pub fn wait_for(&self, id: i64, deadline: Instant) -> bool {
+        block_on_until(self.wait(id), deadline).is_some() || !self.state.lock().busy(id)
     }
 
     pub fn len(&self) -> usize {
@@ -351,8 +388,91 @@ impl ThumbQueue {
     }
 
     pub fn close(&self) {
-        self.state.lock().closed = true;
+        let mut state = self.state.lock();
+        state.closed = true;
+        let wakers: Vec<Waker> = state
+            .wakers
+            .drain()
+            .flat_map(|(_, parked)| parked.into_iter().map(|(_, waker)| waker))
+            .collect();
+        drop(state);
         self.changed.notify_all();
+        wakers.into_iter().for_each(Waker::wake);
+    }
+}
+
+/// See `ThumbQueue::wait`.
+#[must_use = "a wait does nothing unless awaited"]
+pub struct WaitFor<'a> {
+    queue: &'a ThumbQueue,
+    id: i64,
+    token: u64,
+}
+
+impl Future for WaitFor<'_> {
+    type Output = ();
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+        let mut state = self.queue.state.lock();
+        if state.closed || !state.busy(self.id) {
+            return Poll::Ready(());
+        }
+        // Registered under the lock that `done` takes its wakers under, so a job finishing
+        // between the check above and this line cannot be missed.
+        let parked = state.wakers.entry(self.id).or_default();
+        match parked.iter_mut().find(|(token, _)| *token == self.token) {
+            Some((_, waker)) => waker.clone_from(cx.waker()),
+            None => parked.push((self.token, cx.waker().clone())),
+        }
+        Poll::Pending
+    }
+}
+
+impl Drop for WaitFor<'_> {
+    fn drop(&mut self) {
+        let mut state = self.queue.state.lock();
+        if let std::collections::hash_map::Entry::Occupied(mut parked) = state.wakers.entry(self.id)
+        {
+            parked.get_mut().retain(|(token, _)| *token != self.token);
+            if parked.get().is_empty() {
+                parked.remove();
+            }
+        }
+        if let std::collections::hash_map::Entry::Occupied(mut waiters) =
+            state.waiters.entry(self.id)
+        {
+            *waiters.get_mut() -= 1;
+            if *waiters.get() == 0 {
+                waiters.remove();
+            }
+        }
+    }
+}
+
+/// Runs `future` on this thread until it is ready, or gives up at `deadline` and drops it.
+/// What a caller on a plain thread - a test, or anything outside an async runtime - uses to
+/// await the queue's futures.
+pub(crate) fn block_on_until<F: Future>(future: F, deadline: Instant) -> Option<F::Output> {
+    struct Unpark(std::thread::Thread);
+    impl Wake for Unpark {
+        fn wake(self: Arc<Self>) {
+            self.0.unpark();
+        }
+    }
+    let waker = Waker::from(Arc::new(Unpark(std::thread::current())));
+    let mut cx = Context::from_waker(&waker);
+    let mut future = std::pin::pin!(future);
+    loop {
+        if let Poll::Ready(out) = future.as_mut().poll(&mut cx) {
+            return Some(out);
+        }
+        let now = Instant::now();
+        if now >= deadline {
+            return None;
+        }
+        // A wake between the poll and here leaves the thread's token set, so this returns
+        // at once rather than sleeping through it.
+        std::thread::park_timeout(deadline - now);
     }
 }
 
@@ -360,10 +480,15 @@ impl ThumbQueue {
 mod tests {
     use super::*;
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     impl ThumbQueue {
         fn has_waiter(&self, id: i64) -> bool {
             self.state.lock().waiters.contains_key(&id)
+        }
+
+        fn parked_wakers(&self) -> usize {
+            self.state.lock().wakers.values().map(Vec::len).sum()
         }
 
         fn delayed_priority(&self, id: i64) -> Option<Priority> {
@@ -789,5 +914,96 @@ mod tests {
 
         q.set_visible(&[2]);
         assert_eq!(drain(&q), [2, 9, 1]);
+    }
+
+    /// A waker that counts its wakes.
+    #[derive(Default)]
+    struct Wakes(AtomicUsize);
+
+    impl Wake for Wakes {
+        fn wake(self: Arc<Self>) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    impl Wakes {
+        fn count(&self) -> usize {
+            self.0.load(Ordering::SeqCst)
+        }
+    }
+
+    fn poll(wait: &mut WaitFor<'_>, wakes: &Arc<Wakes>) -> Poll<()> {
+        let waker = Waker::from(wakes.clone());
+        Pin::new(wait).poll(&mut Context::from_waker(&waker))
+    }
+
+    /// Each finished job wakes the requests waiting on it and no others: during a fast
+    /// scroll hundreds of requests are parked at once, and a broadcast would have every one
+    /// of them re-check on every job any worker finishes.
+    #[test]
+    fn a_finished_job_wakes_only_the_waits_on_its_own_id() {
+        let q = ThumbQueue::new();
+        q.push_many(&[1, 2], Priority::Visible);
+        assert_eq!((q.pop_blocking(), q.pop_blocking()), (Some(1), Some(2)));
+        let (one, two) = (Arc::new(Wakes::default()), Arc::new(Wakes::default()));
+        let mut wait_one = q.wait(1);
+        let mut wait_two = q.wait(2);
+        assert_eq!(poll(&mut wait_one, &one), Poll::Pending);
+        assert_eq!(poll(&mut wait_two, &two), Poll::Pending);
+
+        q.done(2);
+        assert_eq!((one.count(), two.count()), (0, 1));
+        assert_eq!(poll(&mut wait_two, &two), Poll::Ready(()));
+
+        q.done_settled(1);
+        assert_eq!(one.count(), 1);
+        assert_eq!(poll(&mut wait_one, &one), Poll::Ready(()));
+    }
+
+    /// A future may be polled any number of times before it is woken; it holds one place,
+    /// not one per poll, or a parked request's wakers would pile up for the whole timeout.
+    #[test]
+    fn a_wait_polled_again_replaces_its_waker() {
+        let q = ThumbQueue::new();
+        q.push(1, Priority::Visible);
+        let mut wait = q.wait(1);
+        let wakes = Arc::new(Wakes::default());
+        for _ in 0..3 {
+            assert_eq!(poll(&mut wait, &wakes), Poll::Pending);
+        }
+        assert_eq!(q.parked_wakers(), 1);
+        assert_eq!(q.pop_blocking(), Some(1));
+        q.done(1);
+        assert_eq!(wakes.count(), 1);
+    }
+
+    /// Dropping a wait - a request timing out, or abandoned - takes its waker and its
+    /// `Neighbour` floor with it.
+    #[test]
+    fn a_dropped_wait_leaves_nothing_behind() {
+        let q = ThumbQueue::new();
+        q.push(1, Priority::Visible);
+        let mut wait = q.wait(1);
+        assert_eq!(poll(&mut wait, &Arc::new(Wakes::default())), Poll::Pending);
+        assert!(q.has_waiter(1));
+        drop(wait);
+        assert!(!q.has_waiter(1));
+        assert_eq!(q.parked_wakers(), 0);
+    }
+
+    #[test]
+    fn close_wakes_every_wait() {
+        let q = ThumbQueue::new();
+        q.push_many(&[1, 2], Priority::Visible);
+        let wakes = Arc::new(Wakes::default());
+        let mut waits = [q.wait(1), q.wait(2)];
+        for wait in &mut waits {
+            assert_eq!(poll(wait, &wakes), Poll::Pending);
+        }
+        q.close();
+        assert_eq!(wakes.count(), 2);
+        for wait in &mut waits {
+            assert_eq!(poll(wait, &wakes), Poll::Ready(()));
+        }
     }
 }

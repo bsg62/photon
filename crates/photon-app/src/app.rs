@@ -112,9 +112,11 @@ pub fn run() {
                 .get(tauri::http::header::IF_NONE_MATCH)
                 .and_then(|value| value.to_str().ok())
                 .map(str::to_owned);
-            tauri::async_runtime::spawn_blocking(move || {
+            // Not `spawn_blocking`: `handle` sends its disk work there itself, and awaits
+            // an unbuilt thumbnail without holding a thread - see its doc.
+            tauri::async_runtime::spawn(async move {
                 let response = match engine {
-                    Some(engine) => protocol::handle(&engine, &path, if_none_match.as_deref()),
+                    Some(engine) => protocol::handle(engine, path, if_none_match).await,
                     None => tauri::http::Response::builder()
                         .status(503)
                         .body(b"starting".to_vec())

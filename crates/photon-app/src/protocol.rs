@@ -15,25 +15,58 @@
 
 use crate::engine::Engine;
 use photon_core::{Error, thumbs::ThumbSize};
-use std::{path::Path, time::Duration};
+use std::{path::Path, sync::Arc, time::Duration};
 use tauri::http::{Response, StatusCode, header};
 
 pub const THUMB_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Answers one request. `if_none_match` is the request's `If-None-Match` header, if it
-/// sent one; only the image routes read it (a thumbnail is `immutable` and never
-/// revalidated).
-pub fn handle(engine: &Engine, path: &str, if_none_match: Option<&str>) -> Response<Vec<u8>> {
+/// Answers one request, on the async runtime. `if_none_match` is the request's
+/// `If-None-Match` header, if it sent one; only the image routes read it (a thumbnail is
+/// `immutable` and never revalidated).
+///
+/// Disk work - a file read, a render - runs on the blocking pool, for as long as it takes
+/// and no longer. Waiting for a thumbnail that is not built yet does not: it is awaited
+/// here (`ThumbService::request_async`), holding no thread. Run whole inside
+/// `spawn_blocking`, every such wait held one of Tokio's 512 blocking threads for up to
+/// `THUMB_TIMEOUT`, and once a fast scroll had parked that many, cached thumbnails,
+/// full-size images and every blocking IPC command queued behind waits that were only
+/// going to time out.
+pub async fn handle(
+    engine: Arc<Engine>,
+    path: String,
+    if_none_match: Option<String>,
+) -> Response<Vec<u8>> {
     let parts: Vec<&str> = path.trim_start_matches('/').split('/').collect();
-    match parts.as_slice() {
-        ["thumb", id, size, rest @ ..] => thumb(engine, id, size, rest.first().copied()),
-        ["image", id] => image(engine, id, true, if_none_match),
-        ["image", id, "uncropped"] => image(engine, id, false, if_none_match),
-        _ => text(StatusCode::NOT_FOUND, "not found"),
-    }
+    let cropped = match parts.as_slice() {
+        ["thumb", id, size, rest @ ..] => {
+            return thumb(engine, id, size, rest.first().copied()).await;
+        }
+        ["image", _] => true,
+        ["image", _, "uncropped"] => false,
+        _ => return text(StatusCode::NOT_FOUND, "not found"),
+    };
+    let id = parts[1].to_owned();
+    off_thread(move || image(&engine, &id, cropped, if_none_match.as_deref()))
+        .await
+        .unwrap_or_else(|response| *response)
 }
 
-fn thumb(engine: &Engine, id: &str, size: &str, url_key: Option<&str>) -> Response<Vec<u8>> {
+/// Runs `work` on the blocking pool of the runtime serving the request - Tauri's, in the
+/// app. A panic in it is a 500, as it would be anywhere else.
+async fn off_thread<T: Send + 'static>(
+    work: impl FnOnce() -> T + Send + 'static,
+) -> Result<T, Box<Response<Vec<u8>>>> {
+    tokio::task::spawn_blocking(work)
+        .await
+        .map_err(|err| Box::new(text(StatusCode::INTERNAL_SERVER_ERROR, &err.to_string())))
+}
+
+async fn thumb(
+    engine: Arc<Engine>,
+    id: &str,
+    size: &str,
+    url_key: Option<&str>,
+) -> Response<Vec<u8>> {
     let Ok(id) = id.parse::<i64>() else {
         return text(StatusCode::BAD_REQUEST, "bad id");
     };
@@ -47,14 +80,28 @@ fn thumb(engine: &Engine, id: &str, size: &str, url_key: Option<&str>) -> Respon
     // without asking the database anything - this is every tile of a scroll through a
     // library whose thumbnails exist. A read that fails (not built yet, or collected since)
     // falls through to the item's own lookup below.
-    if let Some(key) = url_key
-        && let Ok(bytes) = std::fs::read(engine.thumbs.path_for(key, size))
-    {
-        return ok(bytes, "image/webp", FOREVER);
+    if let Some(key) = url_key {
+        let cached = engine.thumbs.path_for(key, size);
+        match off_thread(move || std::fs::read(cached)).await {
+            Ok(Ok(bytes)) => return ok(bytes, "image/webp", FOREVER),
+            Ok(Err(_)) => {}
+            Err(response) => return *response,
+        }
     }
-    match engine.thumbs.request(id, size, THUMB_TIMEOUT) {
-        Ok(file) => match std::fs::read(&file) {
-            Ok(bytes) => {
+    // Dropping the request at the deadline is what gives up the wait: `ThumbQueue::wait`
+    // lifts its `Neighbour` floor as it goes.
+    let requested = tokio::time::timeout(THUMB_TIMEOUT, engine.thumbs.request_async(id, size))
+        .await
+        .unwrap_or(Err(Error::ThumbTimeout(id)));
+    match requested {
+        Ok(file) => match off_thread({
+            let file = file.clone();
+            move || std::fs::read(file)
+        })
+        .await
+        {
+            Err(response) => *response,
+            Ok(Ok(bytes)) => {
                 // `request` serves the photo's *current* thumbnail whatever key was asked
                 // for, and keys can recur - "Original", or a fourth quarter turn, returns a
                 // photo to a key it has had before. Only a file that is the URL key's own may
@@ -64,7 +111,7 @@ fn thumb(engine: &Engine, id: &str, size: &str, url_key: Option<&str>) -> Respon
                 let own = url_key.is_some_and(|key| engine.thumbs.path_for(key, size) == file);
                 ok(bytes, "image/webp", if own { FOREVER } else { "no-store" })
             }
-            Err(err) => text(StatusCode::INTERNAL_SERVER_ERROR, &err.to_string()),
+            Ok(Err(err)) => text(StatusCode::INTERNAL_SERVER_ERROR, &err.to_string()),
         },
         Err(Error::NotFound(_)) => text(StatusCode::NOT_FOUND, "not found"),
         Err(Error::ThumbFailed(message)) => text(StatusCode::UNPROCESSABLE_ENTITY, &message),
@@ -251,9 +298,19 @@ fn text(status: StatusCode, message: &str) -> Response<Vec<u8>> {
 mod tests {
     use super::*;
     use crate::testutil::{fixture, jpeg};
+    use photon_core::media::MediaKind;
 
-    fn get(engine: &Engine, path: &str) -> Response<Vec<u8>> {
-        handle(engine, path, None)
+    /// One request, as the webview makes it, from a plain thread.
+    fn call(engine: &Arc<Engine>, path: &str, if_none_match: Option<&str>) -> Response<Vec<u8>> {
+        tauri::async_runtime::block_on(handle(
+            engine.clone(),
+            path.to_owned(),
+            if_none_match.map(str::to_owned),
+        ))
+    }
+
+    fn get(engine: &Arc<Engine>, path: &str) -> Response<Vec<u8>> {
+        call(engine, path, None)
     }
 
     fn header<'a>(r: &'a Response<Vec<u8>>, name: &str) -> &'a str {
@@ -434,7 +491,7 @@ mod tests {
     }
 
     fn revalidate(f: &crate::testutil::Fixture, path: &str, tag: &str) -> Response<Vec<u8>> {
-        handle(&f.engine, path, Some(tag))
+        call(&f.engine, path, Some(tag))
     }
 
     /// A revisit is answered from the webview's cache: the tag names the picture - the
@@ -509,7 +566,7 @@ mod tests {
         std::thread::spawn(move || {
             let statuses: Vec<_> = requests
                 .iter()
-                .map(|(path, tag)| handle(&engine, path, Some(tag)).status())
+                .map(|(path, tag)| call(&engine, path, Some(tag)).status())
                 .collect();
             let _ = tx.send(statuses);
         });
@@ -567,6 +624,48 @@ mod tests {
         assert_eq!(after.status(), 200);
         assert_eq!(dims(&after), (20, 40));
         assert_ne!(etag(&after), before);
+    }
+
+    /// A thumbnail that is not built yet is waited for without a blocking thread. Here the
+    /// runtime has one, and the wait is a video frame no webview will ever draw: parked on
+    /// that thread, it would hold the full-size image behind it for all of `THUMB_TIMEOUT`.
+    #[test]
+    fn a_thumbnail_wait_holds_no_blocking_thread() {
+        let f = fixture(&[("a.jpg", &jpeg(40, 20)), ("clip.mp4", &vec![0u8; 4096])]);
+        f.add_photos();
+        let kind = |id: i64| f.engine.lib.item(id).unwrap().unwrap().kind;
+        let ids = f.ids();
+        let clip = *ids
+            .iter()
+            .find(|&&id| kind(id) == MediaKind::Video)
+            .unwrap();
+        let photo = *ids
+            .iter()
+            .find(|&&id| kind(id) == MediaKind::Image)
+            .unwrap();
+        crate::commands::video_session_start(&f.engine, true).unwrap();
+
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .max_blocking_threads(1)
+            .enable_time()
+            .build()
+            .unwrap();
+        let engine = f.engine.clone();
+        runtime.block_on(async move {
+            let waiting = tokio::spawn(handle(engine.clone(), format!("/thumb/{clip}/grid"), None));
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            assert!(!waiting.is_finished(), "nothing draws the video's frame");
+            let image = tokio::time::timeout(
+                Duration::from_secs(5),
+                handle(engine, format!("/image/{photo}"), None),
+            )
+            .await
+            .expect("the full-size image queued behind a thumbnail wait");
+            assert_eq!(image.status(), 200);
+            waiting.abort();
+        });
+        runtime.shutdown_timeout(Duration::ZERO);
     }
 
     #[test]
