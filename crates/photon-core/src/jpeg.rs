@@ -1,7 +1,8 @@
 //! The marker segments at the head of a JPEG, walked without decoding anything: `iptc` reads
-//! keywords out of them and `decode::dimensions` reads the frame size. One walker serves
-//! both so that a quirk of the stream (fill bytes, a marker with no length) is handled the
-//! same way wherever photon reads a JPEG's headers.
+//! keywords out of them, `decode::dimensions` reads the frame size and `metadata` the frame
+//! size and the EXIF block. One walker serves them all so that a quirk of the stream (fill
+//! bytes, a marker with no length) is handled the same way wherever photon reads a JPEG's
+//! headers.
 
 use std::io::{BufRead, Read, Seek, SeekFrom};
 
@@ -11,6 +12,11 @@ const SOS: u8 = 0xDA;
 const TEM: u8 = 0x01;
 const RST0: u8 = 0xD0;
 const RST7: u8 = 0xD7;
+const APP1: u8 = 0xE1;
+
+/// What opens an APP1 segment holding EXIF, ahead of the TIFF structure inside it - the
+/// same test kamadak-exif makes.
+const EXIF_ID: &[u8] = b"Exif\0\0";
 
 /// One marker segment ahead of the scan data: its marker code and how many body bytes
 /// follow the two length bytes.
@@ -91,6 +97,58 @@ pub(crate) fn dimensions<R: BufRead + Seek>(r: &mut R) -> Option<(u32, u32)> {
     }
 }
 
+/// What `describe()` reads from a JPEG's headers.
+pub(crate) struct Head {
+    /// Stored width and height, as [`dimensions`] reads them.
+    pub(crate) dims: (u32, u32),
+    /// The TIFF structure inside the first `Exif` APP1 segment, for
+    /// `exif::Reader::read_raw`.
+    pub(crate) exif: Option<Vec<u8>>,
+}
+
+/// A JPEG's frame size and EXIF block, from its headers alone.
+///
+/// Not kamadak-exif's `read_from_container`: its search for the EXIF block does not stop at
+/// the first scan, so in a JPEG with no EXIF - an export, a download, a messenger's copy -
+/// it looks through the compressed data to the end of the file, and sizing the photo from
+/// its headers would still leave a whole-file read behind it. This takes the first `Exif`
+/// APP1 segment as that search does, and stops at the scan.
+///
+/// The walk goes on past the frame header until it has the EXIF block or reaches the scan:
+/// EXIF belongs straight after SOI, but kamadak-exif also finds one misplaced after the
+/// frame header, and a photo's date is worth the table segments between the two. `None`
+/// when there is no usable frame header, as for [`dimensions`].
+pub(crate) fn head<R: BufRead + Seek>(r: &mut R) -> Option<Head> {
+    if !read_soi(r) {
+        return None;
+    }
+    let mut dims = None;
+    let mut exif = None;
+    while let Some(segment) = next_segment(r) {
+        let mut rest = segment.len;
+        if dims.is_none() && is_sof(segment.marker) {
+            dims = Some(frame_size(r, segment.len)?);
+            rest -= FRAME_SIZE_BYTES;
+        } else if exif.is_none() && segment.marker == APP1 && rest >= EXIF_ID.len() {
+            // XMP travels in APP1 segments too, so the identifier is read before the body.
+            let mut id = [0; EXIF_ID.len()];
+            r.read_exact(&mut id).ok()?;
+            rest -= id.len();
+            if id == EXIF_ID {
+                let mut tiff = vec![0; rest];
+                r.read_exact(&mut tiff).ok()?;
+                exif = Some(tiff);
+                rest = 0;
+            }
+        }
+        if let (Some(dims), Some(_)) = (dims, &exif) {
+            return Some(Head { dims, exif });
+        }
+        skip(r, rest)?;
+    }
+    dims.map(|dims| Head { dims, exif })
+}
+
 /// The start-of-frame markers, SOF0 to SOF15, less the three codes inside that range that
 /// are something else: DHT (0xC4), JPG (0xC8) and DAC (0xCC). A DHT ahead of the frame
 /// header is legal, and read as a frame it would give the photo the size of a Huffman
@@ -99,9 +157,12 @@ fn is_sof(marker: u8) -> bool {
     matches!(marker, 0xC0..=0xC3 | 0xC5..=0xC7 | 0xC9..=0xCB | 0xCD..=0xCF)
 }
 
+/// How much of a frame header's body [`frame_size`] reads.
+const FRAME_SIZE_BYTES: usize = 5;
+
 /// Width and height from a frame header's body: precision (1 byte), height, width (2 each).
 fn frame_size<R: Read>(r: &mut R, len: usize) -> Option<(u32, u32)> {
-    let mut body = [0; 5];
+    let mut body = [0; FRAME_SIZE_BYTES];
     if len < body.len() {
         return None;
     }
@@ -184,6 +245,57 @@ mod tests {
                 .unwrap();
             assert_eq!(image, expected, "image's answer for {expected:?}");
             assert_eq!(size(&bytes), Some(expected));
+        }
+    }
+
+    /// The EXIF block `head` finds is the one kamadak-exif's own search finds, byte for
+    /// byte: the first APP1 segment that opens `Exif\0\0` - past an XMP segment ahead of
+    /// it, and past the frame header where a writer misplaced it - and none when there is
+    /// none. The size alongside it is the frame header's.
+    #[test]
+    fn head_finds_the_exif_block_kamadak_exif_finds() {
+        // An APP1 payload, "Exif\0\0" included, lifted from the segment after SOI.
+        let exif_app1 = |bytes: &[u8]| {
+            let len = usize::from(u16::from_be_bytes([bytes[4], bytes[5]]));
+            bytes[6..4 + len].to_vec()
+        };
+        let first = exif_app1(&jpeg_with_exif(40, 20, 6, "2024:06:15 12:30:45"));
+        let second = exif_app1(&jpeg_with_exif(40, 20, 3, "2020:01:01 00:00:00"));
+        let xmp = b"http://ns.adobe.com/xap/1.0/\0<x:xmpmeta/>".to_vec();
+        let plain = jpeg_bytes(40, 20);
+        // Past the fixture's whole frame header: marker (2) and its 17-byte segment.
+        let after = sof_at(&plain) + 2 + 0x11;
+        let length = u16::try_from(2 + first.len()).unwrap().to_be_bytes();
+        let misplaced = [
+            &plain[..after],
+            &[0xFF, APP1],
+            &length,
+            &first,
+            &plain[after..],
+        ]
+        .concat();
+        let cases = [
+            ("after SOI", jpeg_with_segments(40, 20, &[(APP1, &first)])),
+            (
+                "behind XMP",
+                jpeg_with_segments(40, 20, &[(APP1, &xmp), (APP1, &first)]),
+            ),
+            (
+                "the first of two",
+                jpeg_with_segments(40, 20, &[(APP1, &first), (APP1, &second)]),
+            ),
+            ("after the frame header", misplaced),
+            ("none", plain),
+        ];
+        for (what, bytes) in cases {
+            let kamadak = exif::Reader::new()
+                .read_from_container(&mut Cursor::new(&bytes))
+                .ok()
+                .map(|exif| exif.buf().to_vec());
+            let head = head(&mut Cursor::new(&bytes)).expect(what);
+            assert_eq!(head.dims, (40, 20), "{what}");
+            assert_eq!(head.exif.is_some(), what != "none", "{what}");
+            assert_eq!(head.exif, kamadak, "{what}");
         }
     }
 

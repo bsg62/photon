@@ -1,6 +1,6 @@
 use std::{
     fs::File,
-    io::{BufRead, BufReader, Seek},
+    io::{BufRead, BufReader, Seek, SeekFrom},
     path::Path,
 };
 
@@ -203,9 +203,24 @@ fn read_header(path: &Path) -> (Option<(u32, u32)>, Option<exif::Exif>, bool) {
 }
 
 /// [`read_header`] over an open file, so a test can count what it reads.
+///
+/// A JPEG is read by `jpeg::head`, one walk of its headers for both answers; see there for
+/// why kamadak-exif's own search is not used for one. Anything else, and a JPEG whose
+/// headers that walk cannot follow, goes the general way.
 fn read_header_from<R: BufRead + Seek>(
     reader: &mut R,
 ) -> (Option<(u32, u32)>, Option<exif::Exif>, bool) {
+    if reader.fill_buf().is_ok_and(crate::jpeg::is_jpeg) {
+        if let Some(head) = crate::jpeg::head(reader) {
+            let exif = head
+                .exif
+                .and_then(|tiff| exif::Reader::new().read_raw(tiff).ok());
+            return (Some(head.dims), exif, false);
+        }
+        if reader.seek(SeekFrom::Start(0)).is_err() {
+            return (None, None, false);
+        }
+    }
     let exif = exif::Reader::new().read_from_container(reader).ok();
     // `dimensions` rewinds first: the EXIF read consumed an unspecified amount, and a file
     // with no EXIF at all leaves the cursor wherever the attempt gave up.
@@ -276,7 +291,8 @@ pub fn date_text(secs: i64) -> String {
 mod tests {
     use super::*;
     use crate::testutil::{
-        ExifSpec, avif_fixture, counted, jpeg_with_exif, jpeg_with_exif_spec, png_bytes, write_file,
+        ExifSpec, avif_fixture, counted, jpeg_bytes, jpeg_with_exif, jpeg_with_exif_spec,
+        png_bytes, write_file,
     };
 
     #[test]
@@ -324,21 +340,41 @@ mod tests {
         );
     }
 
-    /// The whole of what `describe()` reads for a camera JPEG's size and EXIF is its head.
-    /// kamadak-exif stops at the EXIF segment and the size comes from the frame header, so
-    /// a megabyte past the end-of-image marker goes unread. A JPEG with no EXIF is not
-    /// covered: kamadak-exif then searches the scan data all the way to its end.
+    /// The whole of what `describe()` reads for a JPEG's size and EXIF is its head, with
+    /// EXIF or without: a megabyte of scan data goes unread. Without is the case
+    /// `jpeg::head` is for - kamadak-exif's own search for the block goes on through the
+    /// scan data to the end-of-image marker, which in a photo is nearly the whole file.
     #[test]
-    fn a_camera_jpeg_header_read_stops_at_its_headers() {
+    fn a_jpeg_header_read_stops_at_its_headers() {
         let dir = tempfile::tempdir().unwrap();
-        let mut bytes = jpeg_with_exif(40, 20, 6, "2024:06:15 12:30:45");
-        bytes.resize(bytes.len() + 1024 * 1024, 0x5A);
-        let path = write_file(dir.path(), "a.jpg", &bytes);
-        let mut reader = counted(&path);
-        let (dims, exif, avif) = read_header_from(&mut reader);
-        assert_eq!((dims, exif.is_some(), avif), (Some((40, 20)), true, false));
-        let read = reader.get_ref().read;
-        assert!(read < 64 * 1024, "read {read} of {} bytes", bytes.len());
+        for (name, mut bytes, has_exif) in [
+            (
+                "camera.jpg",
+                jpeg_with_exif(40, 20, 6, "2024:06:15 12:30:45"),
+                true,
+            ),
+            ("export.jpg", jpeg_bytes(40, 20), false),
+        ] {
+            // Ahead of the end-of-image marker, where a photo's bulk is: bytes appended after
+            // it would never be reached by a search that stops there.
+            let eoi = bytes.len() - 2;
+            assert_eq!(bytes[eoi..], [0xFF, 0xD9]);
+            bytes.splice(eoi..eoi, std::iter::repeat_n(0x5A, 1024 * 1024));
+            let path = write_file(dir.path(), name, &bytes);
+            let mut reader = counted(&path);
+            let (dims, exif, avif) = read_header_from(&mut reader);
+            assert_eq!(
+                (dims, exif.is_some(), avif),
+                (Some((40, 20)), has_exif, false),
+                "{name}"
+            );
+            let read = reader.get_ref().read;
+            assert!(
+                read < 64 * 1024,
+                "{name}: read {read} of {} bytes",
+                bytes.len()
+            );
+        }
     }
 
     #[test]
