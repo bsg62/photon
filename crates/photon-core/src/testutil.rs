@@ -553,6 +553,39 @@ pub fn bmp_bytes(w: u32, h: u32) -> Vec<u8> {
     out
 }
 
+/// A reader that counts the bytes read through it, for proving a header read stays one.
+/// Put it inside the `BufReader`, not around it: the buffer fills in 8 KiB chunks, and it
+/// is those fills that reach the disk. Seeks pass straight through and count nothing.
+pub struct Counting<R> {
+    inner: R,
+    pub read: u64,
+}
+
+impl<R> Counting<R> {
+    pub fn new(inner: R) -> Self {
+        Self { inner, read: 0 }
+    }
+}
+
+impl<R: std::io::Read> std::io::Read for Counting<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        self.read += n as u64;
+        Ok(n)
+    }
+}
+
+impl<R: std::io::Seek> std::io::Seek for Counting<R> {
+    fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
+        self.inner.seek(pos)
+    }
+}
+
+/// A file opened for a counted read.
+pub fn counted(path: &Path) -> std::io::BufReader<Counting<std::fs::File>> {
+    std::io::BufReader::new(Counting::new(std::fs::File::open(path).unwrap()))
+}
+
 /// One of the `avifenc`-made files in `testdata/avif` (see its README for what each holds).
 pub fn avif_fixture(name: &str) -> Vec<u8> {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))

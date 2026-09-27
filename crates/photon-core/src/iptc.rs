@@ -6,6 +6,9 @@
 //! few dozen lines of bounds-checked slicing, so it is hand-rolled rather than taken as a
 //! dependency. Nothing here writes.
 
+use crate::jpeg;
+use std::io::Cursor;
+
 /// The keywords in the leading bytes of a JPEG, in file order. Empty for a file that is
 /// not a JPEG, has no APP13 segment, or has no keywords; never fails.
 pub fn keywords_in(prefix: &[u8]) -> Vec<String> {
@@ -31,9 +34,7 @@ pub fn caption_in(prefix: &[u8]) -> Option<String> {
     captions.into_iter().next()
 }
 
-const SOI: [u8; 2] = [0xFF, 0xD8];
 const APP13: u8 = 0xED;
-const SOS: u8 = 0xDA;
 const PHOTOSHOP_HEADER: &[u8] = b"Photoshop 3.0\0";
 const IPTC_RESOURCE: u16 = 0x0404;
 const IIM_MARKER: u8 = 0x1C;
@@ -49,39 +50,24 @@ const CAPTION_DATASET: u8 = 120;
 /// nothing; a truncated prefix ends the walk quietly.
 fn app13_segments(prefix: &[u8]) -> Vec<&[u8]> {
     let mut found = Vec::new();
-    if prefix.len() < 2 || prefix[..2] != SOI {
+    let mut cursor = Cursor::new(prefix);
+    if !jpeg::read_soi(&mut cursor) {
         return found;
     }
-    let mut at = 2;
-    while at + 4 <= prefix.len() {
-        if prefix[at] != 0xFF {
+    while let Some(segment) = jpeg::next_segment(&mut cursor) {
+        let start = cursor.position() as usize;
+        let end = start + segment.len;
+        // A segment running past the prefix is where the read stopped, not the file's end,
+        // and nothing after it can be found either.
+        let Some(body) = prefix.get(start..end) else {
             break;
-        }
-        let marker = prefix[at + 1];
-        // Fill bytes between segments are legal.
-        if marker == 0xFF {
-            at += 1;
-            continue;
-        }
-        if marker == SOS {
-            break;
-        }
-        let len = u16::from_be_bytes([prefix[at + 2], prefix[at + 3]]) as usize;
-        if len < 2 {
-            break;
-        }
-        let body_start = at + 4;
-        let body_end = at + 2 + len;
-        if body_end > prefix.len() {
-            break;
-        }
-        let body = &prefix[body_start..body_end];
-        if marker == APP13
+        };
+        if segment.marker == APP13
             && let Some(resources) = body.strip_prefix(PHOTOSHOP_HEADER)
         {
             found.push(resources);
         }
-        at = body_end;
+        cursor.set_position(end as u64);
     }
     found
 }

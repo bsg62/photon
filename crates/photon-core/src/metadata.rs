@@ -1,4 +1,8 @@
-use std::{fs::File, io::BufReader, path::Path};
+use std::{
+    fs::File,
+    io::{BufRead, BufReader, Seek},
+    path::Path,
+};
 
 /// The generation of [`read_image_meta`] a row was last read with, stored in
 /// `items.exif_version`. The scanner re-describes an unchanged file whose stored version is
@@ -195,11 +199,17 @@ fn read_header(path: &Path) -> (Option<(u32, u32)>, Option<exif::Exif>, bool) {
     let Ok(file) = File::open(path) else {
         return (None, None, false);
     };
-    let mut reader = BufReader::new(file);
-    let exif = exif::Reader::new().read_from_container(&mut reader).ok();
+    read_header_from(&mut BufReader::new(file))
+}
+
+/// [`read_header`] over an open file, so a test can count what it reads.
+fn read_header_from<R: BufRead + Seek>(
+    reader: &mut R,
+) -> (Option<(u32, u32)>, Option<exif::Exif>, bool) {
+    let exif = exif::Reader::new().read_from_container(reader).ok();
     // `dimensions` rewinds first: the EXIF read consumed an unspecified amount, and a file
     // with no EXIF at all leaves the cursor wherever the attempt gave up.
-    let (dims, avif) = crate::decode::dimensions(&mut reader);
+    let (dims, avif) = crate::decode::dimensions(reader);
     (dims, exif, avif)
 }
 
@@ -266,7 +276,7 @@ pub fn date_text(secs: i64) -> String {
 mod tests {
     use super::*;
     use crate::testutil::{
-        ExifSpec, avif_fixture, jpeg_with_exif, jpeg_with_exif_spec, png_bytes, write_file,
+        ExifSpec, avif_fixture, counted, jpeg_with_exif, jpeg_with_exif_spec, png_bytes, write_file,
     };
 
     #[test]
@@ -312,6 +322,23 @@ mod tests {
                 camera: CameraMeta::default(),
             }
         );
+    }
+
+    /// The whole of what `describe()` reads for a camera JPEG's size and EXIF is its head.
+    /// kamadak-exif stops at the EXIF segment and the size comes from the frame header, so
+    /// a megabyte past the end-of-image marker goes unread. A JPEG with no EXIF is not
+    /// covered: kamadak-exif then searches the scan data all the way to its end.
+    #[test]
+    fn a_camera_jpeg_header_read_stops_at_its_headers() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut bytes = jpeg_with_exif(40, 20, 6, "2024:06:15 12:30:45");
+        bytes.resize(bytes.len() + 1024 * 1024, 0x5A);
+        let path = write_file(dir.path(), "a.jpg", &bytes);
+        let mut reader = counted(&path);
+        let (dims, exif, avif) = read_header_from(&mut reader);
+        assert_eq!((dims, exif.is_some(), avif), (Some((40, 20)), true, false));
+        let read = reader.get_ref().read;
+        assert!(read < 64 * 1024, "read {read} of {} bytes", bytes.len());
     }
 
     #[test]
