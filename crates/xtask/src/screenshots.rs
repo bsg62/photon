@@ -76,6 +76,12 @@ pub const SHOTS: &[Shot] = &[
         query: "theme=light&do=menu",
         dark: false,
     },
+    // The sidebar folder menu, on a folder with an alias.
+    Shot {
+        name: "folder-menu-light",
+        query: "theme=light&do=foldermenu",
+        dark: false,
+    },
     Shot {
         name: "menu-dark",
         query: "theme=dark&do=menu",

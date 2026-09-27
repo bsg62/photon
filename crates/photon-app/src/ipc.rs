@@ -323,6 +323,15 @@ pub fn set_folder_hidden(engine: Eng<'_>, folder_id: i64, hidden: bool) -> Resul
 }
 
 #[tauri::command(async)]
+pub fn set_folder_alias(
+    engine: Eng<'_>,
+    folder_id: i64,
+    alias: Option<String>,
+) -> Result<bool, AppError> {
+    commands::set_folder_alias(&engine, folder_id, alias)
+}
+
+#[tauri::command(async)]
 pub fn set_items_hidden(engine: Eng<'_>, ids: Vec<i64>, hidden: bool) -> Result<usize, AppError> {
     commands::set_items_hidden(&engine, &ids, hidden)
 }

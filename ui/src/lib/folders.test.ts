@@ -6,10 +6,10 @@ import { arrangeFolders, enterFolder, locateItem, folderRows, groupByYear, retur
 const at = (iso: string) => Math.floor(new Date(iso).getTime() / 1000);
 
 const folders = [
-  { id: 1, watchedId: 1, parentId: null, path: '/photos', name: 'photos', hidden: false },
-  { id: 2, watchedId: 1, parentId: 1, path: '/photos/rome', name: 'rome', hidden: false },
-  { id: 3, watchedId: 1, parentId: 1, path: '/photos/oslo', name: 'oslo', hidden: false },
-  { id: 4, watchedId: 1, parentId: 1, path: '/photos/old', name: 'old', hidden: false },
+  { id: 1, watchedId: 1, parentId: null, path: '/photos', name: 'photos', hidden: false, alias: null },
+  { id: 2, watchedId: 1, parentId: 1, path: '/photos/rome', name: 'rome', hidden: false, alias: null },
+  { id: 3, watchedId: 1, parentId: 1, path: '/photos/oslo', name: 'oslo', hidden: false, alias: null },
+  { id: 4, watchedId: 1, parentId: 1, path: '/photos/old', name: 'old', hidden: false, alias: null },
 ];
 
 const tallies = [
@@ -25,6 +25,11 @@ describe('folderRows', () => {
       { folderId: 3, name: 'oslo', count: 3, year: 2024, takenAtMin: tallies[1].takenAtMin, bytes: 900, modifiedMs: 1_000 },
       { folderId: 4, name: 'old', count: 40, year: 2019, takenAtMin: tallies[2].takenAtMin, bytes: 100, modifiedMs: 2_000 },
     ]);
+  });
+
+  it('shows a folder by its alias, in place of its directory name', () => {
+    const aliased = folders.map((f) => (f.id === 3 ? { ...f, alias: 'Aarhus trip' } : f));
+    expect(folderRows(tallies, aliased).map((r) => r.name)).toEqual(['rome', 'Aarhus trip', 'old']);
   });
 
   it('lists only folders that have photos', () => {
@@ -86,6 +91,12 @@ describe('arrangeFolders', () => {
     expect(names(bySize)).toEqual([['oslo', 'rome', 'old']]);
     expect(names(arrangeFolders(rows, { key: 'size', reverse: true }))).toEqual([['old', 'rome', 'oslo']]);
     expect(names(arrangeFolders(rows, { key: 'modified', reverse: false }))).toEqual([['rome', 'old', 'oslo']]);
+  });
+
+  it('sorts an aliased folder by its alias', () => {
+    const aliased = folders.map((f) => (f.id === 3 ? { ...f, alias: 'Aarhus trip' } : f));
+    const rows = folderRows(tallies, aliased);
+    expect(names(arrangeFolders(rows, { key: 'name', reverse: false }))).toEqual([['Aarhus trip', 'old', 'rome']]);
   });
 
   it('sorts names ignoring case and reading numbers', () => {

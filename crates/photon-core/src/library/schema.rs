@@ -304,6 +304,12 @@ ALTER TABLE albums ADD COLUMN picasa_named_at INTEGER;
 -- every photo, and for a video whose container did not say.
 ALTER TABLE items ADD COLUMN duration_ms INTEGER;
 "#,
+    r#"
+-- A name the user gave the folder in photon, shown in place of its directory name. NULL
+-- for none. Never read from or written to the disk: the directory keeps its name, and a
+-- folder whose row is pruned (its directory gone, renamed or moved) loses the alias with it.
+ALTER TABLE folders ADD COLUMN alias TEXT;
+"#,
 ];
 
 pub fn migrate(conn: &Connection) -> Result<()> {
@@ -555,7 +561,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 20);
+        assert_eq!(version, 21);
         let rules: i64 = conn
             .query_row("SELECT count(*) FROM tag_rules", [], |r| r.get(0))
             .unwrap();
@@ -714,7 +720,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 20);
+        assert_eq!(version, 21);
         let overlay: i64 = conn
             .query_row("SELECT count(*) FROM item_user_tags", [], |r| r.get(0))
             .unwrap();
@@ -764,7 +770,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 20);
+        assert_eq!(version, 21);
         let hash: Option<Vec<u8>> = conn
             .query_row("SELECT content_hash FROM items WHERE id = 1", [], |r| {
                 r.get(0)
@@ -905,7 +911,7 @@ mod tests {
             .unwrap();
         // Hardcoded, like every other version assertion here: `MIGRATIONS.len()` would
         // agree with itself whatever the list did, which is the tripwire removed.
-        assert_eq!(version, 20);
+        assert_eq!(version, 21);
     }
 
     /// Every folder in an existing library comes out of the upgrade visible.
@@ -943,7 +949,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 20);
+        assert_eq!(version, 21);
     }
 
     /// Every album in an existing library comes out of the upgrade as photon's own.
@@ -976,7 +982,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 20);
+        assert_eq!(version, 21);
     }
 
     /// Every Picasa album in an existing library comes out of the upgrade with no recorded
@@ -1010,7 +1016,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 20);
+        assert_eq!(version, 21);
     }
 
     /// Every photo in an existing library comes out of the upgrade uncaptioned, for the
@@ -1049,7 +1055,7 @@ mod tests {
             .unwrap()
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 20);
+        assert_eq!(version, 21);
     }
 
     /// A stored Conservative or Loose keeps meaning Conservative or Loose.
@@ -1083,7 +1089,7 @@ mod tests {
             let version: i64 = conn
                 .query_row("PRAGMA user_version", [], |r| r.get(0))
                 .unwrap();
-            assert_eq!(version, 20);
+            assert_eq!(version, 21);
         }
     }
 
@@ -1133,6 +1139,44 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 20);
+        assert_eq!(version, 21);
+    }
+
+    /// Every folder in an existing library comes out of the upgrade with no alias, so the
+    /// sidebar keeps showing the directory names it showed before.
+    #[test]
+    fn migration_21_leaves_existing_folders_without_an_alias() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("library.db");
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        for sql in &MIGRATIONS[..20] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 20i64).unwrap();
+        conn.execute(
+            "INSERT INTO watched_folders (id, path) VALUES (1, '/p')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO folders (id, watched_id, parent_id, path, name, sort_key) \
+             VALUES (1, 1, NULL, '/p', 'p', 'p')",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+
+        let lib = crate::library::Library::open(&path).unwrap();
+        let conn = lib.reader().unwrap();
+        let (name, alias): (String, Option<String>) = conn
+            .query_row("SELECT name, alias FROM folders WHERE id = 1", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        assert_eq!((name.as_str(), alias), ("p", None));
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, 21);
     }
 }

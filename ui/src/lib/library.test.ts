@@ -47,6 +47,7 @@ vi.mock('./api', () => ({
     watchedFolderStats: vi.fn(),
     setItemsHidden: vi.fn(),
     setFolderHidden: vi.fn(),
+    setFolderAlias: vi.fn(),
     copyPhoto: vi.fn(),
   },
   events: {
@@ -992,7 +993,7 @@ describe('LibraryStore', () => {
   it('hiding a folder refetches the folder list, so its menu offers Unhide next time', async () => {
     const store = new LibraryStore();
     await store.init();
-    const folder = { id: 3, watchedId: 1, parentId: 1, path: '/p/a', name: 'a', hidden: false };
+    const folder = { id: 3, watchedId: 1, parentId: 1, path: '/p/a', name: 'a', hidden: false, alias: null };
     vi.mocked(api.listFolders).mockResolvedValue({ watched: [], folders: [folder] });
     await store.refreshFolders();
     expect(store.folderOf(3)?.hidden).toBe(false);
@@ -1002,6 +1003,20 @@ describe('LibraryStore', () => {
     await store.setFolderHidden(3, true);
     expect(api.setFolderHidden).toHaveBeenCalledWith(3, true);
     expect(store.folderOf(3)?.hidden).toBe(true);
+  });
+
+  it('an emptied alias is sent as none, and the folder list is refetched for the new label', async () => {
+    const store = new LibraryStore();
+    await store.init();
+    const folder = { id: 3, watchedId: 1, parentId: 1, path: '/p/a', name: 'a', hidden: false, alias: 'Easter' };
+    vi.mocked(api.listFolders).mockResolvedValue({ watched: [], folders: [folder] });
+    await store.refreshFolders();
+
+    vi.mocked(api.setFolderAlias).mockResolvedValue(true);
+    vi.mocked(api.listFolders).mockResolvedValue({ watched: [], folders: [{ ...folder, alias: null }] });
+    await store.setFolderAlias(3, '');
+    expect(api.setFolderAlias).toHaveBeenCalledWith(3, null);
+    expect(store.folderOf(3)?.alias).toBe(null);
   });
 
   describe('multi-selection', () => {

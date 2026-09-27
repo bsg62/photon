@@ -231,6 +231,12 @@ photo in it is hidden, and so is anything added to that folder later, until you 
 folder is hidden on its own, as in Picasa. Unhiding the folder brings back every photo in it,
 including ones you had hidden one by one.
 
+To call a folder something other than its directory's name, right-click it in the sidebar and
+choose **Rename in photon…**. The sidebar and the grid show the new name; the directory on disk
+keeps its own, which the grid still shows in the folder's path, and search finds the folder by
+either. Empty the field, or choose **Use folder name**, to go back. The name lives in photon's
+library, so a folder renamed or moved outside photon comes back under its directory's name.
+
 Photos you hid in Picasa are hidden in photon too. photon never writes Picasa's hidden flag,
 so a photo you unhide in photon stays visible until you hide or unhide it in Picasa again.
 
@@ -446,6 +452,7 @@ publishing it.
 - [ ] In Duplicates, select a photo and press **H** a few times: each press hides the selected photo and selects the next one, and the grid scrolls to keep it in view. In Hidden, **H** unhides. With Ctrl, Alt or Cmd held, **H** does nothing.
 - [ ] In the viewer, **H** hides the photo on screen (it stays showing, the menu now says **Unhide photo (H)**) and a second **H** unhides it. With the zoom slider focused, **H** does nothing.
 - [ ] Right-click a folder in the sidebar → **Hide folder**: it leaves the sidebar and its photos leave All; in Hidden the folder is listed and its right-click menu says **Unhide folder**. Copy a new photo into that folder: after the scan it is in Hidden, not All. A subfolder of it stays visible. **Unhide folder** brings every photo back.
+- [ ] Right-click a folder → **Rename in photon…**: the field opens pre-filled and selected; type a name and press Enter. The sidebar and the grid header show it, the header's path still ends in the directory's name, and the directory on disk is unchanged. Sort by name: the folder sorts by its new name. Search for it: its photos are found. Rename it to an empty field: the directory name returns. Set it again, then **Use folder name** from the menu does the same. Escape in the field changes nothing.
 - [ ] Open a photo from Hidden, right-click → **Locate in photon**: the grid lands on it in Hidden, not in All. In Hidden, clicking a folder in the sidebar stays in Hidden.
 - [ ] Open the Copies view of a photo with one identical copy and hide the photo from its tile menu: the copy stays, with the line "… is hidden; these are its copies". In Hidden, that photo's menu offers no "Show 1 duplicate".
 - [ ] Open a photo in the viewer from a selection, **Hide photo**, Escape: nothing is selected, and Ctrl+clicking another photo says "1 selected", not 2.
