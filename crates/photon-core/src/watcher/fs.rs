@@ -5,7 +5,9 @@ use notify::{
     RecursiveMode,
     event::{AccessKind, AccessMode, EventKind},
 };
-use notify_debouncer_full::{DebounceEventResult, Debouncer, NoCache, new_debouncer_opt};
+use notify_debouncer_full::{
+    DebounceEventResult, DebouncedEvent, Debouncer, NoCache, new_debouncer_opt,
+};
 use std::{
     collections::HashSet,
     path::{Path, PathBuf},
@@ -42,41 +44,12 @@ impl Watcher {
         let handler = move |result: DebounceEventResult| {
             match result {
                 Ok(events) => {
-                    // Both sets are what keeps a bulk import cheap here: this callback runs
-                    // on the notify thread for every debounced batch, and a batch can carry
-                    // thousands of paths. `seen` skips the `is_dir()` syscall for a path
-                    // reported more than once, and `unique` replaces a quadratic
-                    // `Vec::contains` scan per directory.
-                    let mut seen: HashSet<&Path> = HashSet::new();
-                    let mut unique: HashSet<PathBuf> = HashSet::new();
-                    let mut dirs: Vec<PathBuf> = Vec::new();
-                    for event in &events {
-                        if !may_have_changed(&event.kind) {
-                            continue;
-                        }
-                        for path in &event.paths {
-                            if !seen.insert(path.as_path()) {
-                                continue;
-                            }
-                            // `is_dir()` reports `false` for a path that no longer exists,
-                            // which routes a deletion to its parent directory. That's the
-                            // behaviour we want: rescanning the parent is how a deletion
-                            // gets noticed, since there's nothing left at `path` itself.
-                            let dir = if path.is_dir() {
-                                path.clone()
-                            } else {
-                                match path.parent() {
-                                    Some(parent) => parent.to_path_buf(),
-                                    None => continue,
-                                }
-                            };
-                            if unique.insert(dir.clone()) {
-                                dirs.push(dir);
-                            }
-                        }
-                    }
+                    let (dirs, lost) = changed_dirs(&events);
                     if !dirs.is_empty() {
                         let _ = tx.send(dirs);
+                    }
+                    if !lost.is_empty() {
+                        let _ = error_tx.send(lost);
                     }
                 }
                 Err(errors) => {
@@ -149,6 +122,69 @@ impl Watcher {
     }
 }
 
+/// The directories a debounced batch says changed, and the events in it that say changes
+/// were *lost*.
+///
+/// A lost-events notice - inotify's queue overflow, FSEvents' "must scan subdirectories" -
+/// reaches the handler as an ordinary `Ok` event flagged `need_rescan`, not as an error,
+/// and usually with no path at all. Read as a change it named no directory and was
+/// dropped, so a root that had silently missed changes kept trusting its watch until the
+/// next launch. It is reported as a watch failure instead - with its path when it has one,
+/// and an empty one, which the policy reads as every root, when it has none - so the roots
+/// it touches fall back to periodic rescans, which is what finds what was missed.
+fn changed_dirs(events: &[DebouncedEvent]) -> (Vec<PathBuf>, Vec<WatchError>) {
+    // Both sets are what keeps a bulk import cheap here: this runs on the notify thread for
+    // every debounced batch, and a batch can carry thousands of paths. `seen` skips the
+    // `is_dir()` syscall for a path reported more than once, and `unique` replaces a
+    // quadratic `Vec::contains` scan per directory.
+    let mut seen: HashSet<&Path> = HashSet::new();
+    let mut unique: HashSet<PathBuf> = HashSet::new();
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    let mut lost: Vec<WatchError> = Vec::new();
+    for event in events {
+        if event.need_rescan() {
+            tracing::warn!(?event, "filesystem events were lost");
+            let message = "filesystem events were lost".to_string();
+            if event.paths.is_empty() {
+                lost.push(WatchError {
+                    path: PathBuf::new(),
+                    message: message.clone(),
+                });
+            }
+            for path in &event.paths {
+                lost.push(WatchError {
+                    path: path.clone(),
+                    message: message.clone(),
+                });
+            }
+            continue;
+        }
+        if !may_have_changed(&event.kind) {
+            continue;
+        }
+        for path in &event.paths {
+            if !seen.insert(path.as_path()) {
+                continue;
+            }
+            // `is_dir()` reports `false` for a path that no longer exists, which routes a
+            // deletion to its parent directory. That's the behaviour we want: rescanning the
+            // parent is how a deletion gets noticed, since there's nothing left at `path`.
+            let dir = if path.is_dir() {
+                path.clone()
+            } else {
+                match path.parent() {
+                    Some(parent) => parent.to_path_buf(),
+                    None => continue,
+                }
+            };
+            if unique.insert(dir.clone()) {
+                dirs.push(dir);
+            }
+        }
+    }
+    (dirs, lost)
+}
+
 /// Whether an event can mean something on disk is different from what the library holds.
 ///
 /// Linux's inotify reports every *open* and *close* as well as every write, and notify
@@ -178,6 +214,36 @@ fn may_have_changed(kind: &EventKind) -> bool {
 mod tests {
     use super::*;
     use crate::paths;
+
+    /// A lost-events notice arrives as an `Ok` event flagged for a rescan, usually with no
+    /// path. It must come out as a watch failure - an empty path when it names none, which
+    /// the policy reads as every root - and never be dropped as a change naming nothing.
+    #[test]
+    fn a_lost_events_notice_is_reported_as_a_watch_failure() {
+        use notify::event::{Event, Flag};
+        let at = std::time::Instant::now();
+        let overflow = DebouncedEvent::new(Event::new(EventKind::Other).set_flag(Flag::Rescan), at);
+        let (dirs, lost) = changed_dirs(&[overflow]);
+        assert!(dirs.is_empty());
+        assert_eq!(
+            lost.iter().map(|e| e.path.clone()).collect::<Vec<_>>(),
+            [PathBuf::new()]
+        );
+
+        let subtree = PathBuf::from("/photos/2024");
+        let must_scan = DebouncedEvent::new(
+            Event::new(EventKind::Other)
+                .set_flag(Flag::Rescan)
+                .add_path(subtree.clone()),
+            at,
+        );
+        let (dirs, lost) = changed_dirs(&[must_scan]);
+        assert!(dirs.is_empty(), "a rescan notice is not a change: {dirs:?}");
+        assert_eq!(
+            lost.iter().map(|e| e.path.clone()).collect::<Vec<_>>(),
+            [subtree]
+        );
+    }
 
     /// Real filesystem events are timing-dependent, so this is excluded from CI.
     /// Run it locally with: cargo test -p photon-core -- --ignored watcher_reports
