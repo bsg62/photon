@@ -1758,6 +1758,44 @@ describe('LibraryStore', () => {
         expect(store.selectionCount).toBe(2991);
       });
 
+      /** The count read while the release's fetch is out. Zeroed before it, the unloaded
+       *  photos dropped out of "N selected" for a round trip and then came back. */
+      it("keeps a long band's count while the release resolves it", async () => {
+        const store = await storeOf(5000);
+        store.beginBand(false);
+        await store.ensure(2950, 3050);
+        store.bandTo([[10, 3000]]);
+
+        const ending = store.endBand([[10, 3000]]);
+        expect(store.selectionCount).toBe(2991);
+        await ending;
+        expect(store.selectionCount).toBe(2991);
+      });
+
+      /** The release recomputes the ranges from the rectangle, and a grid laid out again
+       *  since the last preview can make them empty. */
+      it('counts nothing unresolved once a band that covers nothing at the release ends', async () => {
+        const store = await storeOf(2000);
+        store.beginBand(false);
+        store.bandTo([[1200, 1202]]);
+        expect(store.selectionCount).toBe(3);
+
+        await store.endBand([]);
+        expect(store.selectionCount).toBe(0);
+      });
+
+      it('counts nothing unresolved once a band the grid was rebuilt under is put back', async () => {
+        const store = await storeOf(5000);
+        store.selected = 20;
+        store.beginBand(false);
+        await store.ensure(2950, 3050);
+        store.bandTo([[10, 3000]]);
+        vi.mocked(api.gridRows).mockResolvedValue({ version: 2, rows: [] });
+
+        await store.endBand([[10, 3000]]);
+        expect(store.selectionCount).toBe(1);
+      });
+
       it('counts only what an additive band adds, and nothing once it is abandoned', async () => {
         const store = await storeOf(5000);
         store.selected = 20;

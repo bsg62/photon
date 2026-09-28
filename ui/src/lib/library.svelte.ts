@@ -352,7 +352,6 @@ export class LibraryStore {
     const previous = this.bandPrevious;
     this.bandBase = new Set();
     this.bandPrevious = new Set();
-    this.bandUnresolved = 0;
 
     // A band that covers nothing is a band, not a failure: dragging over empty space is how
     // a selection is cleared, and how an additive drag that ends up covering nothing leaves
@@ -360,6 +359,7 @@ export class LibraryStore {
     // back that the preview had visibly just taken away.
     if (ranges.length === 0) {
       this.pick(new Set(base));
+      this.bandUnresolved = 0;
       if (base.size === 0) {
         this.selectedOffset = null;
         this.selectedId = null;
@@ -368,6 +368,9 @@ export class LibraryStore {
       return;
     }
 
+    // `bandUnresolved` is zeroed only beside each write of the selection, never before this
+    // await: zeroed early, "N selected" dropped to the preview's loaded photos for a round
+    // trip and then jumped back.
     const ids = await this.fetchIdsOf(ranges);
     if (!ids) {
       // Overtaken, or the grid was rebuilt under the drag. The preview was drawn from
@@ -375,6 +378,7 @@ export class LibraryStore {
       // goes back to what it was. The lead is left alone: it was never moved by the drag,
       // and a rebuild has already re-found it by id.
       this.pick(previous);
+      this.bandUnresolved = 0;
       return;
     }
     // The ranges are in grid order and fetched in order, so the first id is the photo at
@@ -384,6 +388,7 @@ export class LibraryStore {
     const firstId: number | undefined = ids.values().next().value;
     for (const id of base) ids.add(id);
     this.pick(ids);
+    this.bandUnresolved = 0;
     const first = ranges[0][0];
     this.selectedOffset = first;
     this.selectedId = firstId ?? this.pages.get(first)?.id ?? null;
