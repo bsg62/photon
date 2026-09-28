@@ -116,6 +116,11 @@
   let sort = { key: 'date', reverse: false };
 
   // Commands whose answer the UI draws.
+  //
+  // The view setters (set_sort and set_search_query here, the rest in SILENT) answer with the
+  // grid version that shows their view, and null means "no version: refetch". The mock's
+  // version never moves from 1, which the store already holds, so any number would tell it
+  // the grid it has is the new one and the echoed sort or query would never be read back.
   const canned = {
     list_folders: () => ({ watched: [{ id: 1, path: '/home/ada/Pictures', online: true }], folders }),
     set_sort: (a) => {
@@ -138,6 +143,7 @@
       album: null,
       tag: null,
       copiesOf: null,
+      buildError: null,
     }),
     grid_rows: (a) => ({
       version: 1,

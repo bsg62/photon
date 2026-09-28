@@ -86,6 +86,10 @@ pub struct GridInfo {
     pub tag: Option<String>,
     /// The photo while `view` is `Copies`.
     pub copies_of: Option<CopiesOf>,
+    /// Why the grid is empty when it is only because photon could not read the library at
+    /// startup (`Engine::build_first_grid`); the UI says so instead of "No photos yet".
+    /// `None` for every grid actually built, so the next successful rebuild clears it.
+    pub build_error: Option<String>,
 }
 
 /// The photo a Copies view is of. The name travels with the id because the sidebar labels
@@ -280,7 +284,7 @@ pub fn rescan_folder(engine: &Arc<Engine>, watched_id: i64) -> CmdResult<()> {
 }
 
 pub fn grid_info(engine: &Engine) -> GridInfo {
-    let (version, grid) = engine.grid();
+    let (version, grid, build_error) = engine.grid_and_failure();
     // One read of the pair, so the argument reported is the one the view was built with.
     let (view, arg) = engine.view_and_arg();
     let copies_of = (view == GridView::Copies)
@@ -340,22 +344,20 @@ pub fn grid_info(engine: &Engine) -> GridInfo {
             .flatten(),
         tag: (view == GridView::Tag).then_some(arg),
         copies_of,
+        build_error,
     }
 }
 
-pub fn set_person_view(engine: &Engine, contact: &str) -> CmdResult<()> {
-    engine.set_person_view(contact)?;
-    Ok(())
+pub fn set_person_view(engine: &Engine, contact: &str) -> CmdResult<Option<u64>> {
+    Ok(engine.set_person_view(contact)?)
 }
 
-pub fn set_album_view(engine: &Engine, album_id: i64) -> CmdResult<()> {
-    engine.set_album_view(album_id)?;
-    Ok(())
+pub fn set_album_view(engine: &Engine, album_id: i64) -> CmdResult<Option<u64>> {
+    Ok(engine.set_album_view(album_id)?)
 }
 
-pub fn set_tag_view(engine: &Engine, tag: &str) -> CmdResult<()> {
-    engine.set_tag_view(tag)?;
-    Ok(())
+pub fn set_tag_view(engine: &Engine, tag: &str) -> CmdResult<Option<u64>> {
+    Ok(engine.set_tag_view(tag)?)
 }
 
 /// A photo's copies as its info panel lists them: byte-identical first, then look-alikes
@@ -397,9 +399,8 @@ pub fn copy_count(engine: &Engine, id: i64) -> CmdResult<usize> {
     Ok(item_copies(engine, id)?.len())
 }
 
-pub fn set_copies_view(engine: &Engine, id: i64) -> CmdResult<()> {
-    engine.set_copies_view(id)?;
-    Ok(())
+pub fn set_copies_view(engine: &Engine, id: i64) -> CmdResult<Option<u64>> {
+    Ok(engine.set_copies_view(id)?)
 }
 
 /// Every named Picasa contact with a photo in the library, for the sidebar.
@@ -489,19 +490,21 @@ pub fn remove_from_album(engine: &Engine, album_id: i64, item_ids: &[i64]) -> Cm
     Ok(())
 }
 
-pub fn set_grid_view(engine: &Engine, view: GridView) -> CmdResult<()> {
-    engine.set_view(view)?;
-    Ok(())
+/// The view setters below answer with the grid version that shows the view they moved to,
+/// or `None` when that cannot be vouched for (`Engine::rebuild_or_restore`). The rebuild's
+/// `library_changed` can reach the webview before this reply does, and the UI's listener
+/// has then already fetched the grid; the version is what lets the setter's own refresh
+/// see that and not fetch it a second time.
+pub fn set_grid_view(engine: &Engine, view: GridView) -> CmdResult<Option<u64>> {
+    Ok(engine.set_view(view)?)
 }
 
-pub fn set_sort(engine: &Engine, sort: Sort) -> CmdResult<()> {
-    engine.set_sort(sort)?;
-    Ok(())
+pub fn set_sort(engine: &Engine, sort: Sort) -> CmdResult<Option<u64>> {
+    Ok(engine.set_sort(sort)?)
 }
 
-pub fn set_search_query(engine: &Engine, query: &str) -> CmdResult<()> {
-    engine.set_search_query(query)?;
-    Ok(())
+pub fn set_search_query(engine: &Engine, query: &str) -> CmdResult<Option<u64>> {
+    Ok(engine.set_search_query(query)?)
 }
 
 pub fn grid_rows(engine: &Engine, offset: usize, count: usize) -> GridRows {

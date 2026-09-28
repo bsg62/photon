@@ -31,6 +31,10 @@ export interface Toast { id: number; message: string; kind: 'error' | 'done' }
  *  `clamp_count` applies without telling the caller it truncated. */
 const GRID_ROWS_CHUNK = 1000;
 
+/** Where `setHidden` moves the selection once the write lands; see `landingOf`. `after:
+ *  null` is "after the start": the first photo. */
+type Landing = { id: number } | { after: number | null } | { at: number };
+
 /** App-wide reactive state: the grid snapshot, the folder tree, scan status and selection. */
 export class LibraryStore {
   /** `$state.raw`, as are the folder list and the collections below: each is only ever
@@ -53,6 +57,7 @@ export class LibraryStore {
     album: null,
     tag: null,
     copiesOf: null,
+    buildError: null,
   });
   folders = $state.raw<FolderList>({ watched: [], folders: [] });
   /** The sidebar's collections. Refetched on every `library-changed` that says the data
@@ -87,9 +92,31 @@ export class LibraryStore {
    *  Pruning it needs a "which of these ids are still live" round trip, which is not worth
    *  an IPC surface for a count one click from correct. Do not "fix" this with offsets. */
   private selection = $state<Set<number>>(new Set());
+  /** Bumped by every selection the user makes - everything that writes `selection` or moves
+   *  the lead but `rebindSelection`, which only follows a rebuild. What lets an await that
+   *  means to select something afterwards (`setHidden`) tell a click made meanwhile, which
+   *  it must not overwrite, from a rebuild re-finding the lead, which it may. */
+  private picks = 0;
+
+  /** Replaces the selection on the user's behalf; see `picks`. */
+  private pick(ids: Set<number>): void {
+    this.selection = ids;
+    this.picks++;
+  }
   /** The grid offset a Shift+click extends from: the last plain click or Ctrl+click. Plain,
    *  not `$state` — nothing renders from it. */
-  private anchor: number | null = null;
+  private get anchor(): number | null {
+    return this.anchorAt;
+  }
+  private set anchor(offset: number | null) {
+    this.anchorAt = offset;
+    this.anchorWrites++;
+  }
+  private anchorAt: number | null = null;
+  /** Bumped by every write of the anchor, so `rebindSelection` can tell an anchor nothing
+   *  has touched since it began from one written again with the same offset - a click on
+   *  the tile now at the lead's old offset names a different photo by the same number. */
+  private anchorWrites = 0;
   /** Bumped on every range fetch — a Shift+click or a Ctrl+A. Two fast Shift+clicks issue overlapping calls
    *  with no ordering guarantee on their fetches - a wide range started first can still be
    *  fetching its later chunks when a narrow range started second finishes first. The rule is
@@ -109,6 +136,13 @@ export class LibraryStore {
    *  lead by id (`rebindSelection`), and writing a pre-rebuild offset back over that answer
    *  is the exact trap that makes Enter open the neighbouring photo. */
   private bandPrevious = new Set<number>();
+  /** How many offsets the live band covers whose page is not loaded, so has no id to put
+   *  in the preview's selection. Counted by offset rather than left out: a band autoscrolled
+   *  a long way has its middle pages evicted by `ensure`, and the status bar's "N selected"
+   *  fell further behind the band the further it went. An offset is a photo, so the count
+   *  is exact - except for an additive band crossing an unloaded photo that was already
+   *  selected, which it counts twice until `endBand` resolves the ids. Zero outside a band. */
+  private bandUnresolved = $state(0);
 
   /** Selected grid offset. */
   get selected(): number | null {
@@ -124,7 +158,9 @@ export class LibraryStore {
     // Every caller of the plain setter is a collapse: an arrow key, a plain click, a
     // right-click outside the selection. Keeping that rule here rather than at each call
     // site is what stops a new caller silently leaving a stale multi-selection behind.
-    this.selection = id === null ? new Set() : new Set([id]);
+    this.pick(id === null ? new Set() : new Set([id]));
+    // A band live under it counted photos the selection no longer holds.
+    this.bandUnresolved = 0;
     this.anchor = offset;
   }
   /** Selects `offset` knowing it holds photo `id`, for callers that know the id without the
@@ -135,9 +171,10 @@ export class LibraryStore {
     // Closing the viewer on the photo it was opened with keeps the selection; navigating
     // away inside the viewer and closing there collapses to the photo on screen.
     const collapse = id !== this.selectedId;
+    this.picks++;
     this.selectedOffset = offset;
     this.selectedId = id;
-    if (collapse) this.selection = new Set([id]);
+    if (collapse) this.pick(new Set([id]));
     this.anchor = offset;
   }
 
@@ -165,7 +202,7 @@ export class LibraryStore {
     if (id === undefined) return;
     const next = new Set(this.selection);
     if (!next.delete(id)) next.add(id);
-    this.selection = next;
+    this.pick(next);
     this.selectedOffset = next.size === 0 ? null : offset;
     this.selectedId = next.size === 0 ? null : id;
     this.anchor = offset;
@@ -183,7 +220,7 @@ export class LibraryStore {
     const end = Math.min(this.info.len - 1, Math.max(from, offset));
     const ids = await this.fetchIds(start, end);
     if (!ids) return;
-    this.selection = ids;
+    this.pick(ids);
     this.selectedOffset = offset;
     this.selectedId = this.pages.get(offset)?.id ?? null;
     // The anchor stays put, so dragging the far end back and forth re-ranges from the
@@ -207,7 +244,7 @@ export class LibraryStore {
     const [start, end] = range;
     const ids = await this.fetchIds(start, end);
     if (!ids) return;
-    this.selection = ids;
+    this.pick(ids);
     if (this.selectedOffset === null) {
       this.selectedOffset = start;
       this.selectedId = this.pages.get(start)?.id ?? null;
@@ -245,7 +282,7 @@ export class LibraryStore {
     const folder = await api.gridFolderIdsAt(at);
     if (!folder || folder.version !== version || this.info.version !== version) return;
     if (call !== this.extendCall) return;
-    this.selection = new Set(folder.ids);
+    this.pick(new Set(folder.ids));
     if (this.selectedOffset === null) {
       this.selectedOffset = at;
       this.selectedId = this.pages.get(at)?.id ?? null;
@@ -299,6 +336,7 @@ export class LibraryStore {
   beginBand(additive: boolean): void {
     this.bandPrevious = new Set(this.selection);
     this.bandBase = additive ? new Set(this.selection) : new Set();
+    this.bandUnresolved = 0;
   }
 
   /** Previews the band, resolving offsets through the loaded pages: synchronous, so the
@@ -307,13 +345,16 @@ export class LibraryStore {
    *  `toggleSelected` already follows - and `endBand` is what puts it right. */
   bandTo(ranges: [number, number][]): void {
     const next = new Set(this.bandBase);
+    let unresolved = 0;
     for (const [start, end] of ranges) {
       for (let at = start; at <= end; at++) {
         const id = this.pages.get(at)?.id;
         if (id !== undefined) next.add(id);
+        else unresolved++;
       }
     }
-    this.selection = next;
+    this.pick(next);
+    this.bandUnresolved = unresolved;
   }
 
   /** Ends a band: the same ranges resolved through the backend, which is the authority.
@@ -330,7 +371,8 @@ export class LibraryStore {
     // what it started with. Answering it like an overtaken fetch would put the selection
     // back that the preview had visibly just taken away.
     if (ranges.length === 0) {
-      this.selection = new Set(base);
+      this.pick(new Set(base));
+      this.bandUnresolved = 0;
       if (base.size === 0) {
         this.selectedOffset = null;
         this.selectedId = null;
@@ -339,13 +381,24 @@ export class LibraryStore {
       return;
     }
 
-    const ids = await this.fetchIdsOf(ranges);
+    // `bandUnresolved` is zeroed only beside each write of the selection, never before this
+    // await: zeroed early, "N selected" dropped to the preview's loaded photos for a round
+    // trip and then jumped back. A fetch that fails writes nothing and zeroes it all the
+    // same: the band is over, and the count would otherwise stay high for good.
+    let ids: Set<number> | null;
+    try {
+      ids = await this.fetchIdsOf(ranges);
+    } catch (e) {
+      this.bandUnresolved = 0;
+      throw e;
+    }
     if (!ids) {
       // Overtaken, or the grid was rebuilt under the drag. The preview was drawn from
       // offsets that mean something else now, so the band is abandoned and the selection
       // goes back to what it was. The lead is left alone: it was never moved by the drag,
       // and a rebuild has already re-found it by id.
-      this.selection = previous;
+      this.pick(previous);
+      this.bandUnresolved = 0;
       return;
     }
     // The ranges are in grid order and fetched in order, so the first id is the photo at
@@ -354,7 +407,8 @@ export class LibraryStore {
     // with no id is clamped by the next rebuild instead of re-found.
     const firstId: number | undefined = ids.values().next().value;
     for (const id of base) ids.add(id);
-    this.selection = ids;
+    this.pick(ids);
+    this.bandUnresolved = 0;
     const first = ranges[0][0];
     this.selectedOffset = first;
     this.selectedId = firstId ?? this.pages.get(first)?.id ?? null;
@@ -364,13 +418,15 @@ export class LibraryStore {
   /** Abandons a band (Escape mid-drag): the selection goes back to what it was. The lead is
    *  left alone for the reason `bandPrevious` gives - the drag never moved it. */
   cancelBand(): void {
-    this.selection = new Set(this.bandPrevious);
+    this.pick(new Set(this.bandPrevious));
     this.bandBase = new Set();
     this.bandPrevious = new Set();
+    this.bandUnresolved = 0;
   }
 
   clearSelection(): void {
-    this.selection = new Set();
+    this.pick(new Set());
+    this.bandUnresolved = 0;
     this.selectedOffset = null;
     this.selectedId = null;
     this.anchor = null;
@@ -394,7 +450,7 @@ export class LibraryStore {
   }
 
   get selectionCount(): number {
-    return this.selection.size;
+    return this.selection.size + this.bandUnresolved;
   }
 
   get selectedItemIds(): number[] {
@@ -508,7 +564,8 @@ export class LibraryStore {
    *  version first and everything else after it. An answer at `version` or later was
    *  therefore read after that publish, and has seen everything the announcement is about.
    *  A view switch's own awaited refresh usually lands before its event arrives, and this is
-   *  what stops the event fetching the same grid a second time.
+   *  what stops the event fetching the same grid a second time; when the event wins the race
+   *  instead, `refreshAfter` is what stops the switch's refresh doing so.
    *
    *  Not the rule for `refresh()` itself: a same-version answer there is still applied (see
    *  `loadGrid`), because the view, the argument and the counts in `GridInfo` are read live
@@ -516,6 +573,24 @@ export class LibraryStore {
    *  rollback's rebuild both fail restores the old view without bumping the version. */
   private refreshTo(version: number): Promise<void> {
     return this.refreshFlight(() => version <= this.info.version);
+  }
+
+  /** The refresh after a view command: `refreshTo` the version the command answered with,
+   *  or a plain `refresh()` when it answered with none.
+   *
+   *  The command's rebuild announces itself with `library-changed`, and that event can reach
+   *  the webview before the command's reply does. Its listener has then fetched the grid
+   *  already, and a plain `refresh()` here fetched the same grid a second time - two
+   *  whole-`GridInfo` round trips per click. The version is the one the backend published
+   *  the new view at (or a later one showing it), so an answer at that version or later has
+   *  seen the switch and is the refresh this call asks for.
+   *
+   *  The same-version caveat on `refreshTo` does not reach here: the version is only ever
+   *  one the command's own view was published at, never a rollback's, and a refused command
+   *  does not get this far. The backend answers null when its rebuild was superseded before
+   *  it could land, and then this fetches whatever is there, as it always did. */
+  private refreshAfter(version: number | null | undefined): Promise<void> {
+    return version == null ? this.refresh() : this.refreshTo(version);
   }
 
   private async loadGrid(): Promise<void> {
@@ -588,10 +663,23 @@ export class LibraryStore {
     // Captured before the lead moves, so it can be compared against where the lead
     // *was* rather than where it is about to go.
     const before = this.selectedOffset;
+    const anchorWrites = this.anchorWrites;
     const version = this.info.version;
     const at = await api.gridOffsetOfItem(id);
     // A newer refresh has landed while this was in flight; its own rebind is the current one.
     if (version !== this.info.version) return;
+    // The lead moved on while this was in flight - a click, or `setHidden` landing on the
+    // photo after the one this asked about - at the same version. The answer is about a
+    // photo that is no longer the lead: acted on, a "gone" cleared the new lead's id, and
+    // the next rebuild clamped its offset instead of re-finding it.
+    if (this.selectedId !== id) {
+      // But it is still about the anchor, when that agreed with the old lead and nothing
+      // has written it since: a Shift+click moves the lead and leaves the anchor, which
+      // would otherwise keep its pre-rebuild offset and range the next Shift+click from
+      // the wrong photo. Every other move of the lead writes the anchor itself.
+      if (this.anchorWrites === anchorWrites && this.anchor === before) this.anchor = at;
+      return;
+    }
     if (at === null) {
       // The lead's id no longer resolves to an offset in this view, so there is nothing to
       // re-find the anchor by either - the same reasoning as the id === null branch above,
@@ -691,8 +779,9 @@ export class LibraryStore {
     this.requestedSort = sort;
     return this.chain(async () => {
       try {
+        let shown: number | null;
         try {
-          await api.setSort(sort);
+          shown = await api.setSort(sort);
         } catch (e) {
           this.reportError(e);
           return;
@@ -701,7 +790,7 @@ export class LibraryStore {
           // As a view switch does: the Shift+click anchor is an offset, and in the new
           // order it names a different photo.
           this.clearSelection();
-          await this.refresh();
+          await this.refreshAfter(shown);
         } catch (e) {
           this.reportError(e);
         }
@@ -770,12 +859,13 @@ export class LibraryStore {
    *  would wipe it while its send was still queued, and the grid would then show a search
    *  the box no longer held. Only a refused command takes the hooks back: once it has
    *  succeeded the backend is in the new view, whatever the refresh does. */
-  private switchView(command: () => Promise<void>): Promise<void> {
+  private switchView(command: () => Promise<number | null>): Promise<void> {
     const undo = [...this.viewSwitchHooks].map((hook) => hook());
     const switchId = ++this.switchesIssued;
     return this.chain(async () => {
+      let shown: number | null;
       try {
-        await command();
+        shown = await command();
       } catch (e) {
         // Only while no later switch has been issued: a click on Starred then Recent emptied
         // the box twice, and Starred's refusal putting the search back would leave it over
@@ -786,7 +876,7 @@ export class LibraryStore {
       }
       try {
         this.clearSelection();
-        await this.refresh();
+        await this.refreshAfter(shown);
       } catch (e) {
         this.reportError(e);
       }
@@ -872,34 +962,163 @@ export class LibraryStore {
    *  from where the user was rather than from the top of the library. Nothing acted on stays
    *  selected: `rebindSelection` re-finds only the lead, and a selection still holding them
    *  would offer the next action - "Hide 12 photos" - to photos the user can no longer see.
-   *  A failed write keeps the selection, so the user can try again.
+   *  A failed write keeps the selection, so the user can try again, and so does a selection
+   *  the user changed while the write was out: that click is the newer choice.
    *
-   *  The photo to move to is chosen *before* the write, from the index the user was looking
-   *  at: the backend announces its rebuild before the command returns, so afterwards the
-   *  loaded pages may already be the new index, where "the next offset" is one photo further
-   *  on. Its new offset is then asked for by id, for the same reason. */
+   *  The write goes first. Finding the photo after the lead used to walk the old index
+   *  before it, a thousand rows per round trip - after Ctrl+A over 300,000 photos some 300
+   *  sequential fetches, seconds of H doing nothing, and a click made meanwhile was then
+   *  overwritten. What is chosen beforehand now comes from the loaded pages and at most
+   *  one photo more (`landingOf`), and what they cannot answer is settled against the
+   *  rebuilt index, where the hidden photos are gone and there is no run of them left to
+   *  cross. */
   async setHidden(itemIds: number[], hidden: boolean): Promise<void> {
     const lead = this.selectedOffset;
-    const leaving = new Set(itemIds);
-    // Walks outward only through loaded pages: past one that is not loaded there is no id to
-    // select, and the selection is simply cleared.
-    const nearest = (from: number, step: 1 | -1): GridEntry | undefined => {
-      for (let at = from + step; at >= 0 && at < this.info.len; at += step) {
-        const entry = this.pages.get(at);
-        if (!entry) return undefined;
-        if (!leaving.has(entry.id)) return entry;
-      }
-      return undefined;
-    };
-    const next = lead === null ? undefined : (nearest(lead, 1) ?? nearest(lead, -1));
+    // Before `landingOf`, which can await: a click during it is as new as one during the write.
+    const picks = this.picks;
+    const landing = lead === null ? null : await this.landingOf(lead, new Set(itemIds));
     await api.setItemsHidden(itemIds, hidden);
+    const target = landing === null || lead === null ? null : await this.landingIn(landing, lead);
+    // A band begun meanwhile captured the selection as it stood, hidden photos and all: its
+    // next frame builds on `bandBase`, and Escape puts `bandPrevious` back. Outside a band
+    // both are empty.
+    for (const id of itemIds) {
+      this.bandBase.delete(id);
+      this.bandPrevious.delete(id);
+    }
+    // Checked once every await is behind it: a click during the write or the lookups. That
+    // click is kept, lead and all, but not the photos just hidden - a Ctrl+click adds to a
+    // selection still holding them. Written past `pick`: this is not the user's choice, and
+    // a later await must still see the click as the last one.
+    if (this.picks !== picks) {
+      const rest = new Set(this.selection);
+      for (const id of itemIds) rest.delete(id);
+      if (rest.size !== this.selection.size) this.selection = rest;
+      return;
+    }
     this.clearSelection();
-    if (next && lead !== null) {
-      this.selectItem(lead, next.id);
-      await this.rebindSelection();
+    // Every landing's offset was read from the rebuilt index; one rebuilt again since is
+    // `rebindSelection`'s, from the id.
+    if (target) this.selectItem(target.offset, target.id);
+  }
+
+  /** Where `setHidden` should land, read from the loaded pages of the index the user was
+   *  looking at, before the write: the backend announces its rebuild before the command
+   *  returns, so afterwards the pages may already be the new index, where "the next offset"
+   *  is one photo further on. At most one photo is fetched, so nothing here is slow.
+   *
+   *  - a staying photo after the lead: that photo, by id (`rebindSelection` finds it);
+   *  - every photo after the lead leaving: the staying photo before it, by id;
+   *  - the pages giving out after the lead - a band autoscrolled over thousands of photos
+   *    has had its middle pages let go - with a staying photo before it: the photo that
+   *    follows that one in the rebuilt index. Every photo between the two is leaving, so
+   *    that is the first photo after the lead to stay, however far on it was;
+   *  - every photo before the lead leaving: the first photo of the rebuilt index, by the
+   *    same argument;
+   *  - neither side settled - the lead inside a run of leaving photos wider than the pages
+   *    kept around it, as after Ctrl+A in the middle of a big folder: the photo before the
+   *    selection's start, fetched if its page is gone, and then as above, the photo that
+   *    follows it in the rebuilt index. The start is `min(anchor, lead)`, which is exact
+   *    for everything that selects a run - Ctrl+A, Shift+click, a band - and bounded by
+   *    where the pages gave out, before which every loaded photo is known to be leaving;
+   *  - that photo leaving too (a selection added to, running on before its anchor), or the
+   *    index moving under the fetch: the photo at the lead's offset in the rebuilt index.
+   *    Exact whenever nothing before the lead was acted on, near it otherwise. The photo
+   *    at the lead's offset was never the answer for a run around the lead: with the run's
+   *    first `lead - start` photos gone, it is that far into whatever follows the run. */
+  private async landingOf(lead: number, leaving: Set<number>): Promise<Landing | null> {
+    const len = this.info.len;
+    let at = lead + 1;
+    for (; at < len; at++) {
+      const entry = this.pages.get(at);
+      if (!entry) break;
+      if (!leaving.has(entry.id)) return { id: entry.id };
+    }
+    const toEnd = at >= len;
+    for (at = lead - 1; at >= 0; at--) {
+      const entry = this.pages.get(at);
+      if (!entry) break;
+      if (!leaving.has(entry.id)) return toEnd ? { id: entry.id } : { after: entry.id };
+    }
+    if (at < 0) return toEnd ? null : { after: null };
+    const start = Math.min(this.anchor ?? lead, lead, at + 1);
+    if (start <= 0) return toEnd ? null : { after: null };
+    const before = await this.photoAt(start - 1).catch(() => undefined);
+    // With nothing after the lead staying either, the photo after it in the rebuilt index
+    // is none, and `findLanding` lands on it instead: the one before, as above.
+    if (before && !leaving.has(before.id)) return { after: before.id };
+    return { at: lead };
+  }
+
+  /** The photo at `offset` in the index the store holds: from its page, or fetched. None
+   *  when the fetch answers from another index, where `offset` means another photo. */
+  private async photoAt(offset: number): Promise<GridEntry | undefined> {
+    const known = this.pages.get(offset);
+    if (known) return known;
+    const version = this.info.version;
+    const rows = await api.gridRows(offset, 1);
+    return rows.version === version && this.info.version === version ? rows.rows[0] : undefined;
+  }
+
+  /** `landing` in the rebuilt index, as an offset and the photo there; `null` when there is
+   *  none, the index moved again between the asks, or an ask failed. Never throws: the
+   *  photos are hidden by now, and an error from here reached the user as a hide that
+   *  failed - with the hidden photos still selected, since `clearSelection` never ran. */
+  private async landingIn(landing: Landing, lead: number): Promise<{ offset: number; id: number } | null> {
+    try {
+      return await this.findLanding(landing, lead);
+    } catch {
+      return null;
     }
   }
 
+  private async findLanding(landing: Landing, lead: number): Promise<{ offset: number; id: number } | null> {
+    if ('id' in landing) {
+      const at = await api.gridOffsetOfItem(landing.id);
+      if (at !== null) return { offset: at, id: landing.id };
+      // The photo left the view with the hidden ones - in Duplicates, hiding one of a pair
+      // takes its partner out too, and the partner was the photo after it. Landing on it
+      // selected nothing, and the next H had nothing to act on. The photo now at the lead's
+      // offset is the one that followed both.
+      landing = { at: lead };
+    }
+    if ('after' in landing && landing.after !== null) {
+      const at = await api.gridOffsetOfItem(landing.after);
+      if (at !== null) {
+        const rows = await api.gridRows(at, 2);
+        // A rebuild between the two asks: `at` no longer holds the photo it was asked for.
+        if (rows.rows[0]?.id !== landing.after) return null;
+        const next = rows.rows[1];
+        return next ? { offset: at + 1, id: next.id } : { offset: at, id: landing.after };
+      }
+      // The photo before the selection left with it - in Duplicates, the partner of one
+      // being hidden. Landing nowhere stopped the run; the photo now at the lead's offset
+      // is near where the hidden ones were, as for the `id` landing above.
+      landing = { at: lead };
+    }
+    if ('at' in landing && landing.at > 0) {
+      // With the photo before it too: hiding the last photos leaves the lead's offset past
+      // the rebuilt end, and the photo before is the one to land on, as with every landing.
+      const [before, at] = (await api.gridRows(landing.at - 1, 2)).rows;
+      if (at) return { offset: landing.at, id: at.id };
+      if (before) return { offset: landing.at - 1, id: before.id };
+      // Two or more past the end: in Duplicates, the lead on the last pair's second photo
+      // takes the landing before it out too. The last photo shown is the one before both.
+      return this.lastPhoto();
+    }
+    const entry = (await api.gridRows(0, 1)).rows[0];
+    return entry ? { offset: 0, id: entry.id } : null;
+  }
+
+  /** The rebuilt index's last photo, from its own length; none when the index is empty or
+   *  moved between the two asks. */
+  private async lastPhoto(): Promise<{ offset: number; id: number } | null> {
+    const info = await api.gridInfo();
+    if (info.len === 0) return null;
+    const rows = await api.gridRows(info.len - 1, 1);
+    const last = rows.version === info.version ? rows.rows[0] : undefined;
+    return last ? { offset: info.len - 1, id: last.id } : null;
+  }
 
   /** Tag rule changes. The backend's rebuild announces a library change, which refetches
    *  the collections too; refetching here as well means the caller's list is current when
@@ -987,8 +1206,9 @@ export class LibraryStore {
   private queuedSearch: { query: string; seq: number; done: Promise<string> } | null = null;
 
   private async applySearchQuery(query: string): Promise<string> {
+    let shown: number | null;
     try {
-      await api.setSearchQuery(query);
+      shown = await api.setSearchQuery(query);
     } catch (e) {
       this.reportError(e);
       // Nothing has refreshed since the last command on this chain landed, so this is the
@@ -997,7 +1217,7 @@ export class LibraryStore {
     }
     try {
       this.clearSelection();
-      await this.refresh();
+      await this.refreshAfter(shown);
     } catch (e) {
       this.reportError(e);
     }

@@ -119,14 +119,23 @@ notice, no photo count, and no last-folder restore, whose `len === 0` guard wait
 `check_grid_query`, which prepares the query without running it. A first build that fails
 anyway is retried (`FIRST_GRID_BACKOFF`) and then published *empty* (`build_first_grid`):
 left at `NOT_BUILT` the window drew nothing, and an unchanged library rebuilt only on a view
-switch.
+switch. The empty grid carries the error (`GridInfo::build_error`), so the UI says the
+library could not be read instead of "No photos yet"; it is never published over a grid something
+else built meanwhile, and the next successful publish clears it.
 
 `LibraryChanged::data_changed` tells the UI whether to refetch the sidebar's collections
 (albums, people, tags - the tag counts alone are ~240ms at 300k photos). Every `refresh_grid`
 marks the engine-wide `data_dirty` before it snapshots; the view setters' rebuilds
-(`rebuild_or_restore`) do not; whichever rebuild *publishes* next swaps it back and sends it.
-Engine-wide rather than per rebuild, because a data rebuild discarded by a view switch would
-otherwise take its flag with it. A new writer calls `refresh_grid`, never the view-only path.
+(`rebuild_or_restore`) do not, and neither does `refresh_grid_derived`, the rebuild after a
+stored poster frame and after the hashing passes in `hash_after_scan` - a thumbnail state, a
+content hash or a look-alike group is read by the grid and `GridInfo` (the Duplicates count),
+never by an album, person, tag, tag rule or folder count, and frames arrive up to once a
+second. Whichever rebuild *publishes* next swaps the flag back and sends it - except a failed
+first build's empty stand-in, which announces a data change without taking the flag, so the
+build that finally succeeds still carries it. Engine-wide
+rather than per rebuild, because a data rebuild discarded by a view switch would otherwise
+take its flag with it. A new writer calls `refresh_grid`; `refresh_grid_derived` only for a
+write that no collection or Settings query reads, checked against those queries.
 
 `ScanReport::touched_rows` gates the end-of-scan refresh on whether a scan actually moved
 rows. A change that alters data by some *other* means must add its own counter to `ScanReport`
@@ -251,7 +260,12 @@ registers for inotify's open and close events, so reading a file's EXIF, listing
 directory or walkdir entering one all arrive as `Access` events on that directory. A scan
 does all three to every directory it walks; treated as changes they scheduled the next
 subtree scan of the same directories two seconds after every scan, forever. Anything that
-makes the watcher react to more event kinds must keep a scan's own reads out.
+makes the watcher react to more event kinds must keep a scan's own reads out. The debouncer
+runs with `NoCache` on every platform, not its `RecommendedCache`: on Windows and macOS that
+is a file-id map which walks every root and opens (Windows) or stats (macOS) every file under
+the debouncer's lock, again on every rescan flag - minutes on a network share - and it only
+stitches a rename's two halves together, which photon never needs, since each half is reduced
+to a directory to rescan either way.
 
 `skip_mark_purge` is set by a walkdir error carrying **no** path — a mid-iteration `read_dir`
 failure (walkdir `lib.rs:1026`), not something the filesystem can be made to do on demand. An
@@ -352,7 +366,11 @@ to `EXACT_RECALL_DISTANCE` (7) - Conservative. Treating the hash as the verdict 
 false pairs back. Both passes run inside
 `Engine::hash_after_scan` (once `hash_duplicates`) at the end of every `run_scan` but one that
 finds its root still offline (the 30-second poll of an unplugged drive, or the startup scan of
-one), which read and changed nothing - not inside the scanner, so neither of `walk_tree`'s callers can be forgotten, and because a duplicate or a
+one), which read and changed nothing; they also run, through
+`request_similar_pass`, whenever the thumbnail queue has stayed quiet for `THUMB_HASH_SETTLE`
+after making new thumbnails ready (`start_thumb_hashing`, `ThumbQueue::wait_drained`), since a
+scan's own pass runs while the queue it fed is still rendering and its new photos otherwise
+waited for the next scan. Not inside the scanner, so neither of `walk_tree`'s callers can be forgotten, and because a duplicate or a
 look-alike is a fact about the whole library, not about one changed file. The perceptual hash
 is taken from the photo's **already-cached grid thumbnail**, not from the source file: the
 thumbnail renderer is skipped whenever a thumbnail is already cached, so a hash computed inside

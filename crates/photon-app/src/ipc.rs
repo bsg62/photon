@@ -159,32 +159,35 @@ pub fn set_grid_tile(
 }
 
 #[tauri::command(async)]
-pub fn set_grid_view(engine: Eng<'_>, view: photon_core::grid::GridView) -> Result<(), AppError> {
+pub fn set_grid_view(
+    engine: Eng<'_>,
+    view: photon_core::grid::GridView,
+) -> Result<Option<u64>, AppError> {
     commands::set_grid_view(&engine, view)
 }
 
 #[tauri::command(async)]
-pub fn set_sort(engine: Eng<'_>, sort: photon_core::sort::Sort) -> Result<(), AppError> {
+pub fn set_sort(engine: Eng<'_>, sort: photon_core::sort::Sort) -> Result<Option<u64>, AppError> {
     commands::set_sort(&engine, sort)
 }
 
 #[tauri::command(async)]
-pub fn set_search_query(engine: Eng<'_>, query: String) -> Result<(), AppError> {
+pub fn set_search_query(engine: Eng<'_>, query: String) -> Result<Option<u64>, AppError> {
     commands::set_search_query(&engine, &query)
 }
 
 #[tauri::command(async)]
-pub fn set_person_view(engine: Eng<'_>, contact: String) -> Result<(), AppError> {
+pub fn set_person_view(engine: Eng<'_>, contact: String) -> Result<Option<u64>, AppError> {
     commands::set_person_view(&engine, &contact)
 }
 
 #[tauri::command(async)]
-pub fn set_album_view(engine: Eng<'_>, album_id: i64) -> Result<(), AppError> {
+pub fn set_album_view(engine: Eng<'_>, album_id: i64) -> Result<Option<u64>, AppError> {
     commands::set_album_view(&engine, album_id)
 }
 
 #[tauri::command(async)]
-pub fn set_tag_view(engine: Eng<'_>, tag: String) -> Result<(), AppError> {
+pub fn set_tag_view(engine: Eng<'_>, tag: String) -> Result<Option<u64>, AppError> {
     commands::set_tag_view(&engine, &tag)
 }
 
@@ -194,7 +197,7 @@ pub fn copy_count(engine: Eng<'_>, id: i64) -> Result<usize, AppError> {
 }
 
 #[tauri::command(async)]
-pub fn set_copies_view(engine: Eng<'_>, id: i64) -> Result<(), AppError> {
+pub fn set_copies_view(engine: Eng<'_>, id: i64) -> Result<Option<u64>, AppError> {
     commands::set_copies_view(&engine, id)
 }
 

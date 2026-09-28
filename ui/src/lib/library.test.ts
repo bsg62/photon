@@ -98,6 +98,7 @@ describe('LibraryStore', () => {
       album: null,
       tag: null,
       copiesOf: null,
+      buildError: null,
     });
     vi.mocked(api.listFolders).mockResolvedValue({ watched: [], folders: [] });
     vi.mocked(api.listAlbums).mockResolvedValue([]);
@@ -240,6 +241,7 @@ describe('LibraryStore', () => {
       album: null,
       tag: null,
       copiesOf: null,
+      buildError: null,
     });
     vi.mocked(api.gridInfo).mockResolvedValue(info(1));
     const store = new LibraryStore();
@@ -449,6 +451,7 @@ describe('LibraryStore', () => {
       album: null,
       tag: null,
       copiesOf: null,
+      buildError: null,
     });
     vi.mocked(api.gridRows).mockResolvedValue({ version: 1, rows: [entry(10), entry(11)] });
     const store = new LibraryStore();
@@ -473,6 +476,7 @@ describe('LibraryStore', () => {
       album: null,
       tag: null,
       copiesOf: null,
+      buildError: null,
     });
     vi.mocked(api.gridOffsetOfItem).mockResolvedValue(2);
     await store.refresh();
@@ -511,6 +515,7 @@ describe('LibraryStore', () => {
       album: null,
       tag: null,
       copiesOf: null,
+      buildError: null,
     });
     vi.mocked(api.gridInfo).mockResolvedValue(info(1, 2));
     vi.mocked(api.gridRows).mockResolvedValue({ version: 1, rows: [entry(10), entry(11)] });
@@ -568,6 +573,7 @@ describe('LibraryStore', () => {
       album: null,
       tag: null,
       copiesOf: null,
+      buildError: null,
     });
     vi.mocked(api.gridInfo).mockResolvedValue(info(1, 1));
     vi.mocked(api.gridRows).mockResolvedValue({ version: 1, rows: [entry(10)] });
@@ -621,6 +627,7 @@ describe('LibraryStore', () => {
       album: null,
       tag: null,
       copiesOf: null,
+      buildError: null,
     });
     const store = new LibraryStore();
     await store.init();
@@ -643,6 +650,7 @@ describe('LibraryStore', () => {
       album: null,
       tag: null,
       copiesOf: null,
+      buildError: null,
     });
     vi.mocked(api.gridOffsetOfItem).mockResolvedValue(4);
     await store.refresh();
@@ -669,6 +677,7 @@ describe('LibraryStore', () => {
       album: null,
       tag: null,
       copiesOf: null,
+      buildError: null,
     });
     const store = new LibraryStore();
     await store.init();
@@ -690,6 +699,7 @@ describe('LibraryStore', () => {
       album: null,
       tag: null,
       copiesOf: null,
+      buildError: null,
     });
     await store.refresh();
     expect(store.selected).toBe(1);
@@ -711,6 +721,7 @@ describe('LibraryStore', () => {
       album: null,
       tag: null,
       copiesOf: null,
+      buildError: null,
     });
     await store.refresh();
     expect(store.selected).toBeNull();
@@ -789,6 +800,7 @@ describe('LibraryStore', () => {
       album: null;
       tag: null;
       copiesOf: null;
+      buildError: null;
     }>();
     vi.mocked(api.gridInfo).mockReturnValueOnce(gridInfoGate.promise);
 
@@ -803,7 +815,7 @@ describe('LibraryStore', () => {
     const initPromise = store.init();
     store.dispose();
     listenGate.resolve();
-    gridInfoGate.resolve({ version: 1, len: 0, sections: [], folders: [], starredCount: 0, duplicateCount: 0, hiddenCount: 0, videoCount: 0, view: 'all', sort: { key: 'date', reverse: false }, searchQuery: '', person: null, album: null, tag: null, copiesOf: null });
+    gridInfoGate.resolve({ version: 1, len: 0, sections: [], folders: [], starredCount: 0, duplicateCount: 0, hiddenCount: 0, videoCount: 0, view: 'all', sort: { key: 'date', reverse: false }, searchQuery: '', person: null, album: null, tag: null, copiesOf: null, buildError: null });
     await initPromise;
 
     expect(unlistenCounts.libraryChanged).toBe(1);
@@ -816,7 +828,7 @@ describe('LibraryStore', () => {
     await store.init();
 
     const refreshGate = deferred<GridInfo>();
-    vi.mocked(api.setGridView).mockResolvedValue(undefined);
+    vi.mocked(api.setGridView).mockResolvedValue(null);
     vi.mocked(api.gridInfo).mockReturnValueOnce(refreshGate.promise);
 
     let resolved = false;
@@ -832,7 +844,7 @@ describe('LibraryStore', () => {
     expect(api.setGridView).toHaveBeenCalledWith('starred');
     expect(resolved).toBe(false);
 
-    refreshGate.resolve({ version: 2, len: 0, sections: [], folders: [], starredCount: 0, duplicateCount: 0, hiddenCount: 0, videoCount: 0, view: 'starred', sort: { key: 'date', reverse: false }, searchQuery: '', person: null, album: null, tag: null, copiesOf: null });
+    refreshGate.resolve({ version: 2, len: 0, sections: [], folders: [], starredCount: 0, duplicateCount: 0, hiddenCount: 0, videoCount: 0, view: 'starred', sort: { key: 'date', reverse: false }, searchQuery: '', person: null, album: null, tag: null, copiesOf: null, buildError: null });
     await setViewPromise;
 
     expect(resolved).toBe(true);
@@ -849,13 +861,111 @@ describe('LibraryStore', () => {
     expect(store.toasts.some((t) => t.message === 'set-view-fail')).toBe(true);
   });
 
+  // The backend's rebuild announces itself with `library-changed`, and that event can reach
+  // the webview before the command's own reply. The listener then fetches the grid, and the
+  // command's refresh used to fetch the very same grid again. The command answers with the
+  // version it published, and the refresh after it waits for that version instead.
+  describe('when the rebuild is announced before the command replies', () => {
+    const at = (version: number, over: Partial<GridInfo>): GridInfo => ({
+      version,
+      len: 0,
+      sections: [],
+      folders: [],
+      starredCount: 0,
+      duplicateCount: 0,
+      hiddenCount: 0,
+      videoCount: 0,
+      view: 'all',
+      sort: { key: 'date', reverse: false },
+      searchQuery: '',
+      person: null,
+      album: null,
+      tag: null,
+      copiesOf: null,
+      buildError: null,
+      ...over,
+    });
+    const announce = (version: number) => handlers.libraryChanged({ version, len: 0, dataChanged: false });
+
+    it('a view switch fetches the grid once, while the listener’s fetch is still in flight', async () => {
+      const store = new LibraryStore();
+      await store.init();
+      const fetches = vi.mocked(api.gridInfo).mock.calls.length;
+      vi.mocked(api.gridInfo).mockResolvedValue(at(2, { view: 'starred' }));
+      vi.mocked(api.setGridView).mockImplementationOnce(async () => {
+        announce(2);
+        return 2;
+      });
+
+      await store.setView('starred');
+
+      expect(vi.mocked(api.gridInfo).mock.calls.length - fetches).toBe(1);
+      expect(store.info.view).toBe('starred');
+    });
+
+    it('a sort fetches the grid once, when the listener’s fetch has already landed', async () => {
+      const store = new LibraryStore();
+      await store.init();
+      const fetches = vi.mocked(api.gridInfo).mock.calls.length;
+      const byName = { key: 'name' as const, reverse: false };
+      vi.mocked(api.gridInfo).mockResolvedValue(at(2, { sort: byName }));
+      vi.mocked(api.setSort).mockImplementationOnce(async () => {
+        announce(2);
+        await flush();
+        return 2;
+      });
+
+      await store.setSort(byName);
+
+      expect(vi.mocked(api.gridInfo).mock.calls.length - fetches).toBe(1);
+      expect(store.info.sort).toEqual(byName);
+    });
+
+    it('a search fetches the grid once', async () => {
+      const store = new LibraryStore();
+      await store.init();
+      const fetches = vi.mocked(api.gridInfo).mock.calls.length;
+      vi.mocked(api.gridInfo).mockResolvedValue(at(2, { view: 'search', searchQuery: 'lake' }));
+      vi.mocked(api.setSearchQuery).mockImplementationOnce(async () => {
+        announce(2);
+        return 2;
+      });
+
+      await expect(store.setSearchQuery('lake')).resolves.toBe('lake');
+
+      expect(vi.mocked(api.gridInfo).mock.calls.length - fetches).toBe(1);
+      expect(store.info.searchQuery).toBe('lake');
+    });
+
+    // No version is the backend saying it cannot vouch for one - its rebuild was superseded
+    // before it landed - so the grid on hand, whatever its version, may be the old view's.
+    it('a command that answers with no version still gets a fetch of its own', async () => {
+      const store = new LibraryStore();
+      await store.init();
+      vi.mocked(api.gridInfo).mockResolvedValue(at(2, { view: 'all' }));
+      vi.mocked(api.setGridView).mockImplementationOnce(async () => {
+        announce(2);
+        await flush();
+        return null;
+      });
+      const fetches = vi.mocked(api.gridInfo).mock.calls.length;
+      vi.mocked(api.gridInfo).mockResolvedValueOnce(at(2, { view: 'all' }));
+      vi.mocked(api.gridInfo).mockResolvedValueOnce(at(2, { view: 'starred' }));
+
+      await store.setView('starred');
+
+      expect(vi.mocked(api.gridInfo).mock.calls.length - fetches).toBe(2);
+      expect(store.info.view).toBe('starred');
+    });
+  });
+
   it('setSearchQuery("") issues the command and refreshes, restoring the All view', async () => {
     // Spec §7: "clearing the box restores the All view." The engine-level behaviour behind
     // this is already covered on the Rust side; this pins the store's half of the path.
     const store = new LibraryStore();
     await store.init();
 
-    vi.mocked(api.setSearchQuery).mockResolvedValue(undefined);
+    vi.mocked(api.setSearchQuery).mockResolvedValue(null);
     vi.mocked(api.gridInfo).mockResolvedValueOnce({
       version: 2,
       len: 2,
@@ -872,6 +982,7 @@ describe('LibraryStore', () => {
       album: null,
       tag: null,
       copiesOf: null,
+      buildError: null,
     });
 
     await store.setSearchQuery('');
@@ -896,11 +1007,13 @@ describe('LibraryStore', () => {
       order.push(`start:${q}`);
       await first.promise;
       order.push(`end:${q}`);
+      return null;
     });
     vi.mocked(api.setSearchQuery).mockImplementationOnce(async (q: string) => {
       order.push(`start:${q}`);
       await second.promise;
       order.push(`end:${q}`);
+      return null;
     });
     vi.mocked(api.gridInfo).mockResolvedValue({
       version: 2,
@@ -918,6 +1031,7 @@ describe('LibraryStore', () => {
       album: null,
       tag: null,
       copiesOf: null,
+      buildError: null,
     });
 
     const p1 = store.setSearchQuery('b');
@@ -950,9 +1064,11 @@ describe('LibraryStore', () => {
     vi.mocked(api.setSearchQuery).mockImplementation(async (q: string) => {
       order.push(`search:${q}`);
       if (q === 'a') await running.promise;
+      return null;
     });
     vi.mocked(api.setGridView).mockImplementation(async (view: GridView) => {
       order.push(`view:${view}`);
+      return null;
     });
 
     const a = store.setSearchQuery('a');
@@ -982,7 +1098,7 @@ describe('LibraryStore', () => {
     const store = new LibraryStore();
     await store.init();
     const running = deferred<void>();
-    vi.mocked(api.setSearchQuery).mockImplementationOnce(() => running.promise);
+    vi.mocked(api.setSearchQuery).mockImplementationOnce(() => running.promise.then(() => null));
     vi.mocked(api.setSearchQuery).mockRejectedValueOnce(new Error('refused'));
     const first = store.setSearchQuery('lake');
     await flush();
@@ -1007,9 +1123,11 @@ describe('LibraryStore', () => {
       order.push(`start:${q}`);
       await search.promise;
       order.push(`end:${q}`);
+      return null;
     });
     vi.mocked(api.setGridView).mockImplementationOnce(async (view: GridView) => {
       order.push(`view:${view}`);
+      return null;
     });
 
     const p1 = store.setSearchQuery('beach');
@@ -1032,8 +1150,8 @@ describe('LibraryStore', () => {
     store.selectItem(3, 42);
 
     const bySize = { key: 'size' as const, reverse: true };
-    vi.mocked(api.setSort).mockResolvedValueOnce(undefined);
-    vi.mocked(api.gridInfo).mockResolvedValueOnce({ version: 2, len: 0, sections: [], folders: [], starredCount: 0, duplicateCount: 0, hiddenCount: 0, videoCount: 0, view: 'search', sort: bySize, searchQuery: 'lake', person: null, album: null, tag: null, copiesOf: null });
+    vi.mocked(api.setSort).mockResolvedValueOnce(null);
+    vi.mocked(api.gridInfo).mockResolvedValueOnce({ version: 2, len: 0, sections: [], folders: [], starredCount: 0, duplicateCount: 0, hiddenCount: 0, videoCount: 0, view: 'search', sort: bySize, searchQuery: 'lake', person: null, album: null, tag: null, copiesOf: null, buildError: null });
     await store.setSort(bySize);
 
     expect(api.setSort).toHaveBeenCalledWith(bySize);
@@ -1051,8 +1169,10 @@ describe('LibraryStore', () => {
     await store.init();
     const first = deferred<void>();
     const second = deferred<void>();
-    vi.mocked(api.setSort).mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
-    const info = (sort: { key: 'name'; reverse: boolean }) => ({ version: 2, len: 0, sections: [], folders: [], starredCount: 0, duplicateCount: 0, hiddenCount: 0, videoCount: 0, view: 'all' as const, sort, searchQuery: '', person: null, album: null, tag: null, copiesOf: null });
+    vi.mocked(api.setSort)
+      .mockReturnValueOnce(first.promise.then(() => null))
+      .mockReturnValueOnce(second.promise.then(() => null));
+    const info = (sort: { key: 'name'; reverse: boolean }) => ({ version: 2, len: 0, sections: [], folders: [], starredCount: 0, duplicateCount: 0, hiddenCount: 0, videoCount: 0, view: 'all' as const, sort, searchQuery: '', person: null, album: null, tag: null, copiesOf: null, buildError: null });
     vi.mocked(api.gridInfo)
       .mockResolvedValueOnce(info({ key: 'name', reverse: false }))
       .mockResolvedValueOnce(info({ key: 'name', reverse: true }));
@@ -1099,7 +1219,7 @@ describe('LibraryStore', () => {
     store.onViewSwitch(hook);
 
     const command = deferred<void>();
-    vi.mocked(api.setGridView).mockReturnValueOnce(command.promise);
+    vi.mocked(api.setGridView).mockReturnValueOnce(command.promise.then(() => null));
     const switched = store.setView('starred');
     // Before the backend has answered: text typed from here on belongs after the switch.
     expect(hook).toHaveBeenCalledOnce();
@@ -1113,7 +1233,7 @@ describe('LibraryStore', () => {
 
     // A refresh failing after the command succeeded is not a refusal: the backend has
     // already moved, so the box must stay empty to match it.
-    vi.mocked(api.setGridView).mockResolvedValueOnce(undefined);
+    vi.mocked(api.setGridView).mockResolvedValueOnce(null);
     vi.mocked(api.gridInfo).mockRejectedValueOnce(new Error('refresh failed'));
     await store.setView('starred');
     expect(undo).toHaveBeenCalledOnce();
@@ -1126,8 +1246,8 @@ describe('LibraryStore', () => {
     store.onViewSwitch(() => undo);
 
     const starred = deferred<void>();
-    vi.mocked(api.setGridView).mockReturnValueOnce(starred.promise);
-    vi.mocked(api.setGridView).mockResolvedValueOnce(undefined);
+    vi.mocked(api.setGridView).mockReturnValueOnce(starred.promise.then(() => null));
+    vi.mocked(api.setGridView).mockResolvedValueOnce(null);
     const first = store.setView('starred');
     const second = store.setView('recent');
     starred.reject(new Error('refused'));
@@ -1141,8 +1261,8 @@ describe('LibraryStore', () => {
   it('answers a refused search with the query the backend rolled back to', async () => {
     const store = new LibraryStore();
     await store.init();
-    vi.mocked(api.setSearchQuery).mockResolvedValueOnce(undefined);
-    vi.mocked(api.gridInfo).mockResolvedValueOnce({ version: 2, len: 0, sections: [], folders: [], starredCount: 0, duplicateCount: 0, hiddenCount: 0, videoCount: 0, view: 'search', sort: { key: 'date', reverse: false }, searchQuery: 'lake', person: null, album: null, tag: null, copiesOf: null });
+    vi.mocked(api.setSearchQuery).mockResolvedValueOnce(null);
+    vi.mocked(api.gridInfo).mockResolvedValueOnce({ version: 2, len: 0, sections: [], folders: [], starredCount: 0, duplicateCount: 0, hiddenCount: 0, videoCount: 0, view: 'search', sort: { key: 'date', reverse: false }, searchQuery: 'lake', person: null, album: null, tag: null, copiesOf: null, buildError: null });
     await expect(store.setSearchQuery('lake')).resolves.toBe('lake');
 
     vi.mocked(api.setSearchQuery).mockRejectedValueOnce(new Error('refused'));
@@ -1153,8 +1273,8 @@ describe('LibraryStore', () => {
     const store = new LibraryStore();
     await store.init();
     const search = deferred<void>();
-    vi.mocked(api.setSearchQuery).mockReturnValueOnce(search.promise);
-    vi.mocked(api.gridInfo).mockResolvedValueOnce({ version: 2, len: 0, sections: [], folders: [], starredCount: 0, duplicateCount: 0, hiddenCount: 0, videoCount: 0, view: 'search', sort: { key: 'date', reverse: false }, searchQuery: 'beach', person: null, album: null, tag: null, copiesOf: null });
+    vi.mocked(api.setSearchQuery).mockReturnValueOnce(search.promise.then(() => null));
+    vi.mocked(api.gridInfo).mockResolvedValueOnce({ version: 2, len: 0, sections: [], folders: [], starredCount: 0, duplicateCount: 0, hiddenCount: 0, videoCount: 0, view: 'search', sort: { key: 'date', reverse: false }, searchQuery: 'beach', person: null, album: null, tag: null, copiesOf: null, buildError: null });
 
     void store.setSearchQuery('beach');
     const view = store.settledView();
@@ -1228,6 +1348,7 @@ describe('LibraryStore', () => {
         album: null,
         tag: null,
         copiesOf: null,
+        buildError: null,
       });
       vi.mocked(api.gridRows).mockImplementation(async (offset: number, count: number) => ({
         version: 1,
@@ -1272,6 +1393,7 @@ describe('LibraryStore', () => {
           album: null,
           tag: null,
           copiesOf: null,
+          buildError: null,
         });
         vi.mocked(api.gridRows).mockImplementation(async (offset: number, count: number) => ({
           version: 2,
@@ -1333,6 +1455,446 @@ describe('LibraryStore', () => {
       expect(store.selectedItemIds).toEqual([idAt(200)]);
     });
 
+    /** What the backend holds once a hide of the photos at `[from, to]` has landed: the
+     *  rest, in the same order, at a new version. */
+    function hiddenFrom(len: number, from: number, to: number) {
+      const kept = Array.from({ length: len }, (_, i) => i).filter((at) => at < from || at > to);
+      vi.mocked(api.gridRows).mockImplementation(async (offset: number, count: number) => ({
+        version: 2,
+        rows: kept.slice(offset, offset + count).map(entryAt),
+      }));
+      vi.mocked(api.gridOffsetOfItem).mockImplementation(async (id: number) => {
+        const at = kept.indexOf(id - 100);
+        return at < 0 ? null : at;
+      });
+    }
+
+    it('hiding a band whose middle pages were let go lands after the band, not before it', async () => {
+      // A band from 10 to 3000, autoscrolled: the window is at the far end, so every page
+      // between the lead's own and the window's has been evicted. The photo to move to is
+      // 3001, after the band; a walk that gave up at the first missing page fell back to 9.
+      const store = await storeOf(5000);
+      store.beginBand(false);
+      await store.ensure(2950, 3050);
+      await store.endBand([[10, 3000]]);
+      expect(store.selected).toBe(10);
+      expect(store.entry(1000)).toBeUndefined();
+
+      vi.mocked(api.setItemsHidden).mockImplementation(async () => {
+        hiddenFrom(5000, 10, 3000);
+        return 2991;
+      });
+      await store.setHidden(store.selectedItemIds, true);
+      expect(store.selectedItemIds).toEqual([idAt(3001)]);
+      expect(store.selected).toBe(10);
+    });
+
+    /** Ctrl+A over a big view, then H. Finding the photo after the selection walked the
+     *  old index first, a thousand rows a round trip - some 300 of them at 300,000 photos -
+     *  before the write was even sent, so H did nothing for seconds. */
+    it('a select-all hide sends the write without first fetching every page', async () => {
+      const store = await storeOf(5000, { view: 'starred' });
+      store.selected = 0;
+      await store.selectAll();
+      expect(store.selectionCount).toBe(5000);
+
+      vi.mocked(api.gridRows).mockClear();
+      let fetchedFirst = -1;
+      vi.mocked(api.setItemsHidden).mockImplementation(async () => {
+        fetchedFirst = vi.mocked(api.gridRows).mock.calls.length;
+        hiddenFrom(5000, 0, 4999);
+        return 5000;
+      });
+      await store.setHidden(store.selectedItemIds, true);
+      expect(fetchedFirst).toBe(0);
+      // Nothing stays in the view, so there is nothing to move to.
+      expect(store.selectionCount).toBe(0);
+      expect(store.selected).toBe(null);
+    });
+
+    /** Ctrl+A in All takes the lead's folder, and the lead stays where it was - in the
+     *  middle of a folder bigger than the pages around it, so the loaded pages settle
+     *  neither side. The photo at the lead's offset in the rebuilt index was one as far into
+     *  the next folder as the lead was into its own: 2,400 photos on, or past the end. */
+    it('hiding a folder selected around the lead lands on the photo after the folder', async () => {
+      const sections: Section[] = [
+        { folderId: 1, offset: 0, count: 100, takenAtMin: 0 },
+        { folderId: 2, offset: 100, count: 4800, takenAtMin: 0 },
+        { folderId: 3, offset: 4900, count: 5100, takenAtMin: 0 },
+      ];
+      const store = await storeOf(10000, { sections });
+      await store.ensure(2450, 2550);
+      store.selected = 2500;
+      await store.selectAll();
+      expect(store.selectionCount).toBe(4800);
+      // The window scrolled away: nothing before the folder is loaded any more.
+      await store.ensure(8000, 8050);
+      expect(store.entry(99)).toBeUndefined();
+
+      vi.mocked(api.gridRows).mockClear();
+      let fetchedFirst = -1;
+      vi.mocked(api.setItemsHidden).mockImplementation(async () => {
+        fetchedFirst = vi.mocked(api.gridRows).mock.calls.length;
+        hiddenFrom(10000, 100, 4899);
+        return 4800;
+      });
+      await store.setHidden(store.selectedItemIds, true);
+      // One photo asked for before the write, not a walk.
+      expect(fetchedFirst).toBe(1);
+      expect(store.selectedItemIds).toEqual([idAt(4900)]);
+      expect(store.selected).toBe(100);
+    });
+
+    /** The same, for the view's first folder: nothing comes before it to ask for, and the
+     *  photo after the folder is the rebuilt index's first. */
+    it('hiding the first folder selected around the lead lands on the photo after it', async () => {
+      const sections: Section[] = [
+        { folderId: 1, offset: 0, count: 4900, takenAtMin: 0 },
+        { folderId: 2, offset: 4900, count: 5100, takenAtMin: 0 },
+      ];
+      const store = await storeOf(10000, { sections });
+      await store.ensure(2450, 2550);
+      store.selected = 2500;
+      await store.selectAll();
+      await store.ensure(8000, 8050);
+
+      vi.mocked(api.setItemsHidden).mockImplementation(async () => {
+        hiddenFrom(10000, 0, 4899);
+        return 4900;
+      });
+      await store.setHidden(store.selectedItemIds, true);
+      expect(store.selectedItemIds).toEqual([idAt(4900)]);
+      expect(store.selected).toBe(0);
+    });
+
+    /** The fetch of the photo before the selection only chooses where to land: failing, it
+     *  must not stop the hide the user asked for. */
+    it('a hide is still sent when the photo before its selection cannot be fetched', async () => {
+      const store = await storeOf(5000);
+      store.selectItem(2500, idAt(2500));
+      await store.ensure(4000, 4050);
+      vi.mocked(api.gridRows).mockRejectedValueOnce(new Error('busy'));
+      vi.mocked(api.setItemsHidden).mockImplementation(async () => {
+        hiddenFrom(5000, 2500, 2500);
+        return 1;
+      });
+      await store.setHidden(store.selectedItemIds, true);
+      expect(api.setItemsHidden).toHaveBeenCalledWith([idAt(2500)], true);
+      expect(store.selectedItemIds).toEqual([idAt(2501)]);
+    });
+
+    /** Asked of an index a scan has rebuilt, the offset before the selection names some
+     *  other photo, and landing after it lands somewhere the user never was. */
+    it('does not land after a photo fetched from another index than the selection', async () => {
+      const store = await storeOf(5000);
+      store.selectItem(2500, idAt(2500));
+      await store.ensure(4000, 4050);
+      vi.mocked(api.gridRows).mockResolvedValueOnce({ version: 2, rows: [entryAt(2400)] });
+      vi.mocked(api.setItemsHidden).mockImplementation(async () => {
+        hiddenFrom(5000, 2500, 2500);
+        return 1;
+      });
+      await store.setHidden(store.selectedItemIds, true);
+      expect(store.selectedItemIds).toEqual([idAt(2501)]);
+    });
+
+    it('a click made while the photo before the selection is fetched is not overwritten', async () => {
+      const store = await storeOf(5000);
+      store.selectItem(2500, idAt(2500));
+      await store.ensure(0, 50);
+      vi.mocked(api.gridRows).mockImplementationOnce(async () => {
+        store.selected = 7;
+        return { version: 1, rows: [entryAt(2499)] };
+      });
+      vi.mocked(api.setItemsHidden).mockImplementation(async () => {
+        hiddenFrom(5000, 2500, 2500);
+        return 1;
+      });
+      await store.setHidden([idAt(2500)], true);
+      expect(store.selectedItemIds).toEqual([idAt(7)]);
+      expect(store.selected).toBe(7);
+    });
+
+    /** Ctrl+A, then a photo Ctrl+clicked off and on again: the lead and the anchor are both
+     *  inside the folder now. The loaded pages before the lead are all leaving, so the
+     *  selection starts no later than where they give out, and the photo there is the one
+     *  to ask for - the photo before the anchor is one of the leaving ones. */
+    it('hiding a folder whose lead and anchor moved inside it still lands after the folder', async () => {
+      const sections: Section[] = [
+        { folderId: 1, offset: 0, count: 2400, takenAtMin: 0 },
+        { folderId: 2, offset: 2400, count: 2500, takenAtMin: 0 },
+        { folderId: 3, offset: 4900, count: 5100, takenAtMin: 0 },
+      ];
+      const store = await storeOf(10000, { sections });
+      await store.ensure(2450, 2550);
+      store.selected = 2450;
+      await store.selectAll();
+      store.toggleSelected(2450);
+      store.toggleSelected(2450);
+      expect(store.selectionCount).toBe(2500);
+      await store.ensure(8000, 8050);
+      expect(store.entry(2399)).toBeUndefined();
+
+      vi.mocked(api.setItemsHidden).mockImplementation(async () => {
+        hiddenFrom(10000, 2400, 4899);
+        return 2500;
+      });
+      await store.setHidden(store.selectedItemIds, true);
+      expect(store.selectedItemIds).toEqual([idAt(4900)]);
+      expect(store.selected).toBe(2400);
+    });
+
+    /** A band begun from a lead, so the lead's page is kept while the window autoscrolls
+     *  away: the photo before the band is loaded, the pages after the lead's are not. */
+    async function bandFromLead(first: number, last: number) {
+      const store = await storeOf(5000);
+      store.selected = first;
+      store.beginBand(false);
+      await store.ensure(2950, 3050);
+      await store.endBand([[first, last]]);
+      expect(store.entry(first - 1)?.id).toBe(idAt(first - 1));
+      expect(store.entry(first + 2 * 200)).toBeUndefined();
+      return store;
+    }
+
+    it('hiding a band lands on the photo after the one before it, in the rebuilt index', async () => {
+      const store = await bandFromLead(10, 3000);
+      vi.mocked(api.setItemsHidden).mockImplementation(async () => {
+        hiddenFrom(5000, 10, 3000);
+        return 2991;
+      });
+      await store.setHidden(store.selectedItemIds, true);
+      expect(store.selectedItemIds).toEqual([idAt(3001)]);
+      expect(store.selected).toBe(10);
+    });
+
+    it('hiding a band that runs to the end lands on the photo before it', async () => {
+      const store = await bandFromLead(10, 4999);
+      vi.mocked(api.setItemsHidden).mockImplementation(async () => {
+        hiddenFrom(5000, 10, 4999);
+        return 4990;
+      });
+      await store.setHidden(store.selectedItemIds, true);
+      expect(store.selectedItemIds).toEqual([idAt(9)]);
+      expect(store.selected).toBe(9);
+    });
+
+    it('lands nowhere when the index moves between finding the photo before and its next', async () => {
+      const store = await bandFromLead(10, 3000);
+      vi.mocked(api.setItemsHidden).mockImplementation(async () => {
+        hiddenFrom(5000, 10, 3000);
+        // A scan indexes a photo ahead of 9 between the two asks: offset 9 now holds 8.
+        vi.mocked(api.gridOffsetOfItem).mockResolvedValueOnce(10);
+        return 2991;
+      });
+      await store.setHidden(store.selectedItemIds, true);
+      expect(store.selectionCount).toBe(0);
+    });
+
+    /** The photos are hidden by then: an error thrown from the lookup told the user a hide
+     *  that worked had failed, and left the hidden photos selected. */
+    it('a landing lookup that fails after the write lands nowhere, without an error', async () => {
+      const store = await bandFromLead(10, 3000);
+      vi.mocked(api.setItemsHidden).mockImplementation(async () => {
+        hiddenFrom(5000, 10, 3000);
+        vi.mocked(api.gridOffsetOfItem).mockRejectedValue(new Error('gone'));
+        return 2991;
+      });
+      await store.setHidden(store.selectedItemIds, true);
+      expect(store.selectionCount).toBe(0);
+      expect(store.selected).toBe(null);
+    });
+
+    it('hiding a band that starts the view lands on the first photo after it', async () => {
+      // Nothing before the lead stays and the pages after it were let go: the rebuilt
+      // index's first photo is the first one after the band.
+      const store = await storeOf(5000);
+      store.beginBand(false);
+      await store.ensure(2950, 3050);
+      await store.endBand([[0, 3000]]);
+
+      vi.mocked(api.setItemsHidden).mockImplementation(async () => {
+        hiddenFrom(5000, 0, 3000);
+        return 3001;
+      });
+      await store.setHidden(store.selectedItemIds, true);
+      expect(store.selectedItemIds).toEqual([idAt(3001)]);
+      expect(store.selected).toBe(0);
+    });
+
+    it('hiding a lead whose page never loaded lands on the photo now at its offset', async () => {
+      // "Locate in photon" selects by id, far from anything the grid has fetched.
+      const store = await storeOf(5000);
+      store.selectItem(2500, idAt(2500));
+      await store.ensure(4000, 4050);
+      expect(store.entry(2501)).toBeUndefined();
+
+      vi.mocked(api.setItemsHidden).mockImplementation(async () => {
+        hiddenFrom(5000, 2500, 2500);
+        return 1;
+      });
+      await store.setHidden(store.selectedItemIds, true);
+      expect(store.selectedItemIds).toEqual([idAt(2501)]);
+      expect(store.selected).toBe(2500);
+    });
+
+    /** The hide's own rebuild re-finds the hidden lead, and answers "gone" only after the
+     *  hide has moved the lead on. That stale answer cleared the new lead's id, and the next
+     *  rebuild clamped the offset instead of re-finding the photo. */
+    it('a rebind that answers after the lead has moved on leaves the new lead alone', async () => {
+      const store = await storeOf(10);
+      store.selected = 2;
+      const oldLead = deferred<number | null>();
+      vi.mocked(api.setItemsHidden).mockImplementation(async () => {
+        vi.mocked(api.gridInfo).mockResolvedValue({ ...(await api.gridInfo()), version: 2, len: 9 });
+        hiddenFrom(10, 2, 2);
+        const rebuilt = vi.mocked(api.gridOffsetOfItem).getMockImplementation()!;
+        vi.mocked(api.gridOffsetOfItem).mockImplementation((id) => (id === idAt(2) ? oldLead.promise : rebuilt(id)));
+        handlers.libraryChanged({ version: 2, len: 9, dataChanged: true });
+        await flush();
+        return 1;
+      });
+      await store.setHidden(store.selectedItemIds, true);
+      expect(store.selectedItemIds).toEqual([idAt(3)]);
+      oldLead.resolve(null);
+      await flush();
+
+      // A photo indexed ahead of it: photo 3 is now at offset 3, which only an id finds.
+      vi.mocked(api.gridInfo).mockResolvedValue({ ...(await api.gridInfo()), version: 3, len: 10 });
+      vi.mocked(api.gridOffsetOfItem).mockResolvedValue(3);
+      await store.refresh();
+      expect(store.selectedItemIds).toEqual([idAt(3)]);
+      expect(store.selected).toBe(3);
+    });
+
+    /** In Duplicates, hiding one of a pair takes its partner out of the view with it, and
+     *  the partner was the photo after it - the landing. Landing on it selected nothing, and
+     *  pressing H again did nothing: the run through the duplicates stopped. */
+    it('a landing that left the view with the hidden photo moves on to the one now there', async () => {
+      const store = await storeOf(10, { view: 'duplicates' });
+      store.selected = 2;
+      vi.mocked(api.setItemsHidden).mockImplementation(async () => {
+        hiddenFrom(10, 2, 3);
+        return 1;
+      });
+      await store.setHidden(store.selectedItemIds, true);
+      expect(store.selectedItemIds).toEqual([idAt(4)]);
+      expect(store.selected).toBe(2);
+    });
+
+    /** The same at the end of the view: the lead's offset is past the rebuilt index's end,
+     *  and the photo before it is the one to land on. */
+    it('a landing past the rebuilt end moves back to the photo before it', async () => {
+      const store = await storeOf(10, { view: 'duplicates' });
+      store.selected = 8;
+      vi.mocked(api.setItemsHidden).mockImplementation(async () => {
+        hiddenFrom(10, 8, 9);
+        return 1;
+      });
+      await store.setHidden(store.selectedItemIds, true);
+      expect(store.selectedItemIds).toEqual([idAt(7)]);
+      expect(store.selected).toBe(7);
+    });
+
+    /** The mirror at the very end: the lead is the last pair's second photo, so the
+     *  landing - the photo before it - leaves with it, and the lead's offset is two past the
+     *  rebuilt end. Neither the photo there nor the one before it exists; the last photo
+     *  still shown is the one to land on. */
+    it('a landing two past the rebuilt end lands on the last photo still shown', async () => {
+      const store = await storeOf(10, { view: 'duplicates' });
+      store.selected = 9;
+      vi.mocked(api.setItemsHidden).mockImplementation(async () => {
+        vi.mocked(api.gridInfo).mockResolvedValue({ ...(await api.gridInfo()), version: 2, len: 8 });
+        hiddenFrom(10, 8, 9);
+        return 1;
+      });
+      await store.setHidden(store.selectedItemIds, true);
+      expect(store.selectedItemIds).toEqual([idAt(7)]);
+      expect(store.selected).toBe(7);
+    });
+
+    /** A band hidden in Duplicates whose photo before it was a partner of one inside it:
+     *  the photo the landing follows has left too, and landing nowhere stopped the run. The
+     *  photo now at the lead's offset is near the band's end - one past it here, since the
+     *  partner before the lead left as well. */
+    it('a landing after a photo that left with the hidden ones lands at the lead', async () => {
+      const store = await bandFromLead(10, 3000);
+      vi.mocked(api.setItemsHidden).mockImplementation(async () => {
+        hiddenFrom(5000, 9, 3000);
+        return 2991;
+      });
+      await store.setHidden(store.selectedItemIds, true);
+      expect(store.selectedItemIds).toEqual([idAt(3002)]);
+      expect(store.selected).toBe(10);
+    });
+
+    /** A Ctrl+click during the write adds to a selection still holding the photos being
+     *  hidden. The click is kept, and the lead with it; the hidden photos are not, or "Hide
+     *  3 photos" is offered for two the user can no longer see. */
+    it('a ctrl+click made while a hide is out keeps the click and drops the hidden photos', async () => {
+      const store = await storeOf(10);
+      store.selected = 2;
+      store.toggleSelected(3);
+      vi.mocked(api.setItemsHidden).mockImplementation(async () => {
+        store.toggleSelected(7);
+        hiddenFrom(10, 2, 3);
+        return 2;
+      });
+      await store.setHidden(store.selectedItemIds, true);
+      expect(store.selectedItemIds).toEqual([idAt(7)]);
+      expect(store.selected).toBe(7);
+    });
+
+    /** A band is built on the selection it started from, captured at `beginBand`. Started
+     *  additively while the hide was out, that base still held the photos being hidden, and
+     *  the band's next frame - or Escape, putting back what it started from - selected them
+     *  again. */
+    it('an additive band begun while a hide is out does not bring the hidden photos back', async () => {
+      const store = await storeOf(10);
+      store.selected = 2;
+      store.toggleSelected(3);
+      vi.mocked(api.setItemsHidden).mockImplementation(async () => {
+        store.beginBand(true);
+        store.bandTo([[6, 6]]);
+        return 2;
+      });
+      await store.setHidden(store.selectedItemIds, true);
+      expect(store.selectedItemIds).toEqual([idAt(6)]);
+      store.bandTo([[6, 7]]);
+      expect([...store.selectedItemIds].sort()).toEqual([idAt(6), idAt(7)]);
+      store.cancelBand();
+      expect(store.selectedItemIds).toEqual([]);
+    });
+
+    /** The same band begun but not yet moved: no pick, so the hide lands, and the band's
+     *  first frame then builds on its base. */
+    it('a band begun but not moved while a hide is out does not bring them back either', async () => {
+      const store = await storeOf(10);
+      store.selected = 2;
+      store.toggleSelected(3);
+      vi.mocked(api.setItemsHidden).mockImplementation(async () => {
+        store.beginBand(true);
+        hiddenFrom(10, 2, 3);
+        return 2;
+      });
+      await store.setHidden(store.selectedItemIds, true);
+      store.bandTo([[6, 6]]);
+      expect(store.selectedItemIds).toEqual([idAt(6)]);
+    });
+
+    it('a click made while a hide is out is not overwritten when it lands', async () => {
+      const store = await storeOf(10);
+      store.selected = 2;
+      vi.mocked(api.setItemsHidden).mockImplementation(async () => {
+        store.selected = 7;
+        hiddenFrom(10, 2, 2);
+        return 1;
+      });
+      await store.setHidden(store.selectedItemIds, true);
+      expect(store.selectedItemIds).toEqual([idAt(7)]);
+      expect(store.selected).toBe(7);
+    });
+
     it('a band autoscrolled far from where it began still leads with its first photo', async () => {
       // By the release the grid's window is thousands of photos below the band's first page,
       // which the window has let go; the lead's id must come from the fetch, or the next
@@ -1376,6 +1938,7 @@ describe('LibraryStore', () => {
         album: null,
         tag: null,
         copiesOf: null,
+        buildError: null,
       });
       vi.mocked(api.gridOffsetOfItem).mockResolvedValue(null);
       await store.refresh();
@@ -1461,12 +2024,108 @@ describe('LibraryStore', () => {
         // Offsets past the first 50 were never fetched, so no page holds them.
         store.beginBand(false);
         store.bandTo([[1200, 1202]]);
-        expect(store.selectionCount).toBe(0);
+        expect(store.isSelected(idAt(1201))).toBe(false);
 
         await store.endBand([[1200, 1202]]);
 
         expect(store.selectionCount).toBe(3);
         expect(store.isSelected(idAt(1201))).toBe(true);
+      });
+
+      /** The status bar's "N selected" reads `selectionCount` while the band is live. An
+       *  autoscroll a long way lets the pages behind the window go, and a count of the ids
+       *  the preview could resolve fell further behind the band the further it went. */
+      it('counts every photo a long band covers, even where its pages were let go', async () => {
+        const store = await storeOf(5000);
+        store.beginBand(false);
+        await store.ensure(2950, 3050);
+        expect(store.entry(1000)).toBeUndefined();
+        store.bandTo([[10, 3000]]);
+        expect(store.selectionCount).toBe(2991);
+
+        await store.endBand([[10, 3000]]);
+        expect(store.selectionCount).toBe(2991);
+      });
+
+      /** The count read while the release's fetch is out. Zeroed before it, the unloaded
+       *  photos dropped out of "N selected" for a round trip and then came back. */
+      it("keeps a long band's count while the release resolves it", async () => {
+        const store = await storeOf(5000);
+        store.beginBand(false);
+        await store.ensure(2950, 3050);
+        store.bandTo([[10, 3000]]);
+
+        const ending = store.endBand([[10, 3000]]);
+        expect(store.selectionCount).toBe(2991);
+        await ending;
+        expect(store.selectionCount).toBe(2991);
+      });
+
+      /** The release recomputes the ranges from the rectangle, and a grid laid out again
+       *  since the last preview can make them empty. */
+      it('counts nothing unresolved once a band that covers nothing at the release ends', async () => {
+        const store = await storeOf(2000);
+        store.beginBand(false);
+        store.bandTo([[1200, 1202]]);
+        expect(store.selectionCount).toBe(3);
+
+        await store.endBand([]);
+        expect(store.selectionCount).toBe(0);
+      });
+
+      it('counts nothing unresolved once a band the grid was rebuilt under is put back', async () => {
+        const store = await storeOf(5000);
+        store.selected = 20;
+        store.beginBand(false);
+        await store.ensure(2950, 3050);
+        store.bandTo([[10, 3000]]);
+        vi.mocked(api.gridRows).mockResolvedValue({ version: 2, rows: [] });
+
+        await store.endBand([[10, 3000]]);
+        expect(store.selectionCount).toBe(1);
+      });
+
+      /** A release whose fetch fails - the backend refusing it, the IPC dropped - left the
+       *  unresolved count behind for good: "N selected" stayed thousands high over a
+       *  selection holding only the preview's loaded photos. */
+      it('counts nothing unresolved once a release whose fetch fails ends', async () => {
+        const store = await storeOf(2000);
+        store.beginBand(false);
+        store.bandTo([[1200, 1202]]);
+        vi.mocked(api.gridRows).mockRejectedValue(new Error('gone'));
+
+        await expect(store.endBand([[1200, 1202]])).rejects.toThrow('gone');
+        expect(store.selectionCount).toBe(0);
+      });
+
+      /** Anything that replaces the selection mid-band - a view switch clearing it, a plain
+       *  selection - ends what the band counted too. */
+      it('counts nothing unresolved once the selection is cleared under a live band', async () => {
+        const store = await storeOf(2000);
+        store.beginBand(false);
+        store.bandTo([[1200, 1202]]);
+
+        store.clearSelection();
+        expect(store.selectionCount).toBe(0);
+      });
+
+      it('counts only the plain selection made under a live band', async () => {
+        const store = await storeOf(2000);
+        store.beginBand(false);
+        store.bandTo([[1200, 1202]]);
+
+        store.selected = 3;
+        expect(store.selectionCount).toBe(1);
+      });
+
+      it('counts only what an additive band adds, and nothing once it is abandoned', async () => {
+        const store = await storeOf(5000);
+        store.selected = 20;
+        store.beginBand(true);
+        store.bandTo([[1000, 1009]]);
+        expect(store.selectionCount).toBe(11);
+        store.cancelBand();
+        expect(store.selectionCount).toBe(1);
       });
 
       /** Dragging a box over empty space is how a selection is cleared - the canonical
@@ -1630,6 +2289,7 @@ describe('LibraryStore', () => {
         album: null,
         tag: null,
         copiesOf: null,
+        buildError: null,
       });
       vi.mocked(api.gridOffsetOfItem).mockResolvedValue(5);
       await store.refresh();
@@ -1693,6 +2353,7 @@ describe('LibraryStore', () => {
         album: null,
         tag: null,
         copiesOf: null,
+        buildError: null,
       });
       vi.mocked(api.gridOffsetOfItem).mockResolvedValue(4);
       // The rebuilt index answers version 2 now, so the range fetched below must match it too.
@@ -1707,6 +2368,55 @@ describe('LibraryStore', () => {
       expect(store.selectionCount).toBe(7); // 4..10, not 3..10
       expect(store.isSelected(idAt(4))).toBe(true);
       expect(store.isSelected(idAt(3))).toBe(false);
+    });
+
+    /** A photo indexed ahead of the lead: every old offset is one later. The rebuild's
+     *  re-find of `leadId` is held until the test answers it. */
+    async function refreshAroundLead(store: LibraryStore, leadId: number) {
+      vi.mocked(api.gridInfo).mockResolvedValue({ ...(await api.gridInfo()), version: 2, len: 11 });
+      vi.mocked(api.gridRows).mockImplementation(async (offset: number, count: number) => ({
+        version: 2,
+        rows: Array.from({ length: Math.min(count, 11 - offset) }, (_, i) => entryAt(offset + i - 1)),
+      }));
+      const found = deferred<number | null>();
+      vi.mocked(api.gridOffsetOfItem).mockImplementation((id) =>
+        id === leadId ? found.promise : Promise.resolve(null),
+      );
+      const refreshed = store.refresh();
+      await flush();
+      expect(api.gridOffsetOfItem).toHaveBeenCalledWith(leadId);
+      return { found, refreshed };
+    }
+
+    /** A Shift+click while the rebuild re-finds the lead moves the lead and leaves the
+     *  anchor, so the rebind answers about a photo that is no longer the lead and returns
+     *  early - and the anchor, which named the clicked photo by its old offset, was left
+     *  there: the next Shift+click ranged from the photo before the one clicked. */
+    it('a shift+click while the lead is re-found still carries the anchor with it', async () => {
+      const store = await storeOf(10);
+      store.selected = 5;
+      const { found, refreshed } = await refreshAroundLead(store, idAt(5));
+      await store.extendSelection(8);
+      found.resolve(6);
+      await refreshed;
+
+      await store.extendSelection(9);
+      expect([...store.selectedItemIds].sort()).toEqual([idAt(5), idAt(6), idAt(7), idAt(8)]);
+    });
+
+    /** A plain click on the offset the lead had, while it is re-found: the anchor now names
+     *  the photo clicked there, and must not be moved as though it were the old lead. */
+    it('a click at the lead\'s old offset while it is re-found keeps its own anchor', async () => {
+      const store = await storeOf(10);
+      store.selected = 5;
+      const { found, refreshed } = await refreshAroundLead(store, idAt(5));
+      store.selected = 5;
+      expect(store.selectedItemIds).toEqual([idAt(4)]);
+      found.resolve(6);
+      await refreshed;
+
+      await store.extendSelection(9);
+      expect([...store.selectedItemIds].sort()).toEqual([idAt(4), idAt(5), idAt(6), idAt(7), idAt(8)]);
     });
 
     it('drops a stale anchor when a rebuild had no lead to re-find it by', async () => {
@@ -1736,6 +2446,7 @@ describe('LibraryStore', () => {
         album: null,
         tag: null,
         copiesOf: null,
+        buildError: null,
       });
       vi.mocked(api.gridRows).mockImplementation(async (offset: number, count: number) => ({
         version: 2,
@@ -1758,7 +2469,7 @@ describe('LibraryStore', () => {
       const store = await storeOf(10);
       store.selected = 3;
       store.toggleSelected(4);
-      vi.mocked(api.setGridView).mockResolvedValue(undefined);
+      vi.mocked(api.setGridView).mockResolvedValue(null);
 
       await store.setView('starred');
 

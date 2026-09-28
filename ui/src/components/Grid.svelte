@@ -5,11 +5,11 @@
   import { isOwnAlbum, ownAlbums } from '../lib/albums';
   import { isCopyPhotoShortcut } from '../lib/copy-photo';
   import { folderLabel } from '../lib/folders';
-  import { showEmptyNotice } from '../lib/grid-state';
+  import { buildFailure, showEmptyNotice } from '../lib/grid-state';
   import { library } from '../lib/library.svelte';
   import { fitMenu } from '../lib/menu-place';
   import { gridSize } from '../lib/app-grid-size.svelte';
-  import { buildRows, columnsFor, edgeScrollSpeed, fetchSpan, firstVisibleOffset, GAP, itemSpan, itemsInRect, type Rect, renderRange, rowOfItem, topFolderId, totalHeight, visibleRange } from '../lib/layout';
+  import { buildRows, columnsFor, defersThumbs, edgeScrollSpeed, fetchSpan, firstVisibleOffset, GAP, itemSpan, itemsInRect, type Rect, renderRange, rowOfItem, topFolderId, totalHeight, visibleRange } from '../lib/layout';
   import { createScrollSpeed } from '../lib/scroll-speed.svelte';
   import { move, type NavKey } from '../lib/nav';
   import { yearMarks } from '../lib/timeline';
@@ -75,10 +75,15 @@
    *  value, and a fresh `[start, end]` is never equal to the last one, so a tuple would
    *  re-slice `rows` - and re-run the `{#each}` over it - on every scroll event, including
    *  the many that move less than a row. */
-  const renderSpan = $derived(renderRange(rows, scrollTop, height, speed.fast));
+  const renderSpan = $derived(renderRange(rows, scrollTop, height, speed.motion));
   const renderStart = $derived(renderSpan[0]);
   const renderEnd = $derived(renderSpan[1]);
   const rendered = $derived(rows.slice(renderStart, renderEnd));
+  /** A boolean, so the tiles' prop changes only when the answer does, not on every event. */
+  const deferThumbs = $derived(defersThumbs(speed.motion, height));
+  /** A continuous scroll, not a jump: a jump lands where the user is about to look, and a
+   *  thumbnail arriving late there fades in as it does on a still grid. */
+  const scrolling = $derived(speed.motion.kind === 'scroll');
   /** The pages to hold, which reach further than what is mounted: see `FETCH_OVERSCAN`.
    *  Split the same way, so `ensure` is asked again only when the span has moved. */
   const fetched = $derived(fetchSpan(rows, scrollTop, height));
@@ -637,7 +642,7 @@
     bind:clientHeight={height}
     onscroll={(e) => {
       scrollTop = viewport.scrollTop;
-      speed.sample(scrollTop, e.timeStamp);
+      speed.sample(scrollTop, e.timeStamp, height);
     }}
     onpointerdown={bandDown}
     onpointermove={bandMove}
@@ -652,7 +657,9 @@
     role="grid"
     aria-label="Photos"
   >
-    {#if showEmptyNotice(library.info)}
+    {#if buildFailure(library.info)}
+      <p class="empty">{buildFailure(library.info)}</p>
+    {:else if showEmptyNotice(library.info)}
       <p class="empty">
         {#if library.info.view === 'starred'}
           No starred photos. Star one in the viewer, or in Picasa.
@@ -712,7 +719,8 @@
                 onopen={() => onopen(offset)}
                 onmenu={(e) => tileMenu(e, offset)}
                 tile={gridSize.width}
-                defer={speed.fast}
+                defer={deferThumbs}
+                moving={scrolling}
               />
             {/each}
           </div>

@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { buildRows, columnsFor, edgeScrollSpeed, fetchSpan, firstVisibleOffset, GAP, HEADER, itemSpan, itemsInRect, renderRange, rowIndexAt, rowOfItem, tileRow, TILE_WIDTH, topFolderId, totalHeight, visibleRange } from './layout';
+import { buildRows, columnsFor, defersThumbs, edgeScrollSpeed, fetchSpan, firstVisibleOffset, GAP, HEADER, itemSpan, itemsInRect, LEAD_MS, LEAD_OVERSCAN_MAX, RENDER_OVERSCAN, renderOverscan, renderRange, rowIndexAt, rowOfItem, tileRow, TILE_WIDTH, topFolderId, totalHeight, TRAIL_OVERSCAN, visibleRange } from './layout';
+import { type Motion, STILL } from './scroll-speed.svelte';
+import { TILE_SETTLE_MS } from './thumb-request.svelte';
 
 const sections = [
   { folderId: 1, offset: 0, count: 5 },
@@ -59,20 +61,59 @@ describe('layout', () => {
     const viewport = 10 * row;
     const top = 100 * row;
 
-    expect(renderRange(rows, top, viewport, false)).toEqual([95, 116]);
+    expect(renderRange(rows, top, viewport, STILL)).toEqual([95, 116]);
     expect(fetchSpan(rows, top, viewport)).toEqual([80, 131]);
   });
 
-  it('mounts only what is on screen while scrolling fast', () => {
+  describe('while the grid moves', () => {
+    // The same 1000 rows of 168px; a viewport is ten rows.
     const rows = buildRows([{ folderId: null, offset: 0, count: 1000 }], 1, TILE_WIDTH.medium);
     const row = tileRow(TILE_WIDTH.medium);
     const viewport = 10 * row;
     const top = 100 * row;
+    const scroll = (direction: 1 | -1, speed: number, peak = speed): Motion => ({ kind: 'scroll', direction, speed, peak });
 
-    expect(renderRange(rows, top, viewport, true)).toEqual([100, 111]);
-    // The fetch does not narrow with it: pages are what the tiles show once it stops.
-    expect(fetchSpan(rows, top, viewport)).toEqual([80, 131]);
-    expect(fetchSpan([], 0, viewport)).toBeNull();
+    it('mounts only what is on screen for a jump', () => {
+      expect(renderRange(rows, top, viewport, { kind: 'jump', stream: true })).toEqual([100, 111]);
+      expect(renderRange(rows, top, viewport, { kind: 'jump', stream: false })).toEqual([100, 111]);
+      // The fetch does not narrow with it: pages are what the tiles show once it stops.
+      expect(fetchSpan(rows, top, viewport)).toEqual([80, 131]);
+      expect(fetchSpan([], 0, viewport)).toBeNull();
+    });
+
+    it('mounts a lead ahead of a fast scroll, and only a little behind it', () => {
+      // 4px/ms - a trackpad flick, which used to drop the overscan altogether - leads by
+      // LEAD_MS of travel (1200px, seven rows and a bit) and trails by a quarter viewport.
+      expect(renderOverscan(scroll(1, 4), viewport)).toEqual([viewport * TRAIL_OVERSCAN, 4 * LEAD_MS]);
+      expect(renderRange(rows, top, viewport, scroll(1, 4))).toEqual([97, 118]);
+      // Upward, the lead is above.
+      expect(renderRange(rows, top, viewport, scroll(-1, 4))).toEqual([92, 113]);
+    });
+
+    it('leads by at least the still overscan, and at most LEAD_OVERSCAN_MAX viewports', () => {
+      expect(renderOverscan(scroll(1, 0), viewport)[1]).toBe(viewport * RENDER_OVERSCAN);
+      expect(renderOverscan(scroll(1, 0.1), viewport)[1]).toBe(viewport * RENDER_OVERSCAN);
+      expect(renderOverscan(scroll(1, 100), viewport)[1]).toBe(viewport * LEAD_OVERSCAN_MAX);
+    });
+
+    it('sizes the lead by the peak, so a flick slowing down keeps what it mounted', () => {
+      expect(renderRange(rows, top, viewport, scroll(1, 0.5, 4))).toEqual(renderRange(rows, top, viewport, scroll(1, 4)));
+    });
+
+    it('defers thumbnails only where a tile will be gone before it settles', () => {
+      expect(defersThumbs(STILL, viewport)).toBe(false);
+      // End or a folder click lands where the user stops.
+      expect(defersThumbs({ kind: 'jump', stream: false }, viewport)).toBe(false);
+      // A scrollbar drag replaces every tile on the next frame.
+      expect(defersThumbs({ kind: 'jump', stream: true }, viewport)).toBe(true);
+      // A 4px/ms flick passes a tile through the window in over half a second.
+      expect(defersThumbs(scroll(1, 4), viewport)).toBe(false);
+      // The window is 2.75 viewports at full lead: 4620px, crossed within the settle above
+      // 46.2px/ms.
+      const window = viewport * (1 + LEAD_OVERSCAN_MAX + TRAIL_OVERSCAN);
+      expect(defersThumbs(scroll(1, window / TILE_SETTLE_MS - 0.1), viewport)).toBe(false);
+      expect(defersThumbs(scroll(1, window / TILE_SETTLE_MS + 0.1), viewport)).toBe(true);
+    });
   });
 
   it('draws a run that names no folder without a header', () => {

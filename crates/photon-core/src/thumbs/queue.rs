@@ -4,7 +4,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll, Wake, Waker};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// Lower sorts first: visible grid cells beat viewer neighbours beat background fill.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -59,9 +59,20 @@ struct State {
     /// with nothing else to do in between - see `pop_blocking`, which waits on the earliest
     /// one rather than polling.
     delayed: Vec<(Instant, i64, Priority)>,
+    /// Set by `note_ready` - a job made a photo's thumbnail ready - and cleared by the
+    /// `wait_drained` that reports it. See `wait_drained`.
+    readied: bool,
+    /// When the last job finished, which is when the queue last stopped being busy: what
+    /// `wait_drained` measures its quiet from.
+    last_done: Option<Instant>,
 }
 
 impl State {
+    /// Nothing queued, in flight, or backed off waiting for its delay - see `wait_idle`.
+    fn idle(&self) -> bool {
+        self.order.is_empty() && self.in_flight.is_empty() && self.delayed.is_empty()
+    }
+
     fn push(&mut self, id: i64, priority: Priority) {
         if self.in_flight.contains(&id) {
             let held = self.deferred.entry(id).or_insert(priority);
@@ -125,6 +136,7 @@ impl State {
     }
 
     fn done(&mut self, id: i64) {
+        self.last_done = Some(Instant::now());
         self.in_flight.remove(&id);
         if let Some(priority) = self.deferred.remove(&id) {
             self.push(id, priority);
@@ -334,10 +346,49 @@ impl ThumbQueue {
         let mut state = self.state.lock();
         loop {
             state.admit_due(Instant::now());
-            let idle =
-                state.order.is_empty() && state.in_flight.is_empty() && state.delayed.is_empty();
-            if state.closed || idle {
+            if state.closed || state.idle() {
                 return;
+            }
+            match state.next_delayed() {
+                Some(deadline) => {
+                    self.changed.wait_until(&mut state, deadline);
+                }
+                None => self.changed.wait(&mut state),
+            }
+        }
+    }
+
+    /// Records that the running job made a photo's thumbnail ready: a new picture in the
+    /// cache for the look-alike pass to hash. Called by the worker before its `done`, which
+    /// is what wakes `wait_drained`.
+    pub fn note_ready(&self) {
+        self.state.lock().readied = true;
+        self.changed.notify_all();
+    }
+
+    /// Blocks until some job since the last call has made a thumbnail ready (`note_ready`)
+    /// and the queue has then stayed idle for `settle` since its last job finished, and
+    /// returns true; or returns false once the queue closes.
+    ///
+    /// A debounce, not a per-thumbnail signal: what it paces is a whole-library look-alike
+    /// pass. A scroll renders the visible tiles in bursts and an import renders for as long
+    /// as it lasts, and either answers once, after its work has stopped.
+    pub fn wait_drained(&self, settle: Duration) -> bool {
+        let mut state = self.state.lock();
+        loop {
+            if state.closed {
+                return false;
+            }
+            let now = Instant::now();
+            state.admit_due(now);
+            if state.readied && state.idle() {
+                let quiet_until = state.last_done.unwrap_or(now) + settle;
+                if now >= quiet_until {
+                    state.readied = false;
+                    return true;
+                }
+                self.changed.wait_until(&mut state, quiet_until);
+                continue;
             }
             match state.next_delayed() {
                 Some(deadline) => {
@@ -593,6 +644,55 @@ mod tests {
             "popped, so in flight until done"
         );
         q.done(7);
+    }
+
+    /// The drain signal answers once per burst, after the queue has gone quiet - never for
+    /// a queue that only ran jobs that readied nothing, and not while work is still going.
+    #[test]
+    fn wait_drained_answers_after_a_readied_job_and_a_quiet_settle() {
+        let settle = std::time::Duration::from_millis(100);
+        let q = Arc::new(ThumbQueue::new());
+        let waiter = {
+            let q = q.clone();
+            std::thread::spawn(move || {
+                let answered = q.wait_drained(settle);
+                (answered, Instant::now())
+            })
+        };
+
+        // A job that readied nothing: an already-ready photo re-queued by a sweep.
+        q.push(1, Priority::Background);
+        q.done(q.pop_blocking().unwrap());
+        std::thread::sleep(settle * 2);
+        assert!(!waiter.is_finished(), "nothing was readied");
+
+        // One that did, followed by more work before the settle is out.
+        q.push(2, Priority::Background);
+        let id = q.pop_blocking().unwrap();
+        q.note_ready();
+        q.done(id);
+        std::thread::sleep(settle / 2);
+        q.push(3, Priority::Background);
+        let id = q.pop_blocking().unwrap();
+        let last_done = Instant::now();
+        q.done(id);
+
+        let (answered, at) = waiter.join().unwrap();
+        assert!(answered);
+        assert!(
+            at >= last_done + settle,
+            "answered before the queue had been quiet for the settle"
+        );
+
+        // The mark was taken: the next wait needs a new one, and a close ends it.
+        let waiter = {
+            let q = q.clone();
+            std::thread::spawn(move || q.wait_drained(settle))
+        };
+        std::thread::sleep(settle * 2);
+        assert!(!waiter.is_finished(), "the mark was already reported");
+        q.close();
+        assert!(!waiter.join().unwrap(), "a closed queue answers false");
     }
 
     #[test]

@@ -46,6 +46,12 @@ const REBUILD_COST_FACTOR: u32 = 4;
 /// plus the UI's `gridInfo` and viewer re-reads - for every video in a folder of them.
 const FRAME_REFRESH_EVERY: Duration = Duration::from_secs(1);
 
+/// How long the thumbnail queue must stay quiet, after making new thumbnails ready, before
+/// the look-alike pass is asked to hash them (`start_thumb_hashing`). The pass reads every
+/// perceptual hash in the library even when it has two to add, so it is paced by the
+/// bursts the queue works in - a scroll's visible tiles, an import - not by the thumbnail.
+const THUMB_HASH_SETTLE: Duration = Duration::from_secs(5);
+
 /// How long `shutdown` waits for a look-alike pass in progress to actually stop before
 /// giving up and leaving it to finish on its own. Bounded for the same reason
 /// `watch::STOP_TIMEOUT` is: the pass's `hash_candidates` reads the original photo files,
@@ -124,6 +130,34 @@ struct Rebuild {
     seq: u64,
 }
 
+/// What `publish_if_current` did with a rebuild.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Publish {
+    /// Published as this version.
+    Published(u64),
+    /// Dropped because a rebuild stamped later, for the same state, had already published.
+    /// The grid on show - at this version - is for the state this rebuild was built for,
+    /// and read the database later than it did.
+    Overtaken(u64),
+    /// Dropped because the view state has moved since this rebuild snapshotted it. Nothing
+    /// published so far need show that state: the index for the new one is still coming.
+    Superseded,
+}
+
+impl Publish {
+    /// The grid version that shows this rebuild's view state, when one has been published.
+    /// What a view setter hands the UI: any `GridInfo` at that version or later was read
+    /// after the grid for the new state was in place, so the UI can skip a fetch it has
+    /// already made. `Superseded` has no such version - the one on show may still be the
+    /// old view's - so the UI must fetch unconditionally.
+    fn shown_at(self) -> Option<u64> {
+        match self {
+            Publish::Published(version) | Publish::Overtaken(version) => Some(version),
+            Publish::Superseded => None,
+        }
+    }
+}
+
 /// What one export came to: how many copies were written, how many photos could not be,
 /// and the first reason why not.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -144,7 +178,10 @@ pub struct Engine {
     /// pass hashes the cached grid thumbnails rather than the photos.
     cache: Arc<ThumbCache>,
     excluded: Vec<PathBuf>,
-    grid: RwLock<(u64, Arc<GridIndex>)>,
+    /// The published grid: its version, its index, and - only when the first build failed
+    /// and this empty index stands in for it - why (`build_first_grid`). Held together so
+    /// `grid_info` reads the reason with the version it belongs to.
+    grid: RwLock<(u64, Arc<GridIndex>, Option<String>)>,
     /// Which photos the grid shows (and the view's argument), and a counter that changes
     /// with it. Held only for the moment of reading or writing it - never across a query or
     /// an index build - so a view switch on the UI thread is never made to wait for a
@@ -160,10 +197,12 @@ pub struct Engine {
     /// Source of `Rebuild::seq`. Taken at snapshot time, before the query begins.
     next_rebuild: AtomicU64,
     /// Set by every rebuild that follows a change to the data (`data_snapshot`), before it
-    /// snapshots; taken back to false by whichever rebuild publishes next, which tells the
+    /// snapshots; taken back to false by whichever rebuild publishes next (a failed first
+    /// build's empty stand-in says `true` and leaves it; see `publish`), which tells the
     /// UI so in `LibraryChanged::data_changed`. The UI refetches its sidebar collections -
     /// albums, people, tags, the slowest of them hundreds of milliseconds at 300k photos -
-    /// only then, and not for the rebuilds of a view switch, a sort or a search keystroke.
+    /// only then, and not for the rebuilds of a view switch, a sort or a search keystroke,
+    /// nor for `refresh_grid_derived`'s.
     ///
     /// Engine-wide rather than carried by each `Rebuild`, because a rebuild can be
     /// discarded: a scan's rebuild overtaken by a view switch never publishes, and a flag it
@@ -194,6 +233,9 @@ pub struct Engine {
     /// outstanding. Mirrors `startup`: `wait_for_similar_pass` takes it and joins it, and
     /// is safe to call when none was ever spawned.
     similar_pass: Mutex<Option<JoinHandle<()>>>,
+    /// The thread `start_thumb_hashing` spawned, if any. `shutdown` joins it after closing
+    /// the thumbnail queue, which is what ends its wait.
+    thumb_hashing: Mutex<Option<JoinHandle<()>>>,
     /// The running watcher service, if one has been started. `start_watcher` and
     /// `stop_watcher` both take this lock for their whole check-then-act, so a `shutdown`
     /// racing `startup`'s call to `start_watcher` can never miss stopping a service that
@@ -329,6 +371,7 @@ impl Engine {
             grid: RwLock::new((
                 NOT_BUILT,
                 Arc::new(GridIndex::build(Vec::new(), sort.layout(GridView::All))),
+                None,
             )),
             state: Mutex::new(ViewState {
                 view: GridView::All,
@@ -346,6 +389,7 @@ impl Engine {
             shutting_down: AtomicBool::new(false),
             startup: Mutex::new(None),
             similar_pass: Mutex::new(None),
+            thumb_hashing: Mutex::new(None),
             watcher: Mutex::new(None),
             ini_write: Mutex::new(()),
             edit_write: Mutex::new(()),
@@ -367,6 +411,13 @@ impl Engine {
         (grid.0, grid.1.clone())
     }
 
+    /// `grid`, with why the grid is empty when it is only because the first build failed.
+    /// `None` for every grid actually built.
+    pub fn grid_and_failure(&self) -> (u64, Arc<GridIndex>, Option<String>) {
+        let grid = self.grid.read();
+        (grid.0, grid.1.clone(), grid.2.clone())
+    }
+
     /// Rebuilds the grid from the database for the current view and tells the UI.
     ///
     /// The query and the index build run with no engine lock held. This used to hold read
@@ -378,14 +429,30 @@ impl Engine {
     /// For callers that changed the data, which is every caller but the view setters: the
     /// event this publishes tells the UI to refetch the collections as well as the grid.
     pub fn refresh_grid(&self) -> Result<()> {
-        self.rebuild(self.data_snapshot())
+        self.rebuild(self.data_snapshot()).map(|_| ())
+    }
+
+    /// `refresh_grid`, for a write that moved nothing the sidebar's collections or
+    /// Settings read: a poster frame (thumbnail state) and the hashing passes
+    /// (`content_hash`, `similar_group`). Those change which photos the grid draws, and how -
+    /// the Duplicates view and its count, which travel in the grid and `GridInfo` the UI
+    /// re-reads on every version - but no album, person, tag, tag rule or folder count, so
+    /// its publish does not send the UI to refetch them. A frame is stored up to once a
+    /// second while a page extracts them, and each one refetched the tag counts alone for
+    /// a quarter of a second at 300k photos.
+    ///
+    /// The "every commit is followed by a later-stamped rebuild" promise is unchanged: this
+    /// is an ordinary rebuild, stamped after the write it follows. It only leaves
+    /// `data_dirty` as it found it, so a data rebuild it overtakes still has its flag
+    /// carried - by this publish, if it is the next.
+    fn refresh_grid_derived(&self) -> Result<()> {
+        self.rebuild(self.snapshot()).map(|_| ())
     }
 
     /// Builds the index for `rebuild`'s snapshot and publishes it unless overtaken.
-    fn rebuild(&self, rebuild: Rebuild) -> Result<()> {
+    fn rebuild(&self, rebuild: Rebuild) -> Result<Publish> {
         let index = Arc::new(self.build_index(&rebuild.state)?);
-        self.publish_if_current(index, &rebuild);
-        Ok(())
+        Ok(self.publish_if_current(index, &rebuild))
     }
 
     /// A poster frame was stored: rebuild the grid, at most once per `FRAME_REFRESH_EVERY`.
@@ -450,7 +517,8 @@ impl Engine {
         if self.shutting_down.load(Ordering::SeqCst) {
             return;
         }
-        if let Err(err) = self.refresh_grid() {
+        // Derived: a frame is a thumbnail, which no collection reads.
+        if let Err(err) = self.refresh_grid_derived() {
             tracing::warn!(%err, "grid refresh after a poster frame failed");
         }
     }
@@ -482,7 +550,7 @@ impl Engine {
     }
 
     /// Publishes `index`, built from `rebuild`'s snapshot, unless it has been overtaken.
-    /// Returns whether it published.
+    /// Returns what it did; see `Publish`.
     ///
     /// Two guards let rebuilds run unlocked, and both are needed. The `epoch` guard: a
     /// scan's rebuild that read the All view, then lost the race to a click on Starred,
@@ -498,33 +566,76 @@ impl Engine {
     /// carries the highest `seq` therefore began its query after that commit and includes
     /// it, and nothing can be stamped later to block it. A setter's rebuild likewise reads
     /// after its epoch bump.
-    fn publish_if_current(&self, index: Arc<GridIndex>, rebuild: &Rebuild) -> bool {
+    ///
+    /// A rebuild the `seq` guard drops is `Overtaken`, not `Superseded`: the epoch check
+    /// has just passed, so the state is still the one it was built for, and the rebuild
+    /// that published with the higher stamp snapshotted after this one did - so after the
+    /// state reached this epoch - and passed the same check when it published. Epochs only
+    /// rise, so it was built for this epoch too: the grid on show is this rebuild's state,
+    /// read later.
+    fn publish_if_current(&self, index: Arc<GridIndex>, rebuild: &Rebuild) -> Publish {
+        self.publish(index, rebuild, None)
+    }
+
+    /// `publish_if_current`, carrying `failure` with the grid: the reason `build_first_grid`
+    /// is publishing an empty stand-in rather than a grid it built. A failure never replaces
+    /// a built grid: anything published before it - a view switch's rebuild, a scan's -
+    /// read the library successfully, and an empty grid saying it could not would be false.
+    /// That refusal comes before the epoch and `seq` checks, so the `Overtaken` it answers
+    /// names only the version on show, which need not be for this rebuild's state; its one
+    /// caller ignores the answer.
+    ///
+    /// Nor does a failure take the `seq` stamp: it read no rows, so it cannot overtake a
+    /// rebuild that did. `build_first_grid` stamps the stand-in after its retries, and a
+    /// view switch made during them is stamped earlier; had the stand-in raised
+    /// `last_published`, the switch's successful read would land as overtaken and the grid
+    /// would go on saying the library could not be read over one that just was.
+    fn publish(
+        &self,
+        index: Arc<GridIndex>,
+        rebuild: &Rebuild,
+        failure: Option<String>,
+    ) -> Publish {
         let mut last_published = self.refresh.lock();
+        if failure.is_some() {
+            let version = self.grid.read().0;
+            if version != NOT_BUILT {
+                tracing::debug!("not replacing a built grid with a failed first build");
+                return Publish::Overtaken(version);
+            }
+        }
         if self.state.lock().epoch != rebuild.state.epoch {
             tracing::debug!("discarding a grid rebuilt for a view that has since changed");
-            return false;
+            return Publish::Superseded;
         }
         if rebuild.seq < *last_published {
             tracing::debug!("discarding a grid rebuilt from an older read than the one published");
-            return false;
+            return Publish::Overtaken(self.grid.read().0);
         }
-        *last_published = rebuild.seq;
+        let failed = failure.is_some();
+        if !failed {
+            *last_published = rebuild.seq;
+        }
         let (version, len) = {
             let mut grid = self.grid.write();
             grid.0 += 1;
             grid.1 = index;
+            grid.2 = failure;
             (grid.0, grid.1.len())
         };
         // Taken only by a rebuild that publishes, and under the `refresh` lock, so the
         // value and the version it is sent with are one publish's. A rebuild discarded
-        // above leaves it for the next one.
-        let data_changed = self.data_dirty.swap(false, Ordering::SeqCst);
+        // above leaves it for the next one. A failure says `true` without taking it: the
+        // UI has no collections yet, but the refetch it asks for reads the database the
+        // build could not, so the flag stays for the first publish that did read it - a
+        // view switch's, which marks nothing itself, would otherwise say nothing changed.
+        let data_changed = failed || self.data_dirty.swap(false, Ordering::SeqCst);
         self.events.library_changed(LibraryChanged {
             version,
             len,
             data_changed,
         });
-        true
+        Publish::Published(version)
     }
 
     pub fn view(&self) -> GridView {
@@ -539,9 +650,10 @@ impl Engine {
     /// Sorts every view by `sort`, rebuilds the grid, and remembers the choice for the next
     /// launch. Stored only once the rebuild has succeeded: a sort that could not be shown
     /// is rolled back, and remembering it would bring the failure back at startup.
-    pub fn set_sort(&self, sort: Sort) -> Result<()> {
-        self.rebuild_or_restore(|state| state.sort = sort)?;
-        self.lib.set_grid_sort(sort)
+    pub fn set_sort(&self, sort: Sort) -> Result<Option<u64>> {
+        let shown = self.rebuild_or_restore(|state| state.sort = sort)?;
+        self.lib.set_grid_sort(sort)?;
+        Ok(shown)
     }
 
     /// The active search query, or the empty string when no search is active.
@@ -572,7 +684,7 @@ impl Engine {
     /// and watcher paths — re-reads the same failing query/view and fails again, and the
     /// empty state can't rescue it either, since `len` still reflects the old, unrelated
     /// result set.
-    pub fn set_view(&self, view: GridView) -> Result<()> {
+    pub fn set_view(&self, view: GridView) -> Result<Option<u64>> {
         self.rebuild_or_restore(|state| {
             // An argument left behind would reappear the next time its view is entered -
             // or, worse, be read by a different view: a search query as a contact hash.
@@ -592,7 +704,14 @@ impl Engine {
     ///
     /// Both the change and the rollback bump the epoch, so a rebuild in flight for either
     /// superseded state is discarded rather than published.
-    fn rebuild_or_restore(&self, mutate: impl FnOnce(&mut ViewState)) -> Result<()> {
+    ///
+    /// Returns the grid version that shows the new state (`Publish::shown_at`), which the
+    /// setter's command hands the UI so it can skip a refetch the `library_changed` of that
+    /// publish has already made; `None` when the state moved again before this rebuild could
+    /// land, and the UI must then fetch whatever is there. A rollback returns the error, never
+    /// a version: a same-version `GridInfo` can report the restored view, so no version would
+    /// tell the UI anything.
+    fn rebuild_or_restore(&self, mutate: impl FnOnce(&mut ViewState)) -> Result<Option<u64>> {
         let previous = {
             let mut state = self.state.lock();
             let previous = state.clone();
@@ -603,27 +722,33 @@ impl Engine {
         // `snapshot`, not `data_snapshot`: moving the view changes no data, so its publish
         // does not ask the UI to refetch the collections - unless a data rebuild it
         // overtook left `data_dirty` set, which it then carries.
-        if let Err(err) = self.rebuild(self.snapshot()) {
-            {
-                // The whole state rather than field by field, so a field added to it cannot
-                // be left out of the rollback. Only the epoch moves on.
-                let mut state = self.state.lock();
-                *state = ViewState {
-                    epoch: state.epoch + 1,
-                    ..previous
-                };
-            }
-            // The bump above discards every rebuild in flight for the state just restored,
-            // so rows a scan committed meanwhile would otherwise wait for its next tick. A
-            // best-effort rebuild for the restored state closes that; it is the query that
-            // was working a moment ago, and if it fails too there is nothing better to do
-            // than log it. A view rebuild too: a scan's commit marked the data itself.
-            if let Err(err) = self.rebuild(self.snapshot()) {
-                tracing::warn!(%err, "grid refresh for the restored view failed");
-            }
-            return Err(err);
+        let published = match self.rebuild(self.snapshot()) {
+            Ok(published) => published,
+            Err(err) => return Err(self.restore(previous, err)),
+        };
+        Ok(published.shown_at())
+    }
+
+    /// `rebuild_or_restore`'s rollback: puts `previous` back and returns `err`.
+    fn restore(&self, previous: ViewState, err: Error) -> Error {
+        {
+            // The whole state rather than field by field, so a field added to it cannot
+            // be left out of the rollback. Only the epoch moves on.
+            let mut state = self.state.lock();
+            *state = ViewState {
+                epoch: state.epoch + 1,
+                ..previous
+            };
         }
-        Ok(())
+        // The bump above discards every rebuild in flight for the state just restored,
+        // so rows a scan committed meanwhile would otherwise wait for its next tick. A
+        // best-effort rebuild for the restored state closes that; it is the query that
+        // was working a moment ago, and if it fails too there is nothing better to do
+        // than log it. A view rebuild too: a scan's commit marked the data itself.
+        if let Err(err) = self.rebuild(self.snapshot()) {
+            tracing::warn!(%err, "grid refresh for the restored view failed");
+        }
+        err
     }
 
     /// Searches for `query`, or returns to the full library when it is blank.
@@ -632,7 +757,7 @@ impl Engine {
     /// matching everything would be the All view under a different name (spec §4).
     ///
     /// Rolls back on a failed refresh; see `set_view`'s doc comment for why.
-    pub fn set_search_query(&self, query: &str) -> Result<()> {
+    pub fn set_search_query(&self, query: &str) -> Result<Option<u64>> {
         if query.trim().is_empty() {
             return self.set_view(GridView::All);
         }
@@ -643,7 +768,7 @@ impl Engine {
     }
 
     /// Shows the photos with a face of one Picasa contact. Rolls back on a failed refresh.
-    pub fn set_person_view(&self, contact: &str) -> Result<()> {
+    pub fn set_person_view(&self, contact: &str) -> Result<Option<u64>> {
         self.rebuild_or_restore(|state| {
             state.arg = contact.to_string();
             state.view = GridView::Person;
@@ -651,7 +776,7 @@ impl Engine {
     }
 
     /// Shows one album. Rolls back on a failed refresh.
-    pub fn set_album_view(&self, album_id: i64) -> Result<()> {
+    pub fn set_album_view(&self, album_id: i64) -> Result<Option<u64>> {
         self.rebuild_or_restore(|state| {
             state.arg = album_id.to_string();
             state.view = GridView::Album;
@@ -659,7 +784,7 @@ impl Engine {
     }
 
     /// Shows the photos carrying one keyword. Rolls back on a failed refresh.
-    pub fn set_tag_view(&self, tag: &str) -> Result<()> {
+    pub fn set_tag_view(&self, tag: &str) -> Result<Option<u64>> {
         self.rebuild_or_restore(|state| {
             state.arg = tag.to_string();
             state.view = GridView::Tag;
@@ -670,7 +795,7 @@ impl Engine {
     ///
     /// The photo's hash is read now, into the argument, so its twins survive the photo
     /// itself being deleted and purged while the view is open (`CopiesArg`).
-    pub fn set_copies_view(&self, item_id: i64) -> Result<()> {
+    pub fn set_copies_view(&self, item_id: i64) -> Result<Option<u64>> {
         let arg = self.lib.copies_view_arg(item_id)?;
         self.rebuild_or_restore(|state| {
             state.arg = arg;
@@ -894,10 +1019,16 @@ impl Engine {
     ///
     /// Always a whole `refresh_grid`, never a narrower update: a hidden photo leaves every
     /// view and every count the sidebar shows, and all of them are read on the rebuild.
+    ///
+    /// A rebuild that fails is logged, not returned: the write has committed, and the next
+    /// rebuild that succeeds shows it. Returned, it reached the UI as a hide that failed,
+    /// which keeps the photos selected for a retry that has nothing left to do.
     pub fn set_items_hidden(&self, ids: &[i64], hidden: bool) -> Result<usize> {
         let count = self.lib.set_hidden(ids, hidden)?;
-        if count > 0 {
-            self.refresh_grid()?;
+        if count > 0
+            && let Err(err) = self.refresh_grid()
+        {
+            tracing::warn!(%err, "photos were hidden but the grid could not be rebuilt");
         }
         Ok(count)
     }
@@ -1385,19 +1516,22 @@ impl Engine {
     /// briefly unreadable database - and a few retries answer that.
     ///
     /// When they do not, an empty index is published so the window leaves the not-built
-    /// state: it says the view is empty, and the next rebuild that succeeds (a view switch,
-    /// a scan that moves rows) puts the photos back. That says something untrue about the
-    /// library, but a blank window says nothing and looks hung; carrying the failure itself
-    /// to the UI would take a new event or a `GridInfo` field for a fault this rare, and
-    /// the log has it. Published like any rebuild, so a view switch that has landed
-    /// meanwhile, with its own grid, is not overwritten.
+    /// state, and the error travels with it (`GridInfo::build_error`), so the grid says
+    /// photon could not read the library rather than "No photos yet" - which, said of a
+    /// library full of photos, sent the user off to add a folder they already have. The
+    /// next rebuild that succeeds (a view switch, a scan that moves rows) puts the photos
+    /// back and clears it. In `GridInfo` rather than a toast: the UI pulls it with the grid,
+    /// so it cannot be lost to a webview whose listener is not up yet, and it stays for as
+    /// long as it is true rather than for as long as a toast does.
+    ///
+    /// Not published over a grid something else has built meanwhile (see `publish`).
     fn build_first_grid(&self, backoff: &[Duration]) {
         let stopping = || self.shutting_down.load(Ordering::SeqCst);
         if let Err(err) = retry_after(backoff, stopping, || self.refresh_grid()) {
             tracing::error!(%err, "could not build the grid at startup; showing it empty");
             let rebuild = self.data_snapshot();
             let empty = GridIndex::build(Vec::new(), rebuild.state.sort.layout(rebuild.state.view));
-            self.publish_if_current(Arc::new(empty), &rebuild);
+            self.publish(Arc::new(empty), &rebuild, Some(err.to_string()));
         }
     }
 
@@ -1408,6 +1542,7 @@ impl Engine {
     /// `shutdown` racing start-up stops it promptly instead of letting it run to
     /// completion.
     pub fn startup(self: &Arc<Self>, pictures: Option<PathBuf>) {
+        self.start_thumb_hashing(THUMB_HASH_SETTLE);
         let engine = Arc::clone(self);
         let handle = std::thread::Builder::new()
             .name("photon-startup".into())
@@ -1534,6 +1669,44 @@ impl Engine {
         *self.similar_pass.lock() = Some(handle);
     }
 
+    /// Requests a look-alike pass whenever the thumbnail workers go quiet after making new
+    /// thumbnails ready, `settle` after the last job finished (`DrainSignal::wait`).
+    ///
+    /// The pass hashes a photo from its cached grid thumbnail, so a photo is a candidate only
+    /// once that exists - and after a scan most do not yet: the scan's own pass runs as it
+    /// ends, while the queue it fed is still rendering. Those photos waited for the next scan
+    /// of anything, which on a quiet library is the next launch; an edit's re-render did
+    /// the same, since `write_edit`'s request runs before the new picture is drawn.
+    ///
+    /// `request_similar_pass` coalesces with a pass already running, and a pass with
+    /// nothing new skips its regroup, so a drain that readied only photos a scan's pass
+    /// already hashed costs the pass's reads and nothing more.
+    ///
+    /// The thread holds the engine weakly and the queue through its own handle, so it keeps
+    /// neither alive: `shutdown` closes the queue and joins it, and an engine dropped
+    /// without one drops the service, which closes the queue too. Once only; a second call
+    /// is a no-op, and so is one after `shutdown` has begun.
+    pub fn start_thumb_hashing(self: &Arc<Self>, settle: Duration) {
+        let mut slot = self.thumb_hashing.lock();
+        if slot.is_some() || self.shutting_down.load(Ordering::SeqCst) {
+            return;
+        }
+        let drained = self.thumbs.drain_signal();
+        let engine = Arc::downgrade(self);
+        let handle = std::thread::Builder::new()
+            .name("photon-thumb-hashing".into())
+            .spawn(move || {
+                while drained.wait(settle) {
+                    let Some(engine) = engine.upgrade() else {
+                        return;
+                    };
+                    engine.request_similar_pass();
+                }
+            })
+            .expect("failed to spawn thumbnail-hashing thread");
+        *slot = Some(handle);
+    }
+
     /// Joins the thread spawned by the most recent `request_similar_pass` call, if one is
     /// outstanding. Safe to call when none was ever spawned.
     ///
@@ -1585,6 +1758,14 @@ impl Engine {
         // to enqueue thumbnails) as the workers go away.
         self.stop_watcher();
         self.thumbs.close();
+        // Before the look-alike pass is waited for: the closed queue has ended its wait, and
+        // joined here it cannot request a pass after `stop_similar_pass` has looked. It
+        // returns at once - `request_similar_pass` only spawns, and refuses while shutting
+        // down.
+        let thumb_hashing = self.thumb_hashing.lock().take();
+        if let Some(handle) = thumb_hashing {
+            let _ = handle.join();
+        }
         self.wait_for_startup();
         self.stop_similar_pass(SIMILAR_PASS_STOP_TIMEOUT);
     }
@@ -1743,7 +1924,10 @@ impl Engine {
     /// `a_rescan_after_set_star_agrees_with_what_photon_wrote`. `pass.groups_changed` is
     /// the one signal that means the view moved: a regroup that hashes nothing still moves
     /// photos into and out of the view (changing the distance setting is exactly that), so
-    /// the refresh is gated on `groups_changed` alone.
+    /// the refresh is gated on `groups_changed` alone. Both rebuild with
+    /// `refresh_grid_derived`: a hash or a group is read by the Duplicates view and its
+    /// count in `GridInfo`, never by an album, person, tag or folder count, so neither
+    /// sends the UI to refetch the collections.
     ///
     /// Here rather than in the scanner because a duplicate is a fact about the whole
     /// library, not about the root or subtree one scan walked - and because `walk_tree` has
@@ -1782,7 +1966,7 @@ impl Engine {
                 match photon_core::duplicates::hash_candidates(&self.lib, cancel) {
                     Ok(0) => {}
                     Ok(_) => {
-                        if let Err(err) = self.refresh_grid() {
+                        if let Err(err) = self.refresh_grid_derived() {
                             tracing::warn!(%err, "grid refresh failed");
                         }
                     }
@@ -1803,7 +1987,7 @@ impl Engine {
                     &mut guard,
                 ) {
                     Ok(pass) if pass.groups_changed => {
-                        if let Err(err) = self.refresh_grid() {
+                        if let Err(err) = self.refresh_grid_derived() {
                             tracing::warn!(%err, "grid refresh failed");
                         }
                     }
@@ -2366,6 +2550,55 @@ mod tests {
         );
     }
 
+    /// A thumbnail rendered after the scan's own pass has run - here, the re-render of an
+    /// edit - is hashed without a further scan: the workers going quiet requests a pass.
+    ///
+    /// Staged through the library rather than `rotate_item`, which requests a pass of its
+    /// own that could race the render and hash the new picture by luck: here nothing but
+    /// the drain signal runs one.
+    #[test]
+    fn a_thumbnail_rendered_after_the_scan_is_hashed_without_another_scan() {
+        let f = fixture(&[("a/one.jpg", &jpeg_pattern(180, 120))]);
+        f.add_photos();
+        f.engine.wait_for_scans();
+        f.engine.thumbs.wait_idle();
+        let id = f.ids()[0];
+        let hashed = |f: &crate::testutil::Fixture| {
+            f.engine
+                .lib
+                .percep_hashes()
+                .unwrap()
+                .iter()
+                .any(|photo| photo.id == id)
+        };
+        f.engine.start_thumb_hashing(Duration::from_millis(50));
+
+        // A turn: a new picture, so a render, and the hash cleared with the thumbnail.
+        let turned = f.engine.lib.item(id).unwrap().unwrap().edit.turned(true);
+        assert!(f.engine.lib.set_item_edit(id, turned).unwrap());
+        assert!(!hashed(&f));
+        f.engine.thumbs.prioritize(&[id], Priority::Visible);
+
+        let wait_hashed = |why: &str| {
+            let deadline = Instant::now() + Duration::from_secs(20);
+            while !hashed(&f) {
+                assert!(Instant::now() < deadline, "{why}: never hashed");
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        };
+        wait_hashed("the turned photo's new thumbnail");
+
+        // Turned back: the original picture is still cached, so the worker renders nothing
+        // and only moves the row to `Ready` - a picture new to the pass all the same.
+        f.engine.wait_for_similar_pass();
+        let original = f.engine.lib.item(id).unwrap().unwrap().edit.turned(false);
+        assert!(f.engine.lib.set_item_edit(id, original).unwrap());
+        assert!(!hashed(&f));
+        f.engine.thumbs.prioritize(&[id], Priority::Visible);
+        wait_hashed("the photo turned back to a cached picture");
+        f.engine.shutdown();
+    }
+
     /// A photo's stored `similar_group`, or `None`. The group column is what a pass leaves
     /// behind, so it is what a test about *requesting* a pass has to read: the Duplicates
     /// view itself is kept honest by `DUPLICATE_FILTER` whether or not a pass ever runs.
@@ -2659,11 +2892,19 @@ mod tests {
         assert_eq!(grid.len(), 2);
         assert!(version >= 1);
         let events = f.events.all();
-        assert!(events.contains(&Recorded::Library(LibraryChanged {
-            version,
-            len: 2,
-            data_changed: true
-        })));
+        // The current version need not be the scan's own rebuild: the two photos share a
+        // byte size, so the duplicate pass after it hashes them and rebuilds again, as a
+        // derived rebuild (`refresh_grid_derived`) that is no data change.
+        assert!(events.iter().any(|e| matches!(e,
+            Recorded::Library(LibraryChanged { version: v, len: 2, .. }) if *v == version)));
+        assert!(events.iter().any(|e| matches!(
+            e,
+            Recorded::Library(LibraryChanged {
+                len: 2,
+                data_changed: true,
+                ..
+            })
+        )));
         assert!(events.iter().any(|e| matches!(e,
             Recorded::Scan(s) if s.watched_id == watched.id && s.done && !s.cancelled && s.added == 2)));
         assert!(events.contains(&Recorded::Folder(FolderStatus {
@@ -2948,6 +3189,27 @@ mod tests {
         f.engine.set_view(GridView::Hidden).unwrap();
         let hidden = crate::commands::grid_info(&f.engine);
         assert_eq!((hidden.view, hidden.len), (GridView::Hidden, 1));
+    }
+
+    /// The hide is committed before the rebuild runs, so a rebuild that fails has not
+    /// undone it. Reported as an error, the UI kept the photos selected as a hide to retry,
+    /// over photos already hidden, and the next rebuild shows them gone anyway.
+    #[test]
+    fn a_hide_whose_rebuild_fails_still_reports_the_photos_it_hid() {
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a.jpg", &img), ("b.jpg", &img)]);
+        f.add_photos();
+        let id = f.ids()[0];
+        let db = rusqlite::Connection::open(&f.config().db_path).unwrap();
+        // Every grid query names the column, so the rebuild after the write fails.
+        db.execute_batch("ALTER TABLE items RENAME COLUMN file_name TO renamed")
+            .unwrap();
+
+        assert_eq!(f.engine.set_items_hidden(&[id], true).unwrap(), 1);
+        let hidden: bool = db
+            .query_row("SELECT hidden FROM items WHERE id = ?1", [id], |r| r.get(0))
+            .unwrap();
+        assert!(hidden);
     }
 
     #[test]
@@ -3501,6 +3763,135 @@ mod tests {
         reopened.shutdown();
     }
 
+    /// The empty stand-in says why it is empty: shown as "No photos yet", a failed read of a
+    /// library full of photos sent the user off to add a folder they already had. And only
+    /// for as long as it is true - the next build that succeeds clears it.
+    #[test]
+    fn a_failed_first_build_reports_its_error_until_a_build_succeeds() {
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a.jpg", &img)]);
+        f.add_photos();
+        let events = Arc::new(crate::events::Recorder::default());
+        let reopened = Engine::open(f.config(), events).unwrap();
+        let db = rusqlite::Connection::open(&f.config().db_path).unwrap();
+        db.execute_batch("ALTER TABLE items RENAME COLUMN file_name TO renamed")
+            .unwrap();
+
+        reopened.build_first_grid(&[Duration::ZERO, Duration::ZERO]);
+
+        let info = crate::commands::grid_info(&reopened);
+        assert_eq!(info.len, 0);
+        let error = info
+            .build_error
+            .expect("the failure is reported with the grid");
+        assert!(
+            error.contains("file_name"),
+            "the database's own reason: {error}"
+        );
+
+        db.execute_batch("ALTER TABLE items RENAME COLUMN renamed TO file_name")
+            .unwrap();
+        reopened.refresh_grid().unwrap();
+        let info = crate::commands::grid_info(&reopened);
+        assert_eq!((info.len, info.build_error), (1, None));
+        reopened.shutdown();
+    }
+
+    /// A grid built while the first build was still retrying - a view switch the UI made
+    /// meanwhile - read the library successfully. The failure landing after it must not
+    /// replace it with an empty grid claiming the library could not be read.
+    #[test]
+    fn a_failed_first_build_does_not_replace_a_grid_built_meanwhile() {
+        use photon_core::grid::GridView;
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a.jpg", &img)]);
+        f.add_photos();
+        let events = Arc::new(crate::events::Recorder::default());
+        let reopened = Engine::open(f.config(), events).unwrap();
+        reopened.set_view(GridView::All).unwrap();
+        let (version, _) = reopened.grid();
+        rusqlite::Connection::open(&f.config().db_path)
+            .unwrap()
+            .execute_batch("ALTER TABLE items RENAME COLUMN file_name TO renamed")
+            .unwrap();
+
+        reopened.build_first_grid(&[Duration::ZERO, Duration::ZERO]);
+
+        let info = crate::commands::grid_info(&reopened);
+        assert_eq!(
+            (info.version, info.len, info.build_error),
+            (version, 1, None)
+        );
+        reopened.shutdown();
+    }
+
+    /// The other order. A view switch made while the first build was retrying snapshots
+    /// before the retries give up, so the stand-in is stamped after it; if the stand-in
+    /// publishes first and takes the stamp, the switch's rebuild - which read the library
+    /// successfully - is dropped as overtaken, and "could not read the library" stays up
+    /// over a library that can be read until something else rebuilds.
+    #[test]
+    fn a_failed_first_build_does_not_block_a_grid_read_before_it() {
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a.jpg", &img)]);
+        f.add_photos();
+        let events = Arc::new(crate::events::Recorder::default());
+        let reopened = Engine::open(f.config(), events).unwrap();
+
+        // The switch's rebuild reads the library...
+        let switch = reopened.snapshot();
+        let switch_index = Arc::new(reopened.build_index(&switch.state).unwrap());
+        // ...and the first build gives up, stamped later, and publishes first.
+        let stand_in = reopened.data_snapshot();
+        let empty = GridIndex::build(Vec::new(), stand_in.state.sort.layout(stand_in.state.view));
+        reopened.publish(Arc::new(empty), &stand_in, Some("busy".into()));
+        assert!(crate::commands::grid_info(&reopened).build_error.is_some());
+
+        assert!(matches!(
+            reopened.publish_if_current(switch_index, &switch),
+            Publish::Published(_)
+        ));
+        let info = crate::commands::grid_info(&reopened);
+        assert_eq!((info.len, info.build_error), (1, None));
+        reopened.shutdown();
+    }
+
+    /// The stand-in says the data changed - the window has nothing yet, so the UI must
+    /// fetch its collections - but it read nothing, and the collections it sends the UI to
+    /// refetch sit in the same database the build could not read. It must leave the flag
+    /// for the first publish that did read: a view switch's rebuild, which marks nothing
+    /// itself, took it `false` and the sidebar stayed empty until a scan moved rows.
+    #[test]
+    fn a_failed_first_build_leaves_the_data_change_for_the_build_that_succeeds() {
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a.jpg", &img)]);
+        f.add_photos();
+        let events = Arc::new(crate::events::Recorder::default());
+        let reopened = Engine::open(f.config(), events.clone()).unwrap();
+
+        let stand_in = reopened.data_snapshot();
+        let empty = GridIndex::build(Vec::new(), stand_in.state.sort.layout(stand_in.state.view));
+        reopened.publish(Arc::new(empty), &stand_in, Some("busy".into()));
+        // A view switch's rebuild, which does not mark the data dirty itself.
+        let switch = reopened.snapshot();
+        let switch_index = Arc::new(reopened.build_index(&switch.state).unwrap());
+        assert!(matches!(
+            reopened.publish_if_current(switch_index, &switch),
+            Publish::Published(_)
+        ));
+
+        let flags: Vec<bool> = events
+            .all()
+            .iter()
+            .filter_map(|e| match e {
+                Recorded::Library(e) => Some(e.data_changed),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(flags, [true, true]);
+        reopened.shutdown();
+    }
+
     /// Only the first attempts may fail: once one succeeds, nothing is tried again, and
     /// its answer is the one returned.
     #[test]
@@ -3816,8 +4207,9 @@ mod tests {
         let (version, grid) = f.engine.grid();
         assert_eq!(grid.len(), 1);
 
-        assert!(
-            !f.engine.publish_if_current(stale_index, &stale),
+        assert_eq!(
+            f.engine.publish_if_current(stale_index, &stale),
+            Publish::Superseded,
             "an index built for a superseded view is discarded"
         );
         let (after, grid) = f.engine.grid();
@@ -3901,8 +4293,9 @@ mod tests {
             let (version, grid) = f.engine.grid();
             let len = grid.len();
 
-            assert!(
-                !f.engine.publish_if_current(stale_index, &stale),
+            assert_eq!(
+                f.engine.publish_if_current(stale_index, &stale),
+                Publish::Superseded,
                 "{moved}: an index built for state that has moved is discarded"
             );
             let (after, grid) = f.engine.grid();
@@ -3914,16 +4307,22 @@ mod tests {
         }
     }
 
-    /// The `data_changed` of the most recent `library_changed`.
-    fn last_data_changed(f: &Fixture) -> bool {
+    /// The `data_changed` of every `library_changed` so far, oldest first.
+    fn data_changed_flags(f: &Fixture) -> Vec<bool> {
         f.events
             .all()
             .iter()
-            .rev()
-            .find_map(|e| match e {
+            .filter_map(|e| match e {
                 Recorded::Library(e) => Some(e.data_changed),
                 _ => None,
             })
+            .collect()
+    }
+
+    /// The `data_changed` of the most recent `library_changed`.
+    fn last_data_changed(f: &Fixture) -> bool {
+        *data_changed_flags(f)
+            .last()
             .expect("a library_changed was sent")
     }
 
@@ -3939,7 +4338,13 @@ mod tests {
         let f = fixture(&[("a/beach.jpg", &img), ("a/mountain.jpg", &img)]);
         f.add_photos();
         f.engine.wait_for_scans();
-        assert!(last_data_changed(&f), "the scan's own rebuild changed data");
+        // Not the last event: the two photos share a byte size, so the duplicate pass
+        // after the scan hashes them and publishes a rebuild of its own, which is not a
+        // data change to the collections.
+        assert!(
+            data_changed_flags(&f).contains(&true),
+            "the scan's own rebuild changed data"
+        );
 
         f.engine.set_view(GridView::Starred).unwrap();
         assert!(!last_data_changed(&f), "a view switch");
@@ -3952,6 +4357,145 @@ mod tests {
             })
             .unwrap();
         assert!(!last_data_changed(&f), "a sort");
+    }
+
+    /// The `version` of the most recent `library_changed`.
+    fn last_announced(f: &Fixture) -> u64 {
+        f.events
+            .all()
+            .iter()
+            .rev()
+            .find_map(|e| match e {
+                Recorded::Library(e) => Some(e.version),
+                _ => None,
+            })
+            .expect("a library_changed was sent")
+    }
+
+    /// Every view setter answers with the version its own rebuild published - the one its
+    /// `library_changed` announced. The UI skips its refetch when it already holds that
+    /// version, because the event's listener got there first; a version from before the
+    /// publish would let it skip while still showing the previous view.
+    #[test]
+    fn a_view_setter_answers_with_the_version_it_published() {
+        use photon_core::grid::GridView;
+        use photon_core::sort::{Sort, SortKey};
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a/beach.jpg", &img), ("a/mountain.jpg", &img)]);
+        f.add_photos();
+        f.engine.wait_for_scans();
+        let album = f.engine.lib.create_album("trip", 0).unwrap();
+        let photo = f.ids()[0];
+
+        type Setter<'a> = &'a dyn Fn() -> Result<Option<u64>>;
+        let setters: [(&str, Setter); 7] = [
+            ("view", &|| f.engine.set_view(GridView::Starred)),
+            ("search", &|| f.engine.set_search_query("beach")),
+            ("blank search", &|| f.engine.set_search_query("  ")),
+            ("sort", &|| {
+                f.engine.set_sort(Sort {
+                    key: SortKey::Name,
+                    reverse: true,
+                })
+            }),
+            ("person", &|| f.engine.set_person_view("abc")),
+            ("album", &|| f.engine.set_album_view(album.id)),
+            ("tag", &|| f.engine.set_tag_view("holiday")),
+        ];
+        for (name, set) in setters {
+            let before = f.engine.grid().0;
+            let answered = set().unwrap();
+            assert!(f.engine.grid().0 > before, "{name}: the setter published");
+            assert_eq!(answered, Some(last_announced(&f)), "{name}");
+            assert_eq!(answered, Some(f.engine.grid().0), "{name}");
+        }
+        let answered = f.engine.set_copies_view(photo).unwrap();
+        assert_eq!(answered, Some(last_announced(&f)), "copies");
+    }
+
+    /// Only a rebuild whose state has moved on names no version: the grid on show may
+    /// still be the old view's, and a UI told to wait for "this version or later" would
+    /// accept it. Overtaken by a later read of the same state, the grid on show is the
+    /// setter's own view, so its version is safe to hand over.
+    #[test]
+    fn only_a_superseded_rebuild_names_no_version_for_the_ui() {
+        assert_eq!(Publish::Published(4).shown_at(), Some(4));
+        assert_eq!(Publish::Overtaken(5).shown_at(), Some(5));
+        assert_eq!(Publish::Superseded.shown_at(), None);
+    }
+
+    /// A poster frame moves a thumbnail's state and nothing any collection or Settings
+    /// reads, so its rebuild - up to one a second while a page extracts frames - must not
+    /// send the UI to refetch the albums, people and tags.
+    #[test]
+    fn a_poster_frame_rebuild_does_not_announce_a_data_change() {
+        use photon_core::grid::GridView;
+        let f = fixture(&[("a/one.jpg", &jpeg(16, 16))]);
+        f.add_photos();
+        f.engine.wait_for_scans();
+        f.engine.set_view(GridView::All).unwrap();
+        assert!(!last_data_changed(&f));
+        let before = f.engine.grid().0;
+
+        // The first frame after a quiet second rebuilds at once, on this thread.
+        f.engine.frame_stored();
+
+        assert!(f.engine.grid().0 > before, "the frame rebuilt the grid");
+        assert!(!last_data_changed(&f));
+    }
+
+    /// The same for the duplicate pass: a content hash moves the Duplicates view and its
+    /// count, which the UI re-reads with the grid on every version, but no album, person,
+    /// tag or folder count.
+    ///
+    /// Two different pictures padded to one byte size: the pass hashes both (a shared size
+    /// is what makes a candidate) and rebuilds, and being different pictures they form no
+    /// look-alike group whose regroup would rebuild after it - so the duplicate pass's is
+    /// the scan's last rebuild, whether or not their thumbnails were ready in time.
+    #[test]
+    fn a_duplicate_pass_rebuild_does_not_announce_a_data_change() {
+        let pattern = jpeg_pattern(180, 120);
+        let mut solid = jpeg(16, 16);
+        assert!(solid.len() < pattern.len());
+        // After the end-of-image marker, where no decoder reads.
+        solid.resize(pattern.len(), 0);
+        let f = fixture(&[("a/one.jpg", &solid), ("b/two.jpg", &pattern)]);
+        f.add_photos();
+        f.engine.wait_for_scans();
+        assert_eq!(crate::commands::grid_info(&f.engine).duplicate_count, 0);
+
+        let flags = data_changed_flags(&f);
+        assert!(flags.contains(&true), "the scan's own rebuild changed data");
+        assert_eq!(
+            flags.last(),
+            Some(&false),
+            "the duplicate pass's rebuild, the scan's last, announced a data change"
+        );
+    }
+
+    /// And for the look-alike regroup, staged as in
+    /// `a_regroup_that_hashes_nothing_still_rebuilds_the_grid`: the groups are cleared
+    /// behind the engine, so the pass has a regroup to publish and nothing to hash.
+    #[test]
+    fn a_look_alike_regroup_does_not_announce_a_data_change() {
+        use photon_core::grid::GridView;
+        let f = fixture(&[
+            ("a/big.jpg", &jpeg_pattern(180, 120)),
+            ("a/small.jpg", &jpeg_pattern(72, 48)),
+        ]);
+        let watched = f.add_photos();
+        f.engine.thumbs.wait_idle();
+        f.engine.start_scan(watched);
+        f.engine.wait_for_scans();
+        f.engine.lib.set_similar_groups(&[]).unwrap();
+        f.engine.set_view(GridView::Duplicates).unwrap();
+        assert_eq!(f.ids().len(), 0);
+        assert!(!last_data_changed(&f));
+
+        f.engine.hash_after_scan(&AtomicBool::new(false));
+
+        assert_eq!(f.ids().len(), 2, "the regroup rebuilt the grid");
+        assert!(!last_data_changed(&f));
     }
 
     /// A star moves the data - and `refresh_grid` stands for every writer like it.
@@ -3992,8 +4536,9 @@ mod tests {
         let stale_index = Arc::new(f.engine.build_index(&stale.state).unwrap());
         // ...when the view switch lands first.
         f.engine.set_view(GridView::Starred).unwrap();
-        assert!(
-            !f.engine.publish_if_current(stale_index, &stale),
+        assert_eq!(
+            f.engine.publish_if_current(stale_index, &stale),
+            Publish::Superseded,
             "the scan's rebuild is discarded, so it sends nothing"
         );
         assert!(
@@ -4029,9 +4574,11 @@ mod tests {
         let (version, grid) = f.engine.grid();
         assert_eq!(grid.len(), 1);
 
-        assert!(
-            !f.engine.publish_if_current(early_index, &early),
-            "an index that read the database before an already-published one is dropped"
+        assert_eq!(
+            f.engine.publish_if_current(early_index, &early),
+            Publish::Overtaken(version),
+            "an index that read the database before an already-published one is dropped, \
+             and the grid on show is named as the one for its state"
         );
         let (after, grid) = f.engine.grid();
         assert_eq!((after, grid.len()), (version, 1));

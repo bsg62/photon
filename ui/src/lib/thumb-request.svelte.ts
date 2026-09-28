@@ -21,9 +21,10 @@ export const TILE_SETTLE_MS = 100;
  *
  *  Unless the caller says `defer`. Rows are keyed by position, so a tile is mounted fresh
  *  for every row a scroll brings in, and its first photo is also the only one it ever shows:
- *  during a flick every tile passed would otherwise ask for its thumbnail on sight - on a
- *  fresh import, a blocking render each. The grid defers only while it scrolls fast; the
- *  initial paint and a slow scroll still ask at once. */
+ *  during a scrollbar drag every tile passed would otherwise ask for its thumbnail on sight -
+ *  on a fresh import, a blocking render each. The grid defers only where a tile will most
+ *  likely be gone before it settles (`defersThumbs`); the initial paint, a jump on its own
+ *  and any continuous scroll short of that still ask at once. */
 export function createThumbRequest() {
   let requested = $state<string | null>(null);
   const settle = debounce((key: string) => (requested = key), TILE_SETTLE_MS);
