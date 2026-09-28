@@ -148,6 +148,8 @@ export class LibraryStore {
     // right-click outside the selection. Keeping that rule here rather than at each call
     // site is what stops a new caller silently leaving a stale multi-selection behind.
     this.pick(id === null ? new Set() : new Set([id]));
+    // A band live under it counted photos the selection no longer holds.
+    this.bandUnresolved = 0;
     this.anchor = offset;
   }
   /** Selects `offset` knowing it holds photo `id`, for callers that know the id without the
@@ -370,8 +372,15 @@ export class LibraryStore {
 
     // `bandUnresolved` is zeroed only beside each write of the selection, never before this
     // await: zeroed early, "N selected" dropped to the preview's loaded photos for a round
-    // trip and then jumped back.
-    const ids = await this.fetchIdsOf(ranges);
+    // trip and then jumped back. A fetch that fails writes nothing and zeroes it all the
+    // same: the band is over, and the count would otherwise stay high for good.
+    let ids: Set<number> | null;
+    try {
+      ids = await this.fetchIdsOf(ranges);
+    } catch (e) {
+      this.bandUnresolved = 0;
+      throw e;
+    }
     if (!ids) {
       // Overtaken, or the grid was rebuilt under the drag. The preview was drawn from
       // offsets that mean something else now, so the band is abandoned and the selection
@@ -406,6 +415,7 @@ export class LibraryStore {
 
   clearSelection(): void {
     this.pick(new Set());
+    this.bandUnresolved = 0;
     this.selectedOffset = null;
     this.selectedId = null;
     this.anchor = null;

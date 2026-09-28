@@ -1796,6 +1796,39 @@ describe('LibraryStore', () => {
         expect(store.selectionCount).toBe(1);
       });
 
+      /** A release whose fetch fails - the backend refusing it, the IPC dropped - left the
+       *  unresolved count behind for good: "N selected" stayed thousands high over a
+       *  selection holding only the preview's loaded photos. */
+      it('counts nothing unresolved once a release whose fetch fails ends', async () => {
+        const store = await storeOf(2000);
+        store.beginBand(false);
+        store.bandTo([[1200, 1202]]);
+        vi.mocked(api.gridRows).mockRejectedValue(new Error('gone'));
+
+        await expect(store.endBand([[1200, 1202]])).rejects.toThrow('gone');
+        expect(store.selectionCount).toBe(0);
+      });
+
+      /** Anything that replaces the selection mid-band - a view switch clearing it, a plain
+       *  selection - ends what the band counted too. */
+      it('counts nothing unresolved once the selection is cleared under a live band', async () => {
+        const store = await storeOf(2000);
+        store.beginBand(false);
+        store.bandTo([[1200, 1202]]);
+
+        store.clearSelection();
+        expect(store.selectionCount).toBe(0);
+      });
+
+      it('counts only the plain selection made under a live band', async () => {
+        const store = await storeOf(2000);
+        store.beginBand(false);
+        store.bandTo([[1200, 1202]]);
+
+        store.selected = 3;
+        expect(store.selectionCount).toBe(1);
+      });
+
       it('counts only what an additive band adds, and nothing once it is abandoned', async () => {
         const store = await storeOf(5000);
         store.selected = 20;
