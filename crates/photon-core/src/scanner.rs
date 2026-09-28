@@ -415,6 +415,69 @@ pub fn scan_subtree(
     Ok(report)
 }
 
+/// What an INI pass did, and the folders it could not do it for.
+#[derive(Debug, Default)]
+pub struct IniPass {
+    pub report: ScanReport,
+    /// Folders photon has no row for: never scanned, so a new folder whose INI appeared with
+    /// it. A walk's to index, not this pass's.
+    pub needs_walk: Vec<PathBuf>,
+}
+
+/// Rereads the Picasa INI of each folder in `dirs` and applies it - stars, faces, the hidden
+/// flag and albums - without walking anything: for a folder whose only change is its INI
+/// (the watcher's `Changed::ini_dirs`), which is what photon's own star writes and a Picasa
+/// album rename produce.
+///
+/// Through the scan's own `apply_picasa`, so it applies exactly the scan's rules. What a scan
+/// does besides is left out on purpose - no mark or purge, no pruning, no thumbnails, no
+/// metadata - since nothing but the INI changed; that is what makes photon's own echo cost
+/// one INI read per folder.
+pub fn refresh_picasa(
+    lib: &Library,
+    watched: &WatchedFolder,
+    dirs: &[PathBuf],
+    cancel: &AtomicBool,
+) -> Result<IniPass> {
+    let root = Path::new(&watched.path);
+    if !root.is_dir() {
+        lib.set_watched_online(watched.id, false)?;
+        return Ok(IniPass {
+            report: ScanReport {
+                offline: true,
+                ..ScanReport::default()
+            },
+            ..IniPass::default()
+        });
+    }
+    let rows = FolderRows::load(lib, watched.id)?;
+    let mut pass = IniPass::default();
+    let mut walked: Vec<(PathBuf, i64)> = Vec::new();
+    for dir in dirs {
+        if !crate::paths::is_within(dir, root) {
+            continue;
+        }
+        match dir.to_str().and_then(|d| rows.stored.get(d)) {
+            Some(&(id, _)) => walked.push((dir.clone(), id)),
+            None => pass.needs_walk.push(dir.clone()),
+        }
+    }
+    // In chunks so a cancel (a folder's removal, a quit) is honoured between folders
+    // without paying `apply_picasa`'s per-call setup once per folder.
+    for chunk in walked.chunks(64) {
+        if cancel.load(Ordering::Relaxed) {
+            pass.report.cancelled = true;
+            break;
+        }
+        let applied = apply_picasa(lib, chunk, &IniEvidence::none());
+        pass.report.restarred += applied.restarred;
+        pass.report.refaced += applied.refaced;
+        pass.report.rehidden += applied.rehidden;
+        pass.report.realbumed += applied.realbumed;
+    }
+    Ok(pass)
+}
+
 /// Upserts the folder rows from the watched root down to the target's parent, so the walk
 /// can attach the target to its real parent rather than treating it as a root. `relative` is
 /// the target's path relative to the watched root (i.e. `target.strip_prefix(root)`).
@@ -561,6 +624,18 @@ impl<'a> IniEvidence<'a> {
             return None;
         }
         Some(self.listed.get(dir).unwrap_or(&NONE))
+    }
+
+    /// No listing at all: every folder is found by `read_folder`, as a folder whose listing
+    /// may have been cut short is. For the INI pass, which lists nothing itself.
+    fn none() -> IniEvidence<'static> {
+        static EMPTY: std::sync::LazyLock<HashMap<PathBuf, IniListing>> =
+            std::sync::LazyLock::new(HashMap::new);
+        IniEvidence {
+            listed: &EMPTY,
+            incomplete: &[],
+            whole: false,
+        }
     }
 }
 
@@ -1349,6 +1424,100 @@ mod tests {
         let mut second = Indexed::default();
         scan_watched(&lib, &watched, 2, &ScanOptions::default(), &mut second).unwrap();
         assert_eq!(second.0, [known[&key(&a)].id]);
+    }
+
+    fn ini_pass(lib: &Library, watched: &WatchedFolder, dirs: &[PathBuf]) -> IniPass {
+        refresh_picasa(lib, watched, dirs, &AtomicBool::new(false)).unwrap()
+    }
+
+    #[test]
+    fn an_ini_pass_applies_a_star_without_walking() {
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        write_file(&root, "a.jpg", &jpeg_bytes(4, 2));
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
+        scan(&lib, &watched, 1);
+        assert_eq!(lib.starred_count().unwrap(), 0);
+
+        write_file(&root, ".picasa.ini", b"[a.jpg]\nstar=yes\n");
+        // A photo that appears at the same time is a walk's business, not this pass's.
+        write_file(&root, "b.jpg", &jpeg_bytes(6, 2));
+        let pass = ini_pass(&lib, &watched, std::slice::from_ref(&root));
+
+        assert_eq!(lib.starred_count().unwrap(), 1);
+        assert_eq!(pass.report.restarred, 1);
+        assert!(pass.report.touched_rows());
+        assert_eq!(lib.grid_entries().unwrap().len(), 1, "nothing was walked");
+        assert!(pass.needs_walk.is_empty());
+    }
+
+    #[test]
+    fn an_ini_pass_over_a_deleted_ini_clears_the_stars() {
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        write_file(&root, "a.jpg", &jpeg_bytes(4, 2));
+        write_file(&root, ".picasa.ini", b"[a.jpg]\nstar=yes\n");
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
+        scan(&lib, &watched, 1);
+        assert_eq!(lib.starred_count().unwrap(), 1);
+
+        fs::remove_file(root.join(".picasa.ini")).unwrap();
+        ini_pass(&lib, &watched, std::slice::from_ref(&root));
+
+        assert_eq!(lib.starred_count().unwrap(), 0);
+    }
+
+    /// Review Focus 2.
+    #[test]
+    fn an_unknown_folder_needs_a_walk() {
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        write_file(&root, "a.jpg", &jpeg_bytes(4, 2));
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
+        scan(&lib, &watched, 1);
+
+        let new = root.join("new");
+        write_file(&new, "c.jpg", &jpeg_bytes(4, 2));
+        write_file(&new, ".picasa.ini", b"[c.jpg]\nstar=yes\n");
+        let pass = ini_pass(&lib, &watched, std::slice::from_ref(&new));
+
+        assert_eq!(pass.needs_walk, [new]);
+        assert_eq!(lib.starred_count().unwrap(), 0);
+    }
+
+    #[test]
+    fn an_ini_pass_over_an_offline_root_reports_offline() {
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        write_file(&root, "a.jpg", &jpeg_bytes(4, 2));
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
+        scan(&lib, &watched, 1);
+        fs::remove_dir_all(&root).unwrap();
+
+        let pass = ini_pass(&lib, &watched, std::slice::from_ref(&root));
+
+        assert!(pass.report.offline);
+    }
+
+    #[test]
+    fn an_ini_pass_stops_when_cancelled() {
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        write_file(&root, "a.jpg", &jpeg_bytes(4, 2));
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
+        scan(&lib, &watched, 1);
+        write_file(&root, ".picasa.ini", b"[a.jpg]\nstar=yes\n");
+
+        let pass = refresh_picasa(
+            &lib,
+            &watched,
+            std::slice::from_ref(&root),
+            &AtomicBool::new(true),
+        )
+        .unwrap();
+
+        assert!(pass.report.cancelled);
+        assert_eq!(lib.starred_count().unwrap(), 0);
     }
 
     /// The status bar's bar. A rescan of an unchanged folder flushes no batch, and the

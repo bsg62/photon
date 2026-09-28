@@ -1,4 +1,4 @@
-//! Turns filesystem events into subtree scans.
+//! Turns filesystem events into subtree scans, and INI-only changes into INI passes.
 //!
 //! The watcher itself and the mapping policy live in photon-core; this owns the lifecycle:
 //! which roots are watched, what happens when the OS won't watch them, and how events
@@ -6,8 +6,9 @@
 
 use crate::engine::{Engine, FullScan};
 use parking_lot::Mutex;
+use photon_core::paths::is_within;
 use photon_core::watcher::{
-    WatchError, WatchedRoot, Watcher, insert_pending, plan_scans, roots_affected_by,
+    Changed, Pending, WatchError, WatchedRoot, Watcher, plan_ini, plan_scans, roots_affected_by,
 };
 use std::{
     collections::HashMap,
@@ -56,13 +57,14 @@ const JOIN_POLL: Duration = Duration::from_millis(50);
 
 pub struct WatcherService {
     engine: Arc<Engine>,
-    /// The directories still waiting for a subtree scan, per watched folder: a bounded set
-    /// maintained by `insert_pending`, so a folder whose scan slot is busy keeps covering
-    /// every queued change without collapsing unrelated branches into a full rescan.
+    /// What is still waiting for a watched folder whose scan slot was busy: directories to
+    /// walk, a bounded set maintained by `insert_pending` so unrelated branches do not
+    /// collapse into a full rescan, and folders whose INI alone changed, uncapped (see
+    /// `Pending`).
     ///
     /// Shared (not a bare `Mutex`) so the event and ticker threads can reach it without
     /// borrowing `self`, which a `'static` thread can't do.
-    pending: Arc<Mutex<HashMap<i64, Vec<PathBuf>>>>,
+    pending: Arc<Mutex<HashMap<i64, Pending>>>,
     /// Roots the OS would not let us watch; rescanned periodically instead, and dropped
     /// once re-registering their watch succeeds. Read by `is_degraded`, which
     /// `Engine::run_scan` consults so the `folder-status` event tells the UI when live
@@ -141,7 +143,16 @@ impl WatcherService {
     /// Maps `dirs` to watched folders and starts a subtree scan for each, queueing a
     /// follow-up for any folder whose scan slot is already occupied.
     pub fn handle_batch(&self, dirs: Vec<PathBuf>) {
-        plan_and_apply(&self.engine, &self.pending, dirs);
+        self.handle_changes(Changed {
+            dirs,
+            ini_dirs: Vec::new(),
+        });
+    }
+
+    /// `handle_batch`, plus folders whose only change is their INI: each watched folder gets
+    /// one INI pass over all of its own, or queues them if its slot is busy.
+    pub fn handle_changes(&self, changed: Changed) {
+        plan_and_apply(&self.engine, &self.pending, changed);
     }
 
     /// Retries one pending follow-up per folder, dropping the ones that start.
@@ -151,7 +162,7 @@ impl WatcherService {
 
     /// How many directories are queued as follow-ups, across every watched folder.
     pub fn pending_len(&self) -> usize {
-        self.pending.lock().values().map(Vec::len).sum()
+        self.pending.lock().values().map(Pending::len).sum()
     }
 
     /// True while `id`'s watch couldn't be registered with the OS, so it's relying on
@@ -198,7 +209,21 @@ impl WatcherService {
     /// set holds rather than infer it indirectly from a scan's side effects.
     #[cfg(test)]
     fn pending_dirs(&self, id: i64) -> Option<Vec<PathBuf>> {
-        self.pending.lock().get(&id).cloned()
+        self.pending
+            .lock()
+            .get(&id)
+            .map(|p| p.dirs.clone())
+            .filter(|dirs| !dirs.is_empty())
+    }
+
+    /// The folders queued for `id`'s next INI pass, in order. Test-only, like `pending_dirs`.
+    #[cfg(test)]
+    fn pending_ini(&self, id: i64) -> Vec<PathBuf> {
+        self.pending
+            .lock()
+            .get(&id)
+            .map(|p| p.ini.iter().cloned().collect())
+            .unwrap_or_default()
     }
 
     /// Stops the event and ticker threads, waiting up to `STOP_TIMEOUT` for them to finish,
@@ -287,11 +312,11 @@ impl Drop for WatcherService {
 #[allow(clippy::too_many_arguments)]
 fn spawn_event_thread(
     engine: Arc<Engine>,
-    pending: Arc<Mutex<HashMap<i64, Vec<PathBuf>>>>,
+    pending: Arc<Mutex<HashMap<i64, Pending>>>,
     degraded: Arc<Mutex<Vec<i64>>>,
     watcher: Arc<Mutex<Option<Watcher>>>,
     stopping: Arc<AtomicBool>,
-    rx: Receiver<Vec<PathBuf>>,
+    rx: Receiver<Changed>,
     errors: Receiver<Vec<WatchError>>,
 ) -> JoinHandle<()> {
     std::thread::Builder::new()
@@ -302,7 +327,7 @@ fn spawn_event_thread(
                     degrade_failed_roots(&engine, &degraded, &failures);
                 }
                 match rx.recv_timeout(POLL) {
-                    Ok(dirs) => plan_and_apply(&engine, &pending, dirs),
+                    Ok(changed) => plan_and_apply(&engine, &pending, changed),
                     Err(RecvTimeoutError::Timeout) => continue,
                     Err(RecvTimeoutError::Disconnected) => {
                         watcher_died(&engine, &degraded, &watcher);
@@ -395,7 +420,7 @@ fn degrade_failed_roots(engine: &Arc<Engine>, degraded: &Mutex<Vec<i64>>, failur
 fn try_start_watcher(
     engine: &Arc<Engine>,
     degraded: &Mutex<Vec<i64>>,
-) -> Option<(Watcher, Receiver<Vec<PathBuf>>, Receiver<Vec<WatchError>>)> {
+) -> Option<(Watcher, Receiver<Changed>, Receiver<Vec<WatchError>>)> {
     let watched = engine.lib.watched_folders().unwrap_or_default();
     match Watcher::start(DEBOUNCE) {
         Ok((mut watcher, rx, errors)) => {
@@ -501,7 +526,7 @@ fn mark_degraded(degraded: &mut Vec<i64>, id: i64) {
 /// interval up to a multiple of it.
 fn ticker_loop(
     engine: Arc<Engine>,
-    pending: Arc<Mutex<HashMap<i64, Vec<PathBuf>>>>,
+    pending: Arc<Mutex<HashMap<i64, Pending>>>,
     degraded: Arc<Mutex<Vec<i64>>>,
     watcher: Arc<Mutex<Option<Watcher>>>,
     threads: Arc<Mutex<Vec<JoinHandle<()>>>>,
@@ -600,13 +625,9 @@ fn rescan_due_degraded_roots(
     }
 }
 
-/// Turns a batch of changed directories into subtree scans, queueing a follow-up for any
-/// folder whose scan slot is already occupied.
-fn plan_and_apply(
-    engine: &Arc<Engine>,
-    pending: &Mutex<HashMap<i64, Vec<PathBuf>>>,
-    dirs: Vec<PathBuf>,
-) {
+/// Turns a batch of changed directories into subtree scans and INI passes, queueing a
+/// follow-up for any folder whose scan slot is already occupied.
+fn plan_and_apply(engine: &Arc<Engine>, pending: &Mutex<HashMap<i64, Pending>>, changed: Changed) {
     // Canonicalize before mapping directories to roots: `add_watched_folder` stores every
     // root canonicalized, while an event arrives with whatever path the OS reported. On
     // macOS a directory under `/var` (or any symlinked path) is reported there while the
@@ -620,10 +641,17 @@ fn plan_and_apply(
     //
     // A directory that has since been deleted cannot be canonicalized and keeps its raw
     // path; `scan_subtree` resolves that by walking up to its nearest living ancestor.
-    let dirs: Vec<PathBuf> = dirs
-        .into_iter()
-        .map(|dir| photon_core::paths::canonicalize(&dir).unwrap_or(dir))
-        .collect();
+    //
+    // The INI dirs need it as much: raw, a symlinked one lies in no stored root and is
+    // dropped, and the pass finds each folder's row by its exact stored path, so one that
+    // missed its row would be walked as a folder photon has never seen.
+    let canonical = |dirs: Vec<PathBuf>| -> Vec<PathBuf> {
+        dirs.into_iter()
+            .map(|dir| photon_core::paths::canonicalize(&dir).unwrap_or(dir))
+            .collect()
+    };
+    let dirs = canonical(changed.dirs);
+    let ini_dirs = canonical(changed.ini_dirs);
     let watched = engine.lib.watched_folders().unwrap_or_default();
     let roots: Vec<WatchedRoot> = watched
         .iter()
@@ -633,43 +661,74 @@ fn plan_and_apply(
         })
         .collect();
     let requests = plan_scans(&dirs, &roots, engine.excluded());
-    for (id, dir) in requests {
-        let Some(folder) = watched.iter().find(|w| w.id == id) else {
+    for (id, dir) in &requests {
+        let Some(folder) = watched.iter().find(|w| w.id == *id) else {
             continue;
         };
         if !engine.start_subtree_scan(folder.clone(), dir.clone()) {
-            queue_pending(pending, id, dir, Path::new(&folder.path));
+            queue_pending(pending, *id, dir.clone(), Path::new(&folder.path));
+        }
+    }
+
+    // A walk in this batch rereads the INI of every folder it covers.
+    let mut by_root: HashMap<i64, Vec<PathBuf>> = HashMap::new();
+    for (id, dir) in plan_ini(&ini_dirs, &roots, engine.excluded()) {
+        if requests
+            .iter()
+            .any(|(walk_id, walk)| *walk_id == id && is_within(&dir, walk))
+        {
+            continue;
+        }
+        by_root.entry(id).or_default().push(dir);
+    }
+    for (id, dirs) in by_root {
+        let Some(folder) = watched.iter().find(|w| w.id == id) else {
+            continue;
+        };
+        if !engine.start_ini_pass(folder.clone(), dirs.clone()) {
+            let mut pending = pending.lock();
+            let queued = pending.entry(id).or_default();
+            for dir in &dirs {
+                queued.queue_ini(dir);
+            }
         }
     }
 }
 
-/// Adds `dir` to the set of follow-ups queued for `id`, via `insert_pending`, so nothing
+/// Adds `dir` to the walks queued for `id`, via `insert_pending`, so nothing
 /// queued is ever dropped: a directory an already-queued ancestor covers is folded into it,
 /// unrelated branches are kept separately, and only an overflowing set collapses to `root`.
-fn queue_pending(pending: &Mutex<HashMap<i64, Vec<PathBuf>>>, id: i64, dir: PathBuf, root: &Path) {
-    let mut pending = pending.lock();
-    insert_pending(pending.entry(id).or_default(), &dir, root);
+fn queue_pending(pending: &Mutex<HashMap<i64, Pending>>, id: i64, dir: PathBuf, root: &Path) {
+    pending.lock().entry(id).or_default().queue_walk(&dir, root);
 }
 
 /// Retries one pending follow-up per watched folder, removing the ones that start, and
 /// forgetting every follow-up of a folder that is no longer watched (there's nothing left to
 /// scan for it).
 ///
-/// One per folder, not all of them: a folder can only have one scan running at a time, so
-/// the rest would be refused anyway. They stay queued for the next tick, two seconds later.
-fn try_drain(engine: &Arc<Engine>, pending: &Mutex<HashMap<i64, Vec<PathBuf>>>) {
-    let candidates: Vec<(i64, PathBuf)> = pending
+/// A queued walk goes first, one per folder per tick - a folder can only have one scan
+/// running at a time, so the rest would be refused anyway, and they stay queued for the next
+/// tick, two seconds later. A walk rereads the INIs of the folders it covers, and queueing
+/// one already dropped those from the INI set. Only once no walk is left does the whole INI
+/// set run, as one pass.
+fn try_drain(engine: &Arc<Engine>, pending: &Mutex<HashMap<i64, Pending>>) {
+    let candidates: Vec<(i64, Option<PathBuf>)> = pending
         .lock()
         .iter()
-        .filter_map(|(id, dirs)| dirs.first().map(|dir| (*id, dir.clone())))
+        .filter(|(_, queued)| !queued.is_empty())
+        .map(|(id, queued)| (*id, queued.dirs.first().cloned()))
         .collect();
     if candidates.is_empty() {
         return;
     }
     let watched = engine.lib.watched_folders().unwrap_or_default();
-    for (id, dir) in candidates {
-        match watched.iter().find(|w| w.id == id) {
-            Some(folder) => {
+    for (id, walk) in candidates {
+        let Some(folder) = watched.iter().find(|w| w.id == id) else {
+            pending.lock().remove(&id);
+            continue;
+        };
+        match walk {
+            Some(dir) => {
                 let root = PathBuf::from(&folder.path);
                 let folder = folder.clone();
                 let started = dir.clone();
@@ -677,9 +736,9 @@ fn try_drain(engine: &Arc<Engine>, pending: &Mutex<HashMap<i64, Vec<PathBuf>>>) 
                     engine.start_subtree_scan(folder, started)
                 });
             }
-            None => {
-                pending.lock().remove(&id);
-            }
+            None => start_queued_ini_pass(pending, id, |dirs| {
+                engine.start_ini_pass(folder.clone(), dirs)
+            }),
         }
     }
 }
@@ -695,7 +754,7 @@ fn try_drain(engine: &Arc<Engine>, pending: &Mutex<HashMap<i64, Vec<PathBuf>>>) 
 /// first can at worst queue a directory the running scan also covers: one redundant walk
 /// rather than a lost change.
 fn start_queued_scan(
-    pending: &Mutex<HashMap<i64, Vec<PathBuf>>>,
+    pending: &Mutex<HashMap<i64, Pending>>,
     id: i64,
     dir: &Path,
     root: &Path,
@@ -703,15 +762,44 @@ fn start_queued_scan(
 ) {
     {
         let mut pending = pending.lock();
-        if let Some(dirs) = pending.get_mut(&id) {
-            dirs.retain(|queued| queued != dir);
-            if dirs.is_empty() {
+        if let Some(queued) = pending.get_mut(&id) {
+            queued.dirs.retain(|queued| queued != dir);
+            if queued.is_empty() {
                 pending.remove(&id);
             }
         }
     }
     if !start() {
         queue_pending(pending, id, dir.to_path_buf(), root);
+    }
+}
+
+/// Starts one pass over `id`'s whole queued INI set, taking the set out of `pending` before
+/// the pass starts and putting it back if the start is refused - for `start_queued_scan`'s
+/// reason: a change to one of these INIs arriving meanwhile must be queued again, not
+/// swallowed by an entry about to be deleted, since the pass may already have read that INI.
+fn start_queued_ini_pass(
+    pending: &Mutex<HashMap<i64, Pending>>,
+    id: i64,
+    start: impl FnOnce(Vec<PathBuf>) -> bool,
+) {
+    let ini: Vec<PathBuf> = {
+        let mut pending = pending.lock();
+        let Some(queued) = pending.get_mut(&id) else {
+            return;
+        };
+        let ini: Vec<PathBuf> = std::mem::take(&mut queued.ini).into_iter().collect();
+        if queued.is_empty() {
+            pending.remove(&id);
+        }
+        ini
+    };
+    if !ini.is_empty() && !start(ini.clone()) {
+        let mut pending = pending.lock();
+        let queued = pending.entry(id).or_default();
+        for dir in &ini {
+            queued.queue_ini(dir);
+        }
     }
 }
 
@@ -756,7 +844,7 @@ fn rescan_offline_roots(
 /// event thread so live updates resume for whichever roots register successfully.
 fn retry_watcher_startup(
     engine: &Arc<Engine>,
-    pending: &Arc<Mutex<HashMap<i64, Vec<PathBuf>>>>,
+    pending: &Arc<Mutex<HashMap<i64, Pending>>>,
     degraded: &Arc<Mutex<Vec<i64>>>,
     watcher: &Arc<Mutex<Option<Watcher>>>,
     stopping: &Arc<AtomicBool>,
@@ -848,7 +936,7 @@ mod tests {
     /// it but a scan that may already have walked past that directory.
     #[test]
     fn an_event_arriving_as_its_follow_up_starts_is_kept() {
-        let pending: Mutex<HashMap<i64, Vec<PathBuf>>> = Mutex::new(HashMap::new());
+        let pending: Mutex<HashMap<i64, Pending>> = Mutex::new(HashMap::new());
         let root = PathBuf::from("/photos");
         let dir = root.join("a");
         queue_pending(&pending, 1, dir.clone(), &root);
@@ -861,7 +949,7 @@ mod tests {
         });
 
         assert_eq!(
-            pending.lock().get(&1).cloned().unwrap_or_default(),
+            pending.lock().get(&1).cloned().unwrap_or_default().dirs,
             vec![root.join("a").join("deep")],
             "the change that arrived during the start stays queued on its own account"
         );
@@ -869,7 +957,7 @@ mod tests {
 
     #[test]
     fn a_follow_up_whose_scan_is_refused_stays_queued() {
-        let pending: Mutex<HashMap<i64, Vec<PathBuf>>> = Mutex::new(HashMap::new());
+        let pending: Mutex<HashMap<i64, Pending>> = Mutex::new(HashMap::new());
         let root = PathBuf::from("/photos");
         let dir = root.join("a");
         queue_pending(&pending, 1, dir.clone(), &root);
@@ -877,9 +965,55 @@ mod tests {
         start_queued_scan(&pending, 1, &dir, &root, || false);
 
         assert_eq!(
-            pending.lock().get(&1).cloned().unwrap_or_default(),
+            pending.lock().get(&1).cloned().unwrap_or_default().dirs,
             vec![dir],
             "removing before the start must not drop a follow-up the scan slot refused"
+        );
+    }
+
+    /// `an_event_arriving_as_its_follow_up_starts_is_kept`, for the INI set: a star written
+    /// into a queued folder while its pass is starting - after the pass may have read that
+    /// INI - must be queued again, not swallowed by an entry about to be deleted.
+    #[test]
+    fn an_ini_change_arriving_as_its_pass_starts_is_kept() {
+        let pending: Mutex<HashMap<i64, Pending>> = Mutex::new(HashMap::new());
+        let dir = PathBuf::from("/photos/a");
+        pending.lock().entry(1).or_default().queue_ini(&dir);
+
+        start_queued_ini_pass(&pending, 1, |dirs| {
+            assert_eq!(dirs, vec![dir.clone()]);
+            // The event thread, running while the pass is being started.
+            pending.lock().entry(1).or_default().queue_ini(&dir);
+            true
+        });
+
+        assert_eq!(
+            pending
+                .lock()
+                .get(&1)
+                .map(|p| p.ini.iter().cloned().collect::<Vec<_>>()),
+            Some(vec![dir]),
+            "the change that arrived during the start stays queued on its own account"
+        );
+    }
+
+    #[test]
+    fn an_ini_pass_that_is_refused_stays_queued() {
+        let pending: Mutex<HashMap<i64, Pending>> = Mutex::new(HashMap::new());
+        let dirs = vec![PathBuf::from("/photos/a"), PathBuf::from("/photos/b")];
+        for dir in &dirs {
+            pending.lock().entry(1).or_default().queue_ini(dir);
+        }
+
+        start_queued_ini_pass(&pending, 1, |_| false);
+
+        assert_eq!(
+            pending
+                .lock()
+                .get(&1)
+                .map(|p| p.ini.iter().cloned().collect::<Vec<_>>()),
+            Some(dirs),
+            "removing before the start must not drop a pass the scan slot refused"
         );
     }
 
@@ -1414,7 +1548,7 @@ mod tests {
 
         // Simulate `Watcher::start` itself having failed at `start` time: no watcher in the
         // slot at all, and the online root marked degraded as a result.
-        let pending: Arc<Mutex<HashMap<i64, Vec<PathBuf>>>> = Arc::new(Mutex::new(HashMap::new()));
+        let pending: Arc<Mutex<HashMap<i64, Pending>>> = Arc::new(Mutex::new(HashMap::new()));
         let degraded = Arc::new(Mutex::new(vec![watched.id]));
         let watcher_slot: Arc<Mutex<Option<Watcher>>> = Arc::new(Mutex::new(None));
         let stopping = Arc::new(AtomicBool::new(false));
@@ -1492,7 +1626,7 @@ mod tests {
         // The outage: `Watcher::start` failed at `start` time, so no event was delivered for
         // this file and nothing but a rescan can find it.
         std::fs::write(f.photos.join("a").join("two.jpg"), &img).unwrap();
-        let pending: Arc<Mutex<HashMap<i64, Vec<PathBuf>>>> = Arc::new(Mutex::new(HashMap::new()));
+        let pending: Arc<Mutex<HashMap<i64, Pending>>> = Arc::new(Mutex::new(HashMap::new()));
         let degraded = Arc::new(Mutex::new(vec![watched.id]));
         let watcher_slot: Arc<Mutex<Option<Watcher>>> = Arc::new(Mutex::new(None));
         let stopping = Arc::new(AtomicBool::new(false));
@@ -1539,13 +1673,13 @@ mod tests {
 
         // A live watcher in the slot, but an event channel we own: dropping its sender is
         // exactly what the debouncer's thread going away looks like from here.
-        let pending: Arc<Mutex<HashMap<i64, Vec<PathBuf>>>> = Arc::new(Mutex::new(HashMap::new()));
+        let pending: Arc<Mutex<HashMap<i64, Pending>>> = Arc::new(Mutex::new(HashMap::new()));
         let degraded = Arc::new(Mutex::new(Vec::new()));
         let (installed, _installed_rx, _installed_errors) = Watcher::start(DEBOUNCE).unwrap();
         let watcher_slot = Arc::new(Mutex::new(Some(installed)));
         let stopping = Arc::new(AtomicBool::new(false));
         let threads: Mutex<Vec<JoinHandle<()>>> = Mutex::new(Vec::new());
-        let (tx, rx) = std::sync::mpsc::channel::<Vec<PathBuf>>();
+        let (tx, rx) = std::sync::mpsc::channel::<Changed>();
         let (_error_tx, error_rx) = std::sync::mpsc::channel::<Vec<WatchError>>();
         let handle = spawn_event_thread(
             f.engine.clone(),
@@ -1609,7 +1743,7 @@ mod tests {
         let f = fixture(&[("a.jpg", &img)]);
         f.add_photos();
 
-        let pending: Arc<Mutex<HashMap<i64, Vec<PathBuf>>>> = Arc::new(Mutex::new(HashMap::new()));
+        let pending: Arc<Mutex<HashMap<i64, Pending>>> = Arc::new(Mutex::new(HashMap::new()));
         let degraded = Arc::new(Mutex::new(Vec::new()));
         let watcher_slot: Arc<Mutex<Option<Watcher>>> = Arc::new(Mutex::new(None));
         let stopping = Arc::new(AtomicBool::new(true));
@@ -1662,6 +1796,178 @@ mod tests {
             )),
             "the failed registration must be reported without waiting for a scan to finish"
         );
+        service.stop();
+    }
+
+    /// The point of the INI set having no cap: an INI-only burst across more folders than
+    /// the walk queue holds stays one INI pass, and never collapses into a rescan of the root.
+    #[test]
+    fn an_ini_batch_while_the_slot_is_held_is_queued_uncapped() {
+        let img = jpeg(16, 16);
+        let names: Vec<String> = (0..20).map(|i| format!("d{i}/one.jpg")).collect();
+        let files: Vec<(&str, &[u8])> = names.iter().map(|n| (n.as_str(), &img[..])).collect();
+        let f = fixture(&files);
+        let watched = f.add_photos();
+        let root = PathBuf::from(&watched.path);
+        let dirs: Vec<PathBuf> = (0..20).map(|i| root.join(format!("d{i}"))).collect();
+        // Before the service starts, so its OS watcher never sees these writes and cannot
+        // run a pass of its own that this test did not hand it.
+        for dir in &dirs {
+            photon_core::picasa::set_star(dir, "one.jpg", true).unwrap();
+        }
+        let service = WatcherService::start(&f.engine);
+
+        let slot = f.engine.occupy_scan_slot_for_test(watched.id);
+        service.handle_changes(Changed {
+            dirs: vec![],
+            ini_dirs: dirs.clone(),
+        });
+        let mut sorted = dirs.clone();
+        sorted.sort();
+        assert_eq!(service.pending_ini(watched.id), sorted);
+        assert_eq!(
+            service.pending_dirs(watched.id),
+            None,
+            "nothing collapsed to the root"
+        );
+        drop(slot);
+
+        service.drain_pending();
+        f.settle();
+        assert_eq!(f.engine.counts().starred, 20, "one pass applied every INI");
+        assert_eq!(service.pending_len(), 0);
+        service.stop();
+    }
+
+    /// A walk rereads the INI of every folder it covers, so an INI-only folder inside a
+    /// walk of the same batch needs no pass of its own.
+    ///
+    /// With the slot free, not held: while it is held both are queued, and `Pending` drops
+    /// the covered INI itself, so that input cannot tell whether the batch skipped it. The
+    /// case only the batch can get right is the walk *starting*: the INI pass is then
+    /// refused by the walk's own slot and would be queued beside no walk at all, for a
+    /// second read of an INI the walk is already reading. The walk of a real folder takes
+    /// far longer than the next few lines of `plan_and_apply`, so it is still running when
+    /// the INI pass asks for the slot.
+    #[test]
+    fn an_ini_folder_inside_a_walk_of_the_same_batch_is_left_to_the_walk() {
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a/b/one.jpg", &img)]);
+        let watched = f.add_photos();
+        let service = WatcherService::start(&f.engine);
+        let root = PathBuf::from(&watched.path);
+
+        service.handle_changes(Changed {
+            dirs: vec![root.join("a")],
+            ini_dirs: vec![root.join("a/b")],
+        });
+        assert_eq!(service.pending_ini(watched.id), Vec::<PathBuf>::new());
+        assert_eq!(
+            service.pending_len(),
+            0,
+            "the walk started; nothing is queued"
+        );
+        f.settle();
+        service.stop();
+    }
+
+    /// An INI that appeared with a folder photon has never scanned is the walk's to index:
+    /// the pass has no folder row to apply it to.
+    #[test]
+    fn an_ini_in_an_unscanned_folder_is_walked() {
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a/one.jpg", &img)]);
+        f.add_photos();
+        let new = f.photos.join("new");
+        std::fs::create_dir_all(&new).unwrap();
+        std::fs::write(new.join("two.jpg"), &img).unwrap();
+        std::fs::write(new.join(".picasa.ini"), b"[two.jpg]\nstar=yes\n").unwrap();
+        // After the writes, so the OS watcher cannot walk `new` itself and pass this test
+        // for the pass.
+        let service = WatcherService::start(&f.engine);
+
+        service.handle_changes(Changed {
+            dirs: vec![],
+            ini_dirs: vec![new],
+        });
+        f.settle();
+
+        assert_eq!(f.ids().len(), 2, "the new folder was walked");
+        assert_eq!(f.engine.counts().starred, 1);
+        service.stop();
+    }
+
+    /// The whole point from photon's side: starring across more folders than the walk queue
+    /// holds, fed back as the batch those writes' events make, starts no walk.
+    #[test]
+    fn photon_s_own_stars_across_many_folders_start_no_walk() {
+        let img = jpeg(16, 16);
+        let names: Vec<String> = (0..12).map(|i| format!("d{i}/one.jpg")).collect();
+        let files: Vec<(&str, &[u8])> = names.iter().map(|n| (n.as_str(), &img[..])).collect();
+        let f = fixture(&files);
+        let watched = f.add_photos();
+        // A photo no scan has seen. Only a walk of `d0` indexes it, so it still being
+        // unindexed at the end proves the folders were reread, not walked - which also
+        // proves the directory the watcher hands over (canonicalized by `plan_and_apply`)
+        // matches the folder's stored row exactly: a miss is a `needs_walk`, and walks.
+        // Written before the service starts, so its OS watcher never sees it.
+        std::fs::write(f.photos.join("d0").join("unseen.jpg"), &img).unwrap();
+        let service = WatcherService::start(&f.engine);
+
+        let slot = f.engine.occupy_scan_slot_for_test(watched.id);
+        let ids = f.ids();
+        assert_eq!(ids.len(), 12);
+        f.engine.set_stars(&ids, true).unwrap();
+        // The directories an INI write reports: each folder, INI-only.
+        let ini_dirs: Vec<PathBuf> = (0..12).map(|i| f.photos.join(format!("d{i}"))).collect();
+        service.handle_changes(Changed {
+            dirs: vec![],
+            ini_dirs,
+        });
+
+        assert_eq!(service.pending_dirs(watched.id), None, "no walk queued");
+        assert_eq!(service.pending_ini(watched.id).len(), 12);
+        drop(slot);
+        service.drain_pending();
+        f.settle();
+        assert_eq!(
+            f.engine.counts().starred,
+            12,
+            "the pass kept the stars photon wrote"
+        );
+        assert_eq!(
+            f.ids().len(),
+            12,
+            "nothing was walked, so the unseen photo is unseen"
+        );
+        service.stop();
+    }
+
+    /// `an_event_reported_through_a_symlinked_path_still_maps_to_its_watched_root`, for an
+    /// INI-only folder: reported raw, it lies in no stored root and the star is dropped.
+    #[test]
+    #[cfg(unix)]
+    fn an_ini_change_reported_through_a_symlinked_path_is_applied() {
+        let img = jpeg(16, 16);
+        let f = fixture(&[]);
+        let real = f.dir.path().join("real");
+        std::fs::create_dir_all(real.join("a")).unwrap();
+        std::fs::write(real.join("a").join("one.jpg"), &img).unwrap();
+        let link = f.dir.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        f.engine.add_folder(&link).unwrap();
+        f.settle();
+        // Before the service starts, so only the batch below can apply it.
+        photon_core::picasa::set_star(&real.join("a"), "one.jpg", true).unwrap();
+
+        let service = WatcherService::start(&f.engine);
+        service.handle_changes(Changed {
+            dirs: vec![],
+            ini_dirs: vec![link.join("a")],
+        });
+        f.settle();
+
+        assert_eq!(f.engine.counts().starred, 1);
         service.stop();
     }
 
@@ -1734,7 +2040,10 @@ mod tests {
         service
             .pending
             .lock()
-            .insert(watched.id, vec![f.photos.clone()]);
+            .entry(watched.id)
+            .or_default()
+            .dirs
+            .push(f.photos.clone());
 
         f.engine.remove_folder(watched.id).unwrap();
 

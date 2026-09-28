@@ -248,6 +248,32 @@ pub fn ini_name(dir: &Path) -> String {
         .unwrap_or_else(|| NEW_INI.to_string())
 }
 
+/// Whether a file named `name` is one an INI write touches: either INI name, in any ASCII
+/// case as the reader matches it, or the temporary photon writes one through
+/// (`<ini name>.photon-<pid>-<seq>.tmp`, see `write_atomically`). Beside the writer that
+/// makes those names so the two cannot drift; the watcher reads a folder whose only changes
+/// are these as an INI change, rereading the INI instead of walking the folder.
+pub fn is_ini_write(name: &str) -> bool {
+    let is_ini = |n: &str| n.eq_ignore_ascii_case(NEW_INI) || n.eq_ignore_ascii_case(OLD_INI);
+    if is_ini(name) {
+        return true;
+    }
+    let Some(rest) = name.strip_suffix(".tmp") else {
+        return false;
+    };
+    let Some(at) = rest.find(".photon-") else {
+        return false;
+    };
+    let (base, tail) = (&rest[..at], &rest[at + ".photon-".len()..]);
+    is_ini(base)
+        && tail.split_once('-').is_some_and(|(pid, seq)| {
+            !pid.is_empty()
+                && !seq.is_empty()
+                && pid.bytes().all(|b| b.is_ascii_digit())
+                && seq.bytes().all(|b| b.is_ascii_digit())
+        })
+}
+
 /// The INI to read, if any. `Ok(None)` when the directory has none; `Err` when the directory
 /// itself could not be listed.
 ///
@@ -693,6 +719,32 @@ mod tests {
         let mut v: Vec<String> = read_stars(dir).unwrap().into_iter().collect();
         v.sort();
         v
+    }
+
+    #[test]
+    fn an_ini_write_is_either_ini_name_or_photon_s_own_temporary() {
+        for name in [
+            ".picasa.ini",
+            ".Picasa.INI",
+            "Picasa.ini",
+            "picasa.ini",
+            ".picasa.ini.photon-4242-7.tmp",
+            "Picasa.ini.photon-1-0.tmp",
+        ] {
+            assert!(is_ini_write(name), "{name}");
+        }
+        for name in [
+            "a.jpg",
+            "picasa.ini.bak",
+            ".picasa.ini.tmp",
+            ".picasa.ini.photon-1-0",
+            ".picasa.ini.other-1-0.tmp",
+            "x.picasa.ini",
+            "notes.txt.photon-1-0.tmp",
+            ".picasa.ini.photon-x-0.tmp",
+        ] {
+            assert!(!is_ini_write(name), "{name}");
+        }
     }
 
     #[test]
