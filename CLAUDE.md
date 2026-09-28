@@ -71,6 +71,11 @@ cargo run -p xtask -- screenshots --only viewer-info-light --no-build
 cargo run -p xtask -- scroll-probe   # the end of a 300k-photo library is reachable
 ```
 
+The project website (`site/`, deployed to photon.webcodr.io by `pages.yml`) uses these
+screenshots with real photos: `--photos crates/xtask/screenshots/photos` serves the CC0 photos
+there (credited in their `CREDITS.md`) in place of the gradients. Regenerate `main-light`,
+`main-dark` and `viewer-info-light` with it and convert them to `site/img/*.webp`.
+
 `npm run dev` runs the app with hot reload. **Do not run it to verify a change** — see
 Conventions.
 

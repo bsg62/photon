@@ -8,7 +8,7 @@
 <link rel="icon" href="img/icon.svg" type="image/svg+xml">
 <meta property="og:title" content="photon">
 <meta property="og:description" content="A fast, local photo manager for Linux, macOS and Windows. A spiritual successor to Picasa 3.">
-<meta property="og:image" content="https://photon.webcodr.io/img/main-light.png">
+<meta property="og:image" content="https://photon.webcodr.io/img/og.jpg">
 <meta property="og:url" content="https://photon.webcodr.io/">
 <style>
   /* The app's own palette (ui/src/tokens.css), so the page and the screenshots agree. */
@@ -68,6 +68,8 @@
   .features { display: grid; grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr)); gap: 1.25rem 2rem; }
   .features h3 { font-size: 1.05rem; margin: 0 0 .25rem; }
   .features p { margin: 0; color: var(--text-dim); }
+  ul { padding-left: 1.25rem; }
+  li { margin: .35rem 0; }
   .table-wrap { overflow-x: auto; }
   table { border-collapse: collapse; width: 100%; }
   th, td { text-align: left; padding: .5rem .75rem .5rem 0; border-bottom: 1px solid var(--line); vertical-align: top; }
@@ -93,8 +95,8 @@
 
   <figure>
     <picture>
-      <source srcset="img/main-dark.png" media="(prefers-color-scheme: dark)">
-      <img src="img/main-light.png" width="1280" height="800" alt="photon's main window: a sidebar of views, albums and folders beside a grid of photos grouped by folder">
+      <source srcset="img/main-dark.webp" media="(prefers-color-scheme: dark)">
+      <img src="img/main-light.webp" width="1280" height="800" alt="photon's main window: a sidebar of views, albums and folders beside a grid of photos grouped by folder">
     </picture>
   </figure>
 
@@ -103,6 +105,14 @@
     photon watches your folders in place. It never moves, renames or changes a photo: it keeps a
     small library and a thumbnail cache in your user directories, and rotations and crops live
     there too, applied only on the way to the screen. No account, no cloud, no import step.
+  </p>
+  <p>
+    That includes a NAS or a network share. Thumbnails are cached on your own computer, so
+    browsing does not wait on the network, and a rescan reads only the files whose size or date
+    changed. Look-alikes are found from those local thumbnails, and the search for exact copies
+    reads only files that share a size with another. When the share is offline, photon leaves
+    the library as it is,
+    checks every 30 seconds, and picks up when it is back.
   </p>
 
   <h2>What it does</h2>
@@ -134,9 +144,37 @@
   </div>
 
   <figure>
-    <img src="img/viewer-info-light.png" width="1280" height="800" loading="lazy" alt="photon's viewer with the info panel open, listing camera, lens, exposure, dates, people, keywords and albums">
+    <img src="img/viewer-info-light.webp" width="1280" height="800" loading="lazy" alt="photon's viewer with the info panel open, listing camera, lens, exposure, dates, people, keywords and albums">
     <figcaption>The viewer's info panel: camera data, every date a photo has, people, keywords and albums.</figcaption>
   </figure>
+
+  <h2>Coming from Picasa</h2>
+  <p>
+    Point photon at the folders Picasa watched. It reads what Picasa kept beside your photos,
+    in each folder's <code>.picasa.ini</code>, so none of it has to be exported or imported:
+  </p>
+  <ul>
+    <li><strong>Stars</strong>, both ways: a star set in photon is written back into that file,
+      touching only its <code>star=</code> line, so Picasa sees it too.</li>
+    <li><strong>People</strong> you named, outlined on the photo in the viewer.</li>
+    <li><strong>Albums</strong>, kept up to date as you change them in Picasa.</li>
+    <li><strong>Hidden photos</strong> stay hidden.</li>
+    <li><strong>Captions and tags</strong>, which Picasa saved into the photos themselves.</li>
+  </ul>
+  <p>
+    Not carried over: Picasa's own edits (crops, filters, retouching) are not applied, and an
+    album Picasa kept only in its database, never in a folder's <code>.picasa.ini</code>, does
+    not appear.
+  </p>
+
+  <h2>What it doesn't do</h2>
+  <ul>
+    <li>No camera RAW or HEIC. Reading them means shipping a C library, and photon has no native
+      dependencies.</li>
+    <li>No editing beyond rotating and cropping.</li>
+    <li>No cloud, sync or sharing. Your library stays on your computer.</li>
+    <li>No phone app.</li>
+  </ul>
 
   <h2>Install</h2>
   <p>Get the installer for your system from the <a href="https://github.com/bsg62/photon/releases/latest">latest release</a>.</p>
@@ -164,6 +202,8 @@
     <a href="https://github.com/bsg62/photon">GitHub</a> ·
     <a href="https://github.com/bsg62/photon/releases">Releases</a> ·
     <a href="https://github.com/bsg62/photon/issues">Issues</a>
+    <br>Photos in the screenshots are public domain (CC0), from
+    <a href="https://github.com/bsg62/photon/blob/main/crates/xtask/screenshots/photos/CREDITS.md">Wikimedia Commons</a>.
   </footer>
 </main>
 </body>

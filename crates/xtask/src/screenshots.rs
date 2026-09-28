@@ -4,7 +4,8 @@
 //! photon's conventions forbid launching the app to verify a change, and vitest has no layout
 //! engine, so the look of the UI had no check at all short of a person. This renders the real
 //! bundle without the app: `ui/dist` is served from here, `screenshots/mock.js` stands in for
-//! Tauri's IPC, and thumbnails are generated gradients. It shows Chromium's rendering, not
+//! Tauri's IPC, and thumbnails are generated gradients (or, with `--photos <dir>`, that
+//! folder's JPEGs, for the project website). It shows Chromium's rendering, not
 //! WebKitGTK's or WKWebView's, so it replaces no item of the smoke checklist
 //! (`docs/smoke-checklist.md`); it is for seeing a change before a person does.
 //!
@@ -269,8 +270,41 @@ fn content_type(path: &Path) -> &'static str {
     }
 }
 
-/// What the server answers for `path`. `dist` is `ui/dist`.
-pub fn respond(path: &str, dist: &Path) -> Response {
+/// A photo from `--photos` for item `id`, wrapping round after the last; the gradient when
+/// none were given. Real photos are for the project website, where a grid of gradients says
+/// nothing about a photo manager.
+fn media(id: u64, photos: &[PathBuf]) -> Response {
+    let Some(len) = u64::try_from(photos.len()).ok().filter(|&n| n > 0) else {
+        return Response::ok("image/svg+xml", placeholder_svg(id));
+    };
+    let index = usize::try_from(id.saturating_sub(1) % len).unwrap_or_default();
+    match std::fs::read(&photos[index]) {
+        Ok(body) => Response::ok("image/jpeg", body),
+        Err(_) => Response::not_found(),
+    }
+}
+
+/// The JPEGs in `dir`, by file name, which is the item id order `media` serves them in.
+fn list_photos(dir: &Path) -> Result<Vec<PathBuf>, String> {
+    let entries = std::fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let mut photos: Vec<PathBuf> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            p.extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|e| e.eq_ignore_ascii_case("jpg") || e.eq_ignore_ascii_case("jpeg"))
+        })
+        .collect();
+    photos.sort();
+    if photos.is_empty() {
+        return Err(format!("{} holds no .jpg files", dir.display()));
+    }
+    Ok(photos)
+}
+
+/// What the server answers for `path`. `dist` is `ui/dist`; `photos` is `--photos`'s files.
+pub fn respond(path: &str, dist: &Path, photos: &[PathBuf]) -> Response {
     // `photon://` media, which the UI asks for over http when it thinks it is on Windows.
     if let Some(rest) = path
         .strip_prefix("/thumb/")
@@ -281,7 +315,7 @@ pub fn respond(path: &str, dist: &Path) -> Response {
             .next()
             .and_then(|s| s.parse().ok())
             .unwrap_or(1);
-        return Response::ok("image/svg+xml", placeholder_svg(id));
+        return media(id, photos);
     }
     if path == "/mock.js" {
         return Response::ok("text/javascript", MOCK_JS);
@@ -342,14 +376,14 @@ pub fn chromium_args(shot: &Shot, port: u16, out_dir: &Path) -> Vec<String> {
     args
 }
 
-fn serve(stream: TcpStream, dist: &Path) {
+fn serve(stream: TcpStream, dist: &Path, photos: &[PathBuf]) {
     let mut reader = BufReader::new(&stream);
     let mut request_line = String::new();
     if reader.read_line(&mut request_line).is_err() {
         return;
     }
     let response = match request_path(&request_line) {
-        Some(path) => respond(path, dist),
+        Some(path) => respond(path, dist, photos),
         None => Response::not_found(),
     };
     let head = format!(
@@ -432,6 +466,14 @@ pub(crate) fn build_and_serve(root: &Path, args: &[String]) -> Result<(PathBuf, 
         }
     }
     let dist = root.join("ui").join("dist");
+    let photos = match flag(args, "--photos").map(|dir| list_photos(Path::new(dir))) {
+        None => Vec::new(),
+        Some(Ok(photos)) => photos,
+        Some(Err(why)) => {
+            eprintln!("--photos: {why}");
+            return Err(ExitCode::FAILURE);
+        }
+    };
 
     // Port 0: whatever is free. Loopback only.
     let listener = match TcpListener::bind(("127.0.0.1", 0)) {
@@ -442,13 +484,13 @@ pub(crate) fn build_and_serve(root: &Path, args: &[String]) -> Result<(PathBuf, 
         }
     };
     let port = listener.local_addr().map(|a| a.port()).unwrap_or_default();
-    let served = dist.clone();
+    let served = std::sync::Arc::new((dist, photos));
     // Detached: it ends with the process. A thread per connection, since Chromium opens
     // several at once and each is answered and closed.
     std::thread::spawn(move || {
         for stream in listener.incoming().flatten() {
-            let dist = served.clone();
-            std::thread::spawn(move || serve(stream, &dist));
+            let served = std::sync::Arc::clone(&served);
+            std::thread::spawn(move || serve(stream, &served.0, &served.1));
         }
     });
 
@@ -552,10 +594,40 @@ mod tests {
     #[test]
     fn media_is_a_gradient_that_follows_the_item_id() {
         let dist = temp_dist(&[]);
-        let thumb = respond("/thumb/12/grid/k11", &dist);
+        let thumb = respond("/thumb/12/grid/k11", &dist, &[]);
         assert_eq!((thumb.status, thumb.content_type), (200, "image/svg+xml"));
-        assert_eq!(thumb, respond("/image/12", &dist));
-        assert_ne!(thumb.body, respond("/thumb/13/grid/k12", &dist).body);
+        assert_eq!(thumb, respond("/image/12", &dist, &[]));
+        assert_ne!(thumb.body, respond("/thumb/13/grid/k12", &dist, &[]).body);
+    }
+
+    #[test]
+    fn photos_are_served_by_item_id_in_name_order_and_wrap_round() {
+        // Ten photos written shuffled, and a file that is not one, so the listing has to sort
+        // and filter. Not written in reverse: tmpfs lists newest first, which turned a reversed
+        // write back into name order and let an unsorted listing pass.
+        let names: Vec<String> = [5, 1, 9, 3, 7, 10, 2, 6, 4, 8]
+            .iter()
+            .map(|n| format!("{n:02}.jpg"))
+            .collect();
+        let mut files: Vec<(&str, &str)> = names.iter().map(|n| (n.as_str(), n.as_str())).collect();
+        files.push(("notes.md", "x"));
+        let dir = temp_dist(&files);
+        let photos = list_photos(&dir).unwrap();
+        assert_eq!(photos.len(), 10);
+        let body = |path: &str| String::from_utf8(respond(path, &dir, &photos).body).unwrap();
+        let served: Vec<String> = (1..=10)
+            .map(|id| body(&format!("/thumb/{id}/grid/k")))
+            .collect();
+        let mut sorted = names.clone();
+        sorted.sort();
+        assert_eq!(served, sorted);
+        assert_eq!(body("/image/2"), "02.jpg");
+        assert_eq!(body("/thumb/11/grid/k10"), "01.jpg");
+        assert_eq!(
+            respond("/image/2", &dir, &photos).content_type,
+            "image/jpeg"
+        );
+        assert!(list_photos(&temp_dist(&[("a.png", "x")])).is_err());
     }
 
     #[test]
@@ -564,15 +636,15 @@ mod tests {
             ("index.html", r#"<script src="/theme-boot.js"></script>"#),
             ("assets/app.css", "body{}"),
         ]);
-        let index = respond("/", &dist);
+        let index = respond("/", &dist, &[]);
         assert_eq!((index.status, index.content_type), (200, "text/html"));
         assert!(String::from_utf8(index.body).unwrap().contains("/mock.js"));
         assert_eq!(
-            respond("/assets/app.css", &dist),
+            respond("/assets/app.css", &dist, &[]),
             Response::ok("text/css", "body{}")
         );
-        assert_eq!(respond("/assets/missing.js", &dist).status, 404);
-        let mock = respond("/mock.js", &dist);
+        assert_eq!(respond("/assets/missing.js", &dist, &[]).status, 404);
+        let mock = respond("/mock.js", &dist, &[]);
         assert_eq!(mock.content_type, "text/javascript");
         assert!(
             String::from_utf8(mock.body)
@@ -584,7 +656,7 @@ mod tests {
     #[test]
     fn an_index_the_mock_cannot_be_put_into_is_a_500_not_a_blank_app() {
         let dist = temp_dist(&[("index.html", "<head></head>")]);
-        assert_eq!(respond("/", &dist).status, 500);
+        assert_eq!(respond("/", &dist, &[]).status, 500);
     }
 
     #[test]
@@ -595,10 +667,13 @@ mod tests {
             "secret",
         )
         .unwrap();
-        assert_eq!(respond("/inner/x.js", &dist).status, 200);
-        assert_eq!(respond("/../photon-xtask-outside.txt", &dist).status, 404);
+        assert_eq!(respond("/inner/x.js", &dist, &[]).status, 200);
         assert_eq!(
-            respond("/inner/../../photon-xtask-outside.txt", &dist).status,
+            respond("/../photon-xtask-outside.txt", &dist, &[]).status,
+            404
+        );
+        assert_eq!(
+            respond("/inner/../../photon-xtask-outside.txt", &dist, &[]).status,
             404
         );
     }

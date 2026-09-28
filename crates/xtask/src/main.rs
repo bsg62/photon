@@ -3,7 +3,7 @@
 //! Usage:
 //!   cargo run -p xtask -- versions [--tag v0.1.0]
 //!   cargo run -p xtask -- metadata
-//!   cargo run -p xtask -- screenshots [--out <dir>] [--only <shot>] [--no-build]
+//!   cargo run -p xtask -- screenshots [--out <dir>] [--only <shot>] [--photos <dir>] [--no-build]
 //!   cargo run -p xtask -- scroll-probe [--no-build]
 
 mod checks;
