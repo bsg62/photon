@@ -458,6 +458,11 @@ publishing it.
 - [ ] Starring a photo in a folder whose INI carries `faces=`, `filters=` or `backuphash=` lines leaves every one of those lines exactly as it was, and Picasa's face tags and edits for the folder survive.
 - [ ] Starring a photo in a folder with only an old `Picasa.ini` edits that file and creates no `.picasa.ini` beside it; the folder's other stars stay.
 - [ ] On Windows, `.picasa.ini` is still hidden after a star is toggled.
+- [ ] On Windows, macOS and Linux: with a watched folder of many subfolders, star (or unstar)
+  photos in 10 or more different folders at once from a selection: the stars show at once and
+  the status bar shows no scan of the folder afterwards (an INI-only change is reread, not
+  walked; a scan showing up here means the platform reports the folder itself as changed, and
+  the fast path does not apply there).
 - [ ] The tile of a starred photo shows a ★ badge, which appears and disappears with the toggle, and the sidebar's Starred count follows.
 - [ ] Unstarring the photo on screen while Starred is showing keeps it on screen with no "n / m" in the caption; ArrowLeft goes to the previous starred photo, ArrowRight to the next, Escape returns to the grid.
 - [ ] Select three photos in All, right-click, **Hide 3 photos**: they leave the grid, the photo after them is selected (ArrowRight carries on from there), and a **Hidden** row appears in the sidebar with a count of 3. Hidden shows exactly those three; **Unhide 3 photos** there brings them back, and the row disappears once nothing is hidden.
@@ -482,6 +487,8 @@ publishing it.
 - [ ] Right-clicking a Picasa album opens no menu; the grid's "Add to album" does not list it; its view offers no "Remove from".
 - [ ] The info panel lists the photo's Picasa albums below the album checkboxes, without checkboxes.
 - [ ] Renaming an album in Picasa and rescanning renames it in photon.
+- [ ] Rename an album in Picasa (which rewrites every member folder's INI) with photon
+  running: the album's new name shows after a moment, with no full scan.
 - [ ] A photo captioned in Picasa shows its caption under the photo, at the top of the info panel, and during a slideshow after the controls fade.
 - [ ] Searching a word of that caption finds the photo.
 - [ ] A photo whose camera wrote only an EXIF description (e.g. "OLYMPUS DIGITAL CAMERA") shows no caption.

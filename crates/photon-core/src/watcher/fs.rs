@@ -160,9 +160,12 @@ impl Watcher {
 /// it touches fall back to periodic rescans, which is what finds what was missed.
 ///
 /// A directory whose every changed path is an INI write (`picasa::is_ini_write`) is reported
-/// in `ini_dirs`, reread rather than walked; anything else into it - another file, a
-/// directory, a temporary photon does not recognise - makes it a walk, so the fast path only
-/// takes what it recognises.
+/// in `ini_dirs`, reread rather than walked; any other changed path into it - another file, a
+/// directory, or a temporary of some other tool's that survives debouncing - makes it a walk.
+/// A foreign temporary written and renamed onto the INI, like photon's own, is folded by
+/// `notify-debouncer-full` onto the final path, so it arrives as the INI itself and stays
+/// INI-only; only one left behind, or split across batches by the debounce window, is seen and
+/// makes the folder a walk.
 fn changed_dirs(events: &[DebouncedEvent]) -> (Changed, Vec<WatchError>) {
     // `seen` is what keeps a bulk import cheap here: this runs on the notify thread for every
     // debounced batch, and a batch can carry thousands of paths. It skips the `is_dir()`

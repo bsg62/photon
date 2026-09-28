@@ -43,9 +43,11 @@ it, without walking the folder. Rejected:
   same reason the writer and the reader share one line classifier.
 - **A folder is INI-only when every changed path in the batch that reduces to it is
   INI-only.** Any other path into it - a photo, a subdirectory, an event on the directory
-  itself, or a temporary name photon does not recognise (Picasa's own, if it uses one) -
-  makes it an ordinary walk. The fast path only ever takes what it recognises; everything
-  else is walked exactly as today.
+  itself - makes it an ordinary walk. A foreign tool's temp-then-rename onto the INI (Picasa's
+  own, if it uses one) is folded by `notify-debouncer-full` onto the final path, so it arrives
+  as the INI itself and is correctly INI-only; only a foreign temporary that survives
+  debouncing - left behind, or split across batches by the debounce window - is seen as its own
+  path and makes the folder a walk.
 - `changed_dirs` returns `(dirs, ini_dirs, lost)`: a directory in both is in `dirs` only.
 - A deleted INI still arrives as a path named `.picasa.ini`: INI-only. The pass then finds no
   INI and clears that folder's stars, faces and Picasa albums, as a scan does today - the INI
