@@ -1455,6 +1455,24 @@ describe('LibraryStore', () => {
       expect(store.selectedItemIds).toEqual([idAt(200)]);
     });
 
+    it('hiding a band whose middle pages were let go lands after the band, not before it', async () => {
+      // A band from 10 to 3000, autoscrolled: the window is at the far end, so every page
+      // between the lead's own and the window's has been evicted. The photo to move to is
+      // 3001, after the band; a walk that gave up at the first missing page fell back to 9.
+      const store = await storeOf(5000);
+      store.beginBand(false);
+      await store.ensure(2950, 3050);
+      await store.endBand([[10, 3000]]);
+      expect(store.selected).toBe(10);
+      expect(store.entry(1000)).toBeUndefined();
+
+      vi.mocked(api.setItemsHidden).mockResolvedValue(2991);
+      vi.mocked(api.gridOffsetOfItem).mockResolvedValue(10);
+      await store.setHidden(store.selectedItemIds, true);
+      expect(store.selectedItemIds).toEqual([idAt(3001)]);
+      expect(api.gridOffsetOfItem).toHaveBeenCalledWith(idAt(3001));
+    });
+
     it('a band autoscrolled far from where it began still leads with its first photo', async () => {
       // By the release the grid's window is thousands of photos below the band's first page,
       // which the window has let go; the lead's id must come from the fetch, or the next

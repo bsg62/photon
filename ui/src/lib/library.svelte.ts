@@ -903,17 +903,38 @@ export class LibraryStore {
   async setHidden(itemIds: number[], hidden: boolean): Promise<void> {
     const lead = this.selectedOffset;
     const leaving = new Set(itemIds);
-    // Walks outward only through loaded pages: past one that is not loaded there is no id to
-    // select, and the selection is simply cleared.
-    const nearest = (from: number, step: 1 | -1): GridEntry | undefined => {
-      for (let at = from + step; at >= 0 && at < this.info.len; at += step) {
-        const entry = this.pages.get(at);
+    const version = this.info.version;
+    const len = this.info.len;
+    // Rows the walk had to fetch itself. A band autoscrolled over thousands of photos
+    // leaves its middle pages evicted - `ensure` keeps only the window and the lead's own
+    // page - and a walk that stopped at the first missing page landed on the photo *before*
+    // the lead instead of the one after the selection.
+    const fetched = new Map<number, GridEntry>();
+    const entryAt = async (at: number, step: 1 | -1): Promise<GridEntry | undefined> => {
+      // The walk awaits now, so a rebuild can land in the middle of it and swap the pages.
+      if (this.info.version !== version) return undefined;
+      const known = this.pages.get(at) ?? fetched.get(at);
+      if (known) return known;
+      // A chunk in the direction of the walk, so crossing a long selection costs one round
+      // trip per thousand photos rather than one per page.
+      const start = step === 1 ? at : Math.max(0, at - GRID_ROWS_CHUNK + 1);
+      const count = Math.min(GRID_ROWS_CHUNK, len - start);
+      const rows = await api.gridRows(start, count);
+      // Rows of another index name other photos at these offsets: give up, and the
+      // selection is simply cleared, as it was before the walk could fetch.
+      if (rows.version !== version || this.info.version !== version) return undefined;
+      rows.rows.forEach((entry, i) => fetched.set(start + i, entry));
+      return fetched.get(at);
+    };
+    const nearest = async (from: number, step: 1 | -1): Promise<GridEntry | undefined> => {
+      for (let at = from + step; at >= 0 && at < len; at += step) {
+        const entry = await entryAt(at, step);
         if (!entry) return undefined;
         if (!leaving.has(entry.id)) return entry;
       }
       return undefined;
     };
-    const next = lead === null ? undefined : (nearest(lead, 1) ?? nearest(lead, -1));
+    const next = lead === null ? undefined : ((await nearest(lead, 1)) ?? (await nearest(lead, -1)));
     await api.setItemsHidden(itemIds, hidden);
     this.clearSelection();
     if (next && lead !== null) {
