@@ -7,7 +7,7 @@
 use crate::engine::{Engine, FullScan};
 use parking_lot::Mutex;
 use photon_core::watcher::{
-    WatchError, WatchedRoot, Watcher, insert_pending, plan_scans, roots_affected_by,
+    Changed, WatchError, WatchedRoot, Watcher, insert_pending, plan_scans, roots_affected_by,
 };
 use std::{
     collections::HashMap,
@@ -291,7 +291,7 @@ fn spawn_event_thread(
     degraded: Arc<Mutex<Vec<i64>>>,
     watcher: Arc<Mutex<Option<Watcher>>>,
     stopping: Arc<AtomicBool>,
-    rx: Receiver<Vec<PathBuf>>,
+    rx: Receiver<Changed>,
     errors: Receiver<Vec<WatchError>>,
 ) -> JoinHandle<()> {
     std::thread::Builder::new()
@@ -302,7 +302,12 @@ fn spawn_event_thread(
                     degrade_failed_roots(&engine, &degraded, &failures);
                 }
                 match rx.recv_timeout(POLL) {
-                    Ok(dirs) => plan_and_apply(&engine, &pending, dirs),
+                    // Walked for now; Task 5 of the INI-only plan routes `ini_dirs`.
+                    Ok(changed) => plan_and_apply(
+                        &engine,
+                        &pending,
+                        changed.dirs.into_iter().chain(changed.ini_dirs).collect(),
+                    ),
                     Err(RecvTimeoutError::Timeout) => continue,
                     Err(RecvTimeoutError::Disconnected) => {
                         watcher_died(&engine, &degraded, &watcher);
@@ -395,7 +400,7 @@ fn degrade_failed_roots(engine: &Arc<Engine>, degraded: &Mutex<Vec<i64>>, failur
 fn try_start_watcher(
     engine: &Arc<Engine>,
     degraded: &Mutex<Vec<i64>>,
-) -> Option<(Watcher, Receiver<Vec<PathBuf>>, Receiver<Vec<WatchError>>)> {
+) -> Option<(Watcher, Receiver<Changed>, Receiver<Vec<WatchError>>)> {
     let watched = engine.lib.watched_folders().unwrap_or_default();
     match Watcher::start(DEBOUNCE) {
         Ok((mut watcher, rx, errors)) => {
@@ -1545,7 +1550,7 @@ mod tests {
         let watcher_slot = Arc::new(Mutex::new(Some(installed)));
         let stopping = Arc::new(AtomicBool::new(false));
         let threads: Mutex<Vec<JoinHandle<()>>> = Mutex::new(Vec::new());
-        let (tx, rx) = std::sync::mpsc::channel::<Vec<PathBuf>>();
+        let (tx, rx) = std::sync::mpsc::channel::<Changed>();
         let (_error_tx, error_rx) = std::sync::mpsc::channel::<Vec<WatchError>>();
         let handle = spawn_event_thread(
             f.engine.clone(),

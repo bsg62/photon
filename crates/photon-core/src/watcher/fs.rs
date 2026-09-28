@@ -9,7 +9,7 @@ use notify_debouncer_full::{
     DebounceEventResult, DebouncedEvent, Debouncer, NoCache, new_debouncer_opt,
 };
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     sync::mpsc::{Receiver, channel},
     time::Duration,
@@ -23,6 +23,21 @@ pub struct WatchError {
     pub message: String,
 }
 
+/// One debounced batch of changes, by directory. `dirs` are walked (a subtree scan);
+/// `ini_dirs` changed only in their Picasa INI (`picasa::is_ini_write`) and are reread
+/// without a walk. A directory is in one or the other, never both.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Changed {
+    pub dirs: Vec<PathBuf>,
+    pub ini_dirs: Vec<PathBuf>,
+}
+
+impl Changed {
+    pub fn is_empty(&self) -> bool {
+        self.dirs.is_empty() && self.ini_dirs.is_empty()
+    }
+}
+
 pub struct Watcher {
     debouncer: Debouncer<notify::RecommendedWatcher, NoCache>,
 }
@@ -30,23 +45,24 @@ pub struct Watcher {
 impl Watcher {
     /// Starts debouncing.
     ///
-    /// Each message on the first returned channel is a batch of directories that changed; a
-    /// file event is reported as its parent directory. Each message on the second is a batch
-    /// of watch failures reported by the OS after registration (for example an event-queue
-    /// overflow, which means events were silently lost): the caller maps them back to roots
-    /// and degrades those, since live updates for them can no longer be trusted.
+    /// Each message on the first returned channel is a batch of changes (`Changed`), by
+    /// directory; a file event is reported as its parent directory. Each message on the
+    /// second is a batch of watch failures reported by the OS after registration (for
+    /// example an event-queue overflow, which means events were silently lost): the caller
+    /// maps them back to roots and degrades those, since live updates for them can no longer
+    /// be trusted.
     #[allow(clippy::type_complexity)]
     pub fn start(
         debounce: Duration,
-    ) -> crate::Result<(Self, Receiver<Vec<PathBuf>>, Receiver<Vec<WatchError>>)> {
-        let (tx, rx) = channel::<Vec<PathBuf>>();
+    ) -> crate::Result<(Self, Receiver<Changed>, Receiver<Vec<WatchError>>)> {
+        let (tx, rx) = channel::<Changed>();
         let (error_tx, error_rx) = channel::<Vec<WatchError>>();
         let handler = move |result: DebounceEventResult| {
             match result {
                 Ok(events) => {
-                    let (dirs, lost) = changed_dirs(&events);
-                    if !dirs.is_empty() {
-                        let _ = tx.send(dirs);
+                    let (changed, lost) = changed_dirs(&events);
+                    if !changed.is_empty() {
+                        let _ = tx.send(changed);
                     }
                     if !lost.is_empty() {
                         let _ = error_tx.send(lost);
@@ -132,8 +148,8 @@ impl Watcher {
     }
 }
 
-/// The directories a debounced batch says changed, and the events in it that say changes
-/// were *lost*.
+/// The directories a debounced batch says changed, split into `dirs` (walked) and `ini_dirs`
+/// (reread), and the events in it that say changes were *lost*.
 ///
 /// A lost-events notice - inotify's queue overflow, FSEvents' "must scan subdirectories" -
 /// reaches the handler as an ordinary `Ok` event flagged `need_rescan`, not as an error,
@@ -142,14 +158,22 @@ impl Watcher {
 /// next launch. It is reported as a watch failure instead - with its path when it has one,
 /// and an empty one, which the policy reads as every root, when it has none - so the roots
 /// it touches fall back to periodic rescans, which is what finds what was missed.
-fn changed_dirs(events: &[DebouncedEvent]) -> (Vec<PathBuf>, Vec<WatchError>) {
-    // Both sets are what keeps a bulk import cheap here: this runs on the notify thread for
-    // every debounced batch, and a batch can carry thousands of paths. `seen` skips the
-    // `is_dir()` syscall for a path reported more than once, and `unique` replaces a
-    // quadratic `Vec::contains` scan per directory.
+///
+/// A directory whose every changed path is an INI write (`picasa::is_ini_write`) is reported
+/// in `ini_dirs`, reread rather than walked; anything else into it - another file, a
+/// directory, a temporary photon does not recognise - makes it a walk, so the fast path only
+/// takes what it recognises.
+fn changed_dirs(events: &[DebouncedEvent]) -> (Changed, Vec<WatchError>) {
+    // `seen` is what keeps a bulk import cheap here: this runs on the notify thread for every
+    // debounced batch, and a batch can carry thousands of paths. It skips the `is_dir()`
+    // syscall for a path reported more than once. `kinds` replaces a quadratic `Vec::contains`
+    // scan per directory, and doubles as the per-directory INI-only flag; `order` is a
+    // separate vec because a `HashMap` gives no stable iteration order and the tests (and any
+    // caller comparing batches) expect first-seen order.
     let mut seen: HashSet<&Path> = HashSet::new();
-    let mut unique: HashSet<PathBuf> = HashSet::new();
-    let mut dirs: Vec<PathBuf> = Vec::new();
+    // Per directory: whether every path seen into it so far was an INI write.
+    let mut kinds: HashMap<PathBuf, bool> = HashMap::new();
+    let mut order: Vec<PathBuf> = Vec::new();
     let mut lost: Vec<WatchError> = Vec::new();
     for event in events {
         if event.need_rescan() {
@@ -179,20 +203,39 @@ fn changed_dirs(events: &[DebouncedEvent]) -> (Vec<PathBuf>, Vec<WatchError>) {
             // `is_dir()` reports `false` for a path that no longer exists, which routes a
             // deletion to its parent directory. That's the behaviour we want: rescanning the
             // parent is how a deletion gets noticed, since there's nothing left at `path`.
-            let dir = if path.is_dir() {
-                path.clone()
+            let (dir, ini) = if path.is_dir() {
+                (path.clone(), false)
             } else {
                 match path.parent() {
-                    Some(parent) => parent.to_path_buf(),
+                    Some(parent) => (
+                        parent.to_path_buf(),
+                        path.file_name()
+                            .and_then(|n| n.to_str())
+                            .is_some_and(crate::picasa::is_ini_write),
+                    ),
                     None => continue,
                 }
             };
-            if unique.insert(dir.clone()) {
-                dirs.push(dir);
+            match kinds.entry(dir) {
+                std::collections::hash_map::Entry::Occupied(mut e) => {
+                    *e.get_mut() &= ini;
+                }
+                std::collections::hash_map::Entry::Vacant(e) => {
+                    order.push(e.key().clone());
+                    e.insert(ini);
+                }
             }
         }
     }
-    (dirs, lost)
+    let mut changed = Changed::default();
+    for dir in order {
+        if kinds[&dir] {
+            changed.ini_dirs.push(dir);
+        } else {
+            changed.dirs.push(dir);
+        }
+    }
+    (changed, lost)
 }
 
 /// Whether an event can mean something on disk is different from what the library holds.
@@ -233,8 +276,8 @@ mod tests {
         use notify::event::{Event, Flag};
         let at = std::time::Instant::now();
         let overflow = DebouncedEvent::new(Event::new(EventKind::Other).set_flag(Flag::Rescan), at);
-        let (dirs, lost) = changed_dirs(&[overflow]);
-        assert!(dirs.is_empty());
+        let (changed, lost) = changed_dirs(&[overflow]);
+        assert!(changed.is_empty());
         assert_eq!(
             lost.iter().map(|e| e.path.clone()).collect::<Vec<_>>(),
             [PathBuf::new()]
@@ -247,8 +290,11 @@ mod tests {
                 .add_path(subtree.clone()),
             at,
         );
-        let (dirs, lost) = changed_dirs(&[must_scan]);
-        assert!(dirs.is_empty(), "a rescan notice is not a change: {dirs:?}");
+        let (changed, lost) = changed_dirs(&[must_scan]);
+        assert!(
+            changed.is_empty(),
+            "a rescan notice is not a change: {changed:?}"
+        );
         assert_eq!(
             lost.iter().map(|e| e.path.clone()).collect::<Vec<_>>(),
             [subtree]
@@ -366,9 +412,88 @@ mod tests {
         let canonical = paths::canonicalize(dir.path()).unwrap();
         assert!(
             batch
+                .dirs
                 .iter()
                 .any(|d| paths::canonicalize(d).unwrap() == canonical)
         );
+    }
+
+    fn event(kind: EventKind, paths: &[&str]) -> DebouncedEvent {
+        let mut e = notify::event::Event::new(kind);
+        for p in paths {
+            e = e.add_path(PathBuf::from(p));
+        }
+        DebouncedEvent::new(e, std::time::Instant::now())
+    }
+
+    fn modify() -> EventKind {
+        EventKind::Modify(notify::event::ModifyKind::Data(
+            notify::event::DataChange::Any,
+        ))
+    }
+
+    /// photon's star write: its temporary is created and written, then renamed over the INI.
+    #[test]
+    fn photon_s_star_write_is_ini_only() {
+        use notify::event::{CreateKind, ModifyKind, RenameMode};
+        let dir = "/nonexistent-photon-test/a";
+        let tmp = format!("{dir}/.picasa.ini.photon-7-1.tmp");
+        let ini = format!("{dir}/.picasa.ini");
+        let (changed, _) = changed_dirs(&[
+            event(EventKind::Create(CreateKind::File), &[&tmp]),
+            event(modify(), &[&tmp]),
+            event(
+                EventKind::Modify(ModifyKind::Name(RenameMode::Both)),
+                &[&tmp, &ini],
+            ),
+        ]);
+        assert!(changed.dirs.is_empty(), "{changed:?}");
+        assert_eq!(changed.ini_dirs, [PathBuf::from(dir)]);
+    }
+
+    /// Review Focus 3.
+    #[test]
+    fn an_ini_and_a_photo_in_one_folder_is_a_walk() {
+        let (changed, _) = changed_dirs(&[
+            event(modify(), &["/nonexistent-photon-test/a/.picasa.ini"]),
+            event(modify(), &["/nonexistent-photon-test/a/b.jpg"]),
+        ]);
+        assert_eq!(changed.dirs, [PathBuf::from("/nonexistent-photon-test/a")]);
+        assert!(changed.ini_dirs.is_empty());
+    }
+
+    #[test]
+    fn a_deleted_ini_is_ini_only() {
+        let (changed, _) = changed_dirs(&[event(
+            EventKind::Remove(notify::event::RemoveKind::File),
+            &["/nonexistent-photon-test/a/Picasa.ini"],
+        )]);
+        assert_eq!(
+            changed.ini_dirs,
+            [PathBuf::from("/nonexistent-photon-test/a")]
+        );
+        assert!(changed.dirs.is_empty());
+    }
+
+    #[test]
+    fn an_unrecognised_temporary_beside_the_ini_is_a_walk() {
+        let (changed, _) = changed_dirs(&[
+            event(modify(), &["/nonexistent-photon-test/a/.picasa.ini"]),
+            event(modify(), &["/nonexistent-photon-test/a/.picasa.ini~"]),
+        ]);
+        assert_eq!(changed.dirs, [PathBuf::from("/nonexistent-photon-test/a")]);
+        assert!(changed.ini_dirs.is_empty());
+    }
+
+    /// A path that is a directory is always a walk, even if it were named like an INI.
+    #[test]
+    fn a_directory_event_is_a_walk() {
+        let dir = tempfile::tempdir().unwrap();
+        let named = dir.path().join(".picasa.ini");
+        std::fs::create_dir(&named).unwrap();
+        let (changed, _) = changed_dirs(&[event(modify(), &[named.to_str().unwrap()])]);
+        assert_eq!(changed.dirs, [named]);
+        assert!(changed.ini_dirs.is_empty());
     }
 }
 
@@ -442,6 +567,7 @@ mod change_tests {
         let canonical = paths::canonicalize(dir.path().join("sub")).unwrap();
         assert!(
             batch
+                .dirs
                 .iter()
                 .any(|d| paths::canonicalize(d).unwrap() == canonical)
         );
