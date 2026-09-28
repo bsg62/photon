@@ -105,17 +105,36 @@ export function createScrollMap() {
       onScrollbar = false;
     },
 
-    /** The layout's height, the viewport's, and the cap. (Completed in Task 4.) */
+    /** The layout's height, the viewport's, and the cap - on every rebuild, resize, tile
+     *  size change and new display scale. Called after the canvas has its new height: a
+     *  write into a canvas not yet grown is clamped away. */
     resize(nextTotal: number, nextViewport: number, nextDomMax: number): number | null {
       const wasMapped = isMapped();
+      const wasHeight = domHeight();
       total = nextTotal;
       viewport = nextViewport;
       domMax = nextDomMax;
-      if (!isMapped()) return null;
-      if (!wasMapped) return target(virtual);
-      virtual = clampVirtual(virtual);
-      shift = virtual - lastDomTop;
-      return null;
+      if (!wasMapped && !isMapped()) return null;
+      if (!isMapped()) {
+        // The canvas holds the whole layout again: the place to be is `virtual` itself.
+        virtual = clampVirtual(virtual);
+        pending = null;
+        return virtual;
+      }
+      const clamped = clampVirtual(virtual);
+      // Staying past the cap at the same height is the common case - a scan adding photos
+      // during a flick - and writes nothing, so the flick carries on.
+      if (
+        wasMapped &&
+        domHeight() === wasHeight &&
+        clamped === virtual &&
+        lastDomTop >= 0 &&
+        lastDomTop <= maxDom()
+      ) {
+        return null;
+      }
+      virtual = clamped;
+      return target(virtual);
     },
 
     /** The DOM position to write for virtual position `v`. Under the cap `v` itself,

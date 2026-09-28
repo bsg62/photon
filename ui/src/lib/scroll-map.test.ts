@@ -224,6 +224,69 @@ describe('re-anchoring', () => {
   });
 });
 
+describe('resizing', () => {
+  it('a rebuild that stays past the cap keeps shift and writes nothing', () => {
+    const map = mapped();
+    map.press(true);
+    map.onScroll(1_000);
+    map.release();
+    const shift = map.shift;
+    expect(map.resize(12_000, 100, 2_100)).toBeNull();
+    expect(map.shift).toBe(shift);
+    expect(map.virtual).toBe(4_950);
+  });
+  it('entering the mapped range keeps the place the grid was at', () => {
+    const map = createScrollMap();
+    map.resize(2_000, 100, 2_100);
+    map.onScroll(700);
+    const w = map.resize(10_000, 100, 2_100);
+    expect(w).toBeCloseTo(700 / 4.95, 6);
+    map.wrote(w!);
+    expect(map.virtual).toBe(700);
+  });
+  it('leaving it writes the virtual position itself', () => {
+    const map = mapped();
+    map.press(true);
+    map.onScroll(400); // virtual 1_980
+    map.release();
+    expect(map.resize(2_050, 100, 2_100)).toBe(1_950); // clamped to the new end
+    map.wrote(1_950);
+    expect(map.shift).toBe(0);
+    expect(map.virtual).toBe(1_950);
+  });
+  it('a new cap (the display scale changed) re-anchors', () => {
+    const map = mapped();
+    map.press(true);
+    map.onScroll(1_000);
+    map.release();
+    const w = map.resize(10_000, 100, 1_100); // maxDom 1_000
+    expect(w).toBeCloseTo((4_950 / 9_900) * 1_000, 6);
+  });
+  it('a library that shrinks under the place the grid was at is clamped and re-anchored', () => {
+    const map = mapped();
+    map.press(true);
+    map.onScroll(2_000); // virtual 9_900
+    map.release();
+    const w = map.resize(6_000, 100, 2_100);
+    expect(w).toBeCloseTo(2_000, 6);
+    map.wrote(w!);
+    expect(map.virtual).toBe(5_900);
+  });
+  it('a taller viewport that leaves the DOM position past the end re-anchors', () => {
+    const map = mapped();
+    map.press(true);
+    map.onScroll(2_000);
+    map.release();
+    expect(map.resize(10_000, 300, 2_100)).toBeCloseTo(1_800, 6);
+  });
+  it('under the cap before and after writes nothing', () => {
+    const map = createScrollMap();
+    map.resize(2_000, 100, 2_100);
+    map.onScroll(700);
+    expect(map.resize(1_500, 100, 2_100)).toBeNull();
+  });
+});
+
 describe('a press on the scrollbar', () => {
   it('release ends a press', () => {
     const map = mapped();
