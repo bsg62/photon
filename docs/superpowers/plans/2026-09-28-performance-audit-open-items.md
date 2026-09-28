@@ -87,7 +87,7 @@ These came out of the audit on 2026-09-27 and are not in any PR. They are ordere
 - **`describe()` runs serially.** On a network share even header reads are latency-bound. 2–4 describe threads per batch would help there, but on a single HDD they would not.
 - ~~**Degraded roots are rescanned every 5 minutes** (`DEGRADED_RESCAN`) however long a full scan of that root takes.~~ Done: a degraded root now waits `max(DEGRADED_RESCAN, 10 × its last full scan)` from the later of its last walk and the ticker's last ask (`watch.rs`, `degraded_rescan_due`; the time is `Engine::last_full_scan`, in memory, timed again by each session's startup scan). Registration is still retried every 5 minutes, and a root that registers is rescanned at once.
 - **On Linux, notify's inotify registration follows symlinks and stats every entry.** That walk costs minutes on CIFS or NFS. — symlinks: done, `with_follow_symlinks(false)` (`watcher/fs.rs`), matching the scanner, so a linked tree is no longer walked or given watch descriptors. The stat is not: notify's `filter_dir` calls `metadata()` on every entry, files included, to find the directories, whatever the flag says (an `lstat` each instead of a `stat` on a link). Removing it needs notify to use walkdir's `file_type()`, which is free from `readdir` - an upstream change, or a fork.
-- **`keywords::read_embedded` opens the file a second time** to read a 256 KiB prefix, and `xmp.rs` lossily decodes that whole prefix before searching it. Read one prefix and share it with `read_header`. Find `</x:xmpmeta>` in the raw bytes before decoding.
+- ~~**`keywords::read_embedded` opens the file a second time.**~~ Done: `metadata::read_image` reads the 256 KiB prefix once for the header, keywords and caption, and `packet_in` finds `</x:xmpmeta>` in the raw bytes and decodes only the packet (~1.7 ms → ~25 µs per photo on a 5.6 MB JPEG). Results are identical, so `EXIF_VERSION` is unchanged.
 
 **Engine:** — done. `export_items`, `check_export_dest`, the five opener commands and `set_star`/`set_stars` run on the blocking pool (`ipc.rs`, tested through Tauri's mock runtime by parking one call per worker). A scan's duplicate and look-alike pass is now requested on its own thread after the scan slot is released, so `startup` starts the watcher without waiting for it; `shutdown` waits for passes by count (`similar_passes`). Starting the watcher *before* the startup scans was rejected: the watcher registers only roots marked online, which those scans settle. Still on the async workers, bounded but slow at 300k: the view setters' rebuilds, `list_tags`, `watched_folder_stats`, and bulk tag/hide/edit writes.
 
@@ -97,7 +97,7 @@ These came out of the audit on 2026-09-27 and are not in any PR. They are ordere
 - **`map_grid_row` allocates a path `String` and a Vec per row** to compute the fingerprint. The thumbnail key must stay byte-identical, since it names cached files.
 
 **UI:**
-- **`itemsInRect` (`layout.ts`) walks every row** on each band pointermove and autoscroll frame. Start it at `rowIndexAt(rows, top)` and stop once past `bottom`.
+- ~~**`itemsInRect` (`layout.ts`) walks every row.**~~ Done: it starts at `rowIndexAt(rows, top)` and stops past `bottom`; results pinned against the full walk at every row boundary.
 - **Tile badges use `filter: drop-shadow`** (`Tile.svelte`). On WebKit that may give each badge its own compositing layer. This is low confidence; check it with `WEBKIT_SHOW_COMPOSITING_DEBUG_VISUALS=1`.
 
 **Thumbnails:**
