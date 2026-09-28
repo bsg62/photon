@@ -110,6 +110,13 @@ export class LibraryStore {
    *  lead by id (`rebindSelection`), and writing a pre-rebuild offset back over that answer
    *  is the exact trap that makes Enter open the neighbouring photo. */
   private bandPrevious = new Set<number>();
+  /** How many offsets the live band covers whose page is not loaded, so has no id to put
+   *  in the preview's selection. Counted by offset rather than left out: a band autoscrolled
+   *  a long way has its middle pages evicted by `ensure`, and the status bar's "N selected"
+   *  fell further behind the band the further it went. An offset is a photo, so the count
+   *  is exact - except for an additive band crossing an unloaded photo that was already
+   *  selected, which it counts twice until `endBand` resolves the ids. Zero outside a band. */
+  private bandUnresolved = $state(0);
 
   /** Selected grid offset. */
   get selected(): number | null {
@@ -300,6 +307,7 @@ export class LibraryStore {
   beginBand(additive: boolean): void {
     this.bandPrevious = new Set(this.selection);
     this.bandBase = additive ? new Set(this.selection) : new Set();
+    this.bandUnresolved = 0;
   }
 
   /** Previews the band, resolving offsets through the loaded pages: synchronous, so the
@@ -308,13 +316,16 @@ export class LibraryStore {
    *  `toggleSelected` already follows - and `endBand` is what puts it right. */
   bandTo(ranges: [number, number][]): void {
     const next = new Set(this.bandBase);
+    let unresolved = 0;
     for (const [start, end] of ranges) {
       for (let at = start; at <= end; at++) {
         const id = this.pages.get(at)?.id;
         if (id !== undefined) next.add(id);
+        else unresolved++;
       }
     }
     this.selection = next;
+    this.bandUnresolved = unresolved;
   }
 
   /** Ends a band: the same ranges resolved through the backend, which is the authority.
@@ -325,6 +336,7 @@ export class LibraryStore {
     const previous = this.bandPrevious;
     this.bandBase = new Set();
     this.bandPrevious = new Set();
+    this.bandUnresolved = 0;
 
     // A band that covers nothing is a band, not a failure: dragging over empty space is how
     // a selection is cleared, and how an additive drag that ends up covering nothing leaves
@@ -368,6 +380,7 @@ export class LibraryStore {
     this.selection = new Set(this.bandPrevious);
     this.bandBase = new Set();
     this.bandPrevious = new Set();
+    this.bandUnresolved = 0;
   }
 
   clearSelection(): void {
@@ -395,7 +408,7 @@ export class LibraryStore {
   }
 
   get selectionCount(): number {
-    return this.selection.size;
+    return this.selection.size + this.bandUnresolved;
   }
 
   get selectedItemIds(): number[] {

@@ -1602,12 +1602,37 @@ describe('LibraryStore', () => {
         // Offsets past the first 50 were never fetched, so no page holds them.
         store.beginBand(false);
         store.bandTo([[1200, 1202]]);
-        expect(store.selectionCount).toBe(0);
+        expect(store.isSelected(idAt(1201))).toBe(false);
 
         await store.endBand([[1200, 1202]]);
 
         expect(store.selectionCount).toBe(3);
         expect(store.isSelected(idAt(1201))).toBe(true);
+      });
+
+      /** The status bar's "N selected" reads `selectionCount` while the band is live. An
+       *  autoscroll a long way lets the pages behind the window go, and a count of the ids
+       *  the preview could resolve fell further behind the band the further it went. */
+      it('counts every photo a long band covers, even where its pages were let go', async () => {
+        const store = await storeOf(5000);
+        store.beginBand(false);
+        await store.ensure(2950, 3050);
+        expect(store.entry(1000)).toBeUndefined();
+        store.bandTo([[10, 3000]]);
+        expect(store.selectionCount).toBe(2991);
+
+        await store.endBand([[10, 3000]]);
+        expect(store.selectionCount).toBe(2991);
+      });
+
+      it('counts only what an additive band adds, and nothing once it is abandoned', async () => {
+        const store = await storeOf(5000);
+        store.selected = 20;
+        store.beginBand(true);
+        store.bandTo([[1000, 1009]]);
+        expect(store.selectionCount).toBe(11);
+        store.cancelBand();
+        expect(store.selectionCount).toBe(1);
       });
 
       /** Dragging a box over empty space is how a selection is cleared - the canonical
