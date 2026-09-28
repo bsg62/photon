@@ -271,7 +271,16 @@
 
   function probeReport() {
     const v = document.querySelector('.viewport');
+    // Only tiles overlapping the viewport's visible box count. A tile mounted but drawn off
+    // screen proves nothing about reachability: with every row drawn at `row.top` instead of
+    // `row.top - shift`, the last rows are mounted below the capped canvas where no scroll
+    // can reach them, and counting every mounted tile passed that.
+    const box = v?.getBoundingClientRect();
     const ids = [...document.querySelectorAll('.canvas img')]
+      .filter((img) => {
+        const r = img.getBoundingClientRect();
+        return box !== undefined && r.bottom > box.top && r.top < box.bottom;
+      })
       .map((img) => /thumb\/(\d+)\/grid\//.exec(img.getAttribute('src') ?? '')?.[1])
       .filter(Boolean)
       .map(Number);
