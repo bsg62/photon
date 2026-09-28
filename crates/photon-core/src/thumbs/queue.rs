@@ -666,14 +666,20 @@ mod tests {
         std::thread::sleep(settle * 2);
         assert!(!waiter.is_finished(), "nothing was readied");
 
-        // One that did, followed by more work before the settle is out.
+        // One that did, followed by more work that is still running when its settle runs out.
+        // The next job is queued while this one is in flight and held in flight past the
+        // settle, so the queue is never idle between them however late the sleep wakes: a
+        // gap left to a sleep *inside* the settle window let a loaded macOS runner oversleep
+        // it, and the queue then answered - rightly - before the assertion's `last_done`
+        // existed. Held past the settle, the job is also what pins "not while work is still
+        // going": a queue that answered on `readied` alone answers during it.
         q.push(2, Priority::Background);
         let id = q.pop_blocking().unwrap();
         q.note_ready();
-        q.done(id);
-        std::thread::sleep(settle / 2);
         q.push(3, Priority::Background);
+        q.done(id);
         let id = q.pop_blocking().unwrap();
+        std::thread::sleep(settle * 2);
         let last_done = Instant::now();
         q.done(id);
 
