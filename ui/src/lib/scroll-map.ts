@@ -221,6 +221,9 @@ export function createScrollMap() {
         lastDomTop = domTop;
         return null;
       }
+      // An elastic bounce reports a position past an end and then the end again: read as
+      // it came, the step back in would move the library by the bounce's depth.
+      domTop = Math.min(maxDom(), Math.max(0, domTop));
       // The event photon's own write caused: already applied by `wrote`. Within a pixel, not
       // equal - a scaled display reads a fractional position back and reports another.
       if (expected !== null && Math.abs(domTop - expected) < 1) {

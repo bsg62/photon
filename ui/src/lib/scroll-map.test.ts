@@ -107,6 +107,18 @@ describe('past the cap', () => {
     expect(map.virtual).toBe(4_960);
     expect(map.shift).toBe(3_950);
   });
+  it('an elastic bounce past either end leaves the virtual position where it was', () => {
+    const map = mapped();
+    map.onScroll(-20);
+    map.onScroll(0);
+    expect(map.virtual).toBe(0);
+    map.press(true);
+    map.onScroll(2_000); // virtual 9_900
+    map.release();
+    map.onScroll(2_020);
+    map.onScroll(2_000);
+    expect(map.virtual).toBe(9_900);
+  });
   it('maps the DOM ends to the virtual ends exactly', () => {
     const map = mapped();
     map.press(true);
