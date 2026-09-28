@@ -6,6 +6,7 @@
 <title>photon — a local photo manager</title>
 <meta name="description" content="A fast, local photo manager for Linux, macOS and Windows. A spiritual successor to Picasa 3. Your photos stay where they are, untouched.">
 <link rel="icon" href="img/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="img/apple-touch-icon.png">
 <meta property="og:title" content="photon">
 <meta property="og:description" content="A fast, local photo manager for Linux, macOS and Windows. A spiritual successor to Picasa 3.">
 <meta property="og:image" content="https://photon.webcodr.io/img/og.jpg">
@@ -69,6 +70,8 @@
   .features h3 { font-size: 1.05rem; margin: 0 0 .25rem; }
   .features p { margin: 0; color: var(--text-dim); }
   ul { padding-left: 1.25rem; }
+  .faq h3 { font-size: 1.05rem; margin: 1.75rem 0 .25rem; }
+  .faq p { margin: .25rem 0; }
   li { margin: .35rem 0; }
   .table-wrap { overflow-x: auto; }
   table { border-collapse: collapse; width: 100%; }
@@ -104,7 +107,8 @@
   <p>
     photon watches your folders in place. It never moves, renames or changes a photo: it keeps a
     small library and a thumbnail cache in your user directories, and rotations and crops live
-    there too, applied only on the way to the screen. No account, no cloud, no import step.
+    there too, applied only on the way to the screen. No account, no cloud, no import step, and
+    no telemetry: photon does not connect to the internet at all.
   </p>
   <p>
     That includes a NAS or a network share. Thumbnails are cached on your own computer, so
@@ -196,6 +200,51 @@
     explains how to get past that on each system, and how to check a download against its
     <code>SHA256SUMS</code>.
   </p>
+
+  <h2>Questions</h2>
+  <div class="faq">
+    <h3>Where does photon keep its library?</h3>
+    <p>
+      In a folder called <code>io.github.bsg62.photon</code>: the library (<code>library.db</code>)
+      under your user data directory, the thumbnails under your cache directory.
+    </p>
+    <div class="table-wrap">
+      <table>
+        <tr><th>System</th><th>Library</th><th>Thumbnails</th></tr>
+        <tr><td>Linux</td><td><code>~/.local/share/</code></td><td><code>~/.cache/</code></td></tr>
+        <tr><td>macOS</td><td><code>~/Library/Application Support/</code></td><td><code>~/Library/Caches/</code></td></tr>
+        <tr><td>Windows</td><td><code>%APPDATA%\</code></td><td><code>%LOCALAPPDATA%\</code></td></tr>
+      </table>
+    </div>
+
+    <h3>What should I back up?</h3>
+    <p>
+      Your photos, as always. Beyond them, the library folder holds what exists only in photon:
+      its own albums, keywords you added, rotations and crops, photos you hid, saved searches,
+      tag renames and settings. Copy it while photon is closed. The thumbnails are rebuilt on their own if lost. Stars, and everything else
+      photon reads from Picasa's files or from the photos, live with the photos already.
+    </p>
+
+    <h3>Can I move my library to another computer?</h3>
+    <p>
+      Yes, if the photos are at the same paths there: the library remembers each photo by its full
+      path. Otherwise, let the new computer build its own library. Stars and Picasa's people and
+      albums come back by themselves; what exists only in photon, above, does not.
+    </p>
+
+    <h3>Can I keep using Picasa alongside it?</h3>
+    <p>
+      Yes. Both read and write the same <code>.picasa.ini</code>, and photon picks up a change
+      Picasa makes within a few seconds of it saving the file. If Picasa has the file open at the moment you set
+      a star in photon, photon says so and changes nothing; try again a moment later.
+    </p>
+
+    <h3>How do I uninstall it?</h3>
+    <p>
+      Remove the app the usual way for your system, then delete the two
+      <code>io.github.bsg62.photon</code> folders above. Your photos are not affected either way.
+    </p>
+  </div>
 
   <footer>
     photon is MIT licensed ·

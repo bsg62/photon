@@ -26,7 +26,7 @@ ratings from that era's XMP-based source, which no INI has confirmed.
 
 Nothing needs to be done: a normal rescan corrects a folder's stars the first time it's
 walked again, whether that scan is manual or triggered by the file watcher. Deleting the
-library (`photon/library.db`, in your user data directory) is not required — it only forces
+library (`io.github.bsg62.photon/library.db`, in your user data directory) is not required — it only forces
 every folder to be reached, and so corrected, in one pass instead of over time as folders
 are scanned. Your photos are untouched either way, since photon never writes a photo file.
 
