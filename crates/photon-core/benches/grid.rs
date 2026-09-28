@@ -180,6 +180,26 @@ fn bench_grid(c: &mut Criterion) {
         b.iter(|| black_box(index.rows(black_box(50_000), 200).len()))
     });
 
+    // The Starred view with one photo in thirty-three starred, about a real library's share.
+    // Served by `items_starred`, it reads the starred rows alone; through `items_folder`, as
+    // it was before schema 22, it read the whole library twice to return 3% of it.
+    let stars: Vec<(i64, u8)> = lib
+        .grid_entries()
+        .unwrap()
+        .iter()
+        .step_by(33)
+        .map(|entry| (entry.id, 1))
+        .collect();
+    lib.set_ratings(&stars).unwrap();
+    c.bench_function("startup_grid_100k_starred", |b| {
+        b.iter(|| {
+            black_box(GridIndex::build(
+                lib.entries_for(GridView::Starred, "").unwrap(),
+                Layout::Folders,
+            ))
+        })
+    });
+
     // The same library with one photo in ten a byte-identical pair, so the grid query's
     // `has_copies` column has a real set to build and probe; the library above has no
     // hashes at all and would measure it empty. Same budget as startup.

@@ -14,8 +14,9 @@
 //! the Videos count took 232ms walking it and 25ms as a scan.
 //!
 //! A query meant to be served by a partial index whose predicate includes the term - Recent,
-//! the thumbnail queue, the Starred and Hidden counts, the look-alike and duplicate
-//! candidates - keeps the bare form: with the plus it could not use its own index either.
+//! the thumbnail queue, the grid views and the Starred, Videos and Hidden counts, the
+//! look-alike and duplicate candidates - keeps the bare form: with the plus it could not use
+//! its own index either.
 //! `ANALYZE` is not the fix: statistics would re-plan every query here at once, and the plan
 //! tests that pin today's plans run without them. Every whole-library read has a plan test
 //! that fails when its plus goes.
@@ -212,7 +213,7 @@ mod tests {
             .unwrap()
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 21);
+        assert_eq!(version, 22);
         let tables: i64 = lib
             .reader()
             .unwrap()
@@ -238,7 +239,7 @@ mod tests {
             Library::open(&path),
             Err(Error::SchemaTooNew {
                 found: 99,
-                supported: 21
+                supported: 22
             })
         ));
     }
