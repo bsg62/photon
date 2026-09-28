@@ -1644,6 +1644,169 @@ describe('LibraryStore', () => {
       expect(store.selected).toBe(2400);
     });
 
+    /** What the backend holds once a hide of the photos `leaving` names has landed. */
+    function hiddenWhere(len: number, leaving: (at: number) => boolean) {
+      const kept = Array.from({ length: len }, (_, i) => i).filter((at) => !leaving(at));
+      vi.mocked(api.gridRows).mockImplementation(async (offset: number, count: number) => ({
+        version: 2,
+        rows: kept.slice(offset, offset + count).map(entryAt),
+      }));
+      vi.mocked(api.gridOffsetOfItem).mockImplementation(async (id: number) => {
+        const at = kept.indexOf(id - 100);
+        return at < 0 ? null : at;
+      });
+    }
+
+    /** A folder of 4,800 photos at 100..4899, between two others, with the pages around
+     *  offset 2500 loaded: those reach neither end of it. */
+    const bigFolder = (at: number) => at >= 100 && at <= 4899;
+    async function storeWithBigFolder() {
+      const sections: Section[] = [
+        { folderId: 1, offset: 0, count: 100, takenAtMin: 0 },
+        { folderId: 2, offset: 100, count: 4800, takenAtMin: 0 },
+        { folderId: 3, offset: 4900, count: 5100, takenAtMin: 0 },
+      ];
+      const store = await storeOf(10000, { sections });
+      await store.ensure(2450, 2550);
+      return store;
+    }
+    async function bigFolderSelectedAt2500() {
+      const store = await storeWithBigFolder();
+      store.selected = 2500;
+      await store.selectAll();
+      return store;
+    }
+
+    /** Scrolls the window far away - nothing before the folder stays loaded - and hides
+     *  the selection, which is the photos `leaving` names. */
+    async function hideFromAfar(store: LibraryStore, leaving: (at: number) => boolean) {
+      await store.ensure(8000, 8050);
+      expect(store.entry(99)).toBeUndefined();
+      vi.mocked(api.setItemsHidden).mockImplementation(async () => {
+        hiddenWhere(10000, leaving);
+        return store.selectionCount;
+      });
+      await store.setHidden(store.selectedItemIds, true);
+    }
+
+    /** Ctrl+A, Enter, Escape: closing the viewer on the photo it opened keeps the selection
+     *  and moves the anchor to the lead, in the middle of the folder. The selection reaches
+     *  above its anchor further than the pages kept around the lead, so neither bounds its
+     *  start, and the photo at the lead's offset in the rebuilt index is 2,400 photos past
+     *  the folder. */
+    it('hiding a folder whose anchor moved inside it lands after the folder, whatever is loaded', async () => {
+      const store = await bigFolderSelectedAt2500();
+      store.closeViewerOn(2500, idAt(2500));
+      expect(store.selectionCount).toBe(4800);
+      await hideFromAfar(store, bigFolder);
+      expect(store.selectedItemIds).toEqual([idAt(4900)]);
+      expect(store.selected).toBe(100);
+    });
+
+    /** The same run picked by Shift+click, with the lead moved inside it by a Ctrl+click off
+     *  and on again. */
+    it('hiding a shift+clicked run whose lead moved inside it lands after the run', async () => {
+      const store = await storeWithBigFolder();
+      await store.ensure(0, 50);
+      store.selected = 100;
+      await store.extendSelection(4899);
+      await store.ensure(2450, 2550);
+      store.toggleSelected(2500);
+      store.toggleSelected(2500);
+      expect(store.selectionCount).toBe(4800);
+      await hideFromAfar(store, bigFolder);
+      expect(store.selectedItemIds).toEqual([idAt(4900)]);
+      expect(store.selected).toBe(100);
+    });
+
+    /** The folder with a photo far above it Ctrl+clicked in, and the lead then moved back
+     *  inside the folder. The selection's lowest offset is that photo, but the photos
+     *  between it and the folder stay: landing after the photo before *it* would land far
+     *  above the lead. What bounds the landing is the start of the run the lead is in. */
+    it('hiding a folder plus a photo far above it lands after the folder, not after that photo', async () => {
+      const store = await bigFolderSelectedAt2500();
+      await store.ensure(0, 50);
+      store.toggleSelected(10);
+      await store.ensure(2450, 2550);
+      store.toggleSelected(2500);
+      store.toggleSelected(2500);
+      expect(store.selectionCount).toBe(4801);
+      await hideFromAfar(store, (at) => at === 10 || bigFolder(at));
+      expect(store.selectedItemIds).toEqual([idAt(4900)]);
+      expect(store.selected).toBe(99);
+    });
+
+    /** Ctrl+clicked in right before the folder, the photo joins its run: the one to land
+     *  after is the photo before *it*, not the photo before the folder, which is leaving. */
+    it('hiding a folder plus the photo just before it lands after the folder', async () => {
+      const store = await bigFolderSelectedAt2500();
+      await store.ensure(0, 50);
+      store.toggleSelected(99);
+      await store.ensure(2450, 2550);
+      store.toggleSelected(2500);
+      store.toggleSelected(2500);
+      expect(store.selectionCount).toBe(4801);
+      await hideFromAfar(store, (at) => at >= 99 && at <= 4899);
+      expect(store.selectedItemIds).toEqual([idAt(4900)]);
+      expect(store.selected).toBe(99);
+    });
+
+    /** A photo Ctrl+clicked out of the folder splits its run: the photos before the gap are
+     *  not in the lead's run, and landing after the photo before the folder lands on the
+     *  photo left in the gap, far above the lead. */
+    it('hiding a folder with a photo taken out of it lands after the folder, not in the gap', async () => {
+      const store = await bigFolderSelectedAt2500();
+      await store.ensure(950, 1050);
+      store.toggleSelected(1000);
+      await store.ensure(2450, 2550);
+      store.toggleSelected(2500);
+      store.toggleSelected(2500);
+      expect(store.selectionCount).toBe(4799);
+      await hideFromAfar(store, (at) => at !== 1000 && bigFolder(at));
+      expect(store.selectedItemIds).toEqual([idAt(4900)]);
+      expect(store.selected).toBe(101);
+    });
+
+    /** An additive band carrying the folder's selection on into the next folder: the lead
+     *  is the band's first photo, and the run it is in began with the folder, not the band. */
+    it('hiding a folder and an additive band after it lands after the band', async () => {
+      const store = await bigFolderSelectedAt2500();
+      store.beginBand(true);
+      await store.ensure(5050, 5100);
+      await store.endBand([[4900, 5100]]);
+      expect(store.selected).toBe(4900);
+      expect(store.selectionCount).toBe(5001);
+      await hideFromAfar(store, (at) => at >= 100 && at <= 5100);
+      expect(store.selectedItemIds).toEqual([idAt(5101)]);
+      expect(store.selected).toBe(100);
+    });
+
+    /** A band that ends without changing the selection leaves it as it was, runs and all. */
+    it.each([
+      ['cancelled', async (store: LibraryStore) => {
+        store.beginBand(false);
+        store.bandTo([[2500, 2501]]);
+        store.cancelBand();
+      }],
+      ['released over nothing', async (store: LibraryStore) => {
+        store.beginBand(true);
+        await store.endBand([]);
+      }],
+      ['abandoned', async (store: LibraryStore) => {
+        store.beginBand(false);
+        vi.mocked(api.gridRows).mockResolvedValueOnce({ version: 2, rows: [] });
+        await store.endBand([[2500, 2501]]);
+      }],
+    ])('hiding a folder after a band %s still lands after the folder', async (_, band) => {
+      const store = await bigFolderSelectedAt2500();
+      store.closeViewerOn(2500, idAt(2500));
+      await band(store);
+      expect(store.selectionCount).toBe(4800);
+      await hideFromAfar(store, bigFolder);
+      expect(store.selectedItemIds).toEqual([idAt(4900)]);
+      expect(store.selected).toBe(100);
+    });
+
     /** A band begun from a lead, so the lead's page is kept while the window autoscrolls
      *  away: the photo before the band is loaded, the pages after the lead's are not. */
     async function bandFromLead(first: number, last: number) {
@@ -1880,6 +2043,48 @@ describe('LibraryStore', () => {
       await store.setHidden(store.selectedItemIds, true);
       store.bandTo([[6, 6]]);
       expect(store.selectedItemIds).toEqual([idAt(6)]);
+    });
+
+    /** A band released while a hide is out: `endBand` holds its base and the selection it
+     *  started from across the fetch of its ids, and the hide landing during that fetch
+     *  could not reach them there. Resolved, the band put the hidden photos back. */
+    async function bandReleasedWhileHiding(answer: { version: number; rows: ReturnType<typeof entryAt>[] }) {
+      const store = await storeOf(10);
+      store.selected = 2;
+      store.toggleSelected(3);
+      const write = deferred<number>();
+      vi.mocked(api.setItemsHidden).mockReturnValue(write.promise);
+      const hiding = store.setHidden(store.selectedItemIds, true);
+      await flush();
+
+      // Drawn over one of the photos being hidden, whose tile is still on screen.
+      store.beginBand(true);
+      store.bandTo([[3, 6]]);
+      const fetch = deferred<{ version: number; rows: ReturnType<typeof entryAt>[] }>();
+      vi.mocked(api.gridRows).mockReturnValueOnce(fetch.promise);
+      const ending = store.endBand([[3, 6]]);
+      await flush();
+
+      hiddenFrom(10, 2, 3);
+      write.resolve(2);
+      await hiding;
+      fetch.resolve(answer);
+      await ending;
+      return store;
+    }
+
+    it('a band released while a hide is out does not bring the hidden photos back', async () => {
+      // Answered from the index the band was drawn on, which the hide's rebuild has not yet
+      // replaced in the store, so it names the photo the hide took out as well.
+      const store = await bandReleasedWhileHiding({ version: 1, rows: [3, 4, 5, 6].map(entryAt) });
+      expect([...store.selectedItemIds].sort()).toEqual([idAt(4), idAt(5), idAt(6)]);
+    });
+
+    /** The same band abandoned, because its fetch answered from the hide's rebuilt index:
+     *  the selection it puts back is the one it started from, which held the hidden photos. */
+    it('a band abandoned while a hide is out does not put the hidden photos back', async () => {
+      const store = await bandReleasedWhileHiding({ version: 2, rows: [entryAt(8)] });
+      expect(store.selectedItemIds).toEqual([]);
     });
 
     it('a click made while a hide is out is not overwritten when it lands', async () => {

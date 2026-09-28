@@ -432,6 +432,26 @@ impl Engine {
         self.rebuild(self.data_snapshot()).map(|_| ())
     }
 
+    /// `refresh_grid`, after a write that has already committed: a failed rebuild is logged,
+    /// not returned. `write` names the write in the log.
+    ///
+    /// Returned, it reached the UI as the write having failed, and the UI answers a failed
+    /// write by undoing its side: the viewer's star and keyword chips flip back, an album
+    /// checkbox unticks, a hide keeps its selection for a retry, the folder list and the
+    /// album list are not refetched. Every one of those contradicts a database that took
+    /// the write - and a retry has nothing left to do. The write stands, and the next
+    /// rebuild that publishes, from any source, shows it: `data_snapshot` marked
+    /// `data_dirty` before this build, a failure leaves it set, and so that publish also
+    /// sends the UI to refetch the collections this write moved.
+    ///
+    /// Not for a view setter, whose rebuild *is* the change: that is `rebuild_or_restore`,
+    /// which rolls back instead.
+    fn refresh_after_write(&self, write: &'static str) {
+        if let Err(err) = self.refresh_grid() {
+            tracing::warn!(%err, write, "the grid could not be rebuilt after a committed write");
+        }
+    }
+
     /// `refresh_grid`, for a write that moved nothing the sidebar's collections or
     /// Settings read: a poster frame (thumbnail state) and the hashing passes
     /// (`content_hash`, `similar_group`). Those change which photos the grid draws, and how -
@@ -806,11 +826,10 @@ impl Engine {
     /// After an album mutation: rebuilds the grid if an album is what it is showing. Any
     /// other view is unaffected by album membership, and the UI refetches the album list
     /// itself after the call that got here.
-    pub fn albums_changed(&self) -> Result<()> {
+    pub fn albums_changed(&self) {
         if self.state.lock().view == GridView::Album {
-            self.refresh_grid()?;
+            self.refresh_after_write("an album change");
         }
-        Ok(())
     }
 
     /// Renames a tag and carries an open Tag view from the old name to the new one.
@@ -871,9 +890,7 @@ impl Engine {
     /// rebuild must not put the view back on a name that no longer answers, nor report the
     /// saved change as failed. The next rebuild, from any source, shows it.
     pub fn tags_changed(&self) {
-        if let Err(err) = self.refresh_grid() {
-            tracing::warn!(%err, "grid refresh after a tag rule change failed");
-        }
+        self.refresh_after_write("a tag rule change");
     }
 
     /// Sets or clears a photo's star: into the folder's Picasa INI first, then into the
@@ -909,7 +926,8 @@ impl Engine {
         // snapshots after this commit, on this thread, so it shows the star with no lock
         // held; see `ini_write`.
         drop(serialised);
-        self.refresh_grid()
+        self.refresh_after_write("a star");
+        Ok(())
     }
 
     /// Stars or unstars several photos, returning how many landed.
@@ -977,7 +995,7 @@ impl Engine {
         self.lib.set_ratings(&ratings)?;
         // Every file, then every row: the lock's work is done, as in `set_star`.
         drop(serialised);
-        self.refresh_grid()?;
+        self.refresh_after_write("stars");
         Ok(ratings.len())
     }
 
@@ -990,7 +1008,7 @@ impl Engine {
     pub fn add_item_tag(&self, id: i64, tag: &str) -> Result<String> {
         self.live_item(id)?;
         let name = self.lib.add_item_tag(id, tag)?;
-        self.refresh_grid()?;
+        self.refresh_after_write("a keyword");
         Ok(name)
     }
 
@@ -1009,7 +1027,7 @@ impl Engine {
     pub fn add_items_tag(&self, ids: &[i64], tag: &str) -> Result<(String, usize)> {
         let (name, count) = self.lib.add_items_tag(ids, tag)?;
         if count > 0 {
-            self.refresh_grid()?;
+            self.refresh_after_write("a keyword");
         }
         Ok((name, count))
     }
@@ -1025,10 +1043,8 @@ impl Engine {
     /// which keeps the photos selected for a retry that has nothing left to do.
     pub fn set_items_hidden(&self, ids: &[i64], hidden: bool) -> Result<usize> {
         let count = self.lib.set_hidden(ids, hidden)?;
-        if count > 0
-            && let Err(err) = self.refresh_grid()
-        {
-            tracing::warn!(%err, "photos were hidden but the grid could not be rebuilt");
+        if count > 0 {
+            self.refresh_after_write("a hide");
         }
         Ok(count)
     }
@@ -1039,7 +1055,7 @@ impl Engine {
     pub fn set_folder_hidden(&self, folder_id: i64, hidden: bool) -> Result<usize> {
         let count = self.lib.set_folder_hidden(folder_id, hidden)?;
         if count > 0 {
-            self.refresh_grid()?;
+            self.refresh_after_write("a folder hide");
         }
         Ok(count)
     }
@@ -1051,7 +1067,7 @@ impl Engine {
     pub fn set_folder_alias(&self, folder_id: i64, alias: Option<&str>) -> Result<bool> {
         let changed = self.lib.set_folder_alias(folder_id, alias)?;
         if changed {
-            self.refresh_grid()?;
+            self.refresh_after_write("a folder name");
         }
         Ok(changed)
     }
@@ -1061,7 +1077,7 @@ impl Engine {
     pub fn remove_items_tag(&self, ids: &[i64], tag: &str) -> Result<usize> {
         let count = self.lib.remove_items_tag(ids, tag)?;
         if count > 0 {
-            self.refresh_grid()?;
+            self.refresh_after_write("a keyword removal");
         }
         Ok(count)
     }
@@ -1070,7 +1086,8 @@ impl Engine {
     pub fn remove_item_tag(&self, id: i64, tag: &str) -> Result<()> {
         self.live_item(id)?;
         self.lib.remove_item_tag(id, tag)?;
-        self.refresh_grid()
+        self.refresh_after_write("a keyword removal");
+        Ok(())
     }
 
     /// Copies photos out of the library into `dest`, returning what landed.
@@ -1217,7 +1234,7 @@ impl Engine {
         drop(serialised);
         if changed {
             self.thumbs.prioritize(&[id], Priority::Visible);
-            self.refresh_grid()?;
+            self.refresh_after_write("an edit");
             self.request_similar_pass();
         }
         Ok(())
@@ -1291,7 +1308,7 @@ impl Engine {
         if let (Some(service), Some(path)) = (self.watcher_service(), path) {
             service.watch_removed(watched_id, Path::new(&path));
         }
-        self.refresh_grid()?;
+        self.refresh_after_write("a folder removal");
         self.request_similar_pass();
         Ok(())
     }
@@ -3191,25 +3208,226 @@ mod tests {
         assert_eq!((hidden.view, hidden.len), (GridView::Hidden, 1));
     }
 
-    /// The hide is committed before the rebuild runs, so a rebuild that fails has not
-    /// undone it. Reported as an error, the UI kept the photos selected as a hide to retry,
-    /// over photos already hidden, and the next rebuild shows them gone anyway.
+    /// Makes every grid rebuild fail from here on while the writers below still work: every
+    /// grid query names `file_name`, and none of those writers does. Returns a connection
+    /// for reading back what a write committed.
+    fn break_grid_rebuilds(f: &Fixture) -> rusqlite::Connection {
+        let db = rusqlite::Connection::open(&f.config().db_path).unwrap();
+        db.execute_batch("ALTER TABLE items RENAME COLUMN file_name TO renamed")
+            .unwrap();
+        assert!(
+            f.engine.refresh_grid().is_err(),
+            "the grid still rebuilds, so nothing below would test a failed one"
+        );
+        db
+    }
+
+    fn item_column(db: &rusqlite::Connection, column: &str, id: i64) -> i64 {
+        db.query_row(
+            &format!("SELECT {column} FROM items WHERE id = ?1"),
+            [id],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
+    // Each writer below commits before it rebuilds, so a rebuild that fails has not undone
+    // the write (`refresh_after_write`). Reported as an error, the UI undid its own side of
+    // a write that stands: a star or a keyword flipped back, a selection kept for a retry
+    // with nothing left to do, the folder or album list not refetched.
+
     #[test]
     fn a_hide_whose_rebuild_fails_still_reports_the_photos_it_hid() {
         let img = jpeg(16, 16);
         let f = fixture(&[("a.jpg", &img), ("b.jpg", &img)]);
         f.add_photos();
         let id = f.ids()[0];
-        let db = rusqlite::Connection::open(&f.config().db_path).unwrap();
-        // Every grid query names the column, so the rebuild after the write fails.
+        let db = break_grid_rebuilds(&f);
+
+        assert_eq!(f.engine.set_items_hidden(&[id], true).unwrap(), 1);
+        assert_eq!(item_column(&db, "hidden", id), 1);
+    }
+
+    #[test]
+    fn a_star_whose_rebuild_fails_is_reported_as_the_star_it_was() {
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a.jpg", &img)]);
+        f.add_photos();
+        let id = f.ids()[0];
+        let db = break_grid_rebuilds(&f);
+
+        f.engine.set_star(id, true).unwrap();
+        assert_eq!(item_column(&db, "rating", id), 1);
+    }
+
+    #[test]
+    fn stars_whose_rebuild_fails_still_report_how_many_landed() {
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a.jpg", &img), ("b.jpg", &img)]);
+        f.add_photos();
+        let ids = f.ids();
+        let db = break_grid_rebuilds(&f);
+
+        assert_eq!(f.engine.set_stars(&ids, true).unwrap(), 2);
+        assert_eq!(item_column(&db, "rating", ids[1]), 1);
+    }
+
+    #[test]
+    fn a_keyword_whose_rebuild_fails_still_reports_the_name_stored() {
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a.jpg", &img)]);
+        f.add_photos();
+        let id = f.ids()[0];
+        break_grid_rebuilds(&f);
+
+        assert_eq!(f.engine.add_item_tag(id, "beach").unwrap(), "beach");
+        assert_eq!(f.engine.lib.item_tags(id).unwrap(), ["beach"]);
+    }
+
+    #[test]
+    fn a_keyword_removal_whose_rebuild_fails_is_reported_as_done() {
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a.jpg", &img)]);
+        f.add_photos();
+        let id = f.ids()[0];
+        f.engine.add_item_tag(id, "beach").unwrap();
+        break_grid_rebuilds(&f);
+
+        f.engine.remove_item_tag(id, "beach").unwrap();
+        assert!(f.engine.lib.item_tags(id).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_bulk_keyword_whose_rebuild_fails_still_reports_how_many_took_it() {
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a.jpg", &img), ("b.jpg", &img)]);
+        f.add_photos();
+        let ids = f.ids();
+        break_grid_rebuilds(&f);
+
+        assert_eq!(
+            f.engine.add_items_tag(&ids, "beach").unwrap(),
+            ("beach".to_string(), 2)
+        );
+        assert_eq!(f.engine.lib.item_tags(ids[1]).unwrap(), ["beach"]);
+    }
+
+    #[test]
+    fn a_bulk_keyword_removal_whose_rebuild_fails_still_reports_how_many_lost_it() {
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a.jpg", &img), ("b.jpg", &img)]);
+        f.add_photos();
+        let ids = f.ids();
+        f.engine.add_items_tag(&ids, "beach").unwrap();
+        break_grid_rebuilds(&f);
+
+        assert_eq!(f.engine.remove_items_tag(&ids, "beach").unwrap(), 2);
+        assert!(f.engine.lib.item_tags(ids[1]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_folder_hide_whose_rebuild_fails_still_reports_the_photos_it_hid() {
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a.jpg", &img), ("b.jpg", &img)]);
+        f.add_photos();
+        let folder = f.engine.lib.folders().unwrap()[0].id;
+        let ids = f.ids();
+        let db = break_grid_rebuilds(&f);
+
+        assert_eq!(f.engine.set_folder_hidden(folder, true).unwrap(), 2);
+        assert_eq!(item_column(&db, "hidden", ids[1]), 1);
+    }
+
+    #[test]
+    fn a_folder_name_whose_rebuild_fails_is_reported_as_changed() {
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a.jpg", &img)]);
+        f.add_photos();
+        let folder = f.engine.lib.folders().unwrap()[0].id;
+        let db = break_grid_rebuilds(&f);
+
+        assert!(f.engine.set_folder_alias(folder, Some("Easter")).unwrap());
+        let alias: String = db
+            .query_row("SELECT alias FROM folders WHERE id = ?1", [folder], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(alias, "Easter");
+    }
+
+    /// Through the command, which is where `albums_changed` is called: an error there kept
+    /// the UI from refetching the album list and put the info panel's checkbox back.
+    #[test]
+    fn an_album_change_whose_rebuild_fails_is_reported_as_done() {
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a.jpg", &img), ("b.jpg", &img)]);
+        f.add_photos();
+        let ids = f.ids();
+        let album = f.engine.lib.create_album("Trip", 1).unwrap();
+        // Only the album on screen is rebuilt for.
+        f.engine.set_album_view(album.id).unwrap();
+        let db = break_grid_rebuilds(&f);
+
+        crate::commands::add_to_album(&f.engine, album.id, &ids).unwrap();
+        let members: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM album_items WHERE album_id = ?1",
+                [album.id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(members, 2);
+    }
+
+    #[test]
+    fn an_edit_whose_rebuild_fails_is_reported_as_the_edit_it_was() {
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a.jpg", &img)]);
+        f.add_photos();
+        let id = f.ids()[0];
+        let db = break_grid_rebuilds(&f);
+
+        f.engine.rotate_item(id, true).unwrap();
+        assert_eq!(item_column(&db, "edit_turns", id), 1);
+    }
+
+    #[test]
+    fn a_folder_removal_whose_rebuild_fails_is_reported_as_done() {
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a.jpg", &img)]);
+        let watched = f.add_photos();
+        break_grid_rebuilds(&f);
+
+        f.engine.remove_folder(watched.id).unwrap();
+        assert!(f.engine.lib.watched_folders().unwrap().is_empty());
+    }
+
+    /// Logging the failure is safe only because the write still reaches the UI: the failed
+    /// rebuild marked `data_dirty` before it built, so the next rebuild that publishes -
+    /// here a view switch, which marks nothing of its own - sends the UI to refetch the
+    /// tag, album and folder counts the write moved.
+    #[test]
+    fn a_write_whose_rebuild_fails_is_announced_by_the_next_publish() {
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a.jpg", &img)]);
+        f.add_photos();
+        f.engine.wait_for_scans();
+        let id = f.ids()[0];
+        f.engine.set_view(GridView::Starred).unwrap();
+        assert!(!last_data_changed(&f), "a view switch");
+        // Not `break_grid_rebuilds`: its own `refresh_grid` would mark the flag.
+        let db = rusqlite::Connection::open(f.config().db_path).unwrap();
         db.execute_batch("ALTER TABLE items RENAME COLUMN file_name TO renamed")
             .unwrap();
 
-        assert_eq!(f.engine.set_items_hidden(&[id], true).unwrap(), 1);
-        let hidden: bool = db
-            .query_row("SELECT hidden FROM items WHERE id = ?1", [id], |r| r.get(0))
+        f.engine.add_item_tag(id, "beach").unwrap();
+        db.execute_batch("ALTER TABLE items RENAME COLUMN renamed TO file_name")
             .unwrap();
-        assert!(hidden);
+        f.engine.set_view(GridView::All).unwrap();
+        assert!(
+            last_data_changed(&f),
+            "the keyword's failed rebuild left no data change for the next publish"
+        );
     }
 
     #[test]
@@ -4666,7 +4884,7 @@ mod tests {
 
         // A membership change while the album is on screen reaches the grid at once.
         f.engine.lib.add_to_album(album.id, &ids[1..], 2).unwrap();
-        f.engine.albums_changed().unwrap();
+        f.engine.albums_changed();
         assert_eq!(f.engine.grid().1.len(), 2);
 
         f.engine.set_tag_view("beach").unwrap();

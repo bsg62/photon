@@ -35,6 +35,32 @@ const GRID_ROWS_CHUNK = 1000;
  *  null` is "after the start": the first photo. */
 type Landing = { id: number } | { after: number | null } | { at: number };
 
+/** Inclusive grid offset ranges, sorted, none touching another. */
+type Runs = [number, number][];
+
+/** `ranges` as `Runs`: sorted, and merged wherever two overlap or meet, so a run is a
+ *  stretch of photos with none unselected inside it and none selected either side. */
+function mergeRuns(ranges: Runs): Runs {
+  const merged: Runs = [];
+  for (const [start, end] of [...ranges].sort((a, b) => a[0] - b[0])) {
+    const last = merged[merged.length - 1];
+    if (last && start <= last[1] + 1) last[1] = Math.max(last[1], end);
+    else merged.push([start, end]);
+  }
+  return merged;
+}
+
+/** `runs` without `offset`, splitting the run it was inside. */
+function runsWithout(runs: Runs, offset: number): Runs {
+  return runs.flatMap(([start, end]): Runs => {
+    if (offset < start || offset > end) return [[start, end]];
+    const parts: Runs = [];
+    if (start < offset) parts.push([start, offset - 1]);
+    if (offset < end) parts.push([offset + 1, end]);
+    return parts;
+  });
+}
+
 /** App-wide reactive state: the grid snapshot, the folder tree, scan status and selection. */
 export class LibraryStore {
   /** `$state.raw`, as are the folder list and the collections below: each is only ever
@@ -97,11 +123,26 @@ export class LibraryStore {
    *  means to select something afterwards (`setHidden`) tell a click made meanwhile, which
    *  it must not overwrite, from a rebuild re-finding the lead, which it may. */
   private picks = 0;
+  /** The selection's offsets, as runs against index `version`, when every photo in it was
+   *  picked by offset; `null` when not (Ctrl+A in a flat All picks a folder's ids, which lie
+   *  anywhere). Only ever a hint beside the ids, never the selection itself, for the reason
+   *  `selection` gives: read only while `version` is still the index's, so a rebuild needs
+   *  nothing to drop it. What it answers is where the run of selected photos around the
+   *  lead begins, which `landingOf` otherwise has to guess. */
+  private runs: { version: number; ranges: Runs } | null = null;
 
-  /** Replaces the selection on the user's behalf; see `picks`. */
-  private pick(ids: Set<number>): void {
+  /** Replaces the selection on the user's behalf; see `picks`. `ranges` are the offsets of
+   *  `ids` in the current index, or `null` when they are not known - every caller has to
+   *  say, so a new way to select cannot leave the old selection's runs behind. */
+  private pick(ids: Set<number>, ranges: Runs | null): void {
     this.selection = ids;
     this.picks++;
+    this.runs = ranges === null ? null : { version: this.info.version, ranges: mergeRuns(ranges) };
+  }
+
+  /** `runs` while they still describe the current index; `null` once it has been rebuilt. */
+  private runsNow(runs: { version: number; ranges: Runs } | null): Runs | null {
+    return runs !== null && runs.version === this.info.version ? runs.ranges : null;
   }
   /** The grid offset a Shift+click extends from: the last plain click or Ctrl+click. Plain,
    *  not `$state` — nothing renders from it. */
@@ -136,6 +177,14 @@ export class LibraryStore {
    *  lead by id (`rebindSelection`), and writing a pre-rebuild offset back over that answer
    *  is the exact trap that makes Enter open the neighbouring photo. */
   private bandPrevious = new Set<number>();
+  /** `runs` beside `bandBase` and `bandPrevious`, captured with them. */
+  private bandBaseRuns: { version: number; ranges: Runs } | null = null;
+  private bandPreviousRuns: { version: number; ranges: Runs } | null = null;
+  /** For each `endBand` waiting on its fetch, the photos hidden meanwhile. A released band
+   *  holds its base and its previous selection in locals across that await, where the hide
+   *  cannot strip them the way it strips `bandBase` and `bandPrevious`; without this, the
+   *  band's write - or its abandonment - put the hidden photos back in the selection. */
+  private bandsResolving = new Set<Set<number>>();
   /** How many offsets the live band covers whose page is not loaded, so has no id to put
    *  in the preview's selection. Counted by offset rather than left out: a band autoscrolled
    *  a long way has its middle pages evicted by `ensure`, and the status bar's "N selected"
@@ -158,7 +207,7 @@ export class LibraryStore {
     // Every caller of the plain setter is a collapse: an arrow key, a plain click, a
     // right-click outside the selection. Keeping that rule here rather than at each call
     // site is what stops a new caller silently leaving a stale multi-selection behind.
-    this.pick(id === null ? new Set() : new Set([id]));
+    this.pick(id === null ? new Set() : new Set([id]), id === null || offset === null ? [] : [[offset, offset]]);
     // A band live under it counted photos the selection no longer holds.
     this.bandUnresolved = 0;
     this.anchor = offset;
@@ -174,7 +223,7 @@ export class LibraryStore {
     this.picks++;
     this.selectedOffset = offset;
     this.selectedId = id;
-    if (collapse) this.pick(new Set([id]));
+    if (collapse) this.pick(new Set([id]), [[offset, offset]]);
     this.anchor = offset;
   }
 
@@ -201,8 +250,10 @@ export class LibraryStore {
     // arrived. There is no id to toggle, so this is a deliberate silent no-op, not dead code.
     if (id === undefined) return;
     const next = new Set(this.selection);
-    if (!next.delete(id)) next.add(id);
-    this.pick(next);
+    const removed = next.delete(id);
+    if (!removed) next.add(id);
+    const runs = this.runsNow(this.runs);
+    this.pick(next, runs === null ? null : removed ? runsWithout(runs, offset) : [...runs, [offset, offset]]);
     this.selectedOffset = next.size === 0 ? null : offset;
     this.selectedId = next.size === 0 ? null : id;
     this.anchor = offset;
@@ -220,7 +271,7 @@ export class LibraryStore {
     const end = Math.min(this.info.len - 1, Math.max(from, offset));
     const ids = await this.fetchIds(start, end);
     if (!ids) return;
-    this.pick(ids);
+    this.pick(ids, [[start, end]]);
     this.selectedOffset = offset;
     this.selectedId = this.pages.get(offset)?.id ?? null;
     // The anchor stays put, so dragging the far end back and forth re-ranges from the
@@ -244,7 +295,7 @@ export class LibraryStore {
     const [start, end] = range;
     const ids = await this.fetchIds(start, end);
     if (!ids) return;
-    this.pick(ids);
+    this.pick(ids, [[start, end]]);
     if (this.selectedOffset === null) {
       this.selectedOffset = start;
       this.selectedId = this.pages.get(start)?.id ?? null;
@@ -282,7 +333,7 @@ export class LibraryStore {
     const folder = await api.gridFolderIdsAt(at);
     if (!folder || folder.version !== version || this.info.version !== version) return;
     if (call !== this.extendCall) return;
-    this.pick(new Set(folder.ids));
+    this.pick(new Set(folder.ids), null);
     if (this.selectedOffset === null) {
       this.selectedOffset = at;
       this.selectedId = this.pages.get(at)?.id ?? null;
@@ -336,6 +387,8 @@ export class LibraryStore {
   beginBand(additive: boolean): void {
     this.bandPrevious = new Set(this.selection);
     this.bandBase = additive ? new Set(this.selection) : new Set();
+    this.bandPreviousRuns = this.runs;
+    this.bandBaseRuns = additive ? this.runs : { version: this.info.version, ranges: [] };
     this.bandUnresolved = 0;
   }
 
@@ -353,7 +406,9 @@ export class LibraryStore {
         else unresolved++;
       }
     }
-    this.pick(next);
+    // No runs for a preview: `endBand` or `cancelBand` replaces it before anything that
+    // reads them - H and the menu wait for the band to end - can run.
+    this.pick(next, null);
     this.bandUnresolved = unresolved;
   }
 
@@ -363,6 +418,8 @@ export class LibraryStore {
   async endBand(ranges: [number, number][]): Promise<void> {
     const base = this.bandBase;
     const previous = this.bandPrevious;
+    const baseRuns = this.bandBaseRuns;
+    const previousRuns = this.bandPreviousRuns;
     this.bandBase = new Set();
     this.bandPrevious = new Set();
 
@@ -371,7 +428,7 @@ export class LibraryStore {
     // what it started with. Answering it like an overtaken fetch would put the selection
     // back that the preview had visibly just taken away.
     if (ranges.length === 0) {
-      this.pick(new Set(base));
+      this.pick(new Set(base), this.runsNow(baseRuns));
       this.bandUnresolved = 0;
       if (base.size === 0) {
         this.selectedOffset = null;
@@ -386,18 +443,31 @@ export class LibraryStore {
     // trip and then jumped back. A fetch that fails writes nothing and zeroes it all the
     // same: the band is over, and the count would otherwise stay high for good.
     let ids: Set<number> | null;
+    const hiddenMeanwhile = new Set<number>();
+    this.bandsResolving.add(hiddenMeanwhile);
     try {
       ids = await this.fetchIdsOf(ranges);
     } catch (e) {
       this.bandUnresolved = 0;
       throw e;
+    } finally {
+      this.bandsResolving.delete(hiddenMeanwhile);
     }
+    // The fetched ids too, not only the two sets: rows answered from the index before the
+    // hide's rebuild still name the photos it took out.
+    for (const id of hiddenMeanwhile) {
+      base.delete(id);
+      previous.delete(id);
+      ids?.delete(id);
+    }
+    // The offsets still name the photos just stripped, so they no longer describe the ids.
+    const stripped = hiddenMeanwhile.size > 0;
     if (!ids) {
       // Overtaken, or the grid was rebuilt under the drag. The preview was drawn from
       // offsets that mean something else now, so the band is abandoned and the selection
       // goes back to what it was. The lead is left alone: it was never moved by the drag,
       // and a rebuild has already re-found it by id.
-      this.pick(previous);
+      this.pick(previous, stripped ? null : this.runsNow(previousRuns));
       this.bandUnresolved = 0;
       return;
     }
@@ -407,7 +477,8 @@ export class LibraryStore {
     // with no id is clamped by the next rebuild instead of re-found.
     const firstId: number | undefined = ids.values().next().value;
     for (const id of base) ids.add(id);
-    this.pick(ids);
+    const known = stripped ? null : this.runsNow(baseRuns);
+    this.pick(ids, known === null ? null : [...known, ...ranges]);
     this.bandUnresolved = 0;
     const first = ranges[0][0];
     this.selectedOffset = first;
@@ -418,14 +489,14 @@ export class LibraryStore {
   /** Abandons a band (Escape mid-drag): the selection goes back to what it was. The lead is
    *  left alone for the reason `bandPrevious` gives - the drag never moved it. */
   cancelBand(): void {
-    this.pick(new Set(this.bandPrevious));
+    this.pick(new Set(this.bandPrevious), this.runsNow(this.bandPreviousRuns));
     this.bandBase = new Set();
     this.bandPrevious = new Set();
     this.bandUnresolved = 0;
   }
 
   clearSelection(): void {
-    this.pick(new Set());
+    this.pick(new Set(), []);
     this.bandUnresolved = 0;
     this.selectedOffset = null;
     this.selectedId = null;
@@ -981,10 +1052,12 @@ export class LibraryStore {
     const target = landing === null || lead === null ? null : await this.landingIn(landing, lead);
     // A band begun meanwhile captured the selection as it stood, hidden photos and all: its
     // next frame builds on `bandBase`, and Escape puts `bandPrevious` back. Outside a band
-    // both are empty.
+    // both are empty. A band already released holds its own copies until its fetch answers,
+    // and strips what `bandsResolving` collects for it.
     for (const id of itemIds) {
-      this.bandBase.delete(id);
-      this.bandPrevious.delete(id);
+      if (this.bandBase.delete(id)) this.bandBaseRuns = null;
+      if (this.bandPrevious.delete(id)) this.bandPreviousRuns = null;
+      for (const hiddenMeanwhile of this.bandsResolving) hiddenMeanwhile.add(id);
     }
     // Checked once every await is behind it: a click during the write or the lookups. That
     // click is kept, lead and all, but not the photos just hidden - a Ctrl+click adds to a
@@ -993,7 +1066,10 @@ export class LibraryStore {
     if (this.picks !== picks) {
       const rest = new Set(this.selection);
       for (const id of itemIds) rest.delete(id);
-      if (rest.size !== this.selection.size) this.selection = rest;
+      if (rest.size !== this.selection.size) {
+        this.selection = rest;
+        this.runs = null;
+      }
       return;
     }
     this.clearSelection();
@@ -1018,11 +1094,17 @@ export class LibraryStore {
    *  - neither side settled - the lead inside a run of leaving photos wider than the pages
    *    kept around it, as after Ctrl+A in the middle of a big folder: the photo before the
    *    selection's start, fetched if its page is gone, and then as above, the photo that
-   *    follows it in the rebuilt index. The start is `min(anchor, lead)`, which is exact
-   *    for everything that selects a run - Ctrl+A, Shift+click, a band - and bounded by
-   *    where the pages gave out, before which every loaded photo is known to be leaving;
-   *  - that photo leaving too (a selection added to, running on before its anchor), or the
-   *    index moving under the fetch: the photo at the lead's offset in the rebuilt index.
+   *    follows it in the rebuilt index. The start is the start of the selected run the
+   *    lead is in, from `runs`, when the selection was picked by offset against this index.
+   *    Not the selection's lowest offset: a photo Ctrl+clicked in far above is a run of its
+   *    own, and the photos between it and the lead's run stay. Without `runs` the start is
+   *    `min(anchor, lead)`, which is exact for everything that selects a run - Ctrl+A,
+   *    Shift+click, a band - until the anchor moves inside it (closing the viewer, a
+   *    Ctrl+click off and on), and bounded by where the pages gave out, before which every
+   *    loaded photo is known to be leaving;
+   *  - that photo leaving too (a selection added to, running on before its anchor, with no
+   *    `runs` to say so), or the index moving under the fetch: the photo at the lead's
+   *    offset in the rebuilt index.
    *    Exact whenever nothing before the lead was acted on, near it otherwise. The photo
    *    at the lead's offset was never the answer for a run around the lead: with the run's
    *    first `lead - start` photos gone, it is that far into whatever follows the run. */
@@ -1041,13 +1123,25 @@ export class LibraryStore {
       if (!leaving.has(entry.id)) return toEnd ? { id: entry.id } : { after: entry.id };
     }
     if (at < 0) return toEnd ? null : { after: null };
-    const start = Math.min(this.anchor ?? lead, lead, at + 1);
+    const start = this.runStartBefore(lead, leaving) ?? Math.min(this.anchor ?? lead, lead, at + 1);
     if (start <= 0) return toEnd ? null : { after: null };
     const before = await this.photoAt(start - 1).catch(() => undefined);
     // With nothing after the lead staying either, the photo after it in the rebuilt index
     // is none, and `findLanding` lands on it instead: the one before, as above.
     if (before && !leaving.has(before.id)) return { after: before.id };
     return { at: lead };
+  }
+
+  /** Where the selected run ending just before `lead` starts - `lead` itself when the photo
+   *  before it is not selected - or `null` when `runs` cannot say: the index has moved on,
+   *  the selection was not picked by offset, or the photos leaving are not the selection,
+   *  which is all `runs` describes. */
+  private runStartBefore(lead: number, leaving: Set<number>): number | null {
+    const runs = this.runsNow(this.runs);
+    if (runs === null || leaving.size !== this.selection.size) return null;
+    for (const id of leaving) if (!this.selection.has(id)) return null;
+    const run = runs.find(([start, end]) => start <= lead - 1 && lead - 1 <= end);
+    return run ? run[0] : lead;
   }
 
   /** The photo at `offset` in the index the store holds: from its page, or fetched. None

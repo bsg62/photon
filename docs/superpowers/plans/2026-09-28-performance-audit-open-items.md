@@ -35,23 +35,13 @@ These can't be tested in CI. The component wiring has no harness, and the headle
   - drive `scrollTop` from `requestAnimationFrame` at a constant px/ms;
   - count on-screen tiles with no `<img>`, still loading, or still fading.
 
-## 3. Hide and selection edge cases (`ui/src/lib/library.svelte.ts`)
+## 3. Hide and selection edge cases — done
 
-- **A band released while a hide is in flight** can put the hidden photos back in the selection. `endBand` keeps local copies of `bandBase` and `bandPrevious` from before its `await`. `setHidden` strips the hidden ids from the store's copies but not from those locals. Fix: re-read the store's sets after the await, or strip them in `endBand` against a "recently hidden" set.
-- **A selection that reaches above its anchor**, and is wider than the loaded pages, lands at the lead's offset after a hide rather than just after the selection. `landingOf` computes the selection's start as `min(anchor, lead, first unloaded offset below the lead)`. The true minimum of the selection can be lower (for example Ctrl+click added a photo far above). Fix: carry the selection's minimum offset when it is known, or fetch it.
+Fixed in the PR after #118 (`ui/src/lib/library.svelte.ts`): a band released while a hide is in flight strips what the hide took (`bandsResolving`), and a hide lands after the selected *run* the lead is in, from offset runs the store keeps beside the selection against one index version. Not the selection's lowest offset, which the earlier note suggested: a photo Ctrl+clicked in far above is a run of its own.
 
-## 4. Writers that report a failed rebuild as a failed write
+## 4. Writers that report a failed rebuild as a failed write — done
 
-`set_items_hidden` was fixed in #117. It commits the write, then logs a failed `refresh_grid` instead of returning it. The same write-then-`refresh_grid()?` pattern is still in these functions in `crates/photon-app/src/engine.rs`:
-
-- `set_stars`
-- `add_item_tag`, `add_items_tag`, `remove_items_tag`
-- `set_folder_hidden`, `set_folder_alias`
-- `albums_changed`
-- `write_edit`
-- `remove_folder_inner`
-
-In each, the change is saved but the UI shows an error, and may keep a selection or state for a retry that has nothing left to do. Decide per writer whether logging is right. Where the UI acts on the error, keep it.
+Fixed in the same PR: every committed write rebuilds through `Engine::refresh_after_write`, which logs a failed rebuild. That covers the nine writers listed here plus `set_star` and `remove_item_tag`, which ended in a bare `refresh_grid()` and were missed by a search for `refresh_grid()?`.
 
 ## 5. Smaller ideas the audit raised but nothing has picked up
 
@@ -60,11 +50,25 @@ In each, the change is saved but the UI shows an error, and may keep a selection
 - **Duplicate candidates are chosen by byte size alone,** so roughly 5–10% of a large library shares a size by coincidence and gets read in full once. A first-64-KiB hash as a pre-filter would cut that read. It needs a schema column, which makes it a minor release.
 - **Thumbnail workers** stay capped at 8 (`MAX_WORKERS`, `thumbs/service.rs`). After #116 each worker needs about half the memory, so a RAM-derived cap is possible. The cap was also about the disk, so measure before raising it.
 
-## 6. A correctness risk found by the audit, never verified
+## 6. The grid canvas exceeds the browser's layout-height limit — confirmed, not fixed
 
-**The grid canvas may exceed the browser's layout-height limit.** The UI audit worked out a case where it would: 300k photos, large tiles, and a narrow window of about 800 px wide with 2 columns. There `.canvas` in `Grid.svelte` reaches roughly 35M px. WebKit and Blink both clamp layout at about 33.5M px, so the end of the library would become unreachable by scrolling.
+Measured on 2026-09-28. Engines cap a box at (2^31−1)/64 = 33,554,428 px; `.canvas` is capped there, every row whose `top` lies beyond lands on the cap, and `scrollTop` stops at it. Everything past it is unreachable by scrolling, End, a folder jump or the timeline; the viewer still works.
 
-Nothing has checked this. Measure the canvas height at the widest tile setting and the narrowest window. If it does exceed the limit, the fix is to scale scroll positions: keep the DOM canvas under the limit and map `scrollTop` to rows proportionally.
+- **Chromium (WebView2) applies the cap in device pixels**: 22,369,620 CSS px at 150% scaling, 16,777,214 at 200%. WebKitGTK measured 33,554,428 (its behaviour under scaling is likely, not proven, to be the same).
+- **The worst width** is the 800 px minimum window with the sidebar at its maximum (half the window): `clientWidth` 336, one column at large and medium tiles.
+- **Photos needed to cross the cap**, at ~15 photos per folder:
+
+| Case | 33.55M | 22.37M (150%) | 16.78M (200%) |
+|---|---|---|---|
+| Large, 1 column | 142k | 95k | 71k |
+| Medium, 1 column | 195k | 130k | 98k |
+| Large, 2 columns (800 window, default sidebar) | 263k | 176k | 132k |
+| Large, 4 columns (1280 window) | 512k | 341k | 256k |
+| One photo per folder, any width | 116.5k folders | 77.7k | 58k |
+
+- **Confirmed on the built UI** in headless Chromium with a 300k-photo / 20k-folder mock: at 800 px, large, 2 columns, End stops at offset 263,244; at 1 column only offsets up to 142,341 are reachable.
+
+**Fix sketch.** Keep row geometry virtual; the DOM canvas is `min(total, MAX_CANVAS)` with `MAX_CANVAS` under the smallest cap across scales (a constant of 8–10M, or measured at runtime from a 1e9 px probe and re-measured on a resolution change). Libraries under it are unchanged. Scrolling is hybrid, not proportional: relative input (wheel, keys, touch, band autoscroll) moves a `virtualTop` 1:1, scrollbar drags and jumps map proportionally, and the ends snap. Rows and headers are drawn at `row.top − shift` (not a wrapper `translateY`, whose children's `top` would still hit the cap). All reads and writes of `scrollTop` are in `Grid.svelte` (`onscroll`, `scrollToOffset`, the tile-size pin restore, `atCanvas`, band autoscroll, the timeline's `onscrub`); `renderRange`, `itemsInRect` and `nav.ts` are unchanged. The hard part is telling a scrollbar drag from wheel and kinetic scrolling on three webviews, which no test here can cover: design it before building it.
 
 ## 7. Audit findings nobody has picked up
 

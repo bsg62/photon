@@ -452,7 +452,7 @@ pub fn rename_album(engine: &Engine, album_id: i64, name: &str) -> CmdResult<()>
 /// an album that no longer exists; `albums_changed` is what does that.
 pub fn delete_album(engine: &Engine, album_id: i64) -> CmdResult<()> {
     engine.lib.delete_album(album_id)?;
-    engine.albums_changed()?;
+    engine.albums_changed();
     Ok(())
 }
 
@@ -480,13 +480,13 @@ pub fn delete_saved_search(engine: &Engine, search_id: i64) -> CmdResult<()> {
 
 pub fn add_to_album(engine: &Engine, album_id: i64, item_ids: &[i64]) -> CmdResult<()> {
     engine.lib.add_to_album(album_id, item_ids, now_ms())?;
-    engine.albums_changed()?;
+    engine.albums_changed();
     Ok(())
 }
 
 pub fn remove_from_album(engine: &Engine, album_id: i64, item_ids: &[i64]) -> CmdResult<()> {
     engine.lib.remove_from_album(album_id, item_ids)?;
-    engine.albums_changed()?;
+    engine.albums_changed();
     Ok(())
 }
 
