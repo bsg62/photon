@@ -2,13 +2,39 @@ import { describe, expect, it } from 'vitest';
 import { CAP_FALLBACK, capFrom, createScrollMap } from './scroll-map';
 
 /** A map past the cap: total 10_000, viewport 100, domMax 2_100 - so maxDom 2_000 and
- *  maxVirtual 9_900, and a proportional DOM position d is virtual d × 4.95. */
+ *  maxVirtual 9_900. The end zones are min(10 × 100, 2_000 / 4) = 500 px: DOM 0..500 is
+ *  virtual 0..500 and DOM 1_500..2_000 is virtual 9_400..9_900, 1:1; between, a DOM
+ *  position d is virtual 500 + (d - 500) × 8.9, so DOM 1_000 is virtual 4_950. */
 function mapped() {
   const map = createScrollMap();
   const w = map.resize(10_000, 100, 2_100);
   expect(w).toBe(0); // entering the mapped range from the top anchors at 0
   map.wrote(0);
   return map;
+}
+
+/** Settles `map` at virtual `from`, then wheels by `step` DOM px per notch the way a
+ *  browser would: the DOM clamped to its range, a re-anchor written back, and no scroll
+ *  event at all once the DOM cannot move. Stops at a virtual end or when stuck. */
+function wheel(map: ReturnType<typeof createScrollMap>, from: number, step: number) {
+  let dom = map.setVirtual(from);
+  map.wrote(dom);
+  expect(map.settle()).toBeNull();
+  const maxDom = map.domHeight - 100;
+  const end = step < 0 ? 0 : 9_900;
+  let steps = 0;
+  while (map.virtual !== end && steps < 1_000) {
+    const next = Math.min(maxDom, Math.max(0, dom + step));
+    if (next === dom) break; // stuck: the browser fires no scroll event
+    dom = next;
+    steps += 1;
+    const w = map.onScroll(dom);
+    if (w !== null) {
+      dom = w;
+      map.wrote(dom);
+    }
+  }
+  return { steps, dom };
 }
 
 describe('capFrom', () => {
@@ -90,20 +116,25 @@ describe('past the cap', () => {
     expect(map.virtual).toBe(0);
   });
   it('reads a step of more than two viewports as a jump, and two viewports as a step', () => {
-    const map = mapped();
-    map.onScroll(200);
-    expect(map.virtual).toBe(200);
-    map.onScroll(401);
-    expect(map.virtual).toBeCloseTo(401 * 4.95, 6);
-  });
-  it('a held press maps even a small step proportionally', () => {
+    // In the middle zone, where a jump and a step land in different places.
     const map = mapped();
     map.press(true);
-    map.onScroll(10);
-    expect(map.virtual).toBeCloseTo(10 * 4.95, 6);
+    map.onScroll(1_000); // virtual 4_950
     map.release();
-    map.onScroll(20);
-    expect(map.virtual).toBeCloseTo(59.5, 6);
+    map.onScroll(1_200);
+    expect(map.virtual).toBe(5_150);
+    map.onScroll(1_401);
+    expect(map.virtual).toBeCloseTo(500 + 901 * 8.9, 6);
+  });
+  it('a held press maps even a small step', () => {
+    const map = mapped();
+    map.press(true);
+    map.onScroll(1_000); // virtual 4_950
+    map.onScroll(1_010);
+    expect(map.virtual).toBeCloseTo(500 + 510 * 8.9, 6);
+    map.release();
+    map.onScroll(1_020);
+    expect(map.virtual).toBeCloseTo(500 + 510 * 8.9 + 10, 6);
   });
 });
 
@@ -162,10 +193,10 @@ describe('re-anchoring', () => {
     map.release();
     map.onScroll(1_100); // virtual 5_050, shift 3_950
     const w = map.settle();
-    expect(w).toBeCloseTo(5_050 / 4.95, 6);
+    expect(w).toBeCloseTo(500 + 4_550 / 8.9, 6);
     map.wrote(w!);
     expect(map.virtual).toBe(5_050);
-    expect(map.shift).toBeCloseTo(5_050 - 5_050 / 4.95, 6);
+    expect(map.shift).toBeCloseTo(5_050 - (500 + 4_550 / 8.9), 6);
   });
   it('writes nothing on settle when the thumb is already right', () => {
     const map = mapped();
@@ -187,22 +218,41 @@ describe('re-anchoring', () => {
     let w: number | null = null;
     for (let d = 850; w === null && d > -150; d -= 150) w = map.onScroll(Math.max(0, d));
     expect(map.virtual).toBe(3_950);
-    expect(w).toBeCloseTo(3_950 / 4.95, 6);
+    expect(w).toBeCloseTo(500 + 3_450 / 8.9, 6);
   });
   it('re-anchors at once when a step reaches the bottom of the DOM before the end', () => {
     const map = mapped();
     map.press(true);
-    map.onScroll(1_900); // virtual 9_405
+    map.onScroll(1_000); // virtual 4_950
     map.release();
-    const w = map.onScroll(2_000); // virtual 9_505: the DOM is at its end, the library is not
-    expect(w).toBeCloseTo(9_505 / 4.95, 6);
+    let w: number | null = null;
+    for (let d = 1_150; w === null && d < 2_150; d += 150) w = map.onScroll(Math.min(2_000, d));
+    // The DOM is at its end, the library is not.
+    expect(map.virtual).toBe(5_950);
+    expect(w).toBeCloseTo(500 + 5_450 / 8.9, 6);
+  });
+  it('a wheel reaches the top from a settled position in one step per 100 px', () => {
+    const map = mapped();
+    const start = 700; // just past the end zone
+    const { steps, dom } = wheel(map, start, -100);
+    expect(map.virtual).toBe(0);
+    expect(dom).toBe(0);
+    expect(steps).toBeLessThanOrEqual(Math.ceil(start / 100) + 2);
+  });
+  it('a wheel reaches the end from a settled position in one step per 100 px', () => {
+    const map = mapped();
+    const start = 9_900 - 700;
+    const { steps, dom } = wheel(map, start, 100);
+    expect(map.virtual).toBe(9_900);
+    expect(dom).toBe(2_000);
+    expect(steps).toBeLessThanOrEqual(Math.ceil(700 / 100) + 2);
   });
   it('an overlay thumb drag read as relative settles onto the thumb', () => {
     const map = mapped();
     for (let d = 100; d <= 1_000; d += 100) map.onScroll(d); // no press: small steps, relative
     expect(map.virtual).toBe(1_000);
     const w = map.settle();
-    expect(w).toBeCloseTo(1_000 / 4.95, 6);
+    expect(w).toBeCloseTo(500 + 500 / 8.9, 6);
   });
   it('a re-anchor keeps every screen position at the same virtual y', () => {
     const map = mapped();
@@ -240,14 +290,14 @@ describe('resizing', () => {
     map.resize(2_000, 100, 2_100);
     map.onScroll(700);
     const w = map.resize(10_000, 100, 2_100);
-    expect(w).toBeCloseTo(700 / 4.95, 6);
+    expect(w).toBeCloseTo(500 + 200 / 8.9, 6);
     map.wrote(w!);
     expect(map.virtual).toBe(700);
   });
   it('leaving it writes the virtual position itself', () => {
     const map = mapped();
     map.press(true);
-    map.onScroll(400); // virtual 1_980
+    map.onScroll(1_000); // virtual 4_950
     map.release();
     expect(map.resize(2_050, 100, 2_100)).toBe(1_950); // clamped to the new end
     map.wrote(1_950);
@@ -259,8 +309,8 @@ describe('resizing', () => {
     map.press(true);
     map.onScroll(1_000);
     map.release();
-    const w = map.resize(10_000, 100, 1_100); // maxDom 1_000
-    expect(w).toBeCloseTo((4_950 / 9_900) * 1_000, 6);
+    const w = map.resize(10_000, 100, 1_100); // maxDom 1_000, end zones 250
+    expect(w).toBeCloseTo(250 + ((4_950 - 250) / (9_900 - 500)) * 500, 6);
   });
   it('a library that shrinks under the place the grid was at is clamped and re-anchored', () => {
     const map = mapped();

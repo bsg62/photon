@@ -14,8 +14,15 @@
  *  Past it, a DOM range shorter than the layout cannot be both 1:1 for the wheel and
  *  proportional for the thumb. The wheel wins: a small step moves the virtual position by
  *  the same amount (`shift` unchanged), and only a held press on the scrollbar, or a jump
- *  too big for any wheel, maps proportionally. The thumb drifts while scrolling and is put
+ *  too big for any wheel, goes through the map. The thumb drifts while scrolling and is put
  *  back where it belongs when scrolling stops (`settle`).
+ *
+ *  The map is proportional in the middle and 1:1 within `endZone()` of either end. A purely
+ *  proportional one left a settled grid `v / ratio` px of DOM for the `v` px of layout above
+ *  it: every wheel step near an end hit the DOM's edge and re-anchored, each time a ratio
+ *  closer, until the DOM sat at 0 with the library a pixel or two short of its top and no
+ *  scroll event left to fire. With the ends 1:1 the DOM's edge and the library's arrive
+ *  together.
  *
  *  Every method that returns `number | null` returns a DOM `scrollTop` for the caller to
  *  write - and then report with `wrote` - or null for none. */
@@ -60,19 +67,35 @@ export function createScrollMap() {
   const maxDom = () => Math.max(0, domHeight() - viewport);
   const clampVirtual = (v: number) => Math.min(maxVirtual(), Math.max(0, v));
 
-  /** The virtual position a DOM position stands for, proportionally; exact at both ends so
-   *  a thumb dragged to the bottom lands on the last row. */
+  /** How far from each end the map is 1:1: ten viewports, but never more than a quarter of
+   *  the DOM range each, so the middle keeps half of it. */
+  const endZone = () => Math.min(10 * viewport, maxDom() / 4);
+
+  /** The virtual position a DOM position stands for: 1:1 within `endZone()` of each end,
+   *  proportional between; exact at both ends so a thumb dragged to the bottom lands on the
+   *  last row. The inverse of `toDom`. */
   function fromDom(d: number): number {
     const md = maxDom();
+    const mv = maxVirtual();
     if (md === 0 || d <= 0) return 0;
-    if (d >= md) return maxVirtual();
-    return (d / md) * maxVirtual();
+    if (d >= md) return mv;
+    const k = endZone();
+    if (d <= k) return d;
+    if (d >= md - k) return mv - (md - d);
+    // Here k < d < md - k, so the middle span is not empty.
+    return k + ((d - k) / (md - 2 * k)) * (mv - 2 * k);
   }
 
-  /** The DOM position that stands for `v`, proportionally. */
+  /** The DOM position that stands for `v`; see `fromDom`. */
   function toDom(v: number): number {
+    const md = maxDom();
     const mv = maxVirtual();
-    return mv === 0 ? 0 : (v / mv) * maxDom();
+    if (mv === 0 || md === 0) return 0;
+    const k = endZone();
+    if (v <= k) return Math.min(v, md);
+    if (v >= mv - k) return Math.max(0, md - (mv - v));
+    // Here k < v < mv - k, so the middle span is not empty.
+    return k + ((v - k) / (mv - 2 * k)) * (md - 2 * k);
   }
 
   /** Aims the grid at virtual `v`: the DOM position to write for it, past the cap. */
@@ -199,7 +222,7 @@ export function createScrollMap() {
       const moved = domTop - lastDomTop;
       lastDomTop = domTop;
       if (onScrollbar || Math.abs(moved) > JUMP_VIEWPORTS * viewport) {
-        // Ends map to ends exactly, so a proportional step never lands on one range's edge
+        // Ends map to ends exactly, so a mapped step never lands on one range's edge
         // without the other's.
         virtual = fromDom(domTop);
         shift = virtual - domTop;

@@ -67,14 +67,18 @@ Each `onscroll` takes the DOM delta `d = domTop − lastDomTop` and classifies i
 
 `virtual` is clamped to `[0, total − viewport]` either way. A proportional move maps the
 DOM's ends to the virtual ends exactly, so dragging the thumb to the bottom always lands on
-the last row.
+the last row. The map is proportional only in the middle: within `K = min(10 × viewport,
+(domHeight − viewport) / 4)` of either end it is 1:1 (`scroll-map.ts`, `endZone`), because
+a purely proportional one left a settled grid `v / ratio` px of DOM for `v` px of layout
+above it, and the wheel crawled - each notch hitting the DOM's edge and re-anchoring a ratio
+closer - until it stalled a pixel or two short of the top (or the end).
 
 ### Re-anchoring
 
 Relative scrolling makes the thumb drift. When scrolling goes still (`Motion` becomes
 `STILL`, `SCROLL_SETTLE_MS` after the last event) and `shift` is not the proportional
-shift for the current `virtual`, the grid writes `domTop = proportional⁻¹(virtual)` and
-sets `shift` to match. Nothing on screen moves - `virtual` is unchanged - only the thumb
+shift for the current `virtual`, the grid writes `domTop = proportional⁻¹(virtual)` (1:1
+within `K` of an end, as above) and sets `shift` to match. Nothing on screen moves - `virtual` is unchanged - only the thumb
 jumps to where it belongs.
 
 If a relative move reaches a DOM edge (`domTop` at 0 or at `domHeight − viewport`) while
