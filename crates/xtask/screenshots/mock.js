@@ -157,8 +157,12 @@
     grid_info: () => ({
       version: 1,
       len,
-      sections,
-      folders: sections.map(({ folderId, count, takenAtMin }) => ({ folderId, count, takenAtMin, bytes: count * 4_000_000, modifiedMs: takenAtMin * 1000 })),
+      // Always sent: a backend may, and the mock's layout never changes anyway.
+      layout: {
+        generation: 1,
+        sections,
+        folders: sections.map(({ folderId, count, takenAtMin }) => ({ folderId, count, takenAtMin, bytes: count * 4_000_000, modifiedMs: takenAtMin * 1000 })),
+      },
       starredCount: 13,
       duplicateCount: 4,
       hiddenCount: 7,

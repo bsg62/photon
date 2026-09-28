@@ -2571,7 +2571,7 @@ mod tests {
         ]);
         f.add_photos();
 
-        let info = crate::commands::grid_info(&f.engine);
+        let info = crate::commands::grid_info(&f.engine, None);
         assert_eq!(info.duplicate_count, 2);
         assert_eq!(info.len, 3, "the All view is untouched");
 
@@ -2596,7 +2596,7 @@ mod tests {
         ]);
         f.add_photos();
 
-        let info = crate::commands::grid_info(&f.engine);
+        let info = crate::commands::grid_info(&f.engine, None);
         assert_eq!(info.duplicate_count, 2);
         f.engine.set_view(GridView::Duplicates).unwrap();
         let ids = f.ids();
@@ -2640,7 +2640,7 @@ mod tests {
         f.engine.start_scan(watched);
         f.settle();
 
-        let info = crate::commands::grid_info(&f.engine);
+        let info = crate::commands::grid_info(&f.engine, None);
         assert_eq!(
             info.duplicate_count, 2,
             "the resized copy is not a look-alike, or the blank frames were grouped"
@@ -3386,11 +3386,11 @@ mod tests {
         f.add_photos();
         let folder = f.engine.lib.folders().unwrap()[0].id;
         f.engine.set_search_query("easter").unwrap();
-        let before = crate::commands::grid_info(&f.engine);
+        let before = crate::commands::grid_info(&f.engine, None);
         assert_eq!(before.len, 0);
 
         assert!(f.engine.set_folder_alias(folder, Some("Easter")).unwrap());
-        let after = crate::commands::grid_info(&f.engine);
+        let after = crate::commands::grid_info(&f.engine, None);
         assert_eq!(after.len, 2, "an open search did not follow the alias");
         assert!(after.version > before.version);
         let listed = crate::commands::list_folders(&f.engine).unwrap();
@@ -3403,7 +3403,7 @@ mod tests {
 
         assert!(!f.engine.set_folder_alias(folder, Some("Easter")).unwrap());
         assert_eq!(
-            crate::commands::grid_info(&f.engine).version,
+            crate::commands::grid_info(&f.engine, None).version,
             after.version,
             "an unchanged alias rebuilt the grid"
         );
@@ -3415,10 +3415,10 @@ mod tests {
         let f = fixture(&[("a.jpg", &img), ("b.jpg", &img)]);
         f.add_photos();
         let folder = f.engine.lib.folders().unwrap()[0].id;
-        let before = crate::commands::grid_info(&f.engine);
+        let before = crate::commands::grid_info(&f.engine, None);
 
         assert_eq!(f.engine.set_folder_hidden(folder, true).unwrap(), 2);
-        let after = crate::commands::grid_info(&f.engine);
+        let after = crate::commands::grid_info(&f.engine, None);
         assert_eq!((after.len, after.hidden_count), (0, 2));
         assert!(after.version > before.version);
         let listed = crate::commands::list_folders(&f.engine).unwrap();
@@ -3426,7 +3426,7 @@ mod tests {
 
         assert_eq!(f.engine.set_folder_hidden(folder, true).unwrap(), 0);
         assert_eq!(
-            crate::commands::grid_info(&f.engine).version,
+            crate::commands::grid_info(&f.engine, None).version,
             after.version,
             "hiding a hidden folder rebuilt the grid"
         );
@@ -3438,23 +3438,23 @@ mod tests {
         let f = fixture(&[("a.jpg", &img), ("b.jpg", &img)]);
         f.add_photos();
         let id = f.ids()[0];
-        let before = crate::commands::grid_info(&f.engine);
+        let before = crate::commands::grid_info(&f.engine, None);
         assert_eq!((before.len, before.hidden_count), (2, 0));
 
         assert_eq!(f.engine.set_items_hidden(&[id], true).unwrap(), 1);
-        let after = crate::commands::grid_info(&f.engine);
+        let after = crate::commands::grid_info(&f.engine, None);
         assert_eq!((after.len, after.hidden_count), (1, 1));
         assert!(after.version > before.version);
 
         assert_eq!(f.engine.set_items_hidden(&[id], true).unwrap(), 0);
         assert_eq!(
-            crate::commands::grid_info(&f.engine).version,
+            crate::commands::grid_info(&f.engine, None).version,
             after.version,
             "hiding a hidden photo rebuilt the grid"
         );
 
         f.engine.set_view(GridView::Hidden).unwrap();
-        let hidden = crate::commands::grid_info(&f.engine);
+        let hidden = crate::commands::grid_info(&f.engine, None);
         assert_eq!((hidden.view, hidden.len), (GridView::Hidden, 1));
     }
 
@@ -3694,7 +3694,7 @@ mod tests {
             std::fs::read(f.photos.join(".picasa.ini")).unwrap(),
             b"[a.jpg]\r\nstar=yes\r\n"
         );
-        let info = crate::commands::grid_info(&f.engine);
+        let info = crate::commands::grid_info(&f.engine, None);
         assert_eq!(info.starred_count, 1);
         assert!(f.engine.grid().1.rows(0, 2)[0].starred);
         assert!(
@@ -3727,7 +3727,7 @@ mod tests {
             std::fs::read(f.photos.join("sub").join(".picasa.ini")).unwrap(),
             b"[c.jpg]\r\nstar=yes\r\n"
         );
-        let info = crate::commands::grid_info(&f.engine);
+        let info = crate::commands::grid_info(&f.engine, None);
         assert_eq!(info.starred_count, 3);
         assert_eq!(
             f.engine.grid().0,
@@ -4139,7 +4139,7 @@ mod tests {
         assert_eq!(grid.sections()[0].folder_id, None);
         let b = grid.rows(1, 1)[0].folder_id;
         assert_eq!(grid.offset_of_folder(b), Some(1));
-        assert_eq!(crate::commands::grid_info(&f.engine).sort, by_name);
+        assert_eq!(crate::commands::grid_info(&f.engine, None).sort, by_name);
 
         let reopened =
             Engine::open(f.config(), Arc::new(crate::events::Recorder::default())).unwrap();
@@ -4247,7 +4247,7 @@ mod tests {
 
         reopened.build_first_grid(&[Duration::ZERO, Duration::ZERO]);
 
-        let info = crate::commands::grid_info(&reopened);
+        let info = crate::commands::grid_info(&reopened, None);
         assert_eq!(info.len, 0);
         let error = info
             .build_error
@@ -4260,7 +4260,7 @@ mod tests {
         db.execute_batch("ALTER TABLE items RENAME COLUMN renamed TO file_name")
             .unwrap();
         reopened.refresh_grid().unwrap();
-        let info = crate::commands::grid_info(&reopened);
+        let info = crate::commands::grid_info(&reopened, None);
         assert_eq!((info.len, info.build_error), (1, None));
         reopened.shutdown();
     }
@@ -4285,7 +4285,7 @@ mod tests {
 
         reopened.build_first_grid(&[Duration::ZERO, Duration::ZERO]);
 
-        let info = crate::commands::grid_info(&reopened);
+        let info = crate::commands::grid_info(&reopened, None);
         assert_eq!(
             (info.version, info.len, info.build_error),
             (version, 1, None)
@@ -4313,13 +4313,17 @@ mod tests {
         let stand_in = reopened.data_snapshot();
         let empty = GridIndex::build(Vec::new(), stand_in.state.sort.layout(stand_in.state.view));
         reopened.publish(Arc::new(empty), &stand_in, Some("busy".into()));
-        assert!(crate::commands::grid_info(&reopened).build_error.is_some());
+        assert!(
+            crate::commands::grid_info(&reopened, None)
+                .build_error
+                .is_some()
+        );
 
         assert!(matches!(
             reopened.publish_if_current(switch_index, &switch),
             Publish::Published(_)
         ));
-        let info = crate::commands::grid_info(&reopened);
+        let info = crate::commands::grid_info(&reopened, None);
         assert_eq!((info.len, info.build_error), (1, None));
         reopened.shutdown();
     }
@@ -4781,7 +4785,7 @@ mod tests {
         f.engine.start_scan(watched);
         f.settle();
 
-        let info = crate::commands::grid_info(&f.engine);
+        let info = crate::commands::grid_info(&f.engine, None);
         assert_eq!(
             (info.view, info.search_query.as_str()),
             (GridView::Search, "beach"),
@@ -4790,7 +4794,7 @@ mod tests {
         assert_eq!(info.len, 2, "the new match is in the rebuilt search");
         assert!(f.engine.grid().0 > version, "and the UI was told");
         // The sidebar reads the same index, so its sections describe the filtered set.
-        assert_eq!(info.sections.len(), 1);
+        assert_eq!(info.layout.as_ref().unwrap().sections.len(), 1);
     }
 
     /// The window the epoch guard exists for, and the one the scenario tests miss.
@@ -5173,7 +5177,10 @@ mod tests {
         let f = fixture(&[("a/one.jpg", &solid), ("b/two.jpg", &pattern)]);
         f.add_photos();
         f.settle();
-        assert_eq!(crate::commands::grid_info(&f.engine).duplicate_count, 0);
+        assert_eq!(
+            crate::commands::grid_info(&f.engine, None).duplicate_count,
+            0
+        );
 
         let flags = data_changed_flags(&f);
         assert!(flags.contains(&true), "the scan's own rebuild changed data");
@@ -5329,7 +5336,7 @@ mod tests {
 
         f.engine.set_search_query("beach").unwrap();
 
-        let info = crate::commands::grid_info(&f.engine);
+        let info = crate::commands::grid_info(&f.engine, None);
         assert_eq!(info.view, GridView::Search);
         assert_eq!(info.search_query, "beach");
         assert_eq!(info.len, 1);
@@ -5348,7 +5355,7 @@ mod tests {
         f.engine.set_search_query("beach").unwrap();
         f.engine.set_search_query("   ").unwrap();
 
-        let info = crate::commands::grid_info(&f.engine);
+        let info = crate::commands::grid_info(&f.engine, None);
         assert_eq!(info.view, GridView::All);
         assert_eq!(info.search_query, "");
         assert_eq!(info.len, 2, "the whole library is back");
@@ -5365,7 +5372,7 @@ mod tests {
         f.engine.lib.add_to_album(album.id, &ids[..1], 1).unwrap();
 
         f.engine.set_album_view(album.id).unwrap();
-        let info = crate::commands::grid_info(&f.engine);
+        let info = crate::commands::grid_info(&f.engine, None);
         assert_eq!(
             (info.view, info.album, info.len),
             (GridView::Album, Some(album.id), 1)
@@ -5381,14 +5388,14 @@ mod tests {
         assert_eq!(f.engine.grid().1.len(), 2);
 
         f.engine.set_tag_view("beach").unwrap();
-        let info = crate::commands::grid_info(&f.engine);
+        let info = crate::commands::grid_info(&f.engine, None);
         assert_eq!(
             (info.view, info.tag.as_deref(), info.album),
             (GridView::Tag, Some("beach"), None)
         );
 
         f.engine.set_person_view("abc").unwrap();
-        let info = crate::commands::grid_info(&f.engine);
+        let info = crate::commands::grid_info(&f.engine, None);
         assert_eq!(
             (info.view, info.person.as_deref()),
             (GridView::Person, Some("abc"))
@@ -5435,7 +5442,7 @@ mod tests {
         };
 
         f.engine.set_copies_view(orig).unwrap();
-        let info = crate::commands::grid_info(&f.engine);
+        let info = crate::commands::grid_info(&f.engine, None);
         assert_eq!((info.view, info.len), (GridView::Copies, 3));
         let copies_of = info.copies_of.expect("reported while the view is open");
         assert_eq!((copies_of.id, copies_of.file_name), (orig, name(orig)));
@@ -5446,13 +5453,21 @@ mod tests {
         );
 
         f.engine.set_view(GridView::All).unwrap();
-        assert!(crate::commands::grid_info(&f.engine).copies_of.is_none());
+        assert!(
+            crate::commands::grid_info(&f.engine, None)
+                .copies_of
+                .is_none()
+        );
 
         // A different parameterised view whose argument happens to parse as an id must not
         // be read as a Copies argument either - `view == Copies` is the guard, not "the
         // argument parses". `orig` itself is a valid id, so this is not a vacuous check.
         f.engine.set_search_query(&orig.to_string()).unwrap();
-        assert!(crate::commands::grid_info(&f.engine).copies_of.is_none());
+        assert!(
+            crate::commands::grid_info(&f.engine, None)
+                .copies_of
+                .is_none()
+        );
 
         // Re-entering without the setter must not bring the old photo back.
         f.engine.set_view(GridView::Copies).unwrap();
@@ -5519,12 +5534,12 @@ mod tests {
             .find(|&id| path_of(id).ends_with("orig.jpg"))
             .unwrap();
         f.engine.set_copies_view(orig).unwrap();
-        let info = crate::commands::grid_info(&f.engine);
+        let info = crate::commands::grid_info(&f.engine, None);
         assert_eq!(info.len, 2);
         assert!(!info.copies_of.unwrap().hidden);
 
         f.engine.set_items_hidden(&[orig], true).unwrap();
-        let info = crate::commands::grid_info(&f.engine);
+        let info = crate::commands::grid_info(&f.engine, None);
         let copies = info.copies_of.unwrap();
         assert!(copies.hidden, "the hidden anchor was not reported");
         assert!(!copies.gone, "a hidden anchor is not gone");
@@ -5557,7 +5572,7 @@ mod tests {
 
         f.engine.set_copies_view(orig).unwrap();
         assert!(
-            !crate::commands::grid_info(&f.engine)
+            !crate::commands::grid_info(&f.engine, None)
                 .copies_of
                 .unwrap()
                 .gone,
@@ -5569,7 +5584,7 @@ mod tests {
 
         // The twin stays through the hash frozen into the argument; the look-alike cannot be
         // frozen (see `CopiesArg`) and drops out.
-        let info = crate::commands::grid_info(&f.engine);
+        let info = crate::commands::grid_info(&f.engine, None);
         let path_at = |offset: usize| path_of(f.engine.grid().1.rows(offset, 1)[0].id);
         assert_eq!(info.len, 1);
         assert!(path_at(0).ends_with("identical.jpg"));
@@ -5593,6 +5608,6 @@ mod tests {
         f.engine.set_search_query("beach").unwrap();
         f.engine.set_view(GridView::Starred).unwrap();
 
-        assert_eq!(crate::commands::grid_info(&f.engine).search_query, "");
+        assert_eq!(crate::commands::grid_info(&f.engine, None).search_query, "");
     }
 }

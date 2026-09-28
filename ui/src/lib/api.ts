@@ -49,12 +49,19 @@ export type GridTile = 'small' | 'medium' | 'large';
 /** `searchQuery`, `person`, `album`, `tag` and `copiesOf` are the argument of the matching
  *  view and empty/null in every other view: the backend is the source of truth for which one
  *  is active, so the UI reads the argument from here rather than remembering what it asked for. */
-export interface GridInfo {
-  version: number;
-  len: number;
+/** Mirrors `commands::GridLayout`: the runs the grid lays out and the folders the sidebar
+ *  lists, at one generation. */
+export interface GridLayout {
+  generation: number;
   sections: Section[];
   /** The folders the view's photos come from - the sidebar's list. */
   folders: FolderTally[];
+}
+export interface GridInfo {
+  version: number;
+  len: number;
+  /** Null when the call named this generation as the one it holds: the store keeps its own. */
+  layout: GridLayout | null;
   starredCount: number;
   /** Photos with a byte-identical twin elsewhere in the library. */
   duplicateCount: number;
@@ -208,7 +215,7 @@ export const api = {
    *  folder row yet (offline, or never scanned). */
   revealWatched: (watchedId: number) => invoke<void>('reveal_watched', { watchedId }),
   revealLibrary: () => invoke<void>('reveal_library'),
-  gridInfo: () => invoke<GridInfo>('grid_info'),
+  gridInfo: (knownLayout: number | null) => invoke<GridInfo>('grid_info', { knownLayout }),
   gridRows: (offset: number, count: number) => invoke<GridRows>('grid_rows', { offset, count }),
   gridOffsetOfFolder: (folderId: number) => invoke<number | null>('grid_offset_of_folder', { folderId }),
   gridFolderIdsAt: (offset: number) => invoke<FolderIds | null>('grid_folder_ids_at', { offset }),

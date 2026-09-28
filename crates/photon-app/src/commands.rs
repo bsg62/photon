@@ -61,10 +61,11 @@ pub struct FolderList {
 pub struct GridInfo {
     pub version: u64,
     pub len: usize,
-    /// The runs the grid lays out: one per folder, or one headerless run in a flat view.
-    pub sections: Vec<Section>,
-    /// The folders the view's photos come from, whatever the layout. The sidebar's list.
-    pub folders: Vec<FolderTally>,
+    /// What the grid lays out and the sidebar lists, and its generation - `None` when the
+    /// caller already holds this generation (`known_layout`), which is most versions: a
+    /// star, a keyword, an edit, a poster frame or a hashing pass moves no photo between
+    /// folders, and at 5,000 folders the two lists are about 1 MB of JSON.
+    pub layout: Option<GridLayout>,
     pub starred_count: usize,
     /// Photos with a byte-identical twin; the sidebar shows the Duplicates row only above 0.
     pub duplicate_count: usize,
@@ -90,6 +91,17 @@ pub struct GridInfo {
     /// startup (`Engine::build_first_grid`); the UI says so instead of "No photos yet".
     /// `None` for every grid actually built, so the next successful rebuild clears it.
     pub build_error: Option<String>,
+}
+
+/// The grid's layout at one generation (`Engine::published`).
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GridLayout {
+    pub generation: u64,
+    /// The runs the grid lays out: one per folder, or one headerless run in a flat view.
+    pub sections: Vec<Section>,
+    /// The folders the view's photos come from, whatever the layout. The sidebar's list.
+    pub folders: Vec<FolderTally>,
 }
 
 /// The photo a Copies view is of. The name travels with the id because the sidebar labels
@@ -283,8 +295,10 @@ pub fn rescan_folder(engine: &Arc<Engine>, watched_id: i64) -> CmdResult<()> {
     Ok(())
 }
 
-pub fn grid_info(engine: &Engine) -> GridInfo {
-    let (version, grid, build_error, _layout_gen) = engine.published();
+/// The grid as the UI draws it. `known_layout` is the layout generation the caller holds;
+/// the layout is left out when it is still the published one.
+pub fn grid_info(engine: &Engine, known_layout: Option<u64>) -> GridInfo {
+    let (version, grid, build_error, layout_gen) = engine.published();
     // One read of the pair, so the argument reported is the one the view was built with.
     let (view, arg) = engine.view_and_arg();
     let copies_of = (view == GridView::Copies)
@@ -314,8 +328,11 @@ pub fn grid_info(engine: &Engine) -> GridInfo {
     GridInfo {
         version,
         len: grid.len(),
-        sections: grid.sections().to_vec(),
-        folders: grid.folders().to_vec(),
+        layout: (known_layout != Some(layout_gen)).then(|| GridLayout {
+            generation: layout_gen,
+            sections: grid.sections().to_vec(),
+            folders: grid.folders().to_vec(),
+        }),
         starred_count: counts.starred,
         duplicate_count: counts.duplicate,
         hidden_count: counts.hidden,
@@ -916,6 +933,42 @@ mod tests {
     use crate::testutil::{fixture, jpeg};
 
     #[test]
+    fn grid_info_leaves_out_a_layout_the_caller_holds() {
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a.jpg", &img), ("sub/b.jpg", &img)]);
+        f.add_photos();
+        let first = grid_info(&f.engine, None);
+        let layout = first.layout.expect("a first call always gets the layout");
+        assert_eq!(layout.sections.len(), 2);
+
+        f.engine.set_star(f.ids()[0], true).unwrap();
+        let again = grid_info(&f.engine, Some(layout.generation));
+
+        assert!(again.version > first.version);
+        assert!(
+            again.layout.is_none(),
+            "the star moved no photo between folders"
+        );
+        assert_eq!(again.starred_count, 1);
+    }
+
+    #[test]
+    fn grid_info_sends_a_layout_that_moved() {
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a.jpg", &img), ("sub/b.jpg", &img)]);
+        f.add_photos();
+        let generation = grid_info(&f.engine, None).layout.unwrap().generation;
+
+        f.engine.set_items_hidden(&[f.ids()[0]], true).unwrap();
+        let after = grid_info(&f.engine, Some(generation))
+            .layout
+            .expect("the hide moved the layout");
+
+        assert_eq!(after.sections.len(), 1);
+        assert_eq!(after.generation, generation + 1);
+    }
+
+    #[test]
     fn folder_listing_and_grid_info() {
         let img = jpeg(16, 16);
         let f = fixture(&[("a.jpg", &img), ("sub/b.jpg", &img)]);
@@ -929,8 +982,11 @@ mod tests {
             }]
         );
         assert_eq!(list.folders.len(), 2);
-        let info = grid_info(&f.engine);
-        assert_eq!((info.len, info.sections.len()), (2, 2));
+        let info = grid_info(&f.engine, None);
+        assert_eq!(
+            (info.len, info.layout.as_ref().unwrap().sections.len()),
+            (2, 2)
+        );
         let sub = list.folders.iter().find(|x| x.name == "sub").unwrap();
         assert_eq!(grid_offset_of_folder(&f.engine, sub.id), Some(1));
     }
@@ -944,16 +1000,28 @@ mod tests {
         let f = fixture(&[("a.jpg", &img), ("sub/b.jpg", &img)]);
         f.add_photos();
         f.engine.set_view(GridView::Recent).unwrap();
-        let info = grid_info(&f.engine);
+        let info = grid_info(&f.engine, None);
         assert_eq!(
-            info.sections
+            info.layout
+                .as_ref()
+                .unwrap()
+                .sections
                 .iter()
                 .map(|s| (s.folder_id, s.offset, s.count))
                 .collect::<Vec<_>>(),
             [(None, 0, 2)]
         );
-        assert_eq!(info.folders.len(), 2);
-        assert_eq!(info.folders.iter().map(|t| t.count).sum::<usize>(), 2);
+        assert_eq!(info.layout.as_ref().unwrap().folders.len(), 2);
+        assert_eq!(
+            info.layout
+                .as_ref()
+                .unwrap()
+                .folders
+                .iter()
+                .map(|t| t.count)
+                .sum::<usize>(),
+            2
+        );
     }
 
     #[test]
@@ -1323,14 +1391,14 @@ mod tests {
         let ids = f.ids();
         set_keywords(&f, ids[0], &["holiday"]);
         set_tag_view(&f.engine, "holiday").unwrap();
-        assert_eq!(grid_info(&f.engine).len, 1);
+        assert_eq!(grid_info(&f.engine, None).len, 1);
 
         assert_eq!(
             rename_tag(&f.engine, "holiday", " ").unwrap_err().kind,
             "emptyTagName"
         );
         rename_tag(&f.engine, "holiday", " vacation").unwrap();
-        let info = grid_info(&f.engine);
+        let info = grid_info(&f.engine, None);
         assert_eq!(info.tag.as_deref(), Some("vacation"));
         assert_eq!(info.len, 1);
         assert_eq!(
@@ -1343,7 +1411,7 @@ mod tests {
 
         hide_tag(&f.engine, "vacation").unwrap();
         assert_eq!(
-            grid_info(&f.engine).len,
+            grid_info(&f.engine, None).len,
             0,
             "the removed tag's view empties"
         );
@@ -1366,16 +1434,16 @@ mod tests {
         );
         add_to_album(&f.engine, album.id, &ids[..1]).unwrap();
         set_album_view(&f.engine, album.id).unwrap();
-        assert_eq!(grid_info(&f.engine).len, 1);
+        assert_eq!(grid_info(&f.engine, None).len, 1);
 
         add_to_album(&f.engine, album.id, &ids[1..]).unwrap();
         assert_eq!(
-            grid_info(&f.engine).len,
+            grid_info(&f.engine, None).len,
             2,
             "the open album follows the add"
         );
         remove_from_album(&f.engine, album.id, &ids).unwrap();
-        assert_eq!(grid_info(&f.engine).len, 0);
+        assert_eq!(grid_info(&f.engine, None).len, 0);
 
         rename_album(&f.engine, album.id, "Zoo").unwrap();
         assert_eq!(list_albums(&f.engine).unwrap()[0].name, "Zoo");
@@ -1394,7 +1462,7 @@ mod tests {
         f.add_photos();
         let rows = grid_rows(&f.engine, 0, 5_000);
         assert_eq!(rows.rows.len(), 2);
-        assert_eq!(rows.version, grid_info(&f.engine).version);
+        assert_eq!(rows.version, grid_info(&f.engine, None).version);
         assert_eq!(clamp_count(5_000), MAX_ROWS);
         assert!(grid_rows(&f.engine, 10, 5).rows.is_empty());
     }
@@ -1447,7 +1515,7 @@ mod tests {
             std::path::PathBuf::from(&watched.path)
         );
         remove_folder(&f.engine, watched.id).unwrap();
-        assert_eq!(grid_info(&f.engine).len, 0);
+        assert_eq!(grid_info(&f.engine, None).len, 0);
     }
 
     /// The command layer's own wiring: a saved search round-trips, its errors reach the UI
@@ -1484,12 +1552,12 @@ mod tests {
 
         // The search view is driven by the query string, not by the saved row.
         set_search_query(&f.engine, "a").unwrap();
-        let before = grid_info(&f.engine).len;
+        let before = grid_info(&f.engine, None).len;
         assert_eq!(before, 1, "the query matches a.jpg only");
         delete_saved_search(&f.engine, saved.id).unwrap();
         assert!(list_saved_searches(&f.engine).unwrap().is_empty());
         assert_eq!(
-            grid_info(&f.engine).len,
+            grid_info(&f.engine, None).len,
             before,
             "deleting the bookmark leaves the photos it was pointing at on screen"
         );
@@ -1530,7 +1598,7 @@ mod tests {
         assert_eq!(viewer_item(&f.engine, one).unwrap().albums, vec![album.id]);
 
         set_album_view(&f.engine, album.id).unwrap();
-        let info = grid_info(&f.engine);
+        let info = grid_info(&f.engine, None);
         assert_eq!(
             (info.view, info.album, info.len),
             (GridView::Album, Some(album.id), 1)

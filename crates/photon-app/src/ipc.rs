@@ -80,8 +80,8 @@ pub fn rescan_folder(engine: Eng<'_>, watched_id: i64) -> Result<(), AppError> {
 }
 
 #[tauri::command(async)]
-pub fn grid_info(engine: Eng<'_>) -> commands::GridInfo {
-    commands::grid_info(&engine)
+pub fn grid_info(engine: Eng<'_>, known_layout: Option<u64>) -> commands::GridInfo {
+    commands::grid_info(&engine, known_layout)
 }
 
 #[tauri::command(async)]
