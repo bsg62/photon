@@ -4,9 +4,11 @@
 //!   cargo run -p xtask -- versions [--tag v0.1.0]
 //!   cargo run -p xtask -- metadata
 //!   cargo run -p xtask -- screenshots [--out <dir>] [--only <shot>] [--no-build]
+//!   cargo run -p xtask -- scroll-probe [--no-build]
 
 mod checks;
 mod screenshots;
+mod scroll_probe;
 
 use checks::{
     Versions, check_metadata, check_versions, parse_cargo_version, parse_pkg_version,
@@ -22,9 +24,10 @@ fn main() -> ExitCode {
         Some("versions") => run_versions(tag.as_deref()),
         Some("metadata") => run_metadata(),
         Some("screenshots") => screenshots::run(&repo_root(), &args),
+        Some("scroll-probe") => scroll_probe::run(&repo_root(), &args),
         other => {
             eprintln!(
-                "unknown command {other:?}; expected `versions`, `metadata` or `screenshots`"
+                "unknown command {other:?}; expected `versions`, `metadata`, `screenshots` or `scroll-probe`"
             );
             ExitCode::FAILURE
         }

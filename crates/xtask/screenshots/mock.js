@@ -43,10 +43,37 @@
     { folderId: 4, offset: 34, count: 17, takenAtMin: day(2025, 12, 24) },
     { folderId: 5, offset: 51, count: 40, takenAtMin: day(2025, 5, 9) },
   ];
-  const len = 91;
+  let len = 91;
+
+  const HUGE = Number(P.get('huge')) || 0;
+  const HUGE_FOLDERS = Number(P.get('folders')) || 1;
+  if (HUGE > 0) {
+    // A library past every engine's layout cap (`scroll-probe`): HUGE photos in HUGE_FOLDERS
+    // folders of equal size, newest first, one folder a day.
+    const per = Math.ceil(HUGE / HUGE_FOLDERS);
+    folders.length = 0;
+    sections.length = 0;
+    for (let f = 0; f < HUGE_FOLDERS; f++) {
+      const id = 100 + f;
+      folders.push({ id, watchedId: 1, parentId: null, path: `/p/${f}`, name: `Folder ${f}`, hidden: false, alias: null });
+      sections.push({ folderId: id, offset: f * per, count: Math.min(per, HUGE - f * per), takenAtMin: day(2026, 1, 1) - f * 86_400 });
+    }
+    len = HUGE;
+  }
+
+  function sectionOf(i) {
+    let lo = 0;
+    let hi = sections.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (sections[mid].offset <= i) lo = mid;
+      else hi = mid - 1;
+    }
+    return sections[lo];
+  }
 
   function entry(i) {
-    const section = [...sections].reverse().find((s) => i >= s.offset);
+    const section = sectionOf(i);
     return {
       id: i + 1,
       folderId: section.folderId,
@@ -242,8 +269,81 @@
   const open = (n) => tile(n)?.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
   const later = (ms, f) => setTimeout(f, ms);
 
+  function probeReport() {
+    const v = document.querySelector('.viewport');
+    const ids = [...document.querySelectorAll('.canvas img')]
+      .map((img) => /thumb\/(\d+)\/grid\//.exec(img.getAttribute('src') ?? '')?.[1])
+      .filter(Boolean)
+      .map(Number);
+    const cols = Math.max(0, ...[...document.querySelectorAll('.canvas .row')].map((r) => r.children.length));
+    document.title =
+      'PROBE ' +
+      JSON.stringify({
+        last: ids.length ? Math.max(...ids) - 1 : -1,
+        cols,
+        canvas: document.querySelector('.canvas')?.getBoundingClientRect().height ?? -1,
+        scrollHeight: v?.scrollHeight ?? -1,
+      });
+  }
+
+  // How long a probe action waits for its scroll to render before reading the result. A
+  // library of 300,000 photos in 20,000 folders takes well past the ordinary shot's 400ms
+  // to finish its first layout pass, so this is longer than the screenshots' own delays.
+  const PROBE_DELAY = 3_000;
+
+  // Waits for `.canvas`'s height to stop changing (three reads, 200ms apart, all equal)
+  // before running `action`. A jump made while the canvas is still growing - grid_info,
+  // then the folder sidebar, then the first page of rows, all take a while against 20,000
+  // folders - lands against a shorter canvas than the final one and reads as stuck partway;
+  // the browser never re-clamps a scrollTop back down when the content it was measured
+  // against later grows underneath it.
+  function whenSettled(action) {
+    let lastHeight = null;
+    let stableReads = 0;
+    const check = () => {
+      const height = document.querySelector('.canvas')?.getBoundingClientRect().height ?? null;
+      if (height !== null && height === lastHeight) {
+        stableReads += 1;
+        if (stableReads >= 3) {
+          action();
+          return;
+        }
+      } else {
+        stableReads = 0;
+        lastHeight = height;
+      }
+      setTimeout(check, 200);
+    };
+    check();
+  }
+
   const actions = {
     select: () => tile(7)?.click(),
+    // `scroll-probe`: End through the grid's own key handling (a write from code), once the
+    // layout has settled, then read what got mounted. The grid's `onscroll` is what turns a
+    // written `scrollTop` into rendered rows, and headless Chromium under
+    // `--virtual-time-budget` does not reliably fire the native scroll event for a
+    // script-written `scrollTop` - `End`'s own internal `viewport.scrollTop = row.top` is no
+    // exception - so this dispatches one itself; without it the DOM's scroll position moves
+    // but the grid never hears about it and keeps rendering the top of the library.
+    'probe-end': () =>
+      whenSettled(() => {
+        const v = document.querySelector('.viewport');
+        v?.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true }));
+        v?.dispatchEvent(new Event('scroll'));
+        later(PROBE_DELAY, probeReport);
+      }),
+    // A scrollbar-sized jump straight to the bottom of the DOM range, once the layout has
+    // settled; the explicit scroll event is the same fix as `probe-end`'s.
+    'probe-bottom': () =>
+      whenSettled(() => {
+        const v = document.querySelector('.viewport');
+        if (v) {
+          v.scrollTop = v.scrollHeight;
+          v.dispatchEvent(new Event('scroll'));
+        }
+        later(PROBE_DELAY, probeReport);
+      }),
     video: () => open(4),
     menu: () => {
       tile(7)?.click();

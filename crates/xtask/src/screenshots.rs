@@ -410,11 +410,52 @@ fn capture(chromium: &Path, shot: &Shot, port: u16, out_dir: &Path) -> Result<()
     }
 }
 
-pub fn run(root: &Path, args: &[String]) -> ExitCode {
+/// Finds Chromium, builds the UI unless `--no-build` is given, and serves `ui/dist` (with
+/// `mock.js` standing in for Tauri) from a freshly bound loopback listener. Returns Chromium's
+/// path and the port it is served on; shared by `screenshots::run` and `scroll_probe::run`.
+pub(crate) fn build_and_serve(root: &Path, args: &[String]) -> Result<(PathBuf, u16), ExitCode> {
     let Some(chromium) = find_chromium() else {
         eprintln!("no Chromium found: install chromium or chrome, or set CHROMIUM to its path");
-        return ExitCode::FAILURE;
+        return Err(ExitCode::FAILURE);
     };
+
+    if !args.iter().any(|a| a == "--no-build") {
+        // `npm` is a .cmd shim on Windows, which `Command` does not resolve by itself.
+        let npm = if cfg!(windows) { "npm.cmd" } else { "npm" };
+        let built = Command::new(npm)
+            .args(["run", "build", "-w", "ui"])
+            .current_dir(root)
+            .status();
+        if !built.is_ok_and(|status| status.success()) {
+            eprintln!("`npm run build -w ui` failed");
+            return Err(ExitCode::FAILURE);
+        }
+    }
+    let dist = root.join("ui").join("dist");
+
+    // Port 0: whatever is free. Loopback only.
+    let listener = match TcpListener::bind(("127.0.0.1", 0)) {
+        Ok(listener) => listener,
+        Err(e) => {
+            eprintln!("cannot listen on loopback: {e}");
+            return Err(ExitCode::FAILURE);
+        }
+    };
+    let port = listener.local_addr().map(|a| a.port()).unwrap_or_default();
+    let served = dist.clone();
+    // Detached: it ends with the process. A thread per connection, since Chromium opens
+    // several at once and each is answered and closed.
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            let dist = served.clone();
+            std::thread::spawn(move || serve(stream, &dist));
+        }
+    });
+
+    Ok((chromium, port))
+}
+
+pub fn run(root: &Path, args: &[String]) -> ExitCode {
     let out_dir =
         flag(args, "--out").map_or_else(|| root.join("target").join("screenshots"), PathBuf::from);
     let only = flag(args, "--only");
@@ -432,42 +473,14 @@ pub fn run(root: &Path, args: &[String]) -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    if !args.iter().any(|a| a == "--no-build") {
-        // `npm` is a .cmd shim on Windows, which `Command` does not resolve by itself.
-        let npm = if cfg!(windows) { "npm.cmd" } else { "npm" };
-        let built = Command::new(npm)
-            .args(["run", "build", "-w", "ui"])
-            .current_dir(root)
-            .status();
-        if !built.is_ok_and(|status| status.success()) {
-            eprintln!("`npm run build -w ui` failed");
-            return ExitCode::FAILURE;
-        }
-    }
-    let dist = root.join("ui").join("dist");
+    let (chromium, port) = match build_and_serve(root, args) {
+        Ok(served) => served,
+        Err(code) => return code,
+    };
     if let Err(e) = std::fs::create_dir_all(&out_dir) {
         eprintln!("cannot create {}: {e}", out_dir.display());
         return ExitCode::FAILURE;
     }
-
-    // Port 0: whatever is free. Loopback only.
-    let listener = match TcpListener::bind(("127.0.0.1", 0)) {
-        Ok(listener) => listener,
-        Err(e) => {
-            eprintln!("cannot listen on loopback: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
-    let port = listener.local_addr().map(|a| a.port()).unwrap_or_default();
-    let served = dist.clone();
-    // Detached: it ends with the process. A thread per connection, since Chromium opens
-    // several at once and each is answered and closed.
-    std::thread::spawn(move || {
-        for stream in listener.incoming().flatten() {
-            let dist = served.clone();
-            std::thread::spawn(move || serve(stream, &dist));
-        }
-    });
 
     let mut failed = false;
     for shot in shots {
