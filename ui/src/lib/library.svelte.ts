@@ -960,6 +960,13 @@ export class LibraryStore {
     const landing = lead === null ? null : await this.landingOf(lead, new Set(itemIds));
     await api.setItemsHidden(itemIds, hidden);
     const target = landing === null || lead === null ? null : await this.landingIn(landing, lead);
+    // A band begun meanwhile captured the selection as it stood, hidden photos and all: its
+    // next frame builds on `bandBase`, and Escape puts `bandPrevious` back. Outside a band
+    // both are empty.
+    for (const id of itemIds) {
+      this.bandBase.delete(id);
+      this.bandPrevious.delete(id);
+    }
     // Checked once every await is behind it: a click during the write or the lookups. That
     // click is kept, lead and all, but not the photos just hidden - a Ctrl+click adds to a
     // selection still holding them. Written past `pick`: this is not the user's choice, and

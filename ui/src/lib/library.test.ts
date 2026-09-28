@@ -1845,6 +1845,43 @@ describe('LibraryStore', () => {
       expect(store.selected).toBe(7);
     });
 
+    /** A band is built on the selection it started from, captured at `beginBand`. Started
+     *  additively while the hide was out, that base still held the photos being hidden, and
+     *  the band's next frame - or Escape, putting back what it started from - selected them
+     *  again. */
+    it('an additive band begun while a hide is out does not bring the hidden photos back', async () => {
+      const store = await storeOf(10);
+      store.selected = 2;
+      store.toggleSelected(3);
+      vi.mocked(api.setItemsHidden).mockImplementation(async () => {
+        store.beginBand(true);
+        store.bandTo([[6, 6]]);
+        return 2;
+      });
+      await store.setHidden(store.selectedItemIds, true);
+      expect(store.selectedItemIds).toEqual([idAt(6)]);
+      store.bandTo([[6, 7]]);
+      expect([...store.selectedItemIds].sort()).toEqual([idAt(6), idAt(7)]);
+      store.cancelBand();
+      expect(store.selectedItemIds).toEqual([]);
+    });
+
+    /** The same band begun but not yet moved: no pick, so the hide lands, and the band's
+     *  first frame then builds on its base. */
+    it('a band begun but not moved while a hide is out does not bring them back either', async () => {
+      const store = await storeOf(10);
+      store.selected = 2;
+      store.toggleSelected(3);
+      vi.mocked(api.setItemsHidden).mockImplementation(async () => {
+        store.beginBand(true);
+        hiddenFrom(10, 2, 3);
+        return 2;
+      });
+      await store.setHidden(store.selectedItemIds, true);
+      store.bandTo([[6, 6]]);
+      expect(store.selectedItemIds).toEqual([idAt(6)]);
+    });
+
     it('a click made while a hide is out is not overwritten when it lands', async () => {
       const store = await storeOf(10);
       store.selected = 2;
