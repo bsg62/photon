@@ -42,8 +42,8 @@ Svelte's *server* runtime, where effects never run; a test that needs real react
 server-runtime test and left every tile deaf to its page. Logic that needs a test goes in a
 `.svelte.ts` factory tested with fake timers (`createSearchBox`, `createThumbRequest`,
 `createSlideshow`, `createCropTool`) or a pure module (`timeline.ts`, `crop.ts`, `picture.ts`);
-what is left in the component is effect wiring, verified by `svelte-check` and the README's
-smoke checklist, not by a test. Layout *can* be measured without the GUI: a static page
+what is left in the component is effect wiring, verified by `svelte-check` and the smoke
+checklist (`docs/smoke-checklist.md`), not by a test. Layout *can* be measured without the GUI: a static page
 holding the component's CSS, run through headless Chromium with `--dump-dom` and a load script
 that writes `getBoundingClientRect()` into `document.title`.
 
@@ -584,7 +584,7 @@ action in `mock.js`.
   `crates/photon-core/src/avif/av1.rs`'s module doc and the spec's "Limits" section);
   `thumbs/inflight.rs` keeps that from repeating on every launch.
 - **Never launch the GUI to verify a change.** Verification is the test suites plus
-  `svelte-check`; anything needing eyes goes on the README's `## Manual smoke checklist`.
+  `svelte-check`; anything needing eyes goes on `docs/smoke-checklist.md`.
 - **A new test must be demonstrated to fail with its change reverted.** A compile error is not
   proof — it shows a symbol was missing, not that an assertion discriminates behaviour. Tests
   that pass with and without the change have shipped here more than once. When a change

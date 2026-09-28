@@ -5,8 +5,8 @@
 //! engine, so the look of the UI had no check at all short of a person. This renders the real
 //! bundle without the app: `ui/dist` is served from here, `screenshots/mock.js` stands in for
 //! Tauri's IPC, and thumbnails are generated gradients. It shows Chromium's rendering, not
-//! WebKitGTK's or WKWebView's, so it replaces no item of the README's smoke checklist; it is
-//! for seeing a change before a person does.
+//! WebKitGTK's or WKWebView's, so it replaces no item of the smoke checklist
+//! (`docs/smoke-checklist.md`); it is for seeing a change before a person does.
 //!
 //! The pure parts - routing, the index injection, Chromium's arguments - are tested. Running
 //! Chromium is not: it is not on CI's runners, and a screenshot has no assertion to make.
