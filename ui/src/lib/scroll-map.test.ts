@@ -285,6 +285,15 @@ describe('resizing', () => {
     expect(map.shift).toBe(shift);
     expect(map.virtual).toBe(4_950);
   });
+  it('a rebuild that grows the library under a grid at the end re-anchors', () => {
+    const map = mapped();
+    map.press(true);
+    map.onScroll(2_000); // virtual 9_900: both at their end
+    map.release();
+    // maxVirtual 29_900: the DOM is at its end and the library is not.
+    const w = map.resize(30_000, 100, 2_100);
+    expect(w).toBeCloseTo(500 + (9_400 / 28_900) * 1_000, 6);
+  });
   it('entering the mapped range keeps the place the grid was at', () => {
     const map = createScrollMap();
     map.resize(2_000, 100, 2_100);

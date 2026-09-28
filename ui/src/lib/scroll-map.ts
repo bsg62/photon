@@ -98,6 +98,13 @@ export function createScrollMap() {
     return k + ((v - k) / (mv - 2 * k)) * (md - 2 * k);
   }
 
+  /** Whether DOM position `d` and virtual position `v` are at the same edge, or neither
+   *  at one. When they are not, the next step towards that edge goes nowhere: the DOM has
+   *  walked into a wall the library has not reached (or the reverse). */
+  function edgesAgree(d: number, v: number): boolean {
+    return d < 1 === v <= 0 && d > maxDom() - 1 === v >= maxVirtual();
+  }
+
   /** Aims the grid at virtual `v`: the DOM position to write for it, past the cap. */
   function target(v: number): number {
     pending = clampVirtual(v);
@@ -146,13 +153,16 @@ export function createScrollMap() {
       }
       const clamped = clampVirtual(virtual);
       // Staying past the cap at the same height is the common case - a scan adding photos
-      // during a flick - and writes nothing, so the flick carries on.
+      // during a flick - and writes nothing, so the flick carries on. Unless the grid was
+      // at the end and the library grew under it: the DOM is still at its end, a wheel
+      // step down fires no scroll event, and nothing else would move it.
       if (
         wasMapped &&
         domHeight() === wasHeight &&
         clamped === virtual &&
         lastDomTop >= 0 &&
-        lastDomTop <= maxDom()
+        lastDomTop <= maxDom() &&
+        edgesAgree(lastDomTop, virtual)
       ) {
         return null;
       }
@@ -230,14 +240,9 @@ export function createScrollMap() {
       }
       virtual = clampVirtual(virtual + moved);
       shift = virtual - domTop;
-      // An end of one range without the other: relative steps have walked the DOM into a
-      // wall the library has not reached (or the reverse), and the next step would go
-      // nowhere. Re-anchored now rather than on settle - it can cut a flick short, but only
-      // after millions of px without a pause.
-      const md = maxDom();
-      const mv = maxVirtual();
-      if (domTop < 1 !== virtual <= 0 || domTop > md - 1 !== virtual >= mv) return target(virtual);
-      return null;
+      // Re-anchored at once rather than on settle when the two ranges' edges disagree - it
+      // can cut a flick short, but only after millions of px without a pause.
+      return edgesAgree(domTop, virtual) ? null : target(virtual);
     },
   };
 }
