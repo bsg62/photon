@@ -1,9 +1,8 @@
 use crate::{
     Result,
-    keywords::read_embedded,
     library::{FolderItem, KnownItem, Library, NewItem, WatchedFolder},
     media::MediaKind,
-    metadata::{CameraMeta, EXIF_VERSION, read_image_meta},
+    metadata::{CameraMeta, EXIF_VERSION, read_image},
     paths,
     picasa::{Face, FolderIni, IniListing},
 };
@@ -1052,8 +1051,7 @@ fn describe(
     let dated = |taken_at: Option<i64>| taken_at.unwrap_or(mtime_ms.div_euclid(1000));
     match kind {
         MediaKind::Image => {
-            let meta = read_image_meta(entry.path());
-            let embedded = read_embedded(entry.path());
+            let (meta, embedded) = read_image(entry.path());
             NewItem {
                 folder_id,
                 path: path.to_string(),

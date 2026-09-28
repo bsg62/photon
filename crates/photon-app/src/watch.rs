@@ -4,7 +4,7 @@
 //! which roots are watched, what happens when the OS won't watch them, and how events
 //! become scans without ever running two scans of one folder at once.
 
-use crate::engine::Engine;
+use crate::engine::{Engine, FullScan};
 use parking_lot::Mutex;
 use photon_core::watcher::{
     WatchError, WatchedRoot, Watcher, insert_pending, plan_scans, roots_affected_by,
@@ -24,7 +24,16 @@ use std::{
 const DEBOUNCE: Duration = Duration::from_secs(2);
 const TICK: Duration = Duration::from_secs(2);
 const OFFLINE_POLL: Duration = Duration::from_secs(30);
+/// How often a degraded root's watch registration is retried, and the least time between
+/// two periodic rescans of it; see `degraded_rescan_interval` for the most.
 const DEGRADED_RESCAN: Duration = Duration::from_secs(300);
+
+/// A degraded root waits at least this many times its last full scan's duration between
+/// periodic rescans. A fixed five minutes kept a root that takes minutes to walk - a network
+/// share, a large library on a spinning disk - scanning a large part of the time, for a
+/// fallback whose only job is to notice changes eventually. At ten, a root spends at most a
+/// tenth of its time being rescanned, however slow it is.
+const DEGRADED_RESCAN_COST_FACTOR: u32 = 10;
 
 /// How often the event thread and the ticker thread check `stopping`, so `stop` never
 /// blocks for longer than this.
@@ -375,7 +384,7 @@ fn degrade_failed_roots(engine: &Arc<Engine>, degraded: &Mutex<Vec<i64>>, failur
 ///
 /// Used both by `start` and by the ticker's retry when the watcher subsystem is down
 /// entirely. A root that fails to register is (re-)marked `degraded`, logged once per
-/// attempt; one that succeeds is deliberately *left* degraded for `rescan_degraded_roots`
+/// attempt; one that succeeds is deliberately *left* degraded for `reregister_degraded_roots`
 /// to clear, because clearing it here would empty the list that function reads and it would
 /// return without scanning. A watch that only just started cannot have seen whatever changed
 /// while the subsystem was down, so dropping that rescan loses every addition and deletion
@@ -480,10 +489,16 @@ fn mark_degraded(degraded: &mut Vec<i64>, id: i64) {
 
 /// The ticker thread's body: every `TICK`, retry pending follow-ups; every `OFFLINE_POLL`,
 /// rescan offline roots (installing a watch for any that have come back); every
-/// `DEGRADED_RESCAN`, restart the watcher subsystem if it's down entirely, retry
-/// registering each degraded root's watch, and full-rescan it. The last is kept on the slow
-/// tick, not `OFFLINE_POLL`, so a permanently unwatchable root doesn't retry in a tight
-/// loop.
+/// `DEGRADED_RESCAN`, restart the watcher subsystem if it's down entirely and retry
+/// registering each degraded root's watch, full-rescanning the ones that register. That is
+/// kept on the slow tick, not `OFFLINE_POLL`, so a permanently unwatchable root doesn't
+/// retry in a tight loop.
+///
+/// A degraded root whose registration still fails is rescanned on its own schedule
+/// (`rescan_due_degraded_roots`, checked every `TICK`), not on the slow tick: it waits
+/// `degraded_rescan_interval` after its last scan, which is longer than `DEGRADED_RESCAN`
+/// for a root that is slow to walk, and checking only on the slow tick would round every
+/// interval up to a multiple of it.
 fn ticker_loop(
     engine: Arc<Engine>,
     pending: Arc<Mutex<HashMap<i64, Vec<PathBuf>>>>,
@@ -495,13 +510,15 @@ fn ticker_loop(
     let mut last_tick = Instant::now();
     let mut last_offline_poll = Instant::now();
     let mut last_degraded_rescan = Instant::now();
+    let mut degraded_rescans = DegradedRescans::default();
     while !stopping.load(Ordering::SeqCst) {
         std::thread::sleep(POLL);
         if stopping.load(Ordering::SeqCst) {
             break;
         }
         let now = Instant::now();
-        if now.duration_since(last_tick) >= TICK {
+        let tick = now.duration_since(last_tick) >= TICK;
+        if tick {
             try_drain(&engine, &pending);
             last_tick = now;
         }
@@ -511,8 +528,74 @@ fn ticker_loop(
         }
         if now.duration_since(last_degraded_rescan) >= DEGRADED_RESCAN {
             retry_watcher_startup(&engine, &pending, &degraded, &watcher, &stopping, &threads);
-            rescan_degraded_roots(&engine, &degraded, &watcher);
+            reregister_degraded_roots(&engine, &degraded, &watcher);
             last_degraded_rescan = now;
+        }
+        // After the registration retry, so a root it has just recovered - and rescanned - is
+        // no longer degraded by the time this looks, and is not scanned a second time.
+        if tick {
+            rescan_due_degraded_roots(&engine, &degraded, &mut degraded_rescans, now);
+        }
+    }
+}
+
+/// How long a degraded root waits between periodic rescans: `DEGRADED_RESCAN`, or
+/// `DEGRADED_RESCAN_COST_FACTOR` times its last full scan when that is longer. A root not
+/// yet timed this session - its startup scan was cancelled, failed, found it offline, or is
+/// still running - waits `DEGRADED_RESCAN`, as every root did before scans were timed.
+fn degraded_rescan_interval(last_scan: Option<Duration>) -> Duration {
+    last_scan.map_or(DEGRADED_RESCAN, |took| {
+        DEGRADED_RESCAN.max(took.saturating_mul(DEGRADED_RESCAN_COST_FACTOR))
+    })
+}
+
+/// Whether a degraded root is due its next periodic rescan at `now`. `since` is when the
+/// ticker last started one, or first found the root degraded; a full scan that *finished*
+/// later than that - the ticker's own, a manual rescan, the startup scan - counts from its
+/// end instead, so the wait is measured from the last time the root was actually walked.
+fn degraded_rescan_due(now: Instant, since: Instant, last_scan: Option<FullScan>) -> bool {
+    let since = last_scan.map_or(since, |scan| scan.finished.max(since));
+    now.saturating_duration_since(since) >= degraded_rescan_interval(last_scan.map(|s| s.took))
+}
+
+/// When the ticker last started a periodic rescan of each degraded root, or first found it
+/// degraded. Kept only for roots still degraded, so a root that recovers and is degraded
+/// again later waits a full interval from then, rather than being rescanned on the spot
+/// for a rescan it was last given days ago.
+#[derive(Debug, Default)]
+struct DegradedRescans {
+    since: HashMap<i64, Instant>,
+}
+
+/// Starts a full rescan of every degraded root that is due one (`degraded_rescan_due`).
+///
+/// Reads the watched folders only when some root is due, since this runs every `TICK`.
+fn rescan_due_degraded_roots(
+    engine: &Arc<Engine>,
+    degraded: &Mutex<Vec<i64>>,
+    rescans: &mut DegradedRescans,
+    now: Instant,
+) {
+    let ids: Vec<i64> = degraded.lock().clone();
+    rescans.since.retain(|id, _| ids.contains(id));
+    let due: Vec<i64> = ids
+        .into_iter()
+        .filter(|id| {
+            let since = *rescans.since.entry(*id).or_insert(now);
+            degraded_rescan_due(now, since, engine.last_full_scan(*id))
+        })
+        .collect();
+    if due.is_empty() {
+        return;
+    }
+    let watched = engine.lib.watched_folders().unwrap_or_default();
+    for id in due {
+        // Recorded even when the scan slot is busy and nothing starts: the scan in it ends
+        // in a `FullScan` of its own, or, if it is a subtree scan, the root is simply asked
+        // again an interval later rather than on every tick until the slot frees.
+        rescans.since.insert(id, now);
+        if let Some(folder) = watched.iter().find(|w| w.id == id) {
+            engine.start_scan(folder.clone());
         }
     }
 }
@@ -714,15 +797,16 @@ fn retry_watcher_startup(
     threads.push(handle);
 }
 
-/// For each degraded root: retries registering its OS watch (dropping it from `degraded` on
-/// success, so it goes back to live updates) and always full-rescans it, since a watch that
-/// only just started can't have seen whatever changed while it was unregistered. A root
-/// whose registration still fails stays in `degraded` for the next tick.
+/// For each degraded root: retries registering its OS watch, and on success drops it from
+/// `degraded`, so it goes back to live updates, and full-rescans it at once, whatever its
+/// periodic schedule says, since a watch that only just started can't have seen whatever
+/// changed while it was unregistered. A root whose registration still fails stays in
+/// `degraded` for the next tick and is left to `rescan_due_degraded_roots`.
 ///
 /// `degraded` is cleared for a recovered root *before* `start_scan` is called for it, for
 /// the same reason as in `rescan_offline_roots`: otherwise the scan's own `FolderStatus`
 /// event could still report it degraded.
-fn rescan_degraded_roots(
+fn reregister_degraded_roots(
     engine: &Arc<Engine>,
     degraded: &Mutex<Vec<i64>>,
     watcher: &Mutex<Option<Watcher>>,
@@ -738,7 +822,9 @@ fn rescan_degraded_roots(
             continue;
         };
         match try_register(watcher, degraded, id, Path::new(&folder.path)) {
-            Some(Ok(())) => {}
+            Some(Ok(())) => {
+                engine.start_scan(folder.clone());
+            }
             Some(Err(err)) => tracing::debug!(
                 watched_id = folder.id,
                 path = %folder.path,
@@ -747,7 +833,6 @@ fn rescan_degraded_roots(
             ),
             None => {}
         }
-        engine.start_scan(folder.clone());
     }
 }
 
@@ -1073,7 +1158,7 @@ mod tests {
         let (watcher, _rx, _errors) = Watcher::start(DEBOUNCE).unwrap();
         let watcher_slot = Mutex::new(Some(watcher));
 
-        rescan_degraded_roots(&f.engine, &degraded, &watcher_slot);
+        reregister_degraded_roots(&f.engine, &degraded, &watcher_slot);
 
         assert!(
             degraded.lock().is_empty(),
@@ -1097,7 +1182,7 @@ mod tests {
         let (watcher, _rx, _errors) = Watcher::start(DEBOUNCE).unwrap();
         let watcher_slot = Mutex::new(Some(watcher));
 
-        rescan_degraded_roots(&f.engine, &degraded, &watcher_slot);
+        reregister_degraded_roots(&f.engine, &degraded, &watcher_slot);
 
         assert_eq!(
             degraded.lock().clone(),
@@ -1107,9 +1192,166 @@ mod tests {
         );
         f.settle();
         assert!(
-            !f.engine.lib.watched_folders().unwrap()[0].online,
-            "start_scan ran regardless of the failed registration, and found the folder gone"
+            f.engine.lib.watched_folders().unwrap()[0].online,
+            "a failed registration is not a recovery, so it leaves the rescan to the root's \
+             own schedule"
         );
+
+        let mut rescans = DegradedRescans::default();
+        let now = Instant::now();
+        rescan_due_degraded_roots(&f.engine, &degraded, &mut rescans, now);
+        rescan_due_degraded_roots(&f.engine, &degraded, &mut rescans, now + DEGRADED_RESCAN);
+        f.settle();
+        assert!(
+            !f.engine.lib.watched_folders().unwrap()[0].online,
+            "which rescans it regardless of the failed registration, and finds the folder gone"
+        );
+    }
+
+    #[test]
+    fn a_root_never_timed_waits_the_floor_between_rescans() {
+        assert_eq!(degraded_rescan_interval(None), DEGRADED_RESCAN);
+        let since = Instant::now();
+        assert!(!degraded_rescan_due(
+            since + DEGRADED_RESCAN - Duration::from_secs(1),
+            since,
+            None
+        ));
+        assert!(degraded_rescan_due(since + DEGRADED_RESCAN, since, None));
+    }
+
+    #[test]
+    fn a_quick_root_still_waits_the_floor() {
+        assert_eq!(
+            degraded_rescan_interval(Some(Duration::from_secs(10))),
+            DEGRADED_RESCAN,
+            "ten times ten seconds is under five minutes, which stays the least wait"
+        );
+    }
+
+    #[test]
+    fn a_root_that_takes_a_minute_to_scan_waits_ten() {
+        let finished = Instant::now();
+        let scan = FullScan {
+            took: Duration::from_secs(60),
+            finished,
+        };
+        assert_eq!(
+            degraded_rescan_interval(Some(scan.took)),
+            Duration::from_secs(600)
+        );
+        assert!(
+            !degraded_rescan_due(finished + DEGRADED_RESCAN, finished, Some(scan)),
+            "five minutes is not enough for a root that takes one to walk"
+        );
+        assert!(
+            !degraded_rescan_due(finished + Duration::from_secs(599), finished, Some(scan)),
+            "nor is a second short of ten"
+        );
+        assert!(degraded_rescan_due(
+            finished + Duration::from_secs(600),
+            finished,
+            Some(scan)
+        ));
+    }
+
+    /// A manual rescan, or the ticker's own, ending after the ticker last asked moves the
+    /// next periodic one out: the wait runs from the last time the root was walked.
+    #[test]
+    fn the_wait_runs_from_a_scan_that_finished_later() {
+        let since = Instant::now();
+        let scan = FullScan {
+            took: Duration::from_secs(1),
+            finished: since + Duration::from_secs(200),
+        };
+        assert!(!degraded_rescan_due(
+            since + DEGRADED_RESCAN,
+            since,
+            Some(scan)
+        ));
+        assert!(degraded_rescan_due(
+            since + Duration::from_secs(500),
+            since,
+            Some(scan)
+        ));
+    }
+
+    /// The ticker's due pass, end to end: a degraded root whose last full scan took a minute
+    /// is left alone at five minutes and rescanned at ten. The scan is seen through the
+    /// root's online flag: its directory is gone, so a scan that runs marks it offline.
+    #[test]
+    fn a_slow_degraded_root_is_rescanned_at_ten_times_its_scan_not_at_five_minutes() {
+        let f = fixture(&[("a.jpg", &jpeg(16, 16))]);
+        let watched = f.add_photos();
+        std::fs::remove_dir_all(&f.photos).unwrap();
+        let degraded = Mutex::new(vec![watched.id]);
+        let start = Instant::now();
+        f.engine.record_full_scan(
+            watched.id,
+            FullScan {
+                took: Duration::from_secs(60),
+                finished: start,
+            },
+        );
+        let online = || f.engine.lib.watched_folders().unwrap()[0].online;
+
+        let mut rescans = DegradedRescans::default();
+        rescan_due_degraded_roots(&f.engine, &degraded, &mut rescans, start);
+        rescan_due_degraded_roots(&f.engine, &degraded, &mut rescans, start + DEGRADED_RESCAN);
+        f.settle();
+        assert!(online(), "not rescanned at five minutes");
+
+        rescan_due_degraded_roots(
+            &f.engine,
+            &degraded,
+            &mut rescans,
+            start + Duration::from_secs(600),
+        );
+        f.settle();
+        assert!(!online(), "rescanned at ten");
+    }
+
+    /// A root the ticker has only just found degraded waits a whole interval, even when its
+    /// last full scan was long ago: the periodic rescan stands in for live updates it had
+    /// until now, so there is nothing yet for it to have missed.
+    #[test]
+    fn a_newly_degraded_root_is_not_rescanned_on_the_spot() {
+        let f = fixture(&[("a.jpg", &jpeg(16, 16))]);
+        let watched = f.add_photos();
+        std::fs::remove_dir_all(&f.photos).unwrap();
+        let degraded = Mutex::new(vec![watched.id]);
+        let later = Instant::now() + Duration::from_secs(3600);
+
+        let mut rescans = DegradedRescans::default();
+        rescan_due_degraded_roots(&f.engine, &degraded, &mut rescans, later);
+        f.settle();
+        assert!(f.engine.lib.watched_folders().unwrap()[0].online);
+    }
+
+    /// The same for a root degraded a second time: what the ticker remembered from the
+    /// first time is forgotten when it recovers, or it would be rescanned on the spot for a
+    /// rescan it was last given long ago.
+    #[test]
+    fn a_root_degraded_again_waits_a_whole_interval() {
+        let f = fixture(&[("a.jpg", &jpeg(16, 16))]);
+        let watched = f.add_photos();
+        std::fs::remove_dir_all(&f.photos).unwrap();
+        let degraded = Mutex::new(vec![watched.id]);
+        let start = Instant::now();
+
+        let mut rescans = DegradedRescans::default();
+        rescan_due_degraded_roots(&f.engine, &degraded, &mut rescans, start);
+        degraded.lock().clear();
+        rescan_due_degraded_roots(&f.engine, &degraded, &mut rescans, start + DEGRADED_RESCAN);
+        degraded.lock().push(watched.id);
+        rescan_due_degraded_roots(
+            &f.engine,
+            &degraded,
+            &mut rescans,
+            start + DEGRADED_RESCAN * 2,
+        );
+        f.settle();
+        assert!(f.engine.lib.watched_folders().unwrap()[0].online);
     }
 
     #[test]
@@ -1194,7 +1436,7 @@ mod tests {
         assert_eq!(
             degraded.lock().clone(),
             vec![watched.id],
-            "the retry does not clear the flag itself: `rescan_degraded_roots` reads that \
+            "the retry does not clear the flag itself: `reregister_degraded_roots` reads that \
              list to decide what to rescan, and clears it as it goes"
         );
         assert_eq!(
@@ -1265,7 +1507,7 @@ mod tests {
             &stopping,
             &threads,
         );
-        rescan_degraded_roots(&f.engine, &degraded, &watcher_slot);
+        reregister_degraded_roots(&f.engine, &degraded, &watcher_slot);
         f.settle();
 
         assert_eq!(
@@ -1344,7 +1586,7 @@ mod tests {
         );
         assert_eq!(threads.lock().len(), 1, "with a fresh event thread");
 
-        rescan_degraded_roots(&f.engine, &degraded, &watcher_slot);
+        reregister_degraded_roots(&f.engine, &degraded, &watcher_slot);
         f.settle();
         assert!(
             degraded.lock().is_empty(),

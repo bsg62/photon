@@ -93,12 +93,22 @@ impl Watcher {
         // directory to rescan, so a rename rescans the same directories stitched or not.
         // Linux's recommended cache is already `NoCache`; this makes the other two
         // platforms match it.
+        //
+        // Symlinks are not followed, because the scanner does not follow them either
+        // (`walk_tree`'s `follow_links(false)`): a photo reached only through a link is never
+        // indexed, so a change beneath one has nothing to update. Following them, inotify's
+        // registration walk descended every linked tree - possibly a whole other share -
+        // spending a watch descriptor on each of its directories (the budget whose exhaustion
+        // degrades a root) and a loop check on each link. The watched root itself is still
+        // resolved when it is a link: walkdir follows a root regardless, and photon stores
+        // roots canonicalized anyway. Only inotify and kqueue read this; FSEvents and
+        // Windows ignore it.
         let debouncer = new_debouncer_opt::<_, notify::RecommendedWatcher, NoCache>(
             debounce,
             None,
             handler,
             NoCache,
-            notify::Config::default(),
+            notify::Config::default().with_follow_symlinks(false),
         )
         .map_err(|err| std::io::Error::other(err.to_string()))?;
         Ok((Self { debouncer }, rx, error_rx))
@@ -243,6 +253,100 @@ mod tests {
             lost.iter().map(|e| e.path.clone()).collect::<Vec<_>>(),
             [subtree]
         );
+    }
+
+    /// The inodes of every directory an inotify instance in this process is watching, read
+    /// from the kernel's own table (`/proc/self/fdinfo`, one `inotify wd:.. ino:<hex>` line
+    /// per watch). That is what registration actually did, with no event and no timing
+    /// involved, which is why this can run in CI where the event tests cannot.
+    #[cfg(target_os = "linux")]
+    fn inotify_watched_inodes() -> HashSet<u64> {
+        let mut inodes = HashSet::new();
+        for fd in std::fs::read_dir("/proc/self/fd").unwrap().flatten() {
+            let is_inotify = std::fs::read_link(fd.path())
+                .is_ok_and(|target| target.as_os_str() == "anon_inode:inotify");
+            if !is_inotify {
+                continue;
+            }
+            let info_path = Path::new("/proc/self/fdinfo").join(fd.file_name());
+            let Ok(info) = std::fs::read_to_string(info_path) else {
+                continue;
+            };
+            // Only the watch lines: the file's own header has an `ino:` line too, the
+            // inotify instance's inode, in decimal and tab-separated.
+            let watches = info.lines().filter(|line| line.starts_with("inotify "));
+            for field in watches.flat_map(str::split_whitespace) {
+                if let Some(hex) = field.strip_prefix("ino:") {
+                    inodes.insert(u64::from_str_radix(hex, 16).unwrap());
+                }
+            }
+        }
+        inodes
+    }
+
+    /// The scanner does not follow symlinks, so nothing beneath a link is ever indexed and
+    /// the watcher must not descend one either: following it registered a watch on every
+    /// directory of the linked tree - possibly a whole other network share - which is the
+    /// registration walk and the watch-descriptor budget spent on photos photon never shows.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn a_symlinked_directory_inside_a_root_is_not_watched() {
+        use std::os::unix::fs::MetadataExt;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("root");
+        let real_sub = root.join("sub");
+        std::fs::create_dir_all(&real_sub).unwrap();
+        let outside = dir.path().join("outside");
+        let outside_sub = outside.join("deeper");
+        std::fs::create_dir_all(&outside_sub).unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("link")).unwrap();
+        let ino = |p: &Path| std::fs::metadata(p).unwrap().ino();
+
+        let (mut watcher, _rx, _errors) = Watcher::start(Duration::from_millis(200)).unwrap();
+        watcher.watch_root(&root).unwrap();
+        let watched = inotify_watched_inodes();
+
+        // The positive half keeps this from passing on a table it failed to read.
+        assert!(watched.contains(&ino(&root)), "the root is watched");
+        assert!(
+            watched.contains(&ino(&real_sub)),
+            "a real subdirectory is watched"
+        );
+        assert!(
+            !watched.contains(&ino(&outside)),
+            "a symlinked directory's target is not watched"
+        );
+        assert!(
+            !watched.contains(&ino(&outside_sub)),
+            "nor anything beneath it"
+        );
+    }
+
+    /// Real filesystem events are timing-dependent, so this is excluded from CI.
+    /// Run it locally with: cargo test -p photon-core -- --ignored a_write_beneath
+    #[test]
+    #[ignore]
+    #[cfg(unix)]
+    fn a_write_beneath_a_symlinked_directory_reports_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("root");
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+        let outside = dir.path().join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("link")).unwrap();
+        let (mut watcher, rx, _errors) = Watcher::start(Duration::from_millis(200)).unwrap();
+        watcher.watch_root(&root).unwrap();
+
+        std::fs::write(outside.join("new.jpg"), b"x").unwrap();
+        assert!(
+            rx.recv_timeout(Duration::from_secs(1)).is_err(),
+            "a write beneath a link the scanner never follows is not a change"
+        );
+
+        // And the watch is live, so the silence above is not a dead watcher.
+        std::fs::write(root.join("sub").join("new.jpg"), b"x").unwrap();
+        rx.recv_timeout(Duration::from_secs(5))
+            .expect("a write in a real subdirectory is a change");
     }
 
     /// Real filesystem events are timing-dependent, so this is excluded from CI.

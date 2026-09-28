@@ -2,10 +2,12 @@
 //!
 //! One bounded read serves both parsers: the XMP packet and the IPTC block both sit in the
 //! leading segments of every container photon reads, so `xmp::MAX_PREFIX` bytes is enough
-//! and a 20 MB photo is never pulled through memory for a tag list. photon only reads;
-//! nothing here writes to a file.
+//! and a 20 MB photo is never pulled through memory for a tag list. `describe()` makes that
+//! read once for everything it reads from a file (`metadata::read_image`), and the header
+//! parser reads the same bytes out of memory. photon only reads; nothing here writes to a
+//! file.
 
-use std::{fs::File, io::Read, path::Path};
+use std::{fs::File, path::Path};
 
 /// A caption longer than this is cut, by characters: it is one more search haystack in every
 /// search, and no caption a person types is anywhere near it.
@@ -52,16 +54,11 @@ fn keywords_from(packet: Option<&str>, prefix: &[u8]) -> Vec<String> {
 /// The keywords and caption in `path`, from one bounded read. Never fails: an unreadable
 /// file has neither.
 pub fn read_embedded(path: &Path) -> Embedded {
-    let Ok(mut file) = File::open(path) else {
+    let Ok(file) = File::open(path) else {
         return Embedded::default();
     };
     let mut buf = Vec::new();
-    if file
-        .by_ref()
-        .take(crate::xmp::MAX_PREFIX as u64)
-        .read_to_end(&mut buf)
-        .is_err()
-    {
+    if crate::xmp::read_prefix(file, &mut buf).is_err() {
         return Embedded::default();
     }
     embedded_in(&buf)

@@ -276,6 +276,26 @@ pub struct Engine {
     /// several roots scanning at once are one library to rebuild, and a pacer each would
     /// rebuild it once per root per window.
     scan_rebuilds: Mutex<RebuildPacer>,
+    /// How long each watched root's last full scan took, and when it ended; see
+    /// `FullScan`. In memory only: the startup scan of every root times it again each
+    /// session, and until one has, the watcher treats the root as untimed.
+    full_scans: Mutex<HashMap<i64, FullScan>>,
+}
+
+/// A watched root's last full scan that ran to the end: how long the walk took, and when it
+/// finished. The watcher paces its periodic rescans of a degraded root by it
+/// (`watch::degraded_rescan_due`), so a root that takes minutes to walk is not kept busy
+/// being walked.
+///
+/// Only a scan that stands for what the next one will cost is recorded: a whole root, not a
+/// subtree (a watcher event's scan of one directory says nothing about the root), and not
+/// one that was cancelled (its time is however far it got) or found its root offline (it
+/// read nothing, so it takes no time at all - recorded, it would shrink the interval back
+/// to the floor).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct FullScan {
+    pub took: Duration,
+    pub finished: Instant,
 }
 
 /// When a scan's next intermediate grid rebuild is due: no sooner than `THROTTLE`, or
@@ -400,6 +420,7 @@ impl Engine {
             hash_requested: AtomicBool::new(false),
             frame_refresh: Mutex::new(FrameRefresh::default()),
             scan_rebuilds: Mutex::new(RebuildPacer::default()),
+            full_scans: Mutex::new(HashMap::new()),
         }))
     }
 
@@ -1314,12 +1335,25 @@ impl Engine {
             .find(|w| w.id == watched_id)
             .map(|w| w.path);
         self.lib.remove_watched_folder(watched_id)?;
+        // SQLite may hand a later folder this id again; it must not inherit this one's pace.
+        self.full_scans.lock().remove(&watched_id);
         if let (Some(service), Some(path)) = (self.watcher_service(), path) {
             service.watch_removed(watched_id, Path::new(&path));
         }
         self.refresh_after_write("a folder removal");
         self.request_similar_pass();
         Ok(())
+    }
+
+    /// The root's last full scan that ran to the end (`FullScan`), if one has this session.
+    pub(crate) fn last_full_scan(&self, watched_id: i64) -> Option<FullScan> {
+        self.full_scans.lock().get(&watched_id).copied()
+    }
+
+    /// Records a root's full scan. Its own function so the watcher's tests can give a root a
+    /// scan time no fixture takes to walk.
+    pub(crate) fn record_full_scan(&self, watched_id: i64, scan: FullScan) {
+        self.full_scans.lock().insert(watched_id, scan);
     }
 
     /// A clone of the running watcher service's handle, if one is currently running.
@@ -1873,10 +1907,25 @@ impl Engine {
             refreshed_total: 0,
             last_progress: None,
         };
+        let started = Instant::now();
         let result = match &subtree {
             Some(dir) => scan_subtree(&self.lib, watched, dir, now_ms(), &options, &mut sink),
             None => scan_watched(&self.lib, watched, now_ms(), &options, &mut sink),
         };
+        if subtree.is_none()
+            && let Ok(report) = &result
+            && !report.cancelled
+            && !report.offline
+        {
+            let finished = Instant::now();
+            self.record_full_scan(
+                watched.id,
+                FullScan {
+                    took: finished.saturating_duration_since(started),
+                    finished,
+                },
+            );
+        }
         let last = sink.last;
         let cancelled = match &result {
             Ok(report) => report.cancelled,
@@ -3036,6 +3085,65 @@ mod tests {
             version,
             "a scan that changed nothing must not rebuild the grid"
         );
+    }
+
+    #[test]
+    fn removing_a_folder_forgets_its_scan_time() {
+        let f = fixture(&[("a.jpg", &jpeg(16, 16))]);
+        let watched = f.add_photos();
+        assert!(f.engine.last_full_scan(watched.id).is_some());
+        f.engine.remove_folder(watched.id).unwrap();
+        assert!(f.engine.last_full_scan(watched.id).is_none());
+    }
+
+    /// Only a whole-root scan that ran to the end is timed for the watcher's pacing of
+    /// degraded rescans: a subtree scan, a cancelled one and one that found the root offline
+    /// all leave the last good time in place, since each is far quicker than walking the
+    /// root and would shrink the wait back to the floor.
+    #[test]
+    fn only_a_complete_full_scan_of_an_online_root_is_timed() {
+        let f = fixture(&[("a/one.jpg", &jpeg(16, 16))]);
+        let watched = f.add_photos();
+        let first = f
+            .engine
+            .last_full_scan(watched.id)
+            .expect("the first full scan is timed")
+            .finished;
+        let finished = || f.engine.last_full_scan(watched.id).unwrap().finished;
+
+        assert!(
+            f.engine
+                .start_subtree_scan(watched.clone(), f.photos.join("a"))
+        );
+        f.settle();
+        assert_eq!(finished(), first, "a subtree scan is not timed");
+
+        f.engine
+            .run_scan(&watched, None, Arc::new(AtomicBool::new(true)));
+        assert_eq!(finished(), first, "a cancelled scan is not timed");
+
+        std::fs::remove_dir_all(&f.photos).unwrap();
+        assert!(f.engine.start_scan(watched.clone()));
+        f.settle();
+        assert_eq!(
+            finished(),
+            first,
+            "a scan that finds the root offline is not timed"
+        );
+
+        std::fs::create_dir_all(f.photos.join("a")).unwrap();
+        std::fs::write(f.photos.join("a").join("one.jpg"), jpeg(16, 16)).unwrap();
+        let back = f
+            .engine
+            .lib
+            .watched_folders()
+            .unwrap()
+            .into_iter()
+            .find(|w| w.id == watched.id)
+            .unwrap();
+        assert!(f.engine.start_scan(back));
+        f.settle();
+        assert!(finished() > first, "the next complete one is");
     }
 
     /// The same 30-second poll must not run the two library-wide sweeps either: a whole

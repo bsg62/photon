@@ -572,15 +572,20 @@ pub fn bmp_bytes(w: u32, h: u32) -> Vec<u8> {
 
 /// A reader that counts the bytes read through it, for proving a header read stays one.
 /// Put it inside the `BufReader`, not around it: the buffer fills in 8 KiB chunks, and it
-/// is those fills that reach the disk. Seeks pass straight through and count nothing.
+/// is those fills that reach the disk. Seeks pass straight through, counted in `seeks`.
 pub struct Counting<R> {
     inner: R,
     pub read: u64,
+    pub seeks: u64,
 }
 
 impl<R> Counting<R> {
     pub fn new(inner: R) -> Self {
-        Self { inner, read: 0 }
+        Self {
+            inner,
+            read: 0,
+            seeks: 0,
+        }
     }
 }
 
@@ -594,6 +599,7 @@ impl<R: std::io::Read> std::io::Read for Counting<R> {
 
 impl<R: std::io::Seek> std::io::Seek for Counting<R> {
     fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
+        self.seeks += 1;
         self.inner.seek(pos)
     }
 }
