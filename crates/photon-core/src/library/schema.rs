@@ -310,6 +310,26 @@ ALTER TABLE items ADD COLUMN duration_ms INTEGER;
 -- folder whose row is pruned (its directory gone, renamed or moved) loses the alias with it.
 ALTER TABLE folders ADD COLUMN alias TEXT;
 "#,
+    r#"
+-- The Starred and Videos views read only the rows they show. Each index is shaped like
+-- `items_hidden`, which is why Hidden was already fast: the grid's driver (`folder_order`)
+-- groups the view's rows by folder, and the outer walk reads each folder's rows in capture
+-- order, so an index on `(folder_id, taken_at)` holding exactly those rows serves both
+-- without touching the rest. Before, both went through `items_folder`, which holds every
+-- row: Starred and Videos read the whole library twice to return a few percent of it.
+--
+-- `items_starred` was `(rating)`, which served the Starred count and nothing else. The count
+-- still reads it, but only because it is the last-created of the partial indexes its WHERE
+-- implies (`items_pending`, `items_size` and `items_recent` tie with it; so for the Videos
+-- count and `items_videos`) - see CLAUDE.md, "Schema". The counts' plan test pins it.
+--
+-- There is deliberately no such index for All (`missing_since IS NULL AND hidden = 0`):
+-- every visible view's WHERE implies that predicate, so it would tie with these two and
+-- take them over. CLAUDE.md, "Schema", has the reasoning.
+DROP INDEX items_starred;
+CREATE INDEX items_starred ON items(folder_id, taken_at) WHERE rating >= 1 AND missing_since IS NULL;
+CREATE INDEX items_videos ON items(folder_id, taken_at) WHERE kind = 1 AND missing_since IS NULL;
+"#,
 ];
 
 pub fn migrate(conn: &Connection) -> Result<()> {
@@ -561,7 +581,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 21);
+        assert_eq!(version, 22);
         let rules: i64 = conn
             .query_row("SELECT count(*) FROM tag_rules", [], |r| r.get(0))
             .unwrap();
@@ -720,7 +740,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 21);
+        assert_eq!(version, 22);
         let overlay: i64 = conn
             .query_row("SELECT count(*) FROM item_user_tags", [], |r| r.get(0))
             .unwrap();
@@ -770,7 +790,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 21);
+        assert_eq!(version, 22);
         let hash: Option<Vec<u8>> = conn
             .query_row("SELECT content_hash FROM items WHERE id = 1", [], |r| {
                 r.get(0)
@@ -911,7 +931,7 @@ mod tests {
             .unwrap();
         // Hardcoded, like every other version assertion here: `MIGRATIONS.len()` would
         // agree with itself whatever the list did, which is the tripwire removed.
-        assert_eq!(version, 21);
+        assert_eq!(version, 22);
     }
 
     /// Every folder in an existing library comes out of the upgrade visible.
@@ -949,7 +969,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 21);
+        assert_eq!(version, 22);
     }
 
     /// Every album in an existing library comes out of the upgrade as photon's own.
@@ -982,7 +1002,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 21);
+        assert_eq!(version, 22);
     }
 
     /// Every Picasa album in an existing library comes out of the upgrade with no recorded
@@ -1016,7 +1036,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 21);
+        assert_eq!(version, 22);
     }
 
     /// Every photo in an existing library comes out of the upgrade uncaptioned, for the
@@ -1055,7 +1075,7 @@ mod tests {
             .unwrap()
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 21);
+        assert_eq!(version, 22);
     }
 
     /// A stored Conservative or Loose keeps meaning Conservative or Loose.
@@ -1089,7 +1109,7 @@ mod tests {
             let version: i64 = conn
                 .query_row("PRAGMA user_version", [], |r| r.get(0))
                 .unwrap();
-            assert_eq!(version, 21);
+            assert_eq!(version, 22);
         }
     }
 
@@ -1139,7 +1159,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 21);
+        assert_eq!(version, 22);
     }
 
     /// Every folder in an existing library comes out of the upgrade with no alias, so the
@@ -1177,6 +1197,54 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 21);
+        assert_eq!(version, 22);
+    }
+
+    /// A library at schema 21 comes out of the upgrade with the Videos index, and with
+    /// `items_starred` reshaped from `(rating)` to the per-folder walk's
+    /// `(folder_id, taken_at)` - a `CREATE INDEX` alone would have failed on the name, and
+    /// an old-shaped index left under it would serve the count but never the view.
+    #[test]
+    fn migration_22_adds_the_view_indexes_and_reshapes_the_starred_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("library.db");
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        for sql in &MIGRATIONS[..21] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 21i64).unwrap();
+        drop(conn);
+
+        let lib = crate::library::Library::open(&path).unwrap();
+        let conn = lib.reader().unwrap();
+        for (index, predicate) in [
+            (
+                "items_starred",
+                "WHERE rating >= 1 AND missing_since IS NULL",
+            ),
+            ("items_videos", "WHERE kind = 1 AND missing_since IS NULL"),
+        ] {
+            let sql: String = conn
+                .query_row(
+                    "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?1",
+                    [index],
+                    |r| r.get(0),
+                )
+                .unwrap_or_else(|e| panic!("{index} missing: {e}"));
+            assert!(sql.ends_with(predicate), "{index}: {sql}");
+            let mut stmt = conn
+                .prepare("SELECT name FROM pragma_index_info(?1) ORDER BY seqno")
+                .unwrap();
+            let columns: Vec<String> = stmt
+                .query_map([index], |r| r.get(0))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap();
+            assert_eq!(columns, ["folder_id", "taken_at"], "{index}");
+        }
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, 22);
     }
 }

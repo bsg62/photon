@@ -233,17 +233,26 @@ pub(super) const GRID_COLUMNS: &str = concat!(
     ", i.duration_ms"
 );
 
+/// The Starred view's filter, shared with its plan test.
+const STARRED_FILTER: &str = "AND i.rating >= 1";
+
 /// The Videos view's filter, shared with `video_count` so the row's number and the grid it
 /// opens cannot count different things.
 const VIDEO_FILTER: &str = "AND i.kind = 1";
 
-/// `video_count`'s query, shared with its plan test. The `+` keeps it a scan in table order
-/// rather than a walk of `items_size`; see `library/mod.rs`.
+/// `video_count`'s query, shared with its plan test. The bare `missing_since IS NULL` is
+/// what lets it read `items_videos`, which holds only the videos: a `+` there, which once
+/// kept it off `items_size` (`library/mod.rs`), would now keep it off its own index too and
+/// send it back to a scan of every row.
 fn video_count_sql() -> String {
     format!(
-        "SELECT COUNT(*) FROM items i WHERE +i.missing_since IS NULL AND i.hidden = 0 {VIDEO_FILTER}"
+        "SELECT COUNT(*) FROM items i WHERE i.missing_since IS NULL AND i.hidden = 0 {VIDEO_FILTER}"
     )
 }
+
+/// `starred_count`'s query, shared with its plan test.
+const STARRED_COUNT_SQL: &str =
+    "SELECT COUNT(*) FROM items WHERE rating >= 1 AND missing_since IS NULL AND hidden = 0";
 
 /// `file_names`' query, shared with its plan test. The `+` keeps it a scan in table order
 /// rather than a walk of `items_size`; see `library/mod.rs`.
@@ -905,7 +914,7 @@ impl Library {
     pub fn entries_for(&self, view: GridView, arg: &str) -> Result<Vec<GridEntry>> {
         match view {
             GridView::All => self.entries_filtered("", &[]),
-            GridView::Starred => self.entries_filtered("AND i.rating >= 1", &[]),
+            GridView::Starred => self.entries_filtered(STARRED_FILTER, &[]),
             GridView::Videos => self.entries_filtered(VIDEO_FILTER, &[]),
             GridView::Hidden => self.hidden_entries(),
             GridView::Recent => self.recent_entries(),
@@ -938,10 +947,11 @@ impl Library {
     }
 
     /// The grid's rows for a `WHERE` filter fragment, applied both to the rows returned and
-    /// to the per-folder placement the order is built on (see `grid_query`). `Starred`
-    /// filters to `rating >= 1`; the `items_starred` partial index can narrow that scan, but
-    /// the query still joins `folders` and orders by `GRID_ORDER`, so it does not serve the
-    /// query outright the way it does `starred_count`.
+    /// to the per-folder placement the order is built on (see `grid_query`). Starred and Videos
+    /// are each served by a partial index on `(folder_id, taken_at)` holding exactly their
+    /// rows (`items_starred`, `items_videos`, schema 22), which the driver and the per-folder
+    /// walk both read; All reads `items_folder`, since an index of every visible row would
+    /// tie with those two and take them over (CLAUDE.md, "Schema").
     ///
     /// `params` bind the filter's `?N` placeholders. The fragment appears twice in the
     /// query (driver and outer filter), which is why placeholders are numbered: the same
@@ -1089,12 +1099,9 @@ impl Library {
 
     /// How many visible videos there are: the sidebar's Videos row, shown only above 0.
     ///
-    /// No index serves it: it scans `items` once per `grid_info`. Measured 2026-09-27 on a
-    /// synthetic 300k-photo library: 25ms a call, small beside the grid rebuild the same
-    /// refresh does, so not worth a schema bump for an index. An earlier 4.6ms at 100k was
-    /// wrong for real libraries: it was taken on the benchmark's library, where every photo
-    /// had the same size, while the query walked `items_size` (see `library/mod.rs`) - and
-    /// with one size, size order is table order. With sizes that vary, the walk took 232ms.
+    /// Served by `items_videos`, which holds only the videos (schema 22). Before it, the count
+    /// scanned every row, 18-25ms at 300k photos; and before its `+`, which that index
+    /// made unnecessary, it walked `items_size` in random order, 232ms (`library/mod.rs`).
     pub fn video_count(&self) -> Result<usize> {
         let conn = self.reader()?;
         let count: i64 = conn.query_row(&video_count_sql(), [], |r| r.get(0))?;
@@ -1107,11 +1114,7 @@ impl Library {
     /// against NULL is never true in SQL.
     pub fn starred_count(&self) -> Result<usize> {
         let conn = self.reader()?;
-        let count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM items WHERE rating >= 1 AND missing_since IS NULL AND hidden = 0",
-            [],
-            |r| r.get(0),
-        )?;
+        let count: i64 = conn.query_row(STARRED_COUNT_SQL, [], |r| r.get(0))?;
         Ok(count as usize)
     }
 }
@@ -2060,17 +2063,55 @@ mod tests {
         );
     }
 
-    /// Pins the `+` in `video_count_sql`: without it the sidebar's count walks `items_size`,
-    /// a B-tree descent per photo, where a scan reads the table in order (`library/mod.rs`).
+    /// Pins that the Starred and Videos grid queries read only the rows they show, through
+    /// `items_starred` and `items_videos`: both the driver (a folder's oldest shown photo) and
+    /// the outer per-folder walk. Without them both read `items_folder`, every row of the
+    /// library, to return a few percent of it. All is pinned to `items_folder`, so a new
+    /// partial index its WHERE implies - one that would tie with the view indexes and take
+    /// them over (CLAUDE.md, "Schema") - fails here rather than slowing Starred silently.
     #[test]
-    fn the_video_count_scans_rather_than_walking_the_size_index() {
+    fn the_all_starred_and_videos_views_are_served_by_their_indexes() {
         let (_dir, lib) = temp_library();
-        let plan = lib.query_plan(&video_count_sql(), &[]);
-        assert!(
-            !plan.iter().any(|step| step.contains("items_size")),
-            "walks the size index: {plan:?}"
-        );
-        assert_eq!(plan, ["SCAN i"], "expected a scan in table order");
+        for (filter, index) in [
+            ("", "items_folder"),
+            (STARRED_FILTER, "items_starred"),
+            (VIDEO_FILTER, "items_videos"),
+        ] {
+            let plan = lib.query_plan(&grid_query(GRID_COLUMNS, Shown::Visible, filter), &[]);
+            // The driver and the walk are each one step on `i`, and a bare `SCAN i` is one
+            // of them too; `has_copies`' subquery reads `items` under no alias, through its
+            // own indexes.
+            let on_i: Vec<&String> = plan
+                .iter()
+                .filter(|step| step.split(' ').nth(1) == Some("i"))
+                .collect();
+            assert_eq!(on_i.len(), 2, "{index}: the driver and the walk: {plan:?}");
+            assert!(
+                on_i.iter()
+                    .all(|step| step.split(' ').nth(4) == Some(index)),
+                "{index}: every read of the view's rows goes through it: {plan:?}"
+            );
+        }
+    }
+
+    /// Pins the Starred and Videos counts to their indexes: the count reads the view's rows
+    /// and nothing else. The Videos count lost its `+` to reach `items_videos`, which is what
+    /// keeps it off `items_size` now (`library/mod.rs`).
+    #[test]
+    fn the_starred_and_video_counts_are_served_by_their_indexes() {
+        let (_dir, lib) = temp_library();
+        for (sql, index) in [
+            (STARRED_COUNT_SQL.to_string(), "items_starred"),
+            (video_count_sql(), "items_videos"),
+        ] {
+            let plan = lib.query_plan(&sql, &[]);
+            assert_eq!(plan.len(), 1, "{index}: one step: {plan:?}");
+            assert_eq!(
+                plan[0].split(' ').nth(4),
+                Some(index),
+                "{index}: expected the count to read its index: {plan:?}"
+            );
+        }
     }
 
     /// Pins the `+` in `FILE_NAMES_SQL`, which a name sort reads on every rebuild: without
