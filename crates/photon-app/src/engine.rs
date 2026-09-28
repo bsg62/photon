@@ -172,7 +172,10 @@ pub struct Engine {
     /// pass hashes the cached grid thumbnails rather than the photos.
     cache: Arc<ThumbCache>,
     excluded: Vec<PathBuf>,
-    grid: RwLock<(u64, Arc<GridIndex>)>,
+    /// The published grid: its version, its index, and - only when the first build failed
+    /// and this empty index stands in for it - why (`build_first_grid`). Held together so
+    /// `grid_info` reads the reason with the version it belongs to.
+    grid: RwLock<(u64, Arc<GridIndex>, Option<String>)>,
     /// Which photos the grid shows (and the view's argument), and a counter that changes
     /// with it. Held only for the moment of reading or writing it - never across a query or
     /// an index build - so a view switch on the UI thread is never made to wait for a
@@ -357,6 +360,7 @@ impl Engine {
             grid: RwLock::new((
                 NOT_BUILT,
                 Arc::new(GridIndex::build(Vec::new(), sort.layout(GridView::All))),
+                None,
             )),
             state: Mutex::new(ViewState {
                 view: GridView::All,
@@ -393,6 +397,13 @@ impl Engine {
     pub fn grid(&self) -> (u64, Arc<GridIndex>) {
         let grid = self.grid.read();
         (grid.0, grid.1.clone())
+    }
+
+    /// `grid`, with why the grid is empty when it is only because the first build failed.
+    /// `None` for every grid actually built.
+    pub fn grid_and_failure(&self) -> (u64, Arc<GridIndex>, Option<String>) {
+        let grid = self.grid.read();
+        (grid.0, grid.1.clone(), grid.2.clone())
     }
 
     /// Rebuilds the grid from the database for the current view and tells the UI.
@@ -533,7 +544,28 @@ impl Engine {
     /// rise, so it was built for this epoch too: the grid on show is this rebuild's state,
     /// read later.
     fn publish_if_current(&self, index: Arc<GridIndex>, rebuild: &Rebuild) -> Publish {
+        self.publish(index, rebuild, None)
+    }
+
+    /// `publish_if_current`, carrying `failure` with the grid: the reason `build_first_grid`
+    /// is publishing an empty stand-in rather than a grid it built. A failure never replaces
+    /// a built grid: anything published before it - a view switch's rebuild, a scan's -
+    /// read the library successfully, and an empty grid saying it could not would be false.
+    /// That answers `Overtaken`, since a grid for this state, read later, is on show.
+    fn publish(
+        &self,
+        index: Arc<GridIndex>,
+        rebuild: &Rebuild,
+        failure: Option<String>,
+    ) -> Publish {
         let mut last_published = self.refresh.lock();
+        if failure.is_some() {
+            let version = self.grid.read().0;
+            if version != NOT_BUILT {
+                tracing::debug!("not replacing a built grid with a failed first build");
+                return Publish::Overtaken(version);
+            }
+        }
         if self.state.lock().epoch != rebuild.state.epoch {
             tracing::debug!("discarding a grid rebuilt for a view that has since changed");
             return Publish::Superseded;
@@ -547,6 +579,7 @@ impl Engine {
             let mut grid = self.grid.write();
             grid.0 += 1;
             grid.1 = index;
+            grid.2 = failure;
             (grid.0, grid.1.len())
         };
         // Taken only by a rebuild that publishes, and under the `refresh` lock, so the
@@ -1433,19 +1466,22 @@ impl Engine {
     /// briefly unreadable database - and a few retries answer that.
     ///
     /// When they do not, an empty index is published so the window leaves the not-built
-    /// state: it says the view is empty, and the next rebuild that succeeds (a view switch,
-    /// a scan that moves rows) puts the photos back. That says something untrue about the
-    /// library, but a blank window says nothing and looks hung; carrying the failure itself
-    /// to the UI would take a new event or a `GridInfo` field for a fault this rare, and
-    /// the log has it. Published like any rebuild, so a view switch that has landed
-    /// meanwhile, with its own grid, is not overwritten.
+    /// state, and the error travels with it (`GridInfo::build_error`), so the grid says
+    /// photon could not read the library rather than "No photos yet" - which, said of a
+    /// library full of photos, sent the user off to add a folder they already have. The
+    /// next rebuild that succeeds (a view switch, a scan that moves rows) puts the photos
+    /// back and clears it. In `GridInfo` rather than a toast: the UI pulls it with the grid,
+    /// so it cannot be lost to a webview whose listener is not up yet, and it stays for as
+    /// long as it is true rather than for as long as a toast does.
+    ///
+    /// Not published over a grid something else has built meanwhile (see `publish`).
     fn build_first_grid(&self, backoff: &[Duration]) {
         let stopping = || self.shutting_down.load(Ordering::SeqCst);
         if let Err(err) = retry_after(backoff, stopping, || self.refresh_grid()) {
             tracing::error!(%err, "could not build the grid at startup; showing it empty");
             let rebuild = self.data_snapshot();
             let empty = GridIndex::build(Vec::new(), rebuild.state.sort.layout(rebuild.state.view));
-            self.publish_if_current(Arc::new(empty), &rebuild);
+            self.publish(Arc::new(empty), &rebuild, Some(err.to_string()));
         }
     }
 
@@ -3546,6 +3582,68 @@ mod tests {
             e,
             Recorded::Library(LibraryChanged { version: v, len: 0, .. }) if *v == version
         )));
+        reopened.shutdown();
+    }
+
+    /// The empty stand-in says why it is empty: shown as "No photos yet", a failed read of a
+    /// library full of photos sent the user off to add a folder they already had. And only
+    /// for as long as it is true - the next build that succeeds clears it.
+    #[test]
+    fn a_failed_first_build_reports_its_error_until_a_build_succeeds() {
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a.jpg", &img)]);
+        f.add_photos();
+        let events = Arc::new(crate::events::Recorder::default());
+        let reopened = Engine::open(f.config(), events).unwrap();
+        let db = rusqlite::Connection::open(&f.config().db_path).unwrap();
+        db.execute_batch("ALTER TABLE items RENAME COLUMN file_name TO renamed")
+            .unwrap();
+
+        reopened.build_first_grid(&[Duration::ZERO, Duration::ZERO]);
+
+        let info = crate::commands::grid_info(&reopened);
+        assert_eq!(info.len, 0);
+        let error = info
+            .build_error
+            .expect("the failure is reported with the grid");
+        assert!(
+            error.contains("file_name"),
+            "the database's own reason: {error}"
+        );
+
+        db.execute_batch("ALTER TABLE items RENAME COLUMN renamed TO file_name")
+            .unwrap();
+        reopened.refresh_grid().unwrap();
+        let info = crate::commands::grid_info(&reopened);
+        assert_eq!((info.len, info.build_error), (1, None));
+        reopened.shutdown();
+    }
+
+    /// A grid built while the first build was still retrying - a view switch the UI made
+    /// meanwhile - read the library successfully. The failure landing after it must not
+    /// replace it with an empty grid claiming the library could not be read.
+    #[test]
+    fn a_failed_first_build_does_not_replace_a_grid_built_meanwhile() {
+        use photon_core::grid::GridView;
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a.jpg", &img)]);
+        f.add_photos();
+        let events = Arc::new(crate::events::Recorder::default());
+        let reopened = Engine::open(f.config(), events).unwrap();
+        reopened.set_view(GridView::All).unwrap();
+        let (version, _) = reopened.grid();
+        rusqlite::Connection::open(&f.config().db_path)
+            .unwrap()
+            .execute_batch("ALTER TABLE items RENAME COLUMN file_name TO renamed")
+            .unwrap();
+
+        reopened.build_first_grid(&[Duration::ZERO, Duration::ZERO]);
+
+        let info = crate::commands::grid_info(&reopened);
+        assert_eq!(
+            (info.version, info.len, info.build_error),
+            (version, 1, None)
+        );
         reopened.shutdown();
     }
 

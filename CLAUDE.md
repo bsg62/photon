@@ -119,7 +119,9 @@ notice, no photo count, and no last-folder restore, whose `len === 0` guard wait
 `check_grid_query`, which prepares the query without running it. A first build that fails
 anyway is retried (`FIRST_GRID_BACKOFF`) and then published *empty* (`build_first_grid`):
 left at `NOT_BUILT` the window drew nothing, and an unchanged library rebuilt only on a view
-switch.
+switch. The empty grid carries the error (`GridInfo::build_error`), so the UI says the
+library could not be read instead of "No photos yet"; it is never published over a grid something
+else built meanwhile, and the next successful publish clears it.
 
 `LibraryChanged::data_changed` tells the UI whether to refetch the sidebar's collections
 (albums, people, tags - the tag counts alone are ~240ms at 300k photos). Every `refresh_grid`

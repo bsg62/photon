@@ -98,6 +98,7 @@ describe('LibraryStore', () => {
       album: null,
       tag: null,
       copiesOf: null,
+      buildError: null,
     });
     vi.mocked(api.listFolders).mockResolvedValue({ watched: [], folders: [] });
     vi.mocked(api.listAlbums).mockResolvedValue([]);
@@ -240,6 +241,7 @@ describe('LibraryStore', () => {
       album: null,
       tag: null,
       copiesOf: null,
+      buildError: null,
     });
     vi.mocked(api.gridInfo).mockResolvedValue(info(1));
     const store = new LibraryStore();
@@ -449,6 +451,7 @@ describe('LibraryStore', () => {
       album: null,
       tag: null,
       copiesOf: null,
+      buildError: null,
     });
     vi.mocked(api.gridRows).mockResolvedValue({ version: 1, rows: [entry(10), entry(11)] });
     const store = new LibraryStore();
@@ -473,6 +476,7 @@ describe('LibraryStore', () => {
       album: null,
       tag: null,
       copiesOf: null,
+      buildError: null,
     });
     vi.mocked(api.gridOffsetOfItem).mockResolvedValue(2);
     await store.refresh();
@@ -511,6 +515,7 @@ describe('LibraryStore', () => {
       album: null,
       tag: null,
       copiesOf: null,
+      buildError: null,
     });
     vi.mocked(api.gridInfo).mockResolvedValue(info(1, 2));
     vi.mocked(api.gridRows).mockResolvedValue({ version: 1, rows: [entry(10), entry(11)] });
@@ -568,6 +573,7 @@ describe('LibraryStore', () => {
       album: null,
       tag: null,
       copiesOf: null,
+      buildError: null,
     });
     vi.mocked(api.gridInfo).mockResolvedValue(info(1, 1));
     vi.mocked(api.gridRows).mockResolvedValue({ version: 1, rows: [entry(10)] });
@@ -621,6 +627,7 @@ describe('LibraryStore', () => {
       album: null,
       tag: null,
       copiesOf: null,
+      buildError: null,
     });
     const store = new LibraryStore();
     await store.init();
@@ -643,6 +650,7 @@ describe('LibraryStore', () => {
       album: null,
       tag: null,
       copiesOf: null,
+      buildError: null,
     });
     vi.mocked(api.gridOffsetOfItem).mockResolvedValue(4);
     await store.refresh();
@@ -669,6 +677,7 @@ describe('LibraryStore', () => {
       album: null,
       tag: null,
       copiesOf: null,
+      buildError: null,
     });
     const store = new LibraryStore();
     await store.init();
@@ -690,6 +699,7 @@ describe('LibraryStore', () => {
       album: null,
       tag: null,
       copiesOf: null,
+      buildError: null,
     });
     await store.refresh();
     expect(store.selected).toBe(1);
@@ -711,6 +721,7 @@ describe('LibraryStore', () => {
       album: null,
       tag: null,
       copiesOf: null,
+      buildError: null,
     });
     await store.refresh();
     expect(store.selected).toBeNull();
@@ -789,6 +800,7 @@ describe('LibraryStore', () => {
       album: null;
       tag: null;
       copiesOf: null;
+      buildError: null;
     }>();
     vi.mocked(api.gridInfo).mockReturnValueOnce(gridInfoGate.promise);
 
@@ -803,7 +815,7 @@ describe('LibraryStore', () => {
     const initPromise = store.init();
     store.dispose();
     listenGate.resolve();
-    gridInfoGate.resolve({ version: 1, len: 0, sections: [], folders: [], starredCount: 0, duplicateCount: 0, hiddenCount: 0, videoCount: 0, view: 'all', sort: { key: 'date', reverse: false }, searchQuery: '', person: null, album: null, tag: null, copiesOf: null });
+    gridInfoGate.resolve({ version: 1, len: 0, sections: [], folders: [], starredCount: 0, duplicateCount: 0, hiddenCount: 0, videoCount: 0, view: 'all', sort: { key: 'date', reverse: false }, searchQuery: '', person: null, album: null, tag: null, copiesOf: null, buildError: null });
     await initPromise;
 
     expect(unlistenCounts.libraryChanged).toBe(1);
@@ -832,7 +844,7 @@ describe('LibraryStore', () => {
     expect(api.setGridView).toHaveBeenCalledWith('starred');
     expect(resolved).toBe(false);
 
-    refreshGate.resolve({ version: 2, len: 0, sections: [], folders: [], starredCount: 0, duplicateCount: 0, hiddenCount: 0, videoCount: 0, view: 'starred', sort: { key: 'date', reverse: false }, searchQuery: '', person: null, album: null, tag: null, copiesOf: null });
+    refreshGate.resolve({ version: 2, len: 0, sections: [], folders: [], starredCount: 0, duplicateCount: 0, hiddenCount: 0, videoCount: 0, view: 'starred', sort: { key: 'date', reverse: false }, searchQuery: '', person: null, album: null, tag: null, copiesOf: null, buildError: null });
     await setViewPromise;
 
     expect(resolved).toBe(true);
@@ -870,6 +882,7 @@ describe('LibraryStore', () => {
       album: null,
       tag: null,
       copiesOf: null,
+      buildError: null,
       ...over,
     });
     const announce = (version: number) => handlers.libraryChanged({ version, len: 0, dataChanged: false });
@@ -969,6 +982,7 @@ describe('LibraryStore', () => {
       album: null,
       tag: null,
       copiesOf: null,
+      buildError: null,
     });
 
     await store.setSearchQuery('');
@@ -1017,6 +1031,7 @@ describe('LibraryStore', () => {
       album: null,
       tag: null,
       copiesOf: null,
+      buildError: null,
     });
 
     const p1 = store.setSearchQuery('b');
@@ -1136,7 +1151,7 @@ describe('LibraryStore', () => {
 
     const bySize = { key: 'size' as const, reverse: true };
     vi.mocked(api.setSort).mockResolvedValueOnce(null);
-    vi.mocked(api.gridInfo).mockResolvedValueOnce({ version: 2, len: 0, sections: [], folders: [], starredCount: 0, duplicateCount: 0, hiddenCount: 0, videoCount: 0, view: 'search', sort: bySize, searchQuery: 'lake', person: null, album: null, tag: null, copiesOf: null });
+    vi.mocked(api.gridInfo).mockResolvedValueOnce({ version: 2, len: 0, sections: [], folders: [], starredCount: 0, duplicateCount: 0, hiddenCount: 0, videoCount: 0, view: 'search', sort: bySize, searchQuery: 'lake', person: null, album: null, tag: null, copiesOf: null, buildError: null });
     await store.setSort(bySize);
 
     expect(api.setSort).toHaveBeenCalledWith(bySize);
@@ -1157,7 +1172,7 @@ describe('LibraryStore', () => {
     vi.mocked(api.setSort)
       .mockReturnValueOnce(first.promise.then(() => null))
       .mockReturnValueOnce(second.promise.then(() => null));
-    const info = (sort: { key: 'name'; reverse: boolean }) => ({ version: 2, len: 0, sections: [], folders: [], starredCount: 0, duplicateCount: 0, hiddenCount: 0, videoCount: 0, view: 'all' as const, sort, searchQuery: '', person: null, album: null, tag: null, copiesOf: null });
+    const info = (sort: { key: 'name'; reverse: boolean }) => ({ version: 2, len: 0, sections: [], folders: [], starredCount: 0, duplicateCount: 0, hiddenCount: 0, videoCount: 0, view: 'all' as const, sort, searchQuery: '', person: null, album: null, tag: null, copiesOf: null, buildError: null });
     vi.mocked(api.gridInfo)
       .mockResolvedValueOnce(info({ key: 'name', reverse: false }))
       .mockResolvedValueOnce(info({ key: 'name', reverse: true }));
@@ -1247,7 +1262,7 @@ describe('LibraryStore', () => {
     const store = new LibraryStore();
     await store.init();
     vi.mocked(api.setSearchQuery).mockResolvedValueOnce(null);
-    vi.mocked(api.gridInfo).mockResolvedValueOnce({ version: 2, len: 0, sections: [], folders: [], starredCount: 0, duplicateCount: 0, hiddenCount: 0, videoCount: 0, view: 'search', sort: { key: 'date', reverse: false }, searchQuery: 'lake', person: null, album: null, tag: null, copiesOf: null });
+    vi.mocked(api.gridInfo).mockResolvedValueOnce({ version: 2, len: 0, sections: [], folders: [], starredCount: 0, duplicateCount: 0, hiddenCount: 0, videoCount: 0, view: 'search', sort: { key: 'date', reverse: false }, searchQuery: 'lake', person: null, album: null, tag: null, copiesOf: null, buildError: null });
     await expect(store.setSearchQuery('lake')).resolves.toBe('lake');
 
     vi.mocked(api.setSearchQuery).mockRejectedValueOnce(new Error('refused'));
@@ -1259,7 +1274,7 @@ describe('LibraryStore', () => {
     await store.init();
     const search = deferred<void>();
     vi.mocked(api.setSearchQuery).mockReturnValueOnce(search.promise.then(() => null));
-    vi.mocked(api.gridInfo).mockResolvedValueOnce({ version: 2, len: 0, sections: [], folders: [], starredCount: 0, duplicateCount: 0, hiddenCount: 0, videoCount: 0, view: 'search', sort: { key: 'date', reverse: false }, searchQuery: 'beach', person: null, album: null, tag: null, copiesOf: null });
+    vi.mocked(api.gridInfo).mockResolvedValueOnce({ version: 2, len: 0, sections: [], folders: [], starredCount: 0, duplicateCount: 0, hiddenCount: 0, videoCount: 0, view: 'search', sort: { key: 'date', reverse: false }, searchQuery: 'beach', person: null, album: null, tag: null, copiesOf: null, buildError: null });
 
     void store.setSearchQuery('beach');
     const view = store.settledView();
@@ -1333,6 +1348,7 @@ describe('LibraryStore', () => {
         album: null,
         tag: null,
         copiesOf: null,
+        buildError: null,
       });
       vi.mocked(api.gridRows).mockImplementation(async (offset: number, count: number) => ({
         version: 1,
@@ -1377,6 +1393,7 @@ describe('LibraryStore', () => {
           album: null,
           tag: null,
           copiesOf: null,
+          buildError: null,
         });
         vi.mocked(api.gridRows).mockImplementation(async (offset: number, count: number) => ({
           version: 2,
@@ -1481,6 +1498,7 @@ describe('LibraryStore', () => {
         album: null,
         tag: null,
         copiesOf: null,
+        buildError: null,
       });
       vi.mocked(api.gridOffsetOfItem).mockResolvedValue(null);
       await store.refresh();
@@ -1735,6 +1753,7 @@ describe('LibraryStore', () => {
         album: null,
         tag: null,
         copiesOf: null,
+        buildError: null,
       });
       vi.mocked(api.gridOffsetOfItem).mockResolvedValue(5);
       await store.refresh();
@@ -1798,6 +1817,7 @@ describe('LibraryStore', () => {
         album: null,
         tag: null,
         copiesOf: null,
+        buildError: null,
       });
       vi.mocked(api.gridOffsetOfItem).mockResolvedValue(4);
       // The rebuilt index answers version 2 now, so the range fetched below must match it too.
@@ -1841,6 +1861,7 @@ describe('LibraryStore', () => {
         album: null,
         tag: null,
         copiesOf: null,
+        buildError: null,
       });
       vi.mocked(api.gridRows).mockImplementation(async (offset: number, count: number) => ({
         version: 2,

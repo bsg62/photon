@@ -5,7 +5,7 @@
   import { isOwnAlbum, ownAlbums } from '../lib/albums';
   import { isCopyPhotoShortcut } from '../lib/copy-photo';
   import { folderLabel } from '../lib/folders';
-  import { showEmptyNotice } from '../lib/grid-state';
+  import { buildFailure, showEmptyNotice } from '../lib/grid-state';
   import { library } from '../lib/library.svelte';
   import { fitMenu } from '../lib/menu-place';
   import { gridSize } from '../lib/app-grid-size.svelte';
@@ -652,7 +652,9 @@
     role="grid"
     aria-label="Photos"
   >
-    {#if showEmptyNotice(library.info)}
+    {#if buildFailure(library.info)}
+      <p class="empty">{buildFailure(library.info)}</p>
+    {:else if showEmptyNotice(library.info)}
       <p class="empty">
         {#if library.info.view === 'starred'}
           No starred photos. Star one in the viewer, or in Picasa.

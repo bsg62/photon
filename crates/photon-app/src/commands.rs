@@ -86,6 +86,10 @@ pub struct GridInfo {
     pub tag: Option<String>,
     /// The photo while `view` is `Copies`.
     pub copies_of: Option<CopiesOf>,
+    /// Why the grid is empty when it is only because photon could not read the library at
+    /// startup (`Engine::build_first_grid`); the UI says so instead of "No photos yet".
+    /// `None` for every grid actually built, so the next successful rebuild clears it.
+    pub build_error: Option<String>,
 }
 
 /// The photo a Copies view is of. The name travels with the id because the sidebar labels
@@ -280,7 +284,7 @@ pub fn rescan_folder(engine: &Arc<Engine>, watched_id: i64) -> CmdResult<()> {
 }
 
 pub fn grid_info(engine: &Engine) -> GridInfo {
-    let (version, grid) = engine.grid();
+    let (version, grid, build_error) = engine.grid_and_failure();
     // One read of the pair, so the argument reported is the one the view was built with.
     let (view, arg) = engine.view_and_arg();
     let copies_of = (view == GridView::Copies)
@@ -340,6 +344,7 @@ pub fn grid_info(engine: &Engine) -> GridInfo {
             .flatten(),
         tag: (view == GridView::Tag).then_some(arg),
         copies_of,
+        build_error,
     }
 }
 

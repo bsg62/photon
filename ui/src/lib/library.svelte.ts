@@ -53,6 +53,7 @@ export class LibraryStore {
     album: null,
     tag: null,
     copiesOf: null,
+    buildError: null,
   });
   folders = $state.raw<FolderList>({ watched: [], folders: [] });
   /** The sidebar's collections. Refetched on every `library-changed` that says the data

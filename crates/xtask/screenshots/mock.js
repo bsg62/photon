@@ -143,6 +143,7 @@
       album: null,
       tag: null,
       copiesOf: null,
+      buildError: null,
     }),
     grid_rows: (a) => ({
       version: 1,

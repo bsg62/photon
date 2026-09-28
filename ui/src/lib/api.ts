@@ -73,6 +73,9 @@ export interface GridInfo {
   tag: string | null;
   /** The photo while `view` is 'copies'. */
   copiesOf: CopiesOf | null;
+  /** Why the grid is empty when it is only because photon could not read the library at
+   *  startup (`Engine::build_first_grid`); null for every grid actually built. */
+  buildError: string | null;
 }
 export interface GridRows { version: number; rows: GridEntry[] }
 /** Mirrors `commands::FolderIds`: one folder's photos, and the index version they are of. */
