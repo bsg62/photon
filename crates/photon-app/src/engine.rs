@@ -46,6 +46,12 @@ const REBUILD_COST_FACTOR: u32 = 4;
 /// plus the UI's `gridInfo` and viewer re-reads - for every video in a folder of them.
 const FRAME_REFRESH_EVERY: Duration = Duration::from_secs(1);
 
+/// How long the thumbnail queue must stay quiet, after making new thumbnails ready, before
+/// the look-alike pass is asked to hash them (`start_thumb_hashing`). The pass reads every
+/// perceptual hash in the library even when it has two to add, so it is paced by the
+/// bursts the queue works in - a scroll's visible tiles, an import - not by the thumbnail.
+const THUMB_HASH_SETTLE: Duration = Duration::from_secs(5);
+
 /// How long `shutdown` waits for a look-alike pass in progress to actually stop before
 /// giving up and leaving it to finish on its own. Bounded for the same reason
 /// `watch::STOP_TIMEOUT` is: the pass's `hash_candidates` reads the original photo files,
@@ -226,6 +232,9 @@ pub struct Engine {
     /// outstanding. Mirrors `startup`: `wait_for_similar_pass` takes it and joins it, and
     /// is safe to call when none was ever spawned.
     similar_pass: Mutex<Option<JoinHandle<()>>>,
+    /// The thread `start_thumb_hashing` spawned, if any. `shutdown` joins it after closing
+    /// the thumbnail queue, which is what ends its wait.
+    thumb_hashing: Mutex<Option<JoinHandle<()>>>,
     /// The running watcher service, if one has been started. `start_watcher` and
     /// `stop_watcher` both take this lock for their whole check-then-act, so a `shutdown`
     /// racing `startup`'s call to `start_watcher` can never miss stopping a service that
@@ -379,6 +388,7 @@ impl Engine {
             shutting_down: AtomicBool::new(false),
             startup: Mutex::new(None),
             similar_pass: Mutex::new(None),
+            thumb_hashing: Mutex::new(None),
             watcher: Mutex::new(None),
             ini_write: Mutex::new(()),
             edit_write: Mutex::new(()),
@@ -1511,6 +1521,7 @@ impl Engine {
     /// `shutdown` racing start-up stops it promptly instead of letting it run to
     /// completion.
     pub fn startup(self: &Arc<Self>, pictures: Option<PathBuf>) {
+        self.start_thumb_hashing(THUMB_HASH_SETTLE);
         let engine = Arc::clone(self);
         let handle = std::thread::Builder::new()
             .name("photon-startup".into())
@@ -1637,6 +1648,44 @@ impl Engine {
         *self.similar_pass.lock() = Some(handle);
     }
 
+    /// Requests a look-alike pass whenever the thumbnail workers go quiet after making new
+    /// thumbnails ready, `settle` after the last job finished (`DrainSignal::wait`).
+    ///
+    /// The pass hashes a photo from its cached grid thumbnail, so a photo is a candidate only
+    /// once that exists - and after a scan most do not yet: the scan's own pass runs as it
+    /// ends, while the queue it fed is still rendering. Those photos waited for the next scan
+    /// of anything, which on a quiet library is the next launch; an edit's re-render did
+    /// the same, since `write_edit`'s request runs before the new picture is drawn.
+    ///
+    /// `request_similar_pass` coalesces with a pass already running, and a pass with
+    /// nothing new skips its regroup, so a drain that readied only photos a scan's pass
+    /// already hashed costs the pass's reads and nothing more.
+    ///
+    /// The thread holds the engine weakly and the queue through its own handle, so it keeps
+    /// neither alive: `shutdown` closes the queue and joins it, and an engine dropped
+    /// without one drops the service, which closes the queue too. Once only; a second call
+    /// is a no-op, and so is one after `shutdown` has begun.
+    pub fn start_thumb_hashing(self: &Arc<Self>, settle: Duration) {
+        let mut slot = self.thumb_hashing.lock();
+        if slot.is_some() || self.shutting_down.load(Ordering::SeqCst) {
+            return;
+        }
+        let drained = self.thumbs.drain_signal();
+        let engine = Arc::downgrade(self);
+        let handle = std::thread::Builder::new()
+            .name("photon-thumb-hashing".into())
+            .spawn(move || {
+                while drained.wait(settle) {
+                    let Some(engine) = engine.upgrade() else {
+                        return;
+                    };
+                    engine.request_similar_pass();
+                }
+            })
+            .expect("failed to spawn thumbnail-hashing thread");
+        *slot = Some(handle);
+    }
+
     /// Joins the thread spawned by the most recent `request_similar_pass` call, if one is
     /// outstanding. Safe to call when none was ever spawned.
     ///
@@ -1688,6 +1737,14 @@ impl Engine {
         // to enqueue thumbnails) as the workers go away.
         self.stop_watcher();
         self.thumbs.close();
+        // Before the look-alike pass is waited for: the closed queue has ended its wait, and
+        // joined here it cannot request a pass after `stop_similar_pass` has looked. It
+        // returns at once - `request_similar_pass` only spawns, and refuses while shutting
+        // down.
+        let thumb_hashing = self.thumb_hashing.lock().take();
+        if let Some(handle) = thumb_hashing {
+            let _ = handle.join();
+        }
         self.wait_for_startup();
         self.stop_similar_pass(SIMILAR_PASS_STOP_TIMEOUT);
     }
@@ -2470,6 +2527,55 @@ mod tests {
             0,
             "the setting change alone should have taken the pair out of the view"
         );
+    }
+
+    /// A thumbnail rendered after the scan's own pass has run - here, the re-render of an
+    /// edit - is hashed without a further scan: the workers going quiet requests a pass.
+    ///
+    /// Staged through the library rather than `rotate_item`, which requests a pass of its
+    /// own that could race the render and hash the new picture by luck: here nothing but
+    /// the drain signal runs one.
+    #[test]
+    fn a_thumbnail_rendered_after_the_scan_is_hashed_without_another_scan() {
+        let f = fixture(&[("a/one.jpg", &jpeg_pattern(180, 120))]);
+        f.add_photos();
+        f.engine.wait_for_scans();
+        f.engine.thumbs.wait_idle();
+        let id = f.ids()[0];
+        let hashed = |f: &crate::testutil::Fixture| {
+            f.engine
+                .lib
+                .percep_hashes()
+                .unwrap()
+                .iter()
+                .any(|photo| photo.id == id)
+        };
+        f.engine.start_thumb_hashing(Duration::from_millis(50));
+
+        // A turn: a new picture, so a render, and the hash cleared with the thumbnail.
+        let turned = f.engine.lib.item(id).unwrap().unwrap().edit.turned(true);
+        assert!(f.engine.lib.set_item_edit(id, turned).unwrap());
+        assert!(!hashed(&f));
+        f.engine.thumbs.prioritize(&[id], Priority::Visible);
+
+        let wait_hashed = |why: &str| {
+            let deadline = Instant::now() + Duration::from_secs(20);
+            while !hashed(&f) {
+                assert!(Instant::now() < deadline, "{why}: never hashed");
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        };
+        wait_hashed("the turned photo's new thumbnail");
+
+        // Turned back: the original picture is still cached, so the worker renders nothing
+        // and only moves the row to `Ready` - a picture new to the pass all the same.
+        f.engine.wait_for_similar_pass();
+        let original = f.engine.lib.item(id).unwrap().unwrap().edit.turned(false);
+        assert!(f.engine.lib.set_item_edit(id, original).unwrap());
+        assert!(!hashed(&f));
+        f.engine.thumbs.prioritize(&[id], Priority::Visible);
+        wait_hashed("the photo turned back to a cached picture");
+        f.engine.shutdown();
     }
 
     /// A photo's stored `similar_group`, or `None`. The group column is what a pass leaves

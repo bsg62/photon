@@ -110,6 +110,18 @@ pub fn video_crashed(item: &crate::library::Item) -> bool {
         && item.thumb_error.as_deref() == Some(VIDEO_CRASH_MESSAGE)
 }
 
+/// See [`ThumbService::drain_signal`].
+pub struct DrainSignal(Arc<ThumbQueue>);
+
+impl DrainSignal {
+    /// Blocks until a worker has made at least one thumbnail ready since the last answer
+    /// and the queue has then been idle for `settle`, and returns true; returns false once
+    /// the queue closes (`close`, or the service dropped). See `ThumbQueue::wait_drained`.
+    pub fn wait(&self, settle: Duration) -> bool {
+        self.0.wait_drained(settle)
+    }
+}
+
 /// A frame bigger than this on either side is not one the webview drew at preview size.
 const MAX_FRAME_EDGE: u32 = 8192;
 
@@ -669,6 +681,14 @@ impl ThumbService {
         self.queue.wait_idle();
     }
 
+    /// A handle that waits for the workers to go quiet after making new thumbnails ready;
+    /// see [`DrainSignal::wait`]. Its own handle on the queue, not a borrow of the service,
+    /// so the thread waiting on it keeps nothing else alive: dropping the service closes
+    /// the queue, and the wait returns false.
+    pub fn drain_signal(&self) -> DrainSignal {
+        DrainSignal(self.queue.clone())
+    }
+
     /// Thumbnails under no live key, and the crash guard's death records under one - the
     /// same `live` set answers both, and both are left behind by the same writes.
     pub fn collect_garbage(&self) -> Result<usize> {
@@ -772,8 +792,12 @@ fn process(
     // was already there - a scan re-touching an unchanged file, say) is resolved the same
     // way a successful `Marker::resolve(true)` would have cleared it.
     if cache.is_complete(key) {
-        if item.thumb_state != ThumbState::Ready {
-            lib.set_thumb_state_if_unchanged(&item, ThumbState::Ready, None)?;
+        if item.thumb_state != ThumbState::Ready
+            && lib.set_thumb_state_if_unchanged(&item, ThumbState::Ready, None)?
+        {
+            // A cached picture the row only now points at - an edit undone back to a key
+            // already rendered - is as new to the look-alike pass as a render.
+            queue.note_ready();
         }
         inflight.clear(id);
         suspects.resolved(id, queue);
@@ -853,7 +877,12 @@ fn process(
     let marker = inflight.begin(id, key);
     let (result, decided) =
         match catch_unwind(AssertUnwindSafe(|| process_item(lib, cache, &item, render))) {
-            Ok(Ok(())) => (Ok(()), true),
+            Ok(Ok(readied)) => {
+                if readied {
+                    queue.note_ready();
+                }
+                (Ok(()), true)
+            }
             Ok(Err(err)) => (Err(err), false),
             Err(_) => {
                 tracing::error!(id, path = %item.path, "thumbnail decoder panicked");
@@ -880,22 +909,28 @@ enum DecodeGuard<'a> {
     Ordinary(RwLockReadGuard<'a, ()>),
 }
 
-fn process_item(lib: &Library, cache: &ThumbCache, item: &Item, render: RenderFn) -> Result<()> {
+/// Returns whether it made a thumbnail ready: rendered one, or moved the row to `Ready` -
+/// either is a picture the look-alike pass has not hashed (`ThumbQueue::note_ready`).
+fn process_item(lib: &Library, cache: &ThumbCache, item: &Item, render: RenderFn) -> Result<bool> {
     let fp = item.thumb_key();
+    let mut readied = false;
     if !cache.is_complete(fp) {
         match render(cache, Path::new(&item.path), item.orientation, item.edit) {
-            Ok((preview, grid)) => cache.store(fp, &preview, &grid)?,
+            Ok((preview, grid)) => {
+                cache.store(fp, &preview, &grid)?;
+                readied = true;
+            }
             Err(err) if !is_source_defect(&err) => return Err(err),
             Err(err) => {
                 lib.set_thumb_state_if_unchanged(item, ThumbState::Failed, Some(&err.to_string()))?;
-                return Ok(());
+                return Ok(false);
             }
         }
     }
     if item.thumb_state != ThumbState::Ready {
-        lib.set_thumb_state_if_unchanged(item, ThumbState::Ready, None)?;
+        readied |= lib.set_thumb_state_if_unchanged(item, ThumbState::Ready, None)?;
     }
-    Ok(())
+    Ok(readied)
 }
 
 /// Whether a render error means the source file itself is bad (so the item is `Failed`).

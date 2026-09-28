@@ -359,7 +359,11 @@ to `EXACT_RECALL_DISTANCE` (7) - Conservative. Treating the hash as the verdict 
 false pairs back. Both passes run inside
 `Engine::hash_after_scan` (once `hash_duplicates`) at the end of every `run_scan` but one that
 finds its root still offline (the 30-second poll of an unplugged drive, or the startup scan of
-one), which read and changed nothing - not inside the scanner, so neither of `walk_tree`'s callers can be forgotten, and because a duplicate or a
+one), which read and changed nothing; they also run, through
+`request_similar_pass`, whenever the thumbnail queue has stayed quiet for `THUMB_HASH_SETTLE`
+after making new thumbnails ready (`start_thumb_hashing`, `ThumbQueue::wait_drained`), since a
+scan's own pass runs while the queue it fed is still rendering and its new photos otherwise
+waited for the next scan. Not inside the scanner, so neither of `walk_tree`'s callers can be forgotten, and because a duplicate or a
 look-alike is a fact about the whole library, not about one changed file. The perceptual hash
 is taken from the photo's **already-cached grid thumbnail**, not from the source file: the
 thumbnail renderer is skipped whenever a thumbnail is already cached, so a hash computed inside
