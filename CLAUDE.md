@@ -333,12 +333,19 @@ bare term makes SQLite walk a partial index on that predicate - `items_size`, in
 order, 7-12x slower at 300k photos. `library/mod.rs` has the reasoning; each such query has a
 plan test, and a new one needs its own.
 
-The same missing statistics make **two partial indexes tie**: SQLite costs every partial index
-as half the table, so when a query's WHERE implies the predicates of two indexes on `items`,
-the one created *last* wins. A new partial index must therefore not be implied by another
-view's WHERE; the view's plan test is the tripwire. That is why the All view has no
-`items_visible` (`missing_since IS NULL AND hidden = 0`) beside `items_starred` and
-`items_videos` (schema 22): every visible view implies it, and created after them it took
+The same missing statistics make **partial indexes tie**: without `ANALYZE` SQLite costs every
+partial index the same, a constant reduction whatever its predicate, and on a tie takes the
+one created *last*. A view's grid query is safe by shape: its `folder_id` group key and
+equality pick the `(folder_id, taken_at)` index holding its rows. A count is not: a scan with
+no `folder_id` term ties with every partial index whose predicate its WHERE implies, and wins
+only by creation order. Today `starred_count`, `video_count` and the Hidden count beat
+`items_pending`, `items_size` and `items_recent` that way, so a later partial index whose
+*predicate* those counts' WHERE implies - a new `WHERE missing_since IS NULL` index, say -
+takes them over; `the_starred_and_video_counts_are_served_by_their_indexes` (and Hidden's plan
+test) is the tripwire. The counts are cached (`counts_epoch`), so a flip costs a cache refill,
+not every grid version. The same tie is why the All view has no `items_visible`
+(`missing_since IS NULL AND hidden = 0`, same shape as the view indexes, schema 22): every
+visible view's WHERE implies it, and created after `items_starred` and `items_videos` it took
 Starred and Videos over, the whole library read for a grid of 3%.
 
 **Reads are pooled, writes are one connection.** `Library::reader()` returns a `Result` and never

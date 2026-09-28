@@ -318,8 +318,10 @@ ALTER TABLE folders ADD COLUMN alias TEXT;
 -- without touching the rest. Before, both went through `items_folder`, which holds every
 -- row: Starred and Videos read the whole library twice to return a few percent of it.
 --
--- `items_starred` was `(rating)`, which served the Starred count and nothing else; the
--- count still reads it (its WHERE implies the index's), now alongside the view.
+-- `items_starred` was `(rating)`, which served the Starred count and nothing else. The count
+-- still reads it, but only because it is the last-created of the partial indexes its WHERE
+-- implies (`items_pending`, `items_size` and `items_recent` tie with it; so for the Videos
+-- count and `items_videos`) - see CLAUDE.md, "Schema". The counts' plan test pins it.
 --
 -- There is deliberately no such index for All (`missing_since IS NULL AND hidden = 0`):
 -- every visible view's WHERE implies that predicate, so it would tie with these two and
