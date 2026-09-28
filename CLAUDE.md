@@ -135,7 +135,11 @@ first build's empty stand-in, which announces a data change without taking the f
 build that finally succeeds still carries it. Engine-wide
 rather than per rebuild, because a data rebuild discarded by a view switch would otherwise
 take its flag with it. A new writer calls `refresh_grid`; `refresh_grid_derived` only for a
-write that no collection or Settings query reads, checked against those queries.
+write that no collection or Settings query reads, checked against those queries. A command
+that has committed its write rebuilds through `refresh_after_write`, which logs a failed
+rebuild rather than returning it: returned, the UI undid its side of a write that stands (a
+star flipped back, a selection kept for a retry), and the flag the failed rebuild left set
+has the next publish announce the write anyway.
 
 `ScanReport::touched_rows` gates the end-of-scan refresh on whether a scan actually moved
 rows. A change that alters data by some *other* means must add its own counter to `ScanReport`
