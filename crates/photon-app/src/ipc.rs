@@ -413,24 +413,47 @@ pub fn neighbours(engine: Eng<'_>, id: i64, radius: usize) -> Vec<i64> {
     commands::neighbours(&engine, id, radius)
 }
 
+/// Every call into the opener runs on the blocking pool, like `add_folder`. Before it does
+/// anything the opener canonicalizes (reveal) or stats (open) the path - a photo's, often on
+/// a network share, which hangs when the share has stopped answering - and then makes a
+/// blocking call of its own: D-Bus to the file manager on Linux, the shell on Windows.
+async fn with_opener(
+    engine: Eng<'_>,
+    open: impl FnOnce(&Engine) -> Result<(), AppError> + Send + 'static,
+) -> Result<(), AppError> {
+    let engine = engine.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || open(&engine))
+        .await
+        .map_err(AppError::internal)?
+}
+
 #[tauri::command(async)]
-pub fn reveal_in_file_manager(engine: Eng<'_>, id: i64) -> Result<(), AppError> {
-    let path = commands::item_path(&engine, id)?;
-    tauri_plugin_opener::reveal_item_in_dir(path).map_err(AppError::internal)
+pub async fn reveal_in_file_manager(engine: Eng<'_>, id: i64) -> Result<(), AppError> {
+    with_opener(engine, move |engine| {
+        let path = commands::item_path(engine, id)?;
+        tauri_plugin_opener::reveal_item_in_dir(path).map_err(AppError::internal)
+    })
+    .await
 }
 
 /// Hands the photo's file to whatever the system opens that kind of file with. photon
 /// registers no file types, so that is never photon itself.
 #[tauri::command(async)]
-pub fn open_in_default_app(engine: Eng<'_>, id: i64) -> Result<(), AppError> {
-    let path = commands::item_path(&engine, id)?;
-    tauri_plugin_opener::open_path(path, None::<&str>).map_err(AppError::internal)
+pub async fn open_in_default_app(engine: Eng<'_>, id: i64) -> Result<(), AppError> {
+    with_opener(engine, move |engine| {
+        let path = commands::item_path(engine, id)?;
+        tauri_plugin_opener::open_path(path, None::<&str>).map_err(AppError::internal)
+    })
+    .await
 }
 
 #[tauri::command(async)]
-pub fn reveal_folder(engine: Eng<'_>, folder_id: i64) -> Result<(), AppError> {
-    let path = commands::folder_path(&engine, folder_id)?;
-    tauri_plugin_opener::reveal_item_in_dir(path).map_err(AppError::internal)
+pub async fn reveal_folder(engine: Eng<'_>, folder_id: i64) -> Result<(), AppError> {
+    with_opener(engine, move |engine| {
+        let path = commands::folder_path(engine, folder_id)?;
+        tauri_plugin_opener::reveal_item_in_dir(path).map_err(AppError::internal)
+    })
+    .await
 }
 
 #[tauri::command(async)]
@@ -445,16 +468,23 @@ pub fn app_info(engine: Eng<'_>) -> commands::AppInfo {
     commands::app_info(&engine)
 }
 
+/// The likeliest of all to meet a dead mount: Settings offers it for a root that is offline.
 #[tauri::command(async)]
-pub fn reveal_watched(engine: Eng<'_>, watched_id: i64) -> Result<(), AppError> {
-    let path = commands::watched_path(&engine, watched_id)?;
-    tauri_plugin_opener::reveal_item_in_dir(path).map_err(AppError::internal)
+pub async fn reveal_watched(engine: Eng<'_>, watched_id: i64) -> Result<(), AppError> {
+    with_opener(engine, move |engine| {
+        let path = commands::watched_path(engine, watched_id)?;
+        tauri_plugin_opener::reveal_item_in_dir(path).map_err(AppError::internal)
+    })
+    .await
 }
 
 #[tauri::command(async)]
-pub fn reveal_library(engine: Eng<'_>) -> Result<(), AppError> {
-    let path = commands::app_info(&engine).library_path;
-    tauri_plugin_opener::reveal_item_in_dir(path).map_err(AppError::internal)
+pub async fn reveal_library(engine: Eng<'_>) -> Result<(), AppError> {
+    with_opener(engine, |engine| {
+        let path = commands::app_info(engine).library_path;
+        tauri_plugin_opener::reveal_item_in_dir(path).map_err(AppError::internal)
+    })
+    .await
 }
 
 #[tauri::command(async)]
