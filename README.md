@@ -77,7 +77,9 @@ hand yet. A video's preview is drawn while photon's window is open.
 ### Camera data, keywords, people and albums
 
 The viewer's ⓘ button (or `I`) opens an info panel: camera, lens, focal length, aperture,
-shutter speed and ISO from the photo's EXIF; the keywords the photo carries in its XMP or
+shutter speed and ISO from the photo's EXIF; every date the photo has - taken, digitized and
+edited from its EXIF (a video's creation date), and the file's created and modified times -
+with a date shared by several of them shown once; the keywords the photo carries in its XMP or
 IPTC (as written by Picasa, Lightroom, Bridge, digiKam and the like); the people Picasa
 named in the folder's `.picasa.ini`, outlined over the photo while the panel is open;
 checkboxes for photon's albums; and the Picasa albums the photo is in. `R` and `Shift+R` turn the photo on screen; nothing is
@@ -340,6 +342,7 @@ publishing it.
 - [ ] Open the Copies view on a photo that has a byte-identical copy and a look-alike, delete that photo and wait for two scans: the identical copy stays, the look-alike leaves, and the grid says the photo is no longer in the library and points to Duplicates.
 - [ ] In All, a folder or a search, a photo with a copy shows a small copy mark bottom-left (a starred one shows both marks); a photo without one shows none, and in Duplicates and in a Copies view no tile is marked. Delete a photo's only copy and let the scan finish: its mark goes.
 - [ ] In the viewer's info panel, a photo with copies shows "Show N duplicates in the grid" under the copies list, with the same N as the tile menu; clicking it closes the viewer and lands the grid on the Copies view with that photo selected, and the arrow keys work straight away.
+- [ ] Open a camera photo's info panel: under Dates, "Taken, digitized" (or all three EXIF dates on one row) shows the capture time the caption shows, and "File modified" the time your file manager shows, in your own zone. A photo with no EXIF shows only the file's dates. On Linux, "File created" appears on ext4/btrfs and is simply absent on a filesystem or share that keeps no birth time.
 - [ ] Open a photo that has both an identical copy and a look-alike: the info panel shows two headings, Identical first, and only the "Looks the same" entry shows dimensions.
 - [ ] Settings → Duplicates → Find look-alikes: click through Off / Conservative / Loose. Each becomes pressed, the hint text below changes, and the Loose hint reads "Finds most look-alikes, not all of them." With it set to Off, Duplicates falls back to byte-identical files only; set it back to Conservative and the look-alikes return without a scan.
 - [ ] Upgrade a real library indexed by an older photon: look-alikes appear without anything being re-scanned — the hashes come from thumbnails that already exist.

@@ -1,7 +1,8 @@
 /** Formatting for the viewer's info panel. Pure, so every spelling is pinned by a test;
  *  the backend stores the raw numbers and derives nothing. */
 
-import type { CopyKind, ItemCopy, ViewerItem } from './api';
+import type { CopyKind, ItemCopy, ItemDates, ViewerItem } from './api';
+import { formatTaken } from './caption';
 
 /** One line of the info panel. */
 export interface InfoRow {
@@ -60,6 +61,38 @@ export function formatExposure(seconds: number): string {
 
 export function formatIso(iso: number): string {
   return `ISO ${iso}`;
+}
+
+/** A file's own time: a real instant, so read in the machine's zone, unlike a camera's.
+ *  `timeZone` is for tests, as `locale` is. */
+function formatInstant(ms: number, locale?: string, timeZone?: string): string {
+  return new Date(ms).toLocaleString(locale, { dateStyle: 'medium', timeStyle: 'short', timeZone });
+}
+
+/** The info panel's dates: the camera's, then the file's, each left out when absent. A
+ *  date shown twice in a group is shown once, labelled with every tag that carries it
+ *  ("Taken, edited") - a camera writes all three EXIF dates alike, and three identical rows
+ *  read as a bug. Compared as spelled, so two times the panel cannot tell apart are merged,
+ *  and never across groups: the camera's 12:30 and the file's 12:30 are different times. */
+export function dateRows(dates: ItemDates, locale?: string, timeZone?: string): InfoRow[] {
+  const camera = (s: number | null) => (s === null ? null : formatTaken(s, locale));
+  const file = (ms: number | null) => (ms === null ? null : formatInstant(ms, locale, timeZone));
+  const groups: [string, [string, string | null][]][] = [
+    ['', [['taken', camera(dates.taken)], ['digitized', camera(dates.digitized)], ['edited', camera(dates.edited)]]],
+    ['file ', [['created', file(dates.fileCreatedMs)], ['modified', file(dates.fileModifiedMs)]]],
+  ];
+  const rows: InfoRow[] = [];
+  for (const [prefix, dated] of groups) {
+    const merged = new Map<string, string[]>();
+    for (const [name, value] of dated) {
+      if (value !== null) merged.set(value, [...(merged.get(value) ?? []), name]);
+    }
+    for (const [value, names] of merged) {
+      const label = prefix + names.join(', ');
+      rows.push({ label: label[0].toUpperCase() + label.slice(1), value });
+    }
+  }
+  return rows;
 }
 
 /** The camera rows of the info panel, in the order a photographer reads them; a field the

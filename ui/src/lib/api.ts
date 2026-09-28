@@ -139,6 +139,22 @@ export interface ViewerItem {
    *  edited photo `width`, `height`, `orientation` and `faces` describe the picture as
    *  shown, because the edit is rendered into every image the backend serves. */
   edit: ItemEdit | null;
+  /** Every date the photo has, for the info panel. */
+  dates: ItemDates;
+}
+/** Two clocks, two units: the camera's dates are its wall clock in naive SECONDS, like
+ *  `takenAt`; the file's are real instants in MILLISECONDS. Null where the file has none -
+ *  `taken` is null for a photo dated by its mtime, and `fileCreatedMs` wherever the
+ *  filesystem keeps no birth time. */
+export interface ItemDates {
+  /** EXIF DateTimeOriginal; a video's creation date. */
+  taken: number | null;
+  /** EXIF DateTimeDigitized. */
+  digitized: number | null;
+  /** EXIF DateTime: when the camera or some software last wrote the file. */
+  edited: number | null;
+  fileCreatedMs: number | null;
+  fileModifiedMs: number;
 }
 /** `crop` is `[left, top, right, bottom]` in 1/65535ths of the turned picture. */
 export interface ItemEdit { turns: number; crop: [number, number, number, number] | null }

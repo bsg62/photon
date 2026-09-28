@@ -132,6 +132,14 @@
       uncroppedWidth: width,
       uncroppedHeight: height,
       edit: null,
+      // Taken and digitized agree, as a camera writes them, so the panel's merged row shows.
+      dates: {
+        taken: day(2026, 7, 14) + 70000 + id * 3600,
+        digitized: day(2026, 7, 14) + 70000 + id * 3600,
+        edited: day(2026, 7, 20) + 30000,
+        fileCreatedMs: (day(2026, 7, 21) + 40000) * 1000,
+        fileModifiedMs: (day(2026, 7, 21) + 40000) * 1000,
+      },
     };
   }
 

@@ -96,6 +96,8 @@ pub struct ExifSpec<'a> {
     pub orientation: Option<u16>,
     /// `DateTimeOriginal`, exactly "YYYY:MM:DD HH:MM:SS".
     pub datetime: Option<&'a str>,
+    /// `DateTimeDigitized`, same format.
+    pub digitized: Option<&'a str>,
     /// `DateTime` (the file-change date in IFD0), same format.
     pub modified: Option<&'a str>,
     /// `ImageDescription` (IFD0 0x010E), ASCII - what cameras fill with their own name.
@@ -199,6 +201,10 @@ pub fn exif_tiff(spec: &ExifSpec<'_>) -> Vec<u8> {
     if let Some(dt) = spec.datetime {
         assert_eq!(dt.len(), 19, "datetime must be YYYY:MM:DD HH:MM:SS");
         exif_ifd.push(ascii_entry(0x9003, dt));
+    }
+    if let Some(dt) = spec.digitized {
+        assert_eq!(dt.len(), 19, "digitized must be YYYY:MM:DD HH:MM:SS");
+        exif_ifd.push(ascii_entry(0x9004, dt));
     }
     if let Some(r) = spec.exposure {
         exif_ifd.push(rational_entry(0x829a, r));

@@ -197,6 +197,57 @@ pub struct ViewerItem {
     /// included. `faces` are likewise mapped into the edited frame, and a face whose centre
     /// was cropped away is left out.
     pub edit: Option<ItemEdit>,
+    /// Every date the photo has, for the info panel.
+    pub dates: ItemDates,
+}
+
+/// The dates the info panel lists. Two clocks, so two units: the camera's dates are its
+/// wall clock in naive seconds, like `taken_at`, and the file's are real instants in
+/// milliseconds, like `mtime_ms`. The UI renders the first in UTC and the second in the
+/// machine's zone; a single unit would invite formatting both the same way.
+#[derive(Debug, Default, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ItemDates {
+    /// EXIF `DateTimeOriginal`; for a video, the container's creation date.
+    pub taken: Option<i64>,
+    /// EXIF `DateTimeDigitized`.
+    pub digitized: Option<i64>,
+    /// EXIF `DateTime`: when the camera or some software last wrote the file.
+    pub edited: Option<i64>,
+    /// The filesystem's birth time, which not every filesystem (or share) keeps.
+    pub file_created_ms: Option<i64>,
+    /// The mtime the library holds, not a fresh one: the one the grid was dated by.
+    pub file_modified_ms: i64,
+}
+
+/// Read from the file on each call, not stored (see `photon_core::metadata::read_exif_dates`
+/// for why). A file that has gone offline answers only the stored mtime.
+fn item_dates(kind: MediaKind, path: &Path, mtime_ms: i64) -> ItemDates {
+    let file_created_ms = std::fs::metadata(path)
+        .and_then(|m| m.created())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .and_then(|d| i64::try_from(d.as_millis()).ok());
+    let base = ItemDates {
+        file_created_ms,
+        file_modified_ms: mtime_ms,
+        ..ItemDates::default()
+    };
+    match kind {
+        MediaKind::Image => {
+            let exif = photon_core::metadata::read_exif_dates(path);
+            ItemDates {
+                taken: exif.original,
+                digitized: exif.digitized,
+                edited: exif.modified,
+                ..base
+            }
+        }
+        MediaKind::Video => ItemDates {
+            taken: photon_core::video::read_meta(path).taken_at,
+            ..base
+        },
+    }
 }
 
 /// An edit on the wire. The crop is `[left, top, right, bottom]` in
@@ -652,6 +703,7 @@ pub fn viewer_item(engine: &Engine, id: i64) -> CmdResult<ViewerItem> {
     let camera = item.camera;
     let kind = item.kind;
     let duration_ms = item.duration_ms;
+    let dates = item_dates(kind, Path::new(&item.path), item.mtime_ms);
     Ok(ViewerItem {
         id: item.id,
         thumb_key,
@@ -691,6 +743,7 @@ pub fn viewer_item(engine: &Engine, id: i64) -> CmdResult<ViewerItem> {
             turns: edit.turns,
             crop: edit.crop.map(|c| [c.left, c.top, c.right, c.bottom]),
         }),
+        dates,
     })
 }
 
@@ -1165,6 +1218,61 @@ mod tests {
                 "This photo can't be read: its file is gone, or its folder is offline."
             )
         );
+    }
+
+    /// The plumbing from the file to the panel's dates (photon-core pins the EXIF reader):
+    /// the camera's date arrives in naive seconds, the file's in milliseconds, and a date
+    /// the file does not carry arrives as nothing rather than as the one it fell back to.
+    #[test]
+    fn viewer_item_reports_the_dates_the_file_carries() {
+        // A JPEG whose EXIF holds only DateTimeOriginal (0x9003). Little-endian TIFF: IFD0
+        // at 8 holds just the pointer (0x8769) to the Exif IFD at 26, whose one ASCII entry
+        // is stored just past it at 44. kamadak-exif knows a tag by the IFD it sits in, so
+        // the date cannot go in IFD0.
+        let entry = |tag: u16, typ: u16, count: u32, value: u32| {
+            let mut e = tag.to_le_bytes().to_vec();
+            e.extend_from_slice(&typ.to_le_bytes());
+            e.extend_from_slice(&count.to_le_bytes());
+            e.extend_from_slice(&value.to_le_bytes());
+            e
+        };
+        let mut tiff = b"II*\0".to_vec();
+        tiff.extend_from_slice(&8u32.to_le_bytes());
+        for (tag, typ, count, value) in [(0x8769, 4, 1, 26), (0x9003, 2, 20, 44)] {
+            tiff.extend_from_slice(&1u16.to_le_bytes());
+            tiff.extend_from_slice(&entry(tag, typ, count, value));
+            tiff.extend_from_slice(&0u32.to_le_bytes());
+        }
+        tiff.extend_from_slice(b"2024:06:15 12:30:45\0");
+        let mut app1 = b"Exif\0\0".to_vec();
+        app1.extend_from_slice(&tiff);
+        let plain = jpeg(16, 16);
+        let mut dated = plain[..2].to_vec();
+        dated.extend_from_slice(&[0xFF, 0xE1]);
+        dated.extend_from_slice(&((2 + app1.len()) as u16).to_be_bytes());
+        dated.extend_from_slice(&app1);
+        dated.extend_from_slice(&plain[2..]);
+
+        let f = fixture(&[("a.jpg", &dated), ("b.jpg", &plain)]);
+        f.add_photos();
+        let dates = |name: &str| {
+            f.ids()
+                .into_iter()
+                .map(|id| viewer_item(&f.engine, id).unwrap())
+                .find(|item| item.file_name == name)
+                .unwrap()
+                .dates
+        };
+        let a = dates("a.jpg");
+        assert_eq!(a.taken, Some(1_718_454_645));
+        assert_eq!((a.digitized, a.edited), (None, None));
+        assert_eq!(a.file_modified_ms, 1_600_000_000_000);
+        let b = dates("b.jpg");
+        assert_eq!(
+            b.taken, None,
+            "dated by its mtime, but the file carries no capture date"
+        );
+        assert_eq!(b.file_modified_ms, 1_600_000_000_000);
     }
 
     #[test]
