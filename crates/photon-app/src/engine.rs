@@ -197,7 +197,8 @@ pub struct Engine {
     /// Source of `Rebuild::seq`. Taken at snapshot time, before the query begins.
     next_rebuild: AtomicU64,
     /// Set by every rebuild that follows a change to the data (`data_snapshot`), before it
-    /// snapshots; taken back to false by whichever rebuild publishes next, which tells the
+    /// snapshots; taken back to false by whichever rebuild publishes next (a failed first
+    /// build's empty stand-in says `true` and leaves it; see `publish`), which tells the
     /// UI so in `LibraryChanged::data_changed`. The UI refetches its sidebar collections -
     /// albums, people, tags, the slowest of them hundreds of milliseconds at 300k photos -
     /// only then, and not for the rebuilds of a view switch, a sort or a search keystroke,
@@ -611,7 +612,8 @@ impl Engine {
             tracing::debug!("discarding a grid rebuilt from an older read than the one published");
             return Publish::Overtaken(self.grid.read().0);
         }
-        if failure.is_none() {
+        let failed = failure.is_some();
+        if !failed {
             *last_published = rebuild.seq;
         }
         let (version, len) = {
@@ -623,8 +625,11 @@ impl Engine {
         };
         // Taken only by a rebuild that publishes, and under the `refresh` lock, so the
         // value and the version it is sent with are one publish's. A rebuild discarded
-        // above leaves it for the next one.
-        let data_changed = self.data_dirty.swap(false, Ordering::SeqCst);
+        // above leaves it for the next one. A failure says `true` without taking it: the
+        // UI has no collections yet, but the refetch it asks for reads the database the
+        // build could not, so the flag stays for the first publish that did read it - a
+        // view switch's, which marks nothing itself, would otherwise say nothing changed.
+        let data_changed = failed || self.data_dirty.swap(false, Ordering::SeqCst);
         self.events.library_changed(LibraryChanged {
             version,
             len,
@@ -3821,6 +3826,42 @@ mod tests {
         ));
         let info = crate::commands::grid_info(&reopened);
         assert_eq!((info.len, info.build_error), (1, None));
+        reopened.shutdown();
+    }
+
+    /// The stand-in says the data changed - the window has nothing yet, so the UI must
+    /// fetch its collections - but it read nothing, and the collections it sends the UI to
+    /// refetch sit in the same database the build could not read. It must leave the flag
+    /// for the first publish that did read: a view switch's rebuild, which marks nothing
+    /// itself, took it `false` and the sidebar stayed empty until a scan moved rows.
+    #[test]
+    fn a_failed_first_build_leaves_the_data_change_for_the_build_that_succeeds() {
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a.jpg", &img)]);
+        f.add_photos();
+        let events = Arc::new(crate::events::Recorder::default());
+        let reopened = Engine::open(f.config(), events.clone()).unwrap();
+
+        let stand_in = reopened.data_snapshot();
+        let empty = GridIndex::build(Vec::new(), stand_in.state.sort.layout(stand_in.state.view));
+        reopened.publish(Arc::new(empty), &stand_in, Some("busy".into()));
+        // A view switch's rebuild, which does not mark the data dirty itself.
+        let switch = reopened.snapshot();
+        let switch_index = Arc::new(reopened.build_index(&switch.state).unwrap());
+        assert!(matches!(
+            reopened.publish_if_current(switch_index, &switch),
+            Publish::Published(_)
+        ));
+
+        let flags: Vec<bool> = events
+            .all()
+            .iter()
+            .filter_map(|e| match e {
+                Recorded::Library(e) => Some(e.data_changed),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(flags, [true, true]);
         reopened.shutdown();
     }
 
