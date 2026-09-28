@@ -949,13 +949,15 @@ export class LibraryStore {
    *  The write goes first. Finding the photo after the lead used to walk the old index
    *  before it, a thousand rows per round trip - after Ctrl+A over 300,000 photos some 300
    *  sequential fetches, seconds of H doing nothing, and a click made meanwhile was then
-   *  overwritten. What is chosen beforehand now comes from the loaded pages alone
-   *  (`landingOf`), and what they cannot answer is settled against the rebuilt index,
-   *  where the hidden photos are gone and there is no run of them left to cross. */
+   *  overwritten. What is chosen beforehand now comes from the loaded pages and at most
+   *  one photo more (`landingOf`), and what they cannot answer is settled against the
+   *  rebuilt index, where the hidden photos are gone and there is no run of them left to
+   *  cross. */
   async setHidden(itemIds: number[], hidden: boolean): Promise<void> {
     const lead = this.selectedOffset;
-    const landing = lead === null ? null : this.landingOf(lead, new Set(itemIds));
+    // Before `landingOf`, which can await: a click during it is as new as one during the write.
     const picks = this.picks;
+    const landing = lead === null ? null : await this.landingOf(lead, new Set(itemIds));
     await api.setItemsHidden(itemIds, hidden);
     const target = landing === null || lead === null ? null : await this.landingIn(landing, lead);
     // Checked once every await is behind it: a click during the write or the lookups. That
@@ -978,7 +980,7 @@ export class LibraryStore {
   /** Where `setHidden` should land, read from the loaded pages of the index the user was
    *  looking at, before the write: the backend announces its rebuild before the command
    *  returns, so afterwards the pages may already be the new index, where "the next offset"
-   *  is one photo further on. No fetch, so nothing here is slow or can be raced.
+   *  is one photo further on. At most one photo is fetched, so nothing here is slow.
    *
    *  - a staying photo after the lead: that photo, by id (`rebindSelection` finds it);
    *  - every photo after the lead leaving: the staying photo before it, by id;
@@ -988,10 +990,18 @@ export class LibraryStore {
    *    that is the first photo after the lead to stay, however far on it was;
    *  - every photo before the lead leaving: the first photo of the rebuilt index, by the
    *    same argument;
-   *  - neither side settled: the photo at the lead's offset in the rebuilt index. Exact
-   *    whenever nothing before the lead was acted on - a band, a range, one photo - and
-   *    near it otherwise. */
-  private landingOf(lead: number, leaving: Set<number>): Landing | null {
+   *  - neither side settled - the lead inside a run of leaving photos wider than the pages
+   *    kept around it, as after Ctrl+A in the middle of a big folder: the photo before the
+   *    selection's start, fetched if its page is gone, and then as above, the photo that
+   *    follows it in the rebuilt index. The start is `min(anchor, lead)`, which is exact
+   *    for everything that selects a run - Ctrl+A, Shift+click, a band - and bounded by
+   *    where the pages gave out, before which every loaded photo is known to be leaving;
+   *  - that photo leaving too (a selection added to, running on before its anchor), or the
+   *    index moving under the fetch: the photo at the lead's offset in the rebuilt index.
+   *    Exact whenever nothing before the lead was acted on, near it otherwise. The photo
+   *    at the lead's offset was never the answer for a run around the lead: with the run's
+   *    first `lead - start` photos gone, it is that far into whatever follows the run. */
+  private async landingOf(lead: number, leaving: Set<number>): Promise<Landing | null> {
     const len = this.info.len;
     let at = lead + 1;
     for (; at < len; at++) {
@@ -1006,7 +1016,23 @@ export class LibraryStore {
       if (!leaving.has(entry.id)) return toEnd ? { id: entry.id } : { after: entry.id };
     }
     if (at < 0) return toEnd ? null : { after: null };
+    const start = Math.min(this.anchor ?? lead, lead, at + 1);
+    if (start <= 0) return toEnd ? null : { after: null };
+    const before = await this.photoAt(start - 1).catch(() => undefined);
+    // With nothing after the lead staying either, the photo after it in the rebuilt index
+    // is none, and `findLanding` lands on it instead: the one before, as above.
+    if (before && !leaving.has(before.id)) return { after: before.id };
     return { at: lead };
+  }
+
+  /** The photo at `offset` in the index the store holds: from its page, or fetched. None
+   *  when the fetch answers from another index, where `offset` means another photo. */
+  private async photoAt(offset: number): Promise<GridEntry | undefined> {
+    const known = this.pages.get(offset);
+    if (known) return known;
+    const version = this.info.version;
+    const rows = await api.gridRows(offset, 1);
+    return rows.version === version && this.info.version === version ? rows.rows[0] : undefined;
   }
 
   /** `landing` in the rebuilt index, as an offset and the photo there; `null` when there is

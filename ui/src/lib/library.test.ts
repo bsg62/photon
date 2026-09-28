@@ -1513,6 +1513,138 @@ describe('LibraryStore', () => {
       expect(store.selected).toBe(null);
     });
 
+    /** Ctrl+A in All takes the lead's folder, and the lead stays where it was - in the
+     *  middle of a folder bigger than the pages around it, so the loaded pages settle
+     *  neither side. The photo at the lead's offset in the rebuilt index was one as far into
+     *  the next folder as the lead was into its own: 2,400 photos on, or past the end. */
+    it('hiding a folder selected around the lead lands on the photo after the folder', async () => {
+      const sections: Section[] = [
+        { folderId: 1, offset: 0, count: 100, takenAtMin: 0 },
+        { folderId: 2, offset: 100, count: 4800, takenAtMin: 0 },
+        { folderId: 3, offset: 4900, count: 5100, takenAtMin: 0 },
+      ];
+      const store = await storeOf(10000, { sections });
+      await store.ensure(2450, 2550);
+      store.selected = 2500;
+      await store.selectAll();
+      expect(store.selectionCount).toBe(4800);
+      // The window scrolled away: nothing before the folder is loaded any more.
+      await store.ensure(8000, 8050);
+      expect(store.entry(99)).toBeUndefined();
+
+      vi.mocked(api.gridRows).mockClear();
+      let fetchedFirst = -1;
+      vi.mocked(api.setItemsHidden).mockImplementation(async () => {
+        fetchedFirst = vi.mocked(api.gridRows).mock.calls.length;
+        hiddenFrom(10000, 100, 4899);
+        return 4800;
+      });
+      await store.setHidden(store.selectedItemIds, true);
+      // One photo asked for before the write, not a walk.
+      expect(fetchedFirst).toBe(1);
+      expect(store.selectedItemIds).toEqual([idAt(4900)]);
+      expect(store.selected).toBe(100);
+    });
+
+    /** The same, for the view's first folder: nothing comes before it to ask for, and the
+     *  photo after the folder is the rebuilt index's first. */
+    it('hiding the first folder selected around the lead lands on the photo after it', async () => {
+      const sections: Section[] = [
+        { folderId: 1, offset: 0, count: 4900, takenAtMin: 0 },
+        { folderId: 2, offset: 4900, count: 5100, takenAtMin: 0 },
+      ];
+      const store = await storeOf(10000, { sections });
+      await store.ensure(2450, 2550);
+      store.selected = 2500;
+      await store.selectAll();
+      await store.ensure(8000, 8050);
+
+      vi.mocked(api.setItemsHidden).mockImplementation(async () => {
+        hiddenFrom(10000, 0, 4899);
+        return 4900;
+      });
+      await store.setHidden(store.selectedItemIds, true);
+      expect(store.selectedItemIds).toEqual([idAt(4900)]);
+      expect(store.selected).toBe(0);
+    });
+
+    /** The fetch of the photo before the selection only chooses where to land: failing, it
+     *  must not stop the hide the user asked for. */
+    it('a hide is still sent when the photo before its selection cannot be fetched', async () => {
+      const store = await storeOf(5000);
+      store.selectItem(2500, idAt(2500));
+      await store.ensure(4000, 4050);
+      vi.mocked(api.gridRows).mockRejectedValueOnce(new Error('busy'));
+      vi.mocked(api.setItemsHidden).mockImplementation(async () => {
+        hiddenFrom(5000, 2500, 2500);
+        return 1;
+      });
+      await store.setHidden(store.selectedItemIds, true);
+      expect(api.setItemsHidden).toHaveBeenCalledWith([idAt(2500)], true);
+      expect(store.selectedItemIds).toEqual([idAt(2501)]);
+    });
+
+    /** Asked of an index a scan has rebuilt, the offset before the selection names some
+     *  other photo, and landing after it lands somewhere the user never was. */
+    it('does not land after a photo fetched from another index than the selection', async () => {
+      const store = await storeOf(5000);
+      store.selectItem(2500, idAt(2500));
+      await store.ensure(4000, 4050);
+      vi.mocked(api.gridRows).mockResolvedValueOnce({ version: 2, rows: [entryAt(2400)] });
+      vi.mocked(api.setItemsHidden).mockImplementation(async () => {
+        hiddenFrom(5000, 2500, 2500);
+        return 1;
+      });
+      await store.setHidden(store.selectedItemIds, true);
+      expect(store.selectedItemIds).toEqual([idAt(2501)]);
+    });
+
+    it('a click made while the photo before the selection is fetched is not overwritten', async () => {
+      const store = await storeOf(5000);
+      store.selectItem(2500, idAt(2500));
+      await store.ensure(0, 50);
+      vi.mocked(api.gridRows).mockImplementationOnce(async () => {
+        store.selected = 7;
+        return { version: 1, rows: [entryAt(2499)] };
+      });
+      vi.mocked(api.setItemsHidden).mockImplementation(async () => {
+        hiddenFrom(5000, 2500, 2500);
+        return 1;
+      });
+      await store.setHidden([idAt(2500)], true);
+      expect(store.selectedItemIds).toEqual([idAt(7)]);
+      expect(store.selected).toBe(7);
+    });
+
+    /** Ctrl+A, then a photo Ctrl+clicked off and on again: the lead and the anchor are both
+     *  inside the folder now. The loaded pages before the lead are all leaving, so the
+     *  selection starts no later than where they give out, and the photo there is the one
+     *  to ask for - the photo before the anchor is one of the leaving ones. */
+    it('hiding a folder whose lead and anchor moved inside it still lands after the folder', async () => {
+      const sections: Section[] = [
+        { folderId: 1, offset: 0, count: 2400, takenAtMin: 0 },
+        { folderId: 2, offset: 2400, count: 2500, takenAtMin: 0 },
+        { folderId: 3, offset: 4900, count: 5100, takenAtMin: 0 },
+      ];
+      const store = await storeOf(10000, { sections });
+      await store.ensure(2450, 2550);
+      store.selected = 2450;
+      await store.selectAll();
+      store.toggleSelected(2450);
+      store.toggleSelected(2450);
+      expect(store.selectionCount).toBe(2500);
+      await store.ensure(8000, 8050);
+      expect(store.entry(2399)).toBeUndefined();
+
+      vi.mocked(api.setItemsHidden).mockImplementation(async () => {
+        hiddenFrom(10000, 2400, 4899);
+        return 2500;
+      });
+      await store.setHidden(store.selectedItemIds, true);
+      expect(store.selectedItemIds).toEqual([idAt(4900)]);
+      expect(store.selected).toBe(2400);
+    });
+
     /** A band begun from a lead, so the lead's page is kept while the window autoscrolls
      *  away: the photo before the band is loaded, the pages after the lead's are not. */
     async function bandFromLead(first: number, last: number) {
