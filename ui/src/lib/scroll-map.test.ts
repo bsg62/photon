@@ -154,6 +154,76 @@ describe('writes from code', () => {
   });
 });
 
+describe('re-anchoring', () => {
+  it('puts the thumb back on settle, without moving the photos', () => {
+    const map = mapped();
+    map.press(true);
+    map.onScroll(1_000); // virtual 4_950
+    map.release();
+    map.onScroll(1_100); // virtual 5_050, shift 3_950
+    const w = map.settle();
+    expect(w).toBeCloseTo(5_050 / 4.95, 6);
+    map.wrote(w!);
+    expect(map.virtual).toBe(5_050);
+    expect(map.shift).toBeCloseTo(5_050 - 5_050 / 4.95, 6);
+  });
+  it('writes nothing on settle when the thumb is already right', () => {
+    const map = mapped();
+    map.press(true);
+    map.onScroll(1_000);
+    expect(map.settle()).toBeNull();
+  });
+  it('writes nothing on settle under the cap', () => {
+    const map = createScrollMap();
+    map.resize(2_000, 100, 2_100);
+    map.onScroll(700);
+    expect(map.settle()).toBeNull();
+  });
+  it('re-anchors at once when a step reaches the top of the DOM before the top of the library', () => {
+    const map = mapped();
+    map.press(true);
+    map.onScroll(1_000); // virtual 4_950
+    map.release();
+    let w: number | null = null;
+    for (let d = 850; w === null && d > -150; d -= 150) w = map.onScroll(Math.max(0, d));
+    expect(map.virtual).toBe(3_950);
+    expect(w).toBeCloseTo(3_950 / 4.95, 6);
+  });
+  it('re-anchors at once when a step reaches the bottom of the DOM before the end', () => {
+    const map = mapped();
+    map.press(true);
+    map.onScroll(1_900); // virtual 9_405
+    map.release();
+    const w = map.onScroll(2_000); // virtual 9_505: the DOM is at its end, the library is not
+    expect(w).toBeCloseTo(9_505 / 4.95, 6);
+  });
+  it('an overlay thumb drag read as relative settles onto the thumb', () => {
+    const map = mapped();
+    for (let d = 100; d <= 1_000; d += 100) map.onScroll(d); // no press: small steps, relative
+    expect(map.virtual).toBe(1_000);
+    const w = map.settle();
+    expect(w).toBeCloseTo(1_000 / 4.95, 6);
+  });
+  it('a re-anchor keeps every screen position at the same virtual y', () => {
+    const map = mapped();
+    map.press(true);
+    map.onScroll(1_000);
+    map.release();
+    map.onScroll(1_100);
+    const before = map.virtualAt(1_100);
+    const w = map.settle()!;
+    map.wrote(w);
+    expect(map.virtualAt(w)).toBeCloseTo(before, 6);
+  });
+  it('settle forgets an echo that never came', () => {
+    const map = mapped();
+    map.wrote(map.setVirtual(4_950)); // expected 1_000
+    map.settle();
+    map.onScroll(1_000.5);
+    expect(map.virtual).toBeCloseTo(4_950.5, 6);
+  });
+});
+
 describe('a press on the scrollbar', () => {
   it('release ends a press', () => {
     const map = mapped();

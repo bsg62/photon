@@ -150,6 +150,15 @@ export function createScrollMap() {
       expected = domTop;
     },
 
+    /** Scrolling has gone still: the DOM position that puts the thumb back where the virtual
+     *  position is, or null when it is already there. Nothing on screen moves - `virtual`
+     *  is unchanged and `shift` absorbs the difference. */
+    settle(): number | null {
+      expected = null;
+      if (!isMapped()) return null;
+      return Math.abs(toDom(virtual) - lastDomTop) < 1 ? null : target(virtual);
+    },
+
     /** A scroll event, with the DOM position it left. */
     onScroll(domTop: number): number | null {
       if (!isMapped()) {
@@ -171,11 +180,21 @@ export function createScrollMap() {
       const moved = domTop - lastDomTop;
       lastDomTop = domTop;
       if (onScrollbar || Math.abs(moved) > JUMP_VIEWPORTS * viewport) {
+        // Ends map to ends exactly, so a proportional step never lands on one range's edge
+        // without the other's.
         virtual = fromDom(domTop);
-      } else {
-        virtual = clampVirtual(virtual + moved);
+        shift = virtual - domTop;
+        return null;
       }
+      virtual = clampVirtual(virtual + moved);
       shift = virtual - domTop;
+      // An end of one range without the other: relative steps have walked the DOM into a
+      // wall the library has not reached (or the reverse), and the next step would go
+      // nowhere. Re-anchored now rather than on settle - it can cut a flick short, but only
+      // after millions of px without a pause.
+      const md = maxDom();
+      const mv = maxVirtual();
+      if (domTop < 1 !== virtual <= 0 || domTop > md - 1 !== virtual >= mv) return target(virtual);
       return null;
     },
   };
