@@ -311,27 +311,20 @@ ALTER TABLE items ADD COLUMN duration_ms INTEGER;
 ALTER TABLE folders ADD COLUMN alias TEXT;
 "#,
     r#"
--- The All, Starred and Videos views read only the rows they show. Each is shaped like
+-- The Starred and Videos views read only the rows they show. Each index is shaped like
 -- `items_hidden`, which is why Hidden was already fast: the grid's driver (`folder_order`)
 -- groups the view's rows by folder, and the outer walk reads each folder's rows in capture
 -- order, so an index on `(folder_id, taken_at)` holding exactly those rows serves both
 -- without touching the rest. Before, both went through `items_folder`, which holds every
--- row: Starred and Videos read the whole library twice to return a few percent of it, and
--- All read every hidden and missing row only to drop it.
+-- row: Starred and Videos read the whole library twice to return a few percent of it.
 --
 -- `items_starred` was `(rating)`, which served the Starred count and nothing else; the
 -- count still reads it (its WHERE implies the index's), now alongside the view.
 --
--- The order of the three is load-bearing. Starred's and Videos' WHERE implies
--- `items_visible`'s too, so each could be served by either index, and photon never runs
--- ANALYZE: without statistics SQLite takes every partial index for half the table, the two
--- cost the same, and the tie goes to the index created *last* - seen in the plans, and what
--- SQLite's code does: a new index goes to the head of the table's list, and a plan found
--- later that is only as good does not displace one found earlier. Created last,
--- `items_visible` served all three views, which is the whole library for a Starred grid of
--- a few percent. The plan tests in `items.rs` fail on that.
+-- There is deliberately no such index for All (`missing_since IS NULL AND hidden = 0`):
+-- every visible view's WHERE implies that predicate, so it would tie with these two and
+-- take them over. CLAUDE.md, "Schema", has the reasoning.
 DROP INDEX items_starred;
-CREATE INDEX items_visible ON items(folder_id, taken_at) WHERE missing_since IS NULL AND hidden = 0;
 CREATE INDEX items_starred ON items(folder_id, taken_at) WHERE rating >= 1 AND missing_since IS NULL;
 CREATE INDEX items_videos ON items(folder_id, taken_at) WHERE kind = 1 AND missing_since IS NULL;
 "#,
@@ -1205,8 +1198,8 @@ mod tests {
         assert_eq!(version, 22);
     }
 
-    /// A library at schema 21 comes out of the upgrade with the three view indexes, and
-    /// with `items_starred` reshaped from `(rating)` to the per-folder walk's
+    /// A library at schema 21 comes out of the upgrade with the Videos index, and with
+    /// `items_starred` reshaped from `(rating)` to the per-folder walk's
     /// `(folder_id, taken_at)` - a `CREATE INDEX` alone would have failed on the name, and
     /// an old-shaped index left under it would serve the count but never the view.
     #[test]
@@ -1228,10 +1221,6 @@ mod tests {
                 "WHERE rating >= 1 AND missing_since IS NULL",
             ),
             ("items_videos", "WHERE kind = 1 AND missing_since IS NULL"),
-            (
-                "items_visible",
-                "WHERE missing_since IS NULL AND hidden = 0",
-            ),
         ] {
             let sql: String = conn
                 .query_row(

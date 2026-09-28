@@ -947,10 +947,11 @@ impl Library {
     }
 
     /// The grid's rows for a `WHERE` filter fragment, applied both to the rows returned and
-    /// to the per-folder placement the order is built on (see `grid_query`). All, Starred and
-    /// Videos are each served by a partial index on `(folder_id, taken_at)` holding exactly
-    /// their rows (`items_visible`, `items_starred`, `items_videos`, schema 22), which the
-    /// driver and the per-folder walk both read.
+    /// to the per-folder placement the order is built on (see `grid_query`). Starred and Videos
+    /// are each served by a partial index on `(folder_id, taken_at)` holding exactly their
+    /// rows (`items_starred`, `items_videos`, schema 22), which the driver and the per-folder
+    /// walk both read; All reads `items_folder`, since an index of every visible row would
+    /// tie with those two and take them over (CLAUDE.md, "Schema").
     ///
     /// `params` bind the filter's `?N` placeholders. The fragment appears twice in the
     /// query (driver and outer filter), which is why placeholders are numbered: the same
@@ -2062,16 +2063,17 @@ mod tests {
         );
     }
 
-    /// Pins that the All, Starred and Videos grid queries read only the rows they show,
-    /// through `items_visible`, `items_starred` and `items_videos`: both the driver (a
-    /// folder's oldest shown photo) and the outer per-folder walk. Built without them, the
-    /// driver scanned every row of the library and the walk read each folder's hidden and
-    /// unshown photos only to drop them.
+    /// Pins that the Starred and Videos grid queries read only the rows they show, through
+    /// `items_starred` and `items_videos`: both the driver (a folder's oldest shown photo) and
+    /// the outer per-folder walk. Without them both read `items_folder`, every row of the
+    /// library, to return a few percent of it. All is pinned to `items_folder`, so a new
+    /// partial index its WHERE implies - one that would tie with the view indexes and take
+    /// them over (CLAUDE.md, "Schema") - fails here rather than slowing Starred silently.
     #[test]
     fn the_all_starred_and_videos_views_are_served_by_their_indexes() {
         let (_dir, lib) = temp_library();
         for (filter, index) in [
-            ("", "items_visible"),
+            ("", "items_folder"),
             (STARRED_FILTER, "items_starred"),
             (VIDEO_FILTER, "items_videos"),
         ] {

@@ -333,6 +333,14 @@ bare term makes SQLite walk a partial index on that predicate - `items_size`, in
 order, 7-12x slower at 300k photos. `library/mod.rs` has the reasoning; each such query has a
 plan test, and a new one needs its own.
 
+The same missing statistics make **two partial indexes tie**: SQLite costs every partial index
+as half the table, so when a query's WHERE implies the predicates of two indexes on `items`,
+the one created *last* wins. A new partial index must therefore not be implied by another
+view's WHERE; the view's plan test is the tripwire. That is why the All view has no
+`items_visible` (`missing_since IS NULL AND hidden = 0`) beside `items_starred` and
+`items_videos` (schema 22): every visible view implies it, and created after them it took
+Starred and Videos over, the whole library read for a grid of 3%.
+
 **Reads are pooled, writes are one connection.** `Library::reader()` returns a `Result` and never
 waits on another reader: it hands out an idle pooled connection or opens one (at most eight are
 kept). `writer()` is a single mutexed connection.
