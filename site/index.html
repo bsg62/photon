@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>photon — a local photo manager</title>
+<meta name="description" content="A fast, local photo manager for Linux, macOS and Windows. A spiritual successor to Picasa 3. Your photos stay where they are, untouched.">
+<link rel="icon" href="img/icon.svg" type="image/svg+xml">
+<meta property="og:title" content="photon">
+<meta property="og:description" content="A fast, local photo manager for Linux, macOS and Windows. A spiritual successor to Picasa 3.">
+<meta property="og:image" content="https://photon.webcodr.io/img/main-light.png">
+<meta property="og:url" content="https://photon.webcodr.io/">
+<style>
+  /* The app's own palette (ui/src/tokens.css), so the page and the screenshots agree. */
+  :root {
+    color-scheme: light dark;
+    --surface: #ffffff;
+    --chrome: #ebebed;
+    --line: #d9d9de;
+    --text: #1f1f23;
+    --text-dim: #5f5f67;
+    --accent: #1f6fd6;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --surface: #1b1b1e;
+      --chrome: #2c2c31;
+      --line: #3a3a40;
+      --text: #ededf0;
+      --text-dim: #a6a6af;
+      --accent: #62a0ea;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--surface);
+    color: var(--text);
+    font: 17px/1.6 system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  }
+  main { max-width: 60rem; margin: 0 auto; padding: 3rem 1rem 4rem; }
+  a { color: var(--accent); }
+  header { text-align: center; }
+  header img { width: 96px; height: 96px; }
+  h1 { font-size: 2.75rem; margin: .25rem 0 0; letter-spacing: -.02em; }
+  .tagline { font-size: 1.25rem; color: var(--text-dim); margin: .25rem 0 1.5rem; }
+  .button {
+    display: inline-block;
+    padding: .6rem 1.25rem;
+    border-radius: 8px;
+    background: var(--accent);
+    color: var(--surface);
+    font-weight: 600;
+    text-decoration: none;
+  }
+  .button.plain { background: var(--chrome); color: var(--text); margin-left: .5rem; }
+  .platforms { color: var(--text-dim); font-size: .95rem; margin-top: .75rem; }
+  figure { margin: 3rem 0; }
+  figure img {
+    display: block;
+    width: 100%;
+    height: auto;
+    border-radius: 10px;
+    border: 1px solid var(--line);
+  }
+  figcaption { color: var(--text-dim); font-size: .95rem; text-align: center; margin-top: .5rem; }
+  h2 { font-size: 1.5rem; margin: 3rem 0 1rem; }
+  .features { display: grid; grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr)); gap: 1.25rem 2rem; }
+  .features h3 { font-size: 1.05rem; margin: 0 0 .25rem; }
+  .features p { margin: 0; color: var(--text-dim); }
+  .table-wrap { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { text-align: left; padding: .5rem .75rem .5rem 0; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-weight: 600; }
+  code { font-size: .9em; background: var(--chrome); padding: .1em .3em; border-radius: 4px; }
+  footer { border-top: 1px solid var(--line); margin-top: 4rem; padding-top: 1.5rem; color: var(--text-dim); font-size: .95rem; text-align: center; }
+  @media (max-width: 30rem) {
+    h1 { font-size: 2.25rem; }
+    .button.plain { margin: .5rem 0 0; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <img src="img/icon.svg" alt="">
+    <h1>photon</h1>
+    <p class="tagline">A fast, local photo manager. A spiritual successor to Picasa 3.</p>
+    <a class="button" href="https://github.com/bsg62/photon/releases/latest">Download</a>
+    <a class="button plain" href="https://github.com/bsg62/photon">Source on GitHub</a>
+    <p class="platforms">Linux · macOS · Windows — free and open source, MIT licensed</p>
+  </header>
+
+  <figure>
+    <picture>
+      <source srcset="img/main-dark.png" media="(prefers-color-scheme: dark)">
+      <img src="img/main-light.png" width="1280" height="800" alt="photon's main window: a sidebar of views, albums and folders beside a grid of photos grouped by folder">
+    </picture>
+  </figure>
+
+  <h2>Your photos stay where they are</h2>
+  <p>
+    photon watches your folders in place. It never moves, renames or changes a photo: it keeps a
+    small library and a thumbnail cache in your user directories, and rotations and crops live
+    there too, applied only on the way to the screen. No account, no cloud, no import step.
+  </p>
+
+  <h2>What it does</h2>
+  <div class="features">
+    <div>
+      <h3>Picks up where Picasa left off</h3>
+      <p>Stars, people, albums and hidden photos are read from Picasa's <code>.picasa.ini</code>. A star set in photon is written back, so both programs agree.</p>
+    </div>
+    <div>
+      <h3>Fast with big libraries</h3>
+      <p>Hundreds of thousands of photos scroll smoothly. New and changed files are picked up as they appear on disk.</p>
+    </div>
+    <div>
+      <h3>Search that knows your photos</h3>
+      <p>File and folder names, camera, lens, <code>50mm</code>, <code>f/1.8</code>, keywords, captions and dates. Save a search to run it again.</p>
+    </div>
+    <div>
+      <h3>Albums, people and tags</h3>
+      <p>Make your own albums. Browse Picasa's people and the keywords Lightroom, Bridge or digiKam wrote into your photos.</p>
+    </div>
+    <div>
+      <h3>Duplicates and look-alikes</h3>
+      <p>Finds byte-identical copies and the same picture after a resize or re-save, and compares them side by side.</p>
+    </div>
+    <div>
+      <h3>Rotate, crop, export</h3>
+      <p>Non-destructive turns and crops, a slideshow, and export of copies to a folder of your choice.</p>
+    </div>
+  </div>
+
+  <figure>
+    <img src="img/viewer-info-light.png" width="1280" height="800" loading="lazy" alt="photon's viewer with the info panel open, listing camera, lens, exposure, dates, people, keywords and albums">
+    <figcaption>The viewer's info panel: camera data, every date a photo has, people, keywords and albums.</figcaption>
+  </figure>
+
+  <h2>Install</h2>
+  <p>Get the installer for your system from the <a href="https://github.com/bsg62/photon/releases/latest">latest release</a>.</p>
+  <div class="table-wrap">
+    <table>
+      <tr><th>System</th><th>File</th></tr>
+      <tr><td>Linux</td><td><code>.AppImage</code>, or <code>.deb</code> for Debian and Ubuntu</td></tr>
+      <tr><td>macOS</td><td><code>.dmg</code> — <code>aarch64</code> for Apple Silicon, <code>x64</code> for Intel</td></tr>
+      <tr><td>Windows</td><td><code>.msi</code></td></tr>
+    </table>
+  </div>
+  <p>
+    photon reads JPEG, PNG, GIF, WebP, TIFF, BMP and AVIF, and plays MP4, MOV and WebM video
+    through the system's own support. Camera RAW and HEIC are not read.
+  </p>
+  <p>
+    The installers are not code-signed, so macOS and Windows will warn the first time you open
+    photon. The <a href="https://github.com/bsg62/photon#photon-is-not-code-signed">README</a>
+    explains how to get past that on each system, and how to check a download against its
+    <code>SHA256SUMS</code>.
+  </p>
+
+  <footer>
+    photon is MIT licensed ·
+    <a href="https://github.com/bsg62/photon">GitHub</a> ·
+    <a href="https://github.com/bsg62/photon/releases">Releases</a> ·
+    <a href="https://github.com/bsg62/photon/issues">Issues</a>
+  </footer>
+</main>
+</body>
+</html>
