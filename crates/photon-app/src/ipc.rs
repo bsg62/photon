@@ -13,7 +13,9 @@
 //! mount) and `remove_folder` (which joins a scan thread) can genuinely block for a
 //! while, so they're `async fn`s that hand their blocking body to
 //! `tauri::async_runtime::spawn_blocking`, which *does* run on Tauri's dedicated
-//! blocking pool.
+//! blocking pool. So does every other command that can: a full-size render, an export, a
+//! path the user picked, a long poll. `an_export_holds_no_ipc_worker` shows what the
+//! difference is, through Tauri's own dispatch.
 
 use crate::{commands, engine::Engine, error::AppError};
 use photon_core::library::{
@@ -310,14 +312,24 @@ pub fn set_item_edit(
     commands::set_item_edit(engine.inner(), id, turns, crop)
 }
 
+/// On the blocking pool like `add_folder`: a star is written into `.picasa.ini` in the
+/// photo's own folder, often on a network share, which hangs when the share has stopped
+/// answering - and every other star then queues behind it on `Engine::ini_write`.
 #[tauri::command(async)]
-pub fn set_star(engine: Eng<'_>, id: i64, starred: bool) -> Result<(), AppError> {
-    commands::set_star(&engine, id, starred)
+pub async fn set_star(engine: Eng<'_>, id: i64, starred: bool) -> Result<(), AppError> {
+    let engine = engine.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || commands::set_star(&engine, id, starred))
+        .await
+        .map_err(AppError::internal)?
 }
 
+/// As `set_star`, once per folder in the selection.
 #[tauri::command(async)]
-pub fn set_stars(engine: Eng<'_>, ids: Vec<i64>, starred: bool) -> Result<usize, AppError> {
-    commands::set_stars(&engine, &ids, starred)
+pub async fn set_stars(engine: Eng<'_>, ids: Vec<i64>, starred: bool) -> Result<usize, AppError> {
+    let engine = engine.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || commands::set_stars(&engine, &ids, starred))
+        .await
+        .map_err(AppError::internal)?
 }
 
 #[tauri::command(async)]
@@ -349,19 +361,33 @@ pub fn remove_item_tag(engine: Eng<'_>, id: i64, tag: String) -> Result<(), AppE
     commands::remove_item_tag(&engine, id, &tag)
 }
 
+/// On the blocking pool like `add_folder`: the call lasts the whole export - every copy, and
+/// every edited photo's render waiting its turn behind the viewer's - and the destination is
+/// canonicalized first, which can hang on a dead mount. Progress still arrives as events
+/// while it runs.
 #[tauri::command(async)]
-pub fn export_items(
+pub async fn export_items(
     engine: Eng<'_>,
     ids: Vec<i64>,
     dest: String,
     apply_edits: bool,
 ) -> Result<commands::ExportReport, AppError> {
-    commands::export_items(&engine, &ids, &dest, apply_edits)
+    let engine = engine.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        commands::export_items(&engine, &ids, &dest, apply_edits)
+    })
+    .await
+    .map_err(AppError::internal)?
 }
 
+/// On the blocking pool for the reason `add_folder` is: it canonicalizes a path the user
+/// picked, which can hang on a dead network mount.
 #[tauri::command(async)]
-pub fn check_export_dest(engine: Eng<'_>, dest: String) -> Result<(), AppError> {
-    commands::check_export_dest(&engine, &dest)
+pub async fn check_export_dest(engine: Eng<'_>, dest: String) -> Result<(), AppError> {
+    let engine = engine.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || commands::check_export_dest(&engine, &dest))
+        .await
+        .map_err(AppError::internal)?
 }
 
 #[tauri::command(async)]
@@ -397,24 +423,47 @@ pub fn neighbours(engine: Eng<'_>, id: i64, radius: usize) -> Vec<i64> {
     commands::neighbours(&engine, id, radius)
 }
 
+/// Every call into the opener runs on the blocking pool, like `add_folder`. Before it does
+/// anything the opener canonicalizes (reveal) or stats (open) the path - a photo's, often on
+/// a network share, which hangs when the share has stopped answering - and then makes a
+/// blocking call of its own: D-Bus to the file manager on Linux, the shell on Windows.
+async fn with_opener(
+    engine: Eng<'_>,
+    open: impl FnOnce(&Engine) -> Result<(), AppError> + Send + 'static,
+) -> Result<(), AppError> {
+    let engine = engine.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || open(&engine))
+        .await
+        .map_err(AppError::internal)?
+}
+
 #[tauri::command(async)]
-pub fn reveal_in_file_manager(engine: Eng<'_>, id: i64) -> Result<(), AppError> {
-    let path = commands::item_path(&engine, id)?;
-    tauri_plugin_opener::reveal_item_in_dir(path).map_err(AppError::internal)
+pub async fn reveal_in_file_manager(engine: Eng<'_>, id: i64) -> Result<(), AppError> {
+    with_opener(engine, move |engine| {
+        let path = commands::item_path(engine, id)?;
+        tauri_plugin_opener::reveal_item_in_dir(path).map_err(AppError::internal)
+    })
+    .await
 }
 
 /// Hands the photo's file to whatever the system opens that kind of file with. photon
 /// registers no file types, so that is never photon itself.
 #[tauri::command(async)]
-pub fn open_in_default_app(engine: Eng<'_>, id: i64) -> Result<(), AppError> {
-    let path = commands::item_path(&engine, id)?;
-    tauri_plugin_opener::open_path(path, None::<&str>).map_err(AppError::internal)
+pub async fn open_in_default_app(engine: Eng<'_>, id: i64) -> Result<(), AppError> {
+    with_opener(engine, move |engine| {
+        let path = commands::item_path(engine, id)?;
+        tauri_plugin_opener::open_path(path, None::<&str>).map_err(AppError::internal)
+    })
+    .await
 }
 
 #[tauri::command(async)]
-pub fn reveal_folder(engine: Eng<'_>, folder_id: i64) -> Result<(), AppError> {
-    let path = commands::folder_path(&engine, folder_id)?;
-    tauri_plugin_opener::reveal_item_in_dir(path).map_err(AppError::internal)
+pub async fn reveal_folder(engine: Eng<'_>, folder_id: i64) -> Result<(), AppError> {
+    with_opener(engine, move |engine| {
+        let path = commands::folder_path(engine, folder_id)?;
+        tauri_plugin_opener::reveal_item_in_dir(path).map_err(AppError::internal)
+    })
+    .await
 }
 
 #[tauri::command(async)]
@@ -429,16 +478,23 @@ pub fn app_info(engine: Eng<'_>) -> commands::AppInfo {
     commands::app_info(&engine)
 }
 
+/// The likeliest of all to meet a dead mount: Settings offers it for a root that is offline.
 #[tauri::command(async)]
-pub fn reveal_watched(engine: Eng<'_>, watched_id: i64) -> Result<(), AppError> {
-    let path = commands::watched_path(&engine, watched_id)?;
-    tauri_plugin_opener::reveal_item_in_dir(path).map_err(AppError::internal)
+pub async fn reveal_watched(engine: Eng<'_>, watched_id: i64) -> Result<(), AppError> {
+    with_opener(engine, move |engine| {
+        let path = commands::watched_path(engine, watched_id)?;
+        tauri_plugin_opener::reveal_item_in_dir(path).map_err(AppError::internal)
+    })
+    .await
 }
 
 #[tauri::command(async)]
-pub fn reveal_library(engine: Eng<'_>) -> Result<(), AppError> {
-    let path = commands::app_info(&engine).library_path;
-    tauri_plugin_opener::reveal_item_in_dir(path).map_err(AppError::internal)
+pub async fn reveal_library(engine: Eng<'_>) -> Result<(), AppError> {
+    with_opener(engine, |engine| {
+        let path = commands::app_info(engine).library_path;
+        tauri_plugin_opener::reveal_item_in_dir(path).map_err(AppError::internal)
+    })
+    .await
 }
 
 #[tauri::command(async)]
@@ -500,4 +556,151 @@ pub fn video_frame_failed(
     reason: photon_core::thumbs::VideoFailure,
 ) -> Result<(), AppError> {
     commands::video_frame_failed(&engine, id, &key, reason)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::testutil::{Fixture, fixture, jpeg};
+    use serde_json::json;
+    use std::{sync::mpsc, time::Duration};
+    use tauri::{
+        Manager,
+        ipc::{CallbackFn, InvokeBody},
+        test::{INVOKE_KEY, get_ipc_response, mock_builder, mock_context, noop_assets},
+        webview::InvokeRequest,
+    };
+
+    fn request(cmd: &str, args: serde_json::Value) -> InvokeRequest {
+        InvokeRequest {
+            cmd: cmd.into(),
+            callback: CallbackFn(0),
+            error: CallbackFn(1),
+            url: if cfg!(windows) {
+                "http://tauri.localhost"
+            } else {
+                "tauri://localhost"
+            }
+            .parse()
+            .unwrap(),
+            body: InvokeBody::Json(args),
+            headers: Default::default(),
+            invoke_key: INVOKE_KEY.to_string(),
+        }
+    }
+
+    /// Sends as many `cmd`s as Tauri's runtime has worker threads, while `park` holds a lock
+    /// each of them waits on, then `grid_info`, and fails unless `grid_info` answers while
+    /// they are still parked. Run on a worker, the parked calls hold every one of them, and
+    /// no other command is dispatched until they finish. Sent through Tauri's own dispatch,
+    /// because the difference is in what `#[tauri::command(async)]` does with a plain `fn`.
+    /// `check` reads each parked call's result once the lock is released. The runtime is
+    /// Tauri's global one, shared by every test in the binary, so one command reverted to a
+    /// plain `fn` starves it for the others too: when several of these fail together, the
+    /// one to read is the one named after the command that changed.
+    fn assert_parked_calls_hold_no_worker<G>(
+        f: &Fixture,
+        cmd: &str,
+        args: impl Fn(usize) -> serde_json::Value,
+        park: impl FnOnce() -> G,
+        check: impl Fn(serde_json::Value),
+    ) {
+        let app = mock_builder()
+            .invoke_handler(tauri::generate_handler![
+                export_items,
+                set_star,
+                set_stars,
+                grid_info
+            ])
+            .build(mock_context(noop_assets()))
+            .unwrap();
+        app.manage(f.engine.clone());
+        let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .unwrap();
+        let workers = tauri::async_runtime::handle()
+            .inner()
+            .metrics()
+            .num_workers();
+
+        let parked = park();
+        std::thread::scope(|s| {
+            let calls: Vec<_> = (0..workers)
+                .map(|n| {
+                    let (webview, args) = (&webview, args(n));
+                    s.spawn(move || get_ipc_response(webview, request(cmd, args)))
+                })
+                .collect();
+            // Long enough for every call to be dispatched and reach the lock.
+            std::thread::sleep(Duration::from_millis(300));
+            let (tx, rx) = mpsc::channel();
+            let webview = &webview;
+            s.spawn(move || {
+                let _ = tx.send(get_ipc_response(webview, request("grid_info", json!({}))));
+            });
+            let answered = rx.recv_timeout(Duration::from_secs(5));
+            // Released before asserting, so a failure still lets the parked calls finish.
+            drop(parked);
+            assert!(
+                answered.is_ok_and(|r| r.is_ok()),
+                "grid_info waited behind {workers} {cmd} calls"
+            );
+            for call in calls {
+                check(call.join().unwrap().unwrap().deserialize().unwrap());
+            }
+        });
+    }
+
+    /// Each export parked on the one full-size render at a time - as a real export of
+    /// edited photos waits behind the viewer's render.
+    #[test]
+    fn an_export_holds_no_ipc_worker() {
+        let f = fixture(&[("a.jpg", &jpeg(16, 8))]);
+        f.add_photos();
+        let id = f.ids()[0];
+        // An edit, so the export renders and takes `RENDERING`.
+        commands::set_item_edit(&f.engine, id, 1, None).unwrap();
+        assert_parked_calls_hold_no_worker(
+            &f,
+            "export_items",
+            |n| {
+                let dest = f.dir.path().join(format!("out{n}"));
+                std::fs::create_dir_all(&dest).unwrap();
+                json!({ "ids": [id], "dest": dest, "applyEdits": true })
+            },
+            || crate::protocol::RENDERING.lock(),
+            |report| assert_eq!(report["written"], 1, "{report}"),
+        );
+    }
+
+    /// Each star parked on the INI-write lock, as stars queue behind one whose folder is on
+    /// a share that has stopped answering.
+    #[test]
+    fn a_star_holds_no_ipc_worker() {
+        let f = fixture(&[("a.jpg", &jpeg(16, 8))]);
+        f.add_photos();
+        let id = f.ids()[0];
+        assert_parked_calls_hold_no_worker(
+            &f,
+            "set_star",
+            |n| json!({ "id": id, "starred": n % 2 == 0 }),
+            || f.engine.hold_ini_write(),
+            |unit| assert_eq!(unit, serde_json::Value::Null),
+        );
+    }
+
+    /// The same for a selection's stars.
+    #[test]
+    fn stars_hold_no_ipc_worker() {
+        let f = fixture(&[("a.jpg", &jpeg(16, 8))]);
+        f.add_photos();
+        let id = f.ids()[0];
+        assert_parked_calls_hold_no_worker(
+            &f,
+            "set_stars",
+            |n| json!({ "ids": [id], "starred": n % 2 == 0 }),
+            || f.engine.hold_ini_write(),
+            |landed| assert_eq!(landed, 1),
+        );
+    }
 }

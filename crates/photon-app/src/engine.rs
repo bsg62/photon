@@ -2,7 +2,7 @@
 //! background scans. Plain Rust, so it can be tested without a webview.
 
 use crate::events::{Events, ExportProgress, FolderStatus, LibraryChanged, ScanProgressEvent};
-use crate::watch::{WatcherService, join_within};
+use crate::watch::WatcherService;
 use parking_lot::{Mutex, MutexGuard, RwLock};
 use photon_core::{
     Error, Result,
@@ -21,7 +21,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
     thread::JoinHandle,
     time::{Duration, Instant},
@@ -229,10 +229,13 @@ pub struct Engine {
     /// The handle of the thread spawned by `startup`, if any is still outstanding.
     /// `wait_for_startup` takes it and joins it, and is safe to call more than once.
     startup: Mutex<Option<JoinHandle<()>>>,
-    /// The handle of the thread spawned by `request_similar_pass`, if any is still
-    /// outstanding. Mirrors `startup`: `wait_for_similar_pass` takes it and joins it, and
-    /// is safe to call when none was ever spawned.
-    similar_pass: Mutex<Option<JoinHandle<()>>>,
+    /// How many threads `request_similar_pass` has let through that have not yet returned,
+    /// which is every pass photon runs, a scan's included. A count rather than a join
+    /// handle: two requests close together are two threads, and a handle kept for the
+    /// latest names the one that found `hashing` held and did nothing while the other does
+    /// the work. Raised before the thread exists, so it also covers one spawned but not yet
+    /// at its `try_lock` on `hashing`, which holds nothing a wait on `hashing` could see.
+    similar_passes: AtomicUsize,
     /// The thread `start_thumb_hashing` spawned, if any. `shutdown` joins it after closing
     /// the thumbnail queue, which is what ends its wait.
     thumb_hashing: Mutex<Option<JoinHandle<()>>>,
@@ -388,7 +391,7 @@ impl Engine {
             next_token: AtomicU64::new(0),
             shutting_down: AtomicBool::new(false),
             startup: Mutex::new(None),
-            similar_pass: Mutex::new(None),
+            similar_passes: AtomicUsize::new(0),
             thumb_hashing: Mutex::new(None),
             watcher: Mutex::new(None),
             ini_write: Mutex::new(()),
@@ -906,6 +909,12 @@ impl Engine {
     ///
     /// A photo the scanner has marked missing is refused: its folder may be an unmounted
     /// drive, and the INI photon would create there would be the only thing on it.
+    /// Holds the INI-write lock, so a test can park a star on it the way a slow share does.
+    #[cfg(test)]
+    pub(crate) fn hold_ini_write(&self) -> MutexGuard<'_, ()> {
+        self.ini_write.lock()
+    }
+
     pub fn set_star(&self, id: i64, starred: bool) -> Result<()> {
         let serialised = self.ini_write.lock();
         let item = self.lib.item(id)?.ok_or(Error::NotFound(id))?;
@@ -1607,7 +1616,12 @@ impl Engine {
                     return;
                 }
                 // Every folder's first scan has now run, so live watching won't race a
-                // startup scan for the same directory.
+                // startup scan for the same directory. Not before them: the watcher registers
+                // only roots marked online, and it is these scans that settle the flag - a
+                // drive plugged in since the last session is offline until its scan, and
+                // the offline poll that would otherwise register it stops looking once the
+                // scan has marked it online. Not after the passes those scans request,
+                // either, which run beyond the scan slot for that reason (`run_scan`).
                 engine.start_watcher();
                 engine.collect_thumb_garbage_if_due();
             })
@@ -1654,8 +1668,10 @@ impl Engine {
         }
     }
 
-    /// Requests a look-alike regroup at whatever distance is stored right now, on its own
-    /// thread. `set_similar_distance` calls this after writing the setting: the
+    /// Requests a duplicate and look-alike pass (`hash_after_scan`), at whatever distance is
+    /// stored right now, on its own thread. Every scan that read its root ends with one
+    /// (`run_scan` says why not inline). `set_similar_distance` calls this after writing
+    /// the setting: the
     /// `groups_changed` signal `hash_after_scan` already reports gets a regroup to the
     /// grid, but nothing runs a pass on its own between scans, so without this a distance
     /// change would sit unseen until some unrelated scan happened to hash something.
@@ -1667,23 +1683,44 @@ impl Engine {
     /// running coalesces with it instead of doubling the work.
     ///
     /// Cancelled by `shutting_down` rather than a token of its own: a distance change has
-    /// no scan to inherit a cancel from, and tying it to shutdown stops the walk on quit
-    /// instead of grinding through a change nobody is left to see.
+    /// no scan to inherit a cancel from, and a scan's pass outlives the scan whose token
+    /// `cancel_scan` would set. Tying it to shutdown stops the walk on quit instead of
+    /// grinding through a change nobody is left to see. A folder's removal no longer stops
+    /// a pass under way, and need not: the pass only updates rows, so a deleted row takes
+    /// no write, and `remove_folder` requests a pass of its own, which the running one
+    /// picks up as another round.
     ///
     /// Checked and refused here, not left to the cancel flag alone: `shutdown`'s bounded
-    /// wait on `hashing` (below) runs once, and an IPC call landing just after it - already
-    /// shutting down, but not yet exited - would otherwise spawn a fresh writer that wait
-    /// never accounted for.
+    /// wait (below) runs once, and an IPC call landing just after it - already shutting
+    /// down, but not yet exited - would otherwise spawn a fresh writer that wait never
+    /// accounted for. The count is raised *before* the flag is read, both `SeqCst`, and
+    /// `shutdown` sets the flag before it reads the count: so either `shutdown` sees this
+    /// request in the count and waits for it, or this request sees the flag and refuses.
+    /// Checked the other way round, a request could read the flag clear, then `shutdown`
+    /// set it and find the count at zero, and only then would the thread be counted.
     pub fn request_similar_pass(self: &Arc<Self>) {
+        self.similar_passes.fetch_add(1, Ordering::SeqCst);
         if self.shutting_down.load(Ordering::SeqCst) {
+            self.similar_passes.fetch_sub(1, Ordering::SeqCst);
             return;
         }
-        let engine = Arc::clone(self);
-        let handle = std::thread::Builder::new()
+        // Lowers the count however the pass ends, a panic included, and also when the
+        // thread never starts: made out here and moved in, it is dropped with the closure
+        // if the spawn fails. Left raised, the count holds every later `shutdown` to its
+        // full timeout.
+        struct Done(Arc<Engine>);
+        impl Drop for Done {
+            fn drop(&mut self) {
+                self.0.similar_passes.fetch_sub(1, Ordering::SeqCst);
+            }
+        }
+        let done = Done(Arc::clone(self));
+        std::thread::Builder::new()
             .name("photon-similar-pass".into())
-            .spawn(move || engine.hash_after_scan(&engine.shutting_down))
+            .spawn(move || {
+                done.0.hash_after_scan(&done.0.shutting_down);
+            })
             .expect("failed to spawn similar-pass thread");
-        *self.similar_pass.lock() = Some(handle);
     }
 
     /// Requests a look-alike pass whenever the thumbnail workers go quiet after making new
@@ -1724,25 +1761,15 @@ impl Engine {
         *slot = Some(handle);
     }
 
-    /// Joins the thread spawned by the most recent `request_similar_pass` call, if one is
-    /// outstanding. Safe to call when none was ever spawned.
+    /// Blocks until every thread `request_similar_pass` has spawned - a scan's pass among
+    /// them - has returned (`similar_passes`). Safe to call when none was ever spawned.
+    /// Unbounded, so for tests and not for the quit path, which is `stop_similar_pass`.
     ///
-    /// This does **not** by itself prove no look-alike pass is still running.
-    /// `hash_after_scan` returns at once when `hashing` is already held elsewhere, so the
-    /// handle stored here can be a thread that did nothing while a different, unrecorded
-    /// thread does the actual work: two requests close together are exactly that case - the
-    /// first thread is still inside `similar::update` when the second overwrites
-    /// `similar_pass` with its own thread, which finds `hashing` held and returns at once.
-    /// Joining *that* handle finishes instantly and proves nothing about the first.
-    /// `shutdown` therefore does not rely on this call for correctness; it waits on
-    /// `hashing` itself afterwards, which identifies whichever thread is actually running
-    /// regardless of which request (or scan) started it. This call exists for the case
-    /// that does discriminate on it: a single request with nothing racing it, where the
-    /// spawned thread is necessarily the one that does the work.
+    /// What this does not see is `hashing` held by something other than a requested pass,
+    /// which in the tests is the test thread standing in for one.
     pub fn wait_for_similar_pass(&self) {
-        let handle = self.similar_pass.lock().take();
-        if let Some(handle) = handle {
-            let _ = handle.join();
+        while self.similar_passes.load(Ordering::SeqCst) > 0 {
+            std::thread::sleep(Duration::from_millis(5));
         }
     }
 
@@ -1789,38 +1816,35 @@ impl Engine {
 
     /// Waits, within `budget` in total, for every look-alike pass to have stopped.
     ///
-    /// Two waits, one deadline between them, because either alone is incomplete.
+    /// Two waits, one deadline between them.
     ///
-    /// Joining the recorded handle closes a sliver nothing else does: a thread already
-    /// spawned but not yet at its own `try_lock` holds nothing, so the wait on `hashing`
-    /// below would sail past it and it would go on to regroup after `shutdown` returned.
-    /// But the handle need not be the thread doing the work - per `wait_for_similar_pass`'s
-    /// doc, a scan's inline `hash_after_scan` never records one, and a request that lost
-    /// the race for `hashing` records a thread that did nothing - so taking and dropping
-    /// `hashing` itself is what establishes "no pass is running", whichever thread got
-    /// there.
+    /// The count of requested passes (`similar_passes`) closes a sliver the wait on
+    /// `hashing` cannot: a thread already spawned but not yet at its own `try_lock` holds
+    /// nothing, so that wait would sail past it and it would go on to regroup after
+    /// `shutdown` returned. Every scan's pass is such a thread, so several roots finishing
+    /// together leave several: the count is raised before each spawn and lowered as each
+    /// returns. Taking and dropping `hashing`
+    /// afterwards still establishes "no pass is running" for whatever holds it, requested
+    /// or not.
     ///
-    /// **Both are bounded, against one deadline.** An unbounded join here would defeat the
-    /// bound below in the single-request case, which is the common one: there the recorded
-    /// handle *is* the thread inside `similar::update`, so joining it waits for exactly the
-    /// thread the timeout exists to give up on. `hash_candidates` reads the original photo
-    /// files, so a root on a dead network mount would hang the quit forever - the scenario
-    /// `SIMILAR_PASS_STOP_TIMEOUT` was introduced for - and the bound would have been real
-    /// only in the interleaving where the recorded handle is a no-op thread. Sharing one
-    /// deadline keeps the total within the stated bound rather than twice it.
+    /// **Both are bounded, against one deadline.** An unbounded wait on the count would
+    /// defeat the bound below in the common case, where the thread counted *is* the one
+    /// inside `similar::update`: it would wait for exactly the thread the timeout exists to
+    /// give up on. `hash_candidates` reads the original photo files, so a root on a dead
+    /// network mount would hang the quit forever - the scenario `SIMILAR_PASS_STOP_TIMEOUT`
+    /// was introduced for. Sharing one deadline keeps the total within the stated bound
+    /// rather than twice it.
     ///
     /// `budget` is a parameter rather than the constant read directly so a test can drive
     /// this with a short one; `shutdown` is its only caller.
     fn stop_similar_pass(&self, budget: Duration) {
         let deadline = Instant::now() + budget;
-        let handle = self.similar_pass.lock().take();
-        if let Some(handle) = handle
-            && join_within(
-                vec![handle],
-                deadline.saturating_duration_since(Instant::now()),
-            ) > 0
-        {
-            tracing::warn!("a requested look-alike pass did not stop in time; detaching it");
+        while self.similar_passes.load(Ordering::SeqCst) > 0 {
+            if Instant::now() >= deadline {
+                tracing::warn!("a requested look-alike pass did not stop in time; detaching it");
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
         }
         match self.hashing.try_lock_until(deadline) {
             Some(guard) => drop(guard),
@@ -1831,7 +1855,12 @@ impl Engine {
         }
     }
 
-    fn run_scan(&self, watched: &WatchedFolder, subtree: Option<PathBuf>, cancel: Arc<AtomicBool>) {
+    fn run_scan(
+        self: &Arc<Self>,
+        watched: &WatchedFolder,
+        subtree: Option<PathBuf>,
+        cancel: Arc<AtomicBool>,
+    ) {
         let options = ScanOptions {
             excluded: self.excluded.clone(),
             cancel: cancel.clone(),
@@ -1918,8 +1947,17 @@ impl Engine {
         // After the scan has reported done, not before: the pass reads files, and on a
         // library with many duplicates on a slow drive that is minutes during which the
         // status bar should not claim the folder is still being scanned.
+        //
+        // On a thread of its own rather than on this one, so the scan slot is released
+        // when the scan is done and not when the pass is. `startup` starts the watcher once
+        // the slots are empty, and run here the pass held it back for the session's first
+        // whole-library regroup, while files changing in that window went unseen until
+        // something rescanned their directory; a watcher event for this folder waited out
+        // the pass as a queued follow-up just the same. The request coalesces with a pass
+        // already running (`hash_after_scan`), and `shutdown` waits for it by count
+        // (`stop_similar_pass`), so leaving the slot loses neither.
         if !cancelled && !still_offline {
-            self.hash_after_scan(&cancel);
+            self.request_similar_pass();
         }
     }
 
@@ -1964,15 +2002,14 @@ impl Engine {
     /// only about keeping the cheap whole-library regroup last.
     ///
     /// One pass at a time. Several roots finish their startup scans close together, and two
-    /// passes would read the same files twice. A scan that finds the pass running sets
+    /// passes would read the same files twice. A request that finds the pass running sets
     /// `hash_requested` and leaves; the runner goes round again while the flag is set, so
     /// files indexed after its candidate list was read are not left for the next launch.
     /// The re-check after the guard is dropped closes the window where the flag is set
     /// after the runner's last look and before it lets go.
     ///
-    /// `cancel` is the calling scan's. Cancelling it (its folder is being removed, or photon
-    /// is shutting down) stops the pass even though the files may belong to other roots;
-    /// the next scan of anything picks the work up.
+    /// `cancel` is `shutting_down` for every pass photon runs (see `request_similar_pass`);
+    /// it stops the pass on quit, and the next launch's scans pick the work up.
     fn hash_after_scan(&self, cancel: &AtomicBool) {
         self.hash_requested.store(true, Ordering::Release);
         loop {
@@ -2292,6 +2329,7 @@ mod tests {
         let engine = Engine::open(f.config(), sink.clone()).unwrap();
         engine.add_folder(&f.photos).unwrap();
         engine.wait_for_scans();
+        engine.wait_for_similar_pass();
         engine
     }
 
@@ -2477,7 +2515,7 @@ mod tests {
         let watched = f.add_photos();
         f.engine.thumbs.wait_idle();
         f.engine.start_scan(watched);
-        f.engine.wait_for_scans();
+        f.settle();
 
         let info = crate::commands::grid_info(&f.engine);
         assert_eq!(
@@ -2514,7 +2552,7 @@ mod tests {
         let watched = f.add_photos();
         f.engine.thumbs.wait_idle();
         f.engine.start_scan(watched);
-        f.engine.wait_for_scans();
+        f.settle();
         f.engine.set_view(GridView::Duplicates).unwrap();
         assert_eq!(f.ids().len(), 2, "the pair was not grouped to begin with");
 
@@ -2534,9 +2572,7 @@ mod tests {
     /// Nothing but `request_similar_pass` runs a pass between scans, so a distance change
     /// on its own would sit unseen until an unrelated scan happened by. `set_similar_distance`
     /// (`commands.rs`) calls it after writing the setting; this drives that same path (not
-    /// `hash_after_scan` directly) and waits for the pass with `wait_for_similar_pass`,
-    /// which is safe here because nothing else is requesting a pass concurrently - see that
-    /// method's own doc for the case where it would not be.
+    /// `hash_after_scan` directly) and waits for the pass with `wait_for_similar_pass`.
     ///
     /// Distance 0 is "off": a resized copy is never pixel-identical to its original, so at
     /// distance 0 the pair that groups at the default distance 3 must not.
@@ -2549,7 +2585,7 @@ mod tests {
         let watched = f.add_photos();
         f.engine.thumbs.wait_idle();
         f.engine.start_scan(watched);
-        f.engine.wait_for_scans();
+        f.settle();
         f.engine.set_view(GridView::Duplicates).unwrap();
         assert_eq!(
             f.ids().len(),
@@ -2577,7 +2613,7 @@ mod tests {
     fn a_thumbnail_rendered_after_the_scan_is_hashed_without_another_scan() {
         let f = fixture(&[("a/one.jpg", &jpeg_pattern(180, 120))]);
         f.add_photos();
-        f.engine.wait_for_scans();
+        f.settle();
         f.engine.thumbs.wait_idle();
         let id = f.ids()[0];
         let hashed = |f: &crate::testutil::Fixture| {
@@ -2646,7 +2682,7 @@ mod tests {
         let watched = f.add_photos();
         f.engine.thumbs.wait_idle();
         f.engine.start_scan(watched);
-        f.engine.wait_for_scans();
+        f.settle();
         let ids = f.ids();
         assert_eq!(ids.len(), 2);
         assert!(
@@ -2676,10 +2712,10 @@ mod tests {
         std::fs::write(other.join("small.jpg"), jpeg_pattern(72, 48)).unwrap();
         let first = f.add_photos();
         let second = f.engine.add_folder(&other).unwrap();
-        f.engine.wait_for_scans();
+        f.settle();
         f.engine.thumbs.wait_idle();
         f.engine.start_scan(first);
-        f.engine.wait_for_scans();
+        f.settle();
 
         let ids = f.ids();
         assert_eq!(ids.len(), 2);
@@ -2731,13 +2767,12 @@ mod tests {
         f.engine.wait_for_similar_pass();
     }
 
-    /// The interleaving `wait_for_similar_pass` alone cannot cover: a thread (standing in
-    /// for one already inside `similar::update`) holds `hashing`, then a second
-    /// `request_similar_pass` call spawns a thread whose own `try_lock` fails at once and
-    /// which is therefore the handle `similar_pass` stores and `wait_for_similar_pass`
-    /// joins - instantly, having done nothing. If `shutdown` relied on that join alone it
-    /// would return while the first thread is still "running" (here, still holding the
-    /// lock); it must instead still be waiting on `hashing` itself.
+    /// What the count of requested passes cannot see: `hashing` held by something that is
+    /// not one (here the test thread, standing in for a pass already inside
+    /// `similar::update`). A request made meanwhile finds it held and returns at once, so
+    /// the count is back at zero and `wait_for_similar_pass` returns. If `shutdown` relied
+    /// on the count alone it would return while the lock is still held; it must instead
+    /// still be waiting on `hashing` itself.
     #[test]
     fn shutdown_waits_for_the_pass_actually_holding_hashing_not_just_the_latest_requested_thread() {
         let f = fixture(&[("a.jpg", &jpeg(4, 2))]);
@@ -2745,7 +2780,7 @@ mod tests {
 
         let held = f.engine.hashing.lock();
         f.engine.request_similar_pass();
-        f.engine.wait_for_similar_pass(); // joins the no-op thread; proves nothing by itself
+        f.engine.wait_for_similar_pass(); // the request found `hashing` held and returned
 
         let engine = Arc::clone(&f.engine);
         let shutdown = std::thread::spawn(move || engine.shutdown());
@@ -2759,16 +2794,41 @@ mod tests {
         shutdown.join().unwrap();
     }
 
-    /// The bound `shutdown` promises is over *both* its waits, and the join is the one that
-    /// could quietly remove it. In the single-request case (a distance change, then a
-    /// quit) the recorded handle is the thread running the pass, so an unbounded join would
-    /// wait for exactly the thread `SIMILAR_PASS_STOP_TIMEOUT` exists to give up on, and an
-    /// app whose photos are on a dead mount would never quit.
+    /// A pass requested but not yet at its `try_lock` on `hashing` holds nothing, so the
+    /// wait on `hashing` alone sails past it, and it goes on to hash and regroup after
+    /// `shutdown` has returned. Every scan now ends by requesting its pass on a thread of its
+    /// own, and two roots finishing together leave two such threads with only the later one
+    /// recorded, so the count is what `shutdown` waits on. Raised by hand here, standing in
+    /// for that thread, since nothing can hold a real one short of its `try_lock`.
+    #[test]
+    fn shutdown_waits_for_a_requested_pass_that_has_not_reached_hashing_yet() {
+        let f = fixture(&[("a.jpg", &jpeg(4, 2))]);
+        f.add_photos();
+
+        f.engine.similar_passes.fetch_add(1, Ordering::SeqCst);
+        let engine = Arc::clone(&f.engine);
+        let shutdown = std::thread::spawn(move || engine.shutdown());
+        std::thread::sleep(Duration::from_millis(150));
+        let returned_early = shutdown.is_finished();
+        f.engine.similar_passes.fetch_sub(1, Ordering::SeqCst);
+        shutdown.join().unwrap();
+        assert!(
+            !returned_early,
+            "shutdown returned while a requested pass had yet to take `hashing`"
+        );
+    }
+
+    /// The bound `shutdown` promises is over *both* its waits, and the wait on the count is
+    /// the one that could quietly remove it. In the common case (a scan's pass, or a
+    /// distance change, then a quit) the thread counted is the one running the pass, so an
+    /// unbounded wait would wait for exactly the thread `SIMILAR_PASS_STOP_TIMEOUT` exists
+    /// to give up on, and an app whose photos are on a dead mount would never quit.
     ///
-    /// Both halves are made to time out here: a recorded thread that will not finish until
-    /// the test releases it, and `hashing` held by the test thread. With both bounded
-    /// against one deadline the call returns after the budget; with the join unbounded it
-    /// never returns at all, and with two separate budgets it would take twice as long.
+    /// Both halves are made to time out here: a counted pass that never returns (the count
+    /// raised by hand, lowered only once the test is done), and `hashing` held by the test
+    /// thread. With both bounded against one deadline the call returns after the budget;
+    /// with the count's wait unbounded it never returns at all, and with two separate
+    /// budgets it would take twice as long.
     ///
     /// The margin between "once" and "twice" has to survive a loaded CI runner: at a 200ms
     /// budget with a 400ms bar, measured from outside the thread (its spawn and the 10ms
@@ -2780,13 +2840,7 @@ mod tests {
         let f = fixture(&[("a.jpg", &jpeg(4, 2))]);
         f.add_photos();
 
-        let release = Arc::new(AtomicBool::new(false));
-        let stuck = Arc::clone(&release);
-        *f.engine.similar_pass.lock() = Some(std::thread::spawn(move || {
-            while !stuck.load(Ordering::SeqCst) {
-                std::thread::sleep(Duration::from_millis(10));
-            }
-        }));
+        f.engine.similar_passes.fetch_add(1, Ordering::SeqCst);
         let held = f.engine.hashing.lock();
 
         let engine = Arc::clone(&f.engine);
@@ -2811,24 +2865,38 @@ mod tests {
         );
 
         drop(held);
-        release.store(true, Ordering::SeqCst);
+        f.engine.similar_passes.fetch_sub(1, Ordering::SeqCst);
     }
 
     /// An IPC call can land after `shutdown` has already set `shutting_down` and run its
-    /// bounded wait on `hashing`, but before the process actually exits. Without this check
-    /// that call would spawn a fresh writer `shutdown` never accounted for.
+    /// bounded wait, but before the process actually exits. Without this check that call
+    /// would spawn a fresh writer `shutdown` never accounted for.
+    ///
+    /// Two traces of a thread, since either alone can miss one: the count, raised for as
+    /// long as the thread runs, and `hash_requested`, which a pass sets first thing and,
+    /// with `hashing` held here, cannot clear.
     #[test]
     fn request_similar_pass_is_a_no_op_once_shutting_down() {
         let f = fixture(&[("a.jpg", &jpeg(4, 2))]);
         f.add_photos();
         f.engine.shutdown();
 
+        let held = f.engine.hashing.lock();
+        f.engine.hash_requested.store(false, Ordering::SeqCst);
         f.engine.request_similar_pass();
 
+        assert_eq!(
+            f.engine.similar_passes.load(Ordering::SeqCst),
+            0,
+            "a request after shutdown was let through, or left itself counted - which would \
+             hold any later wait to its timeout"
+        );
+        f.engine.wait_for_similar_pass();
         assert!(
-            f.engine.similar_pass.lock().is_none(),
+            !f.engine.hash_requested.load(Ordering::SeqCst),
             "a request arriving after shutdown must not spawn a thread"
         );
+        drop(held);
     }
 
     /// Both readers of `excluded` compare it against a canonical path - `add_watched_folder`
@@ -2869,7 +2937,7 @@ mod tests {
         let img = jpeg(16, 16);
         let f = fixture(&[("a/one.jpg", &img)]);
         let watched = f.add_photos();
-        f.engine.wait_for_scans();
+        f.settle();
 
         // Simulate a render that failed transiently: the item is pending again, but a
         // rescan finds nothing changed on disk.
@@ -2880,7 +2948,7 @@ mod tests {
             .unwrap();
 
         assert!(f.engine.start_scan(watched.clone()));
-        f.engine.wait_for_scans();
+        f.settle();
 
         // Checking the queue length right after `wait_for_scans` is racy in practice: the
         // cache for this item is already complete from the first scan, so re-processing it
@@ -2946,7 +3014,7 @@ mod tests {
         // real change and legitimately refreshes.
         std::fs::remove_dir_all(&f.photos).unwrap();
         f.engine.start_scan(watched.clone());
-        f.engine.wait_for_scans();
+        f.settle();
         let version = f.engine.grid().0;
 
         // The second finds exactly what the first did: nothing added, changed, marked or
@@ -2961,7 +3029,7 @@ mod tests {
             .unwrap();
         assert!(!offline.online);
         f.engine.start_scan(offline);
-        f.engine.wait_for_scans();
+        f.settle();
 
         assert_eq!(
             f.engine.grid().0,
@@ -2985,7 +3053,7 @@ mod tests {
         let away = f.add_photos();
         std::fs::remove_dir_all(&f.photos).unwrap();
         f.engine.start_scan(away.clone());
-        f.engine.wait_for_scans();
+        f.settle();
         let away = f
             .engine
             .lib
@@ -3029,7 +3097,7 @@ mod tests {
         assert_eq!(waiting.len(), 2, "the fixture left nothing to hash");
 
         f.engine.start_scan(away);
-        f.engine.wait_for_scans();
+        f.settle();
         f.engine.thumbs.wait_idle();
 
         assert_eq!(
@@ -3047,7 +3115,7 @@ mod tests {
 
         // Both are real work a real scan does: the fixture is not merely unhashable.
         f.engine.start_scan(online);
-        f.engine.wait_for_scans();
+        f.settle();
         f.engine.thumbs.wait_idle();
         assert!(f.engine.lib.hash_candidates().unwrap().is_empty());
         for &id in &waiting {
@@ -3073,7 +3141,7 @@ mod tests {
 
         std::fs::write(f.photos.join(".picasa.ini"), b"[a.jpg]\nstar=yes\n").unwrap();
         f.engine.start_scan(watched);
-        f.engine.wait_for_scans();
+        f.settle();
 
         assert!(
             f.engine.grid().0 > version,
@@ -3411,7 +3479,7 @@ mod tests {
         let img = jpeg(16, 16);
         let f = fixture(&[("a.jpg", &img)]);
         f.add_photos();
-        f.engine.wait_for_scans();
+        f.settle();
         let id = f.ids()[0];
         f.engine.set_view(GridView::Starred).unwrap();
         assert!(!last_data_changed(&f), "a view switch");
@@ -3773,7 +3841,7 @@ mod tests {
         let version = f.engine.grid().0;
 
         f.engine.start_scan(watched);
-        f.engine.wait_for_scans();
+        f.settle();
 
         assert_eq!(
             f.engine.grid().0,
@@ -4242,6 +4310,82 @@ mod tests {
         assert!(!orphan.exists(), "a purge makes the next launch collect");
     }
 
+    /// Parks the duplicate and look-alike pass that follows a scan, at its grid rebuild:
+    /// armed by a scan reporting done, it holds the next `library_changed` sent from a scan
+    /// or pass thread until the test lets it go. The thread names keep a thumbnail worker's
+    /// rebuild from being the one parked in its place, which would let the pass run to the
+    /// end and prove nothing.
+    #[derive(Default)]
+    struct ParkedPass {
+        armed: AtomicBool,
+        parked: Mutex<Option<std::sync::mpsc::Sender<()>>>,
+        release: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
+    }
+
+    impl Events for ParkedPass {
+        fn library_changed(&self, _: LibraryChanged) {
+            let name = std::thread::current().name().unwrap_or_default().to_owned();
+            let on_pass = name.starts_with("photon-scan-") || name == "photon-similar-pass";
+            if on_pass && self.armed.swap(false, Ordering::SeqCst) {
+                let release = self.release.lock().take().unwrap();
+                let _ = self.parked.lock().take().unwrap().send(());
+                // Nothing is ever sent: this returns when the test drops its sender.
+                let _ = release.recv();
+            }
+        }
+        fn scan_progress(&self, event: ScanProgressEvent) {
+            if event.done {
+                self.armed.store(true, Ordering::SeqCst);
+            }
+        }
+        fn folder_status(&self, _: FolderStatus) {}
+        fn export_progress(&self, _: ExportProgress) {}
+    }
+
+    /// The watcher is started once the startup scans are done, and "done" is the scan slot
+    /// being released. The slot used to be held through the duplicate and look-alike pass
+    /// as well, so on a large library the watcher waited for the session's first
+    /// whole-library pass, and a file changed in that window was not seen until something
+    /// rescanned its directory. Two byte-identical photos give the pass a rebuild to park
+    /// at; while it is parked, the watcher must already be running.
+    #[test]
+    fn startup_starts_the_watcher_without_waiting_for_the_pass_after_its_scans() {
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a.jpg", &img), ("b.jpg", &img)]);
+        let sink = Arc::new(ParkedPass::default());
+        let (parked_tx, parked) = std::sync::mpsc::channel();
+        let (release, release_rx) = std::sync::mpsc::channel::<()>();
+        *sink.parked.lock() = Some(parked_tx);
+        *sink.release.lock() = Some(release_rx);
+        let engine = Engine::open(f.config(), sink.clone()).unwrap();
+        engine
+            .lib
+            .add_watched_folder(&f.photos, engine.excluded())
+            .unwrap();
+        // Taken first, with a settle nothing reaches, so the only pass is the scan's own:
+        // one requested by the thumbnail queue going quiet would take `hashing` from it,
+        // and a scan finding `hashing` held returns at once, whatever the order.
+        engine.start_thumb_hashing(Duration::from_secs(3600));
+
+        engine.startup(None);
+        parked
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the pass after the startup scan never rebuilt the grid");
+
+        let started = Instant::now();
+        while engine.watcher_service().is_none() && started.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let watching = engine.watcher_service().is_some();
+        drop(release);
+        engine.wait_for_startup();
+        engine.shutdown();
+        assert!(
+            watching,
+            "the watcher waited for the pass that follows the startup scan"
+        );
+    }
+
     #[test]
     fn startup_adds_pictures_only_to_an_empty_library() {
         let img = jpeg(16, 16);
@@ -4341,7 +4485,7 @@ mod tests {
         assert!(f.engine.start_scan(watched.clone()));
         assert!(!f.engine.start_scan(watched));
 
-        f.engine.wait_for_scans();
+        f.settle();
     }
 
     /// `remove_folder` cancels the running scan before deleting the folder, but the watcher
@@ -4413,7 +4557,7 @@ mod tests {
         let img = jpeg(16, 16);
         let f = fixture(&[("a/one.jpg", &img), ("a/two.jpg", &img)]);
         f.add_photos();
-        f.engine.wait_for_scans();
+        f.settle();
         f.engine.lib.set_ratings(&[(f.ids()[0], 2)]).unwrap();
 
         // A scan's rebuild reads the state and starts querying for All...
@@ -4445,7 +4589,7 @@ mod tests {
         let img = jpeg(16, 16);
         let f = fixture(&[("a/beach.jpg", &img), ("a/mountain.jpg", &img)]);
         let watched = f.add_photos();
-        f.engine.wait_for_scans();
+        f.settle();
         f.engine.set_search_query("beach").unwrap();
         assert_eq!(f.engine.grid().1.len(), 1);
         let version = f.engine.grid().0;
@@ -4453,7 +4597,7 @@ mod tests {
         // A photo arrives that the query matches, and a scan picks it up.
         std::fs::write(f.photos.join("a").join("beach hut.jpg"), &img).unwrap();
         f.engine.start_scan(watched);
-        f.engine.wait_for_scans();
+        f.settle();
 
         let info = crate::commands::grid_info(&f.engine);
         assert_eq!(
@@ -4487,7 +4631,7 @@ mod tests {
         let img = jpeg(16, 16);
         let f = fixture(&[("a/beach.jpg", &img), ("a/mountain.jpg", &img)]);
         f.add_photos();
-        f.engine.wait_for_scans();
+        f.settle();
         f.engine.lib.set_ratings(&[(f.ids()[0], 2)]).unwrap();
 
         for moved in ["view", "query"] {
@@ -4555,7 +4699,7 @@ mod tests {
         let img = jpeg(16, 16);
         let f = fixture(&[("a/beach.jpg", &img), ("a/mountain.jpg", &img)]);
         f.add_photos();
-        f.engine.wait_for_scans();
+        f.settle();
         // Not the last event: the two photos share a byte size, so the duplicate pass
         // after the scan hashes them and publishes a rebuild of its own, which is not a
         // data change to the collections.
@@ -4601,7 +4745,7 @@ mod tests {
         let img = jpeg(16, 16);
         let f = fixture(&[("a/beach.jpg", &img), ("a/mountain.jpg", &img)]);
         f.add_photos();
-        f.engine.wait_for_scans();
+        f.settle();
         let album = f.engine.lib.create_album("trip", 0).unwrap();
         let photo = f.ids()[0];
 
@@ -4650,7 +4794,7 @@ mod tests {
         use photon_core::grid::GridView;
         let f = fixture(&[("a/one.jpg", &jpeg(16, 16))]);
         f.add_photos();
-        f.engine.wait_for_scans();
+        f.settle();
         f.engine.set_view(GridView::All).unwrap();
         assert!(!last_data_changed(&f));
         let before = f.engine.grid().0;
@@ -4679,7 +4823,7 @@ mod tests {
         solid.resize(pattern.len(), 0);
         let f = fixture(&[("a/one.jpg", &solid), ("b/two.jpg", &pattern)]);
         f.add_photos();
-        f.engine.wait_for_scans();
+        f.settle();
         assert_eq!(crate::commands::grid_info(&f.engine).duplicate_count, 0);
 
         let flags = data_changed_flags(&f);
@@ -4704,7 +4848,7 @@ mod tests {
         let watched = f.add_photos();
         f.engine.thumbs.wait_idle();
         f.engine.start_scan(watched);
-        f.engine.wait_for_scans();
+        f.settle();
         f.engine.lib.set_similar_groups(&[]).unwrap();
         f.engine.set_view(GridView::Duplicates).unwrap();
         assert_eq!(f.ids().len(), 0);
@@ -4723,7 +4867,7 @@ mod tests {
         let img = jpeg(16, 16);
         let f = fixture(&[("a/one.jpg", &img)]);
         f.add_photos();
-        f.engine.wait_for_scans();
+        f.settle();
         // The flag is known to be clear, and the last event said so.
         f.engine.set_view(GridView::All).unwrap();
         assert!(!last_data_changed(&f));
@@ -4744,7 +4888,7 @@ mod tests {
         let img = jpeg(16, 16);
         let f = fixture(&[("a/one.jpg", &img), ("a/two.jpg", &img)]);
         f.add_photos();
-        f.engine.wait_for_scans();
+        f.settle();
         f.engine.set_view(GridView::All).unwrap();
         assert!(!last_data_changed(&f));
 
@@ -4780,7 +4924,7 @@ mod tests {
         let img = jpeg(16, 16);
         let f = fixture(&[("a/one.jpg", &img), ("a/two.jpg", &img)]);
         f.add_photos();
-        f.engine.wait_for_scans();
+        f.settle();
 
         // A slow rebuild reads both rows...
         let early = f.engine.snapshot();
@@ -4808,7 +4952,7 @@ mod tests {
         let img = jpeg(16, 16);
         let f = fixture(&[("a/one.jpg", &img), ("a/two.jpg", &img)]);
         f.add_photos();
-        f.engine.wait_for_scans();
+        f.settle();
         let ids = f.ids();
         // Star one of them the way the Picasa pass would, then rebuild the index for the
         // new view. `rating` is `set_ratings`' column now, not `update_items`'.
@@ -4832,7 +4976,7 @@ mod tests {
         let img = jpeg(16, 16);
         let f = fixture(&[("a/beach.jpg", &img), ("a/mountain.jpg", &img)]);
         f.add_photos();
-        f.engine.wait_for_scans();
+        f.settle();
 
         f.engine.set_search_query("beach").unwrap();
 
@@ -4850,7 +4994,7 @@ mod tests {
         let img = jpeg(16, 16);
         let f = fixture(&[("a/beach.jpg", &img), ("a/mountain.jpg", &img)]);
         f.add_photos();
-        f.engine.wait_for_scans();
+        f.settle();
 
         f.engine.set_search_query("beach").unwrap();
         f.engine.set_search_query("   ").unwrap();
@@ -4924,7 +5068,7 @@ mod tests {
         let watched = f.add_photos();
         f.engine.thumbs.wait_idle();
         f.engine.start_scan(watched);
-        f.engine.wait_for_scans();
+        f.settle();
         let path_of = |id: i64| f.engine.lib.item(id).unwrap().unwrap().path;
         let id_of = |name: &str| {
             f.ids()
@@ -4983,7 +5127,7 @@ mod tests {
         let watched = f.add_photos();
         f.engine.thumbs.wait_idle();
         f.engine.start_scan(watched);
-        f.engine.wait_for_scans();
+        f.settle();
         let path_of = |id: i64| f.engine.lib.item(id).unwrap().unwrap().path;
         let orig = f
             .ids()
@@ -5018,7 +5162,7 @@ mod tests {
         let watched = f.add_photos();
         f.engine.thumbs.wait_idle();
         f.engine.start_scan(watched);
-        f.engine.wait_for_scans();
+        f.settle();
         let path_of = |id: i64| f.engine.lib.item(id).unwrap().unwrap().path;
         let orig = f
             .ids()
@@ -5054,7 +5198,7 @@ mod tests {
         let watched = f.add_photos();
         f.engine.thumbs.wait_idle();
         f.engine.start_scan(watched);
-        f.engine.wait_for_scans();
+        f.settle();
         let path_of = |id: i64| f.engine.lib.item(id).unwrap().unwrap().path;
         let orig = f
             .ids()
@@ -5095,7 +5239,7 @@ mod tests {
         let img = jpeg(16, 16);
         let f = fixture(&[("a/beach.jpg", &img), ("a/mountain.jpg", &img)]);
         f.add_photos();
-        f.engine.wait_for_scans();
+        f.settle();
 
         f.engine.set_search_query("beach").unwrap();
         f.engine.set_view(GridView::Starred).unwrap();

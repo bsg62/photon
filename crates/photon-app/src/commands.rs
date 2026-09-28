@@ -1009,7 +1009,7 @@ mod tests {
         std::fs::create_dir_all(f.photos.join("a")).unwrap();
         std::fs::write(f.photos.join("a").join("first.jpg"), &img).unwrap();
         f.engine.start_scan(watched);
-        f.engine.wait_for_scans();
+        f.settle();
 
         assert_eq!(f.ids().len(), 2);
         assert_eq!(
@@ -1172,7 +1172,7 @@ mod tests {
         let watched = f.add_photos();
         f.engine.thumbs.wait_idle();
         f.engine.start_scan(watched);
-        f.engine.wait_for_scans();
+        f.settle();
 
         let path_of = |id: i64| f.engine.lib.item(id).unwrap().unwrap().path;
         let orig_id = f
@@ -1205,7 +1205,7 @@ mod tests {
         let watched = f.add_photos();
         f.engine.thumbs.wait_idle();
         f.engine.start_scan(watched);
-        f.engine.wait_for_scans();
+        f.settle();
         let path_of = |id: i64| f.engine.lib.item(id).unwrap().unwrap().path;
         let id_of = |name: &str| {
             f.ids()

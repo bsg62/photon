@@ -368,9 +368,14 @@ regroup, which is what keeps a no-op scan from banding the whole library. Candid
 from four 16-bit bands, each bucket also compared with those one bit away, which is exact up
 to `EXACT_RECALL_DISTANCE` (7) - Conservative. Treating the hash as the verdict brings the
 false pairs back. Both passes run inside
-`Engine::hash_after_scan` (once `hash_duplicates`) at the end of every `run_scan` but one that
+`Engine::hash_after_scan` (once `hash_duplicates`), requested through `request_similar_pass`
+at the end of every `run_scan` but one that
 finds its root still offline (the 30-second poll of an unplugged drive, or the startup scan of
-one), which read and changed nothing; they also run, through
+one), which read and changed nothing. The pass runs on its own thread, after the scan has
+released its slot: inline, it held back `startup`'s `start_watcher` for the session's first
+whole-library regroup. Every pass is counted in `similar_passes`, which is what `shutdown`
+and a test's `Fixture::settle` wait on - a test that reads hashes or groups after a scan
+waits with `settle`, not `wait_for_scans`. They also run, through
 `request_similar_pass`, whenever the thumbnail queue has stayed quiet for `THUMB_HASH_SETTLE`
 after making new thumbnails ready (`start_thumb_hashing`, `ThumbQueue::wait_drained`), since a
 scan's own pass runs while the queue it fed is still rendering and its new photos otherwise

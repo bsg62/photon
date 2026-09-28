@@ -89,13 +89,7 @@ These came out of the audit on 2026-09-27 and are not in any PR. They are ordere
 - **On Linux, notify's inotify registration follows symlinks and stats every entry.** That walk costs minutes on CIFS or NFS. `with_follow_symlinks(false)` would match the scanner.
 - **`keywords::read_embedded` opens the file a second time** to read a 256 KiB prefix, and `xmp.rs` lossily decodes that whole prefix before searching it. Read one prefix and share it with `read_header`. Find `</x:xmpmeta>` in the raw bytes before decoding.
 
-**Engine:**
-- **Two IPC commands can hold an async IPC worker for a long time.**
-  - `export_items` holds one for the whole export.
-  - `check_export_dest` calls `paths::canonicalize`, which can hang on a dead mount.
-
-  Both should run inside `spawn_blocking`, as `add_folder` already does.
-- **The watcher starts late.** `startup` runs `wait_for_scans()` before `start_watcher()`, and a scan keeps its slot through `hash_after_scan`. So the watcher waits for the first look-alike pass of the session. Files changed in that window aren't seen until something rescans their directory. Running `hash_after_scan` on its own thread after the scan slot is released would fix it.
+**Engine:** — done. `export_items`, `check_export_dest`, the five opener commands and `set_star`/`set_stars` run on the blocking pool (`ipc.rs`, tested through Tauri's mock runtime by parking one call per worker). A scan's duplicate and look-alike pass is now requested on its own thread after the scan slot is released, so `startup` starts the watcher without waiting for it; `shutdown` waits for passes by count (`similar_passes`). Starting the watcher *before* the startup scans was rejected: the watcher registers only roots marked online, which those scans settle. Still on the async workers, bounded but slow at 300k: the view setters' rebuilds, `list_tags`, `watched_folder_stats`, and bulk tag/hide/edit writes.
 
 **SQL** (a schema bump, so a minor release; see CLAUDE.md on version tripwires):
 - **Starred and Videos walk the whole library twice** to return 2–5% of it: about 135 ms at 300k, against 25 ms for Hidden. Reshape `items_starred` to `(folder_id, taken_at) WHERE rating >= 1 AND missing_since IS NULL`, and add the same for videos.
