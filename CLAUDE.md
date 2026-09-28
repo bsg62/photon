@@ -130,7 +130,9 @@ marks the engine-wide `data_dirty` before it snapshots; the view setters' rebuil
 stored poster frame and after the hashing passes in `hash_after_scan` - a thumbnail state, a
 content hash or a look-alike group is read by the grid and `GridInfo` (the Duplicates count),
 never by an album, person, tag, tag rule or folder count, and frames arrive up to once a
-second. Whichever rebuild *publishes* next swaps the flag back and sends it. Engine-wide
+second. Whichever rebuild *publishes* next swaps the flag back and sends it - except a failed
+first build's empty stand-in, which announces a data change without taking the flag, so the
+build that finally succeeds still carries it. Engine-wide
 rather than per rebuild, because a data rebuild discarded by a view switch would otherwise
 take its flag with it. A new writer calls `refresh_grid`; `refresh_grid_derived` only for a
 write that no collection or Settings query reads, checked against those queries.
