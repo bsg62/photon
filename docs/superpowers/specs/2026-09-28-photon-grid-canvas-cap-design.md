@@ -146,8 +146,9 @@ reading of 1e9 (no cap) is used as is: the mapping never leaves the identity.
 - **`cargo run -p xtask -- scroll-probe`** (new; like `screenshots`, needs Chromium, not in
   CI): serves the built UI with `mock.js` answering a 300k-photo / 20k-folder library, and
   asserts, reading the DOM through `--dump-dom` and a load script:
-  - 1 column, large tiles: End mounts the last offset; a timeline scrub to the last mark
-    reaches it;
+  - 1 column, large tiles: End mounts the last offset, and so does a scrollbar-sized jump
+    to the bottom of the DOM range (a timeline scrub goes through the same write-from-code
+    path as End, and is on the smoke checklist);
   - a library under the cap: `shift` is 0 throughout and `.canvas` height equals `total`;
   - `--force-device-scale-factor=2`: the measured cap is ~16.8M px and End still reaches
     the last offset.
