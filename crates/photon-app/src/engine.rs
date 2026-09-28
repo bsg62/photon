@@ -1019,10 +1019,16 @@ impl Engine {
     ///
     /// Always a whole `refresh_grid`, never a narrower update: a hidden photo leaves every
     /// view and every count the sidebar shows, and all of them are read on the rebuild.
+    ///
+    /// A rebuild that fails is logged, not returned: the write has committed, and the next
+    /// rebuild that succeeds shows it. Returned, it reached the UI as a hide that failed,
+    /// which keeps the photos selected for a retry that has nothing left to do.
     pub fn set_items_hidden(&self, ids: &[i64], hidden: bool) -> Result<usize> {
         let count = self.lib.set_hidden(ids, hidden)?;
-        if count > 0 {
-            self.refresh_grid()?;
+        if count > 0
+            && let Err(err) = self.refresh_grid()
+        {
+            tracing::warn!(%err, "photos were hidden but the grid could not be rebuilt");
         }
         Ok(count)
     }
@@ -3183,6 +3189,27 @@ mod tests {
         f.engine.set_view(GridView::Hidden).unwrap();
         let hidden = crate::commands::grid_info(&f.engine);
         assert_eq!((hidden.view, hidden.len), (GridView::Hidden, 1));
+    }
+
+    /// The hide is committed before the rebuild runs, so a rebuild that fails has not
+    /// undone it. Reported as an error, the UI kept the photos selected as a hide to retry,
+    /// over photos already hidden, and the next rebuild shows them gone anyway.
+    #[test]
+    fn a_hide_whose_rebuild_fails_still_reports_the_photos_it_hid() {
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a.jpg", &img), ("b.jpg", &img)]);
+        f.add_photos();
+        let id = f.ids()[0];
+        let db = rusqlite::Connection::open(&f.config().db_path).unwrap();
+        // Every grid query names the column, so the rebuild after the write fails.
+        db.execute_batch("ALTER TABLE items RENAME COLUMN file_name TO renamed")
+            .unwrap();
+
+        assert_eq!(f.engine.set_items_hidden(&[id], true).unwrap(), 1);
+        let hidden: bool = db
+            .query_row("SELECT hidden FROM items WHERE id = ?1", [id], |r| r.get(0))
+            .unwrap();
+        assert!(hidden);
     }
 
     #[test]
