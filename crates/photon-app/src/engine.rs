@@ -171,6 +171,15 @@ pub struct Export {
 /// enough that a fast export of small files is not mostly event traffic.
 const EXPORT_PROGRESS_EVERY: Duration = Duration::from_millis(100);
 
+/// The sidebar's library-wide counts, as `grid_info` reports them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Counts {
+    pub starred: usize,
+    pub duplicate: usize,
+    pub hidden: usize,
+    pub video: usize,
+}
+
 pub struct Engine {
     pub lib: Arc<Library>,
     pub thumbs: ThumbService,
@@ -215,6 +224,14 @@ pub struct Engine {
     /// it, and the UI's collections are read from the database, not from the index, so any
     /// fetch that event triggers sees the commit.
     data_dirty: AtomicBool,
+    /// Moves whenever something a count reads may have changed: every data rebuild
+    /// (`data_snapshot`) and the duplicate pass (`hash_after_scan`). The counts are
+    /// library-wide, so a view or sort switch leaves it, and so does a poster frame.
+    counts_epoch: AtomicU64,
+    /// The four counts `grid_info` reports, and the epoch they were read at.
+    counts: Mutex<Option<(u64, Counts)>>,
+    #[cfg(test)]
+    counts_computed: AtomicUsize,
     events: Arc<dyn Events>,
     scans: Mutex<HashMap<i64, RunningScan>>,
     /// Watched ids whose removal is under way. Per folder what `shutting_down` is for the
@@ -408,6 +425,10 @@ impl Engine {
             refresh: Mutex::new(0),
             next_rebuild: AtomicU64::new(1),
             data_dirty: AtomicBool::new(false),
+            counts_epoch: AtomicU64::new(0),
+            counts: Mutex::new(None),
+            #[cfg(test)]
+            counts_computed: AtomicUsize::new(0),
             events,
             scans: Mutex::new(HashMap::new()),
             removing: Mutex::new(HashSet::new()),
@@ -444,6 +465,42 @@ impl Engine {
     pub fn published(&self) -> (u64, Arc<GridIndex>, Option<String>, u64) {
         let grid = self.grid.read();
         (grid.0, grid.1.clone(), grid.2.clone(), grid.3)
+    }
+
+    /// The four counts, from the cache when nothing they read has moved since it was filled.
+    ///
+    /// The epoch is read before the queries and the result stored under it: a write that
+    /// lands while they run bumps past it, so the next read queries again rather than
+    /// keeping an answer from before the write. A query that fails reads as 0 - the
+    /// sidebar then hides that row - and the answer is not kept, so the next read tries
+    /// again.
+    pub fn counts(&self) -> Counts {
+        let epoch = self.counts_epoch.load(Ordering::SeqCst);
+        if let Some((at, counts)) = *self.counts.lock()
+            && at == epoch
+        {
+            return counts;
+        }
+        #[cfg(test)]
+        self.counts_computed.fetch_add(1, Ordering::SeqCst);
+        let mut failed = false;
+        let mut read = |what: &str, count: Result<usize>| {
+            count.unwrap_or_else(|err| {
+                tracing::warn!(%err, "{what} count query failed");
+                failed = true;
+                0
+            })
+        };
+        let counts = Counts {
+            starred: read("starred", self.lib.starred_count()),
+            duplicate: read("duplicate", self.lib.duplicate_count()),
+            hidden: read("hidden", self.lib.hidden_count()),
+            video: read("video", self.lib.video_count()),
+        };
+        if !failed {
+            *self.counts.lock() = Some((epoch, counts));
+        }
+        counts
     }
 
     /// Rebuilds the grid from the database for the current view and tells the UI.
@@ -591,9 +648,12 @@ impl Engine {
 
     /// `snapshot`, for a rebuild that follows a change to the data: marks `data_dirty`
     /// first. Set here, not when this rebuild publishes, so that a rebuild discarded on
-    /// the way still leaves it for the publish that overtook it; see `data_dirty`.
+    /// the way still leaves it for the publish that overtook it; see `data_dirty`. Moves
+    /// `counts_epoch` at the same point for the same reason: the write this rebuild follows
+    /// has committed, so a count read after this has seen it.
     fn data_snapshot(&self) -> Rebuild {
         self.data_dirty.store(true, Ordering::SeqCst);
+        self.counts_epoch.fetch_add(1, Ordering::SeqCst);
         self.snapshot()
     }
 
@@ -2080,6 +2140,9 @@ impl Engine {
                 match photon_core::duplicates::hash_candidates(&self.lib, cancel) {
                     Ok(0) => {}
                     Ok(_) => {
+                        // `content_hash` moved, which the Duplicates count reads, and this
+                        // rebuild is a derived one that does not mark the data.
+                        self.counts_epoch.fetch_add(1, Ordering::SeqCst);
                         if let Err(err) = self.refresh_grid_derived() {
                             tracing::warn!(%err, "grid refresh failed");
                         }
@@ -5009,6 +5072,67 @@ mod tests {
         f.engine.set_star(ids[0], true).unwrap();
 
         assert_eq!(f.engine.published().3, layout + 1);
+    }
+
+    #[test]
+    fn a_star_changes_the_starred_count_on_the_next_read() {
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a/one.jpg", &img)]);
+        f.add_photos();
+        assert_eq!(f.engine.counts().starred, 0);
+
+        f.engine.set_star(f.ids()[0], true).unwrap();
+
+        assert_eq!(f.engine.counts().starred, 1);
+    }
+
+    /// Review Focus 5: a hide is a data write like any other.
+    #[test]
+    fn a_hide_changes_the_hidden_count_on_the_next_read() {
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a/one.jpg", &img)]);
+        f.add_photos();
+        assert_eq!(f.engine.counts().hidden, 0);
+
+        f.engine.set_items_hidden(&[f.ids()[0]], true).unwrap();
+
+        assert_eq!(f.engine.counts().hidden, 1);
+    }
+
+    /// The hashing pass writes `content_hash` without a data rebuild, so it bumps the epoch
+    /// itself. The counts are read (and cached) while the pass is held off, then the pass
+    /// runs.
+    #[test]
+    fn a_duplicate_pass_changes_the_duplicate_count_on_the_next_read() {
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a/one.jpg", &img), ("b/two.jpg", &img)]);
+        {
+            // Held, every pass the scan requests finds `hashing` taken and leaves.
+            let _held = f.engine.hashing.lock();
+            f.engine.add_folder(&f.photos).unwrap();
+            f.engine.wait_for_scans();
+            f.engine.wait_for_similar_pass();
+            assert_eq!(f.engine.counts().duplicate, 0);
+        }
+        f.engine.request_similar_pass();
+        f.engine.wait_for_similar_pass();
+
+        assert_eq!(f.engine.counts().duplicate, 2);
+    }
+
+    /// A frame moves a thumbnail, which no count reads; its rebuild - up to one a second -
+    /// must not rerun the queries.
+    #[test]
+    fn a_poster_frame_rebuild_does_not_recount() {
+        let f = fixture(&[("a/one.jpg", &jpeg(16, 16))]);
+        f.add_photos();
+        f.engine.counts();
+        let computed = f.engine.counts_computed.load(Ordering::SeqCst);
+
+        f.engine.frame_stored();
+        f.engine.counts();
+
+        assert_eq!(f.engine.counts_computed.load(Ordering::SeqCst), computed);
     }
 
     /// A poster frame moves a thumbnail's state and nothing any collection or Settings

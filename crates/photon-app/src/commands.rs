@@ -310,27 +310,16 @@ pub fn grid_info(engine: &Engine) -> GridInfo {
                 hidden,
             }
         });
+    let counts = engine.counts();
     GridInfo {
         version,
         len: grid.len(),
         sections: grid.sections().to_vec(),
         folders: grid.folders().to_vec(),
-        starred_count: engine.lib.starred_count().unwrap_or_else(|err| {
-            tracing::warn!(%err, "starred count query failed");
-            0
-        }),
-        duplicate_count: engine.lib.duplicate_count().unwrap_or_else(|err| {
-            tracing::warn!(%err, "duplicate count query failed");
-            0
-        }),
-        hidden_count: engine.lib.hidden_count().unwrap_or_else(|err| {
-            tracing::warn!(%err, "hidden count query failed");
-            0
-        }),
-        video_count: engine.lib.video_count().unwrap_or_else(|err| {
-            tracing::warn!(%err, "video count query failed");
-            0
-        }),
+        starred_count: counts.starred,
+        duplicate_count: counts.duplicate,
+        hidden_count: counts.hidden,
+        video_count: counts.video,
         view,
         sort: engine.sort(),
         search_query: if view == GridView::Search {
