@@ -194,7 +194,8 @@ pub struct Engine {
     /// snapshots; taken back to false by whichever rebuild publishes next, which tells the
     /// UI so in `LibraryChanged::data_changed`. The UI refetches its sidebar collections -
     /// albums, people, tags, the slowest of them hundreds of milliseconds at 300k photos -
-    /// only then, and not for the rebuilds of a view switch, a sort or a search keystroke.
+    /// only then, and not for the rebuilds of a view switch, a sort or a search keystroke,
+    /// nor for `refresh_grid_derived`'s.
     ///
     /// Engine-wide rather than carried by each `Rebuild`, because a rebuild can be
     /// discarded: a scan's rebuild overtaken by a view switch never publishes, and a flag it
@@ -420,6 +421,23 @@ impl Engine {
         self.rebuild(self.data_snapshot()).map(|_| ())
     }
 
+    /// `refresh_grid`, for a write that moved nothing the sidebar's collections or
+    /// Settings read: a poster frame (thumbnail state) and the hashing passes
+    /// (`content_hash`, `similar_group`). Those change which photos the grid draws, and how -
+    /// the Duplicates view and its count, which travel in the grid and `GridInfo` the UI
+    /// re-reads on every version - but no album, person, tag, tag rule or folder count, so
+    /// its publish does not send the UI to refetch them. A frame is stored up to once a
+    /// second while a page extracts them, and each one refetched the tag counts alone for
+    /// a quarter of a second at 300k photos.
+    ///
+    /// The "every commit is followed by a later-stamped rebuild" promise is unchanged: this
+    /// is an ordinary rebuild, stamped after the write it follows. It only leaves
+    /// `data_dirty` as it found it, so a data rebuild it overtakes still has its flag
+    /// carried - by this publish, if it is the next.
+    fn refresh_grid_derived(&self) -> Result<()> {
+        self.rebuild(self.snapshot()).map(|_| ())
+    }
+
     /// Builds the index for `rebuild`'s snapshot and publishes it unless overtaken.
     fn rebuild(&self, rebuild: Rebuild) -> Result<Publish> {
         let index = Arc::new(self.build_index(&rebuild.state)?);
@@ -488,7 +506,8 @@ impl Engine {
         if self.shutting_down.load(Ordering::SeqCst) {
             return;
         }
-        if let Err(err) = self.refresh_grid() {
+        // Derived: a frame is a thumbnail, which no collection reads.
+        if let Err(err) = self.refresh_grid_derived() {
             tracing::warn!(%err, "grid refresh after a poster frame failed");
         }
     }
@@ -1827,7 +1846,10 @@ impl Engine {
     /// `a_rescan_after_set_star_agrees_with_what_photon_wrote`. `pass.groups_changed` is
     /// the one signal that means the view moved: a regroup that hashes nothing still moves
     /// photos into and out of the view (changing the distance setting is exactly that), so
-    /// the refresh is gated on `groups_changed` alone.
+    /// the refresh is gated on `groups_changed` alone. Both rebuild with
+    /// `refresh_grid_derived`: a hash or a group is read by the Duplicates view and its
+    /// count in `GridInfo`, never by an album, person, tag or folder count, so neither
+    /// sends the UI to refetch the collections.
     ///
     /// Here rather than in the scanner because a duplicate is a fact about the whole
     /// library, not about the root or subtree one scan walked - and because `walk_tree` has
@@ -1866,7 +1888,7 @@ impl Engine {
                 match photon_core::duplicates::hash_candidates(&self.lib, cancel) {
                     Ok(0) => {}
                     Ok(_) => {
-                        if let Err(err) = self.refresh_grid() {
+                        if let Err(err) = self.refresh_grid_derived() {
                             tracing::warn!(%err, "grid refresh failed");
                         }
                     }
@@ -1887,7 +1909,7 @@ impl Engine {
                     &mut guard,
                 ) {
                     Ok(pass) if pass.groups_changed => {
-                        if let Err(err) = self.refresh_grid() {
+                        if let Err(err) = self.refresh_grid_derived() {
                             tracing::warn!(%err, "grid refresh failed");
                         }
                     }
@@ -2743,11 +2765,19 @@ mod tests {
         assert_eq!(grid.len(), 2);
         assert!(version >= 1);
         let events = f.events.all();
-        assert!(events.contains(&Recorded::Library(LibraryChanged {
-            version,
-            len: 2,
-            data_changed: true
-        })));
+        // The current version need not be the scan's own rebuild: the two photos share a
+        // byte size, so the duplicate pass after it hashes them and rebuilds again, as a
+        // derived rebuild (`refresh_grid_derived`) that is no data change.
+        assert!(events.iter().any(|e| matches!(e,
+            Recorded::Library(LibraryChanged { version: v, len: 2, .. }) if *v == version)));
+        assert!(events.iter().any(|e| matches!(
+            e,
+            Recorded::Library(LibraryChanged {
+                len: 2,
+                data_changed: true,
+                ..
+            })
+        )));
         assert!(events.iter().any(|e| matches!(e,
             Recorded::Scan(s) if s.watched_id == watched.id && s.done && !s.cancelled && s.added == 2)));
         assert!(events.contains(&Recorded::Folder(FolderStatus {
@@ -4062,16 +4092,22 @@ mod tests {
         }
     }
 
-    /// The `data_changed` of the most recent `library_changed`.
-    fn last_data_changed(f: &Fixture) -> bool {
+    /// The `data_changed` of every `library_changed` so far, oldest first.
+    fn data_changed_flags(f: &Fixture) -> Vec<bool> {
         f.events
             .all()
             .iter()
-            .rev()
-            .find_map(|e| match e {
+            .filter_map(|e| match e {
                 Recorded::Library(e) => Some(e.data_changed),
                 _ => None,
             })
+            .collect()
+    }
+
+    /// The `data_changed` of the most recent `library_changed`.
+    fn last_data_changed(f: &Fixture) -> bool {
+        *data_changed_flags(f)
+            .last()
             .expect("a library_changed was sent")
     }
 
@@ -4087,7 +4123,13 @@ mod tests {
         let f = fixture(&[("a/beach.jpg", &img), ("a/mountain.jpg", &img)]);
         f.add_photos();
         f.engine.wait_for_scans();
-        assert!(last_data_changed(&f), "the scan's own rebuild changed data");
+        // Not the last event: the two photos share a byte size, so the duplicate pass
+        // after the scan hashes them and publishes a rebuild of its own, which is not a
+        // data change to the collections.
+        assert!(
+            data_changed_flags(&f).contains(&true),
+            "the scan's own rebuild changed data"
+        );
 
         f.engine.set_view(GridView::Starred).unwrap();
         assert!(!last_data_changed(&f), "a view switch");
@@ -4165,6 +4207,80 @@ mod tests {
         assert_eq!(Publish::Published(4).shown_at(), Some(4));
         assert_eq!(Publish::Overtaken(5).shown_at(), Some(5));
         assert_eq!(Publish::Superseded.shown_at(), None);
+    }
+
+    /// A poster frame moves a thumbnail's state and nothing any collection or Settings
+    /// reads, so its rebuild - up to one a second while a page extracts frames - must not
+    /// send the UI to refetch the albums, people and tags.
+    #[test]
+    fn a_poster_frame_rebuild_does_not_announce_a_data_change() {
+        use photon_core::grid::GridView;
+        let f = fixture(&[("a/one.jpg", &jpeg(16, 16))]);
+        f.add_photos();
+        f.engine.wait_for_scans();
+        f.engine.set_view(GridView::All).unwrap();
+        assert!(!last_data_changed(&f));
+        let before = f.engine.grid().0;
+
+        // The first frame after a quiet second rebuilds at once, on this thread.
+        f.engine.frame_stored();
+
+        assert!(f.engine.grid().0 > before, "the frame rebuilt the grid");
+        assert!(!last_data_changed(&f));
+    }
+
+    /// The same for the duplicate pass: a content hash moves the Duplicates view and its
+    /// count, which the UI re-reads with the grid on every version, but no album, person,
+    /// tag or folder count.
+    ///
+    /// Two different pictures padded to one byte size: the pass hashes both (a shared size
+    /// is what makes a candidate) and rebuilds, and being different pictures they form no
+    /// look-alike group whose regroup would rebuild after it - so the duplicate pass's is
+    /// the scan's last rebuild, whether or not their thumbnails were ready in time.
+    #[test]
+    fn a_duplicate_pass_rebuild_does_not_announce_a_data_change() {
+        let pattern = jpeg_pattern(180, 120);
+        let mut solid = jpeg(16, 16);
+        assert!(solid.len() < pattern.len());
+        // After the end-of-image marker, where no decoder reads.
+        solid.resize(pattern.len(), 0);
+        let f = fixture(&[("a/one.jpg", &solid), ("b/two.jpg", &pattern)]);
+        f.add_photos();
+        f.engine.wait_for_scans();
+        assert_eq!(crate::commands::grid_info(&f.engine).duplicate_count, 0);
+
+        let flags = data_changed_flags(&f);
+        assert!(flags.contains(&true), "the scan's own rebuild changed data");
+        assert_eq!(
+            flags.last(),
+            Some(&false),
+            "the duplicate pass's rebuild, the scan's last, announced a data change"
+        );
+    }
+
+    /// And for the look-alike regroup, staged as in
+    /// `a_regroup_that_hashes_nothing_still_rebuilds_the_grid`: the groups are cleared
+    /// behind the engine, so the pass has a regroup to publish and nothing to hash.
+    #[test]
+    fn a_look_alike_regroup_does_not_announce_a_data_change() {
+        use photon_core::grid::GridView;
+        let f = fixture(&[
+            ("a/big.jpg", &jpeg_pattern(180, 120)),
+            ("a/small.jpg", &jpeg_pattern(72, 48)),
+        ]);
+        let watched = f.add_photos();
+        f.engine.thumbs.wait_idle();
+        f.engine.start_scan(watched);
+        f.engine.wait_for_scans();
+        f.engine.lib.set_similar_groups(&[]).unwrap();
+        f.engine.set_view(GridView::Duplicates).unwrap();
+        assert_eq!(f.ids().len(), 0);
+        assert!(!last_data_changed(&f));
+
+        f.engine.hash_after_scan(&AtomicBool::new(false));
+
+        assert_eq!(f.ids().len(), 2, "the regroup rebuilt the grid");
+        assert!(!last_data_changed(&f));
     }
 
     /// A star moves the data - and `refresh_grid` stands for every writer like it.

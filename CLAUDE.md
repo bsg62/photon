@@ -126,9 +126,14 @@ else built meanwhile, and the next successful publish clears it.
 `LibraryChanged::data_changed` tells the UI whether to refetch the sidebar's collections
 (albums, people, tags - the tag counts alone are ~240ms at 300k photos). Every `refresh_grid`
 marks the engine-wide `data_dirty` before it snapshots; the view setters' rebuilds
-(`rebuild_or_restore`) do not; whichever rebuild *publishes* next swaps it back and sends it.
-Engine-wide rather than per rebuild, because a data rebuild discarded by a view switch would
-otherwise take its flag with it. A new writer calls `refresh_grid`, never the view-only path.
+(`rebuild_or_restore`) do not, and neither does `refresh_grid_derived`, the rebuild after a
+stored poster frame and after the hashing passes in `hash_after_scan` - a thumbnail state, a
+content hash or a look-alike group is read by the grid and `GridInfo` (the Duplicates count),
+never by an album, person, tag, tag rule or folder count, and frames arrive up to once a
+second. Whichever rebuild *publishes* next swaps the flag back and sends it. Engine-wide
+rather than per rebuild, because a data rebuild discarded by a view switch would otherwise
+take its flag with it. A new writer calls `refresh_grid`; `refresh_grid_derived` only for a
+write that no collection or Settings query reads, checked against those queries.
 
 `ScanReport::touched_rows` gates the end-of-scan refresh on whether a scan actually moved
 rows. A change that alters data by some *other* means must add its own counter to `ScanReport`
