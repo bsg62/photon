@@ -96,4 +96,13 @@ describe('past the cap', () => {
     map.onScroll(401);
     expect(map.virtual).toBeCloseTo(401 * 4.95, 6);
   });
+  it('a held press maps even a small step proportionally', () => {
+    const map = mapped();
+    map.press(true);
+    map.onScroll(10);
+    expect(map.virtual).toBeCloseTo(10 * 4.95, 6);
+    map.release();
+    map.onScroll(20);
+    expect(map.virtual).toBeCloseTo(59.5, 6);
+  });
 });
