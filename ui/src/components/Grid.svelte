@@ -243,24 +243,6 @@
     pinned = firstVisibleOffset(rows, map.virtualAt(viewport.scrollTop));
   }
 
-  /** Keeping the user's place when the tile size changes.
-   *
-   *  Every row's `top` is computed from the tile width, so the pixel position the viewport
-   *  is holding names a different photo the instant the width moves - the grid jumps to
-   *  another year when the tiles grow. The photo to come back to therefore has to be read
-   *  from the layout as it was *before* the change and scrolled to in the layout as it is
-   *  after, and one run of an effect can only ever see one of those: `rows` is a `$derived`,
-   *  so the run woken by the new width already reads the new rows. The pin is kept current
-   *  on every run where the width has *not* moved - a scroll, a resize, a rebuilt index -
-   *  and by `scrollToOffset`, which re-pins whatever it scrolls to; the run that sees a new
-   *  width spends the pin instead of taking it again.
-   *
-   *  All three values are read on every run, the restoring one included: an effect depends
-   *  only on what that run read, so a restoring run that skipped `scrollTop` would stop
-   *  hearing about scrolls and pin a stale offset for the next change.
-   *
-   *  `$effect`, not `$effect.pre`: the canvas is only as tall as the old layout until the
-   *  DOM catches up, and a scroll into the part that does not exist yet is clamped away. */
   // After the canvas has its new height (`$effect`, not `$effect.pre`): a write into a canvas
   // not yet grown is clamped away. Above the pin effect, which scrolls through the map.
   $effect(() => {
@@ -299,6 +281,24 @@
     if (w !== null) writeDom(w);
   });
 
+  /** Keeping the user's place when the tile size changes.
+   *
+   *  Every row's `top` is computed from the tile width, so the pixel position the viewport
+   *  is holding names a different photo the instant the width moves - the grid jumps to
+   *  another year when the tiles grow. The photo to come back to therefore has to be read
+   *  from the layout as it was *before* the change and scrolled to in the layout as it is
+   *  after, and one run of an effect can only ever see one of those: `rows` is a `$derived`,
+   *  so the run woken by the new width already reads the new rows. The pin is kept current
+   *  on every run where the width has *not* moved - a scroll, a resize, a rebuilt index -
+   *  and by `scrollToOffset`, which re-pins whatever it scrolls to; the run that sees a new
+   *  width spends the pin instead of taking it again.
+   *
+   *  All three values are read on every run, the restoring one included: an effect depends
+   *  only on what that run read, so a restoring run that skipped `scrollTop` would stop
+   *  hearing about scrolls and pin a stale offset for the next change.
+   *
+   *  `$effect`, not `$effect.pre`: the canvas is only as tall as the old layout until the
+   *  DOM catches up, and a scroll into the part that does not exist yet is clamped away. */
   let pinnedWidth = gridSize.width;
   let pinned: number | null = null;
   $effect(() => {
