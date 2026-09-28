@@ -50,7 +50,9 @@ Fixed in the same PR: every committed write rebuilds through `Engine::refresh_af
 - **Duplicate candidates are chosen by byte size alone,** so roughly 5–10% of a large library shares a size by coincidence and gets read in full once. A first-64-KiB hash as a pre-filter would cut that read. It needs a schema column, which makes it a minor release.
 - **Thumbnail workers** stay capped at 8 (`MAX_WORKERS`, `thumbs/service.rs`). After #116 each worker needs about half the memory, so a RAM-derived cap is possible. The cap was also about the disk, so measure before raising it.
 
-## 6. The grid canvas exceeds the browser's layout-height limit — confirmed, not fixed
+## 6. The grid canvas exceeds the browser's layout-height limit — fixed
+
+Fixed per docs/superpowers/specs/2026-09-28-photon-grid-canvas-cap-design.md (scroll-map.ts, xtask scroll-probe). The measurements below are the before.
 
 Measured on 2026-09-28. Engines cap a box at (2^31−1)/64 = 33,554,428 px; `.canvas` is capped there, every row whose `top` lies beyond lands on the cap, and `scrollTop` stops at it. Everything past it is unreachable by scrolling, End, a folder jump or the timeline; the viewer still works.
 

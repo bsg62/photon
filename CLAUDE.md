@@ -68,6 +68,7 @@ cargo run -p xtask -- metadata            # licence and installer metadata are c
 ```bash
 cargo run -p xtask -- screenshots                     # twenty-six PNGs into target/screenshots/
 cargo run -p xtask -- screenshots --only viewer-info-light --no-build
+cargo run -p xtask -- scroll-probe   # the end of a 300k-photo library is reachable
 ```
 
 `npm run dev` runs the app with hot reload. **Do not run it to verify a change** — see
@@ -202,6 +203,15 @@ folder that sorts earlier shifts every later offset, so anything holding an offs
 rebuild — the viewer, the grid selection — must re-find its photo by id through
 `grid_offset_of_item`. Clamping catches only the offset falling off the end; in range the
 consumer silently shows a different photo.
+
+**The grid's `scrollTop` is the layout's position, not the viewport's.** Engines cap a box
+at 33,554,428 px (less in CSS px on a scaled Windows display), and a large library at large
+tiles in a narrow window is taller; past the cap `.canvas` is held at a measured
+`domHeight` and `scroll-map.ts` maps the layout's position onto it, drawing rows at
+`row.top - shift`. Under the cap the map is the identity. Anything new that reads or writes
+`viewport.scrollTop` in `Grid.svelte` goes through the map (`virtualAt`, `scrollToVirtual`,
+`writeDom`) - a direct read is a DOM position, and in a big library it names another photo.
+`cargo run -p xtask -- scroll-probe` checks the end of a 300,000-photo library is reachable.
 
 ### IPC is three files per command
 

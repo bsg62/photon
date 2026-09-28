@@ -10,6 +10,7 @@
   import { fitMenu } from '../lib/menu-place';
   import { gridSize } from '../lib/app-grid-size.svelte';
   import { buildRows, columnsFor, defersThumbs, edgeScrollSpeed, fetchSpan, firstVisibleOffset, GAP, itemSpan, itemsInRect, type Rect, renderRange, rowOfItem, topFolderId, totalHeight, visibleRange } from '../lib/layout';
+  import { CAP_FALLBACK, capFrom, createScrollMap, PROBE_HEIGHT } from '../lib/scroll-map';
   import { createScrollSpeed } from '../lib/scroll-speed.svelte';
   import { move, type NavKey } from '../lib/nav';
   import { yearMarks } from '../lib/timeline';
@@ -54,6 +55,14 @@
   let width = $state(0);
   let height = $state(0);
   let scrollTop = $state(0);
+  /** `scrollTop` is the layout's position; the viewport's own `scrollTop` is the DOM's, and
+   *  the two differ by `shift` in a library taller than the browser will lay out. Every
+   *  read and write of the viewport's position goes through `map` (`scroll-map.ts`). */
+  const map = createScrollMap();
+  let shift = $state(0);
+  /** The tallest canvas this engine, at this display scale, lays out; see `measureCap`. */
+  let domMax = $state(Number.POSITIVE_INFINITY);
+  let capTrusted = false;
 
   const columns = $derived(columnsFor(Math.max(0, width - 2 * GAP), gridSize.width));
   /** The index's own sections: one per folder run, or a single headerless run in a flat view
@@ -65,6 +74,7 @@
   const sections = $derived(library.info.sections);
   const rows = $derived(buildRows(sections, columns, gridSize.width));
   const total = $derived(totalHeight(rows));
+  const domHeight = $derived(Math.min(total, domMax));
   /** The year strip. It needs folder headers to mark (so a flat view, which has none, never
    *  shows it), more than one year to choose between, and something to scroll. */
   const marks = $derived(yearMarks(sections, rows));
@@ -179,6 +189,31 @@
     return () => clearTimeout(timer);
   });
 
+  /** Writes a DOM position the map asked for and tells it what the browser took. The
+   *  virtual position is published at once only past the cap: under it, the scroll event
+   *  does that, as it always has. */
+  function writeDom(domTop: number) {
+    viewport.scrollTop = domTop;
+    map.wrote(viewport.scrollTop);
+    shift = map.shift;
+    if (map.mapped) scrollTop = map.virtual;
+  }
+
+  function scrollToVirtual(v: number) {
+    writeDom(map.setVirtual(v));
+  }
+
+  /** How tall a box this engine will lay out, in CSS px, at this display scale. */
+  function measureCap() {
+    const probe = document.createElement('div');
+    probe.style.cssText = `position:absolute;top:0;left:0;width:1px;height:${PROBE_HEIGHT}px;visibility:hidden;pointer-events:none`;
+    viewport.appendChild(probe);
+    const cap = capFrom(probe.getBoundingClientRect().height);
+    probe.remove();
+    capTrusted = cap !== null;
+    domMax = cap ?? CAP_FALLBACK;
+  }
+
   export function scrollToOffset(offset: number, align: 'start' | 'nearest' = 'start') {
     const i = rowOfItem(rows, offset);
     if (i < 0 || !viewport) return;
@@ -187,13 +222,16 @@
     // for a real viewport height. 'start' doesn't depend on `height` and stays exact.
     if (align === 'nearest' && height === 0) return;
     const row = rows[i];
+    // Where the grid is now, read from the viewport rather than from `scrollTop`, which
+    // trails it by a scroll event.
+    const now = map.virtualAt(viewport.scrollTop);
     if (align === 'start') {
       const header = rows[i - 1];
-      viewport.scrollTop = header?.kind === 'header' && header.first === row.first ? header.top : row.top;
-    } else if (row.top < viewport.scrollTop) {
-      viewport.scrollTop = row.top;
-    } else if (row.top + row.height > viewport.scrollTop + height) {
-      viewport.scrollTop = row.top + row.height - height;
+      scrollToVirtual(header?.kind === 'header' && header.first === row.first ? header.top : row.top);
+    } else if (row.top < now) {
+      scrollToVirtual(row.top);
+    } else if (row.top + row.height > now + height) {
+      scrollToVirtual(row.top + row.height - height);
     }
     // Every programmatic scroll hands the pin over to where it just put the user, rather
     // than leaving it saying where they were. The browser's scroll event is a task away, so
@@ -202,8 +240,46 @@
     // scroll back to it. Read back from `viewport`, not from the value written above: the
     // browser clamps a scroll past the end of the canvas, and the pin has to name the row
     // that is actually at the top.
-    pinned = firstVisibleOffset(rows, viewport.scrollTop);
+    pinned = firstVisibleOffset(rows, map.virtualAt(viewport.scrollTop));
   }
+
+  // After the canvas has its new height (`$effect`, not `$effect.pre`): a write into a canvas
+  // not yet grown is clamped away. Above the pin effect, which scrolls through the map.
+  $effect(() => {
+    const w = map.resize(total, height, domMax);
+    if (w !== null) writeDom(w);
+  });
+
+  $effect(() => {
+    measureCap();
+    // A new display scale moves Chromium's cap in CSS px (it applies it in device pixels).
+    let query: MediaQueryList | null = null;
+    const listen = () => {
+      query?.removeEventListener('change', onScale);
+      query = matchMedia(`(resolution: ${devicePixelRatio}dppx)`);
+      query.addEventListener('change', onScale);
+    };
+    const onScale = () => {
+      measureCap();
+      listen();
+    };
+    listen();
+    return () => query?.removeEventListener('change', onScale);
+  });
+
+  // A reading taken before the window was laid out is taken again on the next resize.
+  $effect(() => {
+    void width;
+    void height;
+    if (!capTrusted) measureCap();
+  });
+
+  // Scrolling has gone still: put the thumb back where the grid is.
+  $effect(() => {
+    if (speed.motion.kind !== 'still') return;
+    const w = map.settle();
+    if (w !== null) writeDom(w);
+  });
 
   /** Keeping the user's place when the tile size changes.
    *
@@ -395,7 +471,7 @@
   /** A point in the window's coordinates, in the canvas's. */
   function atCanvas(x: number, y: number): { x: number; y: number } {
     const box = viewport.getBoundingClientRect();
-    return { x: x - box.left + viewport.scrollLeft, y: y - box.top + viewport.scrollTop };
+    return { x: x - box.left + viewport.scrollLeft, y: y - box.top + map.virtualAt(viewport.scrollTop) };
   }
 
   function bandRanges(rect: Rect): [number, number][] {
@@ -497,6 +573,8 @@
       const wanted = (speed * elapsed) / 1000 + bandScrollRest;
       const whole = Math.trunc(wanted);
       bandScrollRest = wanted - whole;
+      // A relative step of at most 70px (BAND_SCROLL_MAX x BAND_FRAME_MAX_MS), read by the map
+      // as a wheel step in `onscroll`; `atCanvas` below reads the position through the map.
       if (whole !== 0) viewport.scrollTop += whole;
       const at = atCanvas(bandAt.x, bandAt.y);
       dragTo(at.x, at.y);
@@ -631,7 +709,16 @@
     if (cancelBandKey()) return;
     closeMenu();
   }}
-  onpointerup={bandUp}
+  onpointerup={(e) => {
+    map.release();
+    bandUp(e);
+  }}
+  onpointercancel={() => map.release()}
+  onpointermove={(e) => {
+    // A native scrollbar can keep its release to itself: a pointer moving with no button
+    // held says the press is over, so the next wheel step is not read as a thumb drag.
+    if (e.buttons === 0) map.release();
+  }}
 />
 
 <div class="grid">
@@ -641,12 +728,24 @@
     bind:clientWidth={width}
     bind:clientHeight={height}
     onscroll={(e) => {
-      scrollTop = viewport.scrollTop;
+      const w = map.onScroll(viewport.scrollTop);
+      if (w !== null) writeDom(w);
+      scrollTop = map.virtual;
+      shift = map.shift;
       speed.sample(scrollTop, e.timeStamp, height);
     }}
-    onpointerdown={bandDown}
+    onpointerdown={(e) => {
+      // Past the cap, a drag on the scrollbar maps proportionally (`scroll-map.ts`).
+      map.press(e.offsetX > viewport.clientWidth);
+      bandDown(e);
+    }}
     onpointermove={bandMove}
     onpointercancel={abandonBand}
+    onwheel={() => {
+      // A wheel is never a thumb drag, and it fires before the scroll it causes: a scrollbar
+      // release the grid never saw would otherwise have this step mapped as a drag.
+      map.release();
+    }}
     onclickcapture={(e) => {
       if (!swallowClick) return;
       swallowClick = false;
@@ -688,12 +787,12 @@
         {/if}
       </p>
     {/if}
-    <div class="canvas" class:banding style:height="{total}px">
+    <div class="canvas" class:banding style:height="{domHeight}px">
       {#if banding && band}
         <div
           class="band"
           style:left="{Math.min(band.x0, band.x1)}px"
-          style:top="{Math.min(band.y0, band.y1)}px"
+          style:top="{Math.min(band.y0, band.y1) - shift}px"
           style:width="{Math.abs(band.x1 - band.x0)}px"
           style:height="{Math.abs(band.y1 - band.y0)}px"
         ></div>
@@ -702,12 +801,12 @@
         {#if row.kind === 'header'}
           {@const folderId = sections[row.section].folderId}
           {@const folder = folderId === null ? undefined : library.folderOf(folderId)}
-          <div class="header" style:top="{row.top}px">
+          <div class="header" style:top="{row.top - shift}px">
             <span class="name">{folder ? folderLabel(folder) : ''}</span>
             <span class="path">{folder?.path ?? ''}</span>
           </div>
         {:else}
-          <div class="row" style:top="{row.top}px" style:gap="{GAP}px" style:padding-left="{GAP}px">
+          <div class="row" style:top="{row.top - shift}px" style:gap="{GAP}px" style:padding-left="{GAP}px">
             {#each { length: row.count } as _, i (row.first + i)}
               {@const offset = row.first + i}
               {@const entry = library.entry(offset)}
@@ -739,7 +838,7 @@
     {/if}
   </div>
   {#if scrubbable}
-    <Timeline {marks} {total} viewport={height} {scrollTop} onscrub={(top) => (viewport.scrollTop = top)} />
+    <Timeline {marks} {total} viewport={height} {scrollTop} onscrub={(top) => scrollToVirtual(top)} />
   {/if}
 </div>
 
