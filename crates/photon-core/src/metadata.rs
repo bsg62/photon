@@ -1,6 +1,7 @@
+use crate::keywords::Embedded;
 use std::{
     fs::File,
-    io::{BufRead, BufReader, Seek, SeekFrom},
+    io::{self, BufRead, BufReader, Read, Seek, SeekFrom},
     path::Path,
 };
 
@@ -71,17 +72,147 @@ pub struct ImageMeta {
     pub camera: CameraMeta,
 }
 
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(i64::MAX - FUTURE_SLACK_S, |d| d.as_secs() as i64)
+}
+
 /// Reads dimensions and EXIF data. Never fails: missing data falls back to defaults.
 pub fn read_image_meta(path: &Path) -> ImageMeta {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(i64::MAX - FUTURE_SLACK_S, |d| d.as_secs() as i64);
-    read_image_meta_at(path, now)
+    read_image_meta_at(path, unix_now())
 }
 
 /// [`read_image_meta`] with the clock passed in, so the future bound can be tested.
 pub(crate) fn read_image_meta_at(path: &Path, now: i64) -> ImageMeta {
     let (dims, exif, avif) = read_header(path);
+    meta_from(dims, exif, avif, now)
+}
+
+/// Everything `describe()` reads out of a photo file: what [`read_image_meta`] and
+/// [`crate::keywords::read_embedded`] answer, answered the same, from one open file and one
+/// read of its leading bytes. Never fails, as neither of those does.
+///
+/// The keywords and caption need the first `xmp::MAX_PREFIX` bytes whatever the format, and
+/// the header of every format but a large AVIF lies inside them, so the header is parsed out
+/// of the prefix already in memory ([`Prefixed`]) and the file is read again only past it.
+/// Read separately, the two opened the file twice and read its head twice - once in the
+/// header parser's small buffered reads, once in one go - and on a network share or a
+/// spinning archive drive, per-file syscalls are what an import costs.
+pub fn read_image(path: &Path) -> (ImageMeta, Embedded) {
+    let Ok(file) = File::open(path) else {
+        return (
+            meta_from(None, None, false, unix_now()),
+            Embedded::default(),
+        );
+    };
+    read_image_from(file, unix_now())
+}
+
+/// [`read_image`] over an open file, with the clock passed in, so a test can count what it
+/// reads.
+fn read_image_from<R: Read + Seek>(mut file: R, now: i64) -> (ImageMeta, Embedded) {
+    let mut prefix = Vec::new();
+    let (embedded, prefix, inner_pos) = match crate::xmp::read_prefix(&mut file, &mut prefix) {
+        Ok(_) => {
+            let end = prefix.len() as u64;
+            (crate::keywords::embedded_in(&prefix), prefix, Some(end))
+        }
+        // `read_embedded` answers nothing for a failed read. The header is read from the
+        // start of the file, as it was when it had an open file of its own, rather than from
+        // what a failed read left behind, with the cursor wherever it gave up.
+        Err(_) => (Embedded::default(), Vec::new(), None),
+    };
+    let mut reader = BufReader::new(Prefixed {
+        prefix,
+        inner: file,
+        pos: 0,
+        inner_pos,
+    });
+    let (dims, exif, avif) = read_header_from(&mut reader);
+    (meta_from(dims, exif, avif, now), embedded)
+}
+
+/// A file whose leading bytes were already read into `prefix`: reads there are served from
+/// memory and reads beyond it from the file, so a header parser can seek anywhere in the
+/// file without its head being read twice.
+struct Prefixed<R> {
+    prefix: Vec<u8>,
+    inner: R,
+    /// Where the next read starts, in the file.
+    pos: u64,
+    /// Where `inner`'s own cursor is, when that is known. A read past the prefix seeks
+    /// `inner` only when it is somewhere else: after the prefix read it sits at the prefix's
+    /// end, which is where a parser reading on out of the prefix continues from.
+    inner_pos: Option<u64>,
+}
+
+impl<R: Read + Seek> Read for Prefixed<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let mut n = 0;
+        let rest = usize::try_from(self.pos)
+            .ok()
+            .and_then(|pos| self.prefix.get(pos..))
+            .unwrap_or_default();
+        if !rest.is_empty() {
+            n = rest.len().min(buf.len());
+            buf[..n].copy_from_slice(&rest[..n]);
+            self.pos += n as u64;
+            if n == buf.len() {
+                return Ok(n);
+            }
+        }
+        // A read that runs off the end of the prefix goes on into the file, as one read of
+        // the file would have. A short read here is within `Read`'s contract and no parser
+        // in the tree is known to mind one, but the promise is that the header parsers see
+        // what a plain file shows them, and a file never cut a read at 256 KiB.
+        let read = if self.inner_pos == Some(self.pos) {
+            self.inner.read(&mut buf[n..])
+        } else {
+            self.inner
+                .seek(SeekFrom::Start(self.pos))
+                .and_then(|_| self.inner.read(&mut buf[n..]))
+        };
+        match read {
+            Ok(m) => {
+                self.pos += m as u64;
+                self.inner_pos = Some(self.pos);
+                Ok(n + m)
+            }
+            Err(e) => {
+                self.inner_pos = None;
+                // What came out of the prefix was read; the error surfaces on the next call.
+                if n > 0 { Ok(n) } else { Err(e) }
+            }
+        }
+    }
+}
+
+impl<R: Seek> Seek for Prefixed<R> {
+    fn seek(&mut self, to: SeekFrom) -> io::Result<u64> {
+        self.pos = match to {
+            SeekFrom::Start(pos) => pos,
+            SeekFrom::Current(delta) => self.pos.checked_add_signed(delta).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidInput, "seek before the start")
+            })?,
+            // Only the file knows where it ends.
+            SeekFrom::End(_) => {
+                let pos = self.inner.seek(to)?;
+                self.inner_pos = Some(pos);
+                pos
+            }
+        };
+        Ok(self.pos)
+    }
+}
+
+/// The [`ImageMeta`] a header read yields.
+fn meta_from(
+    dims: Option<(u32, u32)>,
+    exif: Option<exif::Exif>,
+    avif: bool,
+    now: i64,
+) -> ImageMeta {
     let (width, height) = dims.unwrap_or((0, 0));
     let mut meta = ImageMeta {
         width,
@@ -191,10 +322,11 @@ pub fn oriented_dims(width: u32, height: u32, orientation: u8) -> (u32, u32) {
 /// Dimensions, EXIF and whether the file is an AVIF, from one open file.
 ///
 /// Both are in the same leading bytes for every format but AVIF, whose `avif_dimensions`
-/// reads to the end of the file (see `decode::dimensions`); either way `describe()` runs
-/// this for every new or changed photo from one already-open file, not two: opening and
-/// header-parsing a file twice doubled the syscalls of an import for nothing, which on a
-/// network share or a spinning archive drive is what the import costs.
+/// reads to the end of the file (see `decode::dimensions`); either way both come from one
+/// already-open file, not two: opening and header-parsing a file twice doubled the syscalls
+/// of an import for nothing, which on a network share or a spinning archive drive is what
+/// the import costs. `describe()` reads the header through [`read_image`], which shares that
+/// one open file with the keyword and caption read as well.
 fn read_header(path: &Path) -> (Option<(u32, u32)>, Option<exif::Exif>, bool) {
     let Ok(file) = File::open(path) else {
         return (None, None, false);
@@ -302,8 +434,9 @@ pub fn write_date_text(out: &mut String, secs: i64) {
 mod tests {
     use super::*;
     use crate::testutil::{
-        ExifSpec, avif_fixture, counted, jpeg_bytes, jpeg_with_exif, jpeg_with_exif_spec,
-        png_bytes, write_file,
+        ExifSpec, avif_fixture, counted, gif_with_xmp, iptc_app13_datasets, jpeg_bytes,
+        jpeg_with_exif, jpeg_with_exif_spec, jpeg_with_segments, png_bytes, png_with_xmp,
+        write_file, xmp_packet_with_subjects,
     };
 
     #[test]
@@ -577,6 +710,152 @@ mod tests {
         let meta = read_image_meta(&path);
         assert_eq!((meta.width, meta.height, meta.orientation), (32, 64, 1));
         assert_eq!(meta.taken_at, Some(1_718_454_645));
+    }
+
+    /// A JPEG as a camera and a tagging tool leave it: EXIF, then XMP keywords and an IPTC
+    /// caption, then `scan` bytes of scan data ahead of the end-of-image marker.
+    fn tagged_jpeg(scan: usize) -> Vec<u8> {
+        let spec = ExifSpec {
+            orientation: Some(6),
+            datetime: Some("2024:06:15 12:30:45"),
+            ..ExifSpec::default()
+        };
+        let mut exif = b"Exif\0\0".to_vec();
+        exif.extend_from_slice(&crate::testutil::exif_tiff(&spec));
+        let mut xmp = b"http://ns.adobe.com/xap/1.0/\0".to_vec();
+        xmp.extend_from_slice(xmp_packet_with_subjects(&["beach", "東京"]).as_bytes());
+        let iptc = iptc_app13_datasets(&[(120, b"From Picasa"), (25, b"family")]);
+        let mut bytes = jpeg_with_segments(40, 20, &[(0xE1, &exif), (0xE1, &xmp), (0xED, &iptc)]);
+        let eoi = bytes.len() - 2;
+        bytes.splice(eoi..eoi, std::iter::repeat_n(0x5A, scan));
+        bytes
+    }
+
+    /// `describe()`'s read takes a file's head off the disk once: the keyword read's prefix,
+    /// and nothing more, since the header parser reads the same bytes out of memory. Read
+    /// on their own, the header walk's buffered reads came on top of the prefix.
+    #[test]
+    fn describe_reads_a_file_s_head_once() {
+        let dir = tempfile::tempdir().unwrap();
+        for (name, bytes) in [
+            ("large.jpg", tagged_jpeg(1024 * 1024)),
+            ("small.jpg", tagged_jpeg(0)),
+        ] {
+            let path = write_file(dir.path(), name, &bytes);
+            let mut file = crate::testutil::Counting::new(File::open(&path).unwrap());
+            let (meta, embedded) = read_image_from(&mut file, 1_800_000_000);
+            assert_eq!(
+                (meta.width, meta.height, meta.orientation, meta.taken_at),
+                (40, 20, 6, Some(1_718_454_645)),
+                "{name}"
+            );
+            assert_eq!(embedded.keywords, ["beach", "東京", "family"], "{name}");
+            assert_eq!(embedded.caption.as_deref(), Some("From Picasa"), "{name}");
+            assert_eq!(
+                file.read,
+                bytes.len().min(crate::xmp::MAX_PREFIX) as u64,
+                "{name}: of {} bytes",
+                bytes.len()
+            );
+        }
+    }
+
+    /// An AVIF's size is read from the whole file, so a phone's multi-megabyte AVIF is read
+    /// through past the prefix: on from where the prefix read left the file, every byte
+    /// read once and no seek spent getting back to where the file already is.
+    #[test]
+    fn a_large_avif_is_read_once_straight_through() {
+        let mut bytes = avif_fixture("exif_orientation6.avif");
+        // A top-level `free` box is how an encoder pads a file; the parser steps over it.
+        bytes.extend_from_slice(&crate::testutil::mp4_box(b"free", &vec![0; 300_000]));
+        assert!(bytes.len() > crate::xmp::MAX_PREFIX);
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_file(dir.path(), "phone.avif", &bytes);
+        let mut file = crate::testutil::Counting::new(File::open(&path).unwrap());
+        let (meta, _) = read_image_from(&mut file, 1_800_000_000);
+        assert_eq!((meta.width, meta.height, meta.orientation), (32, 64, 1));
+        assert_eq!((file.read, file.seeks), (bytes.len() as u64, 0));
+    }
+
+    /// The one read answers what the two separate reads it replaced answer, for every kind
+    /// of file `describe()` sees - including a header that lies past the prefix, which is
+    /// read from the file beyond it, and an AVIF, whose size is read to the end of the file.
+    #[test]
+    fn read_image_answers_what_the_separate_reads_answer() {
+        let dir = tempfile::tempdir().unwrap();
+        // Five 65,000-byte APP2 segments ahead of the frame header put it at ~325 KiB.
+        let filler = vec![0x11; 65_000];
+        let far: Vec<(u8, &[u8])> = (0..5).map(|_| (0xE2, filler.as_slice())).collect();
+        let far_header = jpeg_with_segments(30, 10, &far);
+        assert!(far_header.len() > crate::xmp::MAX_PREFIX);
+        let mut files = vec![
+            ("tagged.jpg", tagged_jpeg(1024 * 1024)),
+            ("small.jpg", tagged_jpeg(0)),
+            ("far.jpg", far_header),
+            ("plain.jpg", jpeg_bytes(8, 8)),
+            ("a.png", png_with_xmp(8, 8, 4)),
+            ("a.gif", gif_with_xmp(8, 8, 2)),
+            ("a.tif", crate::testutil::tiff_bytes(8, 8)),
+            ("empty.jpg", Vec::new()),
+        ];
+        for avif in ["exif_orientation6.avif", "irot90.avif", "grid_padded.avif"] {
+            files.push((avif, avif_fixture(avif)));
+        }
+        let mut padded = avif_fixture("irot90.avif");
+        padded.extend_from_slice(&crate::testutil::mp4_box(b"free", &vec![0; 300_000]));
+        files.push(("padded.avif", padded));
+        for (name, bytes) in &files {
+            let path = write_file(dir.path(), name, bytes);
+            assert_eq!(
+                read_image(&path),
+                (
+                    read_image_meta(&path),
+                    crate::keywords::read_embedded(&path)
+                ),
+                "{name}"
+            );
+        }
+        let far = read_image(&dir.path().join("far.jpg")).0;
+        assert_eq!((far.width, far.height), (30, 10), "found past the prefix");
+        let missing = dir.path().join("missing.jpg");
+        assert_eq!(
+            read_image(&missing),
+            (read_image_meta(&missing), Embedded::default())
+        );
+    }
+
+    /// Every read and seek a header parser makes lands on the file's own bytes, wherever it
+    /// falls against the prefix: inside it, across its end, past it, and back into it.
+    #[test]
+    fn a_prefixed_file_reads_as_the_file() {
+        let file: Vec<u8> = (0..1000u32).map(|i| (i * 7 % 251) as u8).collect();
+        let mut r = Prefixed {
+            prefix: file[..300].to_vec(),
+            inner: std::io::Cursor::new(file.clone()),
+            pos: 0,
+            inner_pos: None,
+        };
+        // Start in the prefix and cross its end in one read, which comes back whole rather
+        // than cut at a boundary the caller cannot see.
+        let mut buf = [0; 100];
+        r.seek(SeekFrom::Start(250)).unwrap();
+        assert_eq!(r.read(&mut buf).unwrap(), 100);
+        assert_eq!(buf, file[250..350]);
+        // On past it, then back inside it, then past it again from a different place than
+        // the file's cursor was left at.
+        assert_eq!(r.read(&mut buf).unwrap(), 100);
+        assert_eq!(buf, file[350..450]);
+        r.seek(SeekFrom::Current(-400)).unwrap();
+        assert_eq!(r.read(&mut buf).unwrap(), 100);
+        assert_eq!(buf, file[50..150]);
+        r.seek(SeekFrom::Start(700)).unwrap();
+        assert_eq!(r.read(&mut buf).unwrap(), 100);
+        assert_eq!(buf, file[700..800]);
+        r.seek(SeekFrom::End(-50)).unwrap();
+        let mut rest = Vec::new();
+        r.read_to_end(&mut rest).unwrap();
+        assert_eq!(rest, file[950..]);
+        assert!(r.seek(SeekFrom::Current(-2000)).is_err());
     }
 
     #[test]

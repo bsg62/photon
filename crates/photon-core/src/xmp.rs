@@ -8,7 +8,11 @@
 
 use quick_xml::Reader;
 use quick_xml::events::Event;
-use std::{fs::File, io::Read, path::Path};
+use std::{
+    fs::File,
+    io::{self, Read},
+    path::Path,
+};
 
 /// How much of a file is searched for the packet. XMP sits near the start of every
 /// container above; this stops a rating lookup pulling a 20MB photo through memory, and
@@ -16,33 +20,45 @@ use std::{fs::File, io::Read, path::Path};
 pub const MAX_PREFIX: usize = 256 * 1024;
 
 const PACKET_START: &[u8] = b"<x:xmpmeta";
-const PACKET_END: &str = "</x:xmpmeta>";
+const PACKET_END: &[u8] = b"</x:xmpmeta>";
+
+/// Reads the leading [`MAX_PREFIX`] bytes of `r` onto `buf`: the one bounded read every
+/// consumer of the prefix shares, so the cap is spelled once.
+pub(crate) fn read_prefix<R: Read>(r: R, buf: &mut Vec<u8>) -> io::Result<usize> {
+    r.take(MAX_PREFIX as u64).read_to_end(buf)
+}
 
 /// The rating in a photo's embedded XMP, if it has one. Never fails: an unreadable file,
 /// a truncated packet or malformed XML all yield `None`, because one bad photo must not
 /// fail a scan of a hundred thousand.
 pub fn read_rating(path: &Path) -> Option<u8> {
-    let mut file = File::open(path).ok()?;
+    let file = File::open(path).ok()?;
     let mut buf = Vec::new();
-    file.by_ref()
-        .take(MAX_PREFIX as u64)
-        .read_to_end(&mut buf)
-        .ok()?;
+    read_prefix(file, &mut buf).ok()?;
     rating_from_xml(&packet_in(&buf)?)
 }
 
 /// The XMP packet in the leading bytes of a file, as text, if one is complete there.
 ///
 /// Decoded lossily: the packet is UTF-8 by specification, but the bytes around it are
-/// whatever the container holds, and the slice starts at the packet marker so nothing
-/// before it is decoded at all.
+/// whatever the container holds. Both markers are found in the raw bytes and only the
+/// packet between them is decoded, rather than the whole rest of the prefix - up to 256 KiB
+/// of pixel data per photo, validated and copied to find a few kilobytes of text.
+///
+/// Finding the end in the bytes rather than in the decoded text gives the same packet: the
+/// markers are ASCII, a lossy decode never replaces an ASCII byte (it is never part of an
+/// invalid sequence), and its replacement character is not ASCII, so the first end marker
+/// is the same one either way; and decoding stops on that ASCII `>`, which ends any
+/// sequence before it, so the packet decodes to the same text on its own as inside the rest.
 pub fn packet_in(prefix: &[u8]) -> Option<String> {
-    let start = prefix
-        .windows(PACKET_START.len())
-        .position(|w| w == PACKET_START)?;
-    let text = String::from_utf8_lossy(&prefix[start..]);
-    let end = text.find(PACKET_END).map(|i| i + PACKET_END.len())?;
-    Some(text[..end].to_string())
+    let start = find(prefix, PACKET_START)?;
+    let packet = &prefix[start..];
+    let end = find(packet, PACKET_END)? + PACKET_END.len();
+    Some(String::from_utf8_lossy(&packet[..end]).into_owned())
+}
+
+fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack.windows(needle.len()).position(|w| w == needle)
 }
 
 /// The keywords in an XMP packet: every `rdf:li` inside `dc:subject`, in document order,
@@ -360,10 +376,62 @@ mod tests {
         assert_eq!(read_rating(&path), Some(4));
     }
 
+    /// A packet whose last byte is the cap's last byte is whole, and one a byte longer is
+    /// not: the end marker is found in the bytes read, never assumed past them.
+    #[test]
+    fn a_packet_ending_on_the_cap_is_found_and_one_crossing_it_is_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let packet = xmp_packet(4);
+        let packet = &packet[..packet.find("</x:xmpmeta>").unwrap() + PACKET_END.len()];
+        for (name, pad, rating) in [
+            ("on.jpg", MAX_PREFIX - packet.len(), Some(4)),
+            ("across.jpg", MAX_PREFIX - packet.len() + 1, None),
+            ("straddling.jpg", MAX_PREFIX - packet.len() / 2, None),
+        ] {
+            let mut bytes = vec![0xFF; pad];
+            bytes.extend_from_slice(packet.as_bytes());
+            let path = write_file(dir.path(), name, &bytes);
+            assert_eq!(read_rating(&path), rating, "{name}");
+        }
+    }
+
+    /// The packet is decoded on its own, and comes out exactly as it did when the rest of the
+    /// prefix was decoded with it: bytes around it that are not UTF-8 are not part of it, one
+    /// inside it is replaced where it stands, and multibyte text inside it is read whole.
+    #[test]
+    fn the_packet_is_the_text_between_its_markers() {
+        let packet = "<x:xmpmeta a=\"café 東京\">\u{FFFD}</x:xmpmeta>";
+        let mut bytes = vec![0xFF, 0xE2, 0x82];
+        bytes.extend_from_slice(b"<x:xmpmeta a=\"caf\xC3\xA9 \xE6\x9D\xB1\xE4\xBA\xAC\">\xE2\x82");
+        bytes.extend_from_slice(PACKET_END);
+        bytes.extend_from_slice(&[0xC3, 0xFF, 0xE6, 0x9D]);
+        assert_eq!(packet_in(&bytes).as_deref(), Some(packet));
+
+        let jpeg = crate::testutil::jpeg_with_xmp_packet(
+            8,
+            8,
+            &xmp_packet_with_subjects(&["café", "東京", "😀"]),
+        );
+        assert_eq!(crate::keywords::keywords_in(&jpeg), ["café", "東京", "😀"]);
+    }
+
+    /// The packet ends at the first end marker after its start, not at one ahead of it: a
+    /// stray end tag earlier in the file (a thumbnail's own metadata, say) ends nothing.
+    #[test]
+    fn an_end_marker_before_the_packet_does_not_end_it() {
+        let packet = xmp_packet(3);
+        let mut bytes = PACKET_END.to_vec();
+        bytes.extend_from_slice(b"\xFF\xD8 junk ");
+        bytes.extend_from_slice(packet.as_bytes());
+        let found = packet_in(&bytes).unwrap();
+        assert!(found.starts_with("<x:xmpmeta") && found.ends_with("</x:xmpmeta>"));
+        assert_eq!(rating_from_xml(&found), Some(3));
+    }
+
     #[test]
     fn a_packet_with_a_start_marker_but_no_closing_tag_yields_none() {
         // The packet is truncated (e.g. a partially-written or corrupted file): the start
-        // marker is found but `text.find(PACKET_END)` never matches, so `?` bails to None.
+        // marker is found but the end marker never is, so `?` bails to None.
         let dir = tempfile::tempdir().unwrap();
         // The rating sits on the start tag on purpose: without it, an implementation that
         // treated truncation as "scan to the end of the buffer" would also return None here
