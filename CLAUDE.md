@@ -142,6 +142,13 @@ rebuild rather than returning it: returned, the UI undid its side of a write tha
 star flipped back, a selection kept for a retry), and the flag the failed rebuild left set
 has the next publish announce the write anyway.
 
+`grid_info` sends the sections and folders only when their `layout_gen` - published with the
+grid, moved only when a publish changes them - is not the one the UI names, and reads its four
+counts from a cache keyed by `counts_epoch`. `data_snapshot` moves the epoch beside
+`data_dirty`, and `hash_after_scan` moves it before its duplicate rebuild; a new writer that
+changes something a count reads without going through `refresh_grid` must move it too, or the
+sidebar shows a stale count until the next data write.
+
 `ScanReport::touched_rows` gates the end-of-scan refresh on whether a scan actually moved
 rows. A change that alters data by some *other* means must add its own counter to `ScanReport`
 and fold it into `touched_rows`, or the grid silently never rebuilds. Today the counters
