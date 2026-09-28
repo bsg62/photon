@@ -312,14 +312,24 @@ pub fn set_item_edit(
     commands::set_item_edit(engine.inner(), id, turns, crop)
 }
 
+/// On the blocking pool like `add_folder`: a star is written into `.picasa.ini` in the
+/// photo's own folder, often on a network share, which hangs when the share has stopped
+/// answering - and every other star then queues behind it on `Engine::ini_write`.
 #[tauri::command(async)]
-pub fn set_star(engine: Eng<'_>, id: i64, starred: bool) -> Result<(), AppError> {
-    commands::set_star(&engine, id, starred)
+pub async fn set_star(engine: Eng<'_>, id: i64, starred: bool) -> Result<(), AppError> {
+    let engine = engine.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || commands::set_star(&engine, id, starred))
+        .await
+        .map_err(AppError::internal)?
 }
 
+/// As `set_star`, once per folder in the selection.
 #[tauri::command(async)]
-pub fn set_stars(engine: Eng<'_>, ids: Vec<i64>, starred: bool) -> Result<usize, AppError> {
-    commands::set_stars(&engine, &ids, starred)
+pub async fn set_stars(engine: Eng<'_>, ids: Vec<i64>, starred: bool) -> Result<usize, AppError> {
+    let engine = engine.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || commands::set_stars(&engine, &ids, starred))
+        .await
+        .map_err(AppError::internal)?
 }
 
 #[tauri::command(async)]
@@ -551,7 +561,7 @@ pub fn video_frame_failed(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testutil::{fixture, jpeg};
+    use crate::testutil::{Fixture, fixture, jpeg};
     use serde_json::json;
     use std::{sync::mpsc, time::Duration};
     use tauri::{
@@ -579,20 +589,29 @@ mod tests {
         }
     }
 
-    /// As many exports as the runtime has worker threads, each parked on the one full-size
-    /// render at a time - as a real export of edited photos waits behind the viewer's render.
-    /// Run on a worker, they hold every one of them, and `grid_info` - any command - is not
-    /// dispatched until the exports finish. Sent through Tauri's own dispatch, because the
-    /// difference is in what `#[tauri::command(async)]` does with a plain `fn`.
-    #[test]
-    fn an_export_holds_no_ipc_worker() {
-        let f = fixture(&[("a.jpg", &jpeg(16, 8))]);
-        f.add_photos();
-        let id = f.ids()[0];
-        // An edit, so the export renders and takes `RENDERING`.
-        commands::set_item_edit(&f.engine, id, 1, None).unwrap();
+    /// Sends as many `cmd`s as Tauri's runtime has worker threads, while `park` holds a lock
+    /// each of them waits on, then `grid_info`, and fails unless `grid_info` answers while
+    /// they are still parked. Run on a worker, the parked calls hold every one of them, and
+    /// no other command is dispatched until they finish. Sent through Tauri's own dispatch,
+    /// because the difference is in what `#[tauri::command(async)]` does with a plain `fn`.
+    /// `check` reads each parked call's result once the lock is released. The runtime is
+    /// Tauri's global one, shared by every test in the binary, so one command reverted to a
+    /// plain `fn` starves it for the others too: when several of these fail together, the
+    /// one to read is the one named after the command that changed.
+    fn assert_parked_calls_hold_no_worker<G>(
+        f: &Fixture,
+        cmd: &str,
+        args: impl Fn(usize) -> serde_json::Value,
+        park: impl FnOnce() -> G,
+        check: impl Fn(serde_json::Value),
+    ) {
         let app = mock_builder()
-            .invoke_handler(tauri::generate_handler![export_items, grid_info])
+            .invoke_handler(tauri::generate_handler![
+                export_items,
+                set_star,
+                set_stars,
+                grid_info
+            ])
             .build(mock_context(noop_assets()))
             .unwrap();
         app.manage(f.engine.clone());
@@ -604,20 +623,15 @@ mod tests {
             .metrics()
             .num_workers();
 
-        let rendering = crate::protocol::RENDERING.lock();
+        let parked = park();
         std::thread::scope(|s| {
-            let exports: Vec<_> = (0..workers)
+            let calls: Vec<_> = (0..workers)
                 .map(|n| {
-                    let dest = f.dir.path().join(format!("out{n}"));
-                    std::fs::create_dir_all(&dest).unwrap();
-                    let webview = &webview;
-                    s.spawn(move || {
-                        let args = json!({ "ids": [id], "dest": dest, "applyEdits": true });
-                        get_ipc_response(webview, request("export_items", args))
-                    })
+                    let (webview, args) = (&webview, args(n));
+                    s.spawn(move || get_ipc_response(webview, request(cmd, args)))
                 })
                 .collect();
-            // Long enough for every export to be dispatched and reach the lock.
+            // Long enough for every call to be dispatched and reach the lock.
             std::thread::sleep(Duration::from_millis(300));
             let (tx, rx) = mpsc::channel();
             let webview = &webview;
@@ -625,17 +639,68 @@ mod tests {
                 let _ = tx.send(get_ipc_response(webview, request("grid_info", json!({}))));
             });
             let answered = rx.recv_timeout(Duration::from_secs(5));
-            // Released before asserting, so a failure still lets the exports finish.
-            drop(rendering);
+            // Released before asserting, so a failure still lets the parked calls finish.
+            drop(parked);
             assert!(
                 answered.is_ok_and(|r| r.is_ok()),
-                "grid_info waited behind {workers} exports"
+                "grid_info waited behind {workers} {cmd} calls"
             );
-            for export in exports {
-                let report = export.join().unwrap().unwrap();
-                let report: serde_json::Value = report.deserialize().unwrap();
-                assert_eq!(report["written"], 1, "{report}");
+            for call in calls {
+                check(call.join().unwrap().unwrap().deserialize().unwrap());
             }
         });
+    }
+
+    /// Each export parked on the one full-size render at a time - as a real export of
+    /// edited photos waits behind the viewer's render.
+    #[test]
+    fn an_export_holds_no_ipc_worker() {
+        let f = fixture(&[("a.jpg", &jpeg(16, 8))]);
+        f.add_photos();
+        let id = f.ids()[0];
+        // An edit, so the export renders and takes `RENDERING`.
+        commands::set_item_edit(&f.engine, id, 1, None).unwrap();
+        assert_parked_calls_hold_no_worker(
+            &f,
+            "export_items",
+            |n| {
+                let dest = f.dir.path().join(format!("out{n}"));
+                std::fs::create_dir_all(&dest).unwrap();
+                json!({ "ids": [id], "dest": dest, "applyEdits": true })
+            },
+            || crate::protocol::RENDERING.lock(),
+            |report| assert_eq!(report["written"], 1, "{report}"),
+        );
+    }
+
+    /// Each star parked on the INI-write lock, as stars queue behind one whose folder is on
+    /// a share that has stopped answering.
+    #[test]
+    fn a_star_holds_no_ipc_worker() {
+        let f = fixture(&[("a.jpg", &jpeg(16, 8))]);
+        f.add_photos();
+        let id = f.ids()[0];
+        assert_parked_calls_hold_no_worker(
+            &f,
+            "set_star",
+            |n| json!({ "id": id, "starred": n % 2 == 0 }),
+            || f.engine.hold_ini_write(),
+            |unit| assert_eq!(unit, serde_json::Value::Null),
+        );
+    }
+
+    /// The same for a selection's stars.
+    #[test]
+    fn stars_hold_no_ipc_worker() {
+        let f = fixture(&[("a.jpg", &jpeg(16, 8))]);
+        f.add_photos();
+        let id = f.ids()[0];
+        assert_parked_calls_hold_no_worker(
+            &f,
+            "set_stars",
+            |n| json!({ "ids": [id], "starred": n % 2 == 0 }),
+            || f.engine.hold_ini_write(),
+            |landed| assert_eq!(landed, 1),
+        );
     }
 }
