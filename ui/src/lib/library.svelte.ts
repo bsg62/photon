@@ -1058,12 +1058,17 @@ export class LibraryStore {
     }
     if ('after' in landing && landing.after !== null) {
       const at = await api.gridOffsetOfItem(landing.after);
-      if (at === null) return null;
-      const rows = await api.gridRows(at, 2);
-      // A rebuild between the two asks: `at` no longer holds the photo it was asked for.
-      if (rows.rows[0]?.id !== landing.after) return null;
-      const next = rows.rows[1];
-      return next ? { offset: at + 1, id: next.id } : { offset: at, id: landing.after };
+      if (at !== null) {
+        const rows = await api.gridRows(at, 2);
+        // A rebuild between the two asks: `at` no longer holds the photo it was asked for.
+        if (rows.rows[0]?.id !== landing.after) return null;
+        const next = rows.rows[1];
+        return next ? { offset: at + 1, id: next.id } : { offset: at, id: landing.after };
+      }
+      // The photo before the selection left with it - in Duplicates, the partner of one
+      // being hidden. Landing nowhere stopped the run; the photo now at the lead's offset
+      // is near where the hidden ones were, as for the `id` landing above.
+      landing = { at: lead };
     }
     if ('at' in landing && landing.at > 0) {
       // With the photo before it too: hiding the last photos leaves the lead's offset past

@@ -1813,6 +1813,21 @@ describe('LibraryStore', () => {
       expect(store.selected).toBe(7);
     });
 
+    /** A band hidden in Duplicates whose photo before it was a partner of one inside it:
+     *  the photo the landing follows has left too, and landing nowhere stopped the run. The
+     *  photo now at the lead's offset is near the band's end - one past it here, since the
+     *  partner before the lead left as well. */
+    it('a landing after a photo that left with the hidden ones lands at the lead', async () => {
+      const store = await bandFromLead(10, 3000);
+      vi.mocked(api.setItemsHidden).mockImplementation(async () => {
+        hiddenFrom(5000, 9, 3000);
+        return 2991;
+      });
+      await store.setHidden(store.selectedItemIds, true);
+      expect(store.selectedItemIds).toEqual([idAt(3002)]);
+      expect(store.selected).toBe(10);
+    });
+
     /** A Ctrl+click during the write adds to a selection still holding the photos being
      *  hidden. The click is kept, and the lead with it; the hidden photos are not, or "Hide
      *  3 photos" is offered for two the user can no longer see. */
