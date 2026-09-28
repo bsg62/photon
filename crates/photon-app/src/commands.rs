@@ -284,7 +284,7 @@ pub fn rescan_folder(engine: &Arc<Engine>, watched_id: i64) -> CmdResult<()> {
 }
 
 pub fn grid_info(engine: &Engine) -> GridInfo {
-    let (version, grid, build_error) = engine.grid_and_failure();
+    let (version, grid, build_error, _layout_gen) = engine.published();
     // One read of the pair, so the argument reported is the one the view was built with.
     let (view, arg) = engine.view_and_arg();
     let copies_of = (view == GridView::Copies)

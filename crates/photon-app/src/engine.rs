@@ -180,8 +180,10 @@ pub struct Engine {
     excluded: Vec<PathBuf>,
     /// The published grid: its version, its index, and - only when the first build failed
     /// and this empty index stands in for it - why (`build_first_grid`). Held together so
-    /// `grid_info` reads the reason with the version it belongs to.
-    grid: RwLock<(u64, Arc<GridIndex>, Option<String>)>,
+    /// `grid_info` reads the reason with the version it belongs to. The fourth value is the
+    /// layout generation: it moves only when a publish changes the sections or the folders,
+    /// which is what lets `grid_info` leave them out (`commands::grid_info`).
+    grid: RwLock<(u64, Arc<GridIndex>, Option<String>, u64)>,
     /// Which photos the grid shows (and the view's argument), and a counter that changes
     /// with it. Held only for the moment of reading or writing it - never across a query or
     /// an index build - so a view switch on the UI thread is never made to wait for a
@@ -395,6 +397,7 @@ impl Engine {
                 NOT_BUILT,
                 Arc::new(GridIndex::build(Vec::new(), sort.layout(GridView::All))),
                 None,
+                0,
             )),
             state: Mutex::new(ViewState {
                 view: GridView::All,
@@ -435,11 +438,12 @@ impl Engine {
         (grid.0, grid.1.clone())
     }
 
-    /// `grid`, with why the grid is empty when it is only because the first build failed.
-    /// `None` for every grid actually built.
-    pub fn grid_and_failure(&self) -> (u64, Arc<GridIndex>, Option<String>) {
+    /// The published grid in one read: its version, the index, why it is empty when only the
+    /// first build failed (`None` for every grid actually built), and its layout generation.
+    /// One read so the layout `grid_info` sends or leaves out is the version's own.
+    pub fn published(&self) -> (u64, Arc<GridIndex>, Option<String>, u64) {
         let grid = self.grid.read();
-        (grid.0, grid.1.clone(), grid.2.clone())
+        (grid.0, grid.1.clone(), grid.2.clone(), grid.3)
     }
 
     /// Rebuilds the grid from the database for the current view and tells the UI.
@@ -662,6 +666,13 @@ impl Engine {
         }
         let (version, len) = {
             let mut grid = self.grid.write();
+            // What the UI draws the grid and the sidebar from. A star, a keyword, an edit, a
+            // poster frame or a hashing pass leaves both as they were, and then `grid_info`
+            // need not send them again; compared here, once per publish, rather than on every
+            // `grid_info`.
+            if grid.1.sections() != index.sections() || grid.1.folders() != index.folders() {
+                grid.3 += 1;
+            }
             grid.0 += 1;
             grid.1 = index;
             grid.2 = failure;
@@ -4892,6 +4903,112 @@ mod tests {
         assert_eq!(Publish::Published(4).shown_at(), Some(4));
         assert_eq!(Publish::Overtaken(5).shown_at(), Some(5));
         assert_eq!(Publish::Superseded.shown_at(), None);
+    }
+
+    /// A star moves no photo between folders in the All view, so the sidebar's folders and
+    /// the grid's sections are the ones the UI already holds: the generation stays, and
+    /// `grid_info` can leave them out.
+    #[test]
+    fn a_star_leaves_the_layout_generation_alone() {
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a/one.jpg", &img), ("b/two.jpg", &img)]);
+        f.add_photos();
+        let (version, _, _, layout) = f.engine.published();
+        assert_ne!(layout, 0, "the first built grid has a layout of its own");
+
+        f.engine.set_star(f.ids()[0], true).unwrap();
+
+        let (after, _, _, same) = f.engine.published();
+        assert!(after > version, "the star rebuilt the grid");
+        assert_eq!(same, layout);
+    }
+
+    #[test]
+    fn a_hide_moves_the_layout_generation() {
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a/one.jpg", &img), ("b/two.jpg", &img)]);
+        f.add_photos();
+        let (_, _, _, layout) = f.engine.published();
+
+        f.engine.set_items_hidden(&[f.ids()[0]], true).unwrap();
+
+        assert_eq!(f.engine.published().3, layout + 1);
+    }
+
+    /// Under a flat sort the grid is one run, which a file growing leaves as it was; the
+    /// sidebar's folder sizes move, and the sidebar orders by them under a size sort.
+    #[test]
+    fn a_change_to_the_folders_alone_moves_the_layout_generation() {
+        use photon_core::sort::{Sort, SortKey};
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a/one.jpg", &img), ("b/two.jpg", &img)]);
+        let watched = f.add_photos();
+        f.engine
+            .set_sort(Sort {
+                key: SortKey::Size,
+                reverse: false,
+            })
+            .unwrap();
+        let (_, before, _, layout) = f.engine.published();
+
+        // More bytes after the end-of-image marker: the same picture, a bigger file.
+        let mut bigger = img.clone();
+        bigger.resize(img.len() + 4096, 0);
+        std::fs::write(f.photos.join("a").join("one.jpg"), &bigger).unwrap();
+        f.engine.start_scan(watched);
+        f.settle();
+
+        let (_, after, _, moved) = f.engine.published();
+        assert_eq!(
+            after.sections(),
+            before.sections(),
+            "one flat run, as before"
+        );
+        assert_ne!(after.folders(), before.folders());
+        assert_eq!(moved, layout + 1);
+    }
+
+    /// A sort by name lays the same photos out as one flat run: the sections change while
+    /// the sidebar's folders do not.
+    #[test]
+    fn a_change_to_the_sections_alone_moves_the_layout_generation() {
+        use photon_core::sort::{Sort, SortKey};
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a/one.jpg", &img), ("b/two.jpg", &img)]);
+        f.add_photos();
+        let (_, before, _, layout) = f.engine.published();
+
+        f.engine
+            .set_sort(Sort {
+                key: SortKey::Name,
+                reverse: false,
+            })
+            .unwrap();
+
+        let (_, after, _, moved) = f.engine.published();
+        assert_ne!(after.sections(), before.sections());
+        assert_eq!(
+            after.folders(),
+            before.folders(),
+            "the same photos, the same folders"
+        );
+        assert_eq!(moved, layout + 1);
+    }
+
+    /// Review Focus 1: in Starred a star moves a photo into the view.
+    #[test]
+    fn starring_in_the_starred_view_moves_the_layout_generation() {
+        use photon_core::grid::GridView;
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a/one.jpg", &img), ("b/two.jpg", &img)]);
+        f.add_photos();
+        let ids = f.ids();
+        f.engine.set_view(GridView::Starred).unwrap();
+        let (_, _, _, layout) = f.engine.published();
+
+        f.engine.set_star(ids[0], true).unwrap();
+
+        assert_eq!(f.engine.published().3, layout + 1);
     }
 
     /// A poster frame moves a thumbnail's state and nothing any collection or Settings
