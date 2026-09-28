@@ -258,7 +258,12 @@ registers for inotify's open and close events, so reading a file's EXIF, listing
 directory or walkdir entering one all arrive as `Access` events on that directory. A scan
 does all three to every directory it walks; treated as changes they scheduled the next
 subtree scan of the same directories two seconds after every scan, forever. Anything that
-makes the watcher react to more event kinds must keep a scan's own reads out.
+makes the watcher react to more event kinds must keep a scan's own reads out. The debouncer
+runs with `NoCache` on every platform, not its `RecommendedCache`: on Windows and macOS that
+is a file-id map which walks every root and opens (Windows) or stats (macOS) every file under
+the debouncer's lock, again on every rescan flag - minutes on a network share - and it only
+stitches a rename's two halves together, which photon never needs, since each half is reduced
+to a directory to rescan either way.
 
 `skip_mark_purge` is set by a walkdir error carrying **no** path — a mid-iteration `read_dir`
 failure (walkdir `lib.rs:1026`), not something the filesystem can be made to do on demand. An
