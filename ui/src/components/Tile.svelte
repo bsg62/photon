@@ -31,8 +31,9 @@
      *  number decides the row layout there: a tile that sized itself would be free to
      *  disagree with the box the row reserved for it. */
     tile: number;
-    /** The grid is scrolling fast: a photo this tile is given now is asked for only once
-     *  the tile has held it for a moment. See `createThumbRequest`. */
+    /** The grid is moving too fast for this tile to settle (`defersThumbs`): a photo it is
+     *  given now is asked for only once the tile has held it for a moment. See
+     *  `createThumbRequest`. */
     defer?: boolean;
   } = $props();
 
@@ -54,7 +55,7 @@
   //
   // `defer` is read untracked: the grid settling must not re-run this for every tile on
   // screen. A deferred request fires on its own once the tile has held its photo for
-  // `TILE_SETTLE_MS`, which is sooner than the grid calls a fast scroll over.
+  // `TILE_SETTLE_MS`, which is sooner than the grid calls its movement over.
   $effect(() => {
     const assigned = key;
     if (assigned) request.show(assigned, { defer: untrack(() => defer) });

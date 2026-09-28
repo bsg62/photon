@@ -2,6 +2,8 @@
  *  section. Everything here is pure, so 100k items lay out in microseconds. */
 
 import type { Section } from './api';
+import type { Motion } from './scroll-speed.svelte';
+import { TILE_SETTLE_MS } from './thumb-request.svelte';
 
 export type TileSize = 'small' | 'medium' | 'large';
 
@@ -103,22 +105,87 @@ export function visibleRange(rows: Row[], scrollTop: number, viewport: number, o
   return [start, Math.min(end, rows.length)];
 }
 
-/** How far past the viewport tiles are mounted, in viewports: enough that a wheel notch or
- *  an arrow key lands on rows already in the DOM, no more. Every mounted tile carries its
- *  own deriveds and effects, and rows are keyed by position, so a jump (End, a folder
- *  jump, a scrollbar drag, a timeline scrub) mounts the whole window again: at two
- *  viewports either side that was five screens of tiles per jump. */
+/** How far past the viewport tiles are mounted while the grid is still, in viewports, either
+ *  side: enough that a wheel notch or an arrow key lands on rows already in the DOM, no
+ *  more. Every mounted tile carries its own deriveds and effects, and rows are keyed by
+ *  position, so a jump (End, a folder jump, a scrollbar drag, a timeline scrub) mounts the
+ *  whole window again: at two viewports either side that was five screens of tiles per
+ *  jump. */
 export const RENDER_OVERSCAN = 0.5;
+/** While scrolling, how far ahead of the direction of travel tiles are mounted, as time: a
+ *  tile mounted this long before it comes into view has had a round trip for its page, a
+ *  request and a decode before anyone sees it. Scaled by the speed, so the lead covers the
+ *  same time at any speed rather than the same distance, which a flick covers in a frame
+ *  or two. */
+export const LEAD_MS = 300;
+/** The most the lead grows to, in viewports. Mounting it costs once, when the scroll starts
+ *  or speeds up; after that a continuous scroll mounts only the rows it moves by, which at
+ *  any speed short of a jump is a row or two a frame. */
+export const LEAD_OVERSCAN_MAX = 1.5;
+/** What stays mounted behind a scroll, in viewports: a small reversal lands on rows still in
+ *  the DOM, and a real one grows its own lead. */
+export const TRAIL_OVERSCAN = 0.25;
 /** How far past the viewport pages are fetched, in viewports. Wider than what is rendered
  *  on purpose: a page is cheap to hold and costs a round trip to miss, and it is also the
- *  range `LibraryStore.refresh` prefetches before it swaps a rebuilt grid in. */
+ *  range `LibraryStore.refresh` prefetches before it swaps a rebuilt grid in. It has to
+ *  reach past `LEAD_OVERSCAN_MAX`, or the lead mounts tiles with no photo to show yet. */
 export const FETCH_OVERSCAN = 2;
 
-/** The rows to mount, as `[start, end)`. While the grid is scrolling fast the overscan is
- *  dropped entirely: rows scrolled into and straight out of the overscan in the same frame
- *  are mounted for nothing. */
-export function renderRange(rows: Row[], scrollTop: number, viewport: number, fast: boolean): [number, number] {
-  return visibleRange(rows, scrollTop, viewport, fast ? 0 : viewport * RENDER_OVERSCAN);
+/** How far past the viewport to mount tiles, in pixels, as `[above, below]`.
+ *
+ *  A jump mounts only what is on screen: it shares no rows with the render before it, so
+ *  every row of overscan would be mounted fresh - and during a drag unmounted again a frame
+ *  later. That is the only time the overscan goes. A continuous scroll at any speed mounts
+ *  only the rows it moves by, so it can afford a lead, and it needs one: without it every
+ *  row reaches the screen before its tiles have asked for anything, which is the pop-in a
+ *  fast wheel or trackpad scroll showed while the overscan was dropped for speed alone. */
+export function renderOverscan(motion: Motion, viewport: number): [number, number] {
+  switch (motion.kind) {
+    case 'still':
+      return [viewport * RENDER_OVERSCAN, viewport * RENDER_OVERSCAN];
+    case 'jump':
+      return [0, 0];
+    case 'scroll': {
+      const lead = Math.min(
+        Math.max(motion.peak * LEAD_MS, viewport * RENDER_OVERSCAN),
+        viewport * LEAD_OVERSCAN_MAX,
+      );
+      const trail = viewport * TRAIL_OVERSCAN;
+      return motion.direction > 0 ? [trail, lead] : [lead, trail];
+    }
+  }
+}
+
+/** The rows to mount, as `[start, end)`; see `renderOverscan`. */
+export function renderRange(rows: Row[], scrollTop: number, viewport: number, motion: Motion): [number, number] {
+  if (rows.length === 0) return [0, 0];
+  const [above, below] = renderOverscan(motion, viewport);
+  const start = rowIndexAt(rows, scrollTop - above);
+  const end = rowIndexAt(rows, scrollTop + viewport + below) + 1;
+  return [start, Math.min(end, rows.length)];
+}
+
+/** Whether a tile given its photo now waits `TILE_SETTLE_MS` before asking for its thumbnail
+ *  (`createThumbRequest`'s `defer`).
+ *
+ *  Only when it will most likely be gone by then: a tile never seen settled costs the
+ *  backend a render for nothing - on a fresh import, a blocking one each. That is a jump in
+ *  a stream (a scrollbar or timeline drag), where the next frame replaces every tile, and a
+ *  scroll so fast that a tile crosses the whole mounted window, lead and trail included, in
+ *  less than the settle. Anything slower asks at once: a tile the lead mounts is on screen
+ *  within a few hundred milliseconds, and deferring it spent a third of that waiting. A
+ *  jump on its own (End, a folder click) lands where the user stops, so it asks at once. */
+export function defersThumbs(motion: Motion, viewport: number): boolean {
+  switch (motion.kind) {
+    case 'still':
+      return false;
+    case 'jump':
+      return motion.stream;
+    case 'scroll': {
+      const [above, below] = renderOverscan(motion, viewport);
+      return motion.speed * TILE_SETTLE_MS > viewport + above + below;
+    }
+  }
 }
 
 /** The photos whose pages should be loaded, as `[start, end)` grid offsets, or null for a
