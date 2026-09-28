@@ -899,7 +899,7 @@ mod tests {
 
         std::fs::write(f.photos.join("a").join("two.jpg"), &img).unwrap();
         service.handle_batch(vec![f.photos.join("a")]);
-        f.engine.wait_for_scans();
+        f.settle();
 
         assert_eq!(f.engine.grid().1.len(), 2);
         assert_eq!(watched.id, f.engine.lib.watched_folders().unwrap()[0].id);
@@ -914,7 +914,7 @@ mod tests {
         let before = f.engine.grid().0;
 
         service.handle_batch(vec![f.engine.excluded()[0].clone()]);
-        f.engine.wait_for_scans();
+        f.settle();
 
         assert_eq!(f.engine.grid().0, before, "no scan, so no new grid version");
         assert_eq!(service.pending_len(), 0);
@@ -938,9 +938,9 @@ mod tests {
         assert_eq!(service.pending_len(), 1);
         drop(slot);
 
-        f.engine.wait_for_scans();
+        f.settle();
         service.drain_pending();
-        f.engine.wait_for_scans();
+        f.settle();
         assert_eq!(service.pending_len(), 0);
         service.stop();
     }
@@ -974,16 +974,16 @@ mod tests {
         );
         drop(slot);
 
-        f.engine.wait_for_scans();
+        f.settle();
         service.drain_pending();
-        f.engine.wait_for_scans();
+        f.settle();
         assert_eq!(
             service.pending_len(),
             1,
             "a folder runs one scan at a time, so the sibling waits for the next tick"
         );
         service.drain_pending();
-        f.engine.wait_for_scans();
+        f.settle();
         assert_eq!(service.pending_len(), 0);
         service.stop();
     }
@@ -1016,9 +1016,9 @@ mod tests {
         );
         drop(slot);
 
-        f.engine.wait_for_scans();
+        f.settle();
         service.drain_pending();
-        f.engine.wait_for_scans();
+        f.settle();
         assert_eq!(service.pending_len(), 0);
         service.stop();
     }
@@ -1041,7 +1041,7 @@ mod tests {
         std::os::unix::fs::symlink(&real, &link).unwrap();
 
         let watched = f.engine.add_folder(&link).unwrap();
-        f.engine.wait_for_scans();
+        f.settle();
         assert_eq!(
             Path::new(&watched.path),
             photon_core::paths::canonicalize(&real).unwrap(),
@@ -1051,7 +1051,7 @@ mod tests {
         let service = WatcherService::start(&f.engine);
         std::fs::write(link.join("a").join("new.jpg"), &img).unwrap();
         service.handle_batch(vec![link.join("a")]);
-        f.engine.wait_for_scans();
+        f.settle();
 
         assert_eq!(
             f.engine.grid().1.len(),
@@ -1080,7 +1080,7 @@ mod tests {
             "registration succeeds this time (the directory exists), so the root drops out \
              of `degraded` and returns to live updates"
         );
-        f.engine.wait_for_scans();
+        f.settle();
     }
 
     #[test]
@@ -1105,7 +1105,7 @@ mod tests {
             "registration keeps failing (the directory is gone), so the root stays degraded \
              for the next tick"
         );
-        f.engine.wait_for_scans();
+        f.settle();
         assert!(
             !f.engine.lib.watched_folders().unwrap()[0].online,
             "start_scan ran regardless of the failed registration, and found the folder gone"
@@ -1132,7 +1132,7 @@ mod tests {
             degraded.lock().is_empty(),
             "the directory exists, so registering the watch for it succeeds"
         );
-        f.engine.wait_for_scans();
+        f.settle();
         assert!(
             f.engine.lib.watched_folders().unwrap()[0].online,
             "the rescan finds the directory and brings it back online"
@@ -1160,7 +1160,7 @@ mod tests {
             degraded.lock().is_empty(),
             "still gone, so no watch is even attempted for it"
         );
-        f.engine.wait_for_scans();
+        f.settle();
         assert!(!f.engine.lib.watched_folders().unwrap()[0].online);
     }
 
@@ -1266,7 +1266,7 @@ mod tests {
             &threads,
         );
         rescan_degraded_roots(&f.engine, &degraded, &watcher_slot);
-        f.engine.wait_for_scans();
+        f.settle();
 
         assert_eq!(
             f.ids().len(),
@@ -1345,7 +1345,7 @@ mod tests {
         assert_eq!(threads.lock().len(), 1, "with a fresh event thread");
 
         rescan_degraded_roots(&f.engine, &degraded, &watcher_slot);
-        f.engine.wait_for_scans();
+        f.settle();
         assert!(
             degraded.lock().is_empty(),
             "and the root's watch registers again, so - once it has been rescanned for what \
@@ -1457,7 +1457,7 @@ mod tests {
         let other = f.dir.path().join("other");
         std::fs::create_dir_all(&other).unwrap();
         let watched = f.engine.add_folder(&other).unwrap();
-        f.engine.wait_for_scans();
+        f.settle();
 
         assert!(
             service.is_degraded(watched.id),
@@ -1521,7 +1521,7 @@ mod tests {
         let before = f.events.all().len();
 
         rescan_offline_roots(&f.engine, &service.degraded, &service.watcher);
-        f.engine.wait_for_scans();
+        f.settle();
 
         // Only the events from this recovery rescan onward: `add_photos` already recorded
         // an earlier (unrelated) `degraded: false` status, before `service.degraded` was
@@ -1555,7 +1555,7 @@ mod tests {
         let other = f.dir.path().join("other");
         std::fs::create_dir_all(&other).unwrap();
         f.engine.add_folder(&other).unwrap();
-        f.engine.wait_for_scans();
+        f.settle();
 
         std::fs::write(other.join("new.jpg"), jpeg(16, 16)).unwrap();
 

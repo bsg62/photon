@@ -51,11 +51,20 @@ impl Fixture {
         config_in(&self.dir)
     }
 
-    /// Watches `photos` and waits for its first scan to finish.
+    /// Watches `photos` and waits for its first scan to finish, and for the duplicate and
+    /// look-alike pass that scan requests: the pass runs on its own thread once the scan has
+    /// let go of its slot, so a test reading hashes or groups straight after the scan would
+    /// otherwise race it.
     pub fn add_photos(&self) -> WatchedFolder {
         let watched = self.engine.add_folder(&self.photos).unwrap();
-        self.engine.wait_for_scans();
+        self.settle();
         watched
+    }
+
+    /// Waits for every running scan and every duplicate and look-alike pass to finish.
+    pub fn settle(&self) {
+        self.engine.wait_for_scans();
+        self.engine.wait_for_similar_pass();
     }
 
     /// Item ids in grid order.
