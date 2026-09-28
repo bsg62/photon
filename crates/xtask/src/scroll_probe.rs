@@ -50,15 +50,20 @@ const CASES: &[Case] = &[
         query: "huge=300000&folders=20000&tile=large&do=probe-end",
         window: "660,800",
         scale: Some("2"),
-        check: |v| {
-            let canvas = v["canvas"].as_f64().unwrap_or(-1.0);
-            if canvas > 16_777_214.0 {
-                return Err(format!(
-                    "canvas {canvas} px is past Chromium's cap at scale 2"
-                ));
-            }
-            last_is(v, 299_999)
-        },
+        check: |v| last_is(v, 299_999),
+    },
+    // End is a write from code, and `writeDom` reads back the position the browser clamped
+    // it to, so `probe-end` reaches the last row even under a cap measured too high. A
+    // scrollbar jump to the bottom is read through the map instead, and the bottom of what
+    // the engine laid out is short of the DOM range a too-high cap makes the map believe
+    // in, so it maps short of the end. (The canvas's height cannot tell either:
+    // `getBoundingClientRect` reports the engine-capped height, never the one asked for.)
+    Case {
+        name: "scrollbar to the bottom, display scale 2",
+        query: "huge=300000&folders=20000&tile=large&do=probe-bottom",
+        window: "660,800",
+        scale: Some("2"),
+        check: |v| last_is(v, 299_999),
     },
     Case {
         name: "a small library, scrollbar to the bottom",
