@@ -1636,6 +1636,23 @@ describe('LibraryStore', () => {
       expect(store.selected).toBe(3);
     });
 
+    /** A Ctrl+click during the write adds to a selection still holding the photos being
+     *  hidden. The click is kept, and the lead with it; the hidden photos are not, or "Hide
+     *  3 photos" is offered for two the user can no longer see. */
+    it('a ctrl+click made while a hide is out keeps the click and drops the hidden photos', async () => {
+      const store = await storeOf(10);
+      store.selected = 2;
+      store.toggleSelected(3);
+      vi.mocked(api.setItemsHidden).mockImplementation(async () => {
+        store.toggleSelected(7);
+        hiddenFrom(10, 2, 3);
+        return 2;
+      });
+      await store.setHidden(store.selectedItemIds, true);
+      expect(store.selectedItemIds).toEqual([idAt(7)]);
+      expect(store.selected).toBe(7);
+    });
+
     it('a click made while a hide is out is not overwritten when it lands', async () => {
       const store = await storeOf(10);
       store.selected = 2;

@@ -958,8 +958,16 @@ export class LibraryStore {
     const picks = this.picks;
     await api.setItemsHidden(itemIds, hidden);
     const target = landing === null || lead === null ? null : await this.landingIn(landing, lead);
-    // Checked once every await is behind it: a click during the write or the lookups.
-    if (this.picks !== picks) return;
+    // Checked once every await is behind it: a click during the write or the lookups. That
+    // click is kept, lead and all, but not the photos just hidden - a Ctrl+click adds to a
+    // selection still holding them. Written past `pick`: this is not the user's choice, and
+    // a later await must still see the click as the last one.
+    if (this.picks !== picks) {
+      const rest = new Set(this.selection);
+      for (const id of itemIds) rest.delete(id);
+      if (rest.size !== this.selection.size) this.selection = rest;
+      return;
+    }
     this.clearSelection();
     if (target) {
       this.selectItem(target.offset, target.id);
