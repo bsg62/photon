@@ -1560,6 +1560,20 @@ describe('LibraryStore', () => {
       expect(store.selectionCount).toBe(0);
     });
 
+    /** The photos are hidden by then: an error thrown from the lookup told the user a hide
+     *  that worked had failed, and left the hidden photos selected. */
+    it('a landing lookup that fails after the write lands nowhere, without an error', async () => {
+      const store = await bandFromLead(10, 3000);
+      vi.mocked(api.setItemsHidden).mockImplementation(async () => {
+        hiddenFrom(5000, 10, 3000);
+        vi.mocked(api.gridOffsetOfItem).mockRejectedValue(new Error('gone'));
+        return 2991;
+      });
+      await store.setHidden(store.selectedItemIds, true);
+      expect(store.selectionCount).toBe(0);
+      expect(store.selected).toBe(null);
+    });
+
     it('hiding a band that starts the view lands on the first photo after it', async () => {
       // Nothing before the lead stays and the pages after it were let go: the rebuilt
       // index's first photo is the first one after the band.

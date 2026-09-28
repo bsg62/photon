@@ -1002,8 +1002,18 @@ export class LibraryStore {
   }
 
   /** `landing` in the rebuilt index, as an offset and the photo there; `null` when there is
-   *  none, or the index moved again between the asks. */
+   *  none, the index moved again between the asks, or an ask failed. Never throws: the
+   *  photos are hidden by now, and an error from here reached the user as a hide that
+   *  failed - with the hidden photos still selected, since `clearSelection` never ran. */
   private async landingIn(landing: Landing, lead: number): Promise<{ offset: number; id: number } | null> {
+    try {
+      return await this.findLanding(landing, lead);
+    } catch {
+      return null;
+    }
+  }
+
+  private async findLanding(landing: Landing, lead: number): Promise<{ offset: number; id: number } | null> {
     // Its offset is `rebindSelection`'s to find.
     if ('id' in landing) return { offset: lead, id: landing.id };
     if ('after' in landing && landing.after !== null) {
