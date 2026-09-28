@@ -116,7 +116,11 @@ pub fn run() {
             // an unbuilt thumbnail without holding a thread - see its doc.
             tauri::async_runtime::spawn(async move {
                 let response = match engine {
-                    Some(engine) => protocol::handle(engine, path, if_none_match).await,
+                    // `answered`: a panic in the handler is a 500, not a request left
+                    // unanswered - see its doc.
+                    Some(engine) => {
+                        protocol::answered(protocol::handle(engine, path, if_none_match)).await
+                    }
                     None => tauri::http::Response::builder()
                         .status(503)
                         .body(b"starting".to_vec())

@@ -15,7 +15,7 @@
 
 use crate::engine::Engine;
 use photon_core::{Error, thumbs::ThumbSize};
-use std::{path::Path, sync::Arc, time::Duration};
+use std::{future::Future, path::Path, sync::Arc, time::Duration};
 use tauri::http::{Response, StatusCode, header};
 
 pub const THUMB_TIMEOUT: Duration = Duration::from_secs(30);
@@ -49,6 +49,27 @@ pub async fn handle(
     off_thread(move || image(&engine, &id, cropped, if_none_match.as_deref()))
         .await
         .unwrap_or_else(|response| *response)
+}
+
+/// `respond`'s response, or a 500 if it panics - awaited as a task of its own, so its
+/// panic ends in the `JoinError` read here rather than in the task that holds the
+/// responder.
+///
+/// The scheme handler hands each request a responder that must be called exactly once.
+/// Awaited in the same task as that call, a panic anywhere in `handle` - outside
+/// `off_thread`, which already turns a panic in disk work into a 500 - unwound past it:
+/// the request was never answered, and the `<img>` waited with neither `onload` nor
+/// `onerror`, so a tile stayed blank with nothing to retry it.
+pub async fn answered(
+    respond: impl Future<Output = Response<Vec<u8>>> + Send + 'static,
+) -> Response<Vec<u8>> {
+    match tokio::spawn(respond).await {
+        Ok(response) => response,
+        Err(err) => {
+            tracing::error!(%err, "a photon:// request handler failed");
+            text(StatusCode::INTERNAL_SERVER_ERROR, &err.to_string())
+        }
+    }
 }
 
 /// Runs `work` on the blocking pool of the runtime serving the request - Tauri's, in the
@@ -308,6 +329,25 @@ mod tests {
             path.to_owned(),
             if_none_match.map(str::to_owned),
         ))
+    }
+
+    /// A handler that panics is still answered: the responder is called with a 500 rather
+    /// than dropped, which left the webview's request pending forever.
+    #[test]
+    fn a_panicking_handler_is_answered_with_a_500() {
+        let response = tauri::async_runtime::block_on(answered(async {
+            panic!("a handler bug");
+        }));
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+
+        let response = tauri::async_runtime::block_on(answered(async {
+            text(StatusCode::NOT_FOUND, "not found")
+        }));
+        assert_eq!(
+            response.status(),
+            StatusCode::NOT_FOUND,
+            "a response passes through"
+        );
     }
 
     fn get(engine: &Arc<Engine>, path: &str) -> Response<Vec<u8>> {
