@@ -264,6 +264,14 @@ could not complete. A pass that trusted the listing alone would zero that star. 
 the INI's last answer), not mirrored like a star: photon never writes `hidden=`, so a mirror
 would undo every unhide in photon on the next scan.
 
+`apply_picasa` has a third caller: `refresh_picasa`, the INI pass. The watcher reports a
+folder whose only changed files are its INI (`picasa::is_ini_write`, which also knows photon's
+own temporary) in `Changed::ini_dirs`, and those are reread without a walk under the same scan
+slot, queued in `Pending::ini`, which has no cap - photon starring across many folders and a
+Picasa album rename used to overflow the walk queue into a rescan of the whole root. A
+rename of the writer's temporary name must change `is_ini_write` with it, or every star
+becomes a walk again.
+
 **The metadata backfill.** `items.exif_version` records which generation of
 `read_image_meta` last read a file; `metadata::EXIF_VERSION` is the current one. An
 unchanged file whose stored version is behind is re-described and written through
