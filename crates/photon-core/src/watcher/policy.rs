@@ -1,4 +1,5 @@
 use crate::paths::is_within;
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 /// How many directories may wait as pending follow-ups for one watched folder before the
@@ -76,6 +77,68 @@ pub fn insert_pending(set: &mut Vec<PathBuf>, dir: &Path, root: &Path) {
     if set.len() > MAX_PENDING_DIRS {
         set.clear();
         set.push(root.to_path_buf());
+    }
+}
+
+/// Turns folders whose only change is their Picasa INI into INI-pass requests: drops anything
+/// excluded or outside every watched root, removes duplicates, and returns a deterministic
+/// order. Unlike `plan_scans` it keeps a folder beneath another: the pass rereads one INI per
+/// folder and does not descend, so a parent's pass says nothing about its child's INI.
+pub fn plan_ini(
+    dirs: &[PathBuf],
+    roots: &[WatchedRoot],
+    excluded: &[PathBuf],
+) -> Vec<(i64, PathBuf)> {
+    let mut requests: Vec<(i64, PathBuf)> = dirs
+        .iter()
+        .filter(|dir| !excluded.iter().any(|x| is_within(dir, x)))
+        .filter_map(|dir| {
+            roots
+                .iter()
+                .find(|r| is_within(dir, &r.path))
+                .map(|r| (r.watched_id, dir.clone()))
+        })
+        .collect();
+    requests.sort();
+    requests.dedup();
+    requests
+}
+
+/// What is still waiting for one watched folder while its scan slot is busy: directories to
+/// walk (`insert_pending`'s rules and cap) and folders whose INI to reread. The INI set has
+/// no cap - a pass over it costs one INI read per folder, and it is bounded by the folder
+/// count - so an INI-only burst (photon starring across many folders, Picasa renaming an
+/// album) never collapses into a rescan of the root.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Pending {
+    pub dirs: Vec<PathBuf>,
+    pub ini: BTreeSet<PathBuf>,
+}
+
+impl Pending {
+    /// Queues a walk of `dir`. A walk rereads the INI of every folder it covers, so those
+    /// leave the INI set; a collapse to `root` covers them all.
+    pub fn queue_walk(&mut self, dir: &Path, root: &Path) {
+        insert_pending(&mut self.dirs, dir, root);
+        let dirs = &self.dirs;
+        self.ini
+            .retain(|ini| !dirs.iter().any(|walk| is_within(ini, walk)));
+    }
+
+    /// Queues an INI pass over `dir`, unless a queued walk already covers it.
+    pub fn queue_ini(&mut self, dir: &Path) {
+        if self.dirs.iter().any(|walk| is_within(dir, walk)) {
+            return;
+        }
+        self.ini.insert(dir.to_path_buf());
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.dirs.is_empty() && self.ini.is_empty()
+    }
+
+    pub fn len(&self) -> usize {
+        self.dirs.len() + self.ini.len()
     }
 }
 
@@ -246,6 +309,86 @@ mod tests {
             pending(&["/photos/a", "/photos/a", "/photos/a/deep/deeper"]),
             vec![PathBuf::from("/photos/a")]
         );
+    }
+
+    /// Review Focus 1.
+    #[test]
+    fn plan_ini_keeps_a_nested_ini_folder() {
+        let roots = [WatchedRoot {
+            watched_id: 1,
+            path: PathBuf::from("/p"),
+        }];
+        let planned = plan_ini(
+            &[
+                PathBuf::from("/p/a/b"),
+                PathBuf::from("/p/a"),
+                PathBuf::from("/p/a"),
+            ],
+            &roots,
+            &[],
+        );
+        assert_eq!(
+            planned,
+            [(1, PathBuf::from("/p/a")), (1, PathBuf::from("/p/a/b"))]
+        );
+    }
+
+    #[test]
+    fn plan_ini_drops_excluded_and_unwatched_folders() {
+        let roots = [WatchedRoot {
+            watched_id: 1,
+            path: PathBuf::from("/p"),
+        }];
+        let planned = plan_ini(
+            &[
+                PathBuf::from("/p/x/a"),
+                PathBuf::from("/elsewhere"),
+                PathBuf::from("/p/b"),
+            ],
+            &roots,
+            &[PathBuf::from("/p/x")],
+        );
+        assert_eq!(planned, [(1, PathBuf::from("/p/b"))]);
+    }
+
+    #[test]
+    fn the_ini_queue_has_no_cap() {
+        let mut pending = Pending::default();
+        for i in 0..50 {
+            pending.queue_ini(&PathBuf::from(format!("/p/{i}")));
+        }
+        assert_eq!(pending.ini.len(), 50);
+        assert!(pending.dirs.is_empty());
+    }
+
+    #[test]
+    fn an_ini_dir_under_a_queued_walk_is_not_added() {
+        let mut pending = Pending::default();
+        pending.queue_walk(Path::new("/p/a"), Path::new("/p"));
+        pending.queue_ini(Path::new("/p/a/b"));
+        assert!(pending.ini.is_empty());
+    }
+
+    /// Review Focus 4.
+    #[test]
+    fn queueing_a_walk_drops_the_ini_dirs_it_covers() {
+        let mut pending = Pending::default();
+        pending.queue_ini(Path::new("/p/a/b"));
+        pending.queue_ini(Path::new("/p/c"));
+        pending.queue_walk(Path::new("/p/a"), Path::new("/p"));
+        assert_eq!(pending.ini.iter().collect::<Vec<_>>(), [Path::new("/p/c")]);
+    }
+
+    /// Review Focus 4.
+    #[test]
+    fn a_collapse_to_the_root_clears_the_ini_set() {
+        let mut pending = Pending::default();
+        pending.queue_ini(Path::new("/p/z"));
+        for i in 0..=MAX_PENDING_DIRS {
+            pending.queue_walk(&PathBuf::from(format!("/p/{i}")), Path::new("/p"));
+        }
+        assert_eq!(pending.dirs, [PathBuf::from("/p")]);
+        assert!(pending.ini.is_empty());
     }
 
     fn failure(path: &str) -> crate::watcher::WatchError {
