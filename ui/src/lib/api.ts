@@ -230,14 +230,16 @@ export const api = {
   /** The native title bar's scheme; null hands it back to the desktop. Granted in
    *  `capabilities/default.json`. */
   setWindowTheme: (theme: 'light' | 'dark' | null) => getCurrentWindow().setTheme(theme),
-  setGridView: (view: GridView) => invoke<void>('set_grid_view', { view }),
-  setSort: (sort: Sort) => invoke<void>('set_sort', { sort }),
-  setSearchQuery: (query: string) => invoke<void>('set_search_query', { query }),
-  setPersonView: (contact: string) => invoke<void>('set_person_view', { contact }),
-  setAlbumView: (albumId: number) => invoke<void>('set_album_view', { albumId }),
-  setTagView: (tag: string) => invoke<void>('set_tag_view', { tag }),
+  /** The view setters answer with the grid version that shows the state they moved to, or
+   *  null when the backend cannot vouch for one; see `LibraryStore.refreshAfter`. */
+  setGridView: (view: GridView) => invoke<number | null>('set_grid_view', { view }),
+  setSort: (sort: Sort) => invoke<number | null>('set_sort', { sort }),
+  setSearchQuery: (query: string) => invoke<number | null>('set_search_query', { query }),
+  setPersonView: (contact: string) => invoke<number | null>('set_person_view', { contact }),
+  setAlbumView: (albumId: number) => invoke<number | null>('set_album_view', { albumId }),
+  setTagView: (tag: string) => invoke<number | null>('set_tag_view', { tag }),
   copyCount: (id: number) => invoke<number>('copy_count', { id }),
-  setCopiesView: (id: number) => invoke<void>('set_copies_view', { id }),
+  setCopiesView: (id: number) => invoke<number | null>('set_copies_view', { id }),
   listPeople: () => invoke<Person[]>('list_people'),
   listTags: () => invoke<TagCount[]>('list_tags'),
   listTagRules: () => invoke<TagRule[]>('list_tag_rules'),

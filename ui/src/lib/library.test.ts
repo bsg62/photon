@@ -816,7 +816,7 @@ describe('LibraryStore', () => {
     await store.init();
 
     const refreshGate = deferred<GridInfo>();
-    vi.mocked(api.setGridView).mockResolvedValue(undefined);
+    vi.mocked(api.setGridView).mockResolvedValue(null);
     vi.mocked(api.gridInfo).mockReturnValueOnce(refreshGate.promise);
 
     let resolved = false;
@@ -849,13 +849,110 @@ describe('LibraryStore', () => {
     expect(store.toasts.some((t) => t.message === 'set-view-fail')).toBe(true);
   });
 
+  // The backend's rebuild announces itself with `library-changed`, and that event can reach
+  // the webview before the command's own reply. The listener then fetches the grid, and the
+  // command's refresh used to fetch the very same grid again. The command answers with the
+  // version it published, and the refresh after it waits for that version instead.
+  describe('when the rebuild is announced before the command replies', () => {
+    const at = (version: number, over: Partial<GridInfo>): GridInfo => ({
+      version,
+      len: 0,
+      sections: [],
+      folders: [],
+      starredCount: 0,
+      duplicateCount: 0,
+      hiddenCount: 0,
+      videoCount: 0,
+      view: 'all',
+      sort: { key: 'date', reverse: false },
+      searchQuery: '',
+      person: null,
+      album: null,
+      tag: null,
+      copiesOf: null,
+      ...over,
+    });
+    const announce = (version: number) => handlers.libraryChanged({ version, len: 0, dataChanged: false });
+
+    it('a view switch fetches the grid once, while the listener’s fetch is still in flight', async () => {
+      const store = new LibraryStore();
+      await store.init();
+      const fetches = vi.mocked(api.gridInfo).mock.calls.length;
+      vi.mocked(api.gridInfo).mockResolvedValue(at(2, { view: 'starred' }));
+      vi.mocked(api.setGridView).mockImplementationOnce(async () => {
+        announce(2);
+        return 2;
+      });
+
+      await store.setView('starred');
+
+      expect(vi.mocked(api.gridInfo).mock.calls.length - fetches).toBe(1);
+      expect(store.info.view).toBe('starred');
+    });
+
+    it('a sort fetches the grid once, when the listener’s fetch has already landed', async () => {
+      const store = new LibraryStore();
+      await store.init();
+      const fetches = vi.mocked(api.gridInfo).mock.calls.length;
+      const byName = { key: 'name' as const, reverse: false };
+      vi.mocked(api.gridInfo).mockResolvedValue(at(2, { sort: byName }));
+      vi.mocked(api.setSort).mockImplementationOnce(async () => {
+        announce(2);
+        await flush();
+        return 2;
+      });
+
+      await store.setSort(byName);
+
+      expect(vi.mocked(api.gridInfo).mock.calls.length - fetches).toBe(1);
+      expect(store.info.sort).toEqual(byName);
+    });
+
+    it('a search fetches the grid once', async () => {
+      const store = new LibraryStore();
+      await store.init();
+      const fetches = vi.mocked(api.gridInfo).mock.calls.length;
+      vi.mocked(api.gridInfo).mockResolvedValue(at(2, { view: 'search', searchQuery: 'lake' }));
+      vi.mocked(api.setSearchQuery).mockImplementationOnce(async () => {
+        announce(2);
+        return 2;
+      });
+
+      await expect(store.setSearchQuery('lake')).resolves.toBe('lake');
+
+      expect(vi.mocked(api.gridInfo).mock.calls.length - fetches).toBe(1);
+      expect(store.info.searchQuery).toBe('lake');
+    });
+
+    // No version is the backend saying it cannot vouch for one - its rebuild was superseded
+    // before it landed - so the grid on hand, whatever its version, may be the old view's.
+    it('a command that answers with no version still gets a fetch of its own', async () => {
+      const store = new LibraryStore();
+      await store.init();
+      vi.mocked(api.gridInfo).mockResolvedValue(at(2, { view: 'all' }));
+      vi.mocked(api.setGridView).mockImplementationOnce(async () => {
+        announce(2);
+        await flush();
+        return null;
+      });
+      const fetches = vi.mocked(api.gridInfo).mock.calls.length;
+      vi.mocked(api.gridInfo).mockResolvedValueOnce(at(2, { view: 'all' }));
+      vi.mocked(api.gridInfo).mockResolvedValueOnce(at(2, { view: 'starred' }));
+
+      await store.setView('starred');
+
+      expect(vi.mocked(api.gridInfo).mock.calls.length - fetches).toBe(2);
+      expect(store.info.view).toBe('starred');
+    });
+  });
+
   it('setSearchQuery("") issues the command and refreshes, restoring the All view', async () => {
     // Spec §7: "clearing the box restores the All view." The engine-level behaviour behind
     // this is already covered on the Rust side; this pins the store's half of the path.
     const store = new LibraryStore();
     await store.init();
 
-    vi.mocked(api.setSearchQuery).mockResolvedValue(undefined);
+    vi.mocked(api.setSearchQuery).mockResolvedValue(null);
     vi.mocked(api.gridInfo).mockResolvedValueOnce({
       version: 2,
       len: 2,
@@ -896,11 +993,13 @@ describe('LibraryStore', () => {
       order.push(`start:${q}`);
       await first.promise;
       order.push(`end:${q}`);
+      return null;
     });
     vi.mocked(api.setSearchQuery).mockImplementationOnce(async (q: string) => {
       order.push(`start:${q}`);
       await second.promise;
       order.push(`end:${q}`);
+      return null;
     });
     vi.mocked(api.gridInfo).mockResolvedValue({
       version: 2,
@@ -950,9 +1049,11 @@ describe('LibraryStore', () => {
     vi.mocked(api.setSearchQuery).mockImplementation(async (q: string) => {
       order.push(`search:${q}`);
       if (q === 'a') await running.promise;
+      return null;
     });
     vi.mocked(api.setGridView).mockImplementation(async (view: GridView) => {
       order.push(`view:${view}`);
+      return null;
     });
 
     const a = store.setSearchQuery('a');
@@ -982,7 +1083,7 @@ describe('LibraryStore', () => {
     const store = new LibraryStore();
     await store.init();
     const running = deferred<void>();
-    vi.mocked(api.setSearchQuery).mockImplementationOnce(() => running.promise);
+    vi.mocked(api.setSearchQuery).mockImplementationOnce(() => running.promise.then(() => null));
     vi.mocked(api.setSearchQuery).mockRejectedValueOnce(new Error('refused'));
     const first = store.setSearchQuery('lake');
     await flush();
@@ -1007,9 +1108,11 @@ describe('LibraryStore', () => {
       order.push(`start:${q}`);
       await search.promise;
       order.push(`end:${q}`);
+      return null;
     });
     vi.mocked(api.setGridView).mockImplementationOnce(async (view: GridView) => {
       order.push(`view:${view}`);
+      return null;
     });
 
     const p1 = store.setSearchQuery('beach');
@@ -1032,7 +1135,7 @@ describe('LibraryStore', () => {
     store.selectItem(3, 42);
 
     const bySize = { key: 'size' as const, reverse: true };
-    vi.mocked(api.setSort).mockResolvedValueOnce(undefined);
+    vi.mocked(api.setSort).mockResolvedValueOnce(null);
     vi.mocked(api.gridInfo).mockResolvedValueOnce({ version: 2, len: 0, sections: [], folders: [], starredCount: 0, duplicateCount: 0, hiddenCount: 0, videoCount: 0, view: 'search', sort: bySize, searchQuery: 'lake', person: null, album: null, tag: null, copiesOf: null });
     await store.setSort(bySize);
 
@@ -1051,7 +1154,9 @@ describe('LibraryStore', () => {
     await store.init();
     const first = deferred<void>();
     const second = deferred<void>();
-    vi.mocked(api.setSort).mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+    vi.mocked(api.setSort)
+      .mockReturnValueOnce(first.promise.then(() => null))
+      .mockReturnValueOnce(second.promise.then(() => null));
     const info = (sort: { key: 'name'; reverse: boolean }) => ({ version: 2, len: 0, sections: [], folders: [], starredCount: 0, duplicateCount: 0, hiddenCount: 0, videoCount: 0, view: 'all' as const, sort, searchQuery: '', person: null, album: null, tag: null, copiesOf: null });
     vi.mocked(api.gridInfo)
       .mockResolvedValueOnce(info({ key: 'name', reverse: false }))
@@ -1099,7 +1204,7 @@ describe('LibraryStore', () => {
     store.onViewSwitch(hook);
 
     const command = deferred<void>();
-    vi.mocked(api.setGridView).mockReturnValueOnce(command.promise);
+    vi.mocked(api.setGridView).mockReturnValueOnce(command.promise.then(() => null));
     const switched = store.setView('starred');
     // Before the backend has answered: text typed from here on belongs after the switch.
     expect(hook).toHaveBeenCalledOnce();
@@ -1113,7 +1218,7 @@ describe('LibraryStore', () => {
 
     // A refresh failing after the command succeeded is not a refusal: the backend has
     // already moved, so the box must stay empty to match it.
-    vi.mocked(api.setGridView).mockResolvedValueOnce(undefined);
+    vi.mocked(api.setGridView).mockResolvedValueOnce(null);
     vi.mocked(api.gridInfo).mockRejectedValueOnce(new Error('refresh failed'));
     await store.setView('starred');
     expect(undo).toHaveBeenCalledOnce();
@@ -1126,8 +1231,8 @@ describe('LibraryStore', () => {
     store.onViewSwitch(() => undo);
 
     const starred = deferred<void>();
-    vi.mocked(api.setGridView).mockReturnValueOnce(starred.promise);
-    vi.mocked(api.setGridView).mockResolvedValueOnce(undefined);
+    vi.mocked(api.setGridView).mockReturnValueOnce(starred.promise.then(() => null));
+    vi.mocked(api.setGridView).mockResolvedValueOnce(null);
     const first = store.setView('starred');
     const second = store.setView('recent');
     starred.reject(new Error('refused'));
@@ -1141,7 +1246,7 @@ describe('LibraryStore', () => {
   it('answers a refused search with the query the backend rolled back to', async () => {
     const store = new LibraryStore();
     await store.init();
-    vi.mocked(api.setSearchQuery).mockResolvedValueOnce(undefined);
+    vi.mocked(api.setSearchQuery).mockResolvedValueOnce(null);
     vi.mocked(api.gridInfo).mockResolvedValueOnce({ version: 2, len: 0, sections: [], folders: [], starredCount: 0, duplicateCount: 0, hiddenCount: 0, videoCount: 0, view: 'search', sort: { key: 'date', reverse: false }, searchQuery: 'lake', person: null, album: null, tag: null, copiesOf: null });
     await expect(store.setSearchQuery('lake')).resolves.toBe('lake');
 
@@ -1153,7 +1258,7 @@ describe('LibraryStore', () => {
     const store = new LibraryStore();
     await store.init();
     const search = deferred<void>();
-    vi.mocked(api.setSearchQuery).mockReturnValueOnce(search.promise);
+    vi.mocked(api.setSearchQuery).mockReturnValueOnce(search.promise.then(() => null));
     vi.mocked(api.gridInfo).mockResolvedValueOnce({ version: 2, len: 0, sections: [], folders: [], starredCount: 0, duplicateCount: 0, hiddenCount: 0, videoCount: 0, view: 'search', sort: { key: 'date', reverse: false }, searchQuery: 'beach', person: null, album: null, tag: null, copiesOf: null });
 
     void store.setSearchQuery('beach');
@@ -1758,7 +1863,7 @@ describe('LibraryStore', () => {
       const store = await storeOf(10);
       store.selected = 3;
       store.toggleSelected(4);
-      vi.mocked(api.setGridView).mockResolvedValue(undefined);
+      vi.mocked(api.setGridView).mockResolvedValue(null);
 
       await store.setView('starred');
 

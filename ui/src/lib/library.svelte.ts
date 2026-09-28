@@ -508,7 +508,8 @@ export class LibraryStore {
    *  version first and everything else after it. An answer at `version` or later was
    *  therefore read after that publish, and has seen everything the announcement is about.
    *  A view switch's own awaited refresh usually lands before its event arrives, and this is
-   *  what stops the event fetching the same grid a second time.
+   *  what stops the event fetching the same grid a second time; when the event wins the race
+   *  instead, `refreshAfter` is what stops the switch's refresh doing so.
    *
    *  Not the rule for `refresh()` itself: a same-version answer there is still applied (see
    *  `loadGrid`), because the view, the argument and the counts in `GridInfo` are read live
@@ -516,6 +517,24 @@ export class LibraryStore {
    *  rollback's rebuild both fail restores the old view without bumping the version. */
   private refreshTo(version: number): Promise<void> {
     return this.refreshFlight(() => version <= this.info.version);
+  }
+
+  /** The refresh after a view command: `refreshTo` the version the command answered with,
+   *  or a plain `refresh()` when it answered with none.
+   *
+   *  The command's rebuild announces itself with `library-changed`, and that event can reach
+   *  the webview before the command's reply does. Its listener has then fetched the grid
+   *  already, and a plain `refresh()` here fetched the same grid a second time - two
+   *  whole-`GridInfo` round trips per click. The version is the one the backend published
+   *  the new view at (or a later one showing it), so an answer at that version or later has
+   *  seen the switch and is the refresh this call asks for.
+   *
+   *  The same-version caveat on `refreshTo` does not reach here: the version is only ever
+   *  one the command's own view was published at, never a rollback's, and a refused command
+   *  does not get this far. The backend answers null when its rebuild was superseded before
+   *  it could land, and then this fetches whatever is there, as it always did. */
+  private refreshAfter(version: number | null | undefined): Promise<void> {
+    return version == null ? this.refresh() : this.refreshTo(version);
   }
 
   private async loadGrid(): Promise<void> {
@@ -691,8 +710,9 @@ export class LibraryStore {
     this.requestedSort = sort;
     return this.chain(async () => {
       try {
+        let shown: number | null;
         try {
-          await api.setSort(sort);
+          shown = await api.setSort(sort);
         } catch (e) {
           this.reportError(e);
           return;
@@ -701,7 +721,7 @@ export class LibraryStore {
           // As a view switch does: the Shift+click anchor is an offset, and in the new
           // order it names a different photo.
           this.clearSelection();
-          await this.refresh();
+          await this.refreshAfter(shown);
         } catch (e) {
           this.reportError(e);
         }
@@ -770,12 +790,13 @@ export class LibraryStore {
    *  would wipe it while its send was still queued, and the grid would then show a search
    *  the box no longer held. Only a refused command takes the hooks back: once it has
    *  succeeded the backend is in the new view, whatever the refresh does. */
-  private switchView(command: () => Promise<void>): Promise<void> {
+  private switchView(command: () => Promise<number | null>): Promise<void> {
     const undo = [...this.viewSwitchHooks].map((hook) => hook());
     const switchId = ++this.switchesIssued;
     return this.chain(async () => {
+      let shown: number | null;
       try {
-        await command();
+        shown = await command();
       } catch (e) {
         // Only while no later switch has been issued: a click on Starred then Recent emptied
         // the box twice, and Starred's refusal putting the search back would leave it over
@@ -786,7 +807,7 @@ export class LibraryStore {
       }
       try {
         this.clearSelection();
-        await this.refresh();
+        await this.refreshAfter(shown);
       } catch (e) {
         this.reportError(e);
       }
@@ -987,8 +1008,9 @@ export class LibraryStore {
   private queuedSearch: { query: string; seq: number; done: Promise<string> } | null = null;
 
   private async applySearchQuery(query: string): Promise<string> {
+    let shown: number | null;
     try {
-      await api.setSearchQuery(query);
+      shown = await api.setSearchQuery(query);
     } catch (e) {
       this.reportError(e);
       // Nothing has refreshed since the last command on this chain landed, so this is the
@@ -997,7 +1019,7 @@ export class LibraryStore {
     }
     try {
       this.clearSelection();
-      await this.refresh();
+      await this.refreshAfter(shown);
     } catch (e) {
       this.reportError(e);
     }
