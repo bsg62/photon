@@ -58,7 +58,9 @@ identical and still sends them whole. The counts change only on data writes and 
 - **What bumps the epoch:**
   - `data_snapshot`, which every `refresh_grid` goes through - every data write (star, hide,
     keyword, scan, edit, album, folder removal) - beside `data_dirty`, for the same reason;
-  - `hash_after_scan`, before its derived rebuild: the Duplicates count reads `content_hash`.
+  - `hash_after_scan`, before each of its derived rebuilds: the Duplicates count reads
+    `content_hash` and `similar_group` (`duplicate_ids!`). (Added after the whole-branch
+    review: the regroup branch was first left out.)
 - **What does not:** a poster frame's derived rebuild (`refresh_grid_derived` from a stored
   frame), and the view setters' rebuilds (`rebuild_or_restore`): the counts are library-wide,
   independent of view and sort.

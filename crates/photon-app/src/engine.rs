@@ -225,7 +225,8 @@ pub struct Engine {
     /// fetch that event triggers sees the commit.
     data_dirty: AtomicBool,
     /// Moves whenever something a count reads may have changed: every data rebuild
-    /// (`data_snapshot`) and the duplicate pass (`hash_after_scan`). The counts are
+    /// (`data_snapshot`) and both hashing passes (`hash_after_scan`: content hashes and
+    /// look-alike groups, which the Duplicates count reads). The counts are
     /// library-wide, so a view or sort switch leaves it, and so does a poster frame.
     counts_epoch: AtomicU64,
     /// The four counts `grid_info` reports, and the epoch they were read at.
@@ -2164,6 +2165,9 @@ impl Engine {
                     &mut guard,
                 ) {
                     Ok(pass) if pass.groups_changed => {
+                        // `similar_group` moved, which the Duplicates count reads too
+                        // (`duplicate_ids!`), and this rebuild is a derived one.
+                        self.counts_epoch.fetch_add(1, Ordering::SeqCst);
                         if let Err(err) = self.refresh_grid_derived() {
                             tracing::warn!(%err, "grid refresh failed");
                         }
@@ -2724,6 +2728,31 @@ mod tests {
             0,
             "the setting change alone should have taken the pair out of the view"
         );
+    }
+
+    /// The Duplicates count reads look-alike groups too (`duplicate_ids!`), and a regroup
+    /// rebuilds through `refresh_grid_derived`, which does not move the counts epoch: the
+    /// regroup moves it itself. Read once at the old distance so the cache is warm.
+    #[test]
+    fn a_regroup_changes_the_duplicate_count_on_the_next_read() {
+        let f = fixture(&[
+            ("a/big.jpg", &jpeg_pattern(180, 120)),
+            ("a/small.jpg", &jpeg_pattern(72, 48)),
+        ]);
+        let watched = f.add_photos();
+        f.engine.thumbs.wait_idle();
+        f.engine.start_scan(watched);
+        f.settle();
+        assert_eq!(
+            f.engine.counts().duplicate,
+            2,
+            "grouped at the default distance"
+        );
+
+        crate::commands::set_similar_distance(&f.engine, 0).unwrap();
+        f.engine.wait_for_similar_pass();
+
+        assert_eq!(f.engine.counts().duplicate, 0);
     }
 
     /// A thumbnail rendered after the scan's own pass has run - here, the re-render of an

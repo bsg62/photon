@@ -145,7 +145,8 @@ has the next publish announce the write anyway.
 `grid_info` sends the sections and folders only when their `layout_gen` - published with the
 grid, moved only when a publish changes them - is not the one the UI names, and reads its four
 counts from a cache keyed by `counts_epoch`. `data_snapshot` moves the epoch beside
-`data_dirty`, and `hash_after_scan` moves it before its duplicate rebuild; a new writer that
+`data_dirty`, and `hash_after_scan` moves it before each of its rebuilds (the Duplicates count
+reads both `content_hash` and `similar_group`); a new writer that
 changes something a count reads without going through `refresh_grid` must move it too, or the
 sidebar shows a stale count until the next data write.
 
