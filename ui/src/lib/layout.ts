@@ -263,9 +263,17 @@ export function itemsInRect(rows: Row[], rect: Rect, tile: number): [number, num
   const bottom = Math.max(rect.y0, rect.y1);
 
   const ranges: [number, number][] = [];
-  for (const row of rows) {
+  // This runs on every band pointermove and autoscroll frame, so it visits only the rows
+  // the band can reach rather than the whole library. It starts at the row holding `top`:
+  // every row before it ends, gap and all, at or above that row's top, which is at or above
+  // `top`, and its tiles stop a whole GAP short of that, so none can be touched. Rows are
+  // in `top` order, so the first one starting below `bottom` ends the walk.
+  for (let i = rowIndexAt(rows, top); i < rows.length; i++) {
+    const row = rows[i];
+    if (row.top > bottom) break;
     if (row.kind !== 'tiles') continue;
-    if (row.top + tile < top || row.top > bottom) continue;
+    // The row holding `top` can still end above it, when `top` lies in the gap under it.
+    if (row.top + tile < top) continue;
     // Tile k spans GAP + k*tileRow(tile) .. + tile, and touching counts. `firstColumn`
     // measures from each tile's *right* edge, so a band whose left edge lies in the gap
     // after tile k starts at k+1 rather than at k; `lastColumn` measures from the left edges

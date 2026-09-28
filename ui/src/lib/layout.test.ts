@@ -314,6 +314,101 @@ describe('itemsInRect touching a row edge', () => {
   });
 });
 
+/** `itemsInRect` walks only the rows between the one holding the band's top and the first
+ *  starting below its bottom. These pin the ends of that walk: each case puts an edge where
+ *  starting a row late, or stopping a row early, would drop photos the band touches. They
+ *  pin behaviour, not speed. */
+describe('itemsInRect over part of a grid with headers', () => {
+  const tile = TILE_WIDTH.medium; // rows of 168
+  // Rows: header 0, tiles [0-2] at 32, [3-4] at 200 (tiles to 360); SECTION_GAP; header
+  // 392, tiles [5-7] at 424, [8] at 592 (tiles to 752).
+  const rows = buildRows(
+    [
+      { folderId: 1, offset: 0, count: 5 },
+      { folderId: 2, offset: 5, count: 4 },
+    ],
+    3,
+    tile,
+  );
+  const band = (y0: number, y1: number) => itemsInRect(rows, { x0: 0, y0, x1: 1000, y1 }, tile);
+
+  it('lays out as the cases below assume', () => {
+    expect(rows.map((r) => [r.kind, r.first, r.top])).toEqual([
+      ['header', 0, 0],
+      ['tiles', 0, 32],
+      ['tiles', 3, 200],
+      ['header', 5, 392],
+      ['tiles', 5, 424],
+      ['tiles', 8, 592],
+    ]);
+  });
+
+  it('takes the row a band starts inside, deep in the grid', () => {
+    expect(band(250, 260)).toEqual([[3, 4]]);
+    expect(band(600, 610)).toEqual([[8, 8]]);
+  });
+
+  it('takes the row whose bottom tile edge the band starts on', () => {
+    expect(band(360, 360)).toEqual([[3, 4]]);
+    // Within a section the next row starts one GAP below that edge, with nothing between.
+    expect(band(32 + tile, 32 + tile)).toEqual([[0, 2]]);
+    expect(band(200 + tile, 430)).toEqual([[3, 7]]);
+  });
+
+  it('takes the row whose top edge the band ends on', () => {
+    expect(band(250, 424)).toEqual([[3, 7]]);
+    expect(band(100, 200)).toEqual([[0, 4]]);
+  });
+
+  it('starts from a header, the section gap or a row gap', () => {
+    expect(band(400, 430)).toEqual([[5, 7]]); // top in folder 2's header
+    expect(band(380, 430)).toEqual([[5, 7]]); // top in the SECTION_GAP above it
+    expect(band(362, 430)).toEqual([[5, 7]]); // top in the gap under row [3-4]
+    expect(band(10, 40)).toEqual([[0, 2]]); // top in the first header
+  });
+
+  it('reaches past either end of the grid', () => {
+    expect(band(-100, 40)).toEqual([[0, 2]]);
+    expect(band(600, 100_000)).toEqual([[8, 8]]);
+    expect(band(-100, 100_000)).toEqual([[0, 8]]);
+    expect(band(5000, 6000)).toEqual([]);
+    expect(band(-500, -100)).toEqual([]);
+  });
+
+  /** The range-merge rule deep in the grid: a narrow band keeps one range per row. */
+  it('keeps a narrow band that starts mid-grid as one range per row', () => {
+    const column1 = GAP + tileRow(tile);
+    expect(itemsInRect(rows, { x0: column1 + 1, y0: 250, x1: column1 + 2, y1: 600 }, tile)).toEqual([
+      [4, 4],
+      [6, 6],
+    ]);
+  });
+
+  /** Every pair of edges from a row boundary and one pixel either side, against a walk of
+   *  every row: the bounded walk may skip rows only when they could not have answered. */
+  it('agrees with a walk over every row for every edge', () => {
+    const everyRow = (y0: number, y1: number): [number, number][] => {
+      const ranges: [number, number][] = [];
+      for (const row of rows) {
+        if (row.kind !== 'tiles' || row.top + tile < y0 || row.top > y1) continue;
+        const previous = ranges[ranges.length - 1];
+        const to = row.first + row.count - 1;
+        if (previous && previous[1] + 1 === row.first) previous[1] = to;
+        else ranges.push([row.first, to]);
+      }
+      return ranges;
+    };
+    const edges = [-1, ...rows.flatMap((r) => [r.top, r.top + tile, r.top + r.height])];
+    const ys = [...new Set(edges.flatMap((y) => [y - 1, y, y + 1]))];
+    for (const y0 of ys) {
+      for (const y1 of ys) {
+        if (y1 < y0) continue;
+        expect(band(y0, y1), `${y0}..${y1}`).toEqual(everyRow(y0, y1));
+      }
+    }
+  });
+});
+
 describe('keeping your place across a size change', () => {
   const sections = [{ folderId: 1, offset: 0, count: 9 }];
 
