@@ -4,6 +4,7 @@
   import { library } from '../lib/library.svelte';
   import { createThumbRequest } from '../lib/thumb-request.svelte';
   import { createTileRetry, tileProblem } from '../lib/tile-retry.svelte';
+  import { fadesIn } from '../lib/tile-fade';
   import { copiesMarkShown } from '../lib/copies';
   import { formatDuration } from '../lib/video';
   import Icon from './Icon.svelte';
@@ -17,6 +18,7 @@
     onmenu,
     tile,
     defer = false,
+    moving = false,
   }: {
     entry: GridEntry | undefined;
     selected: boolean;
@@ -35,6 +37,9 @@
      *  given now is asked for only once the tile has held it for a moment. See
      *  `createThumbRequest`. */
     defer?: boolean;
+    /** The grid is scrolling: a thumbnail that loads now is shown without a fade. See
+     *  `fadesIn`. */
+    moving?: boolean;
   } = $props();
 
   const key = $derived(entry ? `thumb/${entry.id}/grid/${entry.thumbKey}` : '');
@@ -98,6 +103,28 @@
   function onerror() {
     retry.failed();
   }
+
+  // Whether the thumbnail fades in, decided when it loads. A cached one - the common case,
+  // and every tile the grid's lead mounts ahead of a scroll - loads within a frame or two,
+  // and a 120ms fade on top of that is itself the pop-in; so is a late one fading while it
+  // slides into view during a scroll. See `fadesIn`. `moving` is only read here, in the
+  // handler, so the grid starting and stopping re-runs nothing in the tile. The `src` set is
+  // timed here, after the DOM has taken it, and `complete` read then is the browser's
+  // memory cache answering synchronously.
+  let img: HTMLImageElement | undefined = $state();
+  let srcSetAt = 0;
+  let completeAtSet = false;
+  let fade = $state(true);
+  $effect(() => {
+    void src;
+    srcSetAt = performance.now();
+    completeAtSet = !!img?.complete && img.naturalWidth > 0;
+  });
+
+  function onload() {
+    fade = fadesIn(completeAtSet, performance.now() - srcSetAt, moving);
+    retry.loaded();
+  }
 </script>
 
 <button
@@ -126,8 +153,10 @@
       alt=""
       draggable="false"
       decoding="async"
+      bind:this={img}
       class:loaded={retry.status === 'loaded'}
-      onload={() => retry.loaded()}
+      class:instant={!fade}
+      {onload}
       {onerror}
     />
   {/if}
@@ -188,6 +217,8 @@
     transition: opacity 120ms ease-out;
   }
   img.loaded { opacity: 1; }
+  /* A thumbnail that was already there: see `fadesIn`. */
+  img.instant { transition: none; }
   /* Absolute, not a flow sibling: the <img> stays mounted (invisible) behind it during
      'retrying' and 'broken' so a background retry can still fetch - see the template
      comment above the <img>. */

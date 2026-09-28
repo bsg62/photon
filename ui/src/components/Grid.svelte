@@ -81,6 +81,9 @@
   const rendered = $derived(rows.slice(renderStart, renderEnd));
   /** A boolean, so the tiles' prop changes only when the answer does, not on every event. */
   const deferThumbs = $derived(defersThumbs(speed.motion, height));
+  /** A continuous scroll, not a jump: a jump lands where the user is about to look, and a
+   *  thumbnail arriving late there fades in as it does on a still grid. */
+  const scrolling = $derived(speed.motion.kind === 'scroll');
   /** The pages to hold, which reach further than what is mounted: see `FETCH_OVERSCAN`.
    *  Split the same way, so `ensure` is asked again only when the span has moved. */
   const fetched = $derived(fetchSpan(rows, scrollTop, height));
@@ -717,6 +720,7 @@
                 onmenu={(e) => tileMenu(e, offset)}
                 tile={gridSize.width}
                 defer={deferThumbs}
+                moving={scrolling}
               />
             {/each}
           </div>
