@@ -1485,23 +1485,27 @@ impl Engine {
 
     /// Starts a full background scan unless one is already running for this folder.
     pub fn start_scan(self: &Arc<Self>, watched: WatchedFolder) -> bool {
-        self.start_scan_inner(watched, None)
+        self.start_scan_inner(watched, ScanKind::Full)
     }
 
     /// Starts a scan of one directory beneath `watched`. It takes the same per-folder slot
     /// as a full scan, so a folder never has two scans running, and the watcher's work is
     /// cancelled by `remove_folder` and `shutdown` exactly like a manual rescan.
     pub fn start_subtree_scan(self: &Arc<Self>, watched: WatchedFolder, dir: PathBuf) -> bool {
-        self.start_scan_inner(watched, Some(dir))
+        self.start_scan_inner(watched, ScanKind::Subtree(dir))
+    }
+
+    /// Rereads the Picasa INI of each of `dirs` beneath `watched` without walking them: for
+    /// folders whose only change is their INI. Under the same per-folder slot as a scan, so
+    /// it never interleaves with a scan's own read of the same INIs - where the older read
+    /// could land last.
+    pub fn start_ini_pass(self: &Arc<Self>, watched: WatchedFolder, dirs: Vec<PathBuf>) -> bool {
+        self.start_scan_inner(watched, ScanKind::Ini(dirs))
     }
 
     /// Starts a background scan unless one is already running for this folder, or the
     /// engine is shutting down.
-    fn start_scan_inner(
-        self: &Arc<Self>,
-        watched: WatchedFolder,
-        subtree: Option<PathBuf>,
-    ) -> bool {
+    fn start_scan_inner(self: &Arc<Self>, watched: WatchedFolder, kind: ScanKind) -> bool {
         let mut scans = self.scans.lock();
         if self.shutting_down.load(Ordering::SeqCst)
             || self.removing.lock().contains(&watched.id)
@@ -1539,7 +1543,11 @@ impl Engine {
                     id,
                     token,
                 };
-                engine.run_scan(&watched, subtree, thread_cancel);
+                match kind {
+                    ScanKind::Full => engine.run_scan(&watched, None, thread_cancel),
+                    ScanKind::Subtree(dir) => engine.run_scan(&watched, Some(dir), thread_cancel),
+                    ScanKind::Ini(dirs) => engine.run_ini_pass(&watched, dirs, thread_cancel),
+                }
             })
             .expect("failed to spawn scan thread");
         scans.insert(
@@ -1961,6 +1969,48 @@ impl Engine {
         }
     }
 
+    /// An INI pass. It emits no scan progress - nothing is being scanned from the user's point
+    /// of view - requests no hashing pass (no file was read), and records no full-scan time.
+    /// Folders photon has never scanned are walked afterwards, in this same slot.
+    fn run_ini_pass(
+        self: &Arc<Self>,
+        watched: &WatchedFolder,
+        dirs: Vec<PathBuf>,
+        cancel: Arc<AtomicBool>,
+    ) {
+        let pass = match photon_core::scanner::refresh_picasa(&self.lib, watched, &dirs, &cancel) {
+            Ok(pass) => pass,
+            Err(err) => {
+                tracing::warn!(watched_id = watched.id, %err, "INI pass failed");
+                return;
+            }
+        };
+        let went_offline = pass.report.offline && watched.online;
+        if (pass.report.touched_rows() || went_offline)
+            && let Err(err) = self.refresh_grid()
+        {
+            tracing::warn!(%err, "grid refresh after an INI pass failed");
+        }
+        if went_offline
+            && let Some(folder) = self
+                .lib
+                .watched_folders()
+                .ok()
+                .and_then(|all| all.into_iter().find(|w| w.id == watched.id))
+        {
+            let degraded = self
+                .watcher_service()
+                .is_some_and(|service| service.is_degraded(folder.id));
+            self.emit_status(&folder, degraded);
+        }
+        for dir in pass.needs_walk {
+            if cancel.load(Ordering::Relaxed) {
+                break;
+            }
+            self.run_scan(watched, Some(dir), cancel.clone());
+        }
+    }
+
     fn run_scan(
         self: &Arc<Self>,
         watched: &WatchedFolder,
@@ -2240,6 +2290,14 @@ impl ScanSink for ScanReporter<'_> {
     fn indexed(&mut self, ids: &[i64]) {
         self.engine.thumbs.prioritize(ids, Priority::Background);
     }
+}
+
+/// What a scan thread does with its slot.
+enum ScanKind {
+    Full,
+    Subtree(PathBuf),
+    /// Reread these folders' INIs (`photon_core::scanner::refresh_picasa`).
+    Ini(Vec<PathBuf>),
 }
 
 /// RAII guard returned by `occupy_scan_slot_for_test`. Releases the slot on drop, mirroring
@@ -4701,6 +4759,26 @@ mod tests {
         assert!(!f.engine.start_scan(watched));
 
         f.settle();
+    }
+
+    #[test]
+    fn an_ini_pass_applies_the_ini_under_the_scan_slot() {
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a/one.jpg", &img)]);
+        let watched = f.add_photos();
+        let dir = PathBuf::from(&watched.path).join("a");
+        photon_core::picasa::set_star(&dir, "one.jpg", true).unwrap();
+
+        let slot = f.engine.occupy_scan_slot_for_test(watched.id);
+        assert!(
+            !f.engine.start_ini_pass(watched.clone(), vec![dir.clone()]),
+            "the slot is taken"
+        );
+        drop(slot);
+        assert!(f.engine.start_ini_pass(watched, vec![dir]));
+        f.settle();
+
+        assert_eq!(f.engine.counts().starred, 1);
     }
 
     /// `remove_folder` cancels the running scan before deleting the folder, but the watcher
