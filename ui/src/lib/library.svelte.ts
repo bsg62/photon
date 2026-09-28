@@ -136,6 +136,11 @@ export class LibraryStore {
    *  lead by id (`rebindSelection`), and writing a pre-rebuild offset back over that answer
    *  is the exact trap that makes Enter open the neighbouring photo. */
   private bandPrevious = new Set<number>();
+  /** For each `endBand` waiting on its fetch, the photos hidden meanwhile. A released band
+   *  holds its base and its previous selection in locals across that await, where the hide
+   *  cannot strip them the way it strips `bandBase` and `bandPrevious`; without this, the
+   *  band's write - or its abandonment - put the hidden photos back in the selection. */
+  private bandsResolving = new Set<Set<number>>();
   /** How many offsets the live band covers whose page is not loaded, so has no id to put
    *  in the preview's selection. Counted by offset rather than left out: a band autoscrolled
    *  a long way has its middle pages evicted by `ensure`, and the status bar's "N selected"
@@ -386,11 +391,22 @@ export class LibraryStore {
     // trip and then jumped back. A fetch that fails writes nothing and zeroes it all the
     // same: the band is over, and the count would otherwise stay high for good.
     let ids: Set<number> | null;
+    const hiddenMeanwhile = new Set<number>();
+    this.bandsResolving.add(hiddenMeanwhile);
     try {
       ids = await this.fetchIdsOf(ranges);
     } catch (e) {
       this.bandUnresolved = 0;
       throw e;
+    } finally {
+      this.bandsResolving.delete(hiddenMeanwhile);
+    }
+    // The fetched ids too, not only the two sets: rows answered from the index before the
+    // hide's rebuild still name the photos it took out.
+    for (const id of hiddenMeanwhile) {
+      base.delete(id);
+      previous.delete(id);
+      ids?.delete(id);
     }
     if (!ids) {
       // Overtaken, or the grid was rebuilt under the drag. The preview was drawn from
@@ -981,10 +997,12 @@ export class LibraryStore {
     const target = landing === null || lead === null ? null : await this.landingIn(landing, lead);
     // A band begun meanwhile captured the selection as it stood, hidden photos and all: its
     // next frame builds on `bandBase`, and Escape puts `bandPrevious` back. Outside a band
-    // both are empty.
+    // both are empty. A band already released holds its own copies until its fetch answers,
+    // and strips what `bandsResolving` collects for it.
     for (const id of itemIds) {
       this.bandBase.delete(id);
       this.bandPrevious.delete(id);
+      for (const hiddenMeanwhile of this.bandsResolving) hiddenMeanwhile.add(id);
     }
     // Checked once every await is behind it: a click during the write or the lookups. That
     // click is kept, lead and all, but not the photos just hidden - a Ctrl+click adds to a

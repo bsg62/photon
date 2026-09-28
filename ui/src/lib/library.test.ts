@@ -1882,6 +1882,48 @@ describe('LibraryStore', () => {
       expect(store.selectedItemIds).toEqual([idAt(6)]);
     });
 
+    /** A band released while a hide is out: `endBand` holds its base and the selection it
+     *  started from across the fetch of its ids, and the hide landing during that fetch
+     *  could not reach them there. Resolved, the band put the hidden photos back. */
+    async function bandReleasedWhileHiding(answer: { version: number; rows: ReturnType<typeof entryAt>[] }) {
+      const store = await storeOf(10);
+      store.selected = 2;
+      store.toggleSelected(3);
+      const write = deferred<number>();
+      vi.mocked(api.setItemsHidden).mockReturnValue(write.promise);
+      const hiding = store.setHidden(store.selectedItemIds, true);
+      await flush();
+
+      // Drawn over one of the photos being hidden, whose tile is still on screen.
+      store.beginBand(true);
+      store.bandTo([[3, 6]]);
+      const fetch = deferred<{ version: number; rows: ReturnType<typeof entryAt>[] }>();
+      vi.mocked(api.gridRows).mockReturnValueOnce(fetch.promise);
+      const ending = store.endBand([[3, 6]]);
+      await flush();
+
+      hiddenFrom(10, 2, 3);
+      write.resolve(2);
+      await hiding;
+      fetch.resolve(answer);
+      await ending;
+      return store;
+    }
+
+    it('a band released while a hide is out does not bring the hidden photos back', async () => {
+      // Answered from the index the band was drawn on, which the hide's rebuild has not yet
+      // replaced in the store, so it names the photo the hide took out as well.
+      const store = await bandReleasedWhileHiding({ version: 1, rows: [3, 4, 5, 6].map(entryAt) });
+      expect([...store.selectedItemIds].sort()).toEqual([idAt(4), idAt(5), idAt(6)]);
+    });
+
+    /** The same band abandoned, because its fetch answered from the hide's rebuilt index:
+     *  the selection it puts back is the one it started from, which held the hidden photos. */
+    it('a band abandoned while a hide is out does not put the hidden photos back', async () => {
+      const store = await bandReleasedWhileHiding({ version: 2, rows: [entryAt(8)] });
+      expect(store.selectedItemIds).toEqual([]);
+    });
+
     it('a click made while a hide is out is not overwritten when it lands', async () => {
       const store = await storeOf(10);
       store.selected = 2;
