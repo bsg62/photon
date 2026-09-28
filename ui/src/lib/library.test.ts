@@ -75,7 +75,12 @@ vi.mock('./api', () => ({
 }));
 
 import { api, events } from './api';
-import { LibraryStore } from './library.svelte';
+import { LibraryStore, type GridState } from './library.svelte';
+
+/** A `grid_info` answer carrying what the store holds, layout and all. */
+function asAnswer({ sections, folders, layoutGen, ...rest }: GridState): GridInfo {
+  return { ...rest, layout: { generation: layoutGen ?? 1, sections, folders } };
+}
 
 describe('LibraryStore', () => {
   beforeEach(() => {
@@ -85,8 +90,7 @@ describe('LibraryStore', () => {
     vi.mocked(api.gridInfo).mockResolvedValue({
       version: 1,
       len: 0,
-      sections: [],
-      folders: [],
+      layout: { generation: 1, sections: [], folders: [] },
       starredCount: 0,
       duplicateCount: 0,
       hiddenCount: 0,
@@ -106,6 +110,51 @@ describe('LibraryStore', () => {
     vi.mocked(api.listPeople).mockResolvedValue([]);
     vi.mocked(api.listTags).mockResolvedValue([]);
     vi.mocked(api.watchedFolderStats).mockResolvedValue([]);
+  });
+
+  it('the first fetch asks for the layout', async () => {
+    const store = new LibraryStore();
+    await store.refresh();
+    expect(vi.mocked(api.gridInfo)).toHaveBeenLastCalledWith(null);
+    expect(store.info.layoutGen).toBe(1);
+  });
+
+  // A star, a keyword, an edit or a poster frame moves no photo between folders: the answer
+  // leaves the layout out, and everything else in it - the counts, the view read live beside
+  // the index - still lands. Review Focus: a view switch whose sections come out the same.
+  it('an answer without a layout keeps the sections and takes everything else', async () => {
+    const section: Section = { folderId: 3, offset: 0, count: 2, takenAtMin: 0 };
+    const folder = { folderId: 3, count: 2, takenAtMin: 0, bytes: 10, modifiedMs: 0 };
+    const answer = (version: number, over: Partial<GridInfo>): GridInfo => ({
+      version,
+      len: 2,
+      layout: null,
+      starredCount: 0,
+      duplicateCount: 0,
+      hiddenCount: 0,
+      videoCount: 0,
+      view: 'all',
+      sort: { key: 'date', reverse: false },
+      searchQuery: '',
+      person: null,
+      album: null,
+      tag: null,
+      copiesOf: null,
+      buildError: null,
+      ...over,
+    });
+    const store = new LibraryStore();
+    vi.mocked(api.gridInfo).mockResolvedValueOnce(answer(2, { layout: { generation: 5, sections: [section], folders: [folder] } }));
+    await store.refresh();
+    vi.mocked(api.gridInfo).mockResolvedValueOnce(answer(2, { starredCount: 4, view: 'search', searchQuery: 'x' }));
+    await store.refresh();
+
+    expect(vi.mocked(api.gridInfo)).toHaveBeenLastCalledWith(5);
+    expect(store.info.sections).toEqual([section]);
+    expect(store.info.folders).toEqual([folder]);
+    expect(store.info.layoutGen).toBe(5);
+    expect(store.info.starredCount).toBe(4);
+    expect(store.info.view).toBe('search');
   });
 
   it('snapshots the folder’s photo count when a scan starts, net of what it has already added', async () => {
@@ -216,7 +265,7 @@ describe('LibraryStore', () => {
     await flush();
     expect(vi.mocked(api.gridInfo).mock.calls.length).toBe(calls);
 
-    vi.mocked(api.gridInfo).mockResolvedValue({ ...store.info, version: 2 });
+    vi.mocked(api.gridInfo).mockResolvedValue({ ...asAnswer(store.info), version: 2 });
     handlers.libraryChanged({ version: 2, len: 0, dataChanged: false });
     await flush();
     expect(vi.mocked(api.gridInfo).mock.calls.length).toBe(calls + 1);
@@ -228,8 +277,7 @@ describe('LibraryStore', () => {
     const info = (version: number) => ({
       version,
       len: 1000,
-      sections: [],
-      folders: [],
+      layout: { generation: 1, sections: [], folders: [] },
       starredCount: 0,
       duplicateCount: 0,
       hiddenCount: 0,
@@ -438,8 +486,7 @@ describe('LibraryStore', () => {
     vi.mocked(api.gridInfo).mockResolvedValue({
       version: 1,
       len: 2,
-      sections: [],
-      folders: [],
+      layout: { generation: 1, sections: [], folders: [] },
       starredCount: 0,
       duplicateCount: 0,
       hiddenCount: 0,
@@ -463,8 +510,7 @@ describe('LibraryStore', () => {
     vi.mocked(api.gridInfo).mockResolvedValue({
       version: 2,
       len: 3,
-      sections: [],
-      folders: [],
+      layout: { generation: 1, sections: [], folders: [] },
       starredCount: 0,
       duplicateCount: 0,
       hiddenCount: 0,
@@ -502,8 +548,7 @@ describe('LibraryStore', () => {
     const info = (version: number, len: number) => ({
       version,
       len,
-      sections: [],
-      folders: [],
+      layout: { generation: 1, sections: [], folders: [] },
       starredCount: 0,
       duplicateCount: 0,
       hiddenCount: 0,
@@ -560,8 +605,7 @@ describe('LibraryStore', () => {
     const info = (version: number, len: number) => ({
       version,
       len,
-      sections: [],
-      folders: [],
+      layout: { generation: 1, sections: [], folders: [] },
       starredCount: 0,
       duplicateCount: 0,
       hiddenCount: 0,
@@ -614,8 +658,7 @@ describe('LibraryStore', () => {
     vi.mocked(api.gridInfo).mockResolvedValue({
       version: 1,
       len: 5,
-      sections: [],
-      folders: [],
+      layout: { generation: 1, sections: [], folders: [] },
       starredCount: 0,
       duplicateCount: 0,
       hiddenCount: 0,
@@ -637,8 +680,7 @@ describe('LibraryStore', () => {
     vi.mocked(api.gridInfo).mockResolvedValue({
       version: 2,
       len: 6,
-      sections: [],
-      folders: [],
+      layout: { generation: 1, sections: [], folders: [] },
       starredCount: 0,
       duplicateCount: 0,
       hiddenCount: 0,
@@ -664,8 +706,7 @@ describe('LibraryStore', () => {
     vi.mocked(api.gridInfo).mockResolvedValue({
       version: 1,
       len: 5,
-      sections: [],
-      folders: [],
+      layout: { generation: 1, sections: [], folders: [] },
       starredCount: 0,
       duplicateCount: 0,
       hiddenCount: 0,
@@ -686,8 +727,7 @@ describe('LibraryStore', () => {
     vi.mocked(api.gridInfo).mockResolvedValue({
       version: 2,
       len: 2,
-      sections: [],
-      folders: [],
+      layout: { generation: 1, sections: [], folders: [] },
       starredCount: 0,
       duplicateCount: 0,
       hiddenCount: 0,
@@ -708,8 +748,7 @@ describe('LibraryStore', () => {
     vi.mocked(api.gridInfo).mockResolvedValue({
       version: 3,
       len: 0,
-      sections: [],
-      folders: [],
+      layout: { generation: 1, sections: [], folders: [] },
       starredCount: 0,
       duplicateCount: 0,
       hiddenCount: 0,
@@ -787,8 +826,7 @@ describe('LibraryStore', () => {
     const gridInfoGate = deferred<{
       version: number;
       len: number;
-      sections: never[];
-      folders: never[];
+      layout: { generation: number; sections: never[]; folders: never[] };
       starredCount: number;
       duplicateCount: number;
       hiddenCount: number;
@@ -815,7 +853,7 @@ describe('LibraryStore', () => {
     const initPromise = store.init();
     store.dispose();
     listenGate.resolve();
-    gridInfoGate.resolve({ version: 1, len: 0, sections: [], folders: [], starredCount: 0, duplicateCount: 0, hiddenCount: 0, videoCount: 0, view: 'all', sort: { key: 'date', reverse: false }, searchQuery: '', person: null, album: null, tag: null, copiesOf: null, buildError: null });
+    gridInfoGate.resolve({ version: 1, len: 0, layout: { generation: 1, sections: [], folders: [] }, starredCount: 0, duplicateCount: 0, hiddenCount: 0, videoCount: 0, view: 'all', sort: { key: 'date', reverse: false }, searchQuery: '', person: null, album: null, tag: null, copiesOf: null, buildError: null });
     await initPromise;
 
     expect(unlistenCounts.libraryChanged).toBe(1);
@@ -844,7 +882,7 @@ describe('LibraryStore', () => {
     expect(api.setGridView).toHaveBeenCalledWith('starred');
     expect(resolved).toBe(false);
 
-    refreshGate.resolve({ version: 2, len: 0, sections: [], folders: [], starredCount: 0, duplicateCount: 0, hiddenCount: 0, videoCount: 0, view: 'starred', sort: { key: 'date', reverse: false }, searchQuery: '', person: null, album: null, tag: null, copiesOf: null, buildError: null });
+    refreshGate.resolve({ version: 2, len: 0, layout: { generation: 1, sections: [], folders: [] }, starredCount: 0, duplicateCount: 0, hiddenCount: 0, videoCount: 0, view: 'starred', sort: { key: 'date', reverse: false }, searchQuery: '', person: null, album: null, tag: null, copiesOf: null, buildError: null });
     await setViewPromise;
 
     expect(resolved).toBe(true);
@@ -869,8 +907,7 @@ describe('LibraryStore', () => {
     const at = (version: number, over: Partial<GridInfo>): GridInfo => ({
       version,
       len: 0,
-      sections: [],
-      folders: [],
+      layout: { generation: 1, sections: [], folders: [] },
       starredCount: 0,
       duplicateCount: 0,
       hiddenCount: 0,
@@ -969,8 +1006,7 @@ describe('LibraryStore', () => {
     vi.mocked(api.gridInfo).mockResolvedValueOnce({
       version: 2,
       len: 2,
-      sections: [],
-      folders: [],
+      layout: { generation: 1, sections: [], folders: [] },
       starredCount: 0,
       duplicateCount: 0,
       hiddenCount: 0,
@@ -1018,8 +1054,7 @@ describe('LibraryStore', () => {
     vi.mocked(api.gridInfo).mockResolvedValue({
       version: 2,
       len: 0,
-      sections: [],
-      folders: [],
+      layout: { generation: 1, sections: [], folders: [] },
       starredCount: 0,
       duplicateCount: 0,
       hiddenCount: 0,
@@ -1105,7 +1140,7 @@ describe('LibraryStore', () => {
 
     const b = store.setSearchQuery('b');
     const beach = store.setSearchQuery('beach');
-    vi.mocked(api.gridInfo).mockResolvedValue({ ...store.info, version: 2, view: 'search', searchQuery: 'lake' });
+    vi.mocked(api.gridInfo).mockResolvedValue({ ...asAnswer(store.info), version: 2, view: 'search', searchQuery: 'lake' });
     running.resolve();
     await expect(first).resolves.toBe('lake');
     await expect(beach).resolves.toBe('lake');
@@ -1151,7 +1186,7 @@ describe('LibraryStore', () => {
 
     const bySize = { key: 'size' as const, reverse: true };
     vi.mocked(api.setSort).mockResolvedValueOnce(null);
-    vi.mocked(api.gridInfo).mockResolvedValueOnce({ version: 2, len: 0, sections: [], folders: [], starredCount: 0, duplicateCount: 0, hiddenCount: 0, videoCount: 0, view: 'search', sort: bySize, searchQuery: 'lake', person: null, album: null, tag: null, copiesOf: null, buildError: null });
+    vi.mocked(api.gridInfo).mockResolvedValueOnce({ version: 2, len: 0, layout: { generation: 1, sections: [], folders: [] }, starredCount: 0, duplicateCount: 0, hiddenCount: 0, videoCount: 0, view: 'search', sort: bySize, searchQuery: 'lake', person: null, album: null, tag: null, copiesOf: null, buildError: null });
     await store.setSort(bySize);
 
     expect(api.setSort).toHaveBeenCalledWith(bySize);
@@ -1172,7 +1207,7 @@ describe('LibraryStore', () => {
     vi.mocked(api.setSort)
       .mockReturnValueOnce(first.promise.then(() => null))
       .mockReturnValueOnce(second.promise.then(() => null));
-    const info = (sort: { key: 'name'; reverse: boolean }) => ({ version: 2, len: 0, sections: [], folders: [], starredCount: 0, duplicateCount: 0, hiddenCount: 0, videoCount: 0, view: 'all' as const, sort, searchQuery: '', person: null, album: null, tag: null, copiesOf: null, buildError: null });
+    const info = (sort: { key: 'name'; reverse: boolean }) => ({ version: 2, len: 0, layout: { generation: 1, sections: [], folders: [] }, starredCount: 0, duplicateCount: 0, hiddenCount: 0, videoCount: 0, view: 'all' as const, sort, searchQuery: '', person: null, album: null, tag: null, copiesOf: null, buildError: null });
     vi.mocked(api.gridInfo)
       .mockResolvedValueOnce(info({ key: 'name', reverse: false }))
       .mockResolvedValueOnce(info({ key: 'name', reverse: true }));
@@ -1262,7 +1297,7 @@ describe('LibraryStore', () => {
     const store = new LibraryStore();
     await store.init();
     vi.mocked(api.setSearchQuery).mockResolvedValueOnce(null);
-    vi.mocked(api.gridInfo).mockResolvedValueOnce({ version: 2, len: 0, sections: [], folders: [], starredCount: 0, duplicateCount: 0, hiddenCount: 0, videoCount: 0, view: 'search', sort: { key: 'date', reverse: false }, searchQuery: 'lake', person: null, album: null, tag: null, copiesOf: null, buildError: null });
+    vi.mocked(api.gridInfo).mockResolvedValueOnce({ version: 2, len: 0, layout: { generation: 1, sections: [], folders: [] }, starredCount: 0, duplicateCount: 0, hiddenCount: 0, videoCount: 0, view: 'search', sort: { key: 'date', reverse: false }, searchQuery: 'lake', person: null, album: null, tag: null, copiesOf: null, buildError: null });
     await expect(store.setSearchQuery('lake')).resolves.toBe('lake');
 
     vi.mocked(api.setSearchQuery).mockRejectedValueOnce(new Error('refused'));
@@ -1274,7 +1309,7 @@ describe('LibraryStore', () => {
     await store.init();
     const search = deferred<void>();
     vi.mocked(api.setSearchQuery).mockReturnValueOnce(search.promise.then(() => null));
-    vi.mocked(api.gridInfo).mockResolvedValueOnce({ version: 2, len: 0, sections: [], folders: [], starredCount: 0, duplicateCount: 0, hiddenCount: 0, videoCount: 0, view: 'search', sort: { key: 'date', reverse: false }, searchQuery: 'beach', person: null, album: null, tag: null, copiesOf: null, buildError: null });
+    vi.mocked(api.gridInfo).mockResolvedValueOnce({ version: 2, len: 0, layout: { generation: 1, sections: [], folders: [] }, starredCount: 0, duplicateCount: 0, hiddenCount: 0, videoCount: 0, view: 'search', sort: { key: 'date', reverse: false }, searchQuery: 'beach', person: null, album: null, tag: null, copiesOf: null, buildError: null });
 
     void store.setSearchQuery('beach');
     const view = store.settledView();
@@ -1335,8 +1370,7 @@ describe('LibraryStore', () => {
       vi.mocked(api.gridInfo).mockResolvedValue({
         version: 1,
         len,
-        sections: opts.sections ?? [],
-        folders: [],
+        layout: { generation: 1, sections: opts.sections ?? [], folders: [] },
         starredCount: 0,
         duplicateCount: 0,
         hiddenCount: 0,
@@ -1380,8 +1414,7 @@ describe('LibraryStore', () => {
         vi.mocked(api.gridInfo).mockResolvedValue({
           version: 2,
           len: kept.length,
-          sections: [],
-          folders: [],
+          layout: { generation: 1, sections: [], folders: [] },
           starredCount: 0,
           duplicateCount: 0,
           hiddenCount: 3,
@@ -1909,7 +1942,7 @@ describe('LibraryStore', () => {
       store.selected = 2;
       const oldLead = deferred<number | null>();
       vi.mocked(api.setItemsHidden).mockImplementation(async () => {
-        vi.mocked(api.gridInfo).mockResolvedValue({ ...(await api.gridInfo()), version: 2, len: 9 });
+        vi.mocked(api.gridInfo).mockResolvedValue({ ...(await api.gridInfo(null)), version: 2, len: 9 });
         hiddenFrom(10, 2, 2);
         const rebuilt = vi.mocked(api.gridOffsetOfItem).getMockImplementation()!;
         vi.mocked(api.gridOffsetOfItem).mockImplementation((id) => (id === idAt(2) ? oldLead.promise : rebuilt(id)));
@@ -1923,7 +1956,7 @@ describe('LibraryStore', () => {
       await flush();
 
       // A photo indexed ahead of it: photo 3 is now at offset 3, which only an id finds.
-      vi.mocked(api.gridInfo).mockResolvedValue({ ...(await api.gridInfo()), version: 3, len: 10 });
+      vi.mocked(api.gridInfo).mockResolvedValue({ ...(await api.gridInfo(null)), version: 3, len: 10 });
       vi.mocked(api.gridOffsetOfItem).mockResolvedValue(3);
       await store.refresh();
       expect(store.selectedItemIds).toEqual([idAt(3)]);
@@ -1967,7 +2000,7 @@ describe('LibraryStore', () => {
       const store = await storeOf(10, { view: 'duplicates' });
       store.selected = 9;
       vi.mocked(api.setItemsHidden).mockImplementation(async () => {
-        vi.mocked(api.gridInfo).mockResolvedValue({ ...(await api.gridInfo()), version: 2, len: 8 });
+        vi.mocked(api.gridInfo).mockResolvedValue({ ...(await api.gridInfo(null)), version: 2, len: 8 });
         hiddenFrom(10, 8, 9);
         return 1;
       });
@@ -2110,7 +2143,7 @@ describe('LibraryStore', () => {
       await store.endBand([[10, 4020]]);
       expect(store.selected).toBe(10);
 
-      vi.mocked(api.gridInfo).mockResolvedValue({ ...(await api.gridInfo()), version: 2 });
+      vi.mocked(api.gridInfo).mockResolvedValue({ ...(await api.gridInfo(null)), version: 2 });
       vi.mocked(api.gridRows).mockImplementation(async (offset: number, count: number) => ({
         version: 2,
         rows: Array.from({ length: Math.min(count, 5000 - offset) }, (_, i) => entryAt(offset + i)),
@@ -2130,8 +2163,7 @@ describe('LibraryStore', () => {
       vi.mocked(api.gridInfo).mockResolvedValue({
         version: 2,
         len: 9,
-        sections: [],
-        folders: [],
+        layout: { generation: 1, sections: [], folders: [] },
         starredCount: 0,
         duplicateCount: 0,
         hiddenCount: 1,
@@ -2481,8 +2513,7 @@ describe('LibraryStore', () => {
       vi.mocked(api.gridInfo).mockResolvedValue({
         version: 2,
         len: 11,
-        sections: [],
-        folders: [],
+        layout: { generation: 1, sections: [], folders: [] },
         starredCount: 0,
         duplicateCount: 0,
         hiddenCount: 0,
@@ -2545,8 +2576,7 @@ describe('LibraryStore', () => {
       vi.mocked(api.gridInfo).mockResolvedValue({
         version: 2,
         len: 21,
-        sections: [],
-        folders: [],
+        layout: { generation: 1, sections: [], folders: [] },
         starredCount: 0,
         duplicateCount: 0,
         hiddenCount: 0,
@@ -2578,7 +2608,7 @@ describe('LibraryStore', () => {
     /** A photo indexed ahead of the lead: every old offset is one later. The rebuild's
      *  re-find of `leadId` is held until the test answers it. */
     async function refreshAroundLead(store: LibraryStore, leadId: number) {
-      vi.mocked(api.gridInfo).mockResolvedValue({ ...(await api.gridInfo()), version: 2, len: 11 });
+      vi.mocked(api.gridInfo).mockResolvedValue({ ...(await api.gridInfo(null)), version: 2, len: 11 });
       vi.mocked(api.gridRows).mockImplementation(async (offset: number, count: number) => ({
         version: 2,
         rows: Array.from({ length: Math.min(count, 11 - offset) }, (_, i) => entryAt(offset + i - 1)),
@@ -2638,8 +2668,7 @@ describe('LibraryStore', () => {
       vi.mocked(api.gridInfo).mockResolvedValue({
         version: 2,
         len: 11,
-        sections: [],
-        folders: [],
+        layout: { generation: 1, sections: [], folders: [] },
         starredCount: 0,
         duplicateCount: 0,
         hiddenCount: 0,
@@ -2700,7 +2729,7 @@ describe('LibraryStore', () => {
       const store = await storeOf(5000);
       store.selected = 10;
       await store.ensureAt(3000);
-      vi.mocked(api.gridInfo).mockResolvedValue({ ...(await api.gridInfo()), version: 2 });
+      vi.mocked(api.gridInfo).mockResolvedValue({ ...(await api.gridInfo(null)), version: 2 });
       vi.mocked(api.gridRows).mockImplementation(async (offset: number, count: number) => ({
         version: 2,
         rows: Array.from({ length: Math.min(count, 5000 - offset) }, (_, i) => entryAt(offset + i)),
@@ -2713,7 +2742,7 @@ describe('LibraryStore', () => {
       expect(store.selectedItemIds).toEqual([idAt(3000)]);
 
       // A photo indexed ahead of it: the lead follows it by id rather than clamping.
-      vi.mocked(api.gridInfo).mockResolvedValue({ ...(await api.gridInfo()), version: 3 });
+      vi.mocked(api.gridInfo).mockResolvedValue({ ...(await api.gridInfo(null)), version: 3 });
       vi.mocked(api.gridRows).mockImplementation(async (offset: number, count: number) => ({
         version: 3,
         rows: Array.from({ length: Math.min(count, 5000 - offset) }, (_, i) => entryAt(offset + i)),
@@ -2741,7 +2770,7 @@ describe('LibraryStore', () => {
       await store.ensure(0, 50);
       expect(store.entry(3000)?.id).toBe(idAt(3000));
 
-      vi.mocked(api.gridInfo).mockResolvedValue({ ...(await api.gridInfo()), version: 2 });
+      vi.mocked(api.gridInfo).mockResolvedValue({ ...(await api.gridInfo(null)), version: 2 });
       vi.mocked(api.gridRows).mockImplementation(async (offset: number, count: number) => ({
         version: 2,
         rows: Array.from({ length: Math.min(count, 5000 - offset) }, (_, i) => entryAt(offset + i)),

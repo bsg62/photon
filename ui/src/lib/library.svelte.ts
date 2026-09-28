@@ -6,6 +6,7 @@ import {
   type SavedSearch,
   type Folder,
   type FolderList,
+  type FolderTally,
   type GridEntry,
   type GridInfo,
   type GridView,
@@ -13,6 +14,7 @@ import {
   type ExportProgress,
   type Person,
   type ScanProgressEvent,
+  type Section,
   type TagCount,
 } from './api';
 import { untrack } from 'svelte';
@@ -61,17 +63,26 @@ function runsWithout(runs: Runs, offset: number): Runs {
   });
 }
 
+/** `GridInfo` as the store holds it: the layout of the last answer that carried one, and
+ *  its generation, which the next fetch sends so an unchanged layout is not sent again. */
+export type GridState = Omit<GridInfo, 'layout'> & {
+  sections: Section[];
+  folders: FolderTally[];
+  layoutGen: number | null;
+};
+
 /** App-wide reactive state: the grid snapshot, the folder tree, scan status and selection. */
 export class LibraryStore {
   /** `$state.raw`, as are the folder list and the collections below: each is only ever
    *  replaced whole by a fetch, never written into, and a deep proxy re-wrapped every
    *  section and folder of a large library on every refresh. A write into one of them would
    *  now go unseen - replace it instead. */
-  info = $state.raw<GridInfo>({
+  info = $state.raw<GridState>({
     version: -1,
     len: 0,
     sections: [],
     folders: [],
+    layoutGen: null,
     starredCount: 0,
     duplicateCount: 0,
     hiddenCount: 0,
@@ -665,7 +676,7 @@ export class LibraryStore {
   }
 
   private async loadGrid(): Promise<void> {
-    const info = await api.gridInfo();
+    const info = await api.gridInfo(this.info.layoutGen);
     // Fetches no longer overlap, and versions only rise, so an older answer is not expected;
     // this is the cheap guard that one could never undo a newer grid. A *same*-version answer
     // is applied on purpose: `grid_info` reads the view and the counts live, beside the
@@ -681,7 +692,16 @@ export class LibraryStore {
       ? undefined
       : await this.prefetch(info.version, start, end, info.len);
     this.pages.reset(info.version, seed);
-    this.info = { ...info, copiesOf: keepCopiesName(this.info.copiesOf, info.copiesOf) };
+    const { layout, ...rest } = info;
+    // No layout means the one sent is the one held: `loadGrid` is the only writer of `info`
+    // and fetches never overlap, so what was sent is still what is held here.
+    this.info = {
+      ...rest,
+      sections: layout?.sections ?? this.info.sections,
+      folders: layout?.folders ?? this.info.folders,
+      layoutGen: layout?.generation ?? this.info.layoutGen,
+      copiesOf: keepCopiesName(this.info.copiesOf, info.copiesOf),
+    };
     this.pageSignals.touchAll();
     await this.rebindSelection();
   }
@@ -1207,7 +1227,7 @@ export class LibraryStore {
   /** The rebuilt index's last photo, from its own length; none when the index is empty or
    *  moved between the two asks. */
   private async lastPhoto(): Promise<{ offset: number; id: number } | null> {
-    const info = await api.gridInfo();
+    const info = await api.gridInfo(this.info.layoutGen);
     if (info.len === 0) return null;
     const rows = await api.gridRows(info.len - 1, 1);
     const last = rows.version === info.version ? rows.rows[0] : undefined;

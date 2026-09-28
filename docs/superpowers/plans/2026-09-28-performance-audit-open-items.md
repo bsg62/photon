@@ -76,10 +76,7 @@ Measured on 2026-09-28. Engines cap a box at (2^31−1)/64 = 33,554,428 px; `.ca
 
 These came out of the audit on 2026-09-27 and are not in any PR. They are ordered roughly by how often the cost is paid.
 
-**`grid_info` sends every section and folder on every call** (`commands.rs` `grid_info`). That is about 1 MB of JSON at 5k folders, and `grid_info` runs on every grid version. It also runs four COUNT queries.
-- Idea: a `layout_gen` counter bumped only when sections or folders actually change. `grid_info(known_gen)` then omits both when unchanged.
-- Cache the counts under a data generation too.
-- The TS mirror and `GridInfo` literals in the tests change with it.
+- ~~**`grid_info` sends every section and folder on every call.**~~ Done: a layout generation and a counts cache (`docs/superpowers/specs/2026-09-28-photon-grid-info-layout-gen-design.md`); at 5,000 folders an answer that leaves the layout out is 248 bytes instead of 833 KB. Deltas during a scan were left out.
 
 **Scanner** (`scanner.rs`, `watcher/policy.rs`, `watch.rs`):
 - **photon's own INI writes echo back as subtree scans.** Starring across more than 8 folders overflows the pending queue, and `insert_pending` then collapses it into a full rescan of the root. The same happens when Picasa renames an album, which rewrites every member folder's INI.
