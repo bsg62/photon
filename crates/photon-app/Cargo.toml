@@ -50,3 +50,6 @@ image = { version = "0.25.10", default-features = false, features = ["jpeg"] }
 # cannot get from the engine's own API. The same version and features photon-core builds.
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 tempfile = "3.27.0"
+# `tauri::test`'s mock runtime: the one way to send a command through the real
+# `#[tauri::command]` dispatch, which is where a blocking command occupies an async worker.
+tauri = { version = "2.11.5", features = ["test"] }

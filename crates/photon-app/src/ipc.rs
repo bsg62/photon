@@ -13,7 +13,9 @@
 //! mount) and `remove_folder` (which joins a scan thread) can genuinely block for a
 //! while, so they're `async fn`s that hand their blocking body to
 //! `tauri::async_runtime::spawn_blocking`, which *does* run on Tauri's dedicated
-//! blocking pool.
+//! blocking pool. So does every other command that can: a full-size render, an export, a
+//! path the user picked, a long poll. `an_export_holds_no_ipc_worker` shows what the
+//! difference is, through Tauri's own dispatch.
 
 use crate::{commands, engine::Engine, error::AppError};
 use photon_core::library::{
@@ -349,19 +351,33 @@ pub fn remove_item_tag(engine: Eng<'_>, id: i64, tag: String) -> Result<(), AppE
     commands::remove_item_tag(&engine, id, &tag)
 }
 
+/// On the blocking pool like `add_folder`: the call lasts the whole export - every copy, and
+/// every edited photo's render waiting its turn behind the viewer's - and the destination is
+/// canonicalized first, which can hang on a dead mount. Progress still arrives as events
+/// while it runs.
 #[tauri::command(async)]
-pub fn export_items(
+pub async fn export_items(
     engine: Eng<'_>,
     ids: Vec<i64>,
     dest: String,
     apply_edits: bool,
 ) -> Result<commands::ExportReport, AppError> {
-    commands::export_items(&engine, &ids, &dest, apply_edits)
+    let engine = engine.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        commands::export_items(&engine, &ids, &dest, apply_edits)
+    })
+    .await
+    .map_err(AppError::internal)?
 }
 
+/// On the blocking pool for the reason `add_folder` is: it canonicalizes a path the user
+/// picked, which can hang on a dead network mount.
 #[tauri::command(async)]
-pub fn check_export_dest(engine: Eng<'_>, dest: String) -> Result<(), AppError> {
-    commands::check_export_dest(&engine, &dest)
+pub async fn check_export_dest(engine: Eng<'_>, dest: String) -> Result<(), AppError> {
+    let engine = engine.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || commands::check_export_dest(&engine, &dest))
+        .await
+        .map_err(AppError::internal)?
 }
 
 #[tauri::command(async)]
@@ -500,4 +516,96 @@ pub fn video_frame_failed(
     reason: photon_core::thumbs::VideoFailure,
 ) -> Result<(), AppError> {
     commands::video_frame_failed(&engine, id, &key, reason)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::testutil::{fixture, jpeg};
+    use serde_json::json;
+    use std::{sync::mpsc, time::Duration};
+    use tauri::{
+        Manager,
+        ipc::{CallbackFn, InvokeBody},
+        test::{INVOKE_KEY, get_ipc_response, mock_builder, mock_context, noop_assets},
+        webview::InvokeRequest,
+    };
+
+    fn request(cmd: &str, args: serde_json::Value) -> InvokeRequest {
+        InvokeRequest {
+            cmd: cmd.into(),
+            callback: CallbackFn(0),
+            error: CallbackFn(1),
+            url: if cfg!(windows) {
+                "http://tauri.localhost"
+            } else {
+                "tauri://localhost"
+            }
+            .parse()
+            .unwrap(),
+            body: InvokeBody::Json(args),
+            headers: Default::default(),
+            invoke_key: INVOKE_KEY.to_string(),
+        }
+    }
+
+    /// As many exports as the runtime has worker threads, each parked on the one full-size
+    /// render at a time - as a real export of edited photos waits behind the viewer's render.
+    /// Run on a worker, they hold every one of them, and `grid_info` - any command - is not
+    /// dispatched until the exports finish. Sent through Tauri's own dispatch, because the
+    /// difference is in what `#[tauri::command(async)]` does with a plain `fn`.
+    #[test]
+    fn an_export_holds_no_ipc_worker() {
+        let f = fixture(&[("a.jpg", &jpeg(16, 8))]);
+        f.add_photos();
+        let id = f.ids()[0];
+        // An edit, so the export renders and takes `RENDERING`.
+        commands::set_item_edit(&f.engine, id, 1, None).unwrap();
+        let app = mock_builder()
+            .invoke_handler(tauri::generate_handler![export_items, grid_info])
+            .build(mock_context(noop_assets()))
+            .unwrap();
+        app.manage(f.engine.clone());
+        let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .unwrap();
+        let workers = tauri::async_runtime::handle()
+            .inner()
+            .metrics()
+            .num_workers();
+
+        let rendering = crate::protocol::RENDERING.lock();
+        std::thread::scope(|s| {
+            let exports: Vec<_> = (0..workers)
+                .map(|n| {
+                    let dest = f.dir.path().join(format!("out{n}"));
+                    std::fs::create_dir_all(&dest).unwrap();
+                    let webview = &webview;
+                    s.spawn(move || {
+                        let args = json!({ "ids": [id], "dest": dest, "applyEdits": true });
+                        get_ipc_response(webview, request("export_items", args))
+                    })
+                })
+                .collect();
+            // Long enough for every export to be dispatched and reach the lock.
+            std::thread::sleep(Duration::from_millis(300));
+            let (tx, rx) = mpsc::channel();
+            let webview = &webview;
+            s.spawn(move || {
+                let _ = tx.send(get_ipc_response(webview, request("grid_info", json!({}))));
+            });
+            let answered = rx.recv_timeout(Duration::from_secs(5));
+            // Released before asserting, so a failure still lets the exports finish.
+            drop(rendering);
+            assert!(
+                answered.is_ok_and(|r| r.is_ok()),
+                "grid_info waited behind {workers} exports"
+            );
+            for export in exports {
+                let report = export.join().unwrap().unwrap();
+                let report: serde_json::Value = report.deserialize().unwrap();
+                assert_eq!(report["written"], 1, "{report}");
+            }
+        });
+    }
 }
