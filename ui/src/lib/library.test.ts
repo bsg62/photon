@@ -1486,7 +1486,6 @@ describe('LibraryStore', () => {
       });
       await store.setHidden(store.selectedItemIds, true);
       expect(store.selectedItemIds).toEqual([idAt(3001)]);
-      expect(api.gridOffsetOfItem).toHaveBeenCalledWith(idAt(3001));
       expect(store.selected).toBe(10);
     });
 
@@ -1766,6 +1765,21 @@ describe('LibraryStore', () => {
       await store.refresh();
       expect(store.selectedItemIds).toEqual([idAt(3)]);
       expect(store.selected).toBe(3);
+    });
+
+    /** In Duplicates, hiding one of a pair takes its partner out of the view with it, and
+     *  the partner was the photo after it - the landing. Landing on it selected nothing, and
+     *  pressing H again did nothing: the run through the duplicates stopped. */
+    it('a landing that left the view with the hidden photo moves on to the one now there', async () => {
+      const store = await storeOf(10, { view: 'duplicates' });
+      store.selected = 2;
+      vi.mocked(api.setItemsHidden).mockImplementation(async () => {
+        hiddenFrom(10, 2, 3);
+        return 1;
+      });
+      await store.setHidden(store.selectedItemIds, true);
+      expect(store.selectedItemIds).toEqual([idAt(4)]);
+      expect(store.selected).toBe(2);
     });
 
     /** A Ctrl+click during the write adds to a selection still holding the photos being

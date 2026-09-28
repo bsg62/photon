@@ -971,10 +971,9 @@ export class LibraryStore {
       return;
     }
     this.clearSelection();
-    if (target) {
-      this.selectItem(target.offset, target.id);
-      await this.rebindSelection();
-    }
+    // Every landing's offset was read from the rebuilt index; one rebuilt again since is
+    // `rebindSelection`'s, from the id.
+    if (target) this.selectItem(target.offset, target.id);
   }
 
   /** Where `setHidden` should land, read from the loaded pages of the index the user was
@@ -1048,8 +1047,15 @@ export class LibraryStore {
   }
 
   private async findLanding(landing: Landing, lead: number): Promise<{ offset: number; id: number } | null> {
-    // Its offset is `rebindSelection`'s to find.
-    if ('id' in landing) return { offset: lead, id: landing.id };
+    if ('id' in landing) {
+      const at = await api.gridOffsetOfItem(landing.id);
+      if (at !== null) return { offset: at, id: landing.id };
+      // The photo left the view with the hidden ones - in Duplicates, hiding one of a pair
+      // takes its partner out too, and the partner was the photo after it. Landing on it
+      // selected nothing, and the next H had nothing to act on. The photo now at the lead's
+      // offset is the one that followed both.
+      landing = { at: lead };
+    }
     if ('after' in landing && landing.after !== null) {
       const at = await api.gridOffsetOfItem(landing.after);
       if (at === null) return null;
