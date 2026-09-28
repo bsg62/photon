@@ -741,6 +741,11 @@
     }}
     onpointermove={bandMove}
     onpointercancel={abandonBand}
+    onwheel={() => {
+      // A wheel is never a thumb drag, and it fires before the scroll it causes: a scrollbar
+      // release the grid never saw would otherwise have this step mapped as a drag.
+      map.release();
+    }}
     onclickcapture={(e) => {
       if (!swallowClick) return;
       swallowClick = false;
