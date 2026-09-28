@@ -105,7 +105,18 @@ export class LibraryStore {
   }
   /** The grid offset a Shift+click extends from: the last plain click or Ctrl+click. Plain,
    *  not `$state` — nothing renders from it. */
-  private anchor: number | null = null;
+  private get anchor(): number | null {
+    return this.anchorAt;
+  }
+  private set anchor(offset: number | null) {
+    this.anchorAt = offset;
+    this.anchorWrites++;
+  }
+  private anchorAt: number | null = null;
+  /** Bumped by every write of the anchor, so `rebindSelection` can tell an anchor nothing
+   *  has touched since it began from one written again with the same offset - a click on
+   *  the tile now at the lead's old offset names a different photo by the same number. */
+  private anchorWrites = 0;
   /** Bumped on every range fetch — a Shift+click or a Ctrl+A. Two fast Shift+clicks issue overlapping calls
    *  with no ordering guarantee on their fetches - a wide range started first can still be
    *  fetching its later chunks when a narrow range started second finishes first. The rule is
@@ -652,6 +663,7 @@ export class LibraryStore {
     // Captured before the lead moves, so it can be compared against where the lead
     // *was* rather than where it is about to go.
     const before = this.selectedOffset;
+    const anchorWrites = this.anchorWrites;
     const version = this.info.version;
     const at = await api.gridOffsetOfItem(id);
     // A newer refresh has landed while this was in flight; its own rebind is the current one.
@@ -660,7 +672,14 @@ export class LibraryStore {
     // photo after the one this asked about - at the same version. The answer is about a
     // photo that is no longer the lead: acted on, a "gone" cleared the new lead's id, and
     // the next rebuild clamped its offset instead of re-finding it.
-    if (this.selectedId !== id) return;
+    if (this.selectedId !== id) {
+      // But it is still about the anchor, when that agreed with the old lead and nothing
+      // has written it since: a Shift+click moves the lead and leaves the anchor, which
+      // would otherwise keep its pre-rebuild offset and range the next Shift+click from
+      // the wrong photo. Every other move of the lead writes the anchor itself.
+      if (this.anchorWrites === anchorWrites && this.anchor === before) this.anchor = at;
+      return;
+    }
     if (at === null) {
       // The lead's id no longer resolves to an offset in this view, so there is nothing to
       // re-find the anchor by either - the same reasoning as the id === null branch above,

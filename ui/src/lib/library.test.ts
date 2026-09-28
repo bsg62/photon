@@ -2370,6 +2370,55 @@ describe('LibraryStore', () => {
       expect(store.isSelected(idAt(3))).toBe(false);
     });
 
+    /** A photo indexed ahead of the lead: every old offset is one later. The rebuild's
+     *  re-find of `leadId` is held until the test answers it. */
+    async function refreshAroundLead(store: LibraryStore, leadId: number) {
+      vi.mocked(api.gridInfo).mockResolvedValue({ ...(await api.gridInfo()), version: 2, len: 11 });
+      vi.mocked(api.gridRows).mockImplementation(async (offset: number, count: number) => ({
+        version: 2,
+        rows: Array.from({ length: Math.min(count, 11 - offset) }, (_, i) => entryAt(offset + i - 1)),
+      }));
+      const found = deferred<number | null>();
+      vi.mocked(api.gridOffsetOfItem).mockImplementation((id) =>
+        id === leadId ? found.promise : Promise.resolve(null),
+      );
+      const refreshed = store.refresh();
+      await flush();
+      expect(api.gridOffsetOfItem).toHaveBeenCalledWith(leadId);
+      return { found, refreshed };
+    }
+
+    /** A Shift+click while the rebuild re-finds the lead moves the lead and leaves the
+     *  anchor, so the rebind answers about a photo that is no longer the lead and returns
+     *  early - and the anchor, which named the clicked photo by its old offset, was left
+     *  there: the next Shift+click ranged from the photo before the one clicked. */
+    it('a shift+click while the lead is re-found still carries the anchor with it', async () => {
+      const store = await storeOf(10);
+      store.selected = 5;
+      const { found, refreshed } = await refreshAroundLead(store, idAt(5));
+      await store.extendSelection(8);
+      found.resolve(6);
+      await refreshed;
+
+      await store.extendSelection(9);
+      expect([...store.selectedItemIds].sort()).toEqual([idAt(5), idAt(6), idAt(7), idAt(8)]);
+    });
+
+    /** A plain click on the offset the lead had, while it is re-found: the anchor now names
+     *  the photo clicked there, and must not be moved as though it were the old lead. */
+    it('a click at the lead\'s old offset while it is re-found keeps its own anchor', async () => {
+      const store = await storeOf(10);
+      store.selected = 5;
+      const { found, refreshed } = await refreshAroundLead(store, idAt(5));
+      store.selected = 5;
+      expect(store.selectedItemIds).toEqual([idAt(4)]);
+      found.resolve(6);
+      await refreshed;
+
+      await store.extendSelection(9);
+      expect([...store.selectedItemIds].sort()).toEqual([idAt(4), idAt(5), idAt(6), idAt(7), idAt(8)]);
+    });
+
     it('drops a stale anchor when a rebuild had no lead to re-find it by', async () => {
       // Ctrl+click deselecting the last-selected tile nulls the lead but leaves the anchor
       // at that offset (`toggleSelected`). If a rebuild then finds no id to rebind, and
