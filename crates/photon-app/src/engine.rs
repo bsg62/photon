@@ -580,7 +580,15 @@ impl Engine {
     /// is publishing an empty stand-in rather than a grid it built. A failure never replaces
     /// a built grid: anything published before it - a view switch's rebuild, a scan's -
     /// read the library successfully, and an empty grid saying it could not would be false.
-    /// That answers `Overtaken`, since a grid for this state, read later, is on show.
+    /// That refusal comes before the epoch and `seq` checks, so the `Overtaken` it answers
+    /// names only the version on show, which need not be for this rebuild's state; its one
+    /// caller ignores the answer.
+    ///
+    /// Nor does a failure take the `seq` stamp: it read no rows, so it cannot overtake a
+    /// rebuild that did. `build_first_grid` stamps the stand-in after its retries, and a
+    /// view switch made during them is stamped earlier; had the stand-in raised
+    /// `last_published`, the switch's successful read would land as overtaken and the grid
+    /// would go on saying the library could not be read over one that just was.
     fn publish(
         &self,
         index: Arc<GridIndex>,
@@ -603,7 +611,9 @@ impl Engine {
             tracing::debug!("discarding a grid rebuilt from an older read than the one published");
             return Publish::Overtaken(self.grid.read().0);
         }
-        *last_published = rebuild.seq;
+        if failure.is_none() {
+            *last_published = rebuild.seq;
+        }
         let (version, len) = {
             let mut grid = self.grid.write();
             grid.0 += 1;
@@ -3780,6 +3790,37 @@ mod tests {
             (info.version, info.len, info.build_error),
             (version, 1, None)
         );
+        reopened.shutdown();
+    }
+
+    /// The other order. A view switch made while the first build was retrying snapshots
+    /// before the retries give up, so the stand-in is stamped after it; if the stand-in
+    /// publishes first and takes the stamp, the switch's rebuild - which read the library
+    /// successfully - is dropped as overtaken, and "could not read the library" stays up
+    /// over a library that can be read until something else rebuilds.
+    #[test]
+    fn a_failed_first_build_does_not_block_a_grid_read_before_it() {
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a.jpg", &img)]);
+        f.add_photos();
+        let events = Arc::new(crate::events::Recorder::default());
+        let reopened = Engine::open(f.config(), events).unwrap();
+
+        // The switch's rebuild reads the library...
+        let switch = reopened.snapshot();
+        let switch_index = Arc::new(reopened.build_index(&switch.state).unwrap());
+        // ...and the first build gives up, stamped later, and publishes first.
+        let stand_in = reopened.data_snapshot();
+        let empty = GridIndex::build(Vec::new(), stand_in.state.sort.layout(stand_in.state.view));
+        reopened.publish(Arc::new(empty), &stand_in, Some("busy".into()));
+        assert!(crate::commands::grid_info(&reopened).build_error.is_some());
+
+        assert!(matches!(
+            reopened.publish_if_current(switch_index, &switch),
+            Publish::Published(_)
+        ));
+        let info = crate::commands::grid_info(&reopened);
+        assert_eq!((info.len, info.build_error), (1, None));
         reopened.shutdown();
     }
 
