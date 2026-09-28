@@ -51,6 +51,8 @@ export function createScrollMap() {
   let onScrollbar = false;
   /** The virtual position a write the caller is about to make will take the grid to. */
   let pending: number | null = null;
+  /** The DOM position a write from code left, whose scroll event is still to come. */
+  let expected: number | null = null;
 
   const isMapped = () => total > domMax;
   const domHeight = () => Math.min(total, domMax);
@@ -116,6 +118,21 @@ export function createScrollMap() {
       return null;
     },
 
+    /** The DOM position to write for virtual position `v`. Under the cap `v` itself,
+     *  unclamped: the browser clamps it, as it always has. */
+    setVirtual(v: number): number {
+      if (!isMapped()) {
+        pending = null;
+        return v;
+      }
+      return target(v);
+    },
+
+    /** The virtual position for a DOM position read now, ahead of its scroll event. */
+    virtualAt(domTop: number): number {
+      return isMapped() ? clampVirtual(domTop + shift) : domTop;
+    },
+
     /** What the browser took from a write the caller just made, read back from the
      *  viewport: it may have rounded or clamped the value written. */
     wrote(domTop: number): void {
@@ -124,11 +141,13 @@ export function createScrollMap() {
         virtual = domTop;
         shift = 0;
         pending = null;
+        expected = null;
         return;
       }
       if (pending !== null) virtual = pending;
       pending = null;
       shift = virtual - domTop;
+      expected = domTop;
     },
 
     /** A scroll event, with the DOM position it left. */
@@ -141,6 +160,14 @@ export function createScrollMap() {
         lastDomTop = domTop;
         return null;
       }
+      // The event photon's own write caused: already applied by `wrote`. Within a pixel, not
+      // equal - a scaled display reads a fractional position back and reports another.
+      if (expected !== null && Math.abs(domTop - expected) < 1) {
+        expected = null;
+        lastDomTop = domTop;
+        return null;
+      }
+      expected = null;
       const moved = domTop - lastDomTop;
       lastDomTop = domTop;
       if (onScrollbar || Math.abs(moved) > JUMP_VIEWPORTS * viewport) {

@@ -106,3 +106,67 @@ describe('past the cap', () => {
     expect(map.virtual).toBeCloseTo(59.5, 6);
   });
 });
+
+describe('writes from code', () => {
+  it('maps a virtual target to its proportional DOM position and takes it on the write', () => {
+    const map = mapped();
+    expect(map.setVirtual(4_950)).toBe(1_000);
+    map.wrote(1_000);
+    expect(map.virtual).toBe(4_950);
+    expect(map.shift).toBe(3_950);
+  });
+  it('clamps a target past the end', () => {
+    const map = mapped();
+    expect(map.setVirtual(20_000)).toBe(2_000);
+    map.wrote(2_000);
+    expect(map.virtual).toBe(9_900);
+  });
+  it('does not re-apply the scroll event its own write causes', () => {
+    const map = mapped();
+    map.wrote(map.setVirtual(4_950));
+    map.onScroll(1_000);
+    expect(map.virtual).toBe(4_950);
+    map.onScroll(1_010);
+    expect(map.virtual).toBe(4_960);
+  });
+  it('an echo within a pixel of the write is recognised', () => {
+    const map = mapped();
+    map.setVirtual(4_950);
+    map.wrote(1_000.4);
+    map.onScroll(1_000);
+    expect(map.virtual).toBe(4_950);
+  });
+  it('under the cap hands the target to the browser unclamped', () => {
+    const map = createScrollMap();
+    map.resize(2_000, 100, 2_100);
+    expect(map.setVirtual(5_000)).toBe(5_000);
+    map.wrote(1_900);
+    expect(map.virtual).toBe(1_900);
+    expect(map.shift).toBe(0);
+  });
+  it('reads a DOM position ahead of its scroll event through the shift', () => {
+    const map = mapped();
+    map.wrote(map.setVirtual(4_950));
+    expect(map.virtualAt(1_020)).toBe(4_970);
+    const under = createScrollMap();
+    under.resize(2_000, 100, 2_100);
+    expect(under.virtualAt(1_020)).toBe(1_020);
+  });
+});
+
+describe('a press on the scrollbar', () => {
+  it('release ends a press', () => {
+    const map = mapped();
+    map.press(true);
+    map.onScroll(1_000);
+    map.release();
+    map.onScroll(1_050);
+    expect(map.virtual).toBe(5_000);
+  });
+  it('a press elsewhere is not a thumb drag', () => {
+    const map = mapped();
+    map.press(false);
+    map.onScroll(150);
+    expect(map.virtual).toBe(150);
+  });
+});
