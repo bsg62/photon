@@ -243,11 +243,7 @@ fn meta_from(
         // The plausibility check sits inside the search, not after it: a file whose
         // DateTimeOriginal is garbage often still carries a sane DateTime, and that beats
         // falling all the way back to the mtime.
-        .find_map(|&tag| {
-            exif.get_field(tag, exif::In::PRIMARY)
-                .and_then(|f| parse_exif_datetime(&f.value))
-                .filter(|&t| plausible_taken_at(t, now))
-        });
+        .find_map(|&tag| exif_date(&exif, tag).filter(|&t| plausible_taken_at(t, now)));
         meta.camera = read_camera(&exif);
     }
     meta
@@ -358,6 +354,45 @@ fn read_header_from<R: BufRead + Seek>(
     // with no EXIF at all leaves the cursor wherever the attempt gave up.
     let (dims, avif) = crate::decode::dimensions(reader);
     (dims, exif, avif)
+}
+
+/// Every date a photo's EXIF carries, each as naive local seconds the way `taken_at` holds
+/// one, `None` where the tag is absent or unreadable.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ExifDates {
+    /// `DateTimeOriginal`: when the shutter fired.
+    pub original: Option<i64>,
+    /// `DateTimeDigitized`: when the picture became digital - a scan's date, not the
+    /// negative's.
+    pub digitized: Option<i64>,
+    /// `DateTime`: when the file was last written, by the camera or by software saving it.
+    pub modified: Option<i64>,
+}
+
+/// The EXIF dates of one photo, for the viewer's info panel. Read from the file on demand
+/// rather than stored: one header read for the photo on screen, where storing them would
+/// cost a schema bump and an [`EXIF_VERSION`] backfill of the whole library.
+///
+/// Not filtered by [`plausible_taken_at`], unlike `taken_at`: the panel shows what the file
+/// says, and a date refused for filing is exactly what someone asking why a photo sits
+/// under its mtime needs to see.
+pub fn read_exif_dates(path: &Path) -> ExifDates {
+    let (_, exif, _) = read_header(path);
+    let Some(exif) = exif else {
+        return ExifDates::default();
+    };
+    ExifDates {
+        original: exif_date(&exif, exif::Tag::DateTimeOriginal),
+        digitized: exif_date(&exif, exif::Tag::DateTimeDigitized),
+        modified: exif_date(&exif, exif::Tag::DateTime),
+    }
+}
+
+/// One EXIF date tag of the primary image. The Exif sub-IFD's dates belong to it as far as
+/// `In` is concerned, as the camera fields do.
+fn exif_date(exif: &exif::Exif, tag: exif::Tag) -> Option<i64> {
+    exif.get_field(tag, exif::In::PRIMARY)
+        .and_then(|f| parse_exif_datetime(&f.value))
 }
 
 fn parse_exif_datetime(value: &exif::Value) -> Option<i64> {
@@ -692,6 +727,35 @@ mod tests {
         assert_eq!(
             read_image_meta_at(&path, 1_800_000_000).taken_at,
             Some(1_718_454_645)
+        );
+    }
+
+    /// The info panel's dates: all three EXIF dates, each from its own tag, and an
+    /// implausible one reported as written rather than refused - it is the reason the photo
+    /// is filed under its mtime, and the panel is where someone goes to find that out.
+    #[test]
+    fn reads_every_exif_date_as_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let spec = ExifSpec {
+            datetime: Some("4501:01:01 00:00:00"),
+            digitized: Some("2024:06:14 09:00:00"),
+            modified: Some("2024:06:15 12:30:45"),
+            ..ExifSpec::default()
+        };
+        let path = write_file(dir.path(), "a.jpg", &jpeg_with_exif_spec(4, 2, &spec));
+        assert_eq!(
+            read_exif_dates(&path),
+            ExifDates {
+                original: Some(naive_to_unix(4501, 1, 1, 0, 0, 0)),
+                digitized: Some(naive_to_unix(2024, 6, 14, 9, 0, 0)),
+                modified: Some(1_718_454_645),
+            }
+        );
+        let bare = write_file(dir.path(), "b.jpg", &jpeg_bytes(4, 2));
+        assert_eq!(read_exif_dates(&bare), ExifDates::default());
+        assert_eq!(
+            read_exif_dates(&dir.path().join("gone.jpg")),
+            ExifDates::default()
         );
     }
 

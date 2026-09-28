@@ -15,7 +15,7 @@
   import { isCopyPhotoShortcut } from '../lib/copy-photo';
   import { fitMenu } from '../lib/menu-place';
   import { createCopyFeedback } from '../lib/copied.svelte';
-  import { cameraRows, copyGroups, formatDimensions } from '../lib/exif';
+  import { cameraRows, copyGroups, dateRows, formatDimensions } from '../lib/exif';
   import { showCopiesLabel } from '../lib/copies';
   import { ASPECTS, HANDLES, type Handle } from '../lib/crop';
   import { createCropTool } from '../lib/crop-tool.svelte';
@@ -373,6 +373,7 @@
   );
 
   const camera = $derived(item ? cameraRows(item) : []);
+  const dates = $derived(item ? dateRows(item.dates) : []);
   const copies = $derived(item ? copyGroups(item.copies) : []);
   /** The photo as displayed, orientation applied: the coordinates Picasa's faces are in. */
   const oriented = $derived.by(() => {
@@ -1037,6 +1038,13 @@
       {:else}
         <p class="info-muted">No camera data.</p>
       {/if}
+      <h3>Dates</h3>
+      <dl class="dates">
+        {#each dates as row (row.label)}
+          <dt>{row.label}</dt>
+          <dd>{row.value}</dd>
+        {/each}
+      </dl>
       <h3>People</h3>
       {#if item.faces.length}
         <ul class="chips">
@@ -1386,6 +1394,11 @@
   .info h3 { margin: var(--s-3) 0 var(--s-1); color: var(--text-dim); font-size: var(--t-1); font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; }
   .info dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 10px; margin: 0; }
   .info dt { color: var(--text-dim); }
+  /* A merged label ("File created, modified") is wider than any camera label; the date
+     keeps its one line and the label wraps instead, since a time split before "PM" reads
+     as two values. */
+  .info dl.dates { grid-template-columns: minmax(0, 1fr) auto; }
+  .info dl.dates dd { white-space: nowrap; }
   .info dd { margin: 0; overflow-wrap: anywhere; }
   .info-link { padding: 0; border: 0; background: none; color: var(--accent-glass); font: inherit; text-align: left; cursor: pointer; overflow-wrap: anywhere; }
   .info-link:hover { text-decoration: underline; }

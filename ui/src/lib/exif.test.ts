@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import type { ItemCopy } from './api';
-import { cameraName, cameraRows, copyGroups, fieldQuery, formatAperture, formatDimensions, formatExposure, formatFocal, formatIso } from './exif';
+import type { ItemCopy, ItemDates } from './api';
+import { cameraName, cameraRows, copyGroups, dateRows, fieldQuery, formatAperture, formatDimensions, formatExposure, formatFocal, formatIso } from './exif';
 
 describe('cameraName', () => {
   it('does not repeat the make when the model already names it', () => {
@@ -101,5 +101,39 @@ describe('copy groups', () => {
 
   it('has nothing to show for a photo with no copies', () => {
     expect(copyGroups([])).toEqual([]);
+  });
+});
+
+describe('dateRows', () => {
+  // 2024-06-15 12:30 as the camera's wall clock (naive seconds) and as an instant (ms).
+  const noon = 1_718_454_645;
+  const none: ItemDates = { taken: null, digitized: null, edited: null, fileCreatedMs: null, fileModifiedMs: noon * 1000 };
+  const rows = (dates: Partial<ItemDates>, timeZone = 'UTC') => dateRows({ ...none, ...dates }, 'en-GB', timeZone).map((r) => [r.label, r.value]);
+
+  it('lists every date the photo has, the camera first, leaving out the ones it lacks', () => {
+    expect(rows({ taken: noon, edited: noon + 86_400, fileCreatedMs: (noon + 3_600) * 1000 })).toEqual([
+      ['Taken', '15 Jun 2024, 12:30'],
+      ['Edited', '16 Jun 2024, 12:30'],
+      ['File created', '15 Jun 2024, 13:30'],
+      ['File modified', '15 Jun 2024, 12:30'],
+    ]);
+    expect(rows({})).toEqual([['File modified', '15 Jun 2024, 12:30']]);
+  });
+
+  it('shows a date once, naming every tag that carries it', () => {
+    expect(rows({ taken: noon, digitized: noon + 60, edited: noon, fileCreatedMs: noon * 1000 })).toEqual([
+      ['Taken, edited', '15 Jun 2024, 12:30'],
+      ['Digitized', '15 Jun 2024, 12:31'],
+      ['File created, modified', '15 Jun 2024, 12:30'],
+    ]);
+  });
+
+  it("reads the camera's dates as its wall clock and the file's in the machine's zone", () => {
+    // The camera's 12:30 is 12:30 wherever the photo is viewed; the file's instant is
+    // 14:30 in Berlin in June. Equal as numbers, they are different times, so never merged.
+    expect(rows({ taken: noon }, 'Europe/Berlin')).toEqual([
+      ['Taken', '15 Jun 2024, 12:30'],
+      ['File modified', '15 Jun 2024, 14:30'],
+    ]);
   });
 });
