@@ -1070,10 +1070,23 @@ export class LibraryStore {
       // the rebuilt end, and the photo before is the one to land on, as with every landing.
       const [before, at] = (await api.gridRows(landing.at - 1, 2)).rows;
       if (at) return { offset: landing.at, id: at.id };
-      return before ? { offset: landing.at - 1, id: before.id } : null;
+      if (before) return { offset: landing.at - 1, id: before.id };
+      // Two or more past the end: in Duplicates, the lead on the last pair's second photo
+      // takes the landing before it out too. The last photo shown is the one before both.
+      return this.lastPhoto();
     }
     const entry = (await api.gridRows(0, 1)).rows[0];
     return entry ? { offset: 0, id: entry.id } : null;
+  }
+
+  /** The rebuilt index's last photo, from its own length; none when the index is empty or
+   *  moved between the two asks. */
+  private async lastPhoto(): Promise<{ offset: number; id: number } | null> {
+    const info = await api.gridInfo();
+    if (info.len === 0) return null;
+    const rows = await api.gridRows(info.len - 1, 1);
+    const last = rows.version === info.version ? rows.rows[0] : undefined;
+    return last ? { offset: info.len - 1, id: last.id } : null;
   }
 
   /** Tag rule changes. The backend's rebuild announces a library change, which refetches

@@ -1796,6 +1796,23 @@ describe('LibraryStore', () => {
       expect(store.selected).toBe(7);
     });
 
+    /** The mirror at the very end: the lead is the last pair's second photo, so the
+     *  landing - the photo before it - leaves with it, and the lead's offset is two past the
+     *  rebuilt end. Neither the photo there nor the one before it exists; the last photo
+     *  still shown is the one to land on. */
+    it('a landing two past the rebuilt end lands on the last photo still shown', async () => {
+      const store = await storeOf(10, { view: 'duplicates' });
+      store.selected = 9;
+      vi.mocked(api.setItemsHidden).mockImplementation(async () => {
+        vi.mocked(api.gridInfo).mockResolvedValue({ ...(await api.gridInfo()), version: 2, len: 8 });
+        hiddenFrom(10, 8, 9);
+        return 1;
+      });
+      await store.setHidden(store.selectedItemIds, true);
+      expect(store.selectedItemIds).toEqual([idAt(7)]);
+      expect(store.selected).toBe(7);
+    });
+
     /** A Ctrl+click during the write adds to a selection still holding the photos being
      *  hidden. The click is kept, and the lead with it; the hidden photos are not, or "Hide
      *  3 photos" is offered for two the user can no longer see. */
