@@ -1065,9 +1065,15 @@ export class LibraryStore {
       const next = rows.rows[1];
       return next ? { offset: at + 1, id: next.id } : { offset: at, id: landing.after };
     }
-    const offset = 'at' in landing ? landing.at : 0;
-    const entry = (await api.gridRows(offset, 1)).rows[0];
-    return entry ? { offset, id: entry.id } : null;
+    if ('at' in landing && landing.at > 0) {
+      // With the photo before it too: hiding the last photos leaves the lead's offset past
+      // the rebuilt end, and the photo before is the one to land on, as with every landing.
+      const [before, at] = (await api.gridRows(landing.at - 1, 2)).rows;
+      if (at) return { offset: landing.at, id: at.id };
+      return before ? { offset: landing.at - 1, id: before.id } : null;
+    }
+    const entry = (await api.gridRows(0, 1)).rows[0];
+    return entry ? { offset: 0, id: entry.id } : null;
   }
 
   /** Tag rule changes. The backend's rebuild announces a library change, which refetches

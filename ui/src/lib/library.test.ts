@@ -1782,6 +1782,20 @@ describe('LibraryStore', () => {
       expect(store.selected).toBe(2);
     });
 
+    /** The same at the end of the view: the lead's offset is past the rebuilt index's end,
+     *  and the photo before it is the one to land on. */
+    it('a landing past the rebuilt end moves back to the photo before it', async () => {
+      const store = await storeOf(10, { view: 'duplicates' });
+      store.selected = 8;
+      vi.mocked(api.setItemsHidden).mockImplementation(async () => {
+        hiddenFrom(10, 8, 9);
+        return 1;
+      });
+      await store.setHidden(store.selectedItemIds, true);
+      expect(store.selectedItemIds).toEqual([idAt(7)]);
+      expect(store.selected).toBe(7);
+    });
+
     /** A Ctrl+click during the write adds to a selection still holding the photos being
      *  hidden. The click is kept, and the lead with it; the hidden photos are not, or "Hide
      *  3 photos" is offered for two the user can no longer see. */
