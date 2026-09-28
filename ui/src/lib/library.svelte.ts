@@ -656,6 +656,11 @@ export class LibraryStore {
     const at = await api.gridOffsetOfItem(id);
     // A newer refresh has landed while this was in flight; its own rebind is the current one.
     if (version !== this.info.version) return;
+    // The lead moved on while this was in flight - a click, or `setHidden` landing on the
+    // photo after the one this asked about - at the same version. The answer is about a
+    // photo that is no longer the lead: acted on, a "gone" cleared the new lead's id, and
+    // the next rebuild clamped its offset instead of re-finding it.
+    if (this.selectedId !== id) return;
     if (at === null) {
       // The lead's id no longer resolves to an offset in this view, so there is nothing to
       // re-find the anchor by either - the same reasoning as the id === null branch above,

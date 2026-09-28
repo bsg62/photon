@@ -1593,6 +1593,35 @@ describe('LibraryStore', () => {
       expect(store.selected).toBe(2500);
     });
 
+    /** The hide's own rebuild re-finds the hidden lead, and answers "gone" only after the
+     *  hide has moved the lead on. That stale answer cleared the new lead's id, and the next
+     *  rebuild clamped the offset instead of re-finding the photo. */
+    it('a rebind that answers after the lead has moved on leaves the new lead alone', async () => {
+      const store = await storeOf(10);
+      store.selected = 2;
+      const oldLead = deferred<number | null>();
+      vi.mocked(api.setItemsHidden).mockImplementation(async () => {
+        vi.mocked(api.gridInfo).mockResolvedValue({ ...(await api.gridInfo()), version: 2, len: 9 });
+        hiddenFrom(10, 2, 2);
+        const rebuilt = vi.mocked(api.gridOffsetOfItem).getMockImplementation()!;
+        vi.mocked(api.gridOffsetOfItem).mockImplementation((id) => (id === idAt(2) ? oldLead.promise : rebuilt(id)));
+        handlers.libraryChanged({ version: 2, len: 9, dataChanged: true });
+        await flush();
+        return 1;
+      });
+      await store.setHidden(store.selectedItemIds, true);
+      expect(store.selectedItemIds).toEqual([idAt(3)]);
+      oldLead.resolve(null);
+      await flush();
+
+      // A photo indexed ahead of it: photo 3 is now at offset 3, which only an id finds.
+      vi.mocked(api.gridInfo).mockResolvedValue({ ...(await api.gridInfo()), version: 3, len: 10 });
+      vi.mocked(api.gridOffsetOfItem).mockResolvedValue(3);
+      await store.refresh();
+      expect(store.selectedItemIds).toEqual([idAt(3)]);
+      expect(store.selected).toBe(3);
+    });
+
     it('a click made while a hide is out is not overwritten when it lands', async () => {
       const store = await storeOf(10);
       store.selected = 2;
