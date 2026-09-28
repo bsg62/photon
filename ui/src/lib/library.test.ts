@@ -1455,6 +1455,20 @@ describe('LibraryStore', () => {
       expect(store.selectedItemIds).toEqual([idAt(200)]);
     });
 
+    /** What the backend holds once a hide of the photos at `[from, to]` has landed: the
+     *  rest, in the same order, at a new version. */
+    function hiddenFrom(len: number, from: number, to: number) {
+      const kept = Array.from({ length: len }, (_, i) => i).filter((at) => at < from || at > to);
+      vi.mocked(api.gridRows).mockImplementation(async (offset: number, count: number) => ({
+        version: 2,
+        rows: kept.slice(offset, offset + count).map(entryAt),
+      }));
+      vi.mocked(api.gridOffsetOfItem).mockImplementation(async (id: number) => {
+        const at = kept.indexOf(id - 100);
+        return at < 0 ? null : at;
+      });
+    }
+
     it('hiding a band whose middle pages were let go lands after the band, not before it', async () => {
       // A band from 10 to 3000, autoscrolled: the window is at the far end, so every page
       // between the lead's own and the window's has been evicted. The photo to move to is
@@ -1466,11 +1480,130 @@ describe('LibraryStore', () => {
       expect(store.selected).toBe(10);
       expect(store.entry(1000)).toBeUndefined();
 
-      vi.mocked(api.setItemsHidden).mockResolvedValue(2991);
-      vi.mocked(api.gridOffsetOfItem).mockResolvedValue(10);
+      vi.mocked(api.setItemsHidden).mockImplementation(async () => {
+        hiddenFrom(5000, 10, 3000);
+        return 2991;
+      });
       await store.setHidden(store.selectedItemIds, true);
       expect(store.selectedItemIds).toEqual([idAt(3001)]);
       expect(api.gridOffsetOfItem).toHaveBeenCalledWith(idAt(3001));
+      expect(store.selected).toBe(10);
+    });
+
+    /** Ctrl+A over a big view, then H. Finding the photo after the selection walked the
+     *  old index first, a thousand rows a round trip - some 300 of them at 300,000 photos -
+     *  before the write was even sent, so H did nothing for seconds. */
+    it('a select-all hide sends the write without first fetching every page', async () => {
+      const store = await storeOf(5000, { view: 'starred' });
+      store.selected = 0;
+      await store.selectAll();
+      expect(store.selectionCount).toBe(5000);
+
+      vi.mocked(api.gridRows).mockClear();
+      let fetchedFirst = -1;
+      vi.mocked(api.setItemsHidden).mockImplementation(async () => {
+        fetchedFirst = vi.mocked(api.gridRows).mock.calls.length;
+        hiddenFrom(5000, 0, 4999);
+        return 5000;
+      });
+      await store.setHidden(store.selectedItemIds, true);
+      expect(fetchedFirst).toBe(0);
+      // Nothing stays in the view, so there is nothing to move to.
+      expect(store.selectionCount).toBe(0);
+      expect(store.selected).toBe(null);
+    });
+
+    /** A band begun from a lead, so the lead's page is kept while the window autoscrolls
+     *  away: the photo before the band is loaded, the pages after the lead's are not. */
+    async function bandFromLead(first: number, last: number) {
+      const store = await storeOf(5000);
+      store.selected = first;
+      store.beginBand(false);
+      await store.ensure(2950, 3050);
+      await store.endBand([[first, last]]);
+      expect(store.entry(first - 1)?.id).toBe(idAt(first - 1));
+      expect(store.entry(first + 2 * 200)).toBeUndefined();
+      return store;
+    }
+
+    it('hiding a band lands on the photo after the one before it, in the rebuilt index', async () => {
+      const store = await bandFromLead(10, 3000);
+      vi.mocked(api.setItemsHidden).mockImplementation(async () => {
+        hiddenFrom(5000, 10, 3000);
+        return 2991;
+      });
+      await store.setHidden(store.selectedItemIds, true);
+      expect(store.selectedItemIds).toEqual([idAt(3001)]);
+      expect(store.selected).toBe(10);
+    });
+
+    it('hiding a band that runs to the end lands on the photo before it', async () => {
+      const store = await bandFromLead(10, 4999);
+      vi.mocked(api.setItemsHidden).mockImplementation(async () => {
+        hiddenFrom(5000, 10, 4999);
+        return 4990;
+      });
+      await store.setHidden(store.selectedItemIds, true);
+      expect(store.selectedItemIds).toEqual([idAt(9)]);
+      expect(store.selected).toBe(9);
+    });
+
+    it('lands nowhere when the index moves between finding the photo before and its next', async () => {
+      const store = await bandFromLead(10, 3000);
+      vi.mocked(api.setItemsHidden).mockImplementation(async () => {
+        hiddenFrom(5000, 10, 3000);
+        // A scan indexes a photo ahead of 9 between the two asks: offset 9 now holds 8.
+        vi.mocked(api.gridOffsetOfItem).mockResolvedValueOnce(10);
+        return 2991;
+      });
+      await store.setHidden(store.selectedItemIds, true);
+      expect(store.selectionCount).toBe(0);
+    });
+
+    it('hiding a band that starts the view lands on the first photo after it', async () => {
+      // Nothing before the lead stays and the pages after it were let go: the rebuilt
+      // index's first photo is the first one after the band.
+      const store = await storeOf(5000);
+      store.beginBand(false);
+      await store.ensure(2950, 3050);
+      await store.endBand([[0, 3000]]);
+
+      vi.mocked(api.setItemsHidden).mockImplementation(async () => {
+        hiddenFrom(5000, 0, 3000);
+        return 3001;
+      });
+      await store.setHidden(store.selectedItemIds, true);
+      expect(store.selectedItemIds).toEqual([idAt(3001)]);
+      expect(store.selected).toBe(0);
+    });
+
+    it('hiding a lead whose page never loaded lands on the photo now at its offset', async () => {
+      // "Locate in photon" selects by id, far from anything the grid has fetched.
+      const store = await storeOf(5000);
+      store.selectItem(2500, idAt(2500));
+      await store.ensure(4000, 4050);
+      expect(store.entry(2501)).toBeUndefined();
+
+      vi.mocked(api.setItemsHidden).mockImplementation(async () => {
+        hiddenFrom(5000, 2500, 2500);
+        return 1;
+      });
+      await store.setHidden(store.selectedItemIds, true);
+      expect(store.selectedItemIds).toEqual([idAt(2501)]);
+      expect(store.selected).toBe(2500);
+    });
+
+    it('a click made while a hide is out is not overwritten when it lands', async () => {
+      const store = await storeOf(10);
+      store.selected = 2;
+      vi.mocked(api.setItemsHidden).mockImplementation(async () => {
+        store.selected = 7;
+        hiddenFrom(10, 2, 2);
+        return 1;
+      });
+      await store.setHidden(store.selectedItemIds, true);
+      expect(store.selectedItemIds).toEqual([idAt(7)]);
+      expect(store.selected).toBe(7);
     });
 
     it('a band autoscrolled far from where it began still leads with its first photo', async () => {
