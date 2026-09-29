@@ -359,7 +359,8 @@ pub struct PassOutcome {
 ///
 /// The hash comes from the **cached 256px grid thumbnail**, not from the photo: the
 /// thumbnail is the reduced image this hash wants, it is already on disk, and decoding it
-/// costs about a millisecond against the ~175ms a source decode costs. That is also what
+/// (`ThumbCache::read`) costs about a tenth of a millisecond against the ~175ms a source
+/// decode costs. That is also what
 /// makes an existing library fill in - the thumbnail renderer skips a photo whose thumbnail
 /// is already cached, so a hash computed there would never have been computed at all for
 /// any photo indexed before this feature existed, which is every photo in every library.
@@ -396,8 +397,7 @@ pub fn update(
         if cancel.load(Ordering::Relaxed) {
             break;
         }
-        let path = cache.path_for(candidate.thumb_key, ThumbSize::Grid);
-        match image::open(&path) {
+        match cache.read(candidate.thumb_key, ThumbSize::Grid) {
             // False when the row moved on while the thumbnail was being read - the file
             // rewritten, or the user editing the photo, both of which make this the hash of
             // a picture the row no longer shows. Not a failure: the write is refused, the
@@ -488,7 +488,7 @@ pub fn update(
 }
 
 fn read_reduction(cache: &ThumbCache, key: u64) -> Option<Reduction> {
-    match image::open(cache.path_for(key, ThumbSize::Grid)) {
+    match cache.read(key, ThumbSize::Grid) {
         Ok(img) => Some(reduce(&img)),
         Err(err) => {
             tracing::debug!(key, %err, "could not read a thumbnail to confirm a look-alike");
