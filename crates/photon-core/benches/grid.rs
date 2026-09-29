@@ -1,6 +1,7 @@
 use criterion::{Criterion, criterion_group, criterion_main};
 use photon_core::{
     grid::{GridIndex, GridView, Layout},
+    keywords::keywords_in,
     library::{HashCandidate, Library, NewItem},
     media::MediaKind,
 };
@@ -263,5 +264,42 @@ fn bench_search(c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, bench_grid, bench_search);
+/// `len` bytes that look like compressed image data: no structure, and invalid UTF-8
+/// throughout, which is what surrounds an XMP packet in a real file.
+fn noise(len: usize, seed: &mut u32) -> Vec<u8> {
+    (0..len)
+        .map(|_| {
+            *seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (*seed >> 24) as u8
+        })
+        .collect()
+}
+
+/// The keyword read the scanner makes for every new or changed photo, over a full
+/// `xmp::MAX_PREFIX`: once with no packet (most camera originals), and once with a packet
+/// near the start followed by image data (phones and editors). With no packet the whole
+/// prefix is searched for the start marker and nothing is found, which is where the search
+/// itself is the cost.
+fn bench_keywords(c: &mut Criterion) {
+    let mut seed = 7;
+    let without = noise(photon_core::xmp::MAX_PREFIX, &mut seed);
+    let mut with = noise(2_000, &mut seed);
+    with.extend_from_slice(
+        br#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF><rdf:Description><dc:subject><rdf:Bag><rdf:li>beach</rdf:li><rdf:li>summer</rdf:li></rdf:Bag></dc:subject></rdf:Description></rdf:RDF></x:xmpmeta>"#,
+    );
+    with.extend(noise(photon_core::xmp::MAX_PREFIX - with.len(), &mut seed));
+    // The same honesty check as the search benches: each input must be the case it is
+    // named for.
+    assert_eq!(keywords_in(&with), ["beach", "summer"]);
+    assert!(keywords_in(&without).is_empty());
+
+    c.bench_function("keywords_256k_without_xmp", |b| {
+        b.iter(|| black_box(keywords_in(black_box(&without))))
+    });
+    c.bench_function("keywords_256k_with_xmp", |b| {
+        b.iter(|| black_box(keywords_in(black_box(&with))))
+    });
+}
+
+criterion_group!(benches, bench_grid, bench_search, bench_keywords);
 criterion_main!(benches);

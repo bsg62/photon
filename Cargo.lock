@@ -3251,6 +3251,7 @@ dependencies = [
  "jpeg-encoder",
  "kamadak-exif",
  "libc",
+ "memchr",
  "notify",
  "notify-debouncer-full",
  "parking_lot",
