@@ -130,7 +130,8 @@ library could not be read instead of "No photos yet"; it is never published over
 else built meanwhile, and the next successful publish clears it.
 
 `LibraryChanged::data_changed` tells the UI whether to refetch the sidebar's collections
-(albums, people, tags - the tag counts alone are ~240ms at 300k photos). Every `refresh_grid`
+(albums, people, tags - the tag counts alone are ~220ms at 300k photos carrying three keywords
+each; `tag_counts_100k` measures a third of that library). Every `refresh_grid`
 marks the engine-wide `data_dirty` before it snapshots; the view setters' rebuilds
 (`rebuild_or_restore`) do not, and neither does `refresh_grid_derived`, the rebuild after a
 stored poster frame and after the hashing passes in `hash_after_scan` - a thumbnail state, a

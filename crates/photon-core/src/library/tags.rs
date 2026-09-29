@@ -9,6 +9,7 @@ use super::Library;
 use crate::{Error, Result};
 use rusqlite::{OptionalExtension, params};
 use serde::Serialize;
+use std::collections::HashMap;
 
 /// One change the user made. `target` is the new name, or `None` for a removed tag.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -89,6 +90,17 @@ pub(super) const TAG_FILTER: &str = "AND i.id IN (
           WHERE added = 1 AND tag = ?1 AND NOT EXISTS (SELECT 1 FROM tag_rules WHERE tag = ?1)
      )";
 
+/// Every live photo, for `tags_with_counts`. Only the rowid, so a partial index on
+/// `missing_since IS NULL` answers it without reading a single row. Selecting `hidden` here
+/// too, to save `HIDDEN_IDS` its own scan, reads every photo row instead and doubles the
+/// counts' cost (`tag_counts_100k`); no plan test can catch that, because the plan reads
+/// the same either way.
+const LIVE_IDS: &str = "SELECT id FROM items WHERE missing_since IS NULL";
+
+/// Every live hidden photo, for `tags_with_counts`: `items_hidden`'s own predicate, so it is
+/// that index's rows and nothing else.
+const HIDDEN_IDS: &str = "SELECT id FROM items WHERE hidden = 1 AND missing_since IS NULL";
+
 impl Library {
     /// One photo's tags as the user now names them: the file's own keywords in the order
     /// the file lists them, followed by the tags the user added, each once.
@@ -107,29 +119,65 @@ impl Library {
         Ok(tags)
     }
 
-    /// Every tag carried by at least one live photo, with its photo count. `DISTINCT`
-    /// because a photo carrying both halves of a merge has two rows under one name.
-    /// Sorted in Rust: the ordering is case-insensitive and `lower()` is ASCII-only
+    /// Every tag carried by at least one live photo, with its photo count. A photo is
+    /// counted once per name, because one carrying both halves of a merge has two rows under
+    /// it. Sorted in Rust: the ordering is case-insensitive and `lower()` is ASCII-only
     /// without ICU.
+    ///
+    /// Counted in Rust rather than by `GROUP BY` with two `count(DISTINCT …)`. That form
+    /// sorted every effective keyword row by its text, twice over for the distinct counts,
+    /// and read `items` by rowid once per row for `hidden` and `missing_since`: ~520 ms at
+    /// 300k photos with three keywords each, of which producing the rows was ~145. Here the
+    /// live photos and the hidden ones are two scans of partial indexes (~10 ms), and each
+    /// row is one hash lookup: ~220 ms. See `tag_counts_100k`.
+    ///
+    /// The hidden set is read as `hidden = 1`, where the query before tested `hidden = 0`:
+    /// the same split, since the column only ever holds 0 or 1 - every writer binds a
+    /// `bool`, and `items_hidden` relies on it too.
     pub fn tags_with_counts(&self) -> Result<Vec<TagCount>> {
         let conn = self.reader()?;
-        let mut stmt = conn.prepare(&format!(
-            "SELECT e.tag,
-                    count(DISTINCT CASE WHEN i.hidden = 0 THEN e.item_id END),
-                    count(DISTINCT e.item_id)
-             FROM ({EFFECTIVE_TAGS}) e JOIN items i ON i.id = e.item_id
-             WHERE i.missing_since IS NULL
-             GROUP BY e.tag"
-        ))?;
-        let mut tags = stmt
-            .query_map([], |r| {
-                Ok(TagCount {
-                    tag: r.get(0)?,
-                    count: r.get(1)?,
-                    total: r.get(2)?,
-                })
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
+        // One snapshot for all three reads, as the single statement this replaced had: a
+        // photo hidden or tagged between two of them would be counted against a state it
+        // was never in.
+        let tx = conn.unchecked_transaction()?;
+        // Every live photo, mapped to whether it is hidden.
+        let mut hidden: HashMap<i64, bool> = HashMap::new();
+        for id in tx.prepare(LIVE_IDS)?.query_map([], |r| r.get(0))? {
+            hidden.insert(id?, false);
+        }
+        for id in tx.prepare(HIDDEN_IDS)?.query_map([], |r| r.get(0))? {
+            hidden.insert(id?, true);
+        }
+        let mut photos: HashMap<String, Vec<i64>> = HashMap::new();
+        let mut stmt = tx.prepare(&format!("SELECT item_id, tag FROM ({EFFECTIVE_TAGS})"))?;
+        let mut rows = stmt.query([])?;
+        while let Some(r) = rows.next()? {
+            let id: i64 = r.get(0)?;
+            if !hidden.contains_key(&id) {
+                continue;
+            }
+            // Borrowed, so a name is copied once rather than once per row.
+            let tag = r.get_ref(1)?.as_str().map_err(rusqlite::Error::from)?;
+            match photos.get_mut(tag) {
+                Some(ids) => ids.push(id),
+                None => {
+                    photos.insert(tag.to_owned(), vec![id]);
+                }
+            }
+        }
+        let mut tags: Vec<TagCount> = photos
+            .into_iter()
+            .map(|(tag, mut ids)| {
+                ids.sort_unstable();
+                ids.dedup();
+                let shown = ids.iter().filter(|id| !hidden[*id]).count();
+                TagCount {
+                    tag,
+                    count: shown as i64,
+                    total: ids.len() as i64,
+                }
+            })
+            .collect();
         tags.sort_by_cached_key(|t| (t.tag.to_lowercase(), t.tag.clone()));
         Ok(tags)
     }
@@ -890,5 +938,31 @@ mod tests {
 
         assert_eq!(lib.tag_rules().unwrap(), [rule("beach", None)]);
         assert!(lib.item_tags(ids[0]).unwrap().is_empty());
+    }
+
+    /// A missing photo counts for no tag, not even in the total, and a hidden one counts in
+    /// the total but not in what the sidebar shows. `sun` is carried only by the hidden
+    /// photo, so it stays listed with nothing to show.
+    #[test]
+    fn the_counts_leave_out_missing_photos_and_set_hidden_ones_apart() {
+        let (_dir, lib, ids) = library_with(&[&["beach"], &["beach", "sun"], &["beach"]]);
+        lib.set_hidden(&[ids[1]], true).unwrap();
+        lib.mark_missing(&[ids[2]], 1).unwrap();
+
+        assert_eq!(
+            lib.tags_with_counts().unwrap(),
+            [
+                TagCount {
+                    tag: "beach".into(),
+                    count: 1,
+                    total: 2
+                },
+                TagCount {
+                    tag: "sun".into(),
+                    count: 0,
+                    total: 1
+                },
+            ]
+        );
     }
 }

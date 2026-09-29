@@ -4984,7 +4984,8 @@ mod tests {
     /// A view switch, a sort change and a search keystroke rebuild the grid and change no
     /// data, so their events must not send the UI to refetch the sidebar's collections:
     /// that refetch is the slowest thing a rebuild triggers (the tag list alone is
-    /// ~240ms at 300k photos), and every keystroke of a search would pay for it.
+    /// ~220ms at 300k photos with three keywords each), and every keystroke of a search
+    /// would pay for it.
     #[test]
     fn a_view_change_does_not_announce_a_data_change() {
         use photon_core::grid::GridView;

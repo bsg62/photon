@@ -264,6 +264,79 @@ fn bench_search(c: &mut Criterion) {
     });
 }
 
+/// A library shaped for the sidebar's tag counts: 1,000 folders × 100 photos, every photo
+/// carrying three keywords out of 300, with each thing `EFFECTIVE_TAGS` and the counts treat
+/// specially present - hidden and missing photos, tags added and removed on single photos,
+/// and a rename, a merge and a hidden tag among the rules. The search library tags a third
+/// of its photos from six names, which is not the case the counts are slow in.
+fn tag_library(dir: &Path) -> Library {
+    let lib = Library::open(&dir.join("tags.db")).unwrap();
+    let root = dir.join("photos");
+    std::fs::create_dir_all(&root).unwrap();
+    let watched = lib.add_watched_folder(&root, &[]).unwrap();
+    let root_id = lib
+        .upsert_folder(watched.id, None, root.to_str().unwrap(), 1)
+        .unwrap();
+    let keyword = |n: usize, k: usize| format!("tag{:03}", (n * 7 + k * 101) % 300);
+    let mut items = Vec::with_capacity(100_000);
+    for f in 0..1_000 {
+        let folder_path = root.join(format!("folder-{f:04}"));
+        let folder_id = lib
+            .upsert_folder(watched.id, Some(root_id), folder_path.to_str().unwrap(), 1)
+            .unwrap();
+        for i in 0..100 {
+            let n = f * 100 + i;
+            let name = format!("IMG_{n:06}.jpg");
+            items.push(NewItem {
+                folder_id,
+                path: folder_path.join(&name).to_str().unwrap().to_string(),
+                file_name: name,
+                kind: MediaKind::Image,
+                size: file_size(n),
+                mtime_ms: 1_700_000_000_000 + n as i64,
+                width: 4000,
+                height: 3000,
+                orientation: 1,
+                taken_at: 1_000_000_000 + n as i64 * 600,
+                rating: None,
+                camera: photon_core::metadata::CameraMeta::default(),
+                tags: (0..3).map(|k| keyword(n, k)).collect(),
+                caption: None,
+                duration_ms: None,
+            });
+        }
+    }
+    let ids = lib.insert_items(&items).unwrap();
+    let every = |step: usize, from: usize| -> Vec<i64> {
+        ids.iter().copied().skip(from).step_by(step).collect()
+    };
+    lib.set_hidden(&every(50, 3), true).unwrap();
+    lib.mark_missing(&every(100, 7), 1).unwrap();
+    lib.add_items_tag(&every(100, 11), "added by hand").unwrap();
+    lib.add_items_tag(&every(200, 13), "tag010").unwrap();
+    for (n, id) in ids.iter().enumerate().skip(17).step_by(200) {
+        lib.remove_item_tag(*id, &keyword(n, 1)).unwrap();
+    }
+    lib.rename_tag("tag001", "renamed").unwrap();
+    lib.rename_tag("tag002", "tag003").unwrap(); // a merge: some photos carry both
+    lib.hide_tag("tag004").unwrap();
+    lib
+}
+
+fn bench_tags(c: &mut Criterion) {
+    let dir = tempfile::tempdir().unwrap();
+    let lib = tag_library(dir.path());
+    // Checked, so the library is the one described: the merge is in force and the hidden
+    // photos make some tag's shown count differ from its total.
+    let tags = lib.tags_with_counts().unwrap();
+    assert!(tags.iter().any(|t| t.tag == "renamed"));
+    assert!(!tags.iter().any(|t| t.tag == "tag002"));
+    assert!(tags.iter().any(|t| t.count < t.total));
+    c.bench_function("tag_counts_100k", |b| {
+        b.iter(|| black_box(lib.tags_with_counts().unwrap()))
+    });
+}
+
 /// `len` bytes that look like compressed image data: no structure, and invalid UTF-8
 /// throughout, which is what surrounds an XMP packet in a real file.
 fn noise(len: usize, seed: &mut u32) -> Vec<u8> {
@@ -301,5 +374,11 @@ fn bench_keywords(c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, bench_grid, bench_search, bench_keywords);
+criterion_group!(
+    benches,
+    bench_grid,
+    bench_search,
+    bench_tags,
+    bench_keywords
+);
 criterion_main!(benches);
