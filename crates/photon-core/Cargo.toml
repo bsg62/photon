@@ -16,6 +16,7 @@ image = { version = "0.25.10", default-features = false, features = ["jpeg", "pn
 jiff = "0.2.35"
 kamadak-exif = "0.6.1"
 libc = "0.2"
+memchr = "2.8.3"
 notify = "8.2.0"
 notify-debouncer-full = "0.7.0"
 parking_lot = "0.12.5"

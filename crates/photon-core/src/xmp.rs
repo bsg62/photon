@@ -57,8 +57,12 @@ pub fn packet_in(prefix: &[u8]) -> Option<String> {
     Some(String::from_utf8_lossy(&packet[..end]).into_owned())
 }
 
+/// `memmem` rather than a byte-at-a-time window compare, because most camera originals
+/// carry no packet: the scanner then searches the whole prefix for a start marker that is
+/// not there, for every new photo. The vectorised search does that in ~5 µs rather than
+/// ~66 (`keywords_256k_without_xmp`), and finds the same first match.
 fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack.windows(needle.len()).position(|w| w == needle)
+    memchr::memmem::find(haystack, needle)
 }
 
 /// The keywords in an XMP packet: every `rdf:li` inside `dc:subject`, in document order,
