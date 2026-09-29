@@ -317,9 +317,11 @@ CLAUDE.md's note on fixture cost. For example, 3300x40 decodes at 4/8 for a 1600
 
   Any of them that moves is a finding to explain, not a threshold to loosen.
 
-**Benchmark.** `benches/render.rs`'s `thumbnail_24mp` group gains `preview_decode` beside
-`decode` and `decode_oriented`. The CI gate in CLAUDE.md compiles only the grid bench, so the
-PR also runs `cargo bench -p photon-core --bench render --no-run` once.
+**Benchmark.** `benches/render.rs`'s `thumbnail_24mp` group gains `preview_zune` (zune's
+decode then `fit_within`) and `preview_turbo` (`decode_oriented` at orientation 1, which takes
+the fast path). `preview_decode` is `pub(crate)`, out of a bench's reach, so the two paths are
+compared through public functions. The CI gate in CLAUDE.md compiles only the grid bench, so
+the PR also runs `cargo bench -p photon-core --bench render --no-run` once.
 
 **Probes, per CLAUDE.md.** Each new assertion is shown to fail with its rule removed:
 - the warning callback made to return instead of unwinding (the truncated file then decodes
