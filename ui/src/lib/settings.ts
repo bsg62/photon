@@ -1,4 +1,4 @@
-import type { ScanProgressEvent, WatchedFolder } from './api';
+import type { MemoryUsage, ScanProgressEvent, WatchedFolder } from './api';
 
 export type SettingsSection = 'folders' | 'appearance' | 'tags' | 'slideshow' | 'duplicates' | 'about';
 
@@ -26,4 +26,20 @@ export function folderStatus(
 
 export function photoCountLabel(count: number): string {
   return count === 1 ? '1 photo' : `${count.toLocaleString()} photos`;
+}
+
+/** How often the About section re-reads the figure while it is open. */
+export const MEMORY_POLL_MS = 2000;
+
+/** Whole megabytes below a gigabyte, GB with one decimal above; binary units, as `formatSize`. */
+export function memoryAmount(bytes: number): string {
+  if (bytes < 1_073_741_824) return `${Math.round(bytes / 1_048_576)} MB`;
+  return `${(bytes / 1_073_741_824).toFixed(1)} GB`;
+}
+
+/** What the figure covers. On macOS it is photon's process alone, and saying so is the point:
+ *  the web view is often the larger part, and a bare number would read as the whole. */
+export function memoryScope(usage: MemoryUsage): string {
+  if (!usage.includesWebview) return "photon's own process; the web view's processes are not included on macOS";
+  return `photon and its web view, ${usage.processes} processes`;
 }

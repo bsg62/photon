@@ -478,6 +478,11 @@ pub fn app_info(engine: Eng<'_>) -> commands::AppInfo {
     commands::app_info(&engine)
 }
 
+#[tauri::command(async)]
+pub fn memory_usage() -> Result<commands::MemoryUsage, AppError> {
+    commands::memory_usage()
+}
+
 /// The likeliest of all to meet a dead mount: Settings offers it for a root that is offline.
 #[tauri::command(async)]
 pub async fn reveal_watched(engine: Eng<'_>, watched_id: i64) -> Result<(), AppError> {

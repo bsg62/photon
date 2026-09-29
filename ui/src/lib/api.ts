@@ -16,6 +16,9 @@ export interface FolderList { watched: WatchedFolder[]; folders: Folder[] }
 /** A root with no photos is absent from the list. */
 export interface WatchedFolderStats { watchedId: number; photoCount: number }
 export interface AppInfo { version: string; libraryPath: string; licence: string }
+/** `includesWebview` is false on macOS, where the web view's processes cannot be told apart
+ *  from other apps' and `bytes` is photon's own process alone. */
+export interface MemoryUsage { bytes: number; processes: number; includesWebview: boolean }
 /** Mirrors `grid::Section`: a run the grid lays out. `folderId` is null for a flat view's one
  *  run, which spans many folders and is drawn with no header. `takenAtMin` is in SECONDS. */
 export interface Section { folderId: number | null; offset: number; count: number; takenAtMin: number }
@@ -227,6 +230,7 @@ export const api = {
   rescanFolder: (watchedId: number) => invoke<void>('rescan_folder', { watchedId }),
   watchedFolderStats: () => invoke<WatchedFolderStats[]>('watched_folder_stats'),
   appInfo: () => invoke<AppInfo>('app_info'),
+  memoryUsage: () => invoke<MemoryUsage>('memory_usage'),
   /** Reveals a watched root itself; unlike `revealFolder` it works for a root that has no
    *  folder row yet (offline, or never scanned). */
   revealWatched: (watchedId: number) => invoke<void>('reveal_watched', { watchedId }),

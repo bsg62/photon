@@ -273,6 +273,7 @@ pub fn run() {
             ipc::reveal_folder,
             ipc::watched_folder_stats,
             ipc::app_info,
+            ipc::memory_usage,
             ipc::reveal_watched,
             ipc::reveal_library,
             ipc::media_base,
