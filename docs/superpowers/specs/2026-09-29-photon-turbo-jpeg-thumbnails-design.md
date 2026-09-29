@@ -198,8 +198,11 @@ back, which is how the smoke import counts fall-backs (see Testing).
   features: `unwinding`, `nasm_simd` and `parallel`, where `parallel` only parallelises the C
   build. A comment beside it says why `unwinding` must stay.
 - **nasm in CI.** In `.github/workflows/ci.yml`, the `rust` job installs nasm on all three
-  runners with `ilammy/setup-nasm`, pinned to a commit SHA. It then runs `nasm -v` as its own
-  step, so a missing nasm fails the job by name instead of silently producing a plain-C build.
+  runners with the runner's own package manager: `apt-get` on Linux, Homebrew on macOS,
+  Chocolatey on Windows (adding `C:\Program Files\NASM` to the PATH). It then runs `nasm -v`
+  as its own step, so a missing nasm fails the job by name instead of silently producing a
+  plain-C build. There is no third-party action: nasm's official macOS binaries are x86_64,
+  and Homebrew's is native to the arm64 runners.
 - **nasm in releases.** `.github/workflows/release.yml` does the same in the Linux, Windows
   and macOS jobs.
   - The macOS matrix cross-compiles `x86_64-apple-darwin` on an arm64 runner. nasm assembles
