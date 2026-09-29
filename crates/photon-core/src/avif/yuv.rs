@@ -2,7 +2,7 @@
 //! feeds thumbnails and edits, and the viewer shows the webview's own decode of the file.
 
 use super::av1::Planes;
-use image::{Rgb, RgbImage, Rgba, RgbaImage};
+use image::{RgbImage, Rgba, RgbaImage};
 
 /// H.273 matrix coefficients 0: the planes are G, B, R rather than luma and chroma.
 pub(super) const IDENTITY: u16 = 0;
@@ -57,30 +57,78 @@ fn to8(c: f32) -> u8 {
     (c.clamp(0.0, 1.0) * 255.0).round() as u8
 }
 
+/// Converts row by row, into one buffer.
+///
+/// This was one `RgbImage::from_fn` closure per pixel, which asked per pixel whether the
+/// picture was monochrome and which matrix it used, and worked out the chroma terms again for
+/// every pixel sharing a sample - four times over at 4:2:0. Deciding the case once per
+/// picture and the chroma terms once per chroma row took a 12 MP AVIF's conversion from
+/// ~42 ms to ~25 ms, of ~290 ms for the whole decode.
+///
+/// The output is unchanged to the byte, which is why each pixel's arithmetic below is
+/// spelled exactly as it was, operation for operation: a chroma term is the same `f32`
+/// whether it is computed per pixel or once for its sample, but `luma + a * b` regrouped,
+/// or a division turned into a multiplication by the reciprocal, can round the other way
+/// and move a colour level. `matches_the_per_pixel_conversion` holds it to that.
 pub(super) fn to_rgb(p: &Planes, matrix: u16, full_range: bool) -> RgbImage {
     let levels = Levels::new(p.depth, full_range);
-    let (kr, kb) = weights(matrix);
-    let kg = 1.0 - kr - kb;
-    let chroma_width = p.chroma_width();
-    RgbImage::from_fn(p.width as u32, p.height as u32, |x, y| {
-        let (x, y) = (x as usize, y as usize);
-        let luma = levels.luma(p.y[y * p.width + x]);
+    let (width, height) = (p.width, p.height);
+    let mut out = vec![0u8; width * height * 3];
+    if width > 0 {
+        let rows = out.chunks_exact_mut(width * 3).zip(p.y.chunks_exact(width));
         if p.mono {
-            let g = to8(luma);
-            return Rgb([g, g, g]);
-        }
-        let i = (y >> p.shift.1) * chroma_width + (x >> p.shift.0);
-        let (u, v) = (p.u[i], p.v[i]);
-        let [r, g, b] = if matrix == IDENTITY {
-            [levels.luma(v), luma, levels.luma(u)]
+            for (row, luma) in rows {
+                for (px, &s) in row.as_chunks_mut::<3>().0.iter_mut().zip(luma) {
+                    let g = to8(levels.luma(s));
+                    *px = [g, g, g];
+                }
+            }
         } else {
-            let (cb, cr) = (levels.chroma(u), levels.chroma(v));
-            let r = luma + 2.0 * (1.0 - kr) * cr;
-            let b = luma + 2.0 * (1.0 - kb) * cb;
-            [r, (luma - kr * r - kb * b) / kg, b]
-        };
-        Rgb([to8(r), to8(g), to8(b)])
-    })
+            let (kr, kb) = weights(matrix);
+            let kg = 1.0 - kr - kb;
+            let chroma_width = p.chroma_width();
+            // What each chroma sample of the current chroma row contributes: R and B's
+            // chroma terms, or for identity the R and B samples themselves.
+            let mut red = vec![0f32; chroma_width];
+            let mut blue = vec![0f32; chroma_width];
+            let mut chroma_row = None;
+            for (y, (row, luma)) in rows.enumerate() {
+                let c = y >> p.shift.1;
+                if chroma_row != Some(c) {
+                    chroma_row = Some(c);
+                    let at = c * chroma_width;
+                    let (u, v) = (&p.u[at..at + chroma_width], &p.v[at..at + chroma_width]);
+                    for i in 0..chroma_width {
+                        (red[i], blue[i]) = if matrix == IDENTITY {
+                            (levels.luma(v[i]), levels.luma(u[i]))
+                        } else {
+                            (
+                                2.0 * (1.0 - kr) * levels.chroma(v[i]),
+                                2.0 * (1.0 - kb) * levels.chroma(u[i]),
+                            )
+                        };
+                    }
+                }
+                let pixels = row.as_chunks_mut::<3>().0.iter_mut().zip(luma).enumerate();
+                if matrix == IDENTITY {
+                    for (x, (px, &s)) in pixels {
+                        let i = x >> p.shift.0;
+                        *px = [to8(red[i]), to8(levels.luma(s)), to8(blue[i])];
+                    }
+                } else {
+                    for (x, (px, &s)) in pixels {
+                        let i = x >> p.shift.0;
+                        let luma = levels.luma(s);
+                        let r = luma + red[i];
+                        let b = luma + blue[i];
+                        let g = (luma - kr * r - kb * b) / kg;
+                        *px = [to8(r), to8(g), to8(b)];
+                    }
+                }
+            }
+        }
+    }
+    RgbImage::from_raw(width as u32, height as u32, out).expect("sized for the picture")
 }
 
 /// Joins the colour picture with its alpha item's luma, dividing premultiplied colour back
@@ -111,6 +159,7 @@ pub(super) fn attach_alpha(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use image::Rgb;
 
     /// A width×height picture of one YUV colour, at `depth` bits and `shift` subsampling.
     fn flat(width: usize, height: usize, depth: u8, shift: (u32, u32), yuv: [u16; 3]) -> Planes {
@@ -205,6 +254,112 @@ mod tests {
         let rgb = to_rgb(&p, 6, true);
         assert!(rgb.get_pixel(2, 2).0[0] > 200, "(2,2) reads chroma (1,1)");
         assert!(rgb.get_pixel(1, 1).0[0] < 160, "(1,1) reads chroma (0,0)");
+    }
+
+    /// The per-pixel conversion `to_rgb` replaced, kept as the reference it must match.
+    fn per_pixel(p: &Planes, matrix: u16, full_range: bool) -> RgbImage {
+        let levels = Levels::new(p.depth, full_range);
+        let (kr, kb) = weights(matrix);
+        let kg = 1.0 - kr - kb;
+        let chroma_width = p.chroma_width();
+        RgbImage::from_fn(p.width as u32, p.height as u32, |x, y| {
+            let (x, y) = (x as usize, y as usize);
+            let luma = levels.luma(p.y[y * p.width + x]);
+            if p.mono {
+                let g = to8(luma);
+                return Rgb([g, g, g]);
+            }
+            let i = (y >> p.shift.1) * chroma_width + (x >> p.shift.0);
+            let (u, v) = (p.u[i], p.v[i]);
+            let [r, g, b] = if matrix == IDENTITY {
+                [levels.luma(v), luma, levels.luma(u)]
+            } else {
+                let (cb, cr) = (levels.chroma(u), levels.chroma(v));
+                let r = luma + 2.0 * (1.0 - kr) * cr;
+                let b = luma + 2.0 * (1.0 - kb) * cb;
+                [r, (luma - kr * r - kb * b) / kg, b]
+            };
+            Rgb([to8(r), to8(g), to8(b)])
+        })
+    }
+
+    /// 8-bit (Y, U, V) samples whose green lands on a rounding boundary: each is the first
+    /// of the 16.7M 8-bit colours, for one matrix and range, that comes out a level off
+    /// when `(luma - kr * r - kb * b) / kg` is computed as a multiplication by `1 / kg`
+    /// (the first six) or as `luma - (kr * r + kb * b)` (the last six). Found by trying
+    /// all of them; such a colour is 4 to 83 in 16.7M, so noise alone would almost never
+    /// hold `to_rgb` to its spelling.
+    const ROUNDING_EDGES: [[u16; 3]; 12] = [
+        [138, 213, 204],
+        [51, 197, 114],
+        [182, 195, 32],
+        [9, 15, 114],
+        [8, 131, 44],
+        [27, 55, 88],
+        [77, 213, 204],
+        [26, 157, 66],
+        [54, 78, 178],
+        [24, 85, 71],
+        [24, 131, 44],
+        [13, 9, 7],
+    ];
+
+    /// Byte for byte the per-pixel conversion, on noise rather than flat colour so every
+    /// sample differs from its neighbours: each depth, each subsampling on odd sizes (the
+    /// last chroma column and row are the rounded-up ones), identity and three matrices,
+    /// both ranges, and monochrome - plus [`ROUNDING_EDGES`], where an expression regrouped
+    /// or a division turned into a multiplication rounds the other way. A chroma row reused
+    /// past its picture rows, or a sample read from the wrong column, shows in the noise.
+    #[test]
+    fn matches_the_per_pixel_conversion() {
+        let mut edges = flat(ROUNDING_EDGES.len(), 1, 8, (0, 0), [0, 0, 0]);
+        edges.y = ROUNDING_EDGES.iter().map(|s| s[0]).collect();
+        edges.u = ROUNDING_EDGES.iter().map(|s| s[1]).collect();
+        edges.v = ROUNDING_EDGES.iter().map(|s| s[2]).collect();
+        for matrix in [1, 6, 9] {
+            for full in [false, true] {
+                assert_eq!(
+                    to_rgb(&edges, matrix, full),
+                    per_pixel(&edges, matrix, full),
+                    "rounding edges, matrix {matrix}, full {full}"
+                );
+            }
+        }
+
+        let mut seed = 7u32;
+        let mut noise = |len: usize, depth: u8| -> Vec<u16> {
+            (0..len)
+                .map(|_| {
+                    seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                    (seed >> 16) as u16 & ((1 << depth) - 1)
+                })
+                .collect()
+        };
+        for depth in [8, 10, 12] {
+            for shift in [(0, 0), (1, 0), (1, 1)] {
+                let mut p = flat(7, 5, depth, shift, [0, 0, 0]);
+                p.y = noise(p.y.len(), depth);
+                p.u = noise(p.u.len(), depth);
+                p.v = noise(p.v.len(), depth);
+                for matrix in [IDENTITY, 1, 6, 9] {
+                    for full in [false, true] {
+                        assert_eq!(
+                            to_rgb(&p, matrix, full),
+                            per_pixel(&p, matrix, full),
+                            "depth {depth}, shift {shift:?}, matrix {matrix}, full {full}"
+                        );
+                    }
+                }
+                p.mono = true;
+                p.u.clear();
+                p.v.clear();
+                assert_eq!(
+                    to_rgb(&p, 6, false),
+                    per_pixel(&p, 6, false),
+                    "mono {depth}"
+                );
+            }
+        }
     }
 
     #[test]
