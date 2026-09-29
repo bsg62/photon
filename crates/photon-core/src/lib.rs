@@ -20,6 +20,7 @@ pub mod search;
 pub mod similar;
 pub mod sort;
 pub mod thumbs;
+mod turbo;
 pub mod video;
 pub mod watcher;
 pub mod xmp;

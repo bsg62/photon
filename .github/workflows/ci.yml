@@ -20,6 +20,18 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libsoup-3.0-dev librsvg2-dev libxdo-dev libssl-dev
+      # libjpeg-turbo's x86 SIMD code is nasm assembly. Without nasm, mozjpeg-sys builds plain
+      # C instead, silently, so the next step fails by name if nasm is missing.
+      - name: Install nasm
+        shell: bash
+        run: |
+          case "$RUNNER_OS" in
+            Linux)   sudo apt-get update && sudo apt-get install -y nasm ;;
+            macOS)   brew install nasm ;;
+            Windows) choco install nasm -y --no-progress && echo 'C:\Program Files\NASM' >> "$GITHUB_PATH" ;;
+          esac
+      - name: nasm is on the PATH
+        run: nasm -v
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt

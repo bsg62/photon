@@ -1,10 +1,11 @@
 use crate::Result;
 use crate::avif;
 use crate::jpeg;
+use crate::turbo;
 use fast_image_resize::{FilterType, ResizeAlg, ResizeOptions, Resizer};
 use image::{DynamicImage, ImageFormat, ImageReader};
 use std::fs::File;
-use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
+use std::io::{BufRead, BufReader, Cursor, Read, Seek, SeekFrom};
 use std::path::Path;
 
 /// How much of a filled buffer counts as the file's head when telling an AVIF from anything
@@ -22,7 +23,12 @@ fn sniffed_avif(buf: &[u8]) -> bool {
 /// own decoder (`avif`), since `image` reads it only through a C library; everything else is
 /// `image`. Every full decode goes through here, so a new format is one branch in one place.
 pub fn decode_image(path: &Path) -> Result<DynamicImage> {
-    let mut reader = BufReader::new(File::open(path)?);
+    decode_from(BufReader::new(File::open(path)?), path)
+}
+
+/// [`decode_image`] over a reader already open on `path`'s contents: the file itself, or the
+/// bytes [`preview_decode`] read to try libjpeg-turbo first and then handed back.
+fn decode_from<R: BufRead + Seek>(mut reader: R, path: &Path) -> Result<DynamicImage> {
     // `fill_buf` peeks without consuming: the sniff costs no seek and no re-read, unlike a
     // take-and-rewind, which is what `read_header`'s "one open file, few syscalls" reasoning
     // (metadata.rs) needs from this on every describe().
@@ -124,9 +130,63 @@ pub fn apply_orientation(img: DynamicImage, orientation: u8) -> DynamicImage {
 /// takes one worker's worst case from about 770 MiB to about 560. `MAX_WORKERS` stays where it
 /// is all the same: the cap is there because more workers than the disk can feed buy nothing,
 /// and a smaller peak per worker does not change that.
+///
+/// A JPEG is decoded by libjpeg-turbo at a reduced scale when it can be, and by `image` as
+/// above otherwise: see [`preview_decode`], and `turbo` for why the scaled decode keeps the
+/// same bound.
 pub fn decode_oriented(path: &Path, orientation: u8, max_edge: u32) -> Result<DynamicImage> {
-    let img = fit_within(decode_image(path)?, max_edge);
+    let (img, _) = preview_decode(path, max_edge)?;
     Ok(apply_orientation(img, orientation))
+}
+
+/// Which decoder made a preview. Only the tests read it: it is how they tell the fast path
+/// from the fallback, whose pictures `same_picture` cannot tell apart, by design.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PreviewDecoder {
+    /// libjpeg-turbo's scaled decode (`turbo`).
+    Turbo,
+    /// [`decode_image`] and [`fit_within`], as every preview was made before.
+    Image,
+}
+
+/// `path` decoded and fitted within `max_edge`, not yet oriented, with which decoder made it.
+/// It is [`decode_oriented`] without its last step.
+///
+/// A JPEG larger than `max_edge` goes to libjpeg-turbo first, which decodes it straight at the
+/// smallest n/8 scale that covers the preview. Everything else, and every JPEG libjpeg-turbo
+/// hands back, goes to [`decode_image`] and [`fit_within`] as before.
+///
+/// The file is read once either way. A JPEG is read whole, as `image`'s JPEG decoder reads it
+/// anyway, and a handed-back JPEG is decoded from those same bytes. Any other format streams
+/// from the file as it always did.
+pub(crate) fn preview_decode(path: &Path, max_edge: u32) -> Result<(DynamicImage, PreviewDecoder)> {
+    let mut reader = BufReader::new(File::open(path)?);
+    if !jpeg::is_jpeg(reader.fill_buf()?) {
+        let img = fit_within(decode_from(reader, path)?, max_edge);
+        return Ok((img, PreviewDecoder::Image));
+    }
+    let mut bytes = Vec::new();
+    reader.read_to_end(&mut bytes)?;
+    // The target is the photo's own `fitted` size, not the scaled decode's: n/8 rounds up, so
+    // fitting the scaled picture can land a pixel off the size every cached thumbnail of the
+    // photo has.
+    if let Some((width, height)) = jpeg::dimensions(&mut Cursor::new(bytes.as_slice()))
+        && width.max(height) > max_edge
+    {
+        let target = fitted(width, height, max_edge);
+        // The span is what gives turbo's own debug events their path, for the smoke
+        // checklist's count of fallbacks: a warning late in a file costs nearly a whole
+        // libjpeg decode before zune starts, and that count is how it is noticed.
+        let scaled = {
+            let _preview = tracing::debug_span!("preview", path = %path.display()).entered();
+            turbo::scaled_decode(&bytes, target)
+        };
+        if let Some(img) = scaled {
+            return Ok((resize_to(img, target), PreviewDecoder::Turbo));
+        }
+    }
+    let img = fit_within(decode_from(Cursor::new(bytes), path)?, max_edge);
+    Ok((img, PreviewDecoder::Image))
 }
 
 /// `img` shrunk to fit within `max_edge` on its long side, with a bilinear filter; an image
@@ -149,7 +209,21 @@ pub(crate) fn fit_within_by(img: DynamicImage, max_edge: u32, filter: FilterType
     if img.width().max(img.height()) <= max_edge {
         return img;
     }
-    let (width, height) = fitted(img.width(), img.height(), max_edge);
+    let size = fitted(img.width(), img.height(), max_edge);
+    resize_by(img, size, filter)
+}
+
+/// `img` resized to exactly `size` with [`fit_within`]'s filter. It is for a picture decoded
+/// at a scale near the size it must end up at (`turbo`), whose own `fitted` size could be a
+/// pixel off the photo's.
+fn resize_to(img: DynamicImage, size: (u32, u32)) -> DynamicImage {
+    if (img.width(), img.height()) == size {
+        return img;
+    }
+    resize_by(img, size, FilterType::Bilinear)
+}
+
+fn resize_by(img: DynamicImage, (width, height): (u32, u32), filter: FilterType) -> DynamicImage {
     let mut out = DynamicImage::new(width, height, img.color());
     // Alpha is resampled as it is stored, as `image` did, rather than premultiplied: that
     // would take a premultiplied copy of the whole source first, a second full-size buffer
@@ -181,7 +255,8 @@ mod tests {
     use super::*;
     use crate::Error;
     use crate::testutil::{
-        avif_fixture, bmp_bytes, counted, jpeg_bytes, jpeg_with_segments, tiff_bytes, write_file,
+        avif_fixture, bmp_bytes, counted, encode, jpeg_bytes, jpeg_with_segments, noisy_jpeg,
+        noisy_rgb, tiff_bytes, write_file,
     };
     use image::{Rgba, RgbaImage};
     use std::fs::File;
@@ -393,5 +468,107 @@ mod tests {
             decode_oriented(&path, 1, 100),
             Err(Error::Image(image::ImageError::Decoding(_)))
         ));
+    }
+
+    #[test]
+    fn a_jpeg_larger_than_the_preview_is_decoded_by_libjpeg_turbo() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_file(dir.path(), "wide.jpg", &noisy_jpeg(3300, 40));
+        let (img, decoder) = preview_decode(&path, 1600).unwrap();
+        assert_eq!(decoder, PreviewDecoder::Turbo);
+        assert_eq!((img.width(), img.height()), fitted(3300, 40, 1600));
+    }
+
+    /// Everything but a large YCbCr JPEG is `image`'s, as every preview was before.
+    #[test]
+    fn everything_else_is_decoded_by_image() {
+        let dir = tempfile::tempdir().unwrap();
+        let whole = noisy_jpeg(3300, 40);
+        let cases = [
+            ("small.jpg", noisy_jpeg(400, 40)),
+            // A photo already the preview's size is the one small input the size gate alone
+            // decides: its target is the photo itself, which 8/8 covers, so without the gate
+            // it would be decoded by libjpeg-turbo for nothing. A smaller one (`small.jpg`)
+            // is upscaled by `fitted`, which `scale_for` refuses either way.
+            ("edge.jpg", noisy_jpeg(1600, 40)),
+            ("wide.png", encode(&noisy_rgb(3300, 40), ImageFormat::Png)),
+            (
+                "grey.jpg",
+                encode(&noisy_rgb(3300, 40).grayscale(), ImageFormat::Jpeg),
+            ),
+            ("cut.jpg", whole[..whole.len() / 2].to_vec()),
+            ("a.avif", avif_fixture("irot90.avif")),
+        ];
+        for (name, bytes) in cases {
+            let path = write_file(dir.path(), name, &bytes);
+            // A cut JPEG may be an error from zune: still zune's answer, not the fast path's.
+            let decoder = preview_decode(&path, 1600).map(|(_, decoder)| decoder);
+            assert!(!matches!(decoder, Ok(PreviewDecoder::Turbo)), "{name}");
+        }
+    }
+
+    /// At 7/8, 1828x77 comes out 1600x68, a pixel taller than the photo's 1600x67 preview,
+    /// which every cached thumbnail of it has. Fitting the scaled picture would keep the 68.
+    #[test]
+    fn a_preview_decoded_at_a_scale_is_the_photos_own_fitted_size() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_file(dir.path(), "odd.jpg", &noisy_jpeg(1828, 77));
+        let (img, decoder) = preview_decode(&path, 1600).unwrap();
+        assert_eq!(decoder, PreviewDecoder::Turbo);
+        assert_eq!((img.width(), img.height()), (1600, 67));
+    }
+
+    /// A library's cache mixes thumbnails made by zune with ones made by libjpeg-turbo, and
+    /// the look-alike check compares them with each other, so the two must make the same
+    /// picture as far as `same_picture` can tell. That is the same bar, and the same reason,
+    /// as `a_preview_is_the_same_picture_as_the_one_images_resize_made`.
+    #[test]
+    fn libjpeg_turbos_preview_is_the_same_picture_as_zunes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_file(dir.path(), "photo.jpg", &noisy_jpeg(1800, 300));
+        let (ours, decoder) = preview_decode(&path, 1600).unwrap();
+        assert_eq!(decoder, PreviewDecoder::Turbo);
+        let theirs = fit_within(decode_image(&path).unwrap(), 1600);
+        assert_eq!(
+            (ours.width(), ours.height(), ours.color()),
+            (theirs.width(), theirs.height(), theirs.color())
+        );
+        let grid = |preview: &DynamicImage| crate::similar::reduce(&preview.thumbnail(256, 256));
+        let difference = crate::similar::picture_difference(&grid(&ours), &grid(&theirs));
+        assert!(
+            difference < crate::similar::SAME_PICTURE_MAX_DIFFERENCE / 4.0,
+            "{difference}"
+        );
+    }
+
+    /// Damaged data keeps today's answer exactly: zune's picture, or the `Error::Image` that
+    /// marks the photo Failed rather than retrying it (`is_source_defect`, thumbs/service.rs).
+    #[test]
+    fn a_damaged_jpeg_previews_as_zune_decides_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let whole = noisy_jpeg(3300, 40);
+        let mut corrupt = whole.clone();
+        let middle = corrupt.len() / 2;
+        corrupt[middle..middle + 64].fill(0xFF);
+        for (name, bytes) in [
+            ("cut.jpg", whole[..whole.len() / 2].to_vec()),
+            ("corrupt.jpg", corrupt),
+        ] {
+            let path = write_file(dir.path(), name, &bytes);
+            let ours = preview_decode(&path, 1600);
+            let theirs = decode_image(&path).map(|img| fit_within(img, 1600));
+            match (ours, theirs) {
+                (Ok((ours, decoder)), Ok(theirs)) => {
+                    assert_eq!(decoder, PreviewDecoder::Image, "{name}");
+                    assert!(ours.as_bytes() == theirs.as_bytes(), "{name}");
+                }
+                (Err(Error::Image(_)), Err(Error::Image(_))) => {}
+                (ours, theirs) => panic!(
+                    "{name}: {:?} against {:?}",
+                    ours.map(|(_, decoder)| decoder),
+                    theirs.map(|_| ())
+                ),
+            }
+        }
     }
 }

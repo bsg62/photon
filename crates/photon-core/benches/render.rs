@@ -80,6 +80,20 @@ fn bench_render(c: &mut Criterion) {
     g.bench_function("decode_oriented", |b| {
         b.iter(|| black_box(decode::decode_oriented(&path, 6, PREVIEW_EDGE).unwrap()))
     });
+    // The two preview paths side by side, at orientation 1 so nothing but the decode and the
+    // fit differs: zune's full decode then `fit_within`, and `decode_oriented`, which takes
+    // libjpeg-turbo's scaled decode for this JPEG.
+    g.bench_function("preview_zune", |b| {
+        b.iter(|| {
+            black_box(decode::fit_within(
+                decode::decode_image(&path).unwrap(),
+                PREVIEW_EDGE,
+            ))
+        })
+    });
+    g.bench_function("preview_turbo", |b| {
+        b.iter(|| black_box(decode::decode_oriented(&path, 1, PREVIEW_EDGE).unwrap()))
+    });
     g.finish();
 
     let edit = edited();
