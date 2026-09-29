@@ -1,0 +1,31 @@
+# TEMPORARY - measures libjpeg-turbo's preview path on x86 for the PR, then is deleted
+# (docs/superpowers/plans/2026-09-29-photon-turbo-jpeg-thumbnails.md, Task 5).
+name: bench-x86
+on:
+  push:
+    branches: [feat/turbo-jpeg-thumbnails]
+jobs:
+  bench:
+    name: bench (${{ matrix.os }}, nasm ${{ matrix.nasm }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        nasm: [with, without]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install nasm
+        if: matrix.nasm == 'with'
+        shell: bash
+        run: |
+          case "$RUNNER_OS" in
+            Linux)   sudo apt-get update && sudo apt-get install -y nasm ;;
+            Windows) choco install nasm -y --no-progress && echo 'C:\Program Files\NASM' >> "$GITHUB_PATH" ;;
+          esac
+      - name: No nasm, for the plain-C build
+        if: matrix.nasm == 'without'
+        shell: bash
+        run: "! command -v nasm"
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo bench -p photon-core --bench render -- thumbnail_24mp/preview
