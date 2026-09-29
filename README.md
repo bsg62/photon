@@ -57,10 +57,11 @@ as its first page. AVIF is decoded by photon itself, in pure Rust, including the
 10-bit photos phones write. An HDR AVIF is shown as standard range without tone mapping, so it
 may look flat, and an animated one shows its still image. The viewer shows full-size AVIFs
 where the system's web view can (Windows, macOS 13 and later, most Linux desktops) and the
-1600-pixel preview elsewhere. JPEG thumbnails are made with libjpeg-turbo, which decodes a
-photo straight at the size a thumbnail needs. Camera RAW files and HEIC are not read:
+1600-pixel preview elsewhere. Thumbnails of large JPEGs are made with libjpeg-turbo, which
+decodes a photo straight at the size a thumbnail needs. Camera RAW files and HEIC are not read:
 decoding them means shipping a large C library, and photon keeps its C to a few small,
-vendored ones (SQLite, libwebp, libjpeg-turbo), compiled in, so it needs no system libraries.
+vendored ones (SQLite, libwebp, libjpeg-turbo), compiled in, so it needs no system libraries
+beyond the system's web view.
 
 Adding TIFF, BMP and AVIF does not disturb a library built by an earlier photon. Those files
 simply appear as each folder is walked again, whether that scan is manual or triggered by

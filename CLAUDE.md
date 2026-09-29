@@ -576,7 +576,7 @@ action in `mock.js`.
   recorded limitation, not a bug); Picasa's albums are read from its INI, as noted above, and
   live nowhere else. An edit never touches the photo: it is rendered on the way to the
   screen.
-- **No system library dependencies.** photon's C is vendored and compiled in with `cc`:
+- **No system library dependencies beyond the web view.** photon's C is vendored and compiled in with `cc`:
   SQLite, libwebp and libjpeg-turbo (the mozjpeg crate, for the scaled decode of a JPEG's
   preview, `photon_core::turbo`). Nothing wrapping a C/C++ SDK: that bar is what made
   packaging tractable on three platforms, and it is why XMP and INI parsing are hand-rolled or

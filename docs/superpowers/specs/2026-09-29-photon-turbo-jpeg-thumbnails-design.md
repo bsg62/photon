@@ -1,6 +1,6 @@
 # libjpeg-turbo for JPEG thumbnails
 
-2026-09-29. Approved in conversation the same day; the written spec awaits review.
+2026-09-29. Approved in conversation the same day; implemented on `feat/turbo-jpeg-thumbnails` (PR #133).
 
 ## What it is
 
@@ -13,10 +13,13 @@ is.
 This reverses a stated rule. The README, the website, CLAUDE.md and several specs say photon
 has no native dependencies. That was never literally true: SQLite and libwebp are C, vendored
 and compiled into photon with `cc`. After this change the rule says what it has meant in
-practice: **no system libraries**. The C that photon uses is vendored, compiled into the
-binary, and needs nothing installed on the user's machine. The rule's purpose, packaging that
-stays tractable on three platforms, is unaffected: `ldd` in `release.yml` still finds nothing
-to load.
+practice: **no system libraries beyond the system's web view**. The C that photon uses is
+vendored and compiled into the binary; the only thing it needs installed on the user's machine
+is the web view Tauri already requires (webkit2gtk and libsoup on Linux). The rule's purpose,
+packaging that stays tractable on three platforms, is unaffected: the `ldd` check in
+`release.yml` extracts the binary from the `.deb`, fails on any library "not found", and
+expects the `.deb` to depend on webkit2gtk and libsoup. libjpeg-turbo adds no library to that
+list.
 
 ## Why
 
@@ -74,12 +77,16 @@ is the noisy-gradient q90 JPEG from `benches/render.rs`. The time is the decode 
     recorded.
   - At full resolution, without SIMD, libjpeg-turbo is slower than zune.
 - **Crate: `mozjpeg` 0.10 (`mozjpeg-sys` 2.2), default features.**
-  - It builds with `cc`, plus nasm for x86 SIMD.
+  - It builds with `cc`, plus nasm for x86 SIMD. The default features are kept for
+    `nasm_simd`.
   - It exposes a hook for a caller's own error manager (`DecompressBuilder::with_err`), which
     the warning policy below needs.
-  - Its default features include `unwinding`, which compiles libjpeg with `-fexceptions` so a
-    Rust panic can unwind through it. That feature must stay on: without it a libjpeg error
-    aborts photon.
+  - `mozjpeg` 0.10.13 depends on `mozjpeg-sys` with `unwinding` unconditionally, so the
+    default features do not control it. `unwinding` only adds `-fexceptions` where the C
+    compiler supports it; MSVC ignores it, and unwinding through C frames works there anyway
+    (CI proved it on Windows). What would break the design is a `panic = "abort"` profile:
+    every hand-back is an unwind out of libjpeg, so each would abort photon. `turbo.rs`
+    refuses to compile under it (`compile_error!` on `cfg(panic = "abort")`).
 - **The alternative is the `turbojpeg` crate.** That is upstream libjpeg-turbo 3.x, whose API
   reports errors and warnings as return codes, which would need no `unsafe` in photon. Its
   vendored build needs cmake on every machine that builds photon, and it was not measured.
@@ -126,8 +133,9 @@ holds:
 - **The scale** is the smallest n in 1..=8 for which libjpeg's output
   (`ceil(width * n / 8)` by `ceil(height * n / 8)`) is at least the target on both axes.
 - **The shrink to size.** The scaled picture is then resized to exactly the target, with the
-  same bilinear filter as `fit_within`. That is a new `pub(crate)` helper in `decode.rs`,
-  `resize_to(img, (w, h))`, which `fit_within_by` also calls, so there is one resize.
+  same bilinear filter as `fit_within`. That is a new helper in `decode.rs`,
+  `resize_to(img, (w, h))`, private to `decode.rs`, which shares its resize with
+  `fit_within_by` through a private `resize_by`, so there is one resize.
   `fit_within` itself cannot be reused on the scaled picture: it computes `fitted` from the
   picture's own size, and ceiling rounding at n/8 can land a pixel away from what the full
   photo gives.
@@ -169,7 +177,8 @@ decode, whatever the format. After two deaths on the same photo it is marked Fai
 2. **Take the fast path** if all of these hold: the photo is a JPEG (`jpeg::is_jpeg`), its long
    edge exceeds `max_edge`, and `scaled_decode` returns `Some`. The result is the picture at
    exactly `fitted(...)`.
-3. **Otherwise** use `fit_within(decode_image(path)?, max_edge)`, unchanged.
+3. **Otherwise** decode from the bytes already read and fit them, as before:
+   `fit_within(decode_from(Cursor::new(bytes), path)?, max_edge)`.
 4. Apply the orientation, as today.
 
 The bytes are read once. The fast path needs the whole file in memory, which `image`'s JPEG
@@ -189,14 +198,19 @@ pub(crate) fn preview_decode(
 ```
 
 `decode_oriented` calls it and drops the second value. Nothing outside the tests reads it.
-`preview_decode` also logs, at debug level with the path, each JPEG that `scaled_decode` gave
-back, which is how the smoke import counts fall-backs (see Testing).
+The fall-backs are logged, at debug level, which is how the smoke import counts them (see
+Testing). `scaled_decode` emits one of two events when it returns `None`: "libjpeg-turbo warned
+or failed" when libjpeg's warning or error unwound, and "libjpeg-turbo does not take this JPEG
+on" for a deliberate hand-back (colour space, decode limit, no covering scale). Neither names
+the file, so `preview_decode` enters a `preview` span carrying the path around the call, and
+both events carry it.
 
 ## Build
 
 - **Dependency.** `crates/photon-core/Cargo.toml` gets `mozjpeg = "0.10.13"` with default
   features: `unwinding`, `nasm_simd` and `parallel`, where `parallel` only parallelises the C
-  build. A comment beside it says why `unwinding` must stay.
+  build. A comment beside it says why the defaults stay (`nasm_simd`) and what would break the
+  design (`panic = "abort"`).
 - **nasm in CI.** In `.github/workflows/ci.yml`, the `rust` job installs nasm on all three
   runners with the runner's own package manager: `apt-get` on Linux, Homebrew on macOS,
   Chocolatey on Windows (adding `C:\Program Files\NASM` to the PATH). It then runs `nasm -v`
@@ -217,11 +231,25 @@ back, which is how the smoke import counts fall-backs (see Testing).
   - If x86 with SIMD does not beat zune's decode-plus-fit on that runner, the change does not
     merge as designed. The fast path becomes arm64-only, through a target-specific dependency,
     and this spec is amended.
+  - **Measured** (the `thumbnail_24mp` group, `preview_zune` then `preview_turbo`, each on its
+    own runner, so compare the ratios rather than the times across rows):
+
+    | x86 runner | zune | libjpeg-turbo |
+    |---|---|---|
+    | Linux, with nasm | 207.32 ms | 155.61 ms |
+    | Windows, with nasm | 181.24 ms | 110.40 ms |
+    | Linux, without nasm | 182.28 ms | 135.36 ms |
+
+    Both legs with nasm beat zune. The Windows no-nasm leg was not measurable: the Windows
+    runner ships nasm at `C:\Strawberry\c\bin`, so it could not be taken away, and that leg
+    was waived.
 - **Security fixes (checked 2026-09-29).** The vendored tree is mozjpeg 4.1.5
   (`mozilla/mozjpeg@c2bc351`), whose libjpeg-turbo base is 2.1.x (`ChangeLog.md` opens at
   2.1.6; its five entries are the first five of upstream's 2.1.x branch, "2.1.6 ESR"). Read:
   upstream `ChangeLog.md` from 2.1.91 to 3.2.1, the 2.1.x branch's 2.1.6 ESR section, and
-  upstream's security advisories (none published). None of upstream's decoder security fixes
+  upstream's security advisories (none published). (A reference like "3.0.4[6]" is
+  "version[item]": the item's number in that version's section of upstream's `ChangeLog.md`.)
+  None of upstream's decoder security fixes
   after 2.1.5.1 is both missing from the vendored tree and reachable from 8-bit lossy
   decompression as photon drives it (`Decompress::with_err(..).from_mem`, `scale`, `rgb`,
   `read_scanlines`, no saved markers). Each fix is one of:
@@ -262,12 +290,13 @@ back, which is how the smoke import counts fall-backs (see Testing).
 
   > Camera RAW files and HEIC are not read: decoding them means shipping a large C library,
   > and photon keeps its C to a few small, vendored ones (SQLite, libwebp, libjpeg-turbo),
-  > compiled in, so it needs no system libraries.
+  > compiled in, so it needs no system libraries beyond the system's web view.
 
 - **README, JPEG sentence.** A sentence says JPEG thumbnails are decoded with libjpeg-turbo.
 - **Website.** `site/index.html`'s "What it doesn't do" item is reworded the same way.
 - **CLAUDE.md, Conventions.**
-  - "No native library dependencies" becomes "No system library dependencies". The paragraph
+  - "No native library dependencies" becomes "No system library dependencies beyond the web
+    view". The paragraph
     names the vendored C (SQLite, libwebp, libjpeg-turbo, each compiled with `cc`), says that
     nasm is a build tool on the CI and release runners only, and keeps "nothing wrapping a
     C/C++ SDK" as the bar for anything new.
@@ -284,8 +313,8 @@ back, which is how the smoke import counts fall-backs (see Testing).
 
 **Decoder (`turbo.rs`).** The fixtures are thin noisy strips, not multi-megapixel squares, per
 CLAUDE.md's note on fixture cost. For example, 3300x40 decodes at 4/8 for a 1600 px target.
-- **Scale.** The chosen n is the smallest that covers the target, checked against an
-  exhaustive loop over n. This includes a width at which n/8's ceiling lands a pixel off
+- **Scale.** The chosen n is the smallest that covers the target, checked against a table of
+  camera sizes and edge cases. This includes a width at which n/8's ceiling lands a pixel off
   `fitted`, and the output is exactly `fitted(...)`.
 - **Same picture.** A noisy strip decoded by the fast path and by zune plus `fit_within` has
   the same dimensions and colour type, and is the same picture within
@@ -295,11 +324,13 @@ CLAUDE.md's note on fixture cost. For example, 3300x40 decodes at 4/8 for a 1600
   - a greyscale JPEG;
   - a CMYK JPEG;
   - a truncated JPEG (a warning);
-  - a JPEG with stray bytes between segments (a warning), using the existing
-    `jpeg_with_segments` helper;
+  - a JPEG with stray bytes between segments (a warning), built by hand from a comment
+    segment and two extra bytes;
   - corrupt entropy data (a warning, or a fatal error);
   - bytes that are not a JPEG (a fatal error);
-  - a header over the size limit.
+  - a header over the size limit, which `scaled_decode_within` takes as an argument so that a
+    small file can show the limit is applied (a header claiming 60000x60000 over a small
+    file's data would be handed back by libjpeg's end-of-file warning either way).
 - **No panic hook.** A `None` from a fatal error leaves a panic hook installed for the test
   uncalled.
 
@@ -335,8 +366,9 @@ the PR also runs `cargo bench -p photon-core --bench render --no-run` once.
 
 **Smoke checklist.** A new item: import a folder of real camera JPEGs and check that the
 thumbnails and previews look as before, with the times of a before and an after import noted.
-`preview_decode` logs each JPEG that `scaled_decode` handed back, at debug level with its
-path, and those lines are counted over the folder. This is where "real photos gain more" is confirmed or corrected, and where
+The "libjpeg-turbo warned or failed" lines, each carrying the photo's path through
+`preview_decode`'s span, are counted over the folder; greyscale and CMYK files log "does not
+take this JPEG on" instead, which is expected and not counted. This is where "real photos gain more" is confirmed or corrected, and where
 the late-warning fall-back is measured.
 
 ## Rollout
