@@ -1,7 +1,8 @@
 //! Command implementations as plain functions over `Engine`. `ipc.rs` exposes them to
 //! the UI as Tauri commands.
 
-use crate::{engine::Engine, error::AppError};
+pub use crate::memory::MemoryUsage;
+use crate::{engine::Engine, error::AppError, memory};
 use photon_core::{
     Error,
     edit::{Crop, Edit},
@@ -333,6 +334,11 @@ pub fn app_info(engine: &Engine) -> AppInfo {
         library_path: engine.lib.path().to_path_buf(),
         licence: env!("CARGO_PKG_LICENSE"),
     }
+}
+
+/// Asked for by the About section while it is open, not with `app_info`: it changes.
+pub fn memory_usage() -> CmdResult<MemoryUsage> {
+    memory::usage().map_err(AppError::internal)
 }
 
 pub fn rescan_folder(engine: &Arc<Engine>, watched_id: i64) -> CmdResult<()> {

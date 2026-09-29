@@ -1,10 +1,10 @@
 <script lang="ts">
   import { ask, open } from '@tauri-apps/plugin-dialog';
   import { onMount, tick } from 'svelte';
-  import { api, errorMessage, type AppInfo, type TagCount, type TagRule, type ThemeChoice, type WatchedFolder } from '../lib/api';
+  import { api, errorMessage, type AppInfo, type MemoryUsage, type TagCount, type TagRule, type ThemeChoice, type WatchedFolder } from '../lib/api';
   import { theme } from '../lib/app-theme.svelte';
   import { library } from '../lib/library.svelte';
-  import { folderStatus, photoCountLabel, type SettingsSection } from '../lib/settings';
+  import { MEMORY_POLL_MS, folderStatus, memoryAmount, memoryScope, photoCountLabel, type SettingsSection } from '../lib/settings';
   import { createTagRenamer } from '../lib/tag-renamer.svelte';
   import { filterTags, ruleLabel } from '../lib/tags';
   import Icon from './Icon.svelte';
@@ -38,6 +38,7 @@
   let dialog = $state<HTMLDivElement | undefined>();
   let counts = $state<Map<number, number>>(new Map());
   let info = $state<AppInfo | null>(null);
+  let memory = $state<MemoryUsage | null>(null);
   let rules = $state<TagRule[]>([]);
   let tagFilter = $state('');
   const renamer = createTagRenamer({
@@ -91,6 +92,26 @@
       .appInfo()
       .then((i) => (info = i))
       .catch(library.reportError);
+  });
+
+  // Only while About is showing: on Linux each read walks the whole process table. A failed
+  // read leaves the row out rather than raising an error banner every two seconds.
+  $effect(() => {
+    if (current !== 'about') return;
+    let stale = false;
+    const read = () =>
+      api
+        .memoryUsage()
+        .then((m) => {
+          if (!stale) memory = m;
+        })
+        .catch(() => {});
+    read();
+    const timer = setInterval(read, MEMORY_POLL_MS);
+    return () => {
+      stale = true;
+      clearInterval(timer);
+    };
   });
 
   /** Seconds per photo. Null until read, so the field never shows a value that is not the
@@ -438,6 +459,13 @@
                 <span class="path selectable">{info.libraryPath}</span>
                 <button onclick={() => api.revealLibrary().catch(library.reportError)}>Reveal</button>
               </dd>
+              {#if memory}
+                <dt>Memory</dt>
+                <dd>
+                  {memoryAmount(memory.bytes)}
+                  <span class="scope">{memoryScope(memory)}</span>
+                </dd>
+              {/if}
               <dt>Licence</dt>
               <dd>{info.licence}</dd>
             </dl>
@@ -547,6 +575,7 @@
   dl { display: grid; grid-template-columns: auto 1fr; gap: 8px 16px; margin: 8px 0 0; }
   dt { color: var(--text-dim); }
   dd { margin: 0; min-width: 0; }
+  .scope { display: block; color: var(--text-dim); }
   .library { display: flex; align-items: center; gap: 8px; }
   .selectable { user-select: text; }
   .filter, .rename {

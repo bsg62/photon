@@ -154,6 +154,12 @@ pub const SHOTS: &[Shot] = &[
         query: "theme=dark&do=appearance",
         dark: true,
     },
+    // The memory row, with the scope line under the figure.
+    Shot {
+        name: "about-light",
+        query: "theme=light&do=about",
+        dark: false,
+    },
     // The Duplicates row in the sidebar (byte-identical files and look-alikes both counted
     // in `duplicateCount`), with the info panel open on a photo that has one of each kind.
     Shot {

@@ -217,6 +217,7 @@
     save_search: (args) => ({ id: 3, name: args.name, query: args.query, createdMs: 0 }),
     watched_folder_stats: () => [{ watchedId: 1, photoCount: 12480 }],
     app_info: () => ({ version: '0.0.0', libraryPath: '/home/ada/.local/share/photon/library.db', licence: 'MIT' }),
+    memory_usage: () => ({ bytes: 412_000_000, processes: 4, includesWebview: true }),
     last_folder: () => null,
     slideshow_interval: () => 4,
     similar_distance: () => 7,
@@ -444,15 +445,18 @@
       later(900, () => click('[role="combobox"][aria-label="Crop ratio"]'));
     },
     settings: () => click('button[aria-label="Settings"]'),
-    appearance: () => {
-      click('button[aria-label="Settings"]');
-      later(100, () =>
-        [...document.querySelectorAll('nav[aria-label="Settings sections"] button')]
-          .find((b) => b.textContent.trim() === 'Appearance')
-          ?.click(),
-      );
-    },
+    appearance: () => settingsSection('Appearance'),
+    about: () => settingsSection('About'),
   };
+
+  function settingsSection(name) {
+    click('button[aria-label="Settings"]');
+    later(100, () =>
+      [...document.querySelectorAll('nav[aria-label="Settings sections"] button')]
+        .find((b) => b.textContent.trim() === name)
+        ?.click(),
+    );
+  }
 
   // After the first grid page has rendered; the xtask gives the page a virtual-time budget
   // well past these delays.

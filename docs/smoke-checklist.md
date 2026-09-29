@@ -56,6 +56,7 @@ publishing it.
 - [ ] "Add folder…" in Settings adds a folder. Adding a folder inside a watched one is refused with a clear message.
 - [ ] Rescan works from Settings and from a sidebar folder's right-click menu. "Remove…" in Settings asks first, works during a scan, and leaves the files on disk.
 - [ ] Settings → About shows the version matching the release tag, and its "Reveal" opens the folder holding `library.db`.
+- [ ] Settings → About shows Memory, updating every couple of seconds while About is open. On Linux and Windows it says "photon and its web view" and is close to the sum of photon's and its WebKit/`msedgewebview2` processes in the system monitor (PSS on Linux, Task Manager's Memory column on Windows); on macOS it says the web view is not included and matches photon's own Memory in Activity Monitor.
 - [ ] With a few hundred tags, Settings → Tags stays centred in the window and the list scrolls inside the dialog.
 - [ ] Settings → Tags lists every tag with its photo count, and the filter box narrows it. Rename a tag: Enter saves, Escape or clicking away cancels (Escape does not close Settings), a blank name is refused. The sidebar's Tags list and an open Tag view follow the new name.
 - [ ] Renaming a tag to another existing tag asks to merge, then shows one tag whose count is the photos carrying either. "Remove…" asks first, and the tag disappears from the sidebar and from search.
