@@ -576,12 +576,20 @@ action in `mock.js`.
   recorded limitation, not a bug); Picasa's albums are read from its INI, as noted above, and
   live nowhere else. An edit never touches the photo: it is rendered on the way to the
   screen.
-- **No native library dependencies.** Nothing wrapping a C/C++ SDK. This is what made packaging
-  tractable on three platforms, and it is why XMP and INI parsing are hand-rolled or pure-Rust.
+- **No system library dependencies.** photon's C is vendored and compiled in with `cc`:
+  SQLite, libwebp and libjpeg-turbo (the mozjpeg crate, for the scaled decode of a JPEG's
+  preview, `photon_core::turbo`). Nothing wrapping a C/C++ SDK: that bar is what made
+  packaging tractable on three platforms, and it is why XMP and INI parsing are hand-rolled or
+  pure-Rust. nasm is a build tool on the CI and release runners only, for libjpeg-turbo's x86
+  SIMD code; a build without it still works, as plain C. A new C dependency is a spec-level
+  decision (`2026-09-29-photon-turbo-jpeg-thumbnails-design.md` is the worked example).
 - **AVIF is decoded in `photon_core::avif`, not by `image`**, whose AVIF decoder is dav1d (C).
   `zenavif-parse` reads the container, `rav1d` (built without its assembly) decodes the AV1, and
-  `avif/av1.rs` holds the only `unsafe` code in photon-core. Every full decode goes through
-  `decode::decode_image`, which sniffs the `ftyp` box; calling `ImageReader` directly skips
+  `avif/av1.rs` and `turbo.rs` (libjpeg's error manager) hold the only `unsafe` code in
+  photon-core. Every full decode goes through `decode::decode_image`, which sniffs the `ftyp`
+  box; the uncropped thumbnail's preview goes through `decode::preview_decode`, which tries
+  libjpeg-turbo's scaled decode on a JPEG first and hands everything else to
+  `decode_image`'s own path. Calling `ImageReader` directly skips
   AVIF. The container's `irot`/`imir` are applied in the decoder, so an AVIF's stored
   orientation is always 1 and its EXIF orientation is ignored. `imir` axis 1 is left-to-right,
   as libavif reads it, whatever `zenavif-parse`'s doc comment says. A panic inside rav1d cannot

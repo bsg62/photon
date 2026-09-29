@@ -323,3 +323,70 @@ We specifically permit and encourage the use of this software as the basis of
 commercial products, provided that all warranty or liability claims are
 assumed by the product vendor.
 ```
+
+## libjpeg-turbo (mozjpeg)
+
+`crates/photon-core` depends on mozjpeg 0.10.13 and mozjpeg-sys 2.2.3
+(https://github.com/kornelski/mozjpeg-sys), which compile in mozjpeg 4.1.5
+(https://github.com/mozilla/mozjpeg), a fork of libjpeg-turbo, to decode a JPEG's thumbnail at
+a reduced scale. Licensed "IJG AND Zlib AND BSD-3-Clause". As the IJG licence asks of a program
+distributed as executable code: **this software is based in part on the work of the
+Independent JPEG Group.** The IJG terms are reproduced in full under jpeg-encoder, above. The
+Modified BSD licence, which covers libjpeg-turbo's own code, and the zlib licence, which covers
+its SIMD extensions, follow.
+
+```text
+Copyright (C)2009-2023 D. R. Commander.  All Rights Reserved.
+Copyright (C)2015 Viktor Szathmáry.  All Rights Reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+- Redistributions of source code must retain the above copyright notice,
+  this list of conditions and the following disclaimer.
+- Redistributions in binary form must reproduce the above copyright notice,
+  this list of conditions and the following disclaimer in the documentation
+  and/or other materials provided with the distribution.
+- Neither the name of the libjpeg-turbo Project nor the names of its
+  contributors may be used to endorse or promote products derived from this
+  software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS",
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ARE DISCLAIMED.  IN NO EVENT SHALL THE COPYRIGHT HOLDERS OR CONTRIBUTORS BE
+LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+POSSIBILITY OF SUCH DAMAGE.
+```
+
+```text
+Copyright 2009 Pierre Ossman <ossman@cendio.se> for Cendio AB
+Copyright (C) 2010, 2016, 2018-2019, D. R. Commander.
+Copyright (C) 2018, Matthieu Darbois.
+Copyright (C) 2018, Matthias Räncker.
+
+Based on the x86 SIMD extension for IJG JPEG library - version 1.02
+
+Copyright (C) 1999-2006, MIYASAKA Masaru.
+
+This software is provided 'as-is', without any express or implied
+warranty.  In no event will the authors be held liable for any damages
+arising from the use of this software.
+
+Permission is granted to anyone to use this software for any purpose,
+including commercial applications, and to alter it and redistribute it
+freely, subject to the following restrictions:
+
+1. The origin of this software must not be misrepresented; you must not
+   claim that you wrote the original software. If you use this software
+   in a product, an acknowledgment in the product documentation would be
+   appreciated but is not required.
+2. Altered source versions must be plainly marked as such, and must not be
+   misrepresented as being the original software.
+3. This notice may not be removed or altered from any source distribution.
+```
