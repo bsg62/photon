@@ -18,6 +18,14 @@ jiff = "0.2.35"
 kamadak-exif = "0.6.1"
 libc = "0.2"
 memchr = "2.8.3"
+# libjpeg-turbo, as the mozjpeg fork vendors it, for the scaled decode of a JPEG's preview
+# (`turbo.rs`). Default features on purpose: `unwinding` compiles libjpeg with `-fexceptions`,
+# which is what lets `turbo`'s error manager unwind out through it (without it a libjpeg error
+# aborts photon), and `nasm_simd` builds the x86 SIMD code wherever nasm is installed, which
+# the CI and release workflows make sure of.
+mozjpeg = "0.10.13"
+# The C declarations `turbo`'s error manager is built from; `mozjpeg` does not re-export them.
+mozjpeg-sys = "2.2.3"
 notify = "8.2.0"
 notify-debouncer-full = "0.7.0"
 parking_lot = "0.12.5"

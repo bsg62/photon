@@ -20,6 +20,9 @@ pub mod search;
 pub mod similar;
 pub mod sort;
 pub mod thumbs;
+// Nothing calls it until `decode.rs` takes the fast path; that change removes this allow.
+#[allow(dead_code)]
+mod turbo;
 pub mod video;
 pub mod watcher;
 pub mod xmp;

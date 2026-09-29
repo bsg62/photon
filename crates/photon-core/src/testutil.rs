@@ -68,6 +68,28 @@ pub fn jpeg_bytes(w: u32, h: u32) -> Vec<u8> {
     encode(&solid(w, h), ImageFormat::Jpeg)
 }
 
+/// A gradient under per-pixel noise, the same every time: a photo stand-in whose JPEG blocks
+/// all carry detail, where a solid colour's (`jpeg_bytes`) are empty and decode in no time.
+pub fn noisy_rgb(w: u32, h: u32) -> DynamicImage {
+    let mut seed = 0x9E37_79B9_7F4A_7C15u64;
+    DynamicImage::ImageRgb8(RgbImage::from_fn(w, h, |x, y| {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        let noise = (seed & 0x3F) as u32;
+        Rgb([
+            (x * 190 / w + noise) as u8,
+            (y * 190 / h + noise) as u8,
+            ((x + y) * 90 / (w + h) + noise) as u8,
+        ])
+    }))
+}
+
+/// [`noisy_rgb`] as a baseline JPEG.
+pub fn noisy_jpeg(w: u32, h: u32) -> Vec<u8> {
+    encode(&noisy_rgb(w, h), ImageFormat::Jpeg)
+}
+
 /// The sampling factors of a JPEG's first component, as its frame header writes them:
 /// `0x22` when colour is stored at half resolution each way (4:2:0), `0x11` when at full
 /// resolution (4:4:4). Walks the marker segments to the frame header; `None` if there is none.
