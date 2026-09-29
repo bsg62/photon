@@ -468,6 +468,7 @@ mod tests {
             Err(Error::Image(image::ImageError::Decoding(_)))
         ));
     }
+
     #[test]
     fn a_jpeg_larger_than_the_preview_is_decoded_by_libjpeg_turbo() {
         let dir = tempfile::tempdir().unwrap();
@@ -484,6 +485,11 @@ mod tests {
         let whole = noisy_jpeg(3300, 40);
         let cases = [
             ("small.jpg", noisy_jpeg(400, 40)),
+            // A photo already the preview's size is the one small input the size gate alone
+            // decides: its target is the photo itself, which 8/8 covers, so without the gate
+            // it would be decoded by libjpeg-turbo for nothing. A smaller one (`small.jpg`)
+            // is upscaled by `fitted`, which `scale_for` refuses either way.
+            ("edge.jpg", noisy_jpeg(1600, 40)),
             ("wide.png", encode(&noisy_rgb(3300, 40), ImageFormat::Png)),
             (
                 "grey.jpg",
