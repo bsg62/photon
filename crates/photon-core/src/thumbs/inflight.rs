@@ -1,15 +1,16 @@
 //! Remembers which photos a thumbnail worker was decoding when photon died, so a photo
 //! that kills the process is not decoded again on every launch.
 //!
-//! `catch_unwind` in `service.rs` contains a decoder that panics, but three ways of dying
+//! `catch_unwind` in `service.rs` contains a decoder that panics, but four ways of dying
 //! get past it:
 //! - a panic inside rav1d, which cannot unwind out of its `extern "C"` entry points and
 //!   aborts (see `avif/av1.rs`);
+//! - a memory fault inside libjpeg-turbo's C code (see `turbo.rs`);
 //! - an allocation failure, which aborts without unwinding;
 //! - the OOM killer.
 //!
 //! Each leaves the photo `Pending`, so the next launch queues it again and dies again, with
-//! nothing naming the file. A marker file per in-flight decode survives all three, where a
+//! nothing naming the file. A marker file per in-flight decode survives all four, where a
 //! panic hook would see only the first.
 //!
 //! A marker is turned into a **death record**, under its own directory, the moment `recover`

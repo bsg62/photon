@@ -19,10 +19,11 @@ kamadak-exif = "0.6.1"
 libc = "0.2"
 memchr = "2.8.3"
 # libjpeg-turbo, as the mozjpeg fork vendors it, for the scaled decode of a JPEG's preview
-# (`turbo.rs`). Default features on purpose: `unwinding` compiles libjpeg with `-fexceptions`,
-# which is what lets `turbo`'s error manager unwind out through it (without it a libjpeg error
-# aborts photon), and `nasm_simd` builds the x86 SIMD code wherever nasm is installed, which
-# the CI and release workflows make sure of.
+# (`turbo.rs`). Default features on purpose, for `nasm_simd`, which builds the x86 SIMD code
+# wherever nasm is installed (the CI and release workflows make sure of it). `mozjpeg` asks
+# `mozjpeg-sys` for `unwinding` (`-fexceptions`, where the C compiler has it) whatever the
+# features here say. What would break `turbo`'s error manager, which hands a file back by
+# unwinding out of libjpeg, is `panic = "abort"`: `turbo.rs` refuses to compile under it.
 mozjpeg = "0.10.13"
 # The C declarations `turbo`'s error manager is built from; `mozjpeg` does not re-export them.
 mozjpeg-sys = "2.2.3"

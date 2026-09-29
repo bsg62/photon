@@ -27,6 +27,13 @@ use image::{DynamicImage, RgbImage};
 use mozjpeg::Decompress;
 use mozjpeg_sys::{J_COLOR_SPACE, jpeg_common_struct, jpeg_error_mgr, jpeg_std_error};
 
+// A file is handed back by unwinding out of libjpeg's C frames (`refuse`, `on_message`), and
+// with `panic = "abort"` every such unwind would abort photon instead.
+#[cfg(panic = "abort")]
+compile_error!(
+    "photon_core::turbo hands a file back by unwinding out of libjpeg; with panic = \"abort\" every damaged or unsupported JPEG would abort photon"
+);
+
 /// `image`'s default allocation limit (`Limits::default().max_alloc`), applied to the photo's
 /// full size at RGBA8 as zune's path applies it. A header past it goes to zune, which refuses
 /// it as it always has, so the per-decode bound `MAX_WORKERS` is reasoned against
@@ -43,15 +50,30 @@ struct Refused;
 /// The picture is at least `target` and may be a pixel or so larger, since n/8 rounds up. The
 /// caller resizes it to exactly `target`.
 pub(crate) fn scaled_decode(bytes: &[u8], target: (u32, u32)) -> Option<DynamicImage> {
+    scaled_decode_within(bytes, target, MAX_DECODE_BYTES)
+}
+
+/// [`scaled_decode`] with the decode limit as an argument. It exists so a test can show the
+/// limit is applied with a small file: `MAX_DECODE_BYTES` itself would take a header
+/// claiming half a gigabyte of pixels.
+fn scaled_decode_within(bytes: &[u8], target: (u32, u32), max_bytes: u64) -> Option<DynamicImage> {
     // The whole lifecycle runs inside the one catch, including the drop that destroys
     // libjpeg's state. An unwind out of any of it is a file handed back, never a panic that
     // reaches the thumbnail service's own `catch_unwind` as a decoder bug.
-    catch_unwind(AssertUnwindSafe(|| decode(bytes, target)))
-        .ok()
-        .flatten()
+    match catch_unwind(AssertUnwindSafe(|| decode(bytes, target, max_bytes))) {
+        Ok(None) => {
+            tracing::debug!("libjpeg-turbo does not take this JPEG on; zune decodes it");
+            None
+        }
+        Ok(decoded) => decoded,
+        Err(_) => {
+            tracing::debug!("libjpeg-turbo warned or failed; zune decodes this JPEG");
+            None
+        }
+    }
 }
 
-fn decode(bytes: &[u8], target: (u32, u32)) -> Option<DynamicImage> {
+fn decode(bytes: &[u8], target: (u32, u32), max_bytes: u64) -> Option<DynamicImage> {
     // This decode must not save markers (`with_markers`) or crop or skip scanlines: the
     // vendored mozjpeg 4.1.5 lacks upstream libjpeg-turbo's security fixes for exactly those
     // paths. See the spec's "Build" section ("Security fixes").
@@ -64,7 +86,7 @@ fn decode(bytes: &[u8], target: (u32, u32)) -> Option<DynamicImage> {
     }
     let width = u32::try_from(jpeg.width()).ok()?;
     let height = u32::try_from(jpeg.height()).ok()?;
-    if !within_decode_limit(width, height) {
+    if !within_decode_limit(width, height, max_bytes) {
         return None;
     }
     jpeg.scale(scale_for((width, height), target)?);
@@ -76,8 +98,8 @@ fn decode(bytes: &[u8], target: (u32, u32)) -> Option<DynamicImage> {
     RgbImage::from_raw(out_width, out_height, pixels).map(DynamicImage::ImageRgb8)
 }
 
-fn within_decode_limit(width: u32, height: u32) -> bool {
-    u64::from(width) * u64::from(height) * 4 <= MAX_DECODE_BYTES
+fn within_decode_limit(width: u32, height: u32, max_bytes: u64) -> bool {
+    u64::from(width) * u64::from(height) * 4 <= max_bytes
 }
 
 /// The smallest n in 1..=8 whose n/8 scale covers `target` on both axes. `None` only when
@@ -104,8 +126,9 @@ fn error_mgr() -> jpeg_error_mgr {
     err
 }
 
-/// libjpeg's fatal error. It must not return: the `mozjpeg` reader aborts the process if it
-/// does. `resume_unwind` rather than `panic!`, because it runs no panic hook: a file handed
+/// libjpeg's fatal error. It must not return: libjpeg does not expect `error_exit` to (it would
+/// carry on in an undefined state), and the `mozjpeg` reader aborts the process if it does.
+/// `resume_unwind` rather than `panic!`, because it runs no panic hook: a file handed
 /// back is not a bug, and must not log as one.
 extern "C-unwind" fn refuse(_cinfo: &mut jpeg_common_struct) {
     resume_unwind(Box::new(Refused))
@@ -209,7 +232,9 @@ mod tests {
             "arithmetic"
         );
 
-        // A header claiming 60000x60000: past the limit before a byte is decoded.
+        // A header claiming 60000x60000 over 330x40's data: a no-crash check. The file is
+        // handed back by libjpeg's end-of-file warning whatever the limit says (it is past
+        // the limit too, but `a_photo_past_the_limit_is_handed_back` is what tests that).
         let mut huge = noisy_jpeg(330, 40);
         let sof = sof0(&huge);
         huge[sof + 5..sof + 9].copy_from_slice(&[0xEA, 0x60, 0xEA, 0x60]);
@@ -263,7 +288,17 @@ mod tests {
     #[test]
     fn the_decode_limit_is_images() {
         // 16384 x 8192 x 4 is exactly 512 MiB.
-        assert!(within_decode_limit(16384, 8192));
-        assert!(!within_decode_limit(16385, 8192));
+        assert!(within_decode_limit(16384, 8192, MAX_DECODE_BYTES));
+        assert!(!within_decode_limit(16385, 8192, MAX_DECODE_BYTES));
+    }
+
+    /// The limit is applied to the header's size, before the decode. A small file with the
+    /// limit set to its own size in bytes shows it, where a header claiming 512 MiB would
+    /// end on the end-of-file warning either way.
+    #[test]
+    fn a_photo_past_the_limit_is_handed_back() {
+        let bytes = noisy_jpeg(330, 40);
+        assert!(scaled_decode_within(&bytes, (160, 19), 330 * 40 * 4).is_some());
+        assert!(scaled_decode_within(&bytes, (160, 19), 330 * 40 * 4 - 1).is_none());
     }
 }

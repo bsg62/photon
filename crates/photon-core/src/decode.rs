@@ -174,14 +174,15 @@ pub(crate) fn preview_decode(path: &Path, max_edge: u32) -> Result<(DynamicImage
         && width.max(height) > max_edge
     {
         let target = fitted(width, height, max_edge);
-        match turbo::scaled_decode(&bytes, target) {
-            Some(img) => return Ok((resize_to(img, target), PreviewDecoder::Turbo)),
-            // Logged for the smoke checklist's count of fallbacks: a warning late in a file
-            // costs nearly a whole libjpeg decode before zune starts.
-            None => tracing::debug!(
-                path = %path.display(),
-                "libjpeg-turbo handed a JPEG back to zune"
-            ),
+        // The span is what gives turbo's own debug events their path, for the smoke
+        // checklist's count of fallbacks: a warning late in a file costs nearly a whole
+        // libjpeg decode before zune starts, and that count is how it is noticed.
+        let scaled = {
+            let _preview = tracing::debug_span!("preview", path = %path.display()).entered();
+            turbo::scaled_decode(&bytes, target)
+        };
+        if let Some(img) = scaled {
+            return Ok((resize_to(img, target), PreviewDecoder::Turbo));
         }
     }
     let img = fit_within(decode_from(Cursor::new(bytes), path)?, max_edge);
