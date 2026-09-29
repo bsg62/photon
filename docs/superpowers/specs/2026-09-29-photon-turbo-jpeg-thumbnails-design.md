@@ -214,13 +214,44 @@ back, which is how the smoke import counts fall-backs (see Testing).
   - If x86 with SIMD does not beat zune's decode-plus-fit on that runner, the change does not
     merge as designed. The fast path becomes arm64-only, through a target-specific dependency,
     and this spec is amended.
-- **Security fixes.** mozjpeg is a fork of libjpeg-turbo. Before merging, the implementer
-  records which libjpeg-turbo release the vendored mozjpeg tree is based on, and checks
-  libjpeg-turbo's decoder security fixes since that release against it. The package does not
-  state that version, and it was not established when this spec was written.
-  - If a known decoder vulnerability is unfixed in the vendored tree, the design switches to
-    the `turbojpeg` crate: the same wiring and tests, with its return codes in place of the
-    error manager, and cmake added beside nasm in the workflows.
+- **Security fixes (checked 2026-09-29).** The vendored tree is mozjpeg 4.1.5
+  (`mozilla/mozjpeg@c2bc351`), whose libjpeg-turbo base is 2.1.x (`ChangeLog.md` opens at
+  2.1.6; its five entries are the first five of upstream's 2.1.x branch, "2.1.6 ESR"). Read:
+  upstream `ChangeLog.md` from 2.1.91 to 3.2.1, the 2.1.x branch's 2.1.6 ESR section, and
+  upstream's security advisories (none published). None of upstream's decoder security fixes
+  after 2.1.5.1 is both missing from the vendored tree and reachable from 8-bit lossy
+  decompression as photon drives it (`Decompress::with_err(..).from_mem`, `scale`, `rgb`,
+  `read_scanlines`, no saved markers). Each fix is one of:
+  - **Present in the vendored tree.** `2e1b8a46` (`jpeg_crop_scanline`'s width with scaling
+    and 4x2/2x4 sampling, 3.0.0[4]): `jdapistd.c`, `jpeg_crop_scanline` divides by
+    `max_h_samp_factor * _min_DCT_scaled_size`. `42ce199c` (two-pass quantisation with RGB565,
+    3.0.0[3]): `jdmaster.c`, `master_selection`, and `jquant2.c`, `jinit_2pass_quantizer`, both
+    test `JCS_RGB565`. The smoothing fixes `eadd2436` and `a9d87361` (3.0.1[2], not security
+    fixes) are in `jdcoefct.c`'s `decompress_smooth_data`. `jdcoefct.c`, `jdmaster.c` and
+    `jquant2.c` are byte-identical to the 2.1.x branch's.
+  - **Absent, and only in libjpeg calls photon never makes.** `9046ae19` (quadratic time
+    saving many markers, 3.0.4[1]: `jdmarker.c`'s `save_marker`, which only
+    `jpeg_save_markers` installs, and the `mozjpeg` crate calls that only for `with_markers`).
+    `61709c85` (crop bounds overflow, 3.0.4[6]), `79dd838c` (crop with raw output, 3.2.0[3])
+    and `2646fa33` (merged upsampler overrun when cropping without SIMD, 3.2.1[7]), all in
+    `jpeg_crop_scanline`. `9e17b981` (use after free, 3.1.2[3]) and `7b5fee3f` (skip counts,
+    3.2.1[9]), both under `jpeg_skip_scanlines`. The `mozjpeg` crate calls neither
+    `jpeg_crop_scanline` nor `jpeg_skip_scanlines`. **So `turbo.rs` never calls
+    `with_markers`, and never reaches libjpeg's crop or skip through `mozjpeg::ffi`**: each is
+    a known bug left unfixed in this tree.
+  - **Absent, and needing 3.x's several precisions.** `3c17063e` (duplicate SOF, 3.0.4[2]) also
+    needs a source manager that returns `FALSE` at end of data, where the crate's inserts a
+    fake EOI; 2.1's 8-bit build refuses the 12-bit SOF (`jdinput.c`, `initial_setup`), and the
+    2.1.x branch did not take it. `e0e18dea` (3.1.1[1]) guards 3.x's per-precision methods.
+  - **Off the path by kind.** Lossless (CVE-2023-2804, 3.0.0[2]); 12-bit with quantisation and
+    RGB565 (3.2.1[8]); the TurboJPEG C and Java APIs (3.0.0[5], 3.0.2[1], 3.0.4[7-9],
+    3.1.3[1-3], 3.1.4[1,5,6,8], 3.2.1[6,10]); jpegtran, djpeg, TJBench and the image loaders
+    (3.0.3[4], 3.1.2[1], 3.1.4[4], 3.2.0[2,4], 3.2.1[4-5], CVE-2026-75466); the compressor
+    (3.0.0[7], 3.0.1[3], 3.1.4[3,7]).
+  - **Without a ChangeLog entry**, on the 2.1.x branch: `68321702` (`jmemmgr.c` sizes in
+    `size_t`; a UBSan report, 64-bit `long` on Linux and macOS, and on Windows the 512 MiB
+    header limit keeps a coefficient array far below 2^31 bytes) and `3e6e5673` (`jerror.c`
+    zeroes the error manager, which photon's `error_mgr` already does).
 
 ## Documentation and notices
 
