@@ -46,7 +46,8 @@ Fixed in the same PR: every committed write rebuilds through `Engine::refresh_af
 ## 5. Smaller ideas the audit raised but nothing has picked up
 
 - **Keyword order in search text.** In the search haystack, keywords now follow the query's row order (`search_tags` in `library/items.rs`). This only matters for a quoted phrase spanning two keywords. `ORDER BY e.item_id, e.tag` would make it deterministic again, at the cost of a sort over the keyword rows.
-- **The JPEG decode is now the largest stage of a thumbnail,** about 130 ms of about 140 ms at 24 MP. zune-jpeg has no DCT scaling. `jpeg-decoder`'s `scale()` could decode at 1/2 or 1/4 for previews. Benchmark it first: its entropy decoder is slower, so 1/2 may be a wash.
+- ~~**The JPEG decode is now the largest stage of a thumbnail,** about 130 ms of about 140 ms at 24 MP. zune-jpeg has no DCT scaling. `jpeg-decoder`'s `scale()` could decode at 1/2 or 1/4 for previews. Benchmark it first: its entropy decoder is slower, so 1/2 may be a wash.~~ Measured and dropped: it is a wash below 45 MP (section 8).
+- **foldhash for the other hash maps.** The grid index and the tag counts moved from std's SipHash to foldhash (`tag_counts_100k` −10%, `startup_grid_100k` −2.7%); nothing else was measured. The likeliest next one is `similar::group`: a whole-library regroup puts four band keys per photo into `buckets` (1.2M inserts at 300k) and probes up to sixteen neighbours per bucket, on a pass measured at about half a second. Its partition does not depend on the map's order, since union-find joins the same components whichever pair it meets first.
 - **Duplicate candidates are chosen by byte size alone,** so roughly 5–10% of a large library shares a size by coincidence and gets read in full once. A first-64-KiB hash as a pre-filter would cut that read. It needs a schema column, which makes it a minor release.
 - **Thumbnail workers** stay capped at 8 (`MAX_WORKERS`, `thumbs/service.rs`). After #116 each worker needs about half the memory, so a RAM-derived cap is possible. The cap was also about the disk, so measure before raising it.
 
@@ -111,6 +112,9 @@ These came out of the audit on 2026-09-27 and are not in any PR. They are ordere
 | Skipping unchanged directories by their mtime | An in-place edit doesn't change the directory's mtime. | |
 | Caching parsed INIs by size and mtime | FAT's 2-second mtime resolution makes it unsafe. | |
 | `DynamicImage::thumbnail` for the preview shrink | 77–106 ms, no better than the resize it would replace. `fast_image_resize` is 7 ms. | commit for #116 item 11 |
+| `jpeg-decoder`'s DCT-scaled decode for the preview | Decode and fit to 1600 px: 12 MP 70.8 → 68.9 ms, 24 MP 125.6 → 120.3 ms, 45 MP 235.8 → 202.6 ms. Entropy decoding dominates: a 1/8-scale decode of the 24 MP photo still takes 101 ms, against zune's 112 ms for the whole photo, and a full `jpeg-decoder` decode is 1.4× slower than zune. Only 45 MP photos gain. | library survey, 2026-09-29 |
+| `memchr::memmem::Finder` for search matching | 1.5–4.5× faster than `str::contains` at matching, but matching is about 1 ms of the 100 ms `search_100k`. The rest is SQLite rows and building the haystacks. | library survey, 2026-09-29 |
+| mimalloc as the global allocator | No change on macOS for decode, fit and both WebP encodes: 5.7 photos/s on one thread, 31.8 against 31.2 on eight. It is also a C library. Linux is unmeasured; there glibc hands each 72 MB decode buffer back to the OS. | library survey, 2026-09-29 |
 
 ## 9. Release and workflow notes
 

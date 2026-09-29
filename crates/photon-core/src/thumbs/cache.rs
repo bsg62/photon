@@ -136,6 +136,23 @@ impl ThumbCache {
         Ok(())
     }
 
+    /// Decodes a cached thumbnail with libwebp, the library that wrote it, rather than with
+    /// `image`'s pure-Rust `image-webp`. The pixels are the same - the look-alike pass stored
+    /// every `percep_hash` before this from `image-webp`'s decode, and a new hash has to be
+    /// comparable with those (`reading_gives_image_webps_pixels` holds it) - and the decode
+    /// is about three times faster: ~0.10 ms against ~0.32 for a grid thumbnail. That pass
+    /// reads every grid thumbnail in the library on its first run over it.
+    pub(crate) fn read(&self, fp: u64, size: ThumbSize) -> Result<DynamicImage> {
+        let bytes = fs::read(self.path_for(fp, size))?;
+        // `None` is libwebp refusing the file, or an animation, which photon never writes.
+        webp::Decoder::new(&bytes)
+            .decode()
+            .map(|img| img.to_image())
+            .ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::InvalidData, "not a still WebP").into()
+            })
+    }
+
     /// Removes thumbnails whose fingerprint is not in `live`. Returns the number of files removed.
     ///
     /// GC is best-effort: an unreadable directory entry or a file that can't be removed
@@ -268,6 +285,7 @@ fn encode_webp(encoder: &webp::Encoder<'_>) -> Result<webp::WebPMemory> {
 mod tests {
     use super::*;
     use crate::testutil::{jpeg_bytes, write_file};
+    use image::ImageFormat;
     use std::time::Duration;
 
     fn dims(path: &Path) -> (u32, u32) {
@@ -304,6 +322,79 @@ mod tests {
         assert!(cache.is_complete(42));
         assert_eq!(dims(&cache.path_for(42, ThumbSize::Grid)), (256, 128));
         assert_eq!(dims(&cache.path_for(42, ThumbSize::Preview)), (800, 400));
+    }
+
+    /// `read` swapped `image-webp` for libwebp under hashes already stored, so the two have
+    /// to agree to the byte, not merely look alike. The fixtures are where two decoders part
+    /// if they part anywhere: noise, so every block carries detail; odd dimensions, whose
+    /// last chroma sample covers a single pixel; a thumbnail kept at its source size and one
+    /// shrunk; and an alpha channel, which `write_webp` encodes on a path of its own.
+    #[test]
+    fn reading_gives_image_webps_pixels() {
+        let mut seed = 0x9E37_79B9_7F4A_7C15u64;
+        let mut noise = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed & 0x3F) as u8
+        };
+        let rgb = |w: u32, h: u32, noise: &mut dyn FnMut() -> u8| {
+            DynamicImage::ImageRgb8(image::RgbImage::from_fn(w, h, |x, y| {
+                let n = noise();
+                image::Rgb([
+                    (x * 190 / w) as u8 + n,
+                    (y * 190 / h) as u8 + n,
+                    ((x + y) * 90 / (w + h)) as u8 + n,
+                ])
+            }))
+        };
+        let rgba = DynamicImage::ImageRgba8(image::RgbaImage::from_fn(301, 199, |x, y| {
+            let n = noise();
+            image::Rgba([
+                (x % 256) as u8,
+                (y % 256) as u8,
+                n * 3,
+                (x + y) as u8 | 0x0F,
+            ])
+        }));
+        let fixtures = [
+            ("wide.jpg", rgb(800, 400, &mut noise), ImageFormat::Jpeg),
+            ("odd.jpg", rgb(333, 517, &mut noise), ImageFormat::Jpeg),
+            ("shrunk.jpg", rgb(1901, 1001, &mut noise), ImageFormat::Jpeg),
+            ("alpha.png", rgba, ImageFormat::Png),
+        ];
+
+        let dir = tempfile::tempdir().unwrap();
+        let cache = ThumbCache::new(dir.path().join("cache"));
+        for (fp, (name, img, format)) in (1u64..).zip(&fixtures) {
+            let src = write_file(dir.path(), name, &crate::testutil::encode(img, *format));
+            cache.generate(&src, 1, fp).unwrap();
+            for size in ThumbSize::ALL {
+                let ours = cache.read(fp, size).unwrap();
+                let theirs = image::open(cache.path_for(fp, size)).unwrap();
+                // The alpha fixture has to reach `from_rgba`, or it proves nothing about it.
+                assert_eq!(
+                    theirs.color().has_alpha(),
+                    *format == ImageFormat::Png,
+                    "{name}"
+                );
+                assert_eq!(ours.color(), theirs.color(), "{name} {size:?}");
+                let dims = |img: &DynamicImage| (img.width(), img.height());
+                assert_eq!(dims(&ours), dims(&theirs), "{name} {size:?}");
+                assert!(ours.as_bytes() == theirs.as_bytes(), "{name} {size:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn reading_a_missing_or_foreign_thumbnail_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = ThumbCache::new(dir.path().join("cache"));
+        assert!(cache.read(3, ThumbSize::Grid).is_err());
+        let path = cache.path_for(3, ThumbSize::Grid);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, jpeg_bytes(16, 16)).unwrap();
+        assert!(cache.read(3, ThumbSize::Grid).is_err());
     }
 
     #[test]

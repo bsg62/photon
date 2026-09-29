@@ -3246,6 +3246,7 @@ dependencies = [
  "criterion",
  "dunce",
  "fast_image_resize",
+ "foldhash 0.2.0",
  "image",
  "jiff",
  "jpeg-encoder",

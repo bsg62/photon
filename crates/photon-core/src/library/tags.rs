@@ -9,7 +9,6 @@ use super::Library;
 use crate::{Error, Result};
 use rusqlite::{OptionalExtension, params};
 use serde::Serialize;
-use std::collections::HashMap;
 
 /// One change the user made. `target` is the new name, or `None` for a removed tag.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -131,6 +130,11 @@ impl Library {
     /// live photos and the hidden ones are two scans of partial indexes (~10 ms), and each
     /// row is one hash lookup: ~220 ms. See `tag_counts_100k`.
     ///
+    /// The maps are foldhash's rather than std's SipHash: `tag_counts_100k` 68.9 -> 61.9 ms.
+    /// The names are read from photo files, which anyone could have written, and foldhash
+    /// makes no promise against a set of names crafted to collide. It is seeded per process,
+    /// and what such a set could do is slow this count; the counts it returns stay right.
+    ///
     /// The hidden set is read as `hidden = 1`, where the query before tested `hidden = 0`:
     /// the same split, since the column only ever holds 0 or 1 - every writer binds a
     /// `bool`, and `items_hidden` relies on it too.
@@ -141,14 +145,14 @@ impl Library {
         // was never in.
         let tx = conn.unchecked_transaction()?;
         // Every live photo, mapped to whether it is hidden.
-        let mut hidden: HashMap<i64, bool> = HashMap::new();
+        let mut hidden = foldhash::HashMap::<i64, bool>::default();
         for id in tx.prepare(LIVE_IDS)?.query_map([], |r| r.get(0))? {
             hidden.insert(id?, false);
         }
         for id in tx.prepare(HIDDEN_IDS)?.query_map([], |r| r.get(0))? {
             hidden.insert(id?, true);
         }
-        let mut photos: HashMap<String, Vec<i64>> = HashMap::new();
+        let mut photos = foldhash::HashMap::<String, Vec<i64>>::default();
         let mut stmt = tx.prepare(&format!("SELECT item_id, tag FROM ({EFFECTIVE_TAGS})"))?;
         let mut rows = stmt.query([])?;
         while let Some(r) = rows.next()? {

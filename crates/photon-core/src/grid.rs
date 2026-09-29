@@ -1,6 +1,5 @@
 use crate::media::MediaKind;
 use serde::{Deserialize, Serialize, Serializer};
-use std::collections::HashMap;
 
 /// Which set of photos the grid shows.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -158,7 +157,7 @@ pub struct GridIndex {
     entries: Vec<GridEntry>,
     sections: Vec<Section>,
     folders: Vec<FolderTally>,
-    positions: HashMap<i64, usize>,
+    positions: foldhash::HashMap<i64, usize>,
     layout: Layout,
 }
 
@@ -168,8 +167,12 @@ impl GridIndex {
     pub fn build(entries: Vec<GridEntry>, layout: Layout) -> Self {
         let mut sections: Vec<Section> = Vec::new();
         let mut folders: Vec<FolderTally> = Vec::new();
-        let mut tally_of: HashMap<i64, usize> = HashMap::new();
-        let mut positions = HashMap::with_capacity(entries.len());
+        // foldhash, not std's SipHash, for maps with a key per photo: `startup_grid_100k`
+        // 58.9 -> 57.3 ms. The ids are the library's own, so there is no hostile input for
+        // SipHash's flooding resistance to guard against.
+        let mut tally_of = foldhash::HashMap::<i64, usize>::default();
+        let mut positions =
+            foldhash::HashMap::with_capacity_and_hasher(entries.len(), Default::default());
         let section_folder = |entry: &GridEntry| match layout {
             Layout::Folders => Some(entry.folder_id),
             Layout::Flat => None,
