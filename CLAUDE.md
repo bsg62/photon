@@ -580,13 +580,18 @@ action in `mock.js`.
   SQLite, libwebp and libjpeg-turbo (the mozjpeg crate, for the scaled decode of a JPEG's
   preview and the encode of an edited photo's full-size render, `photon_core::turbo`). Nothing
   wrapping a C/C++ SDK: that bar is what made packaging tractable on three platforms, and it is
-  why XMP and INI parsing are hand-rolled or pure-Rust. nasm is a build tool on the CI and release runners only, for libjpeg-turbo's x86
-  SIMD code; a build without it still works, as plain C. A new C dependency is a spec-level
-  decision (`2026-09-29-photon-turbo-jpeg-thumbnails-design.md` is the worked example).
+  why XMP and INI parsing are hand-rolled or pure-Rust. nasm is a build tool on the CI and
+  release runners only, for libjpeg-turbo's x86 SIMD code and rav1d's x86-64 assembly; a build
+  without it still works, as plain C and plain Rust, because rav1d's assembly is the opt-in
+  `avif-asm` feature (it fails to build without nasm rather than falling back). Release turns
+  it on for every x86-64 installer and never for arm64, where rav1d 1.1.0's published assembly
+  does not build; CI tests photon-core through it. A feature cannot be limited to a target, so
+  that is the workflows' job, not Cargo's. A new C dependency is a spec-level decision
+  (`2026-09-29-photon-turbo-jpeg-thumbnails-design.md` is the worked example).
 - **AVIF is decoded in `photon_core::avif`, not by `image`**, whose AVIF decoder is dav1d (C).
-  `zenavif-parse` reads the container, `rav1d` (built without its assembly) decodes the AV1, and
-  `avif/av1.rs` and `turbo.rs` (libjpeg's error manager) hold the only `unsafe` code in
-  photon-core. Every full decode goes through `decode::decode_image`, which sniffs the `ftyp`
+  `zenavif-parse` reads the container, `rav1d` (its assembly only under `avif-asm`, above)
+  decodes the AV1, and `avif/av1.rs` and `turbo.rs` (libjpeg's error manager) hold the only
+  `unsafe` code in photon-core. Every full decode goes through `decode::decode_image`, which sniffs the `ftyp`
   box; the uncropped thumbnail's preview goes through `decode::preview_decode`, which tries
   libjpeg-turbo's scaled decode on a JPEG first and hands everything else to
   `decode_image`'s own path. Calling `ImageReader` directly skips

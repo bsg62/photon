@@ -21,7 +21,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libsoup-3.0-dev librsvg2-dev libxdo-dev libssl-dev
       # libjpeg-turbo's x86 SIMD code is nasm assembly. Without nasm, mozjpeg-sys builds plain
-      # C instead, silently, so the next step fails by name if nasm is missing.
+      # C instead, silently, so the next step fails by name if nasm is missing. rav1d's x86-64
+      # assembly (`avif-asm`) needs it too, and would fail the build without it anyway.
       - name: Install nasm
         shell: bash
         run: |
@@ -39,6 +40,16 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
+      # rav1d's x86-64 assembly (`avif-asm`) is off above, as in a local build without nasm,
+      # and on in every x86-64 installer the release workflow builds: this runs photon-core's
+      # tests through it. The macOS runners are arm64, where it does not build (photon-core's
+      # Cargo.toml), so there it is only built, for the x86-64 dmg release.yml cross-compiles.
+      - if: runner.os != 'macOS'
+        run: cargo test -p photon-core --features avif-asm
+      - if: runner.os == 'macOS'
+        run: |
+          rustup target add x86_64-apple-darwin
+          cargo build -p photon-core --features avif-asm --target x86_64-apple-darwin
       # Reads the three real version files (xtask's unit tests only cover string literals),
       # so drift fails on the pull request rather than after a release tag already exists.
       - if: runner.os == 'Linux'

@@ -21,6 +21,9 @@ path = "src/main.rs"
 # `cargo build --release` produces a binary that embeds no frontend and tries to load the
 # dev server instead: a blank window with no error.
 custom-protocol = ["tauri/custom-protocol"]
+# rav1d's assembly for AVIF, x86-64 targets only (photon-core's `avif-asm` says why, and
+# why it is opt-in). The release workflow builds every x86-64 installer with it.
+avif-asm = ["photon-core/avif-asm"]
 
 [build-dependencies]
 tauri-build = { version = "2.6.3", features = [] }

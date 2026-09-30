@@ -31,7 +31,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libsoup-3.0-dev librsvg2-dev libxdo-dev libssl-dev
       # libjpeg-turbo's x86 SIMD code is nasm assembly. Without nasm, mozjpeg-sys builds plain
-      # C instead, silently, so the next step fails by name if nasm is missing.
+      # C instead, silently, so the next step fails by name if nasm is missing. rav1d's x86-64
+      # assembly (`avif-asm`) needs it too, and would fail the build without it anyway.
       - name: Install nasm
         shell: bash
         run: |
@@ -49,7 +50,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: npm ci
-      - run: npm run tauri build -- --bundles deb,appimage --ci
+      - run: npm run tauri build -- --features avif-asm --bundles deb,appimage --ci
       - name: Verify the artifacts
         run: |
           set -euo pipefail
@@ -112,15 +113,20 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # `avif-asm` (rav1d's assembly) is x86-64 only: its arm64 assembly does not build
+          # from the published crate (photon-core's Cargo.toml).
           - target: aarch64-apple-darwin
             name: photon-macos-aarch64
+            build-args: ''
           - target: x86_64-apple-darwin
             name: photon-macos-x86_64
+            build-args: --features avif-asm
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v5
       # libjpeg-turbo's x86 SIMD code is nasm assembly. Without nasm, mozjpeg-sys builds plain
-      # C instead, silently, so the next step fails by name if nasm is missing.
+      # C instead, silently, so the next step fails by name if nasm is missing. rav1d's x86-64
+      # assembly (`avif-asm`) needs it too, and would fail the build without it anyway.
       - name: Install nasm
         shell: bash
         run: |
@@ -142,7 +148,7 @@ jobs:
         with:
           key: ${{ matrix.target }}
       - run: npm ci
-      - run: npm run tauri build -- --target ${{ matrix.target }} --bundles dmg --ci
+      - run: npm run tauri build -- --target ${{ matrix.target }} ${{ matrix.build-args }} --bundles dmg --ci
       - name: Verify the artifacts
         run: |
           set -euo pipefail
@@ -166,7 +172,8 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       # libjpeg-turbo's x86 SIMD code is nasm assembly. Without nasm, mozjpeg-sys builds plain
-      # C instead, silently, so the next step fails by name if nasm is missing.
+      # C instead, silently, so the next step fails by name if nasm is missing. rav1d's x86-64
+      # assembly (`avif-asm`) needs it too, and would fail the build without it anyway.
       - name: Install nasm
         shell: bash
         run: |
@@ -184,7 +191,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: npm ci
-      - run: npm run tauri build -- --bundles msi --ci
+      - run: npm run tauri build -- --features avif-asm --bundles msi --ci
       - name: Verify the artifacts
         shell: bash
         run: |

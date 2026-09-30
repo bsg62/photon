@@ -41,6 +41,20 @@ webp = "0.3.1"
 xxhash-rust = { version = "0.8.18", features = ["xxh3"] }
 zenavif-parse = "0.6.2"
 
+[features]
+# rav1d's hand-written assembly (dav1d's), which decodes a 12 MP AVIF's thumbnail in 226 ms
+# where its Rust takes 521, measured on x86-64. AV1 decoding is bit-exact, so it changes how
+# fast a photo decodes, never what it decodes to.
+#
+# For x86-64 targets only: rav1d 1.1.0's published package lacks `src/arm/asm-offsets.h`, so
+# its arm64 assembly does not build, and turning this on for an arm64 target fails there.
+# (A feature cannot be limited to a target, and Cargo refuses the same crate declared under a
+# second name for one, so the release workflow passes it only for x86-64 targets.)
+#
+# Opt-in because the x86 assembly needs nasm, and unlike mozjpeg-sys, rav1d fails to build
+# without it rather than falling back to plain code: a local build with no nasm keeps working.
+avif-asm = ["rav1d/asm"]
+
 [dev-dependencies]
 criterion = "0.8.2"
 # Test fixtures only (a progressive and a CMYK JPEG, `turbo.rs`), which libjpeg-turbo's
