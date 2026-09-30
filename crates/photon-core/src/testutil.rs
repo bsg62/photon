@@ -107,6 +107,30 @@ pub fn jpeg_luma_sampling(bytes: &[u8]) -> Option<u8> {
     None
 }
 
+/// The DC step of a JPEG's luma quantisation table (table 0, 8-bit), which the quality the
+/// encoder was given decides: 16 at quality 50, 3 at 92, 1 at 100 (libjpeg's
+/// `jpeg_quality_scaling`). `None` if the file has no such table.
+pub fn jpeg_luma_dc_step(bytes: &[u8]) -> Option<u8> {
+    let mut at = 2;
+    while at + 4 <= bytes.len() && bytes[at] == 0xFF {
+        let marker = bytes[at + 1];
+        let len = u16::from_be_bytes([bytes[at + 2], bytes[at + 3]]) as usize;
+        if marker == 0xDB {
+            // One segment can hold several tables: precision and id, then 64 steps each.
+            let mut table = at + 4;
+            while table < at + 2 + len {
+                let (precision, id) = (bytes[table] >> 4, bytes[table] & 0x0F);
+                if precision == 0 && id == 0 {
+                    return bytes.get(table + 1).copied();
+                }
+                table += 1 + 64 * (usize::from(precision) + 1);
+            }
+        }
+        at += 2 + len;
+    }
+    None
+}
+
 pub fn png_bytes(w: u32, h: u32) -> Vec<u8> {
     encode(&solid(w, h), ImageFormat::Png)
 }

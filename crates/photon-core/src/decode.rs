@@ -210,7 +210,27 @@ pub(crate) fn fit_within_by(img: DynamicImage, max_edge: u32, filter: FilterType
         return img;
     }
     let size = fitted(img.width(), img.height(), max_edge);
-    resize_by(img, size, filter)
+    resize_by(&img, size, filter)
+}
+
+/// `img` shrunk to fit within `max_edge`, each pixel the average of the box of source pixels
+/// it covers; an image already that small is copied as it is. For a small picture made from
+/// one a few times larger that is kept as well - the grid thumbnail from the preview - so it
+/// borrows rather than takes the source.
+///
+/// The box is what `image`'s `thumbnail` averaged over, which made every grid thumbnail
+/// cached before this, so the two are the same picture to `similar::same_picture` (a test in
+/// `thumbs::cache` holds that). `thumbnail` is scalar; this takes `fast_image_resize`'s SIMD
+/// path, about 0.2 ms for a 1600 px preview where `thumbnail` took 3.2.
+pub(crate) fn shrink_within(img: &DynamicImage, max_edge: u32) -> DynamicImage {
+    if img.width().max(img.height()) <= max_edge {
+        return img.clone();
+    }
+    resize_by(
+        img,
+        fitted(img.width(), img.height(), max_edge),
+        FilterType::Box,
+    )
 }
 
 /// `img` resized to exactly `size` with [`fit_within`]'s filter. It is for a picture decoded
@@ -220,10 +240,10 @@ fn resize_to(img: DynamicImage, size: (u32, u32)) -> DynamicImage {
     if (img.width(), img.height()) == size {
         return img;
     }
-    resize_by(img, size, FilterType::Bilinear)
+    resize_by(&img, size, FilterType::Bilinear)
 }
 
-fn resize_by(img: DynamicImage, (width, height): (u32, u32), filter: FilterType) -> DynamicImage {
+fn resize_by(img: &DynamicImage, (width, height): (u32, u32), filter: FilterType) -> DynamicImage {
     let mut out = DynamicImage::new(width, height, img.color());
     // Alpha is resampled as it is stored, as `image` did, rather than premultiplied: that
     // would take a premultiplied copy of the whole source first, a second full-size buffer
@@ -231,7 +251,7 @@ fn resize_by(img: DynamicImage, (width, height): (u32, u32), filter: FilterType)
     let options = ResizeOptions::new()
         .resize_alg(ResizeAlg::Convolution(filter))
         .use_alpha(false);
-    match Resizer::new().resize(&img, &mut out, &options) {
+    match Resizer::new().resize(img, &mut out, &options) {
         Ok(()) => out,
         // Only a pixel layout the crate does not know refuses (`DynamicImage` is
         // non-exhaustive, so a future `image` can add one): slower, but still a thumbnail.

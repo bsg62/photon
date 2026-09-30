@@ -255,42 +255,16 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-## jpeg-encoder
+## libjpeg-turbo (mozjpeg)
 
-`crates/photon-core` depends on jpeg-encoder 0.7.1 (https://github.com/vstroebel/jpeg-encoder)
-to encode the full-size picture of an edited photo, for the viewer and for an export. Licensed
-"(MIT OR Apache-2.0) AND IJG": its forward DCT (`src/fdct.rs`, `src/avx2/fdct.rs`) is ported
-from the Independent JPEG Group's code by way of mozjpeg. As that licence asks of a program
+`crates/photon-core` depends on mozjpeg 0.10.13 and mozjpeg-sys 2.2.3
+(https://github.com/kornelski/mozjpeg-sys), which compile in mozjpeg 4.1.5
+(https://github.com/mozilla/mozjpeg), a fork of libjpeg-turbo, to decode a JPEG's thumbnail at
+a reduced scale, and to encode the full-size picture of an edited photo, for the viewer and for
+an export. Licensed "IJG AND Zlib AND BSD-3-Clause". As the IJG licence asks of a program
 distributed as executable code: **this software is based in part on the work of the
-Independent JPEG Group.** The crate's MIT licence and the IJG terms follow in full.
-
-```text
-Copyright (c) 2021 Volker Ströbel <volkerstroebel@mysurdity.de>
-
-Permission is hereby granted, free of charge, to any
-person obtaining a copy of this software and associated
-documentation files (the "Software"), to deal in the
-Software without restriction, including without
-limitation the rights to use, copy, modify, merge,
-publish, distribute, sublicense, and/or sell copies of
-the Software, and to permit persons to whom the Software
-is furnished to do so, subject to the following
-conditions:
-
-The above copyright notice and this permission notice
-shall be included in all copies or substantial portions
-of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
-ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
-TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
-PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
-SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
-IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-DEALINGS IN THE SOFTWARE.
-```
+Independent JPEG Group.** The IJG terms, the Modified BSD licence, which covers libjpeg-turbo's
+own code, and the zlib licence, which covers its SIMD extensions, follow.
 
 ```text
 This software is copyright (C) 1991-2020, Thomas G. Lane, Guido Vollbeding.
@@ -323,17 +297,6 @@ We specifically permit and encourage the use of this software as the basis of
 commercial products, provided that all warranty or liability claims are
 assumed by the product vendor.
 ```
-
-## libjpeg-turbo (mozjpeg)
-
-`crates/photon-core` depends on mozjpeg 0.10.13 and mozjpeg-sys 2.2.3
-(https://github.com/kornelski/mozjpeg-sys), which compile in mozjpeg 4.1.5
-(https://github.com/mozilla/mozjpeg), a fork of libjpeg-turbo, to decode a JPEG's thumbnail at
-a reduced scale. Licensed "IJG AND Zlib AND BSD-3-Clause". As the IJG licence asks of a program
-distributed as executable code: **this software is based in part on the work of the
-Independent JPEG Group.** The IJG terms are reproduced in full under jpeg-encoder, above. The
-Modified BSD licence, which covers libjpeg-turbo's own code, and the zlib licence, which covers
-its SIMD extensions, follow.
 
 ```text
 Copyright (C)2009-2023 D. R. Commander.  All Rights Reserved.
