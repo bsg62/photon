@@ -16,6 +16,12 @@ publishing it.
   means a warning is sending them back after a nearly whole decode, and that goes back to
   the spec before release. Greyscale and CMYK files log "does not take this JPEG on" instead:
   that is a deliberate hand-back, expected, and not counted.
+- [ ] **Edited photos through libjpeg-turbo's encoder, grid tiles through a box shrink.** Crop
+  and turn a large camera JPEG, open it at 100% and pan around: no banding, blocking or colour
+  fringes the previous release did not show, and it appears noticeably sooner. Export it with
+  edits applied and open the copy in another viewer: the same picture, about the same file
+  size as the previous release made. A fresh import's grid tiles look as sharp as the previous
+  release's, with no moiré on fine patterns (fabric, fences, brickwork).
 - [ ] In a large library, drag the grid's scrollbar (or the year strip) from one end to the other and let go: the photos on screen fill in within a moment of stopping. A slow wheel scroll shows each row's thumbnails as it arrives, with no wait, and End, Home and a sidebar folder click fill the screen at once. Open a photo, step through a few with the arrow keys, close it: the grid behind shows its thumbnails straight away.
 - [ ] In a large library whose thumbnails are all cached, spin the mouse wheel as fast as it goes, then flick a trackpad hard, both down and back up: rows come onto the screen with their photos already in place, with no blank tiles filling in as they arrive. Only a scrollbar or year-strip drag, fast enough that whole screens go by at once, leaves the screen blank until it stops. End, Home and a folder click show cached photos at once, with no fade; on a fresh import, where thumbnails are still being made, each one still fades in as it arrives.
 - [ ] **A library taller than the browser allows** (`cargo run -p xtask -- scroll-probe` checks

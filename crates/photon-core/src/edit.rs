@@ -362,38 +362,30 @@ pub fn render_full(
     Ok((bytes, mime))
 }
 
-/// Encodes with `jpeg-encoder` rather than `image`'s own encoder, which is scalar and only
-/// writes 4:4:4, and was the slowest stage of rendering an edited photo - slower than the
-/// decode. This one is pure Rust and takes an AVX2 path, through `std::arch`, where the CPU
-/// has one. Subsampled colour is averaged over each 2x2 block, as libjpeg does, rather than
-/// taken from the block's top-left pixel, the crate's default, which frays coloured edges.
+/// Encodes with libjpeg-turbo's compressor (`turbo::encode`), which with SIMD writes a
+/// 24 MP render about four times as fast as `jpeg-encoder`, the pure-Rust encoder it
+/// replaced (126 against 34 ms at 4:2:0, measured on x86-64 with nasm), for the same bytes to
+/// within a hundredth of a percent. Encoding was about 40% of rendering an edited photo.
+/// Without its SIMD - an x86 build on a machine with no nasm, which a release never is - it
+/// is about a third *slower* than `jpeg-encoder` was. `image`'s own encoder, before either,
+/// was scalar and wrote only 4:4:4. Subsampled colour is averaged over each 2x2 block, rather
+/// than taken from the block's top-left pixel, which frays coloured edges.
 pub fn encode_jpeg(
     img: &image::RgbImage,
     quality: u8,
     chroma: Chroma,
     out: &mut Vec<u8>,
 ) -> Result<()> {
-    use jpeg_encoder::{ChromaSubsamplingMethod, ColorType, Encoder, SamplingFactor};
-    let failed = |err: Box<dyn std::error::Error + Send + Sync>| {
+    if crate::turbo::encode(img, quality, chroma, out) {
+        return Ok(());
+    }
+    Err(
         image::ImageError::Encoding(image::error::EncodingError::new(
             image::ImageFormat::Jpeg.into(),
-            err,
+            "libjpeg refused the picture: wider or taller than a JPEG can be, or out of memory",
         ))
-    };
-    let (Ok(width), Ok(height)) = (u16::try_from(img.width()), u16::try_from(img.height())) else {
-        return Err(failed("wider or taller than a JPEG can be".into()).into());
-    };
-    let mut encoder = Encoder::new(out, quality);
-    match chroma {
-        Chroma::Half => {
-            encoder.set_sampling_factor(SamplingFactor::R_4_2_0);
-            encoder.set_chroma_subsampling_method(ChromaSubsamplingMethod::Average);
-        }
-        Chroma::Full => encoder.set_sampling_factor(SamplingFactor::R_4_4_4),
-    }
-    encoder
-        .encode(img.as_raw(), width, height, ColorType::Rgb)
-        .map_err(|err| failed(err.into()).into())
+        .into(),
+    )
 }
 
 /// The photo as shown: decoded at full resolution, turned upright by its EXIF orientation,
@@ -752,6 +744,44 @@ mod tests {
         };
         assert_eq!(sampling(Chroma::Half), Some(0x22));
         assert_eq!(sampling(Chroma::Full), Some(0x11));
+    }
+
+    /// The quality is the caller's, and it is what decides the file's quantisation. Checked
+    /// in the file rather than by its size, which says nothing about which quality was used.
+    #[test]
+    fn the_quality_asked_for_is_the_quality_written() {
+        let img = numbered_of(64, 48).to_rgb8();
+        for (quality, step) in [(50, 16), (FULL_QUALITY, 3), (100, 1)] {
+            let mut bytes = Vec::new();
+            encode_jpeg(&img, quality, Chroma::Half, &mut bytes).unwrap();
+            assert_eq!(
+                crate::testutil::jpeg_luma_dc_step(&bytes),
+                Some(step),
+                "quality {quality}"
+            );
+        }
+    }
+
+    /// libjpeg refuses an edge over 65500 pixels (`JPEG_MAX_DIMENSION`). That is an error for
+    /// the caller, not a panic, and not one the panic hook logs as a bug: the viewer asks
+    /// for the render and shows the preview instead.
+    #[test]
+    fn a_picture_libjpeg_cannot_hold_is_an_error_and_runs_no_panic_hook() {
+        thread_local! {
+            static HOOKED: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+        }
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| HOOKED.with(|h| h.set(h.get() + 1))));
+        let too_wide = image::RgbImage::new(65_501, 1);
+        let result = std::panic::catch_unwind(|| {
+            encode_jpeg(&too_wide, FULL_QUALITY, Chroma::Half, &mut Vec::new())
+        });
+        std::panic::set_hook(previous);
+        assert!(
+            matches!(result, Ok(Err(crate::Error::Image(_)))),
+            "{result:?}"
+        );
+        assert_eq!(HOOKED.with(std::cell::Cell::get), 0);
     }
 
     /// Halved colour is the average of each 2x2 block, not one pixel of it. Each block here

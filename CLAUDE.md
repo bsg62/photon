@@ -578,9 +578,9 @@ action in `mock.js`.
   screen.
 - **No system library dependencies beyond the web view.** photon's C is vendored and compiled in with `cc`:
   SQLite, libwebp and libjpeg-turbo (the mozjpeg crate, for the scaled decode of a JPEG's
-  preview, `photon_core::turbo`). Nothing wrapping a C/C++ SDK: that bar is what made
-  packaging tractable on three platforms, and it is why XMP and INI parsing are hand-rolled or
-  pure-Rust. nasm is a build tool on the CI and release runners only, for libjpeg-turbo's x86
+  preview and the encode of an edited photo's full-size render, `photon_core::turbo`). Nothing
+  wrapping a C/C++ SDK: that bar is what made packaging tractable on three platforms, and it is
+  why XMP and INI parsing are hand-rolled or pure-Rust. nasm is a build tool on the CI and release runners only, for libjpeg-turbo's x86
   SIMD code; a build without it still works, as plain C. A new C dependency is a spec-level
   decision (`2026-09-29-photon-turbo-jpeg-thumbnails-design.md` is the worked example).
 - **AVIF is decoded in `photon_core::avif`, not by `image`**, whose AVIF decoder is dav1d (C).

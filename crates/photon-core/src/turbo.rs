@@ -16,6 +16,10 @@
 //! photon's answer stays whatever zune says, which is what it said before this module
 //! existed.
 //!
+//! It also holds libjpeg-turbo's compressor, [`encode`], which writes the JPEG of an edited
+//! photo's full-size render. That is photon's own pixels going in, never a file from disk,
+//! so none of the above applies to it: it is here because it is the same library.
+//!
 //! libjpeg reports errors and warnings through callbacks. The `mozjpeg` crate's own error
 //! manager unwinds on an error and drops warnings, so this module installs its own, which
 //! unwinds on either. Building that error manager is the module's only `unsafe` code.
@@ -24,8 +28,10 @@ use std::os::raw::c_int;
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 
 use image::{DynamicImage, RgbImage};
-use mozjpeg::Decompress;
+use mozjpeg::{ColorSpace, Compress, Decompress};
 use mozjpeg_sys::{J_COLOR_SPACE, jpeg_common_struct, jpeg_error_mgr, jpeg_std_error};
+
+use crate::edit::Chroma;
 
 // A file is handed back by unwinding out of libjpeg's C frames (`refuse`, `on_message`), and
 // with `panic = "abort"` every such unwind would abort photon instead.
@@ -111,6 +117,41 @@ fn scale_for((width, height): (u32, u32), (target_w, target_h): (u32, u32)) -> O
 /// An edge at n/8, rounded up, as libjpeg computes it (`jdiv_round_up`).
 fn scaled(edge: u32, n: u8) -> u32 {
     (u64::from(edge) * u64::from(n)).div_ceil(8) as u32
+}
+
+/// `img` as a baseline JPEG at `quality`, appended to `out`: libjpeg's own settings (the
+/// `mozjpeg` crate's "fastest" profile, which is plain libjpeg-turbo, not mozjpeg's slower
+/// trellis coding), with colour at half resolution each way or at full resolution.
+///
+/// `false` when libjpeg refuses the picture, with whatever it wrote left in `out` for the
+/// caller to discard: an edge over 65500 pixels (`JPEG_MAX_DIMENSION`), or memory libjpeg could not get. The refusal unwinds out
+/// of libjpeg and is caught here. The crate's own error manager is the right one for this,
+/// unlike for a decode: it unwinds with `resume_unwind`, so a refusal reaches no panic hook,
+/// and the warnings it drops are a decoder's, about damaged data, which a compressor fed
+/// photon's own pixels never meets.
+///
+/// Halved colour is each 2x2 block's average (libjpeg's `h2v2_downsample`), which is what
+/// `edit::encode_jpeg` promises.
+pub(crate) fn encode(img: &RgbImage, quality: u8, chroma: Chroma, out: &mut Vec<u8>) -> bool {
+    catch_unwind(AssertUnwindSafe(|| compress(img, quality, chroma, out)))
+        .is_ok_and(|done| done.is_ok())
+}
+
+fn compress(img: &RgbImage, quality: u8, chroma: Chroma, out: &mut Vec<u8>) -> std::io::Result<()> {
+    let mut jpeg = Compress::new(ColorSpace::JCS_RGB);
+    // First: it resets every setting to the profile's defaults.
+    jpeg.set_fastest_defaults();
+    jpeg.set_size(img.width() as usize, img.height() as usize);
+    jpeg.set_quality(f32::from(quality));
+    let pixel = match chroma {
+        Chroma::Half => (2, 2),
+        Chroma::Full => (1, 1),
+    };
+    jpeg.set_chroma_sampling_pixel_sizes(pixel, pixel);
+    let mut started = jpeg.start_compress(out)?;
+    started.write_scanlines(img.as_raw())?;
+    started.finish()?;
+    Ok(())
 }
 
 fn error_mgr() -> jpeg_error_mgr {

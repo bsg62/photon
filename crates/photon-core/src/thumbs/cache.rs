@@ -222,11 +222,7 @@ fn is_abandoned_temp(entry: &walkdir::DirEntry) -> bool {
 }
 
 fn shrink(img: &DynamicImage, max_edge: u32) -> DynamicImage {
-    if img.width().max(img.height()) > max_edge {
-        img.thumbnail(max_edge, max_edge)
-    } else {
-        img.clone()
-    }
+    crate::decode::shrink_within(img, max_edge)
 }
 
 /// Writes through a temp file + rename so readers never see a half-written thumbnail.
@@ -291,6 +287,40 @@ mod tests {
     fn dims(path: &Path) -> (u32, u32) {
         let img = image::open(path).unwrap();
         (img.width(), img.height())
+    }
+
+    /// The grid thumbnail is shrunk from the preview by `fast_image_resize`, where it was
+    /// `image`'s `thumbnail`. A cache holds grid thumbnails made both ways, and the
+    /// look-alike pass hashes and compares them, so the two must be the same picture as far as
+    /// `same_picture` can tell: the bar `decode.rs` holds the preview's resampler to. The
+    /// stripes are near the sampling limit, where a filter that does not average aliases.
+    #[test]
+    fn a_grid_thumbnail_is_the_same_picture_images_thumbnail_made() {
+        let (w, h) = (1600, 800);
+        let preview = DynamicImage::ImageRgb8(image::RgbImage::from_fn(w, h, |x, y| {
+            let wave = (x as f64 * 0.7975 * std::f64::consts::TAU).sin();
+            let stripe = (127.0 + 100.0 * wave) as u8;
+            let block = if (400..700).contains(&x) && (200..500).contains(&y) {
+                40
+            } else {
+                (x * 255 / w) as u8
+            };
+            image::Rgb([stripe, block, (y * 255 / h) as u8])
+        }));
+        let ours = shrink(&preview, ThumbSize::Grid.max_edge());
+        let theirs = preview.thumbnail(256, 256);
+        assert_eq!(
+            (ours.width(), ours.height(), ours.color()),
+            (theirs.width(), theirs.height(), theirs.color())
+        );
+        let difference = crate::similar::picture_difference(
+            &crate::similar::reduce(&ours),
+            &crate::similar::reduce(&theirs),
+        );
+        assert!(
+            difference < crate::similar::SAME_PICTURE_MAX_DIFFERENCE / 4.0,
+            "{difference}"
+        );
     }
 
     #[test]
