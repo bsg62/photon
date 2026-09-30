@@ -29,6 +29,28 @@ impl ThumbSize {
         }
     }
 
+    /// libwebp's speed/size trade-off for this size, 0 (fastest) to 6 (smallest). The
+    /// crate's plain `encode` uses 4, which cost ~70 ms of the ~225 ms a 24 MP photo's
+    /// thumbnail took on Apple Silicon; 2 was chosen for both sizes on that measurement.
+    ///
+    /// The preview is at 1. On x86-64 its encode was still ~40 ms at 2, as long as the scaled
+    /// JPEG decode before it and nearly half a smooth 24 MP photo's thumbnail; 1 takes ~30 ms.
+    /// Measured on a 1600 px preview of a real photo upscaled to 24 MP, and of the render
+    /// bench's noise: 29.8 against 39.9 ms for 16% more bytes (183 against 158 KB), and 22.1
+    /// against 38.2 ms for 14% fewer; the decoded pictures' PSNR within 0.6 dB either way
+    /// (40.3 against 39.8, 38.2 against 38.3). Thumbnails are written once and read from a
+    /// local disk, so the bytes are cheap and the worker time is not.
+    ///
+    /// The grid thumbnail stays at 2. Its encode is ~1.5 ms either way, and it is the picture
+    /// the look-alike pass hashes and compares, which is better left as every cached grid
+    /// thumbnail already has it.
+    fn webp_method(self) -> i32 {
+        match self {
+            Self::Grid => 2,
+            Self::Preview => 1,
+        }
+    }
+
     fn dir_name(self) -> &'static str {
         match self {
             Self::Grid => "grid",
@@ -38,14 +60,6 @@ impl ThumbSize {
 }
 
 const WEBP_QUALITY: f32 = 85.0;
-
-/// libwebp's speed/size trade-off, 0 (fastest) to 6 (smallest). The crate's plain `encode`
-/// uses 4, which cost ~70ms of the ~225ms it takes to thumbnail a 24 MP photo; 2 encodes
-/// the same 1600px preview in ~19ms for files about 15% larger. Thumbnails are written once
-/// and read from a local disk, so the bytes are cheap and the worker time is not: this is
-/// roughly a fifth more import throughput per worker. Measured on a synthetic image; a real
-/// photo's size difference may be smaller or larger, its time saving similar.
-const WEBP_METHOD: i32 = 2;
 
 /// Prefix for the temp file `write_webp` renames into place. Named by us rather than left to
 /// `tempfile`'s default so garbage collection can recognise one.
@@ -131,8 +145,9 @@ impl ThumbCache {
     /// Writes already-rendered thumbnails to the cache. Failures here mean the cache
     /// destination itself is unwritable (full disk, permissions), not that the source is bad.
     pub(crate) fn store(&self, fp: u64, preview: &DynamicImage, grid: &DynamicImage) -> Result<()> {
-        write_webp(preview, &self.path_for(fp, ThumbSize::Preview))?;
-        write_webp(grid, &self.path_for(fp, ThumbSize::Grid))?;
+        for (img, size) in [(preview, ThumbSize::Preview), (grid, ThumbSize::Grid)] {
+            write_webp(img, &self.path_for(fp, size), size.webp_method())?;
+        }
         Ok(())
     }
 
@@ -230,24 +245,22 @@ fn shrink(img: &DynamicImage, max_edge: u32) -> DynamicImage {
 /// Paths are content-addressed, so an existing file already holds the same thumbnail:
 /// it's kept rather than replaced, which also avoids failing on Windows when that file
 /// is open.
-fn write_webp(img: &DynamicImage, dest: &Path) -> Result<()> {
+fn write_webp(img: &DynamicImage, dest: &Path, method: i32) -> Result<()> {
     // Encoded straight from RGB where there is no alpha to keep, which is every JPEG - the
     // overwhelming majority. `to_rgba8` allocates and copies a buffer a third larger than
     // the image for each of the two sizes written per photo, which on an import of any size
     // is the largest pointless allocation in the pool.
     let data = match img {
-        DynamicImage::ImageRgb8(rgb) => encode_webp(&webp::Encoder::from_rgb(
-            rgb.as_raw(),
-            rgb.width(),
-            rgb.height(),
-        ))?,
+        DynamicImage::ImageRgb8(rgb) => encode_webp(
+            &webp::Encoder::from_rgb(rgb.as_raw(), rgb.width(), rgb.height()),
+            method,
+        )?,
         _ => {
             let rgba = img.to_rgba8();
-            encode_webp(&webp::Encoder::from_rgba(
-                rgba.as_raw(),
-                rgba.width(),
-                rgba.height(),
-            ))?
+            encode_webp(
+                &webp::Encoder::from_rgba(rgba.as_raw(), rgba.width(), rgba.height()),
+                method,
+            )?
         }
     };
     let dir = dest.parent().expect("thumbnail path has a parent");
@@ -263,15 +276,15 @@ fn write_webp(img: &DynamicImage, dest: &Path) -> Result<()> {
     }
 }
 
-/// Encodes at [`WEBP_QUALITY`] and [`WEBP_METHOD`]. A failure here is libwebp refusing its
+/// Encodes at [`WEBP_QUALITY`] and the size's `method` ([`ThumbSize::webp_method`]). A failure here is libwebp refusing its
 /// own config or running out of memory, neither of which says anything about the source
 /// photo, so it is reported as I/O: `process_item` then leaves the item `Pending` for a
 /// retry rather than recording it as `Failed`.
-fn encode_webp(encoder: &webp::Encoder<'_>) -> Result<webp::WebPMemory> {
+fn encode_webp(encoder: &webp::Encoder<'_>, method: i32) -> Result<webp::WebPMemory> {
     let mut config = webp::WebPConfig::new()
         .map_err(|()| std::io::Error::other("libwebp rejected its default config"))?;
     config.quality = WEBP_QUALITY;
-    config.method = WEBP_METHOD;
+    config.method = method;
     encoder
         .encode_advanced(&config)
         .map_err(|err| std::io::Error::other(format!("webp encoding failed: {err:?}")).into())
@@ -321,6 +334,46 @@ mod tests {
             difference < crate::similar::SAME_PICTURE_MAX_DIFFERENCE / 4.0,
             "{difference}"
         );
+    }
+
+    /// The preview is encoded at method 1 and the grid thumbnail at method 2 (see
+    /// [`ThumbSize::webp_method`]). libwebp's encode is deterministic, so each file must be,
+    /// byte for byte, its picture encoded at that method, and a size moved to the other
+    /// method writes different bytes. Noise, so every block has detail for the methods'
+    /// searches to differ on.
+    #[test]
+    fn each_size_is_encoded_at_its_own_method() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = write_file(
+            dir.path(),
+            "src.jpg",
+            &crate::testutil::noisy_jpeg(1800, 300),
+        );
+        let cache = ThumbCache::new(dir.path().join("cache"));
+        let (preview, grid) = cache.render(&src, 1, Edit::default()).unwrap();
+        cache.store(7, &preview, &grid).unwrap();
+        let encoded = |img: &DynamicImage, method: i32| {
+            let rgb = img.to_rgb8();
+            let mut config = webp::WebPConfig::new().unwrap();
+            config.quality = WEBP_QUALITY;
+            config.method = method;
+            webp::Encoder::from_rgb(rgb.as_raw(), rgb.width(), rgb.height())
+                .encode_advanced(&config)
+                .unwrap()
+                .to_vec()
+        };
+        for (size, img, method, other) in [
+            (ThumbSize::Preview, &preview, 1, 2),
+            (ThumbSize::Grid, &grid, 2, 1),
+        ] {
+            let written = fs::read(cache.path_for(7, size)).unwrap();
+            assert_eq!(written, encoded(img, method), "{size:?}");
+            assert_ne!(
+                written,
+                encoded(img, other),
+                "{size:?}: the methods agree here"
+            );
+        }
     }
 
     #[test]
