@@ -30,7 +30,7 @@ impl Library {
         let canonical =
             paths::canonicalize(path).map_err(|_| Error::FolderNotFound(path.to_path_buf()))?;
         if !canonical.is_dir() {
-            return Err(Error::FolderNotFound(path.to_path_buf()));
+            return Err(Error::NotAFolder(path.to_path_buf()));
         }
         for ex in excluded {
             let ex = paths::canonicalize(ex).unwrap_or_else(|_| ex.clone());
@@ -371,6 +371,19 @@ mod tests {
             lib.add_watched_folder(&dir.path().join("missing"), &[]),
             Err(Error::FolderNotFound(_))
         ));
+        // A file is there, so it is not "not found": what a photo dropped on the window is.
+        let file = dir.path().join("photo.jpg");
+        std::fs::write(&file, b"x").unwrap();
+        assert!(matches!(
+            lib.add_watched_folder(&file, &[]),
+            Err(Error::NotAFolder(_))
+        ));
+        assert!(
+            lib.watched_folders()
+                .unwrap()
+                .iter()
+                .all(|w| !w.path.ends_with("photo.jpg"))
+        );
     }
 
     #[test]

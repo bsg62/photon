@@ -22,6 +22,10 @@ pub enum Error {
     ThumbUnavailable(i64),
     #[error("folder not found: {0:?}")]
     FolderNotFound(PathBuf),
+    /// Something that exists and is not a directory: a photo dropped on the window, where
+    /// "not found" would be untrue of a file the user is holding.
+    #[error("{0:?} is a file, not a folder: add the folder it is in")]
+    NotAFolder(PathBuf),
     #[error("folder overlaps the watched folder {existing}")]
     FolderOverlap { existing: String },
     #[error("{path} is used by photon itself and cannot be watched")]

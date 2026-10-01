@@ -21,6 +21,7 @@ impl From<photon_core::Error> for AppError {
         use photon_core::Error::*;
         let kind = match &err {
             FolderNotFound(_) => "folderNotFound",
+            NotAFolder(_) => "notAFolder",
             FolderOverlap { .. } => "folderOverlap",
             FolderExcluded { .. } => "folderExcluded",
             NotFound(_) => "notFound",

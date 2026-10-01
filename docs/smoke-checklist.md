@@ -378,3 +378,4 @@ publishing it.
 - [ ] Choose a sort, quit and relaunch: photon opens in the same sort. Back on Date taken, the
       grid opens at the folder last browsed, as before.
 - [ ] Changing the sort with text in the search box keeps the search, now in the new order.
+- [ ] Drag a folder from the file manager over photon's window: a card says "Drop folders to add them to photon"; drag out again and it goes. Drop it: a toast says "Watching “name”", the folder appears in the sidebar and under Settings → Folders, and its scan starts. Drop two folders at once: "Watching 2 folders". Drop a single photo: one toast says it is a file, not a folder, and nothing is added. Drop a folder that is already watched, or one inside a watched folder: no duplicate appears (the second says it overlaps). Do this once with the viewer open and once with Settings open. Check on each OS: the drag is the system's, and each webview reports it differently.

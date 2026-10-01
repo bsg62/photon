@@ -354,6 +354,14 @@ targets per platform: `dmg` on macOS, `msi` on Windows).
 
 Before each release, run the [manual smoke checklist](docs/smoke-checklist.md) on each OS.
 
+## Adding folders
+
+Settings → Folders → **Add folder…** opens the system's folder picker. Or drag one or more
+folders from your file manager onto photon's window: photon says what dropping will do, and
+watches each of them. A photo dropped on its own is refused with a note to drop its folder
+instead - photon watches folders, it does not import files. Either way nothing is copied or
+moved: the photos stay where they are.
+
 ## How watching works
 
 photon watches each watched folder recursively for filesystem changes. When something
