@@ -200,6 +200,16 @@ pub struct ViewerItem {
     pub edit: Option<ItemEdit>,
     /// Every date the photo has, for the info panel.
     pub dates: ItemDates,
+    /// Where the photo was taken, when its EXIF says.
+    pub gps: Option<ItemGps>,
+}
+
+/// A position in decimal degrees, north and east positive.
+#[derive(Debug, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ItemGps {
+    pub lat: f64,
+    pub lon: f64,
 }
 
 /// The dates the info panel lists. Two clocks, so two units: the camera's dates are its
@@ -750,6 +760,10 @@ pub fn viewer_item(engine: &Engine, id: i64) -> CmdResult<ViewerItem> {
             crop: edit.crop.map(|c| [c.left, c.top, c.right, c.bottom]),
         }),
         dates,
+        gps: camera.gps.map(|g| ItemGps {
+            lat: g.lat,
+            lon: g.lon,
+        }),
     })
 }
 
@@ -969,6 +983,23 @@ pub fn item_path(engine: &Engine, id: i64) -> CmdResult<PathBuf> {
     Ok(PathBuf::from(item.path))
 }
 
+/// The web page that shows where a photo was taken, or `None` for a photo with no position.
+///
+/// Built here from the stored position rather than taken from the webview, so the one URL
+/// photon ever hands the system's browser is one it wrote itself. OpenStreetMap, because it
+/// needs no key and no account; the marker and the map centre are the same point. Six
+/// decimals is about a decimetre, finer than any camera's fix.
+pub fn item_map_url(engine: &Engine, id: i64) -> CmdResult<Option<String>> {
+    let item = engine.lib.item(id)?.ok_or(Error::NotFound(id))?;
+    Ok(item.camera.gps.map(|g| {
+        format!(
+            "https://www.openstreetmap.org/?mlat={lat:.6}&mlon={lon:.6}#map=16/{lat:.6}/{lon:.6}",
+            lat = g.lat,
+            lon = g.lon
+        )
+    }))
+}
+
 pub fn folder_path(engine: &Engine, folder_id: i64) -> CmdResult<PathBuf> {
     let folder = engine
         .lib
@@ -1183,6 +1214,7 @@ mod tests {
                 aperture: Some(1.8),
                 exposure_s: Some(0.004),
                 iso: Some(400),
+                gps: None,
             },
             tags: vec!["beach".into()],
             caption: None,
@@ -1286,6 +1318,59 @@ mod tests {
         assert_eq!(b.file_modified_ms, 1_600_000_000_000);
     }
 
+    /// The position travels from the row to the panel, and to the one URL photon opens.
+    #[test]
+    fn viewer_item_and_the_map_url_report_the_position() {
+        use photon_core::library::NewItem;
+        use photon_core::metadata::{CameraMeta, Gps};
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a.jpg", &img)]);
+        f.add_photos();
+        let id = f.ids()[0];
+        assert_eq!(viewer_item(&f.engine, id).unwrap().gps, None);
+        assert_eq!(item_map_url(&f.engine, id).unwrap(), None);
+
+        let row = f.engine.lib.item(id).unwrap().unwrap();
+        let placed = NewItem {
+            folder_id: row.folder_id,
+            path: row.path.clone(),
+            file_name: "a.jpg".into(),
+            kind: row.kind,
+            size: row.size,
+            mtime_ms: row.mtime_ms,
+            width: row.width,
+            height: row.height,
+            orientation: row.orientation,
+            taken_at: row.taken_at,
+            rating: None,
+            camera: CameraMeta {
+                gps: Some(Gps {
+                    lat: -33.868_82,
+                    lon: 151.209_3,
+                }),
+                ..CameraMeta::default()
+            },
+            tags: vec![],
+            caption: None,
+            duration_ms: None,
+        };
+        f.engine.lib.update_item_meta(&[(id, placed)]).unwrap();
+        assert_eq!(
+            viewer_item(&f.engine, id).unwrap().gps,
+            Some(ItemGps {
+                lat: -33.868_82,
+                lon: 151.209_3
+            })
+        );
+        assert_eq!(
+            item_map_url(&f.engine, id).unwrap().as_deref(),
+            Some(
+                "https://www.openstreetmap.org/?mlat=-33.868820&mlon=151.209300#map=16/-33.868820/151.209300"
+            )
+        );
+        assert!(item_map_url(&f.engine, id + 999).is_err());
+    }
+
     #[test]
     fn viewer_item_reports_the_caption() {
         use photon_core::library::NewItem;
@@ -1317,6 +1402,7 @@ mod tests {
                 aperture: None,
                 exposure_s: None,
                 iso: None,
+                gps: None,
             },
             tags: vec![],
             caption: Some("Grandma".into()),

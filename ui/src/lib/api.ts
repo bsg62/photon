@@ -144,6 +144,9 @@ export interface ViewerItem {
   edit: ItemEdit | null;
   /** Every date the photo has, for the info panel. */
   dates: ItemDates;
+  /** Where the photo was taken, in decimal degrees (north and east positive); null when
+   *  its EXIF does not say. */
+  gps: { lat: number; lon: number } | null;
 }
 /** Two clocks, two units: the camera's dates are its wall clock in naive SECONDS, like
  *  `takenAt`; the file's are real instants in MILLISECONDS. Null where the file has none -
@@ -326,6 +329,8 @@ export const api = {
   revealInFileManager: (id: number) => invoke<void>('reveal_in_file_manager', { id }),
   /** Opens the file itself in the system's app for it: photon's turns and crop do not go along. */
   openInDefaultApp: (id: number) => invoke<void>('open_in_default_app', { id }),
+  /** Opens where the photo was taken on OpenStreetMap, in the system's browser. */
+  openInMap: (id: number) => invoke<void>('open_in_map', { id }),
   /** Copies the photo, as shown and capped at 2560 px, to the clipboard as a picture. */
   copyPhoto: (itemId: number) => invoke<void>('copy_photo', { itemId }),
   revealFolder: (folderId: number) => invoke<void>('reveal_folder', { folderId }),

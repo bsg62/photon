@@ -118,10 +118,23 @@ that keyword and not the ones in a folder named Zoo, `person:anna` the photos Pi
 on, `album:"best of"` the photos in that album, `folder:italy` a folder by its name or the name
 you gave it in photon. People and albums are found only this way; a bare `anna` does not look
 at them. `is:starred`, `is:edited` (turned or cropped in photon), `is:video` and `is:photo` ask
-what a photo is. A hyphen in front turns any term round: `-tag:family`, `-is:starred`,
+what a photo is, and `has:gps` whether it records where it was taken. A hyphen in front turns any term round: `-tag:family`, `-is:starred`,
 `-lake`; in quotes it is an ordinary hyphen. Together with saved searches this makes a
 collection that keeps itself: save `person:anna is:starred -album:printed` and it is always
 Anna's starred photos you have not printed yet.
+
+### Where a photo was taken
+
+A photo from a phone, or a camera with GPS, records its position. The info panel shows it
+under **Location**, with two links. **Photos nearby** searches for everything taken within a
+kilometre: the box then reads `near:46.5388,12.1373`, and you can widen it by adding a
+distance, `near:46.5388,12.1373,25km`. **Open in OpenStreetMap** opens that spot on
+openstreetmap.org in your browser - the only time photon sends anything about a photo
+anywhere, and only when you click it. photon itself draws no map: that would mean fetching
+map tiles for every photo you look at.
+
+A library from an earlier photon picks positions up on the next scan of each folder, which
+reads every file's header once, as it did for camera data. Videos' positions are not read.
 
 ### Saving a search
 

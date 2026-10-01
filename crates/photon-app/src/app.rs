@@ -270,6 +270,7 @@ pub fn run() {
             ipc::neighbours,
             ipc::reveal_in_file_manager,
             ipc::open_in_default_app,
+            ipc::open_in_map,
             ipc::reveal_folder,
             ipc::watched_folder_stats,
             ipc::app_info,

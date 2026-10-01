@@ -6,6 +6,7 @@
 //! seeding a database and counting rows.
 
 use crate::media::MediaKind;
+use crate::metadata::Gps;
 
 /// A parsed search query: alternatives separated by `OR`, each a list of terms that must
 /// all match.
@@ -44,6 +45,9 @@ use crate::media::MediaKind;
 /// - `is:starred`, `is:edited`, `is:video` and `is:photo` ask about the photo rather than
 ///   its text. An `is:` photon does not know is dropped like a prefix with no value: `is:st`
 ///   is `is:starred` half typed.
+/// - `has:gps` keeps the photos that record where they were taken, and `near:LAT,LON` those
+///   taken within a kilometre of that point, in decimal degrees - or within another distance,
+///   `near:48.137,11.575,25km`. The info panel's "Photos nearby" link writes one.
 /// - A leading `-` turns a term round: `-tag:family`, `-is:starred`, `-lake`. A negated
 ///   value of several words (`-camera:"canon eos"`) excludes the photos the positive form
 ///   finds, so it is "not all of these words", not "none of them". A query of nothing but
@@ -82,6 +86,16 @@ enum Term {
     Starred,
     /// `is:edited`: turned or cropped in photon.
     Edited,
+    /// `has:gps`.
+    HasGps,
+    /// `near:`: within `radius_m` metres of a point. Held in whole units - the point in
+    /// 1e-7 degrees, about a centimetre - because a term is compared for equality, which a
+    /// float is not.
+    Near {
+        lat_e7: i64,
+        lon_e7: i64,
+        radius_m: i64,
+    },
     /// A `-` term: true unless every term inside matches. A list because one token can be
     /// several terms (`camera:"canon eos"`), and the negation is of the token.
     Not(Vec<Term>),
@@ -110,6 +124,18 @@ impl Term {
             Term::Folder(needle) => haystacks.folder.contains(needle),
             Term::Starred => haystacks.starred,
             Term::Edited => haystacks.edited,
+            Term::HasGps => haystacks.gps.is_some(),
+            Term::Near {
+                lat_e7,
+                lon_e7,
+                radius_m,
+            } => haystacks.gps.is_some_and(|gps| {
+                let centre = Gps {
+                    lat: *lat_e7 as f64 / 1e7,
+                    lon: *lon_e7 as f64 / 1e7,
+                };
+                gps.distance_km(centre) * 1000.0 <= *radius_m as f64
+            }),
             Term::Not(terms) => !terms.iter().all(|term| term.matches(haystacks)),
         }
     }
@@ -138,6 +164,8 @@ pub struct Fields<'a> {
     pub folder: Option<&'a str>,
     pub starred: bool,
     pub edited: bool,
+    /// Where the photo was taken, for `has:gps` and `near:`.
+    pub gps: Option<Gps>,
 }
 
 /// Appends `text` lowercased to `out`: exactly what `str::to_lowercase` would give, without
@@ -196,6 +224,8 @@ pub struct Haystacks {
     folder: Field,
     pub starred: bool,
     pub edited: bool,
+    /// Where the photo was taken, as [`Fields::gps`].
+    pub gps: Option<Gps>,
     scratch: String,
 }
 
@@ -268,6 +298,7 @@ impl Haystacks {
         self.albums.clear();
         self.starred = false;
         self.edited = false;
+        self.gps = None;
     }
 
     /// Empties everything.
@@ -461,6 +492,49 @@ fn period(value: &str) -> Option<(i64, i64)> {
     Some((start, end))
 }
 
+/// How far `near:` reaches when the query names no distance.
+const NEAR_DEFAULT_M: i64 = 1_000;
+
+/// The term a `near:` value names: `LAT,LON` in decimal degrees, and optionally a distance
+/// as `,5km` or `,500m`. `None` for anything else, which drops the term like a date that is
+/// not one: `near:48.1,` is a point half typed.
+fn near(value: &str) -> Option<Term> {
+    let mut parts = value.split(',');
+    let mut degrees = |limit: f64| {
+        let part = parts.next()?;
+        // `parse` reads "nan", "inf" and "1e5" too; a coordinate is digits, a sign and a point.
+        let plain = part
+            .bytes()
+            .all(|b| b.is_ascii_digit() || b == b'.' || b == b'-');
+        let value: f64 = plain.then(|| part.parse().ok()).flatten()?;
+        (value.abs() <= limit).then_some((value * 1e7).round() as i64)
+    };
+    let lat_e7 = degrees(90.0)?;
+    let lon_e7 = degrees(180.0)?;
+    let radius_m = match parts.next() {
+        None => NEAR_DEFAULT_M,
+        Some(distance) => {
+            let (number, unit_m) = match distance.strip_suffix("km") {
+                Some(number) => (number, 1000.0),
+                None => (distance.strip_suffix('m')?, 1.0),
+            };
+            let plain = number.bytes().all(|b| b.is_ascii_digit() || b == b'.');
+            let number: f64 = plain.then(|| number.parse().ok()).flatten()?;
+            // Anything past half the Earth's circumference is everywhere.
+            let metres = (number * unit_m).round();
+            (metres > 0.0 && metres <= 20_100_000.0).then_some(metres as i64)?
+        }
+    };
+    if parts.next().is_some() {
+        return None;
+    }
+    Some(Term::Near {
+        lat_e7,
+        lon_e7,
+        radius_m,
+    })
+}
+
 impl Query {
     /// Parses `raw` by the grammar on [`Query`].
     ///
@@ -495,8 +569,10 @@ impl Query {
             } else {
                 (text.as_str(), token.unquoted_prefix)
             };
-            let terms = if text.is_empty() && unquoted_prefix.is_none() {
-                // A lone `-`: a negation with nothing typed after it yet.
+            let terms = if text.is_empty() {
+                // A lone `-`, or `-"` with its quote just opened: a negation with nothing
+                // typed after it yet. Searched for, the empty text is in every photo, and
+                // its negation in none - the grid would empty for that keystroke.
                 Vec::new()
             } else {
                 Self::terms(text, unquoted_prefix)
@@ -575,6 +651,13 @@ impl Query {
                 "photo" => vec![Term::Kind(MediaKind::Image)],
                 _ => Vec::new(),
             }
+        } else if let Some(value) = prefixed("has:") {
+            match value {
+                "gps" => vec![Term::HasGps],
+                _ => Vec::new(),
+            }
+        } else if let Some(value) = prefixed("near:") {
+            near(value).into_iter().collect()
         } else {
             vec![Term::Any(text.to_string())]
         }
@@ -628,6 +711,7 @@ impl Query {
         haystacks.folder.set(fields.folder);
         haystacks.starred = fields.starred;
         haystacks.edited = fields.edited;
+        haystacks.gps = fields.gps;
         self.matches_folded(&haystacks)
     }
 
@@ -899,10 +983,85 @@ mod tests {
         assert_eq!(Query::parse("lake -"), Query::parse("lake"));
         assert_eq!(Query::parse("lake -tag:"), Query::parse("lake"));
         assert!(Query::parse("-").is_empty());
+        // The quote just opened, on the way to `-"canon eos"`, and the pair left empty.
+        assert_eq!(Query::parse("lake -\""), Query::parse("lake"));
+        assert_eq!(Query::parse("lake -\"\""), Query::parse("lake"));
         // A hyphen inside a word is the word.
         assert!(names("img-1", &["img-1.jpg"]));
         // A quoted value after the hyphen is still negated: the hyphen is outside.
         assert!(!names("-\"img 1\"", &["img 1.jpg"]));
+    }
+
+    #[test]
+    fn has_gps_and_near_ask_where_a_photo_was_taken() {
+        let marienplatz = Fields {
+            gps: Some(Gps {
+                lat: 48.137_4,
+                lon: 11.575_5,
+            }),
+            ..Fields::default()
+        };
+        let nowhere = Fields {
+            any: &["gps near.jpg"],
+            ..Fields::default()
+        };
+        let m = |q: &str, f: &Fields<'_>| Query::parse(q).matches(f);
+        assert!(m("has:gps", &marienplatz));
+        assert!(!m("has:gps", &nowhere));
+        assert!(m("-has:gps", &nowhere));
+        // A kilometre unless told otherwise. Odeonsplatz is about 500 m north, Nymphenburg
+        // about 9 km west.
+        assert!(m("near:48.1420,11.5775", &marienplatz));
+        assert!(!m("near:48.1583,11.5033", &marienplatz));
+        assert!(m("near:48.1583,11.5033,10km", &marienplatz));
+        assert!(!m("near:48.1420,11.5775,300m", &marienplatz));
+        assert!(m("near:48.1420,11.5775,0.6km", &marienplatz));
+        // A photo with no position is near nothing.
+        assert!(!m("near:48.1420,11.5775,20000km", &nowhere));
+        // The southern and western halves.
+        let sydney = Fields {
+            gps: Some(Gps {
+                lat: -33.868_8,
+                lon: 151.209_3,
+            }),
+            ..Fields::default()
+        };
+        assert!(m("near:-33.8688,151.2093", &sydney));
+        assert!(!m("near:33.8688,151.2093", &sydney));
+    }
+
+    #[test]
+    fn a_near_that_names_no_point_is_dropped() {
+        for half_typed in [
+            "near:",
+            "near:48",
+            "near:48.1,",
+            "near:48.1,11.5,",
+            "near:48.1,11.5,5",
+            "near:48.1,11.5,km",
+            "near:48.1,11.5,0km",
+            "near:48.1,11.5,5km,1",
+            "near:91,11.5",
+            "near:48.1,181",
+            "near:nan,11.5",
+            "near:1e1,11.5",
+            "has:",
+            "has:gp",
+        ] {
+            assert_eq!(
+                Query::parse(&format!("lake {half_typed}")),
+                Query::parse("lake"),
+                "{half_typed}"
+            );
+        }
+        assert_eq!(
+            Query::parse("near:48.1,11.5"),
+            Query::parse("near:48.1,11.5,1km")
+        );
+        assert_eq!(
+            Query::parse("near:48.1,11.5,1km"),
+            Query::parse("near:48.1,11.5,1000m")
+        );
     }
 
     #[test]
@@ -934,8 +1093,10 @@ mod tests {
         haystacks.set_albums_folded(Some("best"));
         haystacks.starred = true;
         haystacks.edited = true;
+        haystacks.gps = Some(Gps { lat: 1.0, lon: 1.0 });
         haystacks.truncate(mark);
         for gone in [
+            "has:gps",
             "tag:zoo",
             "person:anna",
             "album:best",

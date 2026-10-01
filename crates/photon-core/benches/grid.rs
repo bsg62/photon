@@ -122,6 +122,7 @@ fn search_library(dir: &Path) -> Library {
                     aperture: Some([1.8, 2.8, 4.0, 5.6][n % 4]),
                     exposure_s: Some(1.0 / 250.0),
                     iso: Some([100, 200, 400, 1600][n % 4]),
+                    gps: None,
                 }
             } else {
                 photon_core::metadata::CameraMeta::default()

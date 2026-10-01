@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { ItemCopy, ItemDates } from './api';
-import { cameraName, cameraRows, copyGroups, dateRows, fieldQuery, formatAperture, formatDimensions, formatExposure, formatFocal, formatIso } from './exif';
+import { cameraName, cameraRows, copyGroups, dateRows, fieldQuery, formatAperture, formatCoordinates, formatDimensions, formatExposure, formatFocal, formatIso, nearQuery } from './exif';
 
 describe('cameraName', () => {
   it('does not repeat the make when the model already names it', () => {
@@ -135,5 +135,24 @@ describe('dateRows', () => {
       ['Taken', '15 Jun 2024, 12:30'],
       ['File modified', '15 Jun 2024, 14:30'],
     ]);
+  });
+});
+
+describe('formatCoordinates', () => {
+  it('writes the hemisphere as a letter, not a sign', () => {
+    expect(formatCoordinates(48.1374, 11.5755)).toBe('48.13740° N, 11.57550° E');
+    expect(formatCoordinates(-33.86882, -151.2093)).toBe('33.86882° S, 151.20930° W');
+  });
+
+  it('does not call a rounded zero south or west', () => {
+    expect(formatCoordinates(-0.000001, -0.000001)).toBe('0.00000° N, 0.00000° E');
+    expect(formatCoordinates(-0.00001, 0)).toBe('0.00001° S, 0.00000° E');
+  });
+});
+
+describe('nearQuery', () => {
+  it('is a near: term the search grammar reads, signs kept', () => {
+    expect(nearQuery(48.13742, 11.57549)).toBe('near:48.1374,11.5755');
+    expect(nearQuery(-33.86882, 151.2093)).toBe('near:-33.8688,151.2093');
   });
 });

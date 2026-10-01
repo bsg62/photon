@@ -2246,6 +2246,46 @@ mod tests {
     }
 
     #[test]
+    fn an_unchanged_photo_gains_its_position_from_the_backfill() {
+        // A library indexed under EXIF_VERSION 3 has the position columns empty; the photo
+        // is unchanged, so only the version bump brings it back through `describe()`.
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        let spec = ExifSpec {
+            gps: Some(crate::testutil::GpsSpec {
+                lat: [(48, 1), (30, 1), (0, 1)],
+                lat_ref: Some("N"),
+                lon: [(11, 1), (15, 1), (0, 1)],
+                lon_ref: Some("E"),
+            }),
+            ..ExifSpec::default()
+        };
+        let a = write_file(&root, "a.jpg", &jpeg_with_exif_spec(4, 2, &spec));
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
+        scan(&lib, &watched, 1);
+        let id = lib.known_items(watched.id).unwrap()[&key(&a)].id;
+        let here = Some(crate::metadata::Gps {
+            lat: 48.5,
+            lon: 11.25,
+        });
+        assert_eq!(lib.item(id).unwrap().unwrap().camera.gps, here);
+
+        lib.forget_position_for_test(id).unwrap();
+        assert_eq!(lib.item(id).unwrap().unwrap().camera.gps, None);
+        let report = scan(&lib, &watched, 2);
+        assert_eq!(
+            (report.unchanged, report.changed, report.enriched),
+            (1, 0, 1)
+        );
+        assert_eq!(lib.item(id).unwrap().unwrap().camera.gps, here);
+        assert_eq!(
+            scan(&lib, &watched, 3).enriched,
+            0,
+            "read once, not on every scan"
+        );
+    }
+
+    #[test]
     fn a_new_photo_is_stored_with_its_caption() {
         let (dir, lib) = temp_library();
         let root = photos_root(&dir);

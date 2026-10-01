@@ -20,6 +20,24 @@ export function fieldQuery(field: 'camera' | 'lens', value: string): string {
   return `${field}:"${value.replaceAll('"', ' ').trim()}"`;
 }
 
+/** A position as people write one: "48.13740° N, 11.57550° E". Five decimals is about a
+ *  metre, as fine as a camera's fix. The hemisphere letter carries the sign, and is chosen
+ *  after rounding so a hair south of the equator is not "0.00000° S". */
+export function formatCoordinates(lat: number, lon: number): string {
+  const part = (value: number, positive: string, negative: string) => {
+    const rounded = Math.abs(value).toFixed(5);
+    return `${rounded}° ${value < 0 && Number(rounded) !== 0 ? negative : positive}`;
+  };
+  return `${part(lat, 'N', 'S')}, ${part(lon, 'E', 'W')}`;
+}
+
+/** The search for photos taken near a point, in the grammar of `photon-core`'s
+ *  `search::Query`: within its default distance. Four decimals, about ten metres, keep the
+ *  query short enough to read in the box. */
+export function nearQuery(lat: number, lon: number): string {
+  return `near:${lat.toFixed(4)},${lon.toFixed(4)}`;
+}
+
 /** "Canon EOS 5D Mark IV", not "Canon Canon EOS 5D Mark IV": most makers repeat the make
  *  in the model, and Nikon writes "NIKON CORPORATION" as the make and "NIKON D750" as the
  *  model. The model wins whenever it already names the maker's first word. */

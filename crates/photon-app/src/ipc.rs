@@ -458,6 +458,21 @@ pub async fn open_in_default_app(engine: Eng<'_>, id: i64) -> Result<(), AppErro
     .await
 }
 
+/// Opens the place a photo was taken in the system's browser. Nothing happens for a photo
+/// with no position: the UI offers this only where there is one.
+#[tauri::command(async)]
+pub async fn open_in_map(engine: Eng<'_>, id: i64) -> Result<(), AppError> {
+    with_opener(engine, move |engine| {
+        match commands::item_map_url(engine, id)? {
+            Some(url) => {
+                tauri_plugin_opener::open_url(url, None::<&str>).map_err(AppError::internal)
+            }
+            None => Ok(()),
+        }
+    })
+    .await
+}
+
 #[tauri::command(async)]
 pub async fn reveal_folder(engine: Eng<'_>, folder_id: i64) -> Result<(), AppError> {
     with_opener(engine, move |engine| {
