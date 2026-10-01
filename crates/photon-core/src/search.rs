@@ -569,8 +569,10 @@ impl Query {
             } else {
                 (text.as_str(), token.unquoted_prefix)
             };
-            let terms = if text.is_empty() && unquoted_prefix.is_none() {
-                // A lone `-`: a negation with nothing typed after it yet.
+            let terms = if text.is_empty() {
+                // A lone `-`, or `-"` with its quote just opened: a negation with nothing
+                // typed after it yet. Searched for, the empty text is in every photo, and
+                // its negation in none - the grid would empty for that keystroke.
                 Vec::new()
             } else {
                 Self::terms(text, unquoted_prefix)
@@ -981,6 +983,9 @@ mod tests {
         assert_eq!(Query::parse("lake -"), Query::parse("lake"));
         assert_eq!(Query::parse("lake -tag:"), Query::parse("lake"));
         assert!(Query::parse("-").is_empty());
+        // The quote just opened, on the way to `-"canon eos"`, and the pair left empty.
+        assert_eq!(Query::parse("lake -\""), Query::parse("lake"));
+        assert_eq!(Query::parse("lake -\"\""), Query::parse("lake"));
         // A hyphen inside a word is the word.
         assert!(names("img-1", &["img-1.jpg"]));
         // A quoted value after the hyphen is still negated: the hyphen is outside.
