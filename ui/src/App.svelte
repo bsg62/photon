@@ -49,7 +49,7 @@
   /** Exporting copies. Here with the other overlays, for the reason the picker gives, and
    *  the folder picker is the plugin's - photon never types a path for the user. */
   const exporter = createExportDialog({
-    run: (ids, dest, applyEdits) => api.exportItems(ids, dest, applyEdits),
+    run: (ids, dest, applyEdits, maxEdge) => api.exportItems(ids, dest, applyEdits, maxEdge),
     pick: async () => {
       const picked = await pickFolder({ directory: true, multiple: false, title: 'Export copies to…' });
       return typeof picked === 'string' ? picked : null;

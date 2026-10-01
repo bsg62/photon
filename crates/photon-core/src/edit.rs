@@ -345,7 +345,16 @@ pub fn render_full(
     quality: u8,
     chroma: Chroma,
 ) -> Result<(Vec<u8>, &'static str)> {
-    let img = render_picture(path, orientation, edit)?;
+    encode_picture(render_picture(path, orientation, edit)?, quality, chroma)
+}
+
+/// A picture encoded as [`render_full`] encodes one: PNG when it has transparency to keep,
+/// JPEG at `quality` and `chroma` otherwise. Returns the bytes and their MIME type.
+pub fn encode_picture(
+    img: DynamicImage,
+    quality: u8,
+    chroma: Chroma,
+) -> Result<(Vec<u8>, &'static str)> {
     let mut bytes = Vec::new();
     let mime = if img.color().has_alpha() {
         img.write_to(

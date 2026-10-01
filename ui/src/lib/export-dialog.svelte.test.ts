@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { createExportDialog } from './export-dialog.svelte';
 
 function setup(report = { written: 3, failed: 0, reason: null as string | null }) {
-  const run = vi.fn(async (_ids: number[], _dest: string, _applyEdits: boolean) => report);
+  const run = vi.fn(async (_ids: number[], _dest: string, _applyEdits: boolean, _maxEdge: number | null) => report);
   const pick = vi.fn(async () => '/home/ada/Desktop' as string | null);
   const check = vi.fn(async (_dest: string) => {});
   const remember = vi.fn(async (_apply: boolean) => {});
@@ -43,7 +43,35 @@ describe('createExportDialog', () => {
     expect(pick).toHaveBeenCalled();
     expect(dialog.dest).toBe('/home/ada/Desktop');
     await dialog.submit();
-    expect(run).toHaveBeenCalledWith([4, 5], '/home/ada/Desktop', true);
+    expect(run).toHaveBeenCalledWith([4, 5], '/home/ada/Desktop', true, null);
+  });
+
+  it('exports at the size chosen, and the photo\'s own size is no size', async () => {
+    const { dialog, run } = setup();
+    dialog.show([4], true);
+    await dialog.choose();
+    dialog.setMaxEdge(1920);
+    expect(dialog.maxEdge).toBe(1920);
+    await dialog.submit();
+    expect(run).toHaveBeenLastCalledWith([4], '/home/ada/Desktop', true, 1920);
+
+    // "Original size" is the select's 0.
+    dialog.show([4], true);
+    await dialog.choose();
+    dialog.setMaxEdge(1920);
+    dialog.setMaxEdge(0);
+    expect(dialog.maxEdge).toBe(null);
+    await dialog.submit();
+    expect(run).toHaveBeenLastCalledWith([4], '/home/ada/Desktop', true, null);
+  });
+
+  it('forgets the size between exports, so the next one is not quietly shrunk', () => {
+    const { dialog } = setup();
+    dialog.show([1], true);
+    dialog.setMaxEdge(1280);
+    dialog.close();
+    dialog.show([1], true);
+    expect(dialog.maxEdge).toBe(null);
   });
 
   it('keeps the dialog open when the picker is dismissed', async () => {

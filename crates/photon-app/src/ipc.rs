@@ -371,10 +371,11 @@ pub async fn export_items(
     ids: Vec<i64>,
     dest: String,
     apply_edits: bool,
+    max_edge: Option<u32>,
 ) -> Result<commands::ExportReport, AppError> {
     let engine = engine.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        commands::export_items(&engine, &ids, &dest, apply_edits)
+        commands::export_items(&engine, &ids, &dest, apply_edits, max_edge)
     })
     .await
     .map_err(AppError::internal)?
