@@ -140,15 +140,26 @@
    *  it arrives. Not refreshed while the dialog is open - it is a look at the library, not
    *  a gauge. */
   let stats = $state<LibraryStats | null>(null);
+  /** The read failed: said in the section, which would otherwise read "Counting…" until the
+   *  dialog was reopened. Leaving the section and coming back asks again. */
+  let statsFailed = $state(false);
   let statsAsked = false;
 
   $effect(() => {
-    if (current !== 'statistics' || statsAsked) return;
+    if (current !== 'statistics') {
+      if (statsFailed) statsAsked = false;
+      return;
+    }
+    if (statsAsked) return;
     statsAsked = true;
+    statsFailed = false;
     api
       .libraryStats()
       .then((s) => (stats = s))
-      .catch(library.reportError);
+      .catch((e) => {
+        statsFailed = true;
+        library.reportError(e);
+      });
   });
 
   const statLists = $derived<{ title: string; rows: StatRow[]; what: string }[]>(
@@ -467,15 +478,15 @@
         {:else if current === 'statistics'}
           <h2>Statistics</h2>
           {#if stats === null}
-            <p class="hint">Counting…</p>
+            <p class="hint">{statsFailed ? 'The library could not be counted.' : 'Counting…'}</p>
           {:else}
-            <p class="hint">{statsSummary(stats)}. Hidden photos are not counted. Click a row to see its photos.</p>
+            <p class="hint">{statsSummary(stats)}. Hidden photos are not counted. Click a row to search for it.</p>
             {#each statLists as list (list.title)}
               <h2>{list.title}</h2>
               <ul class="stats">
-                {#each list.rows as row (row.label)}
+                {#each list.rows as row (row.search)}
                   <li>
-                    <button onclick={() => onsearch(row.search)} title="Show the photos {list.what} {row.label}">
+                    <button onclick={() => onsearch(row.search)} title="Search for the photos {list.what} {row.label}">
                       <span class="stat-label">{row.label}</span>
                       <span class="stat-bar"><span style:width="{row.share * 100}%"></span></span>
                       <span class="stat-count">{row.count.toLocaleString()}</span>

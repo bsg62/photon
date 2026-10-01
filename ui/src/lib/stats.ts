@@ -60,14 +60,25 @@ export function yearRows(stats: LibraryStats): StatRow[] {
   );
 }
 
-/** The cameras, named and searched for the way the info panel names and searches them. */
+/** The cameras, named and searched for the way the info panel names and searches them.
+ *
+ *  The backend counts by make and model as the files spell them, and `cameraName` folds
+ *  some of those pairs into one name: "Canon EOS 5D" with the make "Canon" and with none
+ *  are one camera to anyone reading the list. Their counts are added and the list sorted
+ *  again, so a name appears once - which is also what lets a row be keyed by its search.
+ *
+ *  A row's link is a search of the camera field, word by word, so it can show more than
+ *  the row counts: "EOS 5D" also finds an "EOS 5D Mark IV". The count is of that exact
+ *  camera; the link is the nearest thing the search grammar can say. */
 export function cameraStatRows(stats: LibraryStats): StatRow[] {
-  return rows(
-    stats.cameras.flatMap((c) => {
-      const name = cameraName(c.make, c.model);
-      return name ? [{ label: name, count: c.count, search: fieldQuery('camera', name) }] : [];
-    }),
-  );
+  const byName = new Map<string, number>();
+  for (const c of stats.cameras) {
+    const name = cameraName(c.make, c.model);
+    if (name) byName.set(name, (byName.get(name) ?? 0) + c.count);
+  }
+  // A stable sort: equal counts keep the backend's order, which is by name.
+  const merged = [...byName].sort((a, b) => b[1] - a[1]);
+  return rows(merged.map(([label, count]) => ({ label, count, search: fieldQuery('camera', label) })));
 }
 
 export function lensStatRows(stats: LibraryStats): StatRow[] {

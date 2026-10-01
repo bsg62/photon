@@ -83,6 +83,23 @@ describe('cameraStatRows and lensStatRows', () => {
     ]);
   });
 
+  it('adds up cameras the files spell differently and the list names alike', () => {
+    // With the make and without it, one camera; together they outnumber the phone.
+    const rows = cameraStatRows({
+      ...empty,
+      cameras: [
+        { make: 'Apple', model: 'iPhone 15', count: 50 },
+        { make: 'Canon', model: 'Canon EOS 5D', count: 40 },
+        { make: null, model: 'Canon EOS 5D', count: 20 },
+      ],
+    });
+    expect(rows.map((r) => [r.label, r.count, r.share])).toEqual([
+      ['Canon EOS 5D', 60, 1],
+      ['Apple iPhone 15', 50, 50 / 60],
+    ]);
+    expect(new Set(rows.map((r) => r.search)).size).toBe(rows.length);
+  });
+
   it('links a lens to its field', () => {
     const rows = lensStatRows({ ...empty, lenses: [{ lens: 'EF50mm f/1.8 STM', count: 4 }] });
     expect(rows).toEqual([{ label: 'EF50mm f/1.8 STM', count: 4, share: 1, search: 'lens:"EF50mm f/1.8 STM"' }]);
