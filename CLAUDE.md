@@ -208,7 +208,7 @@ sidebar's year groups and the grid disagree.
 and folder name, make, model, lens, `50mm`/`f/1.8`/`iso400`, keywords through `EFFECTIVE_TAGS`, the caption,
 and the capture date as `YYYY-MM-DD` — and `search::Query` holds the grammar: words AND,
 capitals-only `OR`/`AND`, quotes, `camera:`/`lens:`/`tag:`/`person:`/`album:`/`folder:` each
-confined to its own field, `is:`/`has:`/`near:` asking about the photo rather than its text, a
+confined to its own field, `is:`/`has:`/`near:`/`on:` asking about the photo rather than its text, a
 leading `-` negating a token, dangling pieces ignored. People and albums are read from side
 tables only when a query names one (`Query::needs`). A new searchable fact is a haystack there, not a view; a new *filter* is a
 prefixed term. The query string is the whole interface, so UI links (the info panel's camera

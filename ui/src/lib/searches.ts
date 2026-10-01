@@ -29,3 +29,17 @@ export function defaultSearchName(query: string): string {
 export function canSaveSearch(searches: SavedSearch[], query: string): boolean {
   return query.trim() !== '' && savedSearchFor(searches, query) === undefined;
 }
+
+/** The search behind the sidebar's "On this day": photos taken on `now`'s month and day in
+ *  any year, in the grammar of `photon-core`'s `search::Query`. The day is the machine's
+ *  own - "today" is where the user is - while a capture date is the camera's wall clock, so
+ *  the two meet as plain calendar days with no zone between them. */
+export function onThisDayQuery(now: Date): string {
+  const two = (n: number) => String(n).padStart(2, '0');
+  return `on:${two(now.getMonth() + 1)}-${two(now.getDate())}`;
+}
+
+/** "14 July", for the row's tooltip. `locale` is for tests. */
+export function onThisDayLabel(now: Date, locale?: string): string {
+  return now.toLocaleDateString(locale, { day: 'numeric', month: 'long' });
+}
