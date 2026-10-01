@@ -218,9 +218,6 @@
     save_search: (args) => ({ id: 3, name: args.name, query: args.query, createdMs: 0 }),
     watched_folder_stats: () => [{ watchedId: 1, photoCount: 12480 }],
     app_info: () => ({ version: '0.0.0', libraryPath: '/home/ada/.local/share/photon/library.db', licence: 'MIT' }),
-    memory_usage: () => ({ bytes: 412_000_000, processes: 4, includesWebview: true }),
-    last_folder: () => null,
-    slideshow_interval: () => 4,
     library_stats: () => ({
       photos: 12034,
       videos: 310,
@@ -243,6 +240,9 @@
         { lens: 'iPhone 15 Pro back triple camera 6.765mm f/1.78', count: 2890 },
       ],
     }),
+    memory_usage: () => ({ bytes: 412_000_000, processes: 4, includesWebview: true }),
+    last_folder: () => null,
+    slideshow_interval: () => 4,
     similar_distance: () => 7,
     set_similar_distance: (a) => a.distance,
     set_search_query: (args) => {
