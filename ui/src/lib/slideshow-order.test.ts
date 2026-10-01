@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { nextStill } from './slideshow-order';
+import { nextStill, shuffleStride } from './slideshow-order';
 
 const kinds = (s: string) => async (i: number) => (s[i] === 'v' ? 'video' : 'image') as 'image' | 'video';
 
@@ -35,5 +35,70 @@ describe('nextStill', () => {
   it('backward comes back to itself as the only photo, and is null with none', async () => {
     expect(await nextStill(1, 3, kinds('vpv'), -1)).toBe(1);
     expect(await nextStill(2, 3, kinds('vvv'), -1)).toBeNull();
+  });
+});
+
+describe('nextStill with a stride', () => {
+  it('steps by the stride, wrapping, and backward undoes forward', async () => {
+    const all = kinds('pppppppppp');
+    expect(await nextStill(0, 10, all, 1, 3)).toBe(3);
+    expect(await nextStill(9, 10, all, 1, 3)).toBe(2);
+    expect(await nextStill(2, 10, all, -1, 3)).toBe(9);
+  });
+  it('skips a video by taking the next step of the same walk, not its neighbour', async () => {
+    // From 0 by 3: offset 3 is a video, so the answer is 6 - not 4, the video's neighbour.
+    expect(await nextStill(0, 10, kinds('pppvpppppp'), 1, 3)).toBe(6);
+    expect(await nextStill(6, 10, kinds('pppvpppppp'), -1, 3)).toBe(0);
+  });
+  it('visits every photo once before any comes round again', async () => {
+    const len = 10;
+    const seen: number[] = [];
+    let at = 0;
+    for (let n = 0; n < len; n++) {
+      at = (await nextStill(at, len, kinds('pppppppppp'), 1, 3)) as number;
+      seen.push(at);
+    }
+    expect([...seen].sort((a, b) => a - b)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    expect(at).toBe(0);
+  });
+});
+
+describe('shuffleStride', () => {
+  const gcd = (a: number, b: number): number => (b === 0 ? a : gcd(b, a % b));
+
+  it('shares no factor with the length, whatever the length and the draw', () => {
+    for (let len = 1; len <= 400; len++) {
+      for (const r of [0, 0.25, 0.5, 0.75, 0.999]) {
+        const stride = shuffleStride(len, () => r);
+        expect(gcd(stride, len), `len ${len}, r ${r}`).toBe(1);
+        expect(stride, `len ${len}, r ${r}`).toBeGreaterThanOrEqual(1);
+        expect(stride, `len ${len}, r ${r}`).toBeLessThan(Math.max(len, 2));
+      }
+    }
+  });
+
+  it('is neither the view\'s own order nor its reverse, wherever another exists', () => {
+    // 1, 2, 3, 4 and 6 have no step but the neighbour's that shares no factor with them.
+    for (let len = 5; len <= 400; len++) {
+      if (len === 6) continue;
+      for (const r of [0, 0.5, 0.999]) {
+        const stride = shuffleStride(len, () => r);
+        expect(stride, `len ${len}, r ${r}`).toBeGreaterThan(1);
+        expect(stride, `len ${len}, r ${r}`).toBeLessThan(len - 1);
+      }
+    }
+    for (const len of [0, 1, 2, 3, 4, 6]) expect(shuffleStride(len, () => 0.5)).toBe(1);
+  });
+
+  it('lands in the middle of the view, so neighbours in the show are far apart in the grid', () => {
+    for (const r of [0, 0.5, 0.999]) {
+      const stride = shuffleStride(100_000, () => r);
+      expect(stride).toBeGreaterThan(29_000);
+      expect(stride).toBeLessThan(71_000);
+    }
+  });
+
+  it('follows the draw, so two shows differ', () => {
+    expect(shuffleStride(1000, () => 0.1)).not.toBe(shuffleStride(1000, () => 0.9));
   });
 });

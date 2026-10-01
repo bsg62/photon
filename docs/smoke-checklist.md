@@ -378,3 +378,4 @@ publishing it.
 - [ ] Choose a sort, quit and relaunch: photon opens in the same sort. Back on Date taken, the
       grid opens at the folder last browsed, as before.
 - [ ] Changing the sort with text in the search box keeps the search, now in the new order.
+- [ ] Settings → Slideshow → tick **Shuffle**, then play a folder of a few dozen photos: the order is mixed, neighbours in the grid do not follow each other, no photo repeats before all have shown, and videos are still skipped. Left goes back to the photo just seen, Right forward again. Each change still crossfades (the next photo is not preloaded in a shuffled show, so on a slow disk the old photo holds a moment longer rather than cutting to black). Start a second show: the order differs. Untick it: the next show plays in order. The checkbox is still ticked after a restart.

@@ -221,6 +221,7 @@
     memory_usage: () => ({ bytes: 412_000_000, processes: 4, includesWebview: true }),
     last_folder: () => null,
     slideshow_interval: () => 4,
+    slideshow_shuffle: () => false,
     similar_distance: () => 7,
     set_similar_distance: (a) => a.distance,
     set_search_query: (args) => {
@@ -253,7 +254,7 @@
     'rescan_folder', 'restore_tag_rule', 'reveal_folder', 'reveal_in_file_manager',
     'reveal_library', 'reveal_watched', 'rotate_item', 'set_album_view', 'set_grid_view',
     'set_item_edit', 'set_last_folder', 'set_person_view',
-    'check_export_dest', 'set_export_apply_edits', 'set_slideshow_interval', 'set_star', 'set_tag_view', 'set_theme',
+    'check_export_dest', 'set_export_apply_edits', 'set_slideshow_interval', 'set_slideshow_shuffle', 'set_star', 'set_tag_view', 'set_theme',
     'set_visible', 'set_copies_view',
     'put_video_frame', 'video_frame_failed', 'video_session_start',
   ];

@@ -5,7 +5,7 @@
   import { isLinux } from '../lib/url';
   import { videoState } from '../lib/video-state.svelte';
   import { formatDuration, videoUrl } from '../lib/video';
-  import { nextStill } from '../lib/slideshow-order';
+  import { nextStill, shuffleStride } from '../lib/slideshow-order';
   import { createVideoPlayer } from '../lib/video-player.svelte';
   import { createAlbumMembership } from '../lib/album-membership.svelte';
   import { ownAlbums, picasaAlbumsOf } from '../lib/albums';
@@ -111,11 +111,24 @@
     return library.entry(i)?.kind;
   }
 
+  /** The running show's shuffle: its stride through a view of `len` photos, or null for a
+   *  show in the view's own order. Not `$state`: nothing draws it. */
+  let shuffle: { len: number; stride: number } | null = null;
+
+  /** How far one step of the show moves through a view of `len` photos. A shuffled show's
+   *  stride is good for one length only - it must share no factor with it - so a view that
+   *  grew or shrank under the show gets a new one. */
+  function showStride(len: number): number {
+    if (shuffle === null) return 1;
+    if (shuffle.len !== len) shuffle = { len, stride: shuffleStride(len, Math.random) };
+    return shuffle.stride;
+  }
+
   const slideshow = createSlideshow({
     advance: () => {
       const len = library.info.len;
       const from = current;
-      void nextStill(from, len, kindAt).then((next) => {
+      void nextStill(from, len, kindAt, 1, showStride(len)).then((next) => {
         // The show may have been stopped, or the user may have navigated by hand, while this
         // awaited: either makes `current` no longer `from`, or the slideshow no longer
         // active, and a `goto` landing on top of either would be a stale write.
@@ -145,6 +158,12 @@
       }
       goto(next);
     }
+    // Read once per show, like the interval. A failed read plays the view in order.
+    const from = current;
+    const shuffled = await api.slideshowShuffle().catch(() => false);
+    // The same two ways out as above: this awaited too.
+    if (destroyed || current !== from || slideshow.active) return;
+    shuffle = shuffled ? { len: -1, stride: 1 } : null;
     void slideshow.start(fullSrc !== null || error !== null);
   }
 
@@ -157,6 +176,8 @@
    *  During one it skips videos in the direction of travel: the show never plays a video,
    *  so landing on one by hand would leave it sitting on a still poster, its timer running,
    *  until the next advance moved it on. It wraps as the show's own advance does, and it
+   *  follows the show's order, so in a shuffled show Left is the photo that was just on
+   *  screen rather than its neighbour in the grid. It
    *  takes the same two staleness guards as `advance`, for the same reason: the walk
    *  awaits pages, and the show may have stopped or the user moved on meanwhile. */
   function step(dir: 1 | -1) {
@@ -165,7 +186,8 @@
       return;
     }
     const from = current;
-    void nextStill(from, library.info.len, kindAt, dir).then((next) => {
+    const len = library.info.len;
+    void nextStill(from, len, kindAt, dir, showStride(len)).then((next) => {
       if (!slideshow.active || current !== from) return;
       if (next !== null && next !== current) goto(next);
     });

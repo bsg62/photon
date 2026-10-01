@@ -125,6 +125,16 @@ pub fn set_slideshow_interval(engine: Eng<'_>, seconds: i64) -> Result<i64, AppE
 }
 
 #[tauri::command(async)]
+pub fn slideshow_shuffle(engine: Eng<'_>) -> Result<bool, AppError> {
+    commands::slideshow_shuffle(&engine)
+}
+
+#[tauri::command(async)]
+pub fn set_slideshow_shuffle(engine: Eng<'_>, shuffle: bool) -> Result<(), AppError> {
+    commands::set_slideshow_shuffle(&engine, shuffle)
+}
+
+#[tauri::command(async)]
 pub fn similar_distance(engine: Eng<'_>) -> Result<i64, AppError> {
     commands::similar_distance(&engine)
 }
