@@ -202,6 +202,10 @@ pub struct ViewerItem {
     pub dates: ItemDates,
     /// Where the photo was taken, when its EXIF says.
     pub gps: Option<ItemGps>,
+    /// How many pixels sit at each of `photon_core::histogram::BINS` brightness steps,
+    /// darkest first, counted from the grid thumbnail and so of the photo as shown. `None`
+    /// for a video, and until the thumbnail exists.
+    pub histogram: Option<Vec<u32>>,
 }
 
 /// A position in decimal degrees, north and east positive.
@@ -732,6 +736,12 @@ pub fn viewer_item(engine: &Engine, id: i64) -> CmdResult<ViewerItem> {
     let copies = item_copies(engine, item.id)?;
     let thumb_key = hex_key(item.thumb_key());
     let video_crashed = photon_core::thumbs::video_crashed(&item);
+    // A video's poster frame is one instant of it; its histogram would say nothing of the
+    // rest. ~0.1 ms for a photo: one small file, decoded by the library that wrote it.
+    let histogram = (item.kind == MediaKind::Image)
+        .then(|| engine.thumbs.histogram(&item))
+        .flatten()
+        .map(|bins| bins.to_vec());
     let camera = item.camera;
     let kind = item.kind;
     let duration_ms = item.duration_ms;
@@ -780,6 +790,7 @@ pub fn viewer_item(engine: &Engine, id: i64) -> CmdResult<ViewerItem> {
             lat: g.lat,
             lon: g.lon,
         }),
+        histogram,
     })
 }
 
@@ -1387,6 +1398,33 @@ mod tests {
         assert!(item_map_url(&f.engine, id + 999).is_err());
     }
 
+    /// The histogram is of the thumbnail on disk: absent until there is one, then one count
+    /// per pixel of it.
+    #[test]
+    fn viewer_item_reports_the_histogram_once_the_thumbnail_exists() {
+        let img = jpeg(64, 32);
+        let f = fixture(&[("a.jpg", &img)]);
+        f.add_photos();
+        let id = f.ids()[0];
+        f.engine.thumbs.wait_idle();
+        let item = f.engine.lib.item(id).unwrap().unwrap();
+        assert_eq!(item.thumb_state, ThumbState::Ready);
+        let bins = viewer_item(&f.engine, id)
+            .unwrap()
+            .histogram
+            .expect("a cached thumbnail has a histogram");
+        assert_eq!(bins.len(), photon_core::histogram::BINS);
+        assert_eq!(bins.iter().sum::<u32>(), 64 * 32);
+
+        // No thumbnail under the photo's key, no histogram - and no error either.
+        let cached = f
+            .engine
+            .thumbs
+            .path_for(item.thumb_key(), photon_core::thumbs::ThumbSize::Grid);
+        std::fs::remove_file(cached).unwrap();
+        assert_eq!(viewer_item(&f.engine, id).unwrap().histogram, None);
+    }
+
     #[test]
     fn viewer_item_reports_the_caption() {
         use photon_core::library::NewItem;
@@ -1871,6 +1909,25 @@ mod tests {
         let item = viewer_item(&f.engine, video).unwrap();
         assert_eq!(item.kind, MediaKind::Video);
         assert!(!neighbours(&f.engine, f.ids()[0], 2).contains(&video));
+    }
+
+    /// A video has a poster in the cache like any photo's thumbnail, and still no
+    /// histogram: one frame says nothing of the rest.
+    #[test]
+    fn a_video_has_no_histogram_though_its_poster_is_cached() {
+        let f = fixture(&[("clip.mp4", b"video")]);
+        f.add_photos();
+        video_session_start(&f.engine, true).unwrap();
+        let job = next_video_job(&f.engine, Duration::from_millis(200))
+            .unwrap()
+            .unwrap();
+        put_video_frame(&f.engine, job.id, &job.key, &jpeg(32, 16)).unwrap();
+        let item = f.engine.lib.item(job.id).unwrap().unwrap();
+        assert!(
+            f.engine.thumbs.histogram(&item).is_some(),
+            "the poster is cached, so only the kind keeps the histogram out"
+        );
+        assert_eq!(viewer_item(&f.engine, job.id).unwrap().histogram, None);
     }
 
     #[test]

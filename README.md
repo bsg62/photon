@@ -88,6 +88,12 @@ named in the folder's `.picasa.ini`, outlined over the photo while the panel is 
 checkboxes for photon's albums; and the Picasa albums the photo is in. `R` and `Shift+R` turn the photo on screen; nothing is
 written, and the next photo opens upright.
 
+Under the exposure the panel draws the photo's **histogram**: how much of the picture sits
+at each brightness, shadows on the left and highlights on the right. It is of the photo as
+photon shows it, so a crop changes it. A tall column at either end is clipping - a blown sky,
+blocked shadows - and is drawn full height without flattening the curve between. Videos have
+none.
+
 A photo's caption - what you typed under it in Picasa, or its description in Lightroom, Bridge
 or digiKam - is shown under the photo in the viewer and during a slideshow, and at the top of
 the info panel. photon reads it from the photo's XMP or IPTC; the text many cameras put in EXIF

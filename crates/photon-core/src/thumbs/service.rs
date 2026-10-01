@@ -670,6 +670,18 @@ impl ThumbService {
         Ok(path.is_file().then_some(path))
     }
 
+    /// The tonal histogram of `item` as shown, from its cached grid thumbnail; `None` while
+    /// that thumbnail has not been made, for a photo it never could be made for, and for a
+    /// file in the cache that will not decode - the panel then draws no histogram, which is
+    /// the truth about a photo photon has no picture of yet.
+    ///
+    /// Asked of the cache by key, not of the row's `thumb_state`: the key names one picture,
+    /// so whatever is cached under it is this photo as shown, whatever the row says.
+    pub fn histogram(&self, item: &Item) -> Option<[u32; crate::histogram::BINS]> {
+        let img = self.cache.read(item.thumb_key(), ThumbSize::Grid).ok()?;
+        Some(crate::histogram::luminance(&img))
+    }
+
     /// Where the thumbnail of the picture `key` names is cached at `size`, whether or not it
     /// has been built. A key names one picture - the file's fingerprint and its edit - so
     /// what is cached there is that picture whichever item asks.

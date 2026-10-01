@@ -141,6 +141,10 @@
         fileModifiedMs: (day(2026, 7, 21) + 40000) * 1000,
       },
       gps: { lat: 46.5388, lon: 12.1373 },
+      // A landscape's shape: a broad hump of midtones, a shoulder of sky, a little clipping.
+      histogram: Array.from({ length: 64 }, (_, i) =>
+        Math.round(900 * Math.exp(-(((i - 24) / 11) ** 2)) + 420 * Math.exp(-(((i - 50) / 6) ** 2)) + (i === 63 ? 1500 : 0)),
+      ),
     };
   }
 
