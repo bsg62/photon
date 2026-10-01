@@ -8,6 +8,7 @@
   import { library } from '../lib/library.svelte';
   import { fitMenu } from '../lib/menu-place';
   import { searchBox } from '../lib/search-box.svelte';
+  import { onThisDayLabel, onThisDayQuery } from '../lib/searches';
   import Icon from './Icon.svelte';
 
   let { onjump, onopensettings }: { onjump: (folderId: number) => void; onopensettings: () => void } = $props();
@@ -285,6 +286,20 @@
   /** Runs a saved search as though it had been typed. `searchBox.search` cancels a pending
    *  debounce first, which is what stops half-typed text landing after this and replacing
    *  the grid the click just asked for. */
+  /** Today, as the "On this day" row means it. Derived from the grid's version so that a
+   *  window left open past midnight catches up the next time anything in the library
+   *  moves; the click reads the clock itself, so it is never a day behind. */
+  const today = $derived.by(() => {
+    void library.info.version;
+    const now = new Date();
+    return { query: onThisDayQuery(now), label: onThisDayLabel(now) };
+  });
+
+  function showOnThisDay() {
+    closeMenus();
+    searchBox.search(onThisDayQuery(new Date()));
+  }
+
   function showSearch(search: SavedSearch) {
     closeMenus();
     searchBox.search(search.query);
@@ -323,6 +338,17 @@
     title="The newest photos by capture date"
   >
     <Icon name="clock" size={14} /><span class="name">Recent</span>
+  </button>
+
+  <!-- A search, not a view: what was taken on today's date in any year. No count, as a
+       saved search has none: it would mean running the search on every library change. -->
+  <button
+    class="root on-this-day"
+    class:active={library.info.view === 'search' && library.info.searchQuery === today.query}
+    onclick={showOnThisDay}
+    title="Photos taken on {today.label}, in any year"
+  >
+    <Icon name="calendar" size={14} /><span class="name">On this day</span>
   </button>
 
   <!-- Only while the library has a video, or while the view is showing: a library of photos
@@ -659,7 +685,7 @@
      covered by `.copies.active`, which is declared after it. */
   .copies { padding-left: 28px; cursor: default; }
   .root:hover, .node:hover, .group:hover { background: var(--hover); }
-  .starred.active, .recent.active, .duplicates.active, .hidden-view.active, .node.active, .copies.active { background: var(--accent-soft); }
+  .starred.active, .recent.active, .on-this-day.active, .duplicates.active, .hidden-view.active, .node.active, .copies.active { background: var(--accent-soft); }
   /* --text-dim does not reach 4.5:1 over --accent-soft; --text does (tokens.test.ts). */
   .active .count { color: var(--text); }
   .add-album { color: var(--text-dim); }

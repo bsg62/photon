@@ -112,6 +112,8 @@ quotes make a phrase, and `camera:` or `lens:` confine a term to that field, so
 lens in the viewer's info panel is a link to that search. `from:` and `to:` bound the date a
 photo was taken, each taking a year, a month or a day and including all of it:
 `from:2019-06 to:2019-08` is June to August, `to:2019` is everything up to the end of 2019.
+`on:07-14` is every 14th of July, whatever the year. **On this day** in the sidebar is that
+search for today's date: what you were photographing a year ago, and ten.
 
 `tag:`, `person:`, `album:` and `folder:` work like `camera:`: `tag:zoo` is the photos carrying
 that keyword and not the ones in a folder named Zoo, `person:anna` the photos Picasa named Anna

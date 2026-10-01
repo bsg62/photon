@@ -28,6 +28,9 @@ use crate::metadata::Gps;
 ///   or after, or within or before, the whole period named: `from:2019-06 to:2019-08` is
 ///   June to August inclusive. Naming both ends inclusively leaves nothing to guess, which
 ///   `after:`/`before:` would (is `after:2019` in 2019?).
+/// - `on:MM-DD` keeps photos taken on that day of any year: `on:07-14` is every 14th of
+///   July. It is what the sidebar's "On this day" searches for. Both parts are two digits,
+///   for the reason `from:` wants its widths, and a day the month never has is dropped.
 /// - `camera:` and `lens:` restrict a term to that field. A bare `canon` matches a folder
 ///   named Canon as readily as the camera; `camera:canon` does not. A quoted value with
 ///   several words (`camera:"canon eos 5d"`, which is what the info panel's links send)
@@ -76,6 +79,11 @@ enum Term {
     /// Taken before this instant: the first second *after* the period `to:` named, so the
     /// whole of that period is in and `to:2019` ends exactly where `from:2020` begins.
     To(i64),
+    /// `on:`: taken on this month and day, whatever the year.
+    On {
+        month: u32,
+        day: u32,
+    },
     /// `video` or `photo`, unquoted: what the file is.
     Kind(MediaKind),
     Tag(String),
@@ -117,6 +125,10 @@ impl Term {
             Term::Lens(needle) => haystacks.lens_contains(needle),
             Term::From(start) => haystacks.taken.is_some_and(|t| t >= *start),
             Term::To(end) => haystacks.taken.is_some_and(|t| t < *end),
+            Term::On { month, day } => haystacks.taken.is_some_and(|t| {
+                let (_, m, d) = crate::metadata::civil_from_unix(t);
+                (m, d) == (*month, *day)
+            }),
             Term::Kind(kind) => haystacks.kind == Some(*kind),
             Term::Tag(needle) => haystacks.tags.contains(needle),
             Term::Person(needle) => haystacks.people.contains(needle),
@@ -492,6 +504,28 @@ fn period(value: &str) -> Option<(i64, i64)> {
     Some((start, end))
 }
 
+/// The term an `on:` value names: `MM-DD`, two digits each. `None` for anything else, and
+/// for a day its month never has. February has 29: a photo can be taken on a leap day, and
+/// it is the leap years' photos that `on:02-29` is asked for.
+fn month_day(value: &str) -> Option<Term> {
+    let (month, day) = value.split_once('-')?;
+    let number = |part: &str| {
+        (part.len() == 2 && part.bytes().all(|b| b.is_ascii_digit()))
+            .then(|| part.parse::<u32>().ok())
+            .flatten()
+    };
+    let (month, day) = (number(month)?, number(day)?);
+    let longest = match month {
+        2 => 29,
+        4 | 6 | 9 | 11 => 30,
+        1..=12 => 31,
+        _ => return None,
+    };
+    (1..=longest)
+        .contains(&day)
+        .then_some(Term::On { month, day })
+}
+
 /// How far `near:` reaches when the query names no distance.
 const NEAR_DEFAULT_M: i64 = 1_000;
 
@@ -643,6 +677,8 @@ impl Query {
                 .map(|(_, end)| Term::To(end))
                 .into_iter()
                 .collect()
+        } else if let Some(value) = prefixed("on:") {
+            month_day(value).into_iter().collect()
         } else if let Some(value) = prefixed("is:") {
             match value {
                 "starred" => vec![Term::Starred],
@@ -1062,6 +1098,56 @@ mod tests {
             Query::parse("near:48.1,11.5,1km"),
             Query::parse("near:48.1,11.5,1000m")
         );
+    }
+
+    #[test]
+    fn on_matches_a_day_of_the_year_in_every_year() {
+        use crate::metadata::naive_to_unix;
+        let taken = |y, m, d, h| Fields {
+            taken: Some(naive_to_unix(y, m, d, h, 0, 0)),
+            ..Fields::default()
+        };
+        let q = Query::parse("on:07-14");
+        // The whole day, first hour to last, in any year - before 1970 too.
+        assert!(q.matches(&taken(2019, 7, 14, 0)));
+        assert!(q.matches(&taken(2024, 7, 14, 23)));
+        assert!(q.matches(&taken(1965, 7, 14, 12)));
+        assert!(!q.matches(&taken(2019, 7, 13, 23)));
+        assert!(!q.matches(&taken(2019, 7, 15, 0)));
+        // Month and day are not interchangeable.
+        assert!(!Query::parse("on:07-08").matches(&taken(2019, 8, 7, 12)));
+        // A leap day is a day.
+        assert!(Query::parse("on:02-29").matches(&taken(2024, 2, 29, 12)));
+        // It narrows like any term, and a photo with no date is on no day.
+        assert!(Query::parse("on:07-14 from:2020").matches(&taken(2024, 7, 14, 12)));
+        assert!(!Query::parse("on:07-14 from:2020").matches(&taken(2019, 7, 14, 12)));
+        assert!(!q.matches(&Fields::default()));
+        assert!(Query::parse("-on:07-14").matches(&taken(2019, 7, 15, 0)));
+    }
+
+    #[test]
+    fn an_on_that_names_no_day_is_dropped() {
+        for half_typed in [
+            "on:",
+            "on:07",
+            "on:07-",
+            "on:07-1",
+            "on:7-14",
+            "on:00-10",
+            "on:13-01",
+            "on:04-31",
+            "on:02-30",
+            "on:07-00",
+            "on:07-14-2019",
+            "on:ab-cd",
+        ] {
+            assert_eq!(
+                Query::parse(&format!("lake {half_typed}")),
+                Query::parse("lake"),
+                "{half_typed}"
+            );
+        }
+        assert!(!Query::parse("on:12-31").is_empty());
     }
 
     #[test]

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { SavedSearch } from './api';
-import { canSaveSearch, defaultSearchName, savedSearchFor } from './searches';
+import { canSaveSearch, defaultSearchName, onThisDayLabel, onThisDayQuery, savedSearchFor } from './searches';
 
 function saved(id: number, name: string, query: string): SavedSearch {
   return { id, name, query, createdMs: 0 };
@@ -52,5 +52,17 @@ describe('canSaveSearch', () => {
 describe('defaultSearchName', () => {
   it('offers the query itself, trimmed', () => {
     expect(defaultSearchName('  camera:canon 2019 ')).toBe('camera:canon 2019');
+  });
+});
+
+describe('onThisDayQuery', () => {
+  it('names the local month and day, two digits each, as the grammar wants them', () => {
+    expect(onThisDayQuery(new Date(2026, 6, 4, 12))).toBe('on:07-04');
+    expect(onThisDayQuery(new Date(2026, 11, 31, 23, 59))).toBe('on:12-31');
+    expect(onThisDayQuery(new Date(2024, 1, 29, 0, 0))).toBe('on:02-29');
+  });
+
+  it('labels the day without a year', () => {
+    expect(onThisDayLabel(new Date(2026, 6, 14, 12), 'en-GB')).toBe('14 July');
   });
 });
