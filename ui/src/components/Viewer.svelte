@@ -15,7 +15,7 @@
   import { isCopyPhotoShortcut } from '../lib/copy-photo';
   import { fitMenu } from '../lib/menu-place';
   import { createCopyFeedback } from '../lib/copied.svelte';
-  import { cameraRows, copyGroups, dateRows, formatDimensions } from '../lib/exif';
+  import { cameraRows, copyGroups, dateRows, formatCoordinates, formatDimensions, nearQuery } from '../lib/exif';
   import { showCopiesLabel } from '../lib/copies';
   import { ASPECTS, HANDLES, type Handle } from '../lib/crop';
   import { createCropTool } from '../lib/crop-tool.svelte';
@@ -438,6 +438,11 @@
     if (!item) return;
     closeMenu();
     api.openInDefaultApp(item.id).catch(library.reportError);
+  }
+
+  function openInMap() {
+    if (!item) return;
+    api.openInMap(item.id).catch(library.reportError);
   }
 
   function viewport(): { width: number; height: number } {
@@ -1045,6 +1050,16 @@
           <dd>{row.value}</dd>
         {/each}
       </dl>
+      {#if item.gps}
+        {@const gps = item.gps}
+        <h3>Location</h3>
+        <p class="info-place">{formatCoordinates(gps.lat, gps.lon)}</p>
+        <p class="info-place">
+          <button class="info-link" onclick={() => onsearch(nearQuery(gps.lat, gps.lon))} title="Show every photo taken within a kilometre of here">Photos nearby</button>
+          ·
+          <button class="info-link" onclick={openInMap} title="Opens openstreetmap.org in your browser, which sends it this position">Open in OpenStreetMap</button>
+        </p>
+      {/if}
       <h3>People</h3>
       {#if item.faces.length}
         <ul class="chips">
@@ -1402,6 +1417,7 @@
   .info dd { margin: 0; overflow-wrap: anywhere; }
   .info-link { padding: 0; border: 0; background: none; color: var(--accent-glass); font: inherit; text-align: left; cursor: pointer; overflow-wrap: anywhere; }
   .info-link:hover { text-decoration: underline; }
+  .info-place { margin: 0 0 var(--s-1); }
   .info-muted { margin: 0; color: var(--text-dim); }
   .chips { display: flex; flex-wrap: wrap; gap: 4px; margin: 0; padding: 0; list-style: none; }
   .chips li { display: inline-flex; align-items: center; padding: 2px var(--s-2); background: var(--field); border-radius: 999px; font-size: var(--t-2); }

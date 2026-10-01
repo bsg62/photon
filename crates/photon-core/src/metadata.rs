@@ -16,7 +16,8 @@ use std::{
 /// [`plausible_taken_at`]); the bump is what re-dates photos indexed under 1.
 /// 3 is the first generation that reads the photo's caption (`keywords::read_embedded`);
 /// the bump is what captions photos indexed under 2.
-pub const EXIF_VERSION: i64 = 3;
+/// 4 is the first generation that reads where the photo was taken ([`Gps`]).
+pub const EXIF_VERSION: i64 = 4;
 
 /// Capture dates earlier than this are refused: 1970-01-01, in naive-as-UTC seconds. A
 /// camera whose clock was never set writes 0000 or 1900-something, and no digital camera
@@ -40,6 +41,27 @@ pub(crate) fn plausible_taken_at(taken_at: i64, now: i64) -> bool {
     (EARLIEST_TAKEN_AT..=now + FUTURE_SLACK_S).contains(&taken_at)
 }
 
+/// Where a photo was taken, in decimal degrees: north and east positive.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Gps {
+    pub lat: f64,
+    pub lon: f64,
+}
+
+impl Gps {
+    /// The great-circle distance to `other` in kilometres, on a sphere of the Earth's mean
+    /// radius: within half a percent of the ellipsoid's answer, which is nothing against the
+    /// "somewhere near here" a search asks for.
+    pub fn distance_km(self, other: Gps) -> f64 {
+        const EARTH_RADIUS_KM: f64 = 6371.0088;
+        let (lat1, lat2) = (self.lat.to_radians(), other.lat.to_radians());
+        let dlat = lat2 - lat1;
+        let dlon = (other.lon - self.lon).to_radians();
+        let a = (dlat / 2.0).sin().powi(2) + lat1.cos() * lat2.cos() * (dlon / 2.0).sin().powi(2);
+        2.0 * EARTH_RADIUS_KM * a.sqrt().min(1.0).asin()
+    }
+}
+
 /// What the camera wrote about itself and the exposure. Every field is optional because
 /// every field is: a phone omits the lens, a scan omits everything.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -54,6 +76,8 @@ pub struct CameraMeta {
     /// Exposure time in seconds.
     pub exposure_s: Option<f64>,
     pub iso: Option<i64>,
+    /// Where the photo was taken, when the camera had a fix.
+    pub gps: Option<Gps>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -273,7 +297,63 @@ fn read_camera(exif: &exif::Exif) -> CameraMeta {
             .and_then(|f| f.value.get_uint(0))
             .filter(|&iso| iso > 0)
             .map(i64::from),
+        gps: read_gps(exif),
     }
+}
+
+/// The position in the GPS IFD, or `None` when any part of it is missing or cannot be a
+/// position.
+///
+/// Both hemisphere references are required: read without one, a photo from Sydney lands in
+/// the Pacific off Japan, and a wrong place is worse than none. Exactly 0,0 is refused too.
+/// It is what a camera with no fix writes when it writes the tags anyway, and the one spot
+/// in the Gulf of Guinea it would otherwise put half a library on has no photos to lose.
+fn read_gps(exif: &exif::Exif) -> Option<Gps> {
+    let degrees = |tag, positive: u8, negative: u8, reference, limit: f64| {
+        let value = dms_degrees(&exif.get_field(tag, exif::In::PRIMARY)?.value)?;
+        let exif::Value::Ascii(parts) = &exif.get_field(reference, exif::In::PRIMARY)?.value else {
+            return None;
+        };
+        let sign = match parts.first()?.first()?.to_ascii_uppercase() {
+            c if c == positive => 1.0,
+            c if c == negative => -1.0,
+            _ => return None,
+        };
+        (value <= limit).then_some(sign * value)
+    };
+    let lat = degrees(
+        exif::Tag::GPSLatitude,
+        b'N',
+        b'S',
+        exif::Tag::GPSLatitudeRef,
+        90.0,
+    )?;
+    let lon = degrees(
+        exif::Tag::GPSLongitude,
+        b'E',
+        b'W',
+        exif::Tag::GPSLongitudeRef,
+        180.0,
+    )?;
+    (lat != 0.0 || lon != 0.0).then_some(Gps { lat, lon })
+}
+
+/// Degrees, minutes and seconds as decimal degrees. Minutes and seconds may be missing or
+/// written 0/0, which writers that keep the fraction in the minutes do; degrees may not.
+fn dms_degrees(value: &exif::Value) -> Option<f64> {
+    let exif::Value::Rational(parts) = value else {
+        return None;
+    };
+    let part = |n: usize| match parts.get(n) {
+        None => Some(0.0),
+        Some(r) if r.denom == 0 => (r.num == 0 && n > 0).then_some(0.0),
+        Some(r) => Some(r.to_f64()),
+    };
+    if parts.is_empty() {
+        return None;
+    }
+    let degrees = part(0)? + part(1)? / 60.0 + part(2)? / 3600.0;
+    degrees.is_finite().then_some(degrees)
 }
 
 /// An ASCII field as text. Cameras pad these with spaces and NULs, and some write an empty
@@ -469,7 +549,7 @@ pub fn write_date_text(out: &mut String, secs: i64) {
 mod tests {
     use super::*;
     use crate::testutil::{
-        ExifSpec, avif_fixture, counted, gif_with_xmp, iptc_app13_datasets, jpeg_bytes,
+        ExifSpec, GpsSpec, avif_fixture, counted, gif_with_xmp, iptc_app13_datasets, jpeg_bytes,
         jpeg_with_exif, jpeg_with_exif_spec, jpeg_with_segments, png_bytes, png_with_xmp,
         write_file, xmp_packet_with_subjects,
     };
@@ -607,8 +687,177 @@ mod tests {
                 aperture: Some(1.8),
                 exposure_s: Some(0.004),
                 iso: Some(400),
+                gps: None,
             }
         );
+    }
+
+    /// Munich's Marienplatz, 48 deg 8' 14.64" N, 11 deg 34' 31.8" E.
+    fn munich() -> GpsSpec<'static> {
+        GpsSpec {
+            lat: [(48, 1), (8, 1), (1464, 100)],
+            lat_ref: Some("N"),
+            lon: [(11, 1), (34, 1), (318, 10)],
+            lon_ref: Some("E"),
+        }
+    }
+
+    fn gps_of(spec: GpsSpec<'_>) -> Option<Gps> {
+        let dir = tempfile::tempdir().unwrap();
+        let spec = ExifSpec {
+            gps: Some(spec),
+            ..ExifSpec::default()
+        };
+        let path = write_file(dir.path(), "a.jpg", &jpeg_with_exif_spec(4, 2, &spec));
+        read_image_meta(&path).camera.gps
+    }
+
+    fn close(a: f64, b: f64) -> bool {
+        (a - b).abs() < 1e-9
+    }
+
+    #[test]
+    fn reads_the_position_as_signed_decimal_degrees() {
+        let gps = gps_of(munich()).expect("a position");
+        assert!(
+            close(gps.lat, 48.0 + 8.0 / 60.0 + 14.64 / 3600.0),
+            "{gps:?}"
+        );
+        assert!(
+            close(gps.lon, 11.0 + 34.0 / 60.0 + 31.8 / 3600.0),
+            "{gps:?}"
+        );
+
+        // South and west are negative; the reference decides, in either case.
+        let gps = gps_of(GpsSpec {
+            lat_ref: Some("S"),
+            lon_ref: Some("w"),
+            ..munich()
+        })
+        .unwrap();
+        assert!(gps.lat < -48.0 && gps.lon < -11.0, "{gps:?}");
+
+        // A writer that keeps the fraction in the minutes leaves the seconds 0/0.
+        let gps = gps_of(GpsSpec {
+            lat: [(48, 1), (8244, 1000), (0, 0)],
+            ..munich()
+        })
+        .unwrap();
+        assert!(close(gps.lat, 48.0 + 8.244 / 60.0), "{gps:?}");
+
+        // Beside the other EXIF: the pointer to the GPS IFD is found with an Exif IFD
+        // before it.
+        let dir = tempfile::tempdir().unwrap();
+        let spec = ExifSpec {
+            make: Some("Canon"),
+            lens: Some("EF50mm"),
+            gps: Some(munich()),
+            ..ExifSpec::default()
+        };
+        let path = write_file(dir.path(), "a.jpg", &jpeg_with_exif_spec(4, 2, &spec));
+        let camera = read_image_meta(&path).camera;
+        assert_eq!(camera.lens.as_deref(), Some("EF50mm"));
+        assert!(camera.gps.is_some());
+    }
+
+    #[test]
+    fn a_position_that_cannot_be_one_reads_as_absent() {
+        for (why, spec) in [
+            (
+                "no latitude reference",
+                GpsSpec {
+                    lat_ref: None,
+                    ..munich()
+                },
+            ),
+            (
+                "no longitude reference",
+                GpsSpec {
+                    lon_ref: None,
+                    ..munich()
+                },
+            ),
+            (
+                "a reference that is no hemisphere",
+                GpsSpec {
+                    lat_ref: Some("E"),
+                    ..munich()
+                },
+            ),
+            (
+                "a latitude past the pole",
+                GpsSpec {
+                    lat: [(91, 1), (0, 1), (0, 1)],
+                    ..munich()
+                },
+            ),
+            (
+                "a longitude past the date line",
+                GpsSpec {
+                    lon: [(180, 1), (1, 1), (0, 1)],
+                    ..munich()
+                },
+            ),
+            (
+                "degrees of 0/0",
+                GpsSpec {
+                    lat: [(0, 0), (8, 1), (0, 1)],
+                    ..munich()
+                },
+            ),
+            (
+                "minutes over zero",
+                GpsSpec {
+                    lat: [(48, 1), (8, 0), (0, 1)],
+                    ..munich()
+                },
+            ),
+            (
+                "no fix: all zeros",
+                GpsSpec {
+                    lat: [(0, 1), (0, 1), (0, 1)],
+                    lat_ref: Some("N"),
+                    lon: [(0, 1), (0, 1), (0, 1)],
+                    lon_ref: Some("E"),
+                },
+            ),
+        ] {
+            assert_eq!(gps_of(spec), None, "{why}");
+        }
+        // On the equator, or on the meridian, is a place: only both at once is no fix.
+        assert!(
+            gps_of(GpsSpec {
+                lat: [(0, 1), (0, 1), (0, 1)],
+                ..munich()
+            })
+            .is_some()
+        );
+    }
+
+    #[test]
+    fn distance_is_the_great_circle() {
+        let munich = Gps {
+            lat: 48.137_4,
+            lon: 11.575_5,
+        };
+        let berlin = Gps {
+            lat: 52.520_0,
+            lon: 13.405_0,
+        };
+        let km = munich.distance_km(berlin);
+        assert!((503.0..506.0).contains(&km), "{km}");
+        assert!(munich.distance_km(munich) < 1e-9);
+        // Across the date line the short way round, not the long one.
+        let east = Gps {
+            lat: 0.0,
+            lon: 179.5,
+        };
+        let west = Gps {
+            lat: 0.0,
+            lon: -179.5,
+        };
+        let km = east.distance_km(west);
+        assert!((110.0..113.0).contains(&km), "{km}");
     }
 
     #[test]

@@ -330,6 +330,14 @@ DROP INDEX items_starred;
 CREATE INDEX items_starred ON items(folder_id, taken_at) WHERE rating >= 1 AND missing_since IS NULL;
 CREATE INDEX items_videos ON items(folder_id, taken_at) WHERE kind = 1 AND missing_since IS NULL;
 "#,
+    r#"
+-- Where the photo was taken, in decimal degrees (north and east positive), from its EXIF GPS
+-- IFD. Both NULL for a photo without a position. Filled by the metadata backfill
+-- (`EXIF_VERSION` 4). No index: the one reader that filters on them is search, which reads
+-- every row anyway.
+ALTER TABLE items ADD COLUMN gps_lat REAL;
+ALTER TABLE items ADD COLUMN gps_lon REAL;
+"#,
 ];
 
 pub fn migrate(conn: &Connection) -> Result<()> {
@@ -581,7 +589,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 22);
+        assert_eq!(version, 23);
         let rules: i64 = conn
             .query_row("SELECT count(*) FROM tag_rules", [], |r| r.get(0))
             .unwrap();
@@ -740,7 +748,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 22);
+        assert_eq!(version, 23);
         let overlay: i64 = conn
             .query_row("SELECT count(*) FROM item_user_tags", [], |r| r.get(0))
             .unwrap();
@@ -790,7 +798,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 22);
+        assert_eq!(version, 23);
         let hash: Option<Vec<u8>> = conn
             .query_row("SELECT content_hash FROM items WHERE id = 1", [], |r| {
                 r.get(0)
@@ -931,7 +939,7 @@ mod tests {
             .unwrap();
         // Hardcoded, like every other version assertion here: `MIGRATIONS.len()` would
         // agree with itself whatever the list did, which is the tripwire removed.
-        assert_eq!(version, 22);
+        assert_eq!(version, 23);
     }
 
     /// Every folder in an existing library comes out of the upgrade visible.
@@ -969,7 +977,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 22);
+        assert_eq!(version, 23);
     }
 
     /// Every album in an existing library comes out of the upgrade as photon's own.
@@ -1002,7 +1010,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 22);
+        assert_eq!(version, 23);
     }
 
     /// Every Picasa album in an existing library comes out of the upgrade with no recorded
@@ -1036,7 +1044,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 22);
+        assert_eq!(version, 23);
     }
 
     /// Every photo in an existing library comes out of the upgrade uncaptioned, for the
@@ -1075,7 +1083,7 @@ mod tests {
             .unwrap()
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 22);
+        assert_eq!(version, 23);
     }
 
     /// A stored Conservative or Loose keeps meaning Conservative or Loose.
@@ -1109,7 +1117,7 @@ mod tests {
             let version: i64 = conn
                 .query_row("PRAGMA user_version", [], |r| r.get(0))
                 .unwrap();
-            assert_eq!(version, 22);
+            assert_eq!(version, 23);
         }
     }
 
@@ -1159,7 +1167,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 22);
+        assert_eq!(version, 23);
     }
 
     /// Every folder in an existing library comes out of the upgrade with no alias, so the
@@ -1197,7 +1205,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 22);
+        assert_eq!(version, 23);
     }
 
     /// A library at schema 21 comes out of the upgrade with the Videos index, and with
@@ -1245,6 +1253,6 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 22);
+        assert_eq!(version, 23);
     }
 }

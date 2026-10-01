@@ -159,9 +159,36 @@ pub struct ExifSpec<'a> {
     pub exposure: Option<(u32, u32)>,
     /// `PhotographicSensitivity`, a SHORT.
     pub iso: Option<u16>,
+    /// The GPS IFD's position.
+    pub gps: Option<GpsSpec<'a>>,
+}
+
+/// A position as the GPS IFD holds it: each coordinate as (degrees, minutes, seconds)
+/// rationals and its hemisphere reference, `None` to leave the reference tag out.
+#[derive(Clone, Debug)]
+pub struct GpsSpec<'a> {
+    pub lat: [(u32, u32); 3],
+    pub lat_ref: Option<&'a str>,
+    pub lon: [(u32, u32); 3],
+    pub lon_ref: Option<&'a str>,
+}
+
+fn rationals_entry(tag: u16, values: &[(u32, u32)]) -> IfdEntry {
+    let mut data = Vec::new();
+    for (num, denom) in values {
+        data.extend_from_slice(&num.to_le_bytes());
+        data.extend_from_slice(&denom.to_le_bytes());
+    }
+    IfdEntry {
+        tag,
+        typ: 5,
+        count: values.len() as u32,
+        data,
+    }
 }
 
 /// One IFD entry: tag, TIFF type, count and the raw value bytes (little-endian).
+#[derive(Clone)]
 struct IfdEntry {
     tag: u16,
     typ: u16,
@@ -241,7 +268,8 @@ fn write_ifd(mut entries: Vec<IfdEntry>, base: u32) -> (Vec<u8>, u32) {
     (table, end)
 }
 
-/// A little-endian TIFF structure with IFD0 and an Exif sub-IFD holding `spec`'s fields.
+/// A little-endian TIFF structure with IFD0, an Exif sub-IFD and a GPS IFD holding `spec`'s
+/// fields.
 pub fn exif_tiff(spec: &ExifSpec<'_>) -> Vec<u8> {
     let mut exif_ifd = Vec::new();
     if let Some(dt) = spec.datetime {
@@ -285,26 +313,41 @@ pub fn exif_tiff(spec: &ExifSpec<'_>) -> Vec<u8> {
         assert_eq!(dt.len(), 19, "modified must be YYYY:MM:DD HH:MM:SS");
         ifd0.push(ascii_entry(0x0132, dt));
     }
-    // The pointer's value is the offset of the Exif IFD, which sits right after IFD0 and
-    // its data; lay IFD0 out once with a placeholder to learn its length.
+    let mut gps_ifd = Vec::new();
+    if let Some(gps) = &spec.gps {
+        if let Some(reference) = gps.lat_ref {
+            gps_ifd.push(ascii_entry(0x0001, reference));
+        }
+        gps_ifd.push(rationals_entry(0x0002, &gps.lat));
+        if let Some(reference) = gps.lon_ref {
+            gps_ifd.push(ascii_entry(0x0003, reference));
+        }
+        gps_ifd.push(rationals_entry(0x0004, &gps.lon));
+    }
+    // A pointer's value is the offset of its IFD: the Exif IFD sits right after IFD0 and
+    // its data, the GPS IFD after that. Lay IFD0 out once with placeholders to learn its
+    // length, which the pointers' values do not change.
     let has_exif_ifd = !exif_ifd.is_empty();
+    let has_gps_ifd = !gps_ifd.is_empty();
     if has_exif_ifd {
         ifd0.push(long_entry(0x8769, 0));
     }
-    let (_, exif_offset) = write_ifd(
-        ifd0.iter()
-            .map(|e| IfdEntry {
-                tag: e.tag,
-                typ: e.typ,
-                count: e.count,
-                data: e.data.clone(),
-            })
-            .collect(),
-        8,
-    );
+    if has_gps_ifd {
+        ifd0.push(long_entry(0x8825, 0));
+    }
+    let (_, exif_offset) = write_ifd(ifd0.clone(), 8);
+    let gps_offset = if has_exif_ifd {
+        write_ifd(exif_ifd.clone(), exif_offset).1
+    } else {
+        exif_offset
+    };
     if has_exif_ifd {
         let pointer = ifd0.iter_mut().find(|e| e.tag == 0x8769).unwrap();
         pointer.data = exif_offset.to_le_bytes().to_vec();
+    }
+    if has_gps_ifd {
+        let pointer = ifd0.iter_mut().find(|e| e.tag == 0x8825).unwrap();
+        pointer.data = gps_offset.to_le_bytes().to_vec();
     }
 
     let mut tiff = Vec::new();
@@ -316,6 +359,11 @@ pub fn exif_tiff(spec: &ExifSpec<'_>) -> Vec<u8> {
         assert_eq!(tiff.len() as u32, exif_offset);
         let (exif_bytes, _) = write_ifd(exif_ifd, exif_offset);
         tiff.extend_from_slice(&exif_bytes);
+    }
+    if has_gps_ifd {
+        assert_eq!(tiff.len() as u32, gps_offset);
+        let (gps_bytes, _) = write_ifd(gps_ifd, gps_offset);
+        tiff.extend_from_slice(&gps_bytes);
     }
     tiff
 }

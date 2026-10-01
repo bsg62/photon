@@ -5,7 +5,7 @@ use crate::Result;
 use crate::edit::{Crop, Edit};
 use crate::grid::{GridEntry, GridView};
 use crate::media::{MediaKind, ThumbState, fingerprint};
-use crate::metadata::{CameraMeta, EXIF_VERSION, oriented_dims, write_date_text};
+use crate::metadata::{CameraMeta, EXIF_VERSION, Gps, oriented_dims, write_date_text};
 use crate::search::{Haystacks, Query, fold_into};
 use crate::sort::{Sort, SortKey};
 use rusqlite::{Connection, OptionalExtension, Row, ToSql, params};
@@ -369,7 +369,16 @@ fn row_to_known(r: &Row<'_>) -> rusqlite::Result<(String, KnownItem)> {
 }
 
 /// The camera columns, in the order `camera_from_row` reads them from `base` onwards.
-const CAMERA_COLUMNS: &str = "make, model, lens, focal_mm, aperture, exposure_s, iso";
+const CAMERA_COLUMNS: &str =
+    "make, model, lens, focal_mm, aperture, exposure_s, iso, gps_lat, gps_lon";
+
+/// A position from its two columns, which are both set or both NULL.
+fn gps_from_db(lat: Option<f64>, lon: Option<f64>) -> Option<Gps> {
+    Some(Gps {
+        lat: lat?,
+        lon: lon?,
+    })
+}
 
 fn camera_from_row(r: &Row<'_>, base: usize) -> rusqlite::Result<CameraMeta> {
     Ok(CameraMeta {
@@ -380,6 +389,7 @@ fn camera_from_row(r: &Row<'_>, base: usize) -> rusqlite::Result<CameraMeta> {
         aperture: r.get(base + 4)?,
         exposure_s: r.get(base + 5)?,
         iso: r.get(base + 6)?,
+        gps: gps_from_db(r.get(base + 7)?, r.get(base + 8)?),
     })
 }
 
@@ -400,9 +410,9 @@ fn row_to_item(r: &Row<'_>) -> rusqlite::Result<Item> {
         missing_since: r.get(12)?,
         rating: r.get(13)?,
         camera: camera_from_row(r, 14)?,
-        edit: edit_from_db(r.get(21)?, r.get(22)?),
-        hidden: r.get(23)?,
-        duration_ms: r.get(24)?,
+        edit: edit_from_db(r.get(23)?, r.get(24)?),
+        hidden: r.get(25)?,
+        duration_ms: r.get(26)?,
     })
 }
 
@@ -443,8 +453,10 @@ impl Library {
                 // a new file, or one renamed or moved in, which is a new row - arrives hidden
                 // (`library/hidden.rs`, Hide folder).
                 "INSERT INTO items (folder_id, path, file_name, kind, size, mtime_ms, width, height, orientation, taken_at, rating,
-                                    make, model, lens, focal_mm, aperture, exposure_s, iso, exif_version, caption, duration_ms, hidden)
+                                    make, model, lens, focal_mm, aperture, exposure_s, iso, exif_version, caption, duration_ms,
+                                    gps_lat, gps_lon, hidden)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21,
+                         ?22, ?23,
                          coalesce((SELECT hidden FROM folders WHERE id = ?1), 0))",
             )?;
             for it in items {
@@ -471,6 +483,8 @@ impl Library {
                     EXIF_VERSION,
                     it.caption,
                     it.duration_ms,
+                    c.gps.map(|g| g.lat),
+                    c.gps.map(|g| g.lon),
                 ])?;
                 let id = tx.last_insert_rowid();
                 write_tags(&tx, id, &it.tags)?;
@@ -500,6 +514,7 @@ impl Library {
                         width = ?8, height = ?9, orientation = ?10, taken_at = ?11,
                         make = ?12, model = ?13, lens = ?14, focal_mm = ?15, aperture = ?16, exposure_s = ?17, iso = ?18,
                         exif_version = ?19, caption = ?20, duration_ms = ?21,
+                        gps_lat = ?22, gps_lon = ?23,
                         thumb_state = 0, thumb_error = NULL, missing_since = NULL,
                         content_hash = NULL, percep_hash = NULL, similar_group = NULL
                  WHERE id = ?1",
@@ -528,6 +543,8 @@ impl Library {
                     EXIF_VERSION,
                     it.caption,
                     it.duration_ms,
+                    c.gps.map(|g| g.lat),
+                    c.gps.map(|g| g.lon),
                 ])?;
                 write_tags(&tx, *id, &it.tags)?;
             }
@@ -555,7 +572,8 @@ impl Library {
         {
             let mut stmt = tx.prepare_cached(
                 "UPDATE items SET make = ?2, model = ?3, lens = ?4, focal_mm = ?5, aperture = ?6,
-                        exposure_s = ?7, iso = ?8, exif_version = ?9, taken_at = ?10, caption = ?11
+                        exposure_s = ?7, iso = ?8, exif_version = ?9, taken_at = ?10, caption = ?11,
+                        gps_lat = ?12, gps_lon = ?13
                  WHERE id = ?1",
             )?;
             for (id, it) in items {
@@ -572,6 +590,8 @@ impl Library {
                     EXIF_VERSION,
                     it.taken_at,
                     it.caption,
+                    c.gps.map(|g| g.lat),
+                    c.gps.map(|g| g.lon),
                 ])?;
                 write_tags(&tx, *id, &it.tags)?;
             }
@@ -587,7 +607,8 @@ impl Library {
     pub(crate) fn forget_metadata_for_test(&self, id: i64) -> Result<()> {
         self.writer().execute(
             "UPDATE items SET make = NULL, model = NULL, lens = NULL, focal_mm = NULL,
-                    aperture = NULL, exposure_s = NULL, iso = NULL, exif_version = 0
+                    aperture = NULL, exposure_s = NULL, iso = NULL, gps_lat = NULL, gps_lon = NULL,
+                    exif_version = 0
              WHERE id = ?1",
             params![id],
         )?;
@@ -612,6 +633,17 @@ impl Library {
     pub(crate) fn forget_caption_for_test(&self, id: i64) -> Result<()> {
         self.writer().execute(
             "UPDATE items SET caption = NULL, exif_version = 2 WHERE id = ?1",
+            params![id],
+        )?;
+        Ok(())
+    }
+
+    /// Test-only: makes a row look as it does after the position columns shipped, on a
+    /// library indexed under `EXIF_VERSION` 3 - position unread, version behind.
+    #[cfg(test)]
+    pub(crate) fn forget_position_for_test(&self, id: i64) -> Result<()> {
+        self.writer().execute(
+            "UPDATE items SET gps_lat = NULL, gps_lon = NULL, exif_version = 3 WHERE id = ?1",
             params![id],
         )?;
         Ok(())
@@ -1052,7 +1084,7 @@ impl Library {
         let mut stmt = tx.prepare(&grid_query(
             &format!(
                 "{GRID_COLUMNS}, i.file_name, f.name, i.make, i.model, i.lens, i.focal_mm, i.aperture, i.iso,
-                 i.caption, f.alias"
+                 i.caption, f.alias, i.gps_lat, i.gps_lon"
             ),
             Shown::Visible,
             "",
@@ -1121,6 +1153,7 @@ impl Library {
             haystacks.starred = r
                 .get::<_, Option<i64>>(10)?
                 .is_some_and(|rating| rating >= 1);
+            haystacks.gps = gps_from_db(r.get(base + 10)?, r.get(base + 11)?);
             haystacks.edited = !edit_from_db(r.get(11)?, r.get(12)?).is_identity();
             if let Some(caption) = text(r, base + 8)? {
                 haystacks.push_caption(caption);
@@ -1257,6 +1290,86 @@ mod tests {
         it.caption = Some("backfilled".into());
         lib.update_item_meta(&[(id, it)]).unwrap();
         assert_eq!(lib.item_caption(id).unwrap().as_deref(), Some("backfilled"));
+    }
+
+    #[test]
+    fn every_item_writer_stores_the_position() {
+        let (_dir, lib) = temp_library();
+        let (_w, folder) = seed_folder(&lib, Path::new("/p"));
+        let munich = Gps {
+            lat: 48.137_4,
+            lon: 11.575_5,
+        };
+        let sydney = Gps {
+            lat: -33.868_8,
+            lon: 151.209_3,
+        };
+        let gps = |id| lib.item(id).unwrap().unwrap().camera.gps;
+        let mut it = new_item(folder, "/p/a.jpg", 1);
+        it.camera.gps = Some(munich);
+        let ids = lib
+            .insert_items(&[it.clone(), new_item(folder, "/p/b.jpg", 2)])
+            .unwrap();
+        assert_eq!(gps(ids[0]), Some(munich));
+        assert_eq!(gps(ids[1]), None);
+
+        // The backfill writes it, on a row that had none.
+        let mut placed = new_item(folder, "/p/b.jpg", 2);
+        placed.camera.gps = Some(sydney);
+        lib.update_item_meta(&[(ids[1], placed)]).unwrap();
+        assert_eq!(gps(ids[1]), Some(sydney));
+
+        // A changed file's position is whatever the file says now, nothing included.
+        it.camera.gps = Some(sydney);
+        lib.update_items(&[(ids[0], it.clone())]).unwrap();
+        assert_eq!(gps(ids[0]), Some(sydney));
+        it.camera.gps = None;
+        lib.update_items(&[(ids[0], it)]).unwrap();
+        assert_eq!(gps(ids[0]), None);
+    }
+
+    #[test]
+    fn search_finds_photos_by_where_they_were_taken() {
+        let (_dir, lib) = temp_library();
+        let (_w, folder) = seed_folder(&lib, Path::new("/p"));
+        let at = |name: &str, taken: i64, gps: Option<Gps>| {
+            let mut it = new_item(folder, name, taken);
+            it.camera.gps = gps;
+            it
+        };
+        let ids = lib
+            .insert_items(&[
+                at(
+                    "/p/marienplatz.jpg",
+                    1,
+                    Some(Gps {
+                        lat: 48.137_4,
+                        lon: 11.575_5,
+                    }),
+                ),
+                // About 9 km from Marienplatz.
+                at(
+                    "/p/nymphenburg.jpg",
+                    2,
+                    Some(Gps {
+                        lat: 48.158_3,
+                        lon: 11.503_3,
+                    }),
+                ),
+                at("/p/nowhere.jpg", 3, None),
+            ])
+            .unwrap();
+        let hits = |query: &str| -> Vec<i64> {
+            lib.entries_for(GridView::Search, query)
+                .unwrap()
+                .iter()
+                .map(|e| e.id)
+                .collect()
+        };
+        assert_eq!(hits("has:gps"), vec![ids[0], ids[1]]);
+        assert_eq!(hits("-has:gps"), vec![ids[2]]);
+        assert_eq!(hits("near:48.1374,11.5755"), vec![ids[0]]);
+        assert_eq!(hits("near:48.1374,11.5755,10km"), vec![ids[0], ids[1]]);
     }
 
     #[test]
@@ -2345,6 +2458,7 @@ mod tests {
                 aperture: Some(1.8),
                 exposure_s: Some(0.004),
                 iso: Some(3200),
+                gps: None,
             },
             tags: vec!["Zoo".into(), "family".into()],
             ..new_item(folder, "/p/a.jpg", 1_718_454_645) // 2024-06-15

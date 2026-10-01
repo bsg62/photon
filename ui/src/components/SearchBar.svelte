@@ -29,7 +29,7 @@
       type="search"
       placeholder="Search names, camera, keywords, dates…"
       aria-label="Search photos by file or folder name, camera, lens, keyword or date"
-      title="Every word must match: a name, a folder, a camera or lens, a keyword, 50mm, f/1.8, iso400, or a date like 2024-06. Use OR to widen, &quot;quotes&quot; for a phrase, camera:, lens:, tag:, person:, album: or folder: for one field, from:2019-06 or to:2020 for a date range, is:starred, is:edited or is:video for what a photo is, and a leading - to exclude: -tag:family."
+      title="Every word must match: a name, a folder, a camera or lens, a keyword, 50mm, f/1.8, iso400, or a date like 2024-06. Use OR to widen, &quot;quotes&quot; for a phrase, camera:, lens:, tag:, person:, album: or folder: for one field, from:2019-06 or to:2020 for a date range, is:starred, is:edited or is:video for what a photo is, has:gps for photos that record where they were taken, and a leading - to exclude: -tag:family."
       bind:value={searchBox.query}
       oninput={() => searchBox.run(searchBox.query)}
       onkeydown={(e) => {

@@ -207,8 +207,10 @@ sidebar's year groups and the grid disagree.
 **Search** is one view, not a family of them. `search_entries` builds the haystacks — file
 and folder name, make, model, lens, `50mm`/`f/1.8`/`iso400`, keywords through `EFFECTIVE_TAGS`, the caption,
 and the capture date as `YYYY-MM-DD` — and `search::Query` holds the grammar: words AND,
-capitals-only `OR`/`AND`, quotes, `camera:`/`lens:` confined to `Fields.camera`/`.lens`, dangling
-pieces ignored. A new searchable fact is a haystack there, not a view; a new *filter* is a
+capitals-only `OR`/`AND`, quotes, `camera:`/`lens:`/`tag:`/`person:`/`album:`/`folder:` each
+confined to its own field, `is:`/`has:`/`near:` asking about the photo rather than its text, a
+leading `-` negating a token, dangling pieces ignored. People and albums are read from side
+tables only when a query names one (`Query::needs`). A new searchable fact is a haystack there, not a view; a new *filter* is a
 prefixed term. The query string is the whole interface, so UI links (the info panel's camera
 and lens) go through `searchBox.search()`, which cancels a pending debounce first.
 
@@ -285,7 +287,9 @@ unchanged file whose stored version is behind is re-described and written throug
 columns, not `rating`). `taken_at` is included because a capture date outside 1970..tomorrow
 is refused (`plausible_taken_at`) and the backfill is the only way an unchanged file is
 re-dated. Adding a field to `describe()` without bumping `EXIF_VERSION` leaves every
-existing photo without it forever. Keywords come from the file (XMP `dc:subject` and IPTC
+existing photo without it forever. The position (`gps_lat`/`gps_lon`, schema 23, read
+from the EXIF GPS IFD by `read_gps`) rides in `CameraMeta`, so the three item writers carry
+it with the camera columns. Keywords come from the file (XMP `dc:subject` and IPTC
 2:25, `keywords.rs`) into `item_tags`; every writer of an item row goes through
 `write_tags`. Every *reader* of keywords goes through `EFFECTIVE_TAGS` or `TAG_FILTER` in
 `library/tags.rs`, which apply the user's rename/remove rules; a reader of `item_tags` that
