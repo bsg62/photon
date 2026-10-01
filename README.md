@@ -288,7 +288,10 @@ Press `S` in the viewer (or the ▶ button) to play the current view from the ph
 fullscreen, crossfading, looping back to the start at the end. Space pauses, the arrow keys
 and the wheel step, the controls hide while the pointer rests, and Escape ends the show and
 leaves you in the viewer on the photo it stopped at. How long each photo stays is set under
-Settings → Slideshow.
+Settings → Slideshow, and so is **Shuffle**, which plays the view in a mixed order: every
+photo once before any comes round again, with photos that sit side by side in the grid kept
+apart, so a burst is not three slides in a row. The arrow keys then step through that order,
+so Left is the photo you just saw. A view of six photos or fewer than five plays in order.
 
 `F11` toggles fullscreen at any time. photon remembers the window's fullscreen state, so if
 you quit in the middle of a slideshow it reopens fullscreen; `F11` is the way out.

@@ -219,6 +219,8 @@ pub fn run() {
             ipc::set_last_folder,
             ipc::slideshow_interval,
             ipc::set_slideshow_interval,
+            ipc::slideshow_shuffle,
+            ipc::set_slideshow_shuffle,
             ipc::similar_distance,
             ipc::set_similar_distance,
             ipc::theme,

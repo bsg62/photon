@@ -23,6 +23,9 @@ pub const SLIDESHOW_INTERVAL_DEFAULT_S: i64 = 4;
 /// have decoded before it is replaced; past a minute it reads as stuck.
 pub const SLIDESHOW_INTERVAL_RANGE_S: std::ops::RangeInclusive<i64> = 1..=60;
 
+/// Whether a slideshow plays the view in a mixed order rather than its own.
+const SLIDESHOW_SHUFFLE: &str = "slideshow_shuffle";
+
 /// Which colour scheme the UI uses.
 const THEME: &str = "theme";
 
@@ -214,6 +217,18 @@ impl Library {
         Ok(seconds)
     }
 
+    /// Whether a slideshow shuffles. Off until the user says otherwise: the view's order is
+    /// the one they were looking at when they pressed play.
+    pub fn slideshow_shuffle(&self) -> Result<bool> {
+        Ok(self
+            .setting(SLIDESHOW_SHUFFLE)?
+            .is_some_and(|stored| stored == "1"))
+    }
+
+    pub fn set_slideshow_shuffle(&self, shuffle: bool) -> Result<()> {
+        self.set_setting(SLIDESHOW_SHUFFLE, if shuffle { "1" } else { "0" })
+    }
+
     /// Whether an export renders edits into the copies. True until the user says otherwise:
     /// an untouched photo is a byte copy either way, so this only decides what happens to
     /// photos the user has deliberately edited - and there, what they see is what they
@@ -341,6 +356,16 @@ mod tests {
         // A value written by something other than the setter is clamped on read.
         lib.set_setting(SLIDESHOW_INTERVAL_S, "0").unwrap();
         assert_eq!(lib.slideshow_interval_s().unwrap(), 1);
+    }
+
+    #[test]
+    fn the_slideshow_shuffle_is_off_until_set_and_persists() {
+        let (_dir, lib) = temp_library();
+        assert!(!lib.slideshow_shuffle().unwrap());
+        lib.set_slideshow_shuffle(true).unwrap();
+        assert!(lib.slideshow_shuffle().unwrap());
+        lib.set_slideshow_shuffle(false).unwrap();
+        assert!(!lib.slideshow_shuffle().unwrap());
     }
 
     #[test]

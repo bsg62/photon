@@ -635,6 +635,16 @@ pub fn set_slideshow_interval(engine: &Engine, seconds: i64) -> CmdResult<i64> {
     Ok(engine.lib.set_slideshow_interval_s(seconds)?)
 }
 
+/// Whether a slideshow plays the view in a mixed order.
+pub fn slideshow_shuffle(engine: &Engine) -> CmdResult<bool> {
+    Ok(engine.lib.slideshow_shuffle()?)
+}
+
+pub fn set_slideshow_shuffle(engine: &Engine, shuffle: bool) -> CmdResult<()> {
+    engine.lib.set_slideshow_shuffle(shuffle)?;
+    Ok(())
+}
+
 /// How far apart two perceptual hashes may be and still count as the same picture.
 pub fn similar_distance(engine: &Engine) -> CmdResult<i64> {
     Ok(engine.lib.similar_distance()?)

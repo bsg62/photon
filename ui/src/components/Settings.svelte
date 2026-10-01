@@ -125,6 +125,29 @@
       .catch(library.reportError);
   });
 
+  /** Whether a slideshow shuffles. Null until read, like `interval`. */
+  let shuffle = $state<boolean | null>(null);
+
+  onMount(() => {
+    api
+      .slideshowShuffle()
+      .then((s) => (shuffle = s))
+      .catch(library.reportError);
+  });
+
+  /** The box shows what is stored: put back if the store fails. */
+  function saveShuffle(e: Event & { currentTarget: HTMLInputElement }) {
+    const field = e.currentTarget;
+    const next = field.checked;
+    api
+      .setSlideshowShuffle(next)
+      .then(() => (shuffle = next))
+      .catch((err) => {
+        field.checked = shuffle ?? false;
+        library.reportError(err);
+      });
+  }
+
   /** The Hamming distance Off/Conservative/Loose means. Null until read, for the same reason
    *  `interval` is: the control must not show a value that is not the stored one. */
   let similarDistance = $state<number | null>(null);
@@ -425,6 +448,10 @@
             <input type="number" min="1" max="60" step="1" value={interval ?? ''} disabled={interval === null} onchange={saveInterval} />
             seconds
           </label>
+          <label class="shuffle">
+            <input type="checkbox" checked={shuffle ?? false} disabled={shuffle === null} onchange={saveShuffle} />
+            Shuffle: play the photos in a mixed order
+          </label>
         {:else if current === 'duplicates'}
           <h2>Find look-alikes</h2>
           <p class="hint">
@@ -546,6 +573,7 @@
   section { flex: 1; min-width: 0; padding: var(--s-3) var(--s-4); overflow: auto; }
   .hint, .empty { margin: 0 0 var(--s-3); color: var(--text-dim); }
   .interval { display: flex; align-items: center; gap: 8px; }
+  .shuffle { display: flex; align-items: center; gap: 8px; margin-top: var(--s-3); cursor: pointer; }
   .interval input { width: 64px; padding: 5px var(--s-2); border: 0; border-radius: var(--r-2); background: var(--field); color: inherit; font: inherit; }
   /* Block-level `flex` shrunk to fit rather than `inline-flex`: an inline box's margin adds
      to its line instead of collapsing with the next heading's, doubling the gap. */
