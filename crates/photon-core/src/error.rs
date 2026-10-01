@@ -24,7 +24,7 @@ pub enum Error {
     FolderNotFound(PathBuf),
     /// Something that exists and is not a directory: a photo dropped on the window, where
     /// "not found" would be untrue of a file the user is holding.
-    #[error("{0:?} is a file, not a folder: add the folder it is in")]
+    #[error("{} is a file, not a folder: add the folder it is in", .0.display())]
     NotAFolder(PathBuf),
     #[error("folder overlaps the watched folder {existing}")]
     FolderOverlap { existing: String },

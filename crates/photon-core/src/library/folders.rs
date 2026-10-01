@@ -374,10 +374,16 @@ mod tests {
         // A file is there, so it is not "not found": what a photo dropped on the window is.
         let file = dir.path().join("photo.jpg");
         std::fs::write(&file, b"x").unwrap();
-        assert!(matches!(
-            lib.add_watched_folder(&file, &[]),
-            Err(Error::NotAFolder(_))
-        ));
+        let refused = lib.add_watched_folder(&file, &[]).unwrap_err();
+        assert!(matches!(refused, Error::NotAFolder(_)));
+        // The path as the user knows it: not Debug's quotes and doubled backslashes.
+        assert_eq!(
+            refused.to_string(),
+            format!(
+                "{} is a file, not a folder: add the folder it is in",
+                file.display()
+            )
+        );
         assert!(
             lib.watched_folders()
                 .unwrap()
