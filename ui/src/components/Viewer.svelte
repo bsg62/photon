@@ -15,6 +15,7 @@
   import { isCopyPhotoShortcut } from '../lib/copy-photo';
   import { fitMenu } from '../lib/menu-place';
   import { createCopyFeedback } from '../lib/copied.svelte';
+  import { HISTOGRAM_HEIGHT, histogramPath } from '../lib/histogram';
   import { cameraRows, copyGroups, dateRows, formatCoordinates, formatDimensions, nearQuery } from '../lib/exif';
   import { showCopiesLabel } from '../lib/copies';
   import { ASPECTS, HANDLES, type Handle } from '../lib/crop';
@@ -411,6 +412,7 @@
 
   const camera = $derived(item ? cameraRows(item) : []);
   const dates = $derived(item ? dateRows(item.dates) : []);
+  const histogram = $derived(item?.histogram ? histogramPath(item.histogram) : null);
   const copies = $derived(item ? copyGroups(item.copies) : []);
   /** The photo as displayed, orientation applied: the coordinates Picasa's faces are in. */
   const oriented = $derived.by(() => {
@@ -1080,6 +1082,14 @@
       {:else}
         <p class="info-muted">No camera data.</p>
       {/if}
+      {#if histogram}
+        <!-- Stretched to the panel's width: the steps are columns, not shapes, so there is
+             no aspect to keep. Decorative to a screen reader, which has the exposure row. -->
+        <svg class="histogram" viewBox="0 0 {item.histogram?.length ?? 0} {HISTOGRAM_HEIGHT}" preserveAspectRatio="none" aria-hidden="true">
+          <title>Brightness: shadows on the left, highlights on the right</title>
+          <path d={histogram} />
+        </svg>
+      {/if}
       <h3>Dates</h3>
       <dl class="dates">
         {#each dates as row (row.label)}
@@ -1454,6 +1464,8 @@
   .info dd { margin: 0; overflow-wrap: anywhere; }
   .info-link { padding: 0; border: 0; background: none; color: var(--accent-glass); font: inherit; text-align: left; cursor: pointer; overflow-wrap: anywhere; }
   .info-link:hover { text-decoration: underline; }
+  .histogram { display: block; width: 100%; height: 56px; margin-top: var(--s-3); border-radius: var(--r-1); background: var(--field); }
+  .histogram path { fill: var(--text-dim); }
   .info-place { margin: 0 0 var(--s-1); }
   .info-muted { margin: 0; color: var(--text-dim); }
   .chips { display: flex; flex-wrap: wrap; gap: 4px; margin: 0; padding: 0; list-style: none; }

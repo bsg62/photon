@@ -7,6 +7,7 @@ pub mod edit;
 pub mod error;
 pub mod export;
 pub mod grid;
+pub mod histogram;
 pub mod iptc;
 mod jpeg;
 pub mod keywords;

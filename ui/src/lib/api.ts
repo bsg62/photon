@@ -164,6 +164,9 @@ export interface ViewerItem {
   /** Where the photo was taken, in decimal degrees (north and east positive); null when
    *  its EXIF does not say. */
   gps: { lat: number; lon: number } | null;
+  /** Pixels at each brightness step, darkest first, of the photo as shown; null for a
+   *  video and until the thumbnail it is counted from exists. */
+  histogram: number[] | null;
 }
 /** Two clocks, two units: the camera's dates are its wall clock in naive SECONDS, like
  *  `takenAt`; the file's are real instants in MILLISECONDS. Null where the file has none -
