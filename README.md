@@ -113,6 +113,16 @@ lens in the viewer's info panel is a link to that search. `from:` and `to:` boun
 photo was taken, each taking a year, a month or a day and including all of it:
 `from:2019-06 to:2019-08` is June to August, `to:2019` is everything up to the end of 2019.
 
+`tag:`, `person:`, `album:` and `folder:` work like `camera:`: `tag:zoo` is the photos carrying
+that keyword and not the ones in a folder named Zoo, `person:anna` the photos Picasa named Anna
+on, `album:"best of"` the photos in that album, `folder:italy` a folder by its name or the name
+you gave it in photon. People and albums are found only this way; a bare `anna` does not look
+at them. `is:starred`, `is:edited` (turned or cropped in photon), `is:video` and `is:photo` ask
+what a photo is. A hyphen in front turns any term round: `-tag:family`, `-is:starred`,
+`-lake`; in quotes it is an ordinary hyphen. Together with saved searches this makes a
+collection that keeps itself: save `person:anna is:starred -album:printed` and it is always
+Anna's starred photos you have not printed yet.
+
 ### Saving a search
 
 A search worth repeating can be kept: with a query in the box, the bookmark button at its

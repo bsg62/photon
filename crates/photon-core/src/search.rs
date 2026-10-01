@@ -38,6 +38,17 @@ use crate::media::MediaKind;
 ///   between two keystrokes.
 /// - `video` and `photo`, unquoted, filter on what the file is rather than searching for the
 ///   word: quoted (`"video"`) they are the word, for a folder actually named Videos.
+/// - `tag:`, `person:`, `album:` and `folder:` restrict a term to the photo's keywords, the
+///   people Picasa named on it, the albums it is in, and its folder's name or alias, read
+///   the way `camera:` reads its value. A photo with none of the thing never matches.
+/// - `is:starred`, `is:edited`, `is:video` and `is:photo` ask about the photo rather than
+///   its text. An `is:` photon does not know is dropped like a prefix with no value: `is:st`
+///   is `is:starred` half typed.
+/// - A leading `-` turns a term round: `-tag:family`, `-is:starred`, `-lake`. A negated
+///   value of several words (`-camera:"canon eos"`) excludes the photos the positive form
+///   finds, so it is "not all of these words", not "none of them". A query of nothing but
+///   negated terms is a query: `-is:starred` is every photo without a star. Quoted, the
+///   hyphen is text (`"-1"`), and a lone `-` is dangling.
 ///
 /// **Matching is done here rather than with SQL `LIKE`** for two reasons, both of which
 /// bite real libraries. SQLite folds case for ASCII only, so `MÜNCHEN` would never find
@@ -63,6 +74,45 @@ enum Term {
     To(i64),
     /// `video` or `photo`, unquoted: what the file is.
     Kind(MediaKind),
+    Tag(String),
+    Person(String),
+    Album(String),
+    Folder(String),
+    /// `is:starred`.
+    Starred,
+    /// `is:edited`: turned or cropped in photon.
+    Edited,
+    /// A `-` term: true unless every term inside matches. A list because one token can be
+    /// several terms (`camera:"canon eos"`), and the negation is of the token.
+    Not(Vec<Term>),
+}
+
+/// The side tables a query's terms read, so a search loads only the ones it was asked about:
+/// most queries name neither a person nor an album.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Needs {
+    pub people: bool,
+    pub albums: bool,
+}
+
+impl Term {
+    fn matches(&self, haystacks: &Haystacks) -> bool {
+        match self {
+            Term::Any(needle) => haystacks.any_contains(needle),
+            Term::Camera(needle) => haystacks.camera_contains(needle),
+            Term::Lens(needle) => haystacks.lens_contains(needle),
+            Term::From(start) => haystacks.taken.is_some_and(|t| t >= *start),
+            Term::To(end) => haystacks.taken.is_some_and(|t| t < *end),
+            Term::Kind(kind) => haystacks.kind == Some(*kind),
+            Term::Tag(needle) => haystacks.tags.contains(needle),
+            Term::Person(needle) => haystacks.people.contains(needle),
+            Term::Album(needle) => haystacks.albums.contains(needle),
+            Term::Folder(needle) => haystacks.folder.contains(needle),
+            Term::Starred => haystacks.starred,
+            Term::Edited => haystacks.edited,
+            Term::Not(terms) => !terms.iter().all(|term| term.matches(haystacks)),
+        }
+    }
 }
 
 /// What a photo offers the matcher. `any` is every searchable text, the camera and lens
@@ -78,6 +128,16 @@ pub struct Fields<'a> {
     pub taken: Option<i64>,
     /// What the file is, for `video` and `photo`.
     pub kind: Option<MediaKind>,
+    /// The photo's keywords, joined by spaces, for `tag:`.
+    pub tags: Option<&'a str>,
+    /// The names of the people on the photo, joined by spaces, for `person:`.
+    pub people: Option<&'a str>,
+    /// The names of the albums the photo is in, joined by spaces, for `album:`.
+    pub albums: Option<&'a str>,
+    /// The folder's name and alias, joined by a space, for `folder:`.
+    pub folder: Option<&'a str>,
+    pub starred: bool,
+    pub edited: bool,
 }
 
 /// Appends `text` lowercased to `out`: exactly what `str::to_lowercase` would give, without
@@ -129,7 +189,50 @@ pub struct Haystacks {
     pub taken: Option<i64>,
     /// What the file is, as [`Fields::kind`].
     pub kind: Option<MediaKind>,
+    tags: Field,
+    people: Field,
+    albums: Field,
+    /// The folder's, so it outlives [`Haystacks::truncate`] as the folder's haystacks do.
+    folder: Field,
+    pub starred: bool,
+    pub edited: bool,
     scratch: String,
+}
+
+/// The text a prefixed term is confined to, lowercased. A flag beside the text for the
+/// reason on `Haystacks::camera`.
+#[derive(Debug, Default)]
+struct Field {
+    text: String,
+    present: bool,
+}
+
+impl Field {
+    fn clear(&mut self) {
+        self.present = false;
+        self.text.clear();
+    }
+
+    /// Sets the field from text that is lowercase already.
+    fn set_folded(&mut self, folded: Option<&str>) {
+        self.clear();
+        if let Some(folded) = folded {
+            self.present = true;
+            self.text.push_str(folded);
+        }
+    }
+
+    fn set(&mut self, text: Option<&str>) {
+        self.clear();
+        if let Some(text) = text {
+            self.present = true;
+            fold_into(&mut self.text, text);
+        }
+    }
+
+    fn contains(&self, needle: &str) -> bool {
+        self.present && self.text.contains(needle)
+    }
 }
 
 /// A point in a [`Haystacks`] to truncate back to.
@@ -150,8 +253,9 @@ impl Haystacks {
         }
     }
 
-    /// Drops every haystack pushed after `mark`, and the camera, lens, date and kind, which
-    /// belong to one photo.
+    /// Drops every haystack pushed after `mark`, and everything else that belongs to one
+    /// photo: the camera, lens, date, kind, keywords, people, albums, star and edit. The
+    /// `folder:` field stays, as the folder's haystacks before the mark do.
     pub fn truncate(&mut self, mark: Mark) {
         self.any.truncate(mark.len);
         self.ends.truncate(mark.count);
@@ -159,11 +263,45 @@ impl Haystacks {
         self.has_lens = false;
         self.taken = None;
         self.kind = None;
+        self.tags.clear();
+        self.people.clear();
+        self.albums.clear();
+        self.starred = false;
+        self.edited = false;
     }
 
     /// Empties everything.
     pub fn clear(&mut self) {
         self.truncate(Mark::default());
+        self.folder.clear();
+    }
+
+    /// Sets the field `tag:` terms are confined to, from keywords lowercased already and
+    /// joined by spaces. Not a haystack of `any`: the caller pushes the keywords there too.
+    pub fn set_tags_folded(&mut self, tags: Option<&str>) {
+        self.tags.set_folded(tags);
+    }
+
+    /// Sets the field `person:` terms are confined to, lowercased already. People are in
+    /// no haystack of `any`: an unprefixed word does not find them.
+    pub fn set_people_folded(&mut self, people: Option<&str>) {
+        self.people.set_folded(people);
+    }
+
+    /// Sets the field `album:` terms are confined to, lowercased already; in no haystack of
+    /// `any` either.
+    pub fn set_albums_folded(&mut self, albums: Option<&str>) {
+        self.albums.set_folded(albums);
+    }
+
+    /// Sets the field `folder:` terms are confined to: the folder's name and its alias, so
+    /// the term finds the folder by either, as an unprefixed word does.
+    pub fn set_folder(&mut self, name: &str, alias: Option<&str>) {
+        self.folder.set(Some(name));
+        if let Some(alias) = alias {
+            self.folder.text.push(' ');
+            fold_into(&mut self.folder.text, alias);
+        }
     }
 
     /// Adds a haystack, lowercasing it.
@@ -349,50 +487,24 @@ impl Query {
                 }
             }
             let text = token.text.to_lowercase();
-            // `video` and `photo` filter on what the file is. Unquoted only: `"video"` is
-            // still the word, for a folder called Videos.
-            if token.unquoted_prefix.is_none() && (text == "video" || text == "photo") {
-                let kind = if text == "video" {
-                    MediaKind::Video
-                } else {
-                    MediaKind::Image
-                };
-                let current = alternatives
-                    .last_mut()
-                    .expect("starts with one alternative");
-                if !current.contains(&Term::Kind(kind)) {
-                    current.push(Term::Kind(kind));
-                }
-                continue;
-            }
-            let prefixed = |prefix: &str| {
-                // Lowercasing never changes the length of these ASCII prefixes, so the
-                // offset recorded against the raw text still applies.
-                let outside_quotes = token.unquoted_prefix.is_none_or(|at| at >= prefix.len());
-                (outside_quotes && text.starts_with(prefix)).then(|| &text[prefix.len()..])
-            };
-            let terms: Vec<Term> = if let Some(value) = prefixed("camera:") {
-                value
-                    .split_whitespace()
-                    .map(|w| Term::Camera(w.to_string()))
-                    .collect()
-            } else if let Some(value) = prefixed("lens:") {
-                value
-                    .split_whitespace()
-                    .map(|w| Term::Lens(w.to_string()))
-                    .collect()
-            } else if let Some(value) = prefixed("from:") {
-                period(value)
-                    .map(|(start, _)| Term::From(start))
-                    .into_iter()
-                    .collect()
-            } else if let Some(value) = prefixed("to:") {
-                period(value)
-                    .map(|(_, end)| Term::To(end))
-                    .into_iter()
-                    .collect()
+            // A leading hyphen outside quotes negates the token. Lowercasing an ASCII hyphen
+            // keeps its length, so the offsets recorded against the raw text still apply.
+            let negated = text.starts_with('-') && token.unquoted_prefix.is_none_or(|at| at >= 1);
+            let (text, unquoted_prefix) = if negated {
+                (&text[1..], token.unquoted_prefix.map(|at| at - 1))
             } else {
-                vec![Term::Any(text.clone())]
+                (text.as_str(), token.unquoted_prefix)
+            };
+            let terms = if text.is_empty() && unquoted_prefix.is_none() {
+                // A lone `-`: a negation with nothing typed after it yet.
+                Vec::new()
+            } else {
+                Self::terms(text, unquoted_prefix)
+            };
+            let terms = if negated && !terms.is_empty() {
+                vec![Term::Not(terms)]
+            } else {
+                terms
             };
             let current = alternatives
                 .last_mut()
@@ -405,6 +517,86 @@ impl Query {
         }
         alternatives.retain(|terms| !terms.is_empty());
         Self { alternatives }
+    }
+
+    /// The terms one token stands for, its text lowercased and any negating hyphen removed.
+    /// `unquoted_prefix` is [`Token::unquoted_prefix`] against that text. None at all for a
+    /// token that is dangling: a prefix with no value, a date that is not one, an `is:`
+    /// photon does not know.
+    fn terms(text: &str, unquoted_prefix: Option<usize>) -> Vec<Term> {
+        // `video` and `photo` filter on what the file is. Unquoted only: `"video"` is
+        // still the word, for a folder called Videos.
+        if unquoted_prefix.is_none() {
+            match text {
+                "video" => return vec![Term::Kind(MediaKind::Video)],
+                "photo" => return vec![Term::Kind(MediaKind::Image)],
+                _ => {}
+            }
+        }
+        let prefixed = |prefix: &str| {
+            // Lowercasing never changes the length of these ASCII prefixes, so the
+            // offset recorded against the raw text still applies.
+            let outside_quotes = unquoted_prefix.is_none_or(|at| at >= prefix.len());
+            (outside_quotes && text.starts_with(prefix)).then(|| &text[prefix.len()..])
+        };
+        let words = |value: &str, term: fn(String) -> Term| -> Vec<Term> {
+            value
+                .split_whitespace()
+                .map(|w| term(w.to_string()))
+                .collect()
+        };
+        if let Some(value) = prefixed("camera:") {
+            words(value, Term::Camera)
+        } else if let Some(value) = prefixed("lens:") {
+            words(value, Term::Lens)
+        } else if let Some(value) = prefixed("tag:") {
+            words(value, Term::Tag)
+        } else if let Some(value) = prefixed("person:") {
+            words(value, Term::Person)
+        } else if let Some(value) = prefixed("album:") {
+            words(value, Term::Album)
+        } else if let Some(value) = prefixed("folder:") {
+            words(value, Term::Folder)
+        } else if let Some(value) = prefixed("from:") {
+            period(value)
+                .map(|(start, _)| Term::From(start))
+                .into_iter()
+                .collect()
+        } else if let Some(value) = prefixed("to:") {
+            period(value)
+                .map(|(_, end)| Term::To(end))
+                .into_iter()
+                .collect()
+        } else if let Some(value) = prefixed("is:") {
+            match value {
+                "starred" => vec![Term::Starred],
+                "edited" => vec![Term::Edited],
+                "video" => vec![Term::Kind(MediaKind::Video)],
+                "photo" => vec![Term::Kind(MediaKind::Image)],
+                _ => Vec::new(),
+            }
+        } else {
+            vec![Term::Any(text.to_string())]
+        }
+    }
+
+    /// Which side tables the query's terms read.
+    pub fn needs(&self) -> Needs {
+        fn visit(terms: &[Term], needs: &mut Needs) {
+            for term in terms {
+                match term {
+                    Term::Person(_) => needs.people = true,
+                    Term::Album(_) => needs.albums = true,
+                    Term::Not(inner) => visit(inner, needs),
+                    _ => {}
+                }
+            }
+        }
+        let mut needs = Needs::default();
+        for terms in &self.alternatives {
+            visit(terms, &mut needs);
+        }
+        needs
     }
 
     /// Whether the query has no terms: a blank query, or one holding only operators.
@@ -430,6 +622,12 @@ impl Query {
         haystacks.set_lens(fields.lens);
         haystacks.taken = fields.taken;
         haystacks.kind = fields.kind;
+        haystacks.tags.set(fields.tags);
+        haystacks.people.set(fields.people);
+        haystacks.albums.set(fields.albums);
+        haystacks.folder.set(fields.folder);
+        haystacks.starred = fields.starred;
+        haystacks.edited = fields.edited;
         self.matches_folded(&haystacks)
     }
 
@@ -438,16 +636,9 @@ impl Query {
     /// an alternative is tried and most photos fail on the first: folding lazily per term
     /// would redo the same work for each.
     pub fn matches_folded(&self, haystacks: &Haystacks) -> bool {
-        self.alternatives.iter().any(|terms| {
-            terms.iter().all(|term| match term {
-                Term::Any(needle) => haystacks.any_contains(needle),
-                Term::Camera(needle) => haystacks.camera_contains(needle),
-                Term::Lens(needle) => haystacks.lens_contains(needle),
-                Term::From(start) => haystacks.taken.is_some_and(|t| t >= *start),
-                Term::To(end) => haystacks.taken.is_some_and(|t| t < *end),
-                Term::Kind(kind) => haystacks.kind == Some(*kind),
-            })
-        })
+        self.alternatives
+            .iter()
+            .any(|terms| terms.iter().all(|term| term.matches(haystacks)))
     }
 
     /// How many terms the query holds across its alternatives. Test-only: the count is
@@ -557,8 +748,7 @@ mod tests {
             ],
             camera: Some("NIKON CORPORATION NIKON D750"),
             lens: Some("50mm f/1.8"),
-            taken: None,
-            kind: None,
+            ..Fields::default()
         };
         assert!(Query::parse("canon").matches(&photo), "the folder name");
         assert!(!Query::parse("camera:canon").matches(&photo));
@@ -583,8 +773,7 @@ mod tests {
             any: &[],
             camera: Some("NIKON CORPORATION NIKON D750"),
             lens: None,
-            taken: None,
-            kind: None,
+            ..Fields::default()
         };
         assert!(Query::parse("camera:\"corporation d750\"").matches(&photo));
         assert!(!Query::parse("camera:\"nikon d850\"").matches(&photo));
@@ -595,6 +784,170 @@ mod tests {
         assert!(names("\"camera:x\"", &["camera:x.jpg"]));
         assert_eq!(Query::parse("lake camera:"), Query::parse("lake"));
         assert!(Query::parse("lens:").is_empty());
+    }
+
+    /// A photo with something in every confined field, each a word no other field has.
+    fn rich() -> Fields<'static> {
+        Fields {
+            any: &["a.jpg", "zoo family"],
+            tags: Some("Zoo family"),
+            people: Some("Anna Schmidt Peter Braun"),
+            albums: Some("Best of 2019"),
+            folder: Some("2019 Italy Holiday"),
+            starred: true,
+            edited: true,
+            kind: Some(MediaKind::Image),
+            ..Fields::default()
+        }
+    }
+
+    #[test]
+    fn tag_person_album_and_folder_terms_are_confined_to_their_fields() {
+        let photo = rich();
+        for hit in [
+            "tag:zoo",
+            "TAG:Family",
+            "person:anna",
+            "person:\"anna schmidt\"",
+            "album:best",
+            "folder:italy",
+            "folder:holiday",
+        ] {
+            assert!(Query::parse(hit).matches(&photo), "{hit}");
+        }
+        // Each value sits in another field, so only confinement makes these miss.
+        for miss in [
+            "tag:anna",
+            "tag:italy",
+            "person:zoo",
+            "person:best",
+            "album:italy",
+            "album:zoo",
+            "folder:best",
+            "folder:anna",
+        ] {
+            assert!(!Query::parse(miss).matches(&photo), "{miss}");
+        }
+        // People and albums are in no unprefixed haystack.
+        assert!(!Query::parse("anna").matches(&photo));
+        // A photo with none of the thing never matches, an empty needle aside.
+        let bare = Fields {
+            any: &["zoo.jpg"],
+            ..Fields::default()
+        };
+        for miss in ["tag:zoo", "person:zoo", "album:zoo", "folder:zoo"] {
+            assert!(!Query::parse(miss).matches(&bare), "{miss}");
+        }
+    }
+
+    #[test]
+    fn is_terms_ask_about_the_photo() {
+        let photo = rich();
+        let plain = Fields {
+            any: &["starred edited.jpg"],
+            kind: Some(MediaKind::Video),
+            ..Fields::default()
+        };
+        for q in ["is:starred", "is:edited", "is:photo", "IS:Starred"] {
+            assert!(Query::parse(q).matches(&photo), "{q}");
+            assert!(!Query::parse(q).matches(&plain), "{q}");
+        }
+        assert!(Query::parse("is:video").matches(&plain));
+        assert_eq!(Query::parse("is:video"), Query::parse("video"));
+        // Half typed, or unknown: dropped, not searched for.
+        assert_eq!(Query::parse("lake is:st"), Query::parse("lake"));
+        assert!(Query::parse("is:").is_empty());
+        // Quoted, it is text.
+        assert!(names("\"is:starred\"", &["is:starred.jpg"]));
+    }
+
+    #[test]
+    fn a_leading_hyphen_negates_a_term() {
+        let photo = rich();
+        let plain = Fields {
+            any: &["b.jpg"],
+            kind: Some(MediaKind::Image),
+            ..Fields::default()
+        };
+        for q in ["-is:starred", "-tag:zoo", "-person:anna", "-zoo", "-video"] {
+            let negative = Query::parse(q);
+            assert!(!negative.is_empty(), "{q} is a query on its own");
+            let positive = Query::parse(&q[1..]);
+            for fields in [&photo, &plain] {
+                assert_eq!(negative.matches(fields), !positive.matches(fields), "{q}");
+            }
+        }
+        // It narrows like any other term, and binds to its own token only.
+        assert!(Query::parse("zoo -is:video").matches(&photo));
+        assert!(!Query::parse("zoo -is:starred").matches(&photo));
+        assert!(Query::parse("-is:starred OR zoo").matches(&photo));
+    }
+
+    #[test]
+    fn a_negated_value_of_several_words_excludes_what_the_positive_finds() {
+        // "anna" is there and "zzz" is not: the positive form misses, so the negative hits.
+        // Negating each word on its own would exclude the photo for its "anna".
+        let photo = rich();
+        assert!(Query::parse("-person:\"anna zzz\"").matches(&photo));
+        assert!(!Query::parse("-person:\"anna schmidt\"").matches(&photo));
+    }
+
+    #[test]
+    fn a_hyphen_is_text_inside_quotes_and_dangling_alone() {
+        assert!(names("\"-1\"", &["img-1.jpg"]));
+        assert!(!names("\"-1\"", &["img1.jpg"]));
+        assert_eq!(Query::parse("lake -"), Query::parse("lake"));
+        assert_eq!(Query::parse("lake -tag:"), Query::parse("lake"));
+        assert!(Query::parse("-").is_empty());
+        // A hyphen inside a word is the word.
+        assert!(names("img-1", &["img-1.jpg"]));
+        // A quoted value after the hyphen is still negated: the hyphen is outside.
+        assert!(!names("-\"img 1\"", &["img 1.jpg"]));
+    }
+
+    #[test]
+    fn needs_names_the_side_tables_a_query_reads() {
+        assert_eq!(Query::parse("lake tag:zoo").needs(), Needs::default());
+        assert_eq!(
+            Query::parse("lake OR person:anna").needs(),
+            Needs {
+                people: true,
+                albums: false
+            }
+        );
+        assert_eq!(
+            Query::parse("-album:best").needs(),
+            Needs {
+                people: false,
+                albums: true
+            }
+        );
+    }
+
+    #[test]
+    fn truncating_keeps_the_folder_field_and_drops_the_photos() {
+        let mut haystacks = Haystacks::default();
+        haystacks.set_folder("Italy", Some("Holiday"));
+        let mark = haystacks.mark();
+        haystacks.set_tags_folded(Some("zoo"));
+        haystacks.set_people_folded(Some("anna"));
+        haystacks.set_albums_folded(Some("best"));
+        haystacks.starred = true;
+        haystacks.edited = true;
+        haystacks.truncate(mark);
+        for gone in [
+            "tag:zoo",
+            "person:anna",
+            "album:best",
+            "is:starred",
+            "is:edited",
+        ] {
+            assert!(!Query::parse(gone).matches_folded(&haystacks), "{gone}");
+        }
+        assert!(Query::parse("folder:italy").matches_folded(&haystacks));
+        assert!(Query::parse("folder:holiday").matches_folded(&haystacks));
+        haystacks.clear();
+        assert!(!Query::parse("folder:italy").matches_folded(&haystacks));
     }
 
     #[test]

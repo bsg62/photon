@@ -311,13 +311,29 @@ fn text<'r>(r: &'r Row<'_>, idx: usize) -> rusqlite::Result<Option<&'r str>> {
 /// Every photo's keywords, hidden and missing ones too: the rows that need none cost one
 /// entry each, and filtering here would repeat the grid query's filter in a second place.
 fn search_tags(conn: &Connection) -> Result<HashMap<i64, String>> {
-    let mut stmt = conn.prepare(&format!(
-        "SELECT e.item_id, e.tag FROM ({EFFECTIVE_TAGS}) e"
-    ))?;
+    search_names(
+        conn,
+        &format!("SELECT e.item_id, e.tag FROM ({EFFECTIVE_TAGS}) e"),
+    )
+}
+
+/// The names of the people Picasa tagged on each photo, for `person:`, as `search_tags`
+/// gives the keywords. A face whose contact no INI has named has no name to find.
+const SEARCH_PEOPLE_SQL: &str =
+    "SELECT f.item_id, c.name FROM faces f JOIN contacts c ON c.hash = f.contact";
+
+/// The names of the albums each photo is in, photon's and Picasa's, for `album:`.
+const SEARCH_ALBUMS_SQL: &str =
+    "SELECT m.item_id, a.name FROM album_items m JOIN albums a ON a.id = m.album_id";
+
+/// The `(item id, name)` rows of `sql` as one lowercased string per photo, its names joined
+/// by a space.
+fn search_names(conn: &Connection, sql: &str) -> Result<HashMap<i64, String>> {
+    let mut stmt = conn.prepare(sql)?;
     let mut rows = stmt.query([])?;
     let mut tags: HashMap<i64, String> = HashMap::new();
     while let Some(r) = rows.next()? {
-        // Both tag columns are NOT NULL; skipped all the same, as `group_concat` skips one.
+        // Every name column is NOT NULL; skipped all the same, as `group_concat` skips one.
         let Some(tag) = text(r, 1)? else {
             continue;
         };
@@ -1021,6 +1037,18 @@ impl Library {
         // other read's photos.
         let tx = conn.unchecked_transaction()?;
         let tags = search_tags(&tx)?;
+        // Read only for a query that names a person or an album, which most do not.
+        let needs = query.needs();
+        let people = if needs.people {
+            search_names(&tx, SEARCH_PEOPLE_SQL)?
+        } else {
+            HashMap::new()
+        };
+        let albums = if needs.albums {
+            search_names(&tx, SEARCH_ALBUMS_SQL)?
+        } else {
+            HashMap::new()
+        };
         let mut stmt = tx.prepare(&grid_query(
             &format!(
                 "{GRID_COLUMNS}, i.file_name, f.name, i.make, i.model, i.lens, i.focal_mm, i.aperture, i.iso,
@@ -1043,10 +1071,13 @@ impl Library {
             let folder_id: i64 = r.get(1)?;
             if folder != Some(folder_id) {
                 haystacks.clear();
-                haystacks.push(text(r, base + 1)?.unwrap_or(""));
-                if let Some(alias) = text(r, base + 9)? {
+                let name = text(r, base + 1)?.unwrap_or("");
+                let alias = text(r, base + 9)?;
+                haystacks.push(name);
+                if let Some(alias) = alias {
                     haystacks.push(alias);
                 }
+                haystacks.set_folder(name, alias);
                 folder = Some(folder_id);
                 folder_mark = haystacks.mark();
             }
@@ -1080,9 +1111,17 @@ impl Library {
                 });
             }
             let id: i64 = r.get(0)?;
-            if let Some(tags) = tags.get(&id) {
+            let tags = tags.get(&id).map(String::as_str);
+            if let Some(tags) = tags {
                 haystacks.push_with(|out| out.push_str(tags));
             }
+            haystacks.set_tags_folded(tags);
+            haystacks.set_people_folded(people.get(&id).map(String::as_str));
+            haystacks.set_albums_folded(albums.get(&id).map(String::as_str));
+            haystacks.starred = r
+                .get::<_, Option<i64>>(10)?
+                .is_some_and(|rating| rating >= 1);
+            haystacks.edited = !edit_from_db(r.get(11)?, r.get(12)?).is_identity();
             if let Some(caption) = text(r, base + 8)? {
                 haystacks.push_caption(caption);
             }
@@ -2215,6 +2254,79 @@ mod tests {
         };
         assert_eq!(hits("video"), vec![ids[1]]);
         assert_eq!(hits("photo"), vec![ids[0]]);
+    }
+
+    #[test]
+    fn search_reads_the_confined_fields_from_the_library() {
+        // Each query can be answered only by the field its prefix names reaching the
+        // matcher: the names match nothing, and `b.jpg` has none of it.
+        use crate::edit::Edit;
+        use crate::picasa::Face;
+        let (_dir, lib) = temp_library();
+        let (_watched, folder) = seed_folder(&lib, Path::new("/p"));
+        let tagged = NewItem {
+            tags: vec!["Zoo".into()],
+            ..new_item(folder, "/p/a.jpg", 10)
+        };
+        let ids = lib
+            .insert_items(&[tagged, new_item(folder, "/p/b.jpg", 20)])
+            .unwrap();
+        lib.upsert_contacts(&HashMap::from([(
+            "c1".to_string(),
+            "Anna Schmidt".to_string(),
+        )]))
+        .unwrap();
+        lib.set_item_faces(&[(
+            ids[0],
+            vec![Face {
+                contact: "c1".into(),
+                left: 0.1,
+                top: 0.1,
+                right: 0.2,
+                bottom: 0.2,
+            }],
+        )])
+        .unwrap();
+        let album = lib.create_album("Best Of", 1).unwrap();
+        lib.add_to_album(album.id, &[ids[0]], 1).unwrap();
+        lib.set_ratings(&[(ids[0], 1)]).unwrap();
+        lib.set_item_edit(ids[0], Edit::new(1, None).unwrap())
+            .unwrap();
+        lib.set_folder_alias(folder, Some("Holiday")).unwrap();
+
+        let hits = |query: &str| -> Vec<i64> {
+            lib.entries_for(GridView::Search, query)
+                .unwrap()
+                .iter()
+                .map(|e| e.id)
+                .collect()
+        };
+        for query in [
+            "tag:zoo",
+            "person:anna",
+            "person:\"anna schmidt\"",
+            "album:best",
+            "is:starred",
+            "is:edited",
+        ] {
+            assert_eq!(hits(query), vec![ids[0]], "{query}");
+        }
+        for query in [
+            "-tag:zoo",
+            "-person:anna",
+            "-album:best",
+            "-is:starred",
+            "-is:edited",
+        ] {
+            assert_eq!(hits(query), vec![ids[1]], "{query}");
+        }
+        // The folder by its name and by its alias; both photos are in it.
+        assert_eq!(hits("folder:holiday").len(), 2);
+        assert_eq!(hits("folder:p").len(), 2);
+        assert!(hits("folder:zoo").is_empty());
+        // A person or an album is found by its prefix only.
+        assert!(hits("anna").is_empty());
+        assert!(hits("best").is_empty());
     }
 
     #[test]
