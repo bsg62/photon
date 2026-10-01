@@ -218,6 +218,28 @@
     save_search: (args) => ({ id: 3, name: args.name, query: args.query, createdMs: 0 }),
     watched_folder_stats: () => [{ watchedId: 1, photoCount: 12480 }],
     app_info: () => ({ version: '0.0.0', libraryPath: '/home/ada/.local/share/photon/library.db', licence: 'MIT' }),
+    library_stats: () => ({
+      photos: 12034,
+      videos: 310,
+      bytes: 48.2 * 1024 ** 3,
+      oldest: day(2004, 3, 2),
+      newest: day(2026, 7, 14),
+      years: [[2026, 1310], [2025, 2204], [2024, 1876], [2023, 960], [2019, 2950], [2012, 1480], [2004, 1564]].map(
+        ([year, count]) => ({ year, count }),
+      ),
+      cameras: [
+        { make: 'Canon', model: 'Canon EOS R6', count: 5120 },
+        { make: 'Apple', model: 'iPhone 15 Pro', count: 3980 },
+        { make: 'FUJIFILM', model: 'X100V', count: 1444 },
+        { make: 'NIKON CORPORATION', model: 'NIKON D750', count: 890 },
+      ],
+      noCamera: 910,
+      lenses: [
+        { lens: 'RF24-70mm F2.8 L IS USM', count: 3010 },
+        { lens: 'RF50mm F1.8 STM', count: 1620 },
+        { lens: 'iPhone 15 Pro back triple camera 6.765mm f/1.78', count: 2890 },
+      ],
+    }),
     memory_usage: () => ({ bytes: 412_000_000, processes: 4, includesWebview: true }),
     last_folder: () => null,
     slideshow_interval: () => 4,
@@ -449,6 +471,7 @@
     settings: () => click('button[aria-label="Settings"]'),
     appearance: () => settingsSection('Appearance'),
     about: () => settingsSection('About'),
+    statistics: () => settingsSection('Statistics'),
   };
 
   function settingsSection(name) {

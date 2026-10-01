@@ -154,6 +154,11 @@ pub const SHOTS: &[Shot] = &[
         query: "theme=dark&do=appearance",
         dark: true,
     },
+    Shot {
+        name: "statistics-light",
+        query: "theme=light&do=statistics",
+        dark: false,
+    },
     // The memory row, with the scope line under the figure.
     Shot {
         name: "about-light",

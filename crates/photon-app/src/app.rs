@@ -275,6 +275,7 @@ pub fn run() {
             ipc::open_in_map,
             ipc::reveal_folder,
             ipc::watched_folder_stats,
+            ipc::library_stats,
             ipc::app_info,
             ipc::memory_usage,
             ipc::reveal_watched,

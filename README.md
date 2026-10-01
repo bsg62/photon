@@ -296,6 +296,16 @@ so Left is the photo you just saw. A view of six photos or fewer than five plays
 `F11` toggles fullscreen at any time. photon remembers the window's fullscreen state, so if
 you quit in the middle of a slideshow it reopens fullscreen; `F11` is the way out.
 
+### Statistics
+
+Settings → **Statistics** counts the library: how many photos and videos, how much disk they
+take, the years they span, and how they spread over the years, your ten most used cameras and
+your ten most used lenses. Every row is a link: click a year, a camera or a lens and Settings
+closes onto a search for it. A year's search is exactly that year; a camera's or a lens's
+matches the name word by word, so "EOS 5D" also finds an "EOS 5D Mark IV" and the grid can
+hold more than the row counted. Hidden photos are not counted. The numbers are read when you
+open the section, not kept live.
+
 ### Linux with an NVIDIA GPU
 
 WebKitGTK, the webview photon uses on Linux, crashes on NVIDIA's proprietary driver when its

@@ -1,16 +1,26 @@
 <script lang="ts">
   import { ask, open } from '@tauri-apps/plugin-dialog';
   import { onMount, tick } from 'svelte';
-  import { api, errorMessage, type AppInfo, type MemoryUsage, type TagCount, type TagRule, type ThemeChoice, type WatchedFolder } from '../lib/api';
+  import { api, errorMessage, type AppInfo, type LibraryStats, type MemoryUsage, type TagCount, type TagRule, type ThemeChoice, type WatchedFolder } from '../lib/api';
   import { theme } from '../lib/app-theme.svelte';
   import { library } from '../lib/library.svelte';
   import { MEMORY_POLL_MS, folderStatus, memoryAmount, memoryScope, photoCountLabel, type SettingsSection } from '../lib/settings';
+  import { cameraStatRows, lensStatRows, statsSummary, yearRows, type StatRow } from '../lib/stats';
   import { createTagRenamer } from '../lib/tag-renamer.svelte';
   import { filterTags, ruleLabel } from '../lib/tags';
   import Icon from './Icon.svelte';
   import SizeControl from './SizeControl.svelte';
 
-  let { section = 'folders', onclose }: { section?: SettingsSection; onclose: () => void } = $props();
+  let {
+    section = 'folders',
+    onclose,
+    onsearch,
+  }: {
+    section?: SettingsSection;
+    onclose: () => void;
+    /** Closes the dialog onto a search: what a year, camera or lens in Statistics links to. */
+    onsearch: (query: string) => void;
+  } = $props();
 
   const THEMES: { value: ThemeChoice; label: string }[] = [
     { value: 'system', label: 'System' },
@@ -185,6 +195,43 @@
       .catch(library.reportError);
   }
 
+  /** The library counted, read when the Statistics section is first opened and not before:
+   *  it reads every photo, and most openings of Settings are for something else. Null until
+   *  it arrives. Not refreshed while the dialog is open - it is a look at the library, not
+   *  a gauge. */
+  let stats = $state<LibraryStats | null>(null);
+  /** The read failed: said in the section, which would otherwise read "Counting…" until the
+   *  dialog was reopened. Leaving the section and coming back asks again. */
+  let statsFailed = $state(false);
+  let statsAsked = false;
+
+  $effect(() => {
+    if (current !== 'statistics') {
+      if (statsFailed) statsAsked = false;
+      return;
+    }
+    if (statsAsked) return;
+    statsAsked = true;
+    statsFailed = false;
+    api
+      .libraryStats()
+      .then((s) => (stats = s))
+      .catch((e) => {
+        statsFailed = true;
+        library.reportError(e);
+      });
+  });
+
+  const statLists = $derived<{ title: string; rows: StatRow[]; what: string }[]>(
+    stats
+      ? [
+          { title: 'Years', rows: yearRows(stats), what: 'taken in' },
+          { title: 'Cameras', rows: cameraStatRows(stats), what: 'taken with' },
+          { title: 'Lenses', rows: lensStatRows(stats), what: 'taken with' },
+        ].filter((list) => list.rows.length > 0)
+      : [],
+  );
+
   function onkeydown(e: KeyboardEvent) {
     if (e.key === 'Escape') {
       e.preventDefault();
@@ -322,6 +369,9 @@
         <button class:active={current === 'duplicates'} aria-current={current === 'duplicates'} onclick={() => (current = 'duplicates')}>
           Duplicates
         </button>
+        <button class:active={current === 'statistics'} aria-current={current === 'statistics'} onclick={() => (current = 'statistics')}>
+          Statistics
+        </button>
         <button class:active={current === 'about'} aria-current={current === 'about'} onclick={() => (current = 'about')}>
           About
         </button>
@@ -418,6 +468,30 @@
                 </li>
               {/each}
             </ul>
+          {/if}
+        {:else if current === 'statistics'}
+          <h2>Statistics</h2>
+          {#if stats === null}
+            <p class="hint">{statsFailed ? 'The library could not be counted.' : 'Counting…'}</p>
+          {:else}
+            <p class="hint">{statsSummary(stats)}. Hidden photos are not counted. Click a row to search for it.</p>
+            {#each statLists as list (list.title)}
+              <h2>{list.title}</h2>
+              <ul class="stats">
+                {#each list.rows as row (row.search)}
+                  <li>
+                    <button onclick={() => onsearch(row.search)} title="Search for the photos {list.what} {row.label}">
+                      <span class="stat-label">{row.label}</span>
+                      <span class="stat-bar"><span style:width="{row.share * 100}%"></span></span>
+                      <span class="stat-count">{row.count.toLocaleString()}</span>
+                    </button>
+                  </li>
+                {/each}
+              </ul>
+            {/each}
+            {#if stats.noCamera > 0 && stats.cameras.length > 0}
+              <p class="hint stats-note">{stats.noCamera.toLocaleString()} without camera data.</p>
+            {/if}
           {/if}
         {:else if current === 'appearance'}
           <h2>Appearance</h2>
@@ -600,6 +674,25 @@
   .status.degraded, .status.offline { color: var(--text); }
   .actions { display: flex; flex-shrink: 0; gap: 6px; }
   .danger { color: var(--danger); }
+  .stats { margin: 0; padding: 0; list-style: none; }
+  /* One row is one link: the label, a bar scaled to the list's largest row, the count. */
+  .stats button {
+    display: grid;
+    grid-template-columns: minmax(0, 11rem) minmax(0, 1fr) 4.5rem;
+    align-items: center;
+    gap: var(--s-3);
+    width: 100%;
+    height: 26px;
+    padding: 0 var(--s-2);
+    background: none;
+    text-align: left;
+  }
+  .stats button:hover { background: var(--hover); }
+  .stat-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .stat-bar { height: 6px; border-radius: var(--r-1); background: var(--field); overflow: hidden; }
+  .stat-bar span { display: block; height: 100%; min-width: 2px; border-radius: var(--r-1); background: var(--accent); }
+  .stat-count { color: var(--text-dim); text-align: right; font-variant-numeric: tabular-nums; }
+  .stats-note { margin-top: var(--s-3); }
   dl { display: grid; grid-template-columns: auto 1fr; gap: 8px 16px; margin: 8px 0 0; }
   dt { color: var(--text-dim); }
   dd { margin: 0; min-width: 0; }

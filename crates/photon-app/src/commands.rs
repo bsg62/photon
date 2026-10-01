@@ -338,6 +338,12 @@ pub fn watched_folder_stats(engine: &Engine) -> CmdResult<Vec<WatchedFolderStats
         .collect())
 }
 
+/// What the library holds, counted, for Settings' Statistics section. Asked for when that
+/// section opens, not kept up to date: it reads every visible photo.
+pub fn library_stats(engine: &Engine) -> CmdResult<photon_core::library::LibraryStats> {
+    Ok(engine.lib.stats()?)
+}
+
 pub fn app_info(engine: &Engine) -> AppInfo {
     AppInfo {
         version: env!("CARGO_PKG_VERSION"),

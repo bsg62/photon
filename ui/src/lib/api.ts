@@ -18,6 +18,20 @@ export type FileDrag = { type: 'enter' | 'drop'; paths: string[] } | { type: 'le
 export interface FolderList { watched: WatchedFolder[]; folders: Folder[] }
 /** A root with no photos is absent from the list. */
 export interface WatchedFolderStats { watchedId: number; photoCount: number }
+/** Mirrors `library::LibraryStats`: the visible library, counted. `oldest`/`newest` are
+ *  capture times in naive SECONDS like `takenAt`, null for an empty library. `cameras` and
+ *  `lenses` are the ten most used, most first; `noCamera` counts files that name none. */
+export interface LibraryStats {
+  photos: number;
+  videos: number;
+  bytes: number;
+  oldest: number | null;
+  newest: number | null;
+  years: { year: number; count: number }[];
+  cameras: { make: string | null; model: string | null; count: number }[];
+  noCamera: number;
+  lenses: { lens: string; count: number }[];
+}
 export interface AppInfo { version: string; libraryPath: string; licence: string }
 /** `includesWebview` is false on macOS, where the web view's processes cannot be told apart
  *  from other apps' and `bytes` is photon's own process alone. */
@@ -235,6 +249,7 @@ export const api = {
   removeFolder: (watchedId: number) => invoke<void>('remove_folder', { watchedId }),
   rescanFolder: (watchedId: number) => invoke<void>('rescan_folder', { watchedId }),
   watchedFolderStats: () => invoke<WatchedFolderStats[]>('watched_folder_stats'),
+  libraryStats: () => invoke<LibraryStats>('library_stats'),
   appInfo: () => invoke<AppInfo>('app_info'),
   memoryUsage: () => invoke<MemoryUsage>('memory_usage'),
   /** Reveals a watched root itself; unlike `revealFolder` it works for a root that has no
