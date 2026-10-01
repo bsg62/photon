@@ -2,7 +2,7 @@
   import { onMount, tick } from 'svelte';
   // `open` is already this component's name for opening the viewer.
   import { open as pickFolder } from '@tauri-apps/plugin-dialog';
-  import { api } from './lib/api';
+  import { api, events } from './lib/api';
   import { gridSize } from './lib/app-grid-size.svelte';
   import { theme } from './lib/app-theme.svelte';
   import { showCopies } from './lib/copies';
@@ -14,6 +14,7 @@
   import type { SettingsSection } from './lib/settings';
   import { clampSidebarWidth, SIDEBAR_DEFAULT, SIDEBAR_STEP } from './lib/sidebar';
   import { createExportDialog } from './lib/export-dialog.svelte';
+  import { createFolderDrop } from './lib/folder-drop.svelte';
   import { createTagPicker } from './lib/tag-picker.svelte';
   import { grabPoster } from './lib/video-grab';
   import { videoState } from './lib/video-state.svelte';
@@ -56,6 +57,15 @@
     },
     check: (dest) => api.checkExportDest(dest),
     remember: (apply) => api.setExportApplyEdits(apply),
+  });
+
+  /** Folders dragged in from a file manager are watched. Not an overlay in `covered`'s
+   *  sense: it takes no focus and no clicks, it only says what letting go will do. */
+  const folderDrop = createFolderDrop({
+    add: (path) => api.addFolder(path),
+    refresh: () => library.refreshFolders(),
+    notify: library.notify,
+    reportError: library.reportError,
   });
 
   /** Everything behind an overlay is inert; the overlays never stack, because each one
@@ -124,12 +134,23 @@
       if (disposed) return;
       if (videoState.supported) thumbnailer.start();
     })();
+    // The listener arrives a round trip later; one that lands after this mount has gone
+    // is dropped at once, like the video session above.
+    let stopDrag: (() => void) | undefined;
+    void events
+      .onFileDrag((e) => void folderDrop.handle(e).catch(library.reportError))
+      .then((unlisten) => {
+        if (disposed) unlisten();
+        else stopDrag = unlisten;
+      })
+      .catch(library.reportError);
     return () => {
       library.dispose();
       theme.dispose();
       gridSize.dispose();
       disposed = true;
       thumbnailer.stop();
+      stopDrag?.();
     };
   });
 
@@ -365,6 +386,13 @@
 <TagPicker {picker} onclosed={closeKeywords} />
 <ExportDialog dialog={exporter} onclosed={closeExport} />
 <Toasts />
+{#if folderDrop.hovering}
+  <!-- Says what letting go will do. It takes no pointer events: the drag is the system's,
+       and the webview reports the drop wherever it lands. -->
+  <div class="drop" aria-hidden="true">
+    <div class="drop-card"><Icon name="folder" size={20} /> Drop folders to add them to photon</div>
+  </div>
+{/if}
 
 <style>
   .app {
@@ -419,4 +447,24 @@
   .gear:hover { color: var(--text); background: var(--hover); }
   @media (prefers-reduced-motion: reduce) { .gear { transition: none; } }
   .statusbar { grid-column: 1 / -1; }
+  .drop {
+    position: fixed;
+    inset: 0;
+    z-index: 40;
+    display: grid;
+    place-items: center;
+    background: var(--scrim);
+    pointer-events: none;
+  }
+  .drop-card {
+    display: flex;
+    align-items: center;
+    gap: var(--s-2);
+    padding: var(--s-4) var(--s-5);
+    background: var(--surface);
+    color: var(--text);
+    border-radius: var(--r-4);
+    box-shadow: 0 0 0 1px var(--line), var(--shadow-dialog);
+    font-size: var(--t-4);
+  }
 </style>

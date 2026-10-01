@@ -3,6 +3,7 @@
 
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 
 export { mediaUrl } from './url';
@@ -12,6 +13,8 @@ export interface WatchedFolder { id: number; path: string; online: boolean }
 /** `alias` is the user's name for the folder in photon, shown in place of `name` (see
  *  `folderLabel`); null for none. */
 export interface Folder { id: number; watchedId: number; parentId: number | null; path: string; name: string; hidden: boolean; alias: string | null }
+/** One step of a drag from outside the window; see `api.onFileDrag`. */
+export type FileDrag = { type: 'enter' | 'drop'; paths: string[] } | { type: 'leave' };
 export interface FolderList { watched: WatchedFolder[]; folders: Folder[] }
 /** A root with no photos is absent from the list. */
 export interface WatchedFolderStats { watchedId: number; photoCount: number }
@@ -354,6 +357,15 @@ export const events = {
     listen<FolderStatus>('folder-status', (e) => cb(e.payload)),
   onExportProgress: (cb: (e: ExportProgress) => void): Promise<UnlistenFn> =>
     listen<ExportProgress>('export-progress', (e) => cb(e.payload)),
+  /** Files and folders dragged from another program over photon's window: the system's
+   *  own drag, which the webview reports with real paths. `over` is left out - it fires per
+   *  pointer move and says nothing `enter` did not. */
+  onFileDrag: (cb: (e: FileDrag) => void): Promise<UnlistenFn> =>
+    getCurrentWebview().onDragDropEvent((e) => {
+      const p = e.payload;
+      if (p.type === 'enter' || p.type === 'drop') cb({ type: p.type, paths: p.paths });
+      else if (p.type === 'leave') cb({ type: 'leave' });
+    }),
 };
 
 export function errorMessage(e: unknown): string {
