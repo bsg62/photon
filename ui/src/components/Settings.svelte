@@ -1,16 +1,26 @@
 <script lang="ts">
   import { ask, open } from '@tauri-apps/plugin-dialog';
   import { onMount, tick } from 'svelte';
-  import { api, errorMessage, type AppInfo, type MemoryUsage, type TagCount, type TagRule, type ThemeChoice, type WatchedFolder } from '../lib/api';
+  import { api, errorMessage, type AppInfo, type LibraryStats, type MemoryUsage, type TagCount, type TagRule, type ThemeChoice, type WatchedFolder } from '../lib/api';
   import { theme } from '../lib/app-theme.svelte';
   import { library } from '../lib/library.svelte';
   import { MEMORY_POLL_MS, folderStatus, memoryAmount, memoryScope, photoCountLabel, type SettingsSection } from '../lib/settings';
+  import { cameraStatRows, lensStatRows, statsSummary, yearRows, type StatRow } from '../lib/stats';
   import { createTagRenamer } from '../lib/tag-renamer.svelte';
   import { filterTags, ruleLabel } from '../lib/tags';
   import Icon from './Icon.svelte';
   import SizeControl from './SizeControl.svelte';
 
-  let { section = 'folders', onclose }: { section?: SettingsSection; onclose: () => void } = $props();
+  let {
+    section = 'folders',
+    onclose,
+    onsearch,
+  }: {
+    section?: SettingsSection;
+    onclose: () => void;
+    /** Closes the dialog onto a search: what a year, camera or lens in Statistics links to. */
+    onsearch: (query: string) => void;
+  } = $props();
 
   const THEMES: { value: ThemeChoice; label: string }[] = [
     { value: 'system', label: 'System' },
@@ -124,6 +134,32 @@
       .then((s) => (interval = s))
       .catch(library.reportError);
   });
+
+  /** The library counted, read when the Statistics section is first opened and not before:
+   *  it reads every photo, and most openings of Settings are for something else. Null until
+   *  it arrives. Not refreshed while the dialog is open - it is a look at the library, not
+   *  a gauge. */
+  let stats = $state<LibraryStats | null>(null);
+  let statsAsked = false;
+
+  $effect(() => {
+    if (current !== 'statistics' || statsAsked) return;
+    statsAsked = true;
+    api
+      .libraryStats()
+      .then((s) => (stats = s))
+      .catch(library.reportError);
+  });
+
+  const statLists = $derived<{ title: string; rows: StatRow[]; what: string }[]>(
+    stats
+      ? [
+          { title: 'Years', rows: yearRows(stats), what: 'taken in' },
+          { title: 'Cameras', rows: cameraStatRows(stats), what: 'taken with' },
+          { title: 'Lenses', rows: lensStatRows(stats), what: 'taken with' },
+        ].filter((list) => list.rows.length > 0)
+      : [],
+  );
 
   /** The Hamming distance Off/Conservative/Loose means. Null until read, for the same reason
    *  `interval` is: the control must not show a value that is not the stored one. */
@@ -299,6 +335,9 @@
         <button class:active={current === 'duplicates'} aria-current={current === 'duplicates'} onclick={() => (current = 'duplicates')}>
           Duplicates
         </button>
+        <button class:active={current === 'statistics'} aria-current={current === 'statistics'} onclick={() => (current = 'statistics')}>
+          Statistics
+        </button>
         <button class:active={current === 'about'} aria-current={current === 'about'} onclick={() => (current = 'about')}>
           About
         </button>
@@ -425,6 +464,30 @@
             <input type="number" min="1" max="60" step="1" value={interval ?? ''} disabled={interval === null} onchange={saveInterval} />
             seconds
           </label>
+        {:else if current === 'statistics'}
+          <h2>Statistics</h2>
+          {#if stats === null}
+            <p class="hint">Counting…</p>
+          {:else}
+            <p class="hint">{statsSummary(stats)}. Hidden photos are not counted. Click a row to see its photos.</p>
+            {#each statLists as list (list.title)}
+              <h2>{list.title}</h2>
+              <ul class="stats">
+                {#each list.rows as row (row.label)}
+                  <li>
+                    <button onclick={() => onsearch(row.search)} title="Show the photos {list.what} {row.label}">
+                      <span class="stat-label">{row.label}</span>
+                      <span class="stat-bar"><span style:width="{row.share * 100}%"></span></span>
+                      <span class="stat-count">{row.count.toLocaleString()}</span>
+                    </button>
+                  </li>
+                {/each}
+              </ul>
+            {/each}
+            {#if stats.noCamera > 0 && stats.cameras.length > 0}
+              <p class="hint stats-note">{stats.noCamera.toLocaleString()} without camera data.</p>
+            {/if}
+          {/if}
         {:else if current === 'duplicates'}
           <h2>Find look-alikes</h2>
           <p class="hint">
@@ -545,6 +608,25 @@
   nav button.active, nav button.active:hover:not(:disabled) { background: var(--accent-soft); }
   section { flex: 1; min-width: 0; padding: var(--s-3) var(--s-4); overflow: auto; }
   .hint, .empty { margin: 0 0 var(--s-3); color: var(--text-dim); }
+  .stats { margin: 0; padding: 0; list-style: none; }
+  /* One row is one link: the label, a bar scaled to the list's largest row, the count. */
+  .stats button {
+    display: grid;
+    grid-template-columns: minmax(0, 11rem) minmax(0, 1fr) 4.5rem;
+    align-items: center;
+    gap: var(--s-3);
+    width: 100%;
+    height: 26px;
+    padding: 0 var(--s-2);
+    background: none;
+    text-align: left;
+  }
+  .stats button:hover { background: var(--hover); }
+  .stat-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .stat-bar { height: 6px; border-radius: var(--r-1); background: var(--field); overflow: hidden; }
+  .stat-bar span { display: block; height: 100%; min-width: 2px; border-radius: var(--r-1); background: var(--accent); }
+  .stat-count { color: var(--text-dim); text-align: right; font-variant-numeric: tabular-nums; }
+  .stats-note { margin-top: var(--s-3); }
   .interval { display: flex; align-items: center; gap: 8px; }
   .interval input { width: 64px; padding: 5px var(--s-2); border: 0; border-radius: var(--r-2); background: var(--field); color: inherit; font: inherit; }
   /* Block-level `flex` shrunk to fit rather than `inline-flex`: an inline box's margin adds

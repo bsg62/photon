@@ -378,3 +378,4 @@ publishing it.
 - [ ] Choose a sort, quit and relaunch: photon opens in the same sort. Back on Date taken, the
       grid opens at the folder last browsed, as before.
 - [ ] Changing the sort with text in the search box keeps the search, now in the new order.
+- [ ] Settings → Statistics: "Counting…" gives way to a summary line (photos, videos, size, years) that matches the status bar's photo count in All photos plus the Videos count, then Years, Cameras and Lenses with bars. Click a year: Settings closes, the search box reads `from:2019 to:2019`, the grid shows that year and the arrow keys work in it without a click. Click a camera, then a lens: the same, with `camera:"…"` and `lens:"…"`, and the grid's count equals the row's number. Hide a photo and reopen Statistics: the total drops by one. On a large library the section opens without the dialog freezing.

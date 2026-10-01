@@ -274,6 +274,16 @@
     gear?.focus();
   }
 
+  /** A year, camera or lens clicked in Settings' Statistics: the dialog closes onto that
+   *  search. Focus goes to the grid, where the answer is, rather than back to the gear;
+   *  after `tick`, for `closeSettings`' reason. */
+  async function searchFromSettings(query: string) {
+    settingsAt = null;
+    searchBox.search(query);
+    await tick();
+    grid?.focus();
+  }
+
   /** The selection is captured now, not read when the dialog writes: the dialog takes
    *  focus, and a scan landing while it is open can rebind what the grid has selected. What
    *  the user was told the dialog would act on is what it acts on. */
@@ -360,7 +370,7 @@
   <div class="statusbar"><StatusBar /></div>
 </div>
 {#if viewerAt !== null}<Viewer offset={viewerAt} onclose={closeViewer} onlocate={locate} onsearch={searchFrom} onshowcopies={showCopiesFromViewer} />{/if}
-{#if settingsAt !== null}<Settings section={settingsAt} onclose={closeSettings} />{/if}
+{#if settingsAt !== null}<Settings section={settingsAt} onclose={closeSettings} onsearch={searchFromSettings} />{/if}
 {#if compareIds !== null}<Compare ids={compareIds} onclose={closeCompare} onopen={openFromCompare} />{/if}
 <TagPicker {picker} onclosed={closeKeywords} />
 <ExportDialog dialog={exporter} onclosed={closeExport} />

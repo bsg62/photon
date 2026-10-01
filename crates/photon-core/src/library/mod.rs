@@ -31,6 +31,7 @@ mod schema;
 mod searches;
 mod settings;
 mod similar;
+mod stats;
 mod tags;
 
 pub use albums::{Album, AlbumSummary};
@@ -41,6 +42,7 @@ pub use items::{FolderItem, Item, KnownItem, NewItem, RECENT_LIMIT, is_starred};
 pub use searches::SavedSearch;
 pub use settings::{GridTile, ThemeChoice};
 pub use similar::{HashedPhoto, SimilarCandidate};
+pub use stats::{CameraCount, LensCount, LibraryStats, STATS_TOP, YearCount};
 pub use tags::{TagCount, TagRule};
 
 use crate::Result;

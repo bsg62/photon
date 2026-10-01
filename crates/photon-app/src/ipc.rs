@@ -490,6 +490,11 @@ pub fn watched_folder_stats(
 }
 
 #[tauri::command(async)]
+pub fn library_stats(engine: Eng<'_>) -> Result<photon_core::library::LibraryStats, AppError> {
+    commands::library_stats(&engine)
+}
+
+#[tauri::command(async)]
 pub fn app_info(engine: Eng<'_>) -> commands::AppInfo {
     commands::app_info(&engine)
 }
