@@ -1,7 +1,8 @@
 <script lang="ts">
-  import type { ExportDialog } from '../lib/export-dialog.svelte';
+  import { EXPORT_SIZES, type ExportDialog } from '../lib/export-dialog.svelte';
   import { library } from '../lib/library.svelte';
   import Icon from './Icon.svelte';
+  import Select from './Select.svelte';
 
   let { dialog, onclosed }: { dialog: ExportDialog; onclosed: () => void } = $props();
 
@@ -78,12 +79,24 @@
         />
         <span>Apply edits to the copies</span>
       </label>
+      <div class="option">
+        <span>Longest edge</span>
+        <Select
+          label="Longest edge of the copies"
+          options={EXPORT_SIZES}
+          value={dialog.maxEdge ?? 0}
+          onchange={(value) => dialog.setMaxEdge(value)}
+          placement="above"
+        />
+      </div>
       <!-- Always shown, because it is the one surprise in the feature: photon reads camera
-           information and never writes it, so a re-encoded copy cannot carry it. An
-           unedited photo is copied byte for byte either way and keeps everything. -->
+           information and never writes it, so a re-encoded copy cannot carry it. A photo
+           that is neither edited nor made smaller is copied byte for byte and keeps
+           everything. -->
       <p class="note">
-        A photo you have turned or cropped is re-encoded, and the copy carries no camera
-        information. Photos you have not edited are copied exactly as they are.
+        A photo you have turned or cropped, or one made smaller, is re-encoded, and the copy
+        carries no camera information. Every other photo is copied exactly as it is: one
+        already within the size, and every video and GIF.
       </p>
 
       <div class="actions">
@@ -153,6 +166,7 @@
   .dest span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; }
   .dest .placeholder { color: var(--text-dim); direction: ltr; }
   .option { display: flex; align-items: center; gap: var(--s-2); cursor: pointer; }
+  div.option { cursor: default; justify-content: space-between; }
   .note { margin: 0; color: var(--text-dim); font-size: var(--t-2); }
   .actions { display: flex; justify-content: flex-end; gap: var(--s-2); }
   .actions button {

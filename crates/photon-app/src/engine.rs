@@ -7,7 +7,7 @@ use parking_lot::{Mutex, MutexGuard, RwLock};
 use photon_core::{
     Error, Result,
     edit::Edit,
-    export::{self, Source},
+    export::{self, Options, Plan, Source},
     grid::{GridIndex, GridView},
     library::{Library, WatchedFolder},
     media::MediaKind,
@@ -1212,7 +1212,11 @@ impl Engine {
     /// is counted and skipped rather than ending the export: one unreadable file must not
     /// cost the user the other hundred and nineteen. The first reason is reported so the
     /// message can say what went wrong rather than only that something did.
-    pub fn export_items(&self, ids: &[i64], dest: &Path, apply_edits: bool) -> Result<Export> {
+    ///
+    /// `options.max_edge` scales down the photos that exceed it, which re-encodes them like
+    /// an edit does; everything within it, every video and every GIF is still a byte copy
+    /// (`Source::plan`).
+    pub fn export_items(&self, ids: &[i64], dest: &Path, options: Options) -> Result<Export> {
         let dest = self.check_export_dest(dest)?;
         let total = ids.len();
         let mut report = Export {
@@ -1224,7 +1228,7 @@ impl Engine {
         // export is 5,000 round trips into the webview, all to move one bar.
         let mut last = Instant::now();
         for (n, &id) in ids.iter().enumerate() {
-            let outcome = self.export_one(id, &dest, apply_edits);
+            let outcome = self.export_one(id, &dest, options);
             match outcome {
                 Ok(()) => report.written += 1,
                 Err(err) => {
@@ -1271,7 +1275,7 @@ impl Engine {
         Ok(dest)
     }
 
-    fn export_one(&self, id: i64, dest: &Path, apply_edits: bool) -> Result<()> {
+    fn export_one(&self, id: i64, dest: &Path, options: Options) -> Result<()> {
         let item = self.lib.item(id)?.ok_or(Error::NotFound(id))?;
         if item.missing_since.is_some() {
             return Err(Error::NotFound(id));
@@ -1280,15 +1284,21 @@ impl Engine {
             path: PathBuf::from(&item.path),
             orientation: item.orientation,
             edit: item.edit,
+            width: item.width,
+            height: item.height,
+            kind: item.kind,
         };
-        if source.needs_render(apply_edits) {
-            let (bytes, mime) = {
-                let _one_at_a_time = crate::protocol::RENDERING.lock();
-                export::render_for_export(&source)?
-            };
-            export::write_rendered(&source, dest, mime, &bytes)?;
-        } else {
-            export::copy_original(&source, dest)?;
+        match source.plan(options) {
+            Plan::Render { edit, max_edge } => {
+                let (bytes, mime) = {
+                    let _one_at_a_time = crate::protocol::RENDERING.lock();
+                    export::render_for_export(&source, edit, max_edge)?
+                };
+                export::write_rendered(&source, dest, mime, &bytes)?;
+            }
+            Plan::Copy => {
+                export::copy_original(&source, dest)?;
+            }
         }
         Ok(())
     }
@@ -3824,6 +3834,14 @@ mod tests {
     }
 
     /// The promise the whole feature has to keep: the photos it copies are not touched.
+    /// An export at full size: what every export was before a size could be asked for.
+    fn full_size(apply_edits: bool) -> Options {
+        Options {
+            apply_edits,
+            max_edge: None,
+        }
+    }
+
     #[test]
     fn exporting_copies_photos_out_and_leaves_the_originals_alone() {
         let img = jpeg(16, 16);
@@ -3843,7 +3861,7 @@ mod tests {
             })
             .collect();
 
-        let report = f.engine.export_items(&ids, &out, true).unwrap();
+        let report = f.engine.export_items(&ids, &out, full_size(true)).unwrap();
 
         assert_eq!((report.written, report.failed), (2, 0));
         assert_eq!(std::fs::read(out.join("a.jpg")).unwrap(), img);
@@ -3861,6 +3879,27 @@ mod tests {
 
     /// Copies written inside a watched folder are scanned back in as new photos: one click
     /// would double the library. Refused before anything is written, not after.
+    /// The size travels from the options to the copies, read from the library's own
+    /// dimensions: the large photo is scaled, the small one keeps its bytes.
+    #[test]
+    fn an_export_with_a_size_scales_only_the_photos_over_it() {
+        let (big, small) = (jpeg(64, 32), jpeg(16, 16));
+        let f = fixture(&[("big.jpg", &big), ("small.jpg", &small)]);
+        f.add_photos();
+        let out = f.dir.path().join("out");
+        std::fs::create_dir_all(&out).unwrap();
+        let options = Options {
+            apply_edits: true,
+            max_edge: Some(32),
+        };
+        let report = f.engine.export_items(&f.ids(), &out, options).unwrap();
+        assert_eq!((report.written, report.failed), (2, 0));
+        let scaled = image::open(out.join("big.jpg")).unwrap();
+        assert_eq!((scaled.width(), scaled.height()), (32, 16));
+        assert_eq!(std::fs::read(out.join("small.jpg")).unwrap(), small);
+        assert_eq!(std::fs::read(f.photos.join("big.jpg")).unwrap(), big);
+    }
+
     #[test]
     fn exporting_into_a_watched_folder_is_refused_and_writes_nothing() {
         let img = jpeg(16, 16);
@@ -3869,7 +3908,10 @@ mod tests {
         let ids = f.ids();
 
         for dest in [f.photos.clone(), f.photos.join("sub")] {
-            let err = f.engine.export_items(&ids, &dest, false).unwrap_err();
+            let err = f
+                .engine
+                .export_items(&ids, &dest, full_size(false))
+                .unwrap_err();
             assert!(
                 matches!(err, Error::ExportIntoLibrary { .. }),
                 "{dest:?}: {err}"
@@ -3881,12 +3923,17 @@ mod tests {
         let above = f.photos.parent().unwrap().join("beside");
         std::fs::create_dir_all(&above).unwrap();
         assert_eq!(
-            f.engine.export_items(&ids, &above, false).unwrap().written,
+            f.engine
+                .export_items(&ids, &above, full_size(false))
+                .unwrap()
+                .written,
             2
         );
         let parent = f.photos.parent().unwrap().to_path_buf();
         assert!(
-            f.engine.export_items(&ids[..1], &parent, false).is_ok(),
+            f.engine
+                .export_items(&ids[..1], &parent, full_size(false))
+                .is_ok(),
             "a folder that contains a watched one is a usable destination"
         );
 
@@ -3911,7 +3958,7 @@ mod tests {
 
         let report = f
             .engine
-            .export_items(&[ids[0], 9_999, ids[1]], &out, false)
+            .export_items(&[ids[0], 9_999, ids[1]], &out, full_size(false))
             .unwrap();
 
         assert_eq!((report.written, report.failed), (2, 1));
@@ -3929,7 +3976,7 @@ mod tests {
         let out = f.dir.path().join("out");
         std::fs::create_dir_all(&out).unwrap();
 
-        f.engine.export_items(&ids, &out, false).unwrap();
+        f.engine.export_items(&ids, &out, full_size(false)).unwrap();
 
         let last = f
             .events

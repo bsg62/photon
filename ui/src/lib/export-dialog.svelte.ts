@@ -14,8 +14,19 @@ function counted(n: number): string {
  *
  *  The selection is captured at `show()`: the dialog takes focus, and a scan landing while
  *  it is open can rebind what the grid has selected. */
+/** The sizes the dialog offers: the longest edge a copy may have, in pixels, with 0 for
+ *  the photo's own size (a select's value is never null). Screens' widths, since a copy made smaller is one to look at or
+ *  send. */
+export const EXPORT_SIZES: { value: number; label: string }[] = [
+  { value: 0, label: 'Original size' },
+  { value: 3840, label: '3840 px' },
+  { value: 2560, label: '2560 px' },
+  { value: 1920, label: '1920 px' },
+  { value: 1280, label: '1280 px' },
+];
+
 export function createExportDialog(deps: {
-  run: (ids: number[], dest: string, applyEdits: boolean) => Promise<ExportReport>;
+  run: (ids: number[], dest: string, applyEdits: boolean, maxEdge: number | null) => Promise<ExportReport>;
   /** The system folder picker; null when the user dismissed it. */
   pick: () => Promise<string | null>;
   /** Refuses a destination photon will not write into - today, one inside a watched folder.
@@ -28,6 +39,7 @@ export function createExportDialog(deps: {
   let visible = $state(false);
   let dest = $state<string | null>(null);
   let applyEdits = $state(true);
+  let maxEdge = $state<number | null>(null);
   let busy = $state(false);
   let problem = $state<string | null>(null);
   let ids = $state<number[]>([]);
@@ -43,6 +55,17 @@ export function createExportDialog(deps: {
 
     get applyEdits(): boolean {
       return applyEdits;
+    },
+
+    /** The longest edge a copy may have, or null for full size. Not remembered between
+     *  exports, unlike the checkbox: a size left on from last time would quietly shrink the
+     *  next export, and that one might be the archive. */
+    get maxEdge(): number | null {
+      return maxEdge;
+    },
+
+    setMaxEdge(next: number | null) {
+      maxEdge = next !== null && next > 0 ? next : null;
     },
 
     get busy(): boolean {
@@ -63,6 +86,7 @@ export function createExportDialog(deps: {
     show(selection: number[], remembered: boolean) {
       ids = [...selection];
       applyEdits = remembered;
+      maxEdge = null;
       dest = null;
       problem = null;
       busy = false;
@@ -119,7 +143,7 @@ export function createExportDialog(deps: {
       busy = true;
       visible = false;
       try {
-        const done = await deps.run(ids, to, applyEdits);
+        const done = await deps.run(ids, to, applyEdits, maxEdge);
         if (done.written === 0) {
           throw new Error(done.reason ?? `Nothing could be exported to ${to}`);
         }

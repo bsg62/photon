@@ -284,8 +284,9 @@ export const api = {
   /** Adds one keyword to a whole selection. The name that comes back is the one stored,
    *  which a rename rule can make different from what was typed. */
   /** Copies photos into `dest`. A destination inside a watched folder is refused. */
-  exportItems: (ids: number[], dest: string, applyEdits: boolean) =>
-    invoke<ExportReport>('export_items', { ids, dest, applyEdits }),
+  /** `maxEdge` scales down the photos whose long edge exceeds it; null keeps every size. */
+  exportItems: (ids: number[], dest: string, applyEdits: boolean, maxEdge: number | null) =>
+    invoke<ExportReport>('export_items', { ids, dest, applyEdits, maxEdge }),
   /** Rejects a destination photon will not write into - today, one inside a watched folder. */
   checkExportDest: (dest: string) => invoke<void>('check_export_dest', { dest }),
   exportApplyEdits: () => invoke<boolean>('export_apply_edits'),

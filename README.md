@@ -176,6 +176,20 @@ full-size file use Export or Reveal in file manager. With text selected (a capti
 panel, say), Ctrl+C copies the text instead. On Linux the picture is served by photon itself:
 unless a clipboard manager keeps a copy, paste it before you quit photon.
 
+### Exporting copies
+
+Select photos, right-click and choose **Export…** to copy them into a folder you pick -
+anywhere but inside a folder photon watches. A photo you have not edited is copied byte for
+byte. One you have turned or cropped comes out as you see it, unless you untick **Apply edits
+to the copies**. Nothing is ever overwritten: a name already there gets ` (2)`.
+
+**Longest edge** makes the copies smaller, for a mail or a web page: choose 1920 px and
+every photo larger than that is scaled down to it, while one already within it is left
+exactly as it is. A scaled copy, like an edited one, is a new JPEG (or PNG, for a picture with
+transparency) and carries no camera information. Videos and GIFs are never scaled. The size
+goes back to **Original size** each time the dialog opens, so an export for the archive is
+never shrunk by the last one's setting.
+
 ### Comparing photos
 
 Select two to four photos in the grid and press `C` (or right-click → **Compare**) to see them

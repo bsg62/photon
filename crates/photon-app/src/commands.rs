@@ -863,8 +863,13 @@ pub fn export_items(
     ids: &[i64],
     dest: &str,
     apply_edits: bool,
+    max_edge: Option<u32>,
 ) -> CmdResult<ExportReport> {
-    let done = engine.export_items(ids, Path::new(dest), apply_edits)?;
+    let options = photon_core::export::Options {
+        apply_edits,
+        max_edge,
+    };
+    let done = engine.export_items(ids, Path::new(dest), options)?;
     Ok(ExportReport {
         written: done.written,
         failed: done.failed,
