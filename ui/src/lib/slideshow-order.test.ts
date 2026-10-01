@@ -90,15 +90,49 @@ describe('shuffleStride', () => {
     for (const len of [0, 1, 2, 3, 4, 6]) expect(shuffleStride(len, () => 0.5)).toBe(1);
   });
 
-  it('lands in the middle of the view, so neighbours in the show are far apart in the grid', () => {
-    for (const r of [0, 0.5, 0.999]) {
-      const stride = shuffleStride(100_000, () => r);
-      expect(stride).toBeGreaterThan(29_000);
-      expect(stride).toBeLessThan(71_000);
+  it('is a golden-ratio share of the view, from one end or the other', () => {
+    const share = (r: number[]) => {
+      const draws = [...r];
+      return shuffleStride(100_000, () => draws.shift() as number) / 100_000;
+    };
+    // The first draw places it within the window, the second picks the end.
+    expect(share([0, 0])).toBeCloseTo(0.37, 3);
+    expect(share([0.999, 0])).toBeCloseTo(0.395, 3);
+    expect(share([0, 0.9])).toBeCloseTo(0.63, 3);
+    expect(share([0.999, 0.9])).toBeCloseTo(0.605, 3);
+  });
+
+  it('keeps the slides after the next one apart too, not only neighbours', () => {
+    // A stride of half the view passes its own first test - each slide is far from the
+    // last - and then plays 0, 50, 100, 49, 99: every second slide is next door. Within
+    // four steps no slide may come within a tenth of the view of where the walk started.
+    // The small lengths are the ones where the *nearest* stride sharing no factor fails
+    // this - for 20 photos it is 7, which comes back next door every third slide - so they
+    // are what holds the choice among the nearest to the best-spreading one.
+    for (const len of [20, 22, 26, 28, 50, 101, 365, 1000, 99_991]) {
+      for (const r of [0, 0.5, 0.999]) {
+        for (const end of [0, 0.9]) {
+          const draws = [r, end];
+          const stride = shuffleStride(len, () => draws.shift() as number);
+          for (let k = 1; k <= 4; k++) {
+            const at = (k * stride) % len;
+            const apart = Math.min(at, len - at);
+            expect(apart, `len ${len}, stride ${stride}, step ${k}`).toBeGreaterThanOrEqual(Math.floor(len / 10));
+          }
+        }
+      }
     }
   });
 
   it('follows the draw, so two shows differ', () => {
     expect(shuffleStride(1000, () => 0.1)).not.toBe(shuffleStride(1000, () => 0.9));
+  });
+
+  it('keeps the stride in use when the view changes length and it still fits', () => {
+    // 381 shares no factor with 1001, so a photo arriving mid-show does not restart the cycle.
+    expect(shuffleStride(1001, () => 0.5, 381)).toBe(381);
+    // It shares 3 with 1002, and is the view's reverse at 382: a new one is drawn.
+    expect(shuffleStride(1002, () => 0.5, 381)).not.toBe(381);
+    expect(shuffleStride(382, () => 0.5, 381)).not.toBe(381);
   });
 });

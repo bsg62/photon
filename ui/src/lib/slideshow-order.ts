@@ -40,19 +40,56 @@ function gcd(a: number, b: number): number {
  *  previous one is the same step backward, and sharing no factor with `len` it shows every
  *  photo once before any comes round again.
  *
- *  It is taken from the middle of the view, between 30% and 70% of its length, so
- *  neighbours in the show are far apart in the grid - a shuffle that played three frames of
- *  one burst in a row would not feel like one - and `random` (0..1) moves it, so two shows
- *  differ. A view with no such stride walks in order: one of fewer than five photos, and
- *  one of six, where every step but the neighbour's shares a factor with the length. */
-export function shuffleStride(len: number, random: () => number): number {
-  const wanted = Math.floor(len * (0.3 + 0.4 * random()));
-  // The nearest stride to `wanted` that shares no factor with `len`, short of 1 and of
-  // `len - 1`, which are the view's own order forward and backward.
-  for (let away = 0; away < len; away++) {
-    for (const s of [wanted + away, wanted - away]) {
-      if (s > 1 && s < len - 1 && gcd(s, len) === 1) return s;
+ *  **The stride is a golden-ratio share of the view**, 37-39.5% of its length (or the same
+ *  from the other end, which is that walk backward). What matters is not only that one
+ *  slide is far from the next but that the slides after it are far from both: a stride of
+ *  half the view plays 0, 50, 100, 49, 99, 48 - two runs through the grid, interleaved -
+ *  and a third of it plays three. The golden ratio is the share furthest from every such
+ *  fraction, so the first handful of slides land in different parts of the view.
+ *  `random` (0..1) picks within the window and the end, so two shows differ; a small view
+ *  has few strides to pick from and may repeat one.
+ *
+ *  `previous` is the stride the show was using before the view changed length: kept when it
+ *  still shares no factor with the new length, so a scan adding a photo mid-show does not
+ *  start the cycle again. A view with no such stride walks in order: one of fewer than five
+ *  photos, and one of six, where every step but the neighbour's shares a factor with the
+ *  length. */
+export function shuffleStride(len: number, random: () => number, previous?: number): number {
+  // Short of 1 and of `len - 1`, which are the view's own order forward and backward.
+  const usable = (s: number) => s > 1 && s < len - 1 && gcd(s, len) === 1;
+  if (previous !== undefined && usable(previous)) return previous;
+  const share = 0.37 + 0.025 * random();
+  const wanted = Math.round(len * (random() < 0.5 ? share : 1 - share));
+  // Of the usable strides nearest `wanted`, the one that spreads best. The nearest alone is
+  // not enough in a small view, where the step to a stride sharing no factor is a large
+  // share of the view: for 50 photos the nearest to 32 is 33, two thirds, and the show
+  // would play three runs interleaved while 31 plays none.
+  let best = 1;
+  let bestSpread = -1;
+  let found = 0;
+  for (let away = 0; away < len && found < NEAREST; away++) {
+    for (const s of away === 0 ? [wanted] : [wanted - away, wanted + away]) {
+      if (!usable(s)) continue;
+      found++;
+      const spread = spreadOf(s, len);
+      if (spread > bestSpread) [best, bestSpread] = [s, spread];
     }
   }
-  return 1;
+  return best;
+}
+
+/** How many usable strides around the wanted one are compared. */
+const NEAREST = 6;
+/** How many slides ahead a stride is judged on. */
+const SPREAD_STEPS = 4;
+
+/** The closest any of the next few slides comes, round the view, to where the walk stands:
+ *  what a stride near a half or a third of the view scores badly on. */
+function spreadOf(stride: number, len: number): number {
+  let closest = len;
+  for (let k = 1; k <= SPREAD_STEPS; k++) {
+    const at = (k * stride) % len;
+    closest = Math.min(closest, at, len - at);
+  }
+  return closest;
 }

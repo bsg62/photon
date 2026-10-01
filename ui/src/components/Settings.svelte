@@ -450,7 +450,7 @@
           </label>
           <label class="shuffle">
             <input type="checkbox" checked={shuffle ?? false} disabled={shuffle === null} onchange={saveShuffle} />
-            Shuffle: play the photos in a mixed order, each once before any repeats
+            Shuffle: play the photos in a mixed order
           </label>
         {:else if current === 'duplicates'}
           <h2>Find look-alikes</h2>

@@ -115,12 +115,20 @@
    *  show in the view's own order. Not `$state`: nothing draws it. */
   let shuffle: { len: number; stride: number } | null = null;
 
-  /** How far one step of the show moves through a view of `len` photos. A shuffled show's
-   *  stride is good for one length only - it must share no factor with it - so a view that
-   *  grew or shrank under the show gets a new one. */
+  /** Counts shows, so a shuffle setting that arrives after its show has ended (or another
+   *  has begun) is not applied. */
+  let showId = 0;
+
+  /** How far one step of the show moves through a view of `len` photos. A stride must share
+   *  no factor with the length, so a view that grew or shrank under the show is checked
+   *  again; `shuffleStride` keeps the one in use wherever it still can, so the cycle goes
+   *  on rather than starting over. */
   function showStride(len: number): number {
     if (shuffle === null) return 1;
-    if (shuffle.len !== len) shuffle = { len, stride: shuffleStride(len, Math.random) };
+    if (shuffle.len !== len) {
+      const previous = shuffle.len < 0 ? undefined : shuffle.stride;
+      shuffle = { len, stride: shuffleStride(len, Math.random, previous) };
+    }
     return shuffle.stride;
   }
 
@@ -158,16 +166,23 @@
       }
       goto(next);
     }
-    // Read once per show, like the interval. A failed read plays the view in order.
-    const from = current;
-    const shuffled = await api.slideshowShuffle().catch(() => false);
-    // The same two ways out as above: this awaited too.
-    if (destroyed || current !== from || slideshow.active) return;
-    shuffle = shuffled ? { len: -1, stride: 1 } : null;
+    // The shuffle setting is read once per show, like the interval, and beside the start
+    // rather than before it: the show's first step is a whole interval away, and waiting
+    // here would make S asynchronous - two quick presses would both start. A failed read
+    // plays the view in order. `len: -1` is "no stride chosen yet".
+    shuffle = null;
+    const mine = ++showId;
+    void api
+      .slideshowShuffle()
+      .catch(() => false)
+      .then((shuffled) => {
+        if (mine === showId && slideshow.active && shuffled) shuffle = { len: -1, stride: 1 };
+      });
     void slideshow.start(fullSrc !== null || error !== null);
   }
 
   function stopSlideshow() {
+    showId++;
     slideshow.stop();
     outgoing = null;
   }
