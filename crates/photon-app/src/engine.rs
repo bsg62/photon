@@ -300,6 +300,18 @@ pub struct Engine {
     /// the edit to its write and released before the rebuild, as `ini_write` is. Taken
     /// before the library's locks and never while holding any other.
     edit_write: Mutex<()>,
+    /// Serialises `set_face_detection`: the move of the `face_enabled` mirror, the write of
+    /// the stored setting, and the mirror's restore when that write fails. The commands
+    /// run concurrently, and an on and an off from a quick double toggle each moved the
+    /// mirror and then queued for the library's writer, which need not serve them in the
+    /// order they swapped: the mirror ended on one answer and the database on the other.
+    /// Mirror off and stored on, photon says it is off and detects again at the next
+    /// launch; mirror on and stored off, every scan and drain runs the detector over the
+    /// whole library while `write_face_batch` refuses each batch, marking nothing, for
+    /// ever. Released before the pass request, the rebuild and the event, as `ini_write`
+    /// is. Taken before the library's locks and never while holding any other; the face
+    /// pass never takes it.
+    face_write: Mutex<()>,
     /// Held by the one thread running the post-scan hashing passes; see `hash_after_scan`.
     /// It holds what the look-alike pass keeps between passes - its thumbnail reductions,
     /// and what its last regroup was asked, which is how a pass with nothing new skips the
@@ -469,6 +481,7 @@ impl Engine {
             watcher: Mutex::new(None),
             ini_write: Mutex::new(()),
             edit_write: Mutex::new(()),
+            face_write: Mutex::new(()),
             hashing: Mutex::new(Default::default()),
             hash_requested: AtomicBool::new(false),
             face_enabled: AtomicBool::new(face_enabled),
@@ -1863,12 +1876,25 @@ impl Engine {
     /// The mirror moves first, so a pass in flight stops at its next photo rather than
     /// detecting through the delete. A batch it had already detected is refused by
     /// `write_face_batch`, which reads the stored setting inside its own transaction.
+    ///
+    /// The mirror and the stored setting move together under `face_write`, so two calls
+    /// cannot leave them disagreeing, and a failed write restores the mirror it moved
+    /// rather than one a later call set.
     pub fn set_face_detection(self: &Arc<Self>, enabled: bool) -> Result<()> {
-        let was = self.face_enabled.swap(enabled, Ordering::SeqCst);
-        if let Err(err) = self.lib.set_face_detection(enabled) {
-            self.face_enabled.store(was, Ordering::SeqCst);
-            return Err(err);
+        {
+            let _serialised = self.face_write.lock();
+            let was = self.face_enabled.swap(enabled, Ordering::SeqCst);
+            if let Err(err) = self.lib.set_face_detection(enabled) {
+                self.face_enabled.store(was, Ordering::SeqCst);
+                return Err(err);
+            }
         }
+        // Outside the lock: none of these writes the setting, and each reads what is in
+        // force when it runs. `request_face_pass` and the pass read the mirror, so an on
+        // overtaken by an off requests nothing or stops at once; the rebuild orders
+        // itself (`publish_if_current`); and a cleared line sent after a later on is
+        // followed by that on's pass reporting for itself. Held across the rebuild, a
+        // second toggle would wait out a whole-library query to flip a flag.
         if enabled {
             self.request_face_pass();
         } else {
@@ -3407,6 +3433,36 @@ mod tests {
         f.engine.wait_for_passes();
         assert_eq!(detected(&f), 0);
         assert!(!f.engine.face_detection());
+    }
+
+    /// The mirror and the stored setting move as one step. A second switch arriving while
+    /// one is between the two (here: `face_write` held by the test, standing in for it)
+    /// must wait, not move the mirror and then queue for the writer in whatever order
+    /// the writer serves: that left the mirror on one answer and the database on the other.
+    ///
+    /// This pins that the switch waits for the lock before it touches either. That the
+    /// lock is held across *both* steps has no test: the window is between the swap and
+    /// the library's writer, and nothing outside photon-core can park a call there.
+    #[test]
+    fn a_face_switch_waits_for_the_one_before_it() {
+        let f = fixture(&[]);
+
+        let held = f.engine.face_write.lock();
+        let engine = Arc::clone(&f.engine);
+        let switching = std::thread::spawn(move || engine.set_face_detection(true).unwrap());
+        std::thread::sleep(Duration::from_millis(150));
+        let mirror = f.engine.face_detection();
+        let stored = f.engine.lib.face_detection().unwrap();
+        drop(held);
+        switching.join().unwrap();
+        f.engine.wait_for_passes();
+
+        assert!(
+            !mirror && !stored,
+            "a switch went ahead beside another: mirror {mirror}, stored {stored}"
+        );
+        assert!(f.engine.face_detection());
+        assert!(f.engine.lib.face_detection().unwrap());
     }
 
     /// Detections are read by the grid of a face search and by the viewer, never by an
