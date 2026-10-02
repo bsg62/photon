@@ -121,6 +121,7 @@
           ? "Grandma's 80th, on the terrace in Lisbon, everyone gathered right before sunset for cake and the last of the summer light over the river."
           : null,
       faces: [{ hash: 'a', name: 'Anna', left: 0.3, top: 0.25, right: 0.42, bottom: 0.5 }],
+      unnamedFaces: [{ left: 0.56, top: 0.3, right: 0.66, bottom: 0.5 }],
       kind: id === 5 ? 'video' : 'image',
       durationMs: id === 5 ? 83_000 : null,
       videoCrashed: false,
@@ -250,6 +251,8 @@
     slideshow_shuffle: () => false,
     similar_distance: () => 7,
     set_similar_distance: (a) => a.distance,
+    face_detection: () => true,
+    set_face_detection: () => null,
     set_search_query: (args) => {
       searchQuery = args.query || '';
       return null;
@@ -476,6 +479,7 @@
     appearance: () => settingsSection('Appearance'),
     about: () => settingsSection('About'),
     statistics: () => settingsSection('Statistics'),
+    people: () => settingsSection('People'),
   };
 
   function settingsSection(name) {

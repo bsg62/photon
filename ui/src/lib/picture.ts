@@ -6,7 +6,10 @@ import type { ViewerItem } from './api';
 
 type Picture = Pick<ViewerItem, 'thumbKey' | 'width' | 'height' | 'orientation' | 'thumbState' | 'kind'>;
 
-/** The key covers the file and the edit; the dimensions and orientation cover a re-read of
+/** Faces are not in `Picture` on purpose: a detection landing must not reload the photo the
+ *  user is looking at.
+ *
+ *  The key covers the file and the edit; the dimensions and orientation cover a re-read of
  *  the same bytes by a newer reader.
  *
  *  `thumbState` counts only across `failed`: that is a photo that could not be shown and now

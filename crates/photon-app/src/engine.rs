@@ -1,7 +1,9 @@
 //! The running library: photon-core services plus the current grid snapshot and the
 //! background scans. Plain Rust, so it can be tested without a webview.
 
-use crate::events::{Events, ExportProgress, FolderStatus, LibraryChanged, ScanProgressEvent};
+use crate::events::{
+    Events, ExportProgress, FaceProgress, FolderStatus, LibraryChanged, ScanProgressEvent,
+};
 use crate::watch::WatcherService;
 use parking_lot::{Mutex, MutexGuard, RwLock};
 use photon_core::{
@@ -30,6 +32,22 @@ use std::{
 /// Minimum time between progress events during one scan, and the floor under the time
 /// between the grid rebuilds scans make as they go (see `RebuildPacer`).
 const THROTTLE: Duration = Duration::from_millis(250);
+
+/// How often a running face pass rebuilds the grid, and only while the view is a search
+/// that reads faces. A pass over a large library runs for hours; rebuilding every few
+/// seconds for all of it would be its largest cost, for nothing anyone is looking at.
+const FACE_REBUILD_EVERY: Duration = Duration::from_secs(30);
+
+/// How often a running face pass reports its progress. Each report counts the library.
+const FACE_PROGRESS_EVERY: Duration = Duration::from_secs(1);
+
+/// What takes the face pass's progress line down once detection is off: nothing checked,
+/// nothing to check, not running.
+const FACE_PROGRESS_CLEARED: FaceProgress = FaceProgress {
+    checked: 0,
+    total: 0,
+    running: false,
+};
 
 /// How many times its own cost a scan's intermediate rebuild waits, after it ends, before
 /// the next may start. A rebuild is a whole-library query and index build - 55 ms at 100k
@@ -249,13 +267,14 @@ pub struct Engine {
     /// The handle of the thread spawned by `startup`, if any is still outstanding.
     /// `wait_for_startup` takes it and joins it, and is safe to call more than once.
     startup: Mutex<Option<JoinHandle<()>>>,
-    /// How many threads `request_similar_pass` has let through that have not yet returned,
-    /// which is every pass photon runs, a scan's included. A count rather than a join
-    /// handle: two requests close together are two threads, and a handle kept for the
-    /// latest names the one that found `hashing` held and did nothing while the other does
-    /// the work. Raised before the thread exists, so it also covers one spawned but not yet
-    /// at its `try_lock` on `hashing`, which holds nothing a wait on `hashing` could see.
-    similar_passes: AtomicUsize,
+    /// How many threads `spawn_pass` has let through that have not yet returned, which is
+    /// every background pass photon runs: the look-alike pass's, a scan's included, and
+    /// the face pass's. A count rather than a join handle: two requests close together are
+    /// two threads, and a handle kept for the latest names the one that found its pass's
+    /// lock (`hashing`) held and did nothing while the other does the work. Raised before
+    /// the thread exists, so it also covers one spawned but not yet at its `try_lock`,
+    /// which holds nothing a wait on that lock could see.
+    background_passes: AtomicUsize,
     /// The thread `start_thumb_hashing` spawned, if any. `shutdown` joins it after closing
     /// the thumbnail queue, which is what ends its wait.
     thumb_hashing: Mutex<Option<JoinHandle<()>>>,
@@ -281,6 +300,18 @@ pub struct Engine {
     /// the edit to its write and released before the rebuild, as `ini_write` is. Taken
     /// before the library's locks and never while holding any other.
     edit_write: Mutex<()>,
+    /// Serialises `set_face_detection`: the move of the `face_enabled` mirror, the write of
+    /// the stored setting, and the mirror's restore when that write fails. The commands
+    /// run concurrently, and an on and an off from a quick double toggle each moved the
+    /// mirror and then queued for the library's writer, which need not serve them in the
+    /// order they swapped: the mirror ended on one answer and the database on the other.
+    /// Mirror off and stored on, photon says it is off and detects again at the next
+    /// launch; mirror on and stored off, every scan and drain runs the detector over the
+    /// whole library while `write_face_batch` refuses each batch, marking nothing, for
+    /// ever. Released before the pass request, the rebuild and the event, as `ini_write`
+    /// is. Taken before the library's locks and never while holding any other; the face
+    /// pass never takes it.
+    face_write: Mutex<()>,
     /// Held by the one thread running the post-scan hashing passes; see `hash_after_scan`.
     /// It holds what the look-alike pass keeps between passes - its thumbnail reductions,
     /// and what its last regroup was asked, which is how a pass with nothing new skips the
@@ -290,6 +321,14 @@ pub struct Engine {
     /// Set by every scan that ends, cleared by the pass as it starts a round. A scan that
     /// finds the pass already running leaves this behind instead of starting a second one.
     hash_requested: AtomicBool,
+    /// The `face_detection` setting, mirrored so a running pass can be cancelled without a
+    /// database read per photo. `set_face_detection` writes both; the stored value is the
+    /// authority (`write_face_batch` reads it in its own transaction).
+    face_enabled: AtomicBool,
+    /// Held by the one running face pass, as `hashing` is by the look-alike pass.
+    face_pass: Mutex<()>,
+    /// A request that found the pass running: the runner goes round again.
+    face_requested: AtomicBool,
     /// Coalesces the rebuilds poster frames ask for; see `frame_stored`.
     frame_refresh: Mutex<FrameRefresh>,
     /// Paces the rebuilds scans make as they go. One for the engine, not one per scan:
@@ -394,6 +433,7 @@ impl Engine {
             .collect();
 
         let sort = lib.grid_sort()?;
+        let face_enabled = lib.face_detection()?;
         // The first grid is not built here. `open` runs inside Tauri's `setup`, on the main
         // thread, before the webview can load: a full read of the library and its index -
         // 200ms warm at 300k photos, far longer on a cold disk or a network share - held
@@ -436,13 +476,17 @@ impl Engine {
             next_token: AtomicU64::new(0),
             shutting_down: AtomicBool::new(false),
             startup: Mutex::new(None),
-            similar_passes: AtomicUsize::new(0),
+            background_passes: AtomicUsize::new(0),
             thumb_hashing: Mutex::new(None),
             watcher: Mutex::new(None),
             ini_write: Mutex::new(()),
             edit_write: Mutex::new(()),
+            face_write: Mutex::new(()),
             hashing: Mutex::new(Default::default()),
             hash_requested: AtomicBool::new(false),
+            face_enabled: AtomicBool::new(face_enabled),
+            face_pass: Mutex::new(()),
+            face_requested: AtomicBool::new(false),
             frame_refresh: Mutex::new(FrameRefresh::default()),
             scan_rebuilds: Mutex::new(RebuildPacer::default()),
             full_scans: Mutex::new(HashMap::new()),
@@ -1685,8 +1729,9 @@ impl Engine {
         }
     }
 
-    /// Background start-up work: build the first grid, watch `pictures` if the library is
-    /// empty, queue pending thumbnails, rescan every folder, then collect thumbnail garbage.
+    /// Background start-up work: build the first grid, take up an unfinished face pass,
+    /// watch `pictures` if the library is empty, queue pending thumbnails, rescan every
+    /// folder, then collect thumbnail garbage.
     ///
     /// Checks `shutting_down` before each step, and before garbage collection, so a
     /// `shutdown` racing start-up stops it promptly instead of letting it run to
@@ -1711,6 +1756,13 @@ impl Engine {
                 if shutting_down() {
                     return;
                 }
+                // A face pass left unfinished by the last session, taken up without
+                // waiting for a scan to ask: a scan that finds its root still offline
+                // asks for nothing (`run_scan`), so with every drive unplugged no scan
+                // would, and the pass reads only photon's own cache, which is here
+                // whatever is plugged in. Nothing with the switch off, and one query on a
+                // library already detected.
+                engine.request_face_pass();
                 match engine.lib.watched_folders() {
                     Ok(watched) if watched.is_empty() => {
                         if let Some(pictures) = pictures.filter(|p| p.is_dir())
@@ -1814,18 +1866,218 @@ impl Engine {
     /// no write, and `remove_folder` requests a pass of its own, which the running one
     /// picks up as another round.
     ///
-    /// Checked and refused here, not left to the cancel flag alone: `shutdown`'s bounded
-    /// wait (below) runs once, and an IPC call landing just after it - already shutting
-    /// down, but not yet exited - would otherwise spawn a fresh writer that wait never
-    /// accounted for. The count is raised *before* the flag is read, both `SeqCst`, and
-    /// `shutdown` sets the flag before it reads the count: so either `shutdown` sees this
-    /// request in the count and waits for it, or this request sees the flag and refuses.
-    /// Checked the other way round, a request could read the flag clear, then `shutdown`
-    /// set it and find the count at zero, and only then would the thread be counted.
+    /// Refused once shutting down, and counted for `shutdown` to wait on: `spawn_pass`.
     pub fn request_similar_pass(self: &Arc<Self>) {
-        self.similar_passes.fetch_add(1, Ordering::SeqCst);
+        self.spawn_pass("photon-similar-pass", |engine| {
+            engine.hash_after_scan(&engine.shutting_down)
+        });
+    }
+
+    /// Whether photon looks for faces itself.
+    pub fn face_detection(&self) -> bool {
+        self.face_enabled.load(Ordering::SeqCst)
+    }
+
+    /// Switches face detection. On requests a pass; off cancels the running one and
+    /// deletes what was found.
+    ///
+    /// The mirror moves first, so a pass in flight stops at its next photo rather than
+    /// detecting through the delete. A batch it had already detected is refused by
+    /// `write_face_batch`, which reads the stored setting inside its own transaction.
+    ///
+    /// The mirror and the stored setting move together under `face_write`, so two calls
+    /// cannot leave them disagreeing, and a failed write restores the mirror it moved
+    /// rather than one a later call set.
+    pub fn set_face_detection(self: &Arc<Self>, enabled: bool) -> Result<()> {
+        {
+            let _serialised = self.face_write.lock();
+            let was = self.face_enabled.swap(enabled, Ordering::SeqCst);
+            if let Err(err) = self.lib.set_face_detection(enabled) {
+                self.face_enabled.store(was, Ordering::SeqCst);
+                return Err(err);
+            }
+        }
+        // Outside the lock: none of these writes the setting, and each reads what is in
+        // force when it runs. `request_face_pass` and the pass read the mirror, so an on
+        // overtaken by an off requests nothing or stops at once; the rebuild orders
+        // itself (`publish_if_current`); and a cleared line sent after a later on is
+        // followed by that on's pass reporting for itself. Held across the rebuild, a
+        // second toggle would wait out a whole-library query to flip a flag.
+        if enabled {
+            self.request_face_pass();
+        } else {
+            self.refresh_after_write("switching face detection off");
+            self.events.face_progress(FACE_PROGRESS_CLEARED);
+        }
+        Ok(())
+    }
+
+    /// Requests a face pass, on its own thread: a no-op with the switch off. Coalesces
+    /// with one already running, like `request_similar_pass`.
+    pub fn request_face_pass(self: &Arc<Self>) {
+        if !self.face_detection() {
+            return;
+        }
+        self.spawn_pass("photon-face-pass", |engine| engine.detect_faces());
+    }
+
+    /// One pass at a time, `hash_after_scan`'s way: a request that finds the pass running
+    /// sets the flag and leaves, and the runner goes round while it is set, so photos
+    /// whose thumbnails became ready after its last batch are not left for the next scan.
+    fn detect_faces(&self) {
+        self.face_requested.store(true, Ordering::Release);
+        loop {
+            let Some(guard) = self.face_pass.try_lock() else {
+                return;
+            };
+            while self.face_requested.swap(false, Ordering::AcqRel) {
+                self.run_face_pass();
+            }
+            drop(guard);
+            if !self.face_requested.load(Ordering::Acquire) {
+                return;
+            }
+        }
+    }
+
+    fn face_cancelled(&self) -> bool {
+        self.shutting_down.load(Ordering::SeqCst) || !self.face_enabled.load(Ordering::SeqCst)
+    }
+
+    /// Whether the grid on screen is a search whose query reads faces: the one view a
+    /// detection changes while the pass is still running.
+    fn view_reads_faces(&self) -> bool {
+        let state = self.state.lock();
+        state.view == GridView::Search
+            && photon_core::search::Query::parse(&state.arg).needs().faces
+    }
+
+    fn send_face_progress(&self, running: bool) {
+        match self
+            .lib
+            .face_progress(photon_core::face_detect::DETECTOR_VERSION)
+        {
+            Ok((checked, total)) => self.events.face_progress(FaceProgress {
+                checked,
+                total,
+                running,
+            }),
+            Err(err) => tracing::warn!(%err, "could not count the face pass's progress"),
+        }
+    }
+
+    /// One pass over the photos nobody has looked at, reporting as it goes.
+    ///
+    /// It asks for a single candidate before anything else, for two reasons. A pass is
+    /// requested at the end of every scan and every time the thumbnail queue goes quiet,
+    /// and on a library already detected each of those would otherwise load the model
+    /// (about 50 ms) to find it has nothing to do. And a pass that has work says so at
+    /// once: the next report comes with the first batch written, which is eight seconds
+    /// away on four workers and a minute on a small machine, long enough for someone who
+    /// has just ticked the box to conclude nothing happened and tick it again.
+    fn run_face_pass(&self) {
+        use photon_core::face_detect::{DETECTOR_VERSION, Detector, pass};
+        if self.face_cancelled() {
+            return;
+        }
+        match self.lib.face_candidates(0, 1, DETECTOR_VERSION) {
+            Ok(candidates) if candidates.is_empty() => {
+                self.end_face_pass(false);
+                return;
+            }
+            Ok(_) => self.send_face_progress(true),
+            Err(err) => {
+                tracing::warn!(%err, "could not list the photos to find faces in");
+                self.end_face_pass(false);
+                return;
+            }
+        }
+        let detector = match Detector::new() {
+            Ok(detector) => detector,
+            Err(err) => {
+                tracing::warn!(%err, "the face detector could not be loaded");
+                // The pass has said it is running; this takes that back.
+                self.end_face_pass(false);
+                return;
+            }
+        };
+        let mut last_rebuild = Instant::now();
+        let mut last_progress: Option<Instant> = None;
+        // Detections written since the last rebuild: what the end of the pass owes the grid.
+        let mut unshown = false;
+        let result = pass::run(
+            &self.lib,
+            &self.cache,
+            DETECTOR_VERSION,
+            pass::workers(),
+            &|preview| detector.detect(preview),
+            &|| self.face_cancelled(),
+            &mut |written| {
+                if last_progress.is_none_or(|t| t.elapsed() >= FACE_PROGRESS_EVERY) {
+                    self.send_face_progress(true);
+                    last_progress = Some(Instant::now());
+                }
+                if written == 0 {
+                    return;
+                }
+                unshown = true;
+                if last_rebuild.elapsed() >= FACE_REBUILD_EVERY && self.view_reads_faces() {
+                    // Derived: a detection is read by a face search's grid and by the
+                    // viewer, and by no album, person, tag, tag rule or folder count.
+                    if let Err(err) = self.refresh_grid_derived() {
+                        tracing::warn!(%err, "grid refresh failed");
+                    }
+                    last_rebuild = Instant::now();
+                    unshown = false;
+                }
+            },
+        );
+        if let Err(err) = result {
+            tracing::warn!(%err, "the face pass failed");
+        }
+        self.end_face_pass(unshown);
+    }
+
+    /// The end of a pass: the rebuild it owes the grid when `unshown` detections were
+    /// written, and its last word.
+    fn end_face_pass(&self, unshown: bool) {
+        // A pass ended by the quit owes nobody either: the rebuild and the count are each
+        // a query over the whole library, run inside the time `shutdown` waits for this
+        // thread, for a window that is closing. What it wrote is shown at the next launch.
+        let quitting = self.shutting_down.load(Ordering::SeqCst);
+        if unshown
+            && !quitting
+            && let Err(err) = self.refresh_grid_derived()
+        {
+            tracing::warn!(%err, "grid refresh failed");
+        }
+        // The pass's last word says it is not running, whatever it did. After a
+        // switch-off that is the cleared line again, although the command has sent one:
+        // the batch the switch interrupted still reports, as running, and a report the
+        // command's line overtook would otherwise be left standing.
+        if !self.face_enabled.load(Ordering::SeqCst) {
+            self.events.face_progress(FACE_PROGRESS_CLEARED);
+        } else if !quitting {
+            self.send_face_progress(false);
+        }
+    }
+
+    /// Runs `pass` on a thread of its own, counted in `background_passes` from before the
+    /// thread exists until it returns, however it ends.
+    ///
+    /// Shutting down is checked and refused here, not left to the pass's cancel flag alone:
+    /// `shutdown`'s bounded wait (below) runs once, and an IPC call landing just after it -
+    /// already shutting down, but not yet exited - would otherwise spawn a fresh writer
+    /// that wait never accounted for. The count is raised *before* the flag is read, both
+    /// `SeqCst`, and `shutdown` sets the flag before it reads the count: so either
+    /// `shutdown` sees this request in the count and waits for it, or this request sees
+    /// the flag and refuses. Checked the other way round, a request could read the flag
+    /// clear, then `shutdown` set it and find the count at zero, and only then would the
+    /// thread be counted.
+    fn spawn_pass(self: &Arc<Self>, name: &str, pass: fn(&Arc<Engine>)) {
+        self.background_passes.fetch_add(1, Ordering::SeqCst);
         if self.shutting_down.load(Ordering::SeqCst) {
-            self.similar_passes.fetch_sub(1, Ordering::SeqCst);
+            self.background_passes.fetch_sub(1, Ordering::SeqCst);
             return;
         }
         // Lowers the count however the pass ends, a panic included, and also when the
@@ -1835,16 +2087,14 @@ impl Engine {
         struct Done(Arc<Engine>);
         impl Drop for Done {
             fn drop(&mut self) {
-                self.0.similar_passes.fetch_sub(1, Ordering::SeqCst);
+                self.0.background_passes.fetch_sub(1, Ordering::SeqCst);
             }
         }
         let done = Done(Arc::clone(self));
         std::thread::Builder::new()
-            .name("photon-similar-pass".into())
-            .spawn(move || {
-                done.0.hash_after_scan(&done.0.shutting_down);
-            })
-            .expect("failed to spawn similar-pass thread");
+            .name(name.into())
+            .spawn(move || pass(&done.0))
+            .expect("failed to spawn a pass thread");
     }
 
     /// Requests a look-alike pass whenever the thumbnail workers go quiet after making new
@@ -1859,6 +2109,9 @@ impl Engine {
     /// `request_similar_pass` coalesces with a pass already running, and a pass with
     /// nothing new skips its regroup, so a drain that readied only photos a scan's pass
     /// already hashed costs the pass's reads and nothing more.
+    ///
+    /// The face pass rides the same signal, for the same reason: a photo is a candidate
+    /// only once its preview exists. With the switch off its request is a no-op.
     ///
     /// The thread holds the engine weakly and the queue through its own handle, so it keeps
     /// neither alive: `shutdown` closes the queue and joins it, and an engine dropped
@@ -1879,20 +2132,21 @@ impl Engine {
                         return;
                     };
                     engine.request_similar_pass();
+                    engine.request_face_pass();
                 }
             })
             .expect("failed to spawn thumbnail-hashing thread");
         *slot = Some(handle);
     }
 
-    /// Blocks until every thread `request_similar_pass` has spawned - a scan's pass among
-    /// them - has returned (`similar_passes`). Safe to call when none was ever spawned.
-    /// Unbounded, so for tests and not for the quit path, which is `stop_similar_pass`.
+    /// Blocks until every thread `spawn_pass` has spawned - a scan's pass among them - has
+    /// returned (`background_passes`). Safe to call when none was ever spawned.
+    /// Unbounded, so for tests and not for the quit path, which is `stop_passes`.
     ///
     /// What this does not see is `hashing` held by something other than a requested pass,
     /// which in the tests is the test thread standing in for one.
-    pub fn wait_for_similar_pass(&self) {
-        while self.similar_passes.load(Ordering::SeqCst) > 0 {
+    pub fn wait_for_passes(&self) {
+        while self.background_passes.load(Ordering::SeqCst) > 0 {
             std::thread::sleep(Duration::from_millis(5));
         }
     }
@@ -1902,7 +2156,8 @@ impl Engine {
     /// racing this can still insert one after the first pass), stops the watcher, closes the
     /// thumbnail queue so its workers finish their current job and stop, waits for the
     /// startup thread to finish (it checks `shutting_down` at each of its own checkpoints, so
-    /// this doesn't wait for it to run to completion), then waits for any look-alike pass.
+    /// this doesn't wait for it to run to completion), then waits for any look-alike pass and
+    /// any face pass.
     pub fn shutdown(&self) {
         // Disarmed first, before anything below that can itself stall - `stop_watcher` has.
         // A kill during that stretch is a deliberate quit already under way, not a crash;
@@ -1927,7 +2182,7 @@ impl Engine {
         self.stop_watcher();
         self.thumbs.close();
         // Before the look-alike pass is waited for: the closed queue has ended its wait, and
-        // joined here it cannot request a pass after `stop_similar_pass` has looked. It
+        // joined here it cannot request a pass after `stop_passes` has looked. It
         // returns at once - `request_similar_pass` only spawns, and refuses while shutting
         // down.
         let thumb_hashing = self.thumb_hashing.lock().take();
@@ -1935,14 +2190,16 @@ impl Engine {
             let _ = handle.join();
         }
         self.wait_for_startup();
-        self.stop_similar_pass(SIMILAR_PASS_STOP_TIMEOUT);
+        self.stop_passes(SIMILAR_PASS_STOP_TIMEOUT);
     }
 
-    /// Waits, within `budget` in total, for every look-alike pass to have stopped.
+    /// Waits, within `budget` in total, for every look-alike pass and every face pass to
+    /// have stopped. The face pass is waited for the look-alike pass's way, by the shared
+    /// count and then by its own lock (`face_pass`), against the same deadline.
     ///
     /// Two waits, one deadline between them.
     ///
-    /// The count of requested passes (`similar_passes`) closes a sliver the wait on
+    /// The count of requested passes (`background_passes`) closes a sliver the wait on
     /// `hashing` cannot: a thread already spawned but not yet at its own `try_lock` holds
     /// nothing, so that wait would sail past it and it would go on to regroup after
     /// `shutdown` returned. Every scan's pass is such a thread, so several roots finishing
@@ -1961,11 +2218,13 @@ impl Engine {
     ///
     /// `budget` is a parameter rather than the constant read directly so a test can drive
     /// this with a short one; `shutdown` is its only caller.
-    fn stop_similar_pass(&self, budget: Duration) {
+    fn stop_passes(&self, budget: Duration) {
         let deadline = Instant::now() + budget;
-        while self.similar_passes.load(Ordering::SeqCst) > 0 {
+        while self.background_passes.load(Ordering::SeqCst) > 0 {
             if Instant::now() >= deadline {
-                tracing::warn!("a requested look-alike pass did not stop in time; detaching it");
+                tracing::warn!(
+                    "a requested look-alike or face pass did not stop in time; detaching it"
+                );
                 break;
             }
             std::thread::sleep(Duration::from_millis(5));
@@ -1975,6 +2234,12 @@ impl Engine {
             None => tracing::warn!(
                 "a look-alike pass did not stop within {budget:?}; \
                  leaving it to finish on its own"
+            ),
+        }
+        match self.face_pass.try_lock_until(deadline) {
+            Some(guard) => drop(guard),
+            None => tracing::warn!(
+                "a face pass did not stop within {budget:?}; leaving it to finish on its own"
             ),
         }
     }
@@ -2136,9 +2401,10 @@ impl Engine {
         // something rescanned their directory; a watcher event for this folder waited out
         // the pass as a queued follow-up just the same. The request coalesces with a pass
         // already running (`hash_after_scan`), and `shutdown` waits for it by count
-        // (`stop_similar_pass`), so leaving the slot loses neither.
+        // (`stop_passes`), so leaving the slot loses neither.
         if !cancelled && !still_offline {
             self.request_similar_pass();
+            self.request_face_pass();
         }
     }
 
@@ -2335,7 +2601,7 @@ impl Drop for TestScanSlot {
 mod tests {
     use super::*;
     use crate::events::Recorded;
-    use crate::testutil::{Fixture, fixture, jpeg, jpeg_pattern};
+    use crate::testutil::{Fixture, fixture, jpeg, jpeg_pattern, portrait_jpeg};
     use photon_core::media::ThumbState;
 
     const MS: Duration = Duration::from_millis(1);
@@ -2515,6 +2781,7 @@ mod tests {
         fn scan_progress(&self, _: ScanProgressEvent) {}
         fn folder_status(&self, _: FolderStatus) {}
         fn export_progress(&self, _: ExportProgress) {}
+        fn face_progress(&self, _: FaceProgress) {}
     }
 
     /// An engine over `f`'s photos, scanned, whose rebuilds `sink` can park. Nothing else
@@ -2524,7 +2791,7 @@ mod tests {
         let engine = Engine::open(f.config(), sink.clone()).unwrap();
         engine.add_folder(&f.photos).unwrap();
         engine.wait_for_scans();
-        engine.wait_for_similar_pass();
+        engine.wait_for_passes();
         engine
     }
 
@@ -2767,7 +3034,7 @@ mod tests {
     /// Nothing but `request_similar_pass` runs a pass between scans, so a distance change
     /// on its own would sit unseen until an unrelated scan happened by. `set_similar_distance`
     /// (`commands.rs`) calls it after writing the setting; this drives that same path (not
-    /// `hash_after_scan` directly) and waits for the pass with `wait_for_similar_pass`.
+    /// `hash_after_scan` directly) and waits for the pass with `wait_for_passes`.
     ///
     /// Distance 0 is "off": a resized copy is never pixel-identical to its original, so at
     /// distance 0 the pair that groups at the default distance 3 must not.
@@ -2789,7 +3056,7 @@ mod tests {
         );
 
         crate::commands::set_similar_distance(&f.engine, 0).unwrap();
-        f.engine.wait_for_similar_pass();
+        f.engine.wait_for_passes();
 
         assert_eq!(
             f.ids().len(),
@@ -2818,7 +3085,7 @@ mod tests {
         );
 
         crate::commands::set_similar_distance(&f.engine, 0).unwrap();
-        f.engine.wait_for_similar_pass();
+        f.engine.wait_for_passes();
 
         assert_eq!(f.engine.counts().duplicate, 0);
     }
@@ -2863,7 +3130,7 @@ mod tests {
 
         // Turned back: the original picture is still cached, so the worker renders nothing
         // and only moves the row to `Ready` - a picture new to the pass all the same.
-        f.engine.wait_for_similar_pass();
+        f.engine.wait_for_passes();
         let original = f.engine.lib.item(id).unwrap().unwrap().edit.turned(false);
         assert!(f.engine.lib.set_item_edit(id, original).unwrap());
         assert!(!hashed(&f));
@@ -2911,7 +3178,7 @@ mod tests {
         );
 
         f.engine.rotate_item(ids[0], true).unwrap();
-        f.engine.wait_for_similar_pass();
+        f.engine.wait_for_passes();
 
         assert_eq!(
             stored_group(&f, ids[1]),
@@ -2959,7 +3226,7 @@ mod tests {
         );
 
         f.engine.remove_folder(second.id).unwrap();
-        f.engine.wait_for_similar_pass();
+        f.engine.wait_for_passes();
 
         assert_eq!(
             stored_group(&f, survivors[0]),
@@ -2984,13 +3251,13 @@ mod tests {
         assert_eq!(clamped, 10, "the write itself still happens");
         drop(held);
 
-        f.engine.wait_for_similar_pass();
+        f.engine.wait_for_passes();
     }
 
     /// What the count of requested passes cannot see: `hashing` held by something that is
     /// not one (here the test thread, standing in for a pass already inside
     /// `similar::update`). A request made meanwhile finds it held and returns at once, so
-    /// the count is back at zero and `wait_for_similar_pass` returns. If `shutdown` relied
+    /// the count is back at zero and `wait_for_passes` returns. If `shutdown` relied
     /// on the count alone it would return while the lock is still held; it must instead
     /// still be waiting on `hashing` itself.
     #[test]
@@ -3000,7 +3267,7 @@ mod tests {
 
         let held = f.engine.hashing.lock();
         f.engine.request_similar_pass();
-        f.engine.wait_for_similar_pass(); // the request found `hashing` held and returned
+        f.engine.wait_for_passes(); // the request found `hashing` held and returned
 
         let engine = Arc::clone(&f.engine);
         let shutdown = std::thread::spawn(move || engine.shutdown());
@@ -3025,12 +3292,12 @@ mod tests {
         let f = fixture(&[("a.jpg", &jpeg(4, 2))]);
         f.add_photos();
 
-        f.engine.similar_passes.fetch_add(1, Ordering::SeqCst);
+        f.engine.background_passes.fetch_add(1, Ordering::SeqCst);
         let engine = Arc::clone(&f.engine);
         let shutdown = std::thread::spawn(move || engine.shutdown());
         std::thread::sleep(Duration::from_millis(150));
         let returned_early = shutdown.is_finished();
-        f.engine.similar_passes.fetch_sub(1, Ordering::SeqCst);
+        f.engine.background_passes.fetch_sub(1, Ordering::SeqCst);
         shutdown.join().unwrap();
         assert!(
             !returned_early,
@@ -3060,7 +3327,7 @@ mod tests {
         let f = fixture(&[("a.jpg", &jpeg(4, 2))]);
         f.add_photos();
 
-        f.engine.similar_passes.fetch_add(1, Ordering::SeqCst);
+        f.engine.background_passes.fetch_add(1, Ordering::SeqCst);
         let held = f.engine.hashing.lock();
 
         let engine = Arc::clone(&f.engine);
@@ -3068,13 +3335,13 @@ mod tests {
         let started = Instant::now();
         let stopping = std::thread::spawn(move || {
             let call = Instant::now();
-            engine.stop_similar_pass(budget);
+            engine.stop_passes(budget);
             call.elapsed()
         });
         while !stopping.is_finished() {
             assert!(
                 started.elapsed() < Duration::from_secs(5),
-                "stop_similar_pass outran its budget of {budget:?}"
+                "stop_passes outran its budget of {budget:?}"
             );
             std::thread::sleep(Duration::from_millis(10));
         }
@@ -3085,7 +3352,7 @@ mod tests {
         );
 
         drop(held);
-        f.engine.similar_passes.fetch_sub(1, Ordering::SeqCst);
+        f.engine.background_passes.fetch_sub(1, Ordering::SeqCst);
     }
 
     /// An IPC call can land after `shutdown` has already set `shutting_down` and run its
@@ -3106,17 +3373,404 @@ mod tests {
         f.engine.request_similar_pass();
 
         assert_eq!(
-            f.engine.similar_passes.load(Ordering::SeqCst),
+            f.engine.background_passes.load(Ordering::SeqCst),
             0,
             "a request after shutdown was let through, or left itself counted - which would \
              hold any later wait to its timeout"
         );
-        f.engine.wait_for_similar_pass();
+        f.engine.wait_for_passes();
         assert!(
             !f.engine.hash_requested.load(Ordering::SeqCst),
             "a request arriving after shutdown must not spawn a thread"
         );
         drop(held);
+    }
+
+    /// How many faces photon has detected on the photos in the grid.
+    fn detected(f: &Fixture) -> usize {
+        f.ids()
+            .into_iter()
+            .map(|id| f.engine.lib.item_detected_faces(id).unwrap().len())
+            .sum()
+    }
+
+    /// Scans, waits for the thumbnails, and lets every pass that follows finish.
+    fn scanned(f: &Fixture) {
+        f.add_photos();
+        f.engine.thumbs.wait_idle();
+        f.settle();
+    }
+
+    fn face_events(f: &Fixture) -> Vec<FaceProgress> {
+        f.events
+            .all()
+            .into_iter()
+            .filter_map(|e| match e {
+                Recorded::Face(p) => Some(p),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Off by default: a scan, its thumbnails and every pass after them leave no face data.
+    #[test]
+    fn nothing_is_detected_until_the_switch_is_on() {
+        let f = fixture(&[("a/face.jpg", &portrait_jpeg())]);
+        scanned(&f);
+        assert!(!f.engine.face_detection());
+        assert_eq!(detected(&f), 0);
+    }
+
+    /// Switching on is itself a request: the photos already there are detected without a
+    /// scan happening by.
+    #[test]
+    fn switching_on_detects_the_photos_already_there() {
+        let f = fixture(&[
+            ("a/face.jpg", &portrait_jpeg()),
+            ("a/plain.jpg", &jpeg(200, 150)),
+        ]);
+        scanned(&f);
+
+        f.engine.set_face_detection(true).unwrap();
+        f.engine.wait_for_passes();
+
+        assert_eq!(detected(&f), 1);
+        let (checked, total) = f
+            .engine
+            .lib
+            .face_progress(photon_core::face_detect::DETECTOR_VERSION)
+            .unwrap();
+        assert_eq!((checked, total), (2, 2));
+    }
+
+    /// With the switch on, a photo that arrives later is detected by the pass its own
+    /// scan and thumbnail bring, with nothing else asking.
+    #[test]
+    fn a_photo_scanned_with_the_switch_on_is_detected() {
+        let f = fixture(&[("a/plain.jpg", &jpeg(200, 150))]);
+        f.engine.set_face_detection(true).unwrap();
+        f.engine.start_thumb_hashing(Duration::from_millis(20));
+        let watched = f.add_photos();
+        std::fs::write(f.photos.join("a").join("face.jpg"), portrait_jpeg()).unwrap();
+        f.engine.start_scan(watched);
+        f.engine.wait_for_scans();
+        f.engine.thumbs.wait_idle();
+        // The drain's settle, then the pass it requests: neither can be waited on before
+        // it exists, so this looks again until the face is there or the time is up.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            f.settle();
+            if detected(&f) == 1 || Instant::now() >= deadline {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(detected(&f), 1);
+    }
+
+    #[test]
+    fn switching_off_leaves_no_detections() {
+        let f = fixture(&[("a/face.jpg", &portrait_jpeg())]);
+        scanned(&f);
+        f.engine.set_face_detection(true).unwrap();
+        f.engine.wait_for_passes();
+        assert_eq!(detected(&f), 1);
+
+        f.engine.set_face_detection(false).unwrap();
+        f.engine.wait_for_passes();
+        assert_eq!(detected(&f), 0);
+        assert!(!f.engine.face_detection());
+    }
+
+    /// The mirror and the stored setting move as one step. A second switch arriving while
+    /// one is between the two (here: `face_write` held by the test, standing in for it)
+    /// must wait, not move the mirror and then queue for the writer in whatever order
+    /// the writer serves: that left the mirror on one answer and the database on the other.
+    ///
+    /// This pins that the switch waits for the lock before it touches either. That the
+    /// lock is held across *both* steps has no test: the window is between the swap and
+    /// the library's writer, and nothing outside photon-core can park a call there.
+    #[test]
+    fn a_face_switch_waits_for_the_one_before_it() {
+        let f = fixture(&[]);
+
+        let held = f.engine.face_write.lock();
+        let engine = Arc::clone(&f.engine);
+        let switching = std::thread::spawn(move || engine.set_face_detection(true).unwrap());
+        std::thread::sleep(Duration::from_millis(150));
+        let mirror = f.engine.face_detection();
+        let stored = f.engine.lib.face_detection().unwrap();
+        drop(held);
+        switching.join().unwrap();
+        f.engine.wait_for_passes();
+
+        assert!(
+            !mirror && !stored,
+            "a switch went ahead beside another: mirror {mirror}, stored {stored}"
+        );
+        assert!(f.engine.face_detection());
+        assert!(f.engine.lib.face_detection().unwrap());
+    }
+
+    /// Detections are read by the grid of a face search and by the viewer, never by an
+    /// album, person, tag or folder count: the pass's rebuild must not send the UI to
+    /// refetch the sidebar.
+    #[test]
+    fn a_face_pass_does_not_announce_a_data_change() {
+        let f = fixture(&[("a/face.jpg", &portrait_jpeg())]);
+        scanned(&f);
+        // Anything pending from the scan is announced by this.
+        f.engine.refresh_grid().unwrap();
+        let before = f.events.all().len();
+
+        f.engine.set_face_detection(true).unwrap();
+        f.engine.wait_for_passes();
+
+        let after: Vec<_> = f.events.all().split_off(before);
+        let libraries: Vec<_> = after
+            .iter()
+            .filter_map(|e| match e {
+                Recorded::Library(l) => Some(*l),
+                _ => None,
+            })
+            .collect();
+        assert!(!libraries.is_empty(), "the pass rebuilt nothing: {after:?}");
+        assert!(libraries.iter().all(|l| !l.data_changed), "{libraries:?}");
+    }
+
+    /// With nothing to detect the pass still ends with an event that says it is not
+    /// running, so a progress line cannot be left standing - and says nothing else: a
+    /// pass that claimed to be running first would flash the line on every scan of a
+    /// library already detected.
+    #[test]
+    fn a_pass_with_nothing_to_do_says_only_that_it_ended() {
+        let f = fixture(&[]);
+        f.engine.set_face_detection(true).unwrap();
+        f.engine.wait_for_passes();
+        assert_eq!(
+            face_events(&f),
+            [FaceProgress {
+                checked: 0,
+                total: 0,
+                running: false
+            }],
+            "no face progress was sent, or one says the pass is running"
+        );
+    }
+
+    /// A pass with work to do says so before it has done any: its first event is running
+    /// with nothing checked yet, not the first batch's report, which on a real library is
+    /// a batch of 64 detections away.
+    #[test]
+    fn a_pass_with_work_says_it_is_running_before_its_first_batch() {
+        let f = fixture(&[("a/face.jpg", &portrait_jpeg())]);
+        scanned(&f);
+        f.engine.set_face_detection(true).unwrap();
+        f.engine.wait_for_passes();
+        let events = face_events(&f);
+        assert_eq!(
+            events.first(),
+            Some(&FaceProgress {
+                checked: 0,
+                total: 1,
+                running: true
+            }),
+            "{events:?}"
+        );
+        assert_eq!(
+            events.last(),
+            Some(&FaceProgress {
+                checked: 1,
+                total: 1,
+                running: false
+            }),
+            "{events:?}"
+        );
+    }
+
+    /// Records like `Recorder`, and quits the engine it is given at the second face event
+    /// that says a pass is running: the report after the first batch, the first being the
+    /// one a pass with work opens with. That is the one place a test can stand between a
+    /// batch's write and the end of its pass.
+    #[derive(Default)]
+    struct QuitAfterABatch {
+        engine: std::sync::OnceLock<std::sync::Weak<Engine>>,
+        running: AtomicUsize,
+        recorded: Mutex<Vec<Recorded>>,
+    }
+
+    impl Events for QuitAfterABatch {
+        fn library_changed(&self, e: LibraryChanged) {
+            self.recorded.lock().push(Recorded::Library(e));
+        }
+        fn scan_progress(&self, _: ScanProgressEvent) {}
+        fn folder_status(&self, _: FolderStatus) {}
+        fn export_progress(&self, _: ExportProgress) {}
+        fn face_progress(&self, e: FaceProgress) {
+            self.recorded.lock().push(Recorded::Face(e));
+            if e.running
+                && self.running.fetch_add(1, Ordering::SeqCst) == 1
+                && let Some(engine) = self.engine.get().and_then(|e| e.upgrade())
+            {
+                engine.shutting_down.store(true, Ordering::SeqCst);
+            }
+        }
+    }
+
+    /// A pass the quit ends leaves without its rebuild and without its last count: each
+    /// reads the whole library, inside the time `shutdown` waits for the pass, and nobody
+    /// is left to see either. The batch it wrote stays written.
+    #[test]
+    fn a_pass_ended_by_the_quit_neither_rebuilds_nor_counts() {
+        let f = fixture(&[("a/face.jpg", &portrait_jpeg())]);
+        scanned(&f);
+        let ids = f.ids();
+        f.engine.shutdown();
+
+        let sink = Arc::new(QuitAfterABatch::default());
+        let engine = Engine::open(f.config(), sink.clone()).unwrap();
+        sink.engine.set(Arc::downgrade(&engine)).ok().unwrap();
+        engine.set_face_detection(true).unwrap();
+        engine.wait_for_passes();
+
+        let written: usize = ids
+            .iter()
+            .map(|id| engine.lib.item_detected_faces(*id).unwrap().len())
+            .sum();
+        assert_eq!(written, 1, "the pass did not get as far as its batch");
+        let recorded = sink.recorded.lock().clone();
+        let running = FaceProgress {
+            checked: 0,
+            total: 1,
+            running: true,
+        };
+        let after_the_batch = FaceProgress {
+            checked: 1,
+            ..running
+        };
+        assert_eq!(
+            recorded,
+            [Recorded::Face(running), Recorded::Face(after_the_batch)],
+            "the pass rebuilt the grid or counted the library on its way out"
+        );
+        engine.shutdown();
+    }
+
+    /// A launch with every drive unplugged still takes up the pass the last session left:
+    /// the scan of a root that is still offline asks for no pass, and the previews are in
+    /// photon's own cache. Here the photo was scanned and thumbnailed with the switch off,
+    /// its folder then went away, and the switch is on in the database alone, as it is at
+    /// the next launch.
+    #[test]
+    fn startup_takes_up_the_face_pass_with_every_root_offline() {
+        let f = fixture(&[("a/face.jpg", &portrait_jpeg())]);
+        scanned(&f);
+        let ids = f.ids();
+        let watched = f.engine.lib.watched_folders().unwrap().remove(0);
+        std::fs::rename(&f.photos, f.dir.path().join("unplugged")).unwrap();
+        f.engine.start_scan(watched);
+        f.settle();
+        let watched = f.engine.lib.watched_folders().unwrap().remove(0);
+        assert!(!watched.online, "the scan did not find the root gone");
+        f.engine.lib.set_face_detection(true).unwrap();
+        f.engine.shutdown();
+
+        let reopened =
+            Engine::open(f.config(), Arc::new(crate::events::Recorder::default())).unwrap();
+        // A settle nothing reaches: the thumbnail queue going quiet must not be what asks.
+        reopened.start_thumb_hashing(Duration::from_secs(3600));
+        reopened.startup(None);
+        reopened.wait_for_startup();
+        reopened.wait_for_passes();
+
+        let detected: usize = ids
+            .iter()
+            .map(|id| reopened.lib.item_detected_faces(*id).unwrap().len())
+            .sum();
+        assert_eq!(detected, 1);
+        reopened.shutdown();
+    }
+
+    /// The pass ends with what it reached, running false.
+    #[test]
+    fn progress_ends_at_the_count_checked() {
+        let f = fixture(&[("a/face.jpg", &portrait_jpeg())]);
+        scanned(&f);
+        f.engine.set_face_detection(true).unwrap();
+        f.engine.wait_for_passes();
+        assert_eq!(
+            face_events(&f).last(),
+            Some(&FaceProgress {
+                checked: 1,
+                total: 1,
+                running: false
+            })
+        );
+    }
+
+    /// A request landing after `shutdown` has run its bounded wait must not spawn a
+    /// thread that wait never accounted for.
+    ///
+    /// That nothing is detected does not show it: a pass that did start finds
+    /// `shutting_down` set and leaves before its first photo. The thread's own traces do,
+    /// the two `request_similar_pass_is_a_no_op_once_shutting_down` reads: the count, and
+    /// `face_requested`, which a pass sets first thing and, with `face_pass` held here,
+    /// cannot clear.
+    #[test]
+    fn a_face_pass_is_not_requested_once_shutting_down() {
+        let f = fixture(&[("a/face.jpg", &portrait_jpeg())]);
+        scanned(&f);
+        f.engine.set_face_detection(true).unwrap();
+        f.engine.wait_for_passes();
+        f.engine.lib.set_face_detection(false).unwrap();
+        f.engine.lib.set_face_detection(true).unwrap(); // every photo a candidate again
+        f.engine.shutdown();
+
+        let held = f.engine.face_pass.lock();
+        f.engine.face_requested.store(false, Ordering::SeqCst);
+        f.engine.request_face_pass();
+
+        assert_eq!(
+            f.engine.background_passes.load(Ordering::SeqCst),
+            0,
+            "a request after shutdown was let through, or left itself counted"
+        );
+        f.engine.wait_for_passes();
+        assert!(
+            !f.engine.face_requested.load(Ordering::SeqCst),
+            "a request arriving after shutdown must not spawn a thread"
+        );
+        drop(held);
+        assert_eq!(detected(&f), 0);
+    }
+
+    /// The scan's own request, which the drain cannot stand in for: a scan that finds
+    /// every thumbnail already cached readies nothing, so the queue never drains and the
+    /// drain never asks. Here the library was scanned and thumbnailed with the switch off,
+    /// and the switch is then on in the database alone, as it is at the next launch: the
+    /// one scan of the unchanged folder is all that can bring the pass.
+    #[test]
+    fn a_scan_with_every_thumbnail_cached_still_requests_a_face_pass() {
+        let f = fixture(&[("a/face.jpg", &portrait_jpeg())]);
+        scanned(&f);
+        let ids = f.ids();
+        f.engine.lib.set_face_detection(true).unwrap();
+
+        let reopened =
+            Engine::open(f.config(), Arc::new(crate::events::Recorder::default())).unwrap();
+        assert!(reopened.face_detection(), "open did not read the setting");
+        reopened.start_thumb_hashing(Duration::from_millis(20));
+        let watched = reopened.lib.watched_folders().unwrap().remove(0);
+        reopened.start_scan(watched);
+        reopened.wait_for_scans();
+        reopened.wait_for_passes();
+
+        let detected: usize = ids
+            .iter()
+            .map(|id| reopened.lib.item_detected_faces(*id).unwrap().len())
+            .sum();
+        assert_eq!(detected, 1);
+        reopened.shutdown();
     }
 
     /// Both readers of `excluded` compare it against a canonical path - `add_watched_folder`
@@ -4660,6 +5314,7 @@ mod tests {
         }
         fn folder_status(&self, _: FolderStatus) {}
         fn export_progress(&self, _: ExportProgress) {}
+        fn face_progress(&self, _: FaceProgress) {}
     }
 
     /// The watcher is started once the startup scans are done, and "done" is the scan slot
@@ -5270,11 +5925,11 @@ mod tests {
             let _held = f.engine.hashing.lock();
             f.engine.add_folder(&f.photos).unwrap();
             f.engine.wait_for_scans();
-            f.engine.wait_for_similar_pass();
+            f.engine.wait_for_passes();
             assert_eq!(f.engine.counts().duplicate, 0);
         }
         f.engine.request_similar_pass();
-        f.engine.wait_for_similar_pass();
+        f.engine.wait_for_passes();
 
         assert_eq!(f.engine.counts().duplicate, 2);
     }

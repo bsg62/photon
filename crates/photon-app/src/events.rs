@@ -58,11 +58,22 @@ pub struct ExportProgress {
     pub failed: usize,
 }
 
+/// How far the face pass has got: live images the current detector has looked at, of all
+/// live images. `running` is false on a pass's last event, which is what clears the line.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FaceProgress {
+    pub checked: u64,
+    pub total: u64,
+    pub running: bool,
+}
+
 pub trait Events: Send + Sync + 'static {
     fn library_changed(&self, event: LibraryChanged);
     fn scan_progress(&self, event: ScanProgressEvent);
     fn folder_status(&self, event: FolderStatus);
     fn export_progress(&self, event: ExportProgress);
+    fn face_progress(&self, event: FaceProgress);
 }
 
 #[cfg(test)]
@@ -72,6 +83,7 @@ pub enum Recorded {
     Scan(ScanProgressEvent),
     Folder(FolderStatus),
     Export(ExportProgress),
+    Face(FaceProgress),
 }
 
 /// Test sink that keeps every event.
@@ -99,5 +111,8 @@ impl Events for Recorder {
     }
     fn export_progress(&self, e: ExportProgress) {
         self.0.lock().push(Recorded::Export(e));
+    }
+    fn face_progress(&self, e: FaceProgress) {
+        self.0.lock().push(Recorded::Face(e));
     }
 }

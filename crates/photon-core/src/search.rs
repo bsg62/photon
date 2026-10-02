@@ -51,6 +51,8 @@ use crate::metadata::Gps;
 /// - `has:gps` keeps the photos that record where they were taken, and `near:LAT,LON` those
 ///   taken within a kilometre of that point, in decimal degrees - or within another distance,
 ///   `near:48.137,11.575,25km`. The info panel's "Photos nearby" link writes one.
+/// - `has:face` keeps the photos with a face, and `faces:2` or `faces:3+` those with that
+///   many; Picasa's faces and the ones photon found, each counted once.
 /// - A leading `-` turns a term round: `-tag:family`, `-is:starred`, `-lake`. A negated
 ///   value of several words (`-camera:"canon eos"`) excludes the photos the positive form
 ///   finds, so it is "not all of these words", not "none of them". A query of nothing but
@@ -96,6 +98,12 @@ enum Term {
     Edited,
     /// `has:gps`.
     HasGps,
+    /// `has:face`, `faces:N` and `faces:N+`: how many faces the photo has, Picasa's and
+    /// the ones photon found, counted once each (`face_detect::merge`).
+    Faces {
+        min: u32,
+        max: Option<u32>,
+    },
     /// `near:`: within `radius_m` metres of a point. Held in whole units - the point in
     /// 1e-7 degrees, about a centimetre - because a term is compared for equality, which a
     /// float is not.
@@ -115,6 +123,7 @@ enum Term {
 pub struct Needs {
     pub people: bool,
     pub albums: bool,
+    pub faces: bool,
 }
 
 impl Term {
@@ -137,6 +146,9 @@ impl Term {
             Term::Starred => haystacks.starred,
             Term::Edited => haystacks.edited,
             Term::HasGps => haystacks.gps.is_some(),
+            Term::Faces { min, max } => {
+                haystacks.faces >= *min && max.is_none_or(|max| haystacks.faces <= max)
+            }
             Term::Near {
                 lat_e7,
                 lon_e7,
@@ -178,6 +190,8 @@ pub struct Fields<'a> {
     pub edited: bool,
     /// Where the photo was taken, for `has:gps` and `near:`.
     pub gps: Option<Gps>,
+    /// How many faces the photo has, for `has:face` and `faces:`.
+    pub faces: u32,
 }
 
 /// Appends `text` lowercased to `out`: exactly what `str::to_lowercase` would give, without
@@ -238,6 +252,8 @@ pub struct Haystacks {
     pub edited: bool,
     /// Where the photo was taken, as [`Fields::gps`].
     pub gps: Option<Gps>,
+    /// How many faces the photo has, as [`Fields::faces`].
+    pub faces: u32,
     scratch: String,
 }
 
@@ -311,6 +327,7 @@ impl Haystacks {
         self.starred = false;
         self.edited = false;
         self.gps = None;
+        self.faces = 0;
     }
 
     /// Empties everything.
@@ -526,6 +543,23 @@ fn month_day(value: &str) -> Option<Term> {
         .then_some(Term::On { month, day })
 }
 
+/// `faces:`'s value: `2` is exactly two, `2+` is two or more. Anything else is no term.
+fn faces(value: &str) -> Option<Term> {
+    let (digits, open) = match value.strip_suffix('+') {
+        Some(digits) => (digits, true),
+        None => (value, false),
+    };
+    // `parse` alone would take "+2"; a count is digits and nothing else.
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let min: u32 = digits.parse().ok()?;
+    Some(Term::Faces {
+        min,
+        max: (!open).then_some(min),
+    })
+}
+
 /// How far `near:` reaches when the query names no distance.
 const NEAR_DEFAULT_M: i64 = 1_000;
 
@@ -690,10 +724,13 @@ impl Query {
         } else if let Some(value) = prefixed("has:") {
             match value {
                 "gps" => vec![Term::HasGps],
+                "face" => vec![Term::Faces { min: 1, max: None }],
                 _ => Vec::new(),
             }
         } else if let Some(value) = prefixed("near:") {
             near(value).into_iter().collect()
+        } else if let Some(value) = prefixed("faces:") {
+            faces(value).into_iter().collect()
         } else {
             vec![Term::Any(text.to_string())]
         }
@@ -706,6 +743,7 @@ impl Query {
                 match term {
                     Term::Person(_) => needs.people = true,
                     Term::Album(_) => needs.albums = true,
+                    Term::Faces { .. } => needs.faces = true,
                     Term::Not(inner) => visit(inner, needs),
                     _ => {}
                 }
@@ -748,6 +786,7 @@ impl Query {
         haystacks.starred = fields.starred;
         haystacks.edited = fields.edited;
         haystacks.gps = fields.gps;
+        haystacks.faces = fields.faces;
         self.matches_folded(&haystacks)
     }
 
@@ -1157,16 +1196,86 @@ mod tests {
             Query::parse("lake OR person:anna").needs(),
             Needs {
                 people: true,
-                albums: false
+                albums: false,
+                faces: false
             }
         );
         assert_eq!(
             Query::parse("-album:best").needs(),
             Needs {
                 people: false,
-                albums: true
+                albums: true,
+                faces: false
             }
         );
+    }
+
+    fn with_faces(n: u32) -> Fields<'static> {
+        Fields {
+            any: &["a.jpg"],
+            faces: n,
+            ..Fields::default()
+        }
+    }
+
+    fn face_match(query: &str, faces: u32) -> bool {
+        Query::parse(query).matches(&with_faces(faces))
+    }
+
+    #[test]
+    fn has_face_asks_for_at_least_one() {
+        assert!(face_match("has:face", 1));
+        assert!(face_match("has:face", 7));
+        assert!(!face_match("has:face", 0));
+        assert!(face_match("-has:face", 0));
+        assert!(!face_match("-has:face", 2));
+        assert!(face_match("HAS:Face", 1));
+    }
+
+    #[test]
+    fn faces_asks_for_a_count() {
+        assert!(face_match("faces:2", 2));
+        assert!(!face_match("faces:2", 1));
+        assert!(!face_match("faces:2", 3));
+        assert!(face_match("faces:0", 0));
+        assert!(!face_match("faces:0", 1));
+    }
+
+    #[test]
+    fn faces_with_a_plus_asks_for_at_least_that_many() {
+        assert!(face_match("faces:3+", 3));
+        assert!(face_match("faces:3+", 12));
+        assert!(!face_match("faces:3+", 2));
+        assert!(face_match("-faces:3+", 2));
+    }
+
+    /// A term that says nothing is dropped, like every other dangling piece - and a query
+    /// of nothing but dropped terms is empty, which matches no photo rather than every photo.
+    #[test]
+    fn malformed_face_terms_are_ignored() {
+        for q in [
+            "faces:",
+            "faces:+",
+            "faces:+2",
+            "faces:-1",
+            "faces:two",
+            "faces:99999999999999999999",
+            "has:faces",
+            "faces:2++",
+        ] {
+            assert!(Query::parse(q).is_empty(), "{q}");
+            // Beside a real term it changes nothing.
+            let both = format!("a.jpg {q}");
+            assert!(Query::parse(&both).matches(&with_faces(0)), "{both}");
+        }
+    }
+
+    #[test]
+    fn only_a_face_term_needs_the_face_counts() {
+        assert!(Query::parse("has:face").needs().faces);
+        assert!(Query::parse("zoo faces:2+").needs().faces);
+        assert!(Query::parse("-has:face").needs().faces);
+        assert!(!Query::parse("zoo person:anna has:gps").needs().faces);
     }
 
     #[test]
@@ -1180,9 +1289,11 @@ mod tests {
         haystacks.starred = true;
         haystacks.edited = true;
         haystacks.gps = Some(Gps { lat: 1.0, lon: 1.0 });
+        haystacks.faces = 2;
         haystacks.truncate(mark);
         for gone in [
             "has:gps",
+            "has:face",
             "tag:zoo",
             "person:anna",
             "album:best",

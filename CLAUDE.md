@@ -66,7 +66,7 @@ cargo run -p xtask -- metadata            # licence and installer metadata are c
 **Seeing the UI without launching it** (not in CI; needs Chromium on `PATH` or in `CHROMIUM`):
 
 ```bash
-cargo run -p xtask -- screenshots                     # twenty-eight PNGs into target/screenshots/
+cargo run -p xtask -- screenshots                     # twenty-nine PNGs into target/screenshots/
 cargo run -p xtask -- screenshots --only viewer-info-light --no-build
 cargo run -p xtask -- scroll-probe   # the end of a 300k-photo library is reachable
 ```
@@ -208,8 +208,9 @@ sidebar's year groups and the grid disagree.
 and folder name, make, model, lens, `50mm`/`f/1.8`/`iso400`, keywords through `EFFECTIVE_TAGS`, the caption,
 and the capture date as `YYYY-MM-DD` — and `search::Query` holds the grammar: words AND,
 capitals-only `OR`/`AND`, quotes, `camera:`/`lens:`/`tag:`/`person:`/`album:`/`folder:` each
-confined to its own field, `is:`/`has:`/`near:`/`on:` asking about the photo rather than its text, a
-leading `-` negating a token, dangling pieces ignored. People and albums are read from side
+confined to its own field, `is:`/`has:`/`near:`/`on:`/`faces:` asking about the photo rather than its text
+(`has:face` and `faces:N`/`faces:N+` count its faces, below), a
+leading `-` negating a token, dangling pieces ignored. People, albums and the face counts are read from side
 tables only when a query names one (`Query::needs`). A new searchable fact is a haystack there, not a view; a new *filter* is a
 prefixed term. The query string is the whole interface, so UI links (the info panel's camera
 and lens) go through `searchBox.search()`, which cancels a pending debounce first.
@@ -396,6 +397,9 @@ the viewer makes on every grid version. A reload blanks the photo, resets zoom a
 closes the crop tool, so the comparison must stay exact: `thumbState` counts only across
 `failed`. Anything that sends a row back to `pending` (an edit does) would otherwise make the
 *next* unrelated change — a star, a scan finishing — reload the photo on screen.
+`pictureChanged` takes a `Pick` of `ViewerItem` that leaves `faces` and `unnamedFaces` out on
+purpose: a detection landing on the photo on screen must not reload it. The type is the whole
+defence - there is no test, because a field the `Pick` cannot see cannot be compared.
 
 **The window's fullscreen state is persisted** (`WINDOW_STATE_FLAGS`), and the slideshow uses
 the window's own fullscreen, so quitting mid-show reopens fullscreen with no title bar. `F11`
@@ -424,9 +428,10 @@ at the end of every `run_scan` but one that
 finds its root still offline (the 30-second poll of an unplugged drive, or the startup scan of
 one), which read and changed nothing. The pass runs on its own thread, after the scan has
 released its slot: inline, it held back `startup`'s `start_watcher` for the session's first
-whole-library regroup. Every pass is counted in `similar_passes`, which is what `shutdown`
-and a test's `Fixture::settle` wait on - a test that reads hashes or groups after a scan
-waits with `settle`, not `wait_for_scans`. They also run, through
+whole-library regroup. Every pass is a thread spawned by `spawn_pass` and counted in
+`background_passes` (the face pass's too, below), which is what `shutdown` (`stop_passes`,
+bounded) and a test's `Fixture::settle` (`wait_for_passes`, unbounded) wait on - a test that
+reads hashes or groups after a scan waits with `settle`, not `wait_for_scans`. They also run, through
 `request_similar_pass`, whenever the thumbnail queue has stayed quiet for `THUMB_HASH_SETTLE`
 after making new thumbnails ready (`start_thumb_hashing`, `ThumbQueue::wait_drained`), since a
 scan's own pass runs while the queue it fed is still rendering and its new photos otherwise
@@ -443,6 +448,84 @@ whatever picture those described); a row that keeps a stale hash is never a cand
 `set_content_hash` refuses a row whose size or mtime moved since the candidate was listed.
 `set_item_edit` clears `percep_hash` and `similar_group` too, for the same reason it clears the
 thumbnail: a look-alike is a fact about the photo *as shown*, and an edit changes what that is.
+
+**Face detection is a third pass, off until the user switches it on.**
+`Engine::request_face_pass` runs `photon_core::face_detect::pass::run` on a thread from
+`spawn_pass`, so it is counted in `background_passes` with the look-alike pass and `shutdown`
+and `settle` cover it with no second mechanism. It is requested in four places: at the end of
+`run_scan`, on the thumbnail queue's drain, by the switch itself, and once by `startup` after
+the first grid is built; with the switch off the request is a no-op. That is not everywhere the
+look-alike pass is requested: `write_edit`, `remove_folder` and `set_similar_distance` request
+that one and no face pass - an edit reaches the face pass through the drain, once the edited
+photo's thumbnail has been remade. The drain is the trigger that matters for a new photo, which
+is a candidate only once its preview exists; the scan's is the only one a running photon gets
+for a library whose thumbnails are all cached; and `startup`'s is what resumes an unfinished
+pass on a launch where every root is offline, whose scans request nothing. A pass asks for one
+candidate before it loads the model (`run_face_pass`): with none it sends its last event and
+leaves - two whole-library queries, the probe and the last event's count, and no model load,
+which is what keeps the request after every scan cheap (a library holding a photo whose
+preview can never be read never gets this path, that photo being always a candidate) - and with one it reports
+`running` at once, the next report being a whole batch away. A pass the quit ends skips its
+rebuild and its last count. The
+pass reads each photo's **cached 1600 px preview**, never the source, for the reason the perceptual hash reads the grid thumbnail: inside the
+renderer it would never run for a photo whose thumbnail is already cached. So its candidate
+list has no `online` term, unlike the look-alike pass's: an unplugged drive's photos are
+detected from photon's own cache. **The detector (YuNet, through `tract`) runs twice per
+picture**, at a 1280 input (`INPUT`) and at 320 (`CLOSE_UP_INPUT`), and the two runs' faces go
+through one overlap suppression, in fractions of the picture: 1280 is what finds a group
+photo's small faces, and it does not find a face that fills the frame (measured: one taller
+than about two thirds of the preview's long side, a head shot or a selfie), which 320 does. A face both runs find comes out once, as the stronger of the two boxes. A face with
+a number that is not finite is dropped before the suppression (`Raw::is_finite`): SQLite binds
+NaN as NULL, the table refuses it, and the refused batch would be listed first by every pass
+after. `items.face_version` records which `DETECTOR_VERSION` looked,
+faces found or not; bump the constant when the model file, either input size, or the threshold
+or overlap limit in `decode.rs` changes, and every photo is detected again. The pass pages by id: a photo
+whose preview cannot be read, or whose decode panics, is skipped *unwritten*, so asked for from the start it would be
+handed back for ever. Such a photo stays a candidate - right for a removed cache file, which
+comes back, but a file libwebp refuses is never re-rendered, so it costs one failed read per
+pass and the progress count stops short of the total. A detection that errors or panics
+(`tract` unwinds, unlike rav1d) is written as looked-at with no faces instead, unless every
+photo detected in its batch failed and there were at least `BREAKER_FLOOR` (8) of them: that is
+taken to be the detector failing, not the photos (the rule assumes it; a count cannot tell), so the
+batch is not written and `pass::run` errs (fewer than 8 failing photos are still marked, so a lone
+bad photo is not retried on every pass; each later trigger fails one batch again, by design; and
+the reverse cost: 8 or more genuinely bad photos with no success in one batch trip it on every
+pass, and no photo with a higher id is ever detected - improbable, but it follows from the rule). `write_face_batch`
+has two guards, each with a test that fails without it: a row whose size, mtime or edit moved
+since it was listed is skipped, and nothing is written with the setting off, read inside the
+batch's own transaction so the switch's delete and a batch in flight cannot interleave.
+`update_items` and `set_item_edit` clear a photo's detections and its version, beside the hashes
+they already clear. The candidate list and `face_progress` each read every live photo, so each
+writes `+missing_since IS NULL` and has its own plan test. The pass rebuilds through
+`refresh_grid_derived`: a detection is read by a face search's grid and by the viewer, never by
+a collection count. Once at its end if it wrote anything, and during it at most every 30
+seconds and only while the view is a search whose query reads faces (`view_reads_faces`) - a
+branch no test reaches, its only trigger being that wait.
+
+**The switch is two values and one lock.** The stored `face_detection` setting is the authority;
+`Engine.face_enabled` mirrors it so the pass's cancel check is not a database read per photo.
+`set_face_detection` moves the mirror first (a pass in flight stops at its next photo), then
+the stored value, and off deletes every detection and nulls every `face_version` in that same
+transaction. All of it, the mirror's restore on a failed write included, is under
+`Engine.face_write`, as an edit is under `edit_write`: two toggles close together otherwise
+reached the library's writer in either order and left the two disagreeing - mirror on and
+stored off runs the detector over the whole library on every scan and drain while every batch
+is refused. The lock is released before the pass request, the rebuild and the event. A pass
+that ends with the switch off sends the cleared progress event itself, although the command
+has sent one: the batch the switch interrupted can still report "running" after it, and the UI
+would be left with a progress line for a pass that is gone.
+
+**Two tables of faces, in two frames.** Picasa's `faces` rows are fractions of the *unedited*
+picture and are mapped through the edit on read; `detected_faces` rows are fractions of the
+picture *as shown*, because that is the preview the detector reads. `face_detect::merge` is the
+one place they meet: `merge::shown` is the single mapping of a Picasa rectangle into the
+picture as shown (the viewer's named faces go through it too), and its rule for "the faces on
+this photo" is every Picasa face the edit still shows plus each detection that is none of them,
+where either rectangle's centre inside the other is the same face - not an overlap ratio, since
+Picasa draws a face loose and YuNet tight. `viewer_item` and `search_face_counts` both go
+through it, so the viewer and `has:face`/`faces:N` cannot disagree, and a new reader of either
+table goes through it too. A Picasa face no INI names counts as a face under that rule, with
+detection on or off: left out, it would hide the detection lying over it.
 
 There is no `COLLATE NOCASE` anywhere and `lower()` is ASCII-only without ICU (a native
 dependency this project does not take), so **case-insensitive matching is done in Rust**, not
@@ -543,7 +626,7 @@ anything sitting outside the tile's own box.
 
 The look cannot be tested here, but it can be seen without launching the app: `cargo run -p xtask --
 screenshots` builds the UI, serves `ui/dist` itself with `mock.js` (in
-`crates/xtask/screenshots/`) standing in for Tauri's IPC, and writes twenty-eight PNGs, in both themes,
+`crates/xtask/screenshots/`) standing in for Tauri's IPC, and writes twenty-nine PNGs, in both themes,
 to `target/screenshots/` with headless Chromium. It claims a Windows user agent and maps
 `photon.localhost` to its own port, because `mediaUrl` uses `http://photon.localhost` there
 and no plain browser can load `photon://`. It is Chromium's rendering, not WebKitGTK's or
@@ -577,7 +660,8 @@ action in `mock.js`.
   removals are `tag_rules` rows applied on read, `library/tags.rs`);
   photon's own albums and edits (turns and crops) live only in `library.db` (both are by item
   id, so a renamed file leaves its albums and loses its edit when its old row is purged — a
-  recorded limitation, not a bug); Picasa's albums are read from its INI, as noted above, and
+  recorded limitation, not a bug), and so do the faces photon detects itself (`detected_faces`,
+  deleted when the switch goes off); Picasa's albums are read from its INI, as noted above, and
   live nowhere else. An edit never touches the photo: it is rendered on the way to the
   screen.
 - **No system library dependencies beyond the web view.** photon's C is vendored and compiled in with `cc`:
@@ -591,7 +675,14 @@ action in `mock.js`.
   it on for every x86-64 installer and never for arm64, where rav1d 1.1.0's published assembly
   does not build; CI tests photon-core through it. A feature cannot be limited to a target, so
   that is the workflows' job, not Cargo's. A new C dependency is a spec-level decision
-  (`2026-09-29-photon-turbo-jpeg-thumbnails-design.md` is the worked example).
+  (`2026-09-29-photon-turbo-jpeg-thumbnails-design.md` is the worked example). Face detection
+  kept to the same bar, which rules out ONNX Runtime and OpenCV: the network runs in `tract`,
+  pure Rust but for `tract-linalg`'s assembly kernels, which it compiles in with `cc` and no
+  nasm, and nothing outside `face_detect` names it. The YuNet model is a file in
+  `crates/photon-core/models/`, embedded with `include_bytes!`; nothing is downloaded. The
+  workspace `Cargo.toml` builds `tract-linalg`, `tract-core` and `tract-data` optimised in the
+  dev profile: unoptimised, one detection takes about five seconds, and the tests run the real
+  model.
 - **AVIF is decoded in `photon_core::avif`, not by `image`**, whose AVIF decoder is dav1d (C).
   `zenavif-parse` reads the container, `rav1d` (its assembly only under `avif-asm`, above)
   decodes the AV1, and `avif/av1.rs` and `turbo.rs` (libjpeg's error manager) hold the only

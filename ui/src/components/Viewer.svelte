@@ -20,7 +20,7 @@
   import { showCopiesLabel } from '../lib/copies';
   import { ASPECTS, HANDLES, type Handle } from '../lib/crop';
   import { createCropTool } from '../lib/crop-tool.svelte';
-  import { containedBox, faceBox } from '../lib/faces';
+  import { containedBox, faceBox, unnamedFacesLabel } from '../lib/faces';
   import { createSlideshow } from '../lib/slideshow.svelte';
   import { createFullLoad, createLoadSlot } from '../lib/full-load';
   import { createStarToggle } from '../lib/star-toggle.svelte';
@@ -414,7 +414,7 @@
   const dates = $derived(item ? dateRows(item.dates) : []);
   const histogram = $derived(item?.histogram ? histogramPath(item.histogram) : null);
   const copies = $derived(item ? copyGroups(item.copies) : []);
-  /** The photo as displayed, orientation applied: the coordinates Picasa's faces are in. */
+  /** The photo as displayed, orientation applied: the coordinates the faces are in. */
   const oriented = $derived.by(() => {
     if (!item) return { width: 0, height: 0 };
     const quarter = item.orientation >= 5 && item.orientation <= 8;
@@ -423,8 +423,12 @@
   const faceBoxes = $derived.by(() => {
     if (!item || !info || crop.active) return [];
     const image = containedBox(oriented.width, oriented.height, frameW, frameH);
-    return item.faces.map((f) => ({ name: f.name, box: faceBox(f, image) }));
+    return [
+      ...item.faces.map((f) => ({ name: f.name as string | null, box: faceBox(f, image) })),
+      ...item.unnamedFaces.map((f) => ({ name: null, box: faceBox(f, image) })),
+    ];
   });
+  const unnamedLabel = $derived(item ? unnamedFacesLabel(item.unnamedFaces.length) : null);
 
   // Click-to-copy on the caption. The clipboard goes through the Tauri plugin rather than
   // `navigator.clipboard`, which needs a secure context and answers differently in the
@@ -1040,7 +1044,7 @@
             style:width="{face.box.width}px"
             style:height="{face.box.height}px"
           >
-            <span class="face-name">{face.name}</span>
+            {#if face.name}<span class="face-name">{face.name}</span>{/if}
           </div>
         {/each}
       </div>
@@ -1114,7 +1118,10 @@
             <li>{face.name}</li>
           {/each}
         </ul>
-      {:else}
+      {/if}
+      {#if unnamedLabel}
+        <p class="info-muted">{unnamedLabel}</p>
+      {:else if !item.faces.length}
         <p class="info-muted">No faces named in Picasa.</p>
       {/if}
       <h3>Keywords</h3>

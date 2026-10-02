@@ -1,7 +1,7 @@
-/** What the status bar shows for a running scan. Pure, so the wording and the arithmetic
+/** What the status bar shows for a running scan or face pass. Pure, so the wording and the arithmetic
  *  are pinned by a test. */
 
-import type { ScanProgressEvent, WatchedFolder } from './api';
+import type { FaceProgress, ScanProgressEvent, WatchedFolder } from './api';
 
 export interface ScanStatus {
   watchedId: number;
@@ -38,4 +38,15 @@ export function scanStatus(
   const moved = scan.added + scan.changed;
   if (moved > 0) parts.push(`${moved.toLocaleString()} new or changed`);
   return { watchedId: watched.id, label: `Scanning ${name}… ${parts.join(', ')}`, fraction };
+}
+
+/** The status bar's line for a running face pass, or null when there is nothing to say:
+ *  no pass, or a library with no photo to check. `total` counts photos whose thumbnail is
+ *  not made yet, so the bar can wait short of its end while thumbnails are rendering. */
+export function faceStatus(progress: FaceProgress | null): { label: string; fraction: number } | null {
+  if (!progress || !progress.running || progress.total <= 0) return null;
+  return {
+    label: `Finding faces: ${progress.checked.toLocaleString()} of ${progress.total.toLocaleString()}`,
+    fraction: Math.min(1, progress.checked / progress.total),
+  };
 }

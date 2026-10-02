@@ -383,3 +383,21 @@ publishing it.
       grid opens at the folder last browsed, as before.
 - [ ] Changing the sort with text in the search box keeps the search, now in the new order.
 - [ ] Drag a folder from the file manager over photon's window: a card says "Drop folders to add them to photon"; drag out again and it goes. Drop it: a toast says "Watching “name”", the folder appears in the sidebar and under Settings → Folders, and its scan starts. Drop two folders at once: "Watching 2 folders". Drop a single photo: one toast says it is a file, not a folder, and nothing is added. Drop a folder that is already watched, or one inside a watched folder: no duplicate appears (the second says it overlaps). Do this once with the viewer open and once with Settings open. Check on each OS: the drag is the system's, and each webview reports it differently.
+
+## Face detection
+
+- [ ] Settings → People: the switch is off on a library that never had it on.
+- [ ] Switch it on: the status bar shows "Finding faces: N of M" at once, before the first photos are done, and N rises; the same line is under the switch in Settings.
+- [ ] Quit mid-pass and relaunch: it carries on from where it was, not from zero. Do it once with the photos' drive unplugged: it still carries on.
+- [ ] Open a group photo with the info panel shown: every face has an outline; Picasa's named faces keep their name plates and are not outlined twice. The People list ends with "N faces not named".
+- [ ] Open a head shot or a selfie, where one face fills most of the frame: it is outlined, and the outline is around the whole face.
+- [ ] `has:face` finds photos with people; `faces:2` and `faces:3+` find the right ones; `-has:face` finds landscapes.
+- [ ] Turn or crop a photo with detected faces: after its thumbnail is remade, the outlines are on the faces again.
+- [ ] A detection landing on the photo open in the viewer (open one the pass has not reached, zoom in, wait): the photo does not blank and the zoom stays.
+- [ ] A photo stored sideways with no orientation tag (a scan, or a file whose EXIF was stripped): its faces are mostly not found. Turn it upright in photon: once its thumbnail is remade it is looked at again and the faces are outlined.
+- [ ] Switch it off mid-pass: the progress line clears and stays cleared, the outlines of detected faces are gone, Picasa's remain.
+- [ ] Toggle the switch on and off quickly several times, ending on off: no progress line comes back, and after a relaunch the switch is still off.
+- [ ] A Picasa library with unnamed faces, detection off: those faces are outlined without a name.
+- [ ] The app stays usable (scrolling, opening photos) while a pass runs on a large library.
+- [ ] Unplug a drive whose photos already have thumbnails, with the pass unfinished: the pass carries on through them.
+- [ ] Windows and macOS: the same switch-on, on a real library.

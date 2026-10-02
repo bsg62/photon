@@ -3,7 +3,9 @@
 
 use crate::{
     engine::{Engine, EngineConfig},
-    events::{Events, ExportProgress, FolderStatus, LibraryChanged, ScanProgressEvent},
+    events::{
+        Events, ExportProgress, FaceProgress, FolderStatus, LibraryChanged, ScanProgressEvent,
+    },
     ipc, protocol,
 };
 use photon_core::library::ThemeChoice;
@@ -19,6 +21,7 @@ pub const LIBRARY_CHANGED: &str = "library-changed";
 pub const SCAN_PROGRESS: &str = "scan-progress";
 pub const FOLDER_STATUS: &str = "folder-status";
 pub const EXPORT_PROGRESS: &str = "export-progress";
+pub const FACE_PROGRESS: &str = "face-progress";
 
 /// The native window's theme for the user's choice. `None` is "the desktop's", and is what
 /// lets the title bar keep following the desktop while photon runs.
@@ -73,6 +76,9 @@ impl Events for TauriEvents {
     }
     fn export_progress(&self, e: ExportProgress) {
         self.emit(EXPORT_PROGRESS, e);
+    }
+    fn face_progress(&self, e: FaceProgress) {
+        self.emit(FACE_PROGRESS, e);
     }
 }
 
@@ -223,6 +229,8 @@ pub fn run() {
             ipc::set_slideshow_shuffle,
             ipc::similar_distance,
             ipc::set_similar_distance,
+            ipc::face_detection,
+            ipc::set_face_detection,
             ipc::theme,
             ipc::set_theme,
             ipc::grid_tile,

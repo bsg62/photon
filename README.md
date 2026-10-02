@@ -88,6 +88,22 @@ named in the folder's `.picasa.ini`, outlined over the photo while the panel is 
 checkboxes for photon's albums; and the Picasa albums the photo is in. `R` and `Shift+R` turn the photo on screen; nothing is
 written, and the next photo opens upright.
 
+photon can also **find faces itself**. It is off until you switch it on, under Settings →
+People → **Find faces in my photos**, and it runs on this computer only: nothing is uploaded,
+and photon has no network access to upload with. It works through the library in the
+background - hours on a large one, with the count in the status bar - and carries on where it
+stopped after a quit. Faces it finds are outlined in the viewer while the info panel is open,
+without a name: photon finds faces, it does not yet recognise whose they are. A face Picasa
+named keeps its name and is not outlined twice, and a face Picasa marked without naming is now
+outlined too. Search counts them: `has:face` is every photo with a face, `faces:2` the ones
+with exactly two, `faces:3+` three or more, `-has:face` the ones with none - which, until the
+first run has finished, includes photos it has not reached yet. A face lying on its side is
+mostly missed, which matters only for a photo stored sideways with nothing in the file saying
+so: turn it in photon and it is looked at again. Videos are not searched for faces, so
+`-has:face` and `faces:0` find every video as well. Switching it
+off deletes everything photon found; what Picasa recorded is untouched. The detections live in
+photon's library and are never written to your photos or to `.picasa.ini`.
+
 Under the exposure the panel draws the photo's **histogram**: how much of the picture sits
 at each brightness, shadows on the left and highlights on the right. It is of the photo as
 photon shows it, so a crop changes it. A tall column at either end is clipping - a blown sky,
@@ -126,7 +142,8 @@ that keyword and not the ones in a folder named Zoo, `person:anna` the photos Pi
 on, `album:"best of"` the photos in that album, `folder:italy` a folder by its name or the name
 you gave it in photon. People and albums are found only this way; a bare `anna` does not look
 at them. `is:starred`, `is:edited` (turned or cropped in photon), `is:video` and `is:photo` ask
-what a photo is, and `has:gps` whether it records where it was taken. A hyphen in front turns any term round: `-tag:family`, `-is:starred`,
+what a photo is, `has:gps` whether it records where it was taken, and `has:face` and `faces:2+`
+how many faces are on it (above). A hyphen in front turns any term round: `-tag:family`, `-is:starred`,
 `-lake`; in quotes it is an ordinary hyphen. Together with saved searches this makes a
 collection that keeps itself: save `person:anna is:starred -album:printed` and it is always
 Anna's starred photos you have not printed yet.

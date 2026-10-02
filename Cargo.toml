@@ -10,3 +10,14 @@ license = "MIT"
 description = "A fast, local photo manager for Linux, macOS and Windows."
 repository = "https://github.com/bsg62/photon"
 authors = ["David Henning"]
+
+# tract unoptimised runs one face detection in about five seconds, against one with these:
+# measured 2026-10-02 on the test fixture. Only the three crates that hold the arithmetic.
+[profile.dev.package.tract-linalg]
+opt-level = 3
+
+[profile.dev.package.tract-core]
+opt-level = 3
+
+[profile.dev.package.tract-data]
+opt-level = 3

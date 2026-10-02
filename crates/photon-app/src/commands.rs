@@ -6,6 +6,7 @@ use crate::{engine::Engine, error::AppError, memory};
 use photon_core::{
     Error,
     edit::{Crop, Edit},
+    face_detect::{Rect, merge},
     grid::{FolderTally, GridEntry, GridView, Section, hex_key},
     library::{
         Album, AlbumSummary, CopiesArg, Folder, GridTile, ItemFace, Person, SavedSearch, TagCount,
@@ -172,6 +173,9 @@ pub struct ViewerItem {
     pub caption: Option<String>,
     /// Named Picasa faces, in INI order.
     pub faces: Vec<ItemFace>,
+    /// Faces with no name: Picasa's whose contact no INI names, then the ones photon
+    /// detected that are none of Picasa's. In the picture as shown, like `faces`.
+    pub unnamed_faces: Vec<Rect>,
     /// A video plays; the viewer shows no zoom, crop or turn for it.
     pub kind: MediaKind,
     /// The video's running time, or `None` for a photo.
@@ -195,7 +199,7 @@ pub struct ViewerItem {
     /// For an edited photo `width`, `height` and `orientation` describe the picture *as
     /// shown* - the edited size, upright - because that is the picture every URL serves:
     /// the edit is rendered into the thumbnails and the full image, EXIF orientation
-    /// included. `faces` are likewise mapped into the edited frame, and a face whose centre
+    /// included. `faces` and `unnamed_faces` are likewise mapped into the edited frame, and a face whose centre
     /// was cropped away is left out.
     pub edit: Option<ItemEdit>,
     /// Every date the photo has, for the info panel.
@@ -670,6 +674,18 @@ pub fn set_similar_distance(engine: &Arc<Engine>, distance: i64) -> CmdResult<i6
     Ok(clamped)
 }
 
+/// Whether photon looks for faces itself.
+pub fn face_detection(engine: &Engine) -> CmdResult<bool> {
+    Ok(engine.face_detection())
+}
+
+/// Switches face detection. On starts a pass in the background; off stops it and deletes
+/// what it found. Returns without waiting for either.
+pub fn set_face_detection(engine: &Arc<Engine>, enabled: bool) -> CmdResult<()> {
+    engine.set_face_detection(enabled)?;
+    Ok(())
+}
+
 /// The colour scheme the user chose.
 pub fn theme(engine: &Engine) -> CmdResult<ThemeChoice> {
     Ok(engine.lib.theme()?)
@@ -712,17 +728,41 @@ pub fn viewer_item(engine: &Engine, id: i64) -> CmdResult<ViewerItem> {
         .item_faces(item.id)?
         .into_iter()
         .filter_map(|face| {
-            let (left, top, right, bottom) =
-                edit.map_rect((face.left, face.top, face.right, face.bottom))?;
+            let rect = merge::shown(
+                edit,
+                Rect {
+                    left: face.left,
+                    top: face.top,
+                    right: face.right,
+                    bottom: face.bottom,
+                },
+            )?;
             Some(ItemFace {
-                left,
-                top,
-                right,
-                bottom,
+                left: rect.left,
+                top: rect.top,
+                right: rect.right,
+                bottom: rect.bottom,
                 ..face
             })
         })
         .collect();
+    // One rule for both readers (`face_detect::merge`): search counts exactly these.
+    let picasa: Vec<(Rect, bool)> = engine
+        .lib
+        .item_picasa_faces(item.id)?
+        .into_iter()
+        .filter_map(|(rect, named)| Some((merge::shown(edit, rect)?, named)))
+        .collect();
+    let all: Vec<Rect> = picasa.iter().map(|(rect, _)| *rect).collect();
+    let mut unnamed_faces: Vec<Rect> = picasa
+        .iter()
+        .filter(|(_, named)| !named)
+        .map(|(rect, _)| *rect)
+        .collect();
+    unnamed_faces.extend(merge::unmatched(
+        &all,
+        &engine.lib.item_detected_faces(item.id)?,
+    ));
     let (upright_w, upright_h) =
         photon_core::metadata::oriented_dims(item.width, item.height, item.orientation);
     let (uncropped_width, uncropped_height) = edit.without_crop().dims(upright_w, upright_h);
@@ -774,6 +814,7 @@ pub fn viewer_item(engine: &Engine, id: i64) -> CmdResult<ViewerItem> {
         tags,
         caption,
         faces,
+        unnamed_faces,
         kind,
         duration_ms,
         video_crashed,
@@ -1053,6 +1094,7 @@ pub fn watched_path(engine: &Engine, watched_id: i64) -> CmdResult<PathBuf> {
 mod tests {
     use super::*;
     use crate::testutil::{fixture, jpeg};
+    use photon_core::face_detect::{DETECTOR_VERSION, Detection};
 
     #[test]
     fn grid_info_leaves_out_a_layout_the_caller_holds() {
@@ -1549,6 +1591,82 @@ mod tests {
         assert_eq!(neighbours(&f.engine, ids[1], 1).len(), 2);
         rotate_item(&f.engine, ids[2], true).unwrap();
         assert_eq!(neighbours(&f.engine, ids[1], 1), vec![ids[0]]);
+    }
+
+    /// The viewer gets Picasa's named faces as before, and beside them every face without
+    /// a name: Picasa's unnamed ones and the detections that are none of Picasa's.
+    #[test]
+    fn viewer_item_carries_unnamed_faces() {
+        let f = fixture(&[
+            ("a/a.jpg", &jpeg(400, 300)),
+            (
+                "a/.picasa.ini",
+                // Ada at the left, and a face whose contact no INI names at the right.
+                b"[Contacts2]\nabc=Ada\n[a.jpg]\nfaces=rect64(1000200030006000),abc;rect64(c0002000f0006000),zzz\n",
+            ),
+        ]);
+        f.add_photos();
+        f.engine.thumbs.wait_idle();
+        let id = f.ids()[0];
+        f.engine.lib.set_face_detection(true).unwrap();
+        f.engine
+            .lib
+            .set_thumb_state(id, ThumbState::Ready, None)
+            .unwrap();
+        let listed = f
+            .engine
+            .lib
+            .face_candidates(0, 10, DETECTOR_VERSION)
+            .unwrap();
+        let at = |left: f64| Detection {
+            rect: Rect {
+                left,
+                top: 0.2,
+                right: left + 0.1,
+                bottom: 0.3,
+            },
+            landmarks: [(0.0, 0.0); 5],
+            score: 0.9,
+        };
+        // One over Ada (0.0625..0.1875 wide), one over the unnamed face (0.75..0.9375),
+        // one in the middle that is nobody Picasa knew.
+        f.engine
+            .lib
+            .write_face_batch(
+                &[(listed[0].clone(), vec![at(0.08), at(0.80), at(0.45)])],
+                DETECTOR_VERSION,
+            )
+            .unwrap();
+
+        let item = viewer_item(&f.engine, id).unwrap();
+        assert_eq!(item.faces.len(), 1);
+        assert_eq!(item.faces[0].name, "Ada");
+        assert_eq!(item.unnamed_faces.len(), 2, "{:?}", item.unnamed_faces);
+        // Picasa's unnamed face first, then the detection that matched nothing.
+        assert!((item.unnamed_faces[0].left - 0.75).abs() < 0.001);
+        assert!((item.unnamed_faces[1].left - 0.45).abs() < 0.001);
+    }
+
+    /// An edit maps Picasa's unnamed face like its named ones; a detection is already in
+    /// the picture as shown and is not mapped again.
+    #[test]
+    fn unnamed_faces_follow_the_edit() {
+        let f = fixture(&[
+            ("a/a.jpg", &jpeg(400, 300)),
+            (
+                "a/.picasa.ini",
+                b"[a.jpg]\nfaces=rect64(1000200030006000),zzz\n",
+            ),
+        ]);
+        f.add_photos();
+        let id = f.ids()[0];
+        let before = viewer_item(&f.engine, id).unwrap().unnamed_faces;
+        rotate_item(&f.engine, id, true).unwrap();
+        let after = viewer_item(&f.engine, id).unwrap().unnamed_faces;
+        assert_eq!((before.len(), after.len()), (1, 1));
+        // A quarter turn clockwise sends (l, t, r, b) to (1 - b, l, 1 - t, r).
+        assert!((after[0].left - (1.0 - before[0].bottom)).abs() < 0.001);
+        assert!((after[0].top - before[0].left).abs() < 0.001);
     }
 
     #[test]
