@@ -6,6 +6,7 @@ pub mod duplicates;
 pub mod edit;
 pub mod error;
 pub mod export;
+pub mod face_detect;
 pub mod grid;
 pub mod histogram;
 pub mod iptc;
