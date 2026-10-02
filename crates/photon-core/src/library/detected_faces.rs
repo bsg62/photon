@@ -39,6 +39,11 @@ const CANDIDATES_SQL: &str = "SELECT id, path, size, mtime_ms, edit_turns, edit_
        AND face_version IS NOT ?2
      ORDER BY id LIMIT ?3";
 
+/// `face_progress`'s query, shared with its plan test. The `+` keeps it a scan in table
+/// order rather than a walk of `items_size`; see `library/mod.rs`.
+const PROGRESS_SQL: &str = "SELECT count(*) FILTER (WHERE face_version IS ?1), count(*) FROM items
+     WHERE +missing_since IS NULL AND kind = 0";
+
 fn landmarks_blob(points: &[(f32, f32); 5]) -> [u8; 40] {
     let mut blob = [0u8; 40];
     for (i, (x, y)) in points.iter().enumerate() {
@@ -150,12 +155,9 @@ impl Library {
     /// can sit below its end while thumbnails are still being made.
     pub fn face_progress(&self, version: i64) -> Result<(u64, u64)> {
         let conn = self.reader()?;
-        let (checked, total): (i64, i64) = conn.query_row(
-            "SELECT count(*) FILTER (WHERE face_version IS ?1), count(*) FROM items
-             WHERE +missing_since IS NULL AND kind = 0",
-            params![version],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )?;
+        let (checked, total): (i64, i64) = conn.query_row(PROGRESS_SQL, params![version], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })?;
         Ok((checked as u64, total as u64))
     }
 
@@ -472,6 +474,22 @@ mod tests {
             plan.iter().any(|s| s.contains("INTEGER PRIMARY KEY")),
             "expected a walk by rowid, got {plan:?}"
         );
+        assert!(!plan.iter().any(|s| s.contains("items_")), "{plan:?}");
+    }
+
+    /// The progress count reads every live photo, so the `+` must keep it off `items_size`.
+    #[test]
+    fn the_progress_count_is_not_served_by_a_partial_index() {
+        let (_dir, lib) = temp_library();
+        let conn = lib.reader().unwrap();
+        let mut stmt = conn
+            .prepare(&format!("EXPLAIN QUERY PLAN {PROGRESS_SQL}"))
+            .unwrap();
+        let plan: Vec<String> = stmt
+            .query_map(rusqlite::params![V], |r| r.get::<_, String>(3))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
         assert!(!plan.iter().any(|s| s.contains("items_")), "{plan:?}");
     }
 }

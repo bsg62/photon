@@ -41,15 +41,15 @@ const GRID_TILE: &str = "grid_tile";
 /// for every view: a sort is how the user likes to browse, not a property of one album.
 const GRID_SORT: &str = "grid_sort";
 
+/// Whether photon looks for faces itself. Absent is off: the pass costs hours on a large
+/// library and computes data about the people in it, so nothing runs until asked.
+const FACE_DETECTION: &str = "face_detection";
+
 /// How far apart two perceptual hashes may be and still count as the same picture:
 /// 0 off, 7 conservative, 10 loose. Migration 15 moved the 3 and 6 of before the probe widened
 /// exact recall (`similar::EXACT_RECALL_DISTANCE`) to what those choices mean now. Stored as the distance itself rather than a name,
 /// because the distance is what the pass uses and a name would need a second table to
 /// interpret it.
-/// Whether photon looks for faces itself. Absent is off: the pass costs hours on a large
-/// library and computes data about the people in it, so nothing runs until asked.
-const FACE_DETECTION: &str = "face_detection";
-
 const SIMILAR_DISTANCE: &str = "similar_distance";
 /// Conservative: the distance at which grouping has complete recall. Derived from that
 /// constant rather than written as 3 beside it - the default *is* that fact, and two copies
