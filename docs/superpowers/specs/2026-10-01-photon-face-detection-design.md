@@ -317,19 +317,25 @@ candidate - not as a detection that failed.
 and every photo hits it (the model failing on this machine): the whole library would be
 marked checked with no faces, the pass would finish normally and nothing would tell the user;
 recovery would be switching the feature off and on. So a batch is not written, and
-`pass::run` returns `Error::FaceModel` ("failed on N photos in a row; nothing was marked"),
+`pass::run` returns `Error::FaceModel` ("all N photos detected in a batch failed; nothing was marked"),
 when *every photo detected in it failed* (error or panic) and at least `BREAKER_FLOOR` (8) did.
 "Detected" means the preview was read and the detector called: a photo skipped for an
 unreadable preview, or not reached because the pass was cancelled, counts neither way, and a
 photo detected with no faces is a success. Nothing of the batch is marked, so its photos stay
 candidates; batches already written stay written. The engine logs the error and ends the pass
 through `end_face_pass` as for any other, so the progress line clears. Because nothing is
-marked, each later trigger loads the model and fails one batch again: one batch per scan end
-or thumbnail drain, which is the intended bounded cost - no retry limit, persisted flag or
-setting. The floor exists because with a lower one a single bad photo alone in a final batch
+marked, each later trigger (a scan's end, the thumbnail queue draining, the switch turned on,
+startup) loads the model and fails one batch again, which is the intended bounded cost - no
+retry limit, persisted flag or setting. The floor exists because with a lower one a single bad photo alone in a final batch
 would never be marked and would be retried on every pass, which is what marking a failed photo
 prevents; it is 8 and not the whole batch so that a small library, or the tail of a large one,
-can still trip it. The gap is real: fewer than 8 photos, all failing, are still marked.
+can still trip it. The gap is real: fewer than 8 photos, all failing, are still marked. So is the cost in the
+other direction: that every detected photo failing means the detector is failing is what the
+rule assumes, not something a count can tell. `run` returns at the tripped batch and the next
+pass starts from the same photos, so if a batch's detected photos are 8 or more genuinely bad
+files with no success among them, it trips on them every pass and no photo after them (a higher
+id) is ever detected. Improbable - each has a readable preview and the detector must fail on
+every one - but it follows from the rule.
 
 A detection whose box, landmarks or score is not a finite number is dropped by the detector.
 SQLite binds NaN as NULL and `detected_faces` refuses it, which would fail the whole batch,

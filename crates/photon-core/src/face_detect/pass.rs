@@ -16,7 +16,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 pub const BATCH: usize = 64;
 
 /// How many photos a batch must have *detected*, every one of them failing, before the
-/// batch is treated as a fault of the detector rather than of those photos.
+/// batch is treated as a fault of the detector rather than of those photos. That reading
+/// is the rule's assumption, not something it can tell: a count cannot distinguish a
+/// broken model from a batch of bad files.
 ///
 /// Why there is a floor at all: a photo that fails is written as looked-at with no faces
 /// so that it is not retried on every pass. With a floor of one, a single bad photo that
@@ -26,9 +28,16 @@ pub const BATCH: usize = 64;
 /// library, or the tail of a large one, must still be able to trip it. The gap is
 /// deliberate and real: fewer than 8 photos, all failing, are still marked.
 ///
+/// The cost in the other direction: `run` returns at the tripped batch and the next pass
+/// starts from the same photos, so if a batch's detected photos are 8 or more genuinely
+/// bad files with no success among them, it trips on them every pass and no photo after
+/// them (a higher id) is ever detected. Improbable - each has a readable preview and the
+/// detector must fail on every one - but it follows from the rule.
+///
 /// Each later trigger of a tripped pass loads the model and fails one batch again, because
-/// nothing was marked. That is the intended cost: one batch per scan end or thumbnail
-/// drain, with no retry limit, flag or setting.
+/// nothing was marked. That is the intended cost: one batch per trigger (a scan's end, the
+/// thumbnail queue draining, the switch turned on, startup), with no retry limit, flag or
+/// setting.
 pub(crate) const BREAKER_FLOOR: usize = 8;
 
 /// What finds the faces in a preview: `Detector::detect`, or a test's stand-in.
@@ -90,7 +99,7 @@ pub fn run(
             // Before the write, so nothing of this batch is marked and every photo in it
             // stays a candidate for the next trigger. Earlier batches stay written.
             return Err(Error::FaceModel(format!(
-                "face detection failed on {failed} photos in a row; nothing was marked"
+                "all {failed} photos detected in a batch failed; nothing was marked"
             )));
         }
         let batch: Vec<(FaceCandidate, Vec<Detection>)> = candidates
@@ -122,10 +131,11 @@ enum Outcome {
     Failed,
 }
 
-/// Whether a batch is a fault of the detector: every photo detected in it failed, and
-/// there were at least [`BREAKER_FLOOR`] of them. Written so that all the photos failing
-/// is a systemic fault (the model failing on this machine) and not a run of bad photos,
-/// which would be marked and left alone.
+/// Whether a batch is not to be written, from two counts: the photos detected in it and
+/// how many of those failed. It trips when they are equal and at least [`BREAKER_FLOOR`].
+/// It only counts: it assumes that so many failures with no success is the detector
+/// failing (the model on this machine) rather than that many bad photos, which it cannot
+/// tell apart.
 fn breaker_trips(detected: usize, failed: usize) -> bool {
     failed == detected && failed >= BREAKER_FLOOR
 }
@@ -483,6 +493,11 @@ mod tests {
         (r, batches)
     }
 
+    /// The breaker's own error, not an `Err` from somewhere else in the pass.
+    fn tripped<T: std::fmt::Debug>(r: Result<T>) -> bool {
+        matches!(r, Err(Error::FaceModel(_)))
+    }
+
     fn untouched(f: &Fixture) -> bool {
         f.lib.face_candidates(0, 1000, V).unwrap().len() == f.ids.len() && faces(f) == 0
     }
@@ -504,8 +519,11 @@ mod tests {
     fn a_batch_where_every_photo_fails_is_not_written() {
         let f = fixture(BATCH);
         let (r, batches) = run_counting(&f, &failing);
-        let err = r.unwrap_err().to_string();
-        assert!(err.contains("nothing was marked"), "{err}");
+        let err = r.unwrap_err();
+        assert!(
+            matches!(&err, Error::FaceModel(m) if m.contains(&format!("all {BATCH} photos")) && m.contains("nothing was marked")),
+            "{err:?}"
+        );
         assert!(batches.is_empty());
         assert!(untouched(&f));
     }
@@ -515,7 +533,7 @@ mod tests {
     fn the_floor_is_eight_photos() {
         let f = fixture(BREAKER_FLOOR);
         let (r, batches) = run_counting(&f, &failing);
-        assert!(r.is_err());
+        assert!(tripped(r));
         assert!(batches.is_empty());
         assert!(untouched(&f));
 
@@ -565,7 +583,7 @@ mod tests {
     fn panics_count_as_failures() {
         let f = fixture(BATCH);
         let (r, batches) = run_counting(&f, &panicking);
-        assert!(r.is_err());
+        assert!(tripped(r));
         assert!(batches.is_empty());
         assert!(untouched(&f));
 
@@ -579,7 +597,7 @@ mod tests {
                 failing(img)
             }
         };
-        assert!(run_counting(&f, &detect).0.is_err());
+        assert!(tripped(run_counting(&f, &detect).0));
         assert!(untouched(&f));
     }
 
@@ -594,7 +612,11 @@ mod tests {
                 std::fs::remove_file(f.cache.path_for(gone.thumb_key, ThumbSize::Preview)).unwrap();
             }
             let (r, _) = run_counting(&f, &failing);
-            assert_eq!(r.is_err(), trips, "{failures} failures");
+            if trips {
+                assert!(tripped(r), "{failures} failures");
+            } else {
+                assert!(r.is_ok(), "{failures} failures");
+            }
             let left = f.lib.face_candidates(0, 100, V).unwrap().len();
             // Tripped: all stay candidates. Not: only the unreadable five do.
             assert_eq!(left, if trips { failures + 5 } else { 5 });
@@ -613,7 +635,7 @@ mod tests {
         };
         let cancel = || calls.load(Ordering::SeqCst) >= BREAKER_FLOOR;
         let r = run(&f.lib, &f.cache, V, 1, &detect, &cancel, &mut |_| {});
-        assert!(r.is_err());
+        assert!(tripped(r));
         assert!(untouched(&f));
     }
 
@@ -630,7 +652,7 @@ mod tests {
             }
         };
         let (r, batches) = run_counting(&f, &detect);
-        assert!(r.is_err());
+        assert!(tripped(r));
         assert_eq!(batches, [BATCH]);
         assert_eq!(faces(&f), BATCH as i64);
         assert_eq!(

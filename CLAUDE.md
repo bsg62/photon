@@ -486,9 +486,11 @@ comes back, but a file libwebp refuses is never re-rendered, so it costs one fai
 pass and the progress count stops short of the total. A detection that errors or panics
 (`tract` unwinds, unlike rav1d) is written as looked-at with no faces instead, unless every
 photo detected in its batch failed and there were at least `BREAKER_FLOOR` (8) of them: that is
-the detector failing, not the photos, so the batch is not written and `pass::run` errs (fewer
-than 8 failing photos are still marked, so a lone bad photo is not retried on every pass; each
-later trigger fails one batch again, by design). `write_face_batch`
+taken to be the detector failing, not the photos (the rule assumes it; a count cannot tell), so the
+batch is not written and `pass::run` errs (fewer than 8 failing photos are still marked, so a lone
+bad photo is not retried on every pass; each later trigger fails one batch again, by design; and
+the reverse cost: 8 or more genuinely bad photos with no success in one batch trip it on every
+pass, and no photo with a higher id is ever detected - improbable, but it follows from the rule). `write_face_batch`
 has two guards, each with a test that fails without it: a row whose size, mtime or edit moved
 since it was listed is skipped, and nothing is written with the setting off, read inside the
 batch's own transaction so the switch's delete and a batch in flight cannot interleave.
