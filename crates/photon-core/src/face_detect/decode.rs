@@ -1,23 +1,17 @@
 //! The arithmetic between the model's twelve output tensors and faces in input pixels.
 //! Pure, so each rule has a test that fails without it.
 
-// Every item here is unused outside the tests until the detector (Task 3) calls it; each
-// carries its own `allow(dead_code)` for Task 3 to remove.
-
 /// A detection must score at least this. Measured 2026-10-01: at 0.7 all 29 faces of a
 /// group photograph (0.89-0.94) and all 401 sampled LFW subjects are kept, and the three
 /// false detections in 23 photos without a face (an ibex at 0.48, a flower and a woman seen
 /// from behind at 0.61) are not. At 0.9 four of the 29 are lost.
-#[allow(dead_code)]
 pub(crate) const SCORE_THRESHOLD: f32 = 0.7;
 
 /// Two boxes sharing more than this much of their union are one face. The model authors'
 /// value.
-#[allow(dead_code)]
 pub(crate) const MAX_IOU: f32 = 0.3;
 
 /// One face in the model's input pixels.
-#[allow(dead_code)]
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Raw {
     pub x: f32,
@@ -30,7 +24,6 @@ pub(crate) struct Raw {
 
 /// The four outputs for one stride, flattened: one value per cell for `cls` and `obj`,
 /// four for `bbox`, ten for `kps`, cells in row order.
-#[allow(dead_code)]
 pub(crate) struct Level<'a> {
     pub stride: usize,
     pub cls: &'a [f32],
@@ -40,7 +33,6 @@ pub(crate) struct Level<'a> {
 }
 
 /// Appends the faces of one level, for a square input `side` pixels wide.
-#[allow(dead_code)]
 pub(crate) fn decode_level(level: &Level<'_>, side: usize, threshold: f32, out: &mut Vec<Raw>) {
     let cols = side / level.stride;
     let stride = level.stride as f32;
@@ -71,7 +63,6 @@ pub(crate) fn decode_level(level: &Level<'_>, side: usize, threshold: f32, out: 
     }
 }
 
-#[allow(dead_code)]
 fn iou(a: &Raw, b: &Raw) -> f32 {
     let w = ((a.x + a.w).min(b.x + b.w) - a.x.max(b.x)).max(0.0);
     let h = ((a.y + a.h).min(b.y + b.h) - a.y.max(b.y)).max(0.0);
@@ -80,7 +71,6 @@ fn iou(a: &Raw, b: &Raw) -> f32 {
 }
 
 /// Keeps the strongest of each set of boxes that overlap by more than `max_iou`.
-#[allow(dead_code)]
 pub(crate) fn suppress(mut faces: Vec<Raw>, max_iou: f32) -> Vec<Raw> {
     faces.sort_by(|a, b| b.score.total_cmp(&a.score));
     let mut kept: Vec<Raw> = Vec::new();
@@ -226,7 +216,7 @@ mod tests {
         assert_eq!(kept[0].score, 0.9);
     }
 
-    /// Two faces side by side, their boxes just touching, are two faces.
+    /// Two faces side by side, their boxes overlapping only at the edges, are two faces.
     #[test]
     fn boxes_under_the_limit_are_both_kept() {
         // Offset by 8: intersection 20, union 180, 0.11.
