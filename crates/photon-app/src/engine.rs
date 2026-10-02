@@ -249,13 +249,14 @@ pub struct Engine {
     /// The handle of the thread spawned by `startup`, if any is still outstanding.
     /// `wait_for_startup` takes it and joins it, and is safe to call more than once.
     startup: Mutex<Option<JoinHandle<()>>>,
-    /// How many threads `request_similar_pass` has let through that have not yet returned,
-    /// which is every pass photon runs, a scan's included. A count rather than a join
-    /// handle: two requests close together are two threads, and a handle kept for the
-    /// latest names the one that found `hashing` held and did nothing while the other does
-    /// the work. Raised before the thread exists, so it also covers one spawned but not yet
-    /// at its `try_lock` on `hashing`, which holds nothing a wait on `hashing` could see.
-    similar_passes: AtomicUsize,
+    /// How many threads `spawn_pass` has let through that have not yet returned, which is
+    /// every background pass photon runs: the look-alike pass's, a scan's included, and
+    /// the face pass's. A count rather than a join handle: two requests close together are
+    /// two threads, and a handle kept for the latest names the one that found its pass's
+    /// lock (`hashing`) held and did nothing while the other does the work. Raised before
+    /// the thread exists, so it also covers one spawned but not yet at its `try_lock`,
+    /// which holds nothing a wait on that lock could see.
+    background_passes: AtomicUsize,
     /// The thread `start_thumb_hashing` spawned, if any. `shutdown` joins it after closing
     /// the thumbnail queue, which is what ends its wait.
     thumb_hashing: Mutex<Option<JoinHandle<()>>>,
@@ -436,7 +437,7 @@ impl Engine {
             next_token: AtomicU64::new(0),
             shutting_down: AtomicBool::new(false),
             startup: Mutex::new(None),
-            similar_passes: AtomicUsize::new(0),
+            background_passes: AtomicUsize::new(0),
             thumb_hashing: Mutex::new(None),
             watcher: Mutex::new(None),
             ini_write: Mutex::new(()),
@@ -1814,18 +1815,29 @@ impl Engine {
     /// no write, and `remove_folder` requests a pass of its own, which the running one
     /// picks up as another round.
     ///
-    /// Checked and refused here, not left to the cancel flag alone: `shutdown`'s bounded
-    /// wait (below) runs once, and an IPC call landing just after it - already shutting
-    /// down, but not yet exited - would otherwise spawn a fresh writer that wait never
-    /// accounted for. The count is raised *before* the flag is read, both `SeqCst`, and
-    /// `shutdown` sets the flag before it reads the count: so either `shutdown` sees this
-    /// request in the count and waits for it, or this request sees the flag and refuses.
-    /// Checked the other way round, a request could read the flag clear, then `shutdown`
-    /// set it and find the count at zero, and only then would the thread be counted.
+    /// Refused once shutting down, and counted for `shutdown` to wait on: `spawn_pass`.
     pub fn request_similar_pass(self: &Arc<Self>) {
-        self.similar_passes.fetch_add(1, Ordering::SeqCst);
+        self.spawn_pass("photon-similar-pass", |engine| {
+            engine.hash_after_scan(&engine.shutting_down)
+        });
+    }
+
+    /// Runs `pass` on a thread of its own, counted in `background_passes` from before the
+    /// thread exists until it returns, however it ends.
+    ///
+    /// Shutting down is checked and refused here, not left to the pass's cancel flag alone:
+    /// `shutdown`'s bounded wait (below) runs once, and an IPC call landing just after it -
+    /// already shutting down, but not yet exited - would otherwise spawn a fresh writer
+    /// that wait never accounted for. The count is raised *before* the flag is read, both
+    /// `SeqCst`, and `shutdown` sets the flag before it reads the count: so either
+    /// `shutdown` sees this request in the count and waits for it, or this request sees
+    /// the flag and refuses. Checked the other way round, a request could read the flag
+    /// clear, then `shutdown` set it and find the count at zero, and only then would the
+    /// thread be counted.
+    fn spawn_pass(self: &Arc<Self>, name: &str, pass: fn(&Arc<Engine>)) {
+        self.background_passes.fetch_add(1, Ordering::SeqCst);
         if self.shutting_down.load(Ordering::SeqCst) {
-            self.similar_passes.fetch_sub(1, Ordering::SeqCst);
+            self.background_passes.fetch_sub(1, Ordering::SeqCst);
             return;
         }
         // Lowers the count however the pass ends, a panic included, and also when the
@@ -1835,16 +1847,14 @@ impl Engine {
         struct Done(Arc<Engine>);
         impl Drop for Done {
             fn drop(&mut self) {
-                self.0.similar_passes.fetch_sub(1, Ordering::SeqCst);
+                self.0.background_passes.fetch_sub(1, Ordering::SeqCst);
             }
         }
         let done = Done(Arc::clone(self));
         std::thread::Builder::new()
-            .name("photon-similar-pass".into())
-            .spawn(move || {
-                done.0.hash_after_scan(&done.0.shutting_down);
-            })
-            .expect("failed to spawn similar-pass thread");
+            .name(name.into())
+            .spawn(move || pass(&done.0))
+            .expect("failed to spawn a pass thread");
     }
 
     /// Requests a look-alike pass whenever the thumbnail workers go quiet after making new
@@ -1885,14 +1895,14 @@ impl Engine {
         *slot = Some(handle);
     }
 
-    /// Blocks until every thread `request_similar_pass` has spawned - a scan's pass among
-    /// them - has returned (`similar_passes`). Safe to call when none was ever spawned.
-    /// Unbounded, so for tests and not for the quit path, which is `stop_similar_pass`.
+    /// Blocks until every thread `spawn_pass` has spawned - a scan's pass among them - has
+    /// returned (`background_passes`). Safe to call when none was ever spawned.
+    /// Unbounded, so for tests and not for the quit path, which is `stop_passes`.
     ///
     /// What this does not see is `hashing` held by something other than a requested pass,
     /// which in the tests is the test thread standing in for one.
-    pub fn wait_for_similar_pass(&self) {
-        while self.similar_passes.load(Ordering::SeqCst) > 0 {
+    pub fn wait_for_passes(&self) {
+        while self.background_passes.load(Ordering::SeqCst) > 0 {
             std::thread::sleep(Duration::from_millis(5));
         }
     }
@@ -1927,7 +1937,7 @@ impl Engine {
         self.stop_watcher();
         self.thumbs.close();
         // Before the look-alike pass is waited for: the closed queue has ended its wait, and
-        // joined here it cannot request a pass after `stop_similar_pass` has looked. It
+        // joined here it cannot request a pass after `stop_passes` has looked. It
         // returns at once - `request_similar_pass` only spawns, and refuses while shutting
         // down.
         let thumb_hashing = self.thumb_hashing.lock().take();
@@ -1935,14 +1945,14 @@ impl Engine {
             let _ = handle.join();
         }
         self.wait_for_startup();
-        self.stop_similar_pass(SIMILAR_PASS_STOP_TIMEOUT);
+        self.stop_passes(SIMILAR_PASS_STOP_TIMEOUT);
     }
 
     /// Waits, within `budget` in total, for every look-alike pass to have stopped.
     ///
     /// Two waits, one deadline between them.
     ///
-    /// The count of requested passes (`similar_passes`) closes a sliver the wait on
+    /// The count of requested passes (`background_passes`) closes a sliver the wait on
     /// `hashing` cannot: a thread already spawned but not yet at its own `try_lock` holds
     /// nothing, so that wait would sail past it and it would go on to regroup after
     /// `shutdown` returned. Every scan's pass is such a thread, so several roots finishing
@@ -1961,9 +1971,9 @@ impl Engine {
     ///
     /// `budget` is a parameter rather than the constant read directly so a test can drive
     /// this with a short one; `shutdown` is its only caller.
-    fn stop_similar_pass(&self, budget: Duration) {
+    fn stop_passes(&self, budget: Duration) {
         let deadline = Instant::now() + budget;
-        while self.similar_passes.load(Ordering::SeqCst) > 0 {
+        while self.background_passes.load(Ordering::SeqCst) > 0 {
             if Instant::now() >= deadline {
                 tracing::warn!("a requested look-alike pass did not stop in time; detaching it");
                 break;
@@ -2136,7 +2146,7 @@ impl Engine {
         // something rescanned their directory; a watcher event for this folder waited out
         // the pass as a queued follow-up just the same. The request coalesces with a pass
         // already running (`hash_after_scan`), and `shutdown` waits for it by count
-        // (`stop_similar_pass`), so leaving the slot loses neither.
+        // (`stop_passes`), so leaving the slot loses neither.
         if !cancelled && !still_offline {
             self.request_similar_pass();
         }
@@ -2524,7 +2534,7 @@ mod tests {
         let engine = Engine::open(f.config(), sink.clone()).unwrap();
         engine.add_folder(&f.photos).unwrap();
         engine.wait_for_scans();
-        engine.wait_for_similar_pass();
+        engine.wait_for_passes();
         engine
     }
 
@@ -2767,7 +2777,7 @@ mod tests {
     /// Nothing but `request_similar_pass` runs a pass between scans, so a distance change
     /// on its own would sit unseen until an unrelated scan happened by. `set_similar_distance`
     /// (`commands.rs`) calls it after writing the setting; this drives that same path (not
-    /// `hash_after_scan` directly) and waits for the pass with `wait_for_similar_pass`.
+    /// `hash_after_scan` directly) and waits for the pass with `wait_for_passes`.
     ///
     /// Distance 0 is "off": a resized copy is never pixel-identical to its original, so at
     /// distance 0 the pair that groups at the default distance 3 must not.
@@ -2789,7 +2799,7 @@ mod tests {
         );
 
         crate::commands::set_similar_distance(&f.engine, 0).unwrap();
-        f.engine.wait_for_similar_pass();
+        f.engine.wait_for_passes();
 
         assert_eq!(
             f.ids().len(),
@@ -2818,7 +2828,7 @@ mod tests {
         );
 
         crate::commands::set_similar_distance(&f.engine, 0).unwrap();
-        f.engine.wait_for_similar_pass();
+        f.engine.wait_for_passes();
 
         assert_eq!(f.engine.counts().duplicate, 0);
     }
@@ -2863,7 +2873,7 @@ mod tests {
 
         // Turned back: the original picture is still cached, so the worker renders nothing
         // and only moves the row to `Ready` - a picture new to the pass all the same.
-        f.engine.wait_for_similar_pass();
+        f.engine.wait_for_passes();
         let original = f.engine.lib.item(id).unwrap().unwrap().edit.turned(false);
         assert!(f.engine.lib.set_item_edit(id, original).unwrap());
         assert!(!hashed(&f));
@@ -2911,7 +2921,7 @@ mod tests {
         );
 
         f.engine.rotate_item(ids[0], true).unwrap();
-        f.engine.wait_for_similar_pass();
+        f.engine.wait_for_passes();
 
         assert_eq!(
             stored_group(&f, ids[1]),
@@ -2959,7 +2969,7 @@ mod tests {
         );
 
         f.engine.remove_folder(second.id).unwrap();
-        f.engine.wait_for_similar_pass();
+        f.engine.wait_for_passes();
 
         assert_eq!(
             stored_group(&f, survivors[0]),
@@ -2984,13 +2994,13 @@ mod tests {
         assert_eq!(clamped, 10, "the write itself still happens");
         drop(held);
 
-        f.engine.wait_for_similar_pass();
+        f.engine.wait_for_passes();
     }
 
     /// What the count of requested passes cannot see: `hashing` held by something that is
     /// not one (here the test thread, standing in for a pass already inside
     /// `similar::update`). A request made meanwhile finds it held and returns at once, so
-    /// the count is back at zero and `wait_for_similar_pass` returns. If `shutdown` relied
+    /// the count is back at zero and `wait_for_passes` returns. If `shutdown` relied
     /// on the count alone it would return while the lock is still held; it must instead
     /// still be waiting on `hashing` itself.
     #[test]
@@ -3000,7 +3010,7 @@ mod tests {
 
         let held = f.engine.hashing.lock();
         f.engine.request_similar_pass();
-        f.engine.wait_for_similar_pass(); // the request found `hashing` held and returned
+        f.engine.wait_for_passes(); // the request found `hashing` held and returned
 
         let engine = Arc::clone(&f.engine);
         let shutdown = std::thread::spawn(move || engine.shutdown());
@@ -3025,12 +3035,12 @@ mod tests {
         let f = fixture(&[("a.jpg", &jpeg(4, 2))]);
         f.add_photos();
 
-        f.engine.similar_passes.fetch_add(1, Ordering::SeqCst);
+        f.engine.background_passes.fetch_add(1, Ordering::SeqCst);
         let engine = Arc::clone(&f.engine);
         let shutdown = std::thread::spawn(move || engine.shutdown());
         std::thread::sleep(Duration::from_millis(150));
         let returned_early = shutdown.is_finished();
-        f.engine.similar_passes.fetch_sub(1, Ordering::SeqCst);
+        f.engine.background_passes.fetch_sub(1, Ordering::SeqCst);
         shutdown.join().unwrap();
         assert!(
             !returned_early,
@@ -3060,7 +3070,7 @@ mod tests {
         let f = fixture(&[("a.jpg", &jpeg(4, 2))]);
         f.add_photos();
 
-        f.engine.similar_passes.fetch_add(1, Ordering::SeqCst);
+        f.engine.background_passes.fetch_add(1, Ordering::SeqCst);
         let held = f.engine.hashing.lock();
 
         let engine = Arc::clone(&f.engine);
@@ -3068,13 +3078,13 @@ mod tests {
         let started = Instant::now();
         let stopping = std::thread::spawn(move || {
             let call = Instant::now();
-            engine.stop_similar_pass(budget);
+            engine.stop_passes(budget);
             call.elapsed()
         });
         while !stopping.is_finished() {
             assert!(
                 started.elapsed() < Duration::from_secs(5),
-                "stop_similar_pass outran its budget of {budget:?}"
+                "stop_passes outran its budget of {budget:?}"
             );
             std::thread::sleep(Duration::from_millis(10));
         }
@@ -3085,7 +3095,7 @@ mod tests {
         );
 
         drop(held);
-        f.engine.similar_passes.fetch_sub(1, Ordering::SeqCst);
+        f.engine.background_passes.fetch_sub(1, Ordering::SeqCst);
     }
 
     /// An IPC call can land after `shutdown` has already set `shutting_down` and run its
@@ -3106,12 +3116,12 @@ mod tests {
         f.engine.request_similar_pass();
 
         assert_eq!(
-            f.engine.similar_passes.load(Ordering::SeqCst),
+            f.engine.background_passes.load(Ordering::SeqCst),
             0,
             "a request after shutdown was let through, or left itself counted - which would \
              hold any later wait to its timeout"
         );
-        f.engine.wait_for_similar_pass();
+        f.engine.wait_for_passes();
         assert!(
             !f.engine.hash_requested.load(Ordering::SeqCst),
             "a request arriving after shutdown must not spawn a thread"
@@ -5270,11 +5280,11 @@ mod tests {
             let _held = f.engine.hashing.lock();
             f.engine.add_folder(&f.photos).unwrap();
             f.engine.wait_for_scans();
-            f.engine.wait_for_similar_pass();
+            f.engine.wait_for_passes();
             assert_eq!(f.engine.counts().duplicate, 0);
         }
         f.engine.request_similar_pass();
-        f.engine.wait_for_similar_pass();
+        f.engine.wait_for_passes();
 
         assert_eq!(f.engine.counts().duplicate, 2);
     }

@@ -64,7 +64,7 @@ impl Fixture {
     /// Waits for every running scan and every duplicate and look-alike pass to finish.
     pub fn settle(&self) {
         self.engine.wait_for_scans();
-        self.engine.wait_for_similar_pass();
+        self.engine.wait_for_passes();
     }
 
     /// Item ids in grid order.
