@@ -313,6 +313,24 @@ crate, and a panic there would otherwise end the pass's thread on the same photo
 A preview whose read panics is treated as one that cannot be read - skipped, still a
 candidate - not as a detection that failed.
 
+**Addendum: the breaker.** Marking a failed photo is wrong when the fault is the detector's
+and every photo hits it (the model failing on this machine): the whole library would be
+marked checked with no faces, the pass would finish normally and nothing would tell the user;
+recovery would be switching the feature off and on. So a batch is not written, and
+`pass::run` returns `Error::FaceModel` ("failed on N photos in a row; nothing was marked"),
+when *every photo detected in it failed* (error or panic) and at least `BREAKER_FLOOR` (8) did.
+"Detected" means the preview was read and the detector called: a photo skipped for an
+unreadable preview, or not reached because the pass was cancelled, counts neither way, and a
+photo detected with no faces is a success. Nothing of the batch is marked, so its photos stay
+candidates; batches already written stay written. The engine logs the error and ends the pass
+through `end_face_pass` as for any other, so the progress line clears. Because nothing is
+marked, each later trigger loads the model and fails one batch again: one batch per scan end
+or thumbnail drain, which is the intended bounded cost - no retry limit, persisted flag or
+setting. The floor exists because with a lower one a single bad photo alone in a final batch
+would never be marked and would be retried on every pass, which is what marking a failed photo
+prevents; it is 8 and not the whole batch so that a small library, or the tail of a large one,
+can still trip it. The gap is real: fewer than 8 photos, all failing, are still marked.
+
 A detection whose box, landmarks or score is not a finite number is dropped by the detector.
 SQLite binds NaN as NULL and `detected_faces` refuses it, which would fail the whole batch,
 and the next pass lists the same batch first.
@@ -359,7 +377,8 @@ detected again through the thumbnail queue's drain.
 2. Workers decode each cached preview and call `detect`. The worker count is half of
    `available_parallelism`, at least 1 and at most 4, bounding the pass at about 500 MB.
 3. Write the batch in one transaction: the detections, and `face_version` for every photo
-   looked at.
+   looked at - unless the batch trips the breaker (see "Failure"), when it writes nothing and
+   the pass ends with an error.
 4. Repeat until a batch is empty. The cancel flag is checked between photos.
 
 A preview that cannot be read or decoded is skipped and the row stays a candidate, as the
@@ -560,6 +579,15 @@ Every new test is shown to fail with its change reverted.
   the small run); the portrait at 1600 px; and the portrait at a sixth of its size in a
   1600 px picture (found only by the large run, and the one test that pins the large run's
   fractions for a picture larger than the input).
+
+**The pass** (`pass.rs`, stand-in detectors)
+
+- The breaker: a full batch of failures is not written (`face_candidates` still lists every
+  photo, no version set, `on_batch` not called) and `run` errs; the floor (8 trip, 7 are
+  marked); a batch with one success is written as before; a detection with no faces is a
+  success; panics count like errors; photos with unreadable previews, and photos a cancel
+  never reached, count neither way; a tripped second batch leaves the first one's writes; and
+  the decision function directly, on literals.
 
 **The library**
 
