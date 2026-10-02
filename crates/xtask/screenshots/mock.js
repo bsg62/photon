@@ -479,6 +479,7 @@
     appearance: () => settingsSection('Appearance'),
     about: () => settingsSection('About'),
     statistics: () => settingsSection('Statistics'),
+    people: () => settingsSection('People'),
   };
 
   function settingsSection(name) {

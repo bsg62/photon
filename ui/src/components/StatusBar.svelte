@@ -1,9 +1,11 @@
 <script lang="ts">
   import { library } from '../lib/library.svelte';
-  import { scanStatus } from '../lib/status';
+  import { faceStatus, scanStatus } from '../lib/status';
   import { photoCount } from '../lib/grid-state';
 
   const count = $derived(photoCount(library.info));
+
+  const faces = $derived(faceStatus(library.faces));
 
   /** One entry per running scan, in watched-folder order, each with a bar. */
   const scans = $derived(
@@ -38,6 +40,12 @@
         {/if}
       </span>
     {/each}
+    {#if faces}
+      <span class="scan" role="status">
+        <span>{faces.label}</span>
+        <progress aria-label="Face detection progress" value={faces.fraction} max="1"></progress>
+      </span>
+    {/if}
   </span>
   <span>
     {#if library.selectionCount > 1}<span class="selected">{library.selectionCount.toLocaleString()} selected</span> · {/if}{count ?? ''}

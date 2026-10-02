@@ -150,6 +150,11 @@ pub const SHOTS: &[Shot] = &[
         dark: true,
     },
     Shot {
+        name: "settings-people-light",
+        query: "theme=light&do=people",
+        dark: false,
+    },
+    Shot {
         name: "appearance-dark",
         query: "theme=dark&do=appearance",
         dark: true,

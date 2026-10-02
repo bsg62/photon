@@ -12,6 +12,7 @@ import {
   type GridView,
   type Sort,
   type ExportProgress,
+  type FaceProgress,
   type Person,
   type ScanProgressEvent,
   type Section,
@@ -554,6 +555,8 @@ export class LibraryStore {
   /** The export running now, or null when none is. An export can take minutes, so the
    *  status bar says where it has got to; the dialog that started it is long closed. */
   exporting = $state<ExportProgress | null>(null);
+  /** The running face pass's progress, or null when none is running. */
+  faces = $state<FaceProgress | null>(null);
 
   private folderById = $derived(new Map(this.folders.folders.map((f) => [f.id, f])));
   private onlineByWatched = $derived(new Map(this.folders.watched.map((w) => [w.id, w.online])));
@@ -599,6 +602,9 @@ export class LibraryStore {
           // where every photo failed - so the bar always clears.
           this.exporting = e.done < e.total ? e : null;
         }),
+        events.onFaceProgress((e) => {
+          this.faces = e.running ? e : null;
+        }),
         events.onScanProgress((e) => {
           const previous = this.scans[e.watchedId];
           this.scans[e.watchedId] = e;
@@ -623,6 +629,7 @@ export class LibraryStore {
     for (const u of this.unlisten) u();
     this.unlisten = [];
     this.degraded = {};
+    this.faces = null;
   }
 
   /** Refetches the grid. One fetch at a time, plus one queued behind it: during a scan

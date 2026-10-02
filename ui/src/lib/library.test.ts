@@ -70,6 +70,10 @@ vi.mock('./api', () => ({
       handlers.exportProgress = cb;
       return Promise.resolve(makeUnlisten('exportProgress'));
     }),
+    onFaceProgress: vi.fn((cb: Handler) => {
+      handlers.faceProgress = cb;
+      return Promise.resolve(makeUnlisten('faceProgress'));
+    }),
   },
   errorMessage: (e: unknown) => (e instanceof Error ? e.message : String(e)),
 }));
@@ -807,6 +811,25 @@ describe('LibraryStore', () => {
     expect(events.onFolderStatus).toHaveBeenCalledTimes(1);
     expect(events.onScanProgress).toHaveBeenCalledTimes(1);
     expect(events.onExportProgress).toHaveBeenCalledTimes(1);
+  });
+
+  /** The status bar's line for the face pass: held while a pass runs, gone at its end (a
+   *  switch-off sends a zeroed `running: false` event, sometimes twice) and on dispose. */
+  it('holds face progress while a pass runs and clears it at the end and on dispose', async () => {
+    const store = new LibraryStore();
+    await store.init();
+    expect(events.onFaceProgress).toHaveBeenCalledTimes(1);
+
+    handlers.faceProgress({ checked: 64, total: 900, running: true });
+    expect(store.faces).toEqual({ checked: 64, total: 900, running: true });
+
+    handlers.faceProgress({ checked: 0, total: 0, running: false });
+    handlers.faceProgress({ checked: 0, total: 0, running: false });
+    expect(store.faces).toBeNull();
+
+    handlers.faceProgress({ checked: 10, total: 900, running: true });
+    store.dispose();
+    expect(store.faces).toBeNull();
   });
 
   /** The bar the user watches while an export runs. It has to clear at the end whatever

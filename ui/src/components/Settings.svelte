@@ -5,6 +5,7 @@
   import { theme } from '../lib/app-theme.svelte';
   import { library } from '../lib/library.svelte';
   import { MEMORY_POLL_MS, folderStatus, memoryAmount, memoryScope, photoCountLabel, type SettingsSection } from '../lib/settings';
+  import { faceStatus } from '../lib/status';
   import { cameraStatRows, lensStatRows, statsSummary, yearRows, type StatRow } from '../lib/stats';
   import { createTagRenamer } from '../lib/tag-renamer.svelte';
   import { filterTags, ruleLabel } from '../lib/tags';
@@ -157,6 +158,31 @@
         library.reportError(err);
       });
   }
+
+  /** Whether photon looks for faces itself. Null until read, like `interval`. */
+  let findFaces = $state<boolean | null>(null);
+
+  onMount(() => {
+    api
+      .faceDetection()
+      .then((on) => (findFaces = on))
+      .catch(library.reportError);
+  });
+
+  /** The box shows what is stored: put back if the store fails. */
+  function saveFindFaces(e: Event & { currentTarget: HTMLInputElement }) {
+    const field = e.currentTarget;
+    const next = field.checked;
+    api
+      .setFaceDetection(next)
+      .then(() => (findFaces = next))
+      .catch((err) => {
+        field.checked = findFaces ?? false;
+        library.reportError(err);
+      });
+  }
+
+  const faceProgress = $derived(faceStatus(library.faces));
 
   /** The Hamming distance Off/Conservative/Loose means. Null until read, for the same reason
    *  `interval` is: the control must not show a value that is not the stored one. */
@@ -369,6 +395,9 @@
         <button class:active={current === 'duplicates'} aria-current={current === 'duplicates'} onclick={() => (current = 'duplicates')}>
           Duplicates
         </button>
+        <button class:active={current === 'people'} aria-current={current === 'people'} onclick={() => (current = 'people')}>
+          People
+        </button>
         <button class:active={current === 'statistics'} aria-current={current === 'statistics'} onclick={() => (current = 'statistics')}>
           Statistics
         </button>
@@ -548,6 +577,25 @@
           {#if similarDistance !== null}
             {@const chosen = SIMILAR_DISTANCES.find((o) => o.value === similarDistance) ?? SIMILAR_DISTANCES[1]}
             <p class="hint">{chosen.hint}</p>
+          {/if}
+        {:else if current === 'people'}
+          <h2>Find faces</h2>
+          <p class="hint">
+            photon looks for faces in your photos, so you can search for them (has:face, faces:2+) and see
+            them outlined in the viewer's info panel. It works in the background and can take hours on a
+            large library; you can quit and it carries on next time. Until it has finished, a search for
+            photos without faces also finds photos it has not reached yet.
+          </p>
+          <p class="hint">
+            Everything stays on this computer. Switching this off deletes what photon found; faces named in
+            Picasa are not affected.
+          </p>
+          <label class="shuffle">
+            <input type="checkbox" checked={findFaces ?? false} disabled={findFaces === null} onchange={saveFindFaces} />
+            Find faces in my photos
+          </label>
+          {#if findFaces && faceProgress}
+            <p class="hint" role="status">{faceProgress.label}</p>
           {/if}
         {:else}
           <h2>About</h2>
