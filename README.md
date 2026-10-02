@@ -99,7 +99,8 @@ outlined too. Search counts them: `has:face` is every photo with a face, `faces:
 with exactly two, `faces:3+` three or more, `-has:face` the ones with none - which, until the
 first run has finished, includes photos it has not reached yet. A face lying on its side is
 mostly missed, which matters only for a photo stored sideways with nothing in the file saying
-so: turn it in photon and it is looked at again. Videos are not searched for faces. Switching it
+so: turn it in photon and it is looked at again. Videos are not searched for faces, so
+`-has:face` and `faces:0` find every video as well. Switching it
 off deletes everything photon found; what Picasa recorded is untouched. The detections live in
 photon's library and are never written to your photos or to `.picasa.ini`.
 

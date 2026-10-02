@@ -452,19 +452,33 @@ thumbnail: a look-alike is a fact about the photo *as shown*, and an edit change
 **Face detection is a third pass, off until the user switches it on.**
 `Engine::request_face_pass` runs `photon_core::face_detect::pass::run` on a thread from
 `spawn_pass`, so it is counted in `background_passes` with the look-alike pass and `shutdown`
-and `settle` cover it with no second mechanism. It is requested wherever that pass is - the end
-of `run_scan`, the thumbnail queue's drain - and by the switch itself; with the switch off the
-request is a no-op. Both triggers are needed: the drain is the one that matters for a new photo,
-which is a candidate only once its preview exists, and the scan's is the only one a library
-whose thumbnails are all cached ever gets (every launch that resumes an unfinished pass). The
-pass reads each photo's **cached 1600 px preview** (YuNet at a 1280 input, through `tract`),
-never the source, for the reason the perceptual hash reads the grid thumbnail: inside the
+and `settle` cover it with no second mechanism. It is requested in four places: at the end of
+`run_scan`, on the thumbnail queue's drain, by the switch itself, and once by `startup` after
+the first grid is built; with the switch off the request is a no-op. That is not everywhere the
+look-alike pass is requested: `write_edit`, `remove_folder` and `set_similar_distance` request
+that one and no face pass - an edit reaches the face pass through the drain, once the edited
+photo's thumbnail has been remade. The drain is the trigger that matters for a new photo, which
+is a candidate only once its preview exists; the scan's is the only one a running photon gets
+for a library whose thumbnails are all cached; and `startup`'s is what resumes an unfinished
+pass on a launch where every root is offline, whose scans request nothing. A pass asks for one
+candidate before it loads the model (`run_face_pass`): with none it sends its last event and
+leaves, which is what keeps the request after every scan cheap, and with one it reports
+`running` at once, the next report being a whole batch away. A pass the quit ends skips its
+rebuild and its last count. The
+pass reads each photo's **cached 1600 px preview**, never the source, for the reason the perceptual hash reads the grid thumbnail: inside the
 renderer it would never run for a photo whose thumbnail is already cached. So its candidate
 list has no `online` term, unlike the look-alike pass's: an unplugged drive's photos are
-detected from photon's own cache. `items.face_version` records which `DETECTOR_VERSION` looked,
-faces found or not; bump the constant when the model file, `INPUT`, or the threshold or overlap
-limit in `decode.rs` changes, and every photo is detected again. The pass pages by id: a photo
-whose preview cannot be read is skipped *unwritten*, so asked for from the start it would be
+detected from photon's own cache. **The detector (YuNet, through `tract`) runs twice per
+picture**, at a 1280 input (`INPUT`) and at 320 (`CLOSE_UP_INPUT`), and the two runs' faces go
+through one overlap suppression, in fractions of the picture: 1280 is what finds a group
+photo's small faces, and it does not find a face that fills the frame (measured: one taller
+than about two thirds of the preview's long side, a head shot or a selfie), which 320 does. A face both runs find comes out once, as the stronger of the two boxes. A face with
+a number that is not finite is dropped before the suppression (`Raw::is_finite`): SQLite binds
+NaN as NULL, the table refuses it, and the refused batch would be listed first by every pass
+after. `items.face_version` records which `DETECTOR_VERSION` looked,
+faces found or not; bump the constant when the model file, either input size, or the threshold
+or overlap limit in `decode.rs` changes, and every photo is detected again. The pass pages by id: a photo
+whose preview cannot be read, or whose decode panics, is skipped *unwritten*, so asked for from the start it would be
 handed back for ever. Such a photo stays a candidate - right for a removed cache file, which
 comes back, but a file libwebp refuses is never re-rendered, so it costs one failed read per
 pass and the progress count stops short of the total. A detection that errors or panics

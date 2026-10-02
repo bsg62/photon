@@ -387,9 +387,10 @@ publishing it.
 ## Face detection
 
 - [ ] Settings → People: the switch is off on a library that never had it on.
-- [ ] Switch it on: the status bar shows "Finding faces: N of M" and N rises; the same line is under the switch in Settings.
-- [ ] Quit mid-pass and relaunch: it carries on from where it was, not from zero.
+- [ ] Switch it on: the status bar shows "Finding faces: N of M" at once, before the first photos are done, and N rises; the same line is under the switch in Settings.
+- [ ] Quit mid-pass and relaunch: it carries on from where it was, not from zero. Do it once with the photos' drive unplugged: it still carries on.
 - [ ] Open a group photo with the info panel shown: every face has an outline; Picasa's named faces keep their name plates and are not outlined twice. The People list ends with "N faces not named".
+- [ ] Open a head shot or a selfie, where one face fills most of the frame: it is outlined, and the outline is around the whole face.
 - [ ] `has:face` finds photos with people; `faces:2` and `faces:3+` find the right ones; `-has:face` finds landscapes.
 - [ ] Turn or crop a photo with detected faces: after its thumbnail is remade, the outlines are on the faces again.
 - [ ] A detection landing on the photo open in the viewer (open one the pass has not reached, zoom in, wait): the photo does not blank and the zoom stays.

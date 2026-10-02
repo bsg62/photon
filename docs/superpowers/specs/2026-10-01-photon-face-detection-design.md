@@ -58,6 +58,41 @@ A face narrower than about 15 px at the model's input is lost. A 256 px grid thu
 therefore useless as input, and 640 puts a group photo's faces at 14-21 px, on the edge. The
 pass uses 1280.
 
+**As built: 1280 and 320.** The spike measured small faces at 1280 and close-ups only at 320
+(LFW), and so missed the other end: at 1280 a face that fills the frame is not found. The
+whole-branch review measured it on 2026-10-02 with the real detector, on crops of the test
+portrait:
+
+| Face height at the model's input | At a 1280 input | The same crop at 640 or 320 |
+|---|---|---|
+| 480-590 px | found, 0.90-0.93 | found, 0.89-0.95 |
+| about 690 px | found, 0.82 | found |
+| 720-830 px | found, 0.76-0.78, the box drawn too small | found |
+| 880-910 px | **not found** | found |
+
+Of a 1600 px preview that is a face taller than about two thirds of the long side: a head
+shot, a selfie, a baby close-up. Why the model stops there was not looked into; the
+measurement is what the decision rests on.
+
+The decision: **the detector runs twice per picture, at 1280 and at 320, and the two runs'
+faces are merged through the one overlap suppression** (0.3, strongest first), compared in
+fractions of the picture, which is the unit both runs share. 320 rather than 640 because it
+costs a sixteenth of the large run where 640 costs a quarter. `DETECTOR_VERSION` stays 1,
+nothing having been released. Measured after the change, on the inputs the spike used:
+
+| | 1280 alone | 1280 and 320 |
+|---|---|---|
+| The portrait cropped to its face, at eight tightnesses, enlarged to 1600 px | 0 of 8 found | 8 of 8, 0.94-0.95 |
+| The test portrait (960x640) | 1 face, 0.936 | 1 face, 0.945 |
+| Solvay at 1600 px (29 people) | 29 | 29 |
+| 23 photos with no frontal face, at 0.7 | 0 | 0 |
+| One detection, release build, one thread | 399 ms | 420 ms |
+
+A face both runs find is kept once, as the stronger box; for the portrait that is the small
+run's, which sits 0.02 lower at the top than the large run's. The portrait at 1600 px shows
+the same thing from the other side: the large run alone draws its box short (top 0.278
+against 0.209), and with the small run it is where the face is.
+
 ### The confidence threshold
 
 Detections at each threshold, input 1280 (LFW at 320, its images being 250 px):
@@ -87,6 +122,11 @@ Scaling a 1600 px preview to the input and detecting at 1280:
 
 A worker holds 100-120 MB. With four workers, 100,000 photos take a little over three hours,
 plus one WebP decode each.
+
+**As built.** The second run at 320 adds 21 ms to a detection on one thread (399 ms to 420 ms
+on the test portrait, release build), about 5%: ten minutes more on those 100,000 photos. The
+spike's own table gave 37 ms for a 320 run. Memory was not measured again; the small run's
+input and outputs are a sixteenth the size of the large run's.
 
 ### Stage 2's evidence, recorded here because the spike produced it
 
@@ -222,11 +262,14 @@ impl Detector {
 `Detector::new` parses and optimises the model, about 25 ms, once per pass. A `Detector` is
 shared between the pass's workers.
 
+**As built.** The model is optimised once for each of the two input sizes: 49 ms in a release
+build.
+
 **As built.** `detect` takes a `&DynamicImage`, not an `&RgbImage`: the cache hands back RGBA
 for a photo with transparency and a greyscale picture is one channel, and converting is the
 detector's business. `DETECTOR_VERSION` also covers the overlap limit.
 
-`DETECTOR_VERSION` changes when the model, the input size or the threshold changes, which
+`DETECTOR_VERSION` changes when the model, either input size or the threshold changes, which
 detects the whole library again, as `EXIF_VERSION` does for metadata.
 
 ### One image
@@ -245,6 +288,14 @@ detects the whole library again, as `EXIF_VERSION` does for metadata.
    (intersection over union) with one already kept exceeds 0.3, the model authors' value.
 5. Divide by the scale and the scaled image's size, giving fractions of the image passed in.
 
+**As built.** Steps 1 to 3 are done twice, with 1280 and with 320 as the square's side (the
+model is loaded with each input fact). Each run's faces over the threshold are divided by the
+size of the image as that run scaled it, which puts both runs' faces in fractions of the
+image; any face with a number that is not finite is dropped; and step 4's suppression then
+runs once over the two sets together, so a face both runs found comes out once. The
+threshold is asked as "is the score at least 0.7", so a score that is not a number is not
+kept.
+
 ### The model file
 
 `crates/photon-core/models/face_detection_yunet_2023mar.onnx`, embedded with `include_bytes!`.
@@ -256,6 +307,15 @@ detects the whole library again, as `EXIF_VERSION` does for metadata.
 whose detection panics or returns an error is logged and written as looked-at with no faces, so
 it is not retried on every pass. Unlike rav1d there is no abort to guard against and no
 crash-loop guard.
+
+**As built.** Reading the preview has a guard of its own: its decode goes through the `webp`
+crate, and a panic there would otherwise end the pass's thread on the same photo every time.
+A preview whose read panics is treated as one that cannot be read - skipped, still a
+candidate - not as a detection that failed.
+
+A detection whose box, landmarks or score is not a finite number is dropped by the detector.
+SQLite binds NaN as NULL and `detected_faces` refuses it, which would fail the whole batch,
+and the next pass lists the same batch first.
 
 ## The pass
 
@@ -283,6 +343,14 @@ It is requested:
 
 Resuming needs nothing more: every launch's startup scans request it, and `face_version`
 records where it stopped.
+
+**As built.** Resuming did need more. A scan that finds its root still offline requests no
+pass, so a launch with every drive unplugged never resumed, though the previews are in
+photon's cache. `startup` requests a pass itself, once the first grid is built.
+
+This is fewer places than the look-alike pass is requested in: an edit, a folder's removal and
+a change of the look-alike distance request that pass and no face pass. An edited photo is
+detected again through the thumbnail queue's drain.
 
 ### Running it
 
@@ -345,6 +413,14 @@ images with the current version, and live images). The last one of a pass carrie
 **As built.** A pass that ends with the switch off sends the cleared event (zeros, not running)
 itself, although the command has already sent one: the batch the switch interrupted can report
 "running" after the command's event, and that report would otherwise be left standing.
+
+A pass asks for one candidate before it loads the model. With none it sends its last event
+and returns, so the pass requested after every scan of a finished library costs a query and
+not a model load. With one it sends a `running: true` event at once: the first batch's report
+is 64 detections away, eight seconds on four workers and a minute on a small machine, and a
+switch that shows nothing for that long gets toggled again. A detector that fails to load
+sends the last event too. A pass the quit ends sends no last count and makes no rebuild; each
+reads the whole library inside `shutdown`'s bounded wait.
 
 ### Quitting
 
@@ -478,6 +554,10 @@ Every new test is shown to fail with its change reverted.
   reliably (see "Limits found while building").
 - End to end on the real model: a small CC0 portrait added as a fixture, credited as the
   screenshot photos are, yields one face about where it is; a landscape yields none.
+  **As built**, also: the portrait cropped to its face and enlarged to 1600 px (found only by
+  the small run); the portrait at 1600 px; and the portrait at a sixth of its size in a
+  1600 px picture (found only by the large run, and the one test that pins the large run's
+  fractions for a picture larger than the input).
 
 **The library**
 
