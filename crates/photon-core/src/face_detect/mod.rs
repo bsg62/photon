@@ -4,6 +4,8 @@
 use crate::{Error, Result};
 use tract_onnx::prelude::*;
 
+mod decode;
+
 /// YuNet, from OpenCV's model zoo (`models/README.md`).
 static MODEL: &[u8] = include_bytes!("../../models/face_detection_yunet_2023mar.onnx");
 
