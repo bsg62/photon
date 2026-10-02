@@ -9,6 +9,7 @@ use crate::edit::{Crop, Edit};
 use crate::face_detect::{Detection, Rect};
 use crate::media::fingerprint;
 use rusqlite::params;
+use std::collections::HashMap;
 
 /// A photo the detector has not looked at, or that an older detector did.
 #[derive(Clone, Debug, PartialEq)]
@@ -179,6 +180,56 @@ impl Library {
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rects)
     }
+}
+
+/// How many faces each photo has, for search: Picasa's and the detected ones, merged by
+/// `face_detect::merge::count` with the photo's edit, so search counts what the viewer
+/// draws. Photos without a face are absent.
+///
+/// Read whole, and only for a query that asks (`Needs::faces`): a few numbers per face.
+pub(crate) fn search_face_counts(conn: &rusqlite::Connection) -> Result<HashMap<i64, u32>> {
+    use crate::face_detect::merge;
+    let rect = |r: &rusqlite::Row<'_>, at: usize| -> rusqlite::Result<Rect> {
+        Ok(Rect {
+            left: r.get(at)?,
+            top: r.get(at + 1)?,
+            right: r.get(at + 2)?,
+            bottom: r.get(at + 3)?,
+        })
+    };
+    let mut detected: HashMap<i64, Vec<Rect>> = HashMap::new();
+    let mut stmt = conn.prepare("SELECT item_id, left, top, right, bottom FROM detected_faces")?;
+    let mut rows = stmt.query([])?;
+    while let Some(r) = rows.next()? {
+        detected.entry(r.get(0)?).or_default().push(rect(r, 1)?);
+    }
+    // Picasa's rectangles are in the unedited picture, so each needs its photo's edit.
+    let mut picasa: HashMap<i64, (Edit, Vec<Rect>)> = HashMap::new();
+    let mut stmt = conn.prepare(
+        "SELECT f.item_id, f.left, f.top, f.right, f.bottom, i.edit_turns, i.edit_crop
+         FROM faces f JOIN items i ON i.id = f.item_id",
+    )?;
+    let mut rows = stmt.query([])?;
+    while let Some(r) = rows.next()? {
+        let edit = edit_from_db(r.get(5)?, r.get(6)?);
+        picasa
+            .entry(r.get(0)?)
+            .or_insert_with(|| (edit, Vec::new()))
+            .1
+            .push(rect(r, 1)?);
+    }
+    let mut counts = HashMap::new();
+    for (id, (edit, faces)) in &picasa {
+        let found = detected.remove(id).unwrap_or_default();
+        let n = merge::count(*edit, faces, &found);
+        if n > 0 {
+            counts.insert(*id, n);
+        }
+    }
+    for (id, found) in detected {
+        counts.insert(id, found.len() as u32);
+    }
+    Ok(counts)
 }
 
 #[cfg(test)]
@@ -491,5 +542,70 @@ mod tests {
             .collect::<rusqlite::Result<_>>()
             .unwrap();
         assert!(!plan.iter().any(|s| s.contains("items_")), "{plan:?}");
+    }
+
+    /// Picasa's faces and the detections are counted through the one merge rule, with the
+    /// photo's edit: a detection lying over a Picasa face is the same face.
+    #[test]
+    fn search_counts_merge_both_sources() {
+        let (_dir, lib, ids) = seeded(&["both.jpg", "detected.jpg", "picasa.jpg", "none.jpg"]);
+        let c = lib.face_candidates(0, 10, V).unwrap();
+        lib.write_face_batch(
+            &[
+                // Over the Picasa face below, and one more elsewhere.
+                (c[0].clone(), vec![face(0.12), face(0.7)]),
+                (c[1].clone(), vec![face(0.1), face(0.4), face(0.7)]),
+            ],
+            V,
+        )
+        .unwrap();
+        let picasa = |contact: &str| crate::picasa::Face {
+            contact: contact.into(),
+            left: 0.10,
+            top: 0.15,
+            right: 0.25,
+            bottom: 0.45,
+        };
+        lib.set_item_faces(&[(ids[0], vec![picasa("a")]), (ids[2], vec![picasa("b")])])
+            .unwrap();
+
+        let counts = search_face_counts(&lib.reader().unwrap()).unwrap();
+        assert_eq!(
+            counts.get(&ids[0]),
+            Some(&2),
+            "one shared, one detected only"
+        );
+        assert_eq!(counts.get(&ids[1]), Some(&3));
+        assert_eq!(
+            counts.get(&ids[2]),
+            Some(&1),
+            "an unnamed Picasa face is a face"
+        );
+        assert_eq!(counts.get(&ids[3]), None);
+    }
+
+    /// The whole path: a face search reads the counts and answers with the right photos.
+    #[test]
+    fn a_face_search_finds_photos_by_their_faces() {
+        use crate::grid::GridView;
+        let (_dir, lib, ids) = seeded(&["with.jpg", "without.jpg"]);
+        let c = lib.face_candidates(0, 10, V).unwrap();
+        lib.write_face_batch(
+            &[(c[0].clone(), vec![face(0.1)]), (c[1].clone(), vec![])],
+            V,
+        )
+        .unwrap();
+        let ids_for = |query: &str| -> Vec<i64> {
+            lib.entries_for(GridView::Search, query)
+                .unwrap()
+                .iter()
+                .map(|e| e.id)
+                .collect()
+        };
+        assert_eq!(ids_for("has:face"), [ids[0]]);
+        assert_eq!(ids_for("-has:face"), [ids[1]]);
+        assert_eq!(ids_for("faces:1"), [ids[0]]);
+        assert_eq!(ids_for("faces:2+"), Vec::<i64>::new());
+        assert_eq!(ids_for("faces:0"), [ids[1]]);
     }
 }

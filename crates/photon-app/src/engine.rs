@@ -1939,8 +1939,9 @@ impl Engine {
     /// Whether the grid on screen is a search whose query reads faces: the one view a
     /// detection changes while the pass is still running.
     fn view_reads_faces(&self) -> bool {
-        // Task 8 gives this its body: no search reads detections until `Needs::faces`.
-        false
+        let state = self.state.lock();
+        state.view == GridView::Search
+            && photon_core::search::Query::parse(&state.arg).needs().faces
     }
 
     fn send_face_progress(&self, running: bool) {

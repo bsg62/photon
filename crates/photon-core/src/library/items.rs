@@ -1078,7 +1078,8 @@ impl Library {
         // other read's photos.
         let tx = conn.unchecked_transaction()?;
         let tags = search_tags(&tx)?;
-        // Read only for a query that names a person or an album, which most do not.
+        // Read only for a query that names a person, an album or a face count, which most
+        // do not.
         let needs = query.needs();
         let people = if needs.people {
             search_names(&tx, SEARCH_PEOPLE_SQL)?
@@ -1087,6 +1088,11 @@ impl Library {
         };
         let albums = if needs.albums {
             search_names(&tx, SEARCH_ALBUMS_SQL)?
+        } else {
+            HashMap::new()
+        };
+        let faces = if needs.faces {
+            super::detected_faces::search_face_counts(&tx)?
         } else {
             HashMap::new()
         };
@@ -1162,6 +1168,7 @@ impl Library {
             haystacks.starred = r
                 .get::<_, Option<i64>>(10)?
                 .is_some_and(|rating| rating >= 1);
+            haystacks.faces = faces.get(&id).copied().unwrap_or(0);
             haystacks.gps = gps_from_db(r.get(base + 10)?, r.get(base + 11)?);
             haystacks.edited = !edit_from_db(r.get(11)?, r.get(12)?).is_identity();
             if let Some(caption) = text(r, base + 8)? {
