@@ -9,6 +9,7 @@ use tract_onnx::prelude::*;
 
 mod decode;
 pub mod merge;
+pub mod pass;
 
 /// YuNet, from OpenCV's model zoo (`models/README.md`).
 static MODEL: &[u8] = include_bytes!("../../models/face_detection_yunet_2023mar.onnx");
