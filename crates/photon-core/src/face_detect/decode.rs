@@ -11,7 +11,8 @@ pub(crate) const SCORE_THRESHOLD: f32 = 0.7;
 /// value.
 pub(crate) const MAX_IOU: f32 = 0.3;
 
-/// One face in the model's input pixels.
+/// One face: in the model's input pixels as [`decode_level`] produces it, in fractions of
+/// the image once [`Raw::in_units_of`] has divided it by the image's size at that input.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Raw {
     pub x: f32,
@@ -20,6 +21,23 @@ pub(crate) struct Raw {
     pub h: f32,
     pub landmarks: [(f32, f32); 5],
     pub score: f32,
+}
+
+impl Raw {
+    /// The same face with every horizontal measure divided by `width` and every vertical
+    /// one by `height`. The overlap of two boxes is a ratio of areas, so it is the same in
+    /// these units as in pixels, which is what lets faces found at two input sizes be
+    /// suppressed together.
+    pub(crate) fn in_units_of(self, width: f32, height: f32) -> Self {
+        Self {
+            x: self.x / width,
+            y: self.y / height,
+            w: self.w / width,
+            h: self.h / height,
+            landmarks: self.landmarks.map(|(x, y)| (x / width, y / height)),
+            score: self.score,
+        }
+    }
 }
 
 /// The four outputs for one stride, flattened: one value per cell for `cls` and `obj`,

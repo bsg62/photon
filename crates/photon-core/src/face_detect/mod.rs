@@ -14,13 +14,24 @@ pub mod pass;
 /// YuNet, from OpenCV's model zoo (`models/README.md`).
 static MODEL: &[u8] = include_bytes!("../../models/face_detection_yunet_2023mar.onnx");
 
-/// The side of the square the model is run at. A face narrower than about 15 px at this
-/// size is missed: at 640 a group photo's faces are 14-21 px wide, on the edge, and at 320
-/// the 29 people of the spike's test photograph came out as one.
+/// The side of the square the model is run at to find small faces. A face narrower than
+/// about 15 px at this size is missed: at 640 a group photo's faces are 14-21 px wide, on
+/// the edge, and at 320 the 29 people of the spike's test photograph came out as one.
 pub const INPUT: usize = 1280;
 
+/// The side of a second run, for the face [`INPUT`] is too large for. The model's coarsest
+/// level has a stride of 32 and was trained at 320 and 640, so a face that fills the frame
+/// at 1280 is larger than anything it has a cell for. Measured 2026-10-02 on crops of the
+/// test portrait, by the face's height at a 1280 input: 480-590 px is found at 0.90-0.93,
+/// 690 px at 0.82, 720-830 px at 0.76-0.78 with the box drawn too small, and 880-910 px
+/// is not found at all - a head shot, a selfie. The same crops at 320 or 640 are found at
+/// 0.89-0.95. 320 rather than 640 because it costs a sixteenth of the large run where 640
+/// costs a quarter, and the faces it is for are a quarter of the frame or more.
+pub const CLOSE_UP_INPUT: usize = 320;
+
 /// Which detector looked at a photo: `items.face_version` records it. Bump it when the
-/// model file, [`INPUT`], or the threshold or overlap limit in `decode` changes; every
+/// model file, [`INPUT`] or [`CLOSE_UP_INPUT`], or the threshold or overlap limit in
+/// `decode` changes; every
 /// photo is then detected again, as `EXIF_VERSION` re-reads metadata.
 pub const DETECTOR_VERSION: i64 = 1;
 
@@ -68,18 +79,24 @@ fn check_lengths(level: &Level<'_>, side: usize) -> Result<()> {
 
 type Run = dyn Fn(Tensor) -> TractResult<TVec<TValue>> + Send + Sync;
 
-/// The loaded model. Parsing and optimising it takes about 25 ms, so a pass makes one and
-/// shares it between its workers.
-pub struct Detector {
+/// The model optimised for one input size.
+struct Plan {
+    side: usize,
     run: Box<Run>,
+}
+
+/// The loaded model, once for each of the two sizes it is run at. Parsing and optimising
+/// them takes about 50 ms, so a pass makes one and shares it between its workers.
+pub struct Detector {
+    plans: [Plan; 2],
 }
 
 fn model_error(err: impl std::fmt::Display) -> Error {
     Error::FaceModel(err.to_string())
 }
 
-impl Detector {
-    pub fn new() -> Result<Self> {
+impl Plan {
+    fn new(side: usize) -> Result<Self> {
         // The file declares a 640 input and the shapes that follow from it; left in, tract
         // refuses any other size ("Impossible to unify 320 with 160").
         let model = tract_onnx::onnx()
@@ -87,41 +104,45 @@ impl Detector {
             .with_ignore_value_info(true)
             .model_for_read(&mut std::io::Cursor::new(MODEL))
             .map_err(model_error)?
-            .with_input_fact(0, f32::fact([1, 3, INPUT, INPUT]).into())
+            .with_input_fact(0, f32::fact([1, 3, side, side]).into())
             .map_err(model_error)?
             .into_optimized()
             .map_err(model_error)?
             .into_runnable()
             .map_err(model_error)?;
         Ok(Self {
+            side,
             run: Box::new(move |input| model.run(tvec!(input.into()))),
         })
     }
 
-    /// The faces in `image`, strongest first.
-    pub fn detect(&self, image: &DynamicImage) -> Result<Vec<Detection>> {
+    /// The faces this size finds in `image`, over the threshold and not yet suppressed, in
+    /// fractions of the image and unclamped: the two runs fit the image to different
+    /// sizes, and a fraction of the image is the one unit both can be compared in.
+    fn detect(&self, image: &DynamicImage, out: &mut Vec<Raw>) -> Result<()> {
+        let side = self.side;
         // Scaled down to fit and never up: a face is found by its size in pixels, and
         // enlarging a small picture only invents them.
-        let fitted = crate::decode::shrink_within(image, INPUT as u32).to_rgb8();
+        let fitted = crate::decode::shrink_within(image, side as u32).to_rgb8();
         // Top left of a black square, as the model was trained: BGR, 0..255, planar.
-        let plane = INPUT * INPUT;
+        let plane = side * side;
         let mut input = vec![0f32; 3 * plane];
         for (x, y, px) in fitted.enumerate_pixels() {
-            let at = y as usize * INPUT + x as usize;
+            let at = y as usize * side + x as usize;
             input[at] = px[2] as f32;
             input[plane + at] = px[1] as f32;
             input[2 * plane + at] = px[0] as f32;
         }
-        let tensor: Tensor = tract_ndarray::Array4::from_shape_vec((1, 3, INPUT, INPUT), input)
+        let tensor: Tensor = tract_ndarray::Array4::from_shape_vec((1, 3, side, side), input)
             .map_err(model_error)?
             .into();
-        let out = (self.run)(tensor).map_err(model_error)?;
+        let found = (self.run)(tensor).map_err(model_error)?;
         // Twelve outputs: class, object, box and landmarks, each at the three strides.
-        if out.len() != 12 {
-            return Err(model_error(format!("{} outputs, expected 12", out.len())));
+        if found.len() != 12 {
+            return Err(model_error(format!("{} outputs, expected 12", found.len())));
         }
         let flat = |i: usize| -> Result<Vec<f32>> {
-            Ok(out[i]
+            Ok(found[i]
                 .to_plain_array_view::<f32>()
                 .map_err(model_error)?
                 .iter()
@@ -138,21 +159,41 @@ impl Detector {
                 bbox: &bbox,
                 kps: &kps,
             };
-            check_lengths(&level, INPUT)?;
-            decode::decode_level(&level, INPUT, SCORE_THRESHOLD, &mut raw);
+            check_lengths(&level, side)?;
+            decode::decode_level(&level, side, SCORE_THRESHOLD, &mut raw);
         }
         let (w, h) = (fitted.width() as f32, fitted.height() as f32);
-        let unit = |v: f32, of: f32| (v / of).clamp(0.0, 1.0);
+        out.extend(raw.into_iter().map(|f| f.in_units_of(w, h)));
+        Ok(())
+    }
+}
+
+impl Detector {
+    pub fn new() -> Result<Self> {
+        Ok(Self {
+            plans: [Plan::new(INPUT)?, Plan::new(CLOSE_UP_INPUT)?],
+        })
+    }
+
+    /// The faces in `image`, strongest first.
+    pub fn detect(&self, image: &DynamicImage) -> Result<Vec<Detection>> {
+        let mut raw: Vec<Raw> = Vec::new();
+        for plan in &self.plans {
+            plan.detect(image, &mut raw)?;
+        }
+        // One suppression over both runs' faces, not one each: a face both sizes find is
+        // drawn slightly differently by each, and must come out once.
+        let unit = |v: f32| v.clamp(0.0, 1.0);
         Ok(decode::suppress(raw, MAX_IOU)
             .into_iter()
             .map(|f| Detection {
                 rect: Rect {
-                    left: unit(f.x, w) as f64,
-                    top: unit(f.y, h) as f64,
-                    right: unit(f.x + f.w, w) as f64,
-                    bottom: unit(f.y + f.h, h) as f64,
+                    left: unit(f.x) as f64,
+                    top: unit(f.y) as f64,
+                    right: unit(f.x + f.w) as f64,
+                    bottom: unit(f.y + f.h) as f64,
                 },
-                landmarks: f.landmarks.map(|(x, y)| (unit(x, w), unit(y, h))),
+                landmarks: f.landmarks.map(|(x, y)| (unit(x), unit(y))),
                 score: f.score,
             })
             .collect())
@@ -239,14 +280,80 @@ mod tests {
         }
     }
 
-    /// A picture smaller than the input is padded, never scaled up, and its fractions are
-    /// still of the picture. A third of the size, the same face.
+    /// A picture no larger than the input is padded, never scaled up, and its fractions are
+    /// still of the picture. A third of the size - which fits even the small input, so
+    /// neither run scales it - the same face.
     #[test]
     fn a_small_picture_is_not_scaled_up() {
         let small = portrait().resize(320, 320, image::imageops::FilterType::Triangle);
         assert_eq!(small.dimensions(), (320, 213));
         let faces = Detector::new().unwrap().detect(&small).unwrap();
         assert_the_portraits_face(&faces);
+    }
+
+    /// A face that fills the frame, as a head shot or a selfie does: the portrait cropped to
+    /// its face and a fifth of the face's size around it (the bottom runs out first, so the
+    /// face is three quarters of the frame's height), at a preview's 1600 px. At the large
+    /// input alone this face, about 940 px tall there, is not found at all; the small run is
+    /// what finds it.
+    #[test]
+    fn a_face_that_fills_the_frame_is_found() {
+        let (x, y, w, h) = (242, 45, 432, 595);
+        let close_up = portrait().crop_imm(x, y, w, h).resize(
+            1600,
+            1600,
+            image::imageops::FilterType::CatmullRom,
+        );
+        assert_eq!(close_up.dimensions(), (1162, 1600));
+        let faces = Detector::new().unwrap().detect(&close_up).unwrap();
+        assert_eq!(faces.len(), 1, "{faces:?}");
+        // The portrait's face, in fractions of the crop.
+        let r = faces[0].rect;
+        for (got, want) in [
+            (r.left, (0.317 * 960.0 - x as f64) / w as f64),
+            (r.top, (0.209 * 640.0 - y as f64) / h as f64),
+            (r.right, (0.638 * 960.0 - x as f64) / w as f64),
+            (r.bottom, (0.896 * 640.0 - y as f64) / h as f64),
+        ] {
+            assert!((got - want).abs() < 0.05, "{r:?}");
+        }
+    }
+
+    /// A preview is 1600 px, so the pass always hands over a picture that is scaled down to
+    /// the input: the same face, in fractions of the picture given and not of the input.
+    #[test]
+    fn a_picture_larger_than_the_input_is_scaled_down() {
+        let large = portrait().resize(1600, 1600, image::imageops::FilterType::CatmullRom);
+        assert_eq!(large.dimensions(), (1600, 1067));
+        assert_the_portraits_face(&Detector::new().unwrap().detect(&large).unwrap());
+    }
+
+    /// A small face in a large picture, which only the large input finds (it is 10 px wide
+    /// at the small one): the portrait at a sixth of its size, low and to the right of a
+    /// black 1600 px picture. Away from the top left so that a fraction taken of anything
+    /// but the picture as it was scaled to the input lands visibly elsewhere, and held to
+    /// a tolerance that suits a face 0.03 of the picture wide.
+    #[test]
+    fn a_small_face_in_a_large_picture_is_found_where_it_is() {
+        let small = portrait().resize(160, 160, image::imageops::FilterType::CatmullRom);
+        assert_eq!(small.dimensions(), (160, 107));
+        let (at_x, at_y) = (1200, 700);
+        let mut canvas = image::RgbImage::new(1600, 1067);
+        image::imageops::overlay(&mut canvas, &small.to_rgb8(), at_x, at_y);
+        let faces = Detector::new()
+            .unwrap()
+            .detect(&DynamicImage::ImageRgb8(canvas))
+            .unwrap();
+        assert_eq!(faces.len(), 1, "{faces:?}");
+        let r = faces[0].rect;
+        for (got, want) in [
+            (r.left, (at_x as f64 + 0.317 * 160.0) / 1600.0),
+            (r.top, (at_y as f64 + 0.209 * 107.0) / 1067.0),
+            (r.right, (at_x as f64 + 0.638 * 160.0) / 1600.0),
+            (r.bottom, (at_y as f64 + 0.896 * 107.0) / 1067.0),
+        ] {
+            assert!((got - want).abs() < 0.01, "{r:?}");
+        }
     }
 
     /// A strip whose short side would scale to under a pixel, and a single pixel: neither
@@ -299,7 +406,7 @@ mod tests {
         assert!(level(&cls, &obj[1..], &bbox, &kps).is_err());
     }
 
-    /// The bundled model parses and optimises at the input size the pass uses. This is the
+    /// The bundled model parses and optimises at both input sizes the pass uses. This is the
     /// test CI runs on Windows and macOS to show `tract` builds and runs there at all.
     #[test]
     fn the_bundled_model_loads() {
