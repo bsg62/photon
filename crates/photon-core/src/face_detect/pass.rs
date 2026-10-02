@@ -18,6 +18,9 @@ pub const BATCH: usize = 64;
 /// What finds the faces in a preview: `Detector::detect`, or a test's stand-in.
 pub type Detect<'a> = dyn Fn(&DynamicImage) -> Result<Vec<Detection>> + Sync + 'a;
 
+/// What hands over a candidate's preview: the cache, or a test's stand-in.
+type Read<'a> = dyn Fn(&FaceCandidate) -> Result<DynamicImage> + Sync + 'a;
+
 /// Half the machine's cores, at least one and at most four. A worker holds 100-120 MB at
 /// the detector's input size (measured: 159 MB with one, 501 MB with four), so the cap is
 /// what bounds the pass's memory; the half is what leaves the machine usable for the
@@ -43,6 +46,7 @@ pub fn run(
     cancel: &(dyn Fn() -> bool + Sync),
     on_batch: &mut dyn FnMut(usize),
 ) -> Result<usize> {
+    let read = |candidate: &FaceCandidate| cache.read(candidate.thumb_key, ThumbSize::Preview);
     let mut after = 0;
     let mut total = 0;
     while !cancel() {
@@ -51,7 +55,7 @@ pub fn run(
             break;
         };
         after = last.id;
-        let found = detect_batch(&candidates, cache, workers, detect, cancel);
+        let found = detect_batch(&candidates, &read, workers, detect, cancel);
         let batch: Vec<(FaceCandidate, Vec<Detection>)> = candidates
             .into_iter()
             .zip(found)
@@ -68,7 +72,7 @@ pub fn run(
 /// at (its preview unreadable, or the pass cancelled before its turn).
 fn detect_batch(
     candidates: &[FaceCandidate],
-    cache: &ThumbCache,
+    read: &Read<'_>,
     workers: usize,
     detect: &Detect<'_>,
     cancel: &(dyn Fn() -> bool + Sync),
@@ -86,7 +90,7 @@ fn detect_batch(
                     let Some(candidate) = candidates.get(i) else {
                         return;
                     };
-                    let faces = detect_one(candidate, cache, detect);
+                    let faces = detect_one(candidate, read, detect);
                     found.lock().unwrap_or_else(|e| e.into_inner())[i] = faces;
                 }
             });
@@ -97,7 +101,7 @@ fn detect_batch(
 
 fn detect_one(
     candidate: &FaceCandidate,
-    cache: &ThumbCache,
+    read: &Read<'_>,
     detect: &Detect<'_>,
 ) -> Option<Vec<Detection>> {
     // A candidate's thumbnail is `Ready`, which is set only once its files exist, and they
@@ -106,10 +110,23 @@ fn detect_one(
     // detected once the preview is back. A file libwebp refuses is permanent - `is_complete`
     // only checks that it exists, so it is never re-rendered - and costs one failed read
     // per pass. The look-alike pass leaves an unreadable thumbnail the same way.
-    let preview = match cache.read(candidate.thumb_key, ThumbSize::Preview) {
-        Ok(preview) => preview,
-        Err(err) => {
+    //
+    // The read is guarded as the detection is, apart from it because the two end
+    // differently: decoding goes through a crate that is not ours, and a panic there,
+    // unguarded, unwinds the pass's thread - no batch after it, no last progress event,
+    // and the same on every pass, since the same file is read first again. A file that
+    // panics is treated as one that cannot be read: skipped, and still a candidate.
+    let preview = match catch_unwind(AssertUnwindSafe(|| read(candidate))) {
+        Ok(Ok(preview)) => preview,
+        Ok(Err(err)) => {
             tracing::debug!(id = candidate.id, %err, "could not read a preview to detect faces");
+            return None;
+        }
+        Err(_) => {
+            tracing::warn!(
+                id = candidate.id,
+                "reading a preview to detect faces panicked"
+            );
             return None;
         }
     };
@@ -148,6 +165,12 @@ mod tests {
 
     /// `n` photos, thumbnails ready and cached, the setting on.
     fn fixture(n: usize) -> Fixture {
+        fixture_with(n, |_| RgbImage::new(64, 48))
+    }
+
+    /// The same, each photo's preview made by `preview` from its place in id order. (The
+    /// cache does not write over a file it has, so a test cannot swap one in afterwards.)
+    fn fixture_with(n: usize, preview: impl Fn(usize) -> RgbImage) -> Fixture {
         let (dir, lib) = temp_library();
         let cache = ThumbCache::new(dir.path().join("thumbs"));
         let (_, folder) = seed_folder(&lib, dir.path());
@@ -159,8 +182,8 @@ mod tests {
         for id in &ids {
             lib.set_thumb_state(*id, ThumbState::Ready, None).unwrap();
         }
-        let picture = DynamicImage::ImageRgb8(RgbImage::new(64, 48));
-        for c in lib.face_candidates(0, n, V).unwrap() {
+        for (i, c) in lib.face_candidates(0, n, V).unwrap().iter().enumerate() {
+            let picture = DynamicImage::ImageRgb8(preview(i));
             cache.store(c.thumb_key, &picture, &picture).unwrap();
         }
         Fixture {
@@ -246,6 +269,57 @@ mod tests {
         assert_eq!(written, 3);
         assert_eq!(faces(&f), 2);
         assert!(f.lib.face_candidates(0, 10, V).unwrap().is_empty());
+    }
+
+    /// A preview whose decode panics is skipped like one that cannot be read: the photos
+    /// around it are detected, it is not, and the pass's thread survives it.
+    #[test]
+    fn a_panic_reading_a_preview_skips_the_photo() {
+        let f = fixture(3);
+        let candidates = f.lib.face_candidates(0, 10, V).unwrap();
+        let bad = candidates[1].id;
+        let read = |c: &FaceCandidate| {
+            if c.id == bad {
+                panic!("a preview the decoder cannot take");
+            }
+            f.cache.read(c.thumb_key, ThumbSize::Preview)
+        };
+        let found = detect_batch(&candidates, &read, 1, &one_face, &never);
+        assert_eq!(
+            found
+                .iter()
+                .map(|f| f.as_ref().map(Vec::len))
+                .collect::<Vec<_>>(),
+            [Some(1), None, Some(1)]
+        );
+    }
+
+    /// Each photo gets the faces found in its own preview. The workers finish in an order
+    /// that is not the candidates' - here the earliest photos are the slowest - so an
+    /// answer filed by when it arrived, rather than by whose it is, lands on another photo.
+    /// Every preview has a width of its own and the stand-in answers with it.
+    #[test]
+    fn each_photo_is_given_its_own_faces() {
+        let width = |i: usize| 16 + 4 * i as u32;
+        let f = fixture_with(12, |i| RgbImage::new(width(i), 8));
+        let candidates = f.lib.face_candidates(0, 100, V).unwrap();
+        assert_eq!(candidates.len(), 12);
+        let detect = |img: &DynamicImage| {
+            let slowest_first = (width(12) - img.width()) as u64;
+            std::thread::sleep(std::time::Duration::from_millis(slowest_first));
+            let mut faces = one_face(img)?;
+            faces[0].rect.left = img.width() as f64 / 1000.0;
+            Ok(faces)
+        };
+        assert_eq!(
+            run(&f.lib, &f.cache, V, 3, &detect, &never, &mut |_| {}).unwrap(),
+            12
+        );
+        for (i, c) in candidates.iter().enumerate() {
+            let stored = f.lib.item_detected_faces(c.id).unwrap();
+            assert_eq!(stored.len(), 1);
+            assert_eq!(stored[0].left, width(i) as f64 / 1000.0, "photo {i}");
+        }
     }
 
     #[test]
