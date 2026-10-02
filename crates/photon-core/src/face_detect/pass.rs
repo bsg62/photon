@@ -32,7 +32,8 @@ pub fn workers() -> usize {
 ///
 /// **Pages by id.** A photo whose preview cannot be read is skipped without being written,
 /// so it is still a candidate - asked for again from the start, it would be handed back for
-/// ever. From after the last id read, it waits for the next pass.
+/// ever. Paging on from the last id read ends this pass; the next pass asks again, which
+/// is when a preview that has come back (a cleared cache rendered anew) is detected.
 pub fn run(
     lib: &Library,
     cache: &ThumbCache,
@@ -99,8 +100,12 @@ fn detect_one(
     cache: &ThumbCache,
     detect: &Detect<'_>,
 ) -> Option<Vec<Detection>> {
-    // Unreadable is usually a cache still being written: left a candidate, as the
-    // look-alike pass leaves a thumbnail it cannot read.
+    // A candidate's thumbnail is `Ready`, which is set only once its files exist, and they
+    // are renamed into place, so a half-written one is not the cause. A removed file (the
+    // cache cleared, or collected after the row moved on) is: left a candidate, it is
+    // detected once the preview is back. A file libwebp refuses is permanent - `is_complete`
+    // only checks that it exists, so it is never re-rendered - and costs one failed read
+    // per pass. The look-alike pass leaves an unreadable thumbnail the same way.
     let preview = match cache.read(candidate.thumb_key, ThumbSize::Preview) {
         Ok(preview) => preview,
         Err(err) => {
