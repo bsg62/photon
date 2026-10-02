@@ -1729,8 +1729,9 @@ impl Engine {
         }
     }
 
-    /// Background start-up work: build the first grid, watch `pictures` if the library is
-    /// empty, queue pending thumbnails, rescan every folder, then collect thumbnail garbage.
+    /// Background start-up work: build the first grid, take up an unfinished face pass,
+    /// watch `pictures` if the library is empty, queue pending thumbnails, rescan every
+    /// folder, then collect thumbnail garbage.
     ///
     /// Checks `shutting_down` before each step, and before garbage collection, so a
     /// `shutdown` racing start-up stops it promptly instead of letting it run to
@@ -1755,6 +1756,13 @@ impl Engine {
                 if shutting_down() {
                     return;
                 }
+                // A face pass left unfinished by the last session, taken up without
+                // waiting for a scan to ask: a scan that finds its root still offline
+                // asks for nothing (`run_scan`), so with every drive unplugged no scan
+                // would, and the pass reads only photon's own cache, which is here
+                // whatever is plugged in. Nothing with the switch off, and one query on a
+                // library already detected.
+                engine.request_face_pass();
                 match engine.lib.watched_folders() {
                     Ok(watched) if watched.is_empty() => {
                         if let Some(pictures) = pictures.filter(|p| p.is_dir())
@@ -1958,15 +1966,38 @@ impl Engine {
         }
     }
 
+    /// One pass over the photos nobody has looked at, reporting as it goes.
+    ///
+    /// It asks for a single candidate before anything else, for two reasons. A pass is
+    /// requested at the end of every scan and every time the thumbnail queue goes quiet,
+    /// and on a library already detected each of those would otherwise load the model
+    /// (about 50 ms) to find it has nothing to do. And a pass that has work says so at
+    /// once: the next report comes with the first batch written, which is eight seconds
+    /// away on four workers and a minute on a small machine, long enough for someone who
+    /// has just ticked the box to conclude nothing happened and tick it again.
     fn run_face_pass(&self) {
         use photon_core::face_detect::{DETECTOR_VERSION, Detector, pass};
         if self.face_cancelled() {
             return;
         }
+        match self.lib.face_candidates(0, 1, DETECTOR_VERSION) {
+            Ok(candidates) if candidates.is_empty() => {
+                self.end_face_pass(false);
+                return;
+            }
+            Ok(_) => self.send_face_progress(true),
+            Err(err) => {
+                tracing::warn!(%err, "could not list the photos to find faces in");
+                self.end_face_pass(false);
+                return;
+            }
+        }
         let detector = match Detector::new() {
             Ok(detector) => detector,
             Err(err) => {
                 tracing::warn!(%err, "the face detector could not be loaded");
+                // The pass has said it is running; this takes that back.
+                self.end_face_pass(false);
                 return;
             }
         };
@@ -2004,17 +2035,30 @@ impl Engine {
         if let Err(err) = result {
             tracing::warn!(%err, "the face pass failed");
         }
-        if unshown && let Err(err) = self.refresh_grid_derived() {
+        self.end_face_pass(unshown);
+    }
+
+    /// The end of a pass: the rebuild it owes the grid when `unshown` detections were
+    /// written, and its last word.
+    fn end_face_pass(&self, unshown: bool) {
+        // A pass ended by the quit owes nobody either: the rebuild and the count are each
+        // a query over the whole library, run inside the time `shutdown` waits for this
+        // thread, for a window that is closing. What it wrote is shown at the next launch.
+        let quitting = self.shutting_down.load(Ordering::SeqCst);
+        if unshown
+            && !quitting
+            && let Err(err) = self.refresh_grid_derived()
+        {
             tracing::warn!(%err, "grid refresh failed");
         }
         // The pass's last word says it is not running, whatever it did. After a
         // switch-off that is the cleared line again, although the command has sent one:
         // the batch the switch interrupted still reports, as running, and a report the
         // command's line overtook would otherwise be left standing.
-        if self.face_enabled.load(Ordering::SeqCst) {
-            self.send_face_progress(false);
-        } else {
+        if !self.face_enabled.load(Ordering::SeqCst) {
             self.events.face_progress(FACE_PROGRESS_CLEARED);
+        } else if !quitting {
+            self.send_face_progress(false);
         }
     }
 
@@ -2178,7 +2222,9 @@ impl Engine {
         let deadline = Instant::now() + budget;
         while self.background_passes.load(Ordering::SeqCst) > 0 {
             if Instant::now() >= deadline {
-                tracing::warn!("a requested look-alike pass did not stop in time; detaching it");
+                tracing::warn!(
+                    "a requested look-alike or face pass did not stop in time; detaching it"
+                );
                 break;
             }
             std::thread::sleep(Duration::from_millis(5));
@@ -3493,21 +3539,156 @@ mod tests {
     }
 
     /// With nothing to detect the pass still ends with an event that says it is not
-    /// running, so a progress line cannot be left standing.
+    /// running, so a progress line cannot be left standing - and says nothing else: a
+    /// pass that claimed to be running first would flash the line on every scan of a
+    /// library already detected.
     #[test]
-    fn a_pass_with_nothing_to_do_still_says_it_ended() {
+    fn a_pass_with_nothing_to_do_says_only_that_it_ended() {
         let f = fixture(&[]);
         f.engine.set_face_detection(true).unwrap();
         f.engine.wait_for_passes();
         assert_eq!(
-            face_events(&f).last(),
-            Some(&FaceProgress {
+            face_events(&f),
+            [FaceProgress {
                 checked: 0,
                 total: 0,
                 running: false
-            }),
-            "no face progress was sent, or the last one says the pass is still running"
+            }],
+            "no face progress was sent, or one says the pass is running"
         );
+    }
+
+    /// A pass with work to do says so before it has done any: its first event is running
+    /// with nothing checked yet, not the first batch's report, which on a real library is
+    /// a batch of 64 detections away.
+    #[test]
+    fn a_pass_with_work_says_it_is_running_before_its_first_batch() {
+        let f = fixture(&[("a/face.jpg", &portrait_jpeg())]);
+        scanned(&f);
+        f.engine.set_face_detection(true).unwrap();
+        f.engine.wait_for_passes();
+        let events = face_events(&f);
+        assert_eq!(
+            events.first(),
+            Some(&FaceProgress {
+                checked: 0,
+                total: 1,
+                running: true
+            }),
+            "{events:?}"
+        );
+        assert_eq!(
+            events.last(),
+            Some(&FaceProgress {
+                checked: 1,
+                total: 1,
+                running: false
+            }),
+            "{events:?}"
+        );
+    }
+
+    /// Records like `Recorder`, and quits the engine it is given at the second face event
+    /// that says a pass is running: the report after the first batch, the first being the
+    /// one a pass with work opens with. That is the one place a test can stand between a
+    /// batch's write and the end of its pass.
+    #[derive(Default)]
+    struct QuitAfterABatch {
+        engine: std::sync::OnceLock<std::sync::Weak<Engine>>,
+        running: AtomicUsize,
+        recorded: Mutex<Vec<Recorded>>,
+    }
+
+    impl Events for QuitAfterABatch {
+        fn library_changed(&self, e: LibraryChanged) {
+            self.recorded.lock().push(Recorded::Library(e));
+        }
+        fn scan_progress(&self, _: ScanProgressEvent) {}
+        fn folder_status(&self, _: FolderStatus) {}
+        fn export_progress(&self, _: ExportProgress) {}
+        fn face_progress(&self, e: FaceProgress) {
+            self.recorded.lock().push(Recorded::Face(e));
+            if e.running
+                && self.running.fetch_add(1, Ordering::SeqCst) == 1
+                && let Some(engine) = self.engine.get().and_then(|e| e.upgrade())
+            {
+                engine.shutting_down.store(true, Ordering::SeqCst);
+            }
+        }
+    }
+
+    /// A pass the quit ends leaves without its rebuild and without its last count: each
+    /// reads the whole library, inside the time `shutdown` waits for the pass, and nobody
+    /// is left to see either. The batch it wrote stays written.
+    #[test]
+    fn a_pass_ended_by_the_quit_neither_rebuilds_nor_counts() {
+        let f = fixture(&[("a/face.jpg", &portrait_jpeg())]);
+        scanned(&f);
+        let ids = f.ids();
+        f.engine.shutdown();
+
+        let sink = Arc::new(QuitAfterABatch::default());
+        let engine = Engine::open(f.config(), sink.clone()).unwrap();
+        sink.engine.set(Arc::downgrade(&engine)).ok().unwrap();
+        engine.set_face_detection(true).unwrap();
+        engine.wait_for_passes();
+
+        let written: usize = ids
+            .iter()
+            .map(|id| engine.lib.item_detected_faces(*id).unwrap().len())
+            .sum();
+        assert_eq!(written, 1, "the pass did not get as far as its batch");
+        let recorded = sink.recorded.lock().clone();
+        let running = FaceProgress {
+            checked: 0,
+            total: 1,
+            running: true,
+        };
+        let after_the_batch = FaceProgress {
+            checked: 1,
+            ..running
+        };
+        assert_eq!(
+            recorded,
+            [Recorded::Face(running), Recorded::Face(after_the_batch)],
+            "the pass rebuilt the grid or counted the library on its way out"
+        );
+        engine.shutdown();
+    }
+
+    /// A launch with every drive unplugged still takes up the pass the last session left:
+    /// the scan of a root that is still offline asks for no pass, and the previews are in
+    /// photon's own cache. Here the photo was scanned and thumbnailed with the switch off,
+    /// its folder then went away, and the switch is on in the database alone, as it is at
+    /// the next launch.
+    #[test]
+    fn startup_takes_up_the_face_pass_with_every_root_offline() {
+        let f = fixture(&[("a/face.jpg", &portrait_jpeg())]);
+        scanned(&f);
+        let ids = f.ids();
+        let watched = f.engine.lib.watched_folders().unwrap().remove(0);
+        std::fs::rename(&f.photos, f.dir.path().join("unplugged")).unwrap();
+        f.engine.start_scan(watched);
+        f.settle();
+        let watched = f.engine.lib.watched_folders().unwrap().remove(0);
+        assert!(!watched.online, "the scan did not find the root gone");
+        f.engine.lib.set_face_detection(true).unwrap();
+        f.engine.shutdown();
+
+        let reopened =
+            Engine::open(f.config(), Arc::new(crate::events::Recorder::default())).unwrap();
+        // A settle nothing reaches: the thumbnail queue going quiet must not be what asks.
+        reopened.start_thumb_hashing(Duration::from_secs(3600));
+        reopened.startup(None);
+        reopened.wait_for_startup();
+        reopened.wait_for_passes();
+
+        let detected: usize = ids
+            .iter()
+            .map(|id| reopened.lib.item_detected_faces(*id).unwrap().len())
+            .sum();
+        assert_eq!(detected, 1);
+        reopened.shutdown();
     }
 
     /// The pass ends with what it reached, running false.
