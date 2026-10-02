@@ -114,7 +114,7 @@ fn detect_one(
     // The read is guarded as the detection is, apart from it because the two end
     // differently: decoding goes through a crate that is not ours, and a panic there,
     // unguarded, unwinds the pass's thread - no batch after it, no last progress event,
-    // and the same on every pass, since the same file is read first again. A file that
+    // and the same on every pass, each of which comes to the same file. A file that
     // panics is treated as one that cannot be read: skipped, and still a candidate.
     let preview = match catch_unwind(AssertUnwindSafe(|| read(candidate))) {
         Ok(Ok(preview)) => preview,

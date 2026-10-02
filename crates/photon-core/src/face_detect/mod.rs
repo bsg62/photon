@@ -19,14 +19,13 @@ static MODEL: &[u8] = include_bytes!("../../models/face_detection_yunet_2023mar.
 /// the edge, and at 320 the 29 people of the spike's test photograph came out as one.
 pub const INPUT: usize = 1280;
 
-/// The side of a second run, for the face [`INPUT`] is too large for. The model's coarsest
-/// level has a stride of 32 and was trained at 320 and 640, so a face that fills the frame
-/// at 1280 is larger than anything it has a cell for. Measured 2026-10-02 on crops of the
+/// The side of a second run, for the face [`INPUT`] is too large for: the model stops
+/// finding a face once it is big enough in pixels. Measured 2026-10-02 on crops of the
 /// test portrait, by the face's height at a 1280 input: 480-590 px is found at 0.90-0.93,
 /// 690 px at 0.82, 720-830 px at 0.76-0.78 with the box drawn too small, and 880-910 px
 /// is not found at all - a head shot, a selfie. The same crops at 320 or 640 are found at
 /// 0.89-0.95. 320 rather than 640 because it costs a sixteenth of the large run where 640
-/// costs a quarter, and the faces it is for are a quarter of the frame or more.
+/// costs a quarter, and the faces it is for are still hundreds of pixels tall at it.
 pub const CLOSE_UP_INPUT: usize = 320;
 
 /// Which detector looked at a photo: `items.face_version` records it. Bump it when the

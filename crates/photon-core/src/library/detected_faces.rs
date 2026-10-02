@@ -31,8 +31,15 @@ pub struct FaceCandidate {
 /// Not `w.online = 1`, unlike that pass's list: the preview is in photon's own cache, so a
 /// drive that is unplugged can still be detected.
 ///
-/// The `+` keeps this a walk of the table by id. Without statistics the bare term has
-/// SQLite walk a partial index on that predicate instead (`library/mod.rs`).
+/// The `+` keeps this a walk of the table by id from the id given. With the bare term the
+/// plan is `SEARCH items USING INDEX items_pending (thumb_state=? AND rowid>?)`: this
+/// query names `thumb_state`, so the partial index SQLite takes is that one and not
+/// `items_size`. That walk is in id order too, so the harm `library/mod.rs` describes for
+/// the bare term - `items_size`, in random table order - is not this query's. What the `+`
+/// buys here is the table read once rather than an index entry and then its row for each
+/// photo, when nearly every live photo's thumbnail is ready; where few are, the index
+/// would skip the rest. Neither has been timed, so the `+` is the convention for a
+/// whole-library read, kept, not a measured saving.
 const CANDIDATES_SQL: &str = "SELECT id, path, size, mtime_ms, edit_turns, edit_crop FROM items
      WHERE id > ?1 AND +missing_since IS NULL AND thumb_state = 1
        -- A poster frame is not the video.
@@ -507,8 +514,11 @@ mod tests {
         assert_eq!(f32::from_le_bytes(blob[36..40].try_into().unwrap()), 1.0);
     }
 
-    /// The candidate list reads every live photo, so it must walk the table by id, not the
-    /// partial index `items_size` (`library/mod.rs` has why the bare term picks it).
+    /// The candidate list walks the table by id. Without the `+` it is
+    /// `SEARCH items USING INDEX items_pending (thumb_state=? AND rowid>?)` - still in id
+    /// order, an index entry and a row per photo instead of the row alone, and not timed
+    /// either way (see `CANDIDATES_SQL`). This pins which of the two it is, so the plan
+    /// cannot move without someone looking.
     #[test]
     fn the_candidate_list_walks_the_table_by_id() {
         let (_dir, lib) = temp_library();
