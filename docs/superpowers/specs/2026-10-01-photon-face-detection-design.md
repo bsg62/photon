@@ -415,8 +415,10 @@ itself, although the command has already sent one: the batch the switch interrup
 "running" after the command's event, and that report would otherwise be left standing.
 
 A pass asks for one candidate before it loads the model. With none it sends its last event
-and returns, so the pass requested after every scan of a finished library costs a query and
-not a model load. With one it sends a `running: true` event at once: the first batch's report
+and returns, so the pass requested after every scan of a finished library costs two queries (the
+candidate probe, which walks the table when nothing matches, and the count in that last
+event) and not a model load. A library holding a photo whose preview can never be read never
+gets this path, since that photo is always a candidate. With one it sends a `running: true` event at once: the first batch's report
 is 64 detections away, eight seconds on four workers and a minute on a small machine, and a
 switch that shows nothing for that long gets toggled again. A detector that fails to load
 sends the last event too. A pass the quit ends sends no last count and makes no rebuild; each

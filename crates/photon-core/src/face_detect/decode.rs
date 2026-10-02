@@ -24,10 +24,6 @@ pub(crate) struct Raw {
 }
 
 impl Raw {
-    /// The same face with every horizontal measure divided by `width` and every vertical
-    /// one by `height`. The overlap of two boxes is a ratio of areas, so it is the same in
-    /// these units as in pixels, which is what lets faces found at two input sizes be
-    /// suppressed together.
     /// Whether every number in it is one. A face with a box, a landmark or a score that is
     /// not cannot be stored - SQLite binds NaN as NULL, which the table's `NOT NULL`
     /// refuses, and the refusal takes the whole batch with it, on every pass after - and
@@ -40,6 +36,10 @@ impl Raw {
             .all(f32::is_finite)
     }
 
+    /// The same face with every horizontal measure divided by `width` and every vertical
+    /// one by `height`. The overlap of two boxes is a ratio of areas, so it is the same in
+    /// these units as in pixels, which is what lets faces found at two input sizes be
+    /// suppressed together.
     pub(crate) fn in_units_of(self, width: f32, height: f32) -> Self {
         Self {
             x: self.x / width,

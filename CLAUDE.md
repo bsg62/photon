@@ -462,7 +462,9 @@ is a candidate only once its preview exists; the scan's is the only one a runnin
 for a library whose thumbnails are all cached; and `startup`'s is what resumes an unfinished
 pass on a launch where every root is offline, whose scans request nothing. A pass asks for one
 candidate before it loads the model (`run_face_pass`): with none it sends its last event and
-leaves, which is what keeps the request after every scan cheap, and with one it reports
+leaves - two whole-library queries, the probe and the last event's count, and no model load,
+which is what keeps the request after every scan cheap (a library holding a photo whose
+preview can never be read never gets this path, that photo being always a candidate) - and with one it reports
 `running` at once, the next report being a whole batch away. A pass the quit ends skips its
 rebuild and its last count. The
 pass reads each photo's **cached 1600 px preview**, never the source, for the reason the perceptual hash reads the grid thumbnail: inside the
