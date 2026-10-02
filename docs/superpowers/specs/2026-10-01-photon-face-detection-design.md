@@ -1,6 +1,7 @@
 # Face detection
 
-2026-10-01. Designed in conversation the same day; awaiting review of this file.
+2026-10-01. Approved 2026-10-02; implemented on `feat/face-detection` (PR #146). Paragraphs
+marked **As built** record where the implementation departs from the design above them.
 
 ## What it is
 
@@ -102,6 +103,15 @@ single linkage. An embedding costs 50-64 ms per face.
 - Detection on real family photographs: children, profiles, faces partly hidden. LFW is press
   photographs of adults.
 
+### Limits found while building
+
+- **A face lying on its side is mostly missed.** Measured on the test fixture on 2026-10-02:
+  the portrait turned a quarter one way is found at 0.71, just over the threshold and with its
+  box about 0.1 off; turned the other way it is not found at all. The pass reads previews,
+  which have the EXIF orientation and photon's own turns applied, so this reaches only photos
+  stored sideways with no orientation tag. Turning such a photo in photon clears its detections
+  and its `face_version`, and it is detected again upright.
+
 ## Decisions
 
 - **Pure-Rust inference with `tract`.** The dependency rule stands. `tract`'s assembly is
@@ -162,6 +172,11 @@ photos are candidates, as they are for hashing, so unhiding is instant.
 The candidate query reads every live photo, so it writes `+missing_since IS NULL` and has a plan
 test.
 
+**As built.** The candidate query has no `online` condition, which the look-alike pass's list
+has: the preview is in photon's own cache, so the photos of an unplugged drive are detected.
+`face_progress`'s count also reads every live photo; it writes the `+` too and has its own plan
+test (without it the plan is a scan of `items_size`).
+
 ### Writers that clear a photo's detections
 
 Each deletes the photo's `detected_faces` rows and sets `face_version` to `NULL`:
@@ -207,6 +222,10 @@ impl Detector {
 `Detector::new` parses and optimises the model, about 25 ms, once per pass. A `Detector` is
 shared between the pass's workers.
 
+**As built.** `detect` takes a `&DynamicImage`, not an `&RgbImage`: the cache hands back RGBA
+for a photo with transparency and a greyscale picture is one channel, and converting is the
+detector's business. `DETECTOR_VERSION` also covers the overlap limit.
+
 `DETECTOR_VERSION` changes when the model, the input size or the threshold changes, which
 detects the whole library again, as `EXIF_VERSION` does for metadata.
 
@@ -250,6 +269,10 @@ It is counted in the counter `request_similar_pass` uses, renamed from `similar_
 it covers both, so `shutdown`'s bounded wait and the tests' `Fixture::settle` cover it without a
 second mechanism.
 
+**As built.** The counter is `background_passes`. Both passes are spawned through one
+function, `spawn_pass`, which counts the thread and refuses it once shutting down;
+`wait_for_similar_pass` and `stop_similar_pass` became `wait_for_passes` and `stop_passes`.
+
 It is requested:
 
 - at the end of every `run_scan` that requests the look-alike pass;
@@ -275,6 +298,12 @@ A preview that cannot be read or decoded is skipped and the row stays a candidat
 look-alike pass treats a thumbnail it cannot read. Paging by id is what keeps that from looping:
 a skipped photo is not read again until the next pass.
 
+**As built.** A candidate's thumbnail is ready, so its files existed and were renamed into
+place; the realistic causes of an unreadable preview are a file removed from the cache, which
+is detected once it is rendered again, and a file libwebp refuses. The second is permanent:
+nothing re-renders a file that exists, so it costs one failed read on every pass and the
+progress count stops short of the total by that photo.
+
 ### Two guards on the write
 
 - **The photo moved on.** A row whose thumbnail key (`Item::thumb_key`: fingerprint and edit) is
@@ -285,6 +314,10 @@ a skipped photo is not read again until the next pass.
   interleave: nothing is written after "off".
 
 Each has a test that fails with the guard removed.
+
+**As built.** The first guard compares what the key is made of rather than the key: the row is
+written only if its size, modification time and edit are still the ones listed and it is not
+missing.
 
 ### The refresh chain
 
@@ -300,11 +333,18 @@ pass rebuilds through `refresh_grid_derived` and does not move `counts_epoch`.
 Consequence: a photo already open in the viewer when its detection lands shows its outlines at
 the next rebuild, not at once. Any photo opened afterwards has them.
 
+**As built.** The rebuild at the end of the pass and its not announcing a data change are
+tested. The rebuild during the pass is not: its only trigger is a 30-second wait.
+
 ### Progress
 
 A `face_progress` event, throttled like scan progress, carries `checked` and `total` (live
 images with the current version, and live images). The last one of a pass carries
 `running: false`. `api.ts` mirrors it in the same commit.
+
+**As built.** A pass that ends with the switch off sends the cleared event (zeros, not running)
+itself, although the command has already sent one: the batch the switch interrupted can report
+"running" after the command's event, and that report would otherwise be left standing.
 
 ### Quitting
 
@@ -330,6 +370,17 @@ The engine keeps the setting in an atomic beside the stored value, set by the co
 at `open`, so the pass's cancel check does not read the database per photo. The batch
 transaction's own read of the stored setting is the authority.
 
+**As built.**
+
+- The setting is read by its own command, `face_detection`, as every other setting is, rather
+  than travelling with others. That makes two commands, each in the same five places.
+- The switch is in a Settings section of its own, People.
+- The mirror, the stored write and the mirror's restore when that write fails are serialised by
+  a mutex in the engine, `face_write`. Commands run concurrently, and two toggles close
+  together each moved the mirror and then queued for the library's writer in either order,
+  leaving the mirror on one answer and the database on the other. The lock is released before
+  the pass request, the rebuild and the event.
+
 ## Readers
 
 ### One rule for the faces on a photo
@@ -343,6 +394,10 @@ so they cannot disagree.
   other rectangle. Picasa's boxes and YuNet's are drawn to different tightness, which an
   overlap ratio would be sensitive to.
 - The result is every Picasa face, then every detection that matches none of them.
+
+**As built.** The function is the module `face_detect::merge`. Its `shown` is the single
+mapping of a Picasa rectangle into the picture as shown: the viewer's named faces go through
+it as well as the unnamed ones and search's count.
 
 ### A change for Picasa libraries
 
@@ -362,6 +417,10 @@ all.
 - **Faces must not reload the photo.** `pictureChanged` does not compare `faces` or
   `unnamedFaces`; a detection landing while the user looks at a photo must not blank it and
   reset the zoom. `picture.ts`'s tests gain that case.
+
+**As built.** No `picture.ts` test was added. `pictureChanged` takes a `Pick` of `ViewerItem`
+that has no face field, so it cannot see a face and there is no behaviour for a test to
+discriminate; the comment on the type says the omission is deliberate.
 
 ### Search
 
@@ -413,6 +472,10 @@ Every new test is shown to fail with its change reverted.
 - The overlap rule: two boxes over the limit keep the higher score; two under it keep both.
 - The letterbox mapping: the same face in a landscape and a portrait image maps back to the
   same fractions of each.
+  **As built:** the test that turned the portrait on its side was replaced by one that puts it
+  on a taller canvas, which moves the padding from the bottom of the input to its right just
+  the same. Turned, the test was measuring the model, which does not find a sideways face
+  reliably (see "Limits found while building").
 - End to end on the real model: a small CC0 portrait added as a fixture, credited as the
   screenshot photos are, yields one face about where it is; a landscape yields none.
 
@@ -440,13 +503,19 @@ Every new test is shown to fail with its change reverted.
 - `viewer_item`: named and unnamed faces for a photo with both, and with an edit.
 - Search: `has:face`, `faces:2`, `faces:2+`, `faces:0`, negation, a Picasa-only library, and
   that a query without the terms makes no side read.
-- `picture.ts`: a change in `unnamedFaces` is not a picture change.
+- `picture.ts`: a change in `unnamedFaces` is not a picture change. **As built:** not written;
+  see "The viewer".
 
 **What has no test**
 
 The viewer's outlines and the Settings switch are component markup and effect wiring; they are
 covered by `svelte-check`, the screenshots (`viewer-info-*` gains an unnamed face in `mock.js`,
 the Settings shot shows the switch) and the smoke checklist.
+
+**As built.** There is one viewer-info shot, `viewer-info-light` (the viewer is dark in both
+themes), and it shows the unnamed face. The switch is in its own Settings section, so the
+existing Settings shots cannot show it: one shot was added, `settings-people-light`, making
+twenty-nine.
 
 ## Rollout
 

@@ -239,8 +239,8 @@ mod tests {
         }
     }
 
-    /// Review focus 1: a picture smaller than the input is padded, never scaled up, and
-    /// its fractions are still of the picture. A third of the size, the same face.
+    /// A picture smaller than the input is padded, never scaled up, and its fractions are
+    /// still of the picture. A third of the size, the same face.
     #[test]
     fn a_small_picture_is_not_scaled_up() {
         let small = portrait().resize(320, 320, image::imageops::FilterType::Triangle);
@@ -249,7 +249,8 @@ mod tests {
         assert_the_portraits_face(&faces);
     }
 
-    /// Review focus 2: a strip whose short side would scale to under a pixel.
+    /// A strip whose short side would scale to under a pixel, and a single pixel: neither
+    /// may reach the model as an image with a side of zero.
     #[test]
     fn a_thin_strip_is_detected_without_a_zero_side() {
         let strip = DynamicImage::ImageRgb8(image::RgbImage::new(6400, 2));
@@ -258,8 +259,8 @@ mod tests {
         assert!(Detector::new().unwrap().detect(&dot).unwrap().is_empty());
     }
 
-    /// Review focus 3: the cache hands back RGBA for a photo with transparency, and a
-    /// greyscale picture is one channel. Both are the same face.
+    /// The cache hands back RGBA for a photo with transparency, and a greyscale picture is
+    /// one channel. Both are the same face.
     #[test]
     fn alpha_and_greyscale_pictures_are_read() {
         let detector = Detector::new().unwrap();
