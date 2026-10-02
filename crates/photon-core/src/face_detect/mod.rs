@@ -181,6 +181,9 @@ impl Detector {
         for plan in &self.plans {
             plan.detect(image, &mut raw)?;
         }
+        // Before anything compares or stores them: one such face would cost its neighbours
+        // in the suppression and its whole batch at the write.
+        raw.retain(Raw::is_finite);
         // One suppression over both runs' faces, not one each: a face both sizes find is
         // drawn slightly differently by each, and must come out once.
         let unit = |v: f32| v.clamp(0.0, 1.0);

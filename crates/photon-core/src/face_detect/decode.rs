@@ -28,6 +28,18 @@ impl Raw {
     /// one by `height`. The overlap of two boxes is a ratio of areas, so it is the same in
     /// these units as in pixels, which is what lets faces found at two input sizes be
     /// suppressed together.
+    /// Whether every number in it is one. A face with a box, a landmark or a score that is
+    /// not cannot be stored - SQLite binds NaN as NULL, which the table's `NOT NULL`
+    /// refuses, and the refusal takes the whole batch with it, on every pass after - and
+    /// in [`suppress`] its overlap with anything is NaN, which drops the face compared
+    /// with it.
+    pub(crate) fn is_finite(&self) -> bool {
+        [self.x, self.y, self.w, self.h, self.score]
+            .into_iter()
+            .chain(self.landmarks.into_iter().flat_map(|(x, y)| [x, y]))
+            .all(f32::is_finite)
+    }
+
     pub(crate) fn in_units_of(self, width: f32, height: f32) -> Self {
         Self {
             x: self.x / width,
@@ -58,7 +70,10 @@ pub(crate) fn decode_level(level: &Level<'_>, side: usize, threshold: f32, out: 
         // Clamped first: a sigmoid that rounds past 1 must not carry a weak partner over
         // the threshold.
         let score = (level.cls[n].clamp(0.0, 1.0) * level.obj[n].clamp(0.0, 1.0)).sqrt();
-        if score < threshold {
+        // Asked as "is it over", not "is it under": a score that is not a number is neither,
+        // and asked the other way round it would be kept.
+        let over = score >= threshold;
+        if !over {
             continue;
         }
         let (row, col) = ((n / cols) as f32, (n % cols) as f32);
@@ -206,6 +221,52 @@ mod tests {
         // Unclamped: sqrt(1.3 * 0.4) = 0.721. Clamped: sqrt(1.0 * 0.4) = 0.632.
         let c = cell(4, 6, 1.3, 0.4, [0.0; 4], [0.0; 10]);
         assert!(decode(&c, 16, 64).is_empty());
+    }
+
+    /// A class score that is not a number makes a score that is not one, which is not
+    /// "under the threshold" to a comparison. It is not a face.
+    #[test]
+    fn a_score_that_is_not_a_number_is_dropped() {
+        let c = cell(4, 6, f32::NAN, 1.0, [0.0; 4], [0.0; 10]);
+        assert!(decode(&c, 16, 64).is_empty());
+    }
+
+    /// Each of a face's numbers on its own: a box whose size overflowed `exp`, a landmark
+    /// and a coordinate that are not numbers, a score that is not.
+    #[test]
+    fn a_face_with_a_number_that_is_not_finite_is_told_apart() {
+        let good = raw(1.0, 2.0, 3.0, 4.0, 0.9);
+        assert!(good.is_finite());
+        for bad in [
+            Raw {
+                x: f32::NAN,
+                ..good.clone()
+            },
+            Raw {
+                y: f32::NEG_INFINITY,
+                ..good.clone()
+            },
+            Raw {
+                w: f32::INFINITY,
+                ..good.clone()
+            },
+            Raw {
+                h: f32::NAN,
+                ..good.clone()
+            },
+            Raw {
+                score: f32::NAN,
+                ..good.clone()
+            },
+        ] {
+            assert!(!bad.is_finite(), "{bad:?}");
+        }
+        let mut bad = good.clone();
+        bad.landmarks[4].1 = f32::NAN;
+        assert!(!bad.is_finite());
+        bad = good;
+        bad.landmarks[0].0 = f32::INFINITY;
+        assert!(!bad.is_finite());
     }
 
     fn raw(x: f32, y: f32, w: f32, h: f32, score: f32) -> Raw {
