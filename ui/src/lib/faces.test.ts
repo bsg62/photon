@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { containedBox, faceBox } from './faces';
+import { containedBox, faceBox, unnamedFacesLabel } from './faces';
 
 describe('containedBox', () => {
   it('fits a landscape photo to the frame width and centres it vertically', () => {
@@ -27,5 +27,16 @@ describe('faceBox', () => {
       width: 200,
       height: 300,
     });
+  });
+});
+
+describe('unnamedFacesLabel', () => {
+  it('says nothing for none', () => {
+    expect(unnamedFacesLabel(0)).toBeNull();
+  });
+  it('counts one and many', () => {
+    expect(unnamedFacesLabel(1)).toBe('1 face not named');
+    expect(unnamedFacesLabel(3)).toBe('3 faces not named');
+    expect(unnamedFacesLabel(1200)).toBe(`${(1200).toLocaleString()} faces not named`);
   });
 });

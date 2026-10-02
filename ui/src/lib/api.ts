@@ -107,6 +107,10 @@ export interface GridInfo {
 export interface GridRows { version: number; rows: GridEntry[] }
 /** Mirrors `commands::FolderIds`: one folder's photos, and the index version they are of. */
 export interface FolderIds { version: number; ids: number[] }
+
+/** Mirrors `face_detect::Rect`: fractions of the picture, from its left and top. */
+export interface FaceRect { left: number; top: number; right: number; bottom: number }
+
 /** A named Picasa face; the rectangle is fractions of the displayed (oriented) image. */
 export interface ItemFace { hash: string; name: string; left: number; top: number; right: number; bottom: number }
 export interface ViewerItem {
@@ -141,6 +145,9 @@ export interface ViewerItem {
   /** The caption the photo carries (XMP or IPTC), shown under it. */
   caption: string | null;
   faces: ItemFace[];
+  /** Faces with no name: Picasa's unnamed ones, then the ones photon detected that are none
+   *  of Picasa's. Fractions of the picture as shown, like `faces`. */
+  unnamedFaces: FaceRect[];
   /** A video plays; the viewer shows no zoom, crop or turn for it. */
   kind: 'image' | 'video';
   /** The video's running time, or null for a photo. */
@@ -156,7 +163,7 @@ export interface ViewerItem {
   uncroppedWidth: number;
   uncroppedHeight: number;
   /** What the user has done to the photo in photon; null for an untouched one. For an
-   *  edited photo `width`, `height`, `orientation` and `faces` describe the picture as
+   *  edited photo `width`, `height`, `orientation`, `faces` and `unnamedFaces` describe the picture as
    *  shown, because the edit is rendered into every image the backend serves. */
   edit: ItemEdit | null;
   /** Every date the photo has, for the info panel. */

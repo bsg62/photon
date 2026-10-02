@@ -1,4 +1,4 @@
-/** Placing Picasa's face rectangles over a photo shown with `object-fit: contain`. */
+/** Placing face rectangles over a photo shown with `object-fit: contain`. */
 
 import type { ItemFace } from './api';
 
@@ -32,4 +32,10 @@ export function faceBox(face: Pick<ItemFace, 'left' | 'top' | 'right' | 'bottom'
     width: (face.right - face.left) * image.width,
     height: (face.bottom - face.top) * image.height,
   };
+}
+
+/** The info panel's line for the faces that have no name, or null when there are none. */
+export function unnamedFacesLabel(count: number): string | null {
+  if (count <= 0) return null;
+  return count === 1 ? '1 face not named' : `${count.toLocaleString()} faces not named`;
 }

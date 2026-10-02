@@ -6,6 +6,7 @@
 
 use super::Library;
 use crate::Result;
+use crate::face_detect::Rect;
 use crate::picasa::Face;
 use rusqlite::{OptionalExtension, params};
 use serde::Serialize;
@@ -159,6 +160,32 @@ impl Library {
         Ok(())
     }
 
+    /// Every face Picasa recorded on one photo, in the unedited picture, with whether its
+    /// contact has a name. `item_faces` is the named ones, with the name; this is what the
+    /// merge with photon's own detections needs, where an unnamed face is still a face.
+    pub fn item_picasa_faces(&self, item_id: i64) -> Result<Vec<(Rect, bool)>> {
+        let conn = self.reader()?;
+        let mut stmt = conn.prepare_cached(
+            "SELECT f.left, f.top, f.right, f.bottom,
+                    EXISTS (SELECT 1 FROM contacts c WHERE c.hash = f.contact)
+             FROM faces f WHERE f.item_id = ?1 ORDER BY f.rowid",
+        )?;
+        let faces = stmt
+            .query_map(params![item_id], |r| {
+                Ok((
+                    Rect {
+                        left: r.get(0)?,
+                        top: r.get(1)?,
+                        right: r.get(2)?,
+                        bottom: r.get(3)?,
+                    },
+                    r.get(4)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(faces)
+    }
+
     /// The named faces on one photo, in the INI's order. A face whose contact no INI has
     /// named is left out: there is nothing to show for it but a hash.
     pub fn item_faces(&self, item_id: i64) -> Result<Vec<ItemFace>> {
@@ -220,6 +247,29 @@ mod tests {
             right: 0.3,
             bottom: 0.4,
         }
+    }
+
+    /// Every Picasa face on the photo, named or not: an unnamed one is still a face, and
+    /// the merge has to know it is there or it would hide the detection lying over it.
+    #[test]
+    fn item_picasa_faces_includes_the_unnamed() {
+        let (_dir, lib) = temp_library();
+        let (_watched, folder) = seed_folder(&lib, Path::new("/p"));
+        let ids = lib
+            .insert_items(&[new_item(folder, "/p/a.jpg", 1)])
+            .unwrap();
+        lib.upsert_contacts(&HashMap::from([("ada".to_string(), "Ada".to_string())]))
+            .unwrap();
+        lib.set_item_faces(&[(ids[0], vec![face("ada"), face("nobody")])])
+            .unwrap();
+
+        let faces = lib.item_picasa_faces(ids[0]).unwrap();
+        assert_eq!(faces.len(), 2);
+        assert_eq!(
+            faces.iter().map(|(_, named)| *named).collect::<Vec<_>>(),
+            [true, false]
+        );
+        assert_eq!(faces[1].0.left, 0.1);
     }
 
     #[test]
