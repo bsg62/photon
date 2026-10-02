@@ -145,6 +145,16 @@ pub fn set_similar_distance(engine: Eng<'_>, distance: i64) -> Result<i64, AppEr
 }
 
 #[tauri::command(async)]
+pub fn face_detection(engine: Eng<'_>) -> Result<bool, AppError> {
+    commands::face_detection(&engine)
+}
+
+#[tauri::command(async)]
+pub fn set_face_detection(engine: Eng<'_>, enabled: bool) -> Result<(), AppError> {
+    commands::set_face_detection(engine.inner(), enabled)
+}
+
+#[tauri::command(async)]
 pub fn theme(engine: Eng<'_>) -> Result<photon_core::library::ThemeChoice, AppError> {
     commands::theme(&engine)
 }

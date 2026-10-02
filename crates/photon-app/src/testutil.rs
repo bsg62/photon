@@ -31,6 +31,14 @@ pub fn jpeg_pattern(w: u32, h: u32) -> Vec<u8> {
     encode_jpeg(img)
 }
 
+/// photon-core's face fixture: one person looking at the camera
+/// (`crates/photon-core/testdata/faces/README.md`).
+pub fn portrait_jpeg() -> Vec<u8> {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../photon-core/testdata/faces/portrait.jpg");
+    std::fs::read(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+}
+
 fn encode_jpeg(img: image::RgbImage) -> Vec<u8> {
     let mut buf = Vec::new();
     image::DynamicImage::ImageRgb8(img)
@@ -61,7 +69,8 @@ impl Fixture {
         watched
     }
 
-    /// Waits for every running scan and every duplicate and look-alike pass to finish.
+    /// Waits for every running scan and every background pass - the duplicate and
+    /// look-alike pass, and the face pass - to finish.
     pub fn settle(&self) {
         self.engine.wait_for_scans();
         self.engine.wait_for_passes();

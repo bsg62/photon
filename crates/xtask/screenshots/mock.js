@@ -250,6 +250,8 @@
     slideshow_shuffle: () => false,
     similar_distance: () => 7,
     set_similar_distance: (a) => a.distance,
+    face_detection: () => true,
+    set_face_detection: () => null,
     set_search_query: (args) => {
       searchQuery = args.query || '';
       return null;

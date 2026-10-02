@@ -670,6 +670,18 @@ pub fn set_similar_distance(engine: &Arc<Engine>, distance: i64) -> CmdResult<i6
     Ok(clamped)
 }
 
+/// Whether photon looks for faces itself.
+pub fn face_detection(engine: &Engine) -> CmdResult<bool> {
+    Ok(engine.face_detection())
+}
+
+/// Switches face detection. On starts a pass in the background; off stops it and deletes
+/// what it found. Returns without waiting for either.
+pub fn set_face_detection(engine: &Arc<Engine>, enabled: bool) -> CmdResult<()> {
+    engine.set_face_detection(enabled)?;
+    Ok(())
+}
+
 /// The colour scheme the user chose.
 pub fn theme(engine: &Engine) -> CmdResult<ThemeChoice> {
     Ok(engine.lib.theme()?)

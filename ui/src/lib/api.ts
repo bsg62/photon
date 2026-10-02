@@ -210,6 +210,14 @@ export interface ExportProgress {
   failed: number;
 }
 
+/** Mirrors `events::FaceProgress`: live images the detector has looked at, of all live
+ *  images. `running` is false on a pass's last event. */
+export interface FaceProgress {
+  checked: number;
+  total: number;
+  running: boolean;
+}
+
 /** What one keyword write to a selection came to. Mirrors `TagWrite` in `commands.rs`.
  *  `count` can be short of the selection: a photo purged or gone missing since the grid was
  *  built is skipped, not refused. */
@@ -279,6 +287,8 @@ export const api = {
   similarDistance: () => invoke<number>('similar_distance'),
   /** Resolves to the clamped value the backend stored. */
   setSimilarDistance: (distance: number) => invoke<number>('set_similar_distance', { distance }),
+  faceDetection: () => invoke<boolean>('face_detection'),
+  setFaceDetection: (enabled: boolean) => invoke<void>('set_face_detection', { enabled }),
   theme: () => invoke<ThemeChoice>('theme'),
   setTheme: (choice: ThemeChoice) => invoke<void>('set_theme', { choice }),
   gridTile: () => invoke<GridTile>('grid_tile'),
@@ -377,6 +387,8 @@ export const events = {
     listen<FolderStatus>('folder-status', (e) => cb(e.payload)),
   onExportProgress: (cb: (e: ExportProgress) => void): Promise<UnlistenFn> =>
     listen<ExportProgress>('export-progress', (e) => cb(e.payload)),
+  onFaceProgress: (cb: (e: FaceProgress) => void): Promise<UnlistenFn> =>
+    listen<FaceProgress>('face-progress', (e) => cb(e.payload)),
   /** Files and folders dragged from another program over photon's window: the system's
    *  own drag, which the webview reports with real paths. `over` is left out - it fires per
    *  pointer move and says nothing `enter` did not. */
