@@ -22,6 +22,7 @@
 //! that fails when its plus goes.
 
 mod albums;
+mod detected_faces;
 mod duplicates;
 mod faces;
 mod folders;
@@ -35,6 +36,7 @@ mod stats;
 mod tags;
 
 pub use albums::{Album, AlbumSummary};
+pub use detected_faces::FaceCandidate;
 pub use duplicates::{CopiesArg, HashCandidate, ItemCopy};
 pub use faces::{ItemFace, Person};
 pub use folders::{Folder, WatchedFolder};
@@ -215,17 +217,17 @@ mod tests {
             .unwrap()
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 23);
+        assert_eq!(version, 24);
         let tables: i64 = lib
             .reader()
             .unwrap()
             .query_row(
-                "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name IN ('watched_folders', 'folders', 'items', 'settings', 'item_tags', 'contacts', 'faces', 'albums', 'album_items', 'tag_rules', 'item_user_tags', 'saved_searches')",
+                "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name IN ('watched_folders', 'folders', 'items', 'settings', 'item_tags', 'contacts', 'faces', 'albums', 'album_items', 'tag_rules', 'item_user_tags', 'saved_searches', 'detected_faces')",
                 [],
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(tables, 12);
+        assert_eq!(tables, 13);
     }
 
     #[test]
@@ -241,7 +243,7 @@ mod tests {
             Library::open(&path),
             Err(Error::SchemaTooNew {
                 found: 99,
-                supported: 23
+                supported: 24
             })
         ));
     }

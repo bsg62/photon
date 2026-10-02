@@ -516,9 +516,12 @@ impl Library {
                         exif_version = ?19, caption = ?20, duration_ms = ?21,
                         gps_lat = ?22, gps_lon = ?23,
                         thumb_state = 0, thumb_error = NULL, missing_since = NULL,
-                        content_hash = NULL, percep_hash = NULL, similar_group = NULL
+                        content_hash = NULL, percep_hash = NULL, similar_group = NULL,
+                        face_version = NULL
                  WHERE id = ?1",
             )?;
+            let mut clear_faces =
+                tx.prepare_cached("DELETE FROM detected_faces WHERE item_id = ?1")?;
             for (id, it) in items {
                 let c = &it.camera;
                 stmt.execute(params![
@@ -546,6 +549,8 @@ impl Library {
                     c.gps.map(|g| g.lat),
                     c.gps.map(|g| g.lon),
                 ])?;
+                // The detections were of the old file's picture, as the hashes cleared above.
+                clear_faces.execute(params![id])?;
                 write_tags(&tx, *id, &it.tags)?;
             }
         }
@@ -811,11 +816,15 @@ impl Library {
         // next pass re-hashes it from the thumbnail this write just invalidated.
         let changed = tx.execute(
             "UPDATE items SET edit_turns = ?2, edit_crop = ?3, thumb_state = 0,
-                 thumb_error = NULL, percep_hash = NULL, similar_group = NULL
+                 thumb_error = NULL, percep_hash = NULL, similar_group = NULL,
+                 face_version = NULL
              WHERE id = ?1 AND NOT (edit_turns = ?2 AND edit_crop IS ?3)",
             params![id, edit.turns, edit.crop.map(Crop::to_db)],
         )?;
         if changed > 0 {
+            // The detections describe the picture as shown, as the perceptual hash does:
+            // a turn or a crop makes them rectangles on a picture photon no longer shows.
+            tx.execute("DELETE FROM detected_faces WHERE item_id = ?1", params![id])?;
             super::settings::bump_thumb_gc_epoch(&tx)?;
         }
         tx.commit()?;

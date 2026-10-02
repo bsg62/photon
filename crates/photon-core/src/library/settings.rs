@@ -46,6 +46,10 @@ const GRID_SORT: &str = "grid_sort";
 /// exact recall (`similar::EXACT_RECALL_DISTANCE`) to what those choices mean now. Stored as the distance itself rather than a name,
 /// because the distance is what the pass uses and a name would need a second table to
 /// interpret it.
+/// Whether photon looks for faces itself. Absent is off: the pass costs hours on a large
+/// library and computes data about the people in it, so nothing runs until asked.
+const FACE_DETECTION: &str = "face_detection";
+
 const SIMILAR_DISTANCE: &str = "similar_distance";
 /// Conservative: the distance at which grouping has complete recall. Derived from that
 /// constant rather than written as 3 beside it - the default *is* that fact, and two copies
@@ -145,6 +149,20 @@ pub(crate) fn bump_thumb_gc_epoch(conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// Whether face detection is on, read on `conn` so a writer can ask inside its own
+/// transaction: `write_face_batch` must not store a face after the user switched off.
+pub(crate) fn face_detection_on(conn: &Connection) -> rusqlite::Result<bool> {
+    use rusqlite::OptionalExtension;
+    let value: Option<String> = conn
+        .query_row(
+            "SELECT value FROM settings WHERE key = ?1",
+            [FACE_DETECTION],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(value.as_deref() == Some("1"))
+}
+
 fn clamp_interval(seconds: i64) -> i64 {
     seconds.clamp(
         *SLIDESHOW_INTERVAL_RANGE_S.start(),
@@ -160,6 +178,29 @@ fn clamp_distance(distance: i64) -> i64 {
 }
 
 impl Library {
+    /// Whether photon looks for faces itself.
+    pub fn face_detection(&self) -> Result<bool> {
+        Ok(face_detection_on(&*self.reader()?)?)
+    }
+
+    /// Switches face detection. Off deletes every detection and every record of a photo
+    /// having been looked at, in the transaction that stores the setting: "off" means
+    /// photon keeps no face data of its own, and switching back on detects again.
+    pub fn set_face_detection(&self, enabled: bool) -> Result<()> {
+        let mut conn = self.writer();
+        let tx = conn.transaction()?;
+        set_setting(&tx, FACE_DETECTION, if enabled { "1" } else { "0" })?;
+        if !enabled {
+            tx.execute("DELETE FROM detected_faces", [])?;
+            tx.execute(
+                "UPDATE items SET face_version = NULL WHERE face_version IS NOT NULL",
+                [],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Reads a setting, or `None` when it has never been written.
     fn setting(&self, key: &str) -> Result<Option<String>> {
         let conn = self.reader()?;

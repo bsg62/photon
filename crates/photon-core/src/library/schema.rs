@@ -338,6 +338,31 @@ CREATE INDEX items_videos ON items(folder_id, taken_at) WHERE kind = 1 AND missi
 ALTER TABLE items ADD COLUMN gps_lat REAL;
 ALTER TABLE items ADD COLUMN gps_lon REAL;
 "#,
+    r#"
+-- The faces photon finds itself (`face_detect`), beside the ones Picasa recorded in `faces`.
+-- A table of its own: `set_item_faces` replaces a photo's Picasa faces wholesale on every
+-- reread of its INI, and a later stage hangs an embedding on a detected face by `id`.
+--
+-- The rectangle is fractions of the picture AS SHOWN, edit applied, because that is the
+-- preview the detector reads. `faces` rows are fractions of the unedited picture and are
+-- mapped through the edit on read. `face_detect::merge` is the one place the two meet.
+--
+-- `landmarks` is the model's five points as ten little-endian f32 fractions.
+CREATE TABLE detected_faces (
+    id        INTEGER PRIMARY KEY,
+    item_id   INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+    left      REAL NOT NULL,
+    top       REAL NOT NULL,
+    right     REAL NOT NULL,
+    bottom    REAL NOT NULL,
+    landmarks BLOB NOT NULL,
+    score     REAL NOT NULL
+);
+CREATE INDEX detected_faces_item ON detected_faces(item_id);
+-- Which `face_detect::DETECTOR_VERSION` last looked at the photo, faces or none; NULL for
+-- never. No index: the candidate query walks the table by id.
+ALTER TABLE items ADD COLUMN face_version INTEGER;
+"#,
 ];
 
 pub fn migrate(conn: &Connection) -> Result<()> {
@@ -589,7 +614,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 23);
+        assert_eq!(version, 24);
         let rules: i64 = conn
             .query_row("SELECT count(*) FROM tag_rules", [], |r| r.get(0))
             .unwrap();
@@ -748,7 +773,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 23);
+        assert_eq!(version, 24);
         let overlay: i64 = conn
             .query_row("SELECT count(*) FROM item_user_tags", [], |r| r.get(0))
             .unwrap();
@@ -798,7 +823,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 23);
+        assert_eq!(version, 24);
         let hash: Option<Vec<u8>> = conn
             .query_row("SELECT content_hash FROM items WHERE id = 1", [], |r| {
                 r.get(0)
@@ -939,7 +964,7 @@ mod tests {
             .unwrap();
         // Hardcoded, like every other version assertion here: `MIGRATIONS.len()` would
         // agree with itself whatever the list did, which is the tripwire removed.
-        assert_eq!(version, 23);
+        assert_eq!(version, 24);
     }
 
     /// Every folder in an existing library comes out of the upgrade visible.
@@ -977,7 +1002,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 23);
+        assert_eq!(version, 24);
     }
 
     /// Every album in an existing library comes out of the upgrade as photon's own.
@@ -1010,7 +1035,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 23);
+        assert_eq!(version, 24);
     }
 
     /// Every Picasa album in an existing library comes out of the upgrade with no recorded
@@ -1044,7 +1069,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 23);
+        assert_eq!(version, 24);
     }
 
     /// Every photo in an existing library comes out of the upgrade uncaptioned, for the
@@ -1083,7 +1108,7 @@ mod tests {
             .unwrap()
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 23);
+        assert_eq!(version, 24);
     }
 
     /// A stored Conservative or Loose keeps meaning Conservative or Loose.
@@ -1117,7 +1142,7 @@ mod tests {
             let version: i64 = conn
                 .query_row("PRAGMA user_version", [], |r| r.get(0))
                 .unwrap();
-            assert_eq!(version, 23);
+            assert_eq!(version, 24);
         }
     }
 
@@ -1167,7 +1192,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 23);
+        assert_eq!(version, 24);
     }
 
     /// Every folder in an existing library comes out of the upgrade with no alias, so the
@@ -1205,7 +1230,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 23);
+        assert_eq!(version, 24);
     }
 
     /// A library at schema 21 comes out of the upgrade with the Videos index, and with
@@ -1253,6 +1278,42 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 23);
+        assert_eq!(version, 24);
+    }
+
+    /// A library at schema 23 with photos in it comes out with the table, and every photo
+    /// unlooked-at.
+    #[test]
+    fn migration_24_adds_detected_faces_to_a_populated_library() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("library.db");
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        for sql in &MIGRATIONS[..23] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 23i64).unwrap();
+        conn.execute_batch(
+            "INSERT INTO watched_folders (id, path) VALUES (1, '/p');
+             INSERT INTO folders (id, watched_id, path, name, sort_key) VALUES (1, 1, '/p', 'p', 1);
+             INSERT INTO items (folder_id, path, file_name, kind, size, mtime_ms, width, height, orientation, taken_at)
+             VALUES (1, '/p/a.jpg', 'a.jpg', 0, 1, 1, 1, 1, 1, 1);",
+        )
+        .unwrap();
+        drop(conn);
+
+        let lib = crate::library::Library::open(&path).unwrap();
+        let conn = lib.reader().unwrap();
+        let (faces, version): (i64, Option<i64>) = conn
+            .query_row(
+                "SELECT (SELECT count(*) FROM detected_faces), face_version FROM items",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((faces, version), (0, None));
+        let user: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(user, 24);
     }
 }
