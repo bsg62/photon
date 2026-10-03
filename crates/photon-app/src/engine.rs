@@ -51,6 +51,15 @@ const FACE_PROGRESS_CLEARED: FaceProgress = FaceProgress {
     running: false,
 };
 
+/// What `face_work` found first: a pass starts at that step.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FaceWork {
+    None,
+    Detect,
+    Embed,
+    Group,
+}
+
 /// What a running face pass owes when it ends: the rebuild for what it has written since
 /// its last, and the phase its last event reports, which is the last step it ran.
 struct FacePass {
@@ -2071,18 +2080,25 @@ impl Engine {
         }
     }
 
-    /// Whether the detection step has work, and whether any step has. Each is one row
-    /// asked for, never a count: this runs after every scan and every thumbnail drain.
-    fn face_work(&self) -> Result<(bool, bool)> {
+    /// The first step with work, asked in the pass's order and no further. Each is one
+    /// row asked for, never a count: this runs after every scan and every thumbnail drain.
+    fn face_work(&self) -> Result<FaceWork> {
         use photon_core::{face_detect::DETECTOR_VERSION, face_embed::EMBEDDER_VERSION};
-        let detect = !self.lib.face_candidates(0, 1, DETECTOR_VERSION)?.is_empty();
-        let any = detect
-            || !self
+        Ok(
+            if !self.lib.face_candidates(0, 1, DETECTOR_VERSION)?.is_empty() {
+                FaceWork::Detect
+            } else if !self
                 .lib
                 .embed_candidates(0, 1, EMBEDDER_VERSION)?
                 .is_empty()
-            || self.lib.has_ungrouped_faces()?;
-        Ok((detect, any))
+            {
+                FaceWork::Embed
+            } else if self.lib.has_ungrouped_faces()? {
+                FaceWork::Group
+            } else {
+                FaceWork::None
+            },
+        )
     }
 
     /// One pass: the photos nobody has looked for faces in, then the faces nobody has
@@ -2101,31 +2117,40 @@ impl Engine {
             return;
         }
         let mut pass = FacePass::new();
-        let detect = match self.face_work() {
-            Ok((detect, true)) => detect,
-            Ok((_, false)) => {
+        let work = match self.face_work() {
+            Ok(FaceWork::None) => {
                 self.end_face_pass(&pass);
                 return;
             }
+            Ok(work) => work,
             Err(err) => {
                 tracing::warn!(%err, "could not list the photos and faces the face pass would do");
                 self.end_face_pass(&pass);
                 return;
             }
         };
-        if detect && !self.detect_step(&mut pass) {
+        if work == FaceWork::Detect && !self.detect_step(&mut pass) {
             self.end_face_pass(&pass);
             return;
         }
-        // Asked again, not taken from `face_work`: detection has just made faces.
-        if !self.face_cancelled() && self.has_faces_to_embed() && !self.embed_step(&mut pass) {
+        // After detection, asked again: it has just made faces. Otherwise `face_work`'s
+        // answer stands - it asked this very question a moment ago, and the walk over every
+        // face is not worth making twice.
+        let embed = match work {
+            FaceWork::Detect => self.has_faces_to_embed(),
+            work => work == FaceWork::Embed,
+        };
+        if !self.face_cancelled() && embed && !self.embed_step(&mut pass) {
             self.end_face_pass(&pass);
             return;
         }
         // What the operations leave (`write_people`): a rejected face, or one no longer
         // ignored, has a vector and no group, and the embedding step above runs only when
-        // something needs a vector. Asked first because the step reads every face's vector.
-        if !self.face_cancelled() && self.has_ungrouped_faces() {
+        // something needs a vector. Asked first, unless `face_work` has just answered it:
+        // the step takes the library's writer before it looks, and a pass that groups
+        // reports the recognising phase last.
+        let group = work == FaceWork::Group || self.has_ungrouped_faces();
+        if !self.face_cancelled() && group {
             pass.phase = FacePhase::Recognising;
             self.group_faces(&mut pass);
         }
@@ -6345,7 +6370,7 @@ mod tests {
                     reverse: true,
                 })
             }),
-            ("person", &|| f.engine.set_person_view("abc")),
+            ("person", &|| f.engine.set_person_view("c:abc")),
             ("album", &|| f.engine.set_album_view(album.id)),
             ("tag", &|| f.engine.set_tag_view("holiday")),
         ];
@@ -6793,11 +6818,11 @@ mod tests {
             (GridView::Tag, Some("beach"), None)
         );
 
-        f.engine.set_person_view("abc").unwrap();
+        f.engine.set_person_view("c:abc").unwrap();
         let info = crate::commands::grid_info(&f.engine, None);
         assert_eq!(
             (info.view, info.person.as_deref()),
-            (GridView::Person, Some("abc"))
+            (GridView::Person, Some("c:abc"))
         );
 
         // Leaving for a plain view drops the argument, so it cannot be read by the next

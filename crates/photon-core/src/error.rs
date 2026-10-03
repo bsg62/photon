@@ -6,9 +6,9 @@ pub enum Error {
     Db(#[from] rusqlite::Error),
     #[error("i/o error: {0}")]
     Io(#[from] std::io::Error),
-    /// The bundled face detector could not be loaded or run: a build fault, not something
-    /// about the user's photo.
-    #[error("face detection failed: {0}")]
+    /// A bundled face model - the detector or the recogniser - could not be loaded or run:
+    /// a build fault, not something about the user's photo.
+    #[error("a face model failed: {0}")]
     FaceModel(String),
     #[error("image error: {0}")]
     Image(#[from] image::ImageError),
