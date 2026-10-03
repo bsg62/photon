@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tick } from 'svelte';
   import type { FaceAction, PeoplePageModel, StripKey } from '../lib/people-page.svelte';
   import { SINGLE } from '../lib/people-page.svelte';
   import { faceUrl } from '../lib/people';
@@ -11,6 +12,7 @@
     label,
     suggestion = false,
     onopen,
+    onfocuslost,
   }: {
     model: PeoplePageModel;
     key: StripKey;
@@ -18,6 +20,8 @@
     /** Faces photon thinks are a named person's, not yet confirmed: drawn dashed. */
     suggestion?: boolean;
     onopen: (itemId: number) => void;
+    /** Where focus goes when the strip has no face left to take it: the page. */
+    onfocuslost?: () => void;
   } = $props();
 
   const ACTION_LABEL: Record<FaceAction, string> = {
@@ -40,6 +44,24 @@
   let failed = $state<Record<string, true>>({});
   const crop = (f: { id: number; thumbKey: string }) => `${f.id}:${f.thumbKey}`;
 
+  let stripEl: HTMLElement | undefined = $state();
+
+  /** Runs an action of the bar, then hands focus on: the action clears the selection, so
+   *  the bar - holding the button or field that had focus - unmounts, and focus left on
+   *  `<body>` reaches no key until a click. The strip's first remaining face takes it, or
+   *  the page when none is left. */
+  async function settle(action: () => void | Promise<void>) {
+    const done = action();
+    await tick();
+    const at = document.activeElement;
+    if (!at || at === document.body) {
+      const face = stripEl?.querySelector<HTMLElement>('button.face');
+      if (face) face.focus();
+      else onfocuslost?.();
+    }
+    await done;
+  }
+
   function onkeydown(e: KeyboardEvent, itemId: number) {
     // Enter opens; Space stays the button's own click, which toggles. Without the
     // preventDefault, Enter on a button also clicks it and would toggle as well.
@@ -51,7 +73,7 @@
 </script>
 
 {#if faces.length}
-  <div class="strip" role="group" aria-label={label}>
+  <div class="strip" role="group" aria-label={label} bind:this={stripEl}>
     <div class="faces">
       {#each faces as f, i (f.id)}
         <button
@@ -98,12 +120,12 @@
       <div class="actions">
         <span class="selected-count">{selected.length} selected</span>
         {#each model.actionsFor(key) as action (action)}
-          <button onclick={() => model.act(key, action)}>{ACTION_LABEL[action]}</button>
+          <button onclick={() => settle(() => model.act(key, action))}>{ACTION_LABEL[action]}</button>
         {/each}
         {#if key === SINGLE}
-          <NameBox choose={(t) => model.choice(t)} commit={(t) => model.nameSingles(t)} label="Name the selected faces" />
+          <NameBox choose={(t) => model.choice(t)} commit={(t) => settle(() => model.nameSingles(t))} label="Name the selected faces" />
         {/if}
-        <button onclick={() => model.clearSelection()}>Clear</button>
+        <button onclick={() => settle(() => model.clearSelection())}>Clear</button>
         <span class="hint">Double-click a face to open its photo</span>
       </div>
     {/if}

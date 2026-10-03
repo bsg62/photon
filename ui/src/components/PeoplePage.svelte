@@ -4,7 +4,7 @@
   import { api } from '../lib/api';
   import { library } from '../lib/library.svelte';
   import { fitMenu } from '../lib/menu-place';
-  import { createPeoplePage, IGNORED_FACES, SINGLE, stripKey } from '../lib/people-page.svelte';
+  import { createPeoplePage, IGNORED_FACES, SINGLE, stripKey, type StripKey } from '../lib/people-page.svelte';
   import { faceStatus } from '../lib/status';
   import FaceStrip from './FaceStrip.svelte';
   import NameBox from './NameBox.svelte';
@@ -145,6 +145,25 @@
     if (focusLost()) root?.focus();
   }
 
+  /** Each group's row in Unnamed and Ignored, by strip key: where focus goes on to when the
+   *  group before it leaves. */
+  const groupEls: Record<StripKey, HTMLElement | null> = {};
+
+  /** Runs an action that removes a group from `list` (named, ignored, or ignored no
+   *  longer) and hands focus to the group that takes its place, or to the page: the row
+   *  that held the focused button or field is gone, and focus on `<body>` reaches no key.
+   *  The model hides the group before its write, so one tick shows the row gone. */
+  async function leaving(section: 'unnamed' | 'ignored', id: number, action: () => Promise<void>) {
+    const list = () => (section === 'unnamed' ? model.unnamed : model.ignoredGroups);
+    const at = list().findIndex((g) => g.id === id);
+    const done = action();
+    await tick();
+    const next = at < 0 ? undefined : list()[at];
+    const face = next && groupEls[stripKey(section, next.id)]?.querySelector<HTMLElement>('button.face');
+    (face || root)?.focus();
+    await done.catch(library.reportError);
+  }
+
   async function closeRename(person: number) {
     renaming = null;
     await tick();
@@ -183,15 +202,15 @@
             <span class="note">{plural(model.unnamed.length, 'group', 'groups')}, largest first</span>{/if}
         </h2>
         {#each model.unnamed as g (g.id)}
-          <div class="row">
-            <FaceStrip {model} key={stripKey('unnamed', g.id)} label="Unnamed group" {onopen} />
+          <div class="row" bind:this={groupEls[stripKey('unnamed', g.id)]}>
+            <FaceStrip {model} key={stripKey('unnamed', g.id)} label="Unnamed group" {onopen} onfocuslost={focus} />
             <div class="line">
               {#if g.offer}
                 {@const offer = g.offer}
-                <button class="primary" onclick={() => model.nameGroup(g.id, offer.name)}>Yes, this is {offer.name}</button>
+                <button class="primary" onclick={() => leaving('unnamed', g.id, () => model.nameGroup(g.id, offer.name))}>Yes, this is {offer.name}</button>
               {/if}
-              <NameBox choose={(t) => model.choice(t)} commit={(t) => model.nameGroup(g.id, t)} label="Name this group" />
-              <button onclick={() => model.ignoreGroup(g.id, true)}>Ignore</button>
+              <NameBox choose={(t) => model.choice(t)} commit={(t) => leaving('unnamed', g.id, () => model.nameGroup(g.id, t))} label="Name this group" />
+              <button onclick={() => leaving('unnamed', g.id, () => model.ignoreGroup(g.id, true))}>Ignore</button>
             </div>
             {#if g.offer}
               <p class="hint">Offered because {g.offer.faces} of these faces are ones Picasa named {g.offer.name}.</p>
@@ -201,7 +220,7 @@
         {#if singleCount > 0}
           <details class="row">
             <summary>{plural(singleCount, 'single face', 'single faces')}</summary>
-            <FaceStrip {model} key={SINGLE} label="Single faces" {onopen} />
+            <FaceStrip {model} key={SINGLE} label="Single faces" {onopen} onfocuslost={focus} />
             {#if singleCount > singleShown}
               <p class="hint">
                 Showing the first {counted.format(singleShown)}. Name or ignore some to see the rest.
@@ -222,7 +241,7 @@
               <strong>{p.name}</strong>
               <span class="dim">{counted.format(model.count(key))} to check</span>
             </div>
-            <FaceStrip {model} {key} suggestion label="Suggested faces for {p.name}" {onopen} />
+            <FaceStrip {model} {key} suggestion label="Suggested faces for {p.name}" {onopen} onfocuslost={focus} />
             <div class="line">
               <button class="primary" onclick={() => model.confirmAll(p.id)}>{model.confirmAllLabel(p.id)}</button>
             </div>
@@ -266,7 +285,7 @@
                 <button class="danger" onclick={() => model.remove(p.id).then(rescueFocus).catch(library.reportError)}>Delete</button>
               </span>
             </div>
-            <FaceStrip {model} {key} label="Faces of {p.name}" {onopen} />
+            <FaceStrip {model} {key} label="Faces of {p.name}" {onopen} onfocuslost={focus} />
           </div>
         {/each}
       </section>
@@ -279,14 +298,16 @@
             Ignored · {plural(model.ignoredGroups.length, 'group', 'groups')}, {plural(ignoredFaces, 'face', 'faces')}
           </summary>
           {#each model.ignoredGroups as g (g.id)}
-            <div class="ignored">
-              <FaceStrip {model} key={stripKey('ignored', g.id)} label="Ignored group" {onopen} />
+            <div class="ignored" bind:this={groupEls[stripKey('ignored', g.id)]}>
+              <FaceStrip {model} key={stripKey('ignored', g.id)} label="Ignored group" {onopen} onfocuslost={focus} />
               <div class="line">
-                <button onclick={() => model.ignoreGroup(g.id, false)}>Stop ignoring</button>
+                <button onclick={() => leaving('ignored', g.id, () => model.ignoreGroup(g.id, false))}
+                  >Stop ignoring</button
+                >
               </div>
             </div>
           {/each}
-          <FaceStrip {model} key={IGNORED_FACES} label="Ignored faces" {onopen} />
+          <FaceStrip {model} key={IGNORED_FACES} label="Ignored faces" {onopen} onfocuslost={focus} />
         </details>
       </section>
     {/if}
