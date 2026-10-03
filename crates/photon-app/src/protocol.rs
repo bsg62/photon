@@ -152,8 +152,9 @@ async fn thumb(
 /// A face's crop for the People page. The face id and the photo's thumbnail key name one
 /// picture (a face is deleted when its photo's picture changes, and its id is never reused),
 /// so the answer is `immutable`. Only the cached preview is read: no photo file and no
-/// render, so a page of crops never queues a burst of renders, and a crop that cannot be
-/// cut is a 404 the page draws a placeholder for.
+/// render, so a page of crops never queues a burst of renders. A face that is gone, a key
+/// that is no longer the photo's, or a preview not cached is a 404; a cached preview that
+/// will not decode is a 500. The page draws a placeholder for either.
 async fn face(engine: Arc<Engine>, id: &str, key: &str) -> Response<Vec<u8>> {
     let (Ok(id), Some(key)) = (id.parse::<i64>(), parse_key(key)) else {
         return text(StatusCode::BAD_REQUEST, "bad face");
