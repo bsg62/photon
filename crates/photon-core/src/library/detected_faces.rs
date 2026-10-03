@@ -70,15 +70,24 @@ pub struct EmbedCandidate {
 /// Photos, in id order after a given one, with at least one face whose
 /// `embedding_version` is not the current one; each with every such face. Driven from
 /// `detected_faces` through its item index: a library has far fewer faces than photos.
+///
+/// The photo's own conditions (live, preview ready) are in the subquery, so the `LIMIT`
+/// counts only photos that can be listed: outside it, a page made of missing photos came
+/// back empty while later photos still had faces to do, and a pass that stops on an empty
+/// page, or asks for one photo to learn whether there is any work, stopped there. The
+/// outer query keeps only the per-face condition, which the subquery cannot give it.
+/// `CROSS JOIN` fixes the order: faces first, each photo then read by rowid. Left to choose,
+/// SQLite walked every ready photo through `items_pending` and probed faces for each.
 const EMBED_CANDIDATES_SQL: &str =
     "SELECT f.id, f.item_id, f.left, f.top, f.right, f.bottom, f.landmarks,
             i.path, i.size, i.mtime_ms, i.edit_turns, i.edit_crop
      FROM detected_faces f JOIN items i ON i.id = f.item_id
-     WHERE f.item_id IN (SELECT DISTINCT item_id FROM detected_faces
-                         WHERE item_id > ?1 AND embedding_version IS NOT ?2
-                         ORDER BY item_id LIMIT ?3)
+     WHERE f.item_id IN (SELECT DISTINCT d.item_id
+                         FROM detected_faces d CROSS JOIN items j ON j.id = d.item_id
+                         WHERE d.item_id > ?1 AND d.embedding_version IS NOT ?2
+                           AND j.missing_since IS NULL AND j.thumb_state = 1
+                         ORDER BY d.item_id LIMIT ?3)
        AND f.embedding_version IS NOT ?2
-       AND i.missing_since IS NULL AND i.thumb_state = 1
      ORDER BY f.item_id, f.id";
 
 const EMBED_PROGRESS_SQL: &str =
@@ -1092,6 +1101,98 @@ mod tests {
         }
     }
 
+    /// The page's limit counts photos that can be listed: a missing photo, or one whose
+    /// preview is not ready, at the lowest id must not hide an eligible one behind it.
+    #[test]
+    fn ineligible_photos_do_not_use_up_the_page() {
+        let (_dir, lib, ids) = seeded(&["gone.jpg", "pending.jpg", "ok.jpg"]);
+        detected(&lib);
+        let w = lib.writer();
+        w.execute("UPDATE items SET missing_since = 5 WHERE id = ?1", [ids[0]])
+            .unwrap();
+        w.execute("UPDATE items SET thumb_state = 0 WHERE id = ?1", [ids[1]])
+            .unwrap();
+        drop(w);
+        let c = lib.embed_candidates(0, 1, EV).unwrap();
+        assert_eq!(c.iter().map(|c| c.item_id).collect::<Vec<_>>(), [ids[2]]);
+    }
+
+    /// A re-run with one face, at the place of the face the user ignored: it inherits that
+    /// face's state and not the first old face's.
+    #[test]
+    fn a_rerun_face_inherits_from_the_face_at_its_own_place() {
+        let (_dir, lib, ids) = seeded(&["a.jpg"]);
+        detected(&lib);
+        let (first, second) = {
+            let c = lib.embed_candidates(0, 10, EV).unwrap();
+            (c[0].faces[0].0, c[0].faces[1].0)
+        };
+        let w = lib.writer();
+        w.execute("INSERT INTO people (id, name) VALUES (7, 'Anna')", [])
+            .unwrap();
+        w.execute(
+            "UPDATE detected_faces SET person_id = 7, confirmed = 1 WHERE id = ?1",
+            [first],
+        )
+        .unwrap();
+        w.execute("INSERT INTO face_rejections VALUES (?1, 7)", [first])
+            .unwrap();
+        w.execute(
+            "UPDATE detected_faces SET ignored = 1 WHERE id = ?1",
+            [second],
+        )
+        .unwrap();
+        drop(w);
+        let c = lib.face_candidates(0, 10, V + 1).unwrap();
+        lib.write_face_batch(&[(c[0].clone(), vec![face(0.5)])], V + 1)
+            .unwrap();
+        let (person, confirmed, ignored, rejected): (Option<i64>, i64, i64, i64) = lib
+            .reader()
+            .unwrap()
+            .query_row(
+                "SELECT person_id, confirmed, ignored,
+                        (SELECT count(*) FROM face_rejections)
+                 FROM detected_faces",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!((person, confirmed, ignored, rejected), (None, 0, 1, 0));
+        assert_eq!(rows(&lib), 1);
+        assert_eq!(version_of(&lib, ids[0]), Some(V + 1));
+    }
+
+    /// Two new faces over one old face: the old face's state goes to one of them.
+    #[test]
+    fn a_rerun_hands_one_old_face_to_one_new_face() {
+        let (_dir, lib, _ids) = seeded(&["a.jpg"]);
+        let c = lib.face_candidates(0, 10, V).unwrap();
+        lib.write_face_batch(&[(c[0].clone(), vec![face(0.1)])], V)
+            .unwrap();
+        let w = lib.writer();
+        w.execute("INSERT INTO people (id, name) VALUES (7, 'Anna')", [])
+            .unwrap();
+        w.execute("UPDATE detected_faces SET person_id = 7, confirmed = 1", [])
+            .unwrap();
+        drop(w);
+        let c = lib.face_candidates(0, 10, V + 1).unwrap();
+        let mut nudged = face(0.1);
+        nudged.rect.left += 0.01;
+        nudged.rect.right += 0.01;
+        lib.write_face_batch(&[(c[0].clone(), vec![face(0.1), nudged])], V + 1)
+            .unwrap();
+        let n: i64 = lib
+            .reader()
+            .unwrap()
+            .query_row(
+                "SELECT count(*) FROM detected_faces WHERE person_id = 7",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!((rows(&lib), n), (2, 1));
+    }
+
     #[test]
     fn the_embedding_candidates_are_found_through_the_face_index() {
         let (_dir, lib) = temp_library();
@@ -1107,6 +1208,10 @@ mod tests {
         assert!(
             plan.iter().any(|s| s.contains("detected_faces_item")),
             "{plan:?}"
+        );
+        assert!(
+            !plan.iter().any(|s| s.contains("items_pending")),
+            "faces drive it, not every ready photo: {plan:?}"
         );
     }
 }
