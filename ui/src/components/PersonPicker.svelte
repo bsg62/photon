@@ -1,9 +1,22 @@
 <script lang="ts">
+  import type { NamedPerson } from '../lib/api';
   import { library } from '../lib/library.svelte';
   import type { PersonPicker } from '../lib/person-picker.svelte';
   import Icon from './Icon.svelte';
 
-  let { picker, onclosed }: { picker: PersonPicker; onclosed: () => void } = $props();
+  let {
+    picker,
+    people,
+    onclosed,
+  }: {
+    picker: PersonPicker;
+    /** The people a name can land on: every named person (`named_people`), those with no
+     *  visible photo too, whom a typed name still joins. A Picasa contact no person is
+     *  linked to is not here - typing its name makes a new person, which the backend then
+     *  links to it by that name. */
+    people: readonly NamedPerson[];
+    onclosed: () => void;
+  } = $props();
 
   let field = $state<HTMLInputElement | undefined>();
 
@@ -13,14 +26,8 @@
     if (picker.visible) field?.focus();
   });
 
-  /** The people a name can land on: the named ones, by id. A `c:` key is a Picasa contact
-   *  no person is linked to - typing its name makes a new person, which the backend then
-   *  links to it by that name. */
-  const named = $derived(
-    library.people.filter((p) => p.key.startsWith('p:')).map((p) => ({ id: Number(p.key.slice(2)), name: p.name })),
-  );
-  const suggestions = $derived(picker.suggestions(named));
-  const hint = $derived(picker.hint(named));
+  const suggestions = $derived(picker.suggestions(people));
+  const hint = $derived(picker.hint(people));
 
   /** Closes and hands focus back, through the caller: only it knows whether the grid or the
    *  viewer is behind the dialog, and the field holding focus is about to leave the DOM. */
@@ -100,7 +107,7 @@
         {#each suggestions as person (person.id)}
           <button onclick={() => submit(person.name)}>{person.name}</button>
         {:else}
-          <p class="none">{named.length === 0 ? 'No one is named yet.' : 'No one matches what you typed.'}</p>
+          <p class="none">{people.length === 0 ? 'No one is named yet.' : 'No one matches what you typed.'}</p>
         {/each}
       </div>
 

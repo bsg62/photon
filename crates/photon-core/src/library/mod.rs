@@ -43,8 +43,8 @@ pub use faces::{ItemFace, Person};
 pub use folders::{Folder, WatchedFolder};
 pub use items::{FolderItem, Item, KnownItem, NewItem, RECENT_LIMIT, is_starred};
 pub use people::{
-    FaceFilter, NamedItems, Offer, PageFace, PageGroup, PeoplePage, RemovedItems, Skipped,
-    SkippedItem,
+    FaceFilter, NamedItems, NamedPerson, Offer, PageFace, PageGroup, PeoplePage, RemovedItems,
+    Skipped, SkippedItem,
 };
 pub use searches::SavedSearch;
 pub use settings::{GridTile, ThemeChoice};

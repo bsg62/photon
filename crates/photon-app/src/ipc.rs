@@ -19,8 +19,8 @@
 
 use crate::{commands, engine::Engine, error::AppError};
 use photon_core::library::{
-    Album, AlbumSummary, FaceFilter, NamedItems, PageFace, PeoplePage, Person, RemovedItems,
-    SavedSearch, TagCount, TagRule, WatchedFolder,
+    Album, AlbumSummary, FaceFilter, NamedItems, NamedPerson, PageFace, PeoplePage, Person,
+    RemovedItems, SavedSearch, TagCount, TagRule, WatchedFolder,
 };
 use std::sync::Arc;
 use tauri::State;
@@ -163,6 +163,11 @@ pub fn people_to_name(engine: Eng<'_>) -> Result<i64, AppError> {
 #[tauri::command(async)]
 pub fn face_data_summary(engine: Eng<'_>) -> Result<commands::FaceDataSummary, AppError> {
     commands::face_data_summary(&engine)
+}
+
+#[tauri::command(async)]
+pub fn named_people(engine: Eng<'_>) -> Result<Vec<NamedPerson>, AppError> {
+    commands::named_people(&engine)
 }
 
 #[tauri::command(async)]

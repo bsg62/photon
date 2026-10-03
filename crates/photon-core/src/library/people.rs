@@ -339,6 +339,14 @@ pub struct NamedItems {
     pub none: Skipped,
 }
 
+/// A person the user named, for the person dialog.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NamedPerson {
+    pub id: i64,
+    pub name: String,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RemovedItems {
@@ -814,6 +822,25 @@ impl Library {
         )?;
         tx.commit()?;
         Ok(())
+    }
+
+    /// Every named person, by name (without case, then as typed, then by id; in Rust, as
+    /// `same_name` compares). The person dialog's list: unlike the sidebar's
+    /// (`people_with_counts`) it has the people with no visible photo too, whom a typed name
+    /// still joins - left out, the dialog would call their name a new person.
+    pub fn named_people(&self) -> Result<Vec<NamedPerson>> {
+        let mut people: Vec<NamedPerson> = self
+            .reader()?
+            .prepare("SELECT id, name FROM people WHERE name IS NOT NULL")?
+            .query_map([], |r| {
+                Ok(NamedPerson {
+                    id: r.get(0)?,
+                    name: r.get(1)?,
+                })
+            })?
+            .collect::<rusqlite::Result<_>>()?;
+        people.sort_by_cached_key(|p| (p.name.to_lowercase(), p.name.clone(), p.id));
+        Ok(people)
     }
 
     /// How many people the user has named: what switching face detection off would delete.
@@ -2960,6 +2987,39 @@ mod tests {
             person_of(&l.lib, f[3]),
             (None, false),
             "Ben's, through the turn"
+        );
+    }
+
+    /// The dialog's list has every named person, a person with no visible photo too (the
+    /// sidebar's list leaves them out), by name without case: "anna" before "Ben".
+    #[test]
+    fn named_people_lists_every_named_person_by_name() {
+        let (l, f) = library(&[&[0.0], &[10.0]]);
+        let ben = make_person(&l.lib, "Ben");
+        let anna = make_person(&l.lib, "anna");
+        put(&l.lib, f[0], anna, true);
+        put(&l.lib, f[1], ben, true);
+        l.lib.set_hidden(&[l.items[1]], true).unwrap();
+        assert!(
+            l.lib
+                .people_with_counts()
+                .unwrap()
+                .iter()
+                .all(|p| p.key != format!("p:{ben}")),
+            "the sidebar's list has no Ben"
+        );
+        assert_eq!(
+            l.lib.named_people().unwrap(),
+            vec![
+                NamedPerson {
+                    id: anna,
+                    name: "anna".into()
+                },
+                NamedPerson {
+                    id: ben,
+                    name: "Ben".into()
+                },
+            ]
         );
     }
 }

@@ -10,8 +10,8 @@ use photon_core::{
     grid::{FolderTally, GridEntry, GridView, Section, hex_key},
     library::{
         Album, AlbumSummary, CopiesArg, FaceFilter, Folder, GridTile, ItemFace, NamedItems,
-        PageFace, PeoplePage, Person, RemovedItems, SavedSearch, TagCount, TagRule, ThemeChoice,
-        WatchedFolder, is_starred,
+        NamedPerson, PageFace, PeoplePage, Person, RemovedItems, SavedSearch, TagCount, TagRule,
+        ThemeChoice, WatchedFolder, is_starred,
     },
     media::{MediaKind, ThumbState},
     now_ms,
@@ -709,6 +709,12 @@ pub fn face_data_summary(engine: &Engine) -> CmdResult<FaceDataSummary> {
 /// How many unnamed groups wait for a name, for the sidebar's People row.
 pub fn people_to_name(engine: &Engine) -> CmdResult<i64> {
     Ok(engine.lib.people_to_name()?)
+}
+
+/// Every named person, by name: the person dialog's list, which has the people with no
+/// visible photo too.
+pub fn named_people(engine: &Engine) -> CmdResult<Vec<NamedPerson>> {
+    Ok(engine.lib.named_people()?)
 }
 
 /// The People page, each group with the first `strip` of its faces.

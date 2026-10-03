@@ -259,6 +259,8 @@ export interface NamedItems {
   rejected: Skipped
   none: Skipped
 }
+/** A person the user named. Mirrors `library::NamedPerson`. */
+export interface NamedPerson { id: number; name: string }
 /** What taking photos from a person did. Mirrors `library::RemovedItems`. */
 export interface RemovedItems { removed: number; keptByPicasa: number }
 
@@ -364,6 +366,9 @@ export const api = {
   setFaceDetection: (enabled: boolean) => invoke<void>('set_face_detection', { enabled }),
   faceDataSummary: () => invoke<FaceDataSummary>('face_data_summary'),
   peopleToName: () => invoke<number>('people_to_name'),
+  /** Every named person, by name: the person dialog's list. Unlike `listPeople` it has the
+   *  people with no visible photo. */
+  namedPeople: () => invoke<NamedPerson[]>('named_people'),
   peoplePage: (strip: number) => invoke<PeoplePage>('people_page', { strip }),
   personFaces: (person: number, which: FaceFilter, offset: number, limit: number) =>
     invoke<PageFace[]>('person_faces', { person, which, offset, limit }),

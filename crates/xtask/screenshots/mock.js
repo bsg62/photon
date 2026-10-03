@@ -255,6 +255,10 @@
     set_face_detection: () => null,
     face_data_summary: () => ({ namedPeople: 1 }),
     people_to_name: () => 2,
+    named_people: () => [
+      { id: 1, name: 'Anna' },
+      { id: 3, name: 'Clara' },
+    ],
     people_page: () => {
       // Face n sits on photo n, so every crop has a thumbnail behind it.
       const face = (id, confirmed = false) => ({ id, itemId: id, thumbKey: 'k' + (id - 1), confirmed, personId: null });

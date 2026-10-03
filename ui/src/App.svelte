@@ -2,7 +2,7 @@
   import { onMount, tick } from 'svelte';
   // `open` is already this component's name for opening the viewer.
   import { open as pickFolder } from '@tauri-apps/plugin-dialog';
-  import { api, events } from './lib/api';
+  import { api, events, type NamedPerson } from './lib/api';
   import { gridSize } from './lib/app-grid-size.svelte';
   import { theme } from './lib/app-theme.svelte';
   import { showCopies } from './lib/copies';
@@ -57,13 +57,20 @@
     apply: (mode, tag, ids) => (mode === 'add' ? api.addItemsTag(ids, tag) : api.removeItemsTag(ids, tag)),
   });
 
+  /** The named people the person dialog lists and joins, read each time it opens: the
+   *  sidebar's list (`library.people`) leaves out a person with no visible photo, and the
+   *  dialog would then call their name a new person while the backend joins them. */
+  let namedPeople = $state.raw<NamedPerson[]>([]);
+  /** Numbered, so a read from an earlier opening landing late cannot replace a newer one. */
+  let namedRead = 0;
+
   /** Naming a face (from the viewer) or adding photos to a person (from the grid). An
    *  overlay like the keyword dialog, so here for the same reason; `nameOf` reads the
    *  stored spelling, so the toast says "Anna" when "anna" was typed for her. */
   const personPicker = createPersonPicker({
     nameFaces: api.nameFaces,
     nameItems: api.nameItems,
-    nameOf: (id) => library.people.find((p) => p.key === `p:${id}`)?.name,
+    nameOf: (id) => namedPeople.find((p) => p.id === id)?.name,
   });
   /** Where the person dialog hands focus back to: the viewer it was opened over, or the grid. */
   let personPickerFrom: 'grid' | 'viewer' = 'grid';
@@ -397,6 +404,17 @@
    *  The target is captured by `show`, for `openKeywords`' reason. */
   function openPersonPicker(target: PickerTarget, from: 'grid' | 'viewer') {
     personPickerFrom = from;
+    // The sidebar's named people stand in until the read lands, and stay if it fails.
+    namedPeople = library.people
+      .filter((p) => p.key.startsWith('p:'))
+      .map((p) => ({ id: Number(p.key.slice(2)), name: p.name }));
+    const read = ++namedRead;
+    api
+      .namedPeople()
+      .then((people) => {
+        if (read === namedRead) namedPeople = people;
+      })
+      .catch(library.reportError);
     personPicker.show(target);
   }
 
@@ -521,7 +539,7 @@
 {#if settingsAt !== null}<Settings section={settingsAt} onclose={closeSettings} onsearch={searchFromSettings} />{/if}
 {#if compareIds !== null}<Compare ids={compareIds} onclose={closeCompare} onopen={openFromCompare} />{/if}
 <TagPicker {picker} onclosed={closeKeywords} />
-<PersonPicker picker={personPicker} onclosed={closePersonPicker} />
+<PersonPicker picker={personPicker} people={namedPeople} onclosed={closePersonPicker} />
 <ExportDialog dialog={exporter} onclosed={closeExport} />
 <Toasts />
 {#if folderDrop.hovering}
