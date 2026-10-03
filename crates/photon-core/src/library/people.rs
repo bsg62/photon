@@ -306,6 +306,132 @@ fn merge_into(tx: &Connection, from: i64, into: i64) -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// A skipped photo, for the toast.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkippedItem {
+    pub id: i64,
+    pub file_name: String,
+}
+
+/// One kind of skipped photo: the first `LISTED_SKIPPED` of them and how many there were.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Skipped {
+    pub items: Vec<SkippedItem>,
+    pub count: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NamedItems {
+    /// The person the photos' faces now belong to; `None` when nothing was named and no
+    /// person of that name exists.
+    pub person: Option<i64>,
+    /// The person's name as stored (an existing person's own spelling).
+    pub name: String,
+    pub named: i64,
+    pub already: Skipped,
+    pub several: Skipped,
+    pub none: Skipped,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemovedItems {
+    pub removed: i64,
+    pub kept_by_picasa: i64,
+}
+
+/// How many photos of one skipped kind are listed by name; the count is always the whole.
+pub const LISTED_SKIPPED: usize = 20;
+
+/// "Not this person" for each face: records the rejection, takes the face out of its group.
+fn reject_in(tx: &Connection, faces: &[i64]) -> rusqlite::Result<()> {
+    let mut reject = tx.prepare_cached(
+        "INSERT OR IGNORE INTO face_rejections (face_id, person_id)
+         SELECT id, person_id FROM detected_faces WHERE id = ?1 AND person_id IS NOT NULL",
+    )?;
+    let mut out = tx.prepare_cached(
+        "UPDATE detected_faces SET person_id = NULL, confirmed = 0 WHERE id = ?1",
+    )?;
+    for face in faces {
+        reject.execute(params![face])?;
+        out.execute(params![face])?;
+    }
+    Ok(())
+}
+
+/// The given faces whose rows exist, once each, in order.
+fn existing_faces(tx: &Connection, faces: &[i64]) -> rusqlite::Result<Vec<i64>> {
+    let mut stmt = tx.prepare_cached("SELECT 1 FROM detected_faces WHERE id = ?1")?;
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for &face in faces {
+        if seen.insert(face) && stmt.exists(params![face])? {
+            out.push(face);
+        }
+    }
+    Ok(out)
+}
+
+/// Names existing faces as `name` (already cleaned): the person of that name, or a new one.
+/// Confirmed, no longer ignored, and a rejection from that person is withdrawn.
+fn name_in(tx: &Connection, faces: &[i64], name: &str) -> rusqlite::Result<i64> {
+    let person = match person_named(tx, name, -1)? {
+        Some(person) => person,
+        None => {
+            tx.execute("INSERT INTO people (name) VALUES (?1)", params![name])?;
+            tx.last_insert_rowid()
+        }
+    };
+    {
+        let mut set = tx.prepare_cached(
+            "UPDATE detected_faces SET person_id = ?2, confirmed = 1, ignored = 0 WHERE id = ?1",
+        )?;
+        let mut forget =
+            tx.prepare_cached("DELETE FROM face_rejections WHERE face_id = ?1 AND person_id = ?2")?;
+        for face in faces {
+            set.execute(params![face, person])?;
+            forget.execute(params![face, person])?;
+        }
+    }
+    link_contacts_by_name(tx)?;
+    Ok(person)
+}
+
+/// Whether the photo is in the person's view: a confirmed face of theirs, or a Picasa face
+/// whose contact is linked to them (the Person view's own condition, `items.rs`).
+fn on_person_view(tx: &Connection, person: i64, item: i64) -> rusqlite::Result<bool> {
+    tx.query_row(
+        "SELECT EXISTS (SELECT 1 FROM detected_faces
+                        WHERE person_id = ?1 AND confirmed = 1 AND item_id = ?2)
+             OR EXISTS (SELECT 1 FROM faces f JOIN person_contacts pc ON pc.contact = f.contact
+                        WHERE pc.person_id = ?1 AND f.item_id = ?2)",
+        params![person, item],
+        |r| r.get(0),
+    )
+}
+
+/// Adds a photo to a skipped list: counted always, named only up to `LISTED_SKIPPED`.
+fn skip(tx: &Connection, into: &mut Skipped, item: i64) -> rusqlite::Result<()> {
+    into.count += 1;
+    if into.items.len() < LISTED_SKIPPED {
+        let path: String =
+            tx.query_row("SELECT path FROM items WHERE id = ?1", params![item], |r| {
+                r.get(0)
+            })?;
+        let file_name = std::path::Path::new(&path)
+            .file_name()
+            .map_or(path.clone(), |n| n.to_string_lossy().into_owned());
+        into.items.push(SkippedItem {
+            id: item,
+            file_name,
+        });
+    }
+    Ok(())
+}
+
 impl Library {
     /// Names a group, or renames a person; returns the person it ended in. A name taken by
     /// another person, in any case, merges the group into them. A group named for the first
@@ -373,21 +499,128 @@ impl Library {
     pub fn reject_faces(&self, faces: &[i64]) -> Result<()> {
         let mut conn = self.writer();
         let tx = conn.transaction()?;
-        {
-            let mut reject = tx.prepare_cached(
-                "INSERT OR IGNORE INTO face_rejections (face_id, person_id)
-                 SELECT id, person_id FROM detected_faces WHERE id = ?1 AND person_id IS NOT NULL",
-            )?;
-            let mut out = tx.prepare_cached(
-                "UPDATE detected_faces SET person_id = NULL, confirmed = 0 WHERE id = ?1",
-            )?;
-            for face in faces {
-                reject.execute(params![face])?;
-                out.execute(params![face])?;
+        reject_in(&tx, faces)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Names faces by id, as the person `name` in any case: an existing person takes them,
+    /// else a new one is made. Each face becomes confirmed (the user said who it is), is no
+    /// longer ignored, and forgets a rejection from that person. Returns the person, or
+    /// `None` when none of the faces exists any more (a detection pass or the switch can
+    /// delete them under a stale request): no person is created for nothing, so a stale
+    /// request never leaves an empty named person behind. A face too small for a vector is
+    /// named like any other; the Person view reads confirmed faces, not vectors.
+    pub fn name_faces(&self, faces: &[i64], name: &str) -> Result<Option<i64>> {
+        let name = clean(name)?;
+        let mut conn = self.writer();
+        let tx = conn.transaction()?;
+        let existing = existing_faces(&tx, faces)?;
+        if existing.is_empty() {
+            return Ok(None);
+        }
+        let person = name_in(&tx, &existing, &name)?;
+        tx.commit()?;
+        Ok(Some(person))
+    }
+
+    /// Names the one unnamed face of each photo as `name`, and says which photos it left
+    /// alone and why. A photo is skipped as *already* the person's when the person has a
+    /// confirmed face on it or a Picasa face linked to them: naming its other face would put
+    /// a stranger under the name. *Several* when more than one face could be meant, *none*
+    /// when no face could. An ignored face is not a candidate: the user put it away as not
+    /// a face worth naming. A person is made only when some face is named.
+    pub fn name_items(&self, items: &[i64], name: &str) -> Result<NamedItems> {
+        let name = clean(name)?;
+        let mut conn = self.writer();
+        let tx = conn.transaction()?;
+        let mut person = person_named(&tx, &name, -1)?;
+        let mut out = NamedItems {
+            person,
+            name: name.clone(),
+            named: 0,
+            already: Skipped::default(),
+            several: Skipped::default(),
+            none: Skipped::default(),
+        };
+        let mut collected = Vec::new();
+        let mut seen = HashSet::new();
+        for &item in items {
+            if !seen.insert(item) {
+                continue;
+            }
+            if let Some(person) = person
+                && on_person_view(&tx, person, item)?
+            {
+                skip(&tx, &mut out.already, item)?;
+                continue;
+            }
+            let candidates: Vec<i64> = tx
+                .prepare_cached(
+                    "SELECT id FROM detected_faces
+                     WHERE item_id = ?1 AND ignored = 0
+                       AND (person_id IS NULL OR confirmed = 0
+                            OR person_id IN (SELECT id FROM people WHERE name IS NULL))",
+                )?
+                .query_map(params![item], |r| r.get(0))?
+                .collect::<rusqlite::Result<_>>()?;
+            match candidates[..] {
+                [] => skip(&tx, &mut out.none, item)?,
+                [face] => collected.push(face),
+                _ => skip(&tx, &mut out.several, item)?,
+            }
+        }
+        if !collected.is_empty() {
+            person = Some(name_in(&tx, &collected, &name)?);
+            out.named = collected.len() as i64;
+        }
+        if let Some(id) = person {
+            out.person = person;
+            out.name = tx.query_row("SELECT name FROM people WHERE id = ?1", params![id], |r| {
+                r.get(0)
+            })?;
+        }
+        tx.commit()?;
+        Ok(out)
+    }
+
+    /// Takes photos out of a person: every face of theirs on them, confirmed or only
+    /// suggested, is rejected from them. A photo they are on through a linked Picasa face
+    /// stays theirs, since photon never changes Picasa's faces: `kept_by_picasa` counts
+    /// those, so the UI can say so instead of leaving the photo in the view unexplained.
+    pub fn remove_from_person(&self, person: i64, items: &[i64]) -> Result<RemovedItems> {
+        let mut conn = self.writer();
+        let tx = conn.transaction()?;
+        if !is_named(&tx, person)? {
+            return Err(Error::NotAPerson(person));
+        }
+        let mut out = RemovedItems {
+            removed: 0,
+            kept_by_picasa: 0,
+        };
+        let mut seen = HashSet::new();
+        for &item in items {
+            if !seen.insert(item) {
+                continue;
+            }
+            let faces: Vec<i64> = tx
+                .prepare_cached(
+                    "SELECT id FROM detected_faces WHERE person_id = ?1 AND item_id = ?2",
+                )?
+                .query_map(params![person, item], |r| r.get(0))?
+                .collect::<rusqlite::Result<_>>()?;
+            if faces.is_empty() {
+                continue;
+            }
+            reject_in(&tx, &faces)?;
+            if on_person_view(&tx, person, item)? {
+                out.kept_by_picasa += 1;
+            } else {
+                out.removed += 1;
             }
         }
         tx.commit()?;
-        Ok(())
+        Ok(out)
     }
 
     /// Merges a group or a person into a named person. Refused into anything else, and
@@ -2185,5 +2418,260 @@ mod tests {
                 .all(|p| p.key != format!("p:{anna}")),
             "a named person with no visible photo has no row in the sidebar's list"
         );
+    }
+
+    fn make_person(lib: &Library, name: &str) -> i64 {
+        let w = lib.writer();
+        w.execute("INSERT INTO people (name) VALUES (?1)", [name])
+            .unwrap();
+        w.last_insert_rowid()
+    }
+
+    fn put(lib: &Library, face: i64, person: i64, confirmed: bool) {
+        lib.writer()
+            .execute(
+                "UPDATE detected_faces SET person_id = ?2, confirmed = ?3 WHERE id = ?1",
+                rusqlite::params![face, person, confirmed],
+            )
+            .unwrap();
+    }
+
+    fn rejections(lib: &Library, face: i64) -> Vec<i64> {
+        let r = lib.reader().unwrap();
+        let mut s = r
+            .prepare("SELECT person_id FROM face_rejections WHERE face_id = ?1 ORDER BY 1")
+            .unwrap();
+        s.query_map([face], |r| r.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    }
+
+    fn name_of(lib: &Library, person: i64) -> String {
+        lib.reader()
+            .unwrap()
+            .query_row("SELECT name FROM people WHERE id = ?1", [person], |r| {
+                r.get(0)
+            })
+            .unwrap()
+    }
+
+    #[test]
+    fn name_faces_with_a_new_name_makes_a_person() {
+        let (l, f) = library(&[&[0.0]]);
+        let p = l.lib.name_faces(&[f[0]], "  Ben ").unwrap().unwrap();
+        assert_eq!(name_of(&l.lib, p), "Ben");
+        assert_eq!(person_of(&l.lib, f[0]), (Some(p), true));
+    }
+
+    #[test]
+    fn name_faces_joins_an_existing_person_whatever_the_case() {
+        let (l, f) = library(&[&[0.0]]);
+        let anna = make_person(&l.lib, "Anna");
+        let p = l.lib.name_faces(&[f[0]], "anna").unwrap();
+        assert_eq!(p, Some(anna));
+        assert_eq!(l.lib.named_people_count().unwrap(), 1);
+        assert_eq!(person_of(&l.lib, f[0]), (Some(anna), true));
+    }
+
+    #[test]
+    fn name_faces_links_a_picasa_contact_of_that_name() {
+        let (l, f) = library(&[&[0.0], &[10.0]]);
+        l.lib
+            .upsert_contacts(&HashMap::from([("h1".to_string(), "ANNA".to_string())]))
+            .unwrap();
+        l.lib
+            .set_item_faces(&[(l.items[1], vec![at_the_face("h1")])])
+            .unwrap();
+        let p = l.lib.name_faces(&[f[0]], "Anna").unwrap().unwrap();
+        assert_eq!(
+            view_ids(&l.lib, crate::grid::GridView::Person, &format!("p:{p}")),
+            vec![l.items[0], l.items[1]]
+        );
+    }
+
+    #[test]
+    fn name_faces_clears_the_faces_rejection_from_that_person() {
+        let (l, f) = library(&[&[0.0]]);
+        let anna = make_person(&l.lib, "Anna");
+        put(&l.lib, f[0], anna, false);
+        l.lib.reject_faces(&[f[0]]).unwrap();
+        assert_eq!(rejections(&l.lib, f[0]), vec![anna]);
+        l.lib.name_faces(&[f[0]], "Anna").unwrap();
+        assert_eq!(person_of(&l.lib, f[0]), (Some(anna), true));
+        assert!(rejections(&l.lib, f[0]).is_empty());
+    }
+
+    #[test]
+    fn name_faces_names_a_face_too_small_for_a_vector() {
+        let (l, f) = library(&[&[0.0]]);
+        l.lib
+            .writer()
+            .execute("UPDATE detected_faces SET embedding = NULL", [])
+            .unwrap();
+        let p = l.lib.name_faces(&[f[0]], "Ben").unwrap().unwrap();
+        assert_eq!(person_of(&l.lib, f[0]), (Some(p), true));
+        assert_eq!(
+            view_ids(&l.lib, crate::grid::GridView::Person, &format!("p:{p}")),
+            vec![l.items[0]]
+        );
+    }
+
+    #[test]
+    fn name_faces_un_ignores_the_face() {
+        let (l, f) = library(&[&[0.0]]);
+        set_ignored_by_hand(&l.lib, f[0], true);
+        l.lib.name_faces(&[f[0]], "Ben").unwrap();
+        let ignored: bool = l
+            .lib
+            .reader()
+            .unwrap()
+            .query_row(
+                "SELECT ignored FROM detected_faces WHERE id = ?1",
+                [f[0]],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(!ignored);
+    }
+
+    #[test]
+    fn name_faces_of_faces_that_are_gone_creates_no_person() {
+        let (l, _f) = library(&[&[0.0]]);
+        assert_eq!(l.lib.name_faces(&[9_000, 9_001], "Ben").unwrap(), None);
+        assert_eq!(l.lib.named_people_count().unwrap(), 0);
+    }
+
+    #[test]
+    fn name_items_names_a_photos_only_unnamed_face() {
+        let (l, f) = library(&[&[0.0], &[10.0]]);
+        let r = l.lib.name_items(&l.items, "Ben").unwrap();
+        let p = r.person.unwrap();
+        assert_eq!((r.named, r.name.as_str()), (2, "Ben"));
+        assert_eq!(r.already.count + r.several.count + r.none.count, 0);
+        assert_eq!(person_of(&l.lib, f[0]), (Some(p), true));
+        assert_eq!(person_of(&l.lib, f[1]), (Some(p), true));
+    }
+
+    #[test]
+    fn name_items_skips_photos_with_several_unnamed_faces_and_lists_them() {
+        let (l, f) = library(&[&[0.0, 5.0], &[10.0, 15.0]]);
+        let r = l.lib.name_items(&l.items, "Ben").unwrap();
+        assert_eq!((r.named, r.person), (0, None));
+        assert_eq!(r.several.count, 2);
+        let names: Vec<_> = r
+            .several
+            .items
+            .iter()
+            .map(|i| i.file_name.as_str())
+            .collect();
+        assert_eq!(names, vec!["0.jpg", "1.jpg"]);
+        assert_eq!(r.several.items[0].id, l.items[0]);
+        assert_eq!(person_of(&l.lib, f[0]), (None, false));
+        assert_eq!(l.lib.named_people_count().unwrap(), 0);
+    }
+
+    #[test]
+    fn name_items_skips_a_photo_with_no_unnamed_face() {
+        let (l, _f) = library(&[&[]]);
+        let r = l.lib.name_items(&l.items, "Ben").unwrap();
+        assert_eq!((r.none.count, r.named), (1, 0));
+        assert_eq!(r.none.items[0].file_name, "0.jpg");
+    }
+
+    #[test]
+    fn name_items_skips_a_photo_already_the_persons() {
+        let (l, f) = library(&[&[0.0, 5.0], &[10.0, 15.0]]);
+        let anna = make_person(&l.lib, "Anna");
+        put(&l.lib, f[0], anna, true);
+        l.lib
+            .upsert_contacts(&HashMap::from([("h1".to_string(), "Anna".to_string())]))
+            .unwrap();
+        l.lib
+            .set_item_faces(&[(l.items[1], vec![at_the_face("h1")])])
+            .unwrap();
+        l.lib
+            .writer()
+            .execute(
+                "INSERT OR IGNORE INTO person_contacts (contact, person_id) VALUES ('h1', ?1)",
+                [anna],
+            )
+            .unwrap();
+        let r = l.lib.name_items(&l.items, "anna").unwrap();
+        assert_eq!((r.already.count, r.named), (2, 0));
+        assert_eq!(r.person, Some(anna));
+        assert_eq!(person_of(&l.lib, f[1]), (None, false), "untouched");
+        assert_eq!(person_of(&l.lib, f[2]), (None, false), "untouched");
+    }
+
+    #[test]
+    fn name_items_does_not_count_an_ignored_face() {
+        let (l, f) = library(&[&[0.0, 5.0]]);
+        set_ignored_by_hand(&l.lib, f[1], true);
+        let r = l.lib.name_items(&l.items, "Ben").unwrap();
+        assert_eq!(r.named, 1);
+        assert_eq!(person_of(&l.lib, f[0]).0, r.person);
+        assert_eq!(person_of(&l.lib, f[1]).0, None);
+    }
+
+    #[test]
+    fn name_items_lists_at_most_twenty_of_a_kind() {
+        let pairs: Vec<&[f32]> = (0..21).map(|_| &[0.0f32, 5.0][..]).collect();
+        let (l, _f) = library(&pairs);
+        let r = l.lib.name_items(&l.items, "Ben").unwrap();
+        assert_eq!((r.several.items.len(), r.several.count), (20, 21));
+    }
+
+    #[test]
+    fn remove_from_person_rejects_the_persons_faces_on_the_photos() {
+        let (l, f) = library(&[&[0.0, 5.0], &[10.0], &[20.0]]);
+        let (anna, ben) = (make_person(&l.lib, "Anna"), make_person(&l.lib, "Ben"));
+        put(&l.lib, f[0], anna, true);
+        put(&l.lib, f[1], ben, true);
+        put(&l.lib, f[2], anna, false);
+        put(&l.lib, f[3], anna, true);
+        let r = l.lib.remove_from_person(anna, &l.items[..2]).unwrap();
+        assert_eq!((r.removed, r.kept_by_picasa), (2, 0));
+        assert_eq!(person_of(&l.lib, f[0]), (None, false));
+        assert_eq!(person_of(&l.lib, f[1]), (Some(ben), true));
+        assert_eq!(person_of(&l.lib, f[2]), (None, false));
+        assert_eq!(rejections(&l.lib, f[0]), vec![anna]);
+        assert_eq!(rejections(&l.lib, f[2]), vec![anna]);
+        assert_eq!(person_of(&l.lib, f[3]), (Some(anna), true), "not asked");
+    }
+
+    #[test]
+    fn remove_from_person_counts_photos_picasa_keeps() {
+        let (l, f) = library(&[&[0.0]]);
+        let anna = make_person(&l.lib, "Anna");
+        put(&l.lib, f[0], anna, true);
+        l.lib
+            .upsert_contacts(&HashMap::from([("h1".to_string(), "Anna".to_string())]))
+            .unwrap();
+        l.lib
+            .set_item_faces(&[(l.items[0], vec![at_the_face("h1")])])
+            .unwrap();
+        l.lib
+            .writer()
+            .execute(
+                "INSERT OR IGNORE INTO person_contacts (contact, person_id) VALUES ('h1', ?1)",
+                [anna],
+            )
+            .unwrap();
+        let r = l.lib.remove_from_person(anna, &l.items).unwrap();
+        assert_eq!((r.removed, r.kept_by_picasa), (0, 1));
+        assert_eq!(person_of(&l.lib, f[0]), (None, false));
+    }
+
+    #[test]
+    fn remove_from_person_refuses_an_unnamed_group() {
+        let (l, f) = library(&[&[0.0]]);
+        l.lib.group_ungrouped_faces(&never).unwrap();
+        let group = person_of(&l.lib, f[0]).0.unwrap();
+        assert!(matches!(
+            l.lib.remove_from_person(group, &l.items),
+            Err(Error::NotAPerson(g)) if g == group
+        ));
+        assert_eq!(person_of(&l.lib, f[0]).0, Some(group));
     }
 }

@@ -241,6 +241,23 @@ export interface FaceProgress {
   running: boolean;
 }
 
+/** A photo a naming skipped. Mirrors `library::SkippedItem`. */
+export interface SkippedItem { id: number; fileName: string }
+/** One kind of skipped photo: the first twenty and how many there were. Mirrors `library::Skipped`. */
+export interface Skipped { items: SkippedItem[]; count: number }
+/** What naming photos did. Mirrors `library::NamedItems`; `person` is null when nothing was
+ *  named and no person of that name exists, `name` the name as stored. */
+export interface NamedItems {
+  person: number | null
+  name: string
+  named: number
+  already: Skipped
+  several: Skipped
+  none: Skipped
+}
+/** What taking photos from a person did. Mirrors `library::RemovedItems`. */
+export interface RemovedItems { removed: number; keptByPicasa: number }
+
 /** One face on the People page. Mirrors `library::PageFace`; `thumbKey` is the photo's
  *  thumbnail key, which with the face id names the face's crop; `personId` is the face's
  *  group, how a single face is named. */
@@ -351,6 +368,11 @@ export const api = {
   renamePerson: (person: number, name: string) => invoke<number>('rename_person', { person, name }),
   confirmFaces: (faces: number[]) => invoke<void>('confirm_faces', { faces }),
   rejectFaces: (faces: number[]) => invoke<void>('reject_faces', { faces }),
+  /** Resolves to the person the faces ended in; null when none of them exists any more. */
+  nameFaces: (faces: number[], name: string) => invoke<number | null>('name_faces', { faces, name }),
+  nameItems: (items: number[], name: string) => invoke<NamedItems>('name_items', { items, name }),
+  removeFromPerson: (person: number, items: number[]) =>
+    invoke<RemovedItems>('remove_from_person', { person, items }),
   mergePeople: (from: number, into: number) => invoke<void>('merge_people', { from, into }),
   ignorePerson: (person: number, ignored: boolean) => invoke<void>('ignore_person', { person, ignored }),
   ignoreFaces: (faces: number[], ignored: boolean) => invoke<void>('ignore_faces', { faces, ignored }),

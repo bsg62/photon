@@ -19,8 +19,8 @@
 
 use crate::{commands, engine::Engine, error::AppError};
 use photon_core::library::{
-    Album, AlbumSummary, FaceFilter, PageFace, PeoplePage, Person, SavedSearch, TagCount, TagRule,
-    WatchedFolder,
+    Album, AlbumSummary, FaceFilter, NamedItems, PageFace, PeoplePage, Person, RemovedItems,
+    SavedSearch, TagCount, TagRule, WatchedFolder,
 };
 use std::sync::Arc;
 use tauri::State;
@@ -199,6 +199,25 @@ pub fn confirm_faces(engine: Eng<'_>, faces: Vec<i64>) -> Result<(), AppError> {
 #[tauri::command(async)]
 pub fn reject_faces(engine: Eng<'_>, faces: Vec<i64>) -> Result<(), AppError> {
     commands::reject_faces(engine.inner(), &faces)
+}
+
+#[tauri::command(async)]
+pub fn name_faces(engine: Eng<'_>, faces: Vec<i64>, name: String) -> Result<Option<i64>, AppError> {
+    commands::name_faces(engine.inner(), &faces, &name)
+}
+
+#[tauri::command(async)]
+pub fn name_items(engine: Eng<'_>, items: Vec<i64>, name: String) -> Result<NamedItems, AppError> {
+    commands::name_items(engine.inner(), &items, &name)
+}
+
+#[tauri::command(async)]
+pub fn remove_from_person(
+    engine: Eng<'_>,
+    person: i64,
+    items: Vec<i64>,
+) -> Result<RemovedItems, AppError> {
+    commands::remove_from_person(engine.inner(), person, &items)
 }
 
 #[tauri::command(async)]

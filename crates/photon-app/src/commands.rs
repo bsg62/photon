@@ -9,8 +9,9 @@ use photon_core::{
     face_detect::{Rect, merge},
     grid::{FolderTally, GridEntry, GridView, Section, hex_key},
     library::{
-        Album, AlbumSummary, CopiesArg, FaceFilter, Folder, GridTile, ItemFace, PageFace,
-        PeoplePage, Person, SavedSearch, TagCount, TagRule, ThemeChoice, WatchedFolder, is_starred,
+        Album, AlbumSummary, CopiesArg, FaceFilter, Folder, GridTile, ItemFace, NamedItems,
+        PageFace, PeoplePage, Person, RemovedItems, SavedSearch, TagCount, TagRule, ThemeChoice,
+        WatchedFolder, is_starred,
     },
     media::{MediaKind, ThumbState},
     now_ms,
@@ -744,6 +745,27 @@ pub fn confirm_faces(engine: &Arc<Engine>, faces: &[i64]) -> CmdResult<()> {
 /// them elsewhere.
 pub fn reject_faces(engine: &Arc<Engine>, faces: &[i64]) -> CmdResult<()> {
     Ok(engine.write_people("rejecting faces", |lib| lib.reject_faces(faces))?)
+}
+
+/// Names faces by id; the person they ended in, or `None` when none of them exists any more.
+pub fn name_faces(engine: &Arc<Engine>, faces: &[i64], name: &str) -> CmdResult<Option<i64>> {
+    Ok(engine.write_people("naming faces", |lib| lib.name_faces(faces, name))?)
+}
+
+/// Names each photo's one unnamed face; the answer says which photos it skipped and why.
+pub fn name_items(engine: &Arc<Engine>, items: &[i64], name: &str) -> CmdResult<NamedItems> {
+    Ok(engine.write_people("naming photos", |lib| lib.name_items(items, name))?)
+}
+
+/// Takes photos out of a person; a photo Picasa names them on stays theirs and is counted.
+pub fn remove_from_person(
+    engine: &Arc<Engine>,
+    person: i64,
+    items: &[i64],
+) -> CmdResult<RemovedItems> {
+    Ok(engine.write_people("removing photos from a person", |lib| {
+        lib.remove_from_person(person, items)
+    })?)
 }
 
 pub fn merge_people(engine: &Arc<Engine>, from: i64, into: i64) -> CmdResult<()> {
@@ -2237,6 +2259,10 @@ mod tests {
         );
         assert_eq!(
             merge_people(&f.engine, 9_999, 9_998).unwrap_err().kind,
+            "notAPerson"
+        );
+        assert_eq!(
+            remove_from_person(&f.engine, 9_999, &[1]).unwrap_err().kind,
             "notAPerson"
         );
     }

@@ -281,6 +281,13 @@
       };
     },
     person_faces: () => [],
+    name_faces: () => 3,
+    name_items: () => ({
+      person: 3, name: 'Anna', named: 2,
+      already: { items: [], count: 0 }, none: { items: [], count: 0 },
+      several: { items: [{ id: 1, fileName: 'IMG_0001.jpg' }], count: 1 },
+    }),
+    remove_from_person: () => ({ removed: 1, keptByPicasa: 0 }),
     set_search_query: (args) => {
       searchQuery = args.query || '';
       return null;
