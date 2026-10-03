@@ -42,6 +42,7 @@ vi.mock('./api', () => ({
     deleteSavedSearch: vi.fn(),
     listPeople: vi.fn(),
     peopleToName: vi.fn(),
+    faceDetection: vi.fn(),
     listTags: vi.fn(),
     setAlbumView: vi.fn(),
     createAlbum: vi.fn(),
@@ -116,6 +117,25 @@ describe('LibraryStore', () => {
     vi.mocked(api.peopleToName).mockResolvedValue(0);
     vi.mocked(api.listTags).mockResolvedValue([]);
     vi.mocked(api.watchedFolderStats).mockResolvedValue([]);
+    vi.mocked(api.faceDetection).mockResolvedValue(false);
+  });
+
+  it('reads the face switch at start, and a late read does not undo a change in Settings', async () => {
+    const store = new LibraryStore();
+    expect(store.findFaces).toBe(null);
+    vi.mocked(api.faceDetection).mockResolvedValueOnce(true);
+    await store.init();
+    await flush();
+    expect(store.findFaces).toBe(true);
+
+    const late = deferred<boolean>();
+    vi.mocked(api.faceDetection).mockReturnValueOnce(late.promise);
+    store.dispose();
+    await store.init();
+    store.setFindFaces(false);
+    late.resolve(true);
+    await flush();
+    expect(store.findFaces).toBe(false);
   });
 
   it('the first fetch asks for the layout', async () => {

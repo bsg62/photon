@@ -109,6 +109,14 @@ export class LibraryStore {
    *  collections, so the face pass's grouping - a data change - moves it. */
   toName = $state(0);
   tags = $state.raw<TagCount[]>([]);
+  /** Whether "Find faces in my photos" is on; null until read. The grid offers "Add … to a
+   *  person…" only while it is: with it off photon has no face to name, and every photo
+   *  would come back "no unnamed face". Read once by `init`; Settings, the switch's only
+   *  writer, reports each change it stores through `setFindFaces`. */
+  findFaces = $state<boolean | null>(null);
+  /** Bumped by every read and by `setFindFaces`, so the start-up read landing after a change
+   *  in Settings cannot put back the switch's state from before it. */
+  private findFacesSeq = 0;
   scans = $state<Record<number, ScanProgressEvent>>({});
   /** Watched folder ids the OS won't let photon watch live, from the most recent
    *  `folder-status` event for each: they fall back to periodic rescans instead. */
@@ -622,6 +630,7 @@ export class LibraryStore {
         return;
       }
       this.unlisten = unlisten;
+      void this.readFindFaces().catch(this.reportError);
       await Promise.all([this.refresh(), this.refreshFolders(), this.refreshCollections()]);
     })();
     return this.initPromise;
@@ -634,6 +643,18 @@ export class LibraryStore {
     this.unlisten = [];
     this.degraded = {};
     this.faces = null;
+  }
+
+  private async readFindFaces(): Promise<void> {
+    const seq = ++this.findFacesSeq;
+    const on = await api.faceDetection();
+    if (seq === this.findFacesSeq) this.findFaces = on;
+  }
+
+  /** The switch as Settings has just stored it. */
+  setFindFaces(on: boolean): void {
+    this.findFacesSeq++;
+    this.findFaces = on;
   }
 
   /** Refetches the grid. One fetch at a time, plus one queued behind it: during a scan

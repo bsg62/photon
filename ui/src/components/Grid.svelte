@@ -890,9 +890,12 @@
     {/if}
     <button role="menuitem" onclick={() => pickKeyword('add')}>Add keyword to {subject}…</button>
     <button role="menuitem" onclick={() => pickKeyword('remove')}>Remove keyword from {subject}…</button>
-    <button role="menuitem" onclick={() => withSelection(async (ids) => onnameperson(ids))}>
-      Add {subject} to a person…
-    </button>
+    <!-- Only while photon finds faces: with the switch off there is no face to name. -->
+    {#if library.findFaces}
+      <button role="menuitem" onclick={() => withSelection(async (ids) => onnameperson(ids))}>
+        Add {subject} to a person…
+      </button>
+    {/if}
     {#if personId !== null}
       <button role="menuitem" onclick={() => withSelection((ids) => library.removeFromPerson(personId, ids))}>
         Remove {subject} from “{library.personName(library.info.person)}”
