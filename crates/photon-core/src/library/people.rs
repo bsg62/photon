@@ -1747,6 +1747,19 @@ mod tests {
         );
     }
 
+    /// Picasa's own photos of a linked contact are the person's, under the person's name:
+    /// after a rename the contact still says "anna" and the person says "Anna Smith".
+    #[test]
+    fn person_search_finds_a_linked_contacts_photos_by_the_persons_name() {
+        let (l, anna) = anna_and_ben();
+        l.lib.rename_person(anna, "Anna Smith").unwrap();
+        assert_eq!(
+            view_ids(&l.lib, crate::grid::GridView::Search, "person:smith"),
+            vec![l.items[0], l.items[1], l.items[3]],
+            "photo 3 has only Picasa's face, recorded under the contact's old name"
+        );
+    }
+
     #[test]
     fn hidden_photos_are_in_no_person_reader() {
         let (l, anna) = anna_and_ben();

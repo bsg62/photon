@@ -830,10 +830,12 @@ pub fn viewer_item(engine: &Engine, id: i64) -> CmdResult<ViewerItem> {
         })
         .collect();
     let named_detected = engine.lib.item_named_detected_faces(item.id)?;
+    let mut named_over_unnamed: Vec<Rect> = Vec::new();
     for (rect, person, name) in &named_detected {
         if named_here.iter().any(|p| merge::same_face(p, rect)) {
             continue;
         }
+        named_over_unnamed.push(*rect);
         faces.push(ItemFace {
             key: format!("p:{person}"),
             name: name.clone(),
@@ -851,9 +853,13 @@ pub fn viewer_item(engine: &Engine, id: i64) -> CmdResult<ViewerItem> {
         .filter_map(|(rect, named)| Some((merge::shown(edit, rect)?, named)))
         .collect();
     let all: Vec<Rect> = picasa.iter().map(|(rect, _)| *rect).collect();
+    // A Picasa face no INI names, under a name plate of ours, is the one face: the plate
+    // is drawn, not an outline on top of it.
     let mut unnamed_faces: Vec<Rect> = picasa
         .iter()
-        .filter(|(_, named)| !named)
+        .filter(|(rect, named)| {
+            !named && !named_over_unnamed.iter().any(|n| merge::same_face(rect, n))
+        })
         .map(|(rect, _)| *rect)
         .collect();
     // A detection a person is confirmed on has a name plate; it is no unnamed outline.
@@ -1825,6 +1831,61 @@ mod tests {
         assert!(
             (item.unnamed_faces[0].left - 0.80).abs() < 0.001,
             "only the suggestion is an outline"
+        );
+    }
+
+    /// A confirmed face over a Picasa face no INI names is one face with a name plate, not
+    /// a plate with an unnamed outline drawn on the same place.
+    #[test]
+    fn a_named_detection_over_an_unnamed_picasa_face_is_drawn_once() {
+        let f = fixture(&[
+            ("a/a.jpg", &jpeg(400, 300)),
+            (
+                "a/.picasa.ini",
+                b"[a.jpg]\nfaces=rect64(1000200030006000),zzz\n",
+            ),
+        ]);
+        f.add_photos();
+        f.engine.thumbs.wait_idle();
+        let id = f.ids()[0];
+        f.engine.lib.set_face_detection(true).unwrap();
+        f.engine
+            .lib
+            .set_thumb_state(id, ThumbState::Ready, None)
+            .unwrap();
+        let listed = f
+            .engine
+            .lib
+            .face_candidates(0, 10, DETECTOR_VERSION)
+            .unwrap();
+        let det = Detection {
+            rect: Rect {
+                left: 0.08,
+                top: 0.2,
+                right: 0.18,
+                bottom: 0.3,
+            },
+            landmarks: [(0.0, 0.0); 5],
+            score: 0.9,
+        };
+        f.engine
+            .lib
+            .write_face_batch(&[(listed[0].clone(), vec![det])], DETECTOR_VERSION)
+            .unwrap();
+        let w = rusqlite::Connection::open(&f.config().db_path).unwrap();
+        w.execute("INSERT INTO people (id, name) VALUES (1, 'Ada')", [])
+            .unwrap();
+        w.execute("UPDATE detected_faces SET person_id = 1, confirmed = 1", [])
+            .unwrap();
+        drop(w);
+
+        let item = viewer_item(&f.engine, id).unwrap();
+        assert_eq!(item.faces.len(), 1, "{:?}", item.faces);
+        assert_eq!(item.faces[0].key, "p:1");
+        assert!(
+            item.unnamed_faces.is_empty(),
+            "no outline under the plate: {:?}",
+            item.unnamed_faces
         );
     }
 

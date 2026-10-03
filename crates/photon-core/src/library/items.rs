@@ -325,7 +325,11 @@ const SEARCH_PEOPLE_SQL: &str =
     "SELECT f.item_id, c.name FROM faces f JOIN contacts c ON c.hash = f.contact
      UNION ALL
      SELECT d.item_id, p.name FROM detected_faces d JOIN people p ON p.id = d.person_id
-     WHERE d.confirmed = 1 AND p.name IS NOT NULL";
+     WHERE d.confirmed = 1 AND p.name IS NOT NULL
+     UNION ALL
+     SELECT f.item_id, p.name FROM faces f
+     JOIN person_contacts pc ON pc.contact = f.contact
+     JOIN people p ON p.id = pc.person_id WHERE p.name IS NOT NULL";
 
 /// The names of the albums each photo is in, photon's and Picasa's, for `album:`.
 const SEARCH_ALBUMS_SQL: &str =
