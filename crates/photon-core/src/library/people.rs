@@ -249,8 +249,19 @@ fn is_named(tx: &Connection, id: i64) -> rusqlite::Result<bool> {
 /// confirmed, as naming it would; a named person's keep their state, so a suggestion stays
 /// one. Rejections move before the delete, or its cascade would take them: a face that said
 /// "not this group" says it of the person the group became.
+///
+/// A face of `from` that was once rejected from `into` is not moved: it is left ungrouped,
+/// for the grouping step to place again passing `into` over. Grouping puts a face it took
+/// out of Anna into some other group, and naming that group "Anna" or merging it into her
+/// would otherwise make the face a confirmed Anna against the user's word.
 fn merge_into(tx: &Connection, from: i64, into: i64) -> rusqlite::Result<()> {
     let from_named = is_named(tx, from)?;
+    tx.execute(
+        "UPDATE detected_faces SET person_id = NULL, confirmed = 0
+         WHERE person_id = ?1
+           AND id IN (SELECT face_id FROM face_rejections WHERE person_id = ?2)",
+        params![from, into],
+    )?;
     tx.execute(
         "UPDATE detected_faces SET person_id = ?2,
              confirmed = CASE WHEN ?3 THEN confirmed ELSE 1 END
@@ -276,10 +287,19 @@ impl Library {
     /// another person, in any case, merges the group into them. A group named for the first
     /// time has its faces confirmed; a person renamed keeps their suggestions as
     /// suggestions. Either way a Picasa contact of that name no one has is linked.
+    ///
+    /// A group that is gone - emptied and deleted by a grouping run, or by the switch - is
+    /// refused rather than answered with success for a name stored nowhere.
     pub fn name_group(&self, group: i64, name: &str) -> Result<i64> {
         let name = clean(name)?;
         let mut conn = self.writer();
         let tx = conn.transaction()?;
+        if !tx
+            .prepare_cached("SELECT 1 FROM people WHERE id = ?1")?
+            .exists(params![group])?
+        {
+            return Err(Error::NotAPerson(group));
+        }
         let person = if let Some(existing) = person_named(&tx, &name, group)? {
             merge_into(&tx, group, existing)?;
             existing
@@ -1180,6 +1200,60 @@ mod tests {
             (Some(anna), true),
             "merged faces are confirmed"
         );
+    }
+
+    /// "Not this person" holds through a merge the other way: a face taken out of Anna and
+    /// grouped elsewhere does not come back to her, confirmed, when that group becomes Anna.
+    /// Through both doors: naming the group with her name, and merging it into her.
+    #[test]
+    fn a_merge_does_not_bring_back_a_face_rejected_from_the_person() {
+        type Merge = fn(&Library, i64, i64);
+        let by_name: Merge = |lib, group, _anna| {
+            lib.name_group(group, "anna").unwrap();
+        };
+        let by_merge: Merge = |lib, group, anna| lib.merge_people(group, anna).unwrap();
+        for (how, merge) in [("naming", by_name), ("merging", by_merge)] {
+            // Anna is confirmed at 0°; 10° arrives later, as a suggestion for her.
+            let (l, f) = library(&[&[0.0], &[10.0]]);
+            set_ignored_by_hand(&l.lib, f[1], true);
+            l.lib.group_ungrouped_faces(&never).unwrap();
+            let anna = person_of(&l.lib, f[0]).0.unwrap();
+            l.lib.name_group(anna, "Anna").unwrap();
+            set_ignored_by_hand(&l.lib, f[1], false);
+            l.lib.group_ungrouped_faces(&never).unwrap();
+            assert_eq!(person_of(&l.lib, f[1]), (Some(anna), false), "{how}");
+            // Not Anna: grouping puts the face in a group of its own.
+            l.lib.reject_faces(&[f[1]]).unwrap();
+            l.lib.group_ungrouped_faces(&never).unwrap();
+            let group = person_of(&l.lib, f[1]).0.unwrap();
+            assert_ne!(group, anna, "{how}");
+
+            merge(&l.lib, group, anna);
+            assert_eq!(person_of(&l.lib, f[1]), (None, false), "{how}");
+            l.lib.group_ungrouped_faces(&never).unwrap();
+            let placed = person_of(&l.lib, f[1]);
+            assert!(
+                placed.0.is_some() && placed.0 != Some(anna),
+                "{how}: {placed:?}"
+            );
+            assert_eq!(person_of(&l.lib, f[0]), (Some(anna), true), "{how}");
+        }
+    }
+
+    /// A group a grouping run deleted, emptied, is not named: the name would be stored
+    /// nowhere while the UI was told it had been.
+    #[test]
+    fn naming_a_group_that_is_gone_is_refused() {
+        let (l, f) = library(&[&[0.0]]);
+        l.lib.group_ungrouped_faces(&never).unwrap();
+        let group = person_of(&l.lib, f[0]).0.unwrap();
+        l.lib.set_faces_ignored(&[f[0]], true).unwrap();
+        l.lib.group_ungrouped_faces(&never).unwrap();
+        assert!(matches!(
+            l.lib.name_group(group, "Anna"),
+            Err(Error::NotAPerson(id)) if id == group
+        ));
+        assert_eq!(l.lib.named_people_count().unwrap(), 0);
     }
 
     #[test]

@@ -18,7 +18,8 @@ pub enum Error {
     SchemaTooNew { found: i64, supported: i64 },
     #[error("a person needs a name")]
     EmptyPersonName,
-    /// A merge into, or an operation on, something that is not a named person.
+    /// A merge into, or an operation on, something that is not a named person; or the
+    /// naming of a group that no longer exists.
     #[error("that is not a named person")]
     NotAPerson(i64),
     /// Ignoring a named person: delete them first, which makes them a group again.
