@@ -2,7 +2,8 @@
 //! background scans. Plain Rust, so it can be tested without a webview.
 
 use crate::events::{
-    Events, ExportProgress, FaceProgress, FolderStatus, LibraryChanged, ScanProgressEvent,
+    Events, ExportProgress, FacePhase, FaceProgress, FolderStatus, LibraryChanged,
+    ScanProgressEvent,
 };
 use crate::watch::WatcherService;
 use parking_lot::{Mutex, MutexGuard, RwLock};
@@ -44,10 +45,33 @@ const FACE_PROGRESS_EVERY: Duration = Duration::from_secs(1);
 /// What takes the face pass's progress line down once detection is off: nothing checked,
 /// nothing to check, not running.
 const FACE_PROGRESS_CLEARED: FaceProgress = FaceProgress {
+    phase: FacePhase::Detecting,
     checked: 0,
     total: 0,
     running: false,
 };
+
+/// What a running face pass owes when it ends: the rebuild for what it has written since
+/// its last, and the phase its last event reports, which is the last step it ran.
+struct FacePass {
+    phase: FacePhase,
+    /// Detections written since the last rebuild: a derived rebuild.
+    unshown: bool,
+    /// Faces grouped since the last rebuild: a data rebuild.
+    regrouped: bool,
+    last_rebuild: Instant,
+}
+
+impl FacePass {
+    fn new() -> Self {
+        Self {
+            phase: FacePhase::Detecting,
+            unshown: false,
+            regrouped: false,
+            last_rebuild: Instant::now(),
+        }
+    }
+}
 
 /// How many times its own cost a scan's intermediate rebuild waits, after it ends, before
 /// the next may start. A rebuild is a whole-library query and index build - 55 ms at 100k
@@ -312,6 +336,12 @@ pub struct Engine {
     /// is. Taken before the library's locks and never while holding any other; the face
     /// pass never takes it.
     face_write: Mutex<()>,
+    /// Serialises the corrections of the People data (`write_people`) with the face pass's
+    /// grouping step, which takes it for each of its runs: a pass cannot place a face in a
+    /// group the user is merging or deleting, or into one a rejection has just ruled out.
+    /// Taken before the library's locks and never while holding `face_write`; nothing takes
+    /// `face_write` while holding this. Released before the rebuild and the pass request.
+    people_write: Mutex<()>,
     /// Held by the one thread running the post-scan hashing passes; see `hash_after_scan`.
     /// It holds what the look-alike pass keeps between passes - its thumbnail reductions,
     /// and what its last regroup was asked, which is how a pass with nothing new skips the
@@ -482,6 +512,7 @@ impl Engine {
             ini_write: Mutex::new(()),
             edit_write: Mutex::new(()),
             face_write: Mutex::new(()),
+            people_write: Mutex::new(()),
             hashing: Mutex::new(Default::default()),
             hash_requested: AtomicBool::new(false),
             face_enabled: AtomicBool::new(face_enabled),
@@ -1912,6 +1943,25 @@ impl Engine {
         Ok(())
     }
 
+    /// Runs a correction of the People data under `people_write`, which the grouping step
+    /// also takes, so a pass cannot place a face in a group the user is merging or
+    /// deleting. Then the rebuild every data write ends with, and a request for a pass:
+    /// faces an operation leaves ungrouped (rejected, no longer ignored) are placed by its
+    /// grouping step, and nothing else would run one until the next scan.
+    pub fn write_people<T>(
+        self: &Arc<Self>,
+        what: &'static str,
+        op: impl FnOnce(&Library) -> Result<T>,
+    ) -> Result<T> {
+        let result = {
+            let _serialised = self.people_write.lock();
+            op(&self.lib)?
+        };
+        self.refresh_after_write(what);
+        self.request_face_pass();
+        Ok(result)
+    }
+
     /// Requests a face pass, on its own thread: a no-op with the switch off. Coalesces
     /// with one already running, like `request_similar_pass`.
     pub fn request_face_pass(self: &Arc<Self>) {
@@ -1952,12 +2002,20 @@ impl Engine {
             && photon_core::search::Query::parse(&state.arg).needs().faces
     }
 
-    fn send_face_progress(&self, running: bool) {
-        match self
-            .lib
-            .face_progress(photon_core::face_detect::DETECTOR_VERSION)
-        {
+    /// Counts the library in `phase`'s units - photos looked at while detecting, faces
+    /// while recognising - and reports it.
+    fn send_face_progress(&self, phase: FacePhase, running: bool) {
+        let counted = match phase {
+            FacePhase::Detecting => self
+                .lib
+                .face_progress(photon_core::face_detect::DETECTOR_VERSION),
+            FacePhase::Recognising => self
+                .lib
+                .embed_progress(photon_core::face_embed::EMBEDDER_VERSION),
+        };
+        match counted {
             Ok((checked, total)) => self.events.face_progress(FaceProgress {
+                phase,
                 checked,
                 total,
                 running,
@@ -1966,90 +2024,213 @@ impl Engine {
         }
     }
 
-    /// One pass over the photos nobody has looked at, reporting as it goes.
+    /// Whether the detection step has work, and whether any step has. Each is one row
+    /// asked for, never a count: this runs after every scan and every thumbnail drain.
+    fn face_work(&self) -> Result<(bool, bool)> {
+        use photon_core::{face_detect::DETECTOR_VERSION, face_embed::EMBEDDER_VERSION};
+        let detect = !self.lib.face_candidates(0, 1, DETECTOR_VERSION)?.is_empty();
+        let any = detect
+            || !self
+                .lib
+                .embed_candidates(0, 1, EMBEDDER_VERSION)?
+                .is_empty()
+            || self.lib.has_ungrouped_faces()?;
+        Ok((detect, any))
+    }
+
+    /// One pass: the photos nobody has looked for faces in, then the faces nobody has
+    /// recognised, each batch of those grouped as it lands, then any face an operation
+    /// left ungrouped. It reports as it goes.
     ///
-    /// It asks for a single candidate before anything else, for two reasons. A pass is
+    /// It asks whether any step has work before anything else, for two reasons. A pass is
     /// requested at the end of every scan and every time the thumbnail queue goes quiet,
-    /// and on a library already detected each of those would otherwise load the model
-    /// (about 50 ms) to find it has nothing to do. And a pass that has work says so at
-    /// once: the next report comes with the first batch written, which is eight seconds
-    /// away on four workers and a minute on a small machine, long enough for someone who
-    /// has just ticked the box to conclude nothing happened and tick it again.
+    /// and on a library already done each of those would otherwise load a model (about
+    /// 50 ms for the detector) to find it has nothing to do. And a step that has work says
+    /// so at once: the next report comes with its first batch written, which is eight
+    /// seconds away on four workers and a minute on a small machine, long enough for
+    /// someone who has just ticked the box to conclude nothing happened and tick it again.
     fn run_face_pass(&self) {
-        use photon_core::face_detect::{DETECTOR_VERSION, Detector, pass};
         if self.face_cancelled() {
             return;
         }
-        match self.lib.face_candidates(0, 1, DETECTOR_VERSION) {
-            Ok(candidates) if candidates.is_empty() => {
-                self.end_face_pass(false);
+        let mut pass = FacePass::new();
+        let detect = match self.face_work() {
+            Ok((detect, true)) => detect,
+            Ok((_, false)) => {
+                self.end_face_pass(&pass);
                 return;
             }
-            Ok(_) => self.send_face_progress(true),
             Err(err) => {
-                tracing::warn!(%err, "could not list the photos to find faces in");
-                self.end_face_pass(false);
+                tracing::warn!(%err, "could not list the photos and faces the face pass would do");
+                self.end_face_pass(&pass);
                 return;
             }
+        };
+        if detect && !self.detect_step(&mut pass) {
+            self.end_face_pass(&pass);
+            return;
         }
+        // Asked again, not taken from `face_work`: detection has just made faces.
+        if !self.face_cancelled() && self.has_faces_to_embed() && !self.embed_step(&mut pass) {
+            self.end_face_pass(&pass);
+            return;
+        }
+        // What the operations leave (`write_people`): a rejected face, or one no longer
+        // ignored, has a vector and no group, and the embedding step above runs only when
+        // something needs a vector. Asked first because the step reads every face's vector.
+        if !self.face_cancelled() && self.has_ungrouped_faces() {
+            pass.phase = FacePhase::Recognising;
+            self.group_faces(&mut pass);
+        }
+        self.end_face_pass(&pass);
+    }
+
+    fn has_faces_to_embed(&self) -> bool {
+        self.lib
+            .embed_candidates(0, 1, photon_core::face_embed::EMBEDDER_VERSION)
+            .map(|candidates| !candidates.is_empty())
+            .unwrap_or_else(|err| {
+                tracing::warn!(%err, "could not list the faces to recognise");
+                false
+            })
+    }
+
+    fn has_ungrouped_faces(&self) -> bool {
+        self.lib.has_ungrouped_faces().unwrap_or_else(|err| {
+            tracing::warn!(%err, "could not ask whether any face is ungrouped");
+            false
+        })
+    }
+
+    /// Detection over the photos whose preview is ready and that the current detector has
+    /// not looked at. False when the detector could not be loaded, which ends the pass.
+    fn detect_step(&self, pass: &mut FacePass) -> bool {
+        use photon_core::face_detect::{DETECTOR_VERSION, Detector, pass as detection};
+        pass.phase = FacePhase::Detecting;
+        self.send_face_progress(FacePhase::Detecting, true);
         let detector = match Detector::new() {
             Ok(detector) => detector,
             Err(err) => {
                 tracing::warn!(%err, "the face detector could not be loaded");
-                // The pass has said it is running; this takes that back.
-                self.end_face_pass(false);
-                return;
+                return false;
             }
         };
-        let mut last_rebuild = Instant::now();
         let mut last_progress: Option<Instant> = None;
-        // Detections written since the last rebuild: what the end of the pass owes the grid.
-        let mut unshown = false;
-        let result = pass::run(
+        let result = detection::run(
             &self.lib,
             &self.cache,
             DETECTOR_VERSION,
-            pass::workers(),
+            detection::workers(),
             &|preview| detector.detect(preview),
             &|| self.face_cancelled(),
             &mut |written| {
                 if last_progress.is_none_or(|t| t.elapsed() >= FACE_PROGRESS_EVERY) {
-                    self.send_face_progress(true);
+                    self.send_face_progress(FacePhase::Detecting, true);
                     last_progress = Some(Instant::now());
                 }
                 if written == 0 {
                     return;
                 }
-                unshown = true;
-                if last_rebuild.elapsed() >= FACE_REBUILD_EVERY && self.view_reads_faces() {
+                pass.unshown = true;
+                if pass.last_rebuild.elapsed() >= FACE_REBUILD_EVERY && self.view_reads_faces() {
                     // Derived: a detection is read by a face search's grid and by the
                     // viewer, and by no album, person, tag, tag rule or folder count.
                     if let Err(err) = self.refresh_grid_derived() {
                         tracing::warn!(%err, "grid refresh failed");
                     }
-                    last_rebuild = Instant::now();
-                    unshown = false;
+                    pass.last_rebuild = Instant::now();
+                    pass.unshown = false;
+                }
+            },
+        );
+        // The faces it did write are still recognised: the step after reads the library,
+        // not this result.
+        if let Err(err) = result {
+            tracing::warn!(%err, "the face pass failed");
+        }
+        true
+    }
+
+    /// The vectors of the faces the current embedder has not looked at, each batch grouped
+    /// as it lands, so the People page fills in during a pass that runs for hours. False
+    /// when the embedder could not be loaded, which ends the pass.
+    fn embed_step(&self, pass: &mut FacePass) -> bool {
+        use photon_core::face_embed::{EMBEDDER_VERSION, Embedder, pass as embedding};
+        pass.phase = FacePhase::Recognising;
+        self.send_face_progress(FacePhase::Recognising, true);
+        let embedder = match Embedder::new() {
+            Ok(embedder) => embedder,
+            Err(err) => {
+                tracing::warn!(%err, "the face recogniser could not be loaded");
+                return false;
+            }
+        };
+        let mut last_progress: Option<Instant> = None;
+        let result = embedding::run(
+            &self.lib,
+            &self.cache,
+            EMBEDDER_VERSION,
+            photon_core::face_detect::pass::workers(),
+            &|image, face| embedder.embed(image, face),
+            &|| self.face_cancelled(),
+            &mut |written| {
+                // Before the report, so a face the report counts is already in its group.
+                if written > 0 {
+                    self.group_faces(pass);
+                }
+                if last_progress.is_none_or(|t| t.elapsed() >= FACE_PROGRESS_EVERY) {
+                    self.send_face_progress(FacePhase::Recognising, true);
+                    last_progress = Some(Instant::now());
+                }
+                // Whatever the view, unlike detection's: the sidebar's People list reads
+                // the groups. A data rebuild, which publishes any detections too.
+                if pass.regrouped && pass.last_rebuild.elapsed() >= FACE_REBUILD_EVERY {
+                    if let Err(err) = self.refresh_grid() {
+                        tracing::warn!(%err, "grid refresh failed");
+                    }
+                    pass.last_rebuild = Instant::now();
+                    pass.regrouped = false;
+                    pass.unshown = false;
                 }
             },
         );
         if let Err(err) = result {
-            tracing::warn!(%err, "the face pass failed");
+            tracing::warn!(%err, "the face pass could not recognise faces");
         }
-        self.end_face_pass(unshown);
+        true
     }
 
-    /// The end of a pass: the rebuild it owes the grid when `unshown` detections were
-    /// written, and its last word.
-    fn end_face_pass(&self, unshown: bool) {
+    /// The grouping step: places every face that has a vector, no group and is not
+    /// ignored. Under `people_write`, so no correction lands in the middle of it.
+    fn group_faces(&self, pass: &mut FacePass) {
+        let _serialised = self.people_write.lock();
+        match self.lib.group_ungrouped_faces(&|| self.face_cancelled()) {
+            Ok(0) => {}
+            Ok(_) => pass.regrouped = true,
+            Err(err) => tracing::warn!(%err, "the faces could not be grouped"),
+        }
+    }
+
+    /// The end of a pass: the rebuild it owes the grid for what it wrote since its last,
+    /// and its last word.
+    fn end_face_pass(&self, pass: &FacePass) {
         // A pass ended by the quit owes nobody either: the rebuild and the count are each
         // a query over the whole library, run inside the time `shutdown` waits for this
         // thread, for a window that is closing. What it wrote is shown at the next launch.
         let quitting = self.shutting_down.load(Ordering::SeqCst);
-        if unshown
-            && !quitting
-            && let Err(err) = self.refresh_grid_derived()
-        {
-            tracing::warn!(%err, "grid refresh failed");
+        if !quitting {
+            // Grouping is a data change - the People list and a person's photos move -
+            // and a data rebuild publishes the detections with it.
+            let rebuilt = if pass.regrouped {
+                self.refresh_grid()
+            } else if pass.unshown {
+                self.refresh_grid_derived()
+            } else {
+                Ok(())
+            };
+            if let Err(err) = rebuilt {
+                tracing::warn!(%err, "grid refresh failed");
+            }
         }
         // The pass's last word says it is not running, whatever it did. After a
         // switch-off that is the cleared line again, although the command has sent one:
@@ -2058,7 +2239,7 @@ impl Engine {
         if !self.face_enabled.load(Ordering::SeqCst) {
             self.events.face_progress(FACE_PROGRESS_CLEARED);
         } else if !quitting {
-            self.send_face_progress(false);
+            self.send_face_progress(pass.phase, false);
         }
     }
 
@@ -2601,7 +2782,7 @@ impl Drop for TestScanSlot {
 mod tests {
     use super::*;
     use crate::events::Recorded;
-    use crate::testutil::{Fixture, fixture, jpeg, jpeg_pattern, portrait_jpeg};
+    use crate::testutil::{Fixture, fixture, jpeg, jpeg_pattern, portrait_jpeg, portrait_jpeg_at};
     use photon_core::media::ThumbState;
 
     const MS: Duration = Duration::from_millis(1);
@@ -3513,11 +3694,12 @@ mod tests {
     }
 
     /// Detections are read by the grid of a face search and by the viewer, never by an
-    /// album, person, tag or folder count: the pass's rebuild must not send the UI to
-    /// refetch the sidebar.
+    /// album, person, tag or folder count: the rebuild of a pass that only detected must
+    /// not send the UI to refetch the sidebar. A photo with no face, so nothing is grouped:
+    /// grouping is a data change (`grouping_announces_a_data_change`).
     #[test]
     fn a_face_pass_does_not_announce_a_data_change() {
-        let f = fixture(&[("a/face.jpg", &portrait_jpeg())]);
+        let f = fixture(&[("a/plain.jpg", &jpeg(200, 150))]);
         scanned(&f);
         // Anything pending from the scan is announced by this.
         f.engine.refresh_grid().unwrap();
@@ -3550,6 +3732,7 @@ mod tests {
         assert_eq!(
             face_events(&f),
             [FaceProgress {
+                phase: FacePhase::Detecting,
                 checked: 0,
                 total: 0,
                 running: false
@@ -3560,7 +3743,7 @@ mod tests {
 
     /// A pass with work to do says so before it has done any: its first event is running
     /// with nothing checked yet, not the first batch's report, which on a real library is
-    /// a batch of 64 detections away.
+    /// a batch of 64 detections away. It ends on the step after detection, recognising.
     #[test]
     fn a_pass_with_work_says_it_is_running_before_its_first_batch() {
         let f = fixture(&[("a/face.jpg", &portrait_jpeg())]);
@@ -3571,6 +3754,7 @@ mod tests {
         assert_eq!(
             events.first(),
             Some(&FaceProgress {
+                phase: FacePhase::Detecting,
                 checked: 0,
                 total: 1,
                 running: true
@@ -3580,6 +3764,7 @@ mod tests {
         assert_eq!(
             events.last(),
             Some(&FaceProgress {
+                phase: FacePhase::Recognising,
                 checked: 1,
                 total: 1,
                 running: false
@@ -3640,6 +3825,7 @@ mod tests {
         assert_eq!(written, 1, "the pass did not get as far as its batch");
         let recorded = sink.recorded.lock().clone();
         let running = FaceProgress {
+            phase: FacePhase::Detecting,
             checked: 0,
             total: 1,
             running: true,
@@ -3691,16 +3877,18 @@ mod tests {
         reopened.shutdown();
     }
 
-    /// The pass ends with what it reached, running false.
+    /// The pass ends with what it reached, running false. A photo with no face, so the
+    /// pass has nothing to recognise and detecting is the last step it runs.
     #[test]
     fn progress_ends_at_the_count_checked() {
-        let f = fixture(&[("a/face.jpg", &portrait_jpeg())]);
+        let f = fixture(&[("a/plain.jpg", &jpeg(200, 150))]);
         scanned(&f);
         f.engine.set_face_detection(true).unwrap();
         f.engine.wait_for_passes();
         assert_eq!(
             face_events(&f).last(),
             Some(&FaceProgress {
+                phase: FacePhase::Detecting,
                 checked: 1,
                 total: 1,
                 running: false
@@ -3771,6 +3959,310 @@ mod tests {
             .sum();
         assert_eq!(detected, 1);
         reopened.shutdown();
+    }
+
+    /// The People page with up to a hundred faces of each group listed.
+    fn people(f: &Fixture) -> photon_core::library::PeoplePage {
+        f.engine.lib.people_page(100).unwrap()
+    }
+
+    /// The faces still to be embedded, by id: none once the pass has been.
+    fn faces_to_embed(f: &Fixture) -> Vec<i64> {
+        f.engine
+            .lib
+            .embed_candidates(0, 64, photon_core::face_embed::EMBEDDER_VERSION)
+            .unwrap()
+            .iter()
+            .flat_map(|c| c.faces.iter().map(|(id, _)| *id))
+            .collect()
+    }
+
+    /// The pass goes on from a face it found to the person it is: the face gets a vector,
+    /// and the grouping step puts it in a group, of one, as the only face there is.
+    #[test]
+    fn a_detected_face_is_embedded_and_grouped() {
+        let f = fixture(&[("a/face.jpg", &portrait_jpeg())]);
+        scanned(&f);
+        f.engine.set_face_detection(true).unwrap();
+        f.settle();
+
+        assert_eq!(
+            f.engine
+                .lib
+                .embed_progress(photon_core::face_embed::EMBEDDER_VERSION)
+                .unwrap(),
+            (1, 1),
+            "the face was not embedded"
+        );
+        let page = people(&f);
+        assert_eq!(page.single_count, 1, "{page:?}");
+        assert_eq!(
+            page.single_faces
+                .iter()
+                .map(|face| face.item_id)
+                .collect::<Vec<_>>(),
+            f.ids(),
+            "{page:?}"
+        );
+        assert!(
+            page.unnamed.is_empty() && page.people.is_empty(),
+            "{page:?}"
+        );
+    }
+
+    /// One face in two files, the second a smaller copy: the second is placed in the
+    /// first's group, not a group of its own.
+    #[test]
+    fn two_photos_of_one_face_share_a_group() {
+        let f = fixture(&[
+            ("a/face.jpg", &portrait_jpeg()),
+            ("a/smaller.jpg", &portrait_jpeg_at(720)),
+        ]);
+        scanned(&f);
+        f.engine.set_face_detection(true).unwrap();
+        f.settle();
+
+        let page = people(&f);
+        assert_eq!(page.unnamed.len(), 1, "{page:?}");
+        assert_eq!(page.single_count, 0, "{page:?}");
+        let group = &page.unnamed[0];
+        assert_eq!(group.face_count, 2, "{page:?}");
+        let mut items: Vec<i64> = group.faces.iter().map(|face| face.item_id).collect();
+        items.sort_unstable();
+        let mut ids = f.ids();
+        ids.sort_unstable();
+        assert_eq!(items, ids);
+    }
+
+    /// Grouping moves the People list and what a person's view holds, which the sidebar
+    /// reads: unlike detecting (`a_face_pass_does_not_announce_a_data_change`), the
+    /// rebuild after it must send the UI to refetch.
+    #[test]
+    fn grouping_announces_a_data_change() {
+        let f = fixture(&[("a/face.jpg", &portrait_jpeg())]);
+        scanned(&f);
+        // Anything pending from the scan is announced by this.
+        f.engine.refresh_grid().unwrap();
+        let before = f.events.all().len();
+
+        f.engine.set_face_detection(true).unwrap();
+        f.settle();
+
+        assert_eq!(people(&f).single_count, 1, "nothing was grouped");
+        let after: Vec<_> = f.events.all().split_off(before);
+        let last = after.iter().rev().find_map(|e| match e {
+            Recorded::Library(l) => Some(*l),
+            _ => None,
+        });
+        assert!(
+            last.is_some_and(|l| l.data_changed),
+            "the pass's last rebuild did not announce a data change: {after:?}"
+        );
+    }
+
+    /// A pass that embedded ends on that step: its last event counts faces recognised,
+    /// running false. The step said it was running before that. A photo with no face
+    /// beside the one with a face, so a count of photos (two) is not a count of faces (one).
+    #[test]
+    fn the_last_event_is_recognising_not_running() {
+        let f = fixture(&[
+            ("a/face.jpg", &portrait_jpeg()),
+            ("a/plain.jpg", &jpeg(200, 150)),
+        ]);
+        scanned(&f);
+        f.engine.set_face_detection(true).unwrap();
+        f.settle();
+
+        let events = face_events(&f);
+        assert!(
+            events
+                .iter()
+                .any(|e| e.phase == FacePhase::Recognising && e.running),
+            "the step never said it was running: {events:?}"
+        );
+        assert_eq!(
+            events.last(),
+            Some(&FaceProgress {
+                phase: FacePhase::Recognising,
+                checked: 1,
+                total: 1,
+                running: false
+            }),
+            "{events:?}"
+        );
+    }
+
+    /// "Not this person" takes a face out of its group, and nothing but a pass puts it
+    /// anywhere else: the operation asks for one, whose grouping step places the face
+    /// again, passing over the group it was taken from - here into a new group of its own.
+    #[test]
+    fn an_operation_requests_a_pass_that_regroups() {
+        let f = fixture(&[
+            ("a/face.jpg", &portrait_jpeg()),
+            ("a/smaller.jpg", &portrait_jpeg_at(720)),
+        ]);
+        scanned(&f);
+        f.engine.set_face_detection(true).unwrap();
+        f.settle();
+        let page = people(&f);
+        assert_eq!(page.unnamed.len(), 1, "{page:?}");
+        let group = page.unnamed[0].id;
+        let (rejected, kept) = (page.unnamed[0].faces[0].id, page.unnamed[0].faces[1].id);
+
+        f.engine
+            .write_people("rejecting a face", |lib| lib.reject_faces(&[rejected]))
+            .unwrap();
+        f.settle();
+
+        let page = people(&f);
+        assert!(page.unnamed.is_empty(), "{page:?}");
+        assert_eq!(
+            page.single_count, 2,
+            "the face was not placed again: {page:?}"
+        );
+        assert!(
+            page.single_faces.iter().any(|face| face.id == rejected),
+            "{page:?}"
+        );
+        let left: Vec<i64> = f
+            .engine
+            .lib
+            .person_faces(group, photon_core::library::FaceFilter::All, 0, 10)
+            .unwrap()
+            .iter()
+            .map(|face| face.id)
+            .collect();
+        assert_eq!(
+            left,
+            [kept],
+            "the face went back into the group it was taken from"
+        );
+    }
+
+    /// A correction is a data write like any other: the People list and a person's photos
+    /// move with it, so it is announced as one at once, not left to a pass that may have
+    /// nothing to do - naming a group leaves no face for the pass to place.
+    #[test]
+    fn a_correction_announces_a_data_change() {
+        let f = fixture(&[
+            ("a/face.jpg", &portrait_jpeg()),
+            ("a/smaller.jpg", &portrait_jpeg_at(720)),
+        ]);
+        scanned(&f);
+        f.engine.set_face_detection(true).unwrap();
+        f.settle();
+        let group = people(&f).unnamed[0].id;
+        let before = f.events.all().len();
+
+        let person = f
+            .engine
+            .write_people("naming a person", |lib| lib.name_group(group, "Ada"))
+            .unwrap();
+
+        let after: Vec<_> = f.events.all().split_off(before);
+        assert!(
+            after
+                .iter()
+                .any(|e| matches!(e, Recorded::Library(l) if l.data_changed)),
+            "the correction was not announced: {after:?}"
+        );
+        f.settle();
+        let page = people(&f);
+        assert_eq!(page.people.len(), 1, "{page:?}");
+        assert_eq!((page.people[0].id, page.people[0].face_count), (person, 2));
+    }
+
+    /// A library photon 0.47.0 detected has faces and no vectors. The pass takes those up
+    /// without detecting again: the faces keep their ids (a detection rewrites a photo's
+    /// rows, under new ids) and are embedded and grouped.
+    #[test]
+    fn a_library_detected_before_this_is_embedded() {
+        use photon_core::face_detect::{DETECTOR_VERSION, Detector, pass};
+        let f = fixture(&[("a/face.jpg", &portrait_jpeg())]);
+        scanned(&f);
+        // Detected as 0.47.0 did: the switch on in the database and the detection pass
+        // alone, with the engine's mirror still off so no pass of its own runs.
+        f.engine.lib.set_face_detection(true).unwrap();
+        let detector = Detector::new().unwrap();
+        pass::run(
+            &f.engine.lib,
+            &f.engine.cache,
+            DETECTOR_VERSION,
+            1,
+            &|preview| detector.detect(preview),
+            &|| false,
+            &mut |_| {},
+        )
+        .unwrap();
+        let detected = faces_to_embed(&f);
+        assert_eq!(detected.len(), 1, "the fixture's face was not detected");
+
+        f.engine.set_face_detection(true).unwrap();
+        f.settle();
+
+        assert!(faces_to_embed(&f).is_empty(), "the face was not embedded");
+        assert_eq!(
+            f.engine.lib.face_progress(DETECTOR_VERSION).unwrap(),
+            (1, 1)
+        );
+        let page = people(&f);
+        assert_eq!(
+            page.single_faces
+                .iter()
+                .map(|face| face.id)
+                .collect::<Vec<_>>(),
+            detected,
+            "the face was detected again, or not grouped: {page:?}"
+        );
+    }
+
+    /// Records, at the first report of the recognising step that counts a face done, how
+    /// many groups of one the People page has then: what the grouping step had placed by
+    /// the end of that batch.
+    #[derive(Default)]
+    struct PageAtFirstEmbedReport {
+        engine: std::sync::OnceLock<std::sync::Weak<Engine>>,
+        singles: Mutex<Option<i64>>,
+    }
+
+    impl Events for PageAtFirstEmbedReport {
+        fn library_changed(&self, _: LibraryChanged) {}
+        fn scan_progress(&self, _: ScanProgressEvent) {}
+        fn folder_status(&self, _: FolderStatus) {}
+        fn export_progress(&self, _: ExportProgress) {}
+        fn face_progress(&self, e: FaceProgress) {
+            if e.phase != FacePhase::Recognising || !e.running || e.checked == 0 {
+                return;
+            }
+            let mut singles = self.singles.lock();
+            if singles.is_none()
+                && let Some(engine) = self.engine.get().and_then(|e| e.upgrade())
+            {
+                *singles = Some(engine.lib.people_page(1).unwrap().single_count);
+            }
+        }
+    }
+
+    /// Each batch embedded is grouped as it lands, not at the end of the pass: on a large
+    /// library the embedding runs for hours, and the People page fills in as it goes.
+    #[test]
+    fn faces_are_grouped_as_each_batch_is_embedded() {
+        let f = fixture(&[("a/face.jpg", &portrait_jpeg())]);
+        scanned(&f);
+        f.engine.shutdown();
+
+        let sink = Arc::new(PageAtFirstEmbedReport::default());
+        let engine = Engine::open(f.config(), sink.clone()).unwrap();
+        sink.engine.set(Arc::downgrade(&engine)).ok().unwrap();
+        engine.set_face_detection(true).unwrap();
+        engine.wait_for_passes();
+
+        assert_eq!(
+            *sink.singles.lock(),
+            Some(1),
+            "the batch's face was not grouped by the time its report went out"
+        );
+        engine.shutdown();
     }
 
     /// Both readers of `excluded` compare it against a canonical path - `add_watched_folder`

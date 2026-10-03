@@ -820,14 +820,14 @@ describe('LibraryStore', () => {
     await store.init();
     expect(events.onFaceProgress).toHaveBeenCalledTimes(1);
 
-    handlers.faceProgress({ checked: 64, total: 900, running: true });
-    expect(store.faces).toEqual({ checked: 64, total: 900, running: true });
+    handlers.faceProgress({ phase: 'detecting', checked: 64, total: 900, running: true });
+    expect(store.faces).toEqual({ phase: 'detecting', checked: 64, total: 900, running: true });
 
-    handlers.faceProgress({ checked: 0, total: 0, running: false });
-    handlers.faceProgress({ checked: 0, total: 0, running: false });
+    handlers.faceProgress({ phase: 'detecting', checked: 0, total: 0, running: false });
+    handlers.faceProgress({ phase: 'detecting', checked: 0, total: 0, running: false });
     expect(store.faces).toBeNull();
 
-    handlers.faceProgress({ checked: 10, total: 900, running: true });
+    handlers.faceProgress({ phase: 'detecting', checked: 10, total: 900, running: true });
     store.dispose();
     expect(store.faces).toBeNull();
   });

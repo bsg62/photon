@@ -19,7 +19,8 @@
 
 use crate::{commands, engine::Engine, error::AppError};
 use photon_core::library::{
-    Album, AlbumSummary, Person, SavedSearch, TagCount, TagRule, WatchedFolder,
+    Album, AlbumSummary, FaceFilter, PageFace, PeoplePage, Person, SavedSearch, TagCount, TagRule,
+    WatchedFolder,
 };
 use std::sync::Arc;
 use tauri::State;
@@ -152,6 +153,67 @@ pub fn face_detection(engine: Eng<'_>) -> Result<bool, AppError> {
 #[tauri::command(async)]
 pub fn set_face_detection(engine: Eng<'_>, enabled: bool) -> Result<(), AppError> {
     commands::set_face_detection(engine.inner(), enabled)
+}
+
+#[tauri::command(async)]
+pub fn face_data_summary(engine: Eng<'_>) -> Result<commands::FaceDataSummary, AppError> {
+    commands::face_data_summary(&engine)
+}
+
+#[tauri::command(async)]
+pub fn people_page(engine: Eng<'_>, strip: usize) -> Result<PeoplePage, AppError> {
+    commands::people_page(&engine, strip)
+}
+
+#[tauri::command(async)]
+pub fn person_faces(
+    engine: Eng<'_>,
+    person: i64,
+    which: FaceFilter,
+    offset: usize,
+    limit: usize,
+) -> Result<Vec<PageFace>, AppError> {
+    commands::person_faces(&engine, person, which, offset, limit)
+}
+
+#[tauri::command(async)]
+pub fn name_person(engine: Eng<'_>, person: i64, name: String) -> Result<i64, AppError> {
+    commands::name_person(engine.inner(), person, &name)
+}
+
+#[tauri::command(async)]
+pub fn rename_person(engine: Eng<'_>, person: i64, name: String) -> Result<i64, AppError> {
+    commands::rename_person(engine.inner(), person, &name)
+}
+
+#[tauri::command(async)]
+pub fn confirm_faces(engine: Eng<'_>, faces: Vec<i64>) -> Result<(), AppError> {
+    commands::confirm_faces(engine.inner(), &faces)
+}
+
+#[tauri::command(async)]
+pub fn reject_faces(engine: Eng<'_>, faces: Vec<i64>) -> Result<(), AppError> {
+    commands::reject_faces(engine.inner(), &faces)
+}
+
+#[tauri::command(async)]
+pub fn merge_people(engine: Eng<'_>, from: i64, into: i64) -> Result<(), AppError> {
+    commands::merge_people(engine.inner(), from, into)
+}
+
+#[tauri::command(async)]
+pub fn ignore_person(engine: Eng<'_>, person: i64, ignored: bool) -> Result<(), AppError> {
+    commands::ignore_person(engine.inner(), person, ignored)
+}
+
+#[tauri::command(async)]
+pub fn ignore_faces(engine: Eng<'_>, faces: Vec<i64>, ignored: bool) -> Result<(), AppError> {
+    commands::ignore_faces(engine.inner(), &faces, ignored)
+}
+
+#[tauri::command(async)]
+pub fn delete_person(engine: Eng<'_>, person: i64) -> Result<(), AppError> {
+    commands::delete_person(engine.inner(), person)
 }
 
 #[tauri::command(async)]

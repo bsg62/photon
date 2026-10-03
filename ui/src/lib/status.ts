@@ -41,12 +41,14 @@ export function scanStatus(
 }
 
 /** The status bar's line for a running face pass, or null when there is nothing to say:
- *  no pass, or a library with no photo to check. `total` counts photos whose thumbnail is
- *  not made yet, so the bar can wait short of its end while thumbnails are rendering. */
+ *  no pass, or nothing to count. Detecting counts photos, and its `total` includes photos
+ *  whose thumbnail is not made yet, so the bar can wait short of its end while thumbnails
+ *  are rendering; recognising counts faces. */
 export function faceStatus(progress: FaceProgress | null): { label: string; fraction: number } | null {
   if (!progress || !progress.running || progress.total <= 0) return null;
+  const counted = `${progress.checked.toLocaleString()} of ${progress.total.toLocaleString()}`;
   return {
-    label: `Finding faces: ${progress.checked.toLocaleString()} of ${progress.total.toLocaleString()}`,
+    label: progress.phase === 'recognising' ? `Recognising people: ${counted} faces` : `Finding faces: ${counted}`,
     fraction: Math.min(1, progress.checked / progress.total),
   };
 }

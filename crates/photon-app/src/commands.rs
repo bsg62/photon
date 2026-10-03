@@ -9,8 +9,8 @@ use photon_core::{
     face_detect::{Rect, merge},
     grid::{FolderTally, GridEntry, GridView, Section, hex_key},
     library::{
-        Album, AlbumSummary, CopiesArg, Folder, GridTile, ItemFace, Person, SavedSearch, TagCount,
-        TagRule, ThemeChoice, WatchedFolder, is_starred,
+        Album, AlbumSummary, CopiesArg, FaceFilter, Folder, GridTile, ItemFace, PageFace,
+        PeoplePage, Person, SavedSearch, TagCount, TagRule, ThemeChoice, WatchedFolder, is_starred,
     },
     media::{MediaKind, ThumbState},
     now_ms,
@@ -684,6 +684,77 @@ pub fn face_detection(engine: &Engine) -> CmdResult<bool> {
 pub fn set_face_detection(engine: &Arc<Engine>, enabled: bool) -> CmdResult<()> {
     engine.set_face_detection(enabled)?;
     Ok(())
+}
+
+/// What switching face detection off would delete that the user made: the people they
+/// named. The faces themselves come back with the next pass; the names do not.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FaceDataSummary {
+    pub named_people: i64,
+}
+
+pub fn face_data_summary(engine: &Engine) -> CmdResult<FaceDataSummary> {
+    Ok(FaceDataSummary {
+        named_people: engine.lib.named_people_count()?,
+    })
+}
+
+/// The People page, each group with the first `strip` of its faces.
+pub fn people_page(engine: &Engine, strip: usize) -> CmdResult<PeoplePage> {
+    Ok(engine.lib.people_page(strip)?)
+}
+
+/// A page of one person's or group's faces: the rest of a strip.
+pub fn person_faces(
+    engine: &Engine,
+    person: i64,
+    which: FaceFilter,
+    offset: usize,
+    limit: usize,
+) -> CmdResult<Vec<PageFace>> {
+    Ok(engine.lib.person_faces(person, which, offset, limit)?)
+}
+
+/// Names a group; returns the person it ended in, which is another when the name is taken.
+pub fn name_person(engine: &Arc<Engine>, person: i64, name: &str) -> CmdResult<i64> {
+    Ok(engine.write_people("naming a person", |lib| lib.name_group(person, name))?)
+}
+
+/// Renames a person; returns the person they ended in, as naming does.
+pub fn rename_person(engine: &Arc<Engine>, person: i64, name: &str) -> CmdResult<i64> {
+    Ok(engine.write_people("renaming a person", |lib| lib.rename_person(person, name))?)
+}
+
+pub fn confirm_faces(engine: &Arc<Engine>, faces: &[i64]) -> CmdResult<()> {
+    Ok(engine.write_people("confirming faces", |lib| lib.confirm_faces(faces))?)
+}
+
+/// "Not this person": the faces leave their group, and the pass the write requests places
+/// them elsewhere.
+pub fn reject_faces(engine: &Arc<Engine>, faces: &[i64]) -> CmdResult<()> {
+    Ok(engine.write_people("rejecting faces", |lib| lib.reject_faces(faces))?)
+}
+
+pub fn merge_people(engine: &Arc<Engine>, from: i64, into: i64) -> CmdResult<()> {
+    Ok(engine.write_people("merging people", |lib| lib.merge_people(from, into))?)
+}
+
+pub fn ignore_person(engine: &Arc<Engine>, person: i64, ignored: bool) -> CmdResult<()> {
+    Ok(engine.write_people("ignoring a person", |lib| {
+        lib.set_person_ignored(person, ignored)
+    })?)
+}
+
+pub fn ignore_faces(engine: &Arc<Engine>, faces: &[i64], ignored: bool) -> CmdResult<()> {
+    Ok(engine.write_people("ignoring faces", |lib| {
+        lib.set_faces_ignored(faces, ignored)
+    })?)
+}
+
+/// Takes a person's name away: their faces stay together, as a group with no name.
+pub fn delete_person(engine: &Arc<Engine>, person: i64) -> CmdResult<()> {
+    Ok(engine.write_people("deleting a person", |lib| lib.delete_person(person))?)
 }
 
 /// The colour scheme the user chose.

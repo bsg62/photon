@@ -44,22 +44,29 @@ describe('scanStatus', () => {
 describe('faceStatus', () => {
   it('is nothing when no pass is running', () => {
     expect(faceStatus(null)).toBeNull();
-    expect(faceStatus({ checked: 5, total: 10, running: false })).toBeNull();
+    expect(faceStatus({ phase: 'detecting', checked: 5, total: 10, running: false })).toBeNull();
   });
 
   it('counts photos checked of all photos', () => {
-    expect(faceStatus({ checked: 12400, total: 98000, running: true })).toEqual({
+    expect(faceStatus({ phase: 'detecting', checked: 12400, total: 98000, running: true })).toEqual({
       label: `Finding faces: ${(12400).toLocaleString()} of ${(98000).toLocaleString()}`,
       fraction: 12400 / 98000,
     });
   });
 
+  it('counts faces recognised of all faces once detection is done', () => {
+    expect(faceStatus({ phase: 'recognising', checked: 1200, total: 4300, running: true })).toEqual({
+      label: `Recognising people: ${(1200).toLocaleString()} of ${(4300).toLocaleString()} faces`,
+      fraction: 1200 / 4300,
+    });
+  });
+
   // An empty library, or a first event before anything is counted, must not draw a bar.
   it('never shows 0 of 0', () => {
-    expect(faceStatus({ checked: 0, total: 0, running: true })).toBeNull();
+    expect(faceStatus({ phase: 'detecting', checked: 0, total: 0, running: true })).toBeNull();
   });
 
   it('does not run past the end', () => {
-    expect(faceStatus({ checked: 11, total: 10, running: true })?.fraction).toBe(1);
+    expect(faceStatus({ phase: 'detecting', checked: 11, total: 10, running: true })?.fraction).toBe(1);
   });
 });

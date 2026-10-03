@@ -253,6 +253,22 @@
     set_similar_distance: (a) => a.distance,
     face_detection: () => true,
     set_face_detection: () => null,
+    face_data_summary: () => ({ namedPeople: 1 }),
+    people_page: () => {
+      // Face n sits on photo n, so every crop has a thumbnail behind it.
+      const face = (id, confirmed = false) => ({ id, itemId: id, thumbKey: 'k' + (id - 1), confirmed });
+      const group = (id, name, faces) => ({ id, name, faceCount: faces.length, faces, offer: null });
+      return {
+        unnamed: [group(1, null, [face(1), face(2), face(3)]), group(2, null, [face(4), face(5), face(6)])],
+        singleFaces: [],
+        singleCount: 0,
+        suggestions: [group(3, 'Anna', [face(9)])],
+        people: [group(3, 'Anna', [face(7, true), face(8, true)])],
+        ignoredGroups: [],
+        ignoredFaces: [],
+      };
+    },
+    person_faces: () => [],
     set_search_query: (args) => {
       searchQuery = args.query || '';
       return null;
@@ -285,6 +301,8 @@
     'set_item_edit', 'set_last_folder', 'set_person_view',
     'check_export_dest', 'set_export_apply_edits', 'set_slideshow_interval', 'set_slideshow_shuffle', 'set_star', 'set_tag_view', 'set_theme',
     'set_visible', 'set_copies_view',
+    'name_person', 'rename_person', 'confirm_faces', 'reject_faces', 'merge_people', 'ignore_person',
+    'ignore_faces', 'delete_person',
     'put_video_frame', 'video_frame_failed', 'video_session_start',
   ];
 
