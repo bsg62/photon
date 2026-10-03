@@ -43,8 +43,10 @@ use crate::metadata::Gps;
 /// - `video` and `photo`, unquoted, filter on what the file is rather than searching for the
 ///   word: quoted (`"video"`) they are the word, for a folder actually named Videos.
 /// - `tag:`, `person:`, `album:` and `folder:` restrict a term to the photo's keywords, the
-///   people Picasa named on it, the albums it is in, and its folder's name or alias, read
-///   the way `camera:` reads its value. A photo with none of the thing never matches.
+///   people on it, the albums it is in, and its folder's name or alias, read the way
+///   `camera:` reads its value. The people are Picasa's named contacts and the people the
+///   user named, by their confirmed faces; a contact linked to a person answers to the
+///   person's name too. A photo with none of the thing never matches.
 /// - `is:starred`, `is:edited`, `is:video` and `is:photo` ask about the photo rather than
 ///   its text. An `is:` photon does not know is dropped like a prefix with no value: `is:st`
 ///   is `is:starred` half typed.

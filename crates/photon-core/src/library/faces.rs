@@ -12,7 +12,9 @@ use rusqlite::{OptionalExtension, params};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 
-/// One person in the People list: a contact with at least one face on a live photo.
+/// One person in the People list: a person the user named, or a Picasa contact no person is
+/// linked to, with a face on a visible photo - for a person, a confirmed face of theirs or one
+/// Picasa recorded under a contact linked to them.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Person {
@@ -23,7 +25,8 @@ pub struct Person {
     pub count: i64,
 }
 
-/// A face on one photo, with the contact's name resolved.
+/// A named face on one photo, with its name resolved: a contact linked to a person carries
+/// the person's key and name. The viewer adds a person's confirmed detections in this form.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ItemFace {

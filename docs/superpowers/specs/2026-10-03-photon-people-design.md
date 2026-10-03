@@ -1,6 +1,8 @@
 # People: recognising and naming
 
-2026-10-03. Designed in conversation the same day; awaiting review of this file.
+2026-10-03. Designed in conversation the same day and approved. The backend (plan 1) is built
+on `feat/people`; where it departs from this text, "As built" near the end records what the
+code does, and the data model below is the shipped schema.
 
 ## What it is
 
@@ -114,46 +116,69 @@ was measured on a family library.
 
 ```sql
 CREATE TABLE people (
-    id             INTEGER PRIMARY KEY,
-    name           TEXT,
-    ignored        INTEGER NOT NULL DEFAULT 0,
-    centroid       BLOB,
-    centroid_count INTEGER NOT NULL DEFAULT 0
+    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    name    TEXT,
+    ignored INTEGER NOT NULL DEFAULT 0
 );
 ```
 
 A row is a set of faces photon takes for one person. `name` is `NULL` for an unnamed group.
 `ignored` marks a group the user does not want to name.
 
-`centroid` is the sum of the vectors of the faces that count towards it (128 little-endian
-`f32`), and `centroid_count` how many. For an unnamed or ignored group every member counts. For
-a named person only confirmed faces count, so suggestions cannot drag the person towards
-themselves.
+A group's centroid is the sum of the vectors of the faces that count towards it, and how many.
+For an unnamed or ignored group every member counts. For a named person only confirmed faces
+count, so suggestions cannot drag the person towards themselves. *As built:* the centroid is
+not a column. It is computed from the faces at the start of each grouping step (see "As
+built").
 
 ### `person_contacts`
 
 ```sql
 CREATE TABLE person_contacts (
-    person_id INTEGER NOT NULL REFERENCES people(id) ON DELETE CASCADE,
-    contact   TEXT NOT NULL PRIMARY KEY
+    contact   TEXT PRIMARY KEY,
+    person_id INTEGER NOT NULL REFERENCES people(id) ON DELETE CASCADE
 );
+CREATE INDEX person_contacts_person ON person_contacts(person_id);
 ```
 
 Links a person to Picasa contact hashes. A table, not a column: Picasa libraries can hold two
 contacts for one human, and merging two people each linked to one must work. A contact belongs
 to at most one person.
 
-### New columns on `detected_faces`
+### `detected_faces`, rebuilt
+
+Migration 25 rebuilds the table migration 24 created (released in 0.47.0), keeping every row
+and its id, because `AUTOINCREMENT` cannot be added to an existing table:
+
+```sql
+CREATE TABLE detected_faces (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    item_id           INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+    left              REAL NOT NULL,
+    top               REAL NOT NULL,
+    right             REAL NOT NULL,
+    bottom            REAL NOT NULL,
+    landmarks         BLOB NOT NULL,
+    score             REAL NOT NULL,
+    embedding         BLOB,
+    embedding_version INTEGER,
+    person_id         INTEGER REFERENCES people(id) ON DELETE SET NULL,
+    confirmed         INTEGER NOT NULL DEFAULT 0,
+    ignored           INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX detected_faces_item ON detected_faces(item_id);
+CREATE INDEX detected_faces_person ON detected_faces(person_id);
+```
+
+The new columns:
 
 | Column | Meaning |
 |---|---|
-| `embedding BLOB` | 128 little-endian `f32`, normalised. `NULL` until computed, and for a face too small. |
+| `embedding BLOB` | 128 little-endian `f32`, normalised. `NULL` until computed, for a face too small, and for one the embedder failed on. |
 | `embedding_version INTEGER` | The `face_embed::EMBEDDER_VERSION` that looked at the face, set even when it was too small. `NULL` for not looked at. |
 | `person_id INTEGER REFERENCES people(id) ON DELETE SET NULL` | The group or person, or `NULL`. |
 | `confirmed INTEGER NOT NULL DEFAULT 0` | The user put the face there, by naming its group or confirming a suggestion. |
 | `ignored INTEGER NOT NULL DEFAULT 0` | This face is not to be grouped or suggested. |
-
-An index on `person_id`.
 
 ### `face_rejections`
 
@@ -169,7 +194,7 @@ CREATE TABLE face_rejections (
 
 ### Size
 
-512 bytes per face. 100,000 faces add about 50 MB to `library.db`.
+512 bytes per face, for the vector. 100,000 faces add about 50 MB to `library.db`.
 
 ### What clears what
 
@@ -259,7 +284,7 @@ a named contact on the same photo (`merge::same_face`, the Picasa rectangle mapp
 photo's edit by `merge::shown`). If one contact accounts for more than half of them, the group
 is offered that contact's name.
 
-Nothing is linked by this. Accepting the offer is naming the group.
+Nothing is linked by this. Accepting the offer is naming the group. *As built:* see As built 4.
 
 ## The operations
 
@@ -282,7 +307,8 @@ through `refresh_after_write`.
   refused; delete them first.
 - **Ignore** faces, or undo it: set `ignored`, clear `person_id` and `confirmed`, and take the
   face out of its centroid. Undoing clears `ignored`, and the face is grouped by the rule.
-- **Rename**: as naming; a taken name merges.
+- **Rename**: as naming; a taken name merges. *As built:* a rename does not confirm the
+  person's suggestions (As built 3).
 - **Delete** a person: the row becomes an unnamed group. `name` is cleared, its contact links
   are removed, its faces become unconfirmed, and its centroid is recomputed over all of them.
 
@@ -318,6 +344,11 @@ grouped by the rule, in id order, in one transaction a batch, under `people_writ
 
 The centroids are read once at the start of the step into memory and written back with each
 batch.
+
+*As built:* the centroids are computed from the faces at the start of each run and nothing is
+written back (As built 1); during the embed step the runs are paced rather than one per batch
+(As built 6); and the run for faces left ungrouped comes at the end of the pass, after the
+embed step, whenever a face with a vector has no group and is not ignored.
 
 ### Guards
 
@@ -378,7 +409,8 @@ linked to no person, as today. Sorted by name in Rust.
 
 `ViewerItem.faces` gains the photo's confirmed faces of named people, with the name and the
 person's key. A detection confirmed as a person is no longer in `unnamed_faces`. Where Picasa
-recorded the same face under a linked contact, it is shown once.
+recorded the same face under a linked contact, it is shown once. *As built:* under any named
+contact, linked or not, and over an unnamed Picasa face too (As built 8).
 
 Unnamed outlines stay as they are and are not clickable.
 
@@ -516,6 +548,67 @@ The release notes say: recognition starts by itself where "Find faces" is alread
 leaves the computer; the installers' measured growth; a first run's time; that this was
 measured on press photographs, and children and photos decades apart will split into more
 groups; that nothing was run in the app by a person.
+
+## As built
+
+The backend (plan 1) was built on 2026-10-03. Where it departs from the text above, the code
+is what is recorded here; each was decided during the work, after review.
+
+1. **Centroids are not stored.** No `centroid` or `centroid_count` column: at the start of each
+   grouping step, every group's sum is computed from its faces by the counting rule above and
+   kept in memory for that step. A stored centroid has to be kept right by every writer that
+   moves a face (every operation, the clearing on an edit or a changed file in `items.rs`, the
+   switch, the carry-over at a detector re-run), and one forgotten writer leaves it silently
+   wrong, which no test of that writer would show. Computing it costs one read of the grouped
+   faces' vectors when there is something to group, and nothing when there is not. So "the
+   centroid is recomputed" in the operations means nothing is written: the next step reads the
+   faces as they now are, and "a group whose `centroid_count` is zero" in the rule is a group
+   nothing counts towards.
+2. **`people.id` and `detected_faces.id` are `INTEGER PRIMARY KEY AUTOINCREMENT`**, and
+   migration 25 rebuilds `detected_faces` to get it (the data model above). The People page
+   holds these ids and acts on them later, and an id the UI holds must never name a different
+   row: without `AUTOINCREMENT` SQLite hands the highest deleted id to the next insert, and the
+   grouping step deletes empty groups and creates new ones, as a re-detection deletes a photo's
+   faces and inserts new ones.
+3. **Renaming a named person does not confirm their suggestions**; naming an unnamed group
+   confirms its faces. "Rename: as naming" holds for the name and the merge a taken name makes,
+   not for the confirmation: confirming suggestions the user has not looked at would put
+   strangers under a name.
+4. **The Picasa name offered for a group counts only faces Picasa recorded under a named
+   contact.** A group's face that sits on no Picasa face, or only on one whose contact no INI
+   names, does not vote, and an unnamed Picasa face at the same place does not hide a named one.
+   A contact linked to a person offers the person's name.
+5. **Every named person is listed in the page's People section**, with a `face_count` of 0 and
+   an empty strip when none of their confirmed faces is visible (all rejected, hidden or
+   missing). Out of the page they could not be renamed, merged or deleted, while the switch-off
+   count still included them. The sidebar's People list is unchanged: it lists a person only
+   with a visible photo.
+6. **Grouping during the embed step is paced.** Not after every embed batch: the first batch
+   that writes is grouped at once, each later run once `GROUP_COST_FACTOR` (9) times the last
+   run's own duration has passed since it ended (`GroupPacer` in `engine.rs`), so grouping is at
+   most about a tenth of the step. Each run reads every grouped face's vector, and run after
+   every batch a first recognition would read about 40 GB at 100,000 photos. The groups are
+   never kept between runs, only the timing: an edit or a changed file deletes detections
+   without `people_write`, so groups held over could name deleted faces. The step that ends the
+   pass places whatever a paced-out batch left.
+7. **The embed candidate query applies its eligibility filters inside the page's `LIMIT`.** The
+   photo's conditions (live, preview ready) are in the subquery that picks the page's photos,
+   faces driving through a `CROSS JOIN` and each photo read by id. Outside it, a page made of
+   missing photos came back empty while later photos had faces to embed, and the pass reads an
+   empty page as no work.
+8. **`person:` and the viewer.** `person:` gives a contact linked to a person the person's name
+   too, so a renamed person's Picasa-only photos are found by the new name. The viewer draws a
+   face once: a confirmed detection over a named Picasa face (linked to a person or not) leaves
+   the plate to Picasa's, which carries the person's key and name when its contact is linked;
+   one over an unnamed Picasa face takes that face's outline away and shows the person's plate.
+9. **A face narrower than `MIN_FACE_PX` (35) in the decoded preview** is marked looked-at
+   (`embedding_version` set) with no vector, and is never grouped. It still counts as a face
+   for `has:face` and `faces:N`.
+10. **The embedding breaker counts faces, not photos.** The floor is detection's, 8, and a batch
+    trips it when every face the model was asked about failed. One group photo with 8 or more
+    faces that all fail (landmarks the aligner refuses), in a batch where no other face is
+    asked about, trips it alone, on every pass, and no photo with a higher id is embedded. The
+    guard in "Guards" is otherwise as written.
 
 ## Not in this design
 

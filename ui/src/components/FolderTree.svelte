@@ -490,7 +490,8 @@
     {/if}
   {/if}
 
-  <!-- People: Picasa's contacts, read from the INI beside the photos. Read only. -->
+  <!-- People: the people the user named among the faces photon found, and Picasa's contacts
+       no such person is linked to, read from the INI beside the photos. Read only here. -->
   <button class="group" aria-expanded={open.people} onclick={() => (open.people = !open.people)}>
     <span class="chevron"><Icon name={open.people ? 'chevron-down' : 'chevron-right'} size={12} /></span><Icon name="user" size={14} />
     <span class="name">People</span>
@@ -508,7 +509,7 @@
         <span class="count">{counted.format(person.count)}</span>
       </button>
     {:else}
-      <p class="empty small">No people. photon reads face names from Picasa’s .picasa.ini.</p>
+      <p class="empty small">No named people. Names Picasa recorded in its .picasa.ini are listed here.</p>
     {/each}
   {/if}
 

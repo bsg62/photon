@@ -33,7 +33,10 @@ type Read<'a> = dyn Fn(&EmbedCandidate) -> Result<DynamicImage> + Sync + 'a;
 /// detection pass's reason: a fault that hits every face would otherwise mark the whole
 /// library as embedded with no vectors. A face too small is not asked about - the embedder
 /// answers it without running the model - so, like a skipped photo, it counts neither way.
-/// Earlier batches stay written.
+/// Earlier batches stay written. It counts faces, not photos as detection's does, and that
+/// has a cost: one group photo with eight or more faces that all fail (landmarks the aligner
+/// refuses, say), in a batch where no other face is asked about, trips it alone - on every
+/// pass after, with no photo of a higher id embedded.
 pub fn run(
     lib: &Library,
     cache: &ThumbCache,

@@ -175,7 +175,9 @@ pub struct ViewerItem {
     /// knows by name that are none of those. A contact linked to a person is that person.
     pub faces: Vec<ItemFace>,
     /// Faces with no name: Picasa's whose contact no INI names, then the ones photon
-    /// detected that are none of Picasa's. In the picture as shown, like `faces`.
+    /// detected that are none of Picasa's. A detection confirmed as a named person is in
+    /// `faces` instead, and an unnamed Picasa face it lies over is left out with it, so the
+    /// face is drawn once. In the picture as shown, like `faces`.
     pub unnamed_faces: Vec<Rect>,
     /// A video plays; the viewer shows no zoom, crop or turn for it.
     pub kind: MediaKind,
@@ -819,7 +821,8 @@ pub fn viewer_item(engine: &Engine, id: i64) -> CmdResult<ViewerItem> {
         })
         .collect();
     // A face photon's own person is confirmed on is named in the viewer, once: where Picasa
-    // recorded the same face under a linked contact, Picasa's is the one shown.
+    // recorded the same face under any named contact, linked to a person or not, Picasa's
+    // is the one shown.
     let named_here: Vec<Rect> = faces
         .iter()
         .map(|f| Rect {
@@ -1755,15 +1758,15 @@ mod tests {
     }
 
     /// A person's confirmed faces are named in the viewer; a contact linked to a person is
-    /// that person, shown once where Picasa and photon both found the face; a suggestion is
-    /// still an unnamed outline.
+    /// that person, under the person's name rather than Picasa's, shown once where Picasa
+    /// and photon both found the face; a suggestion is still an unnamed outline.
     #[test]
     fn viewer_item_names_confirmed_faces_and_shows_a_linked_contact_once() {
         let f = fixture(&[
             ("a/a.jpg", &jpeg(400, 300)),
             (
                 "a/.picasa.ini",
-                b"[Contacts2]\nabc=Ada\n[a.jpg]\nfaces=rect64(1000200030006000),abc\n",
+                b"[Contacts2]\nabc=Ada L.\n[a.jpg]\nfaces=rect64(1000200030006000),abc\n",
             ),
         ]);
         f.add_photos();
@@ -1796,8 +1799,9 @@ mod tests {
                 DETECTOR_VERSION,
             )
             .unwrap();
-        // Ada is linked to Picasa's contact and confirmed on the detection over it; Bea has
-        // a confirmed face in the middle and only a suggestion at the right.
+        // Ada is linked to Picasa's contact (whom Picasa calls "Ada L.") and confirmed on the
+        // detection over it; Bea has a confirmed face in the middle and only a suggestion at
+        // the right.
         let w = rusqlite::Connection::open(&f.config().db_path).unwrap();
         w.execute(
             "INSERT INTO people (id, name) VALUES (1, 'Ada'), (2, 'Bea')",
@@ -1824,7 +1828,8 @@ mod tests {
         assert_eq!(
             named,
             vec![("p:1", "Ada"), ("p:2", "Bea")],
-            "Ada once, under her key, not also as the detection over Picasa's rectangle"
+            "Ada once, under her key and the name the user gave her, not also as the \
+             detection over Picasa's rectangle"
         );
         assert!((item.faces[0].left - 0.0625).abs() < 0.001, "Picasa's box");
         assert_eq!(item.unnamed_faces.len(), 1, "{:?}", item.unnamed_faces);

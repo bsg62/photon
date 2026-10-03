@@ -401,3 +401,17 @@ publishing it.
 - [ ] The app stays usable (scrolling, opening photos) while a pass runs on a large library.
 - [ ] Unplug a drive whose photos already have thumbnails, with the pass unfinished: the pass carries on through them.
 - [ ] Windows and macOS: the same switch-on, on a real library.
+
+## People (backend)
+
+Before the People page (plan 2) there is no way to name anyone by hand, so this is what a
+person can see of recognition on a real library with "Find faces" on.
+
+- [ ] A library a 0.47.0 photon already detected, opened with the switch on: the status bar shows "Recognising people: N of M faces" at once, without "Finding faces" first going over every photo again, and N rises; the same line is under the switch in Settings. It clears when the pass ends.
+- [ ] On a library detected from scratch: "Finding faces" runs first, then the line changes to "Recognising people", in faces rather than photos.
+- [ ] Quit while recognising and relaunch: it carries on from where it was, not from zero.
+- [ ] While it runs and after it: the sidebar's People list still shows Picasa's people with their counts, clicking one still shows their photos, and `person:` with a Picasa name still finds them.
+- [ ] The viewer's info panel on a photo with Picasa faces: the name plates are still there, each face drawn once, and photon's own detections are still outlined without a name.
+- [ ] The app stays usable (scrolling, opening photos, starring) while a large library is being recognised.
+- [ ] Switch it off while recognising: the progress line clears and stays cleared; Picasa's people stay in the sidebar and the viewer.
+- [ ] Open the library with photon 0.47.0 afterwards: it refuses it as made by a newer photon.

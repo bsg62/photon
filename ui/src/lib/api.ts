@@ -111,7 +111,8 @@ export interface FolderIds { version: number; ids: number[] }
 /** Mirrors `face_detect::Rect`: fractions of the picture, from its left and top. */
 export interface FaceRect { left: number; top: number; right: number; bottom: number }
 
-/** A named Picasa face; the rectangle is fractions of the displayed (oriented) image. */
+/** A named face: Picasa's, under the person's key and name when its contact is linked to one,
+ *  or a person's confirmed detection. The rectangle is fractions of the picture as shown. */
 export interface ItemFace { key: string; name: string; left: number; top: number; right: number; bottom: number }
 export interface ViewerItem {
   id: number;
@@ -146,7 +147,8 @@ export interface ViewerItem {
   caption: string | null;
   faces: ItemFace[];
   /** Faces with no name: Picasa's unnamed ones, then the ones photon detected that are none
-   *  of Picasa's. Fractions of the picture as shown, like `faces`. */
+   *  of Picasa's. A detection confirmed as a named person is in `faces` instead, and takes an
+   *  unnamed Picasa face under it along. Fractions of the picture as shown, like `faces`. */
   unnamedFaces: FaceRect[];
   /** A video plays; the viewer shows no zoom, crop or turn for it. */
   kind: 'image' | 'video';

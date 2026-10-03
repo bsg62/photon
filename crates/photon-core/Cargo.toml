@@ -36,8 +36,8 @@ serde = { version = "1.0.229", features = ["derive"] }
 tempfile = "3.27.0"
 thiserror = "2.0.20"
 tracing = "0.1.44"
-# Runs the bundled face detector (`face_detect`). Pure Rust but for tract-linalg's assembly
-# kernels, which it compiles in with `cc`: no nasm, no system library.
+# Runs the bundled face models (`face_detect`, `face_embed`). Pure Rust but for
+# tract-linalg's assembly kernels, which it compiles in with `cc`: no nasm, no system library.
 tract-onnx = "0.23.8"
 walkdir = "2.5.0"
 webp = "0.3.1"
