@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { containedBox, faceBox, unnamedFacesLabel } from './faces';
+import { containedBox, faceAt, faceBox, toLayer, unnamedFacesLabel } from './faces';
 
 describe('containedBox', () => {
   it('fits a landscape photo to the frame width and centres it vertically', () => {
@@ -38,5 +38,28 @@ describe('unnamedFacesLabel', () => {
     expect(unnamedFacesLabel(1)).toBe('1 face not named');
     expect(unnamedFacesLabel(3)).toBe('3 faces not named');
     expect(unnamedFacesLabel(1200)).toBe(`${(1200).toLocaleString()} faces not named`);
+  });
+});
+
+describe('toLayer', () => {
+  it('maps a point through a scaled, offset rectangle', () => {
+    expect(toLayer(500, 350, { left: 100, top: 50, width: 800, height: 600 }, 400, 300)).toEqual({ x: 200, y: 150 });
+  });
+  it('gives a point no box contains for a zero-sized rectangle', () => {
+    expect(toLayer(5, 5, { left: 0, top: 0, width: 0, height: 0 }, 400, 300)).toEqual({ x: -1, y: -1 });
+  });
+});
+
+describe('faceAt', () => {
+  const big = { left: 0, top: 0, width: 100, height: 100 };
+  const small = { left: 40, top: 40, width: 20, height: 20 };
+  it('picks the smallest box under the point', () => {
+    expect(faceAt(50, 50, [big, small])).toBe(1);
+    expect(faceAt(10, 10, [big, small])).toBe(0);
+  });
+  it('includes edges, breaks ties to the first and gives -1 for none', () => {
+    expect(faceAt(100, 100, [big])).toBe(0);
+    expect(faceAt(50, 50, [big, { ...big }])).toBe(0);
+    expect(faceAt(150, 50, [big, small])).toBe(-1);
   });
 });

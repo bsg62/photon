@@ -1,6 +1,7 @@
 /** Pure pieces of the People page: what a typed name will do, the switch-off warning, a
  *  face's crop URL, and opening a face's photo. */
 
+import type { NamedItems, RemovedItems, Skipped } from './api';
 import { mediaUrl } from './url';
 
 export type NameChoice =
@@ -63,4 +64,59 @@ export async function openFacePhoto(itemId: number, deps: OpenFaceDeps): Promise
     return;
   }
   deps.open(at);
+}
+
+/** "1 photo" / "12 photos". */
+function photos(n: number): string {
+  return n === 1 ? '1 photo' : `${n.toLocaleString()} photos`;
+}
+
+/** The file names a skipped list shows, then how many more there were. */
+function listed(s: Skipped): string {
+  const names = s.items.map((i) => i.fileName);
+  const more = s.count - s.items.length;
+  if (more > 0) names.push(`and ${more.toLocaleString()} more`);
+  return names.join(', ');
+}
+
+/** The toast after naming a face from the viewer. */
+export function namedFaceMessage(name: string): string {
+  return `This is ${name}.`;
+}
+
+/** The toast after naming photos: what was done, then why the rest were not, each reason on
+ *  its own, so a user who selected forty photos can tell which to look at. */
+export function namedItemsMessage(r: NamedItems): string {
+  const parts: string[] = [
+    r.named > 0 ? `Added ${photos(r.named)} to ${r.name}.` : `Nothing was added to ${r.name}.`,
+  ];
+  const { several, already, none } = r;
+  if (several.count > 0) {
+    const one = several.count === 1;
+    parts.push(
+      `${several.count.toLocaleString()} ${one ? 'has' : 'have'} more than one unnamed face: ${listed(several)} \u2014 open ${one ? 'it' : 'them'} to choose the face.`,
+    );
+  }
+  if (already.count > 0) {
+    parts.push(`${already.count.toLocaleString()} ${already.count === 1 ? 'is' : 'are'} already ${r.name}'s.`);
+  }
+  if (none.count > 0) {
+    parts.push(`${none.count.toLocaleString()} ${none.count === 1 ? 'has' : 'have'} no face photon found.`);
+  }
+  return parts.join(' ');
+}
+
+/** The toast after taking photos from a person. A photo Picasa names them on stays theirs,
+ *  since photon never writes Picasa's names. */
+export function removedMessage(name: string, r: RemovedItems): string {
+  const kept = r.keptByPicasa;
+  if (kept === 0) {
+    return r.removed > 0 ? `Removed ${photos(r.removed)} from ${name}.` : `Nothing was removed from ${name}.`;
+  }
+  if (r.removed === 0) {
+    return kept === 1
+      ? `1 stays with ${name}: Picasa names ${name} on it.`
+      : `${kept.toLocaleString()} stay with ${name}: Picasa names ${name} on them.`;
+  }
+  return `Removed ${photos(r.removed)} from ${name}. ${kept.toLocaleString()} ${kept === 1 ? 'stays' : 'stay'}: Picasa names ${name} on ${kept === 1 ? 'it' : 'them'}.`;
 }

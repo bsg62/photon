@@ -1,5 +1,14 @@
 import { describe, expect, it, vi } from 'vitest';
-import { faceUrl, nameChoice, openFacePhoto, switchOffWarning } from './people';
+import type { NamedItems } from './api';
+import {
+  faceUrl,
+  nameChoice,
+  namedFaceMessage,
+  namedItemsMessage,
+  openFacePhoto,
+  removedMessage,
+  switchOffWarning,
+} from './people';
 
 const people = [
   { id: 3, name: 'Anna' },
@@ -74,5 +83,65 @@ describe('openFacePhoto', () => {
     await openFacePhoto(11, d);
     expect(d.open).not.toHaveBeenCalled();
     expect(d.notify).toHaveBeenCalled();
+  });
+});
+
+describe('toast wording', () => {
+  const zero = { items: [], count: 0 };
+  const r = (over: Partial<NamedItems> = {}): NamedItems => ({
+    person: 3,
+    name: 'Anna',
+    named: 5,
+    already: zero,
+    several: zero,
+    none: zero,
+    ...over,
+  });
+  const files = (...names: string[]) => names.map((fileName, i) => ({ id: i, fileName }));
+
+  it('names a face', () => {
+    expect(namedFaceMessage('Anna')).toBe('This is Anna.');
+  });
+
+  it('says what was added', () => {
+    expect(namedItemsMessage(r())).toBe('Added 5 photos to Anna.');
+    expect(namedItemsMessage(r({ named: 1 }))).toBe('Added 1 photo to Anna.');
+  });
+
+  it('lists the photos with several unnamed faces', () => {
+    const several = { items: files('IMG_1.jpg', 'IMG_2.jpg'), count: 2 };
+    expect(namedItemsMessage(r({ several }))).toBe(
+      'Added 5 photos to Anna. 2 have more than one unnamed face: IMG_1.jpg, IMG_2.jpg \u2014 open them to choose the face.',
+    );
+  });
+
+  it('says how many more than the listed ones there were', () => {
+    const several = { items: files('a.jpg', 'b.jpg'), count: 5 };
+    expect(namedItemsMessage(r({ several }))).toContain('5 have more than one unnamed face: a.jpg, b.jpg, and 3 more \u2014');
+  });
+
+  it('says how many were already the person or had no face', () => {
+    expect(namedItemsMessage(r({ already: { items: files('a'), count: 1 } }))).toBe(
+      "Added 5 photos to Anna. 1 is already Anna's.",
+    );
+    expect(namedItemsMessage(r({ none: { items: files('a'), count: 1 } }))).toBe(
+      'Added 5 photos to Anna. 1 has no face photon found.',
+    );
+  });
+
+  it('says so when nothing was added, then why', () => {
+    expect(namedItemsMessage(r({ named: 0, none: { items: files('a'), count: 1 } }))).toBe(
+      'Nothing was added to Anna. 1 has no face photon found.',
+    );
+  });
+
+  it('words taking photos from a person', () => {
+    expect(removedMessage('Anna', { removed: 3, keptByPicasa: 0 })).toBe('Removed 3 photos from Anna.');
+    expect(removedMessage('Anna', { removed: 1, keptByPicasa: 2 })).toBe(
+      'Removed 1 photo from Anna. 2 stay: Picasa names Anna on them.',
+    );
+    expect(removedMessage('Anna', { removed: 0, keptByPicasa: 2 })).toBe(
+      '2 stay with Anna: Picasa names Anna on them.',
+    );
   });
 });
