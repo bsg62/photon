@@ -92,7 +92,7 @@ export interface GridInfo {
   view: GridView;
   sort: Sort;
   searchQuery: string;
-  /** Picasa contact hash while `view` is 'person'. */
+  /** The key (`Person.key`) of the person on show while `view` is 'person'. */
   person: string | null;
   /** Album id while `view` is 'album'. */
   album: number | null;
@@ -112,7 +112,7 @@ export interface FolderIds { version: number; ids: number[] }
 export interface FaceRect { left: number; top: number; right: number; bottom: number }
 
 /** A named Picasa face; the rectangle is fractions of the displayed (oriented) image. */
-export interface ItemFace { hash: string; name: string; left: number; top: number; right: number; bottom: number }
+export interface ItemFace { key: string; name: string; left: number; top: number; right: number; bottom: number }
 export interface ViewerItem {
   id: number;
   path: string;
@@ -199,7 +199,8 @@ export interface ItemCopy {
   width: number;
   height: number;
 }
-export interface Person { hash: string; name: string; count: number }
+/** `key` is `p:<id>` for a named person or `c:<hash>` for a Picasa contact no person is linked to. */
+export interface Person { key: string; name: string; count: number }
 /** What one export came to. Mirrors `ExportReport` in `commands.rs`. `failed` counts a photo
  *  that has gone from the library since the grid was built as well as one that could not be
  *  read; `reason` is the first of those failures, for a message that can say why. */
@@ -351,7 +352,7 @@ export const api = {
   setGridView: (view: GridView) => invoke<number | null>('set_grid_view', { view }),
   setSort: (sort: Sort) => invoke<number | null>('set_sort', { sort }),
   setSearchQuery: (query: string) => invoke<number | null>('set_search_query', { query }),
-  setPersonView: (contact: string) => invoke<number | null>('set_person_view', { contact }),
+  setPersonView: (person: string) => invoke<number | null>('set_person_view', { person }),
   setAlbumView: (albumId: number) => invoke<number | null>('set_album_view', { albumId }),
   setTagView: (tag: string) => invoke<number | null>('set_tag_view', { tag }),
   copyCount: (id: number) => invoke<number>('copy_count', { id }),

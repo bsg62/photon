@@ -914,9 +914,9 @@ export class LibraryStore {
     return this.requestedSort ?? this.info.sort;
   }
 
-  /** Shows the photos of one Picasa contact. */
-  setPersonView(hash: string): Promise<void> {
-    return this.switchView(() => api.setPersonView(hash));
+  /** Shows the photos of one person, by `Person.key`. */
+  setPersonView(key: string): Promise<void> {
+    return this.switchView(() => api.setPersonView(key));
   }
 
   /** Shows one album. */
@@ -985,8 +985,8 @@ export class LibraryStore {
     return this.albums.find((a) => a.id === albumId)?.name ?? '';
   }
 
-  personName(hash: string | null): string {
-    return this.people.find((p) => p.hash === hash)?.name ?? '';
+  personName(key: string | null): string {
+    return this.people.find((p) => p.key === key)?.name ?? '';
   }
 
   /** Album mutations. Each refetches the collections itself: the backend only announces a

@@ -261,8 +261,8 @@ pub fn set_search_query(engine: Eng<'_>, query: String) -> Result<Option<u64>, A
 }
 
 #[tauri::command(async)]
-pub fn set_person_view(engine: Eng<'_>, contact: String) -> Result<Option<u64>, AppError> {
-    commands::set_person_view(&engine, &contact)
+pub fn set_person_view(engine: Eng<'_>, person: String) -> Result<Option<u64>, AppError> {
+    commands::set_person_view(&engine, &person)
 }
 
 #[tauri::command(async)]

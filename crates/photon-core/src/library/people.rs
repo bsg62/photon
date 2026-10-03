@@ -1631,4 +1631,146 @@ mod tests {
             .unwrap();
         assert_eq!(l.lib.named_people_count().unwrap(), 1);
     }
+
+    /// A library of five photos with one detected face each: 0 and 1 are Anna's confirmed
+    /// faces, 2 is a suggestion for her, 3 carries Picasa's contact "anna" (linked to her by
+    /// name) and 4 Picasa's contact "Ben", whom no person is linked to.
+    fn anna_and_ben() -> (L, i64) {
+        let (l, f) = library(&[&[0.0], &[20.0], &[40.0], &[60.0], &[80.0]]);
+        let anna = {
+            let w = l.lib.writer();
+            w.execute("INSERT INTO people (name) VALUES ('Anna')", [])
+                .unwrap();
+            w.last_insert_rowid()
+        };
+        for (face, confirmed) in [(f[0], 1), (f[1], 1), (f[2], 0)] {
+            l.lib
+                .writer()
+                .execute(
+                    "UPDATE detected_faces SET person_id = ?2, confirmed = ?3 WHERE id = ?1",
+                    rusqlite::params![face, anna, confirmed],
+                )
+                .unwrap();
+        }
+        l.lib
+            .upsert_contacts(&HashMap::from([
+                ("h-anna".to_string(), "anna".to_string()),
+                ("h-ben".to_string(), "Ben".to_string()),
+            ]))
+            .unwrap();
+        let picasa = |contact: &str| crate::picasa::Face {
+            contact: contact.into(),
+            left: 0.5,
+            top: 0.5,
+            right: 0.6,
+            bottom: 0.6,
+        };
+        l.lib
+            .set_item_faces(&[
+                (l.items[3], vec![picasa("h-anna")]),
+                (l.items[4], vec![picasa("h-ben")]),
+            ])
+            .unwrap();
+        (l, anna)
+    }
+
+    fn view_ids(lib: &Library, view: crate::grid::GridView, arg: &str) -> Vec<i64> {
+        let mut ids: Vec<i64> = lib
+            .entries_for(view, arg)
+            .unwrap()
+            .iter()
+            .map(|e| e.id)
+            .collect();
+        ids.sort();
+        ids
+    }
+
+    #[test]
+    fn the_people_list_has_named_people_and_unlinked_contacts() {
+        let (l, anna) = anna_and_ben();
+        assert_eq!(
+            l.lib.people_with_counts().unwrap(),
+            vec![
+                crate::library::Person {
+                    key: format!("p:{anna}"),
+                    name: "Anna".into(),
+                    count: 3
+                },
+                crate::library::Person {
+                    key: "c:h-ben".into(),
+                    name: "Ben".into(),
+                    count: 1
+                },
+            ],
+            "Anna counts her two confirmed photos and her contact's, not the suggestion's; \
+             her contact is not listed on its own"
+        );
+    }
+
+    #[test]
+    fn the_person_view_has_confirmed_faces_and_linked_contacts() {
+        let (l, anna) = anna_and_ben();
+        assert_eq!(
+            view_ids(&l.lib, crate::grid::GridView::Person, &format!("p:{anna}")),
+            vec![l.items[0], l.items[1], l.items[3]],
+            "the suggestion's photo is not Anna's"
+        );
+    }
+
+    #[test]
+    fn a_contact_key_is_the_picasa_view_and_anything_else_is_empty() {
+        let (l, _) = anna_and_ben();
+        let person = |arg: &str| view_ids(&l.lib, crate::grid::GridView::Person, arg);
+        assert_eq!(person("c:h-ben"), vec![l.items[4]]);
+        assert_eq!(
+            person("c:h-anna"),
+            vec![l.items[3]],
+            "a linked contact still opens as the contact"
+        );
+        assert!(person("h-ben").is_empty(), "no prefix names no one");
+        assert!(person("p:x").is_empty());
+        assert!(person("").is_empty());
+    }
+
+    #[test]
+    fn person_search_finds_a_photon_name() {
+        let (l, _) = anna_and_ben();
+        // Photo 3 is found through the contact's name too, so the two sources agree on it.
+        assert_eq!(
+            view_ids(&l.lib, crate::grid::GridView::Search, "person:anna"),
+            vec![l.items[0], l.items[1], l.items[3]],
+            "confirmed faces, not the suggestion's"
+        );
+        assert_eq!(
+            view_ids(&l.lib, crate::grid::GridView::Search, "person:ben"),
+            vec![l.items[4]]
+        );
+    }
+
+    #[test]
+    fn hidden_photos_are_in_no_person_reader() {
+        let (l, anna) = anna_and_ben();
+        l.lib.set_hidden(&[l.items[0]], true).unwrap();
+        let list = l.lib.people_with_counts().unwrap();
+        assert_eq!(list[0].count, 2, "the list's count drops it");
+        assert_eq!(
+            view_ids(&l.lib, crate::grid::GridView::Person, &format!("p:{anna}")),
+            vec![l.items[1], l.items[3]]
+        );
+        assert_eq!(
+            view_ids(&l.lib, crate::grid::GridView::Search, "person:anna"),
+            vec![l.items[1], l.items[3]]
+        );
+        // With every photo of hers hidden Anna has nothing to count, so the sidebar's list
+        // leaves her out (the People page, which lists every named person, does not).
+        l.lib.set_hidden(&[l.items[1], l.items[3]], true).unwrap();
+        assert!(
+            l.lib
+                .people_with_counts()
+                .unwrap()
+                .iter()
+                .all(|p| p.key != format!("p:{anna}")),
+            "a named person with no visible photo has no row in the sidebar's list"
+        );
+    }
 }

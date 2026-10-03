@@ -1005,10 +1005,10 @@ impl Engine {
         })
     }
 
-    /// Shows the photos with a face of one Picasa contact. Rolls back on a failed refresh.
-    pub fn set_person_view(&self, contact: &str) -> Result<Option<u64>> {
+    /// Shows the photos of one person, by `Person::key`. Rolls back on a failed refresh.
+    pub fn set_person_view(&self, person: &str) -> Result<Option<u64>> {
         self.rebuild_or_restore(|state| {
-            state.arg = contact.to_string();
+            state.arg = person.to_string();
             state.view = GridView::Person;
         })
     }

@@ -120,7 +120,7 @@
         id === 3
           ? "Grandma's 80th, on the terrace in Lisbon, everyone gathered right before sunset for cake and the last of the summer light over the river."
           : null,
-      faces: [{ hash: 'a', name: 'Anna', left: 0.3, top: 0.25, right: 0.42, bottom: 0.5 }],
+      faces: [{ key: 'p:1', name: 'Anna', left: 0.3, top: 0.25, right: 0.42, bottom: 0.5 }],
       unnamedFaces: [{ left: 0.56, top: 0.3, right: 0.66, bottom: 0.5 }],
       kind: id === 5 ? 'video' : 'image',
       durationMs: id === 5 ? 83_000 : null,
@@ -200,8 +200,8 @@
     neighbours: () => [],
     viewer_item: (a) => viewerItem(a.id ?? a.itemId ?? 3),
     list_people: () => [
-      { hash: 'a', name: 'Anna', count: 212 },
-      { hash: 'b', name: 'Jonas', count: 87 },
+      { key: 'p:1', name: 'Anna', count: 212 },
+      { key: 'c:b', name: 'Jonas', count: 87 },
     ],
     list_tags: () => [
       { tag: 'alps', count: 134, total: 134 },

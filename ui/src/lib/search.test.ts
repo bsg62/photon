@@ -87,7 +87,7 @@ describe('viewKey', () => {
 
   it('takes the argument that belongs to the active view', () => {
     expect(viewKey({ ...base, view: 'search', searchQuery: 'lake' })).toEqual({ view: 'search', query: 'lake', order: 'date' });
-    expect(viewKey({ ...base, view: 'person', person: 'abc' })).toEqual({ view: 'person', query: 'abc', order: 'date' });
+    expect(viewKey({ ...base, view: 'person', person: 'c:abc' })).toEqual({ view: 'person', query: 'c:abc', order: 'date' });
     expect(viewKey({ ...base, view: 'album', album: 7 })).toEqual({ view: 'album', query: '7', order: 'date' });
     expect(viewKey({ ...base, view: 'tag', tag: 'beach' })).toEqual({ view: 'tag', query: 'beach', order: 'date' });
     expect(viewKey({ ...base, view: 'copies', copiesOf: { id: 42, fileName: 'a.jpg', gone: false, hidden: false } })).toEqual({

@@ -16,8 +16,9 @@ use std::collections::{HashMap, HashSet};
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Person {
-    /// Picasa's contact hash, the argument of the Person view.
-    pub hash: String,
+    /// The argument of the Person view: `p:<id>` for a person photon knows by name, `c:<hash>`
+    /// for a Picasa contact no person is linked to.
+    pub key: String,
     pub name: String,
     pub count: i64,
 }
@@ -26,7 +27,8 @@ pub struct Person {
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ItemFace {
-    pub hash: String,
+    /// The key of the person the face is, as `Person::key`.
+    pub key: String,
     pub name: String,
     pub left: f64,
     pub top: f64,
@@ -42,7 +44,29 @@ const PEOPLE_SQL: &str = "SELECT c.hash, c.name, count(DISTINCT f.item_id)
      JOIN faces f ON f.contact = c.hash
      JOIN items i ON i.id = f.item_id
      WHERE +i.missing_since IS NULL AND i.hidden = 0
+       AND c.hash NOT IN (SELECT contact FROM person_contacts)
      GROUP BY c.hash";
+
+/// The named people of `people_with_counts`: the photos with a confirmed face of theirs, and
+/// those where Picasa recorded a contact linked to them, counted once each. A suggestion
+/// (`confirmed = 0`) is not a face of the person yet. Each half is driven from its faces and
+/// reaches the photo by id; the live-and-visible test sits inside each half, since a `JOIN
+/// items` outside the union made the planner scan every photo (no `+` is needed in this
+/// shape: probed, it changes no plan).
+const NAMED_PEOPLE_SQL: &str = "SELECT p.id, p.name, count(DISTINCT x.item_id)
+     FROM (SELECT d.person_id AS person_id, d.item_id AS item_id
+           FROM detected_faces d JOIN items i ON i.id = d.item_id
+           WHERE d.confirmed = 1 AND d.person_id IS NOT NULL
+             AND i.missing_since IS NULL AND i.hidden = 0
+           UNION ALL
+           SELECT pc.person_id, f.item_id
+           FROM person_contacts pc
+           JOIN faces f ON f.contact = pc.contact
+           JOIN items i ON i.id = f.item_id
+           WHERE i.missing_since IS NULL AND i.hidden = 0) x
+     JOIN people p ON p.id = x.person_id
+     WHERE p.name IS NOT NULL
+     GROUP BY p.id";
 
 /// `folders_with_faces`' query, shared with its plan test. Driven from `faces`, the small
 /// side: a library has far fewer faces than photos, and each face reaches its photo by id.
@@ -191,19 +215,23 @@ impl Library {
     }
 
     /// The named faces on one photo, in the INI's order. A face whose contact no INI has
-    /// named is left out: there is nothing to show for it but a hash.
+    /// named is left out: there is nothing to show for it but a hash. A contact linked to a
+    /// person is that person: their key and their name.
     pub fn item_faces(&self, item_id: i64) -> Result<Vec<ItemFace>> {
         let conn = self.reader()?;
         let mut stmt = conn.prepare_cached(
-            "SELECT f.contact, c.name, f.left, f.top, f.right, f.bottom
+            "SELECT CASE WHEN p.id IS NULL THEN 'c:' || f.contact ELSE 'p:' || p.id END,
+                    COALESCE(p.name, c.name), f.left, f.top, f.right, f.bottom
              FROM faces f JOIN contacts c ON c.hash = f.contact
+             LEFT JOIN person_contacts pc ON pc.contact = f.contact
+             LEFT JOIN people p ON p.id = pc.person_id AND p.name IS NOT NULL
              WHERE f.item_id = ?1
              ORDER BY f.rowid",
         )?;
         let faces = stmt
             .query_map(params![item_id], |r| {
                 Ok(ItemFace {
-                    hash: r.get(0)?,
+                    key: r.get(0)?,
                     name: r.get(1)?,
                     left: r.get(2)?,
                     top: r.get(3)?,
@@ -215,23 +243,63 @@ impl Library {
         Ok(faces)
     }
 
-    /// Every named contact with a face on a live photo, with how many photos, sorted by
-    /// name in Rust (case-insensitively; `lower()` is ASCII-only without ICU).
+    /// The confirmed faces of named people on one photo, in the picture as shown, with the
+    /// person's id and name, in face order. A suggestion is not here: it is not yet the
+    /// person's face.
+    pub fn item_named_detected_faces(&self, item_id: i64) -> Result<Vec<(Rect, i64, String)>> {
+        let conn = self.reader()?;
+        let mut stmt = conn.prepare_cached(
+            "SELECT d.left, d.top, d.right, d.bottom, p.id, p.name
+             FROM detected_faces d JOIN people p ON p.id = d.person_id
+             WHERE d.item_id = ?1 AND d.confirmed = 1 AND p.name IS NOT NULL
+             ORDER BY d.id",
+        )?;
+        let faces = stmt
+            .query_map(params![item_id], |r| {
+                Ok((
+                    Rect {
+                        left: r.get(0)?,
+                        top: r.get(1)?,
+                        right: r.get(2)?,
+                        bottom: r.get(3)?,
+                    },
+                    r.get(4)?,
+                    r.get(5)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(faces)
+    }
+
+    /// Every named person and every contact no person is linked to, each with a face on a
+    /// live photo, with how many photos, sorted by name in Rust (case-insensitively;
+    /// `lower()` is ASCII-only without ICU).
     ///
     /// Counts photos, not faces: a person twice in one frame is one photo of them.
     pub fn people_with_counts(&self) -> Result<Vec<Person>> {
         let conn = self.reader()?;
-        let mut stmt = conn.prepare(PEOPLE_SQL)?;
-        let mut people = stmt
+        let mut people = conn
+            .prepare(NAMED_PEOPLE_SQL)?
             .query_map([], |r| {
                 Ok(Person {
-                    hash: r.get(0)?,
+                    key: format!("p:{}", r.get::<_, i64>(0)?),
                     name: r.get(1)?,
                     count: r.get(2)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        people.sort_by_cached_key(|p| (p.name.to_lowercase(), p.name.clone(), p.hash.clone()));
+        let contacts = conn
+            .prepare(PEOPLE_SQL)?
+            .query_map([], |r| {
+                Ok(Person {
+                    key: format!("c:{}", r.get::<_, String>(0)?),
+                    name: r.get(1)?,
+                    count: r.get(2)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        people.extend(contacts);
+        people.sort_by_cached_key(|p| (p.name.to_lowercase(), p.name.clone(), p.key.clone()));
         Ok(people)
     }
 }
@@ -294,7 +362,7 @@ mod tests {
         assert_eq!(
             lib.item_faces(ids[0]).unwrap(),
             vec![ItemFace {
-                hash: "ada".into(),
+                key: "c:ada".into(),
                 name: "Ada".into(),
                 left: 0.1,
                 top: 0.2,
@@ -338,12 +406,12 @@ mod tests {
             people,
             vec![
                 Person {
-                    hash: "ada".into(),
+                    key: "c:ada".into(),
                     name: "Ada".into(),
                     count: 2
                 },
                 Person {
-                    hash: "zed".into(),
+                    key: "c:zed".into(),
                     name: "zed".into(),
                     count: 1
                 },
@@ -369,7 +437,7 @@ mod tests {
             .unwrap();
 
         let view: Vec<i64> = lib
-            .entries_for(GridView::Person, "ada")
+            .entries_for(GridView::Person, "c:ada")
             .unwrap()
             .iter()
             .map(|e| e.id)
@@ -380,7 +448,7 @@ mod tests {
             "the newer folder first, then old's member"
         );
         assert!(
-            lib.entries_for(GridView::Person, "nobody")
+            lib.entries_for(GridView::Person, "c:nobody")
                 .unwrap()
                 .is_empty()
         );
@@ -433,6 +501,29 @@ mod tests {
     fn the_people_list_reads_photos_by_id_not_through_the_size_index() {
         let (_dir, lib) = temp_library();
         let plan = lib.query_plan(PEOPLE_SQL, &[]);
+        assert!(
+            !plan.iter().any(|step| step.contains("items_size")),
+            "walks the size index: {plan:?}"
+        );
+        assert!(
+            plan.iter()
+                .any(|step| step == "SEARCH i USING INTEGER PRIMARY KEY (rowid=?)"),
+            "expected each photo to be found by id: {plan:?}"
+        );
+    }
+
+    /// Pins the shape of `NAMED_PEOPLE_SQL`, as the test above does for the contacts half: the
+    /// list reads only the photos that have a face of a person, each by id, and never scans
+    /// or walks `items_size` over the whole library. With `items` joined outside the union
+    /// the planner scans every photo and builds an automatic index on the union's result.
+    #[test]
+    fn the_named_people_are_counted_from_their_faces_not_the_size_index() {
+        let (_dir, lib) = temp_library();
+        let plan = lib.query_plan(NAMED_PEOPLE_SQL, &[]);
+        assert!(
+            !plan.iter().any(|step| step.starts_with("SCAN i")),
+            "scans every photo: {plan:?}"
+        );
         assert!(
             !plan.iter().any(|step| step.contains("items_size")),
             "walks the size index: {plan:?}"

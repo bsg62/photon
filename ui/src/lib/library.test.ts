@@ -202,7 +202,7 @@ describe('LibraryStore', () => {
     expect(api.listAlbums).toHaveBeenCalledTimes(1);
 
     vi.mocked(api.listAlbums).mockResolvedValue([{ id: 1, name: 'Trip', count: 2, picasa: false }]);
-    vi.mocked(api.listPeople).mockResolvedValue([{ hash: 'abc', name: 'Ada', count: 1 }]);
+    vi.mocked(api.listPeople).mockResolvedValue([{ key: 'c:abc', name: 'Ada', count: 1 }]);
     vi.mocked(api.listTags).mockResolvedValue([{ tag: 'beach', count: 3, total: 3 }]);
     vi.mocked(api.listSavedSearches).mockResolvedValue([
       { id: 7, name: 'Canon', query: 'camera:canon', createdMs: 0 },
@@ -215,7 +215,7 @@ describe('LibraryStore', () => {
     expect(store.people[0]?.name).toBe('Ada');
     expect(store.tags[0]?.tag).toBe('beach');
     expect(store.albumName(1)).toBe('Trip');
-    expect(store.personName('abc')).toBe('Ada');
+    expect(store.personName('c:abc')).toBe('Ada');
     expect(store.albumName(99)).toBe('');
     expect(store.searches).toEqual([{ id: 7, name: 'Canon', query: 'camera:canon', createdMs: 0 }]);
 

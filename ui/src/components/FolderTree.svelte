@@ -497,12 +497,12 @@
     <span class="count">{counted.format(library.people.length)}</span>
   </button>
   {#if open.people}
-    {#each library.people as person (person.hash)}
+    {#each library.people as person (person.key)}
       <button
         class="node"
-        class:active={library.info.view === 'person' && library.info.person === person.hash}
+        class:active={library.info.view === 'person' && library.info.person === person.key}
         title={person.name}
-        onclick={() => show(() => library.setPersonView(person.hash))}
+        onclick={() => show(() => library.setPersonView(person.key))}
       >
         <span class="name">{person.name}</span>
         <span class="count">{counted.format(person.count)}</span>
