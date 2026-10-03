@@ -185,12 +185,17 @@ impl Library {
 
     /// Switches face detection. Off deletes every detection and every record of a photo
     /// having been looked at, in the transaction that stores the setting: "off" means
-    /// photon keeps no face data of its own, and switching back on detects again.
+    /// photon keeps no face data of its own, and switching back on detects again. The
+    /// people the user named go too, with their contacts and rejections (the UI asks
+    /// first): a person is a group of detected faces, and keeps nothing without them.
     pub fn set_face_detection(&self, enabled: bool) -> Result<()> {
         let mut conn = self.writer();
         let tx = conn.transaction()?;
         set_setting(&tx, FACE_DETECTION, if enabled { "1" } else { "0" })?;
         if !enabled {
+            tx.execute("DELETE FROM face_rejections", [])?;
+            tx.execute("DELETE FROM person_contacts", [])?;
+            tx.execute("DELETE FROM people", [])?;
             tx.execute("DELETE FROM detected_faces", [])?;
             tx.execute(
                 "UPDATE items SET face_version = NULL WHERE face_version IS NOT NULL",

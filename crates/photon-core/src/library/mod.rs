@@ -36,7 +36,7 @@ mod stats;
 mod tags;
 
 pub use albums::{Album, AlbumSummary};
-pub use detected_faces::FaceCandidate;
+pub use detected_faces::{EmbedCandidate, FaceCandidate};
 pub use duplicates::{CopiesArg, HashCandidate, ItemCopy};
 pub use faces::{ItemFace, Person};
 pub use folders::{Folder, WatchedFolder};
@@ -217,17 +217,17 @@ mod tests {
             .unwrap()
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 24);
+        assert_eq!(version, 25);
         let tables: i64 = lib
             .reader()
             .unwrap()
             .query_row(
-                "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name IN ('watched_folders', 'folders', 'items', 'settings', 'item_tags', 'contacts', 'faces', 'albums', 'album_items', 'tag_rules', 'item_user_tags', 'saved_searches', 'detected_faces')",
+                "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name IN ('watched_folders', 'folders', 'items', 'settings', 'item_tags', 'contacts', 'faces', 'albums', 'album_items', 'tag_rules', 'item_user_tags', 'saved_searches', 'detected_faces', 'people', 'person_contacts', 'face_rejections')",
                 [],
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(tables, 13);
+        assert_eq!(tables, 16);
     }
 
     #[test]
@@ -243,7 +243,7 @@ mod tests {
             Library::open(&path),
             Err(Error::SchemaTooNew {
                 found: 99,
-                supported: 24
+                supported: 25
             })
         ));
     }

@@ -16,6 +16,14 @@ pub enum Error {
     NonUtf8Path(PathBuf),
     #[error("library schema version {found} is newer than supported version {supported}")]
     SchemaTooNew { found: i64, supported: i64 },
+    #[error("a person needs a name")]
+    EmptyPersonName,
+    /// A merge into, or an operation on, something that is not a named person.
+    #[error("that is not a named person")]
+    NotAPerson(i64),
+    /// Ignoring a named person: delete them first, which makes them a group again.
+    #[error("a named person cannot be ignored; delete them first")]
+    PersonNamed(i64),
     #[error("item {0} not found")]
     NotFound(i64),
     #[error("thumbnail generation failed: {0}")]
