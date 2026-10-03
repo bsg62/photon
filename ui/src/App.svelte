@@ -388,8 +388,13 @@
 <div class="app" style:--sidebar-width="{sidebarWidth}px">
   <div class="topbar" inert={covered}>
     <SearchBar />
-    <SortControl />
-    <SizeControl />
+    <!-- The grid's own controls: under the People page they would sort and size a grid no
+         one can see. Hidden rather than removed, so the search box and the gear keep their
+         places; `visibility` takes them out of the tab order too. -->
+    <div class="grid-controls" class:away={mainPage.current !== 'grid'}>
+      <SortControl />
+      <SizeControl />
+    </div>
     <button class="gear" bind:this={gear} aria-label="Settings" title="Settings" onclick={() => openSettings('folders')}
       ><Icon name="settings" size={18} /></button
     >
@@ -499,6 +504,10 @@
     background: var(--chrome);
     border-bottom: 1px solid var(--line);
   }
+  /* No box of its own: the two controls stay items of the top bar's flex row, spaced by its
+     gap, as they were before they were wrapped. */
+  .grid-controls { display: contents; }
+  .grid-controls.away > :global(*) { visibility: hidden; }
   .gear {
     display: grid;
     place-items: center;
