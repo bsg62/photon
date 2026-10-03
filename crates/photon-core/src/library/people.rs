@@ -333,6 +333,9 @@ pub struct NamedItems {
     pub named: i64,
     pub already: Skipped,
     pub several: Skipped,
+    /// Photos with a face the user said is not this person: naming it from the grid would
+    /// undo their word, so it waits for them to name that face in the viewer.
+    pub rejected: Skipped,
     pub none: Skipped,
 }
 
@@ -402,6 +405,11 @@ fn name_in(tx: &Connection, faces: &[i64], name: &str) -> rusqlite::Result<i64> 
 
 /// Whether the photo is in the person's view: a confirmed face of theirs, or a Picasa face
 /// whose contact is linked to them (the Person view's own condition, `items.rs`).
+///
+/// Hidden and missing photos are deliberately not filtered out, although the Person view
+/// leaves them out: `name_items` asks this to keep a stranger from being named, and in the
+/// Hidden view "Add to Anna" on a hidden photo that already shows Anna would otherwise name
+/// its other face as her.
 fn on_person_view(tx: &Connection, person: i64, item: i64) -> rusqlite::Result<bool> {
     tx.query_row(
         "SELECT EXISTS (SELECT 1 FROM detected_faces
@@ -411,6 +419,57 @@ fn on_person_view(tx: &Connection, person: i64, item: i64) -> rusqlite::Result<b
         params![person, item],
         |r| r.get(0),
     )
+}
+
+/// One of Picasa's faces on a photo, for `name_items`: where it is in the picture as shown,
+/// and the name its contact carries, `None` for a face no INI names.
+struct PicasaHere {
+    rect: Rect,
+    name: Option<String>,
+    linked: bool,
+}
+
+/// Picasa's faces on one photo that its edit still shows, each mapped into the picture as
+/// shown (`merge::shown`), where the detections are.
+fn picasa_here(tx: &Connection, item: i64) -> rusqlite::Result<Vec<PicasaHere>> {
+    let edit = tx
+        .query_row(
+            "SELECT edit_turns, edit_crop FROM items WHERE id = ?1",
+            params![item],
+            |r| Ok(edit_from_db(r.get(0)?, r.get(1)?)),
+        )
+        .optional()?
+        .unwrap_or_default();
+    let mut stmt = tx.prepare_cached(
+        "SELECT f.left, f.top, f.right, f.bottom, c.name,
+                EXISTS (SELECT 1 FROM person_contacts pc WHERE pc.contact = f.contact)
+         FROM faces f LEFT JOIN contacts c ON c.hash = f.contact
+         WHERE f.item_id = ?1 ORDER BY f.rowid",
+    )?;
+    let rows = stmt
+        .query_map(params![item], |r| {
+            Ok((
+                Rect {
+                    left: r.get(0)?,
+                    top: r.get(1)?,
+                    right: r.get(2)?,
+                    bottom: r.get(3)?,
+                },
+                r.get::<_, Option<String>>(4)?,
+                r.get::<_, bool>(5)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows
+        .into_iter()
+        .filter_map(|(rect, name, linked)| {
+            Some(PicasaHere {
+                rect: merge::shown(edit, rect)?,
+                name,
+                linked,
+            })
+        })
+        .collect())
 }
 
 /// Adds a photo to a skipped list: counted always, named only up to `LISTED_SKIPPED`.
@@ -525,11 +584,24 @@ impl Library {
     }
 
     /// Names the one unnamed face of each photo as `name`, and says which photos it left
-    /// alone and why. A photo is skipped as *already* the person's when the person has a
-    /// confirmed face on it or a Picasa face linked to them: naming its other face would put
-    /// a stranger under the name. *Several* when more than one face could be meant, *none*
-    /// when no face could. An ignored face is not a candidate: the user put it away as not
-    /// a face worth naming. A person is made only when some face is named.
+    /// alone and why. It never confirms a face the user did not choose:
+    ///
+    /// - A photo is skipped as *already* the person's when the person has a confirmed face
+    ///   on it or a Picasa face linked to them, or Picasa names a contact of that name no
+    ///   person has yet - one this write would link to the person (`link_contacts_by_name`),
+    ///   whether or not the person exists before it. Naming its other face would put a
+    ///   stranger under the name.
+    /// - A candidate is a detection not confirmed as a named person, not ignored, not in an
+    ///   ignored group, and not under a face Picasa names: that face is someone already, and
+    ///   the viewer draws it as Picasa's plate, not as an unnamed outline. (Picasa naming the
+    ///   person themself there made the photo *already*, above.) An ignored face is no
+    ///   candidate: the user put it away as not a face worth naming.
+    /// - *Rejected* when a candidate was rejected from the person: the user said that face is
+    ///   not them, and a guess per photo does not overrule that (`name_faces`, where the user
+    ///   picks the face, does). *Several* when more than one face could be meant, *none* when
+    ///   no face could.
+    ///
+    /// A person is made only when some face is named.
     pub fn name_items(&self, items: &[i64], name: &str) -> Result<NamedItems> {
         let name = clean(name)?;
         let mut conn = self.writer();
@@ -541,6 +613,7 @@ impl Library {
             named: 0,
             already: Skipped::default(),
             several: Skipped::default(),
+            rejected: Skipped::default(),
             none: Skipped::default(),
         };
         let mut collected = Vec::new();
@@ -549,24 +622,60 @@ impl Library {
             if !seen.insert(item) {
                 continue;
             }
-            if let Some(person) = person
-                && on_person_view(&tx, person, item)?
-            {
+            let picasa = picasa_here(&tx, item)?;
+            let theirs = match person {
+                Some(person) => on_person_view(&tx, person, item)?,
+                None => false,
+            };
+            let to_link = picasa
+                .iter()
+                .any(|p| !p.linked && p.name.as_deref().is_some_and(|n| same_name(n, &name)));
+            if theirs || to_link {
                 skip(&tx, &mut out.already, item)?;
                 continue;
             }
             let candidates: Vec<i64> = tx
                 .prepare_cached(
-                    "SELECT id FROM detected_faces
+                    "SELECT id, left, top, right, bottom FROM detected_faces
                      WHERE item_id = ?1 AND ignored = 0
                        AND (person_id IS NULL OR confirmed = 0
                             OR person_id IN (SELECT id FROM people WHERE name IS NULL))
                        AND (person_id IS NULL
-                            OR person_id NOT IN (SELECT id FROM people WHERE ignored = 1))",
+                            OR person_id NOT IN (SELECT id FROM people WHERE ignored = 1))
+                     ORDER BY id",
                 )?
-                .query_map(params![item], |r| r.get(0))?
-                .collect::<rusqlite::Result<_>>()?;
+                .query_map(params![item], |r| {
+                    Ok((
+                        r.get::<_, i64>(0)?,
+                        Rect {
+                            left: r.get(1)?,
+                            top: r.get(2)?,
+                            right: r.get(3)?,
+                            bottom: r.get(4)?,
+                        },
+                    ))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?
+                .into_iter()
+                .filter(|(_, rect)| {
+                    !picasa
+                        .iter()
+                        .any(|p| p.name.is_some() && merge::same_face(&p.rect, rect))
+                })
+                .map(|(id, _)| id)
+                .collect();
+            // A person who does not exist yet has no rejections.
+            let mut rejected = false;
+            if let Some(person) = person {
+                let mut stmt = tx.prepare_cached(
+                    "SELECT 1 FROM face_rejections WHERE face_id = ?1 AND person_id = ?2",
+                )?;
+                for face in &candidates {
+                    rejected |= stmt.exists(params![face, person])?;
+                }
+            }
             match candidates[..] {
+                _ if rejected => skip(&tx, &mut out.rejected, item)?,
                 [] => skip(&tx, &mut out.none, item)?,
                 [face] => collected.push(face),
                 _ => skip(&tx, &mut out.several, item)?,
@@ -2750,5 +2859,107 @@ mod tests {
         assert_eq!(r.named, 2);
         assert_eq!(person_of(&l.lib, f[0]), (r.person, true));
         assert_eq!(person_of(&l.lib, f[1]), (r.person, true));
+    }
+
+    /// A Picasa face at `left`, clear of every detection `library` makes (they sit at
+    /// top 0.1 to 0.2, the first at left 0).
+    fn picasa_at(contact: &str, left: f64) -> crate::picasa::Face {
+        crate::picasa::Face {
+            contact: contact.into(),
+            left,
+            top: 0.5,
+            right: left + 0.1,
+            bottom: 0.7,
+        }
+    }
+
+    /// Picasa names Carl on the photo, a contact no person has. Naming the photo "Carl"
+    /// makes Carl and links the contact to him in the same write, so the photo's other face
+    /// would become a confirmed Carl beside Picasa's - a stranger under his name.
+    #[test]
+    fn name_items_counts_a_contact_this_write_would_link_as_already() {
+        let (l, f) = library(&[&[0.0]]);
+        l.lib
+            .upsert_contacts(&HashMap::from([("h1".to_string(), "Carl".to_string())]))
+            .unwrap();
+        l.lib
+            .set_item_faces(&[(l.items[0], vec![picasa_at("h1", 0.5)])])
+            .unwrap();
+        let r = l.lib.name_items(&l.items, "carl").unwrap();
+        assert_eq!((r.already.count, r.named, r.person), (1, 0, None));
+        assert_eq!(person_of(&l.lib, f[0]), (None, false), "untouched");
+        assert_eq!(l.lib.named_people_count().unwrap(), 0, "no Carl made");
+    }
+
+    /// The grid's naming is a guess per photo; the user's "Not Anna" on that face is not
+    /// overruled by it. Naming the face itself (`name_faces`) is what clears a rejection.
+    #[test]
+    fn name_items_leaves_a_face_rejected_from_the_person() {
+        let (l, f) = library(&[&[0.0]]);
+        let anna = make_person(&l.lib, "Anna");
+        put(&l.lib, f[0], anna, true);
+        l.lib.remove_from_person(anna, &l.items).unwrap();
+        let r = l.lib.name_items(&l.items, "Anna").unwrap();
+        assert_eq!((r.rejected.count, r.named), (1, 0));
+        assert_eq!(r.rejected.items[0].file_name, "0.jpg");
+        assert_eq!(person_of(&l.lib, f[0]), (None, false));
+        assert_eq!(rejections(&l.lib, f[0]), vec![anna], "the rejection stands");
+    }
+
+    /// A face Picasa names is someone already, linked to a person or not: it is no candidate
+    /// for another name. A face Picasa has under no name is one, as the viewer draws it as an
+    /// unnamed outline. Picasa's rectangle is matched through the photo's edit.
+    #[test]
+    fn name_items_does_not_take_a_face_picasa_names_as_someone_else() {
+        let (l, f) = library(&[&[0.0], &[10.0], &[20.0], &[30.0]]);
+        l.lib
+            .upsert_contacts(&HashMap::from([
+                ("h-ben".to_string(), "Ben".to_string()),
+                ("h-cy".to_string(), "Cy".to_string()),
+            ]))
+            .unwrap();
+        let cy = make_person(&l.lib, "Cy");
+        l.lib
+            .writer()
+            .execute(
+                "INSERT INTO person_contacts (contact, person_id) VALUES ('h-cy', ?1)",
+                [cy],
+            )
+            .unwrap();
+        // A quarter turn clockwise takes this rectangle to the detection's place.
+        let ben_before_the_turn = crate::picasa::Face {
+            contact: "h-ben".into(),
+            left: 0.1,
+            top: 0.92,
+            right: 0.2,
+            bottom: 1.0,
+        };
+        l.lib
+            .set_item_faces(&[
+                (l.items[0], vec![at_the_face("h-ben")]),
+                (l.items[1], vec![at_the_face("h-cy")]),
+                (l.items[2], vec![at_the_face("nobody")]),
+                (l.items[3], vec![ben_before_the_turn]),
+            ])
+            .unwrap();
+        l.lib
+            .writer()
+            .execute(
+                "UPDATE items SET edit_turns = 1 WHERE id = ?1",
+                [l.items[3]],
+            )
+            .unwrap();
+        let r = l.lib.name_items(&l.items, "Anna").unwrap();
+        assert_eq!((r.named, r.none.count), (1, 3));
+        let none: Vec<i64> = r.none.items.iter().map(|i| i.id).collect();
+        assert_eq!(none, vec![l.items[0], l.items[1], l.items[3]]);
+        assert_eq!(person_of(&l.lib, f[0]), (None, false), "Ben's, unlinked");
+        assert_eq!(person_of(&l.lib, f[1]), (None, false), "Cy's, linked");
+        assert_eq!(person_of(&l.lib, f[2]), (r.person, true), "under no name");
+        assert_eq!(
+            person_of(&l.lib, f[3]),
+            (None, false),
+            "Ben's, through the turn"
+        );
     }
 }

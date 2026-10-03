@@ -96,18 +96,24 @@ export function namedItemsMessage(r: NamedItems): string {
   const parts: string[] = [
     r.named > 0 ? `Added ${photos(r.named)} to ${r.name}.` : `Nothing was added to ${r.name}.`,
   ];
-  const { several, already, none } = r;
-  if (several.count > 0) {
-    const one = several.count === 1;
+  const { several, rejected, already, none } = r;
+  /** A kind the user settles in the viewer: how many, why, which, and what to do there. */
+  const toOpen = (s: Skipped, why: string) => {
+    if (s.count === 0) return;
+    const one = s.count === 1;
     parts.push(
-      `${several.count.toLocaleString()} ${one ? 'has' : 'have'} more than one unnamed face${several.items.length ? `: ${listed(several)}` : ''} \u2014 open ${one ? 'it' : 'them'} to choose the face.`,
+      `${s.count.toLocaleString()} ${one ? 'has' : 'have'} ${why}${s.items.length ? `: ${listed(s)}` : ''} \u2014 open ${one ? 'it' : 'them'} to choose the face.`,
     );
-  }
+  };
+  toOpen(several, 'more than one unnamed face');
+  toOpen(rejected, `a face you said is not ${r.name}`);
   if (already.count > 0) {
     parts.push(`${already.count.toLocaleString()} ${already.count === 1 ? 'is' : 'are'} already ${r.name}'s.`);
   }
+  // "Unnamed", not "no face photon found": a photo whose faces are all someone's already, or
+  // all ignored, or all Picasa's under a name, has faces and none to name.
   if (none.count > 0) {
-    parts.push(`${none.count.toLocaleString()} ${none.count === 1 ? 'has' : 'have'} no face photon found.`);
+    parts.push(`${none.count.toLocaleString()} ${none.count === 1 ? 'has' : 'have'} no unnamed face.`);
   }
   return parts.join(' ');
 }

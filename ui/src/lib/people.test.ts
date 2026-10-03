@@ -95,6 +95,7 @@ describe('toast wording', () => {
     named: 5,
     already: zero,
     several: zero,
+    rejected: zero,
     none: zero,
     ...over,
   });
@@ -136,13 +137,25 @@ describe('toast wording', () => {
       "Added 5 photos to Anna. 1 is already Anna's.",
     );
     expect(namedItemsMessage(r({ none: { items: files('a'), count: 1 } }))).toBe(
-      'Added 5 photos to Anna. 1 has no face photon found.',
+      'Added 5 photos to Anna. 1 has no unnamed face.',
+    );
+    expect(namedItemsMessage(r({ none: { items: files('a', 'b'), count: 2 } }))).toBe(
+      'Added 5 photos to Anna. 2 have no unnamed face.',
+    );
+  });
+
+  it('lists the photos with a face the user said is not the person', () => {
+    expect(namedItemsMessage(r({ named: 0, rejected: { items: files('IMG_1.jpg'), count: 1 } }))).toBe(
+      'Nothing was added to Anna. 1 has a face you said is not Anna: IMG_1.jpg \u2014 open it to choose the face.',
+    );
+    expect(namedItemsMessage(r({ rejected: { items: files('a.jpg', 'b.jpg'), count: 2 } }))).toBe(
+      'Added 5 photos to Anna. 2 have a face you said is not Anna: a.jpg, b.jpg \u2014 open them to choose the face.',
     );
   });
 
   it('says so when nothing was added, then why', () => {
     expect(namedItemsMessage(r({ named: 0, none: { items: files('a'), count: 1 } }))).toBe(
-      'Nothing was added to Anna. 1 has no face photon found.',
+      'Nothing was added to Anna. 1 has no unnamed face.',
     );
   });
 

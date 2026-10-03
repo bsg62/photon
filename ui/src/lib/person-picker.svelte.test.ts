@@ -4,7 +4,7 @@ import { createPersonPicker } from './person-picker.svelte';
 
 const none = { items: [], count: 0 };
 function named(over: Partial<NamedItems> = {}): NamedItems {
-  return { person: 3, name: 'Anna', named: 3, already: none, several: none, none, ...over };
+  return { person: 3, name: 'Anna', named: 3, already: none, several: none, rejected: none, none, ...over };
 }
 
 function setup() {

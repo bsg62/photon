@@ -254,6 +254,9 @@ export interface NamedItems {
   named: number
   already: Skipped
   several: Skipped
+  /** Photos with a face the user said is not this person: left for the viewer, where the
+   *  user picks the face. */
+  rejected: Skipped
   none: Skipped
 }
 /** What taking photos from a person did. Mirrors `library::RemovedItems`. */
