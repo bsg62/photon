@@ -112,8 +112,17 @@ export interface FolderIds { version: number; ids: number[] }
 export interface FaceRect { left: number; top: number; right: number; bottom: number }
 
 /** A named face: Picasa's, under the person's key and name when its contact is linked to one,
- *  or a person's confirmed detection. The rectangle is fractions of the picture as shown. */
-export interface ItemFace { key: string; name: string; left: number; top: number; right: number; bottom: number }
+ *  or a person's confirmed detection. The rectangle is fractions of the picture as shown.
+ *  `faceId` is the `detected_faces.id` naming or un-naming this plate acts on: a detection's own
+ *  id, or for Picasa's plate of a linked person the detection beneath it confirmed as that
+ *  person. `null` for a plate of a contact no person is linked to (the face beneath may be
+ *  someone else's) and for a Picasa plate with no detection of that person beneath it. */
+export interface ItemFace { key: string; name: string; left: number; top: number; right: number; bottom: number; faceId: number | null }
+
+/** A face with no name. `faceId` is the `detected_faces.id` naming it would name: the detection
+ *  itself, or for Picasa's outline the detection beneath it that no named person is confirmed
+ *  on. `null` when Picasa's outline has no detection beneath it (detection off, or missed). */
+export interface UnnamedFace { left: number; top: number; right: number; bottom: number; faceId: number | null }
 export interface ViewerItem {
   id: number;
   path: string;
@@ -149,7 +158,7 @@ export interface ViewerItem {
   /** Faces with no name: Picasa's unnamed ones, then the ones photon detected that are none
    *  of Picasa's. A detection confirmed as a named person is in `faces` instead, and takes an
    *  unnamed Picasa face under it along. Fractions of the picture as shown, like `faces`. */
-  unnamedFaces: FaceRect[];
+  unnamedFaces: UnnamedFace[];
   /** A video plays; the viewer shows no zoom, crop or turn for it. */
   kind: 'image' | 'video';
   /** The video's running time, or null for a photo. */

@@ -178,7 +178,9 @@ pub struct ViewerItem {
     /// detected that are none of Picasa's. A detection confirmed as a named person is in
     /// `faces` instead, and an unnamed Picasa face it lies over is left out with it, so the
     /// face is drawn once. In the picture as shown, like `faces`.
-    pub unnamed_faces: Vec<Rect>,
+    ///
+    /// Each carries the detection to act on, where there is one (see `UnnamedFace`).
+    pub unnamed_faces: Vec<UnnamedFace>,
     /// A video plays; the viewer shows no zoom, crop or turn for it.
     pub kind: MediaKind,
     /// The video's running time, or `None` for a photo.
@@ -787,6 +789,33 @@ pub fn set_visible(engine: &Engine, ids: &[i64]) {
     engine.thumbs.set_visible(ids);
 }
 
+/// A face with no name in the viewer: the rectangle drawn, and which of photon's detections
+/// naming it would name.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnnamedFace {
+    pub left: f64,
+    pub top: f64,
+    pub right: f64,
+    pub bottom: f64,
+    /// `detected_faces.id` of the face to act on: the detection itself, or, for an outline
+    /// that is Picasa's, the detection beneath it that no named person is confirmed on.
+    /// `None` when Picasa's outline has no detection beneath it (detection off, or missed).
+    pub face_id: Option<i64>,
+}
+
+impl UnnamedFace {
+    fn new(rect: Rect, face_id: Option<i64>) -> Self {
+        Self {
+            left: rect.left,
+            top: rect.top,
+            right: rect.right,
+            bottom: rect.bottom,
+            face_id,
+        }
+    }
+}
+
 /// A photo the scanner has marked missing is `NotFound` here, not returned: the viewer
 /// asks this after `grid_offset_of_item` comes back empty, to tell "left the current view"
 /// (keep showing it) from "gone" (say so), and a missing row is the second case.
@@ -838,8 +867,33 @@ pub fn viewer_item(engine: &Engine, id: i64) -> CmdResult<ViewerItem> {
         })
         .collect();
     let named_detected = engine.lib.item_named_detected_faces(item.id)?;
+    let detected = engine.lib.item_detected_faces_with_ids(item.id)?;
+    // A Picasa plate of a person photon knows is acted on through the detection beneath it
+    // that is confirmed as that same person. A `c:` plate (a contact no person is linked
+    // to) gets none: the face beneath may well be someone else's.
+    for face in &mut faces {
+        let Some(person) = face
+            .key
+            .strip_prefix("p:")
+            .and_then(|k| k.parse::<i64>().ok())
+        else {
+            continue;
+        };
+        let plate = Rect {
+            left: face.left,
+            top: face.top,
+            right: face.right,
+            bottom: face.bottom,
+        };
+        face.face_id = detected
+            .iter()
+            .find(|(_, rect, p, confirmed)| {
+                *confirmed && *p == Some(person) && merge::same_face(&plate, rect)
+            })
+            .map(|(id, ..)| *id);
+    }
     let mut named_over_unnamed: Vec<Rect> = Vec::new();
-    for (rect, person, name) in &named_detected {
+    for (face_id, rect, person, name) in &named_detected {
         if named_here.iter().any(|p| merge::same_face(p, rect)) {
             continue;
         }
@@ -851,6 +905,7 @@ pub fn viewer_item(engine: &Engine, id: i64) -> CmdResult<ViewerItem> {
             top: rect.top,
             right: rect.right,
             bottom: rect.bottom,
+            face_id: Some(*face_id),
         });
     }
     // One rule for both readers (`face_detect::merge`): search counts exactly these.
@@ -861,23 +916,36 @@ pub fn viewer_item(engine: &Engine, id: i64) -> CmdResult<ViewerItem> {
         .filter_map(|(rect, named)| Some((merge::shown(edit, rect)?, named)))
         .collect();
     let all: Vec<Rect> = picasa.iter().map(|(rect, _)| *rect).collect();
+    let is_named = |id: i64| named_detected.iter().any(|(n, ..)| *n == id);
     // A Picasa face no INI names, under a name plate of ours, is the one face: the plate
-    // is drawn, not an outline on top of it.
-    let mut unnamed_faces: Vec<Rect> = picasa
+    // is drawn, not an outline on top of it. An outline that is Picasa's is drawn in place
+    // of the detection beneath it, which is the face naming it would name.
+    let mut unnamed_faces: Vec<UnnamedFace> = picasa
         .iter()
         .filter(|(rect, named)| {
             !named && !named_over_unnamed.iter().any(|n| merge::same_face(rect, n))
         })
-        .map(|(rect, _)| *rect)
+        .map(|(rect, _)| {
+            let beneath = detected
+                .iter()
+                .find(|(id, d, ..)| !is_named(*id) && merge::same_face(rect, d))
+                .map(|(id, ..)| *id);
+            UnnamedFace::new(*rect, beneath)
+        })
         .collect();
     // A detection a person is confirmed on has a name plate; it is no unnamed outline.
-    let unnamed_detected: Vec<Rect> = engine
-        .lib
-        .item_detected_faces(item.id)?
-        .into_iter()
-        .filter(|d| !named_detected.iter().any(|(n, _, _)| n == d))
+    let unnamed_detected: Vec<(i64, Rect)> = detected
+        .iter()
+        .filter(|(id, ..)| !is_named(*id))
+        .map(|(id, rect, ..)| (*id, *rect))
         .collect();
-    unnamed_faces.extend(merge::unmatched(&all, &unnamed_detected));
+    // Those that are none of Picasa's (`merge::unmatched`'s rule).
+    unnamed_faces.extend(
+        unnamed_detected
+            .iter()
+            .filter(|(_, d)| !all.iter().any(|p| merge::same_face(p, d)))
+            .map(|(id, rect)| UnnamedFace::new(*rect, Some(*id))),
+    );
     let (upright_w, upright_h) =
         photon_core::metadata::oriented_dims(item.width, item.height, item.orientation);
     let (uncropped_width, uncropped_height) = edit.without_crop().dims(upright_w, upright_h);
@@ -1208,7 +1276,7 @@ pub fn watched_path(engine: &Engine, watched_id: i64) -> CmdResult<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testutil::{fixture, jpeg};
+    use crate::testutil::{Fixture, fixture, jpeg};
     use photon_core::face_detect::{DETECTOR_VERSION, Detection};
 
     #[test]
@@ -1897,6 +1965,155 @@ mod tests {
             "no outline under the plate: {:?}",
             item.unnamed_faces
         );
+    }
+
+    /// A photo with a Picasa INI and detections (0.1 wide, at the given lefts, in face order).
+    fn photo_with_detections(ini: &[u8], lefts: &[f64]) -> (Fixture, i64) {
+        let f = fixture(&[("a/a.jpg", &jpeg(400, 300)), ("a/.picasa.ini", ini)]);
+        f.add_photos();
+        f.engine.thumbs.wait_idle();
+        let id = f.ids()[0];
+        f.engine.lib.set_face_detection(true).unwrap();
+        f.engine
+            .lib
+            .set_thumb_state(id, ThumbState::Ready, None)
+            .unwrap();
+        let listed = f
+            .engine
+            .lib
+            .face_candidates(0, 10, DETECTOR_VERSION)
+            .unwrap();
+        let dets = lefts
+            .iter()
+            .map(|&left| Detection {
+                rect: Rect {
+                    left,
+                    top: 0.2,
+                    right: left + 0.1,
+                    bottom: 0.3,
+                },
+                landmarks: [(0.0, 0.0); 5],
+                score: 0.9,
+            })
+            .collect();
+        f.engine
+            .lib
+            .write_face_batch(&[(listed[0].clone(), dets)], DETECTOR_VERSION)
+            .unwrap();
+        (f, id)
+    }
+
+    /// Run SQL against the library (people, links, confirmations).
+    fn sql(f: &Fixture, statements: &str) {
+        let w = rusqlite::Connection::open(&f.config().db_path).unwrap();
+        w.execute_batch(statements).unwrap();
+    }
+
+    /// The `detected_faces.id` of the detection starting at `left`.
+    fn face_at(f: &Fixture, left: f64) -> i64 {
+        let w = rusqlite::Connection::open(&f.config().db_path).unwrap();
+        w.query_row(
+            "SELECT id FROM detected_faces WHERE left = ?1",
+            [left],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn a_detections_plate_carries_its_face_id() {
+        let (f, id) = photo_with_detections(b"", &[0.2, 0.6]);
+        sql(
+            &f,
+            "INSERT INTO people (id, name) VALUES (1, 'Ada');
+             UPDATE detected_faces SET person_id = 1, confirmed = 1 WHERE left = 0.6;",
+        );
+        let item = viewer_item(&f.engine, id).unwrap();
+        assert_eq!(item.faces.len(), 1);
+        assert_eq!(item.faces[0].face_id, Some(face_at(&f, 0.6)));
+    }
+
+    #[test]
+    fn a_linked_picasa_plate_carries_the_detection_beneath() {
+        let (f, id) = photo_with_detections(
+            b"[Contacts2]\nabc=Ada L.\n[a.jpg]\nfaces=rect64(1000200030006000),abc\n",
+            &[0.08],
+        );
+        sql(
+            &f,
+            "INSERT INTO people (id, name) VALUES (1, 'Ada'), (2, 'Bea');
+             INSERT INTO person_contacts VALUES ('abc', 1);
+             UPDATE detected_faces SET person_id = 1, confirmed = 1;",
+        );
+        let item = viewer_item(&f.engine, id).unwrap();
+        assert_eq!(item.faces.len(), 1);
+        assert_eq!(item.faces[0].key, "p:1");
+        assert_eq!(item.faces[0].face_id, Some(face_at(&f, 0.08)));
+        // The detection under the plate is confirmed as somebody else: not the plate's face.
+        sql(&f, "UPDATE detected_faces SET person_id = 2;");
+        let item = viewer_item(&f.engine, id).unwrap();
+        let ada = item.faces.iter().find(|p| p.key == "p:1").unwrap();
+        assert_eq!(ada.face_id, None);
+    }
+
+    #[test]
+    fn an_unlinked_contacts_plate_has_no_face_id() {
+        let (f, id) = photo_with_detections(
+            b"[Contacts2]\nabc=Ada L.\n[a.jpg]\nfaces=rect64(1000200030006000),abc\n",
+            &[0.08],
+        );
+        sql(
+            &f,
+            "INSERT INTO people (id, name) VALUES (1, 'Ada');
+             UPDATE detected_faces SET person_id = 1, confirmed = 1;",
+        );
+        let item = viewer_item(&f.engine, id).unwrap();
+        assert_eq!(item.faces[0].key, "c:abc");
+        assert_eq!(item.faces[0].face_id, None);
+    }
+
+    #[test]
+    fn an_unnamed_outline_carries_its_face_id() {
+        // Picasa's unnamed face at 0.75 with a detection beneath, another with none
+        // beneath (at 0.20), and a detection that is none of Picasa's (0.45).
+        let (f, id) = photo_with_detections(
+            b"[a.jpg]\nfaces=rect64(c0002000f0006000),zzz;rect64(2000200030006000),yyy\n",
+            &[0.80, 0.45],
+        );
+        let item = viewer_item(&f.engine, id).unwrap();
+        let by_left = |left: f64| {
+            item.unnamed_faces
+                .iter()
+                .find(|u| (u.left - left).abs() < 0.001)
+                .unwrap_or_else(|| panic!("{left}: {:?}", item.unnamed_faces))
+        };
+        assert_eq!(by_left(0.75).face_id, Some(face_at(&f, 0.80)));
+        assert_eq!(by_left(0.125).face_id, None);
+        assert_eq!(by_left(0.45).face_id, Some(face_at(&f, 0.45)));
+        assert_eq!(item.unnamed_faces.len(), 3);
+    }
+
+    /// Two Picasa faces on one spot, one named and one not, and two detections on it, the
+    /// first confirmed as a person: naming the unnamed outline must act on the detection
+    /// nobody is confirmed on, not on the named one.
+    #[test]
+    fn an_unnamed_outline_skips_the_detection_a_person_is_confirmed_on() {
+        let (f, id) = photo_with_detections(
+            b"[Contacts2]\nabc=Ada L.\n[a.jpg]\nfaces=rect64(1000200030006000),abc;rect64(1000200030006000),zzz\n",
+            &[0.08, 0.09],
+        );
+        sql(
+            &f,
+            "INSERT INTO people (id, name) VALUES (1, 'Ada');
+             UPDATE detected_faces SET person_id = 1, confirmed = 1 WHERE left = 0.08;",
+        );
+        let item = viewer_item(&f.engine, id).unwrap();
+        let outline = item
+            .unnamed_faces
+            .iter()
+            .find(|u| (u.left - 0.0625).abs() < 0.001)
+            .unwrap_or_else(|| panic!("{:?}", item.unnamed_faces));
+        assert_eq!(outline.face_id, Some(face_at(&f, 0.09)));
     }
 
     /// An edit maps Picasa's unnamed face like its named ones; a detection is already in
