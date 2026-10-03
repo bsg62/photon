@@ -417,11 +417,15 @@ itself; the second is the People page.
 - [ ] Switch on, wait for "Recognising people", then click People in the sidebar: the page opens over the grid, with Unnamed groups largest first, each face a crop of the face.
 - [ ] The sidebar's People row says "N to name"; naming a group lowers N, and the count goes back to the number of people when none is left.
 - [ ] Name a group: type a name, Enter. The group moves to People and the sidebar's list gains the person.
-- [ ] Type a name that already exists in another case ("anna" for "Anna"): the button says "Add to Anna", and using it merges the group in.
+- [ ] Type a name that already exists in another case ("anna" for "Anna"): the hint by the field says "Add to Anna · Enter" (it is not a button), and Enter merges the group in.
 - [ ] Select a face and choose "Not this person": it leaves the group and is placed again, never into that group.
 - [ ] "Ignore" on a group moves it under Ignored; "Stop ignoring" brings it back to Unnamed.
 - [ ] Suggestions: faces photon thinks are someone you named, dashed. "Confirm all" confirms the faces on screen and its label says how many when that is fewer than the person's suggestions.
-- [ ] A large group: "Show all N" loads the rest; select a face and act on it, and the strip stays open.
+- [ ] A large group: "Show more (N left)" loads up to 200 more at a time; after three clicks, select a face and act on it, and the strip stays open with every face it had.
+- [ ] With "Recognising people" running for over a minute, type in a group's name box and act on faces: the field keeps focus and the rows do not move (new groups appear at the end of Unnamed).
+- [ ] A library with more than 200 unnamed groups: Unnamed lists 200, its heading counts them all, and a line below says "Showing the 200 largest groups. Name or ignore some to see the rest."
+- [ ] While the People page is up, Sort and Size are hidden and the search box and the gear stay where they were; they come back with the grid.
+- [ ] On a library with no previews yet, open the People page with Find faces off, switch it on in Settings and close Settings: the page no longer says detection is off.
 - [ ] Double-click a face: the viewer opens over the page; closing it returns to the page with its state; the arrows browse the grid's view (All photos when the view lacked the photo).
 - [ ] Rename a person to a name another person has: the two merge. "Merge into…" and Delete (the group returns to Unnamed) ask first with the native dialog.
 - [ ] Opening a person from the sidebar's list, and `person:` in search, show only confirmed faces.

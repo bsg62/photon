@@ -581,17 +581,34 @@ place with the first folder on every return; `display: none` is no better, since
 a folder jump, typing in the search box, the viewer's search links, Locate, Show duplicates and
 Statistics' links. Opening a face's photo does not: the viewer opens over the page, and the grid
 is switched to All photos only when its view lacks the photo. `createPeoplePage`
-(`people-page.svelte.ts`) holds the behaviour and is tested: a hide is optimistic and settled by
-a reload that *started* after the write (one already in flight may have read the old rows),
-"Show all" survives a reload, and a case-only rename of a person's own name is a rename, not a
-merge. "Confirm all" confirms the faces on screen, not the person's whole suggestion list. The
-sidebar's "N to name" is `people_to_name`, equal to the Unnamed section's length, and is
-fetched with the collections on `data_changed`. Confirmations (switching detection off with
-named people, Delete, Merge) are the native `ask`, as everywhere else. The page's crops are
-`/face/<face id>/<thumb key>` in `protocol.rs`, cut only from the cached preview: 404 for a gone
-face, a stale key or no cached preview (never a render, so a page of crops cannot start a burst
-of renders), 500 for an undecodable one, and `immutable` because a face id is never reused and
-never names another picture.
+(`people-page.svelte.ts`) holds the behaviour and is tested (server runtime: it has no effect or
+derived value): a hide is optimistic and settled by a reload that *started* after the write (one
+already in flight may have read the old rows), and a case-only rename of a person's own name is
+a rename, not a merge. "Show more" survives a reload, re-fetched a page of `MORE` (200, the
+backend's `MAX_FACE_PAGE`) at a time - one call is clamped to 200 and folded a longer strip back
+- and a "Show more" or "Show fewer" made while a reload is in flight wins over it (each strip's
+generation). **A reload keeps the order of the groups on screen**: the backend sorts Unnamed by
+size, and re-sorted rows are keyed, so they moved under the user - the name box being typed in
+lost focus and a click could land on another group; only the page's first answer is taken as
+sorted, and new groups go at the end. Library changes reload it through `changed()`, at once
+and then at most once a second (`CHANGE_GAP_MS`, trailing): each reload reads every visible
+face, 148 ms at 150,000 (`people_150k_faces` in the grid bench), and a scan announces a change
+per rebuild; the page's own actions call `load` and are never held back. **Unnamed lists the 200
+largest groups** (`LISTED_GROUPS`) with `unnamed_count` counting all of them; the sidebar's "N
+to name" is `people_to_name`, equal to `unnamed_count`, and is fetched with the collections on
+`data_changed`. A write refused with `notAPerson` (its group is gone) is reported as "That group
+changed". "Confirm all" confirms the faces on screen, not the person's whole suggestion list.
+Confirmations (switching detection off with named people, Delete, Merge) are the native `ask`,
+as everywhere else. The page's crops are `/face/<face id>/<thumb key>` in `protocol.rs`, cut
+only from the cached preview: 404 for a gone face, a stale key or no cached preview (never a
+render, so a page of crops cannot start a burst of renders), 500 for an undecodable one, and
+`immutable` because a face id is never reused and never names another picture. It is the one
+`photon://` route that decodes per request outside the other bounds (an edited `/image` render
+takes `RENDERING`, a thumbnail the pool), so it has its own: a crop waits on `FACE_CROPS`, a
+semaphore of one permit a core, acquired *before* `off_thread` so a waiting request holds no
+blocking thread, and `ThumbCache` keeps the last eight decoded previews by key
+(`decoded_preview`), so a group photo's faces decode it once - a key names one picture, so a
+kept decode is never stale.
 
 **`people_write` serialises the corrections with grouping.** Every operation on the People data
 (`name_group`, `rename_person`, `confirm_faces`, `reject_faces`, `merge_people`,

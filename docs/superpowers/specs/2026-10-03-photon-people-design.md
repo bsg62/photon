@@ -435,7 +435,8 @@ Four sections:
 1. **Unnamed.** Groups of two or more faces, largest first. Each is a strip of faces, the first
    of them with "Show all N", and a name box. Where Picasa's names point at a contact the box
    holds that name with "Yes, this is Anna" and a line saying why. Groups of one face are
-   collected at the end under "N single faces", closed by default.
+   collected at the end under "N single faces", closed by default. *As built:* "Show more (N
+   left)", 200 faces a click, and only the 200 largest groups listed (As built 19).
 2. **Suggestions.** For each named person with unconfirmed faces: those faces, dashed, with
    "Confirm all".
 3. **People.** Each named person: a strip of confirmed faces, Rename, "Merge into…", Delete.
@@ -454,7 +455,8 @@ name opens the Person view, as today.
 ### Loading
 
 The page asks for the sections with the first faces of each strip. "Show all" pages through a
-group's faces. The page refetches on a library change that carries `data_changed`.
+group's faces. The page refetches on a library change that carries `data_changed`. *As built:*
+"Show more", and at most once a second (As built 19).
 
 ### Face crops
 
@@ -468,7 +470,7 @@ photo's thumbnail key names one picture. No photo file is read.
 The page's behaviour (selection per strip, the action bar, paging, the name box's choice
 between creating and merging, optimistic removal of a face acted on) is a factory in a
 `.svelte.ts` module tested with the client runtime, like `createCropTool`. The component holds
-markup and effect wiring.
+markup and effect wiring. *As built:* tested with the server runtime (As built 20).
 
 ### Switching off
 
@@ -643,7 +645,7 @@ is what is recorded here; each was decided during the work, after review.
     opening; a native dialog is modal over the whole window, so it does not arise, and it is
     how photon asks every other destructive question. Delete and Merge on the page ask the same
     way.
-16. **"Confirm all" confirms the faces on screen** (the strip plus whatever "Show all" has
+16. **"Confirm all" confirms the faces on screen** (the strip plus whatever "Show more" has
     loaded), and says how many when that is fewer than the person's suggestions ("Confirm these
     12"): confirming faces the user has not looked at would put strangers under a name, which is
     why renaming does not confirm suggestions (As built 3).
@@ -676,6 +678,15 @@ is what is recorded here; each was decided during the work, after review.
       first) is taken once, when the page opens; after that a group keeps its place and a new
       one is added at the end. Re-sorted on every reload, the keyed rows moved under the user,
       taking focus out of the name being typed and putting another group under the pointer.
+20. **`createPeoplePage` is tested with the server runtime**, not the client one ("Logic and
+    markup" said client). Its tests are `people-page.svelte.test.ts`, in the `node` vitest
+    project, where a `.svelte.ts` module compiles for Svelte's server runtime and effects never
+    run. That is enough because the factory holds no effect and no derived value: its state is
+    read back through plain getters and functions, which run the same on either runtime, and
+    its timers are `setTimeout`, driven by vitest's fake timers. What needs the client runtime
+    is a reaction re-running (`page-signals.client.test.ts` is the case that showed it); the
+    page's reactions - the reload on `dataVersion`, the switch read - live in
+    `PeoplePage.svelte`, which no test renders.
 
 ## Not in this design
 

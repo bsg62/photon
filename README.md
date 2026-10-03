@@ -93,8 +93,9 @@ People → **Find faces in my photos**, and it runs on this computer only: nothi
 and photon has no network access to upload with. It works through the library in the
 background - hours on a large one, with the count in the status bar - and carries on where it
 stopped after a quit. Faces it finds are outlined in the viewer while the info panel is open,
-and photon groups them by likeness. Open **People** in the sidebar to name a group, and the
-same face turns up under that name everywhere; `person:anna` finds the photos.
+and photon groups them by likeness. Open **People** in the sidebar to name a group: its faces
+then carry that name in the viewer, in the person's own view and in search, where `person:anna`
+finds the photos.
 Unconfirmed matches are shown there as suggestions, never as names. A face Picasa
 named keeps its name and is not outlined twice, and a face Picasa marked without naming is now
 outlined too. Search counts them: `has:face` is every photo with a face, `faces:2` the ones
