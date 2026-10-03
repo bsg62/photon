@@ -42,6 +42,7 @@ pub use duplicates::{CopiesArg, HashCandidate, ItemCopy};
 pub use faces::{ItemFace, Person};
 pub use folders::{Folder, WatchedFolder};
 pub use items::{FolderItem, Item, KnownItem, NewItem, RECENT_LIMIT, is_starred};
+pub use people::{FaceFilter, Offer, PageFace, PageGroup, PeoplePage};
 pub use searches::SavedSearch;
 pub use settings::{GridTile, ThemeChoice};
 pub use similar::{HashedPhoto, SimilarCandidate};

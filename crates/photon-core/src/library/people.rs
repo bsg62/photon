@@ -2,12 +2,18 @@
 //! with, and what the People page reads. The rule is `crate::people`.
 
 use super::Library;
+use super::items::edit_from_db;
 use super::settings::face_detection_on;
+use crate::edit::Edit;
+use crate::face_detect::{Rect, merge};
 use crate::face_embed::{DIM, from_blob};
+use crate::grid::hex_key;
+use crate::media::fingerprint;
 use crate::people::{Choice, Group, choose, counts_toward_centroid};
 use crate::{Error, Result};
-use rusqlite::{Connection, OptionalExtension, params};
-use std::collections::{HashMap, HashSet};
+use rusqlite::{Connection, OptionalExtension, params, params_from_iter};
+use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 /// Faces per write of the grouping step: the writer is held for one batch, not the whole
 /// first run over a library.
@@ -417,6 +423,331 @@ impl Library {
             [],
             |r| r.get(0),
         )?)
+    }
+}
+
+/// One face on the People page.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PageFace {
+    pub id: i64,
+    pub item_id: i64,
+    /// The photo's thumbnail key, `grid::hex_key` form: with the face id, what names the
+    /// face's crop.
+    pub thumb_key: String,
+    pub confirmed: bool,
+}
+
+/// Picasa's name for a group: the contact, the name to offer (a linked contact's person's
+/// name), and how many of the group's faces sit on that contact's faces.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Offer {
+    pub name: String,
+    pub contact: String,
+    pub faces: i64,
+}
+
+/// A group or person on the page: how many visible faces the section counts, and the first
+/// of them.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PageGroup {
+    pub id: i64,
+    pub name: Option<String>,
+    pub face_count: i64,
+    pub faces: Vec<PageFace>,
+    pub offer: Option<Offer>,
+}
+
+/// The People page, section by section. Every face in it is on a visible photo: a group
+/// is placed by the faces the user can see.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PeoplePage {
+    /// Unnamed groups of two or more visible faces, largest first.
+    pub unnamed: Vec<PageGroup>,
+    /// The faces of unnamed groups of one, up to [`LISTED_FACES`].
+    pub single_faces: Vec<PageFace>,
+    pub single_count: i64,
+    /// Each named person's unconfirmed faces, by name.
+    pub suggestions: Vec<PageGroup>,
+    /// Each named person's confirmed faces, by name.
+    pub people: Vec<PageGroup>,
+    pub ignored_groups: Vec<PageGroup>,
+    /// Faces ignored one by one, up to [`LISTED_FACES`].
+    pub ignored_faces: Vec<PageFace>,
+}
+
+/// Which of a person's faces `person_faces` pages through.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FaceFilter {
+    All,
+    Confirmed,
+    Unconfirmed,
+}
+
+/// How many single faces, and ignored faces, the page lists. They are a loose collection
+/// rather than strips with "Show all", and a library can hold thousands of strangers.
+const LISTED_FACES: usize = 200;
+
+/// Every face on a visible photo with its group, in face order: what the page is built
+/// from. Visible means not hidden and not missing; the grouping step is the one place
+/// that sees hidden photos' faces.
+///
+/// Driven from `detected_faces`, each photo read by its id. The `+` is the whole-library
+/// convention (`library/mod.rs`), kept, not load-bearing: today the bare term plans the
+/// same, since the faces' own order is the `ORDER BY`. The plan test pins that plan, so a
+/// change that would walk the photos instead is seen.
+const PAGE_FACES_SQL: &str = "SELECT f.id, f.item_id, f.person_id, f.confirmed, f.ignored,
+            f.left, f.top, f.right, f.bottom,
+            i.path, i.size, i.mtime_ms, i.edit_turns, i.edit_crop
+     FROM detected_faces f JOIN items i ON i.id = f.item_id
+     WHERE (f.person_id IS NOT NULL OR f.ignored = 1)
+       AND i.hidden = 0 AND +i.missing_since IS NULL
+     ORDER BY f.id";
+
+/// One person's visible faces, a page of them, through the person index. `?2` is the
+/// confirmation asked for, or NULL for either.
+const PERSON_FACES_SQL: &str = "SELECT f.id, f.item_id, f.person_id, f.confirmed, f.ignored,
+            f.left, f.top, f.right, f.bottom,
+            i.path, i.size, i.mtime_ms, i.edit_turns, i.edit_crop
+     FROM detected_faces f JOIN items i ON i.id = f.item_id
+     WHERE f.person_id = ?1 AND (?2 IS NULL OR f.confirmed = ?2)
+       AND i.hidden = 0 AND i.missing_since IS NULL
+     ORDER BY f.id LIMIT ?3 OFFSET ?4";
+
+/// A row of either query.
+struct FaceRow {
+    face: PageFace,
+    person_id: Option<i64>,
+    ignored: bool,
+    rect: Rect,
+    edit: Edit,
+}
+
+fn face_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<FaceRow> {
+    let path: String = r.get(9)?;
+    let edit = edit_from_db(r.get(12)?, r.get(13)?);
+    Ok(FaceRow {
+        face: PageFace {
+            id: r.get(0)?,
+            item_id: r.get(1)?,
+            thumb_key: hex_key(edit.thumb_key(fingerprint(&path, r.get(10)?, r.get(11)?))),
+            confirmed: r.get::<_, i64>(3)? == 1,
+        },
+        person_id: r.get(2)?,
+        ignored: r.get::<_, i64>(4)? == 1,
+        rect: Rect {
+            left: r.get(5)?,
+            top: r.get(6)?,
+            right: r.get(7)?,
+            bottom: r.get(8)?,
+        },
+        edit,
+    })
+}
+
+fn page_group(id: i64, name: Option<String>, faces: &[&FaceRow], strip: usize) -> PageGroup {
+    PageGroup {
+        id,
+        name,
+        face_count: faces.len() as i64,
+        faces: faces.iter().take(strip).map(|f| f.face.clone()).collect(),
+        offer: None,
+    }
+}
+
+/// Picasa's name for a group, when more than half of its faces that sit on a face Picasa
+/// named are that contact's. A contact linked to a person offers the person's name.
+fn offer(
+    faces: &[&FaceRow],
+    picasa: &HashMap<i64, Vec<(Rect, String)>>,
+    names: &HashMap<String, String>,
+) -> Option<Offer> {
+    let mut votes: HashMap<&str, i64> = HashMap::new();
+    let mut total = 0;
+    for face in faces {
+        let Some(on_photo) = picasa.get(&face.face.item_id) else {
+            continue;
+        };
+        // Only a named contact's face counts, so it is looked for among those: an unnamed
+        // Picasa face at the same place must not hide a named one. Picasa's rectangle is in
+        // the unedited picture, the detection in the picture as shown.
+        if let Some((_, contact)) = on_photo.iter().find(|(p, contact)| {
+            names.contains_key(contact.as_str())
+                && merge::shown(face.edit, *p)
+                    .is_some_and(|shown| merge::same_face(&shown, &face.rect))
+        }) {
+            *votes.entry(contact.as_str()).or_default() += 1;
+            total += 1;
+        }
+    }
+    // Ties broken by contact, so the page does not change between two reads.
+    let (contact, n) = votes
+        .into_iter()
+        .max_by(|a, b| a.1.cmp(&b.1).then(b.0.cmp(a.0)))?;
+    (2 * n > total).then(|| Offer {
+        name: names[contact].clone(),
+        contact: contact.to_string(),
+        faces: n,
+    })
+}
+
+/// Ids per `IN (...)` list, under SQLite's default limit on bound parameters.
+const IN_CHUNK: usize = 500;
+
+/// Picasa's faces on the given photos, in the unedited picture, by photo.
+fn picasa_faces(
+    conn: &Connection,
+    items: &[i64],
+) -> rusqlite::Result<HashMap<i64, Vec<(Rect, String)>>> {
+    let mut out: HashMap<i64, Vec<(Rect, String)>> = HashMap::new();
+    for chunk in items.chunks(IN_CHUNK) {
+        let marks = vec!["?"; chunk.len()].join(",");
+        let mut stmt = conn.prepare(&format!(
+            "SELECT item_id, left, top, right, bottom, contact FROM faces
+             WHERE item_id IN ({marks}) ORDER BY rowid"
+        ))?;
+        let mut rows = stmt.query(params_from_iter(chunk))?;
+        while let Some(r) = rows.next()? {
+            out.entry(r.get(0)?).or_default().push((
+                Rect {
+                    left: r.get(1)?,
+                    top: r.get(2)?,
+                    right: r.get(3)?,
+                    bottom: r.get(4)?,
+                },
+                r.get(5)?,
+            ));
+        }
+    }
+    Ok(out)
+}
+
+/// Every named contact and the name to offer for it: its person's, when it is linked to
+/// one, or Picasa's.
+fn offered_names(conn: &Connection) -> rusqlite::Result<HashMap<String, String>> {
+    let mut stmt = conn.prepare(
+        "SELECT c.hash, coalesce(p.name, c.name) FROM contacts c
+         LEFT JOIN person_contacts pc ON pc.contact = c.hash
+         LEFT JOIN people p ON p.id = pc.person_id",
+    )?;
+    stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect()
+}
+
+/// A name's place in a list: without case, then as typed, then by id.
+fn by_name(g: &PageGroup) -> (String, String, i64) {
+    let name = g.name.clone().unwrap_or_default();
+    (name.to_lowercase(), name, g.id)
+}
+
+impl Library {
+    /// The People page: every visible grouped or ignored face read once and sorted into
+    /// the sections in Rust, each group with the first `strip` of its faces.
+    pub fn people_page(&self, strip: usize) -> Result<PeoplePage> {
+        let conn = self.reader()?;
+        let people: Vec<(i64, Option<String>, bool)> = conn
+            .prepare("SELECT id, name, ignored FROM people ORDER BY id")?
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get::<_, i64>(2)? == 1)))?
+            .collect::<rusqlite::Result<_>>()?;
+        let rows: Vec<FaceRow> = conn
+            .prepare(PAGE_FACES_SQL)?
+            .query_map([], face_row)?
+            .collect::<rusqlite::Result<_>>()?;
+
+        let mut page = PeoplePage::default();
+        let mut by_person: BTreeMap<i64, Vec<&FaceRow>> = BTreeMap::new();
+        for row in &rows {
+            match row.person_id {
+                Some(person) => by_person.entry(person).or_default().push(row),
+                None if row.ignored && page.ignored_faces.len() < LISTED_FACES => {
+                    page.ignored_faces.push(row.face.clone())
+                }
+                None => {}
+            }
+        }
+
+        // The unnamed groups' faces, kept for the offer.
+        let mut unnamed: Vec<(PageGroup, Vec<&FaceRow>)> = Vec::new();
+        for (id, name, ignored) in people {
+            // A group with no visible face is in no section.
+            let Some(faces) = by_person.remove(&id) else {
+                continue;
+            };
+            match name {
+                Some(name) => {
+                    let (confirmed, suggested): (Vec<&FaceRow>, Vec<&FaceRow>) =
+                        faces.into_iter().partition(|f| f.face.confirmed);
+                    if !confirmed.is_empty() {
+                        page.people
+                            .push(page_group(id, Some(name.clone()), &confirmed, strip));
+                    }
+                    if !suggested.is_empty() {
+                        page.suggestions
+                            .push(page_group(id, Some(name), &suggested, strip));
+                    }
+                }
+                None if ignored => page
+                    .ignored_groups
+                    .push(page_group(id, None, &faces, strip)),
+                None if faces.len() == 1 => {
+                    page.single_count += 1;
+                    if page.single_faces.len() < LISTED_FACES {
+                        page.single_faces.push(faces[0].face.clone());
+                    }
+                }
+                None => unnamed.push((page_group(id, None, &faces, strip), faces)),
+            }
+        }
+
+        if !unnamed.is_empty() {
+            let mut items: Vec<i64> = unnamed
+                .iter()
+                .flat_map(|(_, faces)| faces.iter().map(|f| f.face.item_id))
+                .collect();
+            items.sort_unstable();
+            items.dedup();
+            let picasa = picasa_faces(&conn, &items)?;
+            if !picasa.is_empty() {
+                let names = offered_names(&conn)?;
+                for (group, faces) in &mut unnamed {
+                    group.offer = offer(faces, &picasa, &names);
+                }
+            }
+        }
+        unnamed.sort_by_key(|(g, _)| (std::cmp::Reverse(g.face_count), g.id));
+        page.unnamed = unnamed.into_iter().map(|(g, _)| g).collect();
+        page.people.sort_by_cached_key(by_name);
+        page.suggestions.sort_by_cached_key(by_name);
+        Ok(page)
+    }
+
+    /// A page of one person's or group's visible faces, in face order: the rest of a strip.
+    pub fn person_faces(
+        &self,
+        person: i64,
+        which: FaceFilter,
+        offset: usize,
+        limit: usize,
+    ) -> Result<Vec<PageFace>> {
+        let confirmed = match which {
+            FaceFilter::All => None,
+            FaceFilter::Confirmed => Some(1),
+            FaceFilter::Unconfirmed => Some(0),
+        };
+        let conn = self.reader()?;
+        let mut stmt = conn.prepare_cached(PERSON_FACES_SQL)?;
+        let faces = stmt
+            .query_map(
+                params![person, confirmed, limit as i64, offset as i64],
+                face_row,
+            )?
+            .map(|row| row.map(|r| r.face))
+            .collect::<rusqlite::Result<_>>()?;
+        Ok(faces)
     }
 }
 
@@ -843,8 +1174,15 @@ mod tests {
         ));
         l.lib.set_person_ignored(b, true).unwrap();
         assert!(ignored(&l.lib, b));
+        let page = l.lib.people_page(8).unwrap();
+        assert!(
+            page.unnamed.iter().all(|g| g.id != b)
+                && page.single_faces.iter().all(|x| x.id != f[1])
+        );
+        assert!(page.ignored_groups.iter().any(|g| g.id == b));
         l.lib.set_person_ignored(b, false).unwrap();
         assert!(!ignored(&l.lib, b));
+        assert!(l.lib.people_page(8).unwrap().ignored_groups.is_empty());
     }
 
     fn ignored(lib: &Library, person: i64) -> bool {
@@ -913,6 +1251,320 @@ mod tests {
                 .collect()
         };
         assert_eq!(ids, [b], "the unnamed group {a} is gone");
+    }
+
+    fn ids(faces: &[PageFace]) -> Vec<i64> {
+        faces.iter().map(|x| x.id).collect()
+    }
+
+    #[test]
+    fn the_page_sorts_groups_into_its_sections() {
+        let (l, f) = library(&[&[0.0], &[5.0], &[90.0], &[180.0], &[182.0]]);
+        l.lib.group_ungrouped_faces(&never).unwrap();
+        let ben = person_of(&l.lib, f[3]).0.unwrap();
+        l.lib.name_group(ben, "Ben").unwrap();
+        // A later face for Ben, unconfirmed: put it there by hand as the step would.
+        l.lib
+            .writer()
+            .execute(
+                "UPDATE detected_faces SET confirmed = 0 WHERE id = ?1",
+                [f[4]],
+            )
+            .unwrap();
+        let page = l.lib.people_page(8).unwrap();
+        assert_eq!(page.unnamed.len(), 1, "the pair at 0° and 5°");
+        assert_eq!(page.unnamed[0].face_count, 2);
+        assert_eq!(page.unnamed[0].name, None);
+        assert_eq!(page.single_count, 1, "the face at 90°");
+        assert_eq!(ids(&page.single_faces), [f[2]]);
+        assert_eq!(page.people.len(), 1);
+        assert_eq!(page.people[0].name.as_deref(), Some("Ben"));
+        assert_eq!(page.people[0].face_count, 1, "confirmed only");
+        assert_eq!(ids(&page.people[0].faces), [f[3]]);
+        assert!(page.people[0].faces[0].confirmed);
+        assert_eq!(page.suggestions.len(), 1);
+        assert_eq!(ids(&page.suggestions[0].faces), [f[4]]);
+        assert!(!page.suggestions[0].faces[0].confirmed);
+    }
+
+    /// Largest group first; people by name, without case: "ada" before "Zoë", which byte
+    /// order and id order would both put second.
+    #[test]
+    fn the_page_orders_groups_by_size_and_people_by_name() {
+        let (l, f) = library(&[&[0.0], &[2.0], &[120.0], &[122.0], &[124.0], &[240.0]]);
+        l.lib.group_ungrouped_faces(&never).unwrap();
+        let page = l.lib.people_page(8).unwrap();
+        assert_eq!(
+            page.unnamed
+                .iter()
+                .map(|g| g.face_count)
+                .collect::<Vec<_>>(),
+            [3, 2]
+        );
+        l.lib
+            .name_group(person_of(&l.lib, f[0]).0.unwrap(), "Zoë")
+            .unwrap();
+        l.lib
+            .name_group(person_of(&l.lib, f[5]).0.unwrap(), "ada")
+            .unwrap();
+        let page = l.lib.people_page(8).unwrap();
+        let names: Vec<_> = page
+            .people
+            .iter()
+            .map(|p| p.name.clone().unwrap())
+            .collect();
+        assert_eq!(names, ["ada", "Zoë"]);
+    }
+
+    /// A hidden photo's face is in no section and no count, and does not make a group
+    /// "two or more".
+    #[test]
+    fn a_hidden_photo_is_in_no_section() {
+        let (l, f) = library(&[&[0.0], &[5.0]]);
+        l.lib.group_ungrouped_faces(&never).unwrap();
+        l.lib.set_hidden(&[l.items[1]], true).unwrap();
+        let page = l.lib.people_page(8).unwrap();
+        assert!(
+            page.unnamed.is_empty(),
+            "one visible face is not a group of two"
+        );
+        assert_eq!(page.single_count, 1);
+        assert!(page.single_faces.iter().all(|x| x.id != f[1]));
+    }
+
+    /// As for a hidden photo, for a missing one, in every section: a person whose only
+    /// faces are on missing photos is not listed.
+    #[test]
+    fn a_missing_photo_is_in_no_section() {
+        let (l, f) = library(&[&[0.0], &[5.0], &[90.0], &[180.0]]);
+        l.lib.group_ungrouped_faces(&never).unwrap();
+        l.lib
+            .name_group(person_of(&l.lib, f[2]).0.unwrap(), "Ben")
+            .unwrap();
+        l.lib
+            .set_person_ignored(person_of(&l.lib, f[3]).0.unwrap(), true)
+            .unwrap();
+        l.lib
+            .mark_missing(&[l.items[1], l.items[2], l.items[3]], 5)
+            .unwrap();
+        let page = l.lib.people_page(8).unwrap();
+        assert!(page.unnamed.is_empty());
+        assert_eq!(ids(&page.single_faces), [f[0]]);
+        assert!(page.people.is_empty() && page.ignored_groups.is_empty());
+    }
+
+    #[test]
+    fn ignored_faces_are_listed_on_their_own() {
+        let (l, f) = library(&[&[0.0], &[5.0], &[10.0]]);
+        l.lib.group_ungrouped_faces(&never).unwrap();
+        l.lib.set_faces_ignored(&[f[1], f[2]], true).unwrap();
+        l.lib.set_hidden(&[l.items[2]], true).unwrap();
+        let page = l.lib.people_page(8).unwrap();
+        assert_eq!(ids(&page.ignored_faces), [f[1]]);
+        assert_eq!(ids(&page.single_faces), [f[0]]);
+    }
+
+    #[test]
+    fn a_strip_is_the_first_faces_and_the_rest_page() {
+        let (l, f) = library(&[&[0.0], &[1.0], &[2.0], &[3.0], &[4.0]]);
+        l.lib.group_ungrouped_faces(&never).unwrap();
+        let page = l.lib.people_page(2).unwrap();
+        assert_eq!(page.unnamed[0].faces.len(), 2);
+        assert_eq!(page.unnamed[0].face_count, 5);
+        let g = page.unnamed[0].id;
+        let rest = l.lib.person_faces(g, FaceFilter::All, 2, 10).unwrap();
+        assert_eq!(ids(&rest), f[2..]);
+    }
+
+    #[test]
+    fn a_persons_faces_page_by_confirmation_and_leave_out_hidden_and_missing() {
+        let (l, f) = library(&[&[0.0], &[1.0], &[2.0], &[3.0], &[4.0]]);
+        l.lib.group_ungrouped_faces(&never).unwrap();
+        let anna = person_of(&l.lib, f[0]).0.unwrap();
+        l.lib.name_group(anna, "Anna").unwrap();
+        l.lib
+            .writer()
+            .execute(
+                "UPDATE detected_faces SET confirmed = 0 WHERE id IN (?1, ?2)",
+                [f[3], f[4]],
+            )
+            .unwrap();
+        l.lib.set_hidden(&[l.items[1]], true).unwrap();
+        l.lib.mark_missing(&[l.items[4]], 5).unwrap();
+        let faces = |which| ids(&l.lib.person_faces(anna, which, 0, 10).unwrap());
+        assert_eq!(faces(FaceFilter::All), [f[0], f[2], f[3]]);
+        assert_eq!(faces(FaceFilter::Confirmed), [f[0], f[2]]);
+        assert_eq!(faces(FaceFilter::Unconfirmed), [f[3]]);
+    }
+
+    /// The key of the photo as shown: an edited photo's thumbnail is cached under a key
+    /// the edit is part of, and the bare fingerprint names the unedited one.
+    #[test]
+    fn a_page_face_names_its_photos_thumbnail() {
+        let (l, f) = library(&[&[0.0]]);
+        l.lib.group_ungrouped_faces(&never).unwrap();
+        l.lib
+            .writer()
+            .execute(
+                "UPDATE items SET edit_turns = 1 WHERE id = ?1",
+                [l.items[0]],
+            )
+            .unwrap();
+        let item = l.lib.item(l.items[0]).unwrap().unwrap();
+        let page = l.lib.people_page(8).unwrap();
+        assert_eq!(page.single_faces[0].item_id, l.items[0]);
+        assert_eq!(page.single_faces[0].id, f[0]);
+        assert_eq!(
+            page.single_faces[0].thumb_key,
+            crate::grid::hex_key(item.thumb_key())
+        );
+    }
+
+    /// Picasa's name is offered when more than half of a group's faces that sit on a
+    /// named Picasa face are that contact's.
+    #[test]
+    fn picasa_names_are_offered_by_majority() {
+        let (l, f) = library(&[&[0.0], &[3.0], &[6.0]]);
+        l.lib
+            .upsert_contacts(&HashMap::from([
+                ("h1".to_string(), "Anna".to_string()),
+                ("h2".to_string(), "Ben".to_string()),
+            ]))
+            .unwrap();
+        l.lib
+            .set_item_faces(&[
+                (l.items[0], vec![at_the_face("h1")]),
+                (l.items[1], vec![at_the_face("h1")]),
+                (l.items[2], vec![at_the_face("h2")]),
+            ])
+            .unwrap();
+        l.lib.group_ungrouped_faces(&never).unwrap();
+        let page = l.lib.people_page(8).unwrap();
+        let offer = page.unnamed[0].offer.as_ref().unwrap();
+        assert_eq!(
+            (offer.name.as_str(), offer.contact.as_str(), offer.faces),
+            ("Anna", "h1", 2)
+        );
+        // Two against one is a majority; one against one is not.
+        l.lib.set_item_faces(&[(l.items[1], vec![])]).unwrap();
+        assert!(l.lib.people_page(8).unwrap().unnamed[0].offer.is_none());
+        assert_eq!(f.len(), 3);
+    }
+
+    /// The detected face sits at left 0, top 0.1, right 0.08, bottom 0.2 on each photo.
+    fn at_the_face(contact: &str) -> crate::picasa::Face {
+        crate::picasa::Face {
+            contact: contact.into(),
+            left: 0.0,
+            top: 0.1,
+            right: 0.08,
+            bottom: 0.2,
+        }
+    }
+
+    /// Only faces on a named contact's face vote: one face on Anna's and one on a face no
+    /// INI has named is a majority of one, not a tie. The unnamed face is first on its
+    /// photo, at the same place as Anna's, so it must not hide hers either.
+    #[test]
+    fn an_unnamed_picasa_face_does_not_vote() {
+        let (l, _f) = library(&[&[0.0], &[3.0], &[6.0]]);
+        l.lib
+            .upsert_contacts(&HashMap::from([("h1".to_string(), "Anna".to_string())]))
+            .unwrap();
+        l.lib
+            .set_item_faces(&[
+                (l.items[0], vec![at_the_face("nobody"), at_the_face("h1")]),
+                (l.items[1], vec![at_the_face("nobody")]),
+            ])
+            .unwrap();
+        l.lib.group_ungrouped_faces(&never).unwrap();
+        let page = l.lib.people_page(8).unwrap();
+        let offer = page.unnamed[0].offer.as_ref().unwrap();
+        assert_eq!((offer.contact.as_str(), offer.faces), ("h1", 1));
+    }
+
+    /// A contact linked to a person offers the person's name, which accepting would merge
+    /// the group into, and not the name Picasa had.
+    #[test]
+    fn a_linked_contact_offers_its_persons_name() {
+        let (l, f) = library(&[&[0.0], &[90.0], &[93.0]]);
+        l.lib
+            .upsert_contacts(&HashMap::from([("h1".to_string(), "Anna".to_string())]))
+            .unwrap();
+        l.lib
+            .set_item_faces(&[
+                (l.items[1], vec![at_the_face("h1")]),
+                (l.items[2], vec![at_the_face("h1")]),
+            ])
+            .unwrap();
+        l.lib.group_ungrouped_faces(&never).unwrap();
+        let anna = person_of(&l.lib, f[0]).0.unwrap();
+        l.lib.name_group(anna, "Anna").unwrap();
+        l.lib.rename_person(anna, "Anna Smith").unwrap();
+        let page = l.lib.people_page(8).unwrap();
+        let offer = page.unnamed[0].offer.as_ref().unwrap();
+        assert_eq!(
+            (offer.name.as_str(), offer.contact.as_str()),
+            ("Anna Smith", "h1")
+        );
+    }
+
+    /// The Picasa rectangle is in the unedited picture and the detection in the picture as
+    /// shown: a turned photo's face is matched through the edit.
+    #[test]
+    fn an_offer_reads_picasas_faces_through_the_edit() {
+        let (l, _f) = library(&[&[0.0], &[3.0]]);
+        l.lib
+            .upsert_contacts(&HashMap::from([("h1".to_string(), "Anna".to_string())]))
+            .unwrap();
+        // A quarter turn clockwise takes (x, y) to (1 - y, x): this rectangle comes out at
+        // the detection's place, left 0, top 0.1, right 0.08, bottom 0.2.
+        let before_the_turn = crate::picasa::Face {
+            contact: "h1".into(),
+            left: 0.1,
+            top: 0.92,
+            right: 0.2,
+            bottom: 1.0,
+        };
+        l.lib
+            .set_item_faces(&[
+                (l.items[0], vec![before_the_turn.clone()]),
+                (l.items[1], vec![before_the_turn]),
+            ])
+            .unwrap();
+        for item in &l.items {
+            l.lib
+                .writer()
+                .execute("UPDATE items SET edit_turns = 1 WHERE id = ?1", [item])
+                .unwrap();
+        }
+        l.lib.group_ungrouped_faces(&never).unwrap();
+        let page = l.lib.people_page(8).unwrap();
+        assert_eq!(page.unnamed[0].offer.as_ref().map(|o| o.faces), Some(2));
+    }
+
+    /// The page is driven from the faces, each photo read by its id: a library has far
+    /// fewer faces than photos, and the faces come out in id order with no sort.
+    #[test]
+    fn the_page_is_driven_from_the_faces() {
+        let (_dir, lib) = temp_library();
+        let plan = lib.query_plan(PAGE_FACES_SQL, &[]);
+        assert_eq!(
+            plan,
+            ["SCAN f", "SEARCH i USING INTEGER PRIMARY KEY (rowid=?)"],
+            "{plan:?}"
+        );
+    }
+
+    #[test]
+    fn a_persons_faces_are_found_through_the_person_index() {
+        let (_dir, lib) = temp_library();
+        let plan = lib.query_plan(PERSON_FACES_SQL, &[&1, &None::<i64>, &10, &0]);
+        assert!(
+            plan.iter().any(|s| s.contains("detected_faces_person")),
+            "{plan:?}"
+        );
+        assert!(!plan.iter().any(|s| s.contains("TEMP B-TREE")), "{plan:?}");
     }
 
     #[test]
