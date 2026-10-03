@@ -8,7 +8,6 @@ import {
   openFacePhoto,
   removedMessage,
   switchOffWarning,
-  takenOffMessage,
 } from './people';
 
 const people = [
@@ -105,10 +104,6 @@ describe('toast wording', () => {
     expect(namedFaceMessage('Anna')).toBe('This is Anna.');
   });
 
-  it('takes a person off a photo', () => {
-    expect(takenOffMessage('Anna')).toBe('Anna taken off this photo.');
-  });
-
   it('says what was added', () => {
     expect(namedItemsMessage(r())).toBe('Added 5 photos to Anna.');
     expect(namedItemsMessage(r({ named: 1 }))).toBe('Added 1 photo to Anna.');
@@ -160,12 +155,22 @@ describe('toast wording', () => {
   });
 
   it('words taking photos from a person', () => {
-    expect(removedMessage('Anna', { removed: 3, keptByPicasa: 0 })).toBe('Removed 3 photos from Anna.');
-    expect(removedMessage('Anna', { removed: 1, keptByPicasa: 2 })).toBe(
+    expect(removedMessage('Anna', { removed: 3, keptByPicasa: 0 }, 3)).toBe('Removed 3 photos from Anna.');
+    expect(removedMessage('Anna', { removed: 1, keptByPicasa: 2 }, 3)).toBe(
       'Removed 1 photo from Anna. 2 stay: Picasa names Anna on them.',
     );
-    expect(removedMessage('Anna', { removed: 0, keptByPicasa: 2 })).toBe(
+    expect(removedMessage('Anna', { removed: 0, keptByPicasa: 2 }, 2)).toBe(
       '2 stay with Anna: Picasa names Anna on them.',
+    );
+  });
+
+  it('says so when the person was no longer on the photos', () => {
+    // A stale "Not Anna": her face was re-detected between the menu and the click.
+    expect(removedMessage('Anna', { removed: 0, keptByPicasa: 0 }, 1)).toBe(
+      'Anna is no longer on this photo: nothing to remove.',
+    );
+    expect(removedMessage('Anna', { removed: 0, keptByPicasa: 0 }, 4)).toBe(
+      'Anna is no longer on these photos: nothing to remove.',
     );
   });
 });

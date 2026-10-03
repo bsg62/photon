@@ -20,8 +20,8 @@
   import { showCopiesLabel } from '../lib/copies';
   import { ASPECTS, HANDLES, type Handle } from '../lib/crop';
   import { createCropTool } from '../lib/crop-tool.svelte';
-  import { containedBox, faceAt, faceBox, toLayer, unnamedFacesLabel } from '../lib/faces';
-  import { takenOffMessage } from '../lib/people';
+  import { containedBox, faceActionsAt, faceAt, faceBox, toLayer, unnamedFacesLabel, type FaceAction } from '../lib/faces';
+  import { removedMessage } from '../lib/people';
   import { createSlideshow } from '../lib/slideshow.svelte';
   import { createFullLoad, createLoadSlot } from '../lib/full-load';
   import { createStarToggle } from '../lib/star-toggle.svelte';
@@ -473,9 +473,8 @@
     if (item) copy.copy(item.fileName).catch(library.reportError);
   }
 
-  /** What the context menu offers for the faces under the pointer, above its usual items. */
-  type FaceAction = { kind: 'name'; faceId: number } | { kind: 'not'; name: string; faces: number[] };
-
+  /** The context menu, with what it offers for the faces under the pointer above its usual
+   *  items. */
   let menu = $state<{ x: number; y: number; faces: FaceAction[] } | null>(null);
   let menuEl = $state<HTMLDivElement | undefined>();
   /** The layer the faces are drawn in: its bounding rectangle carries the zoom and pan. */
@@ -490,10 +489,10 @@
     if (item) menu = { x: e.clientX, y: e.clientY, faces: faceActions(e) };
   }
 
-  /** The face actions for a right-click: on a face, that face's; anywhere else, "Not …" for
-   *  each person photon can take off this photo. Only a click on the photo itself is tested -
-   *  the bar and the info panel lie over it, and a click there is not on a face beneath. A
-   *  face with no `faceId` is Picasa's alone, which photon never changes: it offers nothing. */
+  /** The face actions for a right-click (`faceActionsAt`): on a face, that face's; anywhere
+   *  else, "Not …" for each person photon has a face of here. Only a click on the photo
+   *  itself is tested - the bar and the info panel lie over it, and a click there is not on
+   *  a face beneath. */
   function faceActions(e: MouseEvent): FaceAction[] {
     const faces = drawnFaces;
     const layer = frameEl;
@@ -502,23 +501,7 @@
       const p = toLayer(e.clientX, e.clientY, layer.getBoundingClientRect(), frameW, frameH);
       hit = faceAt(p.x, p.y, faces.map((f) => f.box));
     }
-    if (hit >= 0) {
-      const face = faces[hit];
-      if (face.faceId === null) return [];
-      return face.key === null
-        ? [{ kind: 'name', faceId: face.faceId }]
-        : [{ kind: 'not', name: face.name ?? '', faces: [face.faceId] }];
-    }
-    // One item per person, rejecting every face of theirs photon can on this photo: "this
-    // photo is not Anna", as the grid's Remove says it.
-    const byKey = new Map<string, { kind: 'not'; name: string; faces: number[] }>();
-    for (const f of faces) {
-      if (f.key === null || f.faceId === null) continue;
-      const action = byKey.get(f.key);
-      if (action) action.faces.push(f.faceId);
-      else byKey.set(f.key, { kind: 'not', name: f.name ?? '', faces: [f.faceId] });
-    }
-    return [...byKey.values()];
+    return faceActionsAt(faces, hit);
   }
 
   function nameFace(faceId: number) {
@@ -526,14 +509,17 @@
     onnameface(faceId);
   }
 
-  /** Takes a person off the photo on screen. The refresh chain re-reads the photo, and in
-   *  that person's view the photo leaves the grid; `orphaned` keeps it on screen, as after
-   *  Hide. The face change itself never reloads the picture (`pictureChanged`). */
-  function notPerson(name: string, faces: number[]) {
+  /** "This photo is not Anna", as the grid's Remove says it (`remove_from_person`): every
+   *  face of hers photon has here is rejected, and the toast says when Picasa still names
+   *  her on it, which photon never changes. The refresh chain re-reads the photo, and in her
+   *  view the photo leaves the grid; `orphaned` keeps it on screen, as after Hide. The face
+   *  change itself never reloads the picture (`pictureChanged`). */
+  function notPerson(person: number, name: string) {
+    if (!item) return;
     closeMenu();
     api
-      .rejectFaces(faces)
-      .then(() => library.notify(takenOffMessage(name)))
+      .removeFromPerson(person, [item.id])
+      .then((result) => library.notify(removedMessage(name, result, 1)))
       .catch(library.reportError);
   }
 
@@ -1402,8 +1388,8 @@
           {@const faceId = action.faceId}
           <button role="menuitem" onclick={() => nameFace(faceId)}>Name this face…</button>
         {:else}
-          {@const { name, faces } = action}
-          <button role="menuitem" onclick={() => notPerson(name, faces)}>Not {name}</button>
+          {@const { person, name } = action}
+          <button role="menuitem" onclick={() => notPerson(person, name)}>Not {name}</button>
         {/if}
       {/each}
       {#if menu.faces.length}<div class="menu-sep" role="separator"></div>{/if}

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { containedBox, faceAt, faceBox, toLayer, unnamedFacesLabel } from './faces';
+import { containedBox, faceActionsAt, faceAt, faceBox, toLayer, unnamedFacesLabel, type DrawnFace } from './faces';
 
 describe('containedBox', () => {
   it('fits a landscape photo to the frame width and centres it vertically', () => {
@@ -74,5 +74,49 @@ describe('faceAt', () => {
     expect(faceAt(50, 39, [small])).toBe(-1);
     expect(faceAt(61, 50, [small])).toBe(-1);
     expect(faceAt(50, 61, [small])).toBe(-1);
+  });
+});
+
+describe('faceActionsAt', () => {
+  const unnamed = (faceId: number | null): DrawnFace => ({ key: null, name: null, faceId });
+  const plate = (key: string, name: string, faceId: number | null): DrawnFace => ({ key, name, faceId });
+
+  it('names an unnamed face photon found', () => {
+    expect(faceActionsAt([plate('p:1', 'Anna', 5), unnamed(9)], 1)).toEqual([{ kind: 'name', faceId: 9 }]);
+  });
+
+  it('offers nothing on a face that is Picasa\'s alone', () => {
+    expect(faceActionsAt([unnamed(null)], 0)).toEqual([]);
+    expect(faceActionsAt([plate('p:1', 'Anna', null)], 0)).toEqual([]);
+  });
+
+  it('says the photo is not the person on their plate', () => {
+    expect(faceActionsAt([unnamed(9), plate('p:1', 'Anna', 5)], 1)).toEqual([{ kind: 'not', person: 1, name: 'Anna' }]);
+  });
+
+  it('offers nothing on an unlinked contact\'s plate', () => {
+    // A `c:` plate never carries an id today; the key alone must still keep it out.
+    expect(faceActionsAt([plate('c:abc', 'Ben', 7)], 0)).toEqual([]);
+  });
+
+  it('offers each person photon has a face of once, in drawn order, away from any face', () => {
+    const faces = [
+      plate('p:2', 'Ben', 6),
+      unnamed(9),
+      plate('p:1', 'Anna', 5),
+      plate('p:2', 'Ben', 8),
+      // Never carries an id today; the key alone keeps it out.
+      plate('c:abc', 'Cy', 10),
+    ];
+    expect(faceActionsAt(faces, -1)).toEqual([
+      { kind: 'not', person: 2, name: 'Ben' },
+      { kind: 'not', person: 1, name: 'Anna' },
+    ]);
+  });
+
+  it('does not offer a person only Picasa names here', () => {
+    expect(faceActionsAt([plate('p:1', 'Anna', null), plate('p:2', 'Ben', 6)], -1)).toEqual([
+      { kind: 'not', person: 2, name: 'Ben' },
+    ]);
   });
 });

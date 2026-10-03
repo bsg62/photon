@@ -84,12 +84,6 @@ export function namedFaceMessage(name: string): string {
   return `This is ${name}.`;
 }
 
-/** The toast after "Not Anna" in the viewer: the face leaves her, and in her view the photo
- *  leaves the grid while the viewer stays on it. */
-export function takenOffMessage(name: string): string {
-  return `${name} taken off this photo.`;
-}
-
 /** The toast after naming photos: what was done, then why the rest were not, each reason on
  *  its own, so a user who selected forty photos can tell which to look at. */
 export function namedItemsMessage(r: NamedItems): string {
@@ -118,12 +112,16 @@ export function namedItemsMessage(r: NamedItems): string {
   return parts.join(' ');
 }
 
-/** The toast after taking photos from a person. A photo Picasa names them on stays theirs,
- *  since photon never writes Picasa's names. */
-export function removedMessage(name: string, r: RemovedItems): string {
+/** The toast after taking photos from a person - the grid's Remove, or "Not Anna" in the
+ *  viewer - `asked` being how many photos were given. A photo Picasa names them on stays
+ *  theirs, since photon never writes Picasa's names. Neither removed nor kept means none of
+ *  the photos was theirs by the time the write landed: their faces were re-detected, or
+ *  someone else took them off, since the menu was drawn. */
+export function removedMessage(name: string, r: RemovedItems, asked: number): string {
   const kept = r.keptByPicasa;
   if (kept === 0) {
-    return r.removed > 0 ? `Removed ${photos(r.removed)} from ${name}.` : `Nothing was removed from ${name}.`;
+    if (r.removed > 0) return `Removed ${photos(r.removed)} from ${name}.`;
+    return `${name} is no longer on ${asked === 1 ? 'this photo' : 'these photos'}: nothing to remove.`;
   }
   if (r.removed === 0) {
     return kept === 1

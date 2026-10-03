@@ -1049,7 +1049,7 @@ export class LibraryStore {
   async removeFromPerson(person: number, itemIds: number[]): Promise<void> {
     const name = this.personName(`p:${person}`);
     const result = await api.removeFromPerson(person, itemIds);
-    this.notify(removedMessage(name, result));
+    this.notify(removedMessage(name, result, itemIds.length));
     await this.refreshCollections();
   }
 
