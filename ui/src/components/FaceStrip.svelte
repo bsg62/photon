@@ -104,9 +104,9 @@
     </div>
     {#if more || expanded}
       <div class="paging">
-        {#if more && !expanded}
-          <button class="link" onclick={() => model.showMore(key)}>Show all {count.toLocaleString()}</button>
-        {:else if more}
+        <!-- "Show more", never "Show all": a click loads one page (`MORE`), and a group can
+             hold more faces than that. -->
+        {#if more}
           <button class="link" onclick={() => model.showMore(key)}
             >Show more ({(count - faces.length).toLocaleString()} left)</button
           >

@@ -1,15 +1,17 @@
 /** The People page's behaviour, apart from its markup so it can be tested: the sections as
- *  the backend last answered, the faces "Show all" has loaded on top, the selection, and
+ *  the backend last answered, the faces "Show more" has loaded on top, the selection, and
  *  the faces and groups hidden optimistically while an action is in flight. */
 
 import type { FaceFilter, PageFace, PageGroup, PeoplePage } from './api';
 import { nameChoice, type NameChoice } from './people';
 import { singleFlight } from './single-flight';
 
-/** Faces a strip shows before "Show all". */
+/** Faces a strip shows before "Show more". */
 export const STRIP = 12;
-/** Faces one "Show more" asks for. */
-export const MORE = 100;
+/** Faces one "Show more" asks for, and one page of a reload's re-fetch: the most one
+ *  `person_faces` call hands over (`MAX_FACE_PAGE` in `library/people.rs`). Asking for more
+ *  gets this many, so a re-fetch asked for in one call folded a strip back to it. */
+export const MORE = 200;
 
 export type Section = 'unnamed' | 'suggestion' | 'person' | 'ignored';
 export type StripKey = string;
@@ -51,7 +53,7 @@ const ACTIONS: Record<Section | 'single' | 'ignored-faces', FaceAction[]> = {
 
 export function createPeoplePage(deps: PeoplePageDeps) {
   let page = $state.raw<PeoplePage | null>(null);
-  /** Faces "Show all" loaded beyond each strip's first `STRIP`. */
+  /** Faces "Show more" loaded beyond each strip's first `STRIP`. */
   let extra = $state<Record<StripKey, PageFace[]>>({});
   let selection = $state<{ strip: StripKey; ids: number[] } | null>(null);
   /** Faces and groups hidden while an action on them is in flight, and after it until a
@@ -61,6 +63,12 @@ export function createPeoplePage(deps: PeoplePageDeps) {
   let hiddenFaces = $state<Map<number, number | null>>(new Map());
   let hiddenGroups = $state<Map<number, number | null>>(new Map());
   let tick = 0;
+  /** Moved by every "Show more" and "Show fewer" as it changes a strip's extra faces. A
+   *  reload keeps its re-fetch of a strip only if the strip's number is where it was when the
+   *  reload began: otherwise a click made while the re-fetch was in flight would be undone by
+   *  a re-fetch of what the strip held before it. Not state: nothing draws it. */
+  const generation: Record<StripKey, number> = {};
+  const bump = (key: StripKey) => (generation[key] = (generation[key] ?? 0) + 1);
 
   const parse = (key: StripKey): { section: Section | 'single' | 'ignored-faces'; id: number } => {
     const [section, id] = key.split(':');
@@ -88,12 +96,20 @@ export function createPeoplePage(deps: PeoplePageDeps) {
 
   const shown = (f: PageFace) => !hiddenFaces.has(f.id);
 
+  /** The strip's faces with what "Show more" loaded, each face once. The extra faces are a
+   *  later read than the strip's first ones, and a face that moved between the two reads can
+   *  be in both; listed twice, it would break the strip's keyed `{#each}`. */
+  function listed(key: StripKey): PageFace[] {
+    const seen = new Set<number>();
+    return [...baseFaces(key), ...(extra[key] ?? [])].filter((f) => !seen.has(f.id) && !!seen.add(f.id));
+  }
+
   function faces(key: StripKey): PageFace[] {
-    return [...baseFaces(key), ...(extra[key] ?? [])].filter(shown);
+    return listed(key).filter(shown);
   }
 
   function count(key: StripKey): number {
-    const all = [...baseFaces(key), ...(extra[key] ?? [])];
+    const all = listed(key);
     const gone = all.length - all.filter(shown).length;
     if (!page) return 0;
     if (key === SINGLE) return page.singleCount - gone;
@@ -102,7 +118,7 @@ export function createPeoplePage(deps: PeoplePageDeps) {
   }
 
   /** Drops what the reload that started at `started` has seen land, and the parts of the
-   *  selection and of "Show all" that no longer exist. */
+   *  selection and of "Show more" that no longer exist. */
   function settle(started: number) {
     for (const map of [hiddenFaces, hiddenGroups])
       for (const [id, ended] of map) if (ended !== null && ended < started) map.delete(id);
@@ -115,10 +131,24 @@ export function createPeoplePage(deps: PeoplePageDeps) {
     }
   }
 
+  /** The `want` faces after a group's strip, a page of `MORE` at a time, until a short page
+   *  says there are no more. */
+  async function refetch(group: PageGroup, section: Section, want: number): Promise<PageFace[]> {
+    const got: PageFace[] = [];
+    while (got.length < want) {
+      const limit = Math.min(MORE, want - got.length);
+      const page = await deps.more(group.id, FILTER[section], group.faces.length + got.length, limit);
+      got.push(...page);
+      if (page.length < limit) break;
+    }
+    return got;
+  }
+
   async function fetch(): Promise<void> {
     const started = ++tick;
+    const before = { ...generation };
     const next = await deps.load(STRIP);
-    // "Show all" survives a reload: an action reloads the page, and a strip the user is
+    // "Show more" survives a reload: an action reloads the page, and a strip the user is
     // working through must not fold up under them.
     const kept: Record<StripKey, PageFace[]> = {};
     await Promise.all(
@@ -127,13 +157,19 @@ export function createPeoplePage(deps: PeoplePageDeps) {
         const { section } = parse(key);
         if (!group || !loaded.length) return;
         try {
-          kept[key] = await deps.more(group.id, FILTER[section as Section], group.faces.length, loaded.length);
+          kept[key] = await refetch(group, section as Section, loaded.length);
         } catch (e) {
           // That strip folds back to its first faces; the page itself still loads.
           deps.reportError(e);
         }
       }),
     );
+    // A strip the user expanded or folded since the reload began stays as they left it.
+    for (const key of new Set([...Object.keys(kept), ...Object.keys(extra)])) {
+      if ((generation[key] ?? 0) === (before[key] ?? 0)) continue;
+      if (key in extra) kept[key] = extra[key];
+      else delete kept[key];
+    }
     // Together, after the re-fetch: the new base with the old extra would show a face twice.
     page = next;
     extra = kept;
@@ -195,6 +231,7 @@ export function createPeoplePage(deps: PeoplePageDeps) {
       try {
         const more = await deps.more(group.id, FILTER[section as Section], offset, MORE);
         extra = { ...extra, [key]: [...(extra[key] ?? []), ...more] };
+        bump(key);
       } catch (e) {
         deps.reportError(e);
       }
@@ -203,6 +240,7 @@ export function createPeoplePage(deps: PeoplePageDeps) {
       const rest = { ...extra };
       delete rest[key];
       extra = rest;
+      bump(key);
     },
     selected: (key: StripKey) => (selection?.strip === key ? selection.ids : []),
     isSelected: (key: StripKey, id: number) => selection?.strip === key && selection.ids.includes(id),

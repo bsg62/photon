@@ -214,6 +214,82 @@ describe('createPeoplePage', () => {
     expect(model.faces(key)).toHaveLength(40);
   });
 
+  /** The backend's `person_faces`: faces `offset..` of a group of `total`, at most `MORE` a
+   *  call however many are asked for, as `MAX_FACE_PAGE` clamps them. */
+  const clamped =
+    (total: number) =>
+    async (_p: number, _w: FaceFilter, offset: number, limit: number): Promise<PageFace[]> =>
+      Array.from({ length: Math.max(0, Math.min(limit, MORE, total - offset)) }, (_, i) => face(offset + i));
+
+  it('a reload re-fetches every page show more loaded, a page at a time', async () => {
+    const first = Array.from({ length: STRIP }, (_, i) => face(i));
+    const { deps, model } = build(answer({ unnamed: [group(1, null, first, 1000)] }));
+    deps.more.mockImplementation(clamped(1000));
+    await model.load();
+    for (let i = 0; i < 3; i++) await model.showMore(A);
+    expect(model.faces(A)).toHaveLength(STRIP + 3 * MORE);
+    await model.load();
+    expect(model.faces(A).map((f) => f.id)).toEqual(Array.from({ length: STRIP + 3 * MORE }, (_, i) => i));
+  });
+
+  it('a re-fetch stops at a short page', async () => {
+    const first = Array.from({ length: STRIP }, (_, i) => face(i));
+    const { deps, model } = build(answer({ unnamed: [group(1, null, first, 1000)] }));
+    deps.more.mockImplementation(clamped(1000));
+    await model.load();
+    await model.showMore(A);
+    await model.showMore(A);
+    // Faces left since: the group now ends 250 faces in.
+    deps.more.mockClear();
+    deps.more.mockImplementation(clamped(250));
+    await model.load();
+    expect(model.faces(A)).toHaveLength(250);
+    expect(deps.more).toHaveBeenCalledTimes(2);
+  });
+
+  it('show fewer while a reload re-fetches the strip stays folded', async () => {
+    const first = Array.from({ length: STRIP }, (_, i) => face(i));
+    const { deps, model } = build(answer({ unnamed: [group(1, null, first, 40)] }));
+    deps.more.mockImplementation(clamped(40));
+    await model.load();
+    await model.showMore(A);
+    const refetch = deferred<PageFace[]>();
+    deps.more.mockReturnValueOnce(refetch.promise);
+    const reload = model.load();
+    await vi.waitFor(() => expect(deps.more).toHaveBeenCalledTimes(2));
+    model.showFewer(A);
+    refetch.resolve(Array.from({ length: 28 }, (_, i) => face(STRIP + i)));
+    await reload;
+    expect(model.isExpanded(A)).toBe(false);
+    expect(model.faces(A)).toHaveLength(STRIP);
+  });
+
+  it('show more while a reload re-fetches the strip is kept', async () => {
+    const first = Array.from({ length: STRIP }, (_, i) => face(i));
+    const { deps, model } = build(answer({ unnamed: [group(1, null, first, 1000)] }));
+    deps.more.mockImplementation(clamped(1000));
+    await model.load();
+    await model.showMore(A);
+    const refetch = deferred<PageFace[]>();
+    deps.more.mockReturnValueOnce(refetch.promise);
+    const reload = model.load();
+    await vi.waitFor(() => expect(deps.more).toHaveBeenCalledTimes(2));
+    await model.showMore(A);
+    expect(model.faces(A)).toHaveLength(STRIP + 2 * MORE);
+    refetch.resolve(Array.from({ length: MORE }, (_, i) => face(STRIP + i)));
+    await reload;
+    expect(model.faces(A)).toHaveLength(STRIP + 2 * MORE);
+  });
+
+  it('a face read by both the strip and show more is listed once', async () => {
+    const { deps, model } = build(unnamedPage());
+    await model.load();
+    deps.more.mockResolvedValueOnce([face(3), face(4)]);
+    await model.showMore(A);
+    expect(model.faces(A).map((f) => f.id)).toEqual([1, 2, 3, 4]);
+    expect(model.count(A)).toBe(5);
+  });
+
   it('naming a group hides it from Unnamed and reloads', async () => {
     const { deps, model } = build(unnamedPage());
     await model.load();
