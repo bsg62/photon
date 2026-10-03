@@ -9,7 +9,7 @@ use crate::edit::{Crop, Edit};
 use crate::face_detect::{Detection, Rect};
 use crate::face_embed::{Embedding, FaceBox, to_blob};
 use crate::media::fingerprint;
-use rusqlite::params;
+use rusqlite::{OptionalExtension, params};
 use std::collections::HashMap;
 
 /// A photo the detector has not looked at, or that an older detector did.
@@ -236,6 +236,34 @@ fn landmarks_blob(points: &[(f32, f32); 5]) -> [u8; 40] {
 }
 
 impl Library {
+    /// A face's rectangle and its photo's current thumbnail key: what the face's crop is cut
+    /// from. `None` when the face is gone.
+    pub fn face_crop_source(&self, face: i64) -> Result<Option<(Rect, u64)>> {
+        let conn = self.reader()?;
+        let found = conn
+            .prepare_cached(
+                "SELECT f.left, f.top, f.right, f.bottom,
+                        i.path, i.size, i.mtime_ms, i.edit_turns, i.edit_crop
+                 FROM detected_faces f JOIN items i ON i.id = f.item_id
+                 WHERE f.id = ?1",
+            )?
+            .query_row(params![face], |r| {
+                let path: String = r.get(4)?;
+                let edit = edit_from_db(r.get(7)?, r.get(8)?);
+                Ok((
+                    Rect {
+                        left: r.get(0)?,
+                        top: r.get(1)?,
+                        right: r.get(2)?,
+                        bottom: r.get(3)?,
+                    },
+                    edit.thumb_key(fingerprint(&path, r.get(5)?, r.get(6)?)),
+                ))
+            })
+            .optional()?;
+        Ok(found)
+    }
+
     /// Up to `limit` candidates with an id above `after_id`, in id order. The pass pages
     /// with the last id it read, so a photo it had to skip is not handed back in the same
     /// pass.
@@ -567,6 +595,48 @@ mod tests {
         }
         lib.set_face_detection(true).unwrap();
         (dir, lib, ids)
+    }
+
+    #[test]
+    fn a_face_crop_source_is_the_rectangle_and_the_photos_current_key() {
+        let (_dir, lib, ids) = seeded(&["a.jpg"]);
+        let c = lib.face_candidates(0, 10, V).unwrap();
+        lib.write_face_batch(&[(c[0].clone(), vec![face(0.1)])], V)
+            .unwrap();
+        let face_id: i64 = lib
+            .reader()
+            .unwrap()
+            .query_row("SELECT id FROM detected_faces", [], |r| r.get(0))
+            .unwrap();
+        let (rect, key) = lib.face_crop_source(face_id).unwrap().unwrap();
+        assert_eq!(rect, face(0.1).rect);
+        assert_eq!(key, lib.item(ids[0]).unwrap().unwrap().thumb_key());
+
+        assert_eq!(lib.face_crop_source(face_id + 1000).unwrap(), None);
+
+        // An edit deletes the photo's detections: the face is gone, not under a new key.
+        let turned = Edit {
+            turns: 1,
+            ..Edit::default()
+        };
+        lib.set_item_edit(ids[0], turned).unwrap();
+        assert_eq!(lib.face_crop_source(face_id).unwrap(), None);
+
+        // Detected again over the edited picture, the key is the edit's, not the file's.
+        lib.set_thumb_state(ids[0], ThumbState::Ready, None)
+            .unwrap();
+        let c = lib.face_candidates(0, 10, V).unwrap();
+        lib.write_face_batch(&[(c[0].clone(), vec![face(0.1)])], V)
+            .unwrap();
+        let again: i64 = lib
+            .reader()
+            .unwrap()
+            .query_row("SELECT id FROM detected_faces", [], |r| r.get(0))
+            .unwrap();
+        let (_, key) = lib.face_crop_source(again).unwrap().unwrap();
+        let item = lib.item(ids[0]).unwrap().unwrap();
+        assert_eq!(key, item.thumb_key());
+        assert_ne!(key, fingerprint(&item.path, item.size, item.mtime_ms));
     }
 
     fn rows(lib: &Library) -> i64 {

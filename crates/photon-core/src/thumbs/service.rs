@@ -689,6 +689,12 @@ impl ThumbService {
         self.cache.path_for(key, size)
     }
 
+    /// A face's crop from the cached preview under `key`; see `ThumbCache::face_crop`. Never
+    /// renders.
+    pub fn face_crop(&self, key: u64, rect: &crate::face_detect::Rect) -> crate::Result<Vec<u8>> {
+        self.cache.face_crop(key, rect)
+    }
+
     pub fn wait_idle(&self) {
         self.queue.wait_idle();
     }

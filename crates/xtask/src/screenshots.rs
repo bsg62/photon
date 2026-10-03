@@ -325,6 +325,8 @@ pub fn respond(path: &str, dist: &Path, photos: &[PathBuf]) -> Response {
     if let Some(rest) = path
         .strip_prefix("/thumb/")
         .or_else(|| path.strip_prefix("/image/"))
+        // The mock's face n sits on photo n, so its crop is that photo.
+        .or_else(|| path.strip_prefix("/face/"))
     {
         let id = rest
             .split('/')
@@ -613,6 +615,7 @@ mod tests {
         let thumb = respond("/thumb/12/grid/k11", &dist, &[]);
         assert_eq!((thumb.status, thumb.content_type), (200, "image/svg+xml"));
         assert_eq!(thumb, respond("/image/12", &dist, &[]));
+        assert_eq!(thumb, respond("/face/12/k11", &dist, &[]));
         assert_ne!(thumb.body, respond("/thumb/13/grid/k12", &dist, &[]).body);
     }
 

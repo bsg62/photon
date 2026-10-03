@@ -168,6 +168,30 @@ impl ThumbCache {
             })
     }
 
+    /// A face's crop, as WebP: the square `face_crop::square` gives, cut from the cached
+    /// preview and scaled to `CROP_PX`. Only the cache is read - never the photo, and never a
+    /// render: a preview that is not cached is an I/O `NotFound`, which the route answers with
+    /// a 404 and the page with a placeholder.
+    pub fn face_crop(&self, key: u64, rect: &crate::face_detect::Rect) -> Result<Vec<u8>> {
+        use super::face_crop::{CROP_PX, square};
+        let preview = self.read(key, ThumbSize::Preview)?.to_rgb8();
+        let (x, y, side) = square(rect, preview.width(), preview.height()).ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, "no face to crop")
+        })?;
+        let cut = image::imageops::crop_imm(&preview, x, y, side, side).to_image();
+        let small = image::imageops::resize(
+            &cut,
+            CROP_PX,
+            CROP_PX,
+            image::imageops::FilterType::Triangle,
+        );
+        let encoded = encode_webp(
+            &webp::Encoder::from_rgb(small.as_raw(), CROP_PX, CROP_PX),
+            ThumbSize::Grid.webp_method(),
+        )?;
+        Ok(encoded.to_vec())
+    }
+
     /// Removes thumbnails whose fingerprint is not in `live`. Returns the number of files removed.
     ///
     /// GC is best-effort: an unreadable directory entry or a file that can't be removed
@@ -373,6 +397,62 @@ mod tests {
                 encoded(img, other),
                 "{size:?}: the methods agree here"
             );
+        }
+    }
+
+    /// A 400 x 200 grey preview with a red 40 x 40 square at x 180-220, y 80-120.
+    fn red_square_preview() -> DynamicImage {
+        DynamicImage::ImageRgb8(image::RgbImage::from_fn(400, 200, |x, y| {
+            if (180..220).contains(&x) && (80..120).contains(&y) {
+                image::Rgb([255, 0, 0])
+            } else {
+                image::Rgb([128, 128, 128])
+            }
+        }))
+    }
+
+    #[test]
+    fn a_face_crop_is_cut_around_the_face_from_the_cached_preview() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = ThumbCache::new(dir.path().join("cache"));
+        let preview = red_square_preview();
+        cache.store(5, &preview, &preview).unwrap();
+        let rect = crate::face_detect::Rect {
+            left: 0.45,
+            top: 0.4,
+            right: 0.55,
+            bottom: 0.6,
+        };
+        let bytes = cache.face_crop(5, &rect).unwrap();
+        let crop = webp::Decoder::new(&bytes).decode().unwrap().to_image();
+        assert_eq!((crop.width(), crop.height()), (96, 96));
+        let crop = crop.to_rgb8();
+        let centre = crop.get_pixel(48, 48).0;
+        assert!(
+            centre[0] > 180 && centre[1] < 80 && centre[2] < 80,
+            "{centre:?}"
+        );
+        let corner = crop.get_pixel(1, 1).0;
+        assert!(
+            corner.iter().all(|&c| (110..150).contains(&c)),
+            "{corner:?}"
+        );
+    }
+
+    /// The route answers exactly this kind with a 404.
+    #[test]
+    fn a_face_crop_is_cut_only_from_the_cached_preview() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = ThumbCache::new(dir.path().join("cache"));
+        let rect = crate::face_detect::Rect {
+            left: 0.4,
+            top: 0.4,
+            right: 0.6,
+            bottom: 0.6,
+        };
+        match cache.face_crop(9, &rect) {
+            Err(crate::Error::Io(err)) => assert_eq!(err.kind(), std::io::ErrorKind::NotFound),
+            other => panic!("{other:?}"),
         }
     }
 
