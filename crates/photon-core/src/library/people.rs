@@ -30,6 +30,12 @@ const GROUP_BATCH: usize = 512;
 /// re-run (`write_face_batch`) is the old box's, kept so that the face counts towards its
 /// group until it is embedded again. A face is placed by its own vector: the carry-over
 /// pairs boxes by place, which is a judgement where two faces overlap.
+///
+/// "The embedder made" is the current model only until `EMBEDDER_VERSION` moves: after a
+/// bump, an ungrouped face whose vector the *previous* model made still matches (its
+/// version is set) and is placed by that old vector during the step, until it is embedded
+/// again. Correcting that would mean comparing versions in this string, which is not worth
+/// a query term for a bump that has never happened.
 const UNGROUPED: &str = "person_id IS NULL AND ignored = 0
      AND embedding_version IS NOT NULL AND length(embedding) = 512";
 const _: () = assert!(
@@ -386,12 +392,20 @@ impl Library {
 
     /// Merges a group or a person into a named person. Refused into anything else, and
     /// into itself: the merge ends by deleting `from`, and `from` being `into` would delete
-    /// the person whose faces it had just kept.
+    /// the person whose faces it had just kept. A `from` that is gone is refused, as naming
+    /// a gone group is: a grouping run can empty and delete a group the page still shows,
+    /// and answered with success the page would think the merge happened.
     pub fn merge_people(&self, from: i64, into: i64) -> Result<()> {
         let mut conn = self.writer();
         let tx = conn.transaction()?;
         if from == into || !is_named(&tx, into)? {
             return Err(Error::NotAPerson(into));
+        }
+        if !tx
+            .prepare_cached("SELECT 1 FROM people WHERE id = ?1")?
+            .exists(params![from])?
+        {
+            return Err(Error::NotAPerson(from));
         }
         merge_into(&tx, from, into)?;
         tx.commit()?;
@@ -462,7 +476,25 @@ impl Library {
             |r| r.get(0),
         )?)
     }
+
+    /// How many unnamed groups wait for a name: the page's Unnamed section, counted.
+    pub fn people_to_name(&self) -> Result<i64> {
+        Ok(self
+            .reader()?
+            .query_row(PEOPLE_TO_NAME_SQL, [], |r| r.get(0))?)
+    }
 }
+
+/// The People page's Unnamed section, counted: what the sidebar shows as "N to name".
+/// Driven from the faces in person order through `detected_faces_person`, each photo read
+/// by its id; the `+` is the whole-library convention (`library/mod.rs`).
+const PEOPLE_TO_NAME_SQL: &str = "SELECT count(*) FROM (
+     SELECT f.person_id FROM detected_faces f
+     JOIN people p ON p.id = f.person_id
+     JOIN items i ON i.id = f.item_id
+     WHERE p.name IS NULL AND p.ignored = 0
+       AND i.hidden = 0 AND +i.missing_since IS NULL
+     GROUP BY f.person_id HAVING count(*) >= 2)";
 
 /// One face on the People page.
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -474,6 +506,8 @@ pub struct PageFace {
     /// face's crop.
     pub thumb_key: String,
     pub confirmed: bool,
+    /// The face's group, which a single face is named through.
+    pub person_id: Option<i64>,
 }
 
 /// Picasa's name for a group: the contact, the name to offer (a linked contact's person's
@@ -575,6 +609,7 @@ fn face_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<FaceRow> {
             item_id: r.get(1)?,
             thumb_key: hex_key(edit.thumb_key(fingerprint(&path, r.get(10)?, r.get(11)?))),
             confirmed: r.get::<_, i64>(3)? == 1,
+            person_id: r.get(2)?,
         },
         person_id: r.get(2)?,
         ignored: r.get::<_, i64>(4)? == 1,
@@ -1394,6 +1429,69 @@ mod tests {
         assert_eq!(l.lib.named_people_count().unwrap(), 0);
     }
 
+    /// A group the page shows can be emptied and deleted by a grouping run before the user
+    /// merges it. Answered with success, the page would think the merge happened.
+    #[test]
+    fn merging_a_group_that_is_gone_is_refused() {
+        let (l, f) = library(&[&[0.0], &[0.0]]);
+        l.lib.group_ungrouped_faces(&never).unwrap();
+        let group = person_of(&l.lib, f[0]).0.unwrap();
+        let anna = l.lib.name_group(group, "Anna").unwrap();
+        assert!(matches!(
+            l.lib.merge_people(9_999, anna),
+            Err(Error::NotAPerson(9_999))
+        ));
+    }
+
+    /// The sidebar's count is the page's Unnamed section, counted: unnamed, not ignored,
+    /// two or more visible faces. Seven groups, each rule leaving out one that only it does:
+    /// A and B are counted, C has one face, D is ignored, E's second photo is hidden, F is
+    /// named, G's second photo is missing. `at` has room for five directions 72 degrees
+    /// apart; F's and G's vectors lie along a third and a fourth dimension, perpendicular
+    /// to all the rest.
+    #[test]
+    fn people_to_name_counts_the_unnamed_section() {
+        let (l, f) = library(&[
+            &[0.0],
+            &[0.0],
+            &[72.0],
+            &[72.0],
+            &[144.0],
+            &[216.0],
+            &[216.0],
+            &[288.0],
+            &[288.0],
+            &[0.0],
+            &[0.0],
+            &[0.0],
+            &[0.0],
+        ]);
+        for (faces, dim) in [(&f[9..11], 2), (&f[11..13], 3)] {
+            let mut v = [0f32; 128];
+            v[dim] = 1.0;
+            for face in faces {
+                l.lib
+                    .writer()
+                    .execute(
+                        "UPDATE detected_faces SET embedding = ?2 WHERE id = ?1",
+                        rusqlite::params![face, to_blob(&v)],
+                    )
+                    .unwrap();
+            }
+        }
+        l.lib.group_ungrouped_faces(&never).unwrap();
+        let group = |i: usize| person_of(&l.lib, f[i]).0.unwrap();
+        let groups: std::collections::HashSet<_> = [0, 2, 4, 5, 7, 9, 11].map(group).into();
+        assert_eq!(groups.len(), 7, "each pair is its own group");
+        l.lib.set_person_ignored(group(5), true).unwrap();
+        l.lib.set_hidden(&[l.items[8]], true).unwrap();
+        l.lib.mark_missing(&[l.items[12]], 5).unwrap();
+        l.lib.name_group(group(9), "Anna").unwrap();
+        let page = l.lib.people_page(8).unwrap();
+        assert_eq!(page.unnamed.len(), 2, "{page:?}");
+        assert_eq!(l.lib.people_to_name().unwrap(), 2);
+    }
+
     #[test]
     fn a_named_person_cannot_be_ignored_but_a_group_can() {
         let (l, f) = library(&[&[0.0], &[90.0]]);
@@ -1708,6 +1806,12 @@ mod tests {
         assert_eq!(page.single_faces[0].item_id, l.items[0]);
         assert_eq!(page.single_faces[0].id, f[0]);
         assert_eq!(
+            page.single_faces[0].person_id,
+            person_of(&l.lib, f[0]).0,
+            "a single face is named through its group"
+        );
+        assert!(page.single_faces[0].person_id.is_some());
+        assert_eq!(
             page.single_faces[0].thumb_key,
             crate::grid::hex_key(item.thumb_key())
         );
@@ -1847,6 +1951,16 @@ mod tests {
             ["SCAN f", "SEARCH i USING INTEGER PRIMARY KEY (rowid=?)"],
             "{plan:?}"
         );
+    }
+
+    /// The count reads the faces in person order and each photo by its id: no walk of the
+    /// items table, and the group-by comes out of the person index without a sort.
+    #[test]
+    fn the_to_name_count_is_driven_from_the_faces() {
+        let (_dir, lib) = temp_library();
+        let plan = lib.query_plan(PEOPLE_TO_NAME_SQL, &[]);
+        assert!(!plan.iter().any(|s| s.starts_with("SCAN i")), "{plan:?}");
+        assert!(!plan.iter().any(|s| s.contains("TEMP B-TREE")), "{plan:?}");
     }
 
     #[test]

@@ -132,7 +132,10 @@ pub fn norm(a: &[f32]) -> f32 {
 /// grouping step makes one comparison per face and group while it holds the library's
 /// writer: measured 2026-10-03 (release, x86-64, 128 numbers) at about 9 ns with the
 /// group's length kept, against 95 ns for the single sum with both lengths recomputed.
-/// Summed in another order, the result can differ from the single sum in its last bits.
+/// Summed in another order, the result can differ from the single sum in its last bits,
+/// which can move a cosine sitting on the grouping threshold, or a near-tie between two
+/// groups, to the other side. That is accepted: a tie at that precision is not a decision
+/// the measurement supports either way.
 pub fn dot(a: &[f32], b: &[f32]) -> f32 {
     debug_assert_eq!(a.len(), b.len());
     let ((a, a_tail), (b, b_tail)) = (a.as_chunks::<8>(), b.as_chunks::<8>());

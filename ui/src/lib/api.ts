@@ -234,7 +234,8 @@ export interface FaceProgress {
 
 /** One face on the People page. Mirrors `library::PageFace`; `thumbKey` is the photo's
  *  thumbnail key, which with the face id names the face's crop. */
-export interface PageFace { id: number; itemId: number; thumbKey: string; confirmed: boolean }
+/** `personId` is the face's group: how a single face is named. Mirrors `library::PageFace`. */
+export interface PageFace { id: number; itemId: number; thumbKey: string; confirmed: boolean; personId: number | null }
 /** Picasa's name for a group: the name to offer, its contact, and how many of the group's
  *  faces sit on that contact's faces. Mirrors `library::Offer`. */
 export interface Offer { name: string; contact: string; faces: number }
@@ -330,6 +331,7 @@ export const api = {
   faceDetection: () => invoke<boolean>('face_detection'),
   setFaceDetection: (enabled: boolean) => invoke<void>('set_face_detection', { enabled }),
   faceDataSummary: () => invoke<FaceDataSummary>('face_data_summary'),
+  peopleToName: () => invoke<number>('people_to_name'),
   peoplePage: (strip: number) => invoke<PeoplePage>('people_page', { strip }),
   personFaces: (person: number, which: FaceFilter, offset: number, limit: number) =>
     invoke<PageFace[]>('person_faces', { person, which, offset, limit }),

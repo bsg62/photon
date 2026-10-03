@@ -254,10 +254,14 @@
     face_detection: () => true,
     set_face_detection: () => null,
     face_data_summary: () => ({ namedPeople: 1 }),
+    people_to_name: () => 2,
     people_page: () => {
       // Face n sits on photo n, so every crop has a thumbnail behind it.
-      const face = (id, confirmed = false) => ({ id, itemId: id, thumbKey: 'k' + (id - 1), confirmed });
-      const group = (id, name, faces) => ({ id, name, faceCount: faces.length, faces, offer: null });
+      const face = (id, confirmed = false) => ({ id, itemId: id, thumbKey: 'k' + (id - 1), confirmed, personId: null });
+      // A face carries its group's id: that is how a single face is named.
+      const group = (id, name, faces) => ({
+        id, name, faceCount: faces.length, faces: faces.map((f) => ({ ...f, personId: id })), offer: null,
+      });
       return {
         unnamed: [group(1, null, [face(1), face(2), face(3)]), group(2, null, [face(4), face(5), face(6)])],
         singleFaces: [],

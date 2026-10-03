@@ -156,6 +156,11 @@ pub fn set_face_detection(engine: Eng<'_>, enabled: bool) -> Result<(), AppError
 }
 
 #[tauri::command(async)]
+pub fn people_to_name(engine: Eng<'_>) -> Result<i64, AppError> {
+    commands::people_to_name(&engine)
+}
+
+#[tauri::command(async)]
 pub fn face_data_summary(engine: Eng<'_>) -> Result<commands::FaceDataSummary, AppError> {
     commands::face_data_summary(&engine)
 }

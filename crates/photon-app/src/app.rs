@@ -232,6 +232,7 @@ pub fn run() {
             ipc::face_detection,
             ipc::set_face_detection,
             ipc::face_data_summary,
+            ipc::people_to_name,
             ipc::people_page,
             ipc::person_faces,
             ipc::name_person,
