@@ -4,6 +4,7 @@ import {
   IGNORED_FACES,
   MORE,
   SINGLE,
+  STALE_GROUP,
   STRIP,
   createPeoplePage,
   stripKey,
@@ -340,15 +341,28 @@ describe('createPeoplePage', () => {
     expect(deps.name).not.toHaveBeenCalled();
   });
 
-  it('a refused name reloads the page and reports the error', async () => {
+  it('a refused name reloads the page and says the group changed', async () => {
     const { deps, model } = build(unnamedPage());
     await model.load();
-    const err = { kind: 'notAPerson', message: 'gone' };
-    deps.name.mockRejectedValueOnce(err);
+    deps.name.mockRejectedValueOnce({ kind: 'notAPerson', message: 'that is not a named person' });
     await model.nameGroup(1, 'Ben');
     expect(model.unnamed).toHaveLength(1);
-    expect(deps.reportError).toHaveBeenCalledWith(err);
+    expect(deps.reportError).toHaveBeenCalledWith(STALE_GROUP);
     expect(deps.load).toHaveBeenCalledTimes(2);
+  });
+
+  it('a rename or merge of someone gone says the group changed; other errors pass through', async () => {
+    const { deps, model } = build(answer({ people: [group(3, 'Anna', []), group(5, 'Ben', [])] }));
+    await model.load();
+    const gone = { kind: 'notAPerson', message: 'that is not a named person' };
+    deps.rename.mockRejectedValueOnce(gone);
+    await model.rename(3, 'Anne');
+    deps.merge.mockRejectedValueOnce(gone);
+    await model.merge(3, 5);
+    const other = { kind: 'internal', message: 'disk full' };
+    deps.merge.mockRejectedValueOnce(other);
+    await model.merge(3, 5);
+    expect(deps.reportError.mock.calls).toEqual([[STALE_GROUP], [STALE_GROUP], [other]]);
   });
 
   it('naming single faces names the first group and merges the rest into it', async () => {

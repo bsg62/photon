@@ -2,7 +2,7 @@
  *  the backend last answered, the faces "Show more" has loaded on top, the selection, and
  *  the faces and groups hidden optimistically while an action is in flight. */
 
-import type { FaceFilter, PageFace, PageGroup, PeoplePage } from './api';
+import type { AppError, FaceFilter, PageFace, PageGroup, PeoplePage } from './api';
 import { nameChoice, type NameChoice } from './people';
 import { singleFlight } from './single-flight';
 
@@ -34,6 +34,15 @@ export interface PeoplePageDeps {
   ask(message: string, title: string): Promise<boolean>;
   reportError(e: unknown): void;
 }
+
+/** What a write refused with `notAPerson` is reported as. The group or person it named is
+ *  gone - a grouping run emptied and deleted it, or another write merged it away - and the
+ *  backend's message, "that is not a named person", reads as the user's mistake. Every such
+ *  write reloads the page after it, which is what the second half says. */
+export const STALE_GROUP = 'That group changed; the page has been refreshed.';
+
+const isNotAPerson = (e: unknown) =>
+  !!e && typeof e === 'object' && 'kind' in e && (e as AppError).kind === 'notAPerson';
 
 const FILTER: Record<Section, FaceFilter> = {
   unnamed: 'all',
@@ -195,6 +204,10 @@ export function createPeoplePage(deps: PeoplePageDeps) {
 
   const load = singleFlight(fetch);
 
+  /** A write's failure, reported: one naming a group that is gone in words the user can act
+   *  on, anything else as the backend put it. */
+  const refused = (e: unknown) => deps.reportError(isNotAPerson(e) ? STALE_GROUP : e);
+
   type Hidden = 'faces' | 'groups';
   /** The map is looked up by name at each step, never held: a change reassigns it so a
    *  component re-reads it, and a held reference would mutate the one just replaced. */
@@ -219,7 +232,7 @@ export function createPeoplePage(deps: PeoplePageDeps) {
       for (const id of ids) if (mapOf(which).has(id)) mapOf(which).set(id, at);
     } catch (e) {
       for (const id of ids) mapOf(which).delete(id);
-      deps.reportError(e);
+      refused(e);
     }
     publish();
     await load().catch(deps.reportError);
@@ -313,7 +326,7 @@ export function createPeoplePage(deps: PeoplePageDeps) {
       try {
         await deps.rename(person, typed.trim());
       } catch (e) {
-        deps.reportError(e);
+        refused(e);
       }
       await load().catch(deps.reportError);
     },
@@ -326,7 +339,7 @@ export function createPeoplePage(deps: PeoplePageDeps) {
       try {
         await deps.merge(from, into);
       } catch (e) {
-        deps.reportError(e);
+        refused(e);
       }
       await load().catch(deps.reportError);
     },
@@ -339,7 +352,7 @@ export function createPeoplePage(deps: PeoplePageDeps) {
       try {
         await deps.remove(person);
       } catch (e) {
-        deps.reportError(e);
+        refused(e);
       }
       await load().catch(deps.reportError);
     },
