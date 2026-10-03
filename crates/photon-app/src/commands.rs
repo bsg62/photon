@@ -961,12 +961,11 @@ pub fn viewer_item(engine: &Engine, id: i64) -> CmdResult<ViewerItem> {
         .filter(|(id, ..)| !is_named(*id))
         .map(|(id, rect, ..)| (*id, *rect))
         .collect();
-    // Those that are none of Picasa's (`merge::unmatched`'s rule).
+    // Those that are none of Picasa's.
     unnamed_faces.extend(
-        unnamed_detected
-            .iter()
-            .filter(|(_, d)| !all.iter().any(|p| merge::same_face(p, d)))
-            .map(|(id, rect)| UnnamedFace::new(*rect, Some(*id))),
+        merge::unmatched_by(&all, &unnamed_detected)
+            .into_iter()
+            .map(|(id, rect)| UnnamedFace::new(rect, Some(id))),
     );
     let (upright_w, upright_h) =
         photon_core::metadata::oriented_dims(item.width, item.height, item.orientation);
