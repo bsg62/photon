@@ -2257,8 +2257,9 @@ impl Engine {
                     self.send_face_progress(FacePhase::Recognising, true);
                     last_progress = Some(Instant::now());
                 }
-                // Whatever the view, unlike detection's: the sidebar's People list reads
-                // the groups. A data rebuild, which publishes any detections too.
+                // Whatever the view, unlike detection's: what grouping writes is read by
+                // the People page, refetched on a data change (`end_face_pass` has why).
+                // A data rebuild, which publishes any detections too.
                 if pass.regrouped && pass.last_rebuild.elapsed() >= FACE_REBUILD_EVERY {
                     if let Err(err) = self.refresh_grid() {
                         tracing::warn!(%err, "grid refresh failed");
@@ -2294,8 +2295,13 @@ impl Engine {
         // thread, for a window that is closing. What it wrote is shown at the next launch.
         let quitting = self.shutting_down.load(Ordering::SeqCst);
         if !quitting {
-            // Grouping is a data change - the People list and a person's photos move -
-            // and a data rebuild publishes the detections with it.
+            // Grouping is rebuilt as a data change. Not for the sidebar's People list, the
+            // Person view, `person:` or the viewer: they read confirmed faces only, and
+            // grouping writes none - only suggestions, new unnamed groups and the removal
+            // of emptied ones. Those are read by `people_page`, which the People page and
+            // its sidebar count of groups to name refetch on `data_changed` (the UI for
+            // both is the next plan's); a derived rebuild would leave them stale. A data
+            // rebuild publishes the detections with it.
             let rebuilt = if pass.regrouped {
                 self.refresh_grid()
             } else if pass.unshown {
@@ -3818,7 +3824,7 @@ mod tests {
     /// Detections are read by the grid of a face search and by the viewer, never by an
     /// album, person, tag or folder count: the rebuild of a pass that only detected must
     /// not send the UI to refetch the sidebar. A photo with no face, so nothing is grouped:
-    /// grouping is a data change (`grouping_announces_a_data_change`).
+    /// grouping is announced as a data change (`grouping_announces_a_data_change`).
     #[test]
     fn a_face_pass_does_not_announce_a_data_change() {
         let f = fixture(&[("a/plain.jpg", &jpeg(200, 150))]);
@@ -4156,9 +4162,11 @@ mod tests {
         assert_eq!(items, ids);
     }
 
-    /// Grouping moves the People list and what a person's view holds, which the sidebar
-    /// reads: unlike detecting (`a_face_pass_does_not_announce_a_data_change`), the
-    /// rebuild after it must send the UI to refetch.
+    /// Grouping writes suggestions and unnamed groups, which `people_page` reads - not the
+    /// People list or a person's view, which read confirmed faces only - and the People
+    /// page refetches it on a data change: unlike detecting
+    /// (`a_face_pass_does_not_announce_a_data_change`), the rebuild after it must send it
+    /// to refetch.
     #[test]
     fn grouping_announces_a_data_change() {
         let f = fixture(&[("a/face.jpg", &portrait_jpeg())]);

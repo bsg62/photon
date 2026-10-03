@@ -462,10 +462,12 @@ photo's thumbnail has been remade. The drain is the trigger that matters for a n
 is a candidate only once its preview exists; the scan's is the only one a running photon gets
 for a library whose thumbnails are all cached; and `startup`'s is what resumes an unfinished
 pass on a launch where every root is offline, whose scans request nothing. A pass asks each
-step for one row of work before it loads a model (`face_work`, in `run_face_pass`): with none
-it sends its last event and leaves - four whole-library queries, a probe per step (a photo to
-detect, a face to embed, a face to group) and the last event's count, and no model load,
-which is what keeps the request after every scan cheap (a library holding a photo whose
+step for one row of work before it loads a model (`face_work`, in `run_face_pass`, which names
+the first step that has some; only detection, which makes faces, has the pass ask the next
+question again): with none it sends its last event and leaves - a probe per step (a photo to
+detect and a face to embed, each a walk of its whole table when there is none; a face to
+group, an index search over the faces with no group), the last event's count, and no model
+load, which is what keeps the request after every scan cheap (a library holding a photo whose
 preview can never be read never gets this path, that photo being always a candidate) - and a
 detection or embedding step with work reports `running` at once, the next report being a
 whole batch away. A pass the quit ends skips its
@@ -539,8 +541,10 @@ has `write_face_batch`'s two guards. The embedding breaker has detection's floor
 on every pass, and no photo with a higher id is embedded.
 
 The **grouping step** (`group_ungrouped_faces`) places every face with a vector, no group and
-not ignored (`UNGROUPED`, one string for the step and for `has_ungrouped_faces`), in face order
-on one thread, by `people::choose`: the most alike group whose average is at least
+not ignored (`UNGROUPED`, one string for the step and for `has_ungrouped_faces`; the vector one
+the embedder made for that face, `embedding_version` set, of the right length - a malformed
+blob matched there kept the probe true for ever), in face order on one thread, by
+`people::choose`: the most alike group whose average is at least
 `GROUP_SIMILARITY` (0.50), else a new unnamed group (measured on 2,674 LFW faces: 27-40
 misplaced at 0.45, 6-11 at 0.50, 2 at 0.55 but with about 35 more of 500 people split - and a
 split is one merge to fix, a mixed group a face at a time). **The averages are computed from the
@@ -556,10 +560,16 @@ while any face is still ungrouped (what an operation leaves). During the step it
 of the step - every run reads every grouped face's vector, and run after every batch a first
 recognition would read about 40 GB at 100k photos. Only the timing is kept between runs, never
 the groups: an edit or a rewritten file deletes detections without `people_write`, so groups
-held over could name deleted faces. **Grouping is a data change; detection is not**: the People
-list and a person's photos move, so a pass that grouped a face rebuilds through `refresh_grid`
-(`data_dirty`, `counts_epoch`) - at its end, and during the embed step at most every 30 seconds
-whatever the view.
+held over could name deleted faces. The choosing runs inside the writer's transaction, so
+it is kept cheap: `people::Group` keeps its sum's length beside the sum (private fields, so
+nothing changes one without the other) and `face_embed::dot` sums in eight lanes - about 9 ns
+a comparison against 95 ns recomputing both lengths. **Grouping is announced as a data change;
+detection is not.** Not because the sidebar's People list, the Person view, `person:` or the
+viewer move: they read confirmed faces only, and grouping writes none - only suggestions, new
+unnamed groups and the removal of emptied ones. What reads those is `people_page`, which the
+People page and its sidebar count of groups to name refetch on `data_changed`, so a pass that
+grouped a face rebuilds through `refresh_grid` (`data_dirty`, `counts_epoch`) - at its end,
+and during the embed step at most every 30 seconds whatever the view.
 
 **`people_write` serialises the corrections with grouping.** Every operation on the People data
 (`name_group`, `rename_person`, `confirm_faces`, `reject_faces`, `merge_people`,
@@ -567,7 +577,10 @@ whatever the view.
 which holds the lock for the write, then rebuilds through `refresh_after_write` and requests a
 face pass; each grouping run takes the same lock. An operation never places a face itself: a
 rejected face, or one no longer ignored, is left ungrouped, and the pass's grouping step places
-it, passing over every group it was rejected from (`face_rejections`).
+it, passing over every group it was rejected from (`face_rejections`). A merge (`merge_into`,
+behind `merge_people` and a name another person has) leaves out, ungrouped, every face of the
+merged group that was rejected from the person it merges into: grouping puts a face taken out
+of Anna in another group, and naming that group Anna would otherwise make it a confirmed Anna.
 
 **Only confirmed faces carry a name.** A face the rule puts with a named person is a suggestion
 (`confirmed = 0`), listed among `people_page`'s suggestions and nowhere else: the Person view,
@@ -583,7 +596,9 @@ when a group is named or renamed - the user typing a name Picasa uses is saying 
 person - and a linked contact is that person everywhere: their key and name in the viewer, their
 Person view, and `person:` finds the contact's Picasa-only photos by the person's name. The
 viewer draws a face once: a confirmed detection over a named Picasa face, linked or not, leaves
-the plate to Picasa's, and one over an unnamed Picasa face takes its outline's place. The Picasa
+the plate to Picasa's, and one over an unnamed Picasa face takes its outline's place - so a
+detection confirmed as Ben over a Picasa face named for a contact Anna that no person is linked
+to shows only Anna's plate in the viewer, while Ben's Person view lists the photo. The Picasa
 name offered for an unnamed group counts only its faces that sit on a Picasa face under a named
 contact (more than half of those must be one contact's): an unnamed Picasa face at the same
 place neither votes nor hides the named one. `people.id` and `detected_faces.id` are
@@ -600,7 +615,14 @@ back as a suggestion (carrying it across a turn or a crop would mean mapping rec
 the edit, for a case one click fixes). A detector re-run over an unchanged picture - a
 `DETECTOR_VERSION` bump - must not do that to a whole library: `write_face_batch` hands each new
 face the group, confirmation, ignored flag and rejections of an old face at the same place
-(`merge::same_face`), each old face to one new face, and its vector is made again. **Hidden
+(`merge::same_face`), each old face to one new face, best overlap first (`pairs_by_fit`: the
+centre test alone let a small face inside a large one take the large face's name). The old
+vector goes too, with no `embedding_version`: the face is embedded again, and meanwhile counts
+towards its group's average but is not placed by it (`UNGROUPED` asks for the version) -
+without it a re-run emptied every named person's average for the whole embedding step. A
+renamed or moved file or folder is a purge and a new row, so its faces lose their
+confirmations as it loses its albums; and a named person whose confirmed faces are all gone
+has no average, so draws no suggestions until a group is named for them again. **Hidden
 photos' faces are grouped** like any other, so unhiding is instant, and appear in no People
 reader: the page's two face queries, the People list, the Person view and the search grid each
 filter `hidden = 0` and `missing_since IS NULL` (`hidden_photos_are_in_no_person_reader`,

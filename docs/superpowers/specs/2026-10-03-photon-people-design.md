@@ -206,10 +206,16 @@ CREATE TABLE face_rejections (
 - **A detector re-run on an unchanged picture** (a `DETECTOR_VERSION` bump) must not do that to
   a whole library. When `write_face_batch` replaces a photo's rows, a new face inherits
   `person_id`, `confirmed`, `ignored` and the rejections of the old face at the same place,
-  by `face_detect::merge::same_face`. Its embedding is computed afresh.
+  by `face_detect::merge::same_face`. Its embedding is computed afresh. *As built:* best
+  overlap first, and the old vector is carried until then (As built 12).
 - **A group left with no faces** is deleted, unless it is named or linked to a contact.
 - **Switching off** deletes `people`, `person_contacts` and `face_rejections` with the
   detections, in the transaction that stores the setting.
+- **A renamed or moved file or folder** is a purge and a new row, as for albums and edits, so
+  its faces are detected again and lose their confirmations. A recorded limit.
+- **A named person whose confirmed faces are all gone** - rejected, cleared by an edit, or
+  purged - has no average, and draws no suggestions until a group is named for them again
+  (or merged into them). A recorded limit.
 
 ### Tripwires
 
@@ -302,7 +308,8 @@ through `refresh_after_write`.
   centroid if it counted), and group it again by the rule, which now skips that group.
 - **Merge** A into B, where B is a named person: A's faces move to B keeping `confirmed`; A's rejections and contact links
   move to B; B's centroid is recomputed; A is deleted. Merging an unnamed group into a person
-  confirms its faces, as naming does.
+  confirms its faces, as naming does. *As built:* a face of A rejected from B is left
+  ungrouped instead (As built 11).
 - **Ignore** a group, or undo it: set or clear `people.ignored`. Ignoring a named person is
   refused; delete them first.
 - **Ignore** faces, or undo it: set `ignored`, clear `person_id` and `confirmed`, and take the
@@ -361,10 +368,13 @@ embed step, whenever a face with a vector has no group and is not ignored.
 
 ### The refresh chain
 
-Grouping changes what the People list and the Person view read. Unlike detection, it is a data
-change: the step rebuilds through `refresh_grid`, which marks `data_dirty` and moves
-`counts_epoch`. Once when the pass ends if anything was grouped, and during the pass at most
-every 30 seconds.
+Grouping does not change what the People list, the Person view, `person:` or the viewer read:
+they read confirmed faces only, and grouping writes none - only suggestions, new unnamed groups
+and the removal of emptied ones. Those are read by `people_page`, and the People page and its
+sidebar count of groups to name refetch on `data_changed`. So, unlike detection, grouping is
+announced as a data change: the step rebuilds through `refresh_grid`, which marks `data_dirty`
+and moves `counts_epoch`. Once when the pass ends if anything was grouped, and during the pass
+at most every 30 seconds.
 
 ### Progress
 
@@ -609,6 +619,24 @@ is what is recorded here; each was decided during the work, after review.
     faces that all fail (landmarks the aligner refuses), in a batch where no other face is
     asked about, trips it alone, on every pass, and no photo with a higher id is embedded. The
     guard in "Guards" is otherwise as written.
+11. **A merge leaves out a face rejected from the person it merges into.** Grouping places a
+    face taken out of Anna in another group; naming that group "Anna", or merging it into her,
+    moved it back to her, confirmed, while the rejection stood. Such a face is left ungrouped
+    by the merge, and the grouping step places it, passing Anna over. Naming a group that no
+    longer exists (emptied and deleted by a grouping run, or by the switch) is refused.
+12. **The detector re-run hands faces back by fit, with their vectors.** Each pair of an old
+    and a new face that `same_face` accepts is a candidate, assigned best overlap (intersection
+    over union) first, each face on either side used once: first-match in id order let a small
+    face whose centre lies inside a large one take the large face's name. The new face gets
+    the old vector without an `embedding_version`, so it is embedded again and meanwhile counts
+    towards its group's average; a face is placed only by a vector made for it (the ungrouped
+    test asks for a version, and for a vector of the right length).
+13. **The choosing is kept cheap, not moved out of the write.** `people::Group` keeps its sum's
+    length, and the dot product sums in eight lanes: about 9 ns a comparison, against 95 ns
+    recomputing both lengths, timed in release on x86-64.
+14. **The viewer and an unlinked contact.** A detection confirmed as Ben over a Picasa face
+    named for a contact Anna that no person is linked to shows only Anna's plate in the viewer
+    (As built 8), while Ben's Person view lists the photo.
 
 ## Not in this design
 
