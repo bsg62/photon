@@ -3492,7 +3492,7 @@ dependencies = [
 
 [[package]]
 name = "photon-app"
-version = "0.48.0"
+version = "0.49.0"
 dependencies = [
  "dunce",
  "getrandom 0.3.4",
@@ -3519,7 +3519,7 @@ dependencies = [
 
 [[package]]
 name = "photon-core"
-version = "0.48.0"
+version = "0.49.0"
 dependencies = [
  "criterion",
  "dunce",
@@ -6739,7 +6739,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.48.0"
+version = "0.49.0"
 dependencies = [
  "serde_json",
  "toml 0.9.12+spec-1.1.0",
