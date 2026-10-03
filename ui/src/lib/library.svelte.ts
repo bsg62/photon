@@ -20,6 +20,7 @@ import {
 } from './api';
 import { untrack } from 'svelte';
 import { keepCopiesName } from './copies';
+import { removedMessage } from './people';
 import { lastIndexAtOrBefore } from './layout';
 import { PageSignals } from './page-signals.svelte';
 import { KEEP_SLACK, PAGE_SIZE, PageCache, pageOf } from './pages';
@@ -1037,6 +1038,18 @@ export class LibraryStore {
 
   async removeFromAlbum(albumId: number, itemIds: number[]): Promise<void> {
     await api.removeFromAlbum(albumId, itemIds);
+    await this.refreshCollections();
+  }
+
+  /** Takes photos from a named person (`person` is the id of a `p:` key) and says what came
+   *  of it: a photo Picasa names the person on stays theirs, and the toast is how the user
+   *  learns why it did not leave the grid. The toast comes before the refetch, so a failed
+   *  refetch cannot swallow the news of a write that stands; the name is read before the
+   *  write, while the list surely still holds it. */
+  async removeFromPerson(person: number, itemIds: number[]): Promise<void> {
+    const name = this.personName(`p:${person}`);
+    const result = await api.removeFromPerson(person, itemIds);
+    this.notify(removedMessage(name, result));
     await this.refreshCollections();
   }
 

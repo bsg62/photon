@@ -73,6 +73,13 @@
   let fullSrc = $state<string | null>(null);
   let error = $state<string | null>(null);
   let zoom = $state(MIN_ZOOM);
+  let root = $state<HTMLDivElement | undefined>();
+
+  /** For a dialog opened over the viewer to hand focus back to: the viewer's keys live on
+   *  the window, but focus left on `<body>` would leave Tab nowhere to start from. */
+  export function focus() {
+    root?.focus();
+  }
   let pan = $state({ x: 0, y: 0 });
   /** The info panel: camera, keywords, people and albums. Its faces are outlined over the
    *  photo while it is open. */
@@ -931,6 +938,7 @@
 <!-- Dark in both themes, so a photo is always judged against the same ground. tokens.css's
      theme blocks match any element, so this subtree resolves the dark tokens. -->
 <div
+  bind:this={root}
   class="viewer focus-container"
   class:quiet={slideshow.idle}
   data-theme="dark"

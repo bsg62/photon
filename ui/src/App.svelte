@@ -17,6 +17,7 @@
   import { clampSidebarWidth, SIDEBAR_DEFAULT, SIDEBAR_STEP } from './lib/sidebar';
   import { createExportDialog } from './lib/export-dialog.svelte';
   import { createFolderDrop } from './lib/folder-drop.svelte';
+  import { createPersonPicker, type PickerTarget } from './lib/person-picker.svelte';
   import { createTagPicker } from './lib/tag-picker.svelte';
   import { grabPoster } from './lib/video-grab';
   import { videoState } from './lib/video-state.svelte';
@@ -26,6 +27,7 @@
   import FolderTree from './components/FolderTree.svelte';
   import Grid from './components/Grid.svelte';
   import PeoplePage from './components/PeoplePage.svelte';
+  import PersonPicker from './components/PersonPicker.svelte';
   import SearchBar from './components/SearchBar.svelte';
   import Compare from './components/Compare.svelte';
   import Settings from './components/Settings.svelte';
@@ -39,6 +41,7 @@
 
   let grid: ReturnType<typeof Grid> | undefined = $state();
   let peoplePage: ReturnType<typeof PeoplePage> | undefined = $state();
+  let viewer: ReturnType<typeof Viewer> | undefined = $state();
   let viewerAt = $state<number | null>(null);
   let settingsAt = $state<SettingsSection | null>(null);
   /** Counts Settings closing, for the People page: Find faces may have been switched there
@@ -53,6 +56,17 @@
   const picker = createTagPicker({
     apply: (mode, tag, ids) => (mode === 'add' ? api.addItemsTag(ids, tag) : api.removeItemsTag(ids, tag)),
   });
+
+  /** Naming a face (from the viewer) or adding photos to a person (from the grid). An
+   *  overlay like the keyword dialog, so here for the same reason; `nameOf` reads the
+   *  stored spelling, so the toast says "Anna" when "anna" was typed for her. */
+  const personPicker = createPersonPicker({
+    nameFaces: api.nameFaces,
+    nameItems: api.nameItems,
+    nameOf: (id) => library.people.find((p) => p.key === `p:${id}`)?.name,
+  });
+  /** Where the person dialog hands focus back to: the viewer it was opened over, or the grid. */
+  let personPickerFrom: 'grid' | 'viewer' = 'grid';
 
   /** Exporting copies. Here with the other overlays, for the reason the picker gives, and
    *  the folder picker is the plugin's - photon never types a path for the user. */
@@ -78,7 +92,12 @@
   /** Everything behind an overlay is inert; the overlays never stack, because each one
    *  makes the other's opener inert. */
   const covered = $derived(
-    viewerAt !== null || settingsAt !== null || compareIds !== null || picker.visible || exporter.visible,
+    viewerAt !== null ||
+      settingsAt !== null ||
+      compareIds !== null ||
+      picker.visible ||
+      personPicker.visible ||
+      exporter.visible,
   );
   let sidebarWidth = $state(SIDEBAR_DEFAULT);
   let dragFrom: { x: number; width: number } | null = null;
@@ -361,6 +380,22 @@
     grid?.focus();
   }
 
+  /** The person dialog, for photos in the grid (`items`) or one face in the viewer (`face`).
+   *  The target is captured by `show`, for `openKeywords`' reason. */
+  function openPersonPicker(target: PickerTarget, from: 'grid' | 'viewer') {
+    personPickerFrom = from;
+    personPicker.show(target);
+  }
+
+  /** Focus goes back where the dialog was opened from, after `tick` for `closeKeywords`'
+   *  reason - and the viewer, too, is inert while the dialog is over it. A viewer that has
+   *  gone meanwhile leaves the grid. */
+  async function closePersonPicker() {
+    await tick();
+    if (personPickerFrom === 'viewer' && viewer) viewer.focus();
+    else grid?.focus();
+  }
+
   /** The remembered checkbox is read when the dialog opens rather than held in the UI: it
    *  lives in the library, and Settings is not the only thing that can change it. A read
    *  that fails must not cost the user the export, so it falls back to rendering edits -
@@ -441,6 +476,7 @@
         onopen={open}
         onkeywords={openKeywords}
         onexport={openExport}
+        onnameperson={(ids) => openPersonPicker({ kind: 'items', items: ids }, 'grid')}
         oncompare={openCompare}
         onshowcopies={showCopiesOf}
       />
@@ -453,10 +489,23 @@
   </main>
   <div class="statusbar"><StatusBar /></div>
 </div>
-{#if viewerAt !== null}<Viewer offset={viewerAt} onclose={closeViewer} onlocate={locate} onsearch={searchFrom} onshowcopies={showCopiesFromViewer} />{/if}
+<!-- Inert under the person dialog, which is opened over it to name a face: `aria-modal`
+     alone does not keep Tab from walking out of the dialog into the viewer's controls. No
+     box of its own, so the viewer is placed exactly as before. -->
+<div class="viewer-layer" inert={personPicker.visible}>
+  {#if viewerAt !== null}<Viewer
+      bind:this={viewer}
+      offset={viewerAt}
+      onclose={closeViewer}
+      onlocate={locate}
+      onsearch={searchFrom}
+      onshowcopies={showCopiesFromViewer}
+    />{/if}
+</div>
 {#if settingsAt !== null}<Settings section={settingsAt} onclose={closeSettings} onsearch={searchFromSettings} />{/if}
 {#if compareIds !== null}<Compare ids={compareIds} onclose={closeCompare} onopen={openFromCompare} />{/if}
 <TagPicker {picker} onclosed={closeKeywords} />
+<PersonPicker picker={personPicker} onclosed={closePersonPicker} />
 <ExportDialog dialog={exporter} onclosed={closeExport} />
 <Toasts />
 {#if folderDrop.hovering}
@@ -528,6 +577,7 @@
   .gear:hover { color: var(--text); background: var(--hover); }
   @media (prefers-reduced-motion: reduce) { .gear { transition: none; } }
   .statusbar { grid-column: 1 / -1; }
+  .viewer-layer { display: contents; }
   .drop {
     position: fixed;
     inset: 0;
