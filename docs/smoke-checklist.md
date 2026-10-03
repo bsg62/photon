@@ -423,7 +423,7 @@ itself; the second is the People page.
 - [ ] Suggestions: faces photon thinks are someone you named, dashed. "Confirm all" confirms the faces on screen and its label says how many when that is fewer than the person's suggestions.
 - [ ] A large group: "Show all N" loads the rest; select a face and act on it, and the strip stays open.
 - [ ] Double-click a face: the viewer opens over the page; closing it returns to the page with its state; the arrows browse the grid's view (All photos when the view lacked the photo).
-- [ ] Rename a person to a name another person has: the two merge. "Merge into..." and Delete (the group returns to Unnamed) ask first with the native dialog.
+- [ ] Rename a person to a name another person has: the two merge. "Merge into…" and Delete (the group returns to Unnamed) ask first with the native dialog.
 - [ ] Opening a person from the sidebar's list, and `person:` in search, show only confirmed faces.
 - [ ] Leaving the page by any sidebar row, a folder, or typing in the search box returns to the grid at the place it was left.
 - [ ] A face whose photo is hidden is nowhere on the page, and not in the count.

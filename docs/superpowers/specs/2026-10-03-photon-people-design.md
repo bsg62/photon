@@ -427,7 +427,8 @@ Unnamed outlines stay as they are and are not clickable.
 ## The People page
 
 Clicking "People" in the sidebar opens it in the main area, in place of the grid. It is a view
-of its own in the UI's navigation, not a `GridView`: it has no grid rows.
+of its own in the UI's navigation, not a `GridView`: it has no grid rows. *As built:* drawn over
+the grid, which stays mounted beneath it (As built 18).
 
 Four sections:
 

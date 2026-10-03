@@ -431,14 +431,14 @@
       tile(7)?.click();
       tile(7)?.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 700, clientY: 300 }));
     },
-    // The sidebar's last row, where the menu has to open upward to stay on screen, and an
-    // aliased folder (folder 5), so the menu holds Rename in photon… and Use folder name.
     // The People page, opened from the sidebar's People row, with a face selected so the
     // action bar is drawn.
     peoplepage: () => {
       click('.group.people');
       later(300, () => document.querySelector('.people .face')?.click());
     },
+    // The sidebar's last row, where the menu has to open upward to stay on screen, and an
+    // aliased folder (folder 5), so the menu holds Rename in photon… and Use folder name.
     foldermenu: () => {
       const row = [...document.querySelectorAll('nav .node')].find((b) => b.textContent.includes('Lisbon with the Silvas'));
       const box = row?.getBoundingClientRect();
