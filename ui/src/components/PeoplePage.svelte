@@ -1,5 +1,6 @@
 <script lang="ts">
   import { ask } from '@tauri-apps/plugin-dialog';
+  import { tick } from 'svelte';
   import { api } from '../lib/api';
   import { library } from '../lib/library.svelte';
   import { fitMenu } from '../lib/menu-place';
@@ -31,15 +32,24 @@
   let renaming = $state<number | null>(null);
   let mergeMenu = $state<{ x: number; y: number; from: number } | null>(null);
   let mergeMenuEl = $state<HTMLDivElement | undefined>();
+  /** Each person's Rename and Merge buttons, where focus goes back to when the field or
+   *  the menu they opened closes: an element removed while it holds focus hands it to
+   *  `<body>`, where no key reaches anything until the user clicks. */
+  const renameButtons: Record<number, HTMLButtonElement | null> = {};
+  const mergeButtons: Record<number, HTMLButtonElement | null> = {};
   const progress = $derived(faceStatus(library.faces));
   const counted = new Intl.NumberFormat();
 
   const page = $derived(model.page);
   const ignoredFaces = $derived(model.count(IGNORED_FACES));
+  /** Through the model, not `page.singleCount`: a face named or ignored leaves at once,
+   *  before the reload that confirms it. */
+  const singleCount = $derived(model.count(SINGLE));
+  const singleShown = $derived(model.faces(SINGLE).length);
   const empty = $derived(
     page !== null &&
       !model.unnamed.length &&
-      !page.singleCount &&
+      !singleCount &&
       !model.suggestions.length &&
       !model.people.length &&
       !model.ignoredGroups.length &&
@@ -63,12 +73,18 @@
   // why rather than "No faces grouped yet"; switching it on sends no data change, but
   // starts a pass, which has work whenever a photo has a preview to look at (off cleared
   // every photo's detection).
+  // Numbered, because the reads overlap: an older answer landing after a newer one would
+  // put back the switch's state from before the change.
+  let switchRead = 0;
   $effect(() => {
     void library.dataVersion;
     void passing;
+    const read = ++switchRead;
     api
       .faceDetection()
-      .then((on) => (enabled = on))
+      .then((on) => {
+        if (read === switchRead) enabled = on;
+      })
       .catch(library.reportError);
   });
 
@@ -94,16 +110,50 @@
    *  open behind it, and again after it is answered. */
   function mergeInto(into: number) {
     const from = mergeMenu?.from;
+    void closeMergeMenu(true);
+    if (from !== undefined) void model.merge(from, into).then(rescueFocus).catch(library.reportError);
+  }
+
+  /** `restore` is false for a click outside the menu that focused something of its own:
+   *  taking focus back from that would undo the user's click. */
+  async function closeMergeMenu(restore: boolean) {
+    const from = mergeMenu?.from;
     mergeMenu = null;
-    if (from !== undefined) void model.merge(from, into);
+    if (from === undefined || !restore) return;
+    await tick();
+    (mergeButtons[from] ?? root)?.focus();
   }
 
   function onMenuKeydown(e: KeyboardEvent) {
-    if (e.key === 'Escape') mergeMenu = null;
+    if (e.key === 'Escape') void closeMergeMenu(true);
+  }
+
+  /** Whether focus has nowhere to be: on `<body>`, or inside the menu about to go. */
+  function focusLost(): boolean {
+    const at = document.activeElement;
+    return !at || at === document.body || !!mergeMenuEl?.contains(at);
+  }
+
+  function onWindowClick() {
+    if (mergeMenu) void closeMergeMenu(focusLost());
+  }
+
+  /** After a person is merged away or deleted, their row - holding the focused button or
+   *  the one focus was handed back to - is gone; the page itself takes focus then. */
+  async function rescueFocus() {
+    await tick();
+    if (focusLost()) root?.focus();
+  }
+
+  async function closeRename(person: number) {
+    renaming = null;
+    await tick();
+    // A rename into another person's name merges this one away, and their button with them.
+    (renameButtons[person] ?? root)?.focus();
   }
 </script>
 
-<svelte:window onclick={() => (mergeMenu = null)} />
+<svelte:window onclick={onWindowClick} />
 
 <div class="people focus-container" tabindex="-1" bind:this={root}>
   <header>
@@ -126,9 +176,12 @@
       </div>
     {/if}
 
-    {#if model.unnamed.length || page.singleCount}
+    {#if model.unnamed.length || singleCount}
       <section aria-labelledby="people-unnamed">
-        <h2 id="people-unnamed">Unnamed <span class="note">{plural(model.unnamed.length, 'group', 'groups')}, largest first</span></h2>
+        <h2 id="people-unnamed">
+          Unnamed{#if model.unnamed.length}
+            <span class="note">{plural(model.unnamed.length, 'group', 'groups')}, largest first</span>{/if}
+        </h2>
         {#each model.unnamed as g (g.id)}
           <div class="row">
             <FaceStrip {model} key={stripKey('unnamed', g.id)} label="Unnamed group" {onopen} />
@@ -145,13 +198,13 @@
             {/if}
           </div>
         {/each}
-        {#if page.singleCount > 0}
+        {#if singleCount > 0}
           <details class="row">
-            <summary>{plural(page.singleCount, 'single face', 'single faces')}</summary>
+            <summary>{plural(singleCount, 'single face', 'single faces')}</summary>
             <FaceStrip {model} key={SINGLE} label="Single faces" {onopen} />
-            {#if page.singleCount > page.singleFaces.length}
+            {#if singleCount > singleShown}
               <p class="hint">
-                Showing the first {counted.format(page.singleFaces.length)}. Name or ignore some to see the rest.
+                Showing the first {counted.format(singleShown)}. Name or ignore some to see the rest.
               </p>
             {/if}
           </details>
@@ -193,9 +246,9 @@
                   choose={(t) => model.choice(t, p.id)}
                   commit={async (t) => {
                     await model.rename(p.id, t);
-                    renaming = null;
+                    await closeRename(p.id);
                   }}
-                  oncancel={() => (renaming = null)}
+                  oncancel={() => closeRename(p.id)}
                   label="Rename {p.name}"
                 />
               {:else}
@@ -203,13 +256,14 @@
               {/if}
               <span class="dim">{n ? plural(n, 'face', 'faces') : 'No faces shown'}</span>
               <span class="buttons">
-                <button onclick={() => (renaming = p.id)}>Rename</button>
+                <button bind:this={renameButtons[p.id]} onclick={() => (renaming = p.id)}>Rename</button>
                 <button
+                  bind:this={mergeButtons[p.id]}
                   disabled={model.people.length < 2}
                   aria-haspopup="menu"
                   onclick={(e) => openMergeMenu(e, p.id)}>Merge into…</button
                 >
-                <button class="danger" onclick={() => model.remove(p.id)}>Delete</button>
+                <button class="danger" onclick={() => model.remove(p.id).then(rescueFocus).catch(library.reportError)}>Delete</button>
               </span>
             </div>
             <FaceStrip {model} {key} label="Faces of {p.name}" {onopen} />

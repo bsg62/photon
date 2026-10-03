@@ -33,10 +33,12 @@
   const more = $derived(model.canShowMore(key));
   const selected = $derived(model.selected(key));
 
-  /** Crops the route answered with an error. Not retried: it is a 404 for a reason a second
-   *  ask does not change (no cached preview, a face that is gone, a key that is stale), and
-   *  the reload that follows any change hands the face a new key if it has one. */
-  let failed = $state<Record<number, true>>({});
+  /** Crops the route answered with an error, by face and key. Not retried under the same
+   *  key: it is a 404 for a reason a second ask does not change (no cached preview, a face
+   *  that is gone, a key that is stale). Keyed by both because a reload can hand the face a
+   *  new key - its photo edited, its preview made - and that crop is worth asking for. */
+  let failed = $state<Record<string, true>>({});
+  const crop = (f: { id: number; thumbKey: string }) => `${f.id}:${f.thumbKey}`;
 
   function onkeydown(e: KeyboardEvent, itemId: number) {
     // Enter opens; Space stays the button's own click, which toggles. Without the
@@ -51,18 +53,18 @@
 {#if faces.length}
   <div class="strip" role="group" aria-label={label}>
     <div class="faces">
-      {#each faces as f (f.id)}
+      {#each faces as f, i (f.id)}
         <button
           class="face"
           class:suggestion
           class:selected={model.isSelected(key, f.id)}
           aria-pressed={model.isSelected(key, f.id)}
-          aria-label="Face"
+          aria-label="Face {i + 1} of {count}"
           onclick={() => model.toggle(key, f.id)}
           ondblclick={() => onopen(f.itemId)}
           onkeydown={(e) => onkeydown(e, f.itemId)}
         >
-          {#if failed[f.id]}
+          {#if failed[crop(f)]}
             <span class="placeholder"><Icon name="user" size={20} /></span>
           {:else}
             <img
@@ -72,7 +74,7 @@
               height="48"
               draggable="false"
               loading="lazy"
-              onerror={() => (failed = { ...failed, [f.id]: true })}
+              onerror={() => (failed = { ...failed, [crop(f)]: true })}
             />
           {/if}
         </button>

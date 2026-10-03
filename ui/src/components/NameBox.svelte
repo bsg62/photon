@@ -46,6 +46,9 @@
   });
 
   async function onkeydown(e: KeyboardEvent) {
+    // An input method's own Enter (confirming a character) and Escape (abandoning one) are
+    // the composition's, not the field's: taken here, Enter committed a half-typed name.
+    if (e.isComposing) return;
     if (e.key === 'Enter' && (choice.kind === 'new' || choice.kind === 'merge')) {
       e.preventDefault();
       const committed = text;
