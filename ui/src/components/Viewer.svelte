@@ -253,6 +253,14 @@
   // Closing by any route - Escape, the back button, the grid going away - leaves fullscreen.
   $effect(() => () => slideshow.stop());
 
+  // A dialog over the viewer holds the show's countdown: the photo being named must not
+  // move on under it. `untrack`: releasing reads the show's own state to re-arm, and this
+  // effect answers to `paused` alone.
+  $effect(() => {
+    const covered = paused;
+    untrack(() => slideshow.hold(covered));
+  });
+
   /** Set once, on unmount: `startSlideshow`'s await for a still to land on can span the
    *  viewer closing underneath it, and a `goto`/fullscreen landing afterwards on a viewer
    *  nobody is looking at would never be stopped by anything. Not `$state`: nothing renders
