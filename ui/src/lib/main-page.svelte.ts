@@ -1,6 +1,7 @@
 /** What the main area shows: the grid, or the People page. The People page is not a grid
  *  view - it has no rows - so it is not `GridView` and does not travel the view chain; the
- *  grid keeps whatever view it had, and is unmounted while the page is up. */
+ *  grid keeps whatever view it had, and stays mounted, hidden, beneath the page (App.svelte
+ *  says why). */
 export type MainPage = 'grid' | 'people';
 
 class MainPageState {

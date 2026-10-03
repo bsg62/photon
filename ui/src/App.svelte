@@ -185,15 +185,18 @@
     // leaves the selection alone; closing after navigating collapses to what is on screen.
     // By id, because the page holding `at` may be long gone; see `closeViewerOn`.
     library.closeViewerOn(at, itemId);
+    // Behind the People page too: a face's photo may have switched the grid to All, and
+    // the hidden grid then holds the photo the user last saw rather than All's first folder,
+    // as "Locate in photon" leaves it.
+    grid?.scrollToOffset(at, 'nearest');
     if (mainPage.current === 'people') {
-      // Opened from a face: the grid is not mounted, and the page is where the user was.
-      // After `tick`, for `closeSettings`' reason - `<main>` is inert until the DOM
+      // Opened from a face: the page is where the user was, and the grid under it is
+      // inert. After `tick`, for `closeSettings`' reason - `<main>` is inert until the DOM
       // catches up with `covered`.
       await tick();
       peoplePage?.focus();
       return;
     }
-    grid?.scrollToOffset(at, 'nearest');
     grid?.focus();
   }
 
@@ -256,8 +259,8 @@
     void showCopiesOf(itemId);
   }
 
-  /** After `tick`: from the People page the grid is mounted only once the DOM catches up,
-   *  and `<main>` stays inert until then too (`closeSettings`). */
+  /** After `tick`: `<main>`, and from the People page the grid's own layer, stay inert until
+   *  the DOM catches up (`closeSettings`). */
   async function searchFrom(query: string) {
     viewerAt = null;
     mainPage.showGrid();
@@ -412,11 +415,18 @@
     onkeydown={keyResize}
   ></div>
   <main class="content" inert={covered}>
-    <!-- The People page has no rows, so it is not a grid view: the grid keeps its view and
-         is unmounted while the page is up (main-page.svelte.ts). -->
-    {#if mainPage.current === 'people'}
-      <PeoplePage bind:this={peoplePage} onopen={openFace} onopensettings={() => openSettings('people')} />
-    {:else}
+    <!-- The People page has no rows, so it is not a grid view (main-page.svelte.ts): it is
+         drawn over the grid, which stays mounted beneath it, keeping its view, scroll,
+         selection and layout. Not unmounted: a remounted grid starts at the top with the
+         launch restore long done, and its "remember the folder at the top" effect then
+         overwrote the user's place with the first folder on every return from the page.
+         Not `display: none` either: that drops the layout box, resets `scrollTop` and shows
+         the grid's ResizeObserver a zero width, whose relayout trips the same write.
+         `visibility: hidden` keeps the box; `inert` keeps the grid's keys and tiles out of
+         reach. Its rubber band cannot be running when the page opens: the page opens from
+         a sidebar click, and the viewport holds the pointer captured until the pointerup
+         or pointercancel that ends a band. -->
+    <div class="grid-layer" class:behind={mainPage.current === 'people'} inert={mainPage.current === 'people'}>
       <Grid
         bind:this={grid}
         onopen={open}
@@ -425,6 +435,11 @@
         oncompare={openCompare}
         onshowcopies={showCopiesOf}
       />
+    </div>
+    {#if mainPage.current === 'people'}
+      <div class="page-layer">
+        <PeoplePage bind:this={peoplePage} onopen={openFace} onopensettings={() => openSettings('people')} />
+      </div>
     {/if}
   </main>
   <div class="statusbar"><StatusBar /></div>
@@ -466,7 +481,11 @@
     background: var(--accent);
     outline: none;
   }
-  .content { min-width: 0; min-height: 0; }
+  .content { position: relative; min-width: 0; min-height: 0; }
+  .grid-layer { height: 100%; }
+  .grid-layer.behind { visibility: hidden; }
+  /* Opaque, since the grid's box is still there beneath it. */
+  .page-layer { position: absolute; inset: 0; background: var(--surface); }
   /* Its own grid row, so it stays put while the sidebar and the grid scroll under it. */
   .topbar {
     grid-column: 1 / -1;
