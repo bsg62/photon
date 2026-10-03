@@ -66,7 +66,7 @@ cargo run -p xtask -- metadata            # licence and installer metadata are c
 **Seeing the UI without launching it** (not in CI; needs Chromium on `PATH` or in `CHROMIUM`):
 
 ```bash
-cargo run -p xtask -- screenshots                     # twenty-nine PNGs into target/screenshots/
+cargo run -p xtask -- screenshots                     # thirty-one PNGs into target/screenshots/
 cargo run -p xtask -- screenshots --only viewer-info-light --no-build
 cargo run -p xtask -- scroll-probe   # the end of a 300k-photo library is reachable
 ```
@@ -196,11 +196,11 @@ Any other writer that creates item rows must inherit the flag the same way, and
 `hidden`.
 
 **Parameterised views.** `GridView::Search`, `Person`, `Album` and `Tag` are selected by an
-argument held beside the view in `ViewState.arg` (the query, a contact hash, an album id,
+argument held beside the view in `ViewState.arg` (the query, a person's key, an album id,
 a keyword). `entries_for(view, arg)` interprets it per view and binds it as a SQL
 parameter; `GridInfo` reports it in typed fields (`searchQuery`, `person`, `album`, `tag`)
 so the TS mirror stays explicit. `set_view` clears the argument unless it is re-entering the
-same parameterised view, so a query can never be read as a contact hash. The membership
+same parameterised view, so a query can never be read as a person's key. The membership
 views filter the driver as well as the outer `WHERE`, the same way Starred does, or the
 sidebar's year groups and the grid disagree.
 
@@ -452,20 +452,25 @@ thumbnail: a look-alike is a fact about the photo *as shown*, and an edit change
 **Face detection is a third pass, off until the user switches it on.**
 `Engine::request_face_pass` runs `photon_core::face_detect::pass::run` on a thread from
 `spawn_pass`, so it is counted in `background_passes` with the look-alike pass and `shutdown`
-and `settle` cover it with no second mechanism. It is requested in four places: at the end of
-`run_scan`, on the thumbnail queue's drain, by the switch itself, and once by `startup` after
-the first grid is built; with the switch off the request is a no-op. That is not everywhere the
+and `settle` cover it with no second mechanism. It is requested in five places: at the end of
+`run_scan`, on the thumbnail queue's drain, by the switch itself, once by `startup` after
+the first grid is built, and after every correction of the People data (`write_people`,
+below); with the switch off the request is a no-op. That is not everywhere the
 look-alike pass is requested: `write_edit`, `remove_folder` and `set_similar_distance` request
 that one and no face pass - an edit reaches the face pass through the drain, once the edited
 photo's thumbnail has been remade. The drain is the trigger that matters for a new photo, which
 is a candidate only once its preview exists; the scan's is the only one a running photon gets
 for a library whose thumbnails are all cached; and `startup`'s is what resumes an unfinished
-pass on a launch where every root is offline, whose scans request nothing. A pass asks for one
-candidate before it loads the model (`run_face_pass`): with none it sends its last event and
-leaves - two whole-library queries, the probe and the last event's count, and no model load,
-which is what keeps the request after every scan cheap (a library holding a photo whose
-preview can never be read never gets this path, that photo being always a candidate) - and with one it reports
-`running` at once, the next report being a whole batch away. A pass the quit ends skips its
+pass on a launch where every root is offline, whose scans request nothing. A pass asks each
+step for one row of work before it loads a model (`face_work`, in `run_face_pass`, which names
+the first step that has some; only detection, which makes faces, has the pass ask the next
+question again): with none it sends its last event and leaves - a probe per step (a photo to
+detect and a face to embed, each a walk of its whole table when there is none; a face to
+group, an index search over the faces with no group), the last event's count, and no model
+load, which is what keeps the request after every scan cheap (a library holding a photo whose
+preview can never be read never gets this path, that photo being always a candidate) - and a
+detection or embedding step with work reports `running` at once, the next report being a
+whole batch away. A pass the quit ends skips its
 rebuild and its last count. The
 pass reads each photo's **cached 1600 px preview**, never the source, for the reason the perceptual hash reads the grid thumbnail: inside the
 renderer it would never run for a photo whose thumbnail is already cached. So its candidate
@@ -496,17 +501,19 @@ since it was listed is skipped, and nothing is written with the setting off, rea
 batch's own transaction so the switch's delete and a batch in flight cannot interleave.
 `update_items` and `set_item_edit` clear a photo's detections and its version, beside the hashes
 they already clear. The candidate list and `face_progress` each read every live photo, so each
-writes `+missing_since IS NULL` and has its own plan test. The pass rebuilds through
-`refresh_grid_derived`: a detection is read by a face search's grid and by the viewer, never by
-a collection count. Once at its end if it wrote anything, and during it at most every 30
-seconds and only while the view is a search whose query reads faces (`view_reads_faces`) - a
-branch no test reaches, its only trigger being that wait.
+writes `+missing_since IS NULL` and has its own plan test. A pass that only detected rebuilds
+through `refresh_grid_derived`: a detection is read by a face search's grid and by the viewer,
+never by a collection count. Once at its end if it wrote anything, and during detection at most
+every 30 seconds and only while the view is a search whose query reads faces
+(`view_reads_faces`) - a branch no test reaches, its only trigger being that wait. A pass that
+grouped a face rebuilds through `refresh_grid` instead (below).
 
 **The switch is two values and one lock.** The stored `face_detection` setting is the authority;
 `Engine.face_enabled` mirrors it so the pass's cancel check is not a database read per photo.
 `set_face_detection` moves the mirror first (a pass in flight stops at its next photo), then
-the stored value, and off deletes every detection and nulls every `face_version` in that same
-transaction. All of it, the mirror's restore on a failed write included, is under
+the stored value, and off deletes every detection, every person with their contact links and
+rejections (`people`, `person_contacts`, `face_rejections`), and nulls every `face_version`, in
+that same transaction. All of it, the mirror's restore on a failed write included, is under
 `Engine.face_write`, as an edit is under `edit_write`: two toggles close together otherwise
 reached the library's writer in either order and left the two disagreeing - mirror on and
 stored off runs the detector over the whole library on every scan and drain while every batch
@@ -514,6 +521,152 @@ is refused. The lock is released before the pass request, the rebuild and the ev
 that ends with the switch off sends the cleared progress event itself, although the command
 has sent one: the batch the switch interrupted can still report "running" after it, and the UI
 would be left with a progress line for a pass that is gone.
+
+**Recognising people is the face pass's second and third steps** (spec
+`2026-10-03-photon-people-design.md`). After detection, `embed_step` runs
+`photon_core::face_embed::pass::run`: a photo with a face whose `embedding_version` is not
+`EMBEDDER_VERSION` has its cached preview decoded once, and each such face is aligned by its
+five landmarks and turned into 128 numbers by SFace, through `tract` like the detector. A step
+of its own rather than part of detection, so a library detected by 0.47.0 is recognised without
+being detected again, at the cost of a second decode of a photo with faces. Its candidate query
+(`EMBED_CANDIDATES_SQL`) applies the photo's conditions (live, preview ready) *inside* the
+page's `LIMIT`, faces driving through a `CROSS JOIN`: outside it, a page made of missing photos
+came back empty, and the pass, which reads an empty page as no work, stopped there. A face
+narrower than `MIN_FACE_PX` (35) in the decoded preview is marked looked-at with no vector and
+is never grouped (measured on LFW faces shrunk into a 1600 px picture: the same person still
+matched 91% of the time at 35 px and 58% at 18 px, at a similarity of 0.45). `write_embeddings`
+has `write_face_batch`'s two guards. The embedding breaker has detection's floor but counts
+*faces*, not photos, and that has a cost: one group photo with 8 or more faces that all fail
+(landmarks the aligner refuses), in a batch where no other face is asked about, trips it alone,
+on every pass, and no photo with a higher id is embedded.
+
+The **grouping step** (`group_ungrouped_faces`) places every face with a vector, no group and
+not ignored (`UNGROUPED`, one string for the step and for `has_ungrouped_faces`; the vector one
+the embedder made for that face, `embedding_version` set, of the right length - a malformed
+blob matched there kept the probe true for ever), in face order on one thread, by
+`people::choose`: the most alike group whose average is at least
+`GROUP_SIMILARITY` (0.50), else a new unnamed group (measured on 2,674 LFW faces: 27-40
+misplaced at 0.45, 6-11 at 0.50, 2 at 0.55 but with about 35 more of 500 people split - and a
+split is one merge to fix, a mixed group a face at a time). **The averages are computed from the
+faces at the start of each run, never stored**: a stored one has to be kept right by every
+writer that moves a face - each operation, the edit and file-change clearing in `items.rs`, the
+switch, the carry-over below - and one forgotten writer leaves it silently wrong. A named
+person's average is their confirmed faces alone (`counts_toward_centroid`), so suggestions
+cannot pull them towards themselves. Groups left with no face are deleted at the start of a run,
+unless named or linked to a contact. Grouping runs during the embed step, and at the pass's end
+while any face is still ungrouped (what an operation leaves). During the step it is paced by
+`GroupPacer`: the first batch that writes is grouped at once, and each later run waits
+`GROUP_COST_FACTOR` (9) times the last run's own duration, so grouping is at most about a tenth
+of the step - every run reads every grouped face's vector, and run after every batch a first
+recognition would read about 40 GB at 100k photos. Only the timing is kept between runs, never
+the groups: an edit or a rewritten file deletes detections without `people_write`, so groups
+held over could name deleted faces. The choosing runs inside the writer's transaction, so
+it is kept cheap: `people::Group` keeps its sum's length beside the sum (private fields, so
+nothing changes one without the other) and `face_embed::dot` sums in eight lanes - about 9 ns
+a comparison against 95 ns recomputing both lengths. **Grouping is announced as a data change;
+detection is not.** Not because the sidebar's People list, the Person view, `person:` or the
+viewer move: they read confirmed faces only, and grouping writes none - only suggestions, new
+unnamed groups and the removal of emptied ones. What reads those is `people_page`, which the
+People page and its sidebar count of groups to name refetch on `data_changed`, so a pass that
+grouped a face rebuilds through `refresh_grid` (`data_dirty`, `counts_epoch`) - at its end,
+and during the embed step at most every 30 seconds whatever the view.
+
+**The People page is `mainPage`, not a `GridView`** (`ui/src/lib/main-page.svelte.ts`): it has no
+rows, so it is not a view of the grid index and does not travel the refresh chain as one. It is
+drawn *over* the grid, which stays mounted beneath it (`visibility: hidden` and `inert`, in
+`App.svelte`'s `.grid-layer`): unmounted, a returning grid starts at the top after the launch
+restore is long done, and its "remember the folder at the top" effect overwrote the user's
+place with the first folder on every return; `display: none` is no better, since it resets
+`scrollTop` and shows the ResizeObserver a zero width. What leaves the page: every sidebar view,
+a folder jump, typing in the search box, the viewer's search links, Locate, Show duplicates and
+Statistics' links. Opening a face's photo does not: the viewer opens over the page, and the grid
+is switched to All photos only when its view lacks the photo. `createPeoplePage`
+(`people-page.svelte.ts`) holds the behaviour and is tested (server runtime: it has no effect or
+derived value): a hide is optimistic and settled by a reload that *started* after the write (one
+already in flight may have read the old rows), and a case-only rename of a person's own name is
+a rename, not a merge. "Show more" survives a reload, re-fetched a page of `MORE` (200, the
+backend's `MAX_FACE_PAGE`) at a time - one call is clamped to 200 and folded a longer strip back
+- and a "Show more" or "Show fewer" made while a reload is in flight wins over it (each strip's
+generation). **A reload keeps the order of the groups on screen**: the backend sorts Unnamed by
+size, and re-sorted rows are keyed, so they moved under the user - the name box being typed in
+lost focus and a click could land on another group; only the page's first answer is taken as
+sorted, and new groups go at the end (a group the 200-group cap below now leaves out simply
+goes; one it now lets in arrives at the end). Library changes reload it through `changed()`, at once
+and then at most once a second (`CHANGE_GAP_MS`, trailing): each reload reads every visible
+face, 148 ms at 150,000 (`people_150k_faces` in the grid bench), and a scan announces a change
+per rebuild; the page's own actions call `load` and are never held back. **Unnamed lists the 200
+largest groups** (`LISTED_GROUPS`) with `unnamed_count` counting all of them; the sidebar's "N
+to name" is `people_to_name`, equal to `unnamed_count`, and is fetched with the collections on
+`data_changed`. A write refused with `notAPerson` (its group is gone) is reported as "That group
+changed". "Confirm all" confirms the faces on screen, not the person's whole suggestion list.
+Confirmations (switching detection off with named people, Delete, Merge) are the native `ask`,
+as everywhere else. The page's crops are `/face/<face id>/<thumb key>` in `protocol.rs`, cut
+only from the cached preview: 404 for a gone face, a stale key or no cached preview (never a
+render, so a page of crops cannot start a burst of renders), 500 for an undecodable one, and
+`immutable` because a face id is never reused and never names another picture. It is the one
+`photon://` route that decodes per request outside the other bounds (an edited `/image` render
+takes `RENDERING`, a thumbnail the pool), so it has its own: a crop waits on `FACE_CROPS`, a
+semaphore of one permit a core, acquired *before* `off_thread` so a waiting request holds no
+blocking thread, and `ThumbCache` keeps the last eight decoded previews by key
+(`decoded_preview`), so a group photo's faces decode it once - a key names one picture, so a
+kept decode is never stale.
+
+**`people_write` serialises the corrections with grouping.** Every operation on the People data
+(`name_group`, `rename_person`, `confirm_faces`, `reject_faces`, `merge_people`,
+`set_person_ignored`, `set_faces_ignored`, `delete_person`) runs through `Engine::write_people`,
+which holds the lock for the write, then rebuilds through `refresh_after_write` and requests a
+face pass; each grouping run takes the same lock. An operation never places a face itself: a
+rejected face, or one no longer ignored, is left ungrouped, and the pass's grouping step places
+it, passing over every group it was rejected from (`face_rejections`). A merge (`merge_into`,
+behind `merge_people` and a name another person has) leaves out, ungrouped, every face of the
+merged group that was rejected from the person it merges into: grouping puts a face taken out
+of Anna in another group, and naming that group Anna would otherwise make it a confirmed Anna.
+
+**Only confirmed faces carry a name.** A face the rule puts with a named person is a suggestion
+(`confirmed = 0`), listed among `people_page`'s suggestions and nowhere else: the Person view,
+the People list's counts, `person:` and the viewer's name plates read confirmed faces only.
+Naming an unnamed group confirms its faces, and so does merging one into a person; renaming a
+named person does not confirm their suggestions, which the user has not looked at. A name
+another person has, compared without case in Rust, merges into them. **A person's key** is
+`p:<id>`, or `c:<hash>` for a Picasa contact no person is linked to: the Person view's argument,
+`GridInfo.person`, `Person.key` and `ItemFace.key`, prefixed so nothing depends on what a hash
+may contain; an argument with neither prefix gives an empty grid. A contact is linked to the
+person whose name it carries (`link_contacts_by_name`) when `upsert_contacts` records it and
+when a group is named or renamed - the user typing a name Picasa uses is saying it is the same
+person - and a linked contact is that person everywhere: their key and name in the viewer, their
+Person view, and `person:` finds the contact's Picasa-only photos by the person's name. The
+viewer draws a face once: a confirmed detection over a named Picasa face, linked or not, leaves
+the plate to Picasa's, and one over an unnamed Picasa face takes its outline's place - so a
+detection confirmed as Ben over a Picasa face named for a contact Anna that no person is linked
+to shows only Anna's plate in the viewer, while Ben's Person view lists the photo. The Picasa
+name offered for an unnamed group counts only its faces that sit on a Picasa face under a named
+contact (more than half of those must be one contact's): an unnamed Picasa face at the same
+place neither votes nor hides the named one. `people.id` and `detected_faces.id` are
+`AUTOINCREMENT` - migration 25 rebuilds `detected_faces`, released in 0.47.0, to get it -
+because the UI holds those ids (`people_page`) and acts on them later: SQLite otherwise hands
+the highest deleted id to the next insert, and a confirm or a rename would land on a face or
+person the user never saw. Every named person is in `people_page`'s People section, with a
+`face_count` of 0 when none of their confirmed faces is visible: off it they could not be
+renamed, merged or deleted, yet `face_data_summary` would still count them.
+
+**What clears what.** An edit or a rewritten file deletes the photo's detections, and with them
+their group, confirmation and rejections: re-detected and grouped again, a confirmed face comes
+back as a suggestion (carrying it across a turn or a crop would mean mapping rectangles through
+the edit, for a case one click fixes). A detector re-run over an unchanged picture - a
+`DETECTOR_VERSION` bump - must not do that to a whole library: `write_face_batch` hands each new
+face the group, confirmation, ignored flag and rejections of an old face at the same place
+(`merge::same_face`), each old face to one new face, best overlap first (`pairs_by_fit`: the
+centre test alone let a small face inside a large one take the large face's name). The old
+vector goes too, with no `embedding_version`: the face is embedded again, and meanwhile counts
+towards its group's average but is not placed by it (`UNGROUPED` asks for the version) -
+without it a re-run emptied every named person's average for the whole embedding step. A
+renamed or moved file or folder is a purge and a new row, so its faces lose their
+confirmations as it loses its albums; and a named person whose confirmed faces are all gone
+has no average, so draws no suggestions until a group is named for them again. **Hidden
+photos' faces are grouped** like any other, so unhiding is instant, and appear in no People
+reader: the page's two face queries, the People list, the Person view and the search grid each
+filter `hidden = 0` and `missing_since IS NULL` (`hidden_photos_are_in_no_person_reader`,
+`a_hidden_photo_is_in_no_section`). They still count towards their group's average.
 
 **Two tables of faces, in two frames.** Picasa's `faces` rows are fractions of the *unedited*
 picture and are mapped through the edit on read; `detected_faces` rows are fractions of the
@@ -626,7 +779,7 @@ anything sitting outside the tile's own box.
 
 The look cannot be tested here, but it can be seen without launching the app: `cargo run -p xtask --
 screenshots` builds the UI, serves `ui/dist` itself with `mock.js` (in
-`crates/xtask/screenshots/`) standing in for Tauri's IPC, and writes twenty-nine PNGs, in both themes,
+`crates/xtask/screenshots/`) standing in for Tauri's IPC, and writes thirty-one PNGs, in both themes,
 to `target/screenshots/` with headless Chromium. It claims a Windows user agent and maps
 `photon.localhost` to its own port, because `mediaUrl` uses `http://photon.localhost` there
 and no plain browser can load `photon://`. It is Chromium's rendering, not WebKitGTK's or
@@ -661,8 +814,9 @@ action in `mock.js`.
   photon's own albums and edits (turns and crops) live only in `library.db` (both are by item
   id, so a renamed file leaves its albums and loses its edit when its old row is purged — a
   recorded limitation, not a bug), and so do the faces photon detects itself (`detected_faces`,
-  deleted when the switch goes off); Picasa's albums are read from its INI, as noted above, and
-  live nowhere else. An edit never touches the photo: it is rendered on the way to the
+  deleted when the switch goes off) and the people the user names among them (`people`, deleted
+  with them; a name is never written to an INI or a photo); Picasa's albums are read from its
+  INI, as noted above, and live nowhere else. An edit never touches the photo: it is rendered on the way to the
   screen.
 - **No system library dependencies beyond the web view.** photon's C is vendored and compiled in with `cc`:
   SQLite, libwebp and libjpeg-turbo (the mozjpeg crate, for the scaled decode of a JPEG's
@@ -678,11 +832,13 @@ action in `mock.js`.
   (`2026-09-29-photon-turbo-jpeg-thumbnails-design.md` is the worked example). Face detection
   kept to the same bar, which rules out ONNX Runtime and OpenCV: the network runs in `tract`,
   pure Rust but for `tract-linalg`'s assembly kernels, which it compiles in with `cc` and no
-  nasm, and nothing outside `face_detect` names it. The YuNet model is a file in
-  `crates/photon-core/models/`, embedded with `include_bytes!`; nothing is downloaded. The
-  workspace `Cargo.toml` builds `tract-linalg`, `tract-core` and `tract-data` optimised in the
-  dev profile: unoptimised, one detection takes about five seconds, and the tests run the real
-  model.
+  nasm, and nothing outside `face_detect` and `face_embed` names it. Both models are files in
+  `crates/photon-core/models/`, embedded with `include_bytes!` - the YuNet detector and the
+  SFace recogniser (38.7 MB, Apache 2.0, in `THIRD-PARTY-NOTICES.md`) - and nothing is
+  downloaded. Both run on the CPU: GPU inference has no one route across three platforms, cannot
+  be tested in CI, and would speed up only the first run. The workspace `Cargo.toml` builds
+  `tract-linalg`, `tract-core` and `tract-data` optimised in the dev profile: unoptimised, one
+  detection takes about five seconds, and the tests run the real models.
 - **AVIF is decoded in `photon_core::avif`, not by `image`**, whose AVIF decoder is dav1d (C).
   `zenavif-parse` reads the container, `rav1d` (its assembly only under `avif-asm`, above)
   decodes the AV1, and `avif/av1.rs` and `turbo.rs` (libjpeg's error manager) hold the only

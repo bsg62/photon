@@ -317,10 +317,19 @@ fn search_tags(conn: &Connection) -> Result<HashMap<i64, String>> {
     )
 }
 
-/// The names of the people Picasa tagged on each photo, for `person:`, as `search_tags`
-/// gives the keywords. A face whose contact no INI has named has no name to find.
+/// The names of the people on each photo, for `person:`, as `search_tags` gives the
+/// keywords: Picasa's contacts, and photon's own people by their confirmed faces. A face
+/// whose contact no INI has named has no name to find, and a suggestion is not yet the
+/// person's face.
 const SEARCH_PEOPLE_SQL: &str =
-    "SELECT f.item_id, c.name FROM faces f JOIN contacts c ON c.hash = f.contact";
+    "SELECT f.item_id, c.name FROM faces f JOIN contacts c ON c.hash = f.contact
+     UNION ALL
+     SELECT d.item_id, p.name FROM detected_faces d JOIN people p ON p.id = d.person_id
+     WHERE d.confirmed = 1 AND p.name IS NOT NULL
+     UNION ALL
+     SELECT f.item_id, p.name FROM faces f
+     JOIN person_contacts pc ON pc.contact = f.contact
+     JOIN people p ON p.id = pc.person_id WHERE p.name IS NOT NULL";
 
 /// The names of the albums each photo is in, photon's and Picasa's, for `album:`.
 const SEARCH_ALBUMS_SQL: &str =
@@ -961,7 +970,7 @@ impl Library {
     }
 
     /// The grid's rows for one view. `arg` is the view's argument - the query for `Search`,
-    /// a contact hash for `Person`, an album id for `Album`, a keyword for `Tag` - and the
+    /// a person key for `Person`, an album id for `Album`, a keyword for `Tag` - and the
     /// other views ignore it. One entry point rather than one per view, because `GridView`
     /// is matched exhaustively and an arm that could not see the argument would have to lie.
     ///
@@ -976,10 +985,32 @@ impl Library {
             GridView::Hidden => self.hidden_entries(),
             GridView::Recent => self.recent_entries(),
             GridView::Search => self.search_entries(arg),
-            GridView::Person => self.entries_filtered(
-                "AND i.id IN (SELECT item_id FROM faces WHERE contact = ?1)",
-                &[&arg],
-            ),
+            GridView::Person => {
+                // The argument is a key (`Person::key`). Neither prefix names no one, so a
+                // bare contact hash is never read as one and the grid is empty, as for an
+                // unknown album id.
+                if let Some(person) = arg.strip_prefix("p:") {
+                    let Ok(person) = person.parse::<i64>() else {
+                        return Ok(Vec::new());
+                    };
+                    self.entries_filtered(
+                        "AND i.id IN (SELECT item_id FROM detected_faces
+                                      WHERE person_id = ?1 AND confirmed = 1
+                                      UNION
+                                      SELECT f.item_id FROM faces f
+                                      JOIN person_contacts pc ON pc.contact = f.contact
+                                      WHERE pc.person_id = ?1)",
+                        &[&person],
+                    )
+                } else if let Some(contact) = arg.strip_prefix("c:") {
+                    self.entries_filtered(
+                        "AND i.id IN (SELECT item_id FROM faces WHERE contact = ?1)",
+                        &[&contact],
+                    )
+                } else {
+                    Ok(Vec::new())
+                }
+            }
             GridView::Album => {
                 // An argument that is not an id names no album; an empty grid says so
                 // rather than an error that would roll the view back to the previous one.

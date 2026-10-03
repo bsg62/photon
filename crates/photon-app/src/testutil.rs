@@ -39,6 +39,18 @@ pub fn portrait_jpeg() -> Vec<u8> {
     std::fs::read(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
 }
 
+/// `portrait_jpeg`'s picture, re-encoded at `width` pixels wide: the same face in a file
+/// of its own, as a copy resized for sharing would be.
+pub fn portrait_jpeg_at(width: u32) -> Vec<u8> {
+    let portrait = image::load_from_memory(&portrait_jpeg()).unwrap();
+    let height = portrait.height() * width / portrait.width();
+    encode_jpeg(
+        portrait
+            .resize_exact(width, height, image::imageops::FilterType::Triangle)
+            .to_rgb8(),
+    )
+}
+
 fn encode_jpeg(img: image::RgbImage) -> Vec<u8> {
     let mut buf = Vec::new();
     image::DynamicImage::ImageRgb8(img)

@@ -338,6 +338,104 @@ fn bench_tags(c: &mut Criterion) {
     });
 }
 
+/// 150,000 detected faces with vectors on the 100k-photo library, in 30,000 groups shaped
+/// like a first recognition: 20 named people of 1,500 faces (1,200 confirmed, 300
+/// suggestions), 30 unnamed groups of 500, 4,950 of 13, 15,000 pairs (100 of them ignored)
+/// and 10,000 single faces, plus 650 faces ignored one by one. A group's faces are spread
+/// over the library, as one person's are, and 1% of the photos are hidden.
+///
+/// Written straight into `library.db` in one transaction, as the grouping step would leave
+/// it: running the detector, the embedder and the grouping over 100k photos to get here would
+/// take hours, and none of it is what is measured. No Picasa faces, so no group has an offer
+/// to work out; that cost falls on the 200 listed groups' photos alone.
+fn people_library(dir: &Path) -> Library {
+    let lib = synthetic_library(dir, 1_000, 100);
+    let ids: Vec<i64> = {
+        let conn = rusqlite::Connection::open(dir.join("bench.db")).unwrap();
+        let mut stmt = conn.prepare("SELECT id FROM items ORDER BY id").unwrap();
+        stmt.query_map([], |r| r.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    };
+    lib.set_face_detection(true).unwrap();
+    let mut conn = rusqlite::Connection::open(dir.join("bench.db")).unwrap();
+    let tx = conn.transaction().unwrap();
+    {
+        let mut person = tx
+            .prepare("INSERT INTO people (name, ignored) VALUES (?1, ?2)")
+            .unwrap();
+        let mut face = tx
+            .prepare(
+                "INSERT INTO detected_faces (item_id, left, top, right, bottom, landmarks,
+                     score, embedding, embedding_version, person_id, confirmed, ignored)
+                 VALUES (?1, 0.4, 0.4, 0.5, 0.5, ?2, 0.9, ?3, 1, ?4, ?5, ?6)",
+            )
+            .unwrap();
+        let landmarks = vec![0u8; 40];
+        let embedding = vec![0u8; 512];
+        let mut n = 0usize;
+        // Face n is on photo n * 7919 mod the library: a group's faces are spread out.
+        let mut add = |group: Option<i64>, confirmed: bool, ignored: bool| {
+            let item = ids[(n * 7_919) % ids.len()];
+            n += 1;
+            face.execute(rusqlite::params![
+                item, landmarks, embedding, group, confirmed, ignored
+            ])
+            .unwrap();
+        };
+        let mut new_group = |name: Option<String>, ignored: bool| {
+            person.execute(rusqlite::params![name, ignored]).unwrap();
+            tx.last_insert_rowid()
+        };
+        let mut shape: Vec<(Option<String>, bool, usize)> = Vec::new();
+        shape.extend((0..20).map(|i| (Some(format!("Person {i:02}")), false, 1_500)));
+        shape.extend((0..30).map(|_| (None, false, 500)));
+        shape.extend((0..4_950).map(|_| (None, false, 13)));
+        shape.extend((0..15_000).map(|i| (None, i < 100, 2)));
+        shape.extend((0..10_000).map(|_| (None, false, 1)));
+        for (name, ignored, size) in shape {
+            let named = name.is_some();
+            let group = new_group(name, ignored);
+            for k in 0..size {
+                add(Some(group), named && k < 1_200, false);
+            }
+        }
+        for _ in 0..650 {
+            add(None, false, true);
+        }
+        assert_eq!(n, 150_000);
+    }
+    tx.commit().unwrap();
+    lib.set_hidden(&ids.iter().copied().step_by(100).collect::<Vec<_>>(), true)
+        .unwrap();
+    lib
+}
+
+fn bench_people(c: &mut Criterion) {
+    let dir = tempfile::tempdir().unwrap();
+    let lib = people_library(dir.path());
+    // Checked, so the library is the one described: the Unnamed section is past its cap, and
+    // every section has something in it.
+    let page = lib.people_page(12).unwrap();
+    assert_eq!(page.unnamed.len(), 200);
+    assert!(page.unnamed_count > 15_000, "{}", page.unnamed_count);
+    assert_eq!(lib.people_to_name().unwrap(), page.unnamed_count);
+    assert_eq!(page.people.len(), 20);
+    assert!(page.single_count > 9_000 && !page.ignored_groups.is_empty());
+    let mut group = c.benchmark_group("people_150k_faces");
+    // Each read is tens of milliseconds or more: the default hundred samples would make
+    // this the longest bench here for no more certainty than the gap between the two needs.
+    group.sample_size(10);
+    group.bench_function("people_page", |b| {
+        b.iter(|| black_box(lib.people_page(12).unwrap()))
+    });
+    group.bench_function("people_to_name", |b| {
+        b.iter(|| black_box(lib.people_to_name().unwrap()))
+    });
+    group.finish();
+}
+
 /// `len` bytes that look like compressed image data: no structure, and invalid UTF-8
 /// throughout, which is what surrounds an XMP packet in a real file.
 fn noise(len: usize, seed: &mut u32) -> Vec<u8> {
@@ -380,6 +478,7 @@ criterion_group!(
     bench_grid,
     bench_search,
     bench_tags,
+    bench_people,
     bench_keywords
 );
 criterion_main!(benches);

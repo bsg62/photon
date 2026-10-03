@@ -9,8 +9,8 @@ use photon_core::{
     face_detect::{Rect, merge},
     grid::{FolderTally, GridEntry, GridView, Section, hex_key},
     library::{
-        Album, AlbumSummary, CopiesArg, Folder, GridTile, ItemFace, Person, SavedSearch, TagCount,
-        TagRule, ThemeChoice, WatchedFolder, is_starred,
+        Album, AlbumSummary, CopiesArg, FaceFilter, Folder, GridTile, ItemFace, PageFace,
+        PeoplePage, Person, SavedSearch, TagCount, TagRule, ThemeChoice, WatchedFolder, is_starred,
     },
     media::{MediaKind, ThumbState},
     now_ms,
@@ -171,10 +171,13 @@ pub struct ViewerItem {
     pub tags: Vec<String>,
     /// The caption the photo carries, if any. Shown under the photo and in the info panel.
     pub caption: Option<String>,
-    /// Named Picasa faces, in INI order.
+    /// Named faces: Picasa's, in INI order, then the confirmed faces of the people photon
+    /// knows by name that are none of those. A contact linked to a person is that person.
     pub faces: Vec<ItemFace>,
     /// Faces with no name: Picasa's whose contact no INI names, then the ones photon
-    /// detected that are none of Picasa's. In the picture as shown, like `faces`.
+    /// detected that are none of Picasa's. A detection confirmed as a named person is in
+    /// `faces` instead, and an unnamed Picasa face it lies over is left out with it, so the
+    /// face is drawn once. In the picture as shown, like `faces`.
     pub unnamed_faces: Vec<Rect>,
     /// A video plays; the viewer shows no zoom, crop or turn for it.
     pub kind: MediaKind,
@@ -435,8 +438,8 @@ pub fn grid_info(engine: &Engine, known_layout: Option<u64>) -> GridInfo {
     }
 }
 
-pub fn set_person_view(engine: &Engine, contact: &str) -> CmdResult<Option<u64>> {
-    Ok(engine.set_person_view(contact)?)
+pub fn set_person_view(engine: &Engine, person: &str) -> CmdResult<Option<u64>> {
+    Ok(engine.set_person_view(person)?)
 }
 
 pub fn set_album_view(engine: &Engine, album_id: i64) -> CmdResult<Option<u64>> {
@@ -686,6 +689,82 @@ pub fn set_face_detection(engine: &Arc<Engine>, enabled: bool) -> CmdResult<()> 
     Ok(())
 }
 
+/// What switching face detection off would delete that the user made: the people they
+/// named. The faces themselves come back with the next pass; the names do not.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FaceDataSummary {
+    pub named_people: i64,
+}
+
+pub fn face_data_summary(engine: &Engine) -> CmdResult<FaceDataSummary> {
+    Ok(FaceDataSummary {
+        named_people: engine.lib.named_people_count()?,
+    })
+}
+
+/// How many unnamed groups wait for a name, for the sidebar's People row.
+pub fn people_to_name(engine: &Engine) -> CmdResult<i64> {
+    Ok(engine.lib.people_to_name()?)
+}
+
+/// The People page, each group with the first `strip` of its faces.
+pub fn people_page(engine: &Engine, strip: usize) -> CmdResult<PeoplePage> {
+    Ok(engine.lib.people_page(strip)?)
+}
+
+/// A page of one person's or group's faces: the rest of a strip.
+pub fn person_faces(
+    engine: &Engine,
+    person: i64,
+    which: FaceFilter,
+    offset: usize,
+    limit: usize,
+) -> CmdResult<Vec<PageFace>> {
+    Ok(engine.lib.person_faces(person, which, offset, limit)?)
+}
+
+/// Names a group; returns the person it ended in, which is another when the name is taken.
+pub fn name_person(engine: &Arc<Engine>, person: i64, name: &str) -> CmdResult<i64> {
+    Ok(engine.write_people("naming a person", |lib| lib.name_group(person, name))?)
+}
+
+/// Renames a person; returns the person they ended in, as naming does.
+pub fn rename_person(engine: &Arc<Engine>, person: i64, name: &str) -> CmdResult<i64> {
+    Ok(engine.write_people("renaming a person", |lib| lib.rename_person(person, name))?)
+}
+
+pub fn confirm_faces(engine: &Arc<Engine>, faces: &[i64]) -> CmdResult<()> {
+    Ok(engine.write_people("confirming faces", |lib| lib.confirm_faces(faces))?)
+}
+
+/// "Not this person": the faces leave their group, and the pass the write requests places
+/// them elsewhere.
+pub fn reject_faces(engine: &Arc<Engine>, faces: &[i64]) -> CmdResult<()> {
+    Ok(engine.write_people("rejecting faces", |lib| lib.reject_faces(faces))?)
+}
+
+pub fn merge_people(engine: &Arc<Engine>, from: i64, into: i64) -> CmdResult<()> {
+    Ok(engine.write_people("merging people", |lib| lib.merge_people(from, into))?)
+}
+
+pub fn ignore_person(engine: &Arc<Engine>, person: i64, ignored: bool) -> CmdResult<()> {
+    Ok(engine.write_people("ignoring a person", |lib| {
+        lib.set_person_ignored(person, ignored)
+    })?)
+}
+
+pub fn ignore_faces(engine: &Arc<Engine>, faces: &[i64], ignored: bool) -> CmdResult<()> {
+    Ok(engine.write_people("ignoring faces", |lib| {
+        lib.set_faces_ignored(faces, ignored)
+    })?)
+}
+
+/// Takes a person's name away: their faces stay together, as a group with no name.
+pub fn delete_person(engine: &Arc<Engine>, person: i64) -> CmdResult<()> {
+    Ok(engine.write_people("deleting a person", |lib| lib.delete_person(person))?)
+}
+
 /// The colour scheme the user chose.
 pub fn theme(engine: &Engine) -> CmdResult<ThemeChoice> {
     Ok(engine.lib.theme()?)
@@ -723,7 +802,7 @@ pub fn viewer_item(engine: &Engine, id: i64) -> CmdResult<ViewerItem> {
     let tags = engine.lib.item_tags(item.id)?;
     let caption = engine.lib.item_caption(item.id)?;
     let edit = item.edit;
-    let faces = engine
+    let mut faces: Vec<ItemFace> = engine
         .lib
         .item_faces(item.id)?
         .into_iter()
@@ -746,6 +825,34 @@ pub fn viewer_item(engine: &Engine, id: i64) -> CmdResult<ViewerItem> {
             })
         })
         .collect();
+    // A face photon's own person is confirmed on is named in the viewer, once: where Picasa
+    // recorded the same face under any named contact, linked to a person or not, Picasa's
+    // is the one shown.
+    let named_here: Vec<Rect> = faces
+        .iter()
+        .map(|f| Rect {
+            left: f.left,
+            top: f.top,
+            right: f.right,
+            bottom: f.bottom,
+        })
+        .collect();
+    let named_detected = engine.lib.item_named_detected_faces(item.id)?;
+    let mut named_over_unnamed: Vec<Rect> = Vec::new();
+    for (rect, person, name) in &named_detected {
+        if named_here.iter().any(|p| merge::same_face(p, rect)) {
+            continue;
+        }
+        named_over_unnamed.push(*rect);
+        faces.push(ItemFace {
+            key: format!("p:{person}"),
+            name: name.clone(),
+            left: rect.left,
+            top: rect.top,
+            right: rect.right,
+            bottom: rect.bottom,
+        });
+    }
     // One rule for both readers (`face_detect::merge`): search counts exactly these.
     let picasa: Vec<(Rect, bool)> = engine
         .lib
@@ -754,15 +861,23 @@ pub fn viewer_item(engine: &Engine, id: i64) -> CmdResult<ViewerItem> {
         .filter_map(|(rect, named)| Some((merge::shown(edit, rect)?, named)))
         .collect();
     let all: Vec<Rect> = picasa.iter().map(|(rect, _)| *rect).collect();
+    // A Picasa face no INI names, under a name plate of ours, is the one face: the plate
+    // is drawn, not an outline on top of it.
     let mut unnamed_faces: Vec<Rect> = picasa
         .iter()
-        .filter(|(_, named)| !named)
+        .filter(|(rect, named)| {
+            !named && !named_over_unnamed.iter().any(|n| merge::same_face(rect, n))
+        })
         .map(|(rect, _)| *rect)
         .collect();
-    unnamed_faces.extend(merge::unmatched(
-        &all,
-        &engine.lib.item_detected_faces(item.id)?,
-    ));
+    // A detection a person is confirmed on has a name plate; it is no unnamed outline.
+    let unnamed_detected: Vec<Rect> = engine
+        .lib
+        .item_detected_faces(item.id)?
+        .into_iter()
+        .filter(|d| !named_detected.iter().any(|(n, _, _)| n == d))
+        .collect();
+    unnamed_faces.extend(merge::unmatched(&all, &unnamed_detected));
     let (upright_w, upright_h) =
         photon_core::metadata::oriented_dims(item.width, item.height, item.orientation);
     let (uncropped_width, uncropped_height) = edit.without_crop().dims(upright_w, upright_h);
@@ -1647,6 +1762,143 @@ mod tests {
         assert!((item.unnamed_faces[1].left - 0.45).abs() < 0.001);
     }
 
+    /// A person's confirmed faces are named in the viewer; a contact linked to a person is
+    /// that person, under the person's name rather than Picasa's, shown once where Picasa
+    /// and photon both found the face; a suggestion is still an unnamed outline.
+    #[test]
+    fn viewer_item_names_confirmed_faces_and_shows_a_linked_contact_once() {
+        let f = fixture(&[
+            ("a/a.jpg", &jpeg(400, 300)),
+            (
+                "a/.picasa.ini",
+                b"[Contacts2]\nabc=Ada L.\n[a.jpg]\nfaces=rect64(1000200030006000),abc\n",
+            ),
+        ]);
+        f.add_photos();
+        f.engine.thumbs.wait_idle();
+        let id = f.ids()[0];
+        f.engine.lib.set_face_detection(true).unwrap();
+        f.engine
+            .lib
+            .set_thumb_state(id, ThumbState::Ready, None)
+            .unwrap();
+        let listed = f
+            .engine
+            .lib
+            .face_candidates(0, 10, DETECTOR_VERSION)
+            .unwrap();
+        let at = |left: f64| Detection {
+            rect: Rect {
+                left,
+                top: 0.2,
+                right: left + 0.1,
+                bottom: 0.3,
+            },
+            landmarks: [(0.0, 0.0); 5],
+            score: 0.9,
+        };
+        f.engine
+            .lib
+            .write_face_batch(
+                &[(listed[0].clone(), vec![at(0.08), at(0.45), at(0.80)])],
+                DETECTOR_VERSION,
+            )
+            .unwrap();
+        // Ada is linked to Picasa's contact (whom Picasa calls "Ada L.") and confirmed on the
+        // detection over it; Bea has a confirmed face in the middle and only a suggestion at
+        // the right.
+        let w = rusqlite::Connection::open(&f.config().db_path).unwrap();
+        w.execute(
+            "INSERT INTO people (id, name) VALUES (1, 'Ada'), (2, 'Bea')",
+            [],
+        )
+        .unwrap();
+        w.execute("INSERT INTO person_contacts VALUES ('abc', 1)", [])
+            .unwrap();
+        for (left, person, confirmed) in [(0.08, 1, 1), (0.45, 2, 1), (0.80, 2, 0)] {
+            w.execute(
+                "UPDATE detected_faces SET person_id = ?2, confirmed = ?3 WHERE left = ?1",
+                rusqlite::params![left, person, confirmed],
+            )
+            .unwrap();
+        }
+        drop(w);
+
+        let item = viewer_item(&f.engine, id).unwrap();
+        let named: Vec<(&str, &str)> = item
+            .faces
+            .iter()
+            .map(|f| (f.key.as_str(), f.name.as_str()))
+            .collect();
+        assert_eq!(
+            named,
+            vec![("p:1", "Ada"), ("p:2", "Bea")],
+            "Ada once, under her key and the name the user gave her, not also as the \
+             detection over Picasa's rectangle"
+        );
+        assert!((item.faces[0].left - 0.0625).abs() < 0.001, "Picasa's box");
+        assert_eq!(item.unnamed_faces.len(), 1, "{:?}", item.unnamed_faces);
+        assert!(
+            (item.unnamed_faces[0].left - 0.80).abs() < 0.001,
+            "only the suggestion is an outline"
+        );
+    }
+
+    /// A confirmed face over a Picasa face no INI names is one face with a name plate, not
+    /// a plate with an unnamed outline drawn on the same place.
+    #[test]
+    fn a_named_detection_over_an_unnamed_picasa_face_is_drawn_once() {
+        let f = fixture(&[
+            ("a/a.jpg", &jpeg(400, 300)),
+            (
+                "a/.picasa.ini",
+                b"[a.jpg]\nfaces=rect64(1000200030006000),zzz\n",
+            ),
+        ]);
+        f.add_photos();
+        f.engine.thumbs.wait_idle();
+        let id = f.ids()[0];
+        f.engine.lib.set_face_detection(true).unwrap();
+        f.engine
+            .lib
+            .set_thumb_state(id, ThumbState::Ready, None)
+            .unwrap();
+        let listed = f
+            .engine
+            .lib
+            .face_candidates(0, 10, DETECTOR_VERSION)
+            .unwrap();
+        let det = Detection {
+            rect: Rect {
+                left: 0.08,
+                top: 0.2,
+                right: 0.18,
+                bottom: 0.3,
+            },
+            landmarks: [(0.0, 0.0); 5],
+            score: 0.9,
+        };
+        f.engine
+            .lib
+            .write_face_batch(&[(listed[0].clone(), vec![det])], DETECTOR_VERSION)
+            .unwrap();
+        let w = rusqlite::Connection::open(&f.config().db_path).unwrap();
+        w.execute("INSERT INTO people (id, name) VALUES (1, 'Ada')", [])
+            .unwrap();
+        w.execute("UPDATE detected_faces SET person_id = 1, confirmed = 1", [])
+            .unwrap();
+        drop(w);
+
+        let item = viewer_item(&f.engine, id).unwrap();
+        assert_eq!(item.faces.len(), 1, "{:?}", item.faces);
+        assert_eq!(item.faces[0].key, "p:1");
+        assert!(
+            item.unnamed_faces.is_empty(),
+            "no outline under the plate: {:?}",
+            item.unnamed_faces
+        );
+    }
+
     /// An edit maps Picasa's unnamed face like its named ones; a detection is already in
     /// the picture as shown and is not mapped again.
     #[test]
@@ -1756,6 +2008,20 @@ mod tests {
             duration_ms: None,
         };
         f.engine.lib.update_item_meta(&[(id, described)]).unwrap();
+    }
+
+    /// The people commands' refusals reach the UI under kinds of their own.
+    #[test]
+    fn people_errors_have_their_own_kinds() {
+        let f = fixture(&[]);
+        assert_eq!(
+            name_person(&f.engine, 1, "  ").unwrap_err().kind,
+            "emptyPersonName"
+        );
+        assert_eq!(
+            merge_people(&f.engine, 9_999, 9_998).unwrap_err().kind,
+            "notAPerson"
+        );
     }
 
     /// Renaming the tag on screen must carry the view with it: left on the old name, the

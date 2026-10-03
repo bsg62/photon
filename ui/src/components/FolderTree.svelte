@@ -6,6 +6,7 @@
   import { arrangeFolders, enterFolder, folderLabel, folderRows, returnToAll } from '../lib/folders';
   import { sidebarTags } from '../lib/tags';
   import { library } from '../lib/library.svelte';
+  import { mainPage } from '../lib/main-page.svelte';
   import { fitMenu } from '../lib/menu-place';
   import { searchBox } from '../lib/search-box.svelte';
   import { onThisDayLabel, onThisDayQuery } from '../lib/searches';
@@ -25,6 +26,10 @@
   /** A row's height, as `.node` and `.editor` draw it below: what a year group that has not
    *  been laid out yet is assumed to be tall (`contain-intrinsic-block-size`). */
   const ROW = 28;
+
+  /** Whether the grid is what the main area shows. While the People page is up no grid view
+   *  is on screen, so none of their rows may look selected. */
+  const onGrid = $derived(mainPage.current === 'grid');
 
   const years = $derived(arrangeFolders(folderRows(library.info.folders, library.folders.folders), library.info.sort));
   const shownTags = $derived(sidebarTags(library.tags));
@@ -140,6 +145,7 @@
   /** The order here — cancel, then await the view switch, then scroll — is explained on
    *  `enterFolder`. */
   function jumpToFolder(folderId: number): Promise<void> {
+    mainPage.showGrid();
     return enterFolder(folderId, {
       cancelSearch: () => searchBox.cancel(),
       currentView: () => library.settledView(),
@@ -149,6 +155,7 @@
   }
 
   function showAll(): Promise<void> {
+    mainPage.showGrid();
     return returnToAll({
       cancelSearch: () => searchBox.cancel(),
       currentView: () => library.settledView(),
@@ -160,8 +167,10 @@
   }
 
   /** Every collection click cancels a pending search first, for the reason on the Starred
-   *  button: an orphaned debounced send would otherwise re-enter Search behind it. */
+   *  button: an orphaned debounced send would otherwise re-enter Search behind it. A click
+   *  on a view is also the user asking for the grid, so it leaves the People page. */
   function show(switchView: () => Promise<void>) {
+    mainPage.showGrid();
     searchBox.cancel();
     void switchView();
   }
@@ -297,12 +306,24 @@
 
   function showOnThisDay() {
     closeMenus();
+    mainPage.showGrid();
     searchBox.search(onThisDayQuery(new Date()));
   }
 
   function showSearch(search: SavedSearch) {
     closeMenus();
+    mainPage.showGrid();
     searchBox.search(search.query);
+  }
+
+  /** The People page, from the label beside the People chevron. A pending search is
+   *  cancelled for the reason on `show`: landing behind the page, it would switch the grid
+   *  to Search where nobody is looking. The list opens too, so the names are beside the page
+   *  that makes them. */
+  function showPeople() {
+    searchBox.cancel();
+    mainPage.showPeople();
+    open.people = true;
   }
 </script>
 
@@ -314,7 +335,7 @@
        reports none for the whole library, and Recent has none either. -->
   <button
     class="root all"
-    class:active={library.info.view === 'all'}
+    class:active={onGrid && library.info.view === 'all'}
     onclick={showAll}
     title="Every photo, back where you left the gallery"
   >
@@ -323,7 +344,7 @@
 
   <button
     class="root starred"
-    class:active={library.info.view === 'starred'}
+    class:active={onGrid && library.info.view === 'starred'}
     onclick={() => show(() => library.setView('starred'))}
     title="Starred photos"
   >
@@ -333,7 +354,7 @@
 
   <button
     class="root recent"
-    class:active={library.info.view === 'recent'}
+    class:active={onGrid && library.info.view === 'recent'}
     onclick={() => show(() => library.setView('recent'))}
     title="The newest photos by capture date"
   >
@@ -344,7 +365,7 @@
        saved search has none: it would mean running the search on every library change. -->
   <button
     class="root on-this-day"
-    class:active={library.info.view === 'search' && library.info.searchQuery === today.query}
+    class:active={onGrid && library.info.view === 'search' && library.info.searchQuery === today.query}
     onclick={showOnThisDay}
     title="Photos taken on {today.label}, in any year"
   >
@@ -356,7 +377,7 @@
   {#if library.info.videoCount > 0 || library.info.view === 'videos'}
     <button
       class="root videos"
-      class:active={library.info.view === 'videos'}
+      class:active={onGrid && library.info.view === 'videos'}
       onclick={() => show(() => library.setView('videos'))}
       title="Every video in the library"
     >
@@ -370,7 +391,7 @@
   {#if library.info.duplicateCount > 0 || library.info.view === 'duplicates' || library.info.view === 'copies'}
     <button
       class="root duplicates"
-      class:active={library.info.view === 'duplicates'}
+      class:active={onGrid && library.info.view === 'duplicates'}
       onclick={() => show(() => library.setView('duplicates'))}
       title="Photos with a byte-identical copy elsewhere in the library"
     >
@@ -381,7 +402,7 @@
       <!-- Not a saved place: it exists while the view is open, and leaving removes it. Not
            a `<button>`: it does nothing on click (the view is already open), so a button
            here was a dead tab stop announced as interactive with no action behind it. -->
-      <div class="root copies active" aria-current="true" title={library.info.copiesOf?.fileName}>
+      <div class="root copies" class:active={onGrid} aria-current={onGrid ? 'true' : undefined} title={library.info.copiesOf?.fileName}>
         <span class="name">Copies of {library.info.copiesOf?.fileName || 'a photo'}</span>
       </div>
     {/if}
@@ -392,7 +413,7 @@
   {#if library.info.hiddenCount > 0 || library.info.view === 'hidden'}
     <button
       class="root hidden-view"
-      class:active={library.info.view === 'hidden'}
+      class:active={onGrid && library.info.view === 'hidden'}
       onclick={() => show(() => library.setView('hidden'))}
       title="Photos you have hidden. They stay on disk; unhide them from here"
     >
@@ -422,7 +443,7 @@
       {:else}
         <button
           class="node"
-          class:active={library.info.view === 'album' && library.info.album === album.id}
+          class:active={onGrid && library.info.view === 'album' && library.info.album === album.id}
           title={album.name}
           onclick={() => show(() => library.setAlbumView(album.id))}
           oncontextmenu={(e) => (album.picasa ? e.preventDefault() : albumContextMenu(e, album))}
@@ -478,7 +499,7 @@
         {:else}
           <button
             class="node"
-            class:active={library.info.view === 'search' && library.info.searchQuery === search.query}
+            class:active={onGrid && library.info.view === 'search' && library.info.searchQuery === search.query}
             title={search.name === search.query ? search.query : `${search.name} — ${search.query}`}
             onclick={() => showSearch(search)}
             oncontextmenu={(e) => searchContextMenu(e, search)}
@@ -490,25 +511,49 @@
     {/if}
   {/if}
 
-  <!-- People: Picasa's contacts, read from the INI beside the photos. Read only. -->
-  <button class="group" aria-expanded={open.people} onclick={() => (open.people = !open.people)}>
-    <span class="chevron"><Icon name={open.people ? 'chevron-down' : 'chevron-right'} size={12} /></span><Icon name="user" size={14} />
-    <span class="name">People</span>
-    <span class="count">{counted.format(library.people.length)}</span>
-  </button>
+  <!-- People: the people the user named among the faces photon found, and Picasa's contacts
+       no such person is linked to, read from the INI beside the photos. Named on the People
+       page, which the label opens; the chevron only folds the list, as the other groups'
+       whole row does. -->
+  <div class="group-row">
+    <button
+      class="fold"
+      aria-expanded={open.people}
+      aria-label={open.people ? 'Hide people' : 'Show people'}
+      title={open.people ? 'Hide people' : 'Show people'}
+      onclick={() => (open.people = !open.people)}
+    >
+      <span class="chevron"><Icon name={open.people ? 'chevron-down' : 'chevron-right'} size={12} /></span>
+    </button>
+    <button
+      class="group people"
+      class:active={mainPage.current === 'people'}
+      aria-current={mainPage.current === 'people' ? 'page' : undefined}
+      title="Name the faces photon found"
+      onclick={showPeople}
+    >
+      <Icon name="user" size={14} />
+      <span class="name">People</span>
+      {#if library.toName > 0}
+        <span class="count to-name" title="Groups of faces waiting for a name">{counted.format(library.toName)} to name</span>
+      {:else}
+        <span class="count">{counted.format(library.people.length)}</span>
+      {/if}
+    </button>
+  </div>
   {#if open.people}
-    {#each library.people as person (person.hash)}
+    {#each library.people as person (person.key)}
       <button
         class="node"
-        class:active={library.info.view === 'person' && library.info.person === person.hash}
+        class:active={onGrid && library.info.view === 'person' && library.info.person === person.key}
         title={person.name}
-        onclick={() => show(() => library.setPersonView(person.hash))}
+        onclick={() => show(() => library.setPersonView(person.key))}
       >
         <span class="name">{person.name}</span>
         <span class="count">{counted.format(person.count)}</span>
       </button>
     {:else}
-      <p class="empty small">No people. photon reads face names from Picasa’s .picasa.ini.</p>
+      <p class="empty small">No named people yet. Name the faces photon found on the People page; names Picasa recorded are listed here too.</p>
     {/each}
   {/if}
 
@@ -522,7 +567,7 @@
     {#each shownTags as t (t.tag)}
       <button
         class="node"
-        class:active={library.info.view === 'tag' && library.info.tag === t.tag}
+        class:active={onGrid && library.info.view === 'tag' && library.info.tag === t.tag}
         title={t.tag}
         onclick={() => show(() => library.setTagView(t.tag))}
       >
@@ -656,6 +701,24 @@
     font-weight: 600;
   }
   .chevron { display: grid; place-items: center; width: 12px; }
+  /* People's header is two buttons, the fold and the page, laid out to sit exactly where
+     a one-button group row puts its chevron and icon: the row takes the group's margins,
+     the fold its left padding and half the gap, the label the other half. */
+  .group-row { display: flex; flex: none; margin: var(--s-2) 6px 0; }
+  .group-row .group { flex: 1; min-width: 0; margin: 0; padding-left: var(--s-1); }
+  .fold {
+    display: flex;
+    align-items: center;
+    flex: none;
+    height: 28px;
+    padding: 0 var(--s-1) 0 var(--s-2);
+    border: 0;
+    border-radius: var(--r-3);
+    background: none;
+    color: var(--text-dim);
+    cursor: pointer;
+    transition: background-color 120ms ease-out;
+  }
   .node { padding-left: 28px; }
   /* A library can have thousands of folders, and the list is laid out again on every frame
      of a splitter drag. `content-visibility: auto` skips the layout and paint of whatever is
@@ -684,8 +747,8 @@
      styled for the buttons it is otherwise always on. Its hover background is already
      covered by `.copies.active`, which is declared after it. */
   .copies { padding-left: 28px; cursor: default; }
-  .root:hover, .node:hover, .group:hover { background: var(--hover); }
-  .starred.active, .recent.active, .on-this-day.active, .duplicates.active, .hidden-view.active, .node.active, .copies.active { background: var(--accent-soft); }
+  .root:hover, .node:hover, .group:hover, .fold:hover { background: var(--hover); }
+  .starred.active, .recent.active, .on-this-day.active, .duplicates.active, .hidden-view.active, .node.active, .copies.active, .people.active { background: var(--accent-soft); }
   /* --text-dim does not reach 4.5:1 over --accent-soft; --text does (tokens.test.ts). */
   .active .count { color: var(--text); }
   .add-album { color: var(--text-dim); }
@@ -757,6 +820,6 @@
   .menu button:disabled { color: var(--text-dim); cursor: default; }
   .menu .danger { color: var(--danger); }
   @media (prefers-reduced-motion: reduce) {
-    .root, .node, .group { transition: none; }
+    .root, .node, .group, .fold { transition: none; }
   }
 </style>

@@ -58,11 +58,23 @@ pub struct ExportProgress {
     pub failed: usize,
 }
 
-/// How far the face pass has got: live images the current detector has looked at, of all
-/// live images. `running` is false on a pass's last event, which is what clears the line.
+/// Which step of the face pass a progress event counts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FacePhase {
+    /// Live images the current detector has looked at, of all live images.
+    Detecting,
+    /// Faces on live images the current embedder has looked at, of all of them.
+    Recognising,
+}
+
+/// How far the face pass has got, in the units of its `phase`. `running` is false on a
+/// pass's last event, which is what clears the line; that event carries the phase of the
+/// last step the pass ran.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FaceProgress {
+    pub phase: FacePhase,
     pub checked: u64,
     pub total: u64,
     pub running: bool,

@@ -104,6 +104,9 @@ export class LibraryStore {
   albums = $state.raw<AlbumSummary[]>([]);
   searches = $state.raw<SavedSearch[]>([]);
   people = $state.raw<Person[]>([]);
+  /** Unnamed groups of two or more faces: the sidebar's "N to name". Read with the
+   *  collections, so the face pass's grouping - a data change - moves it. */
+  toName = $state(0);
   tags = $state.raw<TagCount[]>([]);
   scans = $state<Record<number, ScanProgressEvent>>({});
   /** Watched folder ids the OS won't let photon watch live, from the most recent
@@ -850,15 +853,17 @@ export class LibraryStore {
   private collectionsFlight = singleFlight(() => this.loadCollections());
 
   private async loadCollections(): Promise<void> {
-    const [albums, searches, people, tags] = await Promise.all([
+    const [albums, searches, people, toName, tags] = await Promise.all([
       api.listAlbums(),
       api.listSavedSearches(),
       api.listPeople(),
+      api.peopleToName(),
       api.listTags(),
     ]);
     this.albums = albums;
     this.searches = searches;
     this.people = people;
+    this.toName = toName;
     this.tags = tags;
   }
 
@@ -914,9 +919,9 @@ export class LibraryStore {
     return this.requestedSort ?? this.info.sort;
   }
 
-  /** Shows the photos of one Picasa contact. */
-  setPersonView(hash: string): Promise<void> {
-    return this.switchView(() => api.setPersonView(hash));
+  /** Shows the photos of one person, by `Person.key`. */
+  setPersonView(key: string): Promise<void> {
+    return this.switchView(() => api.setPersonView(key));
   }
 
   /** Shows one album. */
@@ -985,8 +990,8 @@ export class LibraryStore {
     return this.albums.find((a) => a.id === albumId)?.name ?? '';
   }
 
-  personName(hash: string | null): string {
-    return this.people.find((p) => p.hash === hash)?.name ?? '';
+  personName(key: string | null): string {
+    return this.people.find((p) => p.key === key)?.name ?? '';
   }
 
   /** Album mutations. Each refetches the collections itself: the backend only announces a

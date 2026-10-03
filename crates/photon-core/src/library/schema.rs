@@ -363,6 +363,64 @@ CREATE INDEX detected_faces_item ON detected_faces(item_id);
 -- never. No index: the candidate query walks the table by id.
 ALTER TABLE items ADD COLUMN face_version INTEGER;
 "#,
+    r#"
+-- People: groups of faces photon takes for one person, named by the user or not. See
+-- `photon_core::people` and `library/people.rs`. No centroid is stored: it is computed from
+-- the faces at the start of each grouping step, so no writer can leave it out of date.
+--
+-- `people` and `detected_faces` are AUTOINCREMENT because the People page holds their ids
+-- and acts on them later: an id the UI holds must never name a different row. Without it
+-- SQLite hands the highest deleted id to the next insert, and the grouping step deletes
+-- empty groups and creates new ones, as a re-detection deletes a photo's faces and inserts
+-- new ones - a confirm, a rename or a delete would then land on a face or person the user
+-- never saw.
+CREATE TABLE people (
+    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    name    TEXT,
+    ignored INTEGER NOT NULL DEFAULT 0
+);
+-- A person's Picasa contacts. A table, not a column: a Picasa library can hold two
+-- contacts for one human. A contact belongs to at most one person.
+CREATE TABLE person_contacts (
+    contact   TEXT PRIMARY KEY,
+    person_id INTEGER NOT NULL REFERENCES people(id) ON DELETE CASCADE
+);
+CREATE INDEX person_contacts_person ON person_contacts(person_id);
+-- `detected_faces` is rebuilt rather than altered, since AUTOINCREMENT cannot be added to
+-- an existing table. The rows keep their ids; AUTOINCREMENT then starts above the highest.
+-- New columns: a face's vector (128 little-endian f32), the embedder that made it (set
+-- even when the face was too small to have one), its group, whether the user put it
+-- there, and whether it is to be left out of grouping. Nothing references the table yet
+-- (`face_rejections` is created below), so the drop, run with foreign keys on, cascades
+-- nowhere.
+CREATE TABLE detected_faces_new (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    item_id           INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+    left              REAL NOT NULL,
+    top               REAL NOT NULL,
+    right             REAL NOT NULL,
+    bottom            REAL NOT NULL,
+    landmarks         BLOB NOT NULL,
+    score             REAL NOT NULL,
+    embedding         BLOB,
+    embedding_version INTEGER,
+    person_id         INTEGER REFERENCES people(id) ON DELETE SET NULL,
+    confirmed         INTEGER NOT NULL DEFAULT 0,
+    ignored           INTEGER NOT NULL DEFAULT 0
+);
+INSERT INTO detected_faces_new (id, item_id, left, top, right, bottom, landmarks, score)
+    SELECT id, item_id, left, top, right, bottom, landmarks, score FROM detected_faces;
+DROP TABLE detected_faces;
+ALTER TABLE detected_faces_new RENAME TO detected_faces;
+CREATE INDEX detected_faces_item ON detected_faces(item_id);
+CREATE INDEX detected_faces_person ON detected_faces(person_id);
+-- "Not this person": the face is never put in that group again.
+CREATE TABLE face_rejections (
+    face_id   INTEGER NOT NULL REFERENCES detected_faces(id) ON DELETE CASCADE,
+    person_id INTEGER NOT NULL REFERENCES people(id) ON DELETE CASCADE,
+    PRIMARY KEY (face_id, person_id)
+);
+"#,
 ];
 
 pub fn migrate(conn: &Connection) -> Result<()> {
@@ -614,7 +672,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 24);
+        assert_eq!(version, 25);
         let rules: i64 = conn
             .query_row("SELECT count(*) FROM tag_rules", [], |r| r.get(0))
             .unwrap();
@@ -773,7 +831,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 24);
+        assert_eq!(version, 25);
         let overlay: i64 = conn
             .query_row("SELECT count(*) FROM item_user_tags", [], |r| r.get(0))
             .unwrap();
@@ -823,7 +881,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 24);
+        assert_eq!(version, 25);
         let hash: Option<Vec<u8>> = conn
             .query_row("SELECT content_hash FROM items WHERE id = 1", [], |r| {
                 r.get(0)
@@ -964,7 +1022,7 @@ mod tests {
             .unwrap();
         // Hardcoded, like every other version assertion here: `MIGRATIONS.len()` would
         // agree with itself whatever the list did, which is the tripwire removed.
-        assert_eq!(version, 24);
+        assert_eq!(version, 25);
     }
 
     /// Every folder in an existing library comes out of the upgrade visible.
@@ -1002,7 +1060,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 24);
+        assert_eq!(version, 25);
     }
 
     /// Every album in an existing library comes out of the upgrade as photon's own.
@@ -1035,7 +1093,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 24);
+        assert_eq!(version, 25);
     }
 
     /// Every Picasa album in an existing library comes out of the upgrade with no recorded
@@ -1069,7 +1127,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 24);
+        assert_eq!(version, 25);
     }
 
     /// Every photo in an existing library comes out of the upgrade uncaptioned, for the
@@ -1108,7 +1166,7 @@ mod tests {
             .unwrap()
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 24);
+        assert_eq!(version, 25);
     }
 
     /// A stored Conservative or Loose keeps meaning Conservative or Loose.
@@ -1142,7 +1200,7 @@ mod tests {
             let version: i64 = conn
                 .query_row("PRAGMA user_version", [], |r| r.get(0))
                 .unwrap();
-            assert_eq!(version, 24);
+            assert_eq!(version, 25);
         }
     }
 
@@ -1192,7 +1250,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 24);
+        assert_eq!(version, 25);
     }
 
     /// Every folder in an existing library comes out of the upgrade with no alias, so the
@@ -1230,7 +1288,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 24);
+        assert_eq!(version, 25);
     }
 
     /// A library at schema 21 comes out of the upgrade with the Videos index, and with
@@ -1278,7 +1336,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 24);
+        assert_eq!(version, 25);
     }
 
     /// A library at schema 23 with photos in it comes out with the table, and every photo
@@ -1314,6 +1372,143 @@ mod tests {
         let user: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(user, 24);
+        assert_eq!(user, 25);
+    }
+
+    #[test]
+    fn migration_25_adds_people_to_a_library_with_detected_faces() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("library.db");
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        for sql in &MIGRATIONS[..24] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 24i64).unwrap();
+        conn.execute_batch(
+            "INSERT INTO watched_folders (id, path) VALUES (1, '/p');
+             INSERT INTO folders (id, watched_id, path, name, sort_key) VALUES (1, 1, '/p', 'p', 1);
+             INSERT INTO items (id, folder_id, path, file_name, kind, size, mtime_ms, width, height, orientation, taken_at)
+             VALUES (1, 1, '/p/a.jpg', 'a.jpg', 0, 1, 1, 1, 1, 1, 1);
+             INSERT INTO detected_faces (id, item_id, left, top, right, bottom, landmarks, score)
+             VALUES (7, 1, 0.1, 0.2, 0.3, 0.4, zeroblob(40), 0.9);",
+        )
+        .unwrap();
+        drop(conn);
+
+        let lib = crate::library::Library::open(&path).unwrap();
+        let conn = lib.reader().unwrap();
+        // The rebuild keeps each face's id and what migration 24 stored.
+        let kept: (i64, i64, f64, f64, f64, f64, Vec<u8>, f64) = conn
+            .query_row(
+                "SELECT id, item_id, left, top, right, bottom, landmarks, score FROM detected_faces",
+                [],
+                |r| {
+                    Ok((
+                        r.get(0)?,
+                        r.get(1)?,
+                        r.get(2)?,
+                        r.get(3)?,
+                        r.get(4)?,
+                        r.get(5)?,
+                        r.get(6)?,
+                        r.get(7)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(kept, (7, 1, 0.1, 0.2, 0.3, 0.4, vec![0u8; 40], 0.9));
+        // An upgraded library counts on from the highest id it had: its faces' ids are
+        // never handed out again either.
+        {
+            let w = lib.writer();
+            w.execute("DELETE FROM detected_faces WHERE id = 7", [])
+                .unwrap();
+            w.execute(
+                "INSERT INTO detected_faces (item_id, left, top, right, bottom, landmarks, score)
+                 VALUES (1, 0.1, 0.2, 0.3, 0.4, zeroblob(40), 0.9)",
+                [],
+            )
+            .unwrap();
+            assert_eq!(w.last_insert_rowid(), 8);
+        }
+        let indexes: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type = 'index'
+                   AND tbl_name = 'detected_faces'
+                   AND name IN ('detected_faces_item', 'detected_faces_person')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(indexes, 2);
+        let (version, person, confirmed, ignored): (Option<i64>, Option<i64>, i64, i64) = conn
+            .query_row(
+                "SELECT embedding_version, person_id, confirmed, ignored FROM detected_faces",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!((version, person, confirmed, ignored), (None, None, 0, 0));
+        let tables: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type = 'table'
+                   AND name IN ('people', 'person_contacts', 'face_rejections')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(tables, 3);
+        let user: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(user, 25);
+    }
+
+    /// The highest id deleted and a row inserted: the new row's id is above it. Ids the
+    /// People page holds must never come to name a different row.
+    fn next_id_after_deleting_the_highest(
+        lib: &crate::library::Library,
+        insert: &str,
+        table: &str,
+    ) -> (i64, i64) {
+        let w = lib.writer();
+        w.execute(insert, []).unwrap();
+        w.execute(insert, []).unwrap();
+        let highest: i64 = w
+            .query_row(&format!("SELECT max(id) FROM {table}"), [], |r| r.get(0))
+            .unwrap();
+        w.execute(&format!("DELETE FROM {table} WHERE id = ?1"), [highest])
+            .unwrap();
+        w.execute(insert, []).unwrap();
+        (highest, w.last_insert_rowid())
+    }
+
+    #[test]
+    fn a_deleted_persons_id_is_never_reused() {
+        let (_dir, lib) = crate::testutil::temp_library();
+        let (deleted, next) = next_id_after_deleting_the_highest(
+            &lib,
+            "INSERT INTO people (name) VALUES (NULL)",
+            "people",
+        );
+        assert!(next > deleted, "{next} after {deleted}");
+    }
+
+    #[test]
+    fn a_deleted_faces_id_is_never_reused() {
+        let (dir, lib) = crate::testutil::temp_library();
+        let (_, folder) = crate::testutil::seed_folder(&lib, dir.path());
+        let item = lib
+            .insert_items(&[crate::testutil::new_item(folder, "/p/a.jpg", 1)])
+            .unwrap()[0];
+        let (deleted, next) = next_id_after_deleting_the_highest(
+            &lib,
+            &format!(
+                "INSERT INTO detected_faces (item_id, left, top, right, bottom, landmarks, score)
+                 VALUES ({item}, 0.1, 0.2, 0.3, 0.4, zeroblob(40), 0.9)"
+            ),
+            "detected_faces",
+        );
+        assert!(next > deleted, "{next} after {deleted}");
     }
 }

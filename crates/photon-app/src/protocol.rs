@@ -9,13 +9,26 @@
 //! - `/image/<id>/uncropped`: the same without the crop, which is what the crop tool draws
 //!   its rectangle on.
 //!
+//! - `/face/<face id>/<thumbKey>`: a 96 px square WebP around a detected face, cut from the
+//!   photo's *cached* preview and nothing else (`ThumbCache::face_crop`), `immutable`. A
+//!   face gone, a key that is not its photo's current one, or a preview not cached is a 404:
+//!   a page of crops must never start a burst of renders. Like an edited photo's `/image`,
+//!   it decodes a picture per request (unless the photo's decode is kept); unlike that
+//!   render, a crop is small and the page asks for many, so crops are let onto the blocking
+//!   pool one a core (`FACE_CROPS`) rather than one at a time (`RENDERING`).
+//!
 //! Both image routes are `no-cache` with an `ETag` naming the picture they serve, so the
 //! webview revalidates rather than refetches: a photo revisited, or reached after its
 //! neighbour preload, is a 304 with no file read and no render.
 
 use crate::engine::Engine;
 use photon_core::{Error, thumbs::ThumbSize};
-use std::{future::Future, path::Path, sync::Arc, time::Duration};
+use std::{
+    future::Future,
+    path::Path,
+    sync::{Arc, LazyLock},
+    time::Duration,
+};
 use tauri::http::{Response, StatusCode, header};
 
 pub const THUMB_TIMEOUT: Duration = Duration::from_secs(30);
@@ -43,6 +56,7 @@ pub async fn handle(
         }
         ["image", _] => true,
         ["image", _, "uncropped"] => false,
+        ["face", id, key] => return face(engine, id, key).await,
         _ => return text(StatusCode::NOT_FOUND, "not found"),
     };
     let id = parts[1].to_owned();
@@ -142,6 +156,45 @@ async fn thumb(
         Err(err) => text(StatusCode::INTERNAL_SERVER_ERROR, &err.to_string()),
     }
 }
+
+/// A face's crop for the People page. The face id and the photo's thumbnail key name one
+/// picture (a face is deleted when its photo's picture changes, and its id is never reused),
+/// so the answer is `immutable`. Only the cached preview is read: no photo file and no
+/// render, so a page of crops never queues a burst of renders. A face that is gone, a key
+/// that is no longer the photo's, or a preview not cached is a 404; a cached preview that
+/// will not decode is a 500. The page draws a placeholder for either.
+async fn face(engine: Arc<Engine>, id: &str, key: &str) -> Response<Vec<u8>> {
+    let (Ok(id), Some(key)) = (id.parse::<i64>(), parse_key(key)) else {
+        return text(StatusCode::BAD_REQUEST, "bad face");
+    };
+    // Awaited here, before the blocking pool: a request waiting its turn holds no thread.
+    // The semaphore is never closed, so `acquire` cannot fail.
+    let _turn = FACE_CROPS.acquire().await.expect("never closed");
+    off_thread(move || match engine.lib.face_crop_source(id) {
+        Ok(Some((rect, current))) if current == key => match engine.thumbs.face_crop(key, &rect) {
+            Ok(bytes) => ok(bytes, "image/webp", FOREVER),
+            Err(Error::Io(err)) if err.kind() == std::io::ErrorKind::NotFound => {
+                text(StatusCode::NOT_FOUND, "not found")
+            }
+            Err(err) => text(StatusCode::INTERNAL_SERVER_ERROR, &err.to_string()),
+        },
+        Ok(_) => text(StatusCode::NOT_FOUND, "not found"),
+        Err(err) => text(StatusCode::INTERNAL_SERVER_ERROR, &err.to_string()),
+    })
+    .await
+    .unwrap_or_else(|response| *response)
+}
+
+/// How many face crops are cut at once: one a core. A crop decodes a whole preview (about
+/// 6 MB of pixels) unless its photo's decode is kept, and the People page asks for a crop
+/// per face on screen, which an expanded strip makes hundreds. Unbounded, each held a
+/// thread of Tokio's blocking pool - shared with every thumbnail read, full-size image and
+/// blocking IPC command - while its decode waited for a core. More than one a core gains
+/// nothing on work that is all CPU; fewer would leave cores idle while a page fills in.
+static FACE_CROPS: LazyLock<tokio::sync::Semaphore> = LazyLock::new(|| {
+    let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
+    tokio::sync::Semaphore::new(cores.max(1))
+});
 
 /// How long the webview may keep a thumbnail served under its own key: forever, since that
 /// is what the key is for - it changes whenever the picture does.
@@ -733,6 +786,111 @@ mod tests {
         assert_eq!(
             get(&f.engine, &format!("image/{id}")).status(),
             StatusCode::NOT_FOUND
+        );
+    }
+
+    /// A photo with one detected face and its preview cached, as (fixture, face id, the
+    /// photo's id, its thumbnail key). The detection is written through the library, as the
+    /// face pass would, rather than by running the detector.
+    fn with_a_face() -> (crate::testutil::Fixture, i64, i64, String) {
+        use photon_core::face_detect::{DETECTOR_VERSION, Detection, Rect};
+        let f = fixture(&[("a.jpg", &jpeg(400, 300))]);
+        f.add_photos();
+        f.engine.thumbs.wait_idle();
+        let id = f.ids()[0];
+        let key = current_key(&f, id);
+        assert_eq!(
+            get(&f.engine, &format!("/thumb/{id}/preview/{key}")).status(),
+            200
+        );
+        f.engine.lib.set_face_detection(true).unwrap();
+        let listed = f
+            .engine
+            .lib
+            .face_candidates(0, 10, DETECTOR_VERSION)
+            .unwrap();
+        let det = Detection {
+            rect: Rect {
+                left: 0.4,
+                top: 0.4,
+                right: 0.6,
+                bottom: 0.6,
+            },
+            landmarks: [(0.0, 0.0); 5],
+            score: 0.9,
+        };
+        f.engine
+            .lib
+            .write_face_batch(&[(listed[0].clone(), vec![det])], DETECTOR_VERSION)
+            .unwrap();
+        let conn = rusqlite::Connection::open(&f.config().db_path).unwrap();
+        let face = conn
+            .query_row("SELECT id FROM detected_faces", [], |r| r.get(0))
+            .unwrap();
+        (f, face, id, key)
+    }
+
+    #[test]
+    fn serves_a_face_crop_as_immutable_webp() {
+        let (f, face, _, key) = with_a_face();
+        let r = get(&f.engine, &format!("/face/{face}/{key}"));
+        assert_eq!(r.status(), 200);
+        assert_eq!(header(&r, "content-type"), "image/webp");
+        assert_eq!(header(&r, "cache-control"), FOREVER);
+        assert_eq!(dims(&r), (96, 96));
+    }
+
+    #[test]
+    fn a_face_that_is_gone_is_not_found() {
+        let (f, face, _, key) = with_a_face();
+        assert_eq!(
+            get(&f.engine, &format!("/face/{}/{key}", face + 1000)).status(),
+            404
+        );
+    }
+
+    /// A key names one picture: a face asked for under any other is not that picture's.
+    #[test]
+    fn a_face_crop_under_another_key_is_not_found() {
+        let (f, face, _, key) = with_a_face();
+        let current = u64::from_str_radix(&key, 16).unwrap();
+        let other = photon_core::grid::hex_key(current ^ 1);
+        // The other key's preview is cached too (a key recurs - "Original" - and an old
+        // one is collected only later): without that, the missing file alone answers 404
+        // and the key comparison goes unpinned.
+        let theirs = f.engine.thumbs.path_for(current ^ 1, ThumbSize::Preview);
+        std::fs::create_dir_all(theirs.parent().unwrap()).unwrap();
+        std::fs::copy(
+            f.engine.thumbs.path_for(current, ThumbSize::Preview),
+            theirs,
+        )
+        .unwrap();
+        assert_eq!(
+            get(&f.engine, &format!("/face/{face}/{other}")).status(),
+            404
+        );
+    }
+
+    #[test]
+    fn a_face_crop_with_no_preview_is_not_found_and_renders_nothing() {
+        let (f, face, _, key) = with_a_face();
+        let preview = f
+            .engine
+            .thumbs
+            .path_for(u64::from_str_radix(&key, 16).unwrap(), ThumbSize::Preview);
+        std::fs::remove_file(&preview).unwrap();
+        assert_eq!(get(&f.engine, &format!("/face/{face}/{key}")).status(), 404);
+        assert!(!preview.exists(), "the route rendered a preview");
+    }
+
+    #[test]
+    fn a_face_crop_url_that_does_not_parse_is_a_bad_request() {
+        let (f, face, _, key) = with_a_face();
+        assert_eq!(get(&f.engine, "/face/x/abc").status(), 400);
+        assert_eq!(get(&f.engine, "/face/1/+1").status(), 400);
+        assert_eq!(
+            get(&f.engine, &format!("/face/{face}/+{key}")).status(),
+            400
         );
     }
 }

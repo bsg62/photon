@@ -1,4 +1,5 @@
 mod cache;
+pub mod face_crop;
 mod inflight;
 mod queue;
 mod service;

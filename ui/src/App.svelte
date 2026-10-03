@@ -8,7 +8,9 @@
   import { showCopies } from './lib/copies';
   import { locateItem } from './lib/folders';
   import { library } from './lib/library.svelte';
+  import { mainPage } from './lib/main-page.svelte';
   import { ownsSelectAll } from './lib/nav';
+  import { openFacePhoto } from './lib/people';
   import { resultsChanged, viewKey } from './lib/search';
   import { searchBox } from './lib/search-box.svelte';
   import type { SettingsSection } from './lib/settings';
@@ -23,6 +25,7 @@
   import Icon from './components/Icon.svelte';
   import FolderTree from './components/FolderTree.svelte';
   import Grid from './components/Grid.svelte';
+  import PeoplePage from './components/PeoplePage.svelte';
   import SearchBar from './components/SearchBar.svelte';
   import Compare from './components/Compare.svelte';
   import Settings from './components/Settings.svelte';
@@ -35,8 +38,12 @@
   import Viewer from './components/Viewer.svelte';
 
   let grid: ReturnType<typeof Grid> | undefined = $state();
+  let peoplePage: ReturnType<typeof PeoplePage> | undefined = $state();
   let viewerAt = $state<number | null>(null);
   let settingsAt = $state<SettingsSection | null>(null);
+  /** Counts Settings closing, for the People page: Find faces may have been switched there
+   *  in a way the page has no other word of (`PeoplePage`'s switch read says which). */
+  let settingsClosed = $state(0);
   let compareIds = $state<number[] | null>(null);
   let gear: HTMLButtonElement | undefined = $state();
   /** The keyword dialog for the grid's selection. It lives here, not in the grid, because
@@ -175,14 +182,38 @@
     viewerAt = offset;
   }
 
-  function closeViewer(at: number, itemId: number | null) {
+  async function closeViewer(at: number, itemId: number | null) {
     viewerAt = null;
     // Same rule, the other way round: closing on the photo the viewer was opened with
     // leaves the selection alone; closing after navigating collapses to what is on screen.
     // By id, because the page holding `at` may be long gone; see `closeViewerOn`.
     library.closeViewerOn(at, itemId);
+    // Behind the People page too: a face's photo may have switched the grid to All, and
+    // the hidden grid then holds the photo the user last saw rather than All's first folder,
+    // as "Locate in photon" leaves it.
     grid?.scrollToOffset(at, 'nearest');
+    if (mainPage.current === 'people') {
+      // Opened from a face: the page is where the user was, and the grid under it is
+      // inert. After `tick`, for `closeSettings`' reason - `<main>` is inert until the DOM
+      // catches up with `covered`.
+      await tick();
+      peoplePage?.focus();
+      return;
+    }
     grid?.focus();
+  }
+
+  /** A face double-clicked on the People page: its photo in the viewer, over the page. The
+   *  grid behind is switched to All photos when its view does not hold the photo, as "Locate
+   *  in photon" does; the page stays, so closing the viewer lands back on it. */
+  function openFace(itemId: number) {
+    void openFacePhoto(itemId, {
+      offsetOf: (id) => api.gridOffsetOfItem(id).catch(() => null),
+      cancelSearch: () => searchBox.cancel(),
+      showAll: () => library.setView('all'),
+      open,
+      notify: library.notify,
+    });
   }
 
   /** "Locate in photon" from the viewer. Closes it first so the grid is what lands on the
@@ -191,6 +222,7 @@
    *  listed. */
   async function locate(itemId: number, hidden = false) {
     viewerAt = null;
+    mainPage.showGrid();
     await locateItem(itemId, hidden, {
       cancelSearch: () => searchBox.cancel(),
       currentView: () => library.settledView(),
@@ -206,6 +238,7 @@
 
   /** "Show duplicates" from the tile menu; the switch-then-lookup order is `showCopies`'s. */
   async function showCopiesOf(itemId: number) {
+    mainPage.showGrid();
     await showCopies(itemId, {
       cancelSearch: () => searchBox.cancel(),
       setCopiesView: (id) => library.setCopiesView(id),
@@ -229,9 +262,13 @@
     void showCopiesOf(itemId);
   }
 
-  function searchFrom(query: string) {
+  /** After `tick`: `<main>`, and from the People page the grid's own layer, stay inert until
+   *  the DOM catches up (`closeSettings`). */
+  async function searchFrom(query: string) {
     viewerAt = null;
+    mainPage.showGrid();
     searchBox.search(query);
+    await tick();
     grid?.focus();
   }
 
@@ -291,6 +328,7 @@
    *  an inert element silently does nothing — hence the tick before handing focus back. */
   async function closeSettings() {
     settingsAt = null;
+    settingsClosed++;
     await tick();
     gear?.focus();
   }
@@ -300,6 +338,7 @@
    *  after `tick`, for `closeSettings`' reason. */
   async function searchFromSettings(query: string) {
     settingsAt = null;
+    mainPage.showGrid();
     searchBox.search(query);
     await tick();
     grid?.focus();
@@ -341,6 +380,7 @@
   }
 
   async function jump(folderId: number) {
+    mainPage.showGrid();
     const offset = await api.gridOffsetOfFolder(folderId).catch(() => null);
     if (offset === null) return;
     library.selected = offset;
@@ -352,8 +392,13 @@
 <div class="app" style:--sidebar-width="{sidebarWidth}px">
   <div class="topbar" inert={covered}>
     <SearchBar />
-    <SortControl />
-    <SizeControl />
+    <!-- The grid's own controls: under the People page they would sort and size a grid no
+         one can see. Hidden rather than removed, so the search box and the gear keep their
+         places; `visibility` takes them out of the tab order too. -->
+    <div class="grid-controls" class:away={mainPage.current !== 'grid'}>
+      <SortControl />
+      <SizeControl />
+    </div>
     <button class="gear" bind:this={gear} aria-label="Settings" title="Settings" onclick={() => openSettings('folders')}
       ><Icon name="settings" size={18} /></button
     >
@@ -379,14 +424,32 @@
     onkeydown={keyResize}
   ></div>
   <main class="content" inert={covered}>
-    <Grid
-      bind:this={grid}
-      onopen={open}
-      onkeywords={openKeywords}
-      onexport={openExport}
-      oncompare={openCompare}
-      onshowcopies={showCopiesOf}
-    />
+    <!-- The People page has no rows, so it is not a grid view (main-page.svelte.ts): it is
+         drawn over the grid, which stays mounted beneath it, keeping its view, scroll,
+         selection and layout. Not unmounted: a remounted grid starts at the top with the
+         launch restore long done, and its "remember the folder at the top" effect then
+         overwrote the user's place with the first folder on every return from the page.
+         Not `display: none` either: that drops the layout box, resets `scrollTop` and shows
+         the grid's ResizeObserver a zero width, whose relayout trips the same write.
+         `visibility: hidden` keeps the box; `inert` keeps the grid's keys and tiles out of
+         reach. Its rubber band cannot be running when the page opens: the page opens from
+         a sidebar click, and the viewport holds the pointer captured until the pointerup
+         or pointercancel that ends a band. -->
+    <div class="grid-layer" class:behind={mainPage.current === 'people'} inert={mainPage.current === 'people'}>
+      <Grid
+        bind:this={grid}
+        onopen={open}
+        onkeywords={openKeywords}
+        onexport={openExport}
+        oncompare={openCompare}
+        onshowcopies={showCopiesOf}
+      />
+    </div>
+    {#if mainPage.current === 'people'}
+      <div class="page-layer">
+        <PeoplePage bind:this={peoplePage} {settingsClosed} onopen={openFace} onopensettings={() => openSettings('people')} />
+      </div>
+    {/if}
   </main>
   <div class="statusbar"><StatusBar /></div>
 </div>
@@ -427,7 +490,11 @@
     background: var(--accent);
     outline: none;
   }
-  .content { min-width: 0; min-height: 0; }
+  .content { position: relative; min-width: 0; min-height: 0; }
+  .grid-layer { height: 100%; }
+  .grid-layer.behind { visibility: hidden; }
+  /* Opaque, since the grid's box is still there beneath it. */
+  .page-layer { position: absolute; inset: 0; background: var(--surface); }
   /* Its own grid row, so it stays put while the sidebar and the grid scroll under it. */
   .topbar {
     grid-column: 1 / -1;
@@ -441,6 +508,10 @@
     background: var(--chrome);
     border-bottom: 1px solid var(--line);
   }
+  /* No box of its own: the two controls stay items of the top bar's flex row, spaced by its
+     gap, as they were before they were wrapped. */
+  .grid-controls { display: contents; }
+  .grid-controls.away > :global(*) { visibility: hidden; }
   .gear {
     display: grid;
     place-items: center;

@@ -92,7 +92,7 @@ export interface GridInfo {
   view: GridView;
   sort: Sort;
   searchQuery: string;
-  /** Picasa contact hash while `view` is 'person'. */
+  /** The key (`Person.key`) of the person on show while `view` is 'person'. */
   person: string | null;
   /** Album id while `view` is 'album'. */
   album: number | null;
@@ -111,8 +111,9 @@ export interface FolderIds { version: number; ids: number[] }
 /** Mirrors `face_detect::Rect`: fractions of the picture, from its left and top. */
 export interface FaceRect { left: number; top: number; right: number; bottom: number }
 
-/** A named Picasa face; the rectangle is fractions of the displayed (oriented) image. */
-export interface ItemFace { hash: string; name: string; left: number; top: number; right: number; bottom: number }
+/** A named face: Picasa's, under the person's key and name when its contact is linked to one,
+ *  or a person's confirmed detection. The rectangle is fractions of the picture as shown. */
+export interface ItemFace { key: string; name: string; left: number; top: number; right: number; bottom: number }
 export interface ViewerItem {
   id: number;
   path: string;
@@ -146,7 +147,8 @@ export interface ViewerItem {
   caption: string | null;
   faces: ItemFace[];
   /** Faces with no name: Picasa's unnamed ones, then the ones photon detected that are none
-   *  of Picasa's. Fractions of the picture as shown, like `faces`. */
+   *  of Picasa's. A detection confirmed as a named person is in `faces` instead, and takes an
+   *  unnamed Picasa face under it along. Fractions of the picture as shown, like `faces`. */
   unnamedFaces: FaceRect[];
   /** A video plays; the viewer shows no zoom, crop or turn for it. */
   kind: 'image' | 'video';
@@ -199,7 +201,8 @@ export interface ItemCopy {
   width: number;
   height: number;
 }
-export interface Person { hash: string; name: string; count: number }
+/** `key` is `p:<id>` for a named person or `c:<hash>` for a Picasa contact no person is linked to. */
+export interface Person { key: string; name: string; count: number }
 /** What one export came to. Mirrors `ExportReport` in `commands.rs`. `failed` counts a photo
  *  that has gone from the library since the grid was built as well as one that could not be
  *  read; `reason` is the first of those failures, for a message that can say why. */
@@ -217,13 +220,46 @@ export interface ExportProgress {
   failed: number;
 }
 
-/** Mirrors `events::FaceProgress`: live images the detector has looked at, of all live
- *  images. `running` is false on a pass's last event. */
+/** Mirrors `events::FacePhase`: which step of the face pass a progress event counts. */
+export type FacePhase = 'detecting' | 'recognising';
+/** Mirrors `events::FaceProgress`. Detecting: live images the detector has looked at, of all
+ *  live images. Recognising: faces on live images the recogniser has looked at, of all of
+ *  them. `running` is false on a pass's last event, which carries the phase of its last step. */
 export interface FaceProgress {
+  phase: FacePhase;
   checked: number;
   total: number;
   running: boolean;
 }
+
+/** One face on the People page. Mirrors `library::PageFace`; `thumbKey` is the photo's
+ *  thumbnail key, which with the face id names the face's crop; `personId` is the face's
+ *  group, how a single face is named. */
+export interface PageFace { id: number; itemId: number; thumbKey: string; confirmed: boolean; personId: number | null }
+/** Picasa's name for a group: the name to offer, its contact, and how many of the group's
+ *  faces sit on that contact's faces. Mirrors `library::Offer`. */
+export interface Offer { name: string; contact: string; faces: number }
+/** A group or a person on the People page: the section's count of visible faces and the
+ *  first of them. Mirrors `library::PageGroup`. */
+export interface PageGroup { id: number; name: string | null; faceCount: number; faces: PageFace[]; offer: Offer | null }
+/** Mirrors `library::PeoplePage`. Every named person is in `people`, with `faceCount` 0 and
+ *  no faces when none of their confirmed faces is visible. */
+export interface PeoplePage {
+  /** The largest unnamed groups, at most 200 (`LISTED_GROUPS`); `unnamedCount` counts them all. */
+  unnamed: PageGroup[];
+  unnamedCount: number;
+  singleFaces: PageFace[];
+  singleCount: number;
+  suggestions: PageGroup[];
+  people: PageGroup[];
+  ignoredGroups: PageGroup[];
+  ignoredFaces: PageFace[];
+}
+/** Which of a person's faces `personFaces` pages through. Mirrors `library::FaceFilter`. */
+export type FaceFilter = 'all' | 'confirmed' | 'unconfirmed';
+/** What switching face detection off would delete that the user made. Mirrors
+ *  `FaceDataSummary` in `commands.rs`. */
+export interface FaceDataSummary { namedPeople: number }
 
 /** What one keyword write to a selection came to. Mirrors `TagWrite` in `commands.rs`.
  *  `count` can be short of the selection: a photo purged or gone missing since the grid was
@@ -296,6 +332,20 @@ export const api = {
   setSimilarDistance: (distance: number) => invoke<number>('set_similar_distance', { distance }),
   faceDetection: () => invoke<boolean>('face_detection'),
   setFaceDetection: (enabled: boolean) => invoke<void>('set_face_detection', { enabled }),
+  faceDataSummary: () => invoke<FaceDataSummary>('face_data_summary'),
+  peopleToName: () => invoke<number>('people_to_name'),
+  peoplePage: (strip: number) => invoke<PeoplePage>('people_page', { strip }),
+  personFaces: (person: number, which: FaceFilter, offset: number, limit: number) =>
+    invoke<PageFace[]>('person_faces', { person, which, offset, limit }),
+  /** Resolves to the person the group ended in: another one when the name is taken. */
+  namePerson: (person: number, name: string) => invoke<number>('name_person', { person, name }),
+  renamePerson: (person: number, name: string) => invoke<number>('rename_person', { person, name }),
+  confirmFaces: (faces: number[]) => invoke<void>('confirm_faces', { faces }),
+  rejectFaces: (faces: number[]) => invoke<void>('reject_faces', { faces }),
+  mergePeople: (from: number, into: number) => invoke<void>('merge_people', { from, into }),
+  ignorePerson: (person: number, ignored: boolean) => invoke<void>('ignore_person', { person, ignored }),
+  ignoreFaces: (faces: number[], ignored: boolean) => invoke<void>('ignore_faces', { faces, ignored }),
+  deletePerson: (person: number) => invoke<void>('delete_person', { person }),
   theme: () => invoke<ThemeChoice>('theme'),
   setTheme: (choice: ThemeChoice) => invoke<void>('set_theme', { choice }),
   gridTile: () => invoke<GridTile>('grid_tile'),
@@ -308,7 +358,7 @@ export const api = {
   setGridView: (view: GridView) => invoke<number | null>('set_grid_view', { view }),
   setSort: (sort: Sort) => invoke<number | null>('set_sort', { sort }),
   setSearchQuery: (query: string) => invoke<number | null>('set_search_query', { query }),
-  setPersonView: (contact: string) => invoke<number | null>('set_person_view', { contact }),
+  setPersonView: (person: string) => invoke<number | null>('set_person_view', { person }),
   setAlbumView: (albumId: number) => invoke<number | null>('set_album_view', { albumId }),
   setTagView: (tag: string) => invoke<number | null>('set_tag_view', { tag }),
   copyCount: (id: number) => invoke<number>('copy_count', { id }),

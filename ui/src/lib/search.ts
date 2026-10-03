@@ -41,8 +41,8 @@ export interface ViewKey {
 }
 
 /** The view and its argument as `resultsChanged` compares them: the query for Search, the
- *  contact for Person, the album id for Album, the keyword for Tag, the anchor photo id for
- *  Copies, and nothing else - plus the sort, which reorders every view. */
+ *  person's key (`Person.key`) for Person, the album id for Album, the keyword for Tag, the
+ *  anchor photo id for Copies, and nothing else - plus the sort, which reorders every view. */
 export function viewKey(
   info: Pick<GridInfo, 'view' | 'sort' | 'searchQuery' | 'person' | 'album' | 'tag' | 'copiesOf'>,
 ): ViewKey {

@@ -3,12 +3,13 @@ use crate::{
     decode::{decode_oriented, fit_within},
     edit::{Edit, render_picture},
 };
-use image::DynamicImage;
+use image::{DynamicImage, RgbImage};
 use std::{
-    collections::HashSet,
+    collections::{HashSet, VecDeque},
     fs,
     io::Write,
     path::{Path, PathBuf},
+    sync::Arc,
     time::Duration,
 };
 
@@ -70,14 +71,26 @@ const TEMP_PREFIX: &str = "thumb-";
 /// is doing.
 const TEMP_GRACE: Duration = Duration::from_secs(60 * 60);
 
+/// How many decoded previews `face_crop` keeps, the most recently used. A group photo's
+/// faces are crops of one preview, asked for together as a page of strips loads; kept, it is
+/// decoded once for all of them rather than once a face. Eight 1600 px previews are 46 MB
+/// at 4:3 and 61 MB square, held from the first crop on.
+const DECODED_PREVIEWS: usize = 8;
+
 /// On-disk WebP thumbnails keyed by content fingerprint.
 pub struct ThumbCache {
     root: PathBuf,
+    /// The last [`DECODED_PREVIEWS`] previews `face_crop` decoded, by key, the most recently
+    /// used last. A key names one picture, so a decode kept under it is never stale.
+    decoded: parking_lot::Mutex<VecDeque<(u64, Arc<RgbImage>)>>,
 }
 
 impl ThumbCache {
     pub fn new(root: impl Into<PathBuf>) -> Self {
-        Self { root: root.into() }
+        Self {
+            root: root.into(),
+            decoded: parking_lot::Mutex::new(VecDeque::with_capacity(DECODED_PREVIEWS + 1)),
+        }
     }
 
     /// The cache directory, for the in-flight markers kept beside the thumbnails.
@@ -166,6 +179,56 @@ impl ThumbCache {
             .ok_or_else(|| {
                 std::io::Error::new(std::io::ErrorKind::InvalidData, "not a still WebP").into()
             })
+    }
+
+    /// A face's crop, as WebP: the square `face_crop::square` gives, cut from the cached
+    /// preview and scaled to `CROP_PX`. Only the cache is read - never the photo, and never a
+    /// render: a preview that is not cached is an I/O `NotFound`, which the route answers with
+    /// a 404 and the page with a placeholder. The decoded preview is kept for the photo's
+    /// other faces (`decoded_preview`).
+    pub fn face_crop(&self, key: u64, rect: &crate::face_detect::Rect) -> Result<Vec<u8>> {
+        use super::face_crop::{CROP_PX, square};
+        let preview = self.decoded_preview(key)?;
+        let (x, y, side) = square(rect, preview.width(), preview.height()).ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, "no face to crop")
+        })?;
+        let cut = image::imageops::crop_imm(&*preview, x, y, side, side).to_image();
+        let small = image::imageops::resize(
+            &cut,
+            CROP_PX,
+            CROP_PX,
+            image::imageops::FilterType::Triangle,
+        );
+        let encoded = encode_webp(
+            &webp::Encoder::from_rgb(small.as_raw(), CROP_PX, CROP_PX),
+            ThumbSize::Grid.webp_method(),
+        )?;
+        Ok(encoded.to_vec())
+    }
+
+    /// The cached preview under `key`, decoded: from the ones kept if it is there, else read
+    /// from disk and kept. Decoded outside the lock, so two crops of different photos decode
+    /// side by side; two of the same photo arriving together may both decode it, which costs
+    /// a decode and no more.
+    fn decoded_preview(&self, key: u64) -> Result<Arc<RgbImage>> {
+        {
+            let mut kept = self.decoded.lock();
+            if let Some(at) = kept.iter().position(|(k, _)| *k == key) {
+                let hit = kept.remove(at).expect("a position just found");
+                let image = hit.1.clone();
+                kept.push_back(hit);
+                return Ok(image);
+            }
+        }
+        let image = Arc::new(self.read(key, ThumbSize::Preview)?.to_rgb8());
+        let mut kept = self.decoded.lock();
+        if !kept.iter().any(|(k, _)| *k == key) {
+            kept.push_back((key, image.clone()));
+            if kept.len() > DECODED_PREVIEWS {
+                kept.pop_front();
+            }
+        }
+        Ok(image)
     }
 
     /// Removes thumbnails whose fingerprint is not in `live`. Returns the number of files removed.
@@ -373,6 +436,99 @@ mod tests {
                 encoded(img, other),
                 "{size:?}: the methods agree here"
             );
+        }
+    }
+
+    /// A 400 x 200 grey preview with a red 40 x 40 square at x 180-220, y 80-120.
+    fn red_square_preview() -> DynamicImage {
+        DynamicImage::ImageRgb8(image::RgbImage::from_fn(400, 200, |x, y| {
+            if (180..220).contains(&x) && (80..120).contains(&y) {
+                image::Rgb([255, 0, 0])
+            } else {
+                image::Rgb([128, 128, 128])
+            }
+        }))
+    }
+
+    #[test]
+    fn a_face_crop_is_cut_around_the_face_from_the_cached_preview() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = ThumbCache::new(dir.path().join("cache"));
+        let preview = red_square_preview();
+        cache.store(5, &preview, &preview).unwrap();
+        let rect = crate::face_detect::Rect {
+            left: 0.45,
+            top: 0.4,
+            right: 0.55,
+            bottom: 0.6,
+        };
+        let bytes = cache.face_crop(5, &rect).unwrap();
+        let crop = webp::Decoder::new(&bytes).decode().unwrap().to_image();
+        assert_eq!((crop.width(), crop.height()), (96, 96));
+        let crop = crop.to_rgb8();
+        let centre = crop.get_pixel(48, 48).0;
+        assert!(
+            centre[0] > 180 && centre[1] < 80 && centre[2] < 80,
+            "{centre:?}"
+        );
+        let corner = crop.get_pixel(1, 1).0;
+        assert!(
+            corner.iter().all(|&c| (110..150).contains(&c)),
+            "{corner:?}"
+        );
+    }
+
+    /// The route answers exactly this kind with a 404.
+    #[test]
+    fn a_face_crop_is_cut_only_from_the_cached_preview() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = ThumbCache::new(dir.path().join("cache"));
+        let rect = crate::face_detect::Rect {
+            left: 0.4,
+            top: 0.4,
+            right: 0.6,
+            bottom: 0.6,
+        };
+        match cache.face_crop(9, &rect) {
+            Err(crate::Error::Io(err)) => assert_eq!(err.kind(), std::io::ErrorKind::NotFound),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// A photo's faces decode its preview once: a second face of the same key is cut from
+    /// the decode kept from the first, even with the file gone, until eight other previews
+    /// have been decoded since its last use.
+    #[test]
+    fn a_face_crop_reuses_the_last_eight_decoded_previews() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = ThumbCache::new(dir.path().join("cache"));
+        let preview = red_square_preview();
+        for key in 1..=9 {
+            cache.store(key, &preview, &preview).unwrap();
+        }
+        let face = |left: f64| crate::face_detect::Rect {
+            left,
+            top: 0.4,
+            right: left + 0.1,
+            bottom: 0.6,
+        };
+        cache.face_crop(1, &face(0.45)).unwrap();
+        fs::remove_file(cache.path_for(1, ThumbSize::Preview)).unwrap();
+        cache
+            .face_crop(1, &face(0.1))
+            .expect("the decode kept from the first face");
+        for key in 2..=8 {
+            cache.face_crop(key, &face(0.45)).unwrap();
+        }
+        // Key 1 is the least recently used of eight now: still kept.
+        cache.face_crop(1, &face(0.45)).unwrap();
+        cache.face_crop(9, &face(0.45)).unwrap();
+        cache.face_crop(1, &face(0.45)).unwrap();
+        // Key 2 was the oldest when 9 came in, and went for it.
+        fs::remove_file(cache.path_for(2, ThumbSize::Preview)).unwrap();
+        match cache.face_crop(2, &face(0.45)) {
+            Err(crate::Error::Io(err)) => assert_eq!(err.kind(), std::io::ErrorKind::NotFound),
+            other => panic!("{other:?}"),
         }
     }
 

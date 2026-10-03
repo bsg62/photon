@@ -173,7 +173,7 @@ mod tests {
             (GridView::Starred, String::new()),
             (GridView::Recent, String::new()),
             (GridView::Search, "beach".to_string()),
-            (GridView::Person, "ada".to_string()),
+            (GridView::Person, "c:ada".to_string()),
             (GridView::Album, album.to_string()),
             (GridView::Tag, "sea".to_string()),
             (GridView::Duplicates, String::new()),

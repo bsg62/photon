@@ -120,7 +120,7 @@
         id === 3
           ? "Grandma's 80th, on the terrace in Lisbon, everyone gathered right before sunset for cake and the last of the summer light over the river."
           : null,
-      faces: [{ hash: 'a', name: 'Anna', left: 0.3, top: 0.25, right: 0.42, bottom: 0.5 }],
+      faces: [{ key: 'p:1', name: 'Anna', left: 0.3, top: 0.25, right: 0.42, bottom: 0.5 }],
       unnamedFaces: [{ left: 0.56, top: 0.3, right: 0.66, bottom: 0.5 }],
       kind: id === 5 ? 'video' : 'image',
       durationMs: id === 5 ? 83_000 : null,
@@ -200,8 +200,8 @@
     neighbours: () => [],
     viewer_item: (a) => viewerItem(a.id ?? a.itemId ?? 3),
     list_people: () => [
-      { hash: 'a', name: 'Anna', count: 212 },
-      { hash: 'b', name: 'Jonas', count: 87 },
+      { key: 'p:1', name: 'Anna', count: 212 },
+      { key: 'c:b', name: 'Jonas', count: 87 },
     ],
     list_tags: () => [
       { tag: 'alps', count: 134, total: 134 },
@@ -253,6 +253,34 @@
     set_similar_distance: (a) => a.distance,
     face_detection: () => true,
     set_face_detection: () => null,
+    face_data_summary: () => ({ namedPeople: 1 }),
+    people_to_name: () => 2,
+    people_page: () => {
+      // Face n sits on photo n, so every crop has a thumbnail behind it.
+      const face = (id, confirmed = false) => ({ id, itemId: id, thumbKey: 'k' + (id - 1), confirmed, personId: null });
+      // A face carries its group's id: that is how a single face is named.
+      const group = (id, name, faces) => ({
+        id, name, faceCount: faces.length, faces: faces.map((f) => ({ ...f, personId: id })), offer: null,
+      });
+      const range = (from, n) => Array.from({ length: n }, (_, i) => face(from + i));
+      return {
+        unnamed: [
+          { ...group(1, null, range(1, 5)), offer: { name: 'Jonas', contact: 'b', faces: 4 } },
+          group(2, null, range(6, 3)),
+        ],
+        unnamedCount: 2,
+        singleFaces: [10, 11, 12].map((id) => ({ ...face(id), personId: 20 + id })),
+        singleCount: 3,
+        suggestions: [group(3, 'Anna', range(13, 2))],
+        people: [
+          { ...group(3, 'Anna', range(15, 6).map((f) => ({ ...f, confirmed: true }))), faceCount: 18 },
+          group(4, 'Ben', range(21, 2).map((f) => ({ ...f, confirmed: true }))),
+        ],
+        ignoredGroups: [group(5, null, range(23, 2))],
+        ignoredFaces: [],
+      };
+    },
+    person_faces: () => [],
     set_search_query: (args) => {
       searchQuery = args.query || '';
       return null;
@@ -285,6 +313,8 @@
     'set_item_edit', 'set_last_folder', 'set_person_view',
     'check_export_dest', 'set_export_apply_edits', 'set_slideshow_interval', 'set_slideshow_shuffle', 'set_star', 'set_tag_view', 'set_theme',
     'set_visible', 'set_copies_view',
+    'name_person', 'rename_person', 'confirm_faces', 'reject_faces', 'merge_people', 'ignore_person',
+    'ignore_faces', 'delete_person',
     'put_video_frame', 'video_frame_failed', 'video_session_start',
   ];
 
@@ -401,6 +431,12 @@
     menu: () => {
       tile(7)?.click();
       tile(7)?.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 700, clientY: 300 }));
+    },
+    // The People page, opened from the sidebar's People row, with a face selected so the
+    // action bar is drawn.
+    peoplepage: () => {
+      click('.group.people');
+      later(300, () => document.querySelector('.people .face')?.click());
     },
     // The sidebar's last row, where the menu has to open upward to stay on screen, and an
     // aliased folder (folder 5), so the menu holds Rename in photon… and Use folder name.

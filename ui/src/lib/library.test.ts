@@ -41,6 +41,7 @@ vi.mock('./api', () => ({
     renameSavedSearch: vi.fn(),
     deleteSavedSearch: vi.fn(),
     listPeople: vi.fn(),
+    peopleToName: vi.fn(),
     listTags: vi.fn(),
     setAlbumView: vi.fn(),
     createAlbum: vi.fn(),
@@ -112,6 +113,7 @@ describe('LibraryStore', () => {
     vi.mocked(api.listAlbums).mockResolvedValue([]);
     vi.mocked(api.listSavedSearches).mockResolvedValue([]);
     vi.mocked(api.listPeople).mockResolvedValue([]);
+    vi.mocked(api.peopleToName).mockResolvedValue(0);
     vi.mocked(api.listTags).mockResolvedValue([]);
     vi.mocked(api.watchedFolderStats).mockResolvedValue([]);
   });
@@ -202,7 +204,8 @@ describe('LibraryStore', () => {
     expect(api.listAlbums).toHaveBeenCalledTimes(1);
 
     vi.mocked(api.listAlbums).mockResolvedValue([{ id: 1, name: 'Trip', count: 2, picasa: false }]);
-    vi.mocked(api.listPeople).mockResolvedValue([{ hash: 'abc', name: 'Ada', count: 1 }]);
+    vi.mocked(api.listPeople).mockResolvedValue([{ key: 'c:abc', name: 'Ada', count: 1 }]);
+    vi.mocked(api.peopleToName).mockResolvedValue(4);
     vi.mocked(api.listTags).mockResolvedValue([{ tag: 'beach', count: 3, total: 3 }]);
     vi.mocked(api.listSavedSearches).mockResolvedValue([
       { id: 7, name: 'Canon', query: 'camera:canon', createdMs: 0 },
@@ -213,9 +216,12 @@ describe('LibraryStore', () => {
     await Promise.resolve();
     expect(store.albums).toEqual([{ id: 1, name: 'Trip', count: 2, picasa: false }]);
     expect(store.people[0]?.name).toBe('Ada');
+    // The sidebar's "N to name" travels with the collections, so the face pass's grouping
+    // (a data change) moves it.
+    expect(store.toName).toBe(4);
     expect(store.tags[0]?.tag).toBe('beach');
     expect(store.albumName(1)).toBe('Trip');
-    expect(store.personName('abc')).toBe('Ada');
+    expect(store.personName('c:abc')).toBe('Ada');
     expect(store.albumName(99)).toBe('');
     expect(store.searches).toEqual([{ id: 7, name: 'Canon', query: 'camera:canon', createdMs: 0 }]);
 
@@ -315,19 +321,19 @@ describe('LibraryStore', () => {
   it('leaves the collections alone on a library change that moved no data', async () => {
     const store = new LibraryStore();
     await store.init();
-    const calls = () => [api.listAlbums, api.listSavedSearches, api.listPeople, api.listTags].map((f) => vi.mocked(f).mock.calls.length);
-    expect(calls()).toEqual([1, 1, 1, 1]);
+    const calls = () => [api.listAlbums, api.listSavedSearches, api.listPeople, api.peopleToName, api.listTags].map((f) => vi.mocked(f).mock.calls.length);
+    expect(calls()).toEqual([1, 1, 1, 1, 1]);
     const data = store.dataVersion;
 
     handlers.libraryChanged({ version: 2, len: 0, dataChanged: false });
     await Promise.resolve();
     await Promise.resolve();
-    expect(calls()).toEqual([1, 1, 1, 1]);
+    expect(calls()).toEqual([1, 1, 1, 1, 1]);
     expect(store.dataVersion).toBe(data);
 
     handlers.libraryChanged({ version: 3, len: 0, dataChanged: true });
     await Promise.resolve();
-    expect(calls()).toEqual([2, 2, 2, 2]);
+    expect(calls()).toEqual([2, 2, 2, 2, 2]);
     expect(store.dataVersion).toBe(data + 1);
   });
 
@@ -820,14 +826,14 @@ describe('LibraryStore', () => {
     await store.init();
     expect(events.onFaceProgress).toHaveBeenCalledTimes(1);
 
-    handlers.faceProgress({ checked: 64, total: 900, running: true });
-    expect(store.faces).toEqual({ checked: 64, total: 900, running: true });
+    handlers.faceProgress({ phase: 'detecting', checked: 64, total: 900, running: true });
+    expect(store.faces).toEqual({ phase: 'detecting', checked: 64, total: 900, running: true });
 
-    handlers.faceProgress({ checked: 0, total: 0, running: false });
-    handlers.faceProgress({ checked: 0, total: 0, running: false });
+    handlers.faceProgress({ phase: 'detecting', checked: 0, total: 0, running: false });
+    handlers.faceProgress({ phase: 'detecting', checked: 0, total: 0, running: false });
     expect(store.faces).toBeNull();
 
-    handlers.faceProgress({ checked: 10, total: 900, running: true });
+    handlers.faceProgress({ phase: 'detecting', checked: 10, total: 900, running: true });
     store.dispose();
     expect(store.faces).toBeNull();
   });
