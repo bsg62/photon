@@ -6,7 +6,7 @@ use super::items::edit_from_db;
 use super::settings::face_detection_on;
 use crate::edit::Edit;
 use crate::face_detect::{Rect, merge};
-use crate::face_embed::from_blob;
+use crate::face_embed::{DIM, from_blob};
 use crate::grid::hex_key;
 use crate::media::fingerprint;
 use crate::people::{Choice, Group, choose, counts_toward_centroid};
@@ -22,7 +22,20 @@ const GROUP_BATCH: usize = 512;
 /// The faces the grouping step places: a vector, no group, not ignored. One string for the
 /// step's list and for `has_ungrouped_faces`, so the pass never asks for work the step
 /// would not do.
-const UNGROUPED: &str = "person_id IS NULL AND ignored = 0 AND embedding IS NOT NULL";
+///
+/// A vector is one of the right length (`from_blob`'s test, which the step applies too):
+/// a blob of any other length is dropped by the step, and matched here it would leave
+/// `has_ungrouped_faces` true for ever and run a grouping on every pass. And one the
+/// embedder made for this face (`embedding_version` set): a vector carried over a detector
+/// re-run (`write_face_batch`) is the old box's, kept so that the face counts towards its
+/// group until it is embedded again. A face is placed by its own vector: the carry-over
+/// pairs boxes by place, which is a judgement where two faces overlap.
+const UNGROUPED: &str = "person_id IS NULL AND ignored = 0
+     AND embedding_version IS NOT NULL AND length(embedding) = 512";
+const _: () = assert!(
+    DIM * 4 == 512,
+    "UNGROUPED's length is DIM little-endian f32"
+);
 
 impl Library {
     /// Places every face that has a vector, no group and is not ignored, by the rule, in
@@ -921,6 +934,83 @@ mod tests {
                 [f[1]],
             )
             .unwrap();
+        assert_eq!(l.lib.group_ungrouped_faces(&never).unwrap(), 0);
+    }
+
+    /// A blob of the wrong length is no vector: the step drops it, so the probe must not
+    /// report it as work, or every pass would run a grouping that places nothing.
+    #[test]
+    fn a_corrupt_vector_is_not_work() {
+        let (l, f) = library(&[&[0.0]]);
+        l.lib
+            .writer()
+            .execute(
+                "UPDATE detected_faces SET embedding = x'00010203' WHERE id = ?1",
+                [f[0]],
+            )
+            .unwrap();
+        assert!(!l.lib.has_ungrouped_faces().unwrap());
+        assert_eq!(l.lib.group_ungrouped_faces(&never).unwrap(), 0);
+    }
+
+    /// The box of the face at index `k` of a `library` photo, as a new detector would
+    /// find it again.
+    fn the_same_box(k: usize) -> Detection {
+        Detection {
+            rect: Rect {
+                left: 0.1 * k as f64,
+                top: 0.1,
+                right: 0.1 * k as f64 + 0.08,
+                bottom: 0.2,
+            },
+            landmarks: [(0.0, 0.0); 5],
+            score: 0.9,
+        }
+    }
+
+    /// A newer detector looks at `item` again and finds its first face where it was.
+    fn detected_again(l: &L, item: i64) -> i64 {
+        let c = l.lib.face_candidates(0, 100, V + 1).unwrap();
+        let c = c.into_iter().find(|c| c.id == item).unwrap();
+        l.lib
+            .write_face_batch(&[(c, vec![the_same_box(0)])], V + 1)
+            .unwrap();
+        l.lib
+            .reader()
+            .unwrap()
+            .query_row(
+                "SELECT id FROM detected_faces WHERE item_id = ?1",
+                [item],
+                |r| r.get(0),
+            )
+            .unwrap()
+    }
+
+    /// After a detector re-run, Anna's face carries its vector until it is embedded again,
+    /// and still counts towards her: a face recognised meanwhile becomes a suggestion for
+    /// her, where with her average emptied it would start a group of its own.
+    #[test]
+    fn a_carried_vector_keeps_a_persons_average() {
+        let (l, f) = library(&[&[0.0], &[10.0]]);
+        set_ignored_by_hand(&l.lib, f[1], true);
+        l.lib.group_ungrouped_faces(&never).unwrap();
+        let anna = person_of(&l.lib, f[0]).0.unwrap();
+        l.lib.name_group(anna, "Anna").unwrap();
+        let carried = detected_again(&l, l.items[0]);
+        assert_eq!(person_of(&l.lib, carried), (Some(anna), true));
+        set_ignored_by_hand(&l.lib, f[1], false);
+        l.lib.group_ungrouped_faces(&never).unwrap();
+        assert_eq!(person_of(&l.lib, f[1]), (Some(anna), false));
+    }
+
+    /// A face that had a vector and no group yet carries the vector too, and waits for its
+    /// own before it is placed.
+    #[test]
+    fn a_carried_vector_does_not_place_its_face() {
+        let (l, _f) = library(&[&[0.0]]);
+        let carried = detected_again(&l, l.items[0]);
+        assert_eq!(person_of(&l.lib, carried), (None, false));
+        assert!(!l.lib.has_ungrouped_faces().unwrap());
         assert_eq!(l.lib.group_ungrouped_faces(&never).unwrap(), 0);
     }
 

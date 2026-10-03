@@ -111,18 +111,19 @@ fn landmarks_from_blob(b: &[u8]) -> [(f32, f32); 5] {
 }
 
 /// What the user did to one face of a photo, to hand to the face found at the same place
-/// when the detector looks again.
+/// when the detector looks again, and the vector it had.
 struct Carried {
     rect: Rect,
     person_id: Option<i64>,
     confirmed: bool,
     ignored: bool,
     rejected: Vec<i64>,
+    embedding: Option<Vec<u8>>,
 }
 
 fn read_carried(tx: &rusqlite::Connection, item_id: i64) -> rusqlite::Result<Vec<Carried>> {
     let mut faces = tx.prepare_cached(
-        "SELECT id, left, top, right, bottom, person_id, confirmed, ignored
+        "SELECT id, left, top, right, bottom, person_id, confirmed, ignored, embedding
          FROM detected_faces WHERE item_id = ?1 ORDER BY id",
     )?;
     let mut rejections =
@@ -142,6 +143,7 @@ fn read_carried(tx: &rusqlite::Connection, item_id: i64) -> rusqlite::Result<Vec
                     confirmed: r.get::<_, i64>(6)? == 1,
                     ignored: r.get::<_, i64>(7)? == 1,
                     rejected: Vec::new(),
+                    embedding: r.get(8)?,
                 },
             ))
         })?
@@ -156,14 +158,21 @@ fn read_carried(tx: &rusqlite::Connection, item_id: i64) -> rusqlite::Result<Vec
         .collect()
 }
 
+/// Hands `from` to the new face `face_id`. The vector goes too, with no
+/// `embedding_version`: the face is still embedded again, from its own box, but until then
+/// it counts towards its group's average. Without it, a detector re-run would empty every
+/// named person's average for the length of the embedding step, and each face recognised
+/// meanwhile would start a group of its own rather than become a suggestion.
 fn carry(tx: &rusqlite::Connection, face_id: i64, from: &Carried) -> rusqlite::Result<()> {
     tx.execute(
-        "UPDATE detected_faces SET person_id = ?2, confirmed = ?3, ignored = ?4 WHERE id = ?1",
+        "UPDATE detected_faces SET person_id = ?2, confirmed = ?3, ignored = ?4, embedding = ?5
+         WHERE id = ?1",
         params![
             face_id,
             from.person_id,
             from.confirmed as i64,
-            from.ignored as i64
+            from.ignored as i64,
+            from.embedding,
         ],
     )?;
     for person in &from.rejected {
@@ -173,6 +182,48 @@ fn carry(tx: &rusqlite::Connection, face_id: i64, from: &Carried) -> rusqlite::R
         )?;
     }
     Ok(())
+}
+
+/// How much two boxes of the same detector overlap: their intersection over their union.
+fn overlap(a: &Rect, b: &Rect) -> f64 {
+    let w = (a.right.min(b.right) - a.left.max(b.left)).max(0.0);
+    let h = (a.bottom.min(b.bottom) - a.top.max(b.top)).max(0.0);
+    let inter = w * h;
+    let union =
+        (a.right - a.left) * (a.bottom - a.top) + (b.right - b.left) * (b.bottom - b.top) - inter;
+    if union > 0.0 { inter / union } else { 0.0 }
+}
+
+/// Which old face each new face inherits from, as `(new, old)` indexes: among the pairs
+/// `merge::same_face` calls one face, the best-fitting first, each face of either side in
+/// one pair at most.
+///
+/// Not the first old face that matches. A centre inside the other box is a loose test,
+/// meant for Picasa's generous boxes against the detector's tight ones; two people close
+/// together pass it - a small face whose centre lies inside a large one - and a new small
+/// face listed first would take the large face's name. Both sides here are the detector's
+/// own boxes, so how much they overlap says which is which.
+fn pairs_by_fit(old: &[Carried], new: &[Detection]) -> Vec<(usize, usize)> {
+    let mut candidates: Vec<(f64, usize, usize)> = Vec::new();
+    for (n, face) in new.iter().enumerate() {
+        for (o, was) in old.iter().enumerate() {
+            if crate::face_detect::merge::same_face(&was.rect, &face.rect) {
+                candidates.push((overlap(&was.rect, &face.rect), n, o));
+            }
+        }
+    }
+    // Best fit first; a tie in the order the faces were found and stored.
+    candidates.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2)));
+    let (mut new_taken, mut old_taken) = (vec![false; new.len()], vec![false; old.len()]);
+    let mut pairs = Vec::new();
+    for (_, n, o) in candidates {
+        if !new_taken[n] && !old_taken[o] {
+            new_taken[n] = true;
+            old_taken[o] = true;
+            pairs.push((n, o));
+        }
+    }
+    pairs
 }
 
 fn landmarks_blob(points: &[(f32, f32); 5]) -> [u8; 40] {
@@ -270,7 +321,7 @@ impl Library {
                 let old = read_carried(&tx, candidate.id)?;
                 // An older detector's faces, when the version moved.
                 delete.execute(params![candidate.id])?;
-                let mut taken = vec![false; old.len()];
+                let mut ids = Vec::with_capacity(faces.len());
                 for face in faces {
                     insert.execute(params![
                         candidate.id,
@@ -281,13 +332,10 @@ impl Library {
                         landmarks_blob(&face.landmarks).as_slice(),
                         face.score as f64,
                     ])?;
-                    let id = tx.last_insert_rowid();
-                    if let Some(i) = old.iter().enumerate().position(|(i, o)| {
-                        !taken[i] && crate::face_detect::merge::same_face(&o.rect, &face.rect)
-                    }) {
-                        taken[i] = true;
-                        carry(&tx, id, &old[i])?;
-                    }
+                    ids.push(tx.last_insert_rowid());
+                }
+                for (n, o) in pairs_by_fit(&old, faces) {
+                    carry(&tx, ids[n], &old[o])?;
                 }
             }
         }
@@ -1191,6 +1239,87 @@ mod tests {
             )
             .unwrap();
         assert_eq!((rows(&lib), n), (2, 1));
+    }
+
+    /// Two people close together: Ben's small face lies inside Anna's large one, so each
+    /// new box passes the centre test against both old ones. The re-run lists Ben's face
+    /// first, and he keeps his name rather than taking hers.
+    #[test]
+    fn a_rerun_hands_overlapping_faces_back_by_fit() {
+        let (_dir, lib, _ids) = seeded(&["a.jpg"]);
+        let at = |left: f64, top: f64, right: f64, bottom: f64| Detection {
+            rect: Rect {
+                left,
+                top,
+                right,
+                bottom,
+            },
+            ..face(0.0)
+        };
+        let anna = at(0.1, 0.1, 0.6, 0.6);
+        let ben = at(0.3, 0.3, 0.42, 0.42);
+        let c = lib.face_candidates(0, 10, V).unwrap();
+        lib.write_face_batch(&[(c[0].clone(), vec![anna.clone(), ben.clone()])], V)
+            .unwrap();
+        let w = lib.writer();
+        w.execute(
+            "INSERT INTO people (id, name) VALUES (7, 'Anna'), (8, 'Ben')",
+            [],
+        )
+        .unwrap();
+        w.execute(
+            "UPDATE detected_faces SET person_id = CASE WHEN left < 0.2 THEN 7 ELSE 8 END,
+                                       confirmed = 1",
+            [],
+        )
+        .unwrap();
+        drop(w);
+        let c = lib.face_candidates(0, 10, V + 1).unwrap();
+        lib.write_face_batch(&[(c[0].clone(), vec![ben, anna])], V + 1)
+            .unwrap();
+        let r = lib.reader().unwrap();
+        let mut stmt = r
+            .prepare("SELECT left, person_id FROM detected_faces ORDER BY left")
+            .unwrap();
+        let rows: Vec<(f64, Option<i64>)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(rows, [(0.1, Some(7)), (0.3, Some(8))]);
+    }
+
+    /// The vector goes with what the user did, without a version: the face is embedded
+    /// again, and meanwhile counts towards its group (`library/people.rs` has the rest).
+    #[test]
+    fn a_rerun_carries_the_vector_to_be_made_again() {
+        let (_dir, lib, _ids) = seeded(&["a.jpg"]);
+        detected(&lib);
+        let c = lib.embed_candidates(0, 10, EV).unwrap();
+        let faces: Vec<_> = c[0].faces.iter().map(|(id, _)| *id).collect();
+        lib.write_embeddings(
+            &[(
+                c[0].clone(),
+                vec![(faces[0], Some(unit(3))), (faces[1], None)],
+            )],
+            EV,
+        )
+        .unwrap();
+        let c = lib.face_candidates(0, 10, V + 1).unwrap();
+        lib.write_face_batch(&[(c[0].clone(), vec![face(0.1), face(0.5)])], V + 1)
+            .unwrap();
+        let rows: Vec<(Option<Vec<u8>>, Option<i64>)> = {
+            let r = lib.reader().unwrap();
+            let mut stmt = r
+                .prepare("SELECT embedding, embedding_version FROM detected_faces ORDER BY left")
+                .unwrap();
+            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap()
+        };
+        assert_eq!(rows, [(Some(to_blob(&unit(3))), None), (None, None)]);
+        assert_eq!(lib.embed_candidates(0, 10, EV).unwrap()[0].faces.len(), 2);
     }
 
     #[test]
