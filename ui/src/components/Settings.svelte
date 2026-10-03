@@ -4,6 +4,7 @@
   import { api, errorMessage, type AppInfo, type LibraryStats, type MemoryUsage, type TagCount, type TagRule, type ThemeChoice, type WatchedFolder } from '../lib/api';
   import { theme } from '../lib/app-theme.svelte';
   import { library } from '../lib/library.svelte';
+  import { switchOffWarning } from '../lib/people';
   import { MEMORY_POLL_MS, folderStatus, memoryAmount, memoryScope, photoCountLabel, type SettingsSection } from '../lib/settings';
   import { faceStatus } from '../lib/status';
   import { cameraStatRows, lensStatRows, statsSummary, yearRows, type StatRow } from '../lib/stats';
@@ -169,10 +170,26 @@
       .catch(library.reportError);
   });
 
-  /** The box shows what is stored: put back if the store fails. */
-  function saveFindFaces(e: Event & { currentTarget: HTMLInputElement }) {
+  /** The box shows what is stored: put back if the store fails, or if the user keeps their
+   *  names. Switching off deletes the people the user named (spec "Switching off"), so when
+   *  there are any it asks first; with none it switches off as before. */
+  async function saveFindFaces(e: Event & { currentTarget: HTMLInputElement }) {
     const field = e.currentTarget;
     const next = field.checked;
+    if (!next) {
+      let named: number;
+      try {
+        named = (await api.faceDataSummary()).namedPeople;
+      } catch (err) {
+        field.checked = findFaces ?? true;
+        library.reportError(err);
+        return;
+      }
+      if (named > 0 && !(await ask(switchOffWarning(named), { title: 'Stop finding faces', kind: 'warning' }))) {
+        field.checked = findFaces ?? true;
+        return;
+      }
+    }
     api
       .setFaceDetection(next)
       .then(() => (findFaces = next))
@@ -581,14 +598,15 @@
         {:else if current === 'people'}
           <h2>Find faces</h2>
           <p class="hint">
-            photon looks for faces in your photos, so you can search for them (has:face, faces:2+) and see
-            them outlined in the viewer's info panel. It works in the background and can take hours on a
+            photon looks for faces in your photos and sorts them into groups, one per person as far as it
+            can tell. Name them on the People page, in the sidebar, and find them with person:, has:face or
+            faces:2+; the viewer's info panel shows them. It works in the background and can take hours on a
             large library; you can quit and it carries on next time. Until it has finished, a search for
             photos without faces also finds photos it has not reached yet.
           </p>
           <p class="hint">
-            Everything stays on this computer. Switching this off deletes what photon found; faces named in
-            Picasa are not affected.
+            Everything stays on this computer. Switching this off deletes what photon found and the names you
+            gave; faces named in Picasa are not affected.
           </p>
           <label class="shuffle">
             <input type="checkbox" checked={findFaces ?? false} disabled={findFaces === null} onchange={saveFindFaces} />

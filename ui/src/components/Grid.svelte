@@ -771,7 +771,8 @@
             This album has no photos in the library.
           {/if}
         {:else if library.info.view === 'person'}
-          No photos of {library.personName(library.info.person)}.
+          <!-- A person deleted while shown has no name left to read. -->
+          No photos of {library.personName(library.info.person) || 'this person'}.
         {:else if library.info.view === 'duplicates'}
           No duplicates. Every photo in the library is the only copy of itself.
         {:else if library.info.view === 'copies'}

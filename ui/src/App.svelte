@@ -8,7 +8,9 @@
   import { showCopies } from './lib/copies';
   import { locateItem } from './lib/folders';
   import { library } from './lib/library.svelte';
+  import { mainPage } from './lib/main-page.svelte';
   import { ownsSelectAll } from './lib/nav';
+  import { openFacePhoto } from './lib/people';
   import { resultsChanged, viewKey } from './lib/search';
   import { searchBox } from './lib/search-box.svelte';
   import type { SettingsSection } from './lib/settings';
@@ -23,6 +25,7 @@
   import Icon from './components/Icon.svelte';
   import FolderTree from './components/FolderTree.svelte';
   import Grid from './components/Grid.svelte';
+  import PeoplePage from './components/PeoplePage.svelte';
   import SearchBar from './components/SearchBar.svelte';
   import Compare from './components/Compare.svelte';
   import Settings from './components/Settings.svelte';
@@ -35,6 +38,7 @@
   import Viewer from './components/Viewer.svelte';
 
   let grid: ReturnType<typeof Grid> | undefined = $state();
+  let peoplePage: ReturnType<typeof PeoplePage> | undefined = $state();
   let viewerAt = $state<number | null>(null);
   let settingsAt = $state<SettingsSection | null>(null);
   let compareIds = $state<number[] | null>(null);
@@ -175,14 +179,35 @@
     viewerAt = offset;
   }
 
-  function closeViewer(at: number, itemId: number | null) {
+  async function closeViewer(at: number, itemId: number | null) {
     viewerAt = null;
     // Same rule, the other way round: closing on the photo the viewer was opened with
     // leaves the selection alone; closing after navigating collapses to what is on screen.
     // By id, because the page holding `at` may be long gone; see `closeViewerOn`.
     library.closeViewerOn(at, itemId);
+    if (mainPage.current === 'people') {
+      // Opened from a face: the grid is not mounted, and the page is where the user was.
+      // After `tick`, for `closeSettings`' reason - `<main>` is inert until the DOM
+      // catches up with `covered`.
+      await tick();
+      peoplePage?.focus();
+      return;
+    }
     grid?.scrollToOffset(at, 'nearest');
     grid?.focus();
+  }
+
+  /** A face double-clicked on the People page: its photo in the viewer, over the page. The
+   *  grid behind is switched to All photos when its view does not hold the photo, as "Locate
+   *  in photon" does; the page stays, so closing the viewer lands back on it. */
+  function openFace(itemId: number) {
+    void openFacePhoto(itemId, {
+      offsetOf: (id) => api.gridOffsetOfItem(id).catch(() => null),
+      cancelSearch: () => searchBox.cancel(),
+      showAll: () => library.setView('all'),
+      open,
+      notify: library.notify,
+    });
   }
 
   /** "Locate in photon" from the viewer. Closes it first so the grid is what lands on the
@@ -191,6 +216,7 @@
    *  listed. */
   async function locate(itemId: number, hidden = false) {
     viewerAt = null;
+    mainPage.showGrid();
     await locateItem(itemId, hidden, {
       cancelSearch: () => searchBox.cancel(),
       currentView: () => library.settledView(),
@@ -206,6 +232,7 @@
 
   /** "Show duplicates" from the tile menu; the switch-then-lookup order is `showCopies`'s. */
   async function showCopiesOf(itemId: number) {
+    mainPage.showGrid();
     await showCopies(itemId, {
       cancelSearch: () => searchBox.cancel(),
       setCopiesView: (id) => library.setCopiesView(id),
@@ -229,9 +256,13 @@
     void showCopiesOf(itemId);
   }
 
-  function searchFrom(query: string) {
+  /** After `tick`: from the People page the grid is mounted only once the DOM catches up,
+   *  and `<main>` stays inert until then too (`closeSettings`). */
+  async function searchFrom(query: string) {
     viewerAt = null;
+    mainPage.showGrid();
     searchBox.search(query);
+    await tick();
     grid?.focus();
   }
 
@@ -300,6 +331,7 @@
    *  after `tick`, for `closeSettings`' reason. */
   async function searchFromSettings(query: string) {
     settingsAt = null;
+    mainPage.showGrid();
     searchBox.search(query);
     await tick();
     grid?.focus();
@@ -341,6 +373,7 @@
   }
 
   async function jump(folderId: number) {
+    mainPage.showGrid();
     const offset = await api.gridOffsetOfFolder(folderId).catch(() => null);
     if (offset === null) return;
     library.selected = offset;
@@ -379,14 +412,20 @@
     onkeydown={keyResize}
   ></div>
   <main class="content" inert={covered}>
-    <Grid
-      bind:this={grid}
-      onopen={open}
-      onkeywords={openKeywords}
-      onexport={openExport}
-      oncompare={openCompare}
-      onshowcopies={showCopiesOf}
-    />
+    <!-- The People page has no rows, so it is not a grid view: the grid keeps its view and
+         is unmounted while the page is up (main-page.svelte.ts). -->
+    {#if mainPage.current === 'people'}
+      <PeoplePage bind:this={peoplePage} onopen={openFace} onopensettings={() => openSettings('people')} />
+    {:else}
+      <Grid
+        bind:this={grid}
+        onopen={open}
+        onkeywords={openKeywords}
+        onexport={openExport}
+        oncompare={openCompare}
+        onshowcopies={showCopiesOf}
+      />
+    {/if}
   </main>
   <div class="statusbar"><StatusBar /></div>
 </div>
