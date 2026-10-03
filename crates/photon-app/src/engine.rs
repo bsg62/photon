@@ -73,6 +73,53 @@ impl FacePass {
     }
 }
 
+/// How many times its own duration the embedding step waits, after a grouping run ends,
+/// before the next. A run reads every grouped face's vector, so run after every batch the
+/// reads of a first recognition grow with the square of the library: about 40 GB at 100k
+/// photos and 360 GB at 300k, minutes to tens of minutes, the same order as the embedding
+/// itself. Waiting `K` times the run keeps grouping to at most `1 / (K + 1)` of the step's
+/// time: 9 is 10%. A small library, whose run takes milliseconds, is still grouped after
+/// nearly every batch.
+const GROUP_COST_FACTOR: u32 = 9;
+
+/// Paces the grouping runs of the embedding step, `RebuildPacer`'s way, with no floor:
+/// the first batch that writes is grouped at once, each later one once the last run's
+/// duration times `GROUP_COST_FACTOR` has passed since it ended. Faces a skipped run
+/// would have placed wait for the next, or for the grouping that ends the pass. Only the
+/// timing is kept between runs, never the groups: an edit or a rewritten file deletes
+/// detections without `people_write`, so groups held over could name deleted faces.
+#[derive(Debug, Default)]
+struct GroupPacer {
+    last_end: Option<Instant>,
+    last_cost: Duration,
+    /// Faces written since the last run, which a batch paced out leaves.
+    pending: bool,
+}
+
+impl GroupPacer {
+    /// Notes a batch that wrote `written` faces, and answers whether to group now.
+    fn take(&mut self, written: usize, now: Instant) -> bool {
+        self.pending |= written > 0;
+        if self.pending && self.due(now) {
+            self.pending = false;
+            return true;
+        }
+        false
+    }
+
+    fn due(&self, now: Instant) -> bool {
+        let Some(last_end) = self.last_end else {
+            return true;
+        };
+        now.saturating_duration_since(last_end) >= self.last_cost * GROUP_COST_FACTOR
+    }
+
+    fn record(&mut self, start: Instant, end: Instant) {
+        self.last_end = Some(end);
+        self.last_cost = end.saturating_duration_since(start);
+    }
+}
+
 /// How many times its own cost a scan's intermediate rebuild waits, after it ends, before
 /// the next may start. A rebuild is a whole-library query and index build - 55 ms at 100k
 /// photos, about 200 ms at 300k, more in Search - and it runs on the scan thread, so on a
@@ -2166,6 +2213,7 @@ impl Engine {
             }
         };
         let mut last_progress: Option<Instant> = None;
+        let mut pacer = GroupPacer::default();
         let result = embedding::run(
             &self.lib,
             &self.cache,
@@ -2174,9 +2222,11 @@ impl Engine {
             &|image, face| embedder.embed(image, face),
             &|| self.face_cancelled(),
             &mut |written| {
-                // Before the report, so a face the report counts is already in its group.
-                if written > 0 {
+                // Before the report, so a face the report counts after a run is in its group.
+                let now = Instant::now();
+                if pacer.take(written, now) {
                     self.group_faces(pass);
+                    pacer.record(now, Instant::now());
                 }
                 if last_progress.is_none_or(|t| t.elapsed() >= FACE_PROGRESS_EVERY) {
                     self.send_face_progress(FacePhase::Recognising, true);
@@ -2786,6 +2836,53 @@ mod tests {
     use photon_core::media::ThumbState;
 
     const MS: Duration = Duration::from_millis(1);
+
+    #[test]
+    fn the_first_grouping_run_is_due_at_once() {
+        assert!(GroupPacer::default().due(Instant::now()));
+    }
+
+    #[test]
+    fn a_grouping_run_holds_off_the_next_by_its_duration_times_the_factor() {
+        let t0 = Instant::now();
+        let mut pacer = GroupPacer::default();
+        pacer.record(t0, t0 + 100 * MS);
+        let end = t0 + 100 * MS;
+        assert!(!pacer.due(end), "a run straight after the last");
+        assert!(!pacer.due(end + 899 * MS));
+        assert!(pacer.due(end + 900 * MS));
+    }
+
+    /// A batch inside the wait is not grouped, and its faces are not forgotten: the first
+    /// batch after the wait groups them, though it wrote nothing itself. With nothing
+    /// written since, nothing is.
+    #[test]
+    fn a_batch_inside_the_wait_is_grouped_by_the_first_after_it() {
+        let t0 = Instant::now();
+        let mut pacer = GroupPacer::default();
+        assert!(pacer.take(64, t0), "the first batch is grouped at once");
+        pacer.record(t0, t0 + 100 * MS);
+        assert!(!pacer.take(64, t0 + 150 * MS), "grouped inside the wait");
+        assert!(!pacer.take(0, t0 + 999 * MS));
+        assert!(
+            pacer.take(0, t0 + 1000 * MS),
+            "the paced-out batch was forgotten"
+        );
+        pacer.record(t0 + 1000 * MS, t0 + 1000 * MS);
+        assert!(
+            !pacer.take(0, t0 + 2000 * MS),
+            "grouped with nothing written"
+        );
+    }
+
+    /// No floor: a library small enough to group in no time is grouped after every batch.
+    #[test]
+    fn a_grouping_run_that_took_no_time_holds_nothing_off() {
+        let t0 = Instant::now();
+        let mut pacer = GroupPacer::default();
+        pacer.record(t0, t0);
+        assert!(pacer.due(t0));
+    }
 
     #[test]
     fn a_pacer_that_never_rebuilt_is_due_at_once() {
