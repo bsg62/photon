@@ -290,6 +290,40 @@ describe('createPeoplePage', () => {
     expect(model.count(A)).toBe(5);
   });
 
+  it('a reload keeps the order of the groups already shown', async () => {
+    const two = [face(1), face(2)];
+    const { deps, model } = build(
+      answer({
+        unnamed: [group(1, null, two, 9), group(2, null, two, 5), group(3, null, two, 3)],
+        ignoredGroups: [group(7, null, two, 4), group(8, null, two, 2)],
+      }),
+    );
+    await model.load();
+    // Group 2 has grown past group 1, group 3 has gone, group 4 is new and the largest;
+    // the ignored groups' counts have swapped and group 9 is new.
+    deps.load.mockResolvedValueOnce(
+      answer({
+        unnamed: [group(4, null, two, 20), group(2, null, two, 12), group(1, null, two, 9)],
+        ignoredGroups: [group(9, null, two, 6), group(8, null, two, 5), group(7, null, two, 4)],
+      }),
+    );
+    await model.load();
+    expect(model.unnamed.map((g) => g.id)).toEqual([1, 2, 4]);
+    expect(model.unnamed.map((g) => g.faceCount)).toEqual([9, 12, 20]);
+    expect(model.ignoredGroups.map((g) => g.id)).toEqual([7, 8, 9]);
+  });
+
+  it('new groups keep the backend order among themselves', async () => {
+    const two = [face(1), face(2)];
+    const { deps, model } = build(answer({ unnamed: [group(1, null, two, 3)] }));
+    await model.load();
+    deps.load.mockResolvedValueOnce(
+      answer({ unnamed: [group(6, null, two, 9), group(5, null, two, 7), group(1, null, two, 3)] }),
+    );
+    await model.load();
+    expect(model.unnamed.map((g) => g.id)).toEqual([1, 6, 5]);
+  });
+
   it('naming a group hides it from Unnamed and reloads', async () => {
     const { deps, model } = build(unnamedPage());
     await model.load();

@@ -144,6 +144,18 @@ export function createPeoplePage(deps: PeoplePageDeps) {
     return got;
   }
 
+  /** `next` in the order `shown` had them, the groups new to it after in the backend's
+   *  order. The backend sorts Unnamed by size, and a reload during a scan or a grouping run
+   *  can reorder groups whose counts moved; the keyed rows would then move under the user,
+   *  blurring the name field being typed in and putting another group under the pointer
+   *  between press and click. Only the first answer is taken as sorted. */
+  function keepOrder(shown: PageGroup[] | undefined, next: PageGroup[]): PageGroup[] {
+    if (!shown) return next;
+    const at = new Map(shown.map((g, i) => [g.id, i]));
+    const known = next.filter((g) => at.has(g.id)).sort((a, b) => at.get(a.id)! - at.get(b.id)!);
+    return [...known, ...next.filter((g) => !at.has(g.id))];
+  }
+
   async function fetch(): Promise<void> {
     const started = ++tick;
     const before = { ...generation };
@@ -171,7 +183,12 @@ export function createPeoplePage(deps: PeoplePageDeps) {
       else delete kept[key];
     }
     // Together, after the re-fetch: the new base with the old extra would show a face twice.
-    page = next;
+    // People and Suggestions are by name, which a reload moves only for a renamed person.
+    page = {
+      ...next,
+      unnamed: keepOrder(page?.unnamed, next.unnamed),
+      ignoredGroups: keepOrder(page?.ignoredGroups, next.ignoredGroups),
+    };
     extra = kept;
     settle(started);
   }
