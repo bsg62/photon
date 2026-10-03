@@ -212,11 +212,12 @@ mod tests {
         assert!((len - 1.0).abs() < 1e-4, "{len}");
     }
 
-    /// The floor is measured in pixels of the picture the face is cut from.
+    /// The floor is measured in pixels of the picture the face is cut from, across its width: the
+    /// picture is not square, so a floor read off the height would see half the pixels.
     #[test]
     fn a_face_under_the_floor_is_not_embedded() {
         let embedder = Embedder::new().unwrap();
-        let img = DynamicImage::ImageRgb8(image::RgbImage::new(1000, 1000));
+        let img = DynamicImage::ImageRgb8(image::RgbImage::new(1000, 500));
         let at = |width: f64| FaceBox {
             rect: Rect {
                 left: 0.5,
