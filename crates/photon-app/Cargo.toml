@@ -44,8 +44,9 @@ tauri-plugin-clipboard-manager = "2.3.3"
 tiny_http = "0.12"
 getrandom = "0.3"
 # Tauri's own runtime, named for its timer: the protocol handler bounds a thumbnail wait with
-# `tokio::time::timeout`. Tauri builds that runtime with every driver its features enable.
-tokio = { version = "1", features = ["rt-multi-thread", "time"] }
+# `tokio::time::timeout`, and the face crops with a `tokio::sync::Semaphore`. Tauri builds
+# that runtime with every driver its features enable.
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time"] }
 
 # Settings' memory figure (`memory.rs`): the page size on Linux, the physical footprint on
 # macOS; the process table and private working set on Windows.

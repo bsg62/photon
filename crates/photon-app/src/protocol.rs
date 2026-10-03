@@ -12,7 +12,10 @@
 //! - `/face/<face id>/<thumbKey>`: a 96 px square WebP around a detected face, cut from the
 //!   photo's *cached* preview and nothing else (`ThumbCache::face_crop`), `immutable`. A
 //!   face gone, a key that is not its photo's current one, or a preview not cached is a 404:
-//!   a page of crops must never start a burst of renders.
+//!   a page of crops must never start a burst of renders. Like an edited photo's `/image`,
+//!   it decodes a picture per request (unless the photo's decode is kept); unlike that
+//!   render, a crop is small and the page asks for many, so crops are let onto the blocking
+//!   pool one a core (`FACE_CROPS`) rather than one at a time (`RENDERING`).
 //!
 //! Both image routes are `no-cache` with an `ETag` naming the picture they serve, so the
 //! webview revalidates rather than refetches: a photo revisited, or reached after its
@@ -20,7 +23,12 @@
 
 use crate::engine::Engine;
 use photon_core::{Error, thumbs::ThumbSize};
-use std::{future::Future, path::Path, sync::Arc, time::Duration};
+use std::{
+    future::Future,
+    path::Path,
+    sync::{Arc, LazyLock},
+    time::Duration,
+};
 use tauri::http::{Response, StatusCode, header};
 
 pub const THUMB_TIMEOUT: Duration = Duration::from_secs(30);
@@ -159,6 +167,9 @@ async fn face(engine: Arc<Engine>, id: &str, key: &str) -> Response<Vec<u8>> {
     let (Ok(id), Some(key)) = (id.parse::<i64>(), parse_key(key)) else {
         return text(StatusCode::BAD_REQUEST, "bad face");
     };
+    // Awaited here, before the blocking pool: a request waiting its turn holds no thread.
+    // The semaphore is never closed, so `acquire` cannot fail.
+    let _turn = FACE_CROPS.acquire().await.expect("never closed");
     off_thread(move || match engine.lib.face_crop_source(id) {
         Ok(Some((rect, current))) if current == key => match engine.thumbs.face_crop(key, &rect) {
             Ok(bytes) => ok(bytes, "image/webp", FOREVER),
@@ -173,6 +184,17 @@ async fn face(engine: Arc<Engine>, id: &str, key: &str) -> Response<Vec<u8>> {
     .await
     .unwrap_or_else(|response| *response)
 }
+
+/// How many face crops are cut at once: one a core. A crop decodes a whole preview (about
+/// 6 MB of pixels) unless its photo's decode is kept, and the People page asks for a crop
+/// per face on screen, which an expanded strip makes hundreds. Unbounded, each held a
+/// thread of Tokio's blocking pool - shared with every thumbnail read, full-size image and
+/// blocking IPC command - while its decode waited for a core. More than one a core gains
+/// nothing on work that is all CPU; fewer would leave cores idle while a page fills in.
+static FACE_CROPS: LazyLock<tokio::sync::Semaphore> = LazyLock::new(|| {
+    let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
+    tokio::sync::Semaphore::new(cores.max(1))
+});
 
 /// How long the webview may keep a thumbnail served under its own key: forever, since that
 /// is what the key is for - it changes whenever the picture does.
