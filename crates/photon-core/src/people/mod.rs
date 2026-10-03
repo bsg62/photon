@@ -7,7 +7,7 @@ use std::collections::HashSet;
 /// How alike a face and a group's average must be for the face to join it. Measured
 /// 2026-10-03 on 2,674 LFW faces (500 people with several photos, 700 with one): at 0.50
 /// this rule misplaced 6-11 faces and kept 446-448 of the 500 people in one group; at
-/// 0.45, 27-40 and 468; at 0.55, 2 and 411-414. Below 0.50 mixed groups rise quickly,
+/// 0.45, 27-40 and 468-469; at 0.55, 2 and 411-414. Below 0.50 mixed groups rise quickly,
 /// above it people split for little gain - and a split is one merge to fix, where a
 /// mixed group is faces removed one at a time.
 pub const GROUP_SIMILARITY: f32 = 0.50;
@@ -40,9 +40,10 @@ pub enum Choice {
 pub fn choose(face: &[f32], groups: &[Group], rejected: &HashSet<i64>) -> Choice {
     groups
         .iter()
-        // `similarity` already answers 0 for an all-zero sum, so this is belt and braces
-        // for the common case; it is what keeps a group that counts nothing out when its
-        // sum is not zero (a caller that seeds a sum before it counts the face).
+        // `similarity` already answers 0 for an all-zero sum, so for every group the library
+        // builds today this check changes nothing. It is kept for a group with a nonzero
+        // sum and nothing counted towards it, which only a future caller that seeds a sum
+        // before counting could produce.
         .filter(|g| g.count > 0 && !rejected.contains(&g.id))
         .map(|g| (g.id, similarity(&g.sum, face)))
         .filter(|(_, s)| *s >= GROUP_SIMILARITY)
@@ -60,7 +61,6 @@ pub fn counts_toward_centroid(named: bool, confirmed: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashSet;
 
     /// A unit vector at `deg` degrees in the first two dimensions: two of them have a
     /// similarity of cos(difference).
@@ -124,8 +124,9 @@ mod tests {
         assert_eq!(choose(&at(0.0), &[empty], &rejected(NONE)), Choice::New);
     }
 
-    /// The comparison is with the group's average direction, not its first face: a group
-    /// built from faces at 0° and 40° sits at 20°.
+    /// A group with a nonzero sum and nothing counted towards it. The library does not
+    /// produce one today (a named person with no confirmed face has a zero sum); this pins
+    /// the `count` check for a future caller that seeds a sum before counting.
     #[test]
     fn a_group_that_counts_nothing_is_passed_over_whatever_its_sum() {
         let seeded = Group {
@@ -136,6 +137,8 @@ mod tests {
         assert_eq!(choose(&at(0.0), &[seeded], &rejected(NONE)), Choice::New);
     }
 
+    /// The comparison is with the group's average direction, not its first face: a group
+    /// built from faces at 0° and 40° sits at 20°.
     #[test]
     fn a_group_is_compared_by_its_average() {
         let mut g = group(1, 0.0);
