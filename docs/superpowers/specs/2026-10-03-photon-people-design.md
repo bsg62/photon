@@ -637,6 +637,25 @@ is what is recorded here; each was decided during the work, after review.
 14. **The viewer and an unlinked contact.** A detection confirmed as Ben over a Picasa face
     named for a contact Anna that no person is linked to shows only Anna's plate in the viewer
     (As built 8), while Ben's Person view lists the photo.
+15. **The switch-off question is the native `ask` dialog, from Settings,** not an overlay in
+    `App.svelte`. The overlay rule exists because an in-page dialog is made inert by its own
+    opening; a native dialog is modal over the whole window, so it does not arise, and it is
+    how photon asks every other destructive question. Delete and Merge on the page ask the same
+    way.
+16. **"Confirm all" confirms the faces on screen** (the strip plus whatever "Show all" has
+    loaded), and says how many when that is fewer than the person's suggestions ("Confirm these
+    12"): confirming faces the user has not looked at would put strangers under a name, which is
+    why renaming does not confirm suggestions (As built 3).
+17. **Opening a face's photo, and single faces.** The photo is found in the grid's current view,
+    or the grid switches to All photos, and the viewer opens over the page, which keeps its
+    state. A single face can be named: `PageFace.personId` is its group, the first face's group
+    is named and the others' groups merge into it.
+18. **The grid stays mounted under the page.** The spec and the plan said it unmounts. It does
+    not: it is drawn beneath the page with `visibility: hidden` and `inert`. A remounted grid
+    starts at the top after the launch restore is long done, and its "remember the folder at the
+    top" effect then overwrote the user's place with the first folder on every return;
+    `display: none` drops the layout box, resets `scrollTop` and shows the ResizeObserver a zero
+    width, which trips the same write.
 
 ## Not in this design
 

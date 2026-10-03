@@ -154,6 +154,17 @@ pub const SHOTS: &[Shot] = &[
         query: "theme=light&do=people",
         dark: false,
     },
+    // The People page over the grid, a face selected so the action bar is drawn.
+    Shot {
+        name: "people-light",
+        query: "theme=light&do=peoplepage",
+        dark: false,
+    },
+    Shot {
+        name: "people-dark",
+        query: "theme=dark&do=peoplepage",
+        dark: true,
+    },
     Shot {
         name: "appearance-dark",
         query: "theme=dark&do=appearance",

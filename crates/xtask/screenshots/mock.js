@@ -262,13 +262,20 @@
       const group = (id, name, faces) => ({
         id, name, faceCount: faces.length, faces: faces.map((f) => ({ ...f, personId: id })), offer: null,
       });
+      const range = (from, n) => Array.from({ length: n }, (_, i) => face(from + i));
       return {
-        unnamed: [group(1, null, [face(1), face(2), face(3)]), group(2, null, [face(4), face(5), face(6)])],
-        singleFaces: [],
-        singleCount: 0,
-        suggestions: [group(3, 'Anna', [face(9)])],
-        people: [group(3, 'Anna', [face(7, true), face(8, true)])],
-        ignoredGroups: [],
+        unnamed: [
+          { ...group(1, null, range(1, 5)), offer: { name: 'Jonas', contact: 'b', faces: 4 } },
+          group(2, null, range(6, 3)),
+        ],
+        singleFaces: [10, 11, 12].map((id) => ({ ...face(id), personId: 20 + id })),
+        singleCount: 3,
+        suggestions: [group(3, 'Anna', range(13, 2))],
+        people: [
+          { ...group(3, 'Anna', range(15, 6).map((f) => ({ ...f, confirmed: true }))), faceCount: 18 },
+          group(4, 'Ben', range(21, 2).map((f) => ({ ...f, confirmed: true }))),
+        ],
+        ignoredGroups: [group(5, null, range(23, 2))],
         ignoredFaces: [],
       };
     },
@@ -426,6 +433,12 @@
     },
     // The sidebar's last row, where the menu has to open upward to stay on screen, and an
     // aliased folder (folder 5), so the menu holds Rename in photon… and Use folder name.
+    // The People page, opened from the sidebar's People row, with a face selected so the
+    // action bar is drawn.
+    peoplepage: () => {
+      click('.group.people');
+      later(300, () => document.querySelector('.people .face')?.click());
+    },
     foldermenu: () => {
       const row = [...document.querySelectorAll('nav .node')].find((b) => b.textContent.includes('Lisbon with the Silvas'));
       const box = row?.getBoundingClientRect();

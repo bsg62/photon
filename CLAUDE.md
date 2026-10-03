@@ -66,7 +66,7 @@ cargo run -p xtask -- metadata            # licence and installer metadata are c
 **Seeing the UI without launching it** (not in CI; needs Chromium on `PATH` or in `CHROMIUM`):
 
 ```bash
-cargo run -p xtask -- screenshots                     # twenty-nine PNGs into target/screenshots/
+cargo run -p xtask -- screenshots                     # thirty-one PNGs into target/screenshots/
 cargo run -p xtask -- screenshots --only viewer-info-light --no-build
 cargo run -p xtask -- scroll-probe   # the end of a 300k-photo library is reachable
 ```
@@ -571,6 +571,28 @@ People page and its sidebar count of groups to name refetch on `data_changed`, s
 grouped a face rebuilds through `refresh_grid` (`data_dirty`, `counts_epoch`) - at its end,
 and during the embed step at most every 30 seconds whatever the view.
 
+**The People page is `mainPage`, not a `GridView`** (`ui/src/lib/main-page.svelte.ts`): it has no
+rows, so it is not a view of the grid index and does not travel the refresh chain as one. It is
+drawn *over* the grid, which stays mounted beneath it (`visibility: hidden` and `inert`, in
+`App.svelte`'s `.grid-layer`): unmounted, a returning grid starts at the top after the launch
+restore is long done, and its "remember the folder at the top" effect overwrote the user's
+place with the first folder on every return; `display: none` is no better, since it resets
+`scrollTop` and shows the ResizeObserver a zero width. What leaves the page: every sidebar view,
+a folder jump, typing in the search box, the viewer's search links, Locate, Show duplicates and
+Statistics' links. Opening a face's photo does not: the viewer opens over the page, and the grid
+is switched to All photos only when its view lacks the photo. `createPeoplePage`
+(`people-page.svelte.ts`) holds the behaviour and is tested: a hide is optimistic and settled by
+a reload that *started* after the write (one already in flight may have read the old rows),
+"Show all" survives a reload, and a case-only rename of a person's own name is a rename, not a
+merge. "Confirm all" confirms the faces on screen, not the person's whole suggestion list. The
+sidebar's "N to name" is `people_to_name`, equal to the Unnamed section's length, and is
+fetched with the collections on `data_changed`. Confirmations (switching detection off with
+named people, Delete, Merge) are the native `ask`, as everywhere else. The page's crops are
+`/face/<face id>/<thumb key>` in `protocol.rs`, cut only from the cached preview: 404 for a gone
+face, a stale key or no cached preview (never a render, so a page of crops cannot start a burst
+of renders), 500 for an undecodable one, and `immutable` because a face id is never reused and
+never names another picture.
+
 **`people_write` serialises the corrections with grouping.** Every operation on the People data
 (`name_group`, `rename_person`, `confirm_faces`, `reject_faces`, `merge_people`,
 `set_person_ignored`, `set_faces_ignored`, `delete_person`) runs through `Engine::write_people`,
@@ -739,7 +761,7 @@ anything sitting outside the tile's own box.
 
 The look cannot be tested here, but it can be seen without launching the app: `cargo run -p xtask --
 screenshots` builds the UI, serves `ui/dist` itself with `mock.js` (in
-`crates/xtask/screenshots/`) standing in for Tauri's IPC, and writes twenty-nine PNGs, in both themes,
+`crates/xtask/screenshots/`) standing in for Tauri's IPC, and writes thirty-one PNGs, in both themes,
 to `target/screenshots/` with headless Chromium. It claims a Windows user agent and maps
 `photon.localhost` to its own port, because `mediaUrl` uses `http://photon.localhost` there
 and no plain browser can load `photon://`. It is Chromium's rendering, not WebKitGTK's or

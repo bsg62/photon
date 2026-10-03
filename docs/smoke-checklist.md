@@ -402,10 +402,10 @@ publishing it.
 - [ ] Unplug a drive whose photos already have thumbnails, with the pass unfinished: the pass carries on through them.
 - [ ] Windows and macOS: the same switch-on, on a real library.
 
-## People (backend)
+## People
 
-Before the People page (plan 2) there is no way to name anyone by hand, so this is what a
-person can see of recognition on a real library with "Find faces" on.
+On a real library, with "Find faces in my photos" on. The first block is the recognition pass
+itself; the second is the People page.
 
 - [ ] A library a 0.47.0 photon already detected, opened with the switch on: the status bar shows "Recognising people: N of M faces" at once, without "Finding faces" first going over every photo again, and N rises; the same line is under the switch in Settings. It clears when the pass ends.
 - [ ] On a library detected from scratch: "Finding faces" runs first, then the line changes to "Recognising people", in faces rather than photos.
@@ -413,5 +413,19 @@ person can see of recognition on a real library with "Find faces" on.
 - [ ] While it runs and after it: the sidebar's People list still shows Picasa's people with their counts, clicking one still shows their photos, and `person:` with a Picasa name still finds them.
 - [ ] The viewer's info panel on a photo with Picasa faces: the name plates are still there, each face drawn once, and photon's own detections are still outlined without a name.
 - [ ] The app stays usable (scrolling, opening photos, starring) while a large library is being recognised.
-- [ ] Switch it off while recognising: the progress line clears and stays cleared; Picasa's people stay in the sidebar and the viewer.
 - [ ] Open the library with photon 0.47.0 afterwards: it refuses it as made by a newer photon.
+- [ ] Switch on, wait for "Recognising people", then click People in the sidebar: the page opens over the grid, with Unnamed groups largest first, each face a crop of the face.
+- [ ] The sidebar's People row says "N to name"; naming a group lowers N, and the count goes back to the number of people when none is left.
+- [ ] Name a group: type a name, Enter. The group moves to People and the sidebar's list gains the person.
+- [ ] Type a name that already exists in another case ("anna" for "Anna"): the button says "Add to Anna", and using it merges the group in.
+- [ ] Select a face and choose "Not this person": it leaves the group and is placed again, never into that group.
+- [ ] "Ignore" on a group moves it under Ignored; "Stop ignoring" brings it back to Unnamed.
+- [ ] Suggestions: faces photon thinks are someone you named, dashed. "Confirm all" confirms the faces on screen and its label says how many when that is fewer than the person's suggestions.
+- [ ] A large group: "Show all N" loads the rest; select a face and act on it, and the strip stays open.
+- [ ] Double-click a face: the viewer opens over the page; closing it returns to the page with its state; the arrows browse the grid's view (All photos when the view lacked the photo).
+- [ ] Rename a person to a name another person has: the two merge. "Merge into..." and Delete (the group returns to Unnamed) ask first with the native dialog.
+- [ ] Opening a person from the sidebar's list, and `person:` in search, show only confirmed faces.
+- [ ] Leaving the page by any sidebar row, a folder, or typing in the search box returns to the grid at the place it was left.
+- [ ] A face whose photo is hidden is nowhere on the page, and not in the count.
+- [ ] Switch detection off with named people: the question names the count; Cancel keeps everything and the switch stays on; OK deletes the detections and people, and the People page says detection is off.
+- [ ] Switch it off while recognising: the progress line clears and stays cleared; Picasa's people stay in the sidebar and the viewer.
