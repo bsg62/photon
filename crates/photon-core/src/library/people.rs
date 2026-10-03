@@ -990,6 +990,28 @@ mod tests {
         assert_eq!(groups, 1);
     }
 
+    /// A person renamed to their own name in another case is renamed, not merged into
+    /// themselves: that merge would move the faces onto the same row and then delete it,
+    /// leaving every confirmed face with no person.
+    #[test]
+    fn renaming_to_ones_own_name_in_another_case_renames() {
+        let (l, f) = library(&[&[0.0]]);
+        l.lib.group_ungrouped_faces(&never).unwrap();
+        let anna = person_of(&l.lib, f[0]).0.unwrap();
+        l.lib.name_group(anna, "anna").unwrap();
+        assert_eq!(l.lib.rename_person(anna, "ANNA").unwrap(), anna);
+        assert_eq!(person_of(&l.lib, f[0]), (Some(anna), true));
+        let name: String = l
+            .lib
+            .reader()
+            .unwrap()
+            .query_row("SELECT name FROM people WHERE id = ?1", [anna], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(name, "ANNA");
+    }
+
     /// A rename is a name, not a confirmation: the person's suggestions stay suggestions.
     /// Confirming them would put the name on faces the user has not looked at.
     #[test]
