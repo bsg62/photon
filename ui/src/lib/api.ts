@@ -233,8 +233,8 @@ export interface FaceProgress {
 }
 
 /** One face on the People page. Mirrors `library::PageFace`; `thumbKey` is the photo's
- *  thumbnail key, which with the face id names the face's crop. */
-/** `personId` is the face's group: how a single face is named. Mirrors `library::PageFace`. */
+ *  thumbnail key, which with the face id names the face's crop; `personId` is the face's
+ *  group, how a single face is named. */
 export interface PageFace { id: number; itemId: number; thumbKey: string; confirmed: boolean; personId: number | null }
 /** Picasa's name for a group: the name to offer, its contact, and how many of the group's
  *  faces sit on that contact's faces. Mirrors `library::Offer`. */

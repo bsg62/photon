@@ -697,15 +697,15 @@ pub struct FaceDataSummary {
     pub named_people: i64,
 }
 
-/// How many unnamed groups wait for a name, for the sidebar's People row.
-pub fn people_to_name(engine: &Engine) -> CmdResult<i64> {
-    Ok(engine.lib.people_to_name()?)
-}
-
 pub fn face_data_summary(engine: &Engine) -> CmdResult<FaceDataSummary> {
     Ok(FaceDataSummary {
         named_people: engine.lib.named_people_count()?,
     })
+}
+
+/// How many unnamed groups wait for a name, for the sidebar's People row.
+pub fn people_to_name(engine: &Engine) -> CmdResult<i64> {
+    Ok(engine.lib.people_to_name()?)
 }
 
 /// The People page, each group with the first `strip` of its faces.
@@ -2010,8 +2010,7 @@ mod tests {
         f.engine.lib.update_item_meta(&[(id, described)]).unwrap();
     }
 
-    /// Renaming the tag on screen must carry the view with it: left on the old name, the
-    /// view would show a keyword that now answers to nothing, and the grid would empty.
+    /// The people commands' refusals reach the UI under kinds of their own.
     #[test]
     fn people_errors_have_their_own_kinds() {
         let f = fixture(&[]);
@@ -2025,6 +2024,8 @@ mod tests {
         );
     }
 
+    /// Renaming the tag on screen must carry the view with it: left on the old name, the
+    /// view would show a keyword that now answers to nothing, and the grid would empty.
     #[test]
     fn renaming_the_viewed_tag_keeps_the_view_on_it() {
         let img = jpeg(16, 16);
