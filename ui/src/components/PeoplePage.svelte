@@ -9,7 +9,16 @@
   import FaceStrip from './FaceStrip.svelte';
   import NameBox from './NameBox.svelte';
 
-  let { onopen, onopensettings }: { onopen: (itemId: number) => void; onopensettings: () => void } = $props();
+  let {
+    settingsClosed = 0,
+    onopen,
+    onopensettings,
+  }: {
+    /** Moves each time Settings closes, where Find faces is switched. */
+    settingsClosed?: number;
+    onopen: (itemId: number) => void;
+    onopensettings: () => void;
+  } = $props();
 
   const model = createPeoplePage({
     load: (strip) => api.peoplePage(strip),
@@ -72,15 +81,16 @@
 
   // The switch is read again, not once on mount: Settings opens over this page. Switching
   // Find faces off there empties the page with a data change, and the page must then say
-  // why rather than "No faces grouped yet"; switching it on sends no data change, but
-  // starts a pass, which has work whenever a photo has a preview to look at (off cleared
-  // every photo's detection).
+  // why rather than "No faces grouped yet"; switching it on sends no data change, and the
+  // pass it starts moves `passing` only when it has work - a library with no preview to
+  // look at gives it none. Settings closing is the one signal both ways share.
   // Numbered, because the reads overlap: an older answer landing after a newer one would
   // put back the switch's state from before the change.
   let switchRead = 0;
   $effect(() => {
     void library.dataVersion;
     void passing;
+    void settingsClosed;
     const read = ++switchRead;
     api
       .faceDetection()

@@ -41,6 +41,9 @@
   let peoplePage: ReturnType<typeof PeoplePage> | undefined = $state();
   let viewerAt = $state<number | null>(null);
   let settingsAt = $state<SettingsSection | null>(null);
+  /** Counts Settings closing, for the People page: Find faces may have been switched there
+   *  in a way the page has no other word of (`PeoplePage`'s switch read says which). */
+  let settingsClosed = $state(0);
   let compareIds = $state<number[] | null>(null);
   let gear: HTMLButtonElement | undefined = $state();
   /** The keyword dialog for the grid's selection. It lives here, not in the grid, because
@@ -325,6 +328,7 @@
    *  an inert element silently does nothing — hence the tick before handing focus back. */
   async function closeSettings() {
     settingsAt = null;
+    settingsClosed++;
     await tick();
     gear?.focus();
   }
@@ -443,7 +447,7 @@
     </div>
     {#if mainPage.current === 'people'}
       <div class="page-layer">
-        <PeoplePage bind:this={peoplePage} onopen={openFace} onopensettings={() => openSettings('people')} />
+        <PeoplePage bind:this={peoplePage} {settingsClosed} onopen={openFace} onopensettings={() => openSettings('people')} />
       </div>
     {/if}
   </main>
