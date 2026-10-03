@@ -3,6 +3,7 @@
 //! nothing about the library, and nothing outside it names `tract`.
 
 mod align;
+pub mod pass;
 
 use crate::face_detect::Rect;
 use crate::{Error, Result};
