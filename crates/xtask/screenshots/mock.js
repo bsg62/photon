@@ -120,8 +120,8 @@
         id === 3
           ? "Grandma's 80th, on the terrace in Lisbon, everyone gathered right before sunset for cake and the last of the summer light over the river."
           : null,
-      faces: [{ key: 'p:1', name: 'Anna', left: 0.3, top: 0.25, right: 0.42, bottom: 0.5 }],
-      unnamedFaces: [{ left: 0.56, top: 0.3, right: 0.66, bottom: 0.5 }],
+      faces: [{ key: 'p:1', name: 'Anna', left: 0.3, top: 0.25, right: 0.42, bottom: 0.5, faceId: 11 }],
+      unnamedFaces: [{ left: 0.56, top: 0.3, right: 0.66, bottom: 0.5, faceId: 12 }, { left: 0.75, top: 0.3, right: 0.82, bottom: 0.45, faceId: null }],
       kind: id === 5 ? 'video' : 'image',
       durationMs: id === 5 ? 83_000 : null,
       videoCrashed: false,
@@ -255,6 +255,10 @@
     set_face_detection: () => null,
     face_data_summary: () => ({ namedPeople: 1 }),
     people_to_name: () => 2,
+    named_people: () => [
+      { id: 1, name: 'Anna' },
+      { id: 3, name: 'Clara' },
+    ],
     people_page: () => {
       // Face n sits on photo n, so every crop has a thumbnail behind it.
       const face = (id, confirmed = false) => ({ id, itemId: id, thumbKey: 'k' + (id - 1), confirmed, personId: null });
@@ -281,6 +285,14 @@
       };
     },
     person_faces: () => [],
+    name_faces: () => 3,
+    name_items: () => ({
+      person: 3, name: 'Anna', named: 2,
+      already: { items: [], count: 0 }, none: { items: [], count: 0 },
+      several: { items: [{ id: 1, fileName: 'IMG_0001.jpg' }], count: 1 },
+      rejected: { items: [], count: 0 },
+    }),
+    remove_from_person: () => ({ removed: 1, keptByPicasa: 0 }),
     set_search_query: (args) => {
       searchQuery = args.query || '';
       return null;
@@ -472,6 +484,22 @@
           .find((b) => b.textContent.trim().startsWith('Add keyword'))
           ?.click(),
       );
+    },
+    // The person dialog for one photo, from the tile menu, with a name begun so the list is
+    // narrowed and the hint says who Enter will add the photo to - Anna, typed in lower case.
+    personpicker: () => {
+      actions.menu();
+      later(100, () =>
+        [...document.querySelectorAll('[role="menuitem"]')]
+          .find((b) => b.textContent.trim().startsWith('Add photo to a person'))
+          ?.click(),
+      );
+      later(300, () => {
+        const field = document.querySelector('input[aria-label="Name"]');
+        if (!field) return;
+        field.value = 'anna';
+        field.dispatchEvent(new Event('input', { bubbles: true }));
+      });
     },
     // Types a query the canned list already holds, so the bookmark is drawn filled - the
     // state that says "saved", which is also the state that cannot be clicked.

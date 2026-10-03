@@ -20,6 +20,7 @@ import {
 } from './api';
 import { untrack } from 'svelte';
 import { keepCopiesName } from './copies';
+import { removedMessage } from './people';
 import { lastIndexAtOrBefore } from './layout';
 import { PageSignals } from './page-signals.svelte';
 import { KEEP_SLACK, PAGE_SIZE, PageCache, pageOf } from './pages';
@@ -108,6 +109,14 @@ export class LibraryStore {
    *  collections, so the face pass's grouping - a data change - moves it. */
   toName = $state(0);
   tags = $state.raw<TagCount[]>([]);
+  /** Whether "Find faces in my photos" is on; null until read. The grid offers "Add … to a
+   *  person…" only while it is: with it off photon has no face to name, and every photo
+   *  would come back "no unnamed face". Read once by `init`; Settings, the switch's only
+   *  writer, reports each change it stores through `setFindFaces`. */
+  findFaces = $state<boolean | null>(null);
+  /** Bumped by every read and by `setFindFaces`, so the start-up read landing after a change
+   *  in Settings cannot put back the switch's state from before it. */
+  private findFacesSeq = 0;
   scans = $state<Record<number, ScanProgressEvent>>({});
   /** Watched folder ids the OS won't let photon watch live, from the most recent
    *  `folder-status` event for each: they fall back to periodic rescans instead. */
@@ -621,6 +630,7 @@ export class LibraryStore {
         return;
       }
       this.unlisten = unlisten;
+      void this.readFindFaces().catch(this.reportError);
       await Promise.all([this.refresh(), this.refreshFolders(), this.refreshCollections()]);
     })();
     return this.initPromise;
@@ -633,6 +643,18 @@ export class LibraryStore {
     this.unlisten = [];
     this.degraded = {};
     this.faces = null;
+  }
+
+  private async readFindFaces(): Promise<void> {
+    const seq = ++this.findFacesSeq;
+    const on = await api.faceDetection();
+    if (seq === this.findFacesSeq) this.findFaces = on;
+  }
+
+  /** The switch as Settings has just stored it. */
+  setFindFaces(on: boolean): void {
+    this.findFacesSeq++;
+    this.findFaces = on;
   }
 
   /** Refetches the grid. One fetch at a time, plus one queued behind it: during a scan
@@ -1037,6 +1059,18 @@ export class LibraryStore {
 
   async removeFromAlbum(albumId: number, itemIds: number[]): Promise<void> {
     await api.removeFromAlbum(albumId, itemIds);
+    await this.refreshCollections();
+  }
+
+  /** Takes photos from a named person (`person` is the id of a `p:` key) and says what came
+   *  of it: a photo Picasa names the person on stays theirs, and the toast is how the user
+   *  learns why it did not leave the grid. The toast comes before the refetch, so a failed
+   *  refetch cannot swallow the news of a write that stands; the name is read before the
+   *  write, while the list surely still holds it. */
+  async removeFromPerson(person: number, itemIds: number[]): Promise<void> {
+    const name = this.personName(`p:${person}`);
+    const result = await api.removeFromPerson(person, itemIds);
+    this.notify(removedMessage(name, result, itemIds.length));
     await this.refreshCollections();
   }
 

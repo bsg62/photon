@@ -37,6 +37,12 @@ pub struct ItemFace {
     pub top: f64,
     pub right: f64,
     pub bottom: f64,
+    /// The photon-detected face (`detected_faces.id`) this plate can be acted on as, so the
+    /// viewer can name it or take the name off. `None` when there is none to act on: Picasa's
+    /// plate of a contact no person is linked to (the face beneath may be someone else's), or
+    /// a Picasa plate with no detection of the same person beneath it. `item_faces` leaves it
+    /// `None`; `viewer_item` fills it.
+    pub face_id: Option<i64>,
 }
 
 /// `people_with_counts`' query, shared with its plan test. It is driven from `faces` and
@@ -240,6 +246,7 @@ impl Library {
                     top: r.get(3)?,
                     right: r.get(4)?,
                     bottom: r.get(5)?,
+                    face_id: None,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -247,12 +254,12 @@ impl Library {
     }
 
     /// The confirmed faces of named people on one photo, in the picture as shown, with the
-    /// person's id and name, in face order. A suggestion is not here: it is not yet the
-    /// person's face.
-    pub fn item_named_detected_faces(&self, item_id: i64) -> Result<Vec<(Rect, i64, String)>> {
+    /// person's id and name, in face order, each led by the detection's own id. A suggestion
+    /// is not here: it is not yet the person's face.
+    pub fn item_named_detected_faces(&self, item_id: i64) -> Result<Vec<(i64, Rect, i64, String)>> {
         let conn = self.reader()?;
         let mut stmt = conn.prepare_cached(
-            "SELECT d.left, d.top, d.right, d.bottom, p.id, p.name
+            "SELECT d.id, d.left, d.top, d.right, d.bottom, p.id, p.name
              FROM detected_faces d JOIN people p ON p.id = d.person_id
              WHERE d.item_id = ?1 AND d.confirmed = 1 AND p.name IS NOT NULL
              ORDER BY d.id",
@@ -260,14 +267,15 @@ impl Library {
         let faces = stmt
             .query_map(params![item_id], |r| {
                 Ok((
+                    r.get(0)?,
                     Rect {
-                        left: r.get(0)?,
-                        top: r.get(1)?,
-                        right: r.get(2)?,
-                        bottom: r.get(3)?,
+                        left: r.get(1)?,
+                        top: r.get(2)?,
+                        right: r.get(3)?,
+                        bottom: r.get(4)?,
                     },
-                    r.get(4)?,
                     r.get(5)?,
+                    r.get(6)?,
                 ))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -371,6 +379,7 @@ mod tests {
                 top: 0.2,
                 right: 0.3,
                 bottom: 0.4,
+                face_id: None,
             }],
             "the unnamed face is stored (folder_faces sees it) but not shown"
         );

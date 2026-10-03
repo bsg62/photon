@@ -192,7 +192,10 @@
     }
     api
       .setFaceDetection(next)
-      .then(() => (findFaces = next))
+      .then(() => {
+        findFaces = next;
+        library.setFindFaces(next);
+      })
       .catch((err) => {
         field.checked = findFaces ?? false;
         library.reportError(err);

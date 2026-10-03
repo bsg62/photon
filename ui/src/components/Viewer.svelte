@@ -1,7 +1,7 @@
 <script lang="ts">
   import { untrack } from 'svelte';
   import { writeText } from '@tauri-apps/plugin-clipboard-manager';
-  import { api, errorMessage, mediaUrl, type ViewerItem } from '../lib/api';
+  import { api, errorMessage, mediaUrl, type ItemFace, type ViewerItem } from '../lib/api';
   import { isLinux } from '../lib/url';
   import { videoState } from '../lib/video-state.svelte';
   import { formatDuration, videoUrl } from '../lib/video';
@@ -20,7 +20,8 @@
   import { showCopiesLabel } from '../lib/copies';
   import { ASPECTS, HANDLES, type Handle } from '../lib/crop';
   import { createCropTool } from '../lib/crop-tool.svelte';
-  import { containedBox, faceBox, unnamedFacesLabel } from '../lib/faces';
+  import { containedBox, faceActionsAt, faceAt, faceBox, toLayer, unnamedFacesLabel, type FaceAction } from '../lib/faces';
+  import { removedMessage } from '../lib/people';
   import { createSlideshow } from '../lib/slideshow.svelte';
   import { createFullLoad, createLoadSlot } from '../lib/full-load';
   import { createStarToggle } from '../lib/star-toggle.svelte';
@@ -49,6 +50,9 @@
     onlocate,
     onsearch,
     onshowcopies,
+    onnameface,
+    onperson,
+    paused = false,
   }: {
     offset: number;
     /** The offset to hand back to the grid, and the photo shown there - `null` when the
@@ -62,6 +66,15 @@
     /** "Show N duplicates in the grid": the viewer closes and the grid holds this photo and
      *  its copies, as the tile menu's item does. */
     onshowcopies: (itemId: number) => void;
+    /** "Name this face…", or an unnamed outline clicked: the person dialog, for this
+     *  `detected_faces.id`. */
+    onnameface: (faceId: number) => void;
+    /** A name in the info panel was clicked: leave the viewer for that person's view. */
+    onperson: (key: string) => void;
+    /** A dialog is open over the viewer. Its keys are the dialog's: the viewer listens on
+     *  the window, so a key the dialog did not stop - focus left on `<body>`, say - would
+     *  otherwise hide the photo or step past it behind the dialog. */
+    paused?: boolean;
   } = $props();
 
   const PRELOAD_RADIUS = 2;
@@ -73,6 +86,13 @@
   let fullSrc = $state<string | null>(null);
   let error = $state<string | null>(null);
   let zoom = $state(MIN_ZOOM);
+  let root = $state<HTMLDivElement | undefined>();
+
+  /** For a dialog opened over the viewer to hand focus back to: the viewer's keys live on
+   *  the window, but focus left on `<body>` would leave Tab nowhere to start from. */
+  export function focus() {
+    root?.focus();
+  }
   let pan = $state({ x: 0, y: 0 });
   /** The info panel: camera, keywords, people and albums. Its faces are outlined over the
    *  photo while it is open. */
@@ -232,6 +252,14 @@
 
   // Closing by any route - Escape, the back button, the grid going away - leaves fullscreen.
   $effect(() => () => slideshow.stop());
+
+  // A dialog over the viewer holds the show's countdown: the photo being named must not
+  // move on under it. `untrack`: releasing reads the show's own state to re-arm, and this
+  // effect answers to `paused` alone.
+  $effect(() => {
+    const covered = paused;
+    untrack(() => slideshow.hold(covered));
+  });
 
   /** Set once, on unmount: `startSlideshow`'s await for a still to land on can span the
    *  viewer closing underneath it, and a `goto`/fullscreen landing afterwards on a viewer
@@ -420,13 +448,26 @@
     const quarter = item.orientation >= 5 && item.orientation <= 8;
     return quarter ? { width: item.height, height: item.width } : { width: item.width, height: item.height };
   });
-  const faceBoxes = $derived.by(() => {
-    if (!item || !info || crop.active) return [];
+  /** Every face as drawn, named and unnamed, in frame pixels: what the outlines show while
+   *  the info panel is open, and what a right-click is hit-tested against whether it is open
+   *  or not. `key` is the person's for a plate and null for an unnamed face; `faceId` is the
+   *  detection an action on it acts on (`ItemFace`, `UnnamedFace`), null for Picasa's alone. */
+  const drawnFaces = $derived.by(() => {
+    if (!item || crop.active) return [];
     const image = containedBox(oriented.width, oriented.height, frameW, frameH);
     return [
-      ...item.faces.map((f) => ({ name: f.name as string | null, box: faceBox(f, image) })),
-      ...item.unnamedFaces.map((f) => ({ name: null, box: faceBox(f, image) })),
+      ...item.faces.map((f) => ({ key: f.key as string | null, name: f.name as string | null, faceId: f.faceId, box: faceBox(f, image) })),
+      ...item.unnamedFaces.map((f) => ({ key: null, name: null, faceId: f.faceId, box: faceBox(f, image) })),
     ];
+  });
+  const faceBoxes = $derived(info ? drawnFaces : []);
+  /** The info panel's people, once each: Picasa and photon can both name one person on a
+   *  photo, and the chip is a link to their view, not a count. */
+  const people = $derived.by(() => {
+    if (!item) return [];
+    const byKey = new Map<string, ItemFace>();
+    for (const f of item.faces) if (!byKey.has(f.key)) byKey.set(f.key, f);
+    return [...byKey.values()];
   });
   const unnamedLabel = $derived(item ? unnamedFacesLabel(item.unnamedFaces.length) : null);
 
@@ -440,8 +481,12 @@
     if (item) copy.copy(item.fileName).catch(library.reportError);
   }
 
-  let menu = $state<{ x: number; y: number } | null>(null);
+  /** The context menu, with what it offers for the faces under the pointer above its usual
+   *  items. */
+  let menu = $state<{ x: number; y: number; faces: FaceAction[] } | null>(null);
   let menuEl = $state<HTMLDivElement | undefined>();
+  /** The layer the faces are drawn in: its bounding rectangle carries the zoom and pan. */
+  let frameEl = $state<HTMLDivElement | null>(null);
 
   $effect(() => {
     if (menu) menuEl?.focus();
@@ -449,7 +494,41 @@
 
   function oncontextmenu(e: MouseEvent) {
     e.preventDefault();
-    if (item) menu = { x: e.clientX, y: e.clientY };
+    if (item) menu = { x: e.clientX, y: e.clientY, faces: faceActions(e) };
+  }
+
+  /** The face actions for a right-click (`faceActionsAt`): on a face, that face's; anywhere
+   *  else, "Not …" for each person photon has a face of here. Only a click on the photo
+   *  itself is tested - the bar and the info panel lie over it, and a click there is not on
+   *  a face beneath. */
+  function faceActions(e: MouseEvent): FaceAction[] {
+    const faces = drawnFaces;
+    const layer = frameEl;
+    let hit = -1;
+    if (layer && (e.target as HTMLElement).closest('.stage')) {
+      const p = toLayer(e.clientX, e.clientY, layer.getBoundingClientRect(), frameW, frameH);
+      hit = faceAt(p.x, p.y, faces.map((f) => f.box));
+    }
+    return faceActionsAt(faces, hit);
+  }
+
+  function nameFace(faceId: number) {
+    closeMenu();
+    onnameface(faceId);
+  }
+
+  /** "This photo is not Anna", as the grid's Remove says it (`remove_from_person`): every
+   *  face of hers photon has here is rejected, and the toast says when Picasa still names
+   *  her on it, which photon never changes. The refresh chain re-reads the photo, and in her
+   *  view the photo leaves the grid; `orphaned` keeps it on screen, as after Hide. The face
+   *  change itself never reloads the picture (`pictureChanged`). */
+  function notPerson(person: number, name: string) {
+    if (!item) return;
+    closeMenu();
+    api
+      .removeFromPerson(person, [item.id])
+      .then((result) => library.notify(removedMessage(name, result, 1)))
+      .catch(library.reportError);
   }
 
   function closeMenu() {
@@ -721,6 +800,7 @@
   });
 
   function onkeydown(e: KeyboardEvent) {
+    if (paused) return;
     // A drag along the video's position bar owns the keyboard while it lasts: Escape puts the
     // video back where the drag began, and nothing else may navigate away from under it.
     if (player.scrubbing) {
@@ -858,7 +938,7 @@
    *  there is nowhere to go back to, but the press would otherwise be handled twice. The pan
    *  handler below is unaffected — it already ignores every button but the left one. */
   function onbackbutton(e: MouseEvent) {
-    if (!closesViewer(e.button)) return;
+    if (paused || !closesViewer(e.button)) return;
     e.preventDefault();
     close();
   }
@@ -890,9 +970,10 @@
     // A press anywhere but the info panel clears a text selection left in it: a click does
     // not, and the next Ctrl+C would copy that text instead of the photo, silently.
     if (!(e.target as HTMLElement).closest('.info')) window.getSelection()?.removeAllRanges();
-    // The zoom slider, the buttons and the info panel sit on the same surface: a press on
-    // any of them is theirs, not the start of a pan.
-    if ((e.target as HTMLElement).closest('.zoom, .close, .bar, .info')) return;
+    // The zoom slider, the buttons, the info panel and a clickable face outline sit on the
+    // same surface: a press on any of them is theirs, not the start of a pan. An outline
+    // that started one would capture the pointer, and its click would never land.
+    if ((e.target as HTMLElement).closest('.zoom, .close, .bar, .info, .face')) return;
     // Left button only. Without this every button panned, which is why the right button
     // looked like the pan control: the left one was being swallowed by the browser's native
     // image drag before the pointer stream could produce a move.
@@ -931,6 +1012,7 @@
 <!-- Dark in both themes, so a photo is always judged against the same ground. tokens.css's
      theme blocks match any element, so this subtree resolves the dark tokens. -->
 <div
+  bind:this={root}
   class="viewer focus-container"
   class:quiet={slideshow.idle}
   data-theme="dark"
@@ -957,7 +1039,7 @@
     >
       <!-- The frame is the viewport's size; the photo is `contain`-fitted inside it. Turns
            and crops are not drawn here - the backend renders them into the images. -->
-      <div class="frame" bind:clientWidth={frameW} bind:clientHeight={frameH}>
+      <div class="frame" bind:this={frameEl} bind:clientWidth={frameW} bind:clientHeight={frameH}>
         {#if crop.active && cropBox}
           <!-- The whole turned picture, with the rectangle on it. The box is the picture's
                own, so the rectangle's fractions are percentages of it and the dimming
@@ -1037,15 +1119,30 @@
           {/if}
         {/if}
         {#each faceBoxes as face, i (i)}
-          <div
-            class="face"
-            style:left="{face.box.left}px"
-            style:top="{face.box.top}px"
-            style:width="{face.box.width}px"
-            style:height="{face.box.height}px"
-          >
-            {#if face.name}<span class="face-name">{face.name}</span>{/if}
-          </div>
+          {#if face.key === null && face.faceId !== null}
+            {@const faceId = face.faceId}
+            <!-- An unnamed face photon found: a click names it. -->
+            <button
+              class="face"
+              style:left="{face.box.left}px"
+              style:top="{face.box.top}px"
+              style:width="{face.box.width}px"
+              style:height="{face.box.height}px"
+              aria-label="Name this face"
+              title="Name this face"
+              onclick={() => onnameface(faceId)}
+            ></button>
+          {:else}
+            <div
+              class="face"
+              style:left="{face.box.left}px"
+              style:top="{face.box.top}px"
+              style:width="{face.box.width}px"
+              style:height="{face.box.height}px"
+            >
+              {#if face.name}<span class="face-name">{face.name}</span>{/if}
+            </div>
+          {/if}
         {/each}
       </div>
     </div>
@@ -1112,10 +1209,10 @@
         </p>
       {/if}
       <h3>People</h3>
-      {#if item.faces.length}
+      {#if people.length}
         <ul class="chips">
-          {#each item.faces as face, i (i)}
-            <li>{face.name}</li>
+          {#each people as face (face.key)}
+            <li><button class="info-link" onclick={() => onperson(face.key)} title="Show every photo of {face.name}">{face.name}</button></li>
           {/each}
         </ul>
       {/if}
@@ -1294,6 +1391,16 @@
       bind:this={menuEl}
       use:fitMenu={menu}
     >
+      {#each menu.faces as action, i (i)}
+        {#if action.kind === 'name'}
+          {@const faceId = action.faceId}
+          <button role="menuitem" onclick={() => nameFace(faceId)}>Name this face…</button>
+        {:else}
+          {@const { person, name } = action}
+          <button role="menuitem" onclick={() => notPerson(person, name)}>Not {name}</button>
+        {/if}
+      {/each}
+      {#if menu.faces.length}<div class="menu-sep" role="separator"></div>{/if}
       <button role="menuitem" onclick={locate}>Locate in photon</button>
       <button role="menuitem" onclick={reveal}>Reveal in file manager</button>
       <button role="menuitem" title="Opens the file itself; photon's turns and crop are not applied." onclick={openInApp}>Open in default app</button>
@@ -1327,6 +1434,11 @@
   .stage { position: absolute; inset: 0; transform-origin: center; will-change: transform; }
   .frame { position: absolute; left: 50%; top: 50%; width: 100vw; height: 100vh; translate: -50% -50%; }
   .face { position: absolute; border: 2px solid var(--photo-line); border-radius: var(--r-1); box-shadow: 0 0 0 1px var(--shadow-ink); pointer-events: none; }
+  /* An outline that names its face on a click. The box is the outline's alone: no fill, so
+     the face shows through, and the global focus ring outside the line, where a keyboard
+     user tabbing through the faces can see which one is next. */
+  button.face { padding: 0; background: none; pointer-events: auto; cursor: pointer; }
+  button.face:hover { border-color: var(--accent); }
   .face-name { position: absolute; left: -2px; top: 100%; margin-top: 2px; padding: 1px 6px; background: var(--scrim); border-radius: var(--r-1); color: var(--text); font-size: var(--t-2); white-space: nowrap; }
   .grabbable { cursor: grab; }
   .grabbing { cursor: grabbing; }
@@ -1401,6 +1513,7 @@
   }
   .menu button { padding: 6px 10px; border: 0; border-radius: var(--r-2); background: none; text-align: left; cursor: pointer; }
   .menu button:hover { background: var(--hover); }
+  .menu-sep { height: 1px; margin: var(--s-1) 0; background: var(--line); }
   .zoom { position: absolute; bottom: 12px; right: 12px; display: flex; align-items: center; gap: var(--s-2); padding: 6px var(--s-3); border-radius: var(--r-4); }
   .zoom input { width: 120px; }
   .level { color: var(--text-dim); font-size: var(--t-2); min-width: 38px; text-align: right; font-variant-numeric: tabular-nums; }

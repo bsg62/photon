@@ -39,9 +39,19 @@ pub fn same_face(a: &Rect, b: &Rect) -> bool {
 
 /// The detections that are none of Picasa's faces. Both in the picture as shown.
 pub fn unmatched(picasa_shown: &[Rect], detected: &[Rect]) -> Vec<Rect> {
+    let tagged: Vec<((), Rect)> = detected.iter().map(|d| ((), *d)).collect();
+    unmatched_by(picasa_shown, &tagged)
+        .into_iter()
+        .map(|(_, d)| d)
+        .collect()
+}
+
+/// `unmatched` for detections that carry something to keep - the viewer's ids, which say
+/// which face an outline is - so the rule has this one body however it is asked.
+pub fn unmatched_by<T: Copy>(picasa_shown: &[Rect], detected: &[(T, Rect)]) -> Vec<(T, Rect)> {
     detected
         .iter()
-        .filter(|d| !picasa_shown.iter().any(|p| same_face(p, d)))
+        .filter(|(_, d)| !picasa_shown.iter().any(|p| same_face(p, d)))
         .copied()
         .collect()
 }
@@ -72,6 +82,18 @@ mod tests {
         let picasa = [r(0.30, 0.20, 0.50, 0.50)];
         let detected = [r(0.32, 0.22, 0.48, 0.47)];
         assert!(unmatched(&picasa, &detected).is_empty());
+    }
+
+    #[test]
+    fn the_unmatched_detections_keep_what_they_carry() {
+        let picasa = [r(0.30, 0.20, 0.50, 0.50)];
+        let under = r(0.32, 0.22, 0.48, 0.47);
+        let left = r(0.05, 0.20, 0.20, 0.50);
+        let right = r(0.60, 0.20, 0.80, 0.50);
+        assert_eq!(
+            unmatched_by(&picasa, &[(7, left), (8, under), (9, right)]),
+            vec![(7, left), (9, right)]
+        );
     }
 
     #[test]

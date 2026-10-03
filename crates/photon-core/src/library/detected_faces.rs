@@ -506,6 +506,37 @@ impl Library {
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rects)
     }
+
+    /// The same faces with what the viewer needs to act on each: its id, the person it is
+    /// assigned to (a suggestion included) and whether that is confirmed. In the picture as
+    /// shown, in face order.
+    #[allow(clippy::type_complexity)]
+    pub fn item_detected_faces_with_ids(
+        &self,
+        item_id: i64,
+    ) -> Result<Vec<(i64, Rect, Option<i64>, bool)>> {
+        let conn = self.reader()?;
+        let mut stmt = conn.prepare_cached(
+            "SELECT id, left, top, right, bottom, person_id, confirmed
+             FROM detected_faces WHERE item_id = ?1 ORDER BY id",
+        )?;
+        let faces = stmt
+            .query_map(params![item_id], |r| {
+                Ok((
+                    r.get(0)?,
+                    Rect {
+                        left: r.get(1)?,
+                        top: r.get(2)?,
+                        right: r.get(3)?,
+                        bottom: r.get(4)?,
+                    },
+                    r.get(5)?,
+                    r.get::<_, i64>(6)? != 0,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(faces)
+    }
 }
 
 /// How many faces each photo has, for search: Picasa's and the detected ones, merged by

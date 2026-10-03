@@ -23,6 +23,7 @@
     onexport,
     oncompare,
     onshowcopies,
+    onnameperson,
   }: {
     onopen: (offset: number) => void;
     onkeywords: (mode: 'add' | 'remove') => void;
@@ -30,6 +31,8 @@
     oncompare: (ids: number[]) => void;
     /** "Show duplicates" on one photo. App owns the view switch and the selection after it. */
     onshowcopies: (id: number) => void;
+    /** "Add to a person…": App owns the dialog, for `pickKeyword`'s reason. */
+    onnameperson: (ids: number[]) => void;
   } = $props();
 
   const NAV_KEYS = ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'];
@@ -847,6 +850,10 @@
   <!-- Only photon's own album offers "Remove from": Picasa's are changed in Picasa. -->
   {@const albumId =
     library.info.view === 'album' && isOwnAlbum(library.albums, library.info.album) ? library.info.album : null}
+  <!-- Only a named person offers "Remove from": a `c:` key is a Picasa contact, changed in
+       Picasa. -->
+  {@const personId =
+    library.info.view === 'person' && library.info.person?.startsWith('p:') ? Number(library.info.person.slice(2)) : null}
   <div
     class="menu focus-container"
     role="menu"
@@ -883,6 +890,17 @@
     {/if}
     <button role="menuitem" onclick={() => pickKeyword('add')}>Add keyword to {subject}…</button>
     <button role="menuitem" onclick={() => pickKeyword('remove')}>Remove keyword from {subject}…</button>
+    <!-- Only while photon finds faces: with the switch off there is no face to name. -->
+    {#if library.findFaces}
+      <button role="menuitem" onclick={() => withSelection(async (ids) => onnameperson(ids))}>
+        Add {subject} to a person…
+      </button>
+    {/if}
+    {#if personId !== null}
+      <button role="menuitem" onclick={() => withSelection((ids) => library.removeFromPerson(personId, ids))}>
+        Remove {subject} from “{library.personName(library.info.person)}”
+      </button>
+    {/if}
     <button
       role="menuitem"
       onclick={() => {

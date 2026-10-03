@@ -35,6 +35,10 @@ export function createSlideshow(deps: SlideshowDeps) {
   /** Bumped by every start and stop, so a start whose awaits are still in flight when the
    *  user has already stopped does not go fullscreen afterwards. */
   let run = 0;
+  /** Something covers the viewer - the person dialog, opened over it to name a face. The
+   *  show is not paused (its state and its button stay as the user left them); only the
+   *  countdown waits, so the photo being named does not move on under the dialog. */
+  let held = false;
   let countdown: ReturnType<typeof setTimeout> | null = null;
   let idleTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -45,7 +49,7 @@ export function createSlideshow(deps: SlideshowDeps) {
 
   function arm() {
     disarm();
-    if (!active || !playing || !shown) return;
+    if (!active || !playing || !shown || held) return;
     countdown = setTimeout(() => {
       countdown = null;
       deps.advance();
@@ -133,6 +137,15 @@ export function createSlideshow(deps: SlideshowDeps) {
     shown() {
       shown = true;
       arm();
+    },
+
+    /** The viewer is covered (`true`) or uncovered. Uncovered, the photo on screen gets a
+     *  whole interval again: the user has just been looking at the dialog, not at it. */
+    hold(on: boolean) {
+      if (held === on) return;
+      held = on;
+      if (on) disarm();
+      else arm();
     },
 
     /** The pointer moved: bring the controls back and restart the wait. */

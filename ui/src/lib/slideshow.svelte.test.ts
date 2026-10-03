@@ -42,6 +42,28 @@ describe('createSlideshow', () => {
     expect(advance).toHaveBeenCalledTimes(2);
   });
 
+  it('does not advance while held, and gives the photo a whole interval once released', async () => {
+    const { show, advance } = setup({ seconds: 4 });
+    await show.start(true);
+    await settle();
+    vi.advanceTimersByTime(3000);
+    show.hold(true);
+    vi.advanceTimersByTime(60_000);
+    expect(advance).not.toHaveBeenCalled();
+    // A photo that finishes loading under the dialog is held too.
+    show.changed();
+    show.shown();
+    vi.advanceTimersByTime(60_000);
+    expect(advance).not.toHaveBeenCalled();
+    expect(show.playing).toBe(true);
+
+    show.hold(false);
+    vi.advanceTimersByTime(3999);
+    expect(advance).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
+    expect(advance).toHaveBeenCalledTimes(1);
+  });
+
   it('does not count a photo that is still loading, on start or on resume', async () => {
     const { show, advance } = setup();
     // Started on a photo whose full image has not decoded yet.
