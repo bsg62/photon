@@ -211,7 +211,7 @@
       <section aria-labelledby="people-unnamed">
         <h2 id="people-unnamed">
           Unnamed{#if model.unnamed.length}
-            <span class="note">{plural(model.unnamedCount, 'group', 'groups')}, largest first</span>{/if}
+            <span class="note">{plural(model.unnamedCount, 'group', 'groups')}</span>{/if}
         </h2>
         {#each model.unnamed as g (g.id)}
           <div class="row" bind:this={groupEls[stripKey('unnamed', g.id)]}>
@@ -231,7 +231,7 @@
         {/each}
         {#if model.unnamedCount > model.unnamed.length}
           <p class="hint">
-            Showing the {counted.format(model.unnamed.length)} largest groups. Name or ignore some to see the rest.
+            Showing the {counted.format(model.page?.unnamed.length ?? 0)} largest groups. Name or ignore some to see the rest.
           </p>
         {/if}
         {#if singleCount > 0}

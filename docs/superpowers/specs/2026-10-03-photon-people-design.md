@@ -671,6 +671,9 @@ is what is recorded here; each was decided during the work, after review.
     - **Unnamed lists the 200 largest groups** (`LISTED_GROUPS`) and `unnamed_count` counts
       them all; the page says "Showing the 200 largest groups. Name or ignore some to see the
       rest." past it, as it does for single faces. `people_to_name` still counts every group.
+      A group on screen that others' growth pushes out of the 200 leaves the page at the next
+      reload; one that enters is appended, since the page keeps the order it opened with, so "largest first" holds only when the page opens and the heading no
+      longer claims it.
     - **Library changes reload the page at most once a second** (`createPeoplePage().changed`,
       trailing): a scan announces a data change with each rebuild. The page's own actions
       reload at once.

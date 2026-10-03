@@ -590,7 +590,8 @@ backend's `MAX_FACE_PAGE`) at a time - one call is clamped to 200 and folded a l
 generation). **A reload keeps the order of the groups on screen**: the backend sorts Unnamed by
 size, and re-sorted rows are keyed, so they moved under the user - the name box being typed in
 lost focus and a click could land on another group; only the page's first answer is taken as
-sorted, and new groups go at the end. Library changes reload it through `changed()`, at once
+sorted, and new groups go at the end (a group the 200-group cap below now leaves out simply
+goes; one it now lets in arrives at the end). Library changes reload it through `changed()`, at once
 and then at most once a second (`CHANGE_GAP_MS`, trailing): each reload reads every visible
 face, 148 ms at 150,000 (`people_150k_faces` in the grid bench), and a scan announces a change
 per rebuild; the page's own actions call `load` and are never held back. **Unnamed lists the 200
