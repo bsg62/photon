@@ -60,6 +60,9 @@ impl Library {
     ///
     /// The write repeats the comparison in SQL, so a race between the read and the write
     /// still only renames a name that differs.
+    ///
+    /// A contact carrying a person's name is that person: one recorded or renamed here is
+    /// linked to the named person whose name it now has, unless it is linked already.
     pub fn upsert_contacts(&self, contacts: &HashMap<String, String>) -> Result<()> {
         if contacts.is_empty() {
             return Ok(());
@@ -91,6 +94,7 @@ impl Library {
                 stmt.execute(params![hash, name])?;
             }
         }
+        super::people::link_contacts_by_name(&tx)?;
         tx.commit()?;
         Ok(())
     }

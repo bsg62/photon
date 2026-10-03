@@ -28,6 +28,7 @@ mod faces;
 mod folders;
 mod hidden;
 mod items;
+mod people;
 mod schema;
 mod searches;
 mod settings;
