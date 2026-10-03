@@ -120,6 +120,12 @@ describe('toast wording', () => {
     expect(namedItemsMessage(r({ several }))).toContain('5 have more than one unnamed face: a.jpg, b.jpg, and 3 more \u2014');
   });
 
+  it('lists no names when none were kept', () => {
+    expect(namedItemsMessage(r({ several: { items: [], count: 5 } }))).toBe(
+      'Added 5 photos to Anna. 5 have more than one unnamed face \u2014 open them to choose the face.',
+    );
+  });
+
   it('says how many were already the person or had no face', () => {
     expect(namedItemsMessage(r({ already: { items: files('a'), count: 1 } }))).toBe(
       "Added 5 photos to Anna. 1 is already Anna's.",

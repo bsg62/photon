@@ -10,7 +10,8 @@ function named(over: Partial<NamedItems> = {}): NamedItems {
 function setup() {
   const nameFaces = vi.fn(async (_f: number[], _n: string): Promise<number | null> => 3);
   const nameItems = vi.fn(async (_i: number[], _n: string) => named());
-  return { picker: createPersonPicker({ nameFaces, nameItems }), nameFaces, nameItems };
+  const nameOf = vi.fn((_p: number): string | undefined => undefined);
+  return { picker: createPersonPicker({ nameFaces, nameItems, nameOf }), nameFaces, nameItems, nameOf };
 }
 
 describe('createPersonPicker', () => {
@@ -79,6 +80,30 @@ describe('createPersonPicker', () => {
     expect(picker.busy).toBe(false);
   });
 
+  it('the face toast uses the stored spelling, else the typed name', async () => {
+    const { picker, nameOf } = setup();
+    nameOf.mockImplementation((p) => (p === 3 ? 'Anna' : undefined));
+    picker.show({ kind: 'face', face: 1 });
+    expect(await picker.submit('anna')).toBe('This is Anna.');
+    expect(nameOf).toHaveBeenCalledWith(3);
+    nameOf.mockReturnValue(undefined);
+    picker.show({ kind: 'face', face: 1 });
+    expect(await picker.submit(' Ben ')).toBe('This is Ben.');
+  });
+
+  it('a show during a write does not allow a second write', async () => {
+    const { picker, nameFaces } = setup();
+    let release!: (v: number | null) => void;
+    nameFaces.mockImplementation(() => new Promise((r) => (release = r)));
+    picker.show({ kind: 'face', face: 1 });
+    const first = picker.submit('Anna');
+    picker.show({ kind: 'face', face: 2 });
+    expect(await picker.submit('Anna')).toBeNull();
+    release(1);
+    await first;
+    expect(nameFaces).toHaveBeenCalledTimes(1);
+  });
+
   it('submit for photos returns the grid toast line', async () => {
     const { picker, nameItems } = setup();
     picker.show({ kind: 'items', items: [1, 2, 3] });
@@ -103,7 +128,7 @@ describe('createPersonPicker', () => {
   it('the dialog swallows every key it receives', () => {
     const { picker } = setup();
     const press = (key: string) => {
-      const e = { key, stopPropagation: vi.fn(), preventDefault: vi.fn() };
+      const e = { key, isComposing: false, stopPropagation: vi.fn(), preventDefault: vi.fn() };
       return { result: picker.keydown(e), e };
     };
     for (const key of ['h', 'ArrowLeft']) {
@@ -114,8 +139,17 @@ describe('createPersonPicker', () => {
     const esc = press('Escape');
     expect(esc.result).toBe('close');
     expect(esc.e.stopPropagation).toHaveBeenCalled();
+    expect(esc.e.preventDefault).toHaveBeenCalled();
     const enter = press('Enter');
     expect(enter.result).toBe('submit');
     expect(enter.e.stopPropagation).toHaveBeenCalled();
+    expect(enter.e.preventDefault).toHaveBeenCalled();
+  });
+
+  it('an Enter that confirms an IME composition is not a submit', () => {
+    const { picker } = setup();
+    const e = { key: 'Enter', isComposing: true, stopPropagation: vi.fn(), preventDefault: vi.fn() };
+    expect(picker.keydown(e)).toBeNull();
+    expect(e.stopPropagation).toHaveBeenCalled();
   });
 });

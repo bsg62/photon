@@ -94,7 +94,7 @@ export function namedItemsMessage(r: NamedItems): string {
   if (several.count > 0) {
     const one = several.count === 1;
     parts.push(
-      `${several.count.toLocaleString()} ${one ? 'has' : 'have'} more than one unnamed face: ${listed(several)} \u2014 open ${one ? 'it' : 'them'} to choose the face.`,
+      `${several.count.toLocaleString()} ${one ? 'has' : 'have'} more than one unnamed face${several.items.length ? `: ${listed(several)}` : ''} \u2014 open ${one ? 'it' : 'them'} to choose the face.`,
     );
   }
   if (already.count > 0) {

@@ -6,6 +6,8 @@ export type PickerTarget = { kind: 'face'; face: number } | { kind: 'items'; ite
 export interface PersonPickerDeps {
   nameFaces(faces: number[], name: string): Promise<number | null>;
   nameItems(items: number[], name: string): Promise<NamedItems>;
+  /** The stored spelling of a person, from the caller's people list. */
+  nameOf(person: number): string | undefined;
 }
 
 /** The dialog that names a face, or adds photos to a person: the target, what is typed,
@@ -47,9 +49,10 @@ export function createPersonPicker(deps: PersonPickerDeps) {
     },
 
     show(next: PickerTarget) {
+      // No `busy = false` here: the in-flight write's `finally` clears it, and clearing it
+      // earlier would let a second write start beside the first.
       target = next.kind === 'items' ? { kind: 'items', items: [...next.items] } : { ...next };
       draft = '';
-      busy = false;
       visible = true;
     },
 
@@ -92,7 +95,7 @@ export function createPersonPicker(deps: PersonPickerDeps) {
       try {
         if (asked.kind === 'face') {
           const person = await deps.nameFaces([asked.face], typed);
-          return person === null ? 'That face is no longer there.' : namedFaceMessage(typed);
+          return person === null ? 'That face is no longer there.' : namedFaceMessage(deps.nameOf(person) ?? typed);
         }
         return namedItemsMessage(await deps.nameItems(asked.items, typed));
       } finally {
@@ -102,8 +105,10 @@ export function createPersonPicker(deps: PersonPickerDeps) {
 
     /** Every key's propagation is stopped: the viewer listens for single letters on the
      *  window, and typing "h" in the name field would otherwise hide the photo. */
-    keydown(e: Pick<KeyboardEvent, 'key' | 'stopPropagation' | 'preventDefault'>): 'close' | 'submit' | null {
+    keydown(e: Pick<KeyboardEvent, 'key' | 'isComposing' | 'stopPropagation' | 'preventDefault'>): 'close' | 'submit' | null {
       e.stopPropagation();
+      // Enter that confirms an IME composition is not a submit.
+      if (e.isComposing) return null;
       if (e.key === 'Escape') {
         e.preventDefault();
         return 'close';

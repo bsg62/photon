@@ -50,6 +50,13 @@ describe('toLayer', () => {
   });
 });
 
+describe('toLayer with one zero dimension', () => {
+  it('is out of every box', () => {
+    expect(toLayer(5, 5, { left: 0, top: 0, width: 0, height: 10 }, 4, 3)).toEqual({ x: -1, y: -1 });
+    expect(toLayer(5, 5, { left: 0, top: 0, width: 10, height: 0 }, 4, 3)).toEqual({ x: -1, y: -1 });
+  });
+});
+
 describe('faceAt', () => {
   const big = { left: 0, top: 0, width: 100, height: 100 };
   const small = { left: 40, top: 40, width: 20, height: 20 };
@@ -61,5 +68,11 @@ describe('faceAt', () => {
     expect(faceAt(100, 100, [big])).toBe(0);
     expect(faceAt(50, 50, [big, { ...big }])).toBe(0);
     expect(faceAt(150, 50, [big, small])).toBe(-1);
+    expect(faceAt(40, 50, [small])).toBe(0);
+    expect(faceAt(50, 40, [small])).toBe(0);
+    expect(faceAt(39, 50, [small])).toBe(-1);
+    expect(faceAt(50, 39, [small])).toBe(-1);
+    expect(faceAt(61, 50, [small])).toBe(-1);
+    expect(faceAt(50, 61, [small])).toBe(-1);
   });
 });
