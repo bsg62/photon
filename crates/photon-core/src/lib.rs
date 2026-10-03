@@ -17,6 +17,7 @@ pub mod library;
 pub mod media;
 pub mod metadata;
 pub mod paths;
+pub mod people;
 pub mod picasa;
 pub mod scanner;
 pub mod search;
