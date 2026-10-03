@@ -6,7 +6,7 @@ use super::items::edit_from_db;
 use super::settings::face_detection_on;
 use crate::edit::Edit;
 use crate::face_detect::{Rect, merge};
-use crate::face_embed::{DIM, from_blob};
+use crate::face_embed::from_blob;
 use crate::grid::hex_key;
 use crate::media::fingerprint;
 use crate::people::{Choice, Group, choose, counts_toward_centroid};
@@ -160,11 +160,7 @@ struct Groups {
 impl Groups {
     fn insert(&mut self, id: i64, named: bool) {
         self.at.insert(id, (self.list.len(), named));
-        self.list.push(Group {
-            id,
-            sum: vec![0f32; DIM],
-            count: 0,
-        });
+        self.list.push(Group::new(id));
     }
 
     fn add(&mut self, id: i64, vector: &[f32], confirmed: bool) {
