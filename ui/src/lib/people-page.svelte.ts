@@ -256,6 +256,12 @@ export function createPeoplePage(deps: PeoplePageDeps) {
   return {
     get page() { return page; },
     get unnamed() { return (page?.unnamed ?? []).filter((g) => !hiddenGroups.has(g.id)); },
+    /** Every unnamed group, listed or past the backend's 200, less those being named or
+     *  ignored: the listed ones leave at once, and so must their count. */
+    get unnamedCount() {
+      const leaving = (page?.unnamed ?? []).filter((g) => hiddenGroups.has(g.id)).length;
+      return (page?.unnamedCount ?? 0) - leaving;
+    },
     get suggestions() { return page?.suggestions ?? []; },
     get people() { return page?.people ?? []; },
     get ignoredGroups() { return (page?.ignoredGroups ?? []).filter((g) => !hiddenGroups.has(g.id)); },

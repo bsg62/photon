@@ -537,8 +537,11 @@ pub struct PageGroup {
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PeoplePage {
-    /// Unnamed groups of two or more visible faces, largest first.
+    /// Unnamed groups of two or more visible faces, largest first: the first
+    /// [`LISTED_GROUPS`] of them.
     pub unnamed: Vec<PageGroup>,
+    /// How many unnamed groups there are, listed or not: `people_to_name`'s count.
+    pub unnamed_count: i64,
     /// The faces of unnamed groups of one, up to [`LISTED_FACES`].
     pub single_faces: Vec<PageFace>,
     pub single_count: i64,
@@ -562,8 +565,14 @@ pub enum FaceFilter {
 }
 
 /// How many single faces, and ignored faces, the page lists. They are a loose collection
-/// rather than strips with "Show all", and a library can hold thousands of strangers.
+/// rather than strips with "Show more", and a library can hold thousands of strangers.
 const LISTED_FACES: usize = 200;
+
+/// How many unnamed groups the page lists, the largest. A first recognition of a large
+/// library makes tens of thousands of small groups, mostly strangers: each listed group is
+/// a strip of crops and a name box on the page, and its offer is worked out from Picasa's
+/// faces on every reload. The user names or ignores from the top, and the rest move up.
+const LISTED_GROUPS: usize = 200;
 
 /// Every face on a visible photo with its group, in face order: what the page is built
 /// from. Visible means not hidden and not missing; the grouping step is the one place
@@ -786,6 +795,9 @@ impl Library {
             }
         }
 
+        unnamed.sort_by_key(|(g, _)| (std::cmp::Reverse(g.face_count), g.id));
+        page.unnamed_count = unnamed.len() as i64;
+        unnamed.truncate(LISTED_GROUPS);
         if !unnamed.is_empty() {
             let mut items: Vec<i64> = unnamed
                 .iter()
@@ -801,7 +813,6 @@ impl Library {
                 }
             }
         }
-        unnamed.sort_by_key(|(g, _)| (std::cmp::Reverse(g.face_count), g.id));
         page.unnamed = unnamed.into_iter().map(|(g, _)| g).collect();
         page.people.sort_by_cached_key(by_name);
         page.suggestions.sort_by_cached_key(by_name);
@@ -1738,6 +1749,42 @@ mod tests {
         let g = page.unnamed[0].id;
         let rest = l.lib.person_faces(g, FaceFilter::All, 2, 10).unwrap();
         assert_eq!(ids(&rest), f[2..]);
+    }
+
+    /// Past `LISTED_GROUPS` the page lists the largest and counts them all. 203 pairs and,
+    /// created last, one group of four: an id-ordered cut would leave the largest out. The
+    /// groups are made by hand, as the grouping step would leave them - placing 410 faces
+    /// into 204 groups by angle would need vectors far enough apart for each pair.
+    #[test]
+    fn the_page_lists_the_largest_unnamed_groups_and_counts_them_all() {
+        let angles = [[0.0f32; 10]; 41];
+        let faces: Vec<&[f32]> = angles.iter().map(|a| a.as_slice()).collect();
+        let (l, f) = library(&faces);
+        let mut groups = Vec::new();
+        {
+            let w = l.lib.writer();
+            for _ in 0..204 {
+                w.execute("INSERT INTO people (name) VALUES (NULL)", [])
+                    .unwrap();
+                groups.push(w.last_insert_rowid());
+            }
+            for (i, face) in f.iter().enumerate() {
+                w.execute(
+                    "UPDATE detected_faces SET person_id = ?2 WHERE id = ?1",
+                    rusqlite::params![face, groups[(i / 2).min(203)]],
+                )
+                .unwrap();
+            }
+        }
+        assert_eq!(f.len(), 410);
+        let page = l.lib.people_page(2).unwrap();
+        assert_eq!(page.unnamed.len(), LISTED_GROUPS);
+        assert_eq!(page.unnamed_count, 204);
+        assert_eq!(l.lib.people_to_name().unwrap(), 204);
+        let listed: Vec<i64> = page.unnamed.iter().map(|g| g.id).collect();
+        assert_eq!(listed[0], groups[203], "the largest first");
+        assert_eq!(page.unnamed[0].face_count, 4);
+        assert_eq!(listed[1..], groups[..LISTED_GROUPS - 1], "then by id");
     }
 
     /// A limit past the bound is the bound, and so is a strip: `usize::MAX` bound as it

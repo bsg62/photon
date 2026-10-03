@@ -45,6 +45,7 @@ const answer = (over: Partial<PeoplePage> = {}): PeoplePage => ({
   ignoredGroups: [],
   ignoredFaces: [],
   ...over,
+  unnamedCount: over.unnamedCount ?? over.unnamed?.length ?? 0,
 });
 
 /** A page whose deps are all `vi.fn`s that resolve at once, unless a test replaces them. */
@@ -324,6 +325,22 @@ describe('createPeoplePage', () => {
     );
     await model.load();
     expect(model.unnamed.map((g) => g.id)).toEqual([1, 6, 5]);
+  });
+
+  it('counts every unnamed group, less those an action is taking away', async () => {
+    const two = [face(1), face(2)];
+    const { deps, model } = build(
+      answer({ unnamed: [group(1, null, two), group(2, null, [face(3), face(4)])], unnamedCount: 250 }),
+    );
+    await model.load();
+    expect(model.unnamedCount).toBe(250);
+    const write = deferred<number>();
+    deps.name.mockReturnValueOnce(write.promise);
+    const done = model.nameGroup(1, 'Ben');
+    expect(model.unnamedCount).toBe(249);
+    expect(model.unnamed).toHaveLength(1);
+    write.resolve(1);
+    await done;
   });
 
   it('naming a group hides it from Unnamed and reloads', async () => {

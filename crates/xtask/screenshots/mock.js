@@ -268,6 +268,7 @@
           { ...group(1, null, range(1, 5)), offer: { name: 'Jonas', contact: 'b', faces: 4 } },
           group(2, null, range(6, 3)),
         ],
+        unnamedCount: 2,
         singleFaces: [10, 11, 12].map((id) => ({ ...face(id), personId: 20 + id })),
         singleCount: 3,
         suggestions: [group(3, 'Anna', range(13, 2))],

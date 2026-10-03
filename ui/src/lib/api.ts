@@ -245,7 +245,9 @@ export interface PageGroup { id: number; name: string | null; faceCount: number;
 /** Mirrors `library::PeoplePage`. Every named person is in `people`, with `faceCount` 0 and
  *  no faces when none of their confirmed faces is visible. */
 export interface PeoplePage {
+  /** The largest unnamed groups, at most 200 (`LISTED_GROUPS`); `unnamedCount` counts them all. */
   unnamed: PageGroup[];
+  unnamedCount: number;
   singleFaces: PageFace[];
   singleCount: number;
   suggestions: PageGroup[];
