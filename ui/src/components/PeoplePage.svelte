@@ -56,13 +56,15 @@
       !ignoredFaces,
   );
 
-  // The page refetches on every library change that carries `data_changed` (spec
-  // "Loading"): the face pass's grouping, a scan, and the page's own writes all announce
-  // one. `dataVersion` moves exactly then; reading it here is what subscribes.
+  // The page refetches on library changes that carry `data_changed` (spec "Loading"): the
+  // face pass's grouping, a scan, and the page's own writes all announce one. `dataVersion`
+  // moves exactly then; reading it here is what subscribes. Through `changed`, which loads
+  // the page at once on opening and at most once a second after that.
   $effect(() => {
     void library.dataVersion;
-    void model.load().catch(library.reportError);
+    model.changed();
   });
+  $effect(() => () => model.dispose());
 
   /** Whether a face pass is reporting: moves only when one starts or ends, not with each
    *  count, so the switch below is not re-read per progress event. */

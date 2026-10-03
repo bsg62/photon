@@ -1,6 +1,7 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { FaceFilter, PageFace, PageGroup, PeoplePage } from './api';
 import {
+  CHANGE_GAP_MS,
   IGNORED_FACES,
   MORE,
   SINGLE,
@@ -441,5 +442,60 @@ describe('createPeoplePage', () => {
     deps.load.mockResolvedValueOnce(answer({ unnamed: [group(1, null, [face(1), face(3)], 4)] }));
     await model.load();
     expect(model.selected(A)).toEqual([1]);
+  });
+
+  describe('library changes', () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('reload at most once a gap, the last of a burst at its end', async () => {
+      vi.useFakeTimers();
+      const { deps, model } = build(unnamedPage());
+      // At once, not on a timer, however short: the page opens on this call.
+      model.changed();
+      expect(deps.load).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(0);
+      for (let i = 0; i < 5; i++) {
+        await vi.advanceTimersByTimeAsync(100);
+        model.changed();
+      }
+      expect(deps.load).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(CHANGE_GAP_MS - 500 - 1);
+      expect(deps.load).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(deps.load).toHaveBeenCalledTimes(2);
+      // A change long after the last reload is not held back.
+      await vi.advanceTimersByTimeAsync(5 * CHANGE_GAP_MS);
+      model.changed();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(deps.load).toHaveBeenCalledTimes(3);
+    });
+
+    it("the page's own actions reload at once, and the change they announce waits", async () => {
+      vi.useFakeTimers();
+      const { deps, model } = build(unnamedPage());
+      model.changed();
+      await vi.advanceTimersByTimeAsync(5 * CHANGE_GAP_MS);
+      model.toggle(A, 1);
+      await model.act(A, 'reject');
+      expect(deps.load).toHaveBeenCalledTimes(2);
+      model.changed();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(deps.load).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(CHANGE_GAP_MS);
+      expect(deps.load).toHaveBeenCalledTimes(3);
+    });
+
+    it('a reload put off is dropped when the page goes', async () => {
+      vi.useFakeTimers();
+      const { deps, model } = build(unnamedPage());
+      model.changed();
+      await vi.advanceTimersByTimeAsync(0);
+      model.changed();
+      model.dispose();
+      await vi.advanceTimersByTimeAsync(5 * CHANGE_GAP_MS);
+      expect(deps.load).toHaveBeenCalledTimes(1);
+    });
   });
 });

@@ -13,6 +13,12 @@ export const STRIP = 12;
  *  gets this many, so a re-fetch asked for in one call folded a strip back to it. */
 export const MORE = 200;
 
+/** The least time between the starts of two reloads that library changes ask for. A scan
+ *  announces a data change with each rebuild, and each reload reads every visible face in the
+ *  library: unthrottled, a burst of changes was a burst of whole reads, redrawing the page
+ *  faster than anyone can act on it. */
+export const CHANGE_GAP_MS = 1000;
+
 export type Section = 'unnamed' | 'suggestion' | 'person' | 'ignored';
 export type StripKey = string;
 export type FaceAction = 'confirm' | 'reject' | 'ignore' | 'unignore';
@@ -167,6 +173,7 @@ export function createPeoplePage(deps: PeoplePageDeps) {
 
   async function fetch(): Promise<void> {
     const started = ++tick;
+    lastStart = Date.now();
     const before = { ...generation };
     const next = await deps.load(STRIP);
     // "Show more" survives a reload: an action reloads the page, and a strip the user is
@@ -203,6 +210,10 @@ export function createPeoplePage(deps: PeoplePageDeps) {
   }
 
   const load = singleFlight(fetch);
+  /** When the last reload began, by `Date.now()`, whoever asked for it. */
+  let lastStart = -Infinity;
+  /** The reload `changed` has put off, if any. */
+  let due: ReturnType<typeof setTimeout> | null = null;
 
   /** A write's failure, reported: one naming a group that is gone in words the user can act
    *  on, anything else as the backend put it. */
@@ -249,6 +260,26 @@ export function createPeoplePage(deps: PeoplePageDeps) {
     get people() { return page?.people ?? []; },
     get ignoredGroups() { return (page?.ignoredGroups ?? []).filter((g) => !hiddenGroups.has(g.id)); },
     load,
+    /** A library change: reloads now if no reload began in the last `CHANGE_GAP_MS`, else
+     *  once at the end of that gap, however many changes arrive meanwhile. The page's own
+     *  actions call `load` and are never held back: the user is waiting on those. A reload an
+     *  action began counts, so the change that action's write announces waits its turn. */
+    changed() {
+      if (due !== null) return;
+      const reload = () => void load().catch(deps.reportError);
+      const wait = lastStart + CHANGE_GAP_MS - Date.now();
+      if (wait <= 0) reload();
+      else
+        due = setTimeout(() => {
+          due = null;
+          reload();
+        }, wait);
+    },
+    /** Drops a reload `changed` put off: the page is going. */
+    dispose() {
+      if (due !== null) clearTimeout(due);
+      due = null;
+    },
     faces,
     count,
     canShowMore: (key: StripKey) => key !== SINGLE && key !== IGNORED_FACES && faces(key).length < count(key),
