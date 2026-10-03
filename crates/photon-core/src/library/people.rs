@@ -325,8 +325,8 @@ pub struct Skipped {
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NamedItems {
-    /// The person the photos' faces now belong to; `None` when nothing was named and no
-    /// person of that name exists.
+    /// The person of that name, whether or not any photo was named; `None` only when no
+    /// such person exists.
     pub person: Option<i64>,
     /// The person's name as stored (an existing person's own spelling).
     pub name: String,
@@ -560,7 +560,9 @@ impl Library {
                     "SELECT id FROM detected_faces
                      WHERE item_id = ?1 AND ignored = 0
                        AND (person_id IS NULL OR confirmed = 0
-                            OR person_id IN (SELECT id FROM people WHERE name IS NULL))",
+                            OR person_id IN (SELECT id FROM people WHERE name IS NULL))
+                       AND (person_id IS NULL
+                            OR person_id NOT IN (SELECT id FROM people WHERE ignored = 1))",
                 )?
                 .query_map(params![item], |r| r.get(0))?
                 .collect::<rusqlite::Result<_>>()?;
@@ -609,14 +611,18 @@ impl Library {
                 )?
                 .query_map(params![person, item], |r| r.get(0))?
                 .collect::<rusqlite::Result<_>>()?;
-            if faces.is_empty() {
-                continue;
-            }
+            // Decided by the Person view's own condition before and after, not by whether
+            // a detection was rejected: a photo the person is on only through a linked
+            // Picasa face has no detection to reject and still stays, which is the case
+            // `kept_by_picasa` is for; a photo with only a suggestion was never in the view.
+            let was = on_person_view(&tx, person, item)?;
             reject_in(&tx, &faces)?;
-            if on_person_view(&tx, person, item)? {
-                out.kept_by_picasa += 1;
-            } else {
-                out.removed += 1;
+            if was {
+                if on_person_view(&tx, person, item)? {
+                    out.kept_by_picasa += 1;
+                } else {
+                    out.removed += 1;
+                }
             }
         }
         tx.commit()?;
@@ -2631,7 +2637,8 @@ mod tests {
         put(&l.lib, f[2], anna, false);
         put(&l.lib, f[3], anna, true);
         let r = l.lib.remove_from_person(anna, &l.items[..2]).unwrap();
-        assert_eq!((r.removed, r.kept_by_picasa), (2, 0));
+        // Photo 1 held only a suggestion: never in Anna's view, so not counted.
+        assert_eq!((r.removed, r.kept_by_picasa), (1, 0));
         assert_eq!(person_of(&l.lib, f[0]), (None, false));
         assert_eq!(person_of(&l.lib, f[1]), (Some(ben), true));
         assert_eq!(person_of(&l.lib, f[2]), (None, false));
@@ -2673,5 +2680,75 @@ mod tests {
             Err(Error::NotAPerson(g)) if g == group
         ));
         assert_eq!(person_of(&l.lib, f[0]).0, Some(group));
+    }
+
+    #[test]
+    fn remove_from_person_keeps_a_photo_that_is_theirs_only_through_picasa() {
+        let (l, _f) = library(&[&[0.0]]);
+        let anna = make_person(&l.lib, "Anna");
+        l.lib
+            .upsert_contacts(&HashMap::from([("h1".to_string(), "Anna".to_string())]))
+            .unwrap();
+        l.lib
+            .set_item_faces(&[(l.items[0], vec![at_the_face("h1")])])
+            .unwrap();
+        let r = l.lib.remove_from_person(anna, &l.items).unwrap();
+        assert_eq!((r.removed, r.kept_by_picasa), (0, 1));
+    }
+
+    #[test]
+    fn remove_from_person_does_not_count_a_photo_with_only_a_suggestion() {
+        let (l, f) = library(&[&[0.0]]);
+        let anna = make_person(&l.lib, "Anna");
+        put(&l.lib, f[0], anna, false);
+        let r = l.lib.remove_from_person(anna, &l.items).unwrap();
+        assert_eq!((r.removed, r.kept_by_picasa), (0, 0));
+        assert_eq!(person_of(&l.lib, f[0]), (None, false), "still rejected");
+        assert_eq!(rejections(&l.lib, f[0]), vec![anna]);
+    }
+
+    #[test]
+    fn name_items_does_not_count_a_face_whose_group_is_ignored() {
+        let (l, f) = library(&[&[0.0, 5.0]]);
+        l.lib.group_ungrouped_faces(&never).unwrap();
+        // Put the second face in its own ignored group.
+        let other = {
+            let w = l.lib.writer();
+            w.execute("INSERT INTO people (ignored) VALUES (1)", [])
+                .unwrap();
+            w.last_insert_rowid()
+        };
+        put(&l.lib, f[1], other, false);
+        let r = l.lib.name_items(&l.items, "Ben").unwrap();
+        assert_eq!(r.named, 1);
+        assert_eq!(person_of(&l.lib, f[1]).0, Some(other), "untouched");
+    }
+
+    #[test]
+    fn name_items_counts_a_photo_given_twice_once() {
+        let (l, _f) = library(&[&[0.0], &[0.0, 5.0]]);
+        let ids = [l.items[0], l.items[0], l.items[1], l.items[1]];
+        let r = l.lib.name_items(&ids, "Ben").unwrap();
+        assert_eq!((r.named, r.several.count), (1, 1));
+    }
+
+    #[test]
+    fn name_items_answers_with_an_existing_persons_own_spelling() {
+        let (l, _f) = library(&[&[0.0]]);
+        let anna = make_person(&l.lib, "Anna");
+        let r = l.lib.name_items(&l.items, "anna").unwrap();
+        assert_eq!((r.person, r.name.as_str()), (Some(anna), "Anna"));
+    }
+
+    #[test]
+    fn name_items_takes_a_face_in_an_unnamed_group_and_another_persons_suggestion() {
+        let (l, f) = library(&[&[0.0], &[90.0]]);
+        l.lib.group_ungrouped_faces(&never).unwrap();
+        let ben = make_person(&l.lib, "Ben");
+        put(&l.lib, f[1], ben, false);
+        let r = l.lib.name_items(&l.items, "Cy").unwrap();
+        assert_eq!(r.named, 2);
+        assert_eq!(person_of(&l.lib, f[0]), (r.person, true));
+        assert_eq!(person_of(&l.lib, f[1]), (r.person, true));
     }
 }

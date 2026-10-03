@@ -245,8 +245,9 @@ export interface FaceProgress {
 export interface SkippedItem { id: number; fileName: string }
 /** One kind of skipped photo: the first twenty and how many there were. Mirrors `library::Skipped`. */
 export interface Skipped { items: SkippedItem[]; count: number }
-/** What naming photos did. Mirrors `library::NamedItems`; `person` is null when nothing was
- *  named and no person of that name exists, `name` the name as stored. */
+/** What naming photos did. Mirrors `library::NamedItems`; `person` is the person of that name,
+ *  whether or not any photo was named; null only when no such person exists. `name` is the
+ *  name as stored. */
 export interface NamedItems {
   person: number | null
   name: string
