@@ -472,7 +472,8 @@ pub struct PeoplePage {
     pub single_count: i64,
     /// Each named person's unconfirmed faces, by name.
     pub suggestions: Vec<PageGroup>,
-    /// Each named person's confirmed faces, by name.
+    /// Every named person, by name, with their confirmed visible faces - none, and a
+    /// count of 0, for a person who has none.
     pub people: Vec<PageGroup>,
     pub ignored_groups: Vec<PageGroup>,
     /// Faces ignored one by one, up to [`LISTED_FACES`].
@@ -673,23 +674,23 @@ impl Library {
         // The unnamed groups' faces, kept for the offer.
         let mut unnamed: Vec<(PageGroup, Vec<&FaceRow>)> = Vec::new();
         for (id, name, ignored) in people {
-            // A group with no visible face is in no section.
-            let Some(faces) = by_person.remove(&id) else {
-                continue;
-            };
+            let faces = by_person.remove(&id).unwrap_or_default();
             match name {
+                // Every named person, with no visible face too: the page is where they are
+                // renamed, merged and deleted, and a person whose faces were all rejected,
+                // hidden or re-detected would otherwise be out of reach while still counted.
                 Some(name) => {
                     let (confirmed, suggested): (Vec<&FaceRow>, Vec<&FaceRow>) =
                         faces.into_iter().partition(|f| f.face.confirmed);
-                    if !confirmed.is_empty() {
-                        page.people
-                            .push(page_group(id, Some(name.clone()), &confirmed, strip));
-                    }
+                    page.people
+                        .push(page_group(id, Some(name.clone()), &confirmed, strip));
                     if !suggested.is_empty() {
                         page.suggestions
                             .push(page_group(id, Some(name), &suggested, strip));
                     }
                 }
+                // A group with no visible face is in no section.
+                None if faces.is_empty() => {}
                 None if ignored => page
                     .ignored_groups
                     .push(page_group(id, None, &faces, strip)),
@@ -1339,12 +1340,12 @@ mod tests {
     }
 
     /// A hidden photo's face is in no section and no count, and does not make a group
-    /// "two or more".
+    /// "two or more"; a group whose only photo is hidden is in no section at all.
     #[test]
     fn a_hidden_photo_is_in_no_section() {
-        let (l, f) = library(&[&[0.0], &[5.0]]);
+        let (l, f) = library(&[&[0.0], &[5.0], &[180.0]]);
         l.lib.group_ungrouped_faces(&never).unwrap();
-        l.lib.set_hidden(&[l.items[1]], true).unwrap();
+        l.lib.set_hidden(&[l.items[1], l.items[2]], true).unwrap();
         let page = l.lib.people_page(8).unwrap();
         assert!(
             page.unnamed.is_empty(),
@@ -1355,7 +1356,7 @@ mod tests {
     }
 
     /// As for a hidden photo, for a missing one, in every section: a person whose only
-    /// faces are on missing photos is not listed.
+    /// faces are on missing photos is listed with none.
     #[test]
     fn a_missing_photo_is_in_no_section() {
         let (l, f) = library(&[&[0.0], &[5.0], &[90.0], &[180.0]]);
@@ -1372,7 +1373,38 @@ mod tests {
         let page = l.lib.people_page(8).unwrap();
         assert!(page.unnamed.is_empty());
         assert_eq!(ids(&page.single_faces), [f[0]]);
-        assert!(page.people.is_empty() && page.ignored_groups.is_empty());
+        assert!(page.ignored_groups.is_empty());
+        // Ben is still listed, to be renamed or deleted, with nothing to show.
+        assert_eq!(page.people.len(), 1);
+        assert_eq!(
+            (page.people[0].face_count, page.people[0].faces.len()),
+            (0, 0)
+        );
+    }
+
+    /// A named person with no visible confirmed face is still in People, with a count of
+    /// 0: one whose only face was rejected, one whose only photo is hidden. Out of the page,
+    /// they could not be renamed, merged or deleted, yet would still be counted as named.
+    #[test]
+    fn a_named_person_with_no_visible_face_is_still_listed() {
+        let (l, f) = library(&[&[0.0], &[90.0]]);
+        l.lib.group_ungrouped_faces(&never).unwrap();
+        let (anna, ben) = (
+            person_of(&l.lib, f[0]).0.unwrap(),
+            person_of(&l.lib, f[1]).0.unwrap(),
+        );
+        l.lib.name_group(anna, "Anna").unwrap();
+        l.lib.name_group(ben, "Ben").unwrap();
+        l.lib.reject_faces(&[f[0]]).unwrap();
+        l.lib.set_hidden(&[l.items[1]], true).unwrap();
+        let page = l.lib.people_page(8).unwrap();
+        let listed: Vec<_> = page
+            .people
+            .iter()
+            .map(|p| (p.id, p.face_count, p.faces.len()))
+            .collect();
+        assert_eq!(listed, [(anna, 0, 0), (ben, 0, 0)]);
+        assert!(page.suggestions.is_empty());
     }
 
     #[test]
