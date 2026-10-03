@@ -657,6 +657,25 @@ is what is recorded here; each was decided during the work, after review.
     top" effect then overwrote the user's place with the first folder on every return;
     `display: none` drops the layout box, resets `scrollTop` and shows the ResizeObserver a zero
     width, which trips the same write.
+19. **The page at 150,000 faces.** Measured by the `people_150k_faces` bench in
+    `benches/grid.rs` (`cargo bench -p photon-core --bench grid -- people`), in release on a
+    24-thread AMD Ryzen AI MAX PRO 390: 150,000 faces with vectors on the 100,000-photo bench
+    library, in 30,000 groups shaped like a first recognition (20 named people of 1,500 faces,
+    30 unnamed groups of 500, 4,950 of 13, 15,000 pairs, 10,000 single faces, 650 faces
+    ignored one by one; 1% of the photos hidden), written straight into the database.
+    `people_page(12)` takes 148 ms and `people_to_name()` 70 ms. The bench has no Picasa
+    faces, so no offer is worked out; with the cap below, that cost falls on the 200 listed
+    groups' photos alone. Three things keep that from being paid back to back:
+    - **Unnamed lists the 200 largest groups** (`LISTED_GROUPS`) and `unnamed_count` counts
+      them all; the page says "Showing the 200 largest groups. Name or ignore some to see the
+      rest." past it, as it does for single faces. `people_to_name` still counts every group.
+    - **Library changes reload the page at most once a second** (`createPeoplePage().changed`,
+      trailing): a scan announces a data change with each rebuild. The page's own actions
+      reload at once.
+    - **A reload keeps the order of the groups on screen**: the backend's order (largest
+      first) is taken once, when the page opens; after that a group keeps its place and a new
+      one is added at the end. Re-sorted on every reload, the keyed rows moved under the user,
+      taking focus out of the name being typed and putting another group under the pointer.
 
 ## Not in this design
 
