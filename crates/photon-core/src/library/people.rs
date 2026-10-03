@@ -62,18 +62,26 @@ impl Library {
             )?;
             tx.commit()?;
         }
-        let (mut groups, rejected) = self.groups_and_rejections()?;
-        let ungrouped: Vec<(i64, Vec<f32>)> = {
+        // One snapshot for the faces to place and the groups they are placed among. The
+        // faces first: when there are none, every group's vectors go unread.
+        let (ungrouped, mut groups, rejected) = {
             let conn = self.reader()?;
-            let mut stmt = conn.prepare(&format!(
-                "SELECT id, embedding FROM detected_faces WHERE {UNGROUPED} ORDER BY id"
-            ))?;
-            stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Vec<u8>>(1)?)))?
+            let tx = conn.unchecked_transaction()?;
+            let ungrouped: Vec<(i64, Vec<f32>)> = tx
+                .prepare(&format!(
+                    "SELECT id, embedding FROM detected_faces WHERE {UNGROUPED} ORDER BY id"
+                ))?
+                .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Vec<u8>>(1)?)))?
                 .filter_map(|row| {
                     row.map(|(id, b)| from_blob(&b).map(|e| (id, e.to_vec())))
                         .transpose()
                 })
-                .collect::<rusqlite::Result<_>>()?
+                .collect::<rusqlite::Result<_>>()?;
+            if ungrouped.is_empty() {
+                return Ok(0);
+            }
+            let (groups, rejected) = groups_and_rejections(&tx)?;
+            (ungrouped, groups, rejected)
         };
         let none = HashSet::new();
         let mut placed = 0;
@@ -122,41 +130,42 @@ impl Library {
             |r| r.get(0),
         )?)
     }
+}
 
-    /// Every group with the sum of the vectors that count towards it, and each face's
-    /// rejections.
-    fn groups_and_rejections(&self) -> Result<(Groups, Rejections)> {
-        let conn = self.reader()?;
-        let mut groups = Groups::default();
-        let mut stmt = conn.prepare("SELECT id, name IS NOT NULL FROM people")?;
-        for row in stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, bool>(1)?)))? {
-            let (id, named) = row?;
-            groups.insert(id, named);
-        }
-        let mut stmt = conn.prepare(
-            "SELECT person_id, embedding, confirmed FROM detected_faces
-             WHERE person_id IS NOT NULL AND embedding IS NOT NULL",
-        )?;
-        for row in stmt.query_map([], |r| {
-            Ok((
-                r.get::<_, i64>(0)?,
-                r.get::<_, Vec<u8>>(1)?,
-                r.get::<_, i64>(2)? == 1,
-            ))
-        })? {
-            let (person, blob, confirmed) = row?;
-            if let Some(e) = from_blob(&blob) {
-                groups.add(person, &e, confirmed);
-            }
-        }
-        let mut rejected = Rejections::new();
-        let mut stmt = conn.prepare("SELECT face_id, person_id FROM face_rejections")?;
-        for row in stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))? {
-            let (face, person) = row?;
-            rejected.entry(face).or_default().insert(person);
-        }
-        Ok((groups, rejected))
+/// Every group with the sum of the vectors that count towards it, and each face's
+/// rejections. In id order, groups and faces both: the groups are compared in the order
+/// they are listed, and a sum is added up in the order its faces are read, so two runs over
+/// the same library choose alike to the last bit.
+fn groups_and_rejections(conn: &Connection) -> Result<(Groups, Rejections)> {
+    let mut groups = Groups::default();
+    let mut stmt = conn.prepare("SELECT id, name IS NOT NULL FROM people ORDER BY id")?;
+    for row in stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, bool>(1)?)))? {
+        let (id, named) = row?;
+        groups.insert(id, named);
     }
+    let mut stmt = conn.prepare(
+        "SELECT person_id, embedding, confirmed FROM detected_faces
+         WHERE person_id IS NOT NULL AND embedding IS NOT NULL ORDER BY id",
+    )?;
+    for row in stmt.query_map([], |r| {
+        Ok((
+            r.get::<_, i64>(0)?,
+            r.get::<_, Vec<u8>>(1)?,
+            r.get::<_, i64>(2)? == 1,
+        ))
+    })? {
+        let (person, blob, confirmed) = row?;
+        if let Some(e) = from_blob(&blob) {
+            groups.add(person, &e, confirmed);
+        }
+    }
+    let mut rejected = Rejections::new();
+    let mut stmt = conn.prepare("SELECT face_id, person_id FROM face_rejections")?;
+    for row in stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))? {
+        let (face, person) = row?;
+        rejected.entry(face).or_default().insert(person);
+    }
+    Ok((groups, rejected))
 }
 
 /// Each face's "not this person"s, by face id.
@@ -625,6 +634,11 @@ fn offer(
     })
 }
 
+/// The most faces one call hands over, as a page of `person_faces` or a group's strip on
+/// the People page: a page is crops on screen, and the UI asks again for more. The bound is
+/// what keeps a stray limit from reading a person's every face in one answer.
+const MAX_FACE_PAGE: usize = 200;
+
 /// Ids per `IN (...)` list, under SQLite's default limit on bound parameters.
 const IN_CHUNK: usize = 500;
 
@@ -678,7 +692,11 @@ impl Library {
     /// The People page: every visible grouped or ignored face read once and sorted into
     /// the sections in Rust, each group with the first `strip` of its faces.
     pub fn people_page(&self, strip: usize) -> Result<PeoplePage> {
-        let conn = self.reader()?;
+        let strip = strip.min(MAX_FACE_PAGE);
+        let reader = self.reader()?;
+        // One snapshot for the people, their faces and Picasa's: a group named or a face
+        // moved between two reads would otherwise be filed under a state it was never in.
+        let conn = reader.unchecked_transaction()?;
         let people: Vec<(i64, Option<String>, bool)> = conn
             .prepare("SELECT id, name, ignored FROM people ORDER BY id")?
             .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get::<_, i64>(2)? == 1)))?
@@ -768,13 +786,14 @@ impl Library {
             FaceFilter::Confirmed => Some(1),
             FaceFilter::Unconfirmed => Some(0),
         };
+        // Both bound as SQLite integers: `usize::MAX` would wrap to -1, which SQLite reads
+        // as no limit at all.
+        let limit = limit.min(MAX_FACE_PAGE) as i64;
+        let offset = i64::try_from(offset).unwrap_or(i64::MAX);
         let conn = self.reader()?;
         let mut stmt = conn.prepare_cached(PERSON_FACES_SQL)?;
         let faces = stmt
-            .query_map(
-                params![person, confirmed, limit as i64, offset as i64],
-                face_row,
-            )?
+            .query_map(params![person, confirmed, limit, offset], face_row)?
             .map(|row| row.map(|r| r.face))
             .collect::<rusqlite::Result<_>>()?;
         Ok(faces)
@@ -913,8 +932,24 @@ mod tests {
         assert!(!l.lib.has_ungrouped_faces().unwrap());
     }
 
+    /// A face joins by the average of the faces placed before it, so the order decides.
+    /// In face order: 0° starts a group, 50° joins it (0.64) and moves its average to 25°,
+    /// and 100° is then 75° away (0.26) and starts its own. The other way round, 100° and
+    /// 50° would be the pair and 0° alone.
     #[test]
-    fn grouping_is_in_face_order_and_repeatable() {
+    fn grouping_is_in_face_order() {
+        let (l, f) = library(&[&[0.0], &[50.0], &[100.0]]);
+        l.lib.group_ungrouped_faces(&never).unwrap();
+        let groups: Vec<_> = f.iter().map(|id| person_of(&l.lib, *id).0).collect();
+        assert!(
+            groups[0] == groups[1] && groups[2] != groups[0],
+            "{groups:?}"
+        );
+    }
+
+    /// A group's average also moves within one run, as faces join it.
+    #[test]
+    fn a_group_is_judged_by_the_faces_placed_in_the_same_run() {
         let (l, f) = library(&[&[0.0], &[40.0], &[75.0]]);
         l.lib.group_ungrouped_faces(&never).unwrap();
         // 0° starts a group; 40° joins it (0.77); the group's average is then at 20°, and
@@ -1230,6 +1265,23 @@ mod tests {
         // A later step reads the suggestion back from the library with the person's faces.
         set_ignored_by_hand(&l.lib, f[2], false);
         l.lib.group_ungrouped_faces(&never).unwrap();
+        assert_eq!(person_of(&l.lib, f[2]), (Some(anna), false));
+    }
+
+    /// As `suggestions_do_not_move_a_named_person`, within one run: 50° joins Anna as a
+    /// suggestion and must not move the average the next face, -40°, is judged by.
+    #[test]
+    fn a_suggestion_does_not_move_a_named_person_within_the_run() {
+        let (l, f) = library(&[&[0.0], &[50.0], &[-40.0]]);
+        set_ignored_by_hand(&l.lib, f[1], true);
+        set_ignored_by_hand(&l.lib, f[2], true);
+        l.lib.group_ungrouped_faces(&never).unwrap();
+        let anna = person_of(&l.lib, f[0]).0.unwrap();
+        l.lib.name_group(anna, "Anna").unwrap();
+        set_ignored_by_hand(&l.lib, f[1], false);
+        set_ignored_by_hand(&l.lib, f[2], false);
+        assert_eq!(l.lib.group_ungrouped_faces(&never).unwrap(), 2);
+        assert_eq!(person_of(&l.lib, f[1]), (Some(anna), false));
         assert_eq!(person_of(&l.lib, f[2]), (Some(anna), false));
     }
 
@@ -1588,6 +1640,33 @@ mod tests {
         let g = page.unnamed[0].id;
         let rest = l.lib.person_faces(g, FaceFilter::All, 2, 10).unwrap();
         assert_eq!(ids(&rest), f[2..]);
+    }
+
+    /// A limit past the bound is the bound, and so is a strip: `usize::MAX` bound as it
+    /// came would be -1 to SQLite, which reads that as no limit.
+    #[test]
+    fn a_page_of_faces_is_bounded() {
+        // Ten faces a photo: the fixture detects a hundred photos.
+        let angles = [[0.0f32; 10]; MAX_FACE_PAGE / 10 + 1];
+        let faces: Vec<&[f32]> = angles.iter().map(|a| a.as_slice()).collect();
+        let (l, f) = library(&faces);
+        l.lib.group_ungrouped_faces(&never).unwrap();
+        let group = person_of(&l.lib, f[0]).0.unwrap();
+        let page = l
+            .lib
+            .person_faces(group, FaceFilter::All, 0, usize::MAX)
+            .unwrap();
+        assert_eq!(page.len(), MAX_FACE_PAGE);
+        assert!(
+            l.lib
+                .person_faces(group, FaceFilter::All, usize::MAX, 10)
+                .unwrap()
+                .is_empty(),
+            "an offset past the end"
+        );
+        let strip = l.lib.people_page(usize::MAX).unwrap();
+        assert_eq!(strip.unnamed[0].face_count as usize, MAX_FACE_PAGE + 10);
+        assert_eq!(strip.unnamed[0].faces.len(), MAX_FACE_PAGE);
     }
 
     #[test]
