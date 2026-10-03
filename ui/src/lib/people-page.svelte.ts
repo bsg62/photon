@@ -67,14 +67,14 @@ export function createPeoplePage(deps: PeoplePageDeps) {
     return { section: section as Section | 'single' | 'ignored-faces', id: Number(id) };
   };
 
-  function groupOf(key: StripKey): PageGroup | undefined {
-    if (!page) return undefined;
+  function groupOf(key: StripKey, from: PeoplePage | null = page): PageGroup | undefined {
+    if (!from) return undefined;
     const { section, id } = parse(key);
     const list =
-      section === 'unnamed' ? page.unnamed
-      : section === 'suggestion' ? page.suggestions
-      : section === 'person' ? page.people
-      : section === 'ignored' ? page.ignoredGroups
+      section === 'unnamed' ? from.unnamed
+      : section === 'suggestion' ? from.suggestions
+      : section === 'person' ? from.people
+      : section === 'ignored' ? from.ignoredGroups
       : [];
     return list.find((g) => g.id === id);
   }
@@ -121,15 +121,21 @@ export function createPeoplePage(deps: PeoplePageDeps) {
     // "Show all" survives a reload: an action reloads the page, and a strip the user is
     // working through must not fold up under them.
     const kept: Record<StripKey, PageFace[]> = {};
-    page = next;
     await Promise.all(
       Object.entries(extra).map(async ([key, loaded]) => {
-        const group = groupOf(key);
+        const group = groupOf(key, next);
         const { section } = parse(key);
         if (!group || !loaded.length) return;
-        kept[key] = await deps.more(group.id, FILTER[section as Section], group.faces.length, loaded.length);
+        try {
+          kept[key] = await deps.more(group.id, FILTER[section as Section], group.faces.length, loaded.length);
+        } catch (e) {
+          // That strip folds back to its first faces; the page itself still loads.
+          deps.reportError(e);
+        }
       }),
     );
+    // Together, after the re-fetch: the new base with the old extra would show a face twice.
+    page = next;
     extra = kept;
     settle(started);
   }
@@ -147,7 +153,8 @@ export function createPeoplePage(deps: PeoplePageDeps) {
 
   /** Runs `write` with `ids` hidden; puts them back if it fails. Reloads either way: a
    *  failure can mean the page is stale (a group a grouping run deleted). The reload is
-   *  asked for after `ended` took its tick, so it counts as started after the write. */
+   *  asked for after the write's end, which reads `tick` without taking one; the reload's own
+   *  `++tick` is what numbers it past that end, so it counts as started after the write. */
   async function optimistic(which: Hidden, ids: number[], write: () => Promise<unknown>) {
     for (const id of ids) mapOf(which).set(id, null);
     publish();

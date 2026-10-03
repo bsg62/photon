@@ -12,7 +12,9 @@ export type NameChoice =
 /** What committing `typed` will do, by the backend's own rule (`library/people.rs`,
  *  `clean` and `same_name`): trimmed, compared without case - `toLowerCase` is Unicode's
  *  default mapping, as Rust's `to_lowercase` is, so "ÉMILE" is Émile on both sides. `self`
- *  is the person being renamed, whom their own name does not merge into. */
+ *  is the person being renamed, whom their own name does not merge into. Typing their own
+ *  name exactly is `same` (nothing to do); only its capitalisation changing is a rename,
+ *  which the backend allows, so "anna" -> "Anna" is how a name's case is corrected. */
 export function nameChoice(
   typed: string,
   people: readonly { id: number; name: string | null }[],
@@ -23,7 +25,7 @@ export function nameChoice(
   const key = name.toLowerCase();
   const match = people.find((p) => p.name !== null && p.name.toLowerCase() === key);
   if (!match) return { kind: 'new', name };
-  if (match.id === self) return { kind: 'same' };
+  if (match.id === self) return match.name === name ? { kind: 'same' } : { kind: 'new', name };
   return { kind: 'merge', id: match.id, name: match.name as string };
 }
 

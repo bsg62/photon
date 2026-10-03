@@ -20,8 +20,11 @@ describe('nameChoice', () => {
   it('compares case beyond ASCII, as the backend does in Rust', () => {
     expect(nameChoice('ÉMILE', people)).toEqual({ kind: 'merge', id: 5, name: 'Émile' });
   });
-  it('is the same person when renaming to their own name in another case', () => {
-    expect(nameChoice('ANNA', people, 3)).toEqual({ kind: 'same' });
+  it('is the same person when renaming to exactly their own name', () => {
+    expect(nameChoice(' Anna ', people, 3)).toEqual({ kind: 'same' });
+  });
+  it('is a rename when only the case of their own name changes', () => {
+    expect(nameChoice('ANNA', people, 3)).toEqual({ kind: 'new', name: 'ANNA' });
   });
   it('never matches an unnamed group', () => {
     expect(nameChoice('null', people)).toEqual({ kind: 'new', name: 'null' });

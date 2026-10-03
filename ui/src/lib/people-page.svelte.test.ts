@@ -246,13 +246,13 @@ describe('createPeoplePage', () => {
       answer({ singleFaces: [face(1, 21), face(2, 22), face(3, 23)], singleCount: 3 }),
     );
     await model.load();
-    deps.name.mockResolvedValueOnce(21);
+    deps.name.mockResolvedValueOnce(30);
     for (const id of [1, 2, 3]) model.toggle(SINGLE, id);
     await model.nameSingles('Ben');
     expect(deps.name).toHaveBeenCalledWith(21, 'Ben');
     expect(deps.merge.mock.calls).toEqual([
-      [22, 21],
-      [23, 21],
+      [22, 30],
+      [23, 30],
     ]);
     expect(deps.name.mock.invocationCallOrder[0]).toBeLessThan(deps.merge.mock.invocationCallOrder[0]);
   });
@@ -280,10 +280,33 @@ describe('createPeoplePage', () => {
   it('renaming to the same name does nothing', async () => {
     const { deps, model } = build(answer({ people: [group(3, 'Anna', [])] }));
     await model.load();
-    await model.rename(3, 'ANNA');
+    await model.rename(3, ' Anna ');
     expect(deps.rename).not.toHaveBeenCalled();
+    await model.rename(3, 'ANNA');
+    expect(deps.rename).toHaveBeenCalledWith(3, 'ANNA');
     await model.rename(3, ' Anne ');
-    expect(deps.rename).toHaveBeenCalledWith(3, 'Anne');
+    expect(deps.rename).toHaveBeenLastCalledWith(3, 'Anne');
+  });
+
+  it('a failing show-more re-fetch still loads the page and drops only that strip', async () => {
+    const strip = (n: number) => Array.from({ length: STRIP }, (_, i) => face(n * 100 + i, null, true));
+    const page = answer({ people: [group(1, 'Anna', strip(1), 40), group(2, 'Ben', strip(2), 40)] });
+    const { deps, model } = build(page);
+    await model.load();
+    deps.more.mockResolvedValue([face(900), face(901)]);
+    await model.showMore(stripKey('person', 1));
+    await model.showMore(stripKey('person', 2));
+    const err = new Error('more');
+    deps.more.mockImplementation(async (p) => {
+      if (p === 1) throw err;
+      return [face(950), face(951)];
+    });
+    deps.load.mockResolvedValueOnce(answer({ people: [group(1, 'Anna', strip(1), 41), group(2, 'Ben', strip(2), 40)] }));
+    await model.load();
+    expect(deps.reportError).toHaveBeenCalledWith(err);
+    expect(model.count(stripKey('person', 1))).toBe(41);
+    expect(model.faces(stripKey('person', 1))).toHaveLength(STRIP);
+    expect(model.faces(stripKey('person', 2))).toHaveLength(STRIP + 2);
   });
 
   it('a selection loses faces a reload no longer shows', async () => {
