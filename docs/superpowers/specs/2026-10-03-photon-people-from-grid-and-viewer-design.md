@@ -99,7 +99,7 @@ them, and the operations act on what they are given.
   while the view is a named person's (`p:`); none for an unlinked contact's view (`c:`).
 - **The toast** after naming from the grid: "Added 5 photos to Anna." plus, per kind skipped,
   "2 have more than one unnamed face: IMG_0141.jpg, IMG_0153.jpg — open them to choose the
-  face.", "1 is already Anna's.", "1 has no face photon found." After removing: "Removed 3
+  face.", "1 is already Anna's.", "1 has no unnamed face." After removing: "Removed 3
   photos from Anna." plus "2 stay: Picasa names Anna on them." The wording is a pure, tested
   function.
 - **The viewer's context menu**: right-click hit-tests the face rectangles as drawn (the same
@@ -141,3 +141,43 @@ Every new test is shown to fail with its change reverted.
 - Drawing a face rectangle by hand for a face photon did not find.
 - Naming Picasa's faces (it would mean writing `.picasa.ini`).
 - Undo.
+
+## As built
+
+From the whole-branch review (2026-10-04); where this differs from the text above, this wins.
+
+- **`name_items` never confirms a face the user did not choose.** Three rules beyond the
+  above. *Already* also counts a Picasa face on the photo whose contact is linked to no
+  person and carries the name (`same_name`): the write would link that contact to the
+  person it makes or joins, so the photo's other face would be a stranger under the name,
+  whether or not the person existed before. A detection under a face Picasa names - any named
+  contact, linked or not, matched through the photo's edit (`merge::shown`, then
+  `merge::same_face`) - is no candidate: that face is someone already, and the viewer draws it
+  as Picasa's plate, not an unnamed outline. And a photo where a candidate was rejected from
+  the person is skipped as a fourth kind, **rejected**, listed by file name like *several*:
+  bulk naming does not overrule the user's "Not Anna". `name_faces` still clears a rejection,
+  because there the user picked the face. Toast: "1 has a face you said is not Anna:
+  IMG_0141.jpg — open it to choose the face."
+- **"No unnamed face"** replaces "no face photon found", which was false for a photo whose
+  faces are all someone's, all ignored, or all under Picasa's names.
+- **The viewer's "Not Anna" is photo-level**: `remove_from_person(anna, [photo])`, as the
+  grid's Remove, toasted by the same `removedMessage` (which says when Picasa keeps her). It is
+  offered for a person only when photon has a face of theirs on the photo (a plate with that
+  `p:` key and a `faceId`); a person only Picasa names there is not offered. The decision is
+  `faceActionsAt` in `lib/faces.ts`, a pure tested function. When nothing was removed or kept
+  (a stale menu: the face was re-detected meanwhile) the toast says "Anna is no longer on
+  this photo: nothing to remove." Cost, accepted: with Anna twice on one photo, both faces are
+  rejected.
+- **The dialog lists every named person**, through a light command, `named_people`, read when
+  it opens: the sidebar's list leaves out a person with no visible photo, and the dialog then
+  called their name a new person while the backend joined them. The stored-spelling lookup
+  for the toast reads the same list.
+- **"Add … to a person…" is offered only while "Find faces" is on** (`library.findFaces`, read
+  at start and set by Settings when it stores the switch).
+- **A slideshow waits under the dialog**: its countdown is held while the dialog is over the
+  viewer, and the photo gets a whole interval once it closes.
+- `viewer_item`'s unnamed outlines go through `merge::unmatched_by`, the id-carrying form of
+  `merge::unmatched`, so merge stays the one place the two tables meet.
+- Hidden and missing photos stay included in `on_person_view` (the *already* test), on
+  purpose: in the Hidden view, "Add to Anna" on a hidden photo that already shows Anna must not
+  name its other face.

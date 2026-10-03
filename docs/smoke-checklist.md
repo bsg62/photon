@@ -452,4 +452,7 @@ named person (Anna below) and a Picasa contact linked to her by name.
 - [ ] With the info panel open, click an unnamed outline: the dialog opens for that face. Zoomed in, clicking an outline does not start a pan. Tab reaches the outlines and their focus ring shows.
 - [ ] With the dialog open over the viewer, type "h", "r", "s" and the arrows in the field: nothing happens behind it. Click the dialog's title (off the field) and press "h", then Escape: the photo is not hidden, and Escape closes only the dialog, not the viewer. Tab never reaches the viewer's controls (the viewer is `inert` in a `display: contents` wrapper - unverified in WebKitGTK and WKWebView).
 - [ ] Closing the dialog over the viewer leaves the viewer's keys working at once (arrows, Escape).
+- [ ] During a slideshow, right-click an unnamed face and "Name this face…": the show does not move on while the dialog is open, and after it closes the photo stays a whole interval before the next.
+- [ ] Hide every photo of a named person (Ben), then open the dialog and type "ben": the list offers Ben and the hint says "Add to Ben", not "New person".
+- [ ] Switch "Find faces in my photos" off in Settings: the grid's tile menu no longer offers "Add … to a person…"; switch it on again and it does, without restarting.
 - [ ] Click Anna's name in the info panel's People list: the viewer closes and Anna's view opens, the grid focused (the arrow keys move the selection). A name on a photo twice (Picasa and photon) is listed once.

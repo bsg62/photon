@@ -629,17 +629,27 @@ resolved by the one rule (`clean`, `same_name`, contacts linked by name): confir
 ignored, any rejection from that person forgotten; it makes a person only when one of the faces
 still exists, so a stale request leaves no empty named person behind, and it names a face too
 small for a vector, which puts the photo in the Person view without ever shaping suggestions.
-`name_items` is the grid's, by photo, and **never guesses**: a photo's candidates are its
-detections not confirmed as a named person, not ignored and not in an ignored group, and the
-photo is named only with exactly one. It is skipped as *already* when the person has a confirmed
-face on it or Picasa names a contact linked to them there - checked first, because the photo's
-one *other* face is then a stranger the user did not mean - as *several* with more than one
-candidate (listed by file name, so the user opens it and picks the face in the viewer; "the
-largest face" was asked about and declined), and as *none* with no candidate. An ignored face is
-no candidate, so a background stranger the user put away does not make a photo ambiguous.
+`name_items` is the grid's, by photo, and **never confirms a face the user did not choose**: a
+photo's candidates are its detections not confirmed as a named person, not ignored, not in an
+ignored group and not under a face Picasa names (linked or not, through the photo's edit:
+`merge::shown`, then `merge::same_face` - that face is someone already, drawn as Picasa's
+plate), and the photo is named only with exactly one. It is skipped as *already* when the person
+has a confirmed face on it, or Picasa names on it a contact linked to them or an unlinked contact
+of that name - the one this very write would link (`link_contacts_by_name`), so it counts whether
+or not the person exists yet - checked first, because the photo's one *other* face is then a
+stranger the user did not mean; as *rejected* when a candidate was rejected from the person (a
+guess per photo never overrules "Not Anna"; `name_faces`, where the user picks the face, does
+clear the rejection); as *several* with more than one candidate (listed by file name, so the user
+opens it and picks the face in the viewer; "the largest face" was asked about and declined); and
+as *none* with no candidate ("no unnamed face": its faces may all be someone's or ignored). An
+ignored face is no candidate, so a background stranger the user put away does not make a photo
+ambiguous. `on_person_view`, the "already" test, keeps hidden photos on purpose: in the Hidden
+view "Add to Anna" on a hidden photo that shows Anna must not name its other face.
 `remove_from_person` is "Not this person" for every face of the person on each photo, confirmed
 or suggested, through `reject_in`; a photo the person is on through a linked Picasa face stays
-in their view, and `kept_by_picasa` counts it so the toast can say why. **None of the three
+in their view, and `kept_by_picasa` counts it so the toast can say why. The person dialog lists
+`named_people` (every named person, read when it opens), not the sidebar's `people_with_counts`,
+which leaves out a person with no visible photo whom a typed name still joins. **None of the three
 changes Picasa's faces**: photon never writes a name to an INI. **Which detection a viewer face
 is** is `ItemFace.face_id`/`UnnamedFace.face_id` (`viewer_item`): a detection's plate or outline
 carries its own id; Picasa's plate of a *linked* person carries the detection beneath it
@@ -649,10 +659,13 @@ plate of an unlinked contact (`c:`) carries none, since the face beneath may be 
 A face with no id is Picasa's alone, and the viewer offers nothing on it: its context menu
 hit-tests every face as drawn (`toLayer` through the face layer's own bounding rectangle, which
 already holds the zoom and pan, then `faceAt`) whether or not the info panel shows the outlines,
-and offers "Name this face…" on an unnamed face, "Not Anna" on a plate, and elsewhere "Not …"
-for each person with an id on the photo. A rejection reloads nothing (`pictureChanged`'s `Pick`
-leaves the faces out); in that person's view the photo leaves the grid and `orphaned` keeps it
-on screen, as after Hide.
+and `faceActionsAt` (`lib/faces.ts`) offers "Name this face…" on an unnamed face, "Not Anna" on
+her plate, and elsewhere "Not …" once for each person photon has a face of on the photo. **The
+viewer's "Not Anna" is photo-level**, the grid's Remove for one photo (`remove_from_person`),
+so it is offered only where photon holds a face of hers, and its toast (`removedMessage`) says
+when Picasa keeps her there. A rejection reloads nothing (`pictureChanged`'s `Pick` leaves the
+faces out); in that person's view the photo leaves the grid and `orphaned` keeps it on screen,
+as after Hide. The slideshow's countdown is held (`hold`) while the dialog is over the viewer.
 
 **Only confirmed faces carry a name.** A face the rule puts with a named person is a suggestion
 (`confirmed = 0`), listed among `people_page`'s suggestions and nowhere else: the Person view,
