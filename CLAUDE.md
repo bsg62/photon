@@ -66,7 +66,7 @@ cargo run -p xtask -- metadata            # licence and installer metadata are c
 **Seeing the UI without launching it** (not in CI; needs Chromium on `PATH` or in `CHROMIUM`):
 
 ```bash
-cargo run -p xtask -- screenshots                     # thirty-one PNGs into target/screenshots/
+cargo run -p xtask -- screenshots                     # thirty-two PNGs into target/screenshots/
 cargo run -p xtask -- screenshots --only viewer-info-light --no-build
 cargo run -p xtask -- scroll-probe   # the end of a 300k-photo library is reachable
 ```
@@ -613,7 +613,8 @@ kept decode is never stale.
 
 **`people_write` serialises the corrections with grouping.** Every operation on the People data
 (`name_group`, `rename_person`, `confirm_faces`, `reject_faces`, `merge_people`,
-`set_person_ignored`, `set_faces_ignored`, `delete_person`) runs through `Engine::write_people`,
+`set_person_ignored`, `set_faces_ignored`, `delete_person`, and the grid's and the viewer's
+`name_faces`, `name_items` and `remove_from_person`) runs through `Engine::write_people`,
 which holds the lock for the write, then rebuilds through `refresh_after_write` and requests a
 face pass; each grouping run takes the same lock. An operation never places a face itself: a
 rejected face, or one no longer ignored, is left ungrouped, and the pass's grouping step places
@@ -621,6 +622,37 @@ it, passing over every group it was rejected from (`face_rejections`). A merge (
 behind `merge_people` and a name another person has) leaves out, ungrouped, every face of the
 merged group that was rejected from the person it merges into: grouping puts a face taken out
 of Anna in another group, and naming that group Anna would otherwise make it a confirmed Anna.
+
+**The grid and the viewer name and take off faces by id** (spec
+`2026-10-03-photon-people-from-grid-and-viewer-design.md`). `name_faces` names faces as a person
+resolved by the one rule (`clean`, `same_name`, contacts linked by name): confirmed, no longer
+ignored, any rejection from that person forgotten; it makes a person only when one of the faces
+still exists, so a stale request leaves no empty named person behind, and it names a face too
+small for a vector, which puts the photo in the Person view without ever shaping suggestions.
+`name_items` is the grid's, by photo, and **never guesses**: a photo's candidates are its
+detections not confirmed as a named person, not ignored and not in an ignored group, and the
+photo is named only with exactly one. It is skipped as *already* when the person has a confirmed
+face on it or Picasa names a contact linked to them there - checked first, because the photo's
+one *other* face is then a stranger the user did not mean - as *several* with more than one
+candidate (listed by file name, so the user opens it and picks the face in the viewer; "the
+largest face" was asked about and declined), and as *none* with no candidate. An ignored face is
+no candidate, so a background stranger the user put away does not make a photo ambiguous.
+`remove_from_person` is "Not this person" for every face of the person on each photo, confirmed
+or suggested, through `reject_in`; a photo the person is on through a linked Picasa face stays
+in their view, and `kept_by_picasa` counts it so the toast can say why. **None of the three
+changes Picasa's faces**: photon never writes a name to an INI. **Which detection a viewer face
+is** is `ItemFace.face_id`/`UnnamedFace.face_id` (`viewer_item`): a detection's plate or outline
+carries its own id; Picasa's plate of a *linked* person carries the detection beneath it
+(`merge::same_face`) confirmed as that same person; an unnamed Picasa outline the detection
+beneath it that no named person is confirmed on (it is drawn in that detection's place); and a
+plate of an unlinked contact (`c:`) carries none, since the face beneath may be someone else's.
+A face with no id is Picasa's alone, and the viewer offers nothing on it: its context menu
+hit-tests every face as drawn (`toLayer` through the face layer's own bounding rectangle, which
+already holds the zoom and pan, then `faceAt`) whether or not the info panel shows the outlines,
+and offers "Name this face…" on an unnamed face, "Not Anna" on a plate, and elsewhere "Not …"
+for each person with an id on the photo. A rejection reloads nothing (`pictureChanged`'s `Pick`
+leaves the faces out); in that person's view the photo leaves the grid and `orphaned` keeps it
+on screen, as after Hide.
 
 **Only confirmed faces carry a name.** A face the rule puts with a named person is a suggestion
 (`confirmed = 0`), listed among `people_page`'s suggestions and nowhere else: the Person view,
@@ -732,6 +764,13 @@ A new overlay renders beside `Settings`, counts towards `covered`, and hands foc
 closes - after `await tick()`, because `<main>` is inert until the DOM catches up and focusing
 an inert element silently does nothing. The grid's keys live on its viewport, so a dialog that
 closes onto `<body>` leaves the arrow keys, Enter and Escape dead until the user clicks.
+A dialog opened **over the viewer** (the person dialog, naming a face) has one more thing to
+stop: the viewer's keys live on `<svelte:window>`, not on anything `inert` can reach, so typing
+"h" in the name field would hide the photo behind it and the arrows would step past it. The
+dialog stops the propagation of every `keydown` inside it, and the viewer ignores every key
+while `paused` (App passes `personPicker.visible`) for the key that arrives with focus on
+`<body>`; the viewer itself sits in a `display: contents` wrapper made `inert` while the dialog
+is up, so Tab cannot walk out of the dialog into its controls.
 
 **A context menu is placed by `use:fitMenu`** (`lib/menu-place.ts`), never by binding
 `left`/`top` to the pointer: it opens down-right and flips on an axis where that would leave
@@ -779,7 +818,7 @@ anything sitting outside the tile's own box.
 
 The look cannot be tested here, but it can be seen without launching the app: `cargo run -p xtask --
 screenshots` builds the UI, serves `ui/dist` itself with `mock.js` (in
-`crates/xtask/screenshots/`) standing in for Tauri's IPC, and writes thirty-one PNGs, in both themes,
+`crates/xtask/screenshots/`) standing in for Tauri's IPC, and writes thirty-two PNGs, in both themes,
 to `target/screenshots/` with headless Chromium. It claims a Windows user agent and maps
 `photon.localhost` to its own port, because `mediaUrl` uses `http://photon.localhost` there
 and no plain browser can load `photon://`. It is Chromium's rendering, not WebKitGTK's or

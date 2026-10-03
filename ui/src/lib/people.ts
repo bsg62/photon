@@ -84,6 +84,12 @@ export function namedFaceMessage(name: string): string {
   return `This is ${name}.`;
 }
 
+/** The toast after "Not Anna" in the viewer: the face leaves her, and in her view the photo
+ *  leaves the grid while the viewer stays on it. */
+export function takenOffMessage(name: string): string {
+  return `${name} taken off this photo.`;
+}
+
 /** The toast after naming photos: what was done, then why the rest were not, each reason on
  *  its own, so a user who selected forty photos can tell which to look at. */
 export function namedItemsMessage(r: NamedItems): string {

@@ -480,6 +480,22 @@
           ?.click(),
       );
     },
+    // The person dialog for one photo, from the tile menu, with a name begun so the list is
+    // narrowed and the hint says who Enter will add the photo to - Anna, typed in lower case.
+    personpicker: () => {
+      actions.menu();
+      later(100, () =>
+        [...document.querySelectorAll('[role="menuitem"]')]
+          .find((b) => b.textContent.trim().startsWith('Add photo to a person'))
+          ?.click(),
+      );
+      later(300, () => {
+        const field = document.querySelector('input[aria-label="Name"]');
+        if (!field) return;
+        field.value = 'anna';
+        field.dispatchEvent(new Event('input', { bubbles: true }));
+      });
+    },
     // Types a query the canned list already holds, so the bookmark is drawn filled - the
     // state that says "saved", which is also the state that cannot be clicked.
     savedsearch: () => {

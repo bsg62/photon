@@ -139,6 +139,12 @@ pub const SHOTS: &[Shot] = &[
         query: "theme=dark&do=keyword",
         dark: true,
     },
+    // The person dialog, opened from the tile menu on one photo.
+    Shot {
+        name: "person-picker-dark",
+        query: "theme=dark&do=personpicker",
+        dark: true,
+    },
     Shot {
         name: "settings-light",
         query: "theme=light&do=settings",

@@ -8,6 +8,7 @@ import {
   openFacePhoto,
   removedMessage,
   switchOffWarning,
+  takenOffMessage,
 } from './people';
 
 const people = [
@@ -101,6 +102,10 @@ describe('toast wording', () => {
 
   it('names a face', () => {
     expect(namedFaceMessage('Anna')).toBe('This is Anna.');
+  });
+
+  it('takes a person off a photo', () => {
+    expect(takenOffMessage('Anna')).toBe('Anna taken off this photo.');
   });
 
   it('says what was added', () => {

@@ -291,6 +291,19 @@
     grid?.focus();
   }
 
+  /** A name clicked in the viewer's info panel: that person's view, as the sidebar's People
+   *  list opens it. The viewer closes first, for `searchFrom`'s reason, and a pending search
+   *  is cancelled for the sidebar's: its debounced send would otherwise re-enter Search behind
+   *  the switch. After `tick`, `<main>` is no longer inert. */
+  async function showPerson(key: string) {
+    viewerAt = null;
+    searchBox.cancel();
+    mainPage.showGrid();
+    void library.setPersonView(key);
+    await tick();
+    grid?.focus();
+  }
+
   /** F11 toggles fullscreen, everywhere. It exists for its own sake and as the way out of a
    *  trap: the window's fullscreen state is remembered across launches, so quitting in the
    *  middle of a slideshow reopens photon fullscreen, with no title bar to leave it by. */
@@ -500,6 +513,9 @@
       onlocate={locate}
       onsearch={searchFrom}
       onshowcopies={showCopiesFromViewer}
+      onnameface={(faceId) => openPersonPicker({ kind: 'face', face: faceId }, 'viewer')}
+      onperson={showPerson}
+      paused={personPicker.visible}
     />{/if}
 </div>
 {#if settingsAt !== null}<Settings section={settingsAt} onclose={closeSettings} onsearch={searchFromSettings} />{/if}

@@ -433,3 +433,22 @@ itself; the second is the People page.
 - [ ] A face whose photo is hidden is nowhere on the page, and not in the count.
 - [ ] Switch detection off with named people: the question names the count; Cancel keeps everything and the switch stays on; OK deletes the detections and people, and the People page says detection is off.
 - [ ] Switch it off while recognising: the progress line clears and stays cleared; Picasa's people stay in the sidebar and the viewer.
+
+## People from the grid and the viewer
+
+On a real library with "Find faces in my photos" on, recognition finished, and at least one
+named person (Anna below) and a Picasa contact linked to her by name.
+
+- [ ] Grid, one photo with one unnamed face: right-click, "Add photo to a person…", choose Anna. The toast says "Added 1 photo to Anna."; the photo is in Anna's view.
+- [ ] Grid, a selection mixing a photo with several unnamed faces, one that is already Anna's, and one with no face: the toast lists the several-face photos by file name ("open them to choose the face"), says one is already Anna's and one has no face photon found, and adds only the one-face photos.
+- [ ] Type a new name in the dialog: the hint says "New person “Ben”"; Enter makes Ben, and he appears in the sidebar's People list.
+- [ ] In Anna's view, select photos and "Remove N photos from “Anna”": they leave the view and the toast says so. A photo where Picasa names Anna stays, and the toast says "Picasa names Anna on it".
+- [ ] In a Picasa contact's own view (`c:`, no person linked), the tile menu has no Remove item.
+- [ ] Viewer, right-click an unnamed face (info panel open or closed): "Name this face…" opens "Who is this?"; naming it puts the plate on the face without the photo blinking or the zoom resetting.
+- [ ] Viewer, right-click Anna's plate: "Not Anna" takes her off; the toast says "Anna taken off this photo." In Anna's view the viewer stays on the photo, and the arrows carry on from where it was.
+- [ ] Viewer, right-click away from any face on a photo with Anna and Ben: the menu offers "Not Anna" and "Not Ben" above Locate. A face only Picasa knows (no detection beneath) offers nothing.
+- [ ] Viewer, zoomed in and panned: right-click a face: the menu is for that face, not one beside it.
+- [ ] With the info panel open, click an unnamed outline: the dialog opens for that face. Zoomed in, clicking an outline does not start a pan. Tab reaches the outlines and their focus ring shows.
+- [ ] With the dialog open over the viewer, type "h", "r", "s" and the arrows in the field: nothing happens behind it. Click the dialog's title (off the field) and press "h", then Escape: the photo is not hidden, and Escape closes only the dialog, not the viewer. Tab never reaches the viewer's controls (the viewer is `inert` in a `display: contents` wrapper - unverified in WebKitGTK and WKWebView).
+- [ ] Closing the dialog over the viewer leaves the viewer's keys working at once (arrows, Escape).
+- [ ] Click Anna's name in the info panel's People list: the viewer closes and Anna's view opens, the grid focused (the arrow keys move the selection). A name on a photo twice (Picasa and photon) is listed once.
