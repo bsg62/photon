@@ -2,6 +2,8 @@
 //! one person give vectors pointing nearly the same way. Like `face_detect`, this knows
 //! nothing about the library, and nothing outside it names `tract`.
 
+mod align;
+
 use crate::{Error, Result};
 use tract_onnx::prelude::*;
 
