@@ -4,13 +4,9 @@
 
 use image::RgbImage;
 
-// Nothing outside the tests calls this module until the embedder aligns faces through it;
-// the allows below go with that caller.
-
 /// Where the model expects the eyes, the nose tip and the mouth corners, in its 112x112
 /// input, as OpenCV's `FaceRecognizerSF` aligns them. The order is YuNet's: image-left eye
 /// first.
-#[allow(dead_code)]
 pub(crate) const REFERENCE: [(f32, f32); 5] = [
     (38.2946, 51.6963),
     (73.5318, 51.5014),
@@ -19,13 +15,11 @@ pub(crate) const REFERENCE: [(f32, f32); 5] = [
     (70.7299, 92.2041),
 ];
 
-#[allow(dead_code)]
 const SIDE: usize = 112;
 
 /// `u = a x - b y + tx`, `v = b x + a y + ty`: a rotation and uniform scale (`a`, `b`)
 /// and a shift, from the picture's pixels to the model's.
 #[derive(Clone, Copy, Debug, PartialEq)]
-#[allow(dead_code)]
 pub(crate) struct Similarity {
     pub a: f32,
     pub b: f32,
@@ -33,8 +27,9 @@ pub(crate) struct Similarity {
     pub ty: f32,
 }
 
-#[allow(dead_code)]
 impl Similarity {
+    /// Only the tests move a point forward; the sampler goes the other way.
+    #[cfg(test)]
     pub fn apply(&self, (x, y): (f32, f32)) -> (f32, f32) {
         (
             self.a * x - self.b * y + self.tx,
@@ -53,8 +48,7 @@ impl Similarity {
 }
 
 /// The least-squares similarity taking `points` to [`REFERENCE`], or `None` when the
-/// points do not span anything (all in one place).
-#[allow(dead_code)]
+/// points do not span anything (all in one place) or are not numbers.
 pub(crate) fn fit(points: &[(f32, f32); 5]) -> Option<Similarity> {
     let mean = |p: &[(f32, f32); 5]| {
         let (sx, sy) = p
@@ -75,18 +69,23 @@ pub(crate) fn fit(points: &[(f32, f32); 5]) -> Option<Similarity> {
         return None;
     }
     let (a, b) = (along / spread, across / spread);
-    Some(Similarity {
+    let fitted = Similarity {
         a,
         b,
         tx: qx - (a * px - b * py),
         ty: qy - (b * px + a * py),
-    })
+    };
+    // `NaN < 1e-6` is false, so a non-finite landmark gets this far; the sampler casts
+    // what it reads through this to integers.
+    let finite = [fitted.a, fitted.b, fitted.tx, fitted.ty]
+        .iter()
+        .all(|n| n.is_finite());
+    finite.then_some(fitted)
 }
 
 /// The model's input: each of its 112x112 pixels looked up in `image` through the inverse
 /// of `to_reference`, bilinearly, black outside the picture. Planar RGB, 0..255, as
 /// OpenCV feeds the model (it swaps its BGR to RGB for this one).
-#[allow(dead_code)]
 pub(crate) fn sample(image: &RgbImage, to_reference: &Similarity) -> Vec<f32> {
     let (w, h) = (image.width() as i64, image.height() as i64);
     let plane = SIDE * SIDE;
@@ -206,5 +205,57 @@ mod tests {
         );
         assert_eq!(planes[10 * 112 + 10], 200.0);
         assert_eq!(planes[100 * 112 + 100], 0.0);
+    }
+
+    /// A shift moves the picture the way the transform says: model pixel u reads picture
+    /// pixel u - tx. Through `apply` instead of `invert` it would read u + tx.
+    #[test]
+    fn a_shift_reads_the_picture_where_the_transform_came_from() {
+        let img = RgbImage::from_fn(200, 200, |x, y| Rgb([x as u8, y as u8, 0]));
+        let planes = sample(
+            &img,
+            &Similarity {
+                a: 1.0,
+                b: 0.0,
+                tx: 5.0,
+                ty: 0.0,
+            },
+        );
+        let at = |c: usize, x: usize, y: usize| planes[c * 112 * 112 + y * 112 + x];
+        assert_eq!((at(0, 20, 9), at(1, 20, 9)), (15.0, 9.0));
+    }
+
+    /// Half a pixel between two neighbours is their mean, and a quarter is weighted
+    /// towards the nearer one.
+    #[test]
+    fn a_fractional_shift_mixes_two_neighbours() {
+        let img = RgbImage::from_fn(200, 200, |x, _| Rgb([(x * 10) as u8, 0, 0]));
+        let at = |tx: f32| {
+            let planes = sample(
+                &img,
+                &Similarity {
+                    a: 1.0,
+                    b: 0.0,
+                    tx,
+                    ty: 0.0,
+                },
+            );
+            planes[20]
+        };
+        // u = 20 reads x = 19.5 (columns 19 and 20: 190 and 200).
+        assert!((at(0.5) - 195.0).abs() < 1e-3, "{}", at(0.5));
+        // u = 20 reads x = 19.75, three quarters of the way from 190 to 200.
+        assert!((at(0.25) - 197.5).abs() < 1e-3, "{}", at(0.25));
+    }
+
+    /// Landmarks that are not numbers have no transform: NaN or infinity would reach the
+    /// sampler's integer casts.
+    #[test]
+    fn landmarks_that_are_not_numbers_have_no_transform() {
+        let mut p = REFERENCE;
+        p[2] = (f32::NAN, 10.0);
+        assert!(fit(&p).is_none());
+        p[2] = (f32::INFINITY, 10.0);
+        assert!(fit(&p).is_none());
     }
 }

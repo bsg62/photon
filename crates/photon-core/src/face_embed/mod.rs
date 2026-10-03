@@ -4,7 +4,9 @@
 
 mod align;
 
+use crate::face_detect::Rect;
 use crate::{Error, Result};
+use image::DynamicImage;
 use tract_onnx::prelude::*;
 
 /// SFace, from OpenCV's model zoo (`models/README.md`).
@@ -35,8 +37,6 @@ type Run = dyn Fn(Tensor) -> TractResult<TVec<TValue>> + Send + Sync;
 /// The loaded model. Parsing and optimising it takes a few tens of milliseconds; a pass
 /// makes one and shares it between its workers.
 pub struct Embedder {
-    // Read from Task 3 of the people plan on; until then nothing calls it.
-    #[allow(dead_code)]
     run: Box<Run>,
 }
 
@@ -59,11 +59,200 @@ impl Embedder {
             run: Box::new(move |input| model.run(tvec!(input.into()))),
         })
     }
+
+    /// The face's vector, or `None` when it is narrower than [`MIN_FACE_PX`] in `image`.
+    pub fn embed(&self, image: &DynamicImage, face: &FaceBox) -> Result<Option<Embedding>> {
+        let (w, h) = (image.width() as f32, image.height() as f32);
+        if ((face.rect.right - face.rect.left) as f32) * w < MIN_FACE_PX {
+            return Ok(None);
+        }
+        let points = face.landmarks.map(|(x, y)| (x * w, y * h));
+        let to_reference = align::fit(&points)
+            .ok_or_else(|| model_error("a face's landmarks are all in one place"))?;
+        let input = align::sample(&image.to_rgb8(), &to_reference);
+        let tensor: Tensor = tract_ndarray::Array4::from_shape_vec((1, 3, SIDE, SIDE), input)
+            .map_err(model_error)?
+            .into();
+        let out = (self.run)(tensor).map_err(model_error)?;
+        let raw: Vec<f32> = out
+            .first()
+            .ok_or_else(|| model_error("no output"))?
+            .to_plain_array_view::<f32>()
+            .map_err(model_error)?
+            .iter()
+            .copied()
+            .collect();
+        if raw.len() != DIM {
+            return Err(model_error(format!(
+                "{} numbers, expected {DIM}",
+                raw.len()
+            )));
+        }
+        let len = raw.iter().map(|x| x * x).sum::<f32>().sqrt();
+        if !len.is_finite() || len == 0.0 {
+            return Err(model_error("a vector that is not a number"));
+        }
+        let mut e = [0f32; DIM];
+        for (slot, x) in e.iter_mut().zip(&raw) {
+            *slot = x / len;
+        }
+        Ok(Some(e))
+    }
+}
+
+/// One face as `detected_faces` stores it: fractions of the picture it was found in.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FaceBox {
+    pub rect: Rect,
+    pub landmarks: [(f32, f32); 5],
+}
+
+/// How alike two vectors point: the cosine, 1 for the same direction. Either may be an
+/// unnormalised sum (a group's centroid); zero length gives 0.
+pub fn similarity(a: &[f32], b: &[f32]) -> f32 {
+    let dot: f32 = a.iter().zip(b).map(|(x, y)| x * y).sum();
+    let (la, lb) = (
+        a.iter().map(|x| x * x).sum::<f32>().sqrt(),
+        b.iter().map(|x| x * x).sum::<f32>().sqrt(),
+    );
+    if la == 0.0 || lb == 0.0 {
+        0.0
+    } else {
+        dot / (la * lb)
+    }
+}
+
+/// 128 little-endian `f32`, the form `detected_faces.embedding` holds.
+pub fn to_blob(e: &Embedding) -> Vec<u8> {
+    e.iter().flat_map(|x| x.to_le_bytes()).collect()
+}
+
+pub fn from_blob(bytes: &[u8]) -> Option<Embedding> {
+    if bytes.len() != DIM * 4 {
+        return None;
+    }
+    let mut e = [0f32; DIM];
+    let (chunks, _) = bytes.as_chunks::<4>();
+    for (slot, chunk) in e.iter_mut().zip(chunks) {
+        *slot = f32::from_le_bytes(*chunk);
+    }
+    Some(e)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use crate::face_detect::{Detector, Rect};
+    use image::DynamicImage;
+    use std::path::Path;
+
+    fn fixture(name: &str) -> DynamicImage {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("testdata/faces")
+            .join(name);
+        image::open(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+    }
+
+    /// The one face in a picture, as the pass would hand it over.
+    fn the_face(detector: &Detector, img: &DynamicImage) -> FaceBox {
+        let faces = detector.detect(img).unwrap();
+        assert_eq!(faces.len(), 1, "{faces:?}");
+        FaceBox {
+            rect: faces[0].rect,
+            landmarks: faces[0].landmarks,
+        }
+    }
+
+    fn vector(embedder: &Embedder, detector: &Detector, img: &DynamicImage) -> Embedding {
+        embedder
+            .embed(img, &the_face(detector, img))
+            .unwrap()
+            .expect("large enough")
+    }
+
+    /// The pipeline is wired right: one person's face, the photo shrunk to half and saved
+    /// again as a JPEG, still points the same way; another person's does not. (Whether
+    /// recognition is good is the spike's evidence, in the spec, not this test's.)
+    #[test]
+    fn the_same_face_matches_and_another_does_not() {
+        let (embedder, detector) = (Embedder::new().unwrap(), Detector::new().unwrap());
+        let portrait = fixture("portrait.jpg");
+        let copy = {
+            let small = portrait.resize(480, 480, image::imageops::FilterType::Triangle);
+            let mut bytes = Vec::new();
+            small
+                .write_to(
+                    &mut std::io::Cursor::new(&mut bytes),
+                    image::ImageFormat::Jpeg,
+                )
+                .unwrap();
+            image::load_from_memory(&bytes).unwrap()
+        };
+        let a = vector(&embedder, &detector, &portrait);
+        let b = vector(&embedder, &detector, &copy);
+        let other = vector(&embedder, &detector, &fixture("other.jpg"));
+        assert!(
+            similarity(&a, &b) > 0.9,
+            "same face: {}",
+            similarity(&a, &b)
+        );
+        assert!(
+            similarity(&a, &other) < 0.363,
+            "two people: {}",
+            similarity(&a, &other)
+        );
+    }
+
+    #[test]
+    fn a_vector_has_unit_length() {
+        let (embedder, detector) = (Embedder::new().unwrap(), Detector::new().unwrap());
+        let a = vector(&embedder, &detector, &fixture("portrait.jpg"));
+        let len = a.iter().map(|x| x * x).sum::<f32>().sqrt();
+        assert!((len - 1.0).abs() < 1e-4, "{len}");
+    }
+
+    /// The floor is measured in pixels of the picture the face is cut from.
+    #[test]
+    fn a_face_under_the_floor_is_not_embedded() {
+        let embedder = Embedder::new().unwrap();
+        let img = DynamicImage::ImageRgb8(image::RgbImage::new(1000, 1000));
+        let at = |width: f64| FaceBox {
+            rect: Rect {
+                left: 0.5,
+                top: 0.5,
+                right: 0.5 + width,
+                bottom: 0.5 + width,
+            },
+            landmarks: [
+                (0.51, 0.51),
+                (0.53, 0.51),
+                (0.52, 0.52),
+                (0.51, 0.53),
+                (0.53, 0.53),
+            ],
+        };
+        assert_eq!(embedder.embed(&img, &at(0.034)).unwrap(), None); // 34 px
+        assert!(embedder.embed(&img, &at(0.036)).unwrap().is_some()); // 36 px
+    }
+
+    #[test]
+    fn similarity_is_the_cosine() {
+        assert!((similarity(&[1.0, 0.0], &[0.0, 1.0])).abs() < 1e-6);
+        assert!((similarity(&[2.0, 0.0], &[3.0, 0.0]) - 1.0).abs() < 1e-6);
+        assert_eq!(similarity(&[0.0, 0.0], &[1.0, 0.0]), 0.0);
+    }
+
+    #[test]
+    fn a_vector_round_trips_through_its_blob() {
+        let mut e = [0f32; DIM];
+        e[0] = 0.25;
+        e[127] = -1.5;
+        let blob = to_blob(&e);
+        assert_eq!(blob.len(), 512);
+        assert_eq!(from_blob(&blob), Some(e));
+        assert_eq!(from_blob(&blob[..511]), None);
+    }
 
     /// The bundled model parses and optimises. This is the test CI runs on Windows and
     /// macOS to show a 39 MB model embedded in the binary builds and loads there.
