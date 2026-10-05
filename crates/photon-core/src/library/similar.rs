@@ -133,8 +133,13 @@ impl Library {
     /// The thumbnail key is here because a hash only nominates a pair: `similar::update`
     /// confirms it against the two thumbnails themselves, and it must read the thumbnail of
     /// the picture the row shows now. `set_percep_hash` only stores a hash against the
-    /// fingerprint and edit it was taken for, and both writers that move either clear the
-    /// hash, so a row with a hash has a key describing the same picture.
+    /// fingerprint and edit it was taken for, and the two writers that change the picture
+    /// a row shows clear the hash: `update_items` for the file, `set_item_edit` for the
+    /// edit. `move_items` changes the key as well, the path being part of it, and keeps the
+    /// hash on purpose: the file is the same file, and its thumbnails are carried to the new
+    /// key or made again from it. So a row with a hash has a key describing the same
+    /// picture. What a moved row can lack for a while is the thumbnail under that key, and
+    /// a thumbnail that cannot be read confirms nothing and is asked for again.
     pub fn percep_hashes(&self) -> Result<Vec<HashedPhoto>> {
         let conn = self.reader()?;
         let mut stmt = conn.prepare_cached(PERCEP_HASHES_SQL)?;

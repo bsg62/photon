@@ -363,11 +363,11 @@ pub fn scan_subtree(
     // photos that every `scan_watched` skips, marks missing and then purges. Only the part
     // below the root is checked: a user who explicitly watches `~/.photos` gets it scanned,
     // exactly as `scan_watched` does.
-    if relative
-        .components()
-        .filter_map(|c| c.as_os_str().to_str())
-        .any(|name| name.starts_with('.'))
-    {
+    //
+    // The same predicate as the walk's, so a recycle bin is refused here as well. That is
+    // the scan a deleted photo causes: the event is in the bin, and walked from here the bin
+    // is where `flush_new` found the photo "moved to" (`passed_over`).
+    if relative.components().any(|c| passed_over(c.as_os_str())) {
         return Ok(ScanReport::default());
     }
 
@@ -721,7 +721,7 @@ fn walk_tree(
             // Only a directory is checked against the excluded folders: a file inside one
             // can only be reached through it, and it was pruned here first. An excluded
             // folder is a directory by definition (`ScanOptions::excluded`).
-            (e.depth() == 0 || !is_hidden(e))
+            (e.depth() == 0 || !passed_over(e.file_name()))
                 && !(e.file_type().is_dir() && excluded.iter().any(|x| x.contains(e.path())))
         });
     for entry in walker {
@@ -1047,6 +1047,9 @@ fn apply_folder_albums(
 /// one exception: the first read of a photo (`picasa_hidden` still NULL) follows a
 /// `hidden=yes` - Picasa hid it, and a user coming from Picasa expects it hidden - but not
 /// a missing line, so a photo the user hid in photon before this pass existed stays hidden.
+/// A hidden photo that was renamed or moved is a first read again (`Library::move_items`
+/// forgets the answer its old name had), and stays hidden by the same half of the rule: the
+/// line it had is under another name, or in the folder it left.
 /// Only rows whose INI answer differs from the recorded one are written, so an agreeing
 /// folder costs nothing, as with stars and faces.
 fn apply_folder_hidden(
@@ -1137,6 +1140,13 @@ fn apply_folder_faces(
 /// the scan that had just kept it - or, already missing from an earlier scan of the folder it
 /// left, purged with everything on it. The same holds for a row a scan of another watched
 /// folder re-pointed after this one read its list.
+///
+/// That is these two writes only. The walk's other writes from the same list,
+/// `update_items` and `update_item_meta`, are still by id alone, and would put a moved row
+/// back at its old path. They are left so because they are made for a file the walk
+/// *found* at the listed path: for the row to have moved meanwhile, it must have been
+/// followed elsewhere after the list was read - by a scan of another watched folder, or by
+/// this walk - and a file must be at its old path again by the time this walk gets there.
 fn finish_mark_purge(
     lib: &Library,
     mut known: HashMap<String, KnownItem>,
@@ -1297,11 +1307,13 @@ fn find_moves(
     // the claims are what keeps a row from being picked twice, and what lets a second file
     // be offered another row that fits it.
     let mut claimed: HashSet<i64> = HashSet::new();
+    // An error is the probe's: it could not read which drives are there. It fails the batch,
+    // and with it the scan, rather than passing for "no row is this file".
     let mut pick = |item: &NewItem, candidates: &[MoveCandidate], claimed: &HashSet<i64>| {
         moved::pick(item, candidates, claimed, |c| {
             probe.gone(lib, c, Path::new(&item.path))
         })
-        .cloned()
+        .map(|row| row.cloned())
     };
 
     // First the files that are their row's file under its own name, so that none of them
@@ -1309,7 +1321,7 @@ fn find_moves(
     let mut looked = Vec::with_capacity(batch.len());
     for item in &batch {
         let candidates = lib.move_candidates(item.size, item.mtime_ms, item.kind)?;
-        let row = pick(item, &candidates, &claimed);
+        let row = pick(item, &candidates, &claimed)?;
         let named = row.as_ref().filter(|row| row.file_name == item.file_name);
         if let Some(row) = named {
             claimed.insert(row.id);
@@ -1326,7 +1338,7 @@ fn find_moves(
         // time - which is every renamed file but the contested ones.
         let contested = !named && candidates.iter().any(|c| claimed.contains(&c.id));
         let row = if contested {
-            pick(&item, &candidates, &claimed)
+            pick(&item, &candidates, &claimed)?
         } else {
             first
         };
@@ -1384,6 +1396,10 @@ fn apply_moves(
             unmoved.push(item);
             continue;
         }
+        // The only record of which row went where. A row followed to the wrong file shows
+        // as nothing but a photo with another photo's albums and names, so the pair has to
+        // be recoverable from a user's log; the count is in the engine's end-of-scan line.
+        tracing::debug!(id = row.id, from = %row.path, to = %item.path, "followed a moved photo");
         // `Item::thumb_key()` before and after: the row's edit over the fingerprint of each
         // path. The size and time are the file's, which are the row's - that is how it was
         // found.
@@ -1421,9 +1437,18 @@ fn apply_moves(
     //
     // And this walk made the new folder's row. A folder that was there already is one that
     // photos were moved *into*: one photo out of a hidden, named folder whose directory was
-    // then deleted hid every photo its new folder held, under the old folder's name. The
-    // cost is a renamed folder whose first scan is cancelled before any of its files is
-    // flushed: its row is there by the next scan, and the name and flag are not handed on.
+    // then deleted hid every photo its new folder held, under the old folder's name.
+    //
+    // The cost is every folder whose row an earlier scan made before the old directory was
+    // gone: its name and Hide folder flag are not handed on. The commonest is not exotic.
+    // "New folder" in the file manager, which the watcher scans two seconds later; then the
+    // photos dragged in and the old folder deleted. The photos keep their own hidden flag,
+    // but the folder has no name and is not hidden, so a photo added to it later is visible.
+    // The others: a folder moved file by file between volumes with the watcher scanning
+    // mid-move, a subtree scan of a child that seeded the parent's row (`seed_ancestors`),
+    // a walk that errored after `ensure`, and a first scan cancelled before any of the
+    // folder's files was flushed. Accepted knowingly: handing on to any folder with neither
+    // a name nor a flag is the merge above.
     //
     // Before the caller inserts the batch's new files, so in a hidden folder they arrive
     // hidden as any new row does. (Inserted first they would be hidden all the same, by
@@ -1459,11 +1484,41 @@ fn flush_changed(
     Ok(())
 }
 
-fn is_hidden(entry: &DirEntry) -> bool {
-    entry
-        .file_name()
-        .to_str()
-        .is_some_and(|name| name.starts_with('.'))
+/// The directories that are a drive's or a network share's recycle bin, by the names their
+/// systems give them: Windows' on every drive (`RECYCLER` was XP's), Synology's and QNAP's on
+/// every share. macOS's `.Trashes` and a Linux desktop's `.Trash-<uid>` are dot-names, and
+/// passed over as those.
+const RECYCLE_BINS: [&str; 4] = ["$RECYCLE.BIN", "RECYCLER", "#recycle", "@Recycle"];
+
+/// Whether the scan passes over an entry of this name, and does not enter it when it is a
+/// directory: a dot-name, or a recycle bin.
+///
+/// One predicate for the two places that ask: `walk_tree`'s filter, and `scan_subtree`'s
+/// check of the directory the watcher handed it. Both exempt the watched root itself, so a
+/// user who watches `~/.photos` gets it scanned.
+///
+/// A bin is passed over because of what deleting does where the bin lies inside the
+/// watched root - a drive's root watched whole, or a NAS share. Explorer, and an SMB server
+/// with a bin, delete by renaming the file into it, on its own volume and with its size and
+/// modification time as they were. That is a moved photo by every rule `moved::pick` has, so
+/// the row was re-pointed into the bin and the deleted photo stayed in its albums, its
+/// person's view and the grid until the bin was emptied. (Before rows were followed it was
+/// wrong another way: the photo left its albums and came back as a new one.)
+///
+/// The name is matched whole, without ASCII case (a share's may be spelled either way, and
+/// the volume may not fold it), and at any depth, since a watched root can lie above several
+/// shares. A folder whose name merely contains one - `my #recycle photos` - is a folder.
+///
+/// A photo an earlier photon indexed inside a bin is no longer found, so the next scan of
+/// the folder above it marks it missing and the one after purges it. That is intended: it
+/// was never a photo the user kept.
+fn passed_over(name: &std::ffi::OsStr) -> bool {
+    name.to_str().is_some_and(|name| {
+        name.starts_with('.')
+            || RECYCLE_BINS
+                .iter()
+                .any(|bin| name.eq_ignore_ascii_case(bin))
+    })
 }
 
 pub(crate) fn mtime_ms(md: &Metadata) -> i64 {
@@ -3185,6 +3240,174 @@ mod tests {
         assert!(lib.known_items(watched.id).unwrap().is_empty());
     }
 
+    /// A drive's or a share's recycle bin is not part of the library, under each name a
+    /// system gives it, in any case and at any depth. A folder whose name only contains one
+    /// of them is a folder like any other.
+    #[test]
+    fn a_recycle_bin_is_not_walked() {
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        let img = jpeg_bytes(8, 8);
+        write_file(&root, "a.jpg", &img);
+        write_file(&root, "$RECYCLE.BIN/S-1-5-21/$R0A1B2C.jpg", &img);
+        write_file(&root, "#recycle/b.jpg", &img);
+        write_file(&root, "share/@Recycle/c.jpg", &img);
+        write_file(&root, "RECYCLER/d.jpg", &img);
+        // Another parent than the bins above, so the spelling is this directory's own on a
+        // filesystem that folds case as well.
+        write_file(&root, "share/#Recycle/e.jpg", &img);
+        write_file(&root, "other/$Recycle.Bin/f.jpg", &img);
+        write_file(&root, "my #recycle photos/g.jpg", &img);
+        write_file(&root, "RECYCLER 2003/h.jpg", &img);
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
+
+        let report = scan(&lib, &watched, 1);
+
+        assert_eq!(report.added, 3);
+        let mut names: Vec<String> = lib.folders().unwrap().into_iter().map(|f| f.name).collect();
+        names.sort();
+        assert_eq!(
+            names,
+            [
+                "RECYCLER 2003",
+                "my #recycle photos",
+                "other",
+                "photos",
+                "share"
+            ]
+        );
+    }
+
+    /// The watched root is exempt, as it is from the dot-name rule: what the user pointed
+    /// photon at is scanned, whatever it is called.
+    #[test]
+    fn a_watched_root_named_like_a_recycle_bin_is_scanned() {
+        let (dir, lib) = temp_library();
+        let root = dir.path().join("@Recycle");
+        fs::create_dir_all(&root).unwrap();
+        let root = paths::canonicalize(root).unwrap();
+        write_file(&root, "a.jpg", &jpeg_bytes(8, 8));
+        write_file(&root, "sub/b.jpg", &jpeg_bytes(8, 8));
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
+
+        assert_eq!(scan(&lib, &watched, 1).added, 2);
+        write_file(&root, "sub/c.jpg", &jpeg_bytes(8, 8));
+        assert_eq!(scan_sub(&lib, &watched, &root.join("sub"), 2).added, 1);
+    }
+
+    /// The watcher hands `scan_subtree` the directory an event came from, and deleting a
+    /// photo is an event in the bin. `walk_tree` exempts its own depth 0, so the bin needs
+    /// the check the dot-directories have - for the bin itself and for anything inside it.
+    #[test]
+    fn subtree_scan_of_a_recycle_bin_indexes_nothing() {
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        write_file(
+            &root,
+            "$RECYCLE.BIN/S-1-5-21/$R0A1B2C.jpg",
+            &jpeg_bytes(8, 8),
+        );
+        write_file(&root, "share/#recycle/b.jpg", &jpeg_bytes(8, 8));
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
+
+        let bin = root.join("$RECYCLE.BIN");
+        for (scan_id, dir) in [
+            bin.clone(),
+            bin.join("S-1-5-21"),
+            root.join("share").join("#recycle"),
+        ]
+        .iter()
+        .enumerate()
+        {
+            assert_eq!(
+                scan_sub(&lib, &watched, dir, scan_id as i64 + 1),
+                ScanReport::default(),
+                "{dir:?}"
+            );
+        }
+        assert!(lib.known_items(watched.id).unwrap().is_empty());
+        // The bin's parent is a folder like any other, and its walk still passes the bin by.
+        let report = scan_sub(&lib, &watched, &root.join("share"), 9);
+        assert_eq!(report.added, 0);
+        assert!(folder(&lib, "#recycle").is_none());
+    }
+
+    /// Deleting a photo in Explorer, or over SMB on a NAS, renames it into the bin of its
+    /// own volume, with its size and modification time intact: to the rule that follows a
+    /// moved photo, a move like any other. Walked, the bin was where the photo went, and the
+    /// deleted photo stayed in its albums and its person's view until the bin was emptied.
+    #[test]
+    fn a_photo_deleted_into_a_recycle_bin_leaves_the_library() {
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        let a = write_file(&root, "x/a.jpg", &jpeg_bytes(8, 6));
+        // Without it the root holds no photo once this one is deleted, which reads as an
+        // unmounted volume.
+        write_file(&root, "keep.jpg", &jpeg_bytes(8, 7));
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
+        scan(&lib, &watched, 1);
+        let id = id_at(&lib, &watched, &a);
+        decorate(&lib, id);
+
+        let bin = root.join("$RECYCLE.BIN").join("S-1-5-21");
+        fs::create_dir_all(&bin).unwrap();
+        fs::rename(&a, bin.join("$R0A1B2C.jpg")).unwrap();
+        // The watcher reports both directories. The bin's first: the order in which the row
+        // is still live when the "new" file is met.
+        assert_eq!(scan_sub(&lib, &watched, &bin, 2), ScanReport::default());
+        let report = scan_sub(&lib, &watched, &root.join("x"), 3);
+        assert_eq!(
+            (report.moved, report.added, report.marked_missing),
+            (0, 0, 1)
+        );
+        let row = lib.item(id).unwrap().unwrap();
+        assert_eq!(row.path, key(&a));
+        assert!(row.missing_since.is_some());
+
+        let report = scan(&lib, &watched, 4);
+        assert_eq!((report.moved, report.added, report.purged), (0, 0, 1));
+        assert!(lib.item(id).unwrap().is_none());
+        assert_eq!(lib.known_items(watched.id).unwrap().len(), 1);
+        assert!(folder(&lib, "$RECYCLE.BIN").is_none());
+    }
+
+    /// A library an earlier photon built can hold rows inside a bin, which that photon
+    /// walked. They are not found any more, so they go the way of any file that is not:
+    /// missing at the next scan and purged by the one after, their folder rows with them.
+    #[test]
+    fn a_photo_indexed_inside_a_recycle_bin_by_an_earlier_photon_is_purged() {
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        write_file(&root, "keep.jpg", &jpeg_bytes(8, 7));
+        let binned = write_file(&root, "#recycle/old.jpg", &jpeg_bytes(8, 6));
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
+        // The rows as that photon left them, written here because no scan makes them any
+        // more: the file's own size and time, so a walk that reached it would find it
+        // unchanged.
+        let md = fs::metadata(&binned).unwrap();
+        let top = lib.upsert_folder(watched.id, None, &key(&root), 1).unwrap();
+        let bin = lib
+            .upsert_folder(watched.id, Some(top), &key(&root.join("#recycle")), 1)
+            .unwrap();
+        let id = lib
+            .insert_items(&[NewItem {
+                size: md.len() as i64,
+                mtime_ms: mtime_ms(&md),
+                ..crate::testutil::new_item(bin, &key(&binned), 1)
+            }])
+            .unwrap()[0];
+
+        let report = scan(&lib, &watched, 2);
+        assert_eq!(
+            (report.added, report.unchanged, report.marked_missing),
+            (1, 0, 1)
+        );
+        let report = scan(&lib, &watched, 3);
+        assert_eq!(report.purged, 1);
+        assert!(lib.item(id).unwrap().is_none());
+        assert!(folder(&lib, "#recycle").is_none());
+    }
+
     #[test]
     fn subtree_scan_of_a_vanished_watched_root_reports_offline() {
         let (dir, lib) = temp_library();
@@ -3618,6 +3841,49 @@ mod tests {
         assert!(lib.item(b).unwrap().unwrap().missing_since.is_some());
     }
 
+    /// `n` byte-identical files with one modification time, indexed, and then the first of
+    /// them moved to another folder: the report of the scan that finds it there.
+    fn one_of_identical_files_moved(n: usize) -> ScanReport {
+        let bytes = jpeg_bytes(8, 6);
+        let at = UNIX_EPOCH + Duration::from_secs(1_718_454_645);
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        for i in 0..n {
+            set_mtime(
+                &write_file(&root, &format!("frames/{i:02}.jpg"), &bytes),
+                at,
+            );
+        }
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
+        assert_eq!(scan(&lib, &watched, 1).added, n as u64);
+
+        fs::create_dir(root.join("picked")).unwrap();
+        fs::rename(
+            root.join("frames").join("00.jpg"),
+            root.join("picked").join("00.jpg"),
+        )
+        .unwrap();
+        scan(&lib, &watched, 2)
+    }
+
+    /// Rows that cannot be told apart by what the library holds each cost a stat to rule
+    /// out, and in a cluster of them every file asks about every other. Up to the cap
+    /// (`Library::move_candidates`) the one whose file is gone is still found; past it the
+    /// file is a new photo, and the row it was is marked missing.
+    #[test]
+    fn a_move_is_followed_among_identical_rows_only_up_to_the_cap() {
+        let report = one_of_identical_files_moved(32);
+        assert_eq!(
+            (report.moved, report.added, report.marked_missing),
+            (1, 0, 0)
+        );
+        let report = one_of_identical_files_moved(33);
+        assert_eq!(
+            (report.moved, report.added, report.marked_missing),
+            (0, 1, 1)
+        );
+    }
+
     /// A row is claimed by one file of a batch, and the next file is offered what is left.
     /// Both new files are named `a.jpg`, so without the claim both pick `a.jpg`'s row: the
     /// second is refused by the write and inserted as new, and `b.jpg`'s row is left to be
@@ -3955,6 +4221,53 @@ mod tests {
         assert!(lib.watched_folders().unwrap()[0].online);
     }
 
+    /// Whether a row's drive is there is read from the library, once per walk, and that
+    /// read can fail. Taken for "no drive is there", every renamed file of the walk was a new
+    /// photo, and the same scan went on to mark the rows they had been as missing. The scan
+    /// fails instead, before it has decided anything, and the next one follows the rename.
+    #[test]
+    fn a_scan_that_cannot_ask_which_drives_are_there_fails_before_it_calls_a_file_new() {
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        let a = write_file(&root, "a.jpg", &jpeg_bytes(8, 6));
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
+        scan(&lib, &watched, 1);
+        let id = id_at(&lib, &watched, &a);
+        let album = decorate(&lib, id);
+        let b = root.join("b.jpg");
+        fs::rename(&a, &b).unwrap();
+
+        // The read refused, as a corrupt page refuses it. From a connection of the test's
+        // own: nothing in photon fails that read on request.
+        let conn = rusqlite::Connection::open(lib.path()).unwrap();
+        conn.execute_batch("ALTER TABLE watched_folders RENAME TO watched_elsewhere")
+            .unwrap();
+        let scanned = scan_watched(
+            &lib,
+            &watched,
+            2,
+            &ScanOptions::default(),
+            &mut progress_only(|_| {}),
+        );
+        conn.execute_batch("ALTER TABLE watched_elsewhere RENAME TO watched_folders")
+            .unwrap();
+
+        assert!(scanned.is_err(), "the fixture did not fail the read");
+        assert_followed(&lib, id, album, &a);
+        assert_eq!(
+            lib.known_items(watched.id).unwrap().len(),
+            1,
+            "the renamed file was given a row of its own"
+        );
+
+        let report = scan(&lib, &watched, 3);
+        assert_eq!(
+            (report.moved, report.added, report.marked_missing),
+            (1, 0, 0)
+        );
+        assert_followed(&lib, id, album, &b);
+    }
+
     /// What `apply_moves` takes for "a folder this walk made": a directory there was no row
     /// at the path of. A row that only changed parent was there before.
     #[test]
@@ -4124,6 +4437,131 @@ mod tests {
         let item = lib.item(id).unwrap().unwrap();
         assert_eq!(item.path, key(&root.join("z").join("a.jpg")));
         assert!(is_starred(item.rating));
+    }
+
+    /// `x/a.jpg`, hidden by a `hidden=yes` line in `x`'s INI and by nothing else, with a
+    /// second photo beside it so that the folder outlives a move of the first.
+    fn hidden_by_picasa(lib: &Library, root: &Path) -> (WatchedFolder, PathBuf, i64) {
+        let a = write_file(root, "x/a.jpg", &jpeg_bytes(8, 6));
+        write_file(root, "x/keep.jpg", &jpeg_bytes(8, 7));
+        write_file(root, "x/.picasa.ini", b"[a.jpg]\nhidden=yes\n");
+        let watched = lib.add_watched_folder(root, &[]).unwrap();
+        assert_eq!(scan(lib, &watched, 1).rehidden, 1);
+        let id = id_at(lib, &watched, &a);
+        assert!(is_hidden(lib, id));
+        (watched, a, id)
+    }
+
+    /// The INI's last answer for a row, as the hidden pass reads it.
+    fn picasa_said(lib: &Library, id: i64) -> Option<bool> {
+        let folder = lib.item(id).unwrap().unwrap().folder_id;
+        let items = lib.folder_item_names(folder).unwrap();
+        items.iter().find(|i| i.id == id).unwrap().picasa_hidden
+    }
+
+    /// The INI lists a photo under its file name. Renamed, the photo has no line there, and
+    /// with the old name's "yes" still on its row the hidden pass read that as Picasa having
+    /// un-hidden it: the photo came back visible, by a rename.
+    #[test]
+    fn a_photo_hidden_by_picasa_stays_hidden_when_it_is_renamed() {
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        let (watched, a, id) = hidden_by_picasa(&lib, &root);
+
+        let b = root.join("x").join("b.jpg");
+        fs::rename(&a, &b).unwrap();
+        // The watcher's scan, of the one directory.
+        let report = scan_sub(&lib, &watched, &root.join("x"), 2);
+
+        assert_eq!((report.moved, report.rehidden), (1, 0));
+        assert_eq!(lib.item(id).unwrap().unwrap().path, key(&b));
+        assert!(is_hidden(&lib, id), "a rename un-hid the photo");
+        // The new name's answer is on record, and the next scan agrees with it.
+        assert_eq!(picasa_said(&lib, id), Some(false));
+        assert_eq!(scan(&lib, &watched, 3).rehidden, 0);
+        assert!(is_hidden(&lib, id));
+    }
+
+    /// The same for a photo moved out of the folder alone: it has left its INI behind, and
+    /// the folder it is in now says nothing about it.
+    #[test]
+    fn a_photo_hidden_by_picasa_stays_hidden_when_it_is_moved_alone() {
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        let (watched, a, id) = hidden_by_picasa(&lib, &root);
+
+        let new = root.join("y").join("a.jpg");
+        fs::create_dir(root.join("y")).unwrap();
+        fs::rename(&a, &new).unwrap();
+        let report = scan(&lib, &watched, 2);
+
+        assert_eq!((report.moved, report.rehidden), (1, 0));
+        assert_eq!(lib.item(id).unwrap().unwrap().path, key(&new));
+        assert!(is_hidden(&lib, id), "a move un-hid the photo");
+        assert_eq!(scan(&lib, &watched, 3).rehidden, 0);
+        assert!(is_hidden(&lib, id));
+    }
+
+    /// Forgetting the INI's answer has to stop at hidden photos. A photo the user un-hid in
+    /// photon keeps the "yes" its INI still says (photon never writes `hidden=`), and that
+    /// record is all that holds the unhide: forgotten, the renamed folder's INI was a first
+    /// read of a `hidden=yes`, which is followed, and the photo was hidden again.
+    #[test]
+    fn a_photo_unhidden_in_photon_stays_visible_when_its_folder_is_renamed_with_its_ini() {
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        let (watched, _, id) = hidden_by_picasa(&lib, &root);
+        lib.set_hidden(&[id], false).unwrap();
+
+        fs::rename(root.join("x"), root.join("z")).unwrap();
+        let report = scan(&lib, &watched, 2);
+
+        assert_eq!((report.moved, report.rehidden), (2, 0));
+        let item = lib.item(id).unwrap().unwrap();
+        assert_eq!(item.path, key(&root.join("z").join("a.jpg")));
+        assert!(!item.hidden, "a folder rename undid the user's unhide");
+        assert_eq!(picasa_said(&lib, id), Some(true));
+    }
+
+    /// A photo Picasa hid, moved with its folder and its INI: the same line is read again
+    /// under the new path, and nothing changes.
+    #[test]
+    fn a_photo_hidden_by_picasa_stays_hidden_when_its_folder_is_renamed_with_its_ini() {
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        let (watched, _, id) = hidden_by_picasa(&lib, &root);
+
+        fs::rename(root.join("x"), root.join("z")).unwrap();
+        let report = scan(&lib, &watched, 2);
+
+        assert_eq!((report.moved, report.rehidden), (2, 0));
+        let item = lib.item(id).unwrap().unwrap();
+        assert_eq!(item.path, key(&root.join("z").join("a.jpg")));
+        assert!(item.hidden, "the photo came back visible");
+        assert_eq!(picasa_said(&lib, id), Some(true));
+    }
+
+    /// A hidden folder hides what arrives in it, and the hidden pass must not take that back.
+    /// The photo here is visible when it moves (un-hidden in photon, its INI still saying
+    /// yes) and is hidden by the folder's flag in the move's own write; with the old "yes"
+    /// kept, the folder's missing line read as Picasa un-hiding it, in a folder the user hid.
+    #[test]
+    fn a_photo_moved_into_a_hidden_folder_is_not_unhidden_by_the_ini_it_left() {
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        write_file(&root, "put-away/own.jpg", &jpeg_bytes(9, 6));
+        let (watched, a, id) = hidden_by_picasa(&lib, &root);
+        lib.set_hidden(&[id], false).unwrap();
+        lib.set_folder_hidden(folder(&lib, "put-away").unwrap().id, true)
+            .unwrap();
+
+        let new = root.join("put-away").join("a.jpg");
+        fs::rename(&a, &new).unwrap();
+        let report = scan(&lib, &watched, 2);
+
+        assert_eq!((report.moved, report.rehidden), (1, 0));
+        assert_eq!(lib.item(id).unwrap().unwrap().path, key(&new));
+        assert!(is_hidden(&lib, id), "visible in a folder the user hid");
     }
 
     /// What a scan told its sink about moved and indexed rows, in order.

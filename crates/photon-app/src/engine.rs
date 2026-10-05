@@ -2587,7 +2587,28 @@ impl Engine {
         }
         let last = sink.last;
         let cancelled = match &result {
-            Ok(report) => report.cancelled,
+            Ok(report) => {
+                // One line for a scan that changed rows, with what it changed. `moved` is
+                // why it is here: a photo followed to the wrong file shows as nothing but a
+                // photo carrying another's albums and names, and this count - with the row
+                // by row lines `apply_moves` writes at debug level - is what a user's log
+                // has to say about it. Not for a scan that touched nothing: an unplugged
+                // drive is polled every 30 seconds, and the watcher rescans directories
+                // nothing changed in.
+                if report.touched_rows() {
+                    tracing::info!(
+                        watched_id = watched.id,
+                        subtree = subtree.is_some(),
+                        added = report.added,
+                        changed = report.changed,
+                        moved = report.moved,
+                        marked_missing = report.marked_missing,
+                        purged = report.purged,
+                        "scan finished"
+                    );
+                }
+                report.cancelled
+            }
             Err(err) => {
                 tracing::warn!(watched_id = watched.id, %err, "scan failed");
                 false
@@ -4491,10 +4512,14 @@ mod tests {
         std::fs::rename(f.photos.join("a/one.jpg"), f.photos.join("a/two.jpg")).unwrap();
         assert!(f.engine.start_scan(watched));
         f.engine.wait_for_scans();
+        // The move left the row pending under its new key. The worker has to find the
+        // carried files there and say so, or the photo stays a placeholder in the grid.
+        f.engine.thumbs.wait_idle();
 
         // Nothing but the carry-over removes a file from the old key, whatever the worker
         // does with the row meanwhile; and a render would not leave the old key behind.
         let after = f.engine.lib.item(id).unwrap().unwrap();
+        assert_eq!(after.thumb_state, ThumbState::Ready);
         let key_after = after.thumb_key();
         assert_ne!(key_after, key_before);
         assert!(f.engine.cache.is_complete(key_after));

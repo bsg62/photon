@@ -481,9 +481,10 @@ mod tests {
         assert!(lib.thumb_gc_due(1_000, WEEK).unwrap().is_some());
     }
 
-    /// Each of the four writes that can orphan a thumbnail makes the next collection due,
+    /// Each of the six writes that can orphan a thumbnail makes the next collection due,
     /// and nothing else does: a collection with nothing to find is the walk this exists to
-    /// avoid.
+    /// avoid. The six are the purge by id and the scanner's by path, the replace, the edit,
+    /// the move and the removal of a watched folder.
     #[test]
     fn gc_is_due_again_only_after_a_write_that_can_orphan_a_thumbnail() {
         let (_dir, lib) = temp_library();
@@ -511,6 +512,21 @@ mod tests {
 
         lib.purge_items(&[ids[0]]).unwrap();
         assert!(lib.thumb_gc_due(1_000, WEEK).unwrap().is_some(), "purge");
+        settle(&lib);
+
+        // The scanner's purge, of a row still at the path its walk listed.
+        let listed = lib
+            .insert_items(&[new_item(folder, "/p/listed.jpg", 3)])
+            .unwrap()[0];
+        assert_eq!(lib.thumb_gc_due(1_000, WEEK).unwrap(), None, "an insert");
+        assert_eq!(
+            lib.purge_at(&[(listed, "/p/listed.jpg".into())]).unwrap(),
+            1
+        );
+        assert!(
+            lib.thumb_gc_due(1_000, WEEK).unwrap().is_some(),
+            "the purge by path"
+        );
         settle(&lib);
 
         lib.update_items(&[(ids[1], new_item(folder, "/p/b.jpg", 2))])

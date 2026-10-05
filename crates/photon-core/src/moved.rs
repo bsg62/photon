@@ -10,6 +10,7 @@ use std::fs;
 use std::io;
 use std::path::Path;
 
+use crate::Result;
 use crate::library::{Library, MoveCandidate, NewItem};
 use crate::metadata::EXIF_VERSION;
 use crate::paths;
@@ -17,23 +18,31 @@ use crate::paths;
 /// Which of `candidates` the new file `item` is the moved file of, by the spec's rules 1-5,
 /// or `None`. `gone` answers rules 2-4 for one candidate: its file is gone (or is this very
 /// file) and its drive is there. `claimed` holds rows another file of this batch took.
-pub(crate) fn pick<'c>(
+///
+/// An answer `gone` cannot give is this function's error, and ends the asking. It is not a
+/// "no": a candidate refused for want of an answer leaves the file to be inserted as new and
+/// its row to be marked missing, which is the loss this whole rule exists to prevent.
+pub(crate) fn pick<'c, E>(
     item: &NewItem,
     candidates: &'c [MoveCandidate],
     claimed: &HashSet<i64>,
-    mut gone: impl FnMut(&MoveCandidate) -> bool,
-) -> Option<&'c MoveCandidate> {
-    // `gone` is last: it is a syscall, possibly on a network share, so it is asked only about
-    // rows that could be the file.
-    let fits: Vec<&MoveCandidate> = candidates
+    mut gone: impl FnMut(&MoveCandidate) -> std::result::Result<bool, E>,
+) -> std::result::Result<Option<&'c MoveCandidate>, E> {
+    let could_be = candidates
         .iter()
         .filter(|c| !claimed.contains(&c.id))
         .filter(|c| c.width == item.width && c.height == item.height)
         // An older reader may have dated the photo differently, so its date proves nothing.
-        .filter(|c| c.exif_version < EXIF_VERSION || c.taken_at == item.taken_at)
-        .filter(|c| gone(c))
-        .collect();
-    match fits.as_slice() {
+        .filter(|c| c.exif_version < EXIF_VERSION || c.taken_at == item.taken_at);
+    // `gone` is last: it is a syscall, possibly on a network share, so it is asked only about
+    // rows that could be the file.
+    let mut fits: Vec<&MoveCandidate> = Vec::new();
+    for candidate in could_be {
+        if gone(candidate)? {
+            fits.push(candidate);
+        }
+    }
+    Ok(match fits.as_slice() {
         [only] => Some(*only),
         [] => None,
         several => {
@@ -45,7 +54,7 @@ pub(crate) fn pick<'c>(
                 _ => None,
             }
         }
-    }
+    })
 }
 
 /// The filesystem's answers to rules 2-4, with each watched folder's "is its drive there"
@@ -66,12 +75,19 @@ impl Probe {
     }
 
     /// Rules 2-4 for `candidate` against the new file at `new_path`.
+    ///
+    /// An error is the read of the watched folders failing, and it is an error rather than
+    /// "no drive is there" on purpose. That answer made every renamed file of the walk a new
+    /// photo and left the rows they had been for the same scan to mark missing, with nothing
+    /// logged: the lossy direction, taken silently. Returned, it fails the scan before
+    /// `finish_mark_purge`, which loses nothing. Nor is a failed read kept, as an answer is:
+    /// the next question reads again.
     pub(crate) fn gone(
         &mut self,
         lib: &Library,
         candidate: &MoveCandidate,
         new_path: &Path,
-    ) -> bool {
+    ) -> Result<bool> {
         // The root is asked first: an unplugged drive answers NotFound for every file on it,
         // which would read as every photo moved. (Stat-first and refuse-after answer the same;
         // asking the root first also spares a stat per file on a drive that is not there.)
@@ -81,23 +97,28 @@ impl Probe {
         // offline, and believed, every file renamed while the drive was away came in as new
         // and its row was purged. That the walk is producing files from the root is the
         // evidence the flag is waiting for; the root must still be there by its own listing.
-        let walked = self.walked;
-        let live = self.live.get_or_insert_with(|| {
-            lib.watched_folders()
-                .map(|all| {
-                    all.into_iter()
+        let live = match &mut self.live {
+            Some(live) => live,
+            None => {
+                let walked = self.walked;
+                let roots = lib.watched_folders()?;
+                self.live.insert(
+                    roots
+                        .into_iter()
                         .map(|w| {
                             let flagged = w.online || w.id == walked;
                             (w.id, flagged && root_is_there(Path::new(&w.path)))
                         })
-                        .collect()
-                })
-                .unwrap_or_default()
-        });
+                        .collect(),
+                )
+            }
+        };
+        // A watched folder that is not listed was removed after the candidate was read. That
+        // is a state, not a failure: its rows went with it, and the file is a new photo.
         if !live.get(&candidate.watched_id).copied().unwrap_or(false) {
-            return false;
+            return Ok(false);
         }
-        vacated(Path::new(&candidate.path), new_path)
+        Ok(vacated(Path::new(&candidate.path), new_path))
     }
 }
 
@@ -139,6 +160,7 @@ mod tests {
     use super::*;
     use crate::edit::Edit;
     use crate::testutil::{new_item, seed_folder, temp_library, watch, write_file};
+    use std::convert::Infallible;
     use std::path::PathBuf;
 
     fn candidate(id: i64, path: &str) -> MoveCandidate {
@@ -168,7 +190,9 @@ mod tests {
 
     fn pick_ids(cands: &[MoveCandidate], claimed: &[i64], gone: bool) -> Option<i64> {
         let claimed: HashSet<i64> = claimed.iter().copied().collect();
-        pick(&item(), cands, &claimed, |_| gone).map(|c| c.id)
+        pick(&item(), cands, &claimed, |_| Ok::<_, Infallible>(gone))
+            .unwrap()
+            .map(|c| c.id)
     }
 
     #[test]
@@ -230,9 +254,57 @@ mod tests {
         let mut asked = Vec::new();
         pick(&item(), &cands, &claimed, |c| {
             asked.push(c.id);
-            true
-        });
+            Ok::<_, Infallible>(true)
+        })
+        .unwrap();
         assert_eq!(asked, vec![1]);
+    }
+
+    /// "Cannot tell" from the closure is not "no": refused for want of an answer, the row
+    /// is one the scan goes on to mark missing while its file is inserted as new.
+    #[test]
+    fn an_answer_that_cannot_be_given_is_an_error_and_ends_the_asking() {
+        let cands = [candidate(1, "/p/a.jpg"), candidate(2, "/p/b.jpg")];
+        let mut asked = 0;
+        let picked = pick(&item(), &cands, &HashSet::new(), |_| {
+            asked += 1;
+            Err::<bool, _>("unreadable")
+        });
+        assert_eq!(picked, Err("unreadable"));
+        assert_eq!(asked, 1);
+    }
+
+    /// Past the lookup's cap a cluster of identical rows is no candidate at all, so nothing
+    /// is asked of the filesystem about any of them - which is the point of the cap: each
+    /// question is a stat, and every file of the cluster would ask it of every other.
+    #[test]
+    fn a_cluster_of_identical_rows_past_the_cap_costs_no_question() {
+        let (_db, lib) = temp_library();
+        let (_, folder) = seed_folder(&lib, Path::new("/p"));
+        let rows = |n: std::ops::Range<usize>| -> Vec<NewItem> {
+            n.map(|i| new_item(folder, &format!("/p/{i}.jpg"), 5))
+                .collect()
+        };
+        let first = lib.insert_items(&rows(0..32)).unwrap()[0];
+        // Asks which row the new file is, with only `first`'s file gone, and counts the
+        // questions.
+        let ask = |lib: &Library| {
+            let candidates = lib
+                .move_candidates(item().size, item().mtime_ms, item().kind)
+                .unwrap();
+            let mut asked = 0;
+            let picked = pick(&item(), &candidates, &HashSet::new(), |c| {
+                asked += 1;
+                Ok::<_, Infallible>(c.id == first)
+            })
+            .unwrap()
+            .map(|c| c.id);
+            (picked, asked)
+        };
+
+        assert_eq!(ask(&lib), (Some(first), 32));
+        lib.insert_items(&rows(32..33)).unwrap();
+        assert_eq!(ask(&lib), (None, 0));
     }
 
     #[test]
@@ -296,19 +368,23 @@ mod tests {
         let r = rooted("old.jpg");
         let walked = r.row.watched_id;
         let new_path = r.root.join("elsewhere").join("new.jpg");
-        assert!(Probe::new(walked).gone(&r.lib, &r.row, &new_path));
+        assert!(Probe::new(walked).gone(&r.lib, &r.row, &new_path).unwrap());
 
         // A candidate whose file exists is not gone.
         let kept = r.root.join("kept.jpg");
         let present = candidate_in(&r.row, kept.clone());
-        assert!(!Probe::new(walked).gone(&r.lib, &present, &new_path));
+        assert!(
+            !Probe::new(walked)
+                .gone(&r.lib, &present, &new_path)
+                .unwrap()
+        );
 
         // Rule 3: the old path opens the new file itself.
-        assert!(Probe::new(walked).gone(&r.lib, &present, &kept));
+        assert!(Probe::new(walked).gone(&r.lib, &present, &kept).unwrap());
 
         // An emptied root is an unmounted volume's mount point, not a root of moved photos.
         fs::remove_file(&kept).unwrap();
-        assert!(!Probe::new(walked).gone(&r.lib, &r.row, &new_path));
+        assert!(!Probe::new(walked).gone(&r.lib, &r.row, &new_path).unwrap());
     }
 
     /// The flag is written when a scan ends, so through the whole walk that brings a drive
@@ -324,16 +400,24 @@ mod tests {
 
         // To a walk of another watched folder it is an unplugged drive, whose files all
         // answer "no such file".
-        assert!(!Probe::new(elsewhere).gone(&r.lib, &r.row, &new_path));
-        assert!(Probe::new(walked).gone(&r.lib, &r.row, &new_path));
+        assert!(
+            !Probe::new(elsewhere)
+                .gone(&r.lib, &r.row, &new_path)
+                .unwrap()
+        );
+        assert!(Probe::new(walked).gone(&r.lib, &r.row, &new_path).unwrap());
 
         r.lib.set_watched_online(walked, true).unwrap();
-        assert!(Probe::new(elsewhere).gone(&r.lib, &r.row, &new_path));
+        assert!(
+            Probe::new(elsewhere)
+                .gone(&r.lib, &r.row, &new_path)
+                .unwrap()
+        );
 
         // The walk's own root still has to be a directory with something in it.
         r.lib.set_watched_online(walked, false).unwrap();
         fs::remove_file(r.root.join("kept.jpg")).unwrap();
-        assert!(!Probe::new(walked).gone(&r.lib, &r.row, &new_path));
+        assert!(!Probe::new(walked).gone(&r.lib, &r.row, &new_path).unwrap());
     }
 
     /// Rule 3 asks what the old path opens, not how the two are spelled: two files whose
@@ -346,7 +430,11 @@ mod tests {
             write_file(&r.root, "a.jpg", b"x"),
             write_file(&r.root, "b.jpg", b"x"),
         );
-        assert!(!Probe::new(r.row.watched_id).gone(&r.lib, &r.row, &b));
+        assert!(
+            !Probe::new(r.row.watched_id)
+                .gone(&r.lib, &r.row, &b)
+                .unwrap()
+        );
         assert!(!vacated(&a, &b));
         assert!(vacated(&a, &a), "the path itself");
         assert!(vacated(&r.root.join("nothing.jpg"), &b), "gone");
@@ -360,10 +448,52 @@ mod tests {
         let r = rooted("old.jpg");
         let kept = r.root.join("kept.jpg");
         std::os::unix::fs::symlink(&kept, r.root.join("old.jpg")).unwrap();
-        assert!(Probe::new(r.row.watched_id).gone(&r.lib, &r.row, &kept));
+        assert!(
+            Probe::new(r.row.watched_id)
+                .gone(&r.lib, &r.row, &kept)
+                .unwrap()
+        );
 
         let other = write_file(&r.root, "other.jpg", b"x");
-        assert!(!Probe::new(r.row.watched_id).gone(&r.lib, &r.row, &other));
+        assert!(
+            !Probe::new(r.row.watched_id)
+                .gone(&r.lib, &r.row, &other)
+                .unwrap()
+        );
+    }
+
+    /// A watched folder removed between the lookup and the question is not among the ones
+    /// read. That is a state: its rows are going with it, and the file is a new photo.
+    #[test]
+    fn a_candidate_whose_watched_folder_is_not_listed_is_not_gone() {
+        let r = rooted("old.jpg");
+        let new_path = r.root.join("new.jpg");
+        let mut stray = r.row.clone();
+        stray.watched_id += 1000;
+        let mut probe = Probe::new(r.row.watched_id);
+        // The same row under its own watched folder is gone, so the answer is the id's.
+        assert!(probe.gone(&r.lib, &r.row, &new_path).unwrap());
+        assert!(!probe.gone(&r.lib, &stray, &new_path).unwrap());
+    }
+
+    /// Which drives are there is read from the library, and a read that fails says nothing
+    /// about any drive. Taken for "none is there", every renamed file of the walk was a new
+    /// photo and its row was marked missing by the same scan, silently.
+    #[test]
+    fn a_failed_read_of_the_watched_folders_is_an_error_and_not_an_answer() {
+        let r = rooted("old.jpg");
+        let new_path = r.root.join("new.jpg");
+        let mut probe = Probe::new(r.row.watched_id);
+        // From a connection of the test's own: nothing in photon fails that read on request.
+        let conn = rusqlite::Connection::open(r.lib.path()).unwrap();
+        conn.execute_batch("ALTER TABLE watched_folders RENAME TO watched_elsewhere")
+            .unwrap();
+        assert!(probe.gone(&r.lib, &r.row, &new_path).is_err());
+
+        // Nor is the failure kept for the rest of the walk, as an answer is.
+        conn.execute_batch("ALTER TABLE watched_elsewhere RENAME TO watched_folders")
+            .unwrap();
+        assert!(probe.gone(&r.lib, &r.row, &new_path).unwrap());
     }
 
     #[test]
@@ -373,8 +503,8 @@ mod tests {
         let r = rooted("old.jpg");
         let new_path = r.root.join("new.jpg");
         let mut probe = Probe::new(r.row.watched_id);
-        assert!(probe.gone(&r.lib, &r.row, &new_path));
+        assert!(probe.gone(&r.lib, &r.row, &new_path).unwrap());
         fs::remove_file(r.root.join("kept.jpg")).unwrap();
-        assert!(probe.gone(&r.lib, &r.row, &new_path));
+        assert!(probe.gone(&r.lib, &r.row, &new_path).unwrap());
     }
 }
