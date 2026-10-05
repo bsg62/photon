@@ -33,7 +33,6 @@
   import {
     MAX_ZOOM,
     MIN_ZOOM,
-    WHEEL_ZOOM_RATE,
     ZOOM_KEY_STEP,
     actualSizeZoom,
     clampPan,
@@ -42,6 +41,7 @@
     fieldOwnsKey,
     positionInSection,
     wheelStep,
+    wheelZoomFactor,
     zoomAt,
   } from '../lib/nav';
 
@@ -536,7 +536,13 @@
       .catch(library.reportError);
   }
 
+  /** When the menu last closed, for `ondblclick`. Not state: nothing draws it. */
+  let menuClosedAt = Number.NEGATIVE_INFINITY;
+  /** Longer than any system's double-click interval. */
+  const MENU_DOUBLE_CLICK_MS = 700;
+
   function closeMenu() {
+    if (menu) menuClosedAt = performance.now();
     menu = null;
   }
 
@@ -975,15 +981,15 @@
 
   function onwheel(e: WheelEvent) {
     e.preventDefault();
-    // The wheel navigates between photos here, not zoom - zoom is the slider alone - and the
-    // spec drops only zoom, pan and crop for a video, so the wheel keeps moving between
-    // photos over one exactly as it does over a photo.
+    // The plain wheel navigates between photos here, not zoom - zoom is the wheel with Ctrl
+    // held, below - and the spec drops only zoom, pan and crop for a video, so the wheel
+    // keeps moving between photos over one exactly as it does over a photo.
     if (crop.active) return;
     // With Ctrl (or Cmd) held the wheel zooms, at the pointer - which is also how a trackpad
     // pinch arrives. The plain wheel stays the way between photos.
     if (e.ctrlKey || e.metaKey) {
       wheelTotal = 0;
-      zoomTo(zoom * Math.exp(-e.deltaY * WHEEL_ZOOM_RATE), fromCentre(e));
+      zoomTo(zoom * wheelZoomFactor(e.deltaY), fromCentre(e));
       return;
     }
     const stepped = wheelStep(wheelTotal, e.deltaY);
@@ -1005,9 +1011,16 @@
    *  way in, beside the slider. Not a video, which has no zoom, and not under the crop tool,
    *  whose rectangle is placed on the fitted photo. */
   function zoomTo(next: number, point: { x: number; y: number } = { x: 0, y: 0 }) {
-    if (isVideo || crop.active) return;
+    // `!item`: while the next photo is still being looked up nothing says it is not a
+    // video, and one zoomed in that window stayed zoomed, with no slider and every way back
+    // refused here.
+    if (!item || isVideo || crop.active) return;
     const { width, height } = viewport();
     const to = zoomAt(zoom, pan, next, point, width, height);
+    // A pan in progress is measured from where it began: moved along with the photo, or the
+    // next pointer move would put the pan back where the drag had it and undo the zoom's.
+    dragFrom.panX += to.pan.x - pan.x;
+    dragFrom.panY += to.pan.y - pan.y;
     zoom = to.zoom;
     pan = to.pan;
   }
@@ -1017,6 +1030,9 @@
    *  double-clicks: two quick presses of a turn button are two turns. */
   function ondblclick(e: MouseEvent) {
     if (!item || error) return;
+    // The second click of a double-click on a menu item lands on the photo the menu was
+    // over, the first having closed it: that is a slow hand on the menu, not a zoom.
+    if (performance.now() - menuClosedAt < MENU_DOUBLE_CLICK_MS) return;
     if ((e.target as HTMLElement).closest('.zoom, .close, .bar, .info, .face, .menu, .photo-caption')) return;
     if (zoom > MIN_ZOOM) {
       zoomTo(MIN_ZOOM);
@@ -1040,10 +1056,11 @@
     // A press anywhere but the info panel clears a text selection left in it: a click does
     // not, and the next Ctrl+C would copy that text instead of the photo, silently.
     if (!(e.target as HTMLElement).closest('.info')) window.getSelection()?.removeAllRanges();
-    // The zoom slider, the buttons, the info panel and a clickable face outline sit on the
-    // same surface: a press on any of them is theirs, not the start of a pan. An outline
-    // that started one would capture the pointer, and its click would never land.
-    if ((e.target as HTMLElement).closest('.zoom, .close, .bar, .info, .face')) return;
+    // The zoom slider, the buttons, the info panel, the open menu and a clickable face
+    // outline sit on the same surface: a press on any of them is theirs, not the start of a
+    // pan. An outline or a menu item that started one would capture the pointer, and its
+    // click would never land.
+    if ((e.target as HTMLElement).closest('.zoom, .close, .bar, .info, .face, .menu')) return;
     // Left button only. Without this every button panned, which is why the right button
     // looked like the pan control: the left one was being swallowed by the browser's native
     // image drag before the pointer stream could produce a move.

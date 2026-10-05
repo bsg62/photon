@@ -32,7 +32,7 @@ export const SHORTCUTS: ShortcutGroup[] = [
     rows: [
       { keys: [['?']], does: 'Show this list' },
       { keys: [['F11']], does: 'Fullscreen on or off' },
-      { keys: [['Mod', 'F'], ['/']], does: 'Go to the search box' },
+      { keys: [['Mod', 'F'], ['/']], does: 'Go to the search box, from the grid or the People page' },
       { keys: [['Enter']], does: 'In the search box: go to the photos' },
       { keys: [['Esc']], does: 'In the search box: clear the search, or leave an empty box' },
       { keys: [['←'], ['→']], does: "On the sidebar's edge: resize the sidebar" },
@@ -129,13 +129,20 @@ export function chordLabel(chord: string[], mac: boolean): string[] {
 /** Whether a keydown asks for the search box: Ctrl+F (⌘F on a Mac) from anywhere, a text
  *  entry included, and a plain `/` anywhere but in one, where it is the character. Shift is
  *  refused beside Ctrl, since that chord is not this one; beside `/` it is how some layouts
- *  type the character at all. */
+ *  type the character at all.
+ *
+ *  On a Mac it is ⌘F alone. Ctrl+F there is the text system's own "forward a character",
+ *  in every text field, and a name being typed must not jump to the search box for it. */
 export function focusesSearch(
   e: Pick<KeyboardEvent, 'key' | 'ctrlKey' | 'metaKey' | 'altKey' | 'shiftKey'>,
   target: SelectAllTarget | null,
+  mac: boolean,
 ): boolean {
   if (e.altKey) return false;
-  if (e.ctrlKey || e.metaKey) return !e.shiftKey && e.key.toLowerCase() === 'f';
+  if (e.ctrlKey || e.metaKey) {
+    if (mac && !e.metaKey) return false;
+    return !e.shiftKey && e.key.toLowerCase() === 'f';
+  }
   return e.key === '/' && ownsSelectAll(target);
 }
 

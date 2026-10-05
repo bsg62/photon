@@ -13,6 +13,7 @@
   import { CAP_FALLBACK, capFrom, createScrollMap, PROBE_HEIGHT } from '../lib/scroll-map';
   import { createScrollSpeed } from '../lib/scroll-speed.svelte';
   import { move, type NavKey } from '../lib/nav';
+  import { decidingPhoto } from '../lib/star-key';
   import { yearMarks } from '../lib/timeline';
   import Tile from './Tile.svelte';
   import Timeline from './Timeline.svelte';
@@ -385,12 +386,17 @@
       // The window handler closes the menu on Escape. Clearing here as well would do both at
       // once, so the first Escape only ever dismisses the menu.
       if (menu) return;
+      // Nor a held key's repeat: Escape on an empty search box hands the focus here, and the
+      // selection must not go with it.
+      if (e.repeat) return;
       library.clearSelection();
       return;
     }
     if (e.key === 'Enter') {
       e.preventDefault();
-      if (sel !== null) onopen(sel);
+      // Not a key still held from somewhere else: Enter in the search box hands the focus
+      // here, and its auto-repeat would open the viewer on a search nobody had looked at.
+      if (sel !== null && !e.repeat) onopen(sel);
       return;
     }
     if (!e.ctrlKey && !e.metaKey && !e.altKey && e.key.toLowerCase() === 'c') {
@@ -424,14 +430,12 @@
     if (!e.ctrlKey && !e.metaKey && !e.altKey && e.key === '.') {
       // The star, on the key the viewer and compare give it. One key for the menu's two
       // items, so it needs a rule for a selection that is part starred: the photo the
-      // selection is led by decides, the one a single arrow key would move from. Starred, the
-      // whole selection is unstarred; otherwise all of it is starred. A lead whose page is
-      // not loaded reads as unstarred, and starring twice is harmless.
+      // selection is led by decides (`starDecider`). Starred, the whole selection is
+      // unstarred; otherwise all of it is starred.
       const ids = library.selectedItemIds;
       if (ids.length === 0) return;
       e.preventDefault();
-      const lead = sel === null ? undefined : library.entry(sel);
-      star(ids, !lead?.starred).catch(library.reportError);
+      star(ids, !starDecider()?.starred).catch(library.reportError);
       return;
     }
     if (!NAV_KEYS.includes(e.key) || library.info.len === 0) return;
@@ -681,6 +685,15 @@
 
   function closeMenu() {
     menu = null;
+  }
+
+  /** The photo whose star says which way the star key goes: the lead, or failing that a
+   *  selected photo on screen (`decidingPhoto`). */
+  function starDecider() {
+    const lead = library.selected === null ? undefined : library.entry(library.selected);
+    const span = onScreen;
+    const shown = span ? Array.from({ length: span[1] - span[0] }, (_, i) => library.entry(span[0] + i)) : [];
+    return decidingPhoto(lead, shown, (id) => library.isSelected(id));
   }
 
   /** "1 photo" / "12 photos", for a message naming a specific count. */

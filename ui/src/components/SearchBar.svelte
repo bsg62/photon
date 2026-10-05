@@ -56,6 +56,8 @@
         searchBox.run(searchBox.query);
       }}
       onkeydown={(e) => {
+        // A key that confirms or cancels an input method's composition is the composition's.
+        if (e.isComposing) return;
         // An empty box with Search not active has nothing to clear: unconditionally clearing
         // here would call setSearchQuery('') regardless, which is a no-op query but still
         // forces the view to All — kicking the user out of Starred with a keystroke that

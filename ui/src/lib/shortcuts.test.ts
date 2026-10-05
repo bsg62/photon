@@ -140,34 +140,44 @@ describe('focusesSearch', () => {
     ...over,
   });
 
-  it('answers Ctrl+F and Cmd+F, wherever the focus is', () => {
-    expect(focusesSearch(key({ ctrlKey: true }), null)).toBe(true);
-    expect(focusesSearch(key({ metaKey: true }), { tagName: 'DIV' })).toBe(true);
+  it('answers Ctrl+F, wherever the focus is', () => {
+    expect(focusesSearch(key({ ctrlKey: true }), null, false)).toBe(true);
+    expect(focusesSearch(key({ ctrlKey: true }), { tagName: 'DIV' }, false)).toBe(true);
     // Caps Lock, or a layout that reports the capital.
-    expect(focusesSearch(key({ key: 'F', ctrlKey: true }), null)).toBe(true);
+    expect(focusesSearch(key({ key: 'F', ctrlKey: true }), null, false)).toBe(true);
     // From a text entry too: the chord is not a character there.
-    expect(focusesSearch(key({ ctrlKey: true }), { tagName: 'INPUT' })).toBe(true);
+    expect(focusesSearch(key({ ctrlKey: true }), { tagName: 'INPUT' }, false)).toBe(true);
+  });
+
+  it('is Cmd+F on a Mac, and never Ctrl+F there', () => {
+    expect(focusesSearch(key({ metaKey: true }), null, true)).toBe(true);
+    expect(focusesSearch(key({ metaKey: true }), { tagName: 'INPUT' }, true)).toBe(true);
+    // The text system's "forward a character": a name field keeps it.
+    expect(focusesSearch(key({ ctrlKey: true }), { tagName: 'INPUT' }, true)).toBe(false);
+    expect(focusesSearch(key({ ctrlKey: true }), null, true)).toBe(false);
   });
 
   it('leaves a plain f, and the chords that are not this one, alone', () => {
-    expect(focusesSearch(key(), null)).toBe(false);
-    expect(focusesSearch(key({ ctrlKey: true, shiftKey: true }), null)).toBe(false);
-    expect(focusesSearch(key({ ctrlKey: true, altKey: true }), null)).toBe(false);
-    expect(focusesSearch(key({ key: 'g', ctrlKey: true }), null)).toBe(false);
+    expect(focusesSearch(key(), null, false)).toBe(false);
+    expect(focusesSearch(key({ ctrlKey: true, shiftKey: true }), null, false)).toBe(false);
+    expect(focusesSearch(key({ ctrlKey: true, altKey: true }), null, false)).toBe(false);
+    expect(focusesSearch(key({ key: 'g', ctrlKey: true }), null, false)).toBe(false);
+    expect(focusesSearch(key({ metaKey: true, shiftKey: true }), null, true)).toBe(false);
   });
 
   it('answers a plain slash, which some layouts type with Shift', () => {
-    expect(focusesSearch(key({ key: '/' }), null)).toBe(true);
-    expect(focusesSearch(key({ key: '/', shiftKey: true }), { tagName: 'DIV' })).toBe(true);
-    expect(focusesSearch(key({ key: '/', altKey: true }), null)).toBe(false);
-    expect(focusesSearch(key({ key: '/', ctrlKey: true }), null)).toBe(false);
+    expect(focusesSearch(key({ key: '/' }), null, false)).toBe(true);
+    expect(focusesSearch(key({ key: '/' }), null, true)).toBe(true);
+    expect(focusesSearch(key({ key: '/', shiftKey: true }), { tagName: 'DIV' }, false)).toBe(true);
+    expect(focusesSearch(key({ key: '/', altKey: true }), null, false)).toBe(false);
+    expect(focusesSearch(key({ key: '/', ctrlKey: true }), null, false)).toBe(false);
   });
 
   it('is a character in a text entry', () => {
     // A path typed into a name field, a date into the search box itself.
-    expect(focusesSearch(key({ key: '/' }), { tagName: 'INPUT' })).toBe(false);
-    expect(focusesSearch(key({ key: '/' }), { tagName: 'textarea' })).toBe(false);
-    expect(focusesSearch(key({ key: '/' }), { tagName: 'DIV', isContentEditable: true })).toBe(false);
+    expect(focusesSearch(key({ key: '/' }), { tagName: 'INPUT' }, false)).toBe(false);
+    expect(focusesSearch(key({ key: '/' }), { tagName: 'textarea' }, false)).toBe(false);
+    expect(focusesSearch(key({ key: '/' }), { tagName: 'DIV', isContentEditable: true }, false)).toBe(false);
   });
 });
 

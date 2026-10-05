@@ -160,11 +160,21 @@ export function clampZoom(zoom: number): number {
  *  as many presses out as in end where they began. */
 export const ZOOM_KEY_STEP = 1.25;
 
-/** How much one unit of wheel delta zooms while Ctrl is held: a mouse notch (~100) is a
- *  step of about a fifth, and a trackpad pinch, which arrives as a stream of small deltas
- *  with Ctrl set, zooms as smoothly as it is made. Exponential, so a pinch out and the same
- *  pinch back in end where they began. */
-export const WHEEL_ZOOM_RATE = 0.002;
+/** The most one wheel event zooms by, as a delta: see `wheelZoomFactor`. */
+export const WHEEL_ZOOM_CAP = 20;
+
+/** What one wheel event with Ctrl held multiplies the zoom by.
+ *
+ *  A trackpad pinch arrives as a stream of such events, each a small delta the engine made
+ *  from the fingers' own scale - `-100 * ln(scale)` in Chromium - so `exp(-delta / 100)`
+ *  gives the photo back the pinch as it was made. A mouse notch is a delta of about 100
+ *  by the same road, which read the same way would be nearly three times per click; capped
+ *  at `WHEEL_ZOOM_CAP` it is a step of a fifth. Exponential, so a pinch out and the same
+ *  pinch back in end where they began. A delta that is not a number changes nothing. */
+export function wheelZoomFactor(deltaY: number): number {
+  if (!Number.isFinite(deltaY)) return 1;
+  return Math.exp(-Math.max(-WHEEL_ZOOM_CAP, Math.min(WHEEL_ZOOM_CAP, deltaY)) / 100);
+}
 
 /** What a double-click zooms to when the photo is already shown at its own size or larger:
  *  there are no more pixels to see, but "closer" is still what was asked for. */

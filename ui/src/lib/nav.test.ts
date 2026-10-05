@@ -11,6 +11,7 @@ import {
   ownsSelectAll,
   positionInSection,
   wheelStep,
+  wheelZoomFactor,
   zoomAt,
 } from './nav';
 
@@ -196,6 +197,31 @@ describe('actualSizeZoom', () => {
     expect(actualSizeZoom(0, 1600, 1)).toBe(DOUBLE_CLICK_ZOOM);
     expect(actualSizeZoom(4000, 0, 1)).toBe(DOUBLE_CLICK_ZOOM);
     expect(actualSizeZoom(4000, 1600, 0)).toBe(DOUBLE_CLICK_ZOOM);
+  });
+});
+
+describe('wheelZoomFactor', () => {
+  it('gives a pinch back as it was made', () => {
+    // A pinch to 1.1x arrives as a delta of -100 * ln(1.1).
+    expect(wheelZoomFactor(-100 * Math.log(1.1))).toBeCloseTo(1.1, 10);
+    expect(wheelZoomFactor(100 * Math.log(1.1))).toBeCloseTo(1 / 1.1, 10);
+  });
+
+  it('makes a mouse notch a step of about a fifth, not nearly three times', () => {
+    expect(wheelZoomFactor(-100)).toBeCloseTo(Math.exp(0.2), 10);
+    expect(wheelZoomFactor(100)).toBeCloseTo(Math.exp(-0.2), 10);
+    // However hard the wheel is flicked.
+    expect(wheelZoomFactor(-1200)).toBe(wheelZoomFactor(-100));
+  });
+
+  it('ends where it began after the same way out and back', () => {
+    expect(wheelZoomFactor(-7) * wheelZoomFactor(7)).toBeCloseTo(1, 12);
+  });
+
+  it('changes nothing for a delta of nothing, or one that is not a number', () => {
+    expect(wheelZoomFactor(0)).toBe(1);
+    expect(wheelZoomFactor(Number.NaN)).toBe(1);
+    expect(wheelZoomFactor(Number.POSITIVE_INFINITY)).toBe(1);
   });
 });
 
