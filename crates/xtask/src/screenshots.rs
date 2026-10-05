@@ -160,6 +160,23 @@ pub const SHOTS: &[Shot] = &[
         query: "theme=light&do=people",
         dark: false,
     },
+    // The keys, in the three places they are listed: the `?` sheet over the grid and over
+    // the viewer, and Settings' own section.
+    Shot {
+        name: "shortcuts-light",
+        query: "theme=light&do=shortcuts",
+        dark: false,
+    },
+    Shot {
+        name: "shortcuts-viewer-dark",
+        query: "theme=dark&do=shortcutsviewer",
+        dark: true,
+    },
+    Shot {
+        name: "settings-shortcuts-dark",
+        query: "theme=dark&do=shortcutsettings",
+        dark: true,
+    },
     // The People page over the grid, a face selected so the action bar is drawn.
     Shot {
         name: "people-light",

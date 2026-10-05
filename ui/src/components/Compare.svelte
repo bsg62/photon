@@ -84,6 +84,12 @@
    *  `compare.svelte.ts` so that it can be tested; here it is a lookup. */
   const facts = $derived(differingFacts(compare.panes));
 
+  /** For the shortcut sheet, opened over the comparison, to hand focus back to: the keys
+   *  live on this element. */
+  export function focus() {
+    root?.focus();
+  }
+
   onMount(() => {
     // The keys live on this element, so it has to hold focus from the first frame.
     root?.focus();

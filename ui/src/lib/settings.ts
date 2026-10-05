@@ -1,6 +1,6 @@
 import type { MemoryUsage, ScanProgressEvent, WatchedFolder } from './api';
 
-export type SettingsSection = 'folders' | 'appearance' | 'tags' | 'slideshow' | 'duplicates' | 'people' | 'statistics' | 'about';
+export type SettingsSection = 'folders' | 'appearance' | 'tags' | 'slideshow' | 'duplicates' | 'people' | 'statistics' | 'shortcuts' | 'about';
 
 export type FolderStatus =
   | { kind: 'scanning'; label: string }
