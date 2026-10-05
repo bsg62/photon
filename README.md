@@ -324,6 +324,14 @@ so Left is the photo you just saw. A view of six photos or fewer than five plays
 `F11` toggles fullscreen at any time. photon remembers the window's fullscreen state, so if
 you quit in the middle of a slideshow it reopens fullscreen; `F11` is the way out.
 
+### Keyboard shortcuts
+
+Press `?` to see every key photon answers, grouped by where it works - everywhere, in the
+grid, in the viewer, while cropping, during a slideshow, on a video, in compare. It opens over
+whatever you are doing, the viewer and compare included, and Escape or `?` again closes it;
+in a text field `?` is just the character. The same list is under Settings → **Shortcuts**.
+Where a shortcut uses Ctrl, a Mac shows ⌘.
+
 ### Statistics
 
 Settings → **Statistics** counts the library: how many photos and videos, how much disk they

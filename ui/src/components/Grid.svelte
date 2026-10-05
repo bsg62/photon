@@ -335,6 +335,14 @@
     viewport?.focus();
   }
 
+  /** Whether a press that is, or may become, a rubber band is held. An overlay must not open
+   *  over one: `inert` does not stop the band's autoscroll frame, which would go on rewriting
+   *  the selection behind it - the reason the key handler below honours nothing but Escape
+   *  meanwhile, by this same test. */
+  export function dragging(): boolean {
+    return band !== null;
+  }
+
 
   function onkeydown(e: KeyboardEvent) {
     // A drag owns the grid while it lasts: Escape abandons it (below), and every other key

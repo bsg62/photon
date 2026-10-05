@@ -11,6 +11,11 @@ export function isLinux(): boolean {
   return typeof navigator !== 'undefined' && navigator.userAgent.includes('Linux');
 }
 
+/** For how a shortcut is spelled: ⌘ on a Mac's keyboard, Ctrl elsewhere. */
+export function isMac(): boolean {
+  return typeof navigator !== 'undefined' && navigator.userAgent.includes('Mac');
+}
+
 /** URL for a path served by the `photon://` protocol, e.g. `thumb/12/grid/<key>`. */
 export function mediaUrl(path: string, windows: boolean = isWindows()): string {
   return windows ? `http://photon.localhost/${path}` : `photon://localhost/${path}`;

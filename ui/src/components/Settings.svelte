@@ -11,6 +11,7 @@
   import { createTagRenamer } from '../lib/tag-renamer.svelte';
   import { filterTags, ruleLabel } from '../lib/tags';
   import Icon from './Icon.svelte';
+  import ShortcutList from './ShortcutList.svelte';
   import SizeControl from './SizeControl.svelte';
 
   let {
@@ -421,6 +422,9 @@
         <button class:active={current === 'statistics'} aria-current={current === 'statistics'} onclick={() => (current = 'statistics')}>
           Statistics
         </button>
+        <button class:active={current === 'shortcuts'} aria-current={current === 'shortcuts'} onclick={() => (current = 'shortcuts')}>
+          Shortcuts
+        </button>
         <button class:active={current === 'about'} aria-current={current === 'about'} onclick={() => (current = 'about')}>
           About
         </button>
@@ -542,6 +546,10 @@
               <p class="hint stats-note">{stats.noCamera.toLocaleString()} without camera data.</p>
             {/if}
           {/if}
+        {:else if current === 'shortcuts'}
+          <h2>Shortcuts</h2>
+          <p class="hint">Press ? anywhere outside a text field to see this list over what you are doing.</p>
+          <ShortcutList />
         {:else if current === 'appearance'}
           <h2>Appearance</h2>
           <p class="hint">System follows your desktop. The photo viewer is always dark, so every photo is seen against the same ground.</p>

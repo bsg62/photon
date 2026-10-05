@@ -66,7 +66,7 @@ cargo run -p xtask -- metadata            # licence and installer metadata are c
 **Seeing the UI without launching it** (not in CI; needs Chromium on `PATH` or in `CHROMIUM`):
 
 ```bash
-cargo run -p xtask -- screenshots                     # thirty-two PNGs into target/screenshots/
+cargo run -p xtask -- screenshots                     # thirty-five PNGs into target/screenshots/
 cargo run -p xtask -- screenshots --only viewer-info-light --no-build
 cargo run -p xtask -- scroll-probe   # the end of a 300k-photo library is reachable
 ```
@@ -785,6 +785,16 @@ while `paused` (App passes `personPicker.visible`) for the key that arrives with
 `<body>`; the viewer itself sits in a `display: contents` wrapper made `inert` while the dialog
 is up, so Tab cannot walk out of the dialog into its controls.
 
+**The keys are listed in one place, `lib/shortcuts.ts`,** which the `?` sheet
+(`ShortcutSheet.svelte`) and Settings → Shortcuts both draw. `shortcuts.test.ts` reads the
+key handlers' source and fails on a key a handler answers that the list does not name, and on
+a listed key no handler answers - but only in the files its `ANSWERED_IN` names, so a handler
+in a new file is added there with its group, and it cannot check the wording: a key whose
+meaning changes needs its row changed. The sheet is the one overlay that opens over the
+viewer *and* over compare, so both sit in an `inert` `display: contents` wrapper while it is
+up and the viewer is `paused`, as under the person dialog; it does not open over another
+dialog, or while the grid holds a rubber band (`Grid.dragging`, the "fourth ending" below).
+
 **A context menu is placed by `use:fitMenu`** (`lib/menu-place.ts`), never by binding
 `left`/`top` to the pointer: it opens down-right and flips on an axis where that would leave
 the window, re-placing itself when it grows (the tile menu's copies line arrives after it
@@ -831,7 +841,7 @@ anything sitting outside the tile's own box.
 
 The look cannot be tested here, but it can be seen without launching the app: `cargo run -p xtask --
 screenshots` builds the UI, serves `ui/dist` itself with `mock.js` (in
-`crates/xtask/screenshots/`) standing in for Tauri's IPC, and writes thirty-two PNGs, in both themes,
+`crates/xtask/screenshots/`) standing in for Tauri's IPC, and writes thirty-five PNGs, in both themes,
 to `target/screenshots/` with headless Chromium. It claims a Windows user agent and maps
 `photon.localhost` to its own port, because `mediaUrl` uses `http://photon.localhost` there
 and no plain browser can load `photon://`. It is Chromium's rendering, not WebKitGTK's or

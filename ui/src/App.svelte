@@ -13,6 +13,7 @@
   import { openFacePhoto } from './lib/people';
   import { resultsChanged, viewKey } from './lib/search';
   import { searchBox } from './lib/search-box.svelte';
+  import { opensShortcuts } from './lib/shortcuts';
   import type { SettingsSection } from './lib/settings';
   import { clampSidebarWidth, SIDEBAR_DEFAULT, SIDEBAR_STEP } from './lib/sidebar';
   import { createExportDialog } from './lib/export-dialog.svelte';
@@ -29,6 +30,7 @@
   import PeoplePage from './components/PeoplePage.svelte';
   import PersonPicker from './components/PersonPicker.svelte';
   import SearchBar from './components/SearchBar.svelte';
+  import ShortcutSheet from './components/ShortcutSheet.svelte';
   import Compare from './components/Compare.svelte';
   import Settings from './components/Settings.svelte';
   import SizeControl from './components/SizeControl.svelte';
@@ -48,6 +50,12 @@
    *  in a way the page has no other word of (`PeoplePage`'s switch read says which). */
   let settingsClosed = $state(0);
   let compareIds = $state<number[] | null>(null);
+  let compare: ReturnType<typeof Compare> | undefined = $state();
+  /** The shortcut sheet (`?`). Unlike the other overlays it opens over the viewer and over
+   *  compare as well as over the grid, since those are where most of the keys are. */
+  let shortcutsOpen = $state(false);
+  /** What held focus when the sheet opened, to hand it back to. */
+  let shortcutsFrom: HTMLElement | null = null;
   let gear: HTMLButtonElement | undefined = $state();
   /** The keyword dialog for the grid's selection. It lives here, not in the grid, because
    *  it is an overlay: `covered` below makes everything behind one inert, and a dialog
@@ -104,7 +112,8 @@
       compareIds !== null ||
       picker.visible ||
       personPicker.visible ||
-      exporter.visible,
+      exporter.visible ||
+      shortcutsOpen,
   );
   let sidebarWidth = $state(SIDEBAR_DEFAULT);
   let dragFrom: { x: number; width: number } | null = null;
@@ -325,6 +334,18 @@
       e.preventDefault();
       return;
     }
+    if (opensShortcuts(e, e.target as HTMLElement | null)) {
+      // The sheet's own handler closes it and stops the key there; this is the `?` that
+      // arrives with focus on `<body>`.
+      if (shortcutsOpen) {
+        e.preventDefault();
+        void closeShortcuts();
+      } else if (canShowShortcuts()) {
+        e.preventDefault();
+        openShortcuts();
+      }
+      return;
+    }
     if (e.key !== 'F11') return;
     e.preventDefault();
     api
@@ -335,6 +356,37 @@
 
   function openSettings(section: SettingsSection) {
     settingsAt = section;
+  }
+
+  /** Not over another dialog: each of those is a question being answered, and Settings
+   *  lists the keys itself. And not while a rubber band is held in the grid, which an
+   *  overlay would leave running behind it (`Grid.dragging`). */
+  function canShowShortcuts(): boolean {
+    const dialog = settingsAt !== null || picker.visible || personPicker.visible || exporter.visible;
+    return !dialog && !grid?.dragging();
+  }
+
+  function openShortcuts() {
+    const active = document.activeElement;
+    // `<body>` is what "nothing has focus" reads as; handing focus back to it would leave
+    // the grid's keys dead, so that case takes the fallback in `closeShortcuts`.
+    shortcutsFrom = active instanceof HTMLElement && active !== document.body ? active : null;
+    shortcutsOpen = true;
+  }
+
+  /** Focus goes back to what had it, after `tick` for `closeSettings`' reason: everything
+   *  behind the sheet is inert until the DOM catches up. If that element has gone meanwhile
+   *  (a scan can replace the tile), or nothing had focus, whatever is in front takes it. */
+  async function closeShortcuts() {
+    shortcutsOpen = false;
+    const from = shortcutsFrom;
+    shortcutsFrom = null;
+    await tick();
+    if (from?.isConnected) from.focus();
+    else if (viewerAt !== null) viewer?.focus();
+    else if (compareIds !== null) compare?.focus();
+    else if (mainPage.current === 'people') peoplePage?.focus();
+    else grid?.focus();
   }
 
   /** Opens the compare overlay for a selection. Called by the grid (Task 5). */
@@ -520,10 +572,10 @@
   </main>
   <div class="statusbar"><StatusBar /></div>
 </div>
-<!-- Inert under the person dialog, which is opened over it to name a face: `aria-modal`
-     alone does not keep Tab from walking out of the dialog into the viewer's controls. No
-     box of its own, so the viewer is placed exactly as before. -->
-<div class="viewer-layer" inert={personPicker.visible}>
+<!-- Inert under the person dialog, which is opened over it to name a face, and under the
+     shortcut sheet: `aria-modal` alone does not keep Tab from walking out of the dialog into
+     the viewer's controls. No box of its own, so the viewer is placed exactly as before. -->
+<div class="under-dialog" inert={personPicker.visible || shortcutsOpen}>
   {#if viewerAt !== null}<Viewer
       bind:this={viewer}
       offset={viewerAt}
@@ -533,11 +585,16 @@
       onshowcopies={showCopiesFromViewer}
       onnameface={(faceId) => openPersonPicker({ kind: 'face', face: faceId }, 'viewer')}
       onperson={showPerson}
-      paused={personPicker.visible}
+      paused={personPicker.visible || shortcutsOpen}
     />{/if}
 </div>
 {#if settingsAt !== null}<Settings section={settingsAt} onclose={closeSettings} onsearch={searchFromSettings} />{/if}
-{#if compareIds !== null}<Compare ids={compareIds} onclose={closeCompare} onopen={openFromCompare} />{/if}
+<!-- As the viewer above: compare's keys live on its own element, which `inert` puts out of
+     reach while the shortcut sheet is over it. -->
+<div class="under-dialog" inert={shortcutsOpen}>
+  {#if compareIds !== null}<Compare bind:this={compare} ids={compareIds} onclose={closeCompare} onopen={openFromCompare} />{/if}
+</div>
+{#if shortcutsOpen}<ShortcutSheet onclose={closeShortcuts} />{/if}
 <TagPicker {picker} onclosed={closeKeywords} />
 <PersonPicker picker={personPicker} people={namedPeople} onclosed={closePersonPicker} />
 <ExportDialog dialog={exporter} onclosed={closeExport} />
@@ -611,7 +668,7 @@
   .gear:hover { color: var(--text); background: var(--hover); }
   @media (prefers-reduced-motion: reduce) { .gear { transition: none; } }
   .statusbar { grid-column: 1 / -1; }
-  .viewer-layer { display: contents; }
+  .under-dialog { display: contents; }
   .drop {
     position: fixed;
     inset: 0;

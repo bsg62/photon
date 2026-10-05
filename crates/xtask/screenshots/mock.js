@@ -544,6 +544,14 @@
     about: () => settingsSection('About'),
     statistics: () => settingsSection('Statistics'),
     people: () => settingsSection('People'),
+    // The shortcut sheet, by its own key: over the grid, and over the viewer, whose keys
+    // it lists and holds while it is up.
+    shortcuts: () => window.dispatchEvent(new KeyboardEvent('keydown', { key: '?', shiftKey: true, bubbles: true })),
+    shortcutsviewer: () => {
+      open(2);
+      later(500, () => actions.shortcuts());
+    },
+    shortcutsettings: () => settingsSection('Shortcuts'),
   };
 
   function settingsSection(name) {
