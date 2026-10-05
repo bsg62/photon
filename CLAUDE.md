@@ -160,7 +160,8 @@ sidebar shows a stale count until the next data write.
 rows. A change that alters data by some *other* means must add its own counter to `ScanReport`
 and fold it into `touched_rows`, or the grid silently never rebuilds. Today the counters
 beyond the obvious four are `restarred`, `refaced` (Picasa faces), `rehidden` (Picasa's
-`hidden=yes`), `realbumed` (Picasa's albums) and `enriched` (the metadata backfill).
+`hidden=yes`), `realbumed` (Picasa's albums), `enriched` (the metadata backfill) and `moved` (a
+row re-pointed to its file's new path, below).
 
 **Grid order** (`items.rs`, `GRID_ORDER`) is the folder's oldest photo descending, then each
 folder's photos oldest to newest. The sidebar groups by the same value, so the list is an index
@@ -193,7 +194,8 @@ photos are still scanned, thumbnailed and hashed, so unhiding is instant. **Hide
 folder's flag - so visibility stays that one column and no query joins `folders` to decide it.
 Any other writer that creates item rows must inherit the flag the same way, and
 `set_folder_hidden` writes missing rows too, since `update_items` revives a row without touching
-`hidden`.
+`hidden`. `move_items` (below) does: it writes `MAX(hidden, the destination folder's)`, so a
+hidden folder hides what arrives in it and a photo the user hid never comes back out by moving.
 
 **Parameterised views.** `GridView::Search`, `Person`, `Album` and `Tag` are selected by an
 argument held beside the view in `ViewState.arg` (the query, a person's key, an album id,
@@ -300,6 +302,106 @@ it with the camera columns. Keywords come from the file (XMP `dc:subject` and IP
 `library/tags.rs`, which apply the user's rename/remove rules; a reader of `item_tags` that
 bypasses them shows tags the user renamed or removed.
 
+**A renamed or moved photo keeps its row** (spec `2026-10-05-photon-follow-moved-files-design.md`,
+schema 26). Everything photon keeps about a photo hangs on its `items` row, and a path the walk
+does not find is marked missing and purged, while the path it has never seen is a new row with
+none of it - which cost a reorganised folder its albums, edits, names, and the hours of face
+work. So when the walk is about to insert a file, it first asks which row that file used to be.
+The rule is `moved::pick` (pure: the filesystem arrives as a closure) and `moved::Probe` (the
+stats): `Library::move_candidates` finds the rows with the file's size, mtime and kind
+(`items_moved`, a plain index on `(size, mtime_ms)`, not partial, so it is outside the
+partial-index tie in Schema; `the_move_lookup_is_served_by_its_index` is its plan test); `pick`
+then wants the same width, height and `taken_at` (the date ignored for a row an older reader
+described), the old file gone, and exactly one row left, the file name breaking a tie. Gone is
+`NotFound` and nothing else - a permission error or a timed-out share is "cannot tell" - or the
+old path still opens something that `paths::canonicalize` resolves to the new path, which is
+a case-only rename on macOS and Windows, or a file or folder replaced by a symlink to where it
+went. By what the old path *resolves to*, not by `paths::same_path`, which folds case by
+platform and not by volume: on a case-sensitive volume under macOS two identical files `a.jpg`
+and `A.JPG` would have traded one row back and forth on every scan. The drive must be there
+(rule 4: the row's watched folder online, its root a non-empty directory, checked once per
+watched folder per scan), because an unplugged or unmounted drive answers `NotFound` for every
+file on it - `an_offline_or_empty_root_gives_no_candidates`. The exception is the folder being
+walked, whatever its stored flag: the flag is written only after the walk, and without it a
+drive that came back with renamed files had every rename inserted as new and its row purged
+(`a_drive_that_comes_back_with_a_renamed_file_keeps_its_row`).
+
+It runs in `flush_new` (`find_moves`, then `apply_moves`, then the insert of what is left), which
+is `walk_tree`'s, so `scan_watched` and `scan_subtree` both have it; the watcher reports a move as
+its two directories, scanned separately in either order, so a rule that paired a walk's vanished
+and new files would have caught only moves whose ends lie in one walk. `find_moves` is two
+passes, so a row is claimed by one file: the file that kept the row's name has it and the other is
+new, within one batch (`of_two_files_that_fit_one_row_the_one_with_its_name_has_it`); across
+batches the first file met has the row, and no row is ever picked for two files
+(`a_row_is_claimed_by_one_file_and_the_next_takes_the_one_left`), nor guessed between when two fit
+(`two_rows_that_fit_are_not_guessed_between`). `Library::move_items` is `update_items`' opposite:
+the file is the same, so the hashes, the look-alike group, the detections, the edit, the rating
+and every row hanging on the id stay, and what it writes is the place, the metadata just read,
+`thumb_state = 0`, `hidden` as above and the GC epoch. A copy is not a move - its original is
+still there, so rule 2 refuses it (`a_copy_beside_the_original_is_a_new_row`).
+
+Two hazards come with it, both closed by `mark_missing_at` and `purge_at`, which write only a row
+still at the path the walk's `known` has for it and report the rows changed. The walk's own
+`known` still lists a followed row at its old path, which the walk will never find, so by id alone
+the scan that had just followed a move marked it missing - or, when an earlier scan of the folder
+it left had marked it already, purged it with everything on it
+(`a_row_already_missing_is_not_purged_by_the_walk_that_follows_it`). And a scan of another
+watched folder, each having its own slot, may have read `known` before the move was written
+(`the_guarded_mark_and_purge_change_only_a_row_still_at_its_path`, and the stale writes in
+`a_move_is_followed_when_only_the_destination_is_scanned`). The same race has `move_items` answer
+`false` for a row no longer at its old path (purged or claimed since the lookup), and
+`apply_moves` hands that file back for the insert: dropped, it would stay out of the library
+until some later scan (`move_items_reports_a_row_that_is_no_longer_at_its_old_path`,
+`a_file_whose_row_went_away_is_inserted`; a race has no seam, so the second tests `apply_moves`
+directly). `ScanReport::moved` counts the rows, and is in `touched_rows`.
+
+**The thumbnails come along.** The key is made of the path, so the moved row names thumbnails that
+are not cached, and re-rendering a renamed folder of 5,000 photos would also 404 the People
+page's face crops until it was done. `ScanSink::moved(&[(old_key, new_key)])`, called before
+`indexed` for the same rows, has the engine's reporter call `ThumbCache::rename` for each pair (a
+`fs::rename` per size, a missing one skipped, a failure logged and costing one render, never a
+wrong picture); the keys are `Item::thumb_key()` before and after, so an edited photo's are the
+ones carried. The row is `Pending` regardless and the worker marks it `Ready` without decoding
+when it finds the files. `apply_moves` makes the report before it touches folders, which can
+fail: the rows are already re-pointed, and an error there must not leave their thumbnails
+neither carried nor queued (`a_failed_folder_inheritance_still_reports_the_rows_it_moved`).
+
+**A renamed folder keeps its name and Hide folder flag, by a narrower rule than it looks.** A
+folder row is found by path, so a renamed directory is a new row; `inherit_folder_flags(from, to)`
+hands the old row's `alias` and `hidden` to the new one when the old directory is gone (or is
+the new one under another spelling, `moved::vacated` again), the new folder has neither of its
+own, and **the walk created its row** (`FolderRows::created`: a directory it had no row at the
+path of). Without the last, photos of a hidden, named folder moved into a long-standing folder
+whose old directory was then deleted hid and renamed it
+(`photos_moved_into_a_folder_that_was_already_there_do_not_rename_or_hide_it`). The cost to state
+plainly: the name and flag are lost whenever an earlier scan made the new folder's row before the
+old directory was gone - a first scan cancelled before a flush, a folder moved file by file
+across volumes with the watcher scanning mid-move, a child's subtree scan seeding its parent
+(`seed_ancestors`), a walk that errored after `ensure`. A folder row that is gone by then gives
+`Ok(false)`, not an error (`a_folder_row_that_is_gone_gives_and_takes_nothing`): the scanner
+calls it after `from` may have been emptied and pruned by another watched folder's scan. A flag
+is taken through `set_folder_hidden`, so photos of the new folder inserted before the move was
+noticed are hidden with it. Several order claims in the plan were probed and found to do
+nothing, so none is made here: inheriting before or after the batch's insert saves one write and
+asking the root before the stat saves one stat; neither changes an outcome.
+
+**What does not follow, on purpose.** A photo moved out of the library and back later (its row is
+purged by the second scan that misses it; keeping vanished rows for a period was declined for
+now), a copy made first and the original deleted later (at the copy there was no move; at the
+deletion nothing is new), a file edited and moved at once (its size and time differ), and Picasa's
+data except with the folder's INI - `apply_picasa` mirrors the INI of the folder the photo is in
+*now*, so a photo moved alone loses its Picasa star, faces and albums
+(`a_photo_moved_without_its_ini_loses_its_picasa_star`,
+`a_folder_moved_with_its_ini_keeps_its_stars`). **A move between volumes is a copy then a
+delete**, so if the watcher scans the destination while the originals are still there the copies
+are new photos, and when the originals go their rows are purged. A single file is normally
+followed (both halves land inside the watcher's two-second debounce, `DEBOUNCE`); a long folder move between
+drives while photon runs may be followed in part. Two tests, `a_case_only_file_rename_keeps_its_row`
+and `a_case_only_folder_rename_keeps_its_rows_its_name_and_its_hide_flag`, are compiled everywhere
+and ignored on Linux (`cfg_attr(..., ignore = ...)`): no Linux filesystem can make the case-only
+rename. They run in CI on macOS and Windows and are the only tests of rule 3's positive half on a
+case-insensitive filesystem - do not un-ignore or delete them.
+
 **The watcher drops access events** (`watcher/fs.rs`, `may_have_changed`). On Linux, notify
 registers for inotify's open and close events, so reading a file's EXIF, listing a
 directory or walkdir entering one all arrive as `Access` events on that directory. A scan
@@ -371,8 +473,12 @@ kept). `writer()` is a single mutexed connection.
 item, or changing anything the thumbnail key is made of (`path`/`size`/`mtime_ms`, the
 fingerprint columns, and `edit_turns`/`edit_crop`) — must call
 `settings::bump_thumb_gc_epoch` inside its own transaction. Today that is `purge_items`,
-`update_items`, `remove_watched_folder` and `set_item_edit`. The tripwire test in `settings.rs`
-enumerates those four, so a *new* orphaning write is not caught automatically; the seven-day `THUMB_GC_MAX_AGE`
+`update_items`, `remove_watched_folder`, `set_item_edit` and `move_items` (a moved row's old key
+is garbage), plus `purge_at`, the scanner's guarded purge. The tripwire test in `settings.rs`
+enumerates the first five - not `purge_at` - so a *new* orphaning write is not caught
+automatically; `apply_moves` returns before calling `move_items` for a batch with no move, since
+the epoch moves even for no rows and every import would make the walk of the cache due
+(`an_import_that_follows_no_move_orphans_no_thumbnail`); the seven-day `THUMB_GC_MAX_AGE`
 in `engine.rs` bounds the damage of a miss.
 
 **Edits are rendered by the backend, and the thumbnail key includes them.** An edit
@@ -709,8 +815,12 @@ centre test alone let a small face inside a large one take the large face's name
 vector goes too, with no `embedding_version`: the face is embedded again, and meanwhile counts
 towards its group's average but is not placed by it (`UNGROUPED` asks for the version) -
 without it a re-run emptied every named person's average for the whole embedding step. A
-renamed or moved file or folder is a purge and a new row, so its faces lose their
-confirmations as it loses its albums; and a named person whose confirmed faces are all gone
+renamed or moved file or folder keeps its row (`move_items`, not `update_items`: the content is
+the same, so the detections, their groups, confirmations and rejections stay, and a face's
+rectangle is in fractions of the picture as shown, which a move does not change), so it keeps
+them as it keeps its albums; it loses them only where it is still a purge and a new row - out of
+the watched folders and back, a copy whose original goes later, a move between volumes the
+watcher scanned half-way (above). A named person whose confirmed faces are all gone
 has no average, so draws no suggestions until a group is named for them again. **Hidden
 photos' faces are grouped** like any other, so unhiding is instant, and appear in no People
 reader: the page's two face queries, the People list, the Person view and the search grid each
@@ -878,8 +988,10 @@ action in `mock.js`.
   from the same INI and never written; keywords are read from the photo and never written (the user's renames and
   removals are `tag_rules` rows applied on read, `library/tags.rs`);
   photon's own albums and edits (turns and crops) live only in `library.db` (both are by item
-  id, so a renamed file leaves its albums and loses its edit when its old row is purged — a
-  recorded limitation, not a bug), and so do the faces photon detects itself (`detected_faces`,
+  id, and a renamed or moved file keeps them because the scanner re-points its row
+  (`photon_core::moved`, above); a photo moved out of the library and back, or copied and the
+  original deleted later, is still a purge and a new row, which loses them - a recorded
+  limitation, not a bug), and so do the faces photon detects itself (`detected_faces`,
   deleted when the switch goes off) and the people the user names among them (`people`, deleted
   with them; a name is never written to an INI or a photo); Picasa's albums are read from its
   INI, as noted above, and live nowhere else. An edit never touches the photo: it is rendered on the way to the

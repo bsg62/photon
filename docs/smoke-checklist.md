@@ -460,3 +460,12 @@ named person (Anna below) and a Picasa contact linked to her by name.
 - [ ] Hide every photo of a named person (Ben), then open the dialog and type "ben": the list offers Ben and the hint says "Add to Ben", not "New person".
 - [ ] Switch "Find faces in my photos" off in Settings: the grid's tile menu no longer offers "Add … to a person…"; switch it on again and it does, without restarting.
 - [ ] Click Anna's name in the info panel's People list: the viewer closes and Anna's view opens, the grid focused (the arrow keys move the selection). A name on a photo twice (Picasa and photon) is listed once.
+
+## Renaming and moving photos
+
+- [ ] Put a photo in an album, turn it, add a keyword. With photon running, rename the file in the file manager: within a few seconds the grid shows the new name, and the photo is still in the album, still turned, still tagged. Its thumbnail does not flash to a placeholder.
+- [ ] Quit photon, rename a folder that has a photon name, a hidden photo and a named face in it, start photon: the folder keeps its name, the photo is still hidden, the person's view still lists their photo.
+- [ ] Move a photo from one watched folder to another: it keeps its album. If the two folders are on different drives, a move is a copy then a delete: a single photo is normally still followed, but a long move of a whole folder between drives while photon is running may be followed only in part, the rest arriving as new photos with no album. Moving within one drive is always followed.
+- [ ] Copy a photo (keep the original): the copy is a new photo with no album; the original keeps its own.
+- [ ] Unplug a drive photon watches, copy some of its photos from a backup into another watched folder: the copies appear as new photos; plug the drive back in and its photos still have their albums.
+- [ ] Move a photo out of every watched folder, let photon scan twice, then move it back: it is a new photo with no album (this is not followed).
