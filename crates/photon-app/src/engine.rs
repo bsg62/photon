@@ -2587,7 +2587,37 @@ impl Engine {
         }
         let last = sink.last;
         let cancelled = match &result {
-            Ok(report) => report.cancelled,
+            Ok(report) => {
+                // One line for a scan that changed rows, with what it changed. `moved` is
+                // why it is here: a photo followed to the wrong file shows as nothing but a
+                // photo carrying another's albums and names, and this count - with the row
+                // by row lines `apply_moves` writes at debug level - is what a user's log
+                // has to say about it. Not for a scan that touched nothing: an unplugged
+                // drive is polled every 30 seconds, and the watcher rescans directories
+                // nothing changed in.
+                //
+                // Every counter `touched_rows` adds up, since any one of them alone makes
+                // the line: with only some carried, a scan that did nothing but follow a
+                // star logged "scan finished" over a row of zeros.
+                if report.touched_rows() {
+                    tracing::info!(
+                        watched_id = watched.id,
+                        subtree = subtree.is_some(),
+                        added = report.added,
+                        changed = report.changed,
+                        moved = report.moved,
+                        marked_missing = report.marked_missing,
+                        purged = report.purged,
+                        restarred = report.restarred,
+                        refaced = report.refaced,
+                        rehidden = report.rehidden,
+                        realbumed = report.realbumed,
+                        enriched = report.enriched,
+                        "scan finished"
+                    );
+                }
+                report.cancelled
+            }
             Err(err) => {
                 tracing::warn!(watched_id = watched.id, %err, "scan failed");
                 false
@@ -2820,6 +2850,15 @@ impl ScanSink for ScanReporter<'_> {
         }
     }
 
+    /// Before `indexed` queues the rows, so the worker finds the files under the new key and
+    /// marks the row Ready without decoding. The thumbnails are of the same picture; only
+    /// the path half of their key changed.
+    fn moved(&mut self, keys: &[(u64, u64)]) {
+        for &(old, new) in keys {
+            self.engine.cache.rename(old, new);
+        }
+    }
+
     /// Straight onto the queue, in the order the scanner found them. This used to be a
     /// full `enqueue_pending` on every throttled tick above: a grid-order sort of every
     /// pending row, every 250ms, for the whole of an import - and, with the grid rebuild
@@ -2865,6 +2904,7 @@ mod tests {
     use crate::events::Recorded;
     use crate::testutil::{Fixture, fixture, jpeg, jpeg_pattern, portrait_jpeg, portrait_jpeg_at};
     use photon_core::media::ThumbState;
+    use photon_core::thumbs::ThumbSize;
 
     const MS: Duration = Duration::from_millis(1);
 
@@ -4461,6 +4501,44 @@ mod tests {
             ThumbState::Ready,
             "a no-change scan must still queue pending thumbnails; otherwise a transient \
              render failure is never retried without restarting photon"
+        );
+    }
+
+    #[test]
+    fn a_moved_photos_thumbnails_are_carried_to_its_new_key() {
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a/one.jpg", &img)]);
+        f.add_photos();
+        f.engine.thumbs.wait_idle();
+        let id = f.ids()[0];
+        let before = f.engine.lib.item(id).unwrap().unwrap();
+        assert_eq!(before.thumb_state, ThumbState::Ready);
+        let key_before = before.thumb_key();
+        assert!(f.engine.cache.is_complete(key_before));
+        let bytes = std::fs::read(f.engine.cache.path_for(key_before, ThumbSize::Preview)).unwrap();
+
+        let watched = f.engine.lib.watched_folders().unwrap().remove(0);
+        std::fs::rename(f.photos.join("a/one.jpg"), f.photos.join("a/two.jpg")).unwrap();
+        assert!(f.engine.start_scan(watched));
+        f.engine.wait_for_scans();
+        // The move left the row pending under its new key. The worker has to find the
+        // carried files there and say so, or the photo stays a placeholder in the grid.
+        f.engine.thumbs.wait_idle();
+
+        // Nothing but the carry-over removes a file from the old key, whatever the worker
+        // does with the row meanwhile; and a render would not leave the old key behind.
+        let after = f.engine.lib.item(id).unwrap().unwrap();
+        assert_eq!(after.thumb_state, ThumbState::Ready);
+        let key_after = after.thumb_key();
+        assert_ne!(key_after, key_before);
+        assert!(f.engine.cache.is_complete(key_after));
+        for size in ThumbSize::ALL {
+            assert!(!f.engine.cache.path_for(key_before, size).exists());
+        }
+        // The very file, not a second render of the same picture.
+        assert_eq!(
+            std::fs::read(f.engine.cache.path_for(key_after, ThumbSize::Preview)).unwrap(),
+            bytes
         );
     }
 

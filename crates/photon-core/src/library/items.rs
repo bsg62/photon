@@ -48,6 +48,53 @@ pub struct KnownItem {
     pub exif_version: i64,
 }
 
+/// A row that a new file may be the moved file of (`crate::moved`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct MoveCandidate {
+    pub id: i64,
+    pub path: String,
+    pub file_name: String,
+    pub folder_id: i64,
+    /// The folder's own path, for "is the old directory gone".
+    pub folder_path: String,
+    pub watched_id: i64,
+    pub width: u32,
+    pub height: u32,
+    pub taken_at: i64,
+    pub exif_version: i64,
+    pub edit: Edit,
+}
+
+/// Rows with a given size, mtime and kind, missing ones included: a row a previous scan
+/// marked missing is the likeliest candidate of all, which is why `items_moved` (schema 26)
+/// is not partial like `items_size`. `?4` is one more than `MOVE_CANDIDATE_CAP`.
+const MOVE_CANDIDATES_SQL: &str =
+    "SELECT i.id, i.path, i.file_name, i.folder_id, f.path, f.watched_id, i.width, i.height,
+            i.taken_at, i.exif_version, i.edit_turns, i.edit_crop
+     FROM items i JOIN folders f ON f.id = i.folder_id
+     WHERE i.size = ?1 AND i.mtime_ms = ?2 AND i.kind = ?3
+     LIMIT ?4";
+
+/// The most rows of one size, mtime and kind that are candidates for a new file. With more,
+/// none is: photon does not guess among them.
+///
+/// Every candidate that also has the file's pixel size and capture date costs the scanner
+/// a stat of its old path, and a `canonicalize` when that path still opens something
+/// (`moved::pick`, `moved::vacated`). For a photo that is no row or one. For a cluster of
+/// files that share a byte size and a modification time - uncompressed frames, placeholders,
+/// a dataset unpacked with a normalised mtime - it is every row of the cluster, asked by
+/// every file of it, on the first import as well as after a rename. Measured on tmpfs with
+/// 4,000 files of identical bytes and mtime, before there was a cap: 20 s to import and 41 s
+/// to scan after a folder rename, against 0.22 s and 0.25 s for 4,000 distinct files (with
+/// the cap, 0.4 s and 0.5 s); on a network share each of those stats is a round trip. Rare,
+/// but unbounded.
+///
+/// So the lookup reads one row more than this and, finding it, answers with none, before
+/// anything is asked of the filesystem. The price is that a file moved inside such a cluster
+/// is a new photo and the row it was is purged, as every moved file's was before moves were
+/// followed.
+const MOVE_CANDIDATE_CAP: usize = 32;
+
 /// One live photo in a folder, as the scanner's Picasa pass compares it with the INI.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FolderItem {
@@ -55,7 +102,8 @@ pub struct FolderItem {
     /// The file name, lowercased the way the INI's names are.
     pub name: String,
     pub rating: Option<i64>,
-    /// What the INI said about hiding it when the pass last read it; `None` until then.
+    /// What the INI said about hiding it when the pass last read it; `None` until then, and
+    /// again for a hidden photo that has been renamed or moved since (`Library::move_items`).
     pub picasa_hidden: Option<bool>,
 }
 
@@ -458,9 +506,9 @@ impl Library {
         let mut ids = Vec::with_capacity(items.len());
         {
             let mut stmt = tx.prepare_cached(
-                // `hidden` comes from the folder: a photo added to a folder the user hid -
-                // a new file, or one renamed or moved in, which is a new row - arrives hidden
-                // (`library/hidden.rs`, Hide folder).
+                // `hidden` comes from the folder: a photo added to a folder the user hid
+                // arrives hidden (`library/hidden.rs`, Hide folder). One renamed or moved in
+                // keeps its row and takes the flag in `move_items`.
                 "INSERT INTO items (folder_id, path, file_name, kind, size, mtime_ms, width, height, orientation, taken_at, rating,
                                     make, model, lens, focal_mm, aperture, exposure_s, iso, exif_version, caption, duration_ms,
                                     gps_lat, gps_lon, hidden)
@@ -708,6 +756,8 @@ impl Library {
     }
 
     /// Soft-deletes items; they stay hidden until a later scan purges or restores them.
+    /// By id alone: the scanner, whose ids come from a list read before its walk, uses
+    /// `mark_missing_at`, which a row moved meanwhile survives.
     pub fn mark_missing(&self, ids: &[i64], now_ms: i64) -> Result<()> {
         let mut conn = self.writer();
         let tx = conn.transaction()?;
@@ -723,6 +773,8 @@ impl Library {
         Ok(())
     }
 
+    /// Deletes items by id alone; the scanner uses `purge_at` for the reason `mark_missing`
+    /// gives.
     pub fn purge_items(&self, ids: &[i64]) -> Result<()> {
         let mut conn = self.writer();
         let tx = conn.transaction()?;
@@ -735,6 +787,159 @@ impl Library {
         }
         tx.commit()?;
         Ok(())
+    }
+
+    /// `mark_missing`, for ids read before a walk: only a row still at `path` is marked. A
+    /// row the walk (or a scan of another watched folder) re-pointed with `move_items` is
+    /// at a new path and is left alone - that is what keeps a followed move from being
+    /// marked missing by the very scan that followed it. Returns how many were marked.
+    pub fn mark_missing_at(&self, rows: &[(i64, String)], now_ms: i64) -> Result<u64> {
+        let mut conn = self.writer();
+        let tx = conn.transaction()?;
+        let mut marked = 0;
+        {
+            let mut stmt = tx.prepare_cached(
+                "UPDATE items SET missing_since = ?3
+                 WHERE id = ?1 AND path = ?2 AND missing_since IS NULL",
+            )?;
+            for (id, path) in rows {
+                marked += stmt.execute(params![id, path, now_ms])? as u64;
+            }
+        }
+        tx.commit()?;
+        Ok(marked)
+    }
+
+    /// `purge_items`, guarded the same way as `mark_missing_at`. Returns how many rows were
+    /// deleted.
+    pub fn purge_at(&self, rows: &[(i64, String)]) -> Result<u64> {
+        let mut conn = self.writer();
+        let tx = conn.transaction()?;
+        super::settings::bump_thumb_gc_epoch(&tx)?;
+        let mut purged = 0;
+        {
+            let mut stmt = tx.prepare_cached("DELETE FROM items WHERE id = ?1 AND path = ?2")?;
+            for (id, path) in rows {
+                purged += stmt.execute(params![id, path])? as u64;
+            }
+        }
+        tx.commit()?;
+        Ok(purged)
+    }
+
+    /// Every row, live or missing, with this size, mtime and kind - or none, when there are
+    /// more than `MOVE_CANDIDATE_CAP` of them. Served by `items_moved`.
+    pub fn move_candidates(
+        &self,
+        size: i64,
+        mtime_ms: i64,
+        kind: MediaKind,
+    ) -> Result<Vec<MoveCandidate>> {
+        let conn = self.reader()?;
+        let mut stmt = conn.prepare_cached(MOVE_CANDIDATES_SQL)?;
+        let limit = MOVE_CANDIDATE_CAP as i64 + 1;
+        let mut rows = stmt
+            .query_map(params![size, mtime_ms, kind.to_db(), limit], |r| {
+                Ok(MoveCandidate {
+                    id: r.get(0)?,
+                    path: r.get(1)?,
+                    file_name: r.get(2)?,
+                    folder_id: r.get(3)?,
+                    folder_path: r.get(4)?,
+                    watched_id: r.get(5)?,
+                    width: r.get(6)?,
+                    height: r.get(7)?,
+                    taken_at: r.get(8)?,
+                    exif_version: r.get(9)?,
+                    edit: edit_from_db(r.get(10)?, r.get(11)?),
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        // The extra row is the evidence of a cluster, and a cluster is no candidate.
+        if rows.len() > MOVE_CANDIDATE_CAP {
+            rows.clear();
+        }
+        Ok(rows)
+    }
+
+    /// Re-points each row from `old_path` to the file `NewItem` describes: the scanner found
+    /// a new file that is an old row's file under another name (spec
+    /// `2026-10-05-photon-follow-moved-files-design.md`). Returns, per input in order,
+    /// whether the row was moved; `false` means it is no longer at `old_path` (purged or
+    /// claimed since the lookup) and the caller must insert the file instead.
+    ///
+    /// Not `update_items`, which is for a file whose *content* changed and so clears the
+    /// hashes, the look-alike group and the detections. Here the content is the same file,
+    /// so everything derived from the picture, every edit, the rating and every row that
+    /// hangs on the id stays. What is written is the place, the metadata the scan just read
+    /// (a row behind `EXIF_VERSION` is brought up to date in passing), the thumbnail state -
+    /// the path is part of the thumbnail key, so the row names thumbnails not yet there -
+    /// and `hidden`, which only ever goes up: a hidden folder hides what arrives in it, as
+    /// `insert_items` does, but a photo the user hid does not come back out. The GC epoch
+    /// moves because the old key's thumbnails are orphaned.
+    ///
+    /// One column about the old place is dropped. `picasa_hidden` is what the INI of the
+    /// folder the photo was in said about the name it had, and the hidden pass follows a
+    /// *change* in that answer (`scanner::apply_folder_hidden`). Renamed, or moved without its
+    /// INI, the photo has no line where it is now, and a stored "yes" against that read as
+    /// Picasa un-hiding it: a photo hidden in Picasa came back visible by being renamed. So
+    /// a row that is hidden once this write is done forgets the answer, and the pass reads
+    /// the new place as a first read, which follows a `hidden=yes` and ignores a missing
+    /// line. Hidden *after* the write, not before: a visible photo moved into a hidden folder
+    /// is hidden by the line above, and its old "yes" would un-hide it just the same. A row
+    /// that stays visible keeps its answer, because for a photo the user un-hid in photon
+    /// that "yes" is the whole record of the unhide: forgotten, a folder renamed with its
+    /// INI would hide the photo again.
+    pub fn move_items(&self, moves: &[(i64, String, NewItem)]) -> Result<Vec<bool>> {
+        let mut conn = self.writer();
+        let tx = conn.transaction()?;
+        super::settings::bump_thumb_gc_epoch(&tx)?;
+        let mut moved = Vec::with_capacity(moves.len());
+        {
+            let mut stmt = tx.prepare_cached(
+                // Every right-hand side of a SET reads the row as it was, so a bare `hidden`
+                // in the CASE would be the flag before this write. The MAX is spelled out a
+                // second time there to ask about the flag after it.
+                "UPDATE items SET folder_id = ?3, path = ?4, file_name = ?5,
+                        make = ?6, model = ?7, lens = ?8, focal_mm = ?9, aperture = ?10,
+                        exposure_s = ?11, iso = ?12, exif_version = ?13, taken_at = ?14,
+                        caption = ?15, gps_lat = ?16, gps_lon = ?17,
+                        thumb_state = 0, thumb_error = NULL, missing_since = NULL,
+                        hidden = MAX(hidden, coalesce((SELECT hidden FROM folders WHERE id = ?3), 0)),
+                        picasa_hidden = CASE
+                            WHEN MAX(hidden, coalesce((SELECT hidden FROM folders WHERE id = ?3), 0)) = 1
+                            THEN NULL ELSE picasa_hidden END
+                 WHERE id = ?1 AND path = ?2",
+            )?;
+            for (id, old_path, it) in moves {
+                let c = &it.camera;
+                let changed = stmt.execute(params![
+                    id,
+                    old_path,
+                    it.folder_id,
+                    it.path,
+                    it.file_name,
+                    c.make,
+                    c.model,
+                    c.lens,
+                    c.focal_mm,
+                    c.aperture,
+                    c.exposure_s,
+                    c.iso,
+                    EXIF_VERSION,
+                    it.taken_at,
+                    it.caption,
+                    c.gps.map(|g| g.lat),
+                    c.gps.map(|g| g.lon),
+                ])?;
+                if changed == 1 {
+                    write_tags(&tx, *id, &it.tags)?;
+                }
+                moved.push(changed == 1);
+            }
+        }
+        tx.commit()?;
+        Ok(moved)
     }
 
     /// Every item under a watched folder, keyed by path, including soft-deleted ones.
@@ -3229,5 +3434,347 @@ mod tests {
         let pos = |id| all.iter().position(|&x| x == id).unwrap();
         assert!(pos(ids[2]) < pos(ids[1]));
         assert_eq!(lib.video_count().unwrap(), 2);
+    }
+
+    /// Three rows in one folder that differ in one field each from the probe: only the row
+    /// with the probe's size, mtime and kind is a candidate, and a missing row is.
+    #[test]
+    fn move_candidates_finds_live_and_missing_rows_by_size_time_and_kind() {
+        let (_dir, lib) = temp_library();
+        let (watched, folder) = seed_folder(&lib, Path::new("/p"));
+        let mut other_size = new_item(folder, "/p/b.jpg", 2);
+        other_size.size = 101;
+        let mut video = new_item(folder, "/p/c.mp4", 3);
+        video.kind = MediaKind::Video;
+        let ids = lib
+            .insert_items(&[new_item(folder, "/p/a.jpg", 1), other_size, video])
+            .unwrap();
+        lib.mark_missing(&[ids[0]], 5).unwrap();
+
+        let found = lib.move_candidates(100, 1_000, MediaKind::Image).unwrap();
+        assert_eq!(
+            found,
+            [MoveCandidate {
+                id: ids[0],
+                path: "/p/a.jpg".into(),
+                file_name: "a.jpg".into(),
+                folder_id: folder,
+                folder_path: "/p".into(),
+                watched_id: watched,
+                width: 400,
+                height: 300,
+                taken_at: 1,
+                exif_version: EXIF_VERSION,
+                edit: Edit::default(),
+            }]
+        );
+        assert!(
+            lib.move_candidates(100, 1_001, MediaKind::Image)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    /// A cluster of rows with one size, time and kind is handed over whole up to the cap,
+    /// and not at all past it: every row handed over can cost the caller a stat.
+    #[test]
+    fn move_candidates_gives_none_once_more_than_the_cap_fit() {
+        let (_dir, lib) = temp_library();
+        let (_, folder) = seed_folder(&lib, Path::new("/p"));
+        let rows = |n: std::ops::Range<usize>| -> Vec<NewItem> {
+            n.map(|i| new_item(folder, &format!("/p/{i}.jpg"), 1))
+                .collect()
+        };
+        let found = |lib: &Library| {
+            lib.move_candidates(100, 1_000, MediaKind::Image)
+                .unwrap()
+                .len()
+        };
+
+        lib.insert_items(&rows(0..32)).unwrap();
+        assert_eq!(found(&lib), 32);
+        lib.insert_items(&rows(32..33)).unwrap();
+        assert_eq!(found(&lib), 0);
+        lib.insert_items(&rows(33..40)).unwrap();
+        assert_eq!(found(&lib), 0);
+    }
+
+    #[test]
+    fn the_move_lookup_is_served_by_its_index() {
+        let (_dir, lib) = temp_library();
+        let limit = MOVE_CANDIDATE_CAP as i64 + 1;
+        let plan = lib.query_plan(MOVE_CANDIDATES_SQL, &[&0i64, &0i64, &0i64, &limit]);
+        assert!(
+            plan.iter().any(|step| step.contains("items_moved")),
+            "expected the move index, got {plan:?}"
+        );
+    }
+
+    /// One row with everything that can hang on it, moved into another folder: the row is the
+    /// same row, at the new place, with the thumbnail to be made again - and nothing about
+    /// the picture, the albums, the keywords or the hashes is gone.
+    #[test]
+    fn move_items_repoints_the_row_and_keeps_what_hangs_on_it() {
+        let (_dir, lib) = temp_library();
+        let (watched, folder) = seed_folder(&lib, Path::new("/p"));
+        let sub = lib
+            .upsert_folder(watched, Some(folder), "/p/sub", 1)
+            .unwrap();
+        let mut original = new_item(folder, "/p/a.jpg", 1);
+        original.tags = vec!["from-file".into()];
+        let id = lib.insert_items(&[original.clone()]).unwrap()[0];
+        let album = lib.create_album("Trip", 1).unwrap();
+        lib.add_to_album(album.id, &[id], 1).unwrap();
+        lib.add_item_tag(id, "kept").unwrap();
+        let turned = Edit::new(1, None).unwrap();
+        lib.set_item_edit(id, turned).unwrap();
+        lib.set_hidden(&[id], true).unwrap();
+        lib.set_similar_groups(&[(id, id)]).unwrap();
+        lib.set_ratings(&[(id, 1)]).unwrap();
+        // What the passes derive from the picture, which is the same picture after the move.
+        // Written directly, as `replacing_a_file_clears_its_similarity_columns` does: each
+        // has a setter with a guard of its own, which is not what is under test.
+        let derived = || -> (Option<Vec<u8>>, Option<i64>, Option<i64>) {
+            lib.reader()
+                .unwrap()
+                .query_row(
+                    "SELECT content_hash, percep_hash, face_version FROM items WHERE id = ?1",
+                    [id],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )
+                .unwrap()
+        };
+        lib.writer()
+            .execute(
+                "UPDATE items SET content_hash = x'0102', percep_hash = 42, face_version = 3
+                 WHERE id = ?1",
+                [id],
+            )
+            .unwrap();
+        let before = derived();
+        assert_eq!(before, (Some(vec![1, 2]), Some(42), Some(3)));
+        lib.mark_missing(&[id], 5).unwrap();
+        lib.set_thumb_state(id, ThumbState::Ready, None).unwrap();
+        // A second photo, visible, moved beside it: the hidden one alone cannot tell a flag
+        // that was kept from one the move sets on every row.
+        let seen = lib
+            .insert_items(&[new_item(folder, "/p/seen.jpg", 2)])
+            .unwrap()[0];
+
+        let moved = lib
+            .move_items(&[
+                (
+                    id,
+                    "/p/a.jpg".into(),
+                    NewItem {
+                        path: "/p/sub/b.jpg".into(),
+                        file_name: "b.jpg".into(),
+                        folder_id: sub,
+                        ..original
+                    },
+                ),
+                (
+                    seen,
+                    "/p/seen.jpg".into(),
+                    new_item(sub, "/p/sub/seen.jpg", 2),
+                ),
+            ])
+            .unwrap();
+        assert_eq!(moved, [true, true]);
+
+        let item = lib.item(id).unwrap().unwrap();
+        assert_eq!(item.path, "/p/sub/b.jpg");
+        assert_eq!(item.folder_id, sub);
+        assert_eq!(item.missing_since, None);
+        assert_eq!(item.thumb_state, ThumbState::Pending);
+        assert_eq!(item.edit, turned);
+        assert!(item.hidden, "a hidden photo came back visible");
+        assert!(
+            !lib.item(seen).unwrap().unwrap().hidden,
+            "a visible photo was hidden by moving into a visible folder"
+        );
+        assert_eq!(item.rating, Some(1));
+        assert_eq!(derived(), before);
+        assert_eq!(lib.item_albums(id).unwrap(), [album.id]);
+        let mut tags = lib.item_tags(id).unwrap();
+        tags.sort();
+        assert_eq!(tags, ["from-file", "kept"]);
+        assert_eq!(lib.similar_groups().unwrap(), [(id, id)]);
+        let known = lib.known_items(watched).unwrap();
+        assert!(known.contains_key("/p/sub/b.jpg"));
+        assert!(!known.contains_key("/p/a.jpg"));
+    }
+
+    #[test]
+    fn move_items_reports_a_row_that_is_no_longer_at_its_old_path() {
+        let (_dir, lib) = temp_library();
+        let (_, folder) = seed_folder(&lib, Path::new("/p"));
+        let item = new_item(folder, "/p/b.jpg", 1);
+        let id = lib
+            .insert_items(&[new_item(folder, "/p/a.jpg", 1)])
+            .unwrap()[0];
+        let gone = lib
+            .insert_items(&[new_item(folder, "/p/gone.jpg", 1)])
+            .unwrap()[0];
+        lib.purge_items(&[gone]).unwrap();
+
+        let moved = lib
+            .move_items(&[
+                (id, "/p/elsewhere.jpg".into(), item.clone()),
+                (gone, "/p/gone.jpg".into(), item),
+            ])
+            .unwrap();
+        assert_eq!(moved, [false, false]);
+        assert_eq!(lib.item(id).unwrap().unwrap().path, "/p/a.jpg");
+    }
+
+    #[test]
+    fn a_moved_row_keeps_its_own_hidden_flag_and_takes_a_hidden_folders() {
+        let (_dir, lib) = temp_library();
+        let (watched, folder) = seed_folder(&lib, Path::new("/p"));
+        let plain = lib
+            .upsert_folder(watched, Some(folder), "/p/plain", 1)
+            .unwrap();
+        let hidden = lib
+            .upsert_folder(watched, Some(folder), "/p/hid", 1)
+            .unwrap();
+        lib.set_folder_hidden(hidden, true).unwrap();
+        let ids = lib
+            .insert_items(&[
+                new_item(folder, "/p/a.jpg", 1),
+                new_item(folder, "/p/b.jpg", 2),
+            ])
+            .unwrap();
+        lib.set_hidden(&[ids[0]], true).unwrap();
+
+        let moved = lib
+            .move_items(&[
+                (
+                    ids[0],
+                    "/p/a.jpg".into(),
+                    new_item(plain, "/p/plain/a.jpg", 1),
+                ),
+                (
+                    ids[1],
+                    "/p/b.jpg".into(),
+                    new_item(hidden, "/p/hid/b.jpg", 2),
+                ),
+            ])
+            .unwrap();
+        assert_eq!(moved, [true, true]);
+        assert!(lib.item(ids[0]).unwrap().unwrap().hidden, "stays hidden");
+        assert!(
+            lib.item(ids[1]).unwrap().unwrap().hidden,
+            "takes the folder's"
+        );
+    }
+
+    /// `picasa_hidden` is the INI's answer under the old name, in the old folder. A row that
+    /// is hidden once the move is written forgets it, so the hidden pass reads the new place
+    /// for the first time and cannot take a missing line for Picasa un-hiding the photo. A
+    /// row that is visible keeps it: it is what holds an unhide made in photon against an
+    /// INI that still says yes.
+    #[test]
+    fn a_moved_row_forgets_picasas_answer_only_when_it_is_hidden() {
+        let (_dir, lib) = temp_library();
+        let (watched, folder) = seed_folder(&lib, Path::new("/p"));
+        let put_away = lib
+            .upsert_folder(watched, Some(folder), "/p/hid", 1)
+            .unwrap();
+        lib.set_folder_hidden(put_away, true).unwrap();
+        let names = ["a", "b", "c", "d"];
+        let ids = lib
+            .insert_items(&names.map(|n| new_item(folder, &format!("/p/{n}.jpg"), 1)))
+            .unwrap();
+        // a: hidden by Picasa. b: hidden by Picasa, un-hidden in photon. c: never hidden, and
+        // read. d: as b, and moved into a hidden folder.
+        lib.apply_picasa_hidden(&[
+            (ids[0], true, true),
+            (ids[1], true, true),
+            (ids[2], false, false),
+            (ids[3], true, true),
+        ])
+        .unwrap();
+        lib.set_hidden(&[ids[1], ids[3]], false).unwrap();
+
+        let to = |i: usize, folder: i64, path: &str| {
+            (ids[i], format!("/p/{}.jpg", names[i]), {
+                new_item(folder, path, 1)
+            })
+        };
+        let moved = lib
+            .move_items(&[
+                to(0, folder, "/p/a2.jpg"),
+                to(1, folder, "/p/b2.jpg"),
+                to(2, folder, "/p/c2.jpg"),
+                to(3, put_away, "/p/hid/d.jpg"),
+            ])
+            .unwrap();
+        assert_eq!(moved, [true; 4]);
+
+        let said = |folder: i64, id: i64| {
+            let items = lib.folder_item_names(folder).unwrap();
+            items.iter().find(|i| i.id == id).unwrap().picasa_hidden
+        };
+        assert_eq!(said(folder, ids[0]), None, "hidden before the move");
+        assert_eq!(
+            said(folder, ids[1]),
+            Some(true),
+            "visible: the unhide's record"
+        );
+        assert_eq!(said(folder, ids[2]), Some(false));
+        assert_eq!(
+            said(put_away, ids[3]),
+            None,
+            "hidden by the folder it went to"
+        );
+        let hidden = |id: i64| lib.item(id).unwrap().unwrap().hidden;
+        assert_eq!(
+            [0, 1, 2, 3].map(|i| hidden(ids[i])),
+            [true, false, false, true]
+        );
+    }
+
+    #[test]
+    fn a_move_brings_a_stale_row_up_to_date() {
+        let (_dir, lib) = temp_library();
+        let (watched, folder) = seed_folder(&lib, Path::new("/p"));
+        let id = lib
+            .insert_items(&[new_item(folder, "/p/a.jpg", 1)])
+            .unwrap()[0];
+        lib.forget_metadata_for_test(id).unwrap();
+        let mut moved = new_item(folder, "/p/b.jpg", 1);
+        moved.camera.iso = Some(400);
+
+        lib.move_items(&[(id, "/p/a.jpg".into(), moved)]).unwrap();
+        assert_eq!(lib.item(id).unwrap().unwrap().camera.iso, Some(400));
+        assert_eq!(
+            lib.known_items(watched).unwrap()["/p/b.jpg"].exif_version,
+            EXIF_VERSION
+        );
+    }
+
+    #[test]
+    fn the_guarded_mark_and_purge_change_only_a_row_still_at_its_path() {
+        let (_dir, lib) = temp_library();
+        let (_, folder) = seed_folder(&lib, Path::new("/p"));
+        let ids = lib
+            .insert_items(&[
+                new_item(folder, "/p/a.jpg", 1),
+                new_item(folder, "/p/b.jpg", 2),
+            ])
+            .unwrap();
+        let rows = [
+            (ids[0], "/p/a.jpg".to_string()),
+            (ids[1], "/p/WRONG.jpg".to_string()),
+        ];
+
+        assert_eq!(lib.mark_missing_at(&rows, 5).unwrap(), 1);
+        assert_eq!(lib.item(ids[0]).unwrap().unwrap().missing_since, Some(5));
+        assert_eq!(lib.item(ids[1]).unwrap().unwrap().missing_since, None);
+
+        assert_eq!(lib.purge_at(&rows).unwrap(), 1);
+        assert!(lib.item(ids[0]).unwrap().is_none());
+        assert!(lib.item(ids[1]).unwrap().is_some());
     }
 }

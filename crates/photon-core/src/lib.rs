@@ -16,6 +16,7 @@ pub mod keywords;
 pub mod library;
 pub mod media;
 pub mod metadata;
+pub(crate) mod moved;
 pub mod paths;
 pub mod people;
 pub mod picasa;

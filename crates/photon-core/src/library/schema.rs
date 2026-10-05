@@ -421,6 +421,12 @@ CREATE TABLE face_rejections (
     PRIMARY KEY (face_id, person_id)
 );
 "#,
+    // 26: the lookup a scan makes for each new file, to find the row it used to be
+    // (`Library::move_candidates`). Not partial, unlike `items_size`: a row a previous scan
+    // marked missing is the likeliest candidate of all.
+    r#"
+CREATE INDEX items_moved ON items(size, mtime_ms);
+"#,
 ];
 
 pub fn migrate(conn: &Connection) -> Result<()> {
@@ -672,7 +678,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 25);
+        assert_eq!(version, 26);
         let rules: i64 = conn
             .query_row("SELECT count(*) FROM tag_rules", [], |r| r.get(0))
             .unwrap();
@@ -831,7 +837,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 25);
+        assert_eq!(version, 26);
         let overlay: i64 = conn
             .query_row("SELECT count(*) FROM item_user_tags", [], |r| r.get(0))
             .unwrap();
@@ -881,7 +887,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 25);
+        assert_eq!(version, 26);
         let hash: Option<Vec<u8>> = conn
             .query_row("SELECT content_hash FROM items WHERE id = 1", [], |r| {
                 r.get(0)
@@ -1022,7 +1028,7 @@ mod tests {
             .unwrap();
         // Hardcoded, like every other version assertion here: `MIGRATIONS.len()` would
         // agree with itself whatever the list did, which is the tripwire removed.
-        assert_eq!(version, 25);
+        assert_eq!(version, 26);
     }
 
     /// Every folder in an existing library comes out of the upgrade visible.
@@ -1060,7 +1066,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 25);
+        assert_eq!(version, 26);
     }
 
     /// Every album in an existing library comes out of the upgrade as photon's own.
@@ -1093,7 +1099,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 25);
+        assert_eq!(version, 26);
     }
 
     /// Every Picasa album in an existing library comes out of the upgrade with no recorded
@@ -1127,7 +1133,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 25);
+        assert_eq!(version, 26);
     }
 
     /// Every photo in an existing library comes out of the upgrade uncaptioned, for the
@@ -1166,7 +1172,7 @@ mod tests {
             .unwrap()
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 25);
+        assert_eq!(version, 26);
     }
 
     /// A stored Conservative or Loose keeps meaning Conservative or Loose.
@@ -1200,7 +1206,7 @@ mod tests {
             let version: i64 = conn
                 .query_row("PRAGMA user_version", [], |r| r.get(0))
                 .unwrap();
-            assert_eq!(version, 25);
+            assert_eq!(version, 26);
         }
     }
 
@@ -1250,7 +1256,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 25);
+        assert_eq!(version, 26);
     }
 
     /// Every folder in an existing library comes out of the upgrade with no alias, so the
@@ -1288,7 +1294,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 25);
+        assert_eq!(version, 26);
     }
 
     /// A library at schema 21 comes out of the upgrade with the Videos index, and with
@@ -1336,7 +1342,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 25);
+        assert_eq!(version, 26);
     }
 
     /// A library at schema 23 with photos in it comes out with the table, and every photo
@@ -1372,7 +1378,7 @@ mod tests {
         let user: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(user, 25);
+        assert_eq!(user, 26);
     }
 
     #[test]
@@ -1461,7 +1467,46 @@ mod tests {
         let user: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(user, 25);
+        assert_eq!(user, 26);
+    }
+
+    /// The move lookup's index arriving in a populated library: the rows stay, the index is there.
+    #[test]
+    fn migration_26_adds_the_move_index_to_a_populated_library() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("library.db");
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        for sql in &MIGRATIONS[..25] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 25i64).unwrap();
+        conn.execute_batch(
+            "INSERT INTO watched_folders (id, path) VALUES (1, '/p');
+             INSERT INTO folders (id, watched_id, path, name, sort_key) VALUES (1, 1, '/p', 'p', 1);
+             INSERT INTO items (id, folder_id, path, file_name, kind, size, mtime_ms, width, height, orientation, taken_at)
+             VALUES (1, 1, '/p/a.jpg', 'a.jpg', 0, 1, 1, 1, 1, 1, 1);",
+        )
+        .unwrap();
+        drop(conn);
+
+        let lib = crate::library::Library::open(&path).unwrap();
+        let conn = lib.reader().unwrap();
+        let user: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(user, 26);
+        let items: i64 = conn
+            .query_row("SELECT count(*) FROM items", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(items, 1);
+        let index: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type = 'index' AND name = 'items_moved'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(index, 1);
     }
 
     /// The highest id deleted and a row inserted: the new row's id is above it. Ids the

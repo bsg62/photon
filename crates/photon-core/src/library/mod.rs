@@ -41,7 +41,7 @@ pub use detected_faces::{EmbedCandidate, FaceCandidate};
 pub use duplicates::{CopiesArg, HashCandidate, ItemCopy};
 pub use faces::{ItemFace, Person};
 pub use folders::{Folder, WatchedFolder};
-pub use items::{FolderItem, Item, KnownItem, NewItem, RECENT_LIMIT, is_starred};
+pub use items::{FolderItem, Item, KnownItem, MoveCandidate, NewItem, RECENT_LIMIT, is_starred};
 pub use people::{
     FaceFilter, NamedItems, NamedPerson, Offer, PageFace, PageGroup, PeoplePage, RemovedItems,
     Skipped, SkippedItem,
@@ -222,7 +222,7 @@ mod tests {
             .unwrap()
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 25);
+        assert_eq!(version, 26);
         let tables: i64 = lib
             .reader()
             .unwrap()
@@ -248,7 +248,7 @@ mod tests {
             Library::open(&path),
             Err(Error::SchemaTooNew {
                 found: 99,
-                supported: 25
+                supported: 26
             })
         ));
     }

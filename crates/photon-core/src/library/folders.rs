@@ -282,7 +282,7 @@ impl Library {
                 let cut: String = a.trim().chars().take(MAX_FOLDER_ALIAS_CHARS).collect();
                 cut.trim_end().to_string()
             })
-            .filter(|a| !a.is_empty() && *a != name);
+            .filter(|a| !a.is_empty() && !repeats_name(a, &name));
         if alias == current {
             return Ok(false);
         }
@@ -293,6 +293,72 @@ impl Library {
         tx.commit()?;
         Ok(true)
     }
+
+    /// Gives folder `to` the alias and Hide-folder flag of `from`, when `to` has neither: a
+    /// renamed directory is a new folder row, and what the user set on the old one follows
+    /// the photos that followed it. A folder with a name or a flag of its own keeps them.
+    /// The flag goes through `set_folder_hidden`, so photos of `to` indexed before the move
+    /// was noticed are hidden with it. Returns whether anything was written.
+    ///
+    /// An alias that is `to`'s own name is not carried, by the comparison `set_folder_alias`
+    /// stores by (`repeats_name`): "Holiday" on `trip/`, and the directory then renamed to
+    /// `Holiday`, is a folder with no alias. Copied as it stood it was one that stuck: the
+    /// directory renamed once more to `Summer 2019` was still shown as "Holiday". The flag
+    /// is carried either way.
+    ///
+    /// A folder that has no row any more gives nothing and takes nothing, and that is
+    /// `Ok(false)`, not `NotFound`: the scanner calls this after it has re-pointed photos out
+    /// of `from`, which can leave `from` empty, and an empty folder whose directory is gone
+    /// is pruned by the next scan of the watched folder it is in to finish (`prune_folders`
+    /// deletes only its own watched folder's rows). When the photos went to another watched
+    /// folder, that scan has its own slot and can finish between the two writes; removing
+    /// the watched folder deletes the row as well. Answered as an error it failed a scan
+    /// over a name that was already past saving.
+    pub fn inherit_folder_flags(&self, from: i64, to: i64) -> Result<bool> {
+        let (alias, hidden, to_alias, to_hidden) = {
+            let conn = self.reader()?;
+            let read = |id: i64| -> Result<Option<(Option<String>, bool, String)>> {
+                Ok(conn
+                    .query_row(
+                        "SELECT alias, hidden, name FROM folders WHERE id = ?1",
+                        params![id],
+                        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                    )
+                    .optional()?)
+            };
+            let (Some((alias, hidden, _)), Some((to_alias, to_hidden, to_name))) =
+                (read(from)?, read(to)?)
+            else {
+                return Ok(false);
+            };
+            let alias = alias.filter(|alias| !repeats_name(alias, &to_name));
+            (alias, hidden, to_alias, to_hidden)
+        };
+        if to_alias.is_some() || to_hidden || (alias.is_none() && !hidden) {
+            return Ok(false);
+        }
+        if alias.is_some() {
+            // Trimmed and cut when it was set on `from`.
+            self.writer().execute(
+                "UPDATE folders SET alias = ?2 WHERE id = ?1",
+                params![to, alias],
+            )?;
+        }
+        if hidden {
+            self.set_folder_hidden(to, true)?;
+        }
+        Ok(true)
+    }
+}
+
+/// Whether `alias` only repeats the directory's own `name`, which makes it no alias at all:
+/// stored, it would match search as a second copy of the name and outlive the next rename
+/// of the directory. One comparison for the two writers of the column - `set_folder_alias`,
+/// which stores NULL for it, and `inherit_folder_flags`, which does not carry it to a
+/// directory of that name - so that they cannot come to disagree about what repeats.
+/// Exact, case and all: "holiday" over a directory `Holiday` is a name the user chose.
+fn repeats_name(alias: &str, name: &str) -> bool {
+    alias == name
 }
 
 /// Runs `delete` until it removes nothing, returning the total.
@@ -669,5 +735,97 @@ mod tests {
             !plan.iter().any(|step| step.starts_with("SCAN i USING")),
             "photos must not be read in an index's order: {plan:?}"
         );
+    }
+
+    #[test]
+    fn a_folder_inherits_an_alias_and_the_hide_flag_only_when_it_has_neither() {
+        let (_dir, lib) = temp_library();
+        let w = watch(&lib, "/photos");
+        let from = lib.upsert_folder(w.id, None, "/photos/old", 1).unwrap();
+        let to = lib.upsert_folder(w.id, None, "/photos/new", 1).unwrap();
+        let named = lib.upsert_folder(w.id, None, "/photos/named", 1).unwrap();
+        lib.set_folder_alias(from, Some("Holiday")).unwrap();
+        lib.set_folder_hidden(from, true).unwrap();
+        lib.set_folder_alias(named, Some("Mine")).unwrap();
+        let item = lib
+            .insert_items(&[new_item(to, "/photos/new/a.jpg", 1)])
+            .unwrap()[0];
+
+        assert!(lib.inherit_folder_flags(from, to).unwrap());
+        let folder = |id| {
+            lib.folders()
+                .unwrap()
+                .into_iter()
+                .find(|f| f.id == id)
+                .unwrap()
+        };
+        assert_eq!(folder(to).alias.as_deref(), Some("Holiday"));
+        assert!(folder(to).hidden);
+        assert!(lib.item(item).unwrap().unwrap().hidden);
+        assert!(
+            !lib.inherit_folder_flags(from, to).unwrap(),
+            "now it has both"
+        );
+
+        assert!(!lib.inherit_folder_flags(from, named).unwrap());
+        assert_eq!(folder(named).alias.as_deref(), Some("Mine"));
+        assert!(!folder(named).hidden);
+    }
+
+    /// An alias that is the new directory's own name is not an alias: `set_folder_alias`
+    /// stores NULL for it, and handed on as it stands it would stick - the directory renamed
+    /// once more went on being shown under the name it had left. The Hide folder flag is
+    /// another matter and is still handed on.
+    #[test]
+    fn an_alias_that_is_the_new_folders_own_name_is_not_inherited() {
+        let (_dir, lib) = temp_library();
+        let w = watch(&lib, "/photos");
+        let from = lib.upsert_folder(w.id, None, "/photos/trip", 1).unwrap();
+        let to = lib.upsert_folder(w.id, None, "/photos/Holiday", 1).unwrap();
+        let folder = |id| {
+            lib.folders()
+                .unwrap()
+                .into_iter()
+                .find(|f| f.id == id)
+                .unwrap()
+        };
+        lib.set_folder_alias(from, Some("Holiday")).unwrap();
+
+        assert!(
+            !lib.inherit_folder_flags(from, to).unwrap(),
+            "nothing was there to hand on"
+        );
+        assert_eq!(folder(to).alias, None);
+
+        lib.set_folder_hidden(from, true).unwrap();
+        assert!(lib.inherit_folder_flags(from, to).unwrap());
+        assert_eq!(folder(to).alias, None);
+        assert!(folder(to).hidden, "the flag was dropped with the alias");
+
+        // Another spelling is another name, as it is to `set_folder_alias`.
+        let cased = lib.upsert_folder(w.id, None, "/photos/holiday", 1).unwrap();
+        assert!(lib.inherit_folder_flags(from, cased).unwrap());
+        assert_eq!(folder(cased).alias.as_deref(), Some("Holiday"));
+    }
+
+    /// The folder a photo left can be pruned before its name is handed on: by a scan of the
+    /// watched folder it is in, when the photo went to another. That is a state, not an
+    /// error: answered as one, it failed the scan that had just followed the photo.
+    #[test]
+    fn a_folder_row_that_is_gone_gives_and_takes_nothing() {
+        let (_dir, lib) = temp_library();
+        let w = watch(&lib, "/photos");
+        let here = lib.upsert_folder(w.id, None, "/photos/here", 1).unwrap();
+        let gone = here + 1000;
+
+        let before = lib.folders().unwrap();
+        assert!(!lib.inherit_folder_flags(gone, here).unwrap());
+        assert_eq!(lib.folders().unwrap(), before);
+
+        lib.set_folder_alias(here, Some("Holiday")).unwrap();
+        lib.set_folder_hidden(here, true).unwrap();
+        let before = lib.folders().unwrap();
+        assert!(!lib.inherit_folder_flags(here, gone).unwrap());
+        assert_eq!(lib.folders().unwrap(), before);
     }
 }
