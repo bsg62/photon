@@ -114,6 +114,29 @@ impl ThumbCache {
             .all(|&size| self.path_for(fp, size).is_file())
     }
 
+    /// Moves each size's cached file from key `from` to key `to`. A key is made of the
+    /// file's path, so a photo that was renamed or moved names thumbnails that are not
+    /// cached, while the ones under its old key are of the very same picture: it has not
+    /// changed, only what it is called. A size with nothing under `from` is skipped. A rename
+    /// that fails is logged and costs one render, never a wrong picture, since a key names
+    /// one picture.
+    pub fn rename(&self, from: u64, to: u64) {
+        for size in ThumbSize::ALL {
+            let (src, dst) = (self.path_for(from, size), self.path_for(to, size));
+            if !src.is_file() {
+                continue;
+            }
+            let moved = match dst.parent() {
+                Some(dir) => fs::create_dir_all(dir),
+                None => Ok(()),
+            }
+            .and_then(|()| fs::rename(&src, &dst));
+            if let Err(err) = moved {
+                tracing::warn!(%err, from, to, ?size, "could not carry a thumbnail to its new key");
+            }
+        }
+    }
+
     /// Decodes `source` once and writes the preview and grid thumbnails of the untouched
     /// photo. The service renders through `render` with the item's edit; this is the plain
     /// form the cache's own tests use.
@@ -561,6 +584,48 @@ mod tests {
         assert!(cache.is_complete(42));
         assert_eq!(dims(&cache.path_for(42, ThumbSize::Grid)), (256, 128));
         assert_eq!(dims(&cache.path_for(42, ThumbSize::Preview)), (800, 400));
+    }
+
+    #[test]
+    fn rename_carries_both_sizes_to_the_new_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = write_file(dir.path(), "src.jpg", &jpeg_bytes(800, 400));
+        let cache = ThumbCache::new(dir.path().join("cache"));
+        cache.generate(&src, 1, 1).unwrap();
+        let grid = fs::read(cache.path_for(1, ThumbSize::Grid)).unwrap();
+        cache.rename(1, 2);
+        assert!(cache.is_complete(2));
+        for size in ThumbSize::ALL {
+            assert!(!cache.path_for(1, size).exists(), "{size:?} left behind");
+        }
+        assert_eq!(fs::read(cache.path_for(2, ThumbSize::Grid)).unwrap(), grid);
+    }
+
+    #[test]
+    fn rename_of_a_key_with_nothing_cached_does_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = ThumbCache::new(dir.path().join("cache"));
+        cache.rename(7, 8);
+        assert!(!cache.is_complete(8));
+        for size in ThumbSize::ALL {
+            assert!(!cache.path_for(8, size).parent().unwrap().exists());
+        }
+    }
+
+    #[test]
+    fn rename_carries_a_lone_size() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = write_file(dir.path(), "src.jpg", &jpeg_bytes(800, 400));
+        let cache = ThumbCache::new(dir.path().join("cache"));
+        cache.generate(&src, 1, 1).unwrap();
+        fs::remove_file(cache.path_for(1, ThumbSize::Preview)).unwrap();
+        // A key in another shard directory, which a path edit usually lands in: the
+        // directory is not there to receive the file.
+        let to = 0xab << 56;
+        cache.rename(1, to);
+        assert!(cache.path_for(to, ThumbSize::Grid).is_file());
+        assert!(!cache.path_for(1, ThumbSize::Grid).exists());
+        assert!(!cache.path_for(to, ThumbSize::Preview).exists());
     }
 
     /// `read` swapped `image-webp` for libwebp under hashes already stored, so the two have

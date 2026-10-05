@@ -2820,6 +2820,15 @@ impl ScanSink for ScanReporter<'_> {
         }
     }
 
+    /// Before `indexed` queues the rows, so the worker finds the files under the new key and
+    /// marks the row Ready without decoding. The thumbnails are of the same picture; only
+    /// the path half of their key changed.
+    fn moved(&mut self, keys: &[(u64, u64)]) {
+        for &(old, new) in keys {
+            self.engine.cache.rename(old, new);
+        }
+    }
+
     /// Straight onto the queue, in the order the scanner found them. This used to be a
     /// full `enqueue_pending` on every throttled tick above: a grid-order sort of every
     /// pending row, every 250ms, for the whole of an import - and, with the grid rebuild
@@ -2865,6 +2874,7 @@ mod tests {
     use crate::events::Recorded;
     use crate::testutil::{Fixture, fixture, jpeg, jpeg_pattern, portrait_jpeg, portrait_jpeg_at};
     use photon_core::media::ThumbState;
+    use photon_core::thumbs::ThumbSize;
 
     const MS: Duration = Duration::from_millis(1);
 
@@ -4461,6 +4471,40 @@ mod tests {
             ThumbState::Ready,
             "a no-change scan must still queue pending thumbnails; otherwise a transient \
              render failure is never retried without restarting photon"
+        );
+    }
+
+    #[test]
+    fn a_moved_photos_thumbnails_are_carried_to_its_new_key() {
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a/one.jpg", &img)]);
+        f.add_photos();
+        f.engine.thumbs.wait_idle();
+        let id = f.ids()[0];
+        let before = f.engine.lib.item(id).unwrap().unwrap();
+        assert_eq!(before.thumb_state, ThumbState::Ready);
+        let key_before = before.thumb_key();
+        assert!(f.engine.cache.is_complete(key_before));
+        let bytes = std::fs::read(f.engine.cache.path_for(key_before, ThumbSize::Preview)).unwrap();
+
+        let watched = f.engine.lib.watched_folders().unwrap().remove(0);
+        std::fs::rename(f.photos.join("a/one.jpg"), f.photos.join("a/two.jpg")).unwrap();
+        assert!(f.engine.start_scan(watched));
+        f.engine.wait_for_scans();
+
+        // Nothing but the carry-over removes a file from the old key, whatever the worker
+        // does with the row meanwhile; and a render would not leave the old key behind.
+        let after = f.engine.lib.item(id).unwrap().unwrap();
+        let key_after = after.thumb_key();
+        assert_ne!(key_after, key_before);
+        assert!(f.engine.cache.is_complete(key_after));
+        for size in ThumbSize::ALL {
+            assert!(!f.engine.cache.path_for(key_before, size).exists());
+        }
+        // The very file, not a second render of the same picture.
+        assert_eq!(
+            std::fs::read(f.engine.cache.path_for(key_after, ThumbSize::Preview)).unwrap(),
+            bytes
         );
     }
 
