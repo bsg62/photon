@@ -121,7 +121,9 @@
           ? "Grandma's 80th, on the terrace in Lisbon, everyone gathered right before sunset for cake and the last of the summer light over the river."
           : null,
       faces: [{ key: 'p:1', name: 'Anna', left: 0.3, top: 0.25, right: 0.42, bottom: 0.5, faceId: 11 }],
-      unnamedFaces: [{ left: 0.56, top: 0.3, right: 0.66, bottom: 0.5, faceId: 12 }, { left: 0.75, top: 0.3, right: 0.82, bottom: 0.45, faceId: null }],
+      // Rectangles placed for a gradient. With real photos (`--photos`, which sets the flag
+      // before this file runs) they would outline scenery, so the photo has Anna's face alone.
+      unnamedFaces: window.__PHOTON_REAL_PHOTOS__ ? [] : [{ left: 0.56, top: 0.3, right: 0.66, bottom: 0.5, faceId: 12 }, { left: 0.75, top: 0.3, right: 0.82, bottom: 0.45, faceId: null }],
       kind: id === 5 ? 'video' : 'image',
       durationMs: id === 5 ? 83_000 : null,
       videoCrashed: false,
