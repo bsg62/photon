@@ -65,7 +65,10 @@ file of* a row when all of these hold:
    inserted as new: photon does not guess which photo's albums and names to hand over.
 
 A row is claimed by one file. Two new files that both fit one row (two copies of a deleted
-original) are decided by rule 5's file name; the other is new.
+original) are decided by the file name, within one batch of the walk: the file named like
+the row has it, and the other is new. Across batches the first file the walk meets has the
+row - the price of deciding at insert time rather than at the end of the walk, which
+"Decision" explains.
 
 The match is decided in the scanner, by a function that takes "is this path gone" and "is
 this watched folder there" as closures, so every branch is tested without a filesystem.
