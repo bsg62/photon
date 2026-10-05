@@ -74,7 +74,18 @@
 <svelte:window onpointerdown={(e) => help && !field?.contains(e.target as Node) && (help = false)} />
 
 <div class="bar">
-  <div class="field" bind:this={field}>
+  <!-- The panel is the field's, and goes when the focus leaves the field: Enter moving on to
+       the photos, Tab walking on to the gear, `?` opening the shortcut sheet from the help
+       button. Left open it lay over the grid with nothing to close it but the mouse, and over
+       the viewer or a dialog opened from there - it is drawn above them all. A window that
+       loses the focus altogether is not that: coming back to photon finds the panel there. -->
+  <div
+    class="field"
+    bind:this={field}
+    onfocusout={(e) => {
+      if (help && document.hasFocus() && !field?.contains(e.relatedTarget as Node | null)) help = false;
+    }}
+  >
     <Icon name="search" size={14} />
     <input
       class="search"

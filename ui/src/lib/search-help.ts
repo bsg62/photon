@@ -93,8 +93,13 @@ export const SEARCH_HELP: SearchHelpGroup[] = [
 
 /** The box's text after a click on an entry: the term after what is already there, one
  *  space between. The search is every word at once, so adding narrows it - which is what a
- *  click on "is:starred" under a typed "lisbon" is asking for. */
+ *  click on "is:starred" under a typed "lisbon" is asking for.
+ *
+ *  A phrase left open is closed first. The parser reads an unclosed quote as running to the
+ *  end, so the term added after `"summer hike` would have become part of the phrase. */
 export function insertTerm(query: string, term: string): string {
   const held = query.trimEnd();
-  return held === '' ? term : `${held} ${term}`;
+  if (held === '') return term;
+  const open = held.split('"').length % 2 === 0;
+  return `${held}${open ? '"' : ''} ${term}`;
 }

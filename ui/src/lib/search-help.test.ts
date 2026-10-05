@@ -78,6 +78,14 @@ describe('insertTerm', () => {
     expect(insertTerm('lake OR pond', 'has:gps')).toBe('lake OR pond has:gps');
   });
 
+  it('closes a phrase left open, so the term is not read as part of it', () => {
+    expect(insertTerm('"summer hike', 'is:starred')).toBe('"summer hike" is:starred');
+    expect(insertTerm('lake "summer hi ', 'tag:')).toBe('lake "summer hi" tag:');
+    // A closed phrase, and two of them, are left alone.
+    expect(insertTerm('"summer hike"', 'is:starred')).toBe('"summer hike" is:starred');
+    expect(insertTerm('"a b" "c d"', 'on:')).toBe('"a b" "c d" on:');
+  });
+
   it('leaves what was typed as it was', () => {
     // Leading space and inner spacing are the user's, a quoted phrase's included.
     expect(insertTerm(' "summer  hike"', 'on:')).toBe(' "summer  hike" on:');
