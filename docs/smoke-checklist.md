@@ -391,6 +391,7 @@ publishing it.
 - [ ] Quit mid-pass and relaunch: it carries on from where it was, not from zero. Do it once with the photos' drive unplugged: it still carries on.
 - [ ] Open a group photo with the info panel shown: every face has an outline; Picasa's named faces keep their name plates and are not outlined twice. The People list ends with "N faces not named".
 - [ ] Open a head shot or a selfie, where one face fills most of the frame: it is outlined, and the outline is around the whole face.
+- [ ] Search `-has:tag`: only photos with no keyword. `has:caption` shows the captioned ones. `is:duplicate` shows what the Duplicates row shows. `is:portrait` shows upright photos only, including one you turned in photon. `size:>10mb`, `iso:>=1600`, `aperture:<2` and `mp:<2` each show photos whose info panel agrees; typing `size:>10` before the `mb` does not flash the whole library.
 - [ ] `has:face` finds photos with people; `faces:2` and `faces:3+` find the right ones; `-has:face` finds landscapes.
 - [ ] Turn or crop a photo with detected faces: after its thumbnail is remade, the outlines are on the faces again.
 - [ ] A detection landing on the photo open in the viewer (open one the pass has not reached, zoom in, wait): the photo does not blank and the zoom stays.

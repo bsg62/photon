@@ -1110,7 +1110,7 @@ impl Library {
         let tx = conn.unchecked_transaction()?;
         let tags = search_tags(&tx)?;
         // Read only for a query that names a person, an album or a face count, which most
-        // do not.
+        // do not; `needs.file` gates the row's own size, shape and copy flag the same way.
         let needs = query.needs();
         let people = if needs.people {
             search_names(&tx, SEARCH_PEOPLE_SQL)?
@@ -1173,21 +1173,28 @@ impl Library {
             // straight into the buffer. The aperture is an `f64`, whose `Display` can spell
             // `NaN` with capitals; SQLite stores a NaN as NULL, but it is folded all the same
             // rather than trusted, since that costs next to nothing.
-            if let Some(focal) = r.get::<_, Option<f64>>(base + 5)? {
+            let focal = r.get::<_, Option<f64>>(base + 5)?;
+            if let Some(focal) = focal {
                 haystacks.push_with(|out| {
                     let _ = write!(out, "{}mm", focal.round() as i64);
                 });
             }
-            if let Some(aperture) = r.get::<_, Option<f64>>(base + 6)? {
+            let aperture = r.get::<_, Option<f64>>(base + 6)?;
+            if let Some(aperture) = aperture {
                 scratch.clear();
                 let _ = write!(scratch, "f/{aperture}");
                 haystacks.push(&scratch);
             }
-            if let Some(iso) = r.get::<_, Option<i64>>(base + 7)? {
+            let iso = r.get::<_, Option<i64>>(base + 7)?;
+            if let Some(iso) = iso {
                 haystacks.push_with(|out| {
                     let _ = write!(out, "iso{iso}");
                 });
             }
+            // The same numbers as numbers, for `focal:`, `aperture:` and `iso:`.
+            haystacks.focal_mm = focal;
+            haystacks.aperture = aperture;
+            haystacks.iso = iso;
             let id: i64 = r.get(0)?;
             let tags = tags.get(&id).map(String::as_str);
             if let Some(tags) = tags {
@@ -1201,7 +1208,16 @@ impl Library {
                 .is_some_and(|rating| rating >= 1);
             haystacks.faces = faces.get(&id).copied().unwrap_or(0);
             haystacks.gps = gps_from_db(r.get(base + 10)?, r.get(base + 11)?);
-            haystacks.edited = !edit_from_db(r.get(11)?, r.get(12)?).is_identity();
+            let edit = edit_from_db(r.get(11)?, r.get(12)?);
+            haystacks.edited = !edit.is_identity();
+            if needs.file {
+                // As shown, the way `map_grid_row` works out a tile's shape: a turn or a
+                // crop changes what `is:portrait` and `mp:` are asked about.
+                let (width, height) = oriented_dims(r.get(3)?, r.get(4)?, r.get(5)?);
+                haystacks.dims = Some(edit.dims(width, height));
+                haystacks.bytes = Some(r.get(8)?);
+                haystacks.duplicate = r.get(13)?;
+            }
             if let Some(caption) = text(r, base + 8)? {
                 haystacks.push_caption(caption);
             }
@@ -2487,6 +2503,137 @@ mod tests {
         // A person or an album is found by its prefix only.
         assert!(hits("anna").is_empty());
         assert!(hits("best").is_empty());
+    }
+
+    #[test]
+    fn search_reads_what_a_photo_has_and_its_numbers_from_the_library() {
+        // As above: each query is answered only by its fact reaching the matcher. `a.jpg`
+        // comes first in the folder and has every one of them, `b.jpg` after it has none,
+        // so a fact left over from the photo before would show as `b.jpg` matching.
+        use crate::picasa::Face;
+        let (_dir, lib) = temp_library();
+        let (_watched, folder) = seed_folder(&lib, Path::new("/p"));
+        let rich = NewItem {
+            camera: CameraMeta {
+                focal_mm: Some(85.0),
+                aperture: Some(1.8),
+                iso: Some(3200),
+                ..CameraMeta::default()
+            },
+            tags: vec!["Zoo".into()],
+            caption: Some("By the lake".into()),
+            width: 3000,
+            height: 4000,
+            size: 5 * 1024 * 1024,
+            ..new_item(folder, "/p/a.jpg", 10)
+        };
+        // 400 by 300 and 100 bytes, with no camera data.
+        let ids = lib
+            .insert_items(&[rich, new_item(folder, "/p/b.jpg", 20)])
+            .unwrap();
+        lib.upsert_contacts(&HashMap::from([("c1".to_string(), "Anna".to_string())]))
+            .unwrap();
+        lib.set_item_faces(&[(
+            ids[0],
+            vec![Face {
+                contact: "c1".into(),
+                left: 0.1,
+                top: 0.1,
+                right: 0.2,
+                bottom: 0.2,
+            }],
+        )])
+        .unwrap();
+        let album = lib.create_album("Best Of", 1).unwrap();
+        lib.add_to_album(album.id, &[ids[0]], 1).unwrap();
+
+        let hits = |query: &str| -> Vec<i64> {
+            lib.entries_for(GridView::Search, query)
+                .unwrap()
+                .iter()
+                .map(|e| e.id)
+                .collect()
+        };
+        for query in [
+            "has:tag",
+            "has:caption",
+            "has:album",
+            "has:person",
+            "is:portrait",
+            "size:>1mb",
+            "size:5mb",
+            "iso:3200",
+            "iso:>=1600",
+            "aperture:<2",
+            "focal:>50",
+            "mp:12",
+            // No camera data on `b.jpg`: without the number it is in neither half.
+            "iso:>0",
+            "aperture:>0",
+            "focal:>0",
+        ] {
+            assert_eq!(hits(query), vec![ids[0]], "{query}");
+        }
+        for query in [
+            "-has:tag",
+            "-has:caption",
+            "-has:album",
+            "-has:person",
+            "is:landscape",
+            "size:<1kb",
+            "mp:<1",
+            "-iso:>0",
+        ] {
+            assert_eq!(hits(query), vec![ids[1]], "{query}");
+        }
+    }
+
+    #[test]
+    fn search_reads_a_shape_as_shown_and_a_duplicate_as_the_grid_marks_it() {
+        use crate::edit::Edit;
+        let (_dir, lib) = temp_library();
+        let (_watched, folder) = seed_folder(&lib, Path::new("/p"));
+        // Stored 400 by 300 like the others, and shown on its side by its orientation.
+        let sideways = NewItem {
+            orientation: 6,
+            ..new_item(folder, "/p/b.jpg", 20)
+        };
+        let square = NewItem {
+            width: 300,
+            ..new_item(folder, "/p/c.jpg", 30)
+        };
+        let ids = lib
+            .insert_items(&[new_item(folder, "/p/a.jpg", 10), sideways, square])
+            .unwrap();
+        let hits = |query: &str| -> Vec<i64> {
+            lib.entries_for(GridView::Search, query)
+                .unwrap()
+                .iter()
+                .map(|e| e.id)
+                .collect()
+        };
+        assert_eq!(hits("is:landscape"), vec![ids[0]]);
+        assert_eq!(hits("is:portrait"), vec![ids[1]]);
+        assert_eq!(hits("is:square"), vec![ids[2]]);
+        // A quarter turn in photon stands the first on its side too.
+        lib.set_item_edit(ids[0], Edit::new(1, None).unwrap())
+            .unwrap();
+        assert_eq!(hits("is:portrait"), vec![ids[0], ids[1]]);
+        assert!(hits("is:landscape").is_empty());
+
+        assert!(hits("is:duplicate").is_empty());
+        lib.set_similar_groups(&[(ids[0], ids[0]), (ids[2], ids[0])])
+            .unwrap();
+        let marked: Vec<i64> = lib
+            .entries_for(GridView::Search, "jpg")
+            .unwrap()
+            .iter()
+            .filter(|e| e.has_copies)
+            .map(|e| e.id)
+            .collect();
+        assert_eq!(hits("is:duplicate"), marked);
+        assert_eq!(hits("is:duplicate"), vec![ids[0], ids[2]]);
+        assert_eq!(hits("-is:duplicate"), vec![ids[1]]);
     }
 
     #[test]

@@ -30,7 +30,7 @@
       type="search"
       placeholder="Search names, camera, keywords, dates…"
       aria-label="Search photos by file or folder name, camera, lens, keyword or date"
-      title="Every word must match: a name, a folder, a camera or lens, a keyword, 50mm, f/1.8, iso400, or a date like 2024-06. Use OR to widen, &quot;quotes&quot; for a phrase, camera:, lens:, tag:, person:, album: or folder: for one field, from:2019-06 or to:2020 for a date range, on:07-14 for that day in any year, is:starred, is:edited or is:video for what a photo is, has:gps for photos that record where they were taken, has:face or faces:2+ for photos with people in them, and a leading - to exclude: -tag:family."
+      title="Every word must match: a name, a folder, a camera or lens, a keyword, 50mm, f/1.8, iso400, or a date like 2024-06. Use OR to widen, &quot;quotes&quot; for a phrase, camera:, lens:, tag:, person:, album: or folder: for one field, from:2019-06 or to:2020 for a date range, on:07-14 for that day in any year, is:starred, is:edited or is:video for what a photo is, has:gps for photos that record where they were taken, has:face or faces:2+ for photos with people in them, has:tag, has:caption, has:album or has:person for photos with any, is:duplicate, is:portrait, is:landscape or is:square, size:&gt;10mb, iso:&gt;=1600, aperture:&lt;2, focal:&gt;100 or mp:&lt;2 to compare a number, and a leading - to exclude: -tag:family, or -has:tag for the untagged."
       bind:value={searchBox.query}
       oninput={() => {
         // Typing a search is asking for results, which the People page does not show.

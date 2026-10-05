@@ -146,10 +146,23 @@ on, `album:"best of"` the photos in that album, `folder:italy` a folder by its n
 you gave it in photon. People and albums are found only this way; a bare `anna` does not look
 at them. `is:starred`, `is:edited` (turned or cropped in photon), `is:video` and `is:photo` ask
 what a photo is, `has:gps` whether it records where it was taken, and `has:face` and `faces:2+`
-how many faces are on it (above). A hyphen in front turns any term round: `-tag:family`, `-is:starred`,
-`-lake`; in quotes it is an ordinary hyphen. Together with saved searches this makes a
-collection that keeps itself: save `person:anna is:starred -album:printed` and it is always
-Anna's starred photos you have not printed yet.
+how many faces are on it (above). `has:tag`, `has:caption`, `has:album` and `has:person` ask
+whether a photo has any at all, `is:duplicate` whether it has a copy or a look-alike (what the
+Duplicates view shows), and `is:portrait`, `is:landscape` and `is:square` what shape it is as
+photon shows it, turned and cropped. A hyphen in front turns any term round: `-tag:family`,
+`-is:starred`, `-lake`, and `-has:tag` for the photos you have not tagged yet; in quotes it is
+an ordinary hyphen. Together with saved searches this makes a collection that keeps itself:
+save `person:anna is:starred -album:printed` and it is always Anna's starred photos you have
+not printed yet.
+
+`size:`, `iso:`, `aperture:`, `focal:` and `mp:` compare a number: `size:>10mb` is the files
+over ten megabytes, `iso:>=1600` the high-ISO shots, `aperture:<2` the ones shot wider than
+f/2, `focal:>100` the long lens, `mp:<2` the pictures under two megapixels. `>`, `>=`, `<` and
+`<=` are the comparisons, and two terms make a range: `iso:>=400 iso:<=800`. With none, the
+term asks for that number: `iso:400` and `aperture:1.8` exactly, `focal:50` whatever photon
+shows as 50mm, and `size:10mb` or `mp:12` whatever rounds to it - no file is exactly ten
+megabytes. A size needs its unit, `kb`, `mb` or `gb`. A photo that does not record the number
+(a scan has no ISO) matches none of these, so `-iso:>0` finds exactly those.
 
 ### Where a photo was taken
 
