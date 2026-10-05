@@ -50,9 +50,10 @@
     if (!player.scrubbing) pointer = null;
   });
 
-  /** A range input keeps focus after it is used, and the viewer leaves every key alone while
-   *  an input has it - so Space would stop playing and pausing until the user clicked
-   *  elsewhere. Let go of it the moment the drag ends. */
+  /** A range input keeps focus after it is used, and the viewer leaves the keys that move a
+   *  slider alone while one has it (`fieldOwnsKey`) - so the arrows would go on changing the
+   *  volume instead of the photo until the user clicked elsewhere. Let go of it the moment
+   *  the drag ends. */
   function release(e: Event & { currentTarget: HTMLInputElement }) {
     e.currentTarget.blur();
   }

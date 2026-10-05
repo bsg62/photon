@@ -1,5 +1,19 @@
 import { describe, expect, it } from 'vitest';
-import { clampPan, clampZoom, closesViewer, move, ownsSelectAll, positionInSection, wheelStep } from './nav';
+import {
+  actualSizeZoom,
+  clampPan,
+  clampZoom,
+  closesViewer,
+  DOUBLE_CLICK_ZOOM,
+  fieldOwnsKey,
+  MAX_ZOOM,
+  move,
+  ownsSelectAll,
+  positionInSection,
+  wheelStep,
+  wheelZoomFactor,
+  zoomAt,
+} from './nav';
 
 const sections = [
   { folderId: 1, offset: 0, count: 5 },
@@ -120,6 +134,114 @@ describe('clampPan', () => {
 
   it('pins the photo to the centre at fit, where there is nothing to pan', () => {
     expect(clampPan(250, 250, 1, 800, 600)).toEqual({ x: 0, y: 0 });
+  });
+});
+
+describe('zoomAt', () => {
+  it('keeps the photo under the pointer where it is', () => {
+    // At fit, the pointer 200 right and 100 below the centre is over the fitted photo's
+    // point (200, 100). At 2x that point is drawn at pan + 2 * (200, 100), so the pan that
+    // leaves it under the pointer is (-200, -100).
+    expect(zoomAt(1, { x: 0, y: 0 }, 2, { x: 200, y: 100 }, 800, 600)).toEqual({ zoom: 2, pan: { x: -200, y: -100 } });
+    // From a photo already zoomed and panned: the point under the pointer is
+    // (100 - 40) / 2 = 30, and at 3x it must still be drawn at 100.
+    expect(zoomAt(2, { x: 40, y: 0 }, 3, { x: 100, y: 0 }, 800, 600)).toEqual({ zoom: 3, pan: { x: 10, y: 0 } });
+  });
+
+  it('zooms about the middle of the window when no point is given', () => {
+    // The pan scales with the zoom, so what is at the centre stays there.
+    expect(zoomAt(2, { x: 100, y: -50 }, 4, { x: 0, y: 0 }, 800, 600)).toEqual({ zoom: 4, pan: { x: 200, y: -100 } });
+  });
+
+  it('never leaves the photo short of the window', () => {
+    // Zooming out from a corner: scaled about the centre the pan would be (600, 450), past
+    // what a 2x photo can travel. It slides back in rather than leaving black beside it.
+    expect(zoomAt(4, { x: 1200, y: 900 }, 2, { x: 0, y: 0 }, 800, 600).pan).toEqual({ x: 400, y: 300 });
+    // And zooming out under a pointer at the far side, which asks for more still.
+    expect(zoomAt(4, { x: 1200, y: 0 }, 2, { x: -400, y: 0 }, 800, 600).pan).toEqual({ x: 400, y: 0 });
+  });
+
+  it('is the centred fit at the bottom of the range, whatever the point', () => {
+    expect(zoomAt(3, { x: 250, y: -90 }, 1, { x: 300, y: 200 }, 800, 600)).toEqual({ zoom: 1, pan: { x: 0, y: 0 } });
+    expect(zoomAt(3, { x: 250, y: -90 }, 0.2, { x: 300, y: 200 }, 800, 600)).toEqual({ zoom: 1, pan: { x: 0, y: 0 } });
+  });
+
+  it('stops at the top of the range, and pans for the zoom it stopped at', () => {
+    // Asked for 8x, it gets 4x - and the pan is 4x's, not 8x's clamped: the point under the
+    // pointer has to stay there at the zoom actually reached.
+    expect(zoomAt(2, { x: 0, y: 0 }, 8, { x: 100, y: 0 }, 800, 600)).toEqual({ zoom: MAX_ZOOM, pan: { x: -100, y: 0 } });
+  });
+});
+
+describe('actualSizeZoom', () => {
+  it('is one photo pixel on one screen pixel', () => {
+    // 4000 wide, drawn 1600 wide at fit: 2.5x shows it pixel for pixel.
+    expect(actualSizeZoom(4000, 1600, 1)).toBe(2.5);
+    // A display that draws two screen pixels per CSS pixel needs half the zoom.
+    expect(actualSizeZoom(6400, 1600, 2)).toBe(2);
+  });
+
+  it('stops at the most the viewer zooms to', () => {
+    expect(actualSizeZoom(6000, 1000, 1)).toBe(MAX_ZOOM);
+  });
+
+  it('still zooms a photo that has no more pixels to show', () => {
+    // Smaller than its fitted box, exactly its size, or a hair over: a double-click that
+    // moved nothing, or by a few percent, would read as broken.
+    expect(actualSizeZoom(800, 1600, 1)).toBe(DOUBLE_CLICK_ZOOM);
+    expect(actualSizeZoom(1600, 1600, 1)).toBe(DOUBLE_CLICK_ZOOM);
+    expect(actualSizeZoom(1700, 1600, 1)).toBe(DOUBLE_CLICK_ZOOM);
+  });
+
+  it('still zooms before anything has been measured', () => {
+    expect(actualSizeZoom(0, 1600, 1)).toBe(DOUBLE_CLICK_ZOOM);
+    expect(actualSizeZoom(4000, 0, 1)).toBe(DOUBLE_CLICK_ZOOM);
+    expect(actualSizeZoom(4000, 1600, 0)).toBe(DOUBLE_CLICK_ZOOM);
+  });
+});
+
+describe('wheelZoomFactor', () => {
+  it('gives a pinch back as it was made', () => {
+    // A pinch to 1.1x arrives as a delta of -100 * ln(1.1).
+    expect(wheelZoomFactor(-100 * Math.log(1.1))).toBeCloseTo(1.1, 10);
+    expect(wheelZoomFactor(100 * Math.log(1.1))).toBeCloseTo(1 / 1.1, 10);
+  });
+
+  it('makes a mouse notch a step of about a fifth, not nearly three times', () => {
+    expect(wheelZoomFactor(-100)).toBeCloseTo(Math.exp(0.2), 10);
+    expect(wheelZoomFactor(100)).toBeCloseTo(Math.exp(-0.2), 10);
+    // However hard the wheel is flicked.
+    expect(wheelZoomFactor(-1200)).toBe(wheelZoomFactor(-100));
+  });
+
+  it('ends where it began after the same way out and back', () => {
+    expect(wheelZoomFactor(-7) * wheelZoomFactor(7)).toBeCloseTo(1, 12);
+  });
+
+  it('changes nothing for a delta of nothing, or one that is not a number', () => {
+    expect(wheelZoomFactor(0)).toBe(1);
+    expect(wheelZoomFactor(Number.NaN)).toBe(1);
+    expect(wheelZoomFactor(Number.POSITIVE_INFINITY)).toBe(1);
+  });
+});
+
+describe('fieldOwnsKey', () => {
+  it('leaves a slider the keys that move it, and no others', () => {
+    for (const key of ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', 'PageUp', 'PageDown']) {
+      expect(fieldOwnsKey({ type: 'range' }, key), key).toBe(true);
+    }
+    // The viewer's own: zoom, the star, information, the slideshow, the way out.
+    for (const key of ['0', '+', '-', '.', 'i', 's', ' ', 'Backspace']) {
+      expect(fieldOwnsKey({ type: 'range' }, key), key).toBe(false);
+    }
+  });
+
+  it('leaves every key to a field that is typed in or ticked', () => {
+    for (const type of ['text', 'search', 'checkbox', '']) {
+      expect(fieldOwnsKey({ type }, 'i'), type).toBe(true);
+      expect(fieldOwnsKey({ type }, 'Backspace'), type).toBe(true);
+      expect(fieldOwnsKey({ type }, 'ArrowLeft'), type).toBe(true);
+    }
   });
 });
 

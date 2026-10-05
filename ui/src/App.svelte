@@ -13,8 +13,9 @@
   import { openFacePhoto } from './lib/people';
   import { resultsChanged, viewKey } from './lib/search';
   import { searchBox } from './lib/search-box.svelte';
-  import { opensShortcuts } from './lib/shortcuts';
+  import { focusesSearch, opensShortcuts } from './lib/shortcuts';
   import type { SettingsSection } from './lib/settings';
+  import { isMac } from './lib/url';
   import { clampSidebarWidth, SIDEBAR_DEFAULT, SIDEBAR_STEP } from './lib/sidebar';
   import { createExportDialog } from './lib/export-dialog.svelte';
   import { createFolderDrop } from './lib/folder-drop.svelte';
@@ -57,6 +58,7 @@
   /** What held focus when the sheet opened, to hand it back to. */
   let shortcutsFrom: HTMLElement | null = null;
   let gear: HTMLButtonElement | undefined = $state();
+  let searchBar: ReturnType<typeof SearchBar> | undefined = $state();
   /** The keyword dialog for the grid's selection. It lives here, not in the grid, because
    *  it is an overlay: `covered` below makes everything behind one inert, and a dialog
    *  mounted inside `<main>` would be made inert by its own opening - Settings could then
@@ -334,6 +336,29 @@
       e.preventDefault();
       return;
     }
+    // The `/` that focused the search box, still held: its repeats arrive in the box, where
+    // the key is a character, and the first of them would replace the selected search with
+    // a slash and run it.
+    if (slashHeld && e.key === '/' && e.repeat) {
+      e.preventDefault();
+      return;
+    }
+    if (focusesSearch(e, e.target as HTMLElement | null, mac)) {
+      // Prevented whether or not it is acted on: Ctrl+F is photon's for Ctrl+A's reason - a
+      // webview with a find bar of its own would open it over the app - and `/` must not be
+      // typed into the box it has just focused. (The shortcut sheet and the person dialog
+      // stop every key before it gets here, so under those two the chord is still the
+      // webview's.) Under an overlay the top bar is inert, and the key does nothing: the
+      // viewer or a dialog is what the user is in. Nor while the grid holds a rubber band,
+      // for `canShowShortcuts`' reason: the band's release takes the focus back to the grid,
+      // and what was meant for the box would be typed at the photos - `h` hides them.
+      e.preventDefault();
+      if (!covered && !grid?.dragging()) {
+        slashHeld = e.key === '/';
+        searchBar?.focus();
+      }
+      return;
+    }
     if (opensShortcuts(e, e.target as HTMLElement | null)) {
       // The sheet's own handler closes it and stops the key there; this is the `?` that
       // arrives with focus on `<body>`.
@@ -353,6 +378,10 @@
       .then((on) => api.setWindowFullscreen(!on))
       .catch(library.reportError);
   }
+
+  const mac = isMac();
+  /** A `/` keydown focused the search box and the key has not come up yet. */
+  let slashHeld = false;
 
   function openSettings(section: SettingsSection) {
     settingsAt = section;
@@ -497,6 +526,13 @@
     grid?.focus();
   }
 
+  /** Enter in the search box, or Escape on an empty one: on to the photos, or to the People
+   *  page while it is what the main area shows and the grid behind it is inert. */
+  function leaveSearch() {
+    if (mainPage.current === 'people') peoplePage?.focus();
+    else grid?.focus();
+  }
+
   async function jump(folderId: number) {
     mainPage.showGrid();
     const offset = await api.gridOffsetOfFolder(folderId).catch(() => null);
@@ -506,10 +542,17 @@
   }
 </script>
 
-<svelte:window onresize={() => (sidebarWidth = clampSidebarWidth(sidebarWidth, window.innerWidth))} onkeydown={onkeydown} />
+<svelte:window
+  onresize={() => (sidebarWidth = clampSidebarWidth(sidebarWidth, window.innerWidth))}
+  onkeydown={onkeydown}
+  onkeyup={(e) => {
+    if (e.key === '/') slashHeld = false;
+  }}
+  onblur={() => (slashHeld = false)}
+/>
 <div class="app" style:--sidebar-width="{sidebarWidth}px">
   <div class="topbar" inert={covered}>
-    <SearchBar />
+    <SearchBar bind:this={searchBar} onleave={leaveSearch} />
     <!-- The grid's own controls: under the People page they would sort and size a grid no
          one can see. Hidden rather than removed, so the search box and the gear keep their
          places; `visibility` takes them out of the tab order too. -->
