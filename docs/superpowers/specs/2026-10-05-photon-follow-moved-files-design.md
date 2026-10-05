@@ -65,11 +65,18 @@ file of* a row when all of these hold:
    once the walk is over, and a walk that has just produced a file from the root is the
    evidence it waits for. An unplugged drive's files all answer `NotFound`; so do the
    files of an unmounted volume whose mount point was left behind, which is why the scanner
-   has its empty-root guard, and this is the same guard. Checked once per watched folder per
-   scan.
+   has its empty-root guard, and this is its cousin: any entry in the root will do here,
+   where the scanner's own guard counts photos. Checked once per watched folder per scan. A
+   failed read of the watched folders fails the scan, before anything is marked missing:
+   treated as "no drive is there", it would insert every renamed file as new and let the
+   same scan mark the old rows missing.
 5. **There is exactly one such row.** With several, the ones whose `file_name` equals the
    new file's are kept; if that leaves exactly one, it is the row. Otherwise the file is
    inserted as new: photon does not guess which photo's albums and names to hand over.
+   More than 32 rows of one size, time and kind is "do not guess" as well, decided by the
+   lookup's `LIMIT` before any file is asked about: a library of identical files otherwise
+   paid a stat per row per file (measured by the whole-branch review: 4,000 identical files,
+   20 s to import against 0.2 s).
 
 A row is claimed by one file. Two new files that both fit one row (two copies of a deleted
 original) are decided by the file name, within one batch of the walk: the file named like
@@ -101,20 +108,30 @@ and edit until the user removes them - recoverable, and far rarer than the loss 
 - `hidden = 1` if the destination folder is hidden (`folders.hidden`), else unchanged - the
   rule `insert_items` applies to a new row, without un-hiding a photo the user hid;
 - `settings::bump_thumb_gc_epoch` in the same transaction: `path` is part of the thumbnail
-  key. The tripwire test in `settings.rs` lists this writer as its fifth.
+  key. The tripwire test in `settings.rs` walks it, and `purge_at`, with the four it had;
+- `picasa_hidden = NULL` when the row is hidden after the write. The INI's last answer was
+  about the photo under its old name in its old folder; kept, the hidden pass read the new
+  folder's silence as Picasa un-hiding the photo, and a photo hidden through Picasa came
+  back visible on a rename (found by the whole-branch review). Forgotten, the pass's
+  first-read rule follows a `hidden=yes` and ignores a missing line. A visible row keeps
+  the answer: one the user un-hid in photon must not be re-hidden when its folder is
+  renamed with its INI.
 
 Left as they are, which is the point: `edit_turns`, `edit_crop`, `content_hash`,
-`percep_hash`, `similar_group`, `face_version`, `picasa_hidden`, `rating`, and every row in
+`percep_hash`, `similar_group`, `face_version`, `rating`, and every row in
 `album_items`, `item_user_tags`, `detected_faces`, `face_rejections` and `faces`.
 This is what `update_items` must not be used for: it clears the hashes and deletes the
 detections, because there the file's content changed.
 
-`rating`, Picasa's `faces`, Picasa's album memberships and `picasa_hidden` are then put right
+`rating`, Picasa's `faces` and Picasa's album memberships are then put right
 by `apply_picasa`, which runs after every walk over the folders it reached and mirrors the
 INI of the folder the photo is in *now*. A photo moved with its folder finds the same INI
 and nothing changes; a photo moved alone has left its INI behind and loses its Picasa star,
 Picasa faces and Picasa albums - which is what Picasa itself does with a file moved outside
-it. `apply_picasa` reads which folders hold Picasa data from the library after the walk, so
+it. So does a single file renamed in place: the INI is keyed by file name. That includes a
+star set in photon, which is the same `star=` line. Carrying it would mean the scanner
+writing an INI with no gesture from the user, which the project's conventions make a
+decision of its own; it is not taken here. `apply_picasa` reads which folders hold Picasa data from the library after the walk, so
 it sees the re-pointed rows.
 
 ### Folders
@@ -125,8 +142,14 @@ into folder *B*, and *A*'s directory is gone (or canonicalises to *B*'s, a case-
 rename), and *B* is a folder this walk created, with no alias and not hidden, *B* takes
 *A*'s alias and hidden flag. "This walk created" is what tells a renamed folder from a
 merge: photos of a hidden folder moved into a long-standing one must not hide and rename
-it. The cost is a renamed folder whose first scan is cancelled before any of its files is
-flushed: it has a row by the next scan, and loses its name. A flag taken over is written through
+it. The cost is every case where an earlier scan made the new folder's row before the old
+directory was gone, and the name and flag are then lost: a folder made first and filled
+afterwards (the watcher scans the empty folder two seconds after it appears), a folder
+moved file by file between volumes with a scan mid-move, a child's subtree scan seeding its
+parent, a walk that failed after making the row, a first scan cancelled before a flush.
+
+An alias that merely repeats the new directory's name is not carried, as `set_folder_alias`
+would not store it: carried, it would stick through the next rename. A flag taken over is written through
 `set_folder_hidden`, so files of *B* inserted before the move was noticed are hidden with
 it. Done before the batch's remaining files are inserted, so those inherit it the usual way.
 The first folder to arrive wins; a folder with a name or a flag of its own keeps them.
@@ -153,6 +176,16 @@ fails costs one re-render, never a wrong picture: a key names one picture.
 
 A video's poster frame is carried the same way, which matters more: it can only be drawn
 again while photon's window is open.
+
+## Recycle bins
+
+Added after the whole-branch review. The walk skipped only dot-names, so the recycle bin of
+a watched drive root (`$RECYCLE.BIN`, XP's `RECYCLER`) or NAS share (`#recycle`, `@Recycle`)
+was walked like any folder. Deleting a photo there is a rename on the same volume, so the
+rule above would have followed it into the bin, with its albums: "I deleted it and it is
+still in my album". The scan now enters none of them, in `walk_tree` and in `scan_subtree`
+alike; the watched root itself is exempt, as it is from the dot rule. A photo an earlier
+photon indexed inside one leaves the library at the next scans.
 
 ## Guards
 
