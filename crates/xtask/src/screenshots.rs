@@ -119,6 +119,17 @@ pub const SHOTS: &[Shot] = &[
         query: "theme=dark&do=sortmenu",
         dark: true,
     },
+    // The search help, open under the box.
+    Shot {
+        name: "search-help-light",
+        query: "theme=light&do=searchhelp",
+        dark: false,
+    },
+    Shot {
+        name: "search-help-dark",
+        query: "theme=dark&do=searchhelp",
+        dark: true,
+    },
     Shot {
         name: "crop-menu-dark",
         query: "theme=dark&do=cropmenu",

@@ -535,6 +535,8 @@
     },
     // photon's own dropdowns, open: the list is drawn by photon, so this is what it looks like.
     sortmenu: () => click('[role="combobox"][aria-label="Sort by"]'),
+    // What the search box understands, open under it.
+    searchhelp: () => click('button[aria-label="What you can search for"]'),
     cropmenu: () => {
       actions.crop();
       later(900, () => click('[role="combobox"][aria-label="Crop ratio"]'));

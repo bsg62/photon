@@ -66,7 +66,7 @@ cargo run -p xtask -- metadata            # licence and installer metadata are c
 **Seeing the UI without launching it** (not in CI; needs Chromium on `PATH` or in `CHROMIUM`):
 
 ```bash
-cargo run -p xtask -- screenshots                     # thirty-five PNGs into target/screenshots/
+cargo run -p xtask -- screenshots                     # thirty-seven PNGs into target/screenshots/
 cargo run -p xtask -- screenshots --only viewer-info-light --no-build
 cargo run -p xtask -- scroll-probe   # the end of a 300k-photo library is reachable
 ```
@@ -235,7 +235,12 @@ leading `-` negating a token, dangling pieces ignored. A fact a term reads is a 
 `Haystacks` set per photo in `search_entries` and cleared in `Haystacks::truncate`; one set
 only inside an `if let` (the caption's) and not cleared there carries over to the next photo. People, albums and the face counts are read from side
 tables only when a query names one (`Query::needs`). A new searchable fact is a haystack there, not a view; a new *filter* is a
-prefixed term. The query string is the whole interface, so UI links (the info panel's camera
+prefixed term. **The grammar is listed for the user in `lib/search-help.ts`**, which the `?` in
+the search box draws (`SearchHelp.svelte`): `search-help.test.ts` reads `Query::terms` out of
+`search.rs` and fails on a prefix, an `is:` or a `has:` the list lacks, and on one it offers
+that the parser would drop. It finds them by shape - `prefixed("x:")`, and the `"word" =>` arms
+between `prefixed("is:")` and the next prefix - so a parser rearranged away from that shape
+changes the test with it; the wording and the examples nothing checks. The query string is the whole interface, so UI links (the info panel's camera
 and lens) go through `searchBox.search()`, which cancels a pending debounce first.
 
 **A grid offset is only meaningful against one index version.** Indexing a photo into a
@@ -1048,7 +1053,7 @@ anything sitting outside the tile's own box.
 
 The look cannot be tested here, but it can be seen without launching the app: `cargo run -p xtask --
 screenshots` builds the UI, serves `ui/dist` itself with `mock.js` (in
-`crates/xtask/screenshots/`) standing in for Tauri's IPC, and writes thirty-five PNGs, in both themes,
+`crates/xtask/screenshots/`) standing in for Tauri's IPC, and writes thirty-seven PNGs, in both themes,
 to `target/screenshots/` with headless Chromium. It claims a Windows user agent and maps
 `photon.localhost` to its own port, because `mediaUrl` uses `http://photon.localhost` there
 and no plain browser can load `photon://`. It is Chromium's rendering, not WebKitGTK's or

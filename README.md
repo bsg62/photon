@@ -134,7 +134,8 @@ right-click menu or the info panel, and rename or delete from the album's right-
 Picasa's albums (see "Picasa albums" above) are read from its INI and cannot be edited here,
 and neither can People and Tags, which are read from Picasa's INI and from the photos
 themselves. The search box matches all of it: a camera or lens name, a keyword, `50mm`,
-`f/1.8`, `iso400`, or a date such as `2024-06`.
+`f/1.8`, `iso400`, or a date such as `2024-06`. The **?** at the end of the box opens a list of
+everything it understands, described below; click a term there to add it to your search.
 
 Every word narrows the search: `italy lake` finds photos matching both, each word wherever
 it likes (`lake.jpg` in the folder `2019 Italy`). `lake OR pond` widens it; `AND` and `OR`
