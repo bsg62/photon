@@ -1,6 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import type { Folder, GridView } from './api';
-import { arrangeFolders, enterFolder, locateItem, folderRows, groupByYear, returnToAll, type FolderRow } from './folders';
+import {
+  arrangeFolders,
+  enterFolder,
+  folderRows,
+  folderSummary,
+  groupByYear,
+  locateItem,
+  returnToAll,
+  yearOf,
+  type FolderRow,
+} from './folders';
 
 /** Seconds since the epoch, since that is what `takenAtMin` carries. */
 const at = (iso: string) => Math.floor(new Date(iso).getTime() / 1000);
@@ -305,3 +315,38 @@ describe('returnToAll', () => {
   });
 });
 
+
+describe('folderSummary', () => {
+  /** Noon on the 15th, local time: far enough inside the month that no time zone moves it. */
+  const mid = (year: number, month: number) => new Date(year, month - 1, 15, 12).getTime() / 1000;
+
+  it('says how many photos, and the month the oldest was taken', () => {
+    expect(folderSummary(23, mid(2026, 7), 'en-US')).toBe('23 photos · July 2026');
+    expect(folderSummary(4, mid(1998, 1), 'en-US')).toBe('4 photos · January 1998');
+  });
+
+  it('does not call one photo "photos"', () => {
+    expect(folderSummary(1, mid(2026, 7), 'en-US')).toBe('1 photo · July 2026');
+  });
+
+  it('groups the digits of a large folder', () => {
+    expect(folderSummary(12480, mid(2019, 3), 'en-US')).toBe('12,480 photos · March 2019');
+  });
+
+  it('writes the month as the locale does', () => {
+    expect(folderSummary(1200, mid(2026, 7), 'de-DE')).toBe('1.200 photos · Juli 2026');
+  });
+
+  it("is in the year the sidebar files the folder under, at the year's very edge", () => {
+    // Half an hour either side of midnight on New Year's Eve, local time: the header's month
+    // and the sidebar's year are read from the same instant in the same zone, so they cannot
+    // name different years. Both sides, because which of them is another year in UTC depends
+    // on the zone the test runs in: east of Greenwich it is the morning, west of it the night.
+    const eve = new Date(2025, 11, 31, 23, 30).getTime() / 1000;
+    expect(folderSummary(2, eve, 'en-US')).toBe('2 photos · December 2025');
+    expect(yearOf(eve)).toBe(2025);
+    const morning = new Date(2026, 0, 1, 0, 30).getTime() / 1000;
+    expect(folderSummary(2, morning, 'en-US')).toBe('2 photos · January 2026');
+    expect(yearOf(morning)).toBe(2026);
+  });
+});

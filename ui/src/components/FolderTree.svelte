@@ -710,7 +710,10 @@
      covered by `.copies.active`, which is declared after it. */
   .copies { padding-left: 28px; cursor: default; }
   .root:hover, .node:hover, .group:hover, .fold:hover { background: var(--hover); }
-  .starred.active, .recent.active, .on-this-day.active, .duplicates.active, .hidden-view.active, .node.active, .copies.active, .people.active { background: var(--accent-soft); }
+  /* Every row that can be the current place: `.root` is all of the top rows, so a new one
+     is covered without being named. Listed one by one, this rule had left out All photos and
+     Videos, and neither showed that it was where the grid was. */
+  .root.active, .node.active, .people.active { background: var(--accent-soft); }
   /* --text-dim does not reach 4.5:1 over --accent-soft; --text does (tokens.test.ts). */
   .active .count { color: var(--text); }
   .add-album { color: var(--text-dim); }

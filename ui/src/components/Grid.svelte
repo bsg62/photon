@@ -4,7 +4,7 @@
   import { copiesNotice, showCopiesLabel } from '../lib/copies';
   import { isOwnAlbum, ownAlbums } from '../lib/albums';
   import { isCopyPhotoShortcut } from '../lib/copy-photo';
-  import { folderLabel } from '../lib/folders';
+  import { folderLabel, folderSummary } from '../lib/folders';
   import { buildFailure, showEmptyNotice } from '../lib/grid-state';
   import { library } from '../lib/library.svelte';
   import { gridSize } from '../lib/app-grid-size.svelte';
@@ -830,10 +830,13 @@
       {/if}
       {#each rendered as row (row.top)}
         {#if row.kind === 'header'}
-          {@const folderId = sections[row.section].folderId}
-          {@const folder = folderId === null ? undefined : library.folderOf(folderId)}
+          {@const section = sections[row.section]}
+          {@const folder = section.folderId === null ? undefined : library.folderOf(section.folderId)}
           <div class="header" style:top="{row.top - shift}px">
             <span class="name">{folder ? folderLabel(folder) : ''}</span>
+            <!-- From the section, not the folder: it is there before the folder list is,
+                 and it counts the photos under this header, which in a search are fewer. -->
+            <span class="summary">{folderSummary(section.count, section.takenAtMin)}</span>
             <span class="path">{folder?.path ?? ''}</span>
           </div>
         {:else}
@@ -1028,6 +1031,9 @@
      baselines - on the same line, which plain `align-items: baseline` alone no longer does
      once either child clips its own overflow. */
   .header .name { flex: 0 1 auto; max-width: 70%; min-width: 0; overflow: hidden; font-size: var(--t-4); font-weight: 600; line-height: 20px; white-space: nowrap; text-overflow: ellipsis; }
+  /* Never squeezed: it is short, and the name and the path are the two that give way. The
+     same line-height as its neighbours, for the baseline's reason above. */
+  .header .summary { flex: none; color: var(--text-dim); font-size: var(--t-2); line-height: 20px; white-space: nowrap; }
   .header .path { flex: 1 1 auto; min-width: 0; color: var(--text-dim); font-size: var(--t-1); line-height: 20px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .row { display: flex; }
   .empty { position: absolute; inset: 0; display: grid; place-items: center; color: var(--text-dim); margin: 0; }
