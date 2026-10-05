@@ -293,6 +293,43 @@ impl Library {
         tx.commit()?;
         Ok(true)
     }
+
+    /// Gives folder `to` the alias and Hide-folder flag of `from`, when `to` has neither: a
+    /// renamed directory is a new folder row, and what the user set on the old one follows
+    /// the photos that followed it. A folder with a name or a flag of its own keeps them.
+    /// The flag goes through `set_folder_hidden`, so photos of `to` indexed before the move
+    /// was noticed are hidden with it. Returns whether anything was written.
+    pub fn inherit_folder_flags(&self, from: i64, to: i64) -> Result<bool> {
+        let (alias, hidden, to_alias, to_hidden) = {
+            let conn = self.reader()?;
+            let read = |id: i64| -> Result<(Option<String>, bool)> {
+                conn.query_row(
+                    "SELECT alias, hidden FROM folders WHERE id = ?1",
+                    params![id],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .optional()?
+                .ok_or(Error::NotFound(id))
+            };
+            let (alias, hidden) = read(from)?;
+            let (to_alias, to_hidden) = read(to)?;
+            (alias, hidden, to_alias, to_hidden)
+        };
+        if to_alias.is_some() || to_hidden || (alias.is_none() && !hidden) {
+            return Ok(false);
+        }
+        if alias.is_some() {
+            // Validated when it was set on `from`.
+            self.writer().execute(
+                "UPDATE folders SET alias = ?2 WHERE id = ?1",
+                params![to, alias],
+            )?;
+        }
+        if hidden {
+            self.set_folder_hidden(to, true)?;
+        }
+        Ok(true)
+    }
 }
 
 /// Runs `delete` until it removes nothing, returning the total.
@@ -669,5 +706,40 @@ mod tests {
             !plan.iter().any(|step| step.starts_with("SCAN i USING")),
             "photos must not be read in an index's order: {plan:?}"
         );
+    }
+
+    #[test]
+    fn a_folder_inherits_an_alias_and_the_hide_flag_only_when_it_has_neither() {
+        let (_dir, lib) = temp_library();
+        let w = watch(&lib, "/photos");
+        let from = lib.upsert_folder(w.id, None, "/photos/old", 1).unwrap();
+        let to = lib.upsert_folder(w.id, None, "/photos/new", 1).unwrap();
+        let named = lib.upsert_folder(w.id, None, "/photos/named", 1).unwrap();
+        lib.set_folder_alias(from, Some("Holiday")).unwrap();
+        lib.set_folder_hidden(from, true).unwrap();
+        lib.set_folder_alias(named, Some("Mine")).unwrap();
+        let item = lib
+            .insert_items(&[new_item(to, "/photos/new/a.jpg", 1)])
+            .unwrap()[0];
+
+        assert!(lib.inherit_folder_flags(from, to).unwrap());
+        let folder = |id| {
+            lib.folders()
+                .unwrap()
+                .into_iter()
+                .find(|f| f.id == id)
+                .unwrap()
+        };
+        assert_eq!(folder(to).alias.as_deref(), Some("Holiday"));
+        assert!(folder(to).hidden);
+        assert!(lib.item(item).unwrap().unwrap().hidden);
+        assert!(
+            !lib.inherit_folder_flags(from, to).unwrap(),
+            "now it has both"
+        );
+
+        assert!(!lib.inherit_folder_flags(from, named).unwrap());
+        assert_eq!(folder(named).alias.as_deref(), Some("Mine"));
+        assert!(!folder(named).hidden);
     }
 }

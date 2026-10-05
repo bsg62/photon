@@ -529,6 +529,11 @@ mod tests {
             "the same edit again orphans nothing"
         );
 
+        lib.move_items(&[(ids[1], "/p/b.jpg".into(), new_item(folder, "/p/c.jpg", 2))])
+            .unwrap();
+        assert!(lib.thumb_gc_due(1_000, WEEK).unwrap().is_some(), "a move");
+        settle(&lib);
+
         lib.remove_watched_folder(watched).unwrap();
         assert!(
             lib.thumb_gc_due(1_000, WEEK).unwrap().is_some(),
