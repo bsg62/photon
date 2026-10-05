@@ -1007,11 +1007,23 @@ viewer *and* over compare, so both sit in an `inert` `display: contents` wrapper
 up and the viewer is `paused`, as under the person dialog; it does not open over another
 dialog, or while the grid holds a rubber band (`Grid.dragging`, the "fourth ending" below).
 
-**A context menu is placed by `use:fitMenu`** (`lib/menu-place.ts`), never by binding
-`left`/`top` to the pointer: it opens down-right and flips on an axis where that would leave
-the window, re-placing itself when it grows (the tile menu's copies line arrives after it
-opens) or the window resizes. A menu bound straight to the pointer is clipped when opened near
-the bottom or right edge; every menu was, until the folder menu grew to five items.
+**A context menu is `Menu.svelte`**, which every one of them is drawn by (the tile's, the
+sidebar's three, the viewer's, the People page's merge list): the surface, the placing, the
+keys and the focus. Its items are the caller's plain markup (`<button role="menuitem">`, with
+`.hint`, `.sep`, `.heading`, `.sub`, `.note` and `.danger` styled from the component through
+`:global`), and whoever opens it still holds its state and closes it. It is placed by
+`use:fitMenu` (`lib/menu-place.ts`), never by binding `left`/`top` to the pointer: it opens
+down-right and flips on an axis where that would leave the window, re-placing itself when it
+grows (the tile menu's copies line arrives after it opens) or the window resizes; a menu bound
+straight to the pointer is clipped near the bottom or right edge. The arrows, Home and End move
+through the enabled items (`menuStep`). **Every plain key pressed in a menu stops there**
+(`menuOwnsKey`): the viewer listens on the window, and with its menu open an `h` hid the photo
+behind it. Escape is let through, since the opener's window listener is what closes the menu,
+and so is a chord, since App must still prevent Ctrl+A. On closing, the menu hands the focus
+back to what had it, but only while the focus is still the menu's own - an item that opened a
+dialog or focused the grid has already said where it goes. A component with a scoped `button`
+rule (the People page) still gets the menu's look, because the menu's item selectors out-rank
+it; a new item class has to be spelled `button[role='menuitem'].x` to do the same, as `.sub` is.
 
 **A pointer gesture has three endings, not two.** `pointerup` finishes it and Escape abandons
 it, but a browser that claims the gesture for itself - a touchscreen pan, which Windows

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { MAX_PANES } from './compare.svelte';
-import { chordLabel, focusesSearch, opensShortcuts, SHORTCUTS, type ShortcutGroupId } from './shortcuts';
+import { chordLabel, focusesSearch, keyHint, opensShortcuts, SHORTCUTS, type ShortcutGroupId } from './shortcuts';
 
 /** The files that answer keys, as text. */
 const sources = import.meta.glob(['../App.svelte', '../components/*.svelte', './*.ts', '!./*.test.ts'], {
@@ -127,6 +127,14 @@ describe('chordLabel', () => {
     expect(chordLabel(['Mod', 'Shift', 'R'], false)).toEqual(['Ctrl', 'Shift', 'R']);
     expect(chordLabel(['Mod', 'C'], true)).toEqual(['⌘', 'C']);
     expect(chordLabel(['Esc'], true)).toEqual(['Esc']);
+  });
+});
+
+describe('keyHint', () => {
+  it('is the chord on one line, spelled as the platform does', () => {
+    expect(keyHint(['Mod', 'Shift', 'R'], false)).toBe('Ctrl+Shift+R');
+    expect(keyHint(['Mod', 'C'], true)).toBe('⌘+C');
+    expect(keyHint(['H'], false)).toBe('H');
   });
 });
 

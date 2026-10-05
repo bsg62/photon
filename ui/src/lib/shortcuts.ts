@@ -126,6 +126,11 @@ export function chordLabel(chord: string[], mac: boolean): string[] {
   return chord.map((part) => (part === 'Mod' ? (mac ? '⌘' : 'Ctrl') : part));
 }
 
+/** A chord as a menu shows it beside the item it does: `Ctrl+Shift+R`, or `⌘+Shift+R`. */
+export function keyHint(chord: string[], mac: boolean): string {
+  return chordLabel(chord, mac).join('+');
+}
+
 /** Whether a keydown asks for the search box: Ctrl+F (⌘F on a Mac) from anywhere, a text
  *  entry included, and a plain `/` anywhere but in one, where it is the character. Shift is
  *  refused beside Ctrl, since that chord is not this one; beside `/` it is how some layouts

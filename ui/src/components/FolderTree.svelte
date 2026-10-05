@@ -7,10 +7,10 @@
   import { sidebarTags } from '../lib/tags';
   import { library } from '../lib/library.svelte';
   import { mainPage } from '../lib/main-page.svelte';
-  import { fitMenu } from '../lib/menu-place';
   import { searchBox } from '../lib/search-box.svelte';
   import { onThisDayLabel, onThisDayQuery } from '../lib/searches';
   import Icon from './Icon.svelte';
+  import Menu from './Menu.svelte';
 
   let { onjump, onopensettings }: { onjump: (folderId: number) => void; onopensettings: () => void } = $props();
 
@@ -42,22 +42,9 @@
   let menu = $state<{ x: number; y: number; folder: Folder } | null>(null);
   let albumMenu = $state<{ x: number; y: number; album: AlbumSummary } | null>(null);
   let searchMenu = $state<{ x: number; y: number; search: SavedSearch } | null>(null);
-  let menuEl = $state<HTMLDivElement | undefined>();
-  let albumMenuEl = $state<HTMLDivElement | undefined>();
-  let searchMenuEl = $state<HTMLDivElement | undefined>();
   let editorInput = $state<HTMLInputElement | undefined>();
   let searchEditorInput = $state<HTMLInputElement | undefined>();
   let folderEditorInput = $state<HTMLInputElement | undefined>();
-
-  $effect(() => {
-    if (menu) menuEl?.focus();
-  });
-  $effect(() => {
-    if (albumMenu) albumMenuEl?.focus();
-  });
-  $effect(() => {
-    if (searchMenu) searchMenuEl?.focus();
-  });
 
   /** Rebuilt only when the folder list changes: `folderById` is called for every row's title
    *  and again from the context menu, so a linear scan per row would be quadratic in a
@@ -128,10 +115,6 @@
     menu = null;
     albumMenu = null;
     searchMenu = null;
-  }
-
-  function onMenuKeydown(e: KeyboardEvent) {
-    if (e.key === 'Escape') closeMenus();
   }
 
   /** A folder row's context menu offers Rescan and Reveal, which act on the watched folder
@@ -617,14 +600,7 @@
 
 {#if menu}
   {@const folder = menu.folder}
-  <div
-    class="menu focus-container"
-    role="menu"
-    tabindex="-1"
-    bind:this={menuEl}
-    use:fitMenu={menu}
-    onkeydown={onMenuKeydown}
-  >
+  <Menu at={menu}>
     <!-- `rescan_folder` is a no-op while a scan of that folder is running, and reports
          nothing back, so don't offer it. -->
     <button
@@ -640,37 +616,23 @@
       <button role="menuitem" title={`Show it as “${folder.name}” again`} onclick={() => useFolderName(folder)}>Use folder name</button>
     {/if}
     <button role="menuitem" onclick={() => toggleFolderHidden(folder)}>{folder.hidden ? 'Unhide folder' : 'Hide folder'}</button>
-  </div>
+  </Menu>
 {/if}
 
 {#if albumMenu}
   {@const album = albumMenu.album}
-  <div
-    class="menu focus-container"
-    role="menu"
-    tabindex="-1"
-    bind:this={albumMenuEl}
-    use:fitMenu={albumMenu}
-    onkeydown={onMenuKeydown}
-  >
+  <Menu at={albumMenu}>
     <button role="menuitem" onclick={() => startRename(album)}>Rename…</button>
     <button role="menuitem" class="danger" onclick={() => deleteAlbum(album)}>Delete…</button>
-  </div>
+  </Menu>
 {/if}
 
 {#if searchMenu}
   {@const search = searchMenu.search}
-  <div
-    class="menu focus-container"
-    role="menu"
-    tabindex="-1"
-    bind:this={searchMenuEl}
-    use:fitMenu={searchMenu}
-    onkeydown={onMenuKeydown}
-  >
+  <Menu at={searchMenu}>
     <button role="menuitem" onclick={() => startSearchRename(search)}>Rename…</button>
     <button role="menuitem" class="danger" onclick={() => deleteSearch(search)}>Delete…</button>
-  </div>
+  </Menu>
 {/if}
 
 <style>
@@ -793,32 +755,6 @@
     cursor: pointer;
   }
   .add:hover { background: var(--field-hover); }
-  .menu {
-    position: fixed;
-    z-index: 40;
-    display: flex;
-    flex-direction: column;
-    min-width: 200px;
-    /* Never taller than the window, so `fitMenu` can always place all of it on screen. */
-    max-height: calc(100vh - 8px);
-    overflow-y: auto;
-    padding: var(--s-1);
-    background: var(--raised);
-    border-radius: var(--r-3);
-    /* The hairline is what separates a white menu from a white grid in light mode. */
-    box-shadow: 0 0 0 1px var(--line), var(--shadow-menu);
-  }
-  .menu button {
-    padding: 6px 10px;
-    border: 0;
-    border-radius: var(--r-2);
-    background: none;
-    text-align: left;
-    cursor: pointer;
-  }
-  .menu button:hover:not(:disabled) { background: var(--hover); }
-  .menu button:disabled { color: var(--text-dim); cursor: default; }
-  .menu .danger { color: var(--danger); }
   @media (prefers-reduced-motion: reduce) {
     .root, .node, .group, .fold { transition: none; }
   }

@@ -7,14 +7,16 @@
   import { folderLabel } from '../lib/folders';
   import { buildFailure, showEmptyNotice } from '../lib/grid-state';
   import { library } from '../lib/library.svelte';
-  import { fitMenu } from '../lib/menu-place';
   import { gridSize } from '../lib/app-grid-size.svelte';
   import { buildRows, columnsFor, defersThumbs, edgeScrollSpeed, fetchSpan, firstVisibleOffset, GAP, itemSpan, itemsInRect, type Rect, renderRange, rowOfItem, topFolderId, totalHeight, visibleRange } from '../lib/layout';
   import { CAP_FALLBACK, capFrom, createScrollMap, PROBE_HEIGHT } from '../lib/scroll-map';
   import { createScrollSpeed } from '../lib/scroll-speed.svelte';
   import { move, type NavKey } from '../lib/nav';
+  import { keyHint } from '../lib/shortcuts';
   import { decidingPhoto } from '../lib/star-key';
+  import { isMac } from '../lib/url';
   import { yearMarks } from '../lib/timeline';
+  import Menu from './Menu.svelte';
   import Tile from './Tile.svelte';
   import Timeline from './Timeline.svelte';
 
@@ -447,16 +449,12 @@
   // ---- the tile's context menu ----
 
   let menu = $state<{ x: number; y: number } | null>(null);
-  let menuEl = $state<HTMLDivElement | undefined>();
+  const mac = isMac();
   /** The copy count of the one photo the menu was opened on, once the backend answers.
    *  `menuSeq` makes a late answer harmless: one for a menu since closed, or reopened on a
    *  different photo, would otherwise offer that photo's copies under this one. */
   let menuCopies = $state<{ id: number; count: number } | null>(null);
   let menuSeq = 0;
-
-  $effect(() => {
-    if (menu) menuEl?.focus();
-  });
 
   /** Shift extends, Ctrl/Cmd toggles, a plain click collapses to one. Shift wins when both
    *  are held, which is what every file manager does. */
@@ -704,11 +702,6 @@
   const count = $derived(library.selectionCount);
   /** "photo" / "12 photos", for menu items that name what they will act on. */
   const subject = $derived(count === 1 ? 'photo' : counted(count));
-  /** The one selected photo, when the menu's single-photo items ("Reveal", "Copy photo")
-   *  apply at all - `count === 1` already gates those items in the markup, so this only
-   *  needs to say what kind that one photo is. */
-  const soleSelected = $derived(count === 1 && library.selected !== null ? library.entry(library.selected) : undefined);
-
   function withSelection(action: (ids: number[]) => Promise<unknown>) {
     const ids = library.selectedItemIds;
     menu = null;
@@ -888,16 +881,16 @@
        Picasa. -->
   {@const personId =
     library.info.view === 'person' && library.info.person?.startsWith('p:') ? Number(library.info.person.slice(2)) : null}
-  <div
-    class="menu focus-container"
-    role="menu"
-    tabindex="-1"
-    bind:this={menuEl}
-    use:fitMenu={menu}
-  >
+  <!-- The photo the star key would go by (`starDecider`): its star says which of Star and
+       Unstar the key does, and for one photo which of the two is worth offering at all. -->
+  {@const decider = starDecider()}
+  {@const sole = count === 1 ? decider : undefined}
+  <!-- In groups, as a file manager's menu is: the file itself, what the photo is marked as,
+       what it belongs to, where it goes. A group that can be empty carries its own rule. -->
+  <Menu at={menu}>
     {#if count === 1}
       <button role="menuitem" onclick={() => withSelection((ids) => api.revealInFileManager(ids[0]))}>
-        Reveal in file manager
+        Reveal in file manager <span class="hint">{keyHint(['Mod', 'Shift', 'R'], mac)}</span>
       </button>
       <button
         role="menuitem"
@@ -906,22 +899,52 @@
       >
         Open in default app
       </button>
-      {#if soleSelected?.kind !== 'video'}
+      {#if sole?.kind !== 'video'}
         <!-- One photo only: the clipboard holds one picture. The backend refuses a video. -->
-        <button role="menuitem" onclick={() => withSelection((ids) => library.copyPhoto(ids[0]))}>Copy photo</button>
+        <button role="menuitem" onclick={() => withSelection((ids) => library.copyPhoto(ids[0]))}>
+          Copy photo <span class="hint">{keyHint(['Mod', 'C'], mac)}</span>
+        </button>
       {/if}
+      <div class="sep" role="separator"></div>
     {/if}
-    <button role="menuitem" onclick={() => withSelection((ids) => star(ids, true))}>Star {subject}</button>
-    <button role="menuitem" onclick={() => withSelection((ids) => star(ids, false))}>Unstar {subject}</button>
+    {#if sole}
+      <!-- One photo whose star is known: the one item that changes it. -->
+      <button role="menuitem" onclick={() => withSelection((ids) => star(ids, !sole.starred))}>
+        {sole.starred ? 'Unstar photo' : 'Star photo'} <span class="hint">.</span>
+      </button>
+    {:else}
+      <!-- Several photos can be part starred, so both are offered; the key is shown beside
+           the one it would do. -->
+      <button role="menuitem" onclick={() => withSelection((ids) => star(ids, true))}>
+        Star {subject}
+        {#if !decider?.starred}<span class="hint">.</span>{/if}
+      </button>
+      <button role="menuitem" onclick={() => withSelection((ids) => star(ids, false))}>
+        Unstar {subject}
+        {#if decider?.starred}<span class="hint">.</span>{/if}
+      </button>
+    {/if}
     {#if canCompare(count)}
       <button
         role="menuitem"
         onclick={() => {
           menu = null;
           oncompare(library.selectedItemIds);
-        }}>Compare {subject}</button
+        }}>Compare {subject} <span class="hint">C</span></button
       >
     {/if}
+    {#if library.info.view === 'hidden'}
+      <button role="menuitem" onclick={() => withSelection((ids) => library.setHidden(ids, false))}>
+        Unhide {subject} <span class="hint">H</span>
+      </button>
+    {:else}
+      <!-- Not "Delete": photon never deletes a photo. The file stays where it is and the
+           Hidden view gives it back. -->
+      <button role="menuitem" onclick={() => withSelection((ids) => library.setHidden(ids, true))}>
+        Hide {subject} <span class="hint">H</span>
+      </button>
+    {/if}
+    <div class="sep" role="separator"></div>
     <button role="menuitem" onclick={() => pickKeyword('add')}>Add keyword to {subject}…</button>
     <button role="menuitem" onclick={() => pickKeyword('remove')}>Remove keyword from {subject}…</button>
     <!-- Only while photon finds faces: with the switch off there is no face to name. -->
@@ -935,6 +958,12 @@
         Remove {subject} from “{library.personName(library.info.person)}”
       </button>
     {/if}
+    {#if albumId !== null}
+      <button role="menuitem" onclick={() => withSelection((ids) => library.removeFromAlbum(albumId, ids))}>
+        Remove {subject} from “{library.albumName(albumId)}”
+      </button>
+    {/if}
+    <div class="sep" role="separator"></div>
     <button
       role="menuitem"
       onclick={() => {
@@ -942,22 +971,6 @@
         onexport();
       }}>Export {subject}…</button
     >
-    {#if albumId !== null}
-      <button role="menuitem" onclick={() => withSelection((ids) => library.removeFromAlbum(albumId, ids))}>
-        Remove {subject} from “{library.albumName(albumId)}”
-      </button>
-    {/if}
-    {#if library.info.view === 'hidden'}
-      <button role="menuitem" onclick={() => withSelection((ids) => library.setHidden(ids, false))}>
-        Unhide {subject} (H)
-      </button>
-    {:else}
-      <!-- Not "Delete": photon never deletes a photo. The file stays where it is and the
-           Hidden view gives it back. -->
-      <button role="menuitem" onclick={() => withSelection((ids) => library.setHidden(ids, true))}>
-        Hide {subject} (H)
-      </button>
-    {/if}
     {#if count === 1 && menuCopies && menuCopies.count > 0}
       {@const id = menuCopies.id}
       <button
@@ -973,13 +986,13 @@
       <!-- Adding is idempotent, so the album the photos are already in is not filtered out
            here: the grid rows do not know their memberships, and asking per photo for a
            menu would be a round trip for nothing. -->
-      <button role="menuitem" class="album" onclick={() => withSelection((ids) => library.addToAlbum(album.id, ids))}>
+      <button role="menuitem" class="sub" onclick={() => withSelection((ids) => library.addToAlbum(album.id, ids))}>
         {album.name}
       </button>
     {:else}
-      <div class="none">No albums of your own yet — create one in the sidebar.</div>
+      <div class="note">No albums of your own yet — create one in the sidebar.</div>
     {/each}
-  </div>
+  </Menu>
 {/if}
 
 <style>
@@ -1020,31 +1033,4 @@
   /* The Copies view's notice line: in normal flow, below the tile(s) still on screen -
      unlike `.empty`, which overlays the whole viewport and would sit on top of them. */
   .lone { padding: var(--s-3); color: var(--text-dim); margin: 0; }
-  .menu {
-    position: fixed;
-    z-index: 40;
-    display: flex;
-    flex-direction: column;
-    min-width: 220px;
-    max-height: 60vh;
-    overflow-y: auto;
-    padding: var(--s-1);
-    background: var(--raised);
-    border-radius: var(--r-3);
-    /* The hairline is what separates a white menu from a white grid in light mode. */
-    box-shadow: 0 0 0 1px var(--line), var(--shadow-menu);
-  }
-  .menu button { padding: 6px 10px; border: 0; border-radius: var(--r-2); background: none; text-align: left; cursor: pointer; }
-  .menu button:hover { background: var(--hover); }
-  .menu .album { padding-left: 18px; }
-  .menu .heading {
-    margin-top: var(--s-1);
-    padding: 6px 10px 2px;
-    color: var(--text-dim);
-    font-size: var(--t-1);
-    font-weight: 600;
-    letter-spacing: 0.04em;
-    border-top: 1px solid var(--line);
-  }
-  .menu .none { padding: 4px 18px 6px; color: var(--text-dim); font-size: var(--t-2); }
 </style>

@@ -13,7 +13,6 @@
   import { formatCaption } from '../lib/caption';
   import { photoCaptionLine } from '../lib/photo-caption';
   import { isCopyPhotoShortcut } from '../lib/copy-photo';
-  import { fitMenu } from '../lib/menu-place';
   import { createCopyFeedback } from '../lib/copied.svelte';
   import { HISTOGRAM_HEIGHT, histogramPath } from '../lib/histogram';
   import { cameraRows, copyGroups, dateRows, formatCoordinates, formatDimensions, nearQuery } from '../lib/exif';
@@ -28,6 +27,7 @@
   import { library } from '../lib/library.svelte';
   import { pictureChanged } from '../lib/picture';
   import Icon from './Icon.svelte';
+  import Menu from './Menu.svelte';
   import Select from './Select.svelte';
   import VideoControls from './VideoControls.svelte';
   import {
@@ -489,13 +489,8 @@
   /** The context menu, with what it offers for the faces under the pointer above its usual
    *  items. */
   let menu = $state<{ x: number; y: number; faces: FaceAction[] } | null>(null);
-  let menuEl = $state<HTMLDivElement | undefined>();
   /** The layer the faces are drawn in: its bounding rectangle carries the zoom and pan. */
   let frameEl = $state<HTMLDivElement | null>(null);
-
-  $effect(() => {
-    if (menu) menuEl?.focus();
-  });
 
   function oncontextmenu(e: MouseEvent) {
     e.preventDefault();
@@ -1472,13 +1467,7 @@
   </div>
   {/if}
   {#if menu && item}
-    <div
-      class="menu focus-container"
-      role="menu"
-      tabindex="-1"
-      bind:this={menuEl}
-      use:fitMenu={menu}
-    >
+    <Menu at={menu}>
       {#each menu.faces as action, i (i)}
         {#if action.kind === 'name'}
           {@const faceId = action.faceId}
@@ -1488,12 +1477,12 @@
           <button role="menuitem" onclick={() => notPerson(person, name)}>Not {name}</button>
         {/if}
       {/each}
-      {#if menu.faces.length}<div class="menu-sep" role="separator"></div>{/if}
+      {#if menu.faces.length}<div class="sep" role="separator"></div>{/if}
       <button role="menuitem" onclick={locate}>Locate in photon</button>
       <button role="menuitem" onclick={reveal}>Reveal in file manager</button>
       <button role="menuitem" title="Opens the file itself; photon's turns and crop are not applied." onclick={openInApp}>Open in default app</button>
-      <button role="menuitem" onclick={toggleHidden}>{item.hidden ? 'Unhide photo (H)' : 'Hide photo (H)'}</button>
-    </div>
+      <button role="menuitem" onclick={toggleHidden}>{item.hidden ? 'Unhide photo' : 'Hide photo'} <span class="hint">H</span></button>
+    </Menu>
   {/if}
   {#if !isVideo}
     <div class="zoom" class:hidden={crop.active} title="Zoom: double-click the photo, + and -, or hold Ctrl and turn the wheel. 0 fits it to the window.">
@@ -1585,23 +1574,6 @@
   .caption { flex: 0 1 auto; min-width: 0; padding: 0 10px; border: 0; background: none; color: var(--text-dim); font-size: var(--t-2); white-space: nowrap; cursor: pointer; overflow: hidden; text-overflow: ellipsis; }
   .caption:hover:not(:disabled) { color: var(--text); }
   .caption:disabled { cursor: default; }
-  .menu {
-    position: fixed;
-    z-index: 40;
-    display: flex;
-    flex-direction: column;
-    min-width: 200px;
-    /* Never taller than the window, so `fitMenu` can always place all of it on screen. */
-    max-height: calc(100vh - 8px);
-    overflow-y: auto;
-    padding: var(--s-1);
-    background: var(--raised);
-    border-radius: var(--r-3);
-    box-shadow: 0 0 0 1px var(--line), var(--shadow-menu);
-  }
-  .menu button { padding: 6px 10px; border: 0; border-radius: var(--r-2); background: none; text-align: left; cursor: pointer; }
-  .menu button:hover { background: var(--hover); }
-  .menu-sep { height: 1px; margin: var(--s-1) 0; background: var(--line); }
   .zoom { position: absolute; bottom: 12px; right: 12px; display: flex; align-items: center; gap: var(--s-2); padding: 6px var(--s-3); border-radius: var(--r-4); }
   .zoom input { width: 120px; }
   .level { color: var(--text-dim); font-size: var(--t-2); min-width: 38px; text-align: right; font-variant-numeric: tabular-nums; }

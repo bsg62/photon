@@ -3,10 +3,10 @@
   import { tick } from 'svelte';
   import { api } from '../lib/api';
   import { library } from '../lib/library.svelte';
-  import { fitMenu } from '../lib/menu-place';
   import { createPeoplePage, IGNORED_FACES, SINGLE, stripKey, type StripKey } from '../lib/people-page.svelte';
   import { faceStatus } from '../lib/status';
   import FaceStrip from './FaceStrip.svelte';
+  import Menu from './Menu.svelte';
   import NameBox from './NameBox.svelte';
 
   let {
@@ -40,7 +40,6 @@
   let root: HTMLElement | undefined = $state();
   let renaming = $state<number | null>(null);
   let mergeMenu = $state<{ x: number; y: number; from: number } | null>(null);
-  let mergeMenuEl = $state<HTMLDivElement | undefined>();
   /** Each person's Rename and Merge buttons, where focus goes back to when the field or
    *  the menu they opened closes: an element removed while it holds focus hands it to
    *  `<body>`, where no key reaches anything until the user clicks. */
@@ -100,10 +99,6 @@
       .catch(library.reportError);
   });
 
-  $effect(() => {
-    if (mergeMenu) mergeMenuEl?.focus();
-  });
-
   export function focus() {
     root?.focus();
   }
@@ -136,14 +131,10 @@
     (mergeButtons[from] ?? root)?.focus();
   }
 
-  function onMenuKeydown(e: KeyboardEvent) {
-    if (e.key === 'Escape') void closeMergeMenu(true);
-  }
-
   /** Whether focus has nowhere to be: on `<body>`, or inside the menu about to go. */
   function focusLost(): boolean {
     const at = document.activeElement;
-    return !at || at === document.body || !!mergeMenuEl?.contains(at);
+    return !at || at === document.body || !!at.closest('[role="menu"]');
   }
 
   function onWindowClick() {
@@ -336,19 +327,11 @@
      transform or containment it would be placed against that instead. -->
 {#if mergeMenu}
   {@const from = mergeMenu.from}
-  <div
-    class="menu focus-container"
-    role="menu"
-    tabindex="-1"
-    aria-label="Merge into"
-    bind:this={mergeMenuEl}
-    use:fitMenu={mergeMenu}
-    onkeydown={onMenuKeydown}
-  >
+  <Menu at={mergeMenu} label="Merge into" onescape={() => void closeMergeMenu(true)}>
     {#each model.people.filter((p) => p.id !== from) as p (p.id)}
       <button role="menuitem" onclick={() => mergeInto(p.id)}>{p.name}</button>
     {/each}
-  </div>
+  </Menu>
 {/if}
 
 <style>
@@ -396,26 +379,5 @@
   /* Spelled to out-rank the generic hover above, which would otherwise grey it. */
   .primary:hover:not(:disabled) { background: var(--accent); filter: brightness(1.08); }
   .danger { color: var(--danger); }
-  /* FolderTree.svelte's menus. */
-  .menu {
-    position: fixed;
-    z-index: 40;
-    display: flex;
-    flex-direction: column;
-    min-width: 200px;
-    max-height: calc(100vh - 8px);
-    overflow-y: auto;
-    padding: var(--s-1);
-    background: var(--raised);
-    border-radius: var(--r-3);
-    box-shadow: 0 0 0 1px var(--line), var(--shadow-menu);
-  }
-  .menu button {
-    padding: 6px 10px;
-    border-radius: var(--r-2);
-    background: none;
-    text-align: left;
-  }
-  .menu button:hover:not(:disabled) { background: var(--hover); }
   @media (prefers-reduced-motion: reduce) { button { transition: none; } }
 </style>
