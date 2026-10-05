@@ -887,7 +887,8 @@
   {@const sole = count === 1 ? decider : undefined}
   <!-- In groups, as a file manager's menu is: the file itself, what the photo is marked as,
        what it belongs to, where it goes. A group that can be empty carries its own rule. -->
-  <Menu at={menu}>
+  <!-- The focus goes back to the grid itself, never to the tile that was right-clicked. -->
+  <Menu at={menu} restore={focus}>
     {#if count === 1}
       <button role="menuitem" onclick={() => withSelection((ids) => api.revealInFileManager(ids[0]))}>
         Reveal in file manager <span class="hint">{keyHint(['Mod', 'Shift', 'R'], mac)}</span>

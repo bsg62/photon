@@ -22,6 +22,7 @@
     at,
     label,
     onescape,
+    restore,
     children,
   }: {
     /** Where the pointer was; `fitMenu` keeps all of the menu on screen from there. */
@@ -31,25 +32,44 @@
     /** Escape pressed in the menu, for an opener with no window listener of its own. The
      *  key then goes no further. */
     onescape?: () => void;
+    /** Where the focus goes when the menu closes with it, for an opener that knows better
+     *  than "whatever had it": the grid, whose tiles must never be focused from script (they
+     *  would draw a focus ring beside the selection's) and are recycled as it scrolls. */
+    restore?: () => void;
     children: Snippet;
   } = $props();
 
   let el = $state<HTMLDivElement | undefined>();
 
-  // The menu takes the focus as it opens, so its keys reach it, and hands it back as it
-  // closes. Before, a menu closed by Escape left the focus on `<body>`: in the grid that is
-  // the arrow keys dead until a click. Handed back only while the focus is still the
-  // menu's (or already fell to the body with it): an item that moved it on - into a dialog,
-  // back to the grid - has said where it belongs.
+  /** What had the focus before the menu took it. Not state: nothing draws it. */
+  let before: Element | null = null;
+
+  // The menu takes the focus as it opens, so its keys reach it. `at` is read so that this
+  // runs again for a menu opened somewhere else while it is still open: the opener keeps
+  // one block and replaces the point, so nothing is remounted, and the right-click that
+  // moved the menu also moved the focus - to the tile or the row under it, where an arrow
+  // moved the grid's selection behind the open menu and `h` hid the photos.
+  $effect(() => {
+    void at;
+    const menu = el;
+    if (!menu) return;
+    const now = document.activeElement;
+    if (now && !menu.contains(now)) before = now;
+    menu.focus();
+  });
+
+  // And hands it back as it closes. Before, a menu closed by Escape left the focus on
+  // `<body>`: in the grid that is the arrow keys dead until a click. Handed back only while
+  // the focus went with the menu: an item that moved it on - into a dialog, back to the
+  // grid - has said where it belongs, and did so before this runs.
   $effect(() => {
     const menu = el;
     if (!menu) return;
-    const before = document.activeElement;
-    menu.focus();
     return () => {
       const now = document.activeElement;
-      const lost = now === null || now === document.body || menu.contains(now);
-      if (lost && before instanceof HTMLElement && before.isConnected) before.focus();
+      if (now !== null && now !== document.body && !menu.contains(now)) return;
+      if (restore) restore();
+      else if (before instanceof HTMLElement && before.isConnected) before.focus();
     };
   });
 
@@ -119,7 +139,9 @@
   .menu :global(button[role='menuitem'].sub) { padding-left: 18px; }
   /* The key that does the same, at the trailing edge. */
   .menu :global(.hint) { flex: none; color: var(--text-dim); font-size: var(--t-2); }
-  .menu :global(.sep) { flex: none; height: 1px; margin: var(--s-1) 0; background: var(--line); }
+  /* Its width spelled out, like everything else a caller's own rule could set: the viewer
+     has a scoped `.sep` of its own, the toolbar's 1px upright, and this one came out a dot. */
+  .menu :global(.sep) { flex: none; width: auto; height: 1px; margin: var(--s-1) 0; background: var(--line); }
   .menu :global(.heading) {
     flex: none;
     margin-top: var(--s-1);

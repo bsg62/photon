@@ -1020,10 +1020,19 @@ through the enabled items (`menuStep`). **Every plain key pressed in a menu stop
 (`menuOwnsKey`): the viewer listens on the window, and with its menu open an `h` hid the photo
 behind it. Escape is let through, since the opener's window listener is what closes the menu,
 and so is a chord, since App must still prevent Ctrl+A. On closing, the menu hands the focus
-back to what had it, but only while the focus is still the menu's own - an item that opened a
-dialog or focused the grid has already said where it goes. A component with a scoped `button`
+back to what had it, but only while the focus went with the menu - an item that opened a
+dialog or focused the grid has already said where it goes - and the grid passes `restore` so
+it is the viewport that gets it, never the right-clicked tile: a tile must not be focused from
+script (it draws a ring beside the selection's) and is recycled as the grid scrolls. The
+opener keeps one `{#if}` block and replaces the point, so a menu re-opened elsewhere while open
+is not remounted: the effect that takes the focus reads `at` for that, and without it the
+second right-click left the focus on the tile, where an arrow moved the selection and `h` hid
+photos behind the open menu. The function keys are let through with Escape and the chords
+(F11). A component with a scoped `button`
 rule (the People page) still gets the menu's look, because the menu's item selectors out-rank
-it; a new item class has to be spelled `button[role='menuitem'].x` to do the same, as `.sub` is.
+it; a new item class has to be spelled `button[role='menuitem'].x` to do the same, as `.sub` is,
+and a rule for a child must set every property it relies on - the viewer's own scoped `.sep`
+(the toolbar's upright) gave the menu's separator its 1px width until `width: auto` was said.
 
 **A pointer gesture has three endings, not two.** `pointerup` finishes it and Escape abandons
 it, but a browser that claims the gesture for itself - a touchscreen pan, which Windows

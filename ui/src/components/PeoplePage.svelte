@@ -134,7 +134,9 @@
   /** Whether focus has nowhere to be: on `<body>`, or inside the menu about to go. */
   function focusLost(): boolean {
     const at = document.activeElement;
-    return !at || at === document.body || !!at.closest('[role="menu"]');
+    // This page's own menu, by its name: a sidebar menu opened meanwhile holds the focus
+    // where the user put it.
+    return !at || at === document.body || !!at.closest('[role="menu"][aria-label="Merge into"]');
   }
 
   function onWindowClick() {

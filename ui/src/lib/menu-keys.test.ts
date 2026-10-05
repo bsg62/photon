@@ -55,6 +55,14 @@ describe('menuOwnsKey', () => {
     expect(menuOwnsKey(key('Escape'))).toBe(false);
   });
 
+  it('leaves the function keys to the app: F11 is the way out of fullscreen', () => {
+    expect(menuOwnsKey(key('F11'))).toBe(false);
+    expect(menuOwnsKey(key('F1'))).toBe(false);
+    // A letter that happens to be F is a plain key like any other.
+    expect(menuOwnsKey(key('F'))).toBe(true);
+    expect(menuOwnsKey(key('f'))).toBe(true);
+  });
+
   it('leaves a chord to the app and the system', () => {
     expect(menuOwnsKey(key('a', { ctrlKey: true }))).toBe(false);
     expect(menuOwnsKey(key('c', { metaKey: true }))).toBe(false);

@@ -25,7 +25,8 @@ export function menuStep(key: string, current: number, count: number): number | 
  *  Every plain key is: the viewer listens on the window, and with its menu open an "h"
  *  hid the photo behind it and an arrow stepped past it. Escape is not - whoever opened the
  *  menu closes it, from the window - and neither is a chord, which is the app's (Ctrl+A,
- *  which must still be kept from selecting the whole window) or the system's. */
+ *  which must still be kept from selecting the whole window) or the system's. Nor a function
+ *  key: F11 is the way out of a fullscreen photon reopened in, wherever the focus is. */
 export function menuOwnsKey(e: Pick<KeyboardEvent, 'key' | 'ctrlKey' | 'metaKey' | 'altKey'>): boolean {
-  return e.key !== 'Escape' && !e.ctrlKey && !e.metaKey && !e.altKey;
+  return e.key !== 'Escape' && !/^F\d+$/.test(e.key) && !e.ctrlKey && !e.metaKey && !e.altKey;
 }
