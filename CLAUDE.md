@@ -209,8 +209,12 @@ and folder name, make, model, lens, `50mm`/`f/1.8`/`iso400`, keywords through `E
 and the capture date as `YYYY-MM-DD` — and `search::Query` holds the grammar: words AND,
 capitals-only `OR`/`AND`, quotes, `camera:`/`lens:`/`tag:`/`person:`/`album:`/`folder:` each
 confined to its own field, `is:`/`has:`/`near:`/`on:`/`faces:` asking about the photo rather than its text
-(`has:face` and `faces:N`/`faces:N+` count its faces, below), a
-leading `-` negating a token, dangling pieces ignored. People, albums and the face counts are read from side
+(`has:face` and `faces:N`/`faces:N+` count its faces, below), `size:`/`iso:`/`aperture:`/`focal:`/`mp:`
+comparing a number of the photo's (`Term::Number`, inclusive bounds in whole units, so every
+spelling of one comparison is one term), a
+leading `-` negating a token, dangling pieces ignored. A fact a term reads is a field of
+`Haystacks` set per photo in `search_entries` and cleared in `Haystacks::truncate`; one set
+only inside an `if let` (the caption's) and not cleared there carries over to the next photo. People, albums and the face counts are read from side
 tables only when a query names one (`Query::needs`). A new searchable fact is a haystack there, not a view; a new *filter* is a
 prefixed term. The query string is the whole interface, so UI links (the info panel's camera
 and lens) go through `searchBox.search()`, which cancels a pending debounce first.

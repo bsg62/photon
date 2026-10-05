@@ -5,6 +5,8 @@
 //! folding outside ASCII, wildcard characters, an empty query - are testable without
 //! seeding a database and counting rows.
 
+use std::cmp::Ordering;
+
 use crate::media::MediaKind;
 use crate::metadata::Gps;
 
@@ -55,6 +57,18 @@ use crate::metadata::Gps;
 ///   `near:48.137,11.575,25km`. The info panel's "Photos nearby" link writes one.
 /// - `has:face` keeps the photos with a face, and `faces:2` or `faces:3+` those with that
 ///   many; Picasa's faces and the ones photon found, each counted once.
+/// - `has:tag`, `has:caption`, `has:album` and `has:person` keep the photos with any of
+///   the thing, so `-has:tag` is the untagged ones. `is:duplicate` keeps the photos the
+///   Duplicates view shows, and `is:portrait`, `is:landscape` and `is:square` ask for the
+///   picture's shape as photon shows it, turned and cropped.
+/// - `size:`, `iso:`, `aperture:`, `focal:` and `mp:` compare a number of the photo's:
+///   `size:>10mb`, `iso:>=1600`, `aperture:<2`, `focal:>100`, `mp:<2`. The operators are
+///   `>`, `>=`, `<` and `<=`, two terms make a range, and a photo without the number never
+///   matches. With no operator the term asks for that number: exactly, for an ISO, an
+///   f-number or a focal length in whole millimetres; as typed, for a size or a megapixel
+///   count, where nothing is exactly ten megabytes - `size:10mb` is what rounds to 10 and
+///   `mp:12.2` what rounds to 12.2. A size needs its unit (`kb`, `mb`, `gb`, each 1024 of
+///   the one before, as photon shows sizes).
 /// - A leading `-` turns a term round: `-tag:family`, `-is:starred`, `-lake`. A negated
 ///   value of several words (`-camera:"canon eos"`) excludes the photos the positive form
 ///   finds, so it is "not all of these words", not "none of them". A query of nothing but
@@ -114,9 +128,69 @@ enum Term {
         lon_e7: i64,
         radius_m: i64,
     },
+    /// `has:tag`.
+    HasTag,
+    /// `has:caption`.
+    HasCaption,
+    /// `has:album`.
+    HasAlbum,
+    /// `has:person`.
+    HasPerson,
+    /// `is:duplicate`: has a copy or a look-alike, as the Duplicates view counts them.
+    Duplicate,
+    /// `is:portrait`, `is:landscape` and `is:square`.
+    Shape(Shape),
+    /// `size:`, `iso:`, `aperture:`, `focal:` and `mp:`: the photo's number within these
+    /// bounds, both inclusive and in the measure's whole unit ([`Measure::of`]). Whole
+    /// units for the reason `Near` has them, and bounds rather than an operator so that
+    /// every spelling of one question (`iso:>399`, `iso:>=400`) is one term.
+    Number {
+        measure: Measure,
+        min: Option<i64>,
+        max: Option<i64>,
+    },
     /// A `-` term: true unless every term inside matches. A list because one token can be
     /// several terms (`camera:"canon eos"`), and the negation is of the token.
     Not(Vec<Term>),
+}
+
+/// What `is:portrait` and its kin ask for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Shape {
+    Portrait,
+    Landscape,
+    Square,
+}
+
+/// Which number of the photo's a [`Term::Number`] compares.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Measure {
+    /// `size:`, in bytes.
+    Bytes,
+    /// `iso:`.
+    Iso,
+    /// `aperture:`, in hundredths of a stop: f/0.95 exists, and nothing is finer.
+    Aperture,
+    /// `focal:`, in whole millimetres, which is how the `50mm` haystack spells it.
+    Focal,
+    /// `mp:`, in pixels.
+    Pixels,
+}
+
+impl Measure {
+    /// The photo's number in this measure's whole unit, or `None` for a photo without it.
+    fn of(self, haystacks: &Haystacks) -> Option<i64> {
+        let whole = |value: f64| value.is_finite().then(|| value.round() as i64);
+        match self {
+            Measure::Bytes => haystacks.bytes,
+            Measure::Iso => haystacks.iso,
+            Measure::Aperture => whole(haystacks.aperture? * 100.0),
+            Measure::Focal => whole(haystacks.focal_mm?),
+            Measure::Pixels => haystacks
+                .shown_dims()
+                .map(|(w, h)| i64::from(w) * i64::from(h)),
+        }
+    }
 }
 
 /// The side tables a query's terms read, so a search loads only the ones it was asked about:
@@ -126,6 +200,11 @@ pub struct Needs {
     pub people: bool,
     pub albums: bool,
     pub faces: bool,
+    /// Not a side table: the photo's size in bytes, its shape and whether it has a copy
+    /// (`is:duplicate`, `is:portrait`, `size:`, `mp:`). They are in the row already, but
+    /// reading them out of it for every photo cost every search 8% (`search_100k`), and
+    /// almost no query asks.
+    pub file: bool,
 }
 
 impl Term {
@@ -162,6 +241,22 @@ impl Term {
                 };
                 gps.distance_km(centre) * 1000.0 <= *radius_m as f64
             }),
+            Term::HasTag => haystacks.tags.present,
+            Term::HasCaption => haystacks.captioned,
+            Term::HasAlbum => haystacks.albums.present,
+            Term::HasPerson => haystacks.people.present,
+            Term::Duplicate => haystacks.duplicate,
+            Term::Shape(shape) => haystacks.shown_dims().is_some_and(|(w, h)| {
+                *shape
+                    == match w.cmp(&h) {
+                        Ordering::Less => Shape::Portrait,
+                        Ordering::Greater => Shape::Landscape,
+                        Ordering::Equal => Shape::Square,
+                    }
+            }),
+            Term::Number { measure, min, max } => measure
+                .of(haystacks)
+                .is_some_and(|n| min.is_none_or(|min| n >= min) && max.is_none_or(|max| n <= max)),
             Term::Not(terms) => !terms.iter().all(|term| term.matches(haystacks)),
         }
     }
@@ -194,6 +289,19 @@ pub struct Fields<'a> {
     pub gps: Option<Gps>,
     /// How many faces the photo has, for `has:face` and `faces:`.
     pub faces: u32,
+    /// Whether the photo has a caption, for `has:caption`. The caption's text is a
+    /// haystack of `any`.
+    pub captioned: bool,
+    /// Whether the photo has a copy or a look-alike, for `is:duplicate`.
+    pub duplicate: bool,
+    /// Width and height as shown, for `is:portrait` and its kin and for `mp:`.
+    pub dims: Option<(u32, u32)>,
+    /// The file's size, for `size:`.
+    pub bytes: Option<i64>,
+    pub iso: Option<i64>,
+    /// The f-number, for `aperture:`.
+    pub aperture: Option<f64>,
+    pub focal_mm: Option<f64>,
 }
 
 /// Appends `text` lowercased to `out`: exactly what `str::to_lowercase` would give, without
@@ -256,6 +364,18 @@ pub struct Haystacks {
     pub gps: Option<Gps>,
     /// How many faces the photo has, as [`Fields::faces`].
     pub faces: u32,
+    /// Set by [`Haystacks::push_caption`], as [`Fields::captioned`].
+    captioned: bool,
+    /// As [`Fields::duplicate`].
+    pub duplicate: bool,
+    /// As [`Fields::dims`].
+    pub dims: Option<(u32, u32)>,
+    /// As [`Fields::bytes`].
+    pub bytes: Option<i64>,
+    pub iso: Option<i64>,
+    /// As [`Fields::aperture`].
+    pub aperture: Option<f64>,
+    pub focal_mm: Option<f64>,
     scratch: String,
 }
 
@@ -330,6 +450,13 @@ impl Haystacks {
         self.edited = false;
         self.gps = None;
         self.faces = 0;
+        self.captioned = false;
+        self.duplicate = false;
+        self.dims = None;
+        self.bytes = None;
+        self.iso = None;
+        self.aperture = None;
+        self.focal_mm = None;
     }
 
     /// Empties everything.
@@ -395,6 +522,8 @@ impl Haystacks {
             }
             collapsed.push_str(word);
         }
+        // Not `true`: a caption of nothing but whitespace is no caption to `has:caption`.
+        self.captioned |= !collapsed.is_empty();
         self.push(&collapsed);
         self.scratch = collapsed;
     }
@@ -436,6 +565,12 @@ impl Haystacks {
             start = end + SEPARATOR.len_utf8();
             found
         })
+    }
+
+    /// The picture's width and height as shown, or `None` when either is not known: a
+    /// file whose header could not be read is stored as 0 by 0, and has no shape.
+    fn shown_dims(&self) -> Option<(u32, u32)> {
+        self.dims.filter(|&(w, h)| w > 0 && h > 0)
     }
 
     fn camera_contains(&self, needle: &str) -> bool {
@@ -605,6 +740,91 @@ fn near(value: &str) -> Option<Term> {
     })
 }
 
+/// A plain decimal - digits, and at most one point among them - and how many digits follow
+/// the point. `parse` alone would take "1e3", "nan", "inf" and a sign.
+fn decimal(text: &str) -> Option<(f64, u32)> {
+    let (whole, fraction) = text.split_once('.').unwrap_or((text, ""));
+    let digits = |part: &str| part.bytes().all(|b| b.is_ascii_digit());
+    if whole.len() + fraction.len() == 0 || !digits(whole) || !digits(fraction) {
+        return None;
+    }
+    Some((text.parse().ok()?, fraction.len() as u32))
+}
+
+/// The term a number prefix's value names: `400`, `>400`, `>=400`, `<400` or `<=400`, the
+/// number followed by one of `units` where the measure has any. `scale` is how many of the
+/// measure's whole units one of the number typed is. `None` for anything else, which
+/// drops the term: `iso:>` is `iso:>400` half typed.
+///
+/// With no operator, `exact` measures ask for the number itself and the others for what
+/// rounds to it at the digits typed (see [`Query`]): half a step below, inclusive, to half
+/// a step above, exclusive.
+fn number(measure: Measure, value: &str, units: &[(&str, f64)]) -> Option<Term> {
+    let (operator, rest) = ["<=", ">=", "<", ">"]
+        .into_iter()
+        .find_map(|op| Some((op, value.strip_prefix(op)?)))
+        .unwrap_or(("", value));
+    let (digits, scale) = if units.is_empty() {
+        (rest, measure.scale())
+    } else {
+        // A measure with units needs one: `size:>10` is `size:>10mb` two keys early, and
+        // read as bytes it would be the whole library.
+        units
+            .iter()
+            .find_map(|(unit, scale)| Some((rest.strip_suffix(unit)?, *scale)))?
+    };
+    let (typed, decimals) = decimal(digits)?;
+    let at = typed * scale;
+    // Past this an `i64` of the result means nothing, and no photo is near it.
+    if at > 1e15 {
+        return None;
+    }
+    let (floor, ceil) = (at.floor() as i64, at.ceil() as i64);
+    let (min, max) = match operator {
+        ">" => (Some(floor + 1), None),
+        ">=" => (Some(ceil), None),
+        "<" => (None, Some(ceil - 1)),
+        "<=" => (None, Some(floor)),
+        _ if measure.exact() => {
+            let whole = at.round() as i64;
+            (Some(whole), Some(whole))
+        }
+        _ => {
+            let half = scale / 10f64.powi(decimals as i32) / 2.0;
+            (
+                Some((at - half).ceil() as i64),
+                Some((at + half).ceil() as i64 - 1),
+            )
+        }
+    };
+    Some(Term::Number { measure, min, max })
+}
+
+/// `size:`'s units. photon shows a size in units of 1024, so that is what is typed.
+const SIZE_UNITS: &[(&str, f64)] = &[
+    ("kb", 1024.0),
+    ("mb", 1024.0 * 1024.0),
+    ("gb", 1024.0 * 1024.0 * 1024.0),
+];
+
+impl Measure {
+    /// How many whole units one of the number typed is, for a measure without units of
+    /// its own to type.
+    fn scale(self) -> f64 {
+        match self {
+            Measure::Aperture => 100.0,
+            Measure::Pixels => 1_000_000.0,
+            Measure::Bytes | Measure::Iso | Measure::Focal => 1.0,
+        }
+    }
+
+    /// Whether a term with no operator asks for the number exactly. True where a photo
+    /// can have exactly the number typed; a size and a megapixel count never do.
+    fn exact(self) -> bool {
+        matches!(self, Measure::Iso | Measure::Aperture | Measure::Focal)
+    }
+}
+
 impl Query {
     /// Parses `raw` by the grammar on [`Query`].
     ///
@@ -721,14 +941,34 @@ impl Query {
                 "edited" => vec![Term::Edited],
                 "video" => vec![Term::Kind(MediaKind::Video)],
                 "photo" => vec![Term::Kind(MediaKind::Image)],
+                "duplicate" => vec![Term::Duplicate],
+                "portrait" => vec![Term::Shape(Shape::Portrait)],
+                "landscape" => vec![Term::Shape(Shape::Landscape)],
+                "square" => vec![Term::Shape(Shape::Square)],
                 _ => Vec::new(),
             }
         } else if let Some(value) = prefixed("has:") {
             match value {
                 "gps" => vec![Term::HasGps],
                 "face" => vec![Term::Faces { min: 1, max: None }],
+                "tag" => vec![Term::HasTag],
+                "caption" => vec![Term::HasCaption],
+                "album" => vec![Term::HasAlbum],
+                "person" => vec![Term::HasPerson],
                 _ => Vec::new(),
             }
+        } else if let Some(value) = prefixed("size:") {
+            number(Measure::Bytes, value, SIZE_UNITS)
+                .into_iter()
+                .collect()
+        } else if let Some(value) = prefixed("iso:") {
+            number(Measure::Iso, value, &[]).into_iter().collect()
+        } else if let Some(value) = prefixed("aperture:") {
+            number(Measure::Aperture, value, &[]).into_iter().collect()
+        } else if let Some(value) = prefixed("focal:") {
+            number(Measure::Focal, value, &[]).into_iter().collect()
+        } else if let Some(value) = prefixed("mp:") {
+            number(Measure::Pixels, value, &[]).into_iter().collect()
         } else if let Some(value) = prefixed("near:") {
             near(value).into_iter().collect()
         } else if let Some(value) = prefixed("faces:") {
@@ -743,9 +983,15 @@ impl Query {
         fn visit(terms: &[Term], needs: &mut Needs) {
             for term in terms {
                 match term {
-                    Term::Person(_) => needs.people = true,
-                    Term::Album(_) => needs.albums = true,
+                    Term::Person(_) | Term::HasPerson => needs.people = true,
+                    Term::Album(_) | Term::HasAlbum => needs.albums = true,
                     Term::Faces { .. } => needs.faces = true,
+                    Term::Duplicate
+                    | Term::Shape(_)
+                    | Term::Number {
+                        measure: Measure::Bytes | Measure::Pixels,
+                        ..
+                    } => needs.file = true,
                     Term::Not(inner) => visit(inner, needs),
                     _ => {}
                 }
@@ -789,6 +1035,13 @@ impl Query {
         haystacks.edited = fields.edited;
         haystacks.gps = fields.gps;
         haystacks.faces = fields.faces;
+        haystacks.captioned = fields.captioned;
+        haystacks.duplicate = fields.duplicate;
+        haystacks.dims = fields.dims;
+        haystacks.bytes = fields.bytes;
+        haystacks.iso = fields.iso;
+        haystacks.aperture = fields.aperture;
+        haystacks.focal_mm = fields.focal_mm;
         self.matches_folded(&haystacks)
     }
 
@@ -1199,7 +1452,7 @@ mod tests {
             Needs {
                 people: true,
                 albums: false,
-                faces: false
+                ..Needs::default()
             }
         );
         assert_eq!(
@@ -1207,7 +1460,7 @@ mod tests {
             Needs {
                 people: false,
                 albums: true,
-                faces: false
+                ..Needs::default()
             }
         );
     }
@@ -1575,5 +1828,335 @@ mod tests {
     fn a_date_prefix_is_literal_inside_quotes() {
         assert!(names("\"from:2019\"", &["from:2019.jpg"]));
         assert!(!dated("\"from:2019\"", &taken(2019, 6, 15, 12, 0, 0)));
+    }
+
+    #[test]
+    fn has_terms_ask_whether_the_photo_has_any() {
+        let photo = Fields {
+            captioned: true,
+            ..rich()
+        };
+        let bare = Fields {
+            // The words are in the names, so only the fields can answer.
+            any: &["tag caption album person.jpg"],
+            ..Fields::default()
+        };
+        for q in [
+            "has:tag",
+            "has:caption",
+            "has:album",
+            "has:person",
+            "HAS:Tag",
+        ] {
+            assert!(Query::parse(q).matches(&photo), "{q}");
+            assert!(!Query::parse(q).matches(&bare), "{q}");
+            // Negated it is the photos without: `-has:tag` is the untagged ones.
+            let not = format!("-{q}");
+            assert!(Query::parse(&not).matches(&bare), "{not}");
+            assert!(!Query::parse(&not).matches(&photo), "{not}");
+        }
+        // Each asks about its own field and no other.
+        let only_tagged = Fields {
+            tags: Some("zoo"),
+            ..Fields::default()
+        };
+        assert!(Query::parse("has:tag").matches(&only_tagged));
+        for q in ["has:caption", "has:album", "has:person"] {
+            assert!(!Query::parse(q).matches(&only_tagged), "{q}");
+        }
+        // The plural is not a term, as `has:faces` is not.
+        for q in ["has:tags", "has:people", "has:albums", "has:ta"] {
+            assert!(Query::parse(q).is_empty(), "{q}");
+        }
+    }
+
+    #[test]
+    fn has_album_and_has_person_read_their_side_tables() {
+        assert!(Query::parse("has:album").needs().albums);
+        assert!(Query::parse("-has:album").needs().albums);
+        assert!(Query::parse("has:person").needs().people);
+        assert_eq!(
+            Query::parse("has:tag has:caption").needs(),
+            Needs::default()
+        );
+    }
+
+    #[test]
+    fn only_a_term_about_the_file_needs_its_size_shape_and_copies() {
+        for q in [
+            "is:duplicate",
+            "is:portrait",
+            "-is:square",
+            "size:>1mb",
+            "mp:12",
+            "lake OR mp:<2",
+        ] {
+            assert!(Query::parse(q).needs().file, "{q}");
+        }
+        // The camera's numbers are read for their haystacks anyway.
+        for q in [
+            "lake",
+            "iso:400 aperture:<2 focal:50",
+            "has:caption is:starred",
+        ] {
+            assert_eq!(Query::parse(q).needs(), Needs::default(), "{q}");
+        }
+    }
+
+    #[test]
+    fn is_duplicate_keeps_the_photos_with_a_copy() {
+        let copy = Fields {
+            duplicate: true,
+            ..Fields::default()
+        };
+        assert!(Query::parse("is:duplicate").matches(&copy));
+        assert!(!Query::parse("is:duplicate").matches(&Fields::default()));
+        assert!(Query::parse("-is:duplicate").matches(&Fields::default()));
+    }
+
+    fn shaped(width: u32, height: u32) -> Fields<'static> {
+        Fields {
+            dims: Some((width, height)),
+            ..Fields::default()
+        }
+    }
+
+    #[test]
+    fn shape_terms_read_the_photo_as_shown() {
+        for (q, (w, h)) in [
+            ("is:landscape", (4, 3)),
+            ("is:portrait", (3, 4)),
+            ("is:square", (5, 5)),
+        ] {
+            for (width, height) in [(4, 3), (3, 4), (5, 5)] {
+                assert_eq!(
+                    Query::parse(q).matches(&shaped(width, height)),
+                    (width, height) == (w, h),
+                    "{q} against {width}x{height}"
+                );
+            }
+            // A photo whose size is not known has no shape: none of the three, and so
+            // every one of them negated.
+            for unknown in [Fields::default(), shaped(0, 0), shaped(4, 0)] {
+                assert!(!Query::parse(q).matches(&unknown), "{q}");
+                assert!(Query::parse(&format!("-{q}")).matches(&unknown), "-{q}");
+            }
+        }
+    }
+
+    fn with_iso(iso: i64) -> Fields<'static> {
+        Fields {
+            iso: Some(iso),
+            ..Fields::default()
+        }
+    }
+
+    #[test]
+    fn a_number_term_compares_the_photos_own_number() {
+        for (q, below, at, above) in [
+            ("iso:400", false, true, false),
+            ("iso:>400", false, false, true),
+            ("iso:>=400", false, true, true),
+            ("iso:<400", true, false, false),
+            ("iso:<=400", true, true, false),
+            ("ISO:>=400", false, true, true),
+        ] {
+            let got = [399, 400, 401].map(|iso| Query::parse(q).matches(&with_iso(iso)));
+            assert_eq!(got, [below, at, above], "{q}");
+        }
+        // Two terms make a range.
+        let range = Query::parse("iso:>=400 iso:<=800");
+        assert_eq!(
+            [200, 400, 800, 1600].map(|iso| range.matches(&with_iso(iso))),
+            [false, true, true, false]
+        );
+    }
+
+    #[test]
+    fn a_photo_without_the_number_never_matches_a_number_term() {
+        // `iso400.jpg` is the name, so a term read as a word would find it.
+        let unknown = Fields {
+            any: &["iso:400 size:1mb aperture:2 focal:50 mp:1.jpg"],
+            ..Fields::default()
+        };
+        for q in [
+            "iso:400",
+            "iso:<400",
+            "iso:>0",
+            "size:<1gb",
+            "size:1mb",
+            "aperture:<22",
+            "aperture:2",
+            "focal:>1",
+            "focal:50",
+            "mp:<100",
+            "mp:1",
+        ] {
+            assert!(!Query::parse(q).matches(&unknown), "{q}");
+            assert!(Query::parse(&format!("-{q}")).matches(&unknown), "-{q}");
+        }
+        // A size the file did not report is no megapixel count either.
+        assert!(!Query::parse("mp:<100").matches(&shaped(0, 3000)));
+    }
+
+    #[test]
+    fn aperture_and_focal_length_compare_as_they_are_shown() {
+        let at = |aperture: f64, focal_mm: f64| Fields {
+            aperture: Some(aperture),
+            focal_mm: Some(focal_mm),
+            ..Fields::default()
+        };
+        // A bare f-number is that stop, not every stop that starts with it, which is what
+        // the word `f/2` finds.
+        assert!(Query::parse("aperture:2").matches(&at(2.0, 50.0)));
+        assert!(!Query::parse("aperture:2").matches(&at(2.8, 50.0)));
+        assert!(!Query::parse("aperture:2").matches(&at(2.2, 50.0)));
+        assert!(Query::parse("aperture:1.8").matches(&at(1.8, 50.0)));
+        assert!(Query::parse("aperture:0.95").matches(&at(0.95, 50.0)));
+        assert!(Query::parse("aperture:<2").matches(&at(1.8, 50.0)));
+        assert!(!Query::parse("aperture:<2").matches(&at(2.0, 50.0)));
+        assert!(Query::parse("aperture:<=2").matches(&at(2.0, 50.0)));
+        assert!(Query::parse("aperture:>=5.6").matches(&at(8.0, 50.0)));
+        // A focal length is compared in the whole millimetres photon writes: 49.6 is shown,
+        // and found, as 50mm.
+        assert!(Query::parse("focal:50").matches(&at(2.0, 49.6)));
+        assert!(!Query::parse("focal:50").matches(&at(2.0, 51.0)));
+        assert!(!Query::parse("focal:>100").matches(&at(2.0, 100.4)));
+        assert!(Query::parse("focal:>100").matches(&at(2.0, 135.0)));
+        assert!(Query::parse("focal:<=24").matches(&at(2.0, 24.0)));
+    }
+
+    const KB: i64 = 1024;
+    const MB: i64 = 1024 * KB;
+    const GB: i64 = 1024 * MB;
+
+    fn sized(bytes: i64) -> Fields<'static> {
+        Fields {
+            bytes: Some(bytes),
+            ..Fields::default()
+        }
+    }
+
+    #[test]
+    fn size_takes_a_unit_and_compares_bytes() {
+        assert!(Query::parse("size:>10mb").matches(&sized(10 * MB + 1)));
+        assert!(!Query::parse("size:>10mb").matches(&sized(10 * MB)));
+        assert!(Query::parse("size:>=10mb").matches(&sized(10 * MB)));
+        assert!(Query::parse("size:<500kb").matches(&sized(500 * KB - 1)));
+        assert!(!Query::parse("size:<500kb").matches(&sized(500 * KB)));
+        assert!(Query::parse("size:<=500kb").matches(&sized(500 * KB)));
+        assert!(Query::parse("size:>1gb").matches(&sized(3 * GB)));
+        assert!(Query::parse("SIZE:>1.5GB").matches(&sized(2 * GB)));
+        assert!(!Query::parse("size:>1.5gb").matches(&sized(GB + GB / 2)));
+    }
+
+    #[test]
+    fn a_bare_size_or_megapixel_count_is_the_number_as_typed() {
+        // No file is exactly ten megabytes: `size:10mb` is what rounds to 10, and
+        // `size:1.5mb` what rounds to 1.5.
+        let ten = Query::parse("size:10mb");
+        assert!(ten.matches(&sized(10 * MB)));
+        assert!(ten.matches(&sized(10 * MB + 400 * KB)));
+        assert!(ten.matches(&sized(10 * MB - 400 * KB)));
+        assert!(ten.matches(&sized(10 * MB - 512 * KB)), "9.5 rounds up");
+        assert!(!ten.matches(&sized(10 * MB + 512 * KB)), "10.5 rounds up");
+        assert!(!ten.matches(&sized(10 * MB - 512 * KB - 1)));
+        let one_and_a_half = Query::parse("size:1.5mb");
+        assert!(one_and_a_half.matches(&sized(MB + MB / 2 + 20 * KB)));
+        assert!(!one_and_a_half.matches(&sized(MB + MB / 2 + 100 * KB)));
+        // A 12 megapixel camera writes 4288x2848, which is 12.2 million.
+        assert!(Query::parse("mp:12").matches(&shaped(4288, 2848)));
+        assert!(!Query::parse("mp:12").matches(&shaped(4928, 3264)));
+        assert!(Query::parse("mp:12.2").matches(&shaped(4288, 2848)));
+        assert!(!Query::parse("mp:12.0").matches(&shaped(4288, 2848)));
+    }
+
+    #[test]
+    fn megapixels_count_the_picture_as_shown() {
+        assert!(!Query::parse("mp:>12").matches(&shaped(4000, 3000)));
+        assert!(Query::parse("mp:>=12").matches(&shaped(4000, 3000)));
+        assert!(Query::parse("mp:>12").matches(&shaped(6000, 4000)));
+        assert!(Query::parse("mp:<2").matches(&shaped(1600, 1200)));
+        assert!(!Query::parse("mp:<2").matches(&shaped(2000, 1000)));
+        assert!(Query::parse("mp:<0.5").matches(&shaped(640, 480)));
+    }
+
+    /// What a number term looks like while it is being typed, or mistyped: dropped, like a
+    /// date that is not one, rather than searched for as a word.
+    #[test]
+    fn malformed_number_terms_are_ignored() {
+        for q in [
+            "iso:",
+            "iso:>",
+            "iso:>=",
+            "iso:abc",
+            "iso:=400",
+            "iso:>>400",
+            "iso:=>400",
+            "iso:-400",
+            "iso:+400",
+            "iso:1e3",
+            "iso:nan",
+            "iso:inf",
+            "iso:4.0.0",
+            "iso:.",
+            "iso:400mb",
+            "aperture:f/2",
+            "focal:50mm",
+            "mp:12mp",
+            // A size needs its unit: `size:>10` is `size:>10mb` two keys early, and read
+            // as bytes it would be the whole library.
+            "size:>10",
+            "size:10",
+            "size:mb",
+            "size:>mb",
+            "size:10tb",
+            "size:99999999999999999999999999999999999999gb",
+        ] {
+            assert!(Query::parse(q).is_empty(), "{q}");
+            let both = format!("lake {q}");
+            assert_eq!(Query::parse(&both), Query::parse("lake"), "{both}");
+        }
+        // Quoted, it is text.
+        assert!(names("\"iso:400\"", &["iso:400.jpg"]));
+    }
+
+    #[test]
+    fn truncating_drops_what_the_new_terms_read() {
+        let mut haystacks = Haystacks::default();
+        let mark = haystacks.mark();
+        haystacks.push_caption("By the lake");
+        haystacks.duplicate = true;
+        haystacks.dims = Some((4000, 3000));
+        haystacks.bytes = Some(5 * MB);
+        haystacks.iso = Some(400);
+        haystacks.aperture = Some(2.0);
+        haystacks.focal_mm = Some(50.0);
+        let terms = [
+            "has:caption",
+            "is:duplicate",
+            "is:landscape",
+            "mp:12",
+            "size:5mb",
+            "iso:400",
+            "aperture:2",
+            "focal:50",
+        ];
+        for q in terms {
+            assert!(Query::parse(q).matches_folded(&haystacks), "{q}");
+        }
+        haystacks.truncate(mark);
+        for q in terms {
+            assert!(!Query::parse(q).matches_folded(&haystacks), "{q}");
+        }
+    }
+
+    #[test]
+    fn a_caption_of_nothing_but_whitespace_is_no_caption() {
+        let mut haystacks = Haystacks::default();
+        haystacks.push_caption(" \n ");
+        assert!(!Query::parse("has:caption").matches_folded(&haystacks));
+        haystacks.push_caption("x");
+        assert!(Query::parse("has:caption").matches_folded(&haystacks));
     }
 }
