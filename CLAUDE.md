@@ -74,7 +74,11 @@ cargo run -p xtask -- scroll-probe   # the end of a 300k-photo library is reacha
 The project website (`site/`, deployed to photon.webcodr.io by `pages.yml`) uses these
 screenshots with real photos: `--photos crates/xtask/screenshots/photos` serves the CC0 photos
 there (credited in their `CREDITS.md`) in place of the gradients. Regenerate `main-light`,
-`main-dark` and `viewer-info-light` with it and convert them to `site/img/*.webp`.
+`main-dark` and `viewer-info-light` with it and convert them to `site/img/*.webp`
+(`magick x.png -quality 85 x.webp`), and `main-light` to `site/img/og.jpg` at quality 88, the
+link preview. With `--photos` the server puts a flag before `mock.js`, and the mock then leaves
+out the faces it says nobody has named: they are rectangles placed for a gradient, and on a
+real photo they outlined skyline.
 
 `npm run dev` runs the app with hot reload. **Do not run it to verify a change** — see
 Conventions.

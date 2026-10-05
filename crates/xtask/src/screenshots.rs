@@ -22,6 +22,10 @@ use std::{
 
 const MOCK_JS: &str = include_str!("../screenshots/mock.js");
 
+/// The global the mock reads to learn that real photos are being served (`--photos`). Set
+/// by a line put before the mock, so it is there when the mock first runs.
+const REAL_PHOTOS_FLAG: &str = "__PHOTON_REAL_PHOTOS__";
+
 /// The script `ui/index.html` loads first. The mock is injected ahead of it, because
 /// theme-boot.js is the first thing to run and `app-theme` calls the backend at import.
 const BOOT_TAG: &str = r#"<script src="/theme-boot.js">"#;
@@ -381,7 +385,16 @@ pub fn respond(path: &str, dist: &Path, photos: &[PathBuf]) -> Response {
         return media(id, photos);
     }
     if path == "/mock.js" {
-        return Response::ok("text/javascript", MOCK_JS);
+        // With real photos the mock is told so: the faces it says photon found and nobody
+        // named are rectangles placed for a gradient, and on a real photo they outlined a
+        // stretch of skyline with no face in it - on the website's own screenshot.
+        if photos.is_empty() {
+            return Response::ok("text/javascript", MOCK_JS);
+        }
+        return Response::ok(
+            "text/javascript",
+            format!("window.{REAL_PHOTOS_FLAG} = true;\n{MOCK_JS}"),
+        );
     }
     // Bound to loopback and short-lived, but a server that reads files refuses to leave its
     // root all the same.
@@ -692,6 +705,22 @@ mod tests {
             "image/jpeg"
         );
         assert!(list_photos(&temp_dist(&[("a.png", "x")])).is_err());
+    }
+
+    #[test]
+    fn the_mock_is_told_when_real_photos_are_served() {
+        let dir = temp_dist(&[("01.jpg", "x")]);
+        let photos = list_photos(&dir).unwrap();
+        let mock =
+            |photos: &[PathBuf]| String::from_utf8(respond("/mock.js", &dir, photos).body).unwrap();
+        let flag = format!("window.{REAL_PHOTOS_FLAG} = true;");
+        // Before the mock, which reads it as it builds its answers.
+        assert!(mock(&photos).starts_with(&flag));
+        assert!(mock(&photos).ends_with(MOCK_JS));
+        // Gradients keep every face: the People screenshots are drawn from them.
+        assert_eq!(mock(&[]), MOCK_JS);
+        // And the mock does read it; a flag nothing reads would pass the lines above.
+        assert!(MOCK_JS.contains(&format!("window.{REAL_PHOTOS_FLAG} ? []")));
     }
 
     #[test]
