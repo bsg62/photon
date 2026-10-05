@@ -2,7 +2,8 @@
 //! "The rule"). `Library::move_candidates` has already matched size, mtime and kind (rule 1's
 //! first half). Here: the same pixel size and capture date (the date ignored for a row an older
 //! reader described), the old file gone or this very file, its drive there, and exactly one such
-//! row, the file name breaking a tie. Only stats; photon never touches a photo file.
+//! row, the file name breaking a tie. Only stats and path lookups; photon never touches a photo
+//! file.
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -50,15 +51,18 @@ pub(crate) fn pick<'c>(
 /// The filesystem's answers to rules 2-4, with each watched folder's "is its drive there"
 /// worked out once per scan.
 pub(crate) struct Probe {
-    /// Watched id -> its root is online and a non-empty directory. Filled on first use, and
-    /// never refreshed: a scan is one moment, and re-reading a root per file costs a listing
-    /// per candidate.
+    /// The watched folder the scan is walking.
+    walked: i64,
+    /// Watched id -> its drive is there: a non-empty directory, and flagged online unless
+    /// it is the one being walked. Filled on first use, and never refreshed: a scan is one
+    /// moment, and re-reading a root per file costs a listing per candidate.
     live: Option<HashMap<i64, bool>>,
 }
 
 impl Probe {
-    pub(crate) fn new() -> Self {
-        Probe { live: None }
+    /// A probe for one walk of the watched folder `walked`.
+    pub(crate) fn new(walked: i64) -> Self {
+        Probe { walked, live: None }
     }
 
     /// Rules 2-4 for `candidate` against the new file at `new_path`.
@@ -68,19 +72,24 @@ impl Probe {
         candidate: &MoveCandidate,
         new_path: &Path,
     ) -> bool {
-        // The old spelling is this file (a case-only rename where the old name still opens
-        // it): nothing about a drive to ask.
-        if paths::same_path(Path::new(&candidate.path), new_path) {
-            return true;
-        }
         // The root is asked first: an unplugged drive answers NotFound for every file on it,
         // which would read as every photo moved. (Stat-first and refuse-after answer the same;
         // asking the root first also spares a stat per file on a drive that is not there.)
+        //
+        // The folder being walked is not asked for its flag. The flag is written when a scan
+        // ends, so through the whole walk that brings an unplugged drive back it still says
+        // offline, and believed, every file renamed while the drive was away came in as new
+        // and its row was purged. That the walk is producing files from the root is the
+        // evidence the flag is waiting for; the root must still be there by its own listing.
+        let walked = self.walked;
         let live = self.live.get_or_insert_with(|| {
             lib.watched_folders()
                 .map(|all| {
                     all.into_iter()
-                        .map(|w| (w.id, w.online && root_is_there(Path::new(&w.path))))
+                        .map(|w| {
+                            let flagged = w.online || w.id == walked;
+                            (w.id, flagged && root_is_there(Path::new(&w.path)))
+                        })
                         .collect()
                 })
                 .unwrap_or_default()
@@ -88,7 +97,7 @@ impl Probe {
         if !live.get(&candidate.watched_id).copied().unwrap_or(false) {
             return false;
         }
-        is_gone(&fs::symlink_metadata(&candidate.path))
+        vacated(Path::new(&candidate.path), new_path)
     }
 }
 
@@ -96,6 +105,27 @@ impl Probe {
 /// share that timed out) is "cannot tell", and a row that cannot be told is not a candidate.
 pub(crate) fn is_gone(stat: &io::Result<fs::Metadata>) -> bool {
     matches!(stat, Err(e) if e.kind() == io::ErrorKind::NotFound)
+}
+
+/// Rules 2 and 3 for one old path, a file's or a directory's: nothing is at `old` any more,
+/// or what `old` opens is `new` itself.
+///
+/// The second is a rename that changed only the case, where the old spelling still opens
+/// the file. It is decided by what the old path resolves to, not by comparing the spellings
+/// (`paths::same_path`), which folds case by platform and not by volume: on a volume that
+/// tells `a.jpg` from `A.JPG`, under macOS or Windows, two identical files so named each
+/// read as the other renamed, and traded one row back and forth on every scan. `new` comes
+/// from a walk of a canonicalised root and stored paths are `paths::canonicalize`'s output,
+/// so the two sides are in one form; where they are not (a path dunce leaves verbatim), the
+/// answer is "not this file" and the file is a new row, as it was before moves were followed.
+///
+/// The resolve is asked only of a path that opens something - a copy beside its original,
+/// in the main - never of the file that is simply gone.
+pub(crate) fn vacated(old: &Path, new: &Path) -> bool {
+    match fs::symlink_metadata(old) {
+        Ok(_) => paths::canonicalize(old).is_ok_and(|resolved| resolved == new),
+        stat => is_gone(&stat),
+    }
 }
 
 /// Rule 4 for one root: a directory with at least one entry. An unmounted volume's mount point
@@ -108,7 +138,8 @@ pub(crate) fn root_is_there(root: &Path) -> bool {
 mod tests {
     use super::*;
     use crate::edit::Edit;
-    use crate::testutil::{new_item, seed_folder, temp_library, write_file};
+    use crate::testutil::{new_item, seed_folder, temp_library, watch, write_file};
+    use std::path::PathBuf;
 
     fn candidate(id: i64, path: &str) -> MoveCandidate {
         MoveCandidate {
@@ -226,61 +257,124 @@ mod tests {
     }
 
     /// A library with one watched root holding `kept.jpg`, and a candidate row in it.
-    fn rooted(
-        path_in_root: &str,
-    ) -> (tempfile::TempDir, tempfile::TempDir, Library, MoveCandidate) {
-        let (dbdir, lib) = temp_library();
-        let root = tempfile::tempdir().unwrap();
-        write_file(root.path(), "kept.jpg", b"x");
-        let (watched, folder) = seed_folder(&lib, root.path());
-        let path = root.path().join(path_in_root).to_str().unwrap().to_string();
-        let mut c = candidate(1, &path);
-        c.watched_id = watched;
-        c.folder_id = folder;
-        (dbdir, root, lib, c)
+    struct Rooted {
+        _db: tempfile::TempDir,
+        _dir: tempfile::TempDir,
+        /// Canonicalised, as every stored path is: the temp dir sits behind a symlink on
+        /// macOS and can be spelled in short names on Windows.
+        root: PathBuf,
+        lib: Library,
+        row: MoveCandidate,
     }
 
-    #[test]
-    fn the_probe_follows_a_file_that_is_gone_from_a_live_root() {
-        let (_db, root, lib, c) = rooted("old.jpg");
-        let new_path = root.path().join("elsewhere").join("new.jpg");
-        assert!(Probe::new().gone(&lib, &c, &new_path));
-
-        // A candidate whose file exists is not gone.
-        let present = candidate_in(&c, root.path().join("kept.jpg"));
-        assert!(!Probe::new().gone(&lib, &present, &new_path));
-
-        // Rule 3: the old spelling is the new file, present on disk.
-        let same = candidate_in(&c, root.path().join("kept.jpg"));
-        let kept = root.path().join("kept.jpg");
-        assert!(Probe::new().gone(&lib, &same, &kept));
-
-        // An offline watched folder: its files all answer NotFound, and are not gone.
-        lib.set_watched_online(c.watched_id, false).unwrap();
-        assert!(!Probe::new().gone(&lib, &c, &new_path));
-        lib.set_watched_online(c.watched_id, true).unwrap();
-        assert!(Probe::new().gone(&lib, &c, &new_path));
-
-        // An emptied root is an unmounted volume's mount point, not a root of moved photos.
-        fs::remove_file(root.path().join("kept.jpg")).unwrap();
-        assert!(!Probe::new().gone(&lib, &c, &new_path));
+    fn rooted(path_in_root: &str) -> Rooted {
+        let (db, lib) = temp_library();
+        let dir = tempfile::tempdir().unwrap();
+        let root = paths::canonicalize(dir.path()).unwrap();
+        write_file(&root, "kept.jpg", b"x");
+        let (watched, folder) = seed_folder(&lib, &root);
+        let mut row = candidate(1, root.join(path_in_root).to_str().unwrap());
+        row.watched_id = watched;
+        row.folder_id = folder;
+        Rooted {
+            _db: db,
+            _dir: dir,
+            root,
+            lib,
+            row,
+        }
     }
 
-    fn candidate_in(base: &MoveCandidate, path: std::path::PathBuf) -> MoveCandidate {
+    fn candidate_in(base: &MoveCandidate, path: PathBuf) -> MoveCandidate {
         let mut c = candidate(base.id, path.to_str().unwrap());
         c.watched_id = base.watched_id;
         c
     }
 
     #[test]
+    fn the_probe_follows_a_file_that_is_gone_from_a_live_root() {
+        let r = rooted("old.jpg");
+        let walked = r.row.watched_id;
+        let new_path = r.root.join("elsewhere").join("new.jpg");
+        assert!(Probe::new(walked).gone(&r.lib, &r.row, &new_path));
+
+        // A candidate whose file exists is not gone.
+        let kept = r.root.join("kept.jpg");
+        let present = candidate_in(&r.row, kept.clone());
+        assert!(!Probe::new(walked).gone(&r.lib, &present, &new_path));
+
+        // Rule 3: the old path opens the new file itself.
+        assert!(Probe::new(walked).gone(&r.lib, &present, &kept));
+
+        // An emptied root is an unmounted volume's mount point, not a root of moved photos.
+        fs::remove_file(&kept).unwrap();
+        assert!(!Probe::new(walked).gone(&r.lib, &r.row, &new_path));
+    }
+
+    /// The flag is written when a scan ends, so through the whole walk that brings a drive
+    /// back it still says offline. Believed there, every file renamed while the drive was
+    /// away came in as new and its row was purged.
+    #[test]
+    fn a_root_flagged_offline_is_there_only_for_the_walk_that_is_in_it() {
+        let r = rooted("old.jpg");
+        let walked = r.row.watched_id;
+        let elsewhere = watch(&r.lib, "/elsewhere").id;
+        let new_path = r.root.join("new.jpg");
+        r.lib.set_watched_online(walked, false).unwrap();
+
+        // To a walk of another watched folder it is an unplugged drive, whose files all
+        // answer "no such file".
+        assert!(!Probe::new(elsewhere).gone(&r.lib, &r.row, &new_path));
+        assert!(Probe::new(walked).gone(&r.lib, &r.row, &new_path));
+
+        r.lib.set_watched_online(walked, true).unwrap();
+        assert!(Probe::new(elsewhere).gone(&r.lib, &r.row, &new_path));
+
+        // The walk's own root still has to be a directory with something in it.
+        r.lib.set_watched_online(walked, false).unwrap();
+        fs::remove_file(r.root.join("kept.jpg")).unwrap();
+        assert!(!Probe::new(walked).gone(&r.lib, &r.row, &new_path));
+    }
+
+    /// Rule 3 asks what the old path opens, not how the two are spelled: two files whose
+    /// names differ only in case are two files on a volume that tells them apart, whatever
+    /// the platform's habit, and each would otherwise take the other's row in turn.
+    #[test]
+    fn an_old_path_that_opens_another_file_is_not_this_file() {
+        let r = rooted("a.jpg");
+        let (a, b) = (
+            write_file(&r.root, "a.jpg", b"x"),
+            write_file(&r.root, "b.jpg", b"x"),
+        );
+        assert!(!Probe::new(r.row.watched_id).gone(&r.lib, &r.row, &b));
+        assert!(!vacated(&a, &b));
+        assert!(vacated(&a, &a), "the path itself");
+        assert!(vacated(&r.root.join("nothing.jpg"), &b), "gone");
+    }
+
+    /// A link stands in for what a case-insensitive filesystem does with a file renamed only
+    /// in its case: the old name still opens it, under its new one.
+    #[test]
+    #[cfg(unix)]
+    fn an_old_path_that_resolves_to_the_new_file_is_this_very_file() {
+        let r = rooted("old.jpg");
+        let kept = r.root.join("kept.jpg");
+        std::os::unix::fs::symlink(&kept, r.root.join("old.jpg")).unwrap();
+        assert!(Probe::new(r.row.watched_id).gone(&r.lib, &r.row, &kept));
+
+        let other = write_file(&r.root, "other.jpg", b"x");
+        assert!(!Probe::new(r.row.watched_id).gone(&r.lib, &r.row, &other));
+    }
+
+    #[test]
     fn the_probe_asks_about_a_root_once() {
         // Per scan by design: re-listing a root for every candidate would cost a listing per
         // file, so a root emptied mid-scan keeps the answer it had.
-        let (_db, root, lib, c) = rooted("old.jpg");
-        let new_path = root.path().join("new.jpg");
-        let mut probe = Probe::new();
-        assert!(probe.gone(&lib, &c, &new_path));
-        fs::remove_file(root.path().join("kept.jpg")).unwrap();
-        assert!(probe.gone(&lib, &c, &new_path));
+        let r = rooted("old.jpg");
+        let new_path = r.root.join("new.jpg");
+        let mut probe = Probe::new(r.row.watched_id);
+        assert!(probe.gone(&r.lib, &r.row, &new_path));
+        fs::remove_file(r.root.join("kept.jpg")).unwrap();
+        assert!(probe.gone(&r.lib, &r.row, &new_path));
     }
 }

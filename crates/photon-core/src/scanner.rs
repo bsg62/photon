@@ -9,7 +9,7 @@ use crate::{
 use std::{
     cell::RefCell,
     collections::{BTreeSet, HashMap, HashSet},
-    fs::{self, Metadata},
+    fs::Metadata,
     path::{Path, PathBuf},
     sync::{
         Arc,
@@ -541,12 +541,17 @@ fn seed_ancestors(
 /// the walk instead (`walk_tree`).
 struct FolderRows {
     stored: HashMap<String, (i64, Option<i64>)>,
+    /// The folders this scan made a row for: a directory it had no row at the path of. One
+    /// whose row only changed parent is not among them. `apply_moves` hands a folder's name
+    /// and Hide folder flag on to these alone.
+    created: HashSet<i64>,
 }
 
 impl FolderRows {
     fn load(lib: &Library, watched_id: i64) -> Result<Self> {
         Ok(Self {
             stored: lib.folder_rows(watched_id)?,
+            created: HashSet::new(),
         })
     }
 
@@ -566,7 +571,9 @@ impl FolderRows {
             return Ok((id, true));
         }
         let id = lib.upsert_folder(watched_id, parent, path, scan_id)?;
-        self.stored.insert(path.to_string(), (id, parent));
+        if self.stored.insert(path.to_string(), (id, parent)).is_none() {
+            self.created.insert(id);
+        }
         Ok((id, false))
     }
 }
@@ -679,7 +686,7 @@ fn walk_tree(
     let mut changed_batch: Vec<(i64, NewItem)> = Vec::new();
     let mut meta_batch: Vec<(i64, NewItem)> = Vec::new();
     // One for the whole walk: it asks each watched root once whether its drive is there.
-    let mut probe = moved::Probe::new();
+    let mut probe = moved::Probe::new(watched_id);
     let mut walked: Vec<(PathBuf, i64)> = Vec::new();
     // Walked folders whose row already agreed: bumped to this scan in bulk after the walk.
     let mut unwritten: Vec<i64> = Vec::new();
@@ -807,6 +814,7 @@ fn walk_tree(
                 lib,
                 &mut new_batch,
                 &mut probe,
+                &rows.created,
                 &mut report,
                 &mut seen,
                 progress,
@@ -823,6 +831,7 @@ fn walk_tree(
         lib,
         &mut new_batch,
         &mut probe,
+        &rows.created,
         &mut report,
         &mut seen,
         progress,
@@ -1241,6 +1250,7 @@ fn flush_new(
     lib: &Library,
     batch: &mut Vec<NewItem>,
     probe: &mut moved::Probe,
+    created: &HashSet<i64>,
     report: &mut ScanReport,
     seen: &mut ScanProgress,
     progress: &mut dyn ScanSink,
@@ -1249,7 +1259,7 @@ fn flush_new(
         return Ok(());
     }
     let (moves, mut fresh) = find_moves(lib, std::mem::take(batch), probe)?;
-    fresh.extend(apply_moves(lib, moves, report, progress)?);
+    fresh.extend(apply_moves(lib, moves, created, report, progress)?);
     // A batch that was all moves - a renamed folder's - inserts nothing and has nothing to
     // hand the thumbnail queue.
     if !fresh.is_empty() {
@@ -1339,9 +1349,12 @@ fn find_moves(
 /// Reports the moved rows to the sink twice over: `moved` with each row's thumbnail key
 /// before and after, then `indexed`, since `move_items` leaves the row's thumbnail pending
 /// under its new key.
+///
+/// `created` is the folders this walk made a row for (`FolderRows::created`).
 fn apply_moves(
     lib: &Library,
     moves: Vec<Move>,
+    created: &HashSet<i64>,
     report: &mut ScanReport,
     progress: &mut dyn ScanSink,
 ) -> Result<Vec<NewItem>> {
@@ -1391,28 +1404,36 @@ fn apply_moves(
         }
     }
 
+    // Before the folders below, which can fail: the rows are re-pointed already, and an
+    // error there must not leave their thumbnails neither carried over nor queued.
+    report.moved += ids.len() as u64;
+    progress.moved(&keys);
+    progress.indexed(&ids);
+
     // A renamed directory is a new folder row, and the name and Hide folder flag the user
-    // gave the old one follow the photos - but only when the old directory is gone. A photo
-    // moved out of a folder that is still there has left that folder, not renamed it.
+    // gave the old one follow the photos. Two conditions, each with a case behind it.
     //
-    // Or when the two are one directory under two spellings. On macOS and Windows the old
-    // spelling still opens a directory renamed only in its case, so it is never gone, exactly
-    // as rule 3 says of a file; its row is nonetheless a new one, folder rows being found by
-    // the path as written.
+    // The old directory is gone, or is the new one under another spelling (`moved::vacated`,
+    // as for a file: on a case-insensitive volume the old spelling still opens a directory
+    // renamed only in its case, while its row is a new one, folder rows being found by the
+    // path as written). A photo moved out of a folder that is still there has left that
+    // folder, not renamed it.
+    //
+    // And this walk made the new folder's row. A folder that was there already is one that
+    // photos were moved *into*: one photo out of a hidden, named folder whose directory was
+    // then deleted hid every photo its new folder held, under the old folder's name. The
+    // cost is a renamed folder whose first scan is cancelled before any of its files is
+    // flushed: its row is there by the next scan, and the name and flag are not handed on.
     //
     // Before the caller inserts the batch's new files, so in a hidden folder they arrive
     // hidden as any new row does. (Inserted first they would be hidden all the same, by
     // `set_folder_hidden`'s own write: the order saves that write, nothing more.)
     for (from, was, to, now) in folders {
-        let was = Path::new(&was);
-        if paths::same_path(was, &now) || moved::is_gone(&fs::symlink_metadata(was)) {
+        if created.contains(&to) && moved::vacated(Path::new(&was), &now) {
             lib.inherit_folder_flags(from, to)?;
         }
     }
 
-    report.moved += ids.len() as u64;
-    progress.moved(&keys);
-    progress.indexed(&ids);
     Ok(unmoved)
 }
 
@@ -3650,7 +3671,8 @@ mod tests {
         set_mtime(&copy, at);
 
         let decided = |batch: Vec<NewItem>| {
-            let (moves, fresh) = find_moves(&lib, batch, &mut moved::Probe::new()).unwrap();
+            let (moves, fresh) =
+                find_moves(&lib, batch, &mut moved::Probe::new(watched.id)).unwrap();
             let moves: Vec<(i64, String)> = moves
                 .into_iter()
                 .map(|(row, item)| (row.id, item.file_name))
@@ -3876,6 +3898,161 @@ mod tests {
         );
     }
 
+    /// A folder takes a name and a Hide folder flag only as a row this walk made - which is
+    /// what a renamed directory is. A folder that was there before is somewhere photos were
+    /// moved *into*: handed the flag of the folder they left, every photo it already held
+    /// was hidden, under the other folder's name.
+    #[test]
+    fn photos_moved_into_a_folder_that_was_already_there_do_not_rename_or_hide_it() {
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        let old = write_file(&root, "x/a.jpg", &jpeg_bytes(8, 6));
+        let own = write_file(&root, "y/own.jpg", &jpeg_bytes(8, 7));
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
+        scan(&lib, &watched, 1);
+        let (id, own) = (id_at(&lib, &watched, &old), id_at(&lib, &watched, &own));
+        let x = folder(&lib, "x").unwrap().id;
+        lib.set_folder_alias(x, Some("Easter")).unwrap();
+        lib.set_folder_hidden(x, true).unwrap();
+
+        let new = root.join("y").join("a.jpg");
+        fs::rename(&old, &new).unwrap();
+        fs::remove_dir(root.join("x")).unwrap();
+        let report = scan(&lib, &watched, 2);
+
+        assert_eq!((report.moved, report.added), (1, 0));
+        assert_eq!(lib.item(id).unwrap().unwrap().path, key(&new));
+        assert!(is_hidden(&lib, id), "its own flag");
+        let y = folder(&lib, "y").unwrap();
+        assert_eq!((y.alias, y.hidden), (None, false));
+        assert!(!is_hidden(&lib, own), "a photo that was there all along");
+    }
+
+    /// A drive unplugged, its files renamed on another machine, and plugged back in. The
+    /// watched folder's flag still says offline while the walk that brings it back runs; it
+    /// is that walk's own files that say the drive is there.
+    #[test]
+    fn a_drive_that_comes_back_with_a_renamed_file_keeps_its_row() {
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        let a = write_file(&root, "a.jpg", &jpeg_bytes(8, 6));
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
+        scan(&lib, &watched, 1);
+        let id = id_at(&lib, &watched, &a);
+        let album = decorate(&lib, id);
+        // What the scan that found the root gone left behind.
+        lib.set_watched_online(watched.id, false).unwrap();
+
+        let b = root.join("b.jpg");
+        fs::rename(&a, &b).unwrap();
+        let report = scan(&lib, &watched, 2);
+
+        assert_eq!(
+            (report.moved, report.added, report.marked_missing),
+            (1, 0, 0)
+        );
+        assert_followed(&lib, id, album, &b);
+        assert!(lib.watched_folders().unwrap()[0].online);
+    }
+
+    /// What `apply_moves` takes for "a folder this walk made": a directory there was no row
+    /// at the path of. A row that only changed parent was there before.
+    #[test]
+    fn only_a_folder_with_no_row_at_its_path_is_one_the_scan_made() {
+        let (_dir, lib) = temp_library();
+        let watched = crate::testutil::watch(&lib, "/p");
+        let root = lib.upsert_folder(watched.id, None, "/p", 1).unwrap();
+        let moved = lib.upsert_folder(watched.id, None, "/p/sub", 1).unwrap();
+        let mut rows = FolderRows::load(&lib, watched.id).unwrap();
+
+        let agreed = rows.ensure(&lib, watched.id, None, "/p", 2).unwrap();
+        assert_eq!(agreed, (root, true));
+        let reparented = rows
+            .ensure(&lib, watched.id, Some(root), "/p/sub", 2)
+            .unwrap();
+        assert_eq!(reparented, (moved, false));
+        assert!(rows.created.is_empty());
+
+        let (new, _) = rows
+            .ensure(&lib, watched.id, Some(root), "/p/new", 2)
+            .unwrap();
+        assert_eq!(rows.created, HashSet::from([new]));
+    }
+
+    /// The rows are re-pointed before the folder's name is handed on, and that second write
+    /// can fail. By then the sink has to have been told: the rows are at their new paths
+    /// whatever becomes of the scan, and told after, their thumbnails were neither carried
+    /// over nor queued by it.
+    #[test]
+    fn a_failed_folder_inheritance_still_reports_the_rows_it_moved() {
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        let a = write_file(&root, "trip/a.jpg", &jpeg_bytes(8, 6));
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
+        scan(&lib, &watched, 1);
+        let before = lib.item(id_at(&lib, &watched, &a)).unwrap().unwrap();
+        lib.set_folder_alias(folder(&lib, "trip").unwrap().id, Some("Holiday"))
+            .unwrap();
+        // The write of a folder's name refused, as a full disk refuses it. From a connection
+        // of the test's own: nothing in photon fails that write on request.
+        rusqlite::Connection::open(lib.path())
+            .unwrap()
+            .execute_batch(
+                "CREATE TRIGGER refuse_alias BEFORE UPDATE OF alias ON folders
+                 BEGIN SELECT RAISE(ABORT, 'refused'); END;",
+            )
+            .unwrap();
+
+        fs::rename(root.join("trip"), root.join("summer")).unwrap();
+        let mut sink = Reports::default();
+        let scanned = scan_watched(&lib, &watched, 2, &ScanOptions::default(), &mut sink);
+
+        assert!(scanned.is_err(), "the fixture did not fail the write");
+        let after = lib.item(before.id).unwrap().unwrap();
+        assert_eq!(after.path, key(&root.join("summer").join("a.jpg")));
+        assert_eq!(
+            sink.0,
+            [
+                Reported::Moved(vec![(before.thumb_key(), after.thumb_key())]),
+                Reported::Indexed(vec![before.id]),
+            ]
+        );
+    }
+
+    /// A link stands in for a case-insensitive filesystem, which no Linux runner has: the
+    /// directory's old path still opens it, under its new one. It is then not "gone", and
+    /// its rows, its name and its Hide folder flag follow because it is the same directory.
+    #[test]
+    #[cfg(unix)]
+    fn a_folder_its_old_path_still_opens_keeps_its_rows_its_name_and_its_hide_flag() {
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        let a = write_file(&root, "trip/a.jpg", &jpeg_bytes(8, 6));
+        let b = write_file(&root, "trip/b.jpg", &jpeg_bytes(8, 7));
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
+        scan(&lib, &watched, 1);
+        let (a, b) = (id_at(&lib, &watched, &a), id_at(&lib, &watched, &b));
+        let trip = folder(&lib, "trip").unwrap().id;
+        lib.set_folder_alias(trip, Some("Holiday")).unwrap();
+        lib.set_folder_hidden(trip, true).unwrap();
+
+        let summer = root.join("summer");
+        fs::rename(root.join("trip"), &summer).unwrap();
+        std::os::unix::fs::symlink(&summer, root.join("trip")).unwrap();
+        let report = scan(&lib, &watched, 2);
+
+        assert_eq!(
+            (report.moved, report.added, report.marked_missing),
+            (2, 0, 0)
+        );
+        let path_of = |id: i64| lib.item(id).unwrap().unwrap().path;
+        assert_eq!(path_of(a), key(&summer.join("a.jpg")));
+        assert_eq!(path_of(b), key(&summer.join("b.jpg")));
+        let renamed = folder(&lib, "summer").unwrap();
+        assert_eq!(renamed.alias.as_deref(), Some("Holiday"));
+        assert!(renamed.hidden, "the folder came back visible");
+    }
+
     /// One photo leaving a folder is not the folder moving: the folder is still there, with
     /// its name and its flag, and the folder the photo went to gets neither. The photo itself
     /// stays hidden, by its own flag.
@@ -4059,7 +4236,7 @@ mod tests {
 
         let mut report = ScanReport::default();
         let mut sink = Reports::default();
-        let unmoved = apply_moves(&lib, moves, &mut report, &mut sink).unwrap();
+        let unmoved = apply_moves(&lib, moves, &HashSet::new(), &mut report, &mut sink).unwrap();
 
         assert_eq!(unmoved, [described_at(&lost, &b)]);
         assert_eq!(report.moved, 1);

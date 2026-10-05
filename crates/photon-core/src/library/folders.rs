@@ -302,9 +302,12 @@ impl Library {
     ///
     /// A folder that has no row any more gives nothing and takes nothing, and that is
     /// `Ok(false)`, not `NotFound`: the scanner calls this after it has re-pointed photos out
-    /// of `from`, which leaves `from` empty, and a scan of another watched folder may prune
-    /// an empty folder at any moment. Answered as an error it failed a scan over a name
-    /// that was already past saving.
+    /// of `from`, which can leave `from` empty, and an empty folder whose directory is gone
+    /// is pruned by the next scan of the watched folder it is in to finish (`prune_folders`
+    /// deletes only its own watched folder's rows). When the photos went to another watched
+    /// folder, that scan has its own slot and can finish between the two writes; removing
+    /// the watched folder deletes the row as well. Answered as an error it failed a scan
+    /// over a name that was already past saving.
     pub fn inherit_folder_flags(&self, from: i64, to: i64) -> Result<bool> {
         let (alias, hidden, to_alias, to_hidden) = {
             let conn = self.reader()?;
@@ -751,9 +754,9 @@ mod tests {
         assert!(!folder(named).hidden);
     }
 
-    /// A scan of another watched folder can prune the folder a photo left before its name
-    /// is handed on. That is a state, not an error: answered as one, it failed the scan that
-    /// had just followed the photo.
+    /// The folder a photo left can be pruned before its name is handed on: by a scan of the
+    /// watched folder it is in, when the photo went to another. That is a state, not an
+    /// error: answered as one, it failed the scan that had just followed the photo.
     #[test]
     fn a_folder_row_that_is_gone_gives_and_takes_nothing() {
         let (_dir, lib) = temp_library();
