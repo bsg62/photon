@@ -326,9 +326,11 @@ watcher hands `scan_subtree` the directory an event came from and `walk_tree` ex
 depth 0: without it a subtree scan indexes what every full scan skips, marks missing and purges
 (`subtree_scan_of_a_hidden_directory_indexes_nothing`,
 `subtree_scan_of_a_recycle_bin_indexes_nothing`). The bins are `RECYCLE_BINS`: `$RECYCLE.BIN`
-and XP's `RECYCLER` (inside the root when a drive's root is watched), Synology's `#recycle` and
-QNAP's `@Recycle` (inside it when the share is), matched as a whole component, without ASCII
-case, at any depth; `.Trashes` and `.Trash-1000` are dot-names already. They are skipped
+(inside the root when a drive's root is watched), Synology's `#recycle` and QNAP's `@Recycle`
+(inside it when the share is), matched as a whole component, without ASCII case, at any depth;
+`.Trashes` and `.Trash-1000` are dot-names already. Not XP's `RECYCLER`, and no other plain
+word: matched without case it is a user's own folder "Recycler", whose photos the upgrade would
+purge (`a_recycle_bin_is_not_walked` walks one). They are skipped
 because of the feature below: deleting in Explorer or over SMB is a rename on the same volume
 that keeps size and mtime, so the row was followed *into the bin* and the deleted photo stayed
 in its albums and person views until the bin was emptied
@@ -336,7 +338,12 @@ in its albums and person views until the bin was emptied
 passed over, whatever it is called (`a_watched_root_named_like_a_recycle_bin_is_scanned`; the
 exemption had no test before it). A photo an earlier photon indexed inside a bin is no longer
 found, so the next two scans that reach the folder above it mark it missing and purge it:
-intended (`a_photo_indexed_inside_a_recycle_bin_by_an_earlier_photon_is_purged`).
+intended (`a_photo_indexed_inside_a_recycle_bin_by_an_earlier_photon_is_purged`). Except when
+those were the watched root's *only* photos: the walk then sees no file, the empty-root guard
+in `scan_watched` reads a root with rows and no file as an unplugged drive, marks it offline
+and returns before anything is marked or purged, and the rows stay until a photo appears
+outside the bin. That is the guard, not the bin rule, and it is why those fixtures hold a
+`keep.jpg`.
 
 **A renamed or moved photo keeps its row** (spec `2026-10-05-photon-follow-moved-files-design.md`,
 schema 26). Everything photon keeps about a photo hangs on its `items` row, and a path the walk

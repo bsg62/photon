@@ -1141,12 +1141,15 @@ fn apply_folder_faces(
 /// left, purged with everything on it. The same holds for a row a scan of another watched
 /// folder re-pointed after this one read its list.
 ///
-/// That is these two writes only. The walk's other writes from the same list,
-/// `update_items` and `update_item_meta`, are still by id alone, and would put a moved row
-/// back at its old path. They are left so because they are made for a file the walk
-/// *found* at the listed path: for the row to have moved meanwhile, it must have been
-/// followed elsewhere after the list was read - by a scan of another watched folder, or by
-/// this walk - and a file must be at its old path again by the time this walk gets there.
+/// That is these two writes only. The walk's other writes from the same list are still by
+/// id alone. `update_items` writes the path with the rest, so it would put a moved row back
+/// at its old path, and clear what a changed file clears. `update_item_meta` writes no path:
+/// it would leave the row where it went and put on it the metadata and keywords read from
+/// the file at the old path, one with the row's own size and mtime. They are left so because
+/// they are made for a file the walk *found* at the listed path: for the row to have moved
+/// meanwhile, it must have been followed elsewhere after the list was read - by a scan of
+/// another watched folder, or by this walk - and a file must be at its old path again by the
+/// time this walk gets there.
 fn finish_mark_purge(
     lib: &Library,
     mut known: HashMap<String, KnownItem>,
@@ -1485,10 +1488,14 @@ fn flush_changed(
 }
 
 /// The directories that are a drive's or a network share's recycle bin, by the names their
-/// systems give them: Windows' on every drive (`RECYCLER` was XP's), Synology's and QNAP's on
-/// every share. macOS's `.Trashes` and a Linux desktop's `.Trash-<uid>` are dot-names, and
-/// passed over as those.
-const RECYCLE_BINS: [&str; 4] = ["$RECYCLE.BIN", "RECYCLER", "#recycle", "@Recycle"];
+/// systems give them: Windows' on every drive, Synology's and QNAP's on every share. macOS's
+/// `.Trashes` and a Linux desktop's `.Trash-<uid>` are dot-names, and passed over as those.
+///
+/// Each begins with a sign (`$`, `#`, `@`) that a folder of the user's own seldom does, and
+/// that is what makes a name safe to list, matched as they are without case. Windows XP's
+/// `RECYCLER` is left out for it: it is a plain word, a user's folder called "Recycler" would
+/// be passed over with it, and on the upgrade that brought the rule its photos would be purged.
+const RECYCLE_BINS: [&str; 3] = ["$RECYCLE.BIN", "#recycle", "@Recycle"];
 
 /// Whether the scan passes over an entry of this name, and does not enter it when it is a
 /// directory: a dot-name, or a recycle bin.
@@ -3242,7 +3249,9 @@ mod tests {
 
     /// A drive's or a share's recycle bin is not part of the library, under each name a
     /// system gives it, in any case and at any depth. A folder whose name only contains one
-    /// of them is a folder like any other.
+    /// of them is a folder like any other, and so is one called `Recycler`: Windows XP's bin
+    /// had that name, but it is a plain word a user's own folder can have, and passing it
+    /// over would purge that folder's photos.
     #[test]
     fn a_recycle_bin_is_not_walked() {
         let (dir, lib) = temp_library();
@@ -3252,24 +3261,25 @@ mod tests {
         write_file(&root, "$RECYCLE.BIN/S-1-5-21/$R0A1B2C.jpg", &img);
         write_file(&root, "#recycle/b.jpg", &img);
         write_file(&root, "share/@Recycle/c.jpg", &img);
-        write_file(&root, "RECYCLER/d.jpg", &img);
+        write_file(&root, "Recycler/d.jpg", &img);
         // Another parent than the bins above, so the spelling is this directory's own on a
         // filesystem that folds case as well.
         write_file(&root, "share/#Recycle/e.jpg", &img);
         write_file(&root, "other/$Recycle.Bin/f.jpg", &img);
         write_file(&root, "my #recycle photos/g.jpg", &img);
-        write_file(&root, "RECYCLER 2003/h.jpg", &img);
+        write_file(&root, "@Recycle 2003/h.jpg", &img);
         let watched = lib.add_watched_folder(&root, &[]).unwrap();
 
         let report = scan(&lib, &watched, 1);
 
-        assert_eq!(report.added, 3);
+        assert_eq!(report.added, 4);
         let mut names: Vec<String> = lib.folders().unwrap().into_iter().map(|f| f.name).collect();
         names.sort();
         assert_eq!(
             names,
             [
-                "RECYCLER 2003",
+                "@Recycle 2003",
+                "Recycler",
                 "my #recycle photos",
                 "other",
                 "photos",

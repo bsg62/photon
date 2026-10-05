@@ -2595,6 +2595,10 @@ impl Engine {
                 // has to say about it. Not for a scan that touched nothing: an unplugged
                 // drive is polled every 30 seconds, and the watcher rescans directories
                 // nothing changed in.
+                //
+                // Every counter `touched_rows` adds up, since any one of them alone makes
+                // the line: with only some carried, a scan that did nothing but follow a
+                // star logged "scan finished" over a row of zeros.
                 if report.touched_rows() {
                     tracing::info!(
                         watched_id = watched.id,
@@ -2604,6 +2608,11 @@ impl Engine {
                         moved = report.moved,
                         marked_missing = report.marked_missing,
                         purged = report.purged,
+                        restarred = report.restarred,
+                        refaced = report.refaced,
+                        rehidden = report.rehidden,
+                        realbumed = report.realbumed,
+                        enriched = report.enriched,
                         "scan finished"
                     );
                 }
