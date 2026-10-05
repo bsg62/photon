@@ -41,7 +41,7 @@ pub use detected_faces::{EmbedCandidate, FaceCandidate};
 pub use duplicates::{CopiesArg, HashCandidate, ItemCopy};
 pub use faces::{ItemFace, Person};
 pub use folders::{Folder, WatchedFolder};
-pub use items::{FolderItem, Item, KnownItem, NewItem, RECENT_LIMIT, is_starred};
+pub use items::{FolderItem, Item, KnownItem, MoveCandidate, NewItem, RECENT_LIMIT, is_starred};
 pub use people::{
     FaceFilter, NamedItems, NamedPerson, Offer, PageFace, PageGroup, PeoplePage, RemovedItems,
     Skipped, SkippedItem,
