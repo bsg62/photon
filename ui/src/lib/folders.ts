@@ -26,6 +26,21 @@ export function yearOf(takenAtMin: number): number {
   return new Date(takenAtMin * 1000).getFullYear();
 }
 
+/** What a folder's header in the grid says after its name: how many of its photos the view
+ *  holds, and the month its oldest one was taken - "23 photos · July 2026".
+ *
+ *  The oldest, not a range to the newest, for the reason the sidebar files a folder under its
+ *  oldest photo's year: a photo with no date of its own is dated by its file, so one scan
+ *  copied over yesterday would stretch a folder from 1998 "to" this month. The month is the
+ *  viewer's own, like `yearOf`, so the header and the year the sidebar lists the folder under
+ *  are the same instant read the same way. The count is the view's: in a search it is the
+ *  photos that matched, which is what is under the header. */
+export function folderSummary(count: number, takenAtMin: number, locale?: string): string {
+  const photos = count === 1 ? '1 photo' : `${count.toLocaleString(locale)} photos`;
+  const month = new Date(takenAtMin * 1000).toLocaleDateString(locale, { month: 'long', year: 'numeric' });
+  return `${photos} · ${month}`;
+}
+
 /** What photon calls a folder: the user's alias, else its directory name. The one place that
  *  decides it, so the sidebar, its name sort and the grid header cannot disagree. The path,
  *  shown beside the header and as the sidebar row's tooltip, keeps the real name visible. */

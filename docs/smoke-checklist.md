@@ -333,6 +333,12 @@ publishing it.
       photo.
 - [ ] Scroll the full library to some folder, open Starred, then click All photos: the grid is
       back at that folder, and All photos is highlighted. From a search, the search box empties.
+- [ ] Every view in the sidebar's top block is highlighted while it is the one showing: All
+      photos at launch, then Starred, Recent, On this day, Videos, Duplicates and Hidden in turn.
+- [ ] A folder's header in the grid reads its name, then "23 photos · July 2026" - the count
+      of its photos in this view and the month of its oldest - then its path. The month's
+      year is the year the sidebar lists the folder under. In a search the count is the photos
+      that matched. A long folder name ellipsises before the count is squeezed.
 - [ ] Put an iPhone `.MOV`, an Android `.mp4` and a `.webm` in a watched folder: each gets a tile
       with a play badge and its length, sorted among the photos taken beside it (not hours away).
       The preview frame is not black.
