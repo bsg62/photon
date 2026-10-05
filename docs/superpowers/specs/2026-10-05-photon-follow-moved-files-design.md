@@ -180,11 +180,13 @@ again while photon's window is open.
 ## Recycle bins
 
 Added after the whole-branch review. The walk skipped only dot-names, so the recycle bin of
-a watched drive root (`$RECYCLE.BIN`, XP's `RECYCLER`) or NAS share (`#recycle`, `@Recycle`)
+a watched drive root (`$RECYCLE.BIN`) or NAS share (`#recycle`, `@Recycle`)
 was walked like any folder. Deleting a photo there is a rename on the same volume, so the
 rule above would have followed it into the bin, with its albums: "I deleted it and it is
 still in my album". The scan now enters none of them, in `walk_tree` and in `scan_subtree`
-alike; the watched root itself is exempt, as it is from the dot rule. A photo an earlier
+alike; the watched root itself is exempt, as it is from the dot rule. Windows XP's
+`RECYCLER` is left out on purpose: it is a plain word, and a user's own folder of that
+name would be passed over and its photos purged. A photo an earlier
 photon indexed inside one leaves the library at the next scans.
 
 ## Guards
