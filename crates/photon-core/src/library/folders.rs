@@ -299,20 +299,28 @@ impl Library {
     /// the photos that followed it. A folder with a name or a flag of its own keeps them.
     /// The flag goes through `set_folder_hidden`, so photos of `to` indexed before the move
     /// was noticed are hidden with it. Returns whether anything was written.
+    ///
+    /// A folder that has no row any more gives nothing and takes nothing, and that is
+    /// `Ok(false)`, not `NotFound`: the scanner calls this after it has re-pointed photos out
+    /// of `from`, which leaves `from` empty, and a scan of another watched folder may prune
+    /// an empty folder at any moment. Answered as an error it failed a scan over a name
+    /// that was already past saving.
     pub fn inherit_folder_flags(&self, from: i64, to: i64) -> Result<bool> {
         let (alias, hidden, to_alias, to_hidden) = {
             let conn = self.reader()?;
-            let read = |id: i64| -> Result<(Option<String>, bool)> {
-                conn.query_row(
-                    "SELECT alias, hidden FROM folders WHERE id = ?1",
-                    params![id],
-                    |r| Ok((r.get(0)?, r.get(1)?)),
-                )
-                .optional()?
-                .ok_or(Error::NotFound(id))
+            let read = |id: i64| -> Result<Option<(Option<String>, bool)>> {
+                Ok(conn
+                    .query_row(
+                        "SELECT alias, hidden FROM folders WHERE id = ?1",
+                        params![id],
+                        |r| Ok((r.get(0)?, r.get(1)?)),
+                    )
+                    .optional()?)
             };
-            let (alias, hidden) = read(from)?;
-            let (to_alias, to_hidden) = read(to)?;
+            let (Some((alias, hidden)), Some((to_alias, to_hidden))) = (read(from)?, read(to)?)
+            else {
+                return Ok(false);
+            };
             (alias, hidden, to_alias, to_hidden)
         };
         if to_alias.is_some() || to_hidden || (alias.is_none() && !hidden) {
@@ -741,5 +749,26 @@ mod tests {
         assert!(!lib.inherit_folder_flags(from, named).unwrap());
         assert_eq!(folder(named).alias.as_deref(), Some("Mine"));
         assert!(!folder(named).hidden);
+    }
+
+    /// A scan of another watched folder can prune the folder a photo left before its name
+    /// is handed on. That is a state, not an error: answered as one, it failed the scan that
+    /// had just followed the photo.
+    #[test]
+    fn a_folder_row_that_is_gone_gives_and_takes_nothing() {
+        let (_dir, lib) = temp_library();
+        let w = watch(&lib, "/photos");
+        let here = lib.upsert_folder(w.id, None, "/photos/here", 1).unwrap();
+        let gone = here + 1000;
+
+        let before = lib.folders().unwrap();
+        assert!(!lib.inherit_folder_flags(gone, here).unwrap());
+        assert_eq!(lib.folders().unwrap(), before);
+
+        lib.set_folder_alias(here, Some("Holiday")).unwrap();
+        lib.set_folder_hidden(here, true).unwrap();
+        let before = lib.folders().unwrap();
+        assert!(!lib.inherit_folder_flags(here, gone).unwrap());
+        assert_eq!(lib.folders().unwrap(), before);
     }
 }

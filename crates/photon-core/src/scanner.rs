@@ -1266,28 +1266,60 @@ fn flush_new(
 type Move = (MoveCandidate, NewItem);
 
 /// Splits a batch of files no row has the path of into those that are a row's moved file,
-/// each with that row, and those that are new.
+/// each with that row, and those that are new. Both come back in the batch's order.
 ///
 /// One indexed lookup per file (`items_moved`), which for nearly every file of an import
 /// finds nothing; the filesystem is asked only about a row `moved::pick` could not rule out
 /// from what the library holds.
+///
+/// A row is claimed by one file. When two files of the batch fit one row - two copies of a
+/// deleted original - the one that kept the row's file name has it and the other is new,
+/// whichever the walk met first; with no name to decide, the first of the batch has it. That
+/// holds within a batch only. Across batches and across scans the first file to arrive has
+/// the row: its move is written before the next file is looked at, and the row's file is
+/// then no longer gone.
 fn find_moves(
     lib: &Library,
     batch: Vec<NewItem>,
     probe: &mut moved::Probe,
 ) -> Result<(Vec<Move>, Vec<NewItem>)> {
-    // A row is claimed by one file. The lookups below all read the library as it was before
-    // this batch wrote anything, so without the set two files that fit one row - two copies
-    // of a deleted original - would both pick it, and the second would not be offered
-    // another row that fits it. Of two such files the one the walk met first has the row.
+    // Every lookup below reads the library as it was before this batch wrote anything, so
+    // the claims are what keeps a row from being picked twice, and what lets a second file
+    // be offered another row that fits it.
     let mut claimed: HashSet<i64> = HashSet::new();
-    let (mut moves, mut fresh) = (Vec::new(), Vec::new());
-    for item in batch {
-        let candidates = lib.move_candidates(item.size, item.mtime_ms, item.kind)?;
-        let row = moved::pick(&item, &candidates, &claimed, |c| {
+    let mut pick = |item: &NewItem, candidates: &[MoveCandidate], claimed: &HashSet<i64>| {
+        moved::pick(item, candidates, claimed, |c| {
             probe.gone(lib, c, Path::new(&item.path))
         })
-        .cloned();
+        .cloned()
+    };
+
+    // First the files that are their row's file under its own name, so that none of them
+    // finds its row taken by a copy the walk happened to meet earlier.
+    let mut looked = Vec::with_capacity(batch.len());
+    for item in &batch {
+        let candidates = lib.move_candidates(item.size, item.mtime_ms, item.kind)?;
+        let row = pick(item, &candidates, &claimed);
+        let named = row.as_ref().filter(|row| row.file_name == item.file_name);
+        if let Some(row) = named {
+            claimed.insert(row.id);
+        }
+        let named = named.is_some();
+        looked.push((candidates, row, named));
+    }
+
+    // Then the rest, in the batch's order, each offered what is left.
+    let (mut moves, mut fresh) = (Vec::new(), Vec::new());
+    for (item, (candidates, first, named)) in batch.into_iter().zip(looked) {
+        // A pick depends on the claims only through the file's own candidates. With none of
+        // them claimed the first answer stands, and the filesystem is not asked a second
+        // time - which is every renamed file but the contested ones.
+        let contested = !named && candidates.iter().any(|c| claimed.contains(&c.id));
+        let row = if contested {
+            pick(&item, &candidates, &claimed)
+        } else {
+            first
+        };
         match row {
             Some(row) => {
                 claimed.insert(row.id);
@@ -1328,10 +1360,11 @@ fn apply_moves(
     let written = lib.move_items(&writes)?;
 
     let (mut ids, mut keys, mut unmoved) = (Vec::new(), Vec::new(), Vec::new());
-    // (the folder the row left, its directory, the folder it is in now), each pair once and
-    // in the order the walk met them: of two folders emptied into one, the first to arrive
-    // is the one whose name and flag it takes. A row renamed in place has changed no folder.
-    let mut folders: Vec<(i64, String, i64)> = Vec::new();
+    // (the folder the row left, its directory, the folder it is in now, its directory), each
+    // pair once and in the order the walk met them: of two folders emptied into one, the
+    // first to arrive is the one whose name and flag it takes. A row renamed in place has
+    // changed no folder.
+    let mut folders: Vec<(i64, String, i64, PathBuf)> = Vec::new();
     let mut paired: HashSet<(i64, i64)> = HashSet::new();
     for ((row, (_, _, item)), moved) in rows.into_iter().zip(writes).zip(written) {
         if !moved {
@@ -1348,7 +1381,13 @@ fn apply_moves(
         keys.push((key(&row.path), key(&item.path)));
         ids.push(row.id);
         if row.folder_id != item.folder_id && paired.insert((row.folder_id, item.folder_id)) {
-            folders.push((row.folder_id, row.folder_path, item.folder_id));
+            let now = Path::new(&item.path).parent().unwrap_or(Path::new(""));
+            folders.push((
+                row.folder_id,
+                row.folder_path,
+                item.folder_id,
+                now.to_path_buf(),
+            ));
         }
     }
 
@@ -1356,11 +1395,17 @@ fn apply_moves(
     // gave the old one follow the photos - but only when the old directory is gone. A photo
     // moved out of a folder that is still there has left that folder, not renamed it.
     //
+    // Or when the two are one directory under two spellings. On macOS and Windows the old
+    // spelling still opens a directory renamed only in its case, so it is never gone, exactly
+    // as rule 3 says of a file; its row is nonetheless a new one, folder rows being found by
+    // the path as written.
+    //
     // Before the caller inserts the batch's new files, so in a hidden folder they arrive
     // hidden as any new row does. (Inserted first they would be hidden all the same, by
     // `set_folder_hidden`'s own write: the order saves that write, nothing more.)
-    for (from, directory, to) in folders {
-        if moved::is_gone(&fs::symlink_metadata(&directory)) {
+    for (from, was, to, now) in folders {
+        let was = Path::new(&was);
+        if paths::same_path(was, &now) || moved::is_gone(&fs::symlink_metadata(was)) {
             lib.inherit_folder_flags(from, to)?;
         }
     }
@@ -3583,6 +3628,151 @@ mod tests {
             .map(|id| lib.item(*id).unwrap().unwrap().path)
             .collect();
         assert_eq!(now_at, news.iter().map(|p| key(p)).collect());
+    }
+
+    /// Two copies of a deleted original both fit its row, and the one that kept its name has
+    /// it, whichever of them the walk meets first. A walk's order is the filesystem's, so the
+    /// batch is handed to `find_moves` directly, in both orders, and then walked as well.
+    #[test]
+    fn of_two_files_that_fit_one_row_the_one_with_its_name_has_it() {
+        let bytes = jpeg_bytes(8, 6);
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        let a = write_file(&root, "a.jpg", &bytes);
+        let at = fs::metadata(&a).unwrap().modified().unwrap();
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
+        scan(&lib, &watched, 1);
+        let row = lib.item(id_at(&lib, &watched, &a)).unwrap().unwrap();
+        fs::remove_file(&a).unwrap();
+        let named = write_file(&root, "sub/a.jpg", &bytes);
+        let copy = write_file(&root, "sub/copy.jpg", &bytes);
+        set_mtime(&named, at);
+        set_mtime(&copy, at);
+
+        let decided = |batch: Vec<NewItem>| {
+            let (moves, fresh) = find_moves(&lib, batch, &mut moved::Probe::new()).unwrap();
+            let moves: Vec<(i64, String)> = moves
+                .into_iter()
+                .map(|(row, item)| (row.id, item.file_name))
+                .collect();
+            let fresh: Vec<String> = fresh.into_iter().map(|item| item.file_name).collect();
+            (moves, fresh)
+        };
+        let (named_item, copy_item) = (described_at(&row, &named), described_at(&row, &copy));
+        let by_name = (
+            vec![(row.id, "a.jpg".to_string())],
+            vec!["copy.jpg".to_string()],
+        );
+        assert_eq!(
+            decided(vec![copy_item.clone(), named_item.clone()]),
+            by_name
+        );
+        assert_eq!(decided(vec![named_item, copy_item.clone()]), by_name);
+
+        // Neither has the row's name: the first of the batch has it, and the other is new.
+        let other = described_at(&row, &root.join("sub").join("other.jpg"));
+        assert_eq!(
+            decided(vec![copy_item, other]),
+            (
+                vec![(row.id, "copy.jpg".to_string())],
+                vec!["other.jpg".to_string()]
+            )
+        );
+
+        let report = scan(&lib, &watched, 2);
+        assert_eq!(
+            (report.moved, report.added, report.marked_missing),
+            (1, 1, 0)
+        );
+        assert_eq!(lib.item(row.id).unwrap().unwrap().path, key(&named));
+    }
+
+    /// Rule 3 through a scan: where names are compared without case, the old spelling still
+    /// opens the renamed file, so its row's file is never "gone" - it is this very file.
+    ///
+    /// Run only where the filesystem is case-insensitive. Elsewhere the rename makes a plain
+    /// new path and the row follows as any renamed file's does, which would pass without
+    /// reaching the rule this is for.
+    #[test]
+    #[cfg_attr(
+        not(any(target_os = "macos", target_os = "windows")),
+        ignore = "needs a case-insensitive filesystem"
+    )]
+    fn a_case_only_file_rename_keeps_its_row() {
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        let old = write_file(&root, "IMG.JPG", &jpeg_bytes(8, 6));
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
+        scan(&lib, &watched, 1);
+        let id = id_at(&lib, &watched, &old);
+        let album = decorate(&lib, id);
+
+        fs::rename(&old, root.join("img.jpg")).unwrap();
+        let new = paths::canonicalize(root.join("img.jpg")).unwrap();
+        let report = scan(&lib, &watched, 2);
+
+        assert_eq!(
+            (report.moved, report.added, report.marked_missing),
+            (1, 0, 0)
+        );
+        assert_followed(&lib, id, album, &new);
+        assert_eq!(lib.known_items(watched.id).unwrap().len(), 1);
+    }
+
+    /// The same for a directory: the old spelling still opens it, so it is never "gone", and
+    /// the folder's name and Hide folder flag would be left on a row the scan then prunes.
+    ///
+    /// Run only where the filesystem is case-insensitive, as above: elsewhere the old
+    /// directory is simply gone.
+    #[test]
+    #[cfg_attr(
+        not(any(target_os = "macos", target_os = "windows")),
+        ignore = "needs a case-insensitive filesystem"
+    )]
+    fn a_case_only_folder_rename_keeps_its_rows_its_name_and_its_hide_flag() {
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        let a = write_file(&root, "Trip/a.jpg", &jpeg_bytes(8, 6));
+        let b = write_file(&root, "Trip/b.jpg", &jpeg_bytes(8, 7));
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
+        scan(&lib, &watched, 1);
+        let (a, b) = (id_at(&lib, &watched, &a), id_at(&lib, &watched, &b));
+        let old = folder(&lib, "Trip").unwrap().id;
+        lib.set_folder_alias(old, Some("Holiday")).unwrap();
+        lib.set_folder_hidden(old, true).unwrap();
+
+        fs::rename(root.join("Trip"), root.join("trip")).unwrap();
+        let new = paths::canonicalize(root.join("trip")).unwrap();
+        let report = scan(&lib, &watched, 2);
+
+        assert_eq!(
+            (report.moved, report.added, report.marked_missing),
+            (2, 0, 0)
+        );
+        let path_of = |id: i64| lib.item(id).unwrap().unwrap().path;
+        assert_eq!(path_of(a), key(&new.join("a.jpg")));
+        assert_eq!(path_of(b), key(&new.join("b.jpg")));
+        let renamed = lib
+            .folders()
+            .unwrap()
+            .into_iter()
+            .find(|f| f.path == key(&new))
+            .expect("a folder row at the new spelling");
+        assert_eq!(renamed.alias.as_deref(), Some("Holiday"));
+        assert!(renamed.hidden, "the folder came back visible");
+        assert!(is_hidden(&lib, a) && is_hidden(&lib, b));
+
+        let report = scan(&lib, &watched, 3);
+        assert_eq!(
+            (report.unchanged, report.marked_missing, report.purged),
+            (2, 0, 0)
+        );
+        assert!(
+            lib.folders().unwrap().iter().all(|f| f.id != old),
+            "the old spelling's folder row stayed"
+        );
+        assert_eq!(path_of(a), key(&new.join("a.jpg")));
+        assert_eq!(path_of(b), key(&new.join("b.jpg")));
     }
 
     /// An unplugged drive's files all answer "no such file", and so do those of an unmounted
