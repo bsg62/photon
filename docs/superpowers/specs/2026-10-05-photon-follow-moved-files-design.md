@@ -53,10 +53,17 @@ file of* a row when all of these hold:
    `NotFound`. Any other error is "cannot tell" and the row is not a candidate. A row
    already marked missing is a candidate like any other; the stat is still made, since
    "missing at the last scan" is not "gone now".
-3. **Or it is this very file:** `paths::same_path(old, new)` - a case-only rename on macOS
-   or Windows, where the old spelling still opens the file.
-4. **Its drive is there:** the row's watched folder is online, its root is a directory, and
-   that directory is not empty. An unplugged drive's files all answer `NotFound`; so do the
+3. **Or it is this very file:** the old path still opens something, and
+   `paths::canonicalize(old)` is the new path. That is a case-only rename on macOS or
+   Windows, where the old spelling still opens the file, and a file replaced by a symlink to
+   where it went. Not `paths::same_path`, as first written: that folds case by platform
+   rather than by volume, so on a case-sensitive volume under macOS two identical files
+   `a.jpg` and `A.JPG` would have traded one row back and forth on every scan.
+4. **Its drive is there:** the row's watched folder is online - or is the one being walked,
+   whatever its stored flag says - its root is a directory, and that directory is not empty.
+   The exception is what lets a drive come back with renamed files: the flag is only set
+   once the walk is over, and a walk that has just produced a file from the root is the
+   evidence it waits for. An unplugged drive's files all answer `NotFound`; so do the
    files of an unmounted volume whose mount point was left behind, which is why the scanner
    has its empty-root guard, and this is the same guard. Checked once per watched folder per
    scan.
@@ -114,11 +121,18 @@ it sees the re-pointed rows.
 
 A folder's photon name (`folders.alias`) and its Hide folder flag (`folders.hidden`) hang on
 the folder's row, which is found by path too. When a batch re-points rows from folder *A*
-into folder *B*, and *A*'s directory is gone, and *B* has no alias and is not hidden, *B*
-takes *A*'s alias and hidden flag. A flag taken over is written through
+into folder *B*, and *A*'s directory is gone (or canonicalises to *B*'s, a case-only
+rename), and *B* is a folder this walk created, with no alias and not hidden, *B* takes
+*A*'s alias and hidden flag. "This walk created" is what tells a renamed folder from a
+merge: photos of a hidden folder moved into a long-standing one must not hide and rename
+it. The cost is a renamed folder whose first scan is cancelled before any of its files is
+flushed: it has a row by the next scan, and loses its name. A flag taken over is written through
 `set_folder_hidden`, so files of *B* inserted before the move was noticed are hidden with
 it. Done before the batch's remaining files are inserted, so those inherit it the usual way.
 The first folder to arrive wins; a folder with a name or a flag of its own keeps them.
+
+A folder row that has gone by the time its flags are asked for (pruned by a scan of the
+watched folder it was in) gives nothing, and is not an error.
 
 `settings.last_folder` already answers `None` for a folder that no longer exists.
 
@@ -231,5 +245,5 @@ Upgrading line for schema 26.
 - **Picasa's own data** follows only with the folder's INI, as above.
 - **A volume mounted inside a watched folder** and unplugged on its own is not covered by
   rule 4, which looks at the watched root.
-- **A rename that changes only Unicode normalisation** on macOS: the old spelling still
-  opens the file and `same_path` compares the spellings, so it is a new row, as today.
+- **A rename that changes only Unicode normalisation** on macOS should now be followed by
+  rule 3, since the old spelling canonicalises to the new one; nothing tests it.
