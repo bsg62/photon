@@ -40,6 +40,13 @@ first photo is starred; an old `Picasa.ini` is edited in place. On Windows the f
 hidden attribute is kept. If Picasa has the file open at that moment the write fails with
 a message and nothing changes; try again once Picasa has finished.
 
+A star lives in that file under the photo's file name, and that goes for a star set in photon
+as much as for one set in Picasa. So it follows a folder you rename or move, because the
+folder's `.picasa.ini` goes with it, but not a single photo you rename or move to another
+folder: the file has no line for the new name, and the photo comes back without its star. Star
+it again. photon does not carry the star over by itself, because that would be writing into
+your folder without being asked.
+
 ### Picasa albums
 
 Albums you made in Picasa 3 appear in photon's **Albums** list, marked with a small
@@ -319,10 +326,12 @@ choose **Rename in photon…**. The sidebar and the grid show the new name; the 
 keeps its own, which the grid still shows in the folder's path, and search finds the folder by
 either. Empty the field, or choose **Use folder name**, to go back. The name lives in photon's
 library and follows the folder when it is renamed or moved inside the folders photon watches,
-so the folder keeps its photon name (and its **Hide folder** setting).
+so the folder normally keeps its photon name (and its **Hide folder** setting); "Renaming and
+moving photos" below says when it does not.
 
-Photos you hid in Picasa are hidden in photon too. photon never writes Picasa's hidden flag,
-so a photo you unhide in photon stays visible until you hide or unhide it in Picasa again.
+Photos you hid in Picasa are hidden in photon too, and stay hidden when you rename or move
+them. photon never writes Picasa's hidden flag, so a photo you unhide in photon stays visible
+until you hide or unhide it in Picasa again.
 
 ### Slideshow and fullscreen
 
@@ -362,22 +371,36 @@ Rename or move photos in your file manager and photon keeps what it knows about 
 renamed, moved to another folder, or carried along with a renamed folder - anywhere inside the
 folders photon watches, even from one watched folder to another - stays in its albums, keeps the
 keywords you added in photon, its turns and crops, its hidden flag, and the faces photon found on
-it with the names you gave them. A renamed folder keeps its name in photon and its **Hide folder**
-setting. It shows up under its new name within a few seconds if photon is running, or on the next
-start if it was not.
+it with the names you gave them. A renamed folder normally keeps its name in photon and its
+**Hide folder** setting; it does not when you made the new folder first and filled it
+afterwards, because photon had already seen it as a folder of its own. It shows up under its new
+name within a few seconds if photon is running, or on the next start if it was not.
 
-photon recognises the photo without reading it: a new file with the same size, the same
-modification time and the same picture size and capture date as a photo whose old file is gone
-is that photo. If two photos fit equally well, photon does not guess and treats the new file as a
-new photo. Moving a file within one drive is a rename and is always followed. Moving between two
-drives is a copy followed by a delete: a single photo is normally followed, but a long folder move
-between drives while photon is running can be followed only in part, because photon may scan the
-copies while the originals are still there, and then they are new photos.
+photon does not compare pictures to recognise the photo. It reads the new file's header, as it
+does for any new file, and a new file with the same size, the same modification time and the same
+picture size and capture date as a photo whose old file is gone is that photo. If two photos fit
+equally well, photon does not guess and treats the new file as a new photo; it does the same
+among more than 32 files that are identical in size and modification time. Moving a file within
+one drive is a rename and is followed. Moving between two drives is a copy followed by a delete:
+a single photo is normally followed, but a long folder move between drives while photon is
+running can be followed only in part, because photon may scan the copies while the originals are
+still there, and then they are new photos.
 
-What does not follow: a photo moved out of the watched folders and brought back later, a copy
-whose original is deleted afterwards, a file you edited in another program and saved under a new
-name, and Picasa's stars, faces and albums, which follow only when the folder's `.picasa.ini` moves
-with the photo.
+What does not follow: a photo moved out of the watched folders and brought back later; a copy
+whose original is deleted afterwards; a file you edited in another program and saved under a new
+name; every photo of a watched folder moved into another one, leaving it empty (photon reads an
+empty watched folder as an unplugged drive, and keeps its photos for when it comes back); a move
+to a drive that keeps coarser timestamps, such as FAT or exFAT on a memory card (the
+modification time changes); and the photos of a drive that is mounted inside a watched folder
+and unplugged on its own (photon takes them for deleted). Picasa keeps its faces and albums in
+the folder's `.picasa.ini` under each photo's file name, and a star is kept there too, whether
+you set it in Picasa or in photon: all three follow a folder that is renamed or moved, not a
+single photo that is renamed or moved on its own (see "Stars and Picasa").
+
+photon does not look inside a drive's or a network share's recycle bin (`$RECYCLE.BIN`,
+`#recycle`, `@Recycle`), so a photo you delete leaves the library, and its albums, even when the
+bin lies inside a watched folder. Photos an earlier version indexed inside a bin leave the
+library over the next two scans.
 
 ### Linux with an NVIDIA GPU
 
