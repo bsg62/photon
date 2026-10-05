@@ -16,9 +16,6 @@ pub mod keywords;
 pub mod library;
 pub mod media;
 pub mod metadata;
-// Nothing calls it until Task 3 of docs/superpowers/plans/2026-10-05-photon-follow-moved-files.md,
-// which removes this allowance.
-#[allow(dead_code)]
 pub(crate) mod moved;
 pub mod paths;
 pub mod people;
