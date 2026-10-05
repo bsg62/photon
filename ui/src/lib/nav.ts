@@ -48,6 +48,18 @@ export function ownsSelectAll(target: SelectAllTarget | null): boolean {
   return tag !== 'INPUT' && tag !== 'TEXTAREA';
 }
 
+/** The keys that move a slider. */
+const SLIDER_KEYS = ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', 'PageUp', 'PageDown'];
+
+/** Whether a key pressed with the focus in a form field is the field's to answer, rather
+ *  than the viewer's. A text field or a checkbox keeps every key. A slider keeps only the
+ *  keys that move it: a click on the zoom slider leaves the focus there, and with every key
+ *  the slider's, `0`, `+` and the star were dead until something else was clicked - at the
+ *  very moment the zoom keys are most likely to be reached for. */
+export function fieldOwnsKey(field: { type: string }, key: string): boolean {
+  return field.type !== 'range' || SLIDER_KEYS.includes(key);
+}
+
 export interface FolderPosition {
   /** 1-based position within the folder, or 0 when there is nothing to number. */
   index: number;
@@ -142,6 +154,56 @@ export function wheelStep(
 
 export function clampZoom(zoom: number): number {
   return Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, zoom));
+}
+
+/** One press of `+` or `-` in the viewer: a quarter more, or back by the same factor, so
+ *  as many presses out as in end where they began. */
+export const ZOOM_KEY_STEP = 1.25;
+
+/** How much one unit of wheel delta zooms while Ctrl is held: a mouse notch (~100) is a
+ *  step of about a fifth, and a trackpad pinch, which arrives as a stream of small deltas
+ *  with Ctrl set, zooms as smoothly as it is made. Exponential, so a pinch out and the same
+ *  pinch back in end where they began. */
+export const WHEEL_ZOOM_RATE = 0.002;
+
+/** What a double-click zooms to when the photo is already shown at its own size or larger:
+ *  there are no more pixels to see, but "closer" is still what was asked for. */
+export const DOUBLE_CLICK_ZOOM = 2;
+
+/** The zoom a double-click on a fitted photo goes to: one pixel of the photo on one pixel
+ *  of the screen, which is what a photo is checked for sharpness at. `fitted` is the photo's
+ *  width as drawn at fit, in CSS pixels, and `dpr` how many screen pixels one of those is.
+ *  Clamped like every zoom, so a large photo in a small window stops at `MAX_ZOOM`. A photo
+ *  that fills its fitted box with no pixels to spare - a small one, or anything not yet
+ *  measured - gets `DOUBLE_CLICK_ZOOM` instead: a double-click that changed nothing would
+ *  read as broken. */
+export function actualSizeZoom(imageWidth: number, fitted: number, dpr: number): number {
+  if (!(imageWidth > 0) || !(fitted > 0) || !(dpr > 0)) return DOUBLE_CLICK_ZOOM;
+  const actual = imageWidth / (fitted * dpr);
+  return actual > 1.1 ? clampZoom(actual) : DOUBLE_CLICK_ZOOM;
+}
+
+/** Zooms to `next` keeping the photo under `point` where it is. `point` and the pan are both
+ *  measured from the viewport's centre, which is the stage's transform origin: the stage
+ *  draws a point `q` of the fitted photo at `pan + zoom * q`, so the pan that leaves `point`
+ *  showing the same `q` at the new zoom is `point - (point - pan) * next / zoom`. The result
+ *  is clamped like any pan, so zooming out from a corner slides the photo back into the
+ *  window rather than leaving black beside it, and at fit it is the centre whatever the
+ *  point. `{ x: 0, y: 0 }` zooms about the middle of the window. */
+export function zoomAt(
+  zoom: number,
+  pan: Pan,
+  next: number,
+  point: Pan,
+  width: number,
+  height: number,
+): { zoom: number; pan: Pan } {
+  const to = clampZoom(next);
+  const by = to / zoom;
+  return {
+    zoom: to,
+    pan: clampPan(point.x - (point.x - pan.x) * by, point.y - (point.y - pan.y) * by, to, width, height),
+  };
 }
 
 /** Keeps a panned photo covering the viewport. Scaling by `zoom` overflows the viewport by

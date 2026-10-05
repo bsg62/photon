@@ -199,7 +199,9 @@
     }
     const pane = compare.panes[compare.focus];
     if (!pane) return;
-    if (e.key.toLowerCase() === 's') {
+    // `.` as well: S is the slideshow's in the viewer, so the star's key there and in the
+    // grid is one that is free in all three.
+    if (e.key.toLowerCase() === 's' || e.key === '.') {
       e.preventDefault();
       toggleStar(pane);
       return;

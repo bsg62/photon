@@ -421,6 +421,19 @@
         .catch(library.reportError);
       return;
     }
+    if (!e.ctrlKey && !e.metaKey && !e.altKey && e.key === '.') {
+      // The star, on the key the viewer and compare give it. One key for the menu's two
+      // items, so it needs a rule for a selection that is part starred: the photo the
+      // selection is led by decides, the one a single arrow key would move from. Starred, the
+      // whole selection is unstarred; otherwise all of it is starred. A lead whose page is
+      // not loaded reads as unstarred, and starring twice is harmless.
+      const ids = library.selectedItemIds;
+      if (ids.length === 0) return;
+      e.preventDefault();
+      const lead = sel === null ? undefined : library.entry(sel);
+      star(ids, !lead?.starred).catch(library.reportError);
+      return;
+    }
     if (!NAV_KEYS.includes(e.key) || library.info.len === 0) return;
     e.preventDefault();
     const next = move(sel, e.key as NavKey, sections, columns);

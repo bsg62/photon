@@ -350,10 +350,18 @@ you quit in the middle of a slideshow it reopens fullscreen; `F11` is the way ou
 ### Keyboard shortcuts
 
 Press `?` to see every key photon answers, grouped by where it works - everywhere, in the
-grid, in the viewer, while cropping, during a slideshow, on a video, in compare. It opens over
+grid, in compare, in the viewer, while cropping, during a slideshow, on a video. It opens over
 whatever you are doing, the viewer and compare included, and Escape or `?` again closes it;
 in a text field `?` is just the character. The same list is under Settings → **Shortcuts**.
 Where a shortcut uses Ctrl, a Mac shows ⌘.
+
+A few worth knowing. `Ctrl+F` or `/` puts the caret in the search box, and Enter there moves
+on to the photos it found. `.` stars what is selected - in the grid, in the viewer and in
+compare - and takes the star off again; over a selection that is part starred, the photo the
+selection is led by decides. In the viewer a double-click zooms to the photo's own pixels
+where you clicked, and a second one fits it to the window again; `+`, `-` and `0` do the same
+from the keyboard, and the wheel zooms where the pointer is while Ctrl is held. Without Ctrl
+the wheel moves between photos, as it always has.
 
 ### Statistics
 

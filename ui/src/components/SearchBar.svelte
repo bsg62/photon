@@ -8,6 +8,23 @@
   // This component only renders the machine in `search-box.svelte.ts`; the folder tree
   // drives the same instance, which is why none of that state lives here.
 
+  let {
+    onleave,
+  }: {
+    /** The keyboard is done with the box - Enter, or Escape on a box with nothing to clear -
+     *  and wants the photos: App knows which of its pages is showing them. */
+    onleave: () => void;
+  } = $props();
+
+  let input = $state<HTMLInputElement | undefined>();
+
+  /** Ctrl+F and `/` (App): the caret in the box, with what it holds selected, so typing
+   *  replaces the last search and an arrow key keeps it to refine. */
+  export function focus() {
+    input?.focus();
+    input?.select();
+  }
+
   /** The saved search the box already holds, if any. Drives both the filled bookmark and
    *  the refusal to save the same query twice. */
   const already = $derived(savedSearchFor(library.searches, searchBox.query));
@@ -31,6 +48,7 @@
       placeholder="Search names, camera, keywords, dates…"
       aria-label="Search photos by file or folder name, camera, lens, keyword or date"
       title="Every word must match: a name, a folder, a camera or lens, a keyword, 50mm, f/1.8, iso400, or a date like 2024-06. Use OR to widen, &quot;quotes&quot; for a phrase, camera:, lens:, tag:, person:, album: or folder: for one field, from:2019-06 or to:2020 for a date range, on:07-14 for that day in any year, is:starred, is:edited or is:video for what a photo is, has:gps for photos that record where they were taken, has:face or faces:2+ for photos with people in them, has:tag, has:caption, has:album or has:person for photos with any, is:duplicate, is:portrait, is:landscape or is:square, size:&gt;10mb, iso:&gt;=1600, aperture:&lt;2, focal:&gt;100 or mp:&lt;2 to compare a number, and a leading - to exclude: -tag:family, or -has:tag for the untagged."
+      bind:this={input}
       bind:value={searchBox.query}
       oninput={() => {
         // Typing a search is asking for results, which the People page does not show.
@@ -42,7 +60,19 @@
         // here would call setSearchQuery('') regardless, which is a no-op query but still
         // forces the view to All — kicking the user out of Starred with a keystroke that
         // cleared nothing.
-        if (e.key === 'Escape' && (searchBox.query !== '' || library.info.view === 'search')) searchBox.clear();
+        if (e.key === 'Escape') {
+          if (searchBox.query !== '' || library.info.view === 'search') searchBox.clear();
+          // Nothing to clear: the second Escape of two, or a box opened by mistake. The way
+          // out of it without the mouse, since Tab from here walks the whole top bar first.
+          else onleave();
+          return;
+        }
+        // The search is already on its way - it runs as it is typed - so Enter only moves on
+        // to its results, where the arrow keys are.
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          onleave();
+        }
       }}
     />
     {#if searchBox.query.trim() !== ''}

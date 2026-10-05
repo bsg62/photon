@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { MAX_PANES } from './compare.svelte';
-import { chordLabel, opensShortcuts, SHORTCUTS, type ShortcutGroupId } from './shortcuts';
+import { chordLabel, focusesSearch, opensShortcuts, SHORTCUTS, type ShortcutGroupId } from './shortcuts';
 
 /** The files that answer keys, as text. */
 const sources = import.meta.glob(['../App.svelte', '../components/*.svelte', './*.ts', '!./*.test.ts'], {
@@ -24,7 +24,7 @@ const ANSWERED_IN: Record<string, ShortcutGroupId[]> = {
 };
 
 /** Parts of a chord that are not a key a handler compares `e.key` with. */
-const MODIFIERS = ['Mod', 'Shift', 'click'];
+const MODIFIERS = ['Mod', 'Shift', 'click', 'wheel'];
 
 const NAMES: Record<string, string> = {
   ' ': 'Space',
@@ -78,14 +78,14 @@ describe('the shortcut list', () => {
       expect(keysIn(sources[file]).size, file).toBeGreaterThan(0);
     }
     expect([...keysIn(sources['../components/Viewer.svelte'])].sort()).toEqual(
-      ['Backspace', 'C', 'End', 'Enter', 'Esc', 'H', 'Home', 'I', 'R', 'S', 'Space', '←', '→'].sort(),
+      ['+', '-', '.', '0', '=', 'Backspace', 'C', 'End', 'Enter', 'Esc', 'H', 'Home', 'I', 'R', 'S', 'Space', '←', '→'].sort(),
     );
     expect([...keysIn(sources['../components/Grid.svelte'])].sort()).toEqual(
-      ['A', 'C', 'End', 'Enter', 'Esc', 'H', 'Home', 'R', '←', '→', '↑', '↓'].sort(),
+      ['.', 'A', 'C', 'End', 'Enter', 'Esc', 'H', 'Home', 'R', '←', '→', '↑', '↓'].sort(),
     );
     expect([...keysIn(sources['./video-player.svelte.ts'])].sort()).toEqual(['L', 'M', 'Space', '←', '→'].sort());
     expect([...keysIn(sources['../components/Compare.svelte'])].sort()).toEqual(
-      [`1–${MAX_PANES}`, 'Enter', 'Esc', 'S', 'Tab'].sort(),
+      ['.', `1–${MAX_PANES}`, 'Enter', 'Esc', 'S', 'Tab'].sort(),
     );
   });
 
@@ -105,7 +105,7 @@ describe('the shortcut list', () => {
   });
 
   it('has a row for every group, and says what each key does', () => {
-    expect(SHORTCUTS.map((g) => g.id)).toEqual(['everywhere', 'grid', 'viewer', 'crop', 'slideshow', 'video', 'compare']);
+    expect(SHORTCUTS.map((g) => g.id)).toEqual(['everywhere', 'grid', 'compare', 'viewer', 'crop', 'slideshow', 'video']);
     for (const g of SHORTCUTS) {
       expect(g.title, g.id).not.toBe('');
       expect(g.rows.length, g.id).toBeGreaterThan(0);
@@ -127,6 +127,47 @@ describe('chordLabel', () => {
     expect(chordLabel(['Mod', 'Shift', 'R'], false)).toEqual(['Ctrl', 'Shift', 'R']);
     expect(chordLabel(['Mod', 'C'], true)).toEqual(['⌘', 'C']);
     expect(chordLabel(['Esc'], true)).toEqual(['Esc']);
+  });
+});
+
+describe('focusesSearch', () => {
+  const key = (over: Partial<Parameters<typeof focusesSearch>[0]> = {}) => ({
+    key: 'f',
+    ctrlKey: false,
+    metaKey: false,
+    altKey: false,
+    shiftKey: false,
+    ...over,
+  });
+
+  it('answers Ctrl+F and Cmd+F, wherever the focus is', () => {
+    expect(focusesSearch(key({ ctrlKey: true }), null)).toBe(true);
+    expect(focusesSearch(key({ metaKey: true }), { tagName: 'DIV' })).toBe(true);
+    // Caps Lock, or a layout that reports the capital.
+    expect(focusesSearch(key({ key: 'F', ctrlKey: true }), null)).toBe(true);
+    // From a text entry too: the chord is not a character there.
+    expect(focusesSearch(key({ ctrlKey: true }), { tagName: 'INPUT' })).toBe(true);
+  });
+
+  it('leaves a plain f, and the chords that are not this one, alone', () => {
+    expect(focusesSearch(key(), null)).toBe(false);
+    expect(focusesSearch(key({ ctrlKey: true, shiftKey: true }), null)).toBe(false);
+    expect(focusesSearch(key({ ctrlKey: true, altKey: true }), null)).toBe(false);
+    expect(focusesSearch(key({ key: 'g', ctrlKey: true }), null)).toBe(false);
+  });
+
+  it('answers a plain slash, which some layouts type with Shift', () => {
+    expect(focusesSearch(key({ key: '/' }), null)).toBe(true);
+    expect(focusesSearch(key({ key: '/', shiftKey: true }), { tagName: 'DIV' })).toBe(true);
+    expect(focusesSearch(key({ key: '/', altKey: true }), null)).toBe(false);
+    expect(focusesSearch(key({ key: '/', ctrlKey: true }), null)).toBe(false);
+  });
+
+  it('is a character in a text entry', () => {
+    // A path typed into a name field, a date into the search box itself.
+    expect(focusesSearch(key({ key: '/' }), { tagName: 'INPUT' })).toBe(false);
+    expect(focusesSearch(key({ key: '/' }), { tagName: 'textarea' })).toBe(false);
+    expect(focusesSearch(key({ key: '/' }), { tagName: 'DIV', isContentEditable: true })).toBe(false);
   });
 });
 
