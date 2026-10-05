@@ -1,9 +1,12 @@
 <script lang="ts">
+  import { tick } from 'svelte';
   import { library } from '../lib/library.svelte';
   import { mainPage } from '../lib/main-page.svelte';
   import { searchBox } from '../lib/search-box.svelte';
+  import { insertTerm } from '../lib/search-help';
   import { canSaveSearch, defaultSearchName, savedSearchFor } from '../lib/searches';
   import Icon from './Icon.svelte';
+  import SearchHelp from './SearchHelp.svelte';
 
   // This component only renders the machine in `search-box.svelte.ts`; the folder tree
   // drives the same instance, which is why none of that state lives here.
@@ -17,6 +20,34 @@
   } = $props();
 
   let input = $state<HTMLInputElement | undefined>();
+  let field = $state<HTMLDivElement | undefined>();
+  let helpButton = $state<HTMLButtonElement | undefined>();
+  const helpId = $props.id();
+  /** The panel listing what the box understands (`SearchHelp`), under the box. */
+  let help = $state(false);
+
+  /** Escape, from the panel or from its button: the focus goes back to the button, which
+   *  is where it was before the panel had any of it. */
+  function closeHelp() {
+    help = false;
+    helpButton?.focus();
+  }
+
+  /** A term clicked in the panel goes into the box as though it had been typed there: the
+   *  same debounced send, the same leaving of the People page. Then the caret, after it -
+   *  a prefix like `camera:` is half a term, and the rest is the user's to type. */
+  async function pick(term: string) {
+    help = false;
+    const next = insertTerm(searchBox.query, term);
+    searchBox.query = next;
+    mainPage.showGrid();
+    searchBox.run(next);
+    // The box takes the new text on the next render, and the caret can only go to the end
+    // of what is there.
+    await tick();
+    input?.focus();
+    input?.setSelectionRange(next.length, next.length);
+  }
 
   /** Ctrl+F and `/` (App): the caret in the box, with what it holds selected, so typing
    *  replaces the last search and an arrow key keeps it to refine. */
@@ -39,15 +70,29 @@
   }
 </script>
 
+<!-- A press anywhere but the box and its panel closes the panel, as leaving a menu does. -->
+<svelte:window onpointerdown={(e) => help && !field?.contains(e.target as Node) && (help = false)} />
+
 <div class="bar">
-  <div class="field">
+  <!-- The panel is the field's, and goes when the focus leaves the field: Enter moving on to
+       the photos, Tab walking on to the gear, `?` opening the shortcut sheet from the help
+       button. Left open it lay over the grid with nothing to close it but the mouse, and over
+       the viewer or a dialog opened from there - it is drawn above them all. A window that
+       loses the focus altogether is not that: coming back to photon finds the panel there. -->
+  <div
+    class="field"
+    bind:this={field}
+    onfocusout={(e) => {
+      if (help && document.hasFocus() && !field?.contains(e.relatedTarget as Node | null)) help = false;
+    }}
+  >
     <Icon name="search" size={14} />
     <input
       class="search"
+      class:holding={searchBox.query.trim() !== ''}
       type="search"
       placeholder="Search names, camera, keywords, dates…"
       aria-label="Search photos by file or folder name, camera, lens, keyword or date"
-      title="Every word must match: a name, a folder, a camera or lens, a keyword, 50mm, f/1.8, iso400, or a date like 2024-06. Use OR to widen, &quot;quotes&quot; for a phrase, camera:, lens:, tag:, person:, album: or folder: for one field, from:2019-06 or to:2020 for a date range, on:07-14 for that day in any year, is:starred, is:edited or is:video for what a photo is, has:gps for photos that record where they were taken, has:face or faces:2+ for photos with people in them, has:tag, has:caption, has:album or has:person for photos with any, is:duplicate, is:portrait, is:landscape or is:square, size:&gt;10mb, iso:&gt;=1600, aperture:&lt;2, focal:&gt;100 or mp:&lt;2 to compare a number, and a leading - to exclude: -tag:family, or -has:tag for the untagged."
       bind:this={input}
       bind:value={searchBox.query}
       oninput={() => {
@@ -63,7 +108,9 @@
         // forces the view to All — kicking the user out of Starred with a keystroke that
         // cleared nothing.
         if (e.key === 'Escape') {
-          if (searchBox.query !== '' || library.info.view === 'search') searchBox.clear();
+          // The panel first, as any Escape closes the nearest thing: the search stays.
+          if (help) help = false;
+          else if (searchBox.query !== '' || library.info.view === 'search') searchBox.clear();
           // Nothing to clear: the second Escape of two, or a box opened by mistake. The way
           // out of it without the mouse, since Tab from here walks the whole top bar first.
           else onleave();
@@ -77,6 +124,29 @@
         }
       }}
     />
+    <!-- What the box understands. Before the bookmark in the tab order and after it on
+         screen, so it is always the field's last thing and the panel's terms follow it. -->
+    <button
+      class="help"
+      class:open={help}
+      bind:this={helpButton}
+      aria-label="What you can search for"
+      title="What you can search for"
+      aria-expanded={help}
+      aria-controls={help ? helpId : undefined}
+      onclick={() => (help = !help)}
+      onkeydown={(e) => {
+        if (e.key === 'Escape' && help) {
+          e.stopPropagation();
+          closeHelp();
+        }
+      }}
+    >
+      <Icon name="circle-help" size={14} />
+    </button>
+    {#if help}
+      <SearchHelp id={helpId} onpick={pick} onclose={closeHelp} />
+    {/if}
     {#if searchBox.query.trim() !== ''}
       <!-- Filled and inert once saved: removing a saved search is done from the sidebar,
            which asks first, so there is no one-click undo of a thing the sidebar guards. -->
@@ -112,7 +182,7 @@
   .search {
     width: 100%;
     box-sizing: border-box;
-    /* Right padding clears the bookmark button, which overlaps the field's trailing edge. */
+    /* Right padding clears the help button, which overlaps the field's trailing edge. */
     padding: 6px 30px 6px 30px;
     border: 0;
     border-radius: var(--r-3);
@@ -120,10 +190,12 @@
     color: var(--text);
     font: inherit;
   }
+  /* And the bookmark beside it, which is there only while the box holds something. */
+  .search.holding { padding-right: 54px; }
   .search::placeholder { color: var(--text-dim); }
   /* The global ring, pulled in to hug the field rather than float 2px off it. */
   .search:focus-visible { outline-offset: 0; }
-  .save {
+  .save, .help {
     position: absolute;
     right: 4px;
     display: flex;
@@ -134,7 +206,9 @@
     color: var(--text-dim);
     cursor: pointer;
   }
-  .save:hover:not(:disabled) { color: var(--text); background: var(--hover); }
+  /* The bookmark stands inside the help button, which is always there. */
+  .save { right: 28px; }
+  .save:hover:not(:disabled), .help:hover, .help.open { color: var(--text); background: var(--hover); }
   /* Saved: the accent marks it, and the cursor says there is nothing more to do here. */
   .save.saved { color: var(--accent); }
   .save:disabled { cursor: default; }

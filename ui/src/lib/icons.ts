@@ -1,7 +1,7 @@
 // Icons from Lucide (https://lucide.dev), lucide-static 1.47.0. ISC License, Copyright (c)
-// Lucide Icons and Contributors; chevron-down, chevron-right, clock, info, search and x
-// derive from Feather, MIT License, Copyright (c) 2013-present Cole Bemis. Both licences
-// are reproduced in THIRD-PARTY-NOTICES.md at the repository root.
+// Lucide Icons and Contributors; chevron-down, chevron-right, circle-help, clock, info,
+// search and x derive from Feather, MIT License, Copyright (c) 2013-present Cole Bemis. Both
+// licences are reproduced in THIRD-PARTY-NOTICES.md at the repository root.
 //
 // Each value is the inside of the icon's <svg>, on Lucide's 24-unit grid. Vendored rather
 // than depended on: twenty icons do not justify a package and its update churn.
@@ -13,6 +13,7 @@ export type IconName =
   | 'check'
   | 'chevron-down'
   | 'chevron-right'
+  | 'circle-help'
   | 'clock'
   | 'copy'
   | 'crop'
@@ -43,6 +44,7 @@ export const ICONS: Record<IconName, string> = {
   check: '<path d="M20 6 9 17l-5-5"/>',
   'chevron-down': '<path d="m6 9 6 6 6-6"/>',
   'chevron-right': '<path d="m9 18 6-6-6-6"/>',
+  'circle-help': '<circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><path d="M12 17h.01"/>',
   clock: '<circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>',
   copy: '<rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>',
   crop: '<path d="M6 2v14a2 2 0 0 0 2 2h14"/><path d="M18 22V8a2 2 0 0 0-2-2H2"/>',
