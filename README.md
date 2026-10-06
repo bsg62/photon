@@ -204,15 +204,33 @@ the next scan of each folder, which reads every file's header once; nothing need
 done. And a photo renamed or moved on disk inside the folders photon watches stays in its
 albums; see "Renaming and moving photos" below for what is followed and what is not.
 
+### Finding your way in the grid
+
+The **Group by** control in the top bar, beside the sort, sets what the grid's headers are:
+**folder** (one header a folder, as photon has always drawn it), **day**, **month**, **year**,
+or **none**. Under a date grouping every view is one timeline across folders, newest photo
+first, with a header wherever the day, month or year changes. Grouping goes with the Date taken
+sort; sorted by name, size or date modified the control is dimmed and keeps its choice.
+
+A header stays at the top of the grid for as long as you are among its photos, and the next
+one pushes it out as it arrives, so deep in a folder of several hundred photos the grid still
+says which folder it is. While the grid runs folder by folder, that folder also carries a small
+bar beside its name in the sidebar, and the list scrolls to keep it in view - except while the
+pointer is over the list, so it never moves under your hand. Right-click a folder's header in
+the grid for the same menu its row in the sidebar has: Rescan, Reveal in file manager, Rename
+in photon…, Hide folder.
+
 ### Photo size
 
 The **Small / Medium / Large** control in the top bar — also under Settings → Appearance — sets
-how large the grid draws your photos. Medium is the size photon has always used. Small fits
-roughly twice as many photos on screen, Large makes faces and detail easier to judge at a
-glance. Changing it keeps your place: the photo at the top of the screen is still the photo at
-the top of the screen afterwards, whichever way the tiles go. The choice is remembered, so
-photon reopens at the size you left it, and it costs nothing to change your mind — the same
-thumbnails are drawn at every size, and nothing is read from or written to your photos.
+how large the grid draws your photos. Small fits roughly twice as many photos on screen as
+Medium, Large makes faces and detail easier to judge at a glance. Each is the size a photo
+starts from: photon widens the photos so every row runs to the edge of the grid, so the exact
+size follows the width of the window. Changing the size, resizing the window or dragging the
+sidebar's edge keeps your place: the photos at the top of the screen are still the photos at
+the top of the screen afterwards. The choice is remembered, so photon reopens at the size you
+left it, and it costs nothing to change your mind — the same thumbnails are drawn at every
+size, and nothing is read from or written to your photos.
 
 ### Rotating and cropping
 

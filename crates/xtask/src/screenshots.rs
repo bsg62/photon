@@ -94,6 +94,18 @@ pub const SHOTS: &[Shot] = &[
         query: "theme=light&do=foldermenu",
         dark: false,
     },
+    // Deep in a folder: its header pinned over the grid, its row marked in the sidebar.
+    Shot {
+        name: "pinned-header-light",
+        query: "theme=light&tile=small&do=scrolled",
+        dark: false,
+    },
+    // The same menu from the folder's header in the grid.
+    Shot {
+        name: "header-menu-dark",
+        query: "theme=dark&tile=small&do=headermenu",
+        dark: true,
+    },
     Shot {
         name: "menu-dark",
         query: "theme=dark&do=menu",

@@ -327,6 +327,31 @@ publishing it.
       not the grid scrolls, the last photo of a row never runs under it, and no horizontal
       scrollbar appears when the size is changed from Small to Large in a view of a dozen
       photos.
+- [ ] **The header stays at the top.** Scroll into a folder of several screens: its header
+      (name, count and month, path) stays over the top of the grid with a hairline under it,
+      and the photos pass beneath. Scroll on: the next folder's header pushes it out, and the
+      two never overlap. At the very top of a folder there is one header, not two. Group by
+      month: the month's header stays the same way. Recent, No grouping and a sort by name
+      have no header and pin none. Past the layout cap (a very large library) it still names
+      the folder on screen.
+- [ ] With a header pinned, select a photo a few rows down and hold ArrowUp: each newly
+      selected row comes to rest just under the pinned header, never under it; at a folder's
+      first row its own header is what shows. Home lands on the first header. Group by
+      month and click a folder in the sidebar: the folder's first photo is just under the
+      month's header, not behind it.
+- [ ] **The sidebar marks where the grid is.** In All photos by folder, scroll the grid: the
+      folder at the top has a small accent bar beside its name in the sidebar, while All
+      photos keeps its filled highlight. With a long folder list, scroll the grid through
+      folders the sidebar has scrolled past (the wheel over the grid, or the timeline): the
+      list moves to keep the marked row in view. Rest the pointer over the sidebar and scroll
+      the grid with the keyboard (End, Home): the list does not move under the pointer. Group
+      by month, or open the People page: no folder is marked.
+- [ ] Right-click a folder's header in the grid, the real one and the pinned one: the menu
+      the folder's sidebar row has (Rescan, Reveal in file manager, Rename in photon…, Hide
+      folder; Use folder name on a renamed one). Escape closes it and the arrow keys move the
+      grid's selection. Rename in photon… puts the caret in that folder's row in the sidebar,
+      scrolled into view, with the name selected. A month's header has no menu. A drag begun
+      on the pinned header draws no rubber band.
 - [ ] Change the size in Recent (no headers) and in a Starred or search view too: your place is
       kept there as well. Try it scrolled to the very end of the library: it lands at the end,
       not past it.

@@ -397,6 +397,62 @@ export function edgeScrollSpeed(
   return 0;
 }
 
+/** The indexes of the header rows in `rows`, in order: what `pinnedHeader` searches, built
+ *  once per layout rather than walked back to from every scroll event. */
+export function headerRows(rows: Row[]): number[] {
+  const headers: number[] = [];
+  rows.forEach((row, i) => {
+    if (row.kind === 'header') headers.push(i);
+  });
+  return headers;
+}
+
+/** The header drawn over the top of the grid: its section, and how far up it has been
+ *  pushed (`y`, zero or negative). */
+export interface PinnedHeader {
+  section: number;
+  y: number;
+}
+
+/** The header to pin to the top of the grid at `scrollTop`, or null for none.
+ *
+ *  A header scrolls away with its row, and deep in a folder of four hundred photos nothing
+ *  then says which folder it is; the grid draws a copy of that header over its top edge. It
+ *  is the header of the section the top edge is inside - the space under a section's last
+ *  row included, where it is still that section the eye is leaving - and none while that
+ *  header is itself at the top, or over a run that has no header. The next header pushes it
+ *  out as it arrives, so the two never lie over each other. */
+export function pinnedHeader(rows: Row[], headers: number[], scrollTop: number): PinnedHeader | null {
+  if (headers.length === 0 || rows.length === 0) return null;
+  const at = lastIndexAtOrBefore(headers, scrollTop, (i) => rows[i].top);
+  const header = rows[headers[at]];
+  if (scrollTop <= header.top) return null;
+  if (rows[rowIndexAt(rows, scrollTop)].section !== header.section) return null;
+  const next = headers[at + 1];
+  const y = next === undefined ? 0 : Math.min(0, rows[next].top - scrollTop - HEADER);
+  return { section: header.section, y };
+}
+
+/** Where to scroll so `row` starts the view: its top just under what lies over the top of
+ *  the grid (`inset`, as in `scrollIntoGrid`). For a section's first row that is its own
+ *  header's top, the header being exactly that tall and directly above; for a row from the
+ *  middle of a section - a folder jump under a date grouping lands on one - it is the room
+ *  the pinned header takes, which flush to the top it covered the row's first 32px with. */
+export function scrollToStart(row: Pick<Row, 'top'>, inset: number): number {
+  return row.top - inset;
+}
+
+/** Where to scroll so `row` is in view, or null when it already is: the least movement,
+ *  as `scrollIntoView`'s `nearest` is. `inset` is what lies over the top of the grid - the
+ *  pinned header's height, in a grid that has headers - and a row is in view only below it:
+ *  brought flush to the top instead, the row the arrow keys had just selected was half
+ *  under the header. For a section's first row the same sum lands on its own header's top. */
+export function scrollIntoGrid(row: Pick<Row, 'top' | 'height'>, scrollTop: number, viewport: number, inset: number): number | null {
+  if (row.top < scrollTop + inset) return Math.max(0, row.top - inset);
+  if (row.top + row.height > scrollTop + viewport) return row.top + row.height - viewport;
+  return null;
+}
+
 /** A place in the grid that survives the rows changing height: the row at the top of the
  *  viewport, by its first photo, and how much of it has been scrolled past. */
 export interface Pin {
