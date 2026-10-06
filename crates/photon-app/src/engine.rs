@@ -5664,6 +5664,61 @@ mod tests {
         assert_eq!(f.engine.lib.grid_sort().unwrap(), Sort::default());
     }
 
+    /// A grouping travels the sort's path: the rebuild lays the grid out by period, the
+    /// layout generation moves (the sections changed, the folders did not), `GridInfo`
+    /// reports it, and the next launch opens grouped the same way. Recent, flat by folder,
+    /// takes the period headers too.
+    #[test]
+    fn a_grouping_lays_the_grid_out_by_period_and_is_remembered() {
+        use photon_core::grid::GridView;
+        use photon_core::sort::{Grouping, Sort};
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a/one.jpg", &img), ("b/two.jpg", &img)]);
+        f.add_photos();
+        let (_, before, _, layout) = f.engine.published();
+        assert!(
+            before
+                .sections()
+                .iter()
+                .all(|s| s.folder_id.is_some() && s.period.is_none())
+        );
+        let by_month = Sort {
+            group: Grouping::Month,
+            ..Sort::default()
+        };
+        let by_period = |grid: &GridIndex| {
+            !grid.sections().is_empty()
+                && grid
+                    .sections()
+                    .iter()
+                    .all(|s| s.folder_id.is_none() && s.period.is_some_and(|p| p.day.is_none()))
+        };
+
+        f.engine.set_sort(by_month).unwrap();
+
+        let (_, grid, _, moved) = f.engine.published();
+        assert!(by_period(&grid));
+        assert_eq!(grid.sections().iter().map(|s| s.count).sum::<usize>(), 2);
+        assert_eq!(
+            grid.folders(),
+            before.folders(),
+            "the same photos, the same folders"
+        );
+        assert_eq!(moved, layout + 1);
+        assert_eq!(crate::commands::grid_info(&f.engine, None).sort, by_month);
+
+        f.engine.set_view(GridView::Recent).unwrap();
+        assert!(by_period(&f.engine.grid().1));
+
+        let reopened =
+            Engine::open(f.config(), Arc::new(crate::events::Recorder::default())).unwrap();
+        assert_eq!(reopened.sort(), by_month);
+        reopened.startup(None);
+        reopened.wait_for_startup();
+        assert!(by_period(&reopened.grid().1));
+        reopened.shutdown();
+    }
+
     /// `open` runs on the main thread before the window can draw, so it leaves the first
     /// grid - a read of the whole library - to `startup`, and says so with the version.
     /// Startup's scan of the unchanged folder moves no rows and so rebuilds nothing: the

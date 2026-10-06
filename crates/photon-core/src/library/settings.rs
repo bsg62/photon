@@ -7,7 +7,7 @@
 
 use super::Library;
 use crate::Result;
-use crate::sort::Sort;
+use crate::sort::{Grouping, Sort};
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -40,6 +40,11 @@ const GRID_TILE: &str = "grid_tile";
 /// What the grid and the sidebar are sorted by, in `Sort::to_setting`'s form. One setting
 /// for every view: a sort is how the user likes to browse, not a property of one album.
 const GRID_SORT: &str = "grid_sort";
+
+/// Where the grid's headers fall by date (`sort::Grouping`). A key of its own rather than
+/// more syntax in `grid_sort`, whose form an older photon reads: it finds the sort it knows
+/// and never sees this.
+const GRID_GROUP: &str = "grid_group";
 
 /// Whether photon looks for faces itself. Absent is off: the pass costs hours on a large
 /// library and computes data about the people in it, so nothing runs until asked.
@@ -316,16 +321,24 @@ impl Library {
         self.set_setting(GRID_TILE, tile.as_str())
     }
 
-    /// What the grid is sorted by; by date when never set.
+    /// What the grid is sorted by, and how it is grouped by date; by date and by folder
+    /// when never set.
     pub fn grid_sort(&self) -> Result<Sort> {
-        Ok(self
+        let mut sort = self
             .setting(GRID_SORT)?
-            .map_or_else(Sort::default, |stored| Sort::from_setting(&stored)))
+            .map_or_else(Sort::default, |stored| Sort::from_setting(&stored));
+        if let Some(stored) = self.setting(GRID_GROUP)? {
+            sort.group = Grouping::from_setting(&stored);
+        }
+        Ok(sort)
     }
 
-    /// Stores what the grid is sorted by.
+    /// Stores what the grid is sorted by and how it is grouped. Two rows, written one after
+    /// the other: a failure between them leaves a sort and a grouping that were each chosen,
+    /// just not together, and either pair is one the grid can show.
     pub fn set_grid_sort(&self, sort: Sort) -> Result<()> {
-        self.set_setting(GRID_SORT, &sort.to_setting())
+        self.set_setting(GRID_SORT, &sort.to_setting())?;
+        self.set_setting(GRID_GROUP, sort.group.as_str())
     }
 
     /// How far apart two perceptual hashes may be and still be grouped, in force right now.
@@ -666,5 +679,34 @@ mod tests {
         assert_eq!(lib.grid_sort().unwrap(), by_name_reversed);
         lib.set_setting(GRID_SORT, "rating").unwrap();
         assert_eq!(lib.grid_sort().unwrap(), Sort::default());
+    }
+
+    /// The grouping is stored beside the sort, under its own key, and with any key: chosen,
+    /// then the sort moved to Size, it is there when the sort comes back to the date.
+    #[test]
+    fn the_grouping_is_stored_with_the_sort_and_falls_back_to_folder() {
+        use crate::sort::{Grouping, SortKey};
+        let (_dir, lib) = temp_library();
+        assert_eq!(lib.grid_sort().unwrap().group, Grouping::Folder);
+        let by_month = Sort {
+            group: Grouping::Month,
+            ..Sort::default()
+        };
+        lib.set_grid_sort(by_month).unwrap();
+        assert_eq!(lib.grid_sort().unwrap(), by_month);
+        // An older photon reads the sort it knows.
+        assert_eq!(lib.setting(GRID_SORT).unwrap().as_deref(), Some("date"));
+
+        let by_size_grouped = Sort {
+            key: SortKey::Size,
+            reverse: true,
+            group: Grouping::Year,
+        };
+        lib.set_grid_sort(by_size_grouped).unwrap();
+        assert_eq!(lib.grid_sort().unwrap(), by_size_grouped);
+
+        lib.set_setting(GRID_GROUP, "week").unwrap();
+        assert_eq!(lib.grid_sort().unwrap().group, Grouping::Folder);
+        assert_eq!(lib.grid_sort().unwrap().key, SortKey::Size);
     }
 }

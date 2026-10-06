@@ -3223,6 +3223,67 @@ mod tests {
         assert_eq!(order(SortKey::Modified, true), [ids[0], ids[2], ids[1]]);
     }
 
+    /// The view's query hands its rows over folder by folder - in a filtered view, with each
+    /// folder placed by its oldest *matching* photo. Under a date grouping none of that order
+    /// survives: every photo of the view, newest first.
+    #[test]
+    fn a_date_grouping_orders_a_view_newest_first_across_folders() {
+        use crate::sort::{Grouping, Sort};
+        let (_dir, lib) = temp_library();
+        let (watched, old_folder) = seed_folder(&lib, Path::new("/p/old"));
+        let new_folder = lib.upsert_folder(watched, None, "/p/new", 1).unwrap();
+        let ids = lib
+            .insert_items(&[
+                new_item(old_folder, "/p/old/a.jpg", 1),
+                new_item(old_folder, "/p/old/b.jpg", 20),
+                new_item(new_folder, "/p/new/c.jpg", 10),
+                new_item(old_folder, "/p/old/d.jpg", 30),
+            ])
+            .unwrap();
+        // Starred: all but the newest.
+        lib.set_ratings(&[(ids[0], 1), (ids[1], 1), (ids[2], 1)])
+            .unwrap();
+        let order = |view, group, reverse| -> Vec<i64> {
+            let sort = Sort {
+                group,
+                reverse,
+                ..Sort::default()
+            };
+            lib.sorted_entries(view, "", sort)
+                .unwrap()
+                .iter()
+                .map(|e| e.id)
+                .collect()
+        };
+        // By folder: `/p/new` first, its oldest photo being newer than `/p/old`'s.
+        assert_eq!(
+            order(GridView::All, Grouping::Folder, false),
+            [ids[2], ids[0], ids[1], ids[3]]
+        );
+        for group in [
+            Grouping::Day,
+            Grouping::Month,
+            Grouping::Year,
+            Grouping::None,
+        ] {
+            assert_eq!(
+                order(GridView::All, group, false),
+                [ids[3], ids[1], ids[2], ids[0]],
+                "{group:?}"
+            );
+            assert_eq!(
+                order(GridView::All, group, true),
+                [ids[0], ids[2], ids[1], ids[3]],
+                "{group:?} reversed"
+            );
+            assert_eq!(
+                order(GridView::Starred, group, false),
+                [ids[1], ids[2], ids[0]],
+                "{group:?} starred"
+            );
+        }
+    }
+
     #[test]
     fn search_folds_case_for_non_ascii_text() {
         // This is the test that pins the whole "match in Rust, not in SQL" decision

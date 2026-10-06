@@ -4,6 +4,7 @@ use photon_core::{
     keywords::keywords_in,
     library::{HashCandidate, Library, NewItem},
     media::MediaKind,
+    sort::{Grouping, Sort},
 };
 use std::{hint::black_box, path::Path};
 
@@ -172,6 +173,21 @@ fn bench_grid(c: &mut Criterion) {
             black_box(GridIndex::build(
                 lib.grid_entries().unwrap(),
                 Layout::Folders,
+            ))
+        })
+    });
+
+    // The same library as one timeline with a header a month: the view's query, the
+    // re-sort by capture date that a date grouping adds, and a period read per photo.
+    let by_month = Sort {
+        group: Grouping::Month,
+        ..Sort::default()
+    };
+    c.bench_function("startup_grid_100k_by_month", |b| {
+        b.iter(|| {
+            black_box(GridIndex::build(
+                lib.sorted_entries(GridView::All, "", by_month).unwrap(),
+                by_month.layout(GridView::All),
             ))
         })
     });
