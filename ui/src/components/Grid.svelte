@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   import { api } from '../lib/api';
   import { canCompare } from '../lib/compare.svelte';
   import { copiesNotice, showCopiesLabel } from '../lib/copies';
@@ -9,7 +10,7 @@
   import { laidOutByFolder, periodLabel } from '../lib/grouping';
   import { library } from '../lib/library.svelte';
   import { gridSize } from '../lib/app-grid-size.svelte';
-  import { buildRows, columnsFor, defersThumbs, edgeScrollSpeed, fetchSpan, firstVisibleOffset, GAP, itemSpan, itemsInRect, type Rect, renderRange, rowOfItem, topFolderId, totalHeight, visibleRange } from '../lib/layout';
+  import { buildRows, columnsFor, defersThumbs, edgeScrollSpeed, fetchSpan, GAP, itemSpan, itemsInRect, type Pin, pinAt, pinTop, type Rect, renderRange, rowOfItem, tileFor, topFolderId, totalHeight, visibleRange } from '../lib/layout';
   import { CAP_FALLBACK, capFrom, createScrollMap, PROBE_HEIGHT } from '../lib/scroll-map';
   import { createScrollSpeed } from '../lib/scroll-speed.svelte';
   import { move, type NavKey } from '../lib/nav';
@@ -71,7 +72,13 @@
   let domMax = $state(Number.POSITIVE_INFINITY);
   let capTrusted = false;
 
-  const columns = $derived(columnsFor(Math.max(0, width - 2 * GAP), gridSize.width));
+  /** The row's width: the viewport's, less the gutter down either side. */
+  const rowWidth = $derived(Math.max(0, width - 2 * GAP));
+  const columns = $derived(columnsFor(rowWidth, gridSize.width));
+  /** The tile as drawn: the size chosen, widened so the columns fill the row (`tileFor`).
+   *  It is this, never `gridSize.width`, that the rows, the tiles and the band are measured
+   *  by - one number, or the row would reserve a box its tiles did not fill. */
+  const tile = $derived(tileFor(rowWidth, gridSize.width));
   /** The index's own sections: one per folder run, one per day, month or year under a date
    *  grouping, or a single headerless run in a flat view (Recent). Both the layout and the
    *  keyboard navigation read these, so arrow keys move along the rows the eye sees.
@@ -79,7 +86,7 @@
    *  A tile's offline dimming follows the photo's own folder, not its section's: one Recent
    *  row holds photos from several folders, and its run names none of them. */
   const sections = $derived(library.info.sections);
-  const rows = $derived(buildRows(sections, columns, gridSize.width));
+  const rows = $derived(buildRows(sections, columns, tile));
   const total = $derived(totalHeight(rows));
   const domHeight = $derived(Math.min(total, domMax));
   /** The year strip. It needs headers to mark (so a flat view, which has none, never
@@ -252,7 +259,7 @@
     // scroll back to it. Read back from `viewport`, not from the value written above: the
     // browser clamps a scroll past the end of the canvas, and the pin has to name the row
     // that is actually at the top.
-    pinned = firstVisibleOffset(rows, map.virtualAt(viewport.scrollTop));
+    pinned = pinAt(rows, map.virtualAt(viewport.scrollTop));
   }
 
   // After the canvas has its new height (`$effect`, not `$effect.pre`): a write into a canvas
@@ -293,32 +300,45 @@
     if (w !== null) writeDom(w);
   });
 
-  /** Keeping the user's place when the tile size changes.
+  /** Keeping the user's place when the tiles change width.
    *
-   *  Every row's `top` is computed from the tile width, so the pixel position the viewport
+   *  Every row's `top` is computed from the tile's width, so the pixel position the viewport
    *  is holding names a different photo the instant the width moves - the grid jumps to
-   *  another year when the tiles grow. The photo to come back to therefore has to be read
-   *  from the layout as it was *before* the change and scrolled to in the layout as it is
-   *  after, and one run of an effect can only ever see one of those: `rows` is a `$derived`,
-   *  so the run woken by the new width already reads the new rows. The pin is kept current
-   *  on every run where the width has *not* moved - a scroll, a resize, a rebuilt index -
-   *  and by `scrollToOffset`, which re-pins whatever it scrolls to; the run that sees a new
-   *  width spends the pin instead of taking it again.
+   *  another year when the tiles grow. And the width moves often: with a new size, and,
+   *  since the tiles fill the row, with every pixel the window or the sidebar is resized
+   *  by. The place to come back to therefore has to be read from the layout as it was
+   *  *before* the change and scrolled to in the layout as it is after, and one run of an
+   *  effect can only ever see one of those: `rows` is a `$derived`, so the run woken by the
+   *  new width already reads the new rows. The pin is kept current on every run where the
+   *  tile and the column count have *not* moved - a scroll, a rebuilt index - and by
+   *  `scrollToOffset`, which re-pins whatever it scrolls to; the run that sees either move
+   *  spends the pin instead of taking it again.
    *
-   *  All three values are read on every run, the restoring one included: an effect depends
+   *  All four values are read on every run, the restoring one included: an effect depends
    *  only on what that run read, so a restoring run that skipped `scrollTop` would stop
-   *  hearing about scrolls and pin a stale offset for the next change.
+   *  hearing about scrolls and pin a stale place for the next change.
    *
    *  `$effect`, not `$effect.pre`: the canvas is only as tall as the old layout until the
    *  DOM catches up, and a scroll into the part that does not exist yet is clamped away. */
-  let pinnedWidth = gridSize.width;
-  let pinned: number | null = null;
+  let pinnedTile = untrack(() => tile);
+  let pinnedColumns = untrack(() => columns);
+  let pinned: Pin | null = null;
+  /** Where the last restore put the grid. Its own scroll event arrives a task later and is
+   *  not the user moving: re-pinned from it, the place would be re-read through the
+   *  browser's rounding on every frame of a resize, and a drag of the sidebar would walk
+   *  the grid off its photo a fraction of a pixel at a time. */
+  let restoredTo: number | null = null;
+  /** The layout that restore was made in: a rebuilt index is a new place to read, wherever
+   *  the viewport stands. */
+  let restoredIn: unknown = null;
   $effect(() => {
-    const tile = gridSize.width;
+    const drawn = tile;
+    const across = columns;
     const layout = rows;
     const top = scrollTop;
-    if (tile !== pinnedWidth) {
-      pinnedWidth = tile;
+    if (drawn !== pinnedTile || across !== pinnedColumns) {
+      pinnedTile = drawn;
+      pinnedColumns = across;
       // The pin is spent unconditionally, and it is `scrollToOffset` that keeps it honest:
       // every programmatic scroll re-pins (see there), so a jump the browser has not yet
       // reported - the launch restore, App's jump to the top on a view change - has already
@@ -334,10 +354,18 @@
       // at 5000 whose content went 10000 -> 3000 read back 2400 in the same task. So on every
       // shrink deep enough to clamp, the comparison fails, the restore is skipped, and the
       // user is left wherever the clamp dropped them - the end of the library.
-      if (pinned !== null) scrollToOffset(pinned, 'start');
+      const back = pinned === null ? null : pinTop(layout, pinned);
+      if (back !== null) {
+        scrollToVirtual(back);
+        restoredTo = map.virtualAt(viewport.scrollTop);
+        restoredIn = layout;
+      }
       return;
     }
-    pinned = firstVisibleOffset(layout, top);
+    if (restoredTo !== null && restoredIn === layout && Math.abs(top - restoredTo) < 1) return;
+    restoredTo = null;
+    restoredIn = null;
+    pinned = pinAt(layout, top);
   });
 
   export function focus() {
@@ -507,7 +535,7 @@
   }
 
   function bandRanges(rect: Rect): [number, number][] {
-    return itemsInRect(rows, rect, gridSize.width);
+    return itemsInRect(rows, rect, tile);
   }
 
   function bandDown(e: PointerEvent) {
@@ -834,7 +862,11 @@
           style:height="{Math.abs(band.y1 - band.y0)}px"
         ></div>
       {/if}
-      {#each rendered as row (row.top)}
+      <!-- Keyed by the row's place in the layout, not by its `top`: a row keeps its place
+           when the tiles change width, and they do on every frame of a window or sidebar
+           resize. Keyed by `top`, each of those frames unmounted every tile on screen and
+           mounted it again, blank until its thumbnail was decoded once more. -->
+      {#each rendered as row, i (renderStart + i)}
         {#if row.kind === 'header'}
           {@const section = sections[row.section]}
           {@const folder = section.folderId === null ? undefined : library.folderOf(section.folderId)}
@@ -864,7 +896,7 @@
                 onselect={(e) => tileClick(e, offset)}
                 onopen={() => onopen(offset)}
                 onmenu={(e) => tileMenu(e, offset)}
-                tile={gridSize.width}
+                {tile}
                 defer={deferThumbs}
                 moving={scrolling}
               />

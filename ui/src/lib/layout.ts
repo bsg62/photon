@@ -7,7 +7,8 @@ import { TILE_SETTLE_MS } from './thumb-request.svelte';
 
 export type TileSize = 'small' | 'medium' | 'large';
 
-/** How wide a tile is at each step, in CSS pixels.
+/** How wide a tile is at each step, in CSS pixels, before it is widened to fill its row
+ *  (`tileFor`, which stops at `TILE_MAX`).
  *
  *  Every step is at or below 256, which is `ThumbSize::Grid`'s maximum edge. The cache key
  *  is the photo's fingerprint while the cache *directory* is what separates the sizes, so
@@ -52,6 +53,25 @@ export interface Row {
 
 export function columnsFor(width: number, tile: number): number {
   return Math.max(1, Math.floor((width + GAP) / tileRow(tile)));
+}
+
+/** The widest a tile is drawn: an eighth past `ThumbSize::Grid`'s 256px edge, which is how
+ *  much of an enlargement goes unseen. Only Large reaches it, with three columns or fewer;
+ *  there the row keeps a gutter. */
+export const TILE_MAX = 288;
+
+/** How wide a tile is drawn in a row `width` pixels wide: the size chosen (`TILE_WIDTH`),
+ *  widened so the columns that fit fill the row instead of leaving a gutter at its end.
+ *
+ *  The column count is the chosen size's, so a tile only ever grows, by less than one
+ *  column's share. A whole number of pixels: every row's `top` is a multiple of the tile's
+ *  height, and a fractional one would put each row's tiles on a different part of a pixel.
+ *  Never narrower than the size chosen, which a row too narrow for one tile overflows as
+ *  it always has. */
+export function tileFor(width: number, nominal: number): number {
+  const columns = columnsFor(width, nominal);
+  const share = Math.floor((width - (columns - 1) * GAP) / columns);
+  return Math.max(nominal, Math.min(share, TILE_MAX));
 }
 
 /** A section gets a header row when it names a folder or a period; a flat view's run names
@@ -327,18 +347,42 @@ export function edgeScrollSpeed(
   return 0;
 }
 
-/** The grid offset of the first photo in the row at the top of the viewport, or null when
- *  the grid has no rows.
+/** A place in the grid that survives the rows changing height: the row at the top of the
+ *  viewport, by its first photo, and how much of it has been scrolled past. */
+export interface Pin {
+  /** The grid offset of the row's first photo (for a header, of the section it heads). */
+  offset: number;
+  /** Whether the row is a header: a header and the row of photos under it share an offset. */
+  header: boolean;
+  /** The share of the row above the top of the viewport, 0 to 1. */
+  into: number;
+}
+
+/** The row at the top of the viewport as a `Pin`, or null when the grid has no rows.
  *
- *  This is how the grid keeps your place when the tile size changes: every row's `top`
- *  moves, so a scroll position kept as a number points somewhere else afterwards, and a
- *  grid that jumps to a different year when the tiles grow is worse than no size control
- *  at all. The offset is read here from the layout as it was, and `Grid.svelte` scrolls to
- *  it in the layout as it is through its own `scrollToOffset(offset, 'start')` - which puts
- *  a section's header back at the top rather than the first row under it, so a header row
- *  answering with the offset of the section it heads (the photo the eye is on) round-trips
- *  to what the eye actually saw. */
-export function firstVisibleOffset(rows: Row[], scrollTop: number): number | null {
+ *  This is how the grid keeps your place when its tiles change width - a new size, or a
+ *  window or sidebar resized under tiles that fill the row: every row's `top` moves, so a
+ *  scroll position kept as a number points somewhere else afterwards, and a grid that jumps
+ *  to a different year when the tiles grow is worse than no size control at all. The pin is
+ *  read here from the layout as it was and `pinTop` finds it in the layout as it is.
+ *
+ *  A header answers with the section it heads (the photo the eye is on), and says it is a
+ *  header, so it comes back to the header and not to the row under it. The share is kept
+ *  because a resize spends the pin on every frame: coming back to the row's top would jump
+ *  by up to a row on the first one. Past the end of the row - the space between two
+ *  folders - is the whole of it. */
+export function pinAt(rows: Row[], scrollTop: number): Pin | null {
   if (rows.length === 0) return null;
-  return rows[rowIndexAt(rows, scrollTop)].first;
+  const row = rows[rowIndexAt(rows, scrollTop)];
+  const into = Math.min(1, Math.max(0, (scrollTop - row.top) / row.height));
+  return { offset: row.first, header: row.kind === 'header', into };
+}
+
+/** Where `pin` is in `rows`, as a scroll position, or null when its photo is not there. */
+export function pinTop(rows: Row[], pin: Pin): number | null {
+  const i = rowOfItem(rows, pin.offset);
+  if (i < 0) return null;
+  const above = rows[i - 1];
+  const row = pin.header && above?.kind === 'header' && above.first === pin.offset ? above : rows[i];
+  return row.top + pin.into * row.height;
 }

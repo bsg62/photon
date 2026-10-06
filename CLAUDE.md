@@ -279,6 +279,19 @@ tiles in a narrow window is taller; past the cap `.canvas` is held at a measured
 `writeDom`) - a direct read is a DOM position, and in a big library it names another photo.
 `cargo run -p xtask -- scroll-probe` checks the end of a 300,000-photo library is reachable.
 
+**A tile is drawn wider than its size says.** `TILE_WIDTH` is the size chosen; `tileFor`
+widens it so the columns fill the row (whole pixels, at most `TILE_MAX`), and that drawn width -
+`tile` in `Grid.svelte`, never `gridSize.width` - is what the rows, the tiles and the band's hit
+test are measured by. So every row's height moves with every pixel of a window or sidebar
+resize, and three things follow. The place is kept as a `Pin` (the row at the top, and the share
+of it scrolled past) and restored on any change of the tile or the column count, not only on a
+new size. The restore's own scroll event is not pinned again (`restoredTo`): re-read through the
+browser's rounding on every frame, a splitter drag walked the grid off its photo, 5px in a 60px
+drag. And rows are keyed by their index in the layout, not by their `top`: keyed by `top`, every
+frame of a resize unmounted and remounted every tile on screen. The last two are effect wiring
+with no test; what showed both was a sidebar drag driven by trusted mouse input in headless
+Chromium, against a build with each one taken out.
+
 ### IPC is three files per command
 
 Adding a command means touching all three, in this order:
