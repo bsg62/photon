@@ -2,7 +2,7 @@
   import { tick } from 'svelte';
   import type { FaceAction, PeoplePageModel, StripKey } from '../lib/people-page.svelte';
   import { SINGLE } from '../lib/people-page.svelte';
-  import { faceUrl } from '../lib/people';
+  import { FACE_PX, faceUrl } from '../lib/people';
   import Icon from './Icon.svelte';
   import NameBox from './NameBox.svelte';
 
@@ -80,6 +80,8 @@
           class="face"
           class:suggestion
           class:selected={model.isSelected(key, f.id)}
+          style:width="{FACE_PX}px"
+          style:height="{FACE_PX}px"
           aria-pressed={model.isSelected(key, f.id)}
           aria-label="Face {i + 1} of {count}"
           onclick={() => model.toggle(key, f.id)}
@@ -87,13 +89,13 @@
           onkeydown={(e) => onkeydown(e, f.itemId)}
         >
           {#if failed[crop(f)]}
-            <span class="placeholder"><Icon name="user" size={20} /></span>
+            <span class="placeholder"><Icon name="user" size={28} /></span>
           {:else}
             <img
               src={faceUrl(f.id, f.thumbKey)}
               alt=""
-              width="48"
-              height="48"
+              width={FACE_PX}
+              height={FACE_PX}
               draggable="false"
               loading="lazy"
               onerror={() => (failed = { ...failed, [crop(f)]: true })}
@@ -138,8 +140,7 @@
   .face {
     position: relative;
     flex: none;
-    width: 48px;
-    height: 48px;
+    /* Its side is `FACE_PX`, set on the element: the crop asked for is twice it. */
     padding: 0;
     border: 0;
     border-radius: var(--r-2);

@@ -71,6 +71,15 @@ export function unnamedFacesLabel(count: number): string | null {
   return count === 1 ? '1 face not named' : `${count.toLocaleString()} faces not named`;
 }
 
+/** The info panel's line for a photo with no face at all, named or not. Which faces there
+ *  could have been depends on who looks: with photon's own detection on (`findFaces`), it
+ *  looked and found none - or has not got to this photo, while a pass is still running
+ *  (`looking`); with it off, or not yet read, there are only the ones Picasa recorded. */
+export function noFacesLabel(findFaces: boolean | null, looking: boolean): string {
+  if (!findFaces) return 'No faces named in Picasa.';
+  return looking ? 'No faces found yet.' : 'No faces found.';
+}
+
 /** A face as the viewer draws it, for its context menu. `key` is a plate's person (`p:<id>`)
  *  or Picasa contact (`c:<hash>`), null for an unnamed outline; `faceId` is the detection of
  *  photon's that the face is, null for a face that is Picasa's alone. */

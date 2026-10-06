@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { containedBox, faceActionsAt, faceAt, faceBox, toLayer, unnamedFacesLabel, type DrawnFace } from './faces';
+import { containedBox, faceActionsAt, faceAt, faceBox, noFacesLabel, toLayer, unnamedFacesLabel, type DrawnFace } from './faces';
 
 describe('containedBox', () => {
   it('fits a landscape photo to the frame width and centres it vertically', () => {
@@ -38,6 +38,26 @@ describe('unnamedFacesLabel', () => {
     expect(unnamedFacesLabel(1)).toBe('1 face not named');
     expect(unnamedFacesLabel(3)).toBe('3 faces not named');
     expect(unnamedFacesLabel(1200)).toBe(`${(1200).toLocaleString()} faces not named`);
+  });
+});
+
+describe('noFacesLabel', () => {
+  // With photon's own detection off, the only faces there can be are the ones Picasa
+  // recorded - and before the switch has been read, that is all that can be said.
+  it('speaks of Picasa while photon finds no faces itself', () => {
+    expect(noFacesLabel(false, false)).toBe('No faces named in Picasa.');
+    expect(noFacesLabel(null, false)).toBe('No faces named in Picasa.');
+  });
+
+  // It used to say "named in Picasa" here too, about a photo photon had looked at itself.
+  it('says photon found none once it looks for them', () => {
+    expect(noFacesLabel(true, false)).toBe('No faces found.');
+  });
+
+  // The pass may not have reached this photo: "found none" would be said too soon.
+  it('says so far while a pass is still looking', () => {
+    expect(noFacesLabel(true, true)).toBe('No faces found yet.');
+    expect(noFacesLabel(false, true)).toBe('No faces named in Picasa.');
   });
 });
 

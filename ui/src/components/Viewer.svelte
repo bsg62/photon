@@ -19,7 +19,7 @@
   import { showCopiesLabel } from '../lib/copies';
   import { ASPECTS, HANDLES, type Handle } from '../lib/crop';
   import { createCropTool } from '../lib/crop-tool.svelte';
-  import { containedBox, faceActionsAt, faceAt, faceBox, toLayer, unnamedFacesLabel, type FaceAction } from '../lib/faces';
+  import { containedBox, faceActionsAt, faceAt, faceBox, noFacesLabel, toLayer, unnamedFacesLabel, type FaceAction } from '../lib/faces';
   import { removedMessage } from '../lib/people';
   import { createSlideshow } from '../lib/slideshow.svelte';
   import { createFullLoad, createLoadSlot } from '../lib/full-load';
@@ -1303,7 +1303,7 @@
       {#if unnamedLabel}
         <p class="info-muted">{unnamedLabel}</p>
       {:else if !item.faces.length}
-        <p class="info-muted">No faces named in Picasa.</p>
+        <p class="info-muted">{noFacesLabel(library.findFaces, library.faces !== null)}</p>
       {/if}
       <h3>Keywords</h3>
       {#if tags.list.length}
