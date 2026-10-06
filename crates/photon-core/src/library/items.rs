@@ -3200,11 +3200,19 @@ mod tests {
             ])
             .unwrap();
         let order = |key, reverse| -> Vec<i64> {
-            lib.sorted_entries(GridView::All, "", Sort { key, reverse })
-                .unwrap()
-                .iter()
-                .map(|e| e.id)
-                .collect()
+            lib.sorted_entries(
+                GridView::All,
+                "",
+                Sort {
+                    key,
+                    reverse,
+                    ..Sort::default()
+                },
+            )
+            .unwrap()
+            .iter()
+            .map(|e| e.id)
+            .collect()
         };
         // By date, the view's own order: `/p/new` first, by its oldest photo.
         assert_eq!(order(SortKey::Date, false), [ids[2], ids[0], ids[1]]);

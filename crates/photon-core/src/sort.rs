@@ -6,12 +6,16 @@
 //! view together and lay the grid out flat: sorted by size within each folder, "the largest
 //! photos" would still mean "the largest photos of the newest folder".
 //!
+//! By date the user also chooses where the headers fall (`Grouping`): at each folder, which
+//! is that order, or at each day, month or year, or nowhere - one timeline across folders,
+//! newest first, which is an order of its own and so part of the sort rather than beside it.
+//!
 //! The sort runs here, in Rust, over the rows a view's query already returned, rather than
 //! as one more `ORDER BY` per key: the name has to compare case-insensitively, which SQL
 //! cannot do here beyond ASCII (see `CLAUDE.md`), and one sort over rows already in memory
 //! is cheaper than teaching every view's query a second shape.
 
-use crate::grid::{GridEntry, GridView, Layout};
+use crate::grid::{GridEntry, GridView, Layout, PeriodUnit};
 use serde::{Deserialize, Serialize};
 use std::cmp::{Ordering, Reverse};
 
@@ -52,7 +56,49 @@ impl SortKey {
     }
 }
 
-/// A key and whether it runs backwards. `reverse` turns the whole list upside down, the
+/// Where the grid's headers fall while it is sorted by date. It decides the order as well as
+/// the headers, which is why it is a field of [`Sort`]: by folder the view's own order
+/// stands, and every other choice is one timeline across folders, newest first. Under any
+/// other key it is kept and ignored, so it is there again when the sort returns to the date.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Grouping {
+    /// A header per folder: the grid photon has always had.
+    #[default]
+    Folder,
+    Day,
+    Month,
+    Year,
+    /// The timeline with no headers.
+    None,
+}
+
+impl Grouping {
+    /// The form stored in the settings table.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Folder => "folder",
+            Self::Day => "day",
+            Self::Month => "month",
+            Self::Year => "year",
+            Self::None => "none",
+        }
+    }
+
+    /// Reads [`as_str`](Self::as_str)'s form. Anything else - a grouping a newer photon
+    /// added, a hand-edited row - is the default rather than a library that fails to open.
+    pub fn from_setting(stored: &str) -> Self {
+        match stored {
+            "day" => Self::Day,
+            "month" => Self::Month,
+            "year" => Self::Year,
+            "none" => Self::None,
+            _ => Self::Folder,
+        }
+    }
+}
+
+/// A key, whether it runs backwards, and where the headers fall by date. `reverse` turns the whole list upside down, the
 /// Date order included - folders oldest first, each read newest to oldest - so it means one
 /// thing for every key and the folder runs stay contiguous for the sections.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -60,15 +106,24 @@ impl SortKey {
 pub struct Sort {
     pub key: SortKey,
     pub reverse: bool,
+    pub group: Grouping,
 }
 
 impl Sort {
-    /// How `view` is laid out under this sort: the view's own layout by date, flat by any
-    /// other key, whose runs of one folder are an accident of the key rather than sections.
+    /// How `view` is laid out under this sort. By any key but date it is flat: runs of one
+    /// folder there are an accident of the key rather than sections. By date the grouping
+    /// decides: by folder it is the view's own layout (so Recent, which interleaves folders,
+    /// stays flat), a period lays every view out by that period, and none is flat.
     pub fn layout(self, view: GridView) -> Layout {
-        match self.key {
-            SortKey::Date => view.layout(),
-            _ => Layout::Flat,
+        if self.key != SortKey::Date {
+            return Layout::Flat;
+        }
+        match self.group {
+            Grouping::Folder => view.layout(),
+            Grouping::Day => Layout::Periods(PeriodUnit::Day),
+            Grouping::Month => Layout::Periods(PeriodUnit::Month),
+            Grouping::Year => Layout::Periods(PeriodUnit::Year),
+            Grouping::None => Layout::Flat,
         }
     }
 
@@ -81,12 +136,18 @@ impl Sort {
 
     /// Reads [`to_setting`](Self::to_setting)'s form. Anything else - a key a newer photon
     /// added, a hand-edited row - falls back to the default rather than failing to open.
+    /// The grouping is stored under a key of its own (`Library::grid_sort`), so this form is
+    /// the one an older photon reads.
     pub fn from_setting(stored: &str) -> Self {
         let (reverse, key) = match stored.strip_prefix('-') {
             Some(key) => (true, key),
             None => (false, stored),
         };
-        SortKey::parse(key).map_or_else(Self::default, |key| Self { key, reverse })
+        SortKey::parse(key).map_or_else(Self::default, |key| Self {
+            key,
+            reverse,
+            group: Grouping::default(),
+        })
     }
 
     /// Puts `entries`, which arrive in the view's own order, into this sort's order. `name`
@@ -95,9 +156,18 @@ impl Sort {
     /// The sort is stable, so photos that tie - the same size, the same second - keep the
     /// view's own order between them rather than an arbitrary one that could change between
     /// rebuilds and shuffle the grid under the user.
+    ///
+    /// By date under a grouping other than the folder's, that is every photo newest first.
     pub fn arrange<'a>(self, entries: &mut Vec<GridEntry>, name: impl Fn(i64) -> &'a str) {
         match self.key {
-            SortKey::Date => {}
+            // By folder the view's own order is the answer. Otherwise the folders it
+            // arrives grouped by give way to one timeline; the stable sort leaves photos of
+            // one second in the view's order.
+            SortKey::Date => {
+                if self.group != Grouping::Folder {
+                    entries.sort_by_key(|e| Reverse(e.taken_at));
+                }
+            }
             SortKey::Modified => entries.sort_by_key(|e| Reverse(e.mtime_ms)),
             SortKey::Size => entries.sort_by_key(|e| Reverse(e.size)),
             SortKey::Name => {
@@ -241,6 +311,7 @@ mod tests {
         let sort = Sort {
             key: SortKey::Name,
             reverse: false,
+            ..Sort::default()
         };
         sort.arrange(&mut entries, names);
         // Byte order would put "Beach" and "IMG_10" before "img_2".
@@ -254,6 +325,7 @@ mod tests {
         Sort {
             key: SortKey::Size,
             reverse: false,
+            ..Sort::default()
         }
         .arrange(&mut by_size, names);
         assert_eq!(ids(&by_size), [2, 3, 1]);
@@ -262,6 +334,7 @@ mod tests {
         Sort {
             key: SortKey::Modified,
             reverse: false,
+            ..Sort::default()
         }
         .arrange(&mut by_modified, names);
         assert_eq!(ids(&by_modified), [1, 3, 2]);
@@ -278,6 +351,7 @@ mod tests {
         Sort {
             key: SortKey::Size,
             reverse: false,
+            ..Sort::default()
         }
         .arrange(&mut entries, names);
         assert_eq!(ids(&entries), [2, 1, 3, 4]);
@@ -286,6 +360,7 @@ mod tests {
         Sort {
             key: SortKey::Name,
             reverse: false,
+            ..Sort::default()
         }
         .arrange(&mut entries, names);
         assert_eq!(ids(&entries), [4, 2]);
@@ -297,6 +372,7 @@ mod tests {
             Sort {
                 key,
                 reverse: false,
+                ..Sort::default()
             }
             .arrange(&mut entries, |id| if id % 2 == 0 { "a" } else { "b" });
             for pair in entries.windows(2) {
@@ -327,6 +403,7 @@ mod tests {
         Sort {
             key: SortKey::Date,
             reverse: true,
+            ..Sort::default()
         }
         .arrange(&mut reversed, names);
         assert_eq!(ids(&reversed), [3, 2, 1]);
@@ -335,6 +412,7 @@ mod tests {
         Sort {
             key: SortKey::Size,
             reverse: true,
+            ..Sort::default()
         }
         .arrange(&mut smallest_first, names);
         assert_eq!(ids(&smallest_first), [1, 3, 2]);
@@ -344,7 +422,11 @@ mod tests {
     fn only_date_keeps_the_views_layout() {
         for key in [SortKey::Modified, SortKey::Name, SortKey::Size] {
             for reverse in [false, true] {
-                let sort = Sort { key, reverse };
+                let sort = Sort {
+                    key,
+                    reverse,
+                    ..Sort::default()
+                };
                 assert_eq!(sort.layout(GridView::All), Layout::Flat, "{sort:?}");
             }
         }
@@ -353,6 +435,7 @@ mod tests {
         let reversed = Sort {
             key: SortKey::Date,
             reverse: true,
+            ..Sort::default()
         };
         assert_eq!(reversed.layout(GridView::Starred), Layout::Folders);
         assert_eq!(date.layout(GridView::Recent), Layout::Flat);
@@ -367,7 +450,11 @@ mod tests {
             SortKey::Size,
         ] {
             for reverse in [false, true] {
-                let sort = Sort { key, reverse };
+                let sort = Sort {
+                    key,
+                    reverse,
+                    ..Sort::default()
+                };
                 assert_eq!(Sort::from_setting(&sort.to_setting()), sort);
             }
         }
@@ -381,10 +468,171 @@ mod tests {
         let sort = Sort {
             key: SortKey::Modified,
             reverse: true,
+            group: Grouping::Month,
         };
         assert_eq!(
             serde_json::to_string(&sort).unwrap(),
-            r#"{"key":"modified","reverse":true}"#
+            r#"{"key":"modified","reverse":true,"group":"month"}"#
         );
+        assert_eq!(
+            serde_json::from_str::<Sort>(r#"{"key":"date","reverse":false,"group":"none"}"#)
+                .unwrap(),
+            by(Grouping::None, false)
+        );
+    }
+
+    const GROUPINGS: [Grouping; 5] = [
+        Grouping::Folder,
+        Grouping::Day,
+        Grouping::Month,
+        Grouping::Year,
+        Grouping::None,
+    ];
+
+    fn dated(id: i64, folder_id: i64, taken_at: i64) -> GridEntry {
+        GridEntry {
+            folder_id,
+            taken_at,
+            ..entry(id, 0, 0)
+        }
+    }
+
+    fn by(group: Grouping, reverse: bool) -> Sort {
+        Sort {
+            group,
+            reverse,
+            ..Sort::default()
+        }
+    }
+
+    /// The view hands its rows over folder by folder. A date grouping is one timeline across
+    /// them, newest first, and the four that are not the folder's agree on the order: they
+    /// differ only in where the headers fall.
+    #[test]
+    fn a_date_grouping_is_one_timeline_newest_first_across_folders() {
+        let view = || {
+            vec![
+                dated(1, 10, 100),
+                dated(2, 10, 300),
+                dated(3, 20, 200),
+                dated(4, 20, 400),
+            ]
+        };
+        let mut by_folder = view();
+        by(Grouping::Folder, false).arrange(&mut by_folder, names);
+        assert_eq!(ids(&by_folder), [1, 2, 3, 4]);
+        for group in [
+            Grouping::Day,
+            Grouping::Month,
+            Grouping::Year,
+            Grouping::None,
+        ] {
+            let mut entries = view();
+            by(group, false).arrange(&mut entries, names);
+            assert_eq!(ids(&entries), [4, 2, 3, 1], "{group:?}");
+            let mut reversed = view();
+            by(group, true).arrange(&mut reversed, names);
+            assert_eq!(ids(&reversed), [1, 3, 2, 4], "{group:?} reversed");
+        }
+    }
+
+    /// A burst, or a folder of undated scans copied at once, shares one second. Those photos
+    /// keep the view's order between them on every rebuild - and the list is long enough
+    /// that the standard library's sort has left insertion sort, which is stable by accident.
+    #[test]
+    fn photos_of_one_second_keep_the_views_order_under_a_date_grouping() {
+        for group in [
+            Grouping::Day,
+            Grouping::Month,
+            Grouping::Year,
+            Grouping::None,
+        ] {
+            let mut entries: Vec<GridEntry> = (0..200).map(|id| dated(id, 1, id % 3)).collect();
+            by(group, false).arrange(&mut entries, names);
+            for pair in entries.windows(2) {
+                assert!(
+                    pair[0].taken_at >= pair[1].taken_at,
+                    "{group:?}: newest first"
+                );
+                if pair[0].taken_at == pair[1].taken_at {
+                    assert!(
+                        pair[0].id < pair[1].id,
+                        "{group:?}: {} before {}",
+                        pair[0].id,
+                        pair[1].id
+                    );
+                }
+            }
+        }
+    }
+
+    /// By name, size or modification time every photo is sorted together, whatever grouping
+    /// is stored for the day the sort returns to the date.
+    #[test]
+    fn a_grouping_changes_nothing_under_another_key() {
+        let fresh = || vec![entry(1, 10, 300), entry(2, 30, 100), entry(3, 20, 200)];
+        for key in [SortKey::Modified, SortKey::Name, SortKey::Size] {
+            let mut plain = fresh();
+            Sort {
+                key,
+                ..Sort::default()
+            }
+            .arrange(&mut plain, names);
+            for group in GROUPINGS {
+                let sort = Sort {
+                    key,
+                    group,
+                    ..Sort::default()
+                };
+                let mut entries = fresh();
+                sort.arrange(&mut entries, names);
+                assert_eq!(ids(&entries), ids(&plain), "{sort:?}");
+                assert_eq!(sort.layout(GridView::All), Layout::Flat, "{sort:?}");
+                assert_eq!(sort.layout(GridView::Recent), Layout::Flat, "{sort:?}");
+            }
+        }
+    }
+
+    /// By folder a view keeps its own layout, so Recent stays flat. A period lays every view
+    /// out by that period, Recent included: it is already newest first. None is flat.
+    #[test]
+    fn the_grouping_decides_the_layout_under_the_date_sort() {
+        use crate::grid::PeriodUnit;
+        let layout = |group, view| by(group, false).layout(view);
+        assert_eq!(layout(Grouping::Folder, GridView::All), Layout::Folders);
+        assert_eq!(layout(Grouping::Folder, GridView::Recent), Layout::Flat);
+        for view in [GridView::All, GridView::Starred, GridView::Recent] {
+            assert_eq!(
+                layout(Grouping::Day, view),
+                Layout::Periods(PeriodUnit::Day),
+                "{view:?}"
+            );
+            assert_eq!(
+                layout(Grouping::Month, view),
+                Layout::Periods(PeriodUnit::Month),
+                "{view:?}"
+            );
+            assert_eq!(
+                layout(Grouping::Year, view),
+                Layout::Periods(PeriodUnit::Year),
+                "{view:?}"
+            );
+            assert_eq!(layout(Grouping::None, view), Layout::Flat, "{view:?}");
+        }
+        assert_eq!(
+            by(Grouping::Month, true).layout(GridView::All),
+            Layout::Periods(PeriodUnit::Month)
+        );
+    }
+
+    /// A grouping a newer photon stored, or a hand-edited row, opens by folder.
+    #[test]
+    fn a_grouping_round_trips_and_falls_back_to_folder() {
+        for group in GROUPINGS {
+            assert_eq!(Grouping::from_setting(group.as_str()), group);
+        }
+        assert_eq!(Grouping::from_setting("week"), Grouping::Folder);
+        assert_eq!(Grouping::from_setting(""), Grouping::Folder);
+        assert_eq!(Grouping::from_setting("Month"), Grouping::Folder);
     }
 }

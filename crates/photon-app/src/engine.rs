@@ -5616,6 +5616,7 @@ mod tests {
         let by_name = Sort {
             key: SortKey::Name,
             reverse: false,
+            ..Sort::default()
         };
 
         f.engine.set_sort(by_name).unwrap();
@@ -5656,6 +5657,7 @@ mod tests {
         let by_size = Sort {
             key: SortKey::Size,
             reverse: true,
+            ..Sort::default()
         };
         assert!(f.engine.set_sort(by_size).is_err());
         assert_eq!(f.engine.sort(), Sort::default());
@@ -6412,6 +6414,7 @@ mod tests {
             .set_sort(Sort {
                 key: SortKey::Name,
                 reverse: true,
+                ..Sort::default()
             })
             .unwrap();
         assert!(!last_data_changed(&f), "a sort");
@@ -6454,6 +6457,7 @@ mod tests {
                 f.engine.set_sort(Sort {
                     key: SortKey::Name,
                     reverse: true,
+                    ..Sort::default()
                 })
             }),
             ("person", &|| f.engine.set_person_view("c:abc")),
@@ -6524,6 +6528,7 @@ mod tests {
             .set_sort(Sort {
                 key: SortKey::Size,
                 reverse: false,
+                ..Sort::default()
             })
             .unwrap();
         let (_, before, _, layout) = f.engine.published();
@@ -6559,6 +6564,7 @@ mod tests {
             .set_sort(Sort {
                 key: SortKey::Name,
                 reverse: false,
+                ..Sort::default()
             })
             .unwrap();
 

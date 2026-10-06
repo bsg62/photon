@@ -660,6 +660,7 @@ mod tests {
         let by_name_reversed = Sort {
             key: SortKey::Name,
             reverse: true,
+            ..Sort::default()
         };
         lib.set_grid_sort(by_name_reversed).unwrap();
         assert_eq!(lib.grid_sort().unwrap(), by_name_reversed);
