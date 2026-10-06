@@ -26,6 +26,11 @@ export function yearOf(takenAtMin: number): number {
   return new Date(takenAtMin * 1000).getFullYear();
 }
 
+/** "1 photo", "4,210 photos": what a header says it holds. */
+export function photoCount(count: number, locale?: string): string {
+  return count === 1 ? '1 photo' : `${count.toLocaleString(locale)} photos`;
+}
+
 /** What a folder's header in the grid says after its name: how many of its photos the view
  *  holds, and the month its oldest one was taken - "23 photos · July 2026".
  *
@@ -36,9 +41,8 @@ export function yearOf(takenAtMin: number): number {
  *  are the same instant read the same way. The count is the view's: in a search it is the
  *  photos that matched, which is what is under the header. */
 export function folderSummary(count: number, takenAtMin: number, locale?: string): string {
-  const photos = count === 1 ? '1 photo' : `${count.toLocaleString(locale)} photos`;
   const month = new Date(takenAtMin * 1000).toLocaleDateString(locale, { month: 'long', year: 'numeric' });
-  return `${photos} · ${month}`;
+  return `${photoCount(count, locale)} · ${month}`;
 }
 
 /** What photon calls a folder: the user's alias, else its directory name. The one place that

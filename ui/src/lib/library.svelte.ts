@@ -90,7 +90,7 @@ export class LibraryStore {
     hiddenCount: 0,
     videoCount: 0,
     view: 'all',
-    sort: { key: 'date', reverse: false },
+    sort: { key: 'date', reverse: false, group: 'folder' },
     searchQuery: '',
     person: null,
     album: null,

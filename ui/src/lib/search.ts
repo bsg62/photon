@@ -42,7 +42,8 @@ export interface ViewKey {
 
 /** The view and its argument as `resultsChanged` compares them: the query for Search, the
  *  person's key (`Person.key`) for Person, the album id for Album, the keyword for Tag, the
- *  anchor photo id for Copies, and nothing else - plus the sort, which reorders every view. */
+ *  anchor photo id for Copies, and nothing else - plus the sort, which reorders every view, and
+ *  by date the grouping, which does too. */
 export function viewKey(
   info: Pick<GridInfo, 'view' | 'sort' | 'searchQuery' | 'person' | 'album' | 'tag' | 'copiesOf'>,
 ): ViewKey {
@@ -53,5 +54,9 @@ export function viewKey(
     : info.view === 'tag' ? (info.tag ?? '')
     : info.view === 'copies' ? String(info.copiesOf?.id ?? '')
     : '';
-  return { view: info.view, query, order: `${info.sort.reverse ? '-' : ''}${info.sort.key}` };
+  const { key, reverse, group } = info.sort;
+  // The grouping reorders the grid only by date. Under another key it is ignored, and a
+  // change to it must not throw the scroll position away.
+  const grouped = key === 'date' && group !== 'folder' ? `:${group}` : '';
+  return { view: info.view, query, order: `${reverse ? '-' : ''}${key}${grouped}` };
 }

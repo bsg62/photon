@@ -17,13 +17,13 @@
 <!-- Holds no sort of its own: `library.sort` is the change in flight, else the grid's, so a
      quick second change builds on the first and a refused one puts the control back. -->
 <div class="sort" role="group" aria-label="Sort">
-  <Select label="Sort by" options={KEYS} value={sort.key} onchange={(key) => library.setSort({ key, reverse: sort.reverse })} />
+  <Select label="Sort by" options={KEYS} value={sort.key} onchange={(key) => library.setSort({ ...sort, key })} />
   <button
     aria-label="Reverse order"
     title="Reverse order"
     aria-pressed={sort.reverse}
     class:checked={sort.reverse}
-    onclick={() => library.setSort({ key: sort.key, reverse: !sort.reverse })}
+    onclick={() => library.setSort({ ...sort, reverse: !sort.reverse })}
   >
     <Icon name="arrow-down-up" size={14} />
   </button>

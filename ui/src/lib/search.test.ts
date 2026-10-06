@@ -83,7 +83,20 @@ describe('resultsChanged', () => {
 });
 
 describe('viewKey', () => {
-  const base = { sort: { key: 'date' as const, reverse: false }, searchQuery: '', person: null, album: null, tag: null, copiesOf: null };
+  const base = { sort: { key: 'date' as const, reverse: false, group: 'folder' as const }, searchQuery: '', person: null, album: null, tag: null, copiesOf: null };
+
+  it('so a new grouping resets the scroll by date, and changes nothing under another key', () => {
+    const byMonth = { ...base, view: 'all' as const, sort: { key: 'date' as const, reverse: false, group: 'month' as const } };
+    const byDay = { ...byMonth, sort: { ...byMonth.sort, group: 'day' as const } };
+    expect(viewKey({ ...base, view: 'all' }).order).toBe('date');
+    expect(resultsChanged(viewKey({ ...base, view: 'all' }), viewKey(byMonth))).toBe(true);
+    expect(resultsChanged(viewKey(byMonth), viewKey(byDay))).toBe(true);
+    expect(resultsChanged(viewKey(byMonth), viewKey({ ...byMonth }))).toBe(false);
+    // By size the grid is flat whatever the grouping: the same list, the same place.
+    const bySize = { ...base, view: 'all' as const, sort: { key: 'size' as const, reverse: false, group: 'folder' as const } };
+    const bySizeGrouped = { ...bySize, sort: { ...bySize.sort, group: 'month' as const } };
+    expect(resultsChanged(viewKey(bySize), viewKey(bySizeGrouped))).toBe(false);
+  });
 
   it('takes the argument that belongs to the active view', () => {
     expect(viewKey({ ...base, view: 'search', searchQuery: 'lake' })).toEqual({ view: 'search', query: 'lake', order: 'date' });
@@ -104,8 +117,8 @@ describe('viewKey', () => {
   });
 
   it('so a new sort resets the scroll, and the same sort re-published does not', () => {
-    const bySize = { ...base, view: 'all' as const, sort: { key: 'size' as const, reverse: false } };
-    const bySizeReversed = { ...bySize, sort: { key: 'size' as const, reverse: true } };
+    const bySize = { ...base, view: 'all' as const, sort: { key: 'size' as const, reverse: false, group: 'folder' as const } };
+    const bySizeReversed = { ...bySize, sort: { key: 'size' as const, reverse: true, group: 'folder' as const } };
     expect(resultsChanged(viewKey({ ...base, view: 'all' }), viewKey(bySize))).toBe(true);
     expect(resultsChanged(viewKey(bySize), viewKey(bySizeReversed))).toBe(true);
     expect(resultsChanged(viewKey(bySize), viewKey({ ...bySize }))).toBe(false);

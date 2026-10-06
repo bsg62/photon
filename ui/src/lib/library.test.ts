@@ -102,7 +102,7 @@ describe('LibraryStore', () => {
       hiddenCount: 0,
       videoCount: 0,
       view: 'all',
-      sort: { key: 'date' as const, reverse: false },
+      sort: { key: 'date' as const, reverse: false, group: 'folder' as const },
       searchQuery: '',
       person: null,
       album: null,
@@ -149,7 +149,7 @@ describe('LibraryStore', () => {
   // leaves the layout out, and everything else in it - the counts, the view read live beside
   // the index - still lands. Review Focus: a view switch whose sections come out the same.
   it('an answer without a layout keeps the sections and takes everything else', async () => {
-    const section: Section = { folderId: 3, offset: 0, count: 2, takenAtMin: 0 };
+    const section: Section = { folderId: 3, offset: 0, count: 2, takenAtMin: 0, period: null };
     const folder = { folderId: 3, count: 2, takenAtMin: 0, bytes: 10, modifiedMs: 0 };
     const answer = (version: number, over: Partial<GridInfo>): GridInfo => ({
       version,
@@ -160,7 +160,7 @@ describe('LibraryStore', () => {
       hiddenCount: 0,
       videoCount: 0,
       view: 'all',
-      sort: { key: 'date', reverse: false },
+      sort: { key: 'date', reverse: false, group: 'folder' as const },
       searchQuery: '',
       person: null,
       album: null,
@@ -313,7 +313,7 @@ describe('LibraryStore', () => {
       hiddenCount: 0,
       videoCount: 0,
       view: 'all' as const,
-      sort: { key: 'date' as const, reverse: false },
+      sort: { key: 'date' as const, reverse: false, group: 'folder' as const },
       searchQuery: '',
       person: null,
       album: null,
@@ -522,7 +522,7 @@ describe('LibraryStore', () => {
       hiddenCount: 0,
       videoCount: 0,
       view: 'all',
-      sort: { key: 'date' as const, reverse: false },
+      sort: { key: 'date' as const, reverse: false, group: 'folder' as const },
       searchQuery: '',
       person: null,
       album: null,
@@ -546,7 +546,7 @@ describe('LibraryStore', () => {
       hiddenCount: 0,
       videoCount: 0,
       view: 'all',
-      sort: { key: 'date' as const, reverse: false },
+      sort: { key: 'date' as const, reverse: false, group: 'folder' as const },
       searchQuery: '',
       person: null,
       album: null,
@@ -584,7 +584,7 @@ describe('LibraryStore', () => {
       hiddenCount: 0,
       videoCount: 0,
       view: 'all' as const,
-      sort: { key: 'date' as const, reverse: false },
+      sort: { key: 'date' as const, reverse: false, group: 'folder' as const },
       searchQuery: '',
       person: null,
       album: null,
@@ -641,7 +641,7 @@ describe('LibraryStore', () => {
       hiddenCount: 0,
       videoCount: 0,
       view: 'all' as const,
-      sort: { key: 'date' as const, reverse: false },
+      sort: { key: 'date' as const, reverse: false, group: 'folder' as const },
       searchQuery: '',
       person: null,
       album: null,
@@ -694,7 +694,7 @@ describe('LibraryStore', () => {
       hiddenCount: 0,
       videoCount: 0,
       view: 'all',
-      sort: { key: 'date' as const, reverse: false },
+      sort: { key: 'date' as const, reverse: false, group: 'folder' as const },
       searchQuery: '',
       person: null,
       album: null,
@@ -716,7 +716,7 @@ describe('LibraryStore', () => {
       hiddenCount: 0,
       videoCount: 0,
       view: 'all',
-      sort: { key: 'date' as const, reverse: false },
+      sort: { key: 'date' as const, reverse: false, group: 'folder' as const },
       searchQuery: '',
       person: null,
       album: null,
@@ -742,7 +742,7 @@ describe('LibraryStore', () => {
       hiddenCount: 0,
       videoCount: 0,
       view: 'all',
-      sort: { key: 'date' as const, reverse: false },
+      sort: { key: 'date' as const, reverse: false, group: 'folder' as const },
       searchQuery: '',
       person: null,
       album: null,
@@ -763,7 +763,7 @@ describe('LibraryStore', () => {
       hiddenCount: 0,
       videoCount: 0,
       view: 'all',
-      sort: { key: 'date' as const, reverse: false },
+      sort: { key: 'date' as const, reverse: false, group: 'folder' as const },
       searchQuery: '',
       person: null,
       album: null,
@@ -784,7 +784,7 @@ describe('LibraryStore', () => {
       hiddenCount: 0,
       videoCount: 0,
       view: 'all',
-      sort: { key: 'date' as const, reverse: false },
+      sort: { key: 'date' as const, reverse: false, group: 'folder' as const },
       searchQuery: '',
       person: null,
       album: null,
@@ -881,7 +881,7 @@ describe('LibraryStore', () => {
       hiddenCount: number;
       videoCount: number;
       view: 'all';
-      sort: { key: 'date'; reverse: boolean };
+      sort: { key: 'date'; reverse: boolean; group: 'folder' };
       searchQuery: string;
       person: null;
       album: null;
@@ -902,7 +902,7 @@ describe('LibraryStore', () => {
     const initPromise = store.init();
     store.dispose();
     listenGate.resolve();
-    gridInfoGate.resolve({ version: 1, len: 0, layout: { generation: 1, sections: [], folders: [] }, starredCount: 0, duplicateCount: 0, hiddenCount: 0, videoCount: 0, view: 'all', sort: { key: 'date', reverse: false }, searchQuery: '', person: null, album: null, tag: null, copiesOf: null, buildError: null });
+    gridInfoGate.resolve({ version: 1, len: 0, layout: { generation: 1, sections: [], folders: [] }, starredCount: 0, duplicateCount: 0, hiddenCount: 0, videoCount: 0, view: 'all', sort: { key: 'date', reverse: false, group: 'folder' as const }, searchQuery: '', person: null, album: null, tag: null, copiesOf: null, buildError: null });
     await initPromise;
 
     expect(unlistenCounts.libraryChanged).toBe(1);
@@ -931,7 +931,7 @@ describe('LibraryStore', () => {
     expect(api.setGridView).toHaveBeenCalledWith('starred');
     expect(resolved).toBe(false);
 
-    refreshGate.resolve({ version: 2, len: 0, layout: { generation: 1, sections: [], folders: [] }, starredCount: 0, duplicateCount: 0, hiddenCount: 0, videoCount: 0, view: 'starred', sort: { key: 'date', reverse: false }, searchQuery: '', person: null, album: null, tag: null, copiesOf: null, buildError: null });
+    refreshGate.resolve({ version: 2, len: 0, layout: { generation: 1, sections: [], folders: [] }, starredCount: 0, duplicateCount: 0, hiddenCount: 0, videoCount: 0, view: 'starred', sort: { key: 'date', reverse: false, group: 'folder' as const }, searchQuery: '', person: null, album: null, tag: null, copiesOf: null, buildError: null });
     await setViewPromise;
 
     expect(resolved).toBe(true);
@@ -962,7 +962,7 @@ describe('LibraryStore', () => {
       hiddenCount: 0,
       videoCount: 0,
       view: 'all',
-      sort: { key: 'date', reverse: false },
+      sort: { key: 'date', reverse: false, group: 'folder' as const },
       searchQuery: '',
       person: null,
       album: null,
@@ -993,7 +993,7 @@ describe('LibraryStore', () => {
       const store = new LibraryStore();
       await store.init();
       const fetches = vi.mocked(api.gridInfo).mock.calls.length;
-      const byName = { key: 'name' as const, reverse: false };
+      const byName = { key: 'name' as const, reverse: false, group: 'folder' as const };
       vi.mocked(api.gridInfo).mockResolvedValue(at(2, { sort: byName }));
       vi.mocked(api.setSort).mockImplementationOnce(async () => {
         announce(2);
@@ -1061,7 +1061,7 @@ describe('LibraryStore', () => {
       hiddenCount: 0,
       videoCount: 0,
       view: 'all',
-      sort: { key: 'date' as const, reverse: false },
+      sort: { key: 'date' as const, reverse: false, group: 'folder' as const },
       searchQuery: '',
       person: null,
       album: null,
@@ -1109,7 +1109,7 @@ describe('LibraryStore', () => {
       hiddenCount: 0,
       videoCount: 0,
       view: 'search',
-      sort: { key: 'date' as const, reverse: false },
+      sort: { key: 'date' as const, reverse: false, group: 'folder' as const },
       searchQuery: 'beach',
       person: null,
       album: null,
@@ -1233,7 +1233,7 @@ describe('LibraryStore', () => {
     store.onViewSwitch(hook);
     store.selectItem(3, 42);
 
-    const bySize = { key: 'size' as const, reverse: true };
+    const bySize = { key: 'size' as const, reverse: true, group: 'folder' as const };
     vi.mocked(api.setSort).mockResolvedValueOnce(null);
     vi.mocked(api.gridInfo).mockResolvedValueOnce({ version: 2, len: 0, layout: { generation: 1, sections: [], folders: [] }, starredCount: 0, duplicateCount: 0, hiddenCount: 0, videoCount: 0, view: 'search', sort: bySize, searchQuery: 'lake', person: null, album: null, tag: null, copiesOf: null, buildError: null });
     await store.setSort(bySize);
@@ -1256,28 +1256,28 @@ describe('LibraryStore', () => {
     vi.mocked(api.setSort)
       .mockReturnValueOnce(first.promise.then(() => null))
       .mockReturnValueOnce(second.promise.then(() => null));
-    const info = (sort: { key: 'name'; reverse: boolean }) => ({ version: 2, len: 0, layout: { generation: 1, sections: [], folders: [] }, starredCount: 0, duplicateCount: 0, hiddenCount: 0, videoCount: 0, view: 'all' as const, sort, searchQuery: '', person: null, album: null, tag: null, copiesOf: null, buildError: null });
+    const info = (sort: { key: 'name'; reverse: boolean; group: 'folder' }) => ({ version: 2, len: 0, layout: { generation: 1, sections: [], folders: [] }, starredCount: 0, duplicateCount: 0, hiddenCount: 0, videoCount: 0, view: 'all' as const, sort, searchQuery: '', person: null, album: null, tag: null, copiesOf: null, buildError: null });
     vi.mocked(api.gridInfo)
-      .mockResolvedValueOnce(info({ key: 'name', reverse: false }))
-      .mockResolvedValueOnce(info({ key: 'name', reverse: true }));
+      .mockResolvedValueOnce(info({ key: 'name', reverse: false, group: 'folder' as const }))
+      .mockResolvedValueOnce(info({ key: 'name', reverse: true, group: 'folder' as const }));
 
     const byName = store.setSort({ ...store.sort, key: 'name' });
     const reversed = store.setSort({ ...store.sort, reverse: !store.sort.reverse });
-    expect(store.sort).toEqual({ key: 'name', reverse: true });
+    expect(store.sort).toEqual({ key: 'name', reverse: true, group: 'folder' as const });
     first.resolve();
     await byName;
     // The first has landed and `info` says Name ascending, but the reversal is still queued:
     // the control must keep showing it, or a third click would build on the wrong sort.
-    expect(store.info.sort).toEqual({ key: 'name', reverse: false });
-    expect(store.sort).toEqual({ key: 'name', reverse: true });
+    expect(store.info.sort).toEqual({ key: 'name', reverse: false, group: 'folder' as const });
+    expect(store.sort).toEqual({ key: 'name', reverse: true, group: 'folder' as const });
     second.resolve();
     await reversed;
 
     expect(vi.mocked(api.setSort).mock.calls.map((c) => c[0])).toEqual([
-      { key: 'name', reverse: false },
-      { key: 'name', reverse: true },
+      { key: 'name', reverse: false, group: 'folder' as const },
+      { key: 'name', reverse: true, group: 'folder' as const },
     ]);
-    expect(store.sort).toEqual({ key: 'name', reverse: true });
+    expect(store.sort).toEqual({ key: 'name', reverse: true, group: 'folder' as const });
   });
 
   it('routes a refused sort into reportError and leaves the grid as it was', async () => {
@@ -1286,13 +1286,13 @@ describe('LibraryStore', () => {
     const calls = vi.mocked(api.gridInfo).mock.calls.length;
 
     vi.mocked(api.setSort).mockRejectedValueOnce(new Error('sort-fail'));
-    await expect(store.setSort({ key: 'name', reverse: false })).resolves.toBeUndefined();
+    await expect(store.setSort({ key: 'name', reverse: false, group: 'folder' as const })).resolves.toBeUndefined();
 
     expect(store.toasts.some((t) => t.message === 'sort-fail')).toBe(true);
     expect(vi.mocked(api.gridInfo).mock.calls.length).toBe(calls);
-    expect(store.info.sort).toEqual({ key: 'date', reverse: false });
+    expect(store.info.sort).toEqual({ key: 'date', reverse: false, group: 'folder' as const });
     // And the control, which showed Name while it was asked for, is back on the grid's sort.
-    expect(store.sort).toEqual({ key: 'date', reverse: false });
+    expect(store.sort).toEqual({ key: 'date', reverse: false, group: 'folder' as const });
   });
 
   it('runs the view-switch hooks as the switch is issued, and takes them back only if it is refused', async () => {
@@ -1346,7 +1346,7 @@ describe('LibraryStore', () => {
     const store = new LibraryStore();
     await store.init();
     vi.mocked(api.setSearchQuery).mockResolvedValueOnce(null);
-    vi.mocked(api.gridInfo).mockResolvedValueOnce({ version: 2, len: 0, layout: { generation: 1, sections: [], folders: [] }, starredCount: 0, duplicateCount: 0, hiddenCount: 0, videoCount: 0, view: 'search', sort: { key: 'date', reverse: false }, searchQuery: 'lake', person: null, album: null, tag: null, copiesOf: null, buildError: null });
+    vi.mocked(api.gridInfo).mockResolvedValueOnce({ version: 2, len: 0, layout: { generation: 1, sections: [], folders: [] }, starredCount: 0, duplicateCount: 0, hiddenCount: 0, videoCount: 0, view: 'search', sort: { key: 'date', reverse: false, group: 'folder' as const }, searchQuery: 'lake', person: null, album: null, tag: null, copiesOf: null, buildError: null });
     await expect(store.setSearchQuery('lake')).resolves.toBe('lake');
 
     vi.mocked(api.setSearchQuery).mockRejectedValueOnce(new Error('refused'));
@@ -1358,7 +1358,7 @@ describe('LibraryStore', () => {
     await store.init();
     const search = deferred<void>();
     vi.mocked(api.setSearchQuery).mockReturnValueOnce(search.promise.then(() => null));
-    vi.mocked(api.gridInfo).mockResolvedValueOnce({ version: 2, len: 0, layout: { generation: 1, sections: [], folders: [] }, starredCount: 0, duplicateCount: 0, hiddenCount: 0, videoCount: 0, view: 'search', sort: { key: 'date', reverse: false }, searchQuery: 'beach', person: null, album: null, tag: null, copiesOf: null, buildError: null });
+    vi.mocked(api.gridInfo).mockResolvedValueOnce({ version: 2, len: 0, layout: { generation: 1, sections: [], folders: [] }, starredCount: 0, duplicateCount: 0, hiddenCount: 0, videoCount: 0, view: 'search', sort: { key: 'date', reverse: false, group: 'folder' as const }, searchQuery: 'beach', person: null, album: null, tag: null, copiesOf: null, buildError: null });
 
     void store.setSearchQuery('beach');
     const view = store.settledView();
@@ -1425,7 +1425,7 @@ describe('LibraryStore', () => {
         hiddenCount: 0,
       videoCount: 0,
         view: opts.view ?? 'all',
-        sort: { key: 'date' as const, reverse: false },
+        sort: { key: 'date' as const, reverse: false, group: 'folder' as const },
         searchQuery: '',
         person: null,
         album: null,
@@ -1469,7 +1469,7 @@ describe('LibraryStore', () => {
           hiddenCount: 3,
           videoCount: 0,
           view: 'all',
-          sort: { key: 'date' as const, reverse: false },
+          sort: { key: 'date' as const, reverse: false, group: 'folder' as const },
           searchQuery: '',
           person: null,
           album: null,
@@ -1600,9 +1600,9 @@ describe('LibraryStore', () => {
      *  the next folder as the lead was into its own: 2,400 photos on, or past the end. */
     it('hiding a folder selected around the lead lands on the photo after the folder', async () => {
       const sections: Section[] = [
-        { folderId: 1, offset: 0, count: 100, takenAtMin: 0 },
-        { folderId: 2, offset: 100, count: 4800, takenAtMin: 0 },
-        { folderId: 3, offset: 4900, count: 5100, takenAtMin: 0 },
+        { folderId: 1, offset: 0, count: 100, takenAtMin: 0, period: null },
+        { folderId: 2, offset: 100, count: 4800, takenAtMin: 0, period: null },
+        { folderId: 3, offset: 4900, count: 5100, takenAtMin: 0, period: null },
       ];
       const store = await storeOf(10000, { sections });
       await store.ensure(2450, 2550);
@@ -1631,8 +1631,8 @@ describe('LibraryStore', () => {
      *  photo after the folder is the rebuilt index's first. */
     it('hiding the first folder selected around the lead lands on the photo after it', async () => {
       const sections: Section[] = [
-        { folderId: 1, offset: 0, count: 4900, takenAtMin: 0 },
-        { folderId: 2, offset: 4900, count: 5100, takenAtMin: 0 },
+        { folderId: 1, offset: 0, count: 4900, takenAtMin: 0, period: null },
+        { folderId: 2, offset: 4900, count: 5100, takenAtMin: 0, period: null },
       ];
       const store = await storeOf(10000, { sections });
       await store.ensure(2450, 2550);
@@ -1703,9 +1703,9 @@ describe('LibraryStore', () => {
      *  to ask for - the photo before the anchor is one of the leaving ones. */
     it('hiding a folder whose lead and anchor moved inside it still lands after the folder', async () => {
       const sections: Section[] = [
-        { folderId: 1, offset: 0, count: 2400, takenAtMin: 0 },
-        { folderId: 2, offset: 2400, count: 2500, takenAtMin: 0 },
-        { folderId: 3, offset: 4900, count: 5100, takenAtMin: 0 },
+        { folderId: 1, offset: 0, count: 2400, takenAtMin: 0, period: null },
+        { folderId: 2, offset: 2400, count: 2500, takenAtMin: 0, period: null },
+        { folderId: 3, offset: 4900, count: 5100, takenAtMin: 0, period: null },
       ];
       const store = await storeOf(10000, { sections });
       await store.ensure(2450, 2550);
@@ -1744,9 +1744,9 @@ describe('LibraryStore', () => {
     const bigFolder = (at: number) => at >= 100 && at <= 4899;
     async function storeWithBigFolder() {
       const sections: Section[] = [
-        { folderId: 1, offset: 0, count: 100, takenAtMin: 0 },
-        { folderId: 2, offset: 100, count: 4800, takenAtMin: 0 },
-        { folderId: 3, offset: 4900, count: 5100, takenAtMin: 0 },
+        { folderId: 1, offset: 0, count: 100, takenAtMin: 0, period: null },
+        { folderId: 2, offset: 100, count: 4800, takenAtMin: 0, period: null },
+        { folderId: 3, offset: 4900, count: 5100, takenAtMin: 0, period: null },
       ];
       const store = await storeOf(10000, { sections });
       await store.ensure(2450, 2550);
@@ -2218,7 +2218,7 @@ describe('LibraryStore', () => {
         hiddenCount: 1,
         videoCount: 0,
         view: 'all',
-        sort: { key: 'date' as const, reverse: false },
+        sort: { key: 'date' as const, reverse: false, group: 'folder' as const },
         searchQuery: '',
         person: null,
         album: null,
@@ -2568,7 +2568,7 @@ describe('LibraryStore', () => {
         hiddenCount: 0,
       videoCount: 0,
         view: 'all',
-        sort: { key: 'date' as const, reverse: false },
+        sort: { key: 'date' as const, reverse: false, group: 'folder' as const },
         searchQuery: '',
         person: null,
         album: null,
@@ -2631,7 +2631,7 @@ describe('LibraryStore', () => {
         hiddenCount: 0,
       videoCount: 0,
         view: 'all',
-        sort: { key: 'date' as const, reverse: false },
+        sort: { key: 'date' as const, reverse: false, group: 'folder' as const },
         searchQuery: '',
         person: null,
         album: null,
@@ -2723,7 +2723,7 @@ describe('LibraryStore', () => {
         hiddenCount: 0,
       videoCount: 0,
         view: 'all',
-        sort: { key: 'date' as const, reverse: false },
+        sort: { key: 'date' as const, reverse: false, group: 'folder' as const },
         searchQuery: '',
         person: null,
         album: null,
@@ -2837,9 +2837,9 @@ describe('LibraryStore', () => {
     describe('select all', () => {
       /** Three folders: 0..4, 5..11, 12..14. */
       const folders: Section[] = [
-        { folderId: 1, offset: 0, count: 5, takenAtMin: 0 },
-        { folderId: 2, offset: 5, count: 7, takenAtMin: 0 },
-        { folderId: 3, offset: 12, count: 3, takenAtMin: 0 },
+        { folderId: 1, offset: 0, count: 5, takenAtMin: 0, period: null },
+        { folderId: 2, offset: 5, count: 7, takenAtMin: 0, period: null },
+        { folderId: 3, offset: 12, count: 3, takenAtMin: 0, period: null },
       ];
 
       it('takes the folder the lead is in, not the whole library', async () => {
@@ -2861,7 +2861,7 @@ describe('LibraryStore', () => {
       it('takes the lead photo\'s folder under a flat sort, wherever its photos are', async () => {
         // Sorted by size, All is one headerless run and a folder's photos are scattered
         // through it: still the folder, never the library.
-        const flat = [{ folderId: null, offset: 0, count: 15, takenAtMin: 0 }];
+        const flat = [{ folderId: null, offset: 0, count: 15, takenAtMin: 0, period: null }];
         const store = await storeOf(15, { sections: flat });
         store.selected = 7;
         vi.mocked(api.gridFolderIdsAt).mockResolvedValueOnce({ version: 1, ids: [idAt(2), idAt(7), idAt(12)] });
@@ -2874,7 +2874,7 @@ describe('LibraryStore', () => {
       });
 
       it('drops a flat folder answered against another version of the grid', async () => {
-        const flat = [{ folderId: null, offset: 0, count: 15, takenAtMin: 0 }];
+        const flat = [{ folderId: null, offset: 0, count: 15, takenAtMin: 0, period: null }];
         const store = await storeOf(15, { sections: flat });
         store.selected = 7;
         vi.mocked(api.gridFolderIdsAt).mockResolvedValueOnce({ version: 2, ids: [idAt(2), idAt(7), idAt(12)] });
