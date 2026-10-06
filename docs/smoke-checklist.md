@@ -316,8 +316,17 @@ publishing it.
       resize the window the same way: the photos resize smoothly under the pointer with no
       blank flash, the row at the top of the grid stays the same row at the same part of it
       (also when the column count changes), and letting go where you started leaves the grid
-      exactly where it was. Do the same in a library large enough to be past the layout cap
-      (see the scroll-probe item).
+      exactly where it was. Do it far down a large library (tens of thousands of photos in):
+      no frame shows blank tiles or grey placeholders, and the sidebar's marked folder does
+      not flicker. Do the same in a library large enough to be past the layout cap (see the
+      scroll-probe item).
+- [ ] A view about one screen tall with photos from two or more years (a small album, a
+      search): resize the window's height slowly through the point where the grid just fits.
+      The year strip appears or goes once and stays; the photos never flicker between two
+      sizes. On Windows (scrollbars that take room): the scrollbar's track is there whether or
+      not the grid scrolls, the last photo of a row never runs under it, and no horizontal
+      scrollbar appears when the size is changed from Small to Large in a view of a dozen
+      photos.
 - [ ] Change the size in Recent (no headers) and in a Starred or search view too: your place is
       kept there as well. Try it scrolled to the very end of the library: it lands at the end,
       not past it.

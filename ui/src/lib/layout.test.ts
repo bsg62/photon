@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildRows, columnsFor, defersThumbs, edgeScrollSpeed, fetchSpan, GAP, hasHeader, HEADER, itemSpan, itemsInRect, LEAD_MS, LEAD_OVERSCAN_MAX, pinAt, pinTop, RENDER_OVERSCAN, renderOverscan, renderRange, rowIndexAt, rowOfItem, TILE_MAX, tileFor, tileRow, TILE_WIDTH, topFolderId, totalHeight, TRAIL_OVERSCAN, visibleRange } from './layout';
+import { buildRows, columnsFor, layoutHeight, placeIn, rowWidth, showsTimeline, TIMELINE_WIDTH, defersThumbs, edgeScrollSpeed, fetchSpan, GAP, hasHeader, HEADER, itemSpan, itemsInRect, LEAD_MS, LEAD_OVERSCAN_MAX, pinAt, pinTop, RENDER_OVERSCAN, renderOverscan, renderRange, rowIndexAt, rowOfItem, TILE_MAX, tileFor, tileRow, TILE_WIDTH, topFolderId, totalHeight, TRAIL_OVERSCAN, visibleRange } from './layout';
 import { type Motion, STILL } from './scroll-speed.svelte';
 import { TILE_SETTLE_MS } from './thumb-request.svelte';
 
@@ -624,5 +624,115 @@ describe('period sections', () => {
     expect(rows.map((r) => r.kind)).toEqual(['tiles', 'tiles']);
     expect(hasHeader({ folderId: null, offset: 0, count: 3 })).toBe(false);
     expect(hasHeader({ folderId: 7, offset: 0, count: 3 })).toBe(true);
+  });
+});
+
+describe('the height of a layout without building it', () => {
+  // `showsTimeline` asks how tall the grid would be at another width, on every resize, in a
+  // library of any size: it must be the height `buildRows` arrives at, row by row.
+  it('is the height the rows come to, for every shape of section', () => {
+    const shapes = [
+      [],
+      sections,
+      headerless(sections),
+      [{ folderId: 1, offset: 0, count: 1 }],
+      [{ folderId: 1, offset: 0, count: 0 }, { folderId: 2, offset: 0, count: 7 }],
+      [sections[0], { folderId: null, offset: 5, count: 3 }],
+      // A header after a run that has none still gets the gap above it.
+      [{ folderId: null, offset: 0, count: 3 }, { folderId: 2, offset: 3, count: 3 }],
+      [{ folderId: null, period: { year: 2026, month: 7, day: null }, offset: 0, count: 23 }, { folderId: null, period: { year: 2026, month: 3, day: null }, offset: 23, count: 11 }],
+    ];
+    for (const shape of shapes) {
+      for (const columns of [1, 2, 3, 7]) {
+        for (const tile of [120, 181, 224]) {
+          expect(layoutHeight(shape, columns, tile), `${JSON.stringify(shape)} at ${columns} x ${tile}`).toBe(
+            totalHeight(buildRows(shape, columns, tile)),
+          );
+        }
+      }
+    }
+  });
+});
+
+describe('whether the year strip is shown', () => {
+  // Two years, nine photos each, so two rows of five each. Beside the strip the grid is 956
+  // wide and its tiles 181; with no strip 1000 and 190: four rows of those are 36px taller.
+  const two = [
+    { folderId: 1, offset: 0, count: 9 },
+    { folderId: 2, offset: 9, count: 9 },
+  ];
+  const outer = 1000;
+  const beside = layoutHeight(two, 5, 181);
+  const alone = layoutHeight(two, 5, 190);
+
+  it('lays the example out as the cases below assume', () => {
+    const row = rowWidth(outer - TIMELINE_WIDTH);
+    expect([columnsFor(row, TILE_WIDTH.medium), tileFor(row, TILE_WIDTH.medium)]).toEqual([5, 181]);
+    expect([columnsFor(rowWidth(outer), TILE_WIDTH.medium), tileFor(rowWidth(outer), TILE_WIDTH.medium)]).toEqual([5, 190]);
+    expect(alone).toBeGreaterThan(beside);
+  });
+
+  it('is shown when the grid beside it has something to scroll', () => {
+    expect(showsTimeline(two, 2, outer, 0, beside - 1, TILE_WIDTH.medium)).toBe(true);
+  });
+
+  // The strip takes width from the tiles, and tiles that fill the row are shorter for it:
+  // in this band the grid fits beside the strip and overflows without it. Asked of the grid
+  // as it stood, the answer changed the grid, which changed the answer - the strip came
+  // and went on every frame. It is asked of the grid as it would be beside the strip, which
+  // showing the strip does not change.
+  it('is not shown while the grid would fit beside it, though it overflows without', () => {
+    expect(beside).toBeLessThan(alone);
+    for (const viewport of [beside, beside + 1, alone - 1]) {
+      expect(showsTimeline(two, 2, outer, 0, viewport, TILE_WIDTH.medium), `${viewport}`).toBe(false);
+    }
+  });
+
+  it('needs more than one year to choose between', () => {
+    expect(showsTimeline(two, 1, outer, 0, 10, TILE_WIDTH.medium)).toBe(false);
+    expect(showsTimeline(two, 0, outer, 0, 10, TILE_WIDTH.medium)).toBe(false);
+  });
+
+  // A scrollbar that takes room narrows the grid as the strip does.
+  it('counts the room a scrollbar takes', () => {
+    const row = rowWidth(outer - TIMELINE_WIDTH - 15);
+    const narrower = layoutHeight(two, columnsFor(row, TILE_WIDTH.medium), tileFor(row, TILE_WIDTH.medium));
+    expect(narrower).toBeLessThan(beside);
+    expect(showsTimeline(two, 2, outer, 15, narrower, TILE_WIDTH.medium)).toBe(false);
+    expect(showsTimeline(two, 2, outer, 15, narrower - 1, TILE_WIDTH.medium)).toBe(true);
+  });
+});
+
+describe('where the grid is drawn after its rows change height', () => {
+  const run = [{ folderId: null, offset: 0, count: 300 }];
+  const before = buildRows(run, 5, 181);
+  const after = buildRows(run, 5, 169);
+
+  it('is where it was scrolled to while the tiles have not changed', () => {
+    expect(placeIn(before, 800, 12345, pinAt(before, 3000), false)).toBe(12345);
+  });
+
+  // The rows are new on the very render that follows a width change, and the viewport's own
+  // position is not corrected until an effect after it: drawn at the old number, that
+  // render showed other rows - blank ones, deep in a library - for a frame, on every frame.
+  it("is the pin's place in the new rows from the first render with them", () => {
+    const pin = pinAt(before, 40 * tileRow(181) + 50)!;
+    expect(placeIn(after, 800, 40 * tileRow(181) + 50, pin, true)).toBe(pinTop(after, pin));
+    expect(placeIn(after, 800, 40 * tileRow(181) + 50, pin, true)).not.toBe(40 * tileRow(181) + 50);
+  });
+
+  it('stops where the browser will stop, at the end of the grid', () => {
+    const end = totalHeight(before) - 10;
+    const pin = pinAt(before, end)!;
+    expect(pinTop(after, pin)!).toBeGreaterThan(totalHeight(after) - 800);
+    expect(placeIn(after, 800, end, pin, true)).toBe(totalHeight(after) - 800);
+    // A grid shorter than its viewport does not scroll at all.
+    const short = buildRows([{ folderId: null, offset: 0, count: 5 }], 5, 181);
+    expect(placeIn(short, 800, 0, { offset: 0, header: false, into: 0.5 }, true)).toBe(0);
+  });
+
+  it('stays where it was with no pin, or one whose photo has gone', () => {
+    expect(placeIn(after, 800, 500, null, true)).toBe(500);
+    expect(placeIn(after, 800, 500, { offset: 9999, header: false, into: 0 }, true)).toBe(500);
   });
 });

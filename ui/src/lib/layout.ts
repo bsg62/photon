@@ -98,6 +98,56 @@ export function buildRows(sections: SectionLike[], columns: number, tile: number
   return rows;
 }
 
+/** How tall `buildRows` lays these sections out, without building a row: a sum over the
+ *  sections, for a question asked of a layout that is not the one on screen. */
+export function layoutHeight(sections: SectionLike[], columns: number, tile: number): number {
+  let top = 0;
+  let any = false;
+  for (const s of sections) {
+    if (hasHeader(s)) {
+      if (any) top += SECTION_GAP;
+      top += HEADER;
+      any = true;
+    }
+    const rows = Math.ceil(s.count / columns);
+    if (rows > 0) any = true;
+    top += rows * tileRow(tile);
+  }
+  return top;
+}
+
+/** The width of a row of tiles in a viewport `viewport` wide: what is left between the
+ *  gutter down either side. */
+export function rowWidth(viewport: number): number {
+  return Math.max(0, viewport - 2 * GAP);
+}
+
+/** The year strip's width beside the grid (`Timeline.svelte`). */
+export const TIMELINE_WIDTH = 44;
+
+/** Whether the year strip is drawn beside the grid: with more than one year to choose
+ *  between, and something to scroll.
+ *
+ *  "Something to scroll" is asked of the grid *as it would be beside the strip* - `outer`
+ *  is the width the grid and the strip share, `gutter` what a scrollbar takes of it - and
+ *  not of the grid as it stands. The strip takes width from the tiles, and tiles that fill
+ *  the row are shorter for it, so there is a band of heights where the grid fits beside the
+ *  strip and overflows without it: asked of the grid as it stood, the answer changed the
+ *  grid, which changed the answer, and the strip came and went on every frame. In that band
+ *  there is no strip, and a grid that scrolls by a few pixels without one. */
+export function showsTimeline(
+  sections: SectionLike[],
+  years: number,
+  outer: number,
+  gutter: number,
+  viewport: number,
+  nominal: number,
+): boolean {
+  if (years < 2) return false;
+  const row = rowWidth(outer - TIMELINE_WIDTH - gutter);
+  return layoutHeight(sections, columnsFor(row, nominal), tileFor(row, nominal)) > viewport;
+}
+
 export function totalHeight(rows: Row[]): number {
   const last = rows[rows.length - 1];
   return last ? last.top + last.height : 0;
@@ -385,4 +435,20 @@ export function pinTop(rows: Row[], pin: Pin): number | null {
   const above = rows[i - 1];
   const row = pin.header && above?.kind === 'header' && above.first === pin.offset ? above : rows[i];
   return row.top + pin.into * row.height;
+}
+
+/** The scroll position to draw `rows` at. While the tiles are as they were when the
+ *  viewport last reported its position (`moved` false), that position. On the render where
+ *  they are not, the place the pin names in the new rows, held to where the browser will
+ *  let the viewport go.
+ *
+ *  The viewport itself is moved by an effect, after that render: drawn at the position it
+ *  still holds, the new rows are other rows - in a deep library a screen or more away, so
+ *  blank - and every frame of a resize showed them for a frame, unmounting the tiles on
+ *  screen and naming another folder at the top on the way. */
+export function placeIn(rows: Row[], viewport: number, scrollTop: number, pin: Pin | null, moved: boolean): number {
+  if (!moved || pin === null) return scrollTop;
+  const back = pinTop(rows, pin);
+  if (back === null) return scrollTop;
+  return Math.min(back, Math.max(0, totalHeight(rows) - viewport));
 }
