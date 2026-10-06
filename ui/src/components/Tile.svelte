@@ -29,9 +29,9 @@
     onopen: () => void;
     /** Right-click. The grid owns the menu, since it knows the view and the albums. */
     onmenu: (e: MouseEvent) => void;
-    /** The tile's side in pixels, chosen by the user. The grid passes it because the same
-     *  number decides the row layout there: a tile that sized itself would be free to
-     *  disagree with the box the row reserved for it. */
+    /** The tile's side in pixels: the size the user chose, widened to fill the row. The grid
+     *  passes it because the same number decides the row layout there: a tile that sized
+     *  itself would be free to disagree with the box the row reserved for it. */
     tile: number;
     /** The grid is moving too fast for this tile to settle (`defersThumbs`): a photo it is
      *  given now is asked for only once the tile has held it for a moment. See

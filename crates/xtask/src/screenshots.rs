@@ -436,6 +436,11 @@ pub fn chromium_args(shot: &Shot, port: u16, out_dir: &Path) -> Vec<String> {
         "--headless".to_owned(),
         "--disable-gpu".to_owned(),
         "--hide-scrollbars".to_owned(),
+        // Scrollbars that lie over the content, as on macOS and under GTK. The grid keeps a
+        // classic scrollbar's room whether or not it scrolls (`scrollbar-gutter`), and
+        // `--hide-scrollbars` hides the bar but not that room: every shot of the grid had an
+        // empty strip beside the photos that no platform draws without a scrollbar in it.
+        "--enable-features=OverlayScrollbar".to_owned(),
         "--window-size=1280,800".to_owned(),
         // Lets mock.js's timers and the app's first page of thumbnails run before the capture.
         "--virtual-time-budget=5000".to_owned(),

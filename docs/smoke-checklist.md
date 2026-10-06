@@ -307,6 +307,26 @@ publishing it.
       still at the top afterwards — not a different year, and not the end of the library. Then
       make them bigger again and check the same. Try both with a folder header the first thing
       visible: the same header is still at the top.
+- [ ] **Tiles fill the row.** At Small, Medium and Large, and at a few window widths: the last
+      tile of every full row ends a gutter's width from the timeline (or the window's edge in a
+      view without one), with no empty strip beside it. Large in a narrow window (three columns
+      or fewer) may keep a strip: its tiles stop growing at 288 px. Thumbnails look as sharp as
+      before at Small and Medium; at Large on a 1x screen they may be very slightly softer.
+- [ ] Scroll deep into a large library, then drag the sidebar's edge slowly out and back, and
+      resize the window the same way: the photos resize smoothly under the pointer with no
+      blank flash, the row at the top of the grid stays the same row at the same part of it
+      (also when the column count changes), and letting go where you started leaves the grid
+      exactly where it was. Do it far down a large library (tens of thousands of photos in):
+      no frame shows blank tiles or grey placeholders, and the sidebar's marked folder does
+      not flicker. Do the same in a library large enough to be past the layout cap (see the
+      scroll-probe item).
+- [ ] A view about one screen tall with photos from two or more years (a small album, a
+      search): resize the window's height slowly through the point where the grid just fits.
+      The year strip appears or goes once and stays; the photos never flicker between two
+      sizes. On Windows (scrollbars that take room): the scrollbar's track is there whether or
+      not the grid scrolls, the last photo of a row never runs under it, and no horizontal
+      scrollbar appears when the size is changed from Small to Large in a view of a dozen
+      photos.
 - [ ] Change the size in Recent (no headers) and in a Starred or search view too: your place is
       kept there as well. Try it scrolled to the very end of the library: it lands at the end,
       not past it.

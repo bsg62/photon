@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { TIMELINE_WIDTH } from '../lib/layout';
   import { labelledMarks, scrollTopFor, stripY, yearAt, type YearMark } from '../lib/timeline';
 
   let {
@@ -60,6 +61,7 @@
      year groups are the keyboard's way to a year. The role is for what a pointer does. -->
 <div
   class="timeline"
+  style:width="{TIMELINE_WIDTH}px"
   bind:this={el}
   bind:clientHeight={strip}
   role="slider"
@@ -87,7 +89,8 @@
   .timeline {
     position: relative;
     flex: none;
-    width: 44px;
+    /* Its width is `TIMELINE_WIDTH`, set on the element: the grid lays itself out for the
+       room left beside it before it is shown (`showsTimeline`). */
     height: 100%;
     overflow: visible;
     cursor: pointer;

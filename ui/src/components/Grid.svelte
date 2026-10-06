@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   import { api } from '../lib/api';
   import { canCompare } from '../lib/compare.svelte';
   import { copiesNotice, showCopiesLabel } from '../lib/copies';
@@ -9,7 +10,7 @@
   import { laidOutByFolder, periodLabel } from '../lib/grouping';
   import { library } from '../lib/library.svelte';
   import { gridSize } from '../lib/app-grid-size.svelte';
-  import { buildRows, columnsFor, defersThumbs, edgeScrollSpeed, fetchSpan, firstVisibleOffset, GAP, itemSpan, itemsInRect, type Rect, renderRange, rowOfItem, topFolderId, totalHeight, visibleRange } from '../lib/layout';
+  import { buildRows, columnsFor, defersThumbs, edgeScrollSpeed, fetchSpan, GAP, itemSpan, itemsInRect, type Pin, pinAt, pinTop, placeIn, type Rect, renderRange, rowOfItem, rowWidth as rowWidthIn, showsTimeline, tileFor, topFolderId, totalHeight, visibleRange } from '../lib/layout';
   import { CAP_FALLBACK, capFrom, createScrollMap, PROBE_HEIGHT } from '../lib/scroll-map';
   import { createScrollSpeed } from '../lib/scroll-speed.svelte';
   import { move, type NavKey } from '../lib/nav';
@@ -61,6 +62,12 @@
   let viewport: HTMLDivElement;
   let width = $state(0);
   let height = $state(0);
+  /** The width the viewport and the year strip share, and what a scrollbar takes of the
+   *  viewport's: what `showsTimeline` needs to ask about the grid beside the strip whether
+   *  or not the strip is there. */
+  let outer = $state(0);
+  let gutter = $state(0);
+  /** Where the viewport last said it was. What is drawn goes by `viewTop`, below. */
   let scrollTop = $state(0);
   /** `scrollTop` is the layout's position; the viewport's own `scrollTop` is the DOM's, and
    *  the two differ by `shift` in a library taller than the browser will lay out. Every
@@ -71,7 +78,13 @@
   let domMax = $state(Number.POSITIVE_INFINITY);
   let capTrusted = false;
 
-  const columns = $derived(columnsFor(Math.max(0, width - 2 * GAP), gridSize.width));
+  /** The row's width: the viewport's, less the gutter down either side. */
+  const rowWidth = $derived(rowWidthIn(width));
+  const columns = $derived(columnsFor(rowWidth, gridSize.width));
+  /** The tile as drawn: the size chosen, widened so the columns fill the row (`tileFor`).
+   *  It is this, never `gridSize.width`, that the rows, the tiles and the band are measured
+   *  by - one number, or the row would reserve a box its tiles did not fill. */
+  const tile = $derived(tileFor(rowWidth, gridSize.width));
   /** The index's own sections: one per folder run, one per day, month or year under a date
    *  grouping, or a single headerless run in a flat view (Recent). Both the layout and the
    *  keyboard navigation read these, so arrow keys move along the rows the eye sees.
@@ -79,20 +92,30 @@
    *  A tile's offline dimming follows the photo's own folder, not its section's: one Recent
    *  row holds photos from several folders, and its run names none of them. */
   const sections = $derived(library.info.sections);
-  const rows = $derived(buildRows(sections, columns, gridSize.width));
+  const rows = $derived(buildRows(sections, columns, tile));
   const total = $derived(totalHeight(rows));
   const domHeight = $derived(Math.min(total, domMax));
   /** The year strip. It needs headers to mark (so a flat view, which has none, never
    *  shows it), more than one year to choose between, and something to scroll. */
   const marks = $derived(yearMarks(sections, rows));
-  const scrubbable = $derived(marks.length > 1 && total > height);
+  const scrubbable = $derived(showsTimeline(sections, marks.length, outer, gutter, height, gridSize.width));
+
+  /** The tiles `scrollTop` was reported under, and the place it named among them (the pin
+   *  effect below keeps all three). Not state: they change only in that effect, and what
+   *  reads them is woken by the tile changing, not by them. */
+  let pinnedTile = untrack(() => tile);
+  let pinnedColumns = untrack(() => columns);
+  let pinned: Pin | null = null;
+  /** The position everything is drawn at: `scrollTop`, except on the render where the tiles
+   *  have just changed width, when it is already the pin's place in the new rows (`placeIn`). */
+  const viewTop = $derived(placeIn(rows, height, scrollTop, pinned, tile !== pinnedTile || columns !== pinnedColumns));
   const speed = createScrollSpeed();
   $effect(() => () => speed.dispose());
   /** What is mounted, as two numbers rather than one tuple: a `$derived` stops at an equal
    *  value, and a fresh `[start, end]` is never equal to the last one, so a tuple would
    *  re-slice `rows` - and re-run the `{#each}` over it - on every scroll event, including
    *  the many that move less than a row. */
-  const renderSpan = $derived(renderRange(rows, scrollTop, height, speed.motion));
+  const renderSpan = $derived(renderRange(rows, viewTop, height, speed.motion));
   const renderStart = $derived(renderSpan[0]);
   const renderEnd = $derived(renderSpan[1]);
   const rendered = $derived(rows.slice(renderStart, renderEnd));
@@ -103,11 +126,11 @@
   const scrolling = $derived(speed.motion.kind === 'scroll');
   /** The pages to hold, which reach further than what is mounted: see `FETCH_OVERSCAN`.
    *  Split the same way, so `ensure` is asked again only when the span has moved. */
-  const fetched = $derived(fetchSpan(rows, scrollTop, height));
+  const fetched = $derived(fetchSpan(rows, viewTop, height));
   const fetchStart = $derived(fetched?.[0] ?? -1);
   const fetchEnd = $derived(fetched?.[1] ?? -1);
   const onScreen = $derived.by(() => {
-    const [start, end] = visibleRange(rows, scrollTop, height, 0);
+    const [start, end] = visibleRange(rows, viewTop, height, 0);
     return itemSpan(rows.slice(start, end));
   });
 
@@ -176,7 +199,7 @@
   let remembered: number | null = null;
   $effect(() => {
     if (library.info.view !== 'all' || library.restoring) return;
-    const folderId = topFolderId(rows, sections, scrollTop);
+    const folderId = topFolderId(rows, sections, viewTop);
     if (folderId === null || folderId === remembered) return;
     remembered = folderId;
     api.setLastFolder(folderId).catch(() => {});
@@ -252,7 +275,7 @@
     // scroll back to it. Read back from `viewport`, not from the value written above: the
     // browser clamps a scroll past the end of the canvas, and the pin has to name the row
     // that is actually at the top.
-    pinned = firstVisibleOffset(rows, map.virtualAt(viewport.scrollTop));
+    pinned = pinAt(rows, map.virtualAt(viewport.scrollTop));
   }
 
   // After the canvas has its new height (`$effect`, not `$effect.pre`): a write into a canvas
@@ -284,6 +307,9 @@
     void width;
     void height;
     if (!capTrusted) measureCap();
+    // What a scrollbar takes of the viewport. The room is always kept (`scrollbar-gutter`
+    // below), so this is the same whether or not there is anything to scroll.
+    gutter = viewport.offsetWidth - viewport.clientWidth;
   });
 
   // Scrolling has gone still: put the thumb back where the grid is.
@@ -293,32 +319,43 @@
     if (w !== null) writeDom(w);
   });
 
-  /** Keeping the user's place when the tile size changes.
+  /** Keeping the user's place when the tiles change width.
    *
-   *  Every row's `top` is computed from the tile width, so the pixel position the viewport
+   *  Every row's `top` is computed from the tile's width, so the pixel position the viewport
    *  is holding names a different photo the instant the width moves - the grid jumps to
-   *  another year when the tiles grow. The photo to come back to therefore has to be read
-   *  from the layout as it was *before* the change and scrolled to in the layout as it is
-   *  after, and one run of an effect can only ever see one of those: `rows` is a `$derived`,
-   *  so the run woken by the new width already reads the new rows. The pin is kept current
-   *  on every run where the width has *not* moved - a scroll, a resize, a rebuilt index -
-   *  and by `scrollToOffset`, which re-pins whatever it scrolls to; the run that sees a new
-   *  width spends the pin instead of taking it again.
+   *  another year when the tiles grow. And the width moves often: with a new size, and,
+   *  since the tiles fill the row, with every pixel the window or the sidebar is resized
+   *  by. The place to come back to therefore has to be read from the layout as it was
+   *  *before* the change and scrolled to in the layout as it is after, and one run of an
+   *  effect can only ever see one of those: `rows` is a `$derived`, so the run woken by the
+   *  new width already reads the new rows. The pin is kept current on every run where the
+   *  tile and the column count have *not* moved - a scroll, a rebuilt index - and by
+   *  `scrollToOffset`, which re-pins whatever it scrolls to; the run that sees either move
+   *  spends the pin instead of taking it again.
    *
-   *  All three values are read on every run, the restoring one included: an effect depends
+   *  All four values are read on every run, the restoring one included: an effect depends
    *  only on what that run read, so a restoring run that skipped `scrollTop` would stop
-   *  hearing about scrolls and pin a stale offset for the next change.
+   *  hearing about scrolls and pin a stale place for the next change.
+   *
+   *  The rows are drawn at the pin's place before this runs (`viewTop`): this is what moves
+   *  the viewport to match.
    *
    *  `$effect`, not `$effect.pre`: the canvas is only as tall as the old layout until the
    *  DOM catches up, and a scroll into the part that does not exist yet is clamped away. */
-  let pinnedWidth = gridSize.width;
-  let pinned: number | null = null;
+  /** Where the last restore put the grid. Its own scroll event arrives a task later and is
+   *  not the user moving: re-pinned from it, the place would be re-read through the
+   *  browser's rounding on every frame of a resize, and a drag of the sidebar would walk
+   *  the grid off its photo a fraction of a pixel at a time. */
+  let restoredTo: number | null = null;
+  /** The layout that restore was made in: a rebuilt index is a new place to read, wherever
+   *  the viewport stands. */
+  let restoredIn: unknown = null;
   $effect(() => {
-    const tile = gridSize.width;
+    const drawn = tile;
+    const across = columns;
     const layout = rows;
     const top = scrollTop;
-    if (tile !== pinnedWidth) {
-      pinnedWidth = tile;
+    if (drawn !== pinnedTile || across !== pinnedColumns) {
       // The pin is spent unconditionally, and it is `scrollToOffset` that keeps it honest:
       // every programmatic scroll re-pins (see there), so a jump the browser has not yet
       // reported - the launch restore, App's jump to the top on a view change - has already
@@ -334,10 +371,27 @@
       // at 5000 whose content went 10000 -> 3000 read back 2400 in the same task. So on every
       // shrink deep enough to clamp, the comparison fails, the restore is skipped, and the
       // user is left wherever the clamp dropped them - the end of the library.
-      if (pinned !== null) scrollToOffset(pinned, 'start');
+      //
+      // The rows were already drawn at the pin's place (`viewTop`, read before the tiles it
+      // is measured against are brought up to date); this moves the viewport there, and
+      // says so at once rather than a scroll event later - under the cap `writeDom` leaves
+      // that to the event, and until it came `scrollTop` named the old place among the new
+      // rows.
+      const back = pinned === null || pinTop(layout, pinned) === null ? null : untrack(() => viewTop);
+      pinnedTile = drawn;
+      pinnedColumns = across;
+      if (back !== null) {
+        scrollToVirtual(back);
+        restoredTo = map.virtualAt(viewport.scrollTop);
+        restoredIn = layout;
+        scrollTop = restoredTo;
+      }
       return;
     }
-    pinned = firstVisibleOffset(layout, top);
+    if (restoredTo !== null && restoredIn === layout && Math.abs(top - restoredTo) < 1) return;
+    restoredTo = null;
+    restoredIn = null;
+    pinned = pinAt(layout, top);
   });
 
   export function focus() {
@@ -507,7 +561,7 @@
   }
 
   function bandRanges(rect: Rect): [number, number][] {
-    return itemsInRect(rows, rect, gridSize.width);
+    return itemsInRect(rows, rect, tile);
   }
 
   function bandDown(e: PointerEvent) {
@@ -757,7 +811,7 @@
   }}
 />
 
-<div class="grid">
+<div class="grid" bind:clientWidth={outer}>
   <div
     class="viewport"
     bind:this={viewport}
@@ -834,7 +888,11 @@
           style:height="{Math.abs(band.y1 - band.y0)}px"
         ></div>
       {/if}
-      {#each rendered as row (row.top)}
+      <!-- Keyed by the row's place in the layout, not by its `top`: a row keeps its place
+           when the tiles change width, and they do on every frame of a window or sidebar
+           resize. Keyed by `top`, each of those frames unmounted every tile on screen and
+           mounted it again, blank until its thumbnail was decoded once more. -->
+      {#each rendered as row, i (renderStart + i)}
         {#if row.kind === 'header'}
           {@const section = sections[row.section]}
           {@const folder = section.folderId === null ? undefined : library.folderOf(section.folderId)}
@@ -864,7 +922,7 @@
                 onselect={(e) => tileClick(e, offset)}
                 onopen={() => onopen(offset)}
                 onmenu={(e) => tileMenu(e, offset)}
-                tile={gridSize.width}
+                {tile}
                 defer={deferThumbs}
                 moving={scrolling}
               />
@@ -885,7 +943,7 @@
     {/if}
   </div>
   {#if scrubbable}
-    <Timeline {marks} {total} viewport={height} {scrollTop} onscrub={(top) => scrollToVirtual(top)} />
+    <Timeline {marks} {total} viewport={height} scrollTop={viewTop} onscrub={(top) => scrollToVirtual(top)} />
   {/if}
 </div>
 
@@ -1014,7 +1072,14 @@
 
 <style>
   .grid { display: flex; height: 100%; background: var(--surface); }
-  .viewport { position: relative; flex: 1; min-width: 0; height: 100%; overflow-y: auto; outline: none; }
+  /* A scrollbar that takes room keeps it whether or not there is anything to scroll. The
+     tiles fill the row, so a narrower row is a shorter grid: a scrollbar that came with the
+     overflow took the overflow away, and went, and came back. With the room kept the row
+     is as wide either way. (Nothing changes where scrollbars lie over the content.) */
+  .viewport { position: relative; flex: 1; min-width: 0; height: 100%; overflow-y: auto; scrollbar-gutter: stable; outline: none; }
+  @supports not (scrollbar-gutter: stable) {
+    .viewport { overflow-y: scroll; }
+  }
   /* The grid is in the tab order (tabindex="0"), so tabbing into it must show something -
      with nothing selected there is no tile ring to stand in for it. Drawn inside, like the
      tile's ring and for the same reason: the viewport scrolls a row flush to its own top

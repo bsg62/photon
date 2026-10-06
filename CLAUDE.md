@@ -279,6 +279,41 @@ tiles in a narrow window is taller; past the cap `.canvas` is held at a measured
 `writeDom`) - a direct read is a DOM position, and in a big library it names another photo.
 `cargo run -p xtask -- scroll-probe` checks the end of a 300,000-photo library is reachable.
 
+**A tile is drawn wider than its size says.** `TILE_WIDTH` is the size chosen; `tileFor`
+widens it so the columns fill the row (whole pixels, at most `TILE_MAX`), and that drawn width -
+`tile` in `Grid.svelte`, never `gridSize.width` - is what the rows, the tiles and the band's hit
+test are measured by. So every row's height moves with every pixel of a window or sidebar
+resize, and a narrower grid is a *shorter* one. Six things follow, and the last three shipped
+to a review before anyone saw them:
+
+- The place is kept as a `Pin` (the row at the top, and the share of it scrolled past) and
+  restored on any change of the tile or the column count, not only on a new size.
+- The restore's own scroll event is not pinned again (`restoredTo`): re-read through the
+  browser's rounding on every frame, a splitter drag walked the grid off its photo, 5px in a
+  60px drag.
+- Rows are keyed by their index in the layout, not by their `top`: keyed by `top`, every frame
+  of a resize unmounted and remounted every tile on screen.
+- Everything is drawn at `viewTop` (`placeIn`), not at `scrollTop`: on the render where the
+  tiles change, `viewTop` is already the pin's place in the new rows, while the viewport is
+  only moved by an effect after it. Drawn at `scrollTop`, that render showed the rows the old
+  number names among the new ones - blank, deep in a library - for a frame on every frame,
+  remounted every tile and named another folder at the top (24 `set_last_folder` writes in
+  one drag). Anything new that asks "what is at the top" asks `viewTop`.
+- The year strip is shown by `showsTimeline`, which asks whether the grid *as it would be
+  beside the strip* has something to scroll (`.grid`'s own width, less the strip and the
+  scrollbar's gutter). Asked of the grid as it stood, the strip narrowed the tiles, the grid
+  then fitted, the strip went, the tiles widened, the grid overflowed: every frame.
+- A scrollbar that takes room keeps it always (`scrollbar-gutter: stable`, `overflow-y:
+  scroll` where that is not known): one that came with the overflow took the overflow away
+  the same way, and Svelte's `bind:clientWidth` watches the border box, which a scrollbar
+  does not change, so the tiles were sized for a row 15px wider than it was.
+
+The effect wiring here has no test. What showed all of it was the built UI in headless
+Chromium, driven by trusted mouse input on the sidebar's splitter, against a build with each
+point taken out - **150,000px down a 5,000-photo library, not near its top**, where the stale
+frame is inside the overscan and every probe passes; with scrollbars that take room, which the
+screenshot harness hides; and in a view about one screen tall with two years in it.
+
 ### IPC is three files per command
 
 Adding a command means touching all three, in this order:

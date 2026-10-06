@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildRows, columnsFor, defersThumbs, edgeScrollSpeed, fetchSpan, firstVisibleOffset, GAP, hasHeader, HEADER, itemSpan, itemsInRect, LEAD_MS, LEAD_OVERSCAN_MAX, RENDER_OVERSCAN, renderOverscan, renderRange, rowIndexAt, rowOfItem, tileRow, TILE_WIDTH, topFolderId, totalHeight, TRAIL_OVERSCAN, visibleRange } from './layout';
+import { buildRows, columnsFor, layoutHeight, placeIn, rowWidth, showsTimeline, TIMELINE_WIDTH, defersThumbs, edgeScrollSpeed, fetchSpan, GAP, hasHeader, HEADER, itemSpan, itemsInRect, LEAD_MS, LEAD_OVERSCAN_MAX, pinAt, pinTop, RENDER_OVERSCAN, renderOverscan, renderRange, rowIndexAt, rowOfItem, TILE_MAX, tileFor, tileRow, TILE_WIDTH, topFolderId, totalHeight, TRAIL_OVERSCAN, visibleRange } from './layout';
 import { type Motion, STILL } from './scroll-speed.svelte';
 import { TILE_SETTLE_MS } from './thumb-request.svelte';
 
@@ -409,25 +409,38 @@ describe('itemsInRect over part of a grid with headers', () => {
   });
 });
 
-describe('keeping your place across a size change', () => {
+describe('keeping your place across a change of tile width', () => {
   const sections = [{ folderId: 1, offset: 0, count: 9 }];
 
   it('reports the first item of the row at the top of the viewport', () => {
     const rows = buildRows(headerless(sections), 3, TILE_WIDTH.medium);
-    expect(firstVisibleOffset(rows, 0)).toBe(0);
-    expect(firstVisibleOffset(rows, tileRow(TILE_WIDTH.medium))).toBe(3);
-    expect(firstVisibleOffset([], 0)).toBeNull();
+    expect(pinAt(rows, 0)).toEqual({ offset: 0, header: false, into: 0 });
+    expect(pinAt(rows, tileRow(TILE_WIDTH.medium))).toEqual({ offset: 3, header: false, into: 0 });
+    expect(pinAt([], 0)).toBeNull();
   });
 
-  // The pin `Grid.svelte` takes before a size change: what matters is that it names a
-  // photo and not a pixel, so it survives every row's `top` moving underneath it. Anywhere
+  // The pin `Grid.svelte` takes before the tiles change width: what matters is that it names
+  // a photo and not a pixel, so it survives every row's `top` moving underneath it. Anywhere
   // within a row answers with that row's first offset, which is what makes the number
   // meaningful in a layout it was not measured in.
   it('names the photo, not the pixel, anywhere within a row', () => {
     const medium = buildRows(headerless(sections), 3, TILE_WIDTH.medium);
     const row = tileRow(TILE_WIDTH.medium);
-    expect(firstVisibleOffset(medium, 2 * row)).toBe(6);
-    expect(firstVisibleOffset(medium, 2 * row + row - 1)).toBe(6);
+    expect(pinAt(medium, 2 * row)?.offset).toBe(6);
+    expect(pinAt(medium, 2 * row + row - 1)?.offset).toBe(6);
+  });
+
+  // Tiles that fill the row change width with every pixel the window or the sidebar moves,
+  // so the pin is spent on every frame of a drag: one that put the row's top at the top of
+  // the grid would jump by up to a row on the first frame. The part of the row already
+  // scrolled past is kept as a share of its height, which is the same photo detail at the
+  // top edge whatever the row's new height.
+  it('comes back to the same part of the row, not to its top', () => {
+    const medium = buildRows(headerless(sections), 3, TILE_WIDTH.medium);
+    const wider = buildRows(headerless(sections), 3, 200);
+    const pin = pinAt(medium, tileRow(TILE_WIDTH.medium) + tileRow(TILE_WIDTH.medium) / 4)!;
+    expect(pin).toEqual({ offset: 3, header: false, into: 0.25 });
+    expect(pinTop(wider, pin)).toBe(tileRow(200) + tileRow(200) / 4);
   });
 
   // Two folders, so there is a header partway down to land on.
@@ -444,22 +457,94 @@ describe('keeping your place across a size change', () => {
     const medium = buildRows(folders, 3, TILE_WIDTH.medium);
     const small = buildRows(folders, 5, TILE_WIDTH.small);
     for (const top of [0, 40, 200, 500, totalHeight(medium) - 1]) {
-      const offset = firstVisibleOffset(medium, top);
-      expect(offset).not.toBeNull();
-      expect(rowOfItem(small, offset!)).toBeGreaterThanOrEqual(0);
+      const pin = pinAt(medium, top);
+      expect(pin).not.toBeNull();
+      const back = pinTop(small, pin!);
+      expect(back).not.toBeNull();
+      expect(pinAt(small, back!)?.offset).toBe(rowsFirst(small, pin!.offset));
     }
   });
+
+  /** The first offset of the row of `rows` that holds `offset`. */
+  function rowsFirst(rows: ReturnType<typeof buildRows>, offset: number): number {
+    return rows[rowOfItem(rows, offset)].first;
+  }
 
   // A header is where the pin can be wrong without being out of range, so this is the case
   // that discriminates: at a section's header the eye is on that section's first photo, and
   // an implementation that answered with the tile row above - the last row of the previous
-  // folder - would scroll the user back into a folder they had already left. It round-trips
-  // because `scrollToOffset(offset, 'start')` puts the header itself back at the top.
-  it('answers a header with the section it heads, not the row above it', () => {
+  // folder - would scroll the user back into a folder they had already left. And it comes
+  // back to the header itself, not to the row of photos under it, which shares its offset.
+  it('answers a header with the section it heads, and comes back to that header', () => {
     const medium = buildRows(folders, 3, TILE_WIDTH.medium);
+    const small = buildRows(folders, 5, TILE_WIDTH.small);
     const header = medium.find((r) => r.kind === 'header' && r.section === 1)!;
-    expect(firstVisibleOffset(medium, header.top)).toBe(5);
-    expect(rowOfItem(buildRows(folders, 5, TILE_WIDTH.small), 5)).toBeGreaterThanOrEqual(0);
+    const pin = pinAt(medium, header.top)!;
+    expect(pin).toEqual({ offset: 5, header: true, into: 0 });
+    expect(pinTop(small, pin)).toBe(small.find((r) => r.kind === 'header' && r.section === 1)!.top);
+    // The row under it is another place, a header's height further down.
+    expect(pinTop(small, { ...pin, header: false })).toBe(small.find((r) => r.kind === 'tiles' && r.section === 1)!.top);
+  });
+
+  // The space between two folders belongs to no row; the row above it is as far as the pin
+  // can say, so it says the whole of it rather than a share past its end.
+  it('takes the gap under a folder as the end of its last row', () => {
+    const medium = buildRows(folders, 3, TILE_WIDTH.medium);
+    const last = medium.filter((r) => r.kind === 'tiles' && r.section === 0).at(-1)!;
+    expect(pinAt(medium, last.top + last.height + 10)).toEqual({ offset: last.first, header: false, into: 1 });
+  });
+
+  it('has nowhere to come back to once its photo is gone', () => {
+    expect(pinTop(buildRows(folders, 3, TILE_WIDTH.medium), { offset: 99, header: false, into: 0 })).toBeNull();
+  });
+});
+
+describe('tiles that fill the row', () => {
+  it('widens the tiles to take up what the columns leave over', () => {
+    // Four medium tiles and three gaps are 664; the 136 left over is 34 a tile.
+    expect(columnsFor(800, TILE_WIDTH.medium)).toBe(4);
+    expect(tileFor(800, TILE_WIDTH.medium)).toBe(194);
+  });
+
+  it('keeps the chosen width in a row it already fills', () => {
+    expect(tileFor(4 * 160 + 3 * GAP, TILE_WIDTH.medium)).toBe(160);
+  });
+
+  it('is a whole number of pixels, leaving less than a pixel a column', () => {
+    for (const width of [801, 802, 803]) {
+      const tile = tileFor(width, TILE_WIDTH.medium);
+      expect(Number.isInteger(tile)).toBe(true);
+      const left = width - (4 * tile + 3 * GAP);
+      expect(left).toBeGreaterThanOrEqual(0);
+      expect(left).toBeLessThan(4);
+    }
+  });
+
+  it('never draws a tile narrower than the size chosen', () => {
+    expect(tileFor(100, TILE_WIDTH.medium)).toBe(160);
+    expect(tileFor(0, TILE_WIDTH.large)).toBe(224);
+  });
+
+  // The row is laid out for `columnsFor` columns, so the widened tiles have to be that many
+  // and fit: a tile widened past its share would push the last one of each row off the edge.
+  it('fits the columns the row was laid out for, at every width', () => {
+    for (const nominal of Object.values(TILE_WIDTH)) {
+      for (let width = nominal; width <= 3000; width++) {
+        const columns = columnsFor(width, nominal);
+        const tile = tileFor(width, nominal);
+        expect(tile, `${nominal} at ${width}`).toBeGreaterThanOrEqual(nominal);
+        expect(columns * tile + (columns - 1) * GAP, `${nominal} at ${width}`).toBeLessThanOrEqual(width);
+      }
+    }
+  });
+
+  // A grid thumbnail is 256px on its long edge: a tile drawn much wider than that shows it
+  // enlarged. Three large tiles in 900px would be 294 each.
+  it('stops an eighth past the thumbnail it draws', () => {
+    expect(TILE_MAX).toBe(288);
+    expect(columnsFor(900, TILE_WIDTH.large)).toBe(3);
+    expect(tileFor(900, TILE_WIDTH.large)).toBe(288);
+    expect(tileFor(860, TILE_WIDTH.large)).toBe(281);
   });
 });
 
@@ -539,5 +624,115 @@ describe('period sections', () => {
     expect(rows.map((r) => r.kind)).toEqual(['tiles', 'tiles']);
     expect(hasHeader({ folderId: null, offset: 0, count: 3 })).toBe(false);
     expect(hasHeader({ folderId: 7, offset: 0, count: 3 })).toBe(true);
+  });
+});
+
+describe('the height of a layout without building it', () => {
+  // `showsTimeline` asks how tall the grid would be at another width, on every resize, in a
+  // library of any size: it must be the height `buildRows` arrives at, row by row.
+  it('is the height the rows come to, for every shape of section', () => {
+    const shapes = [
+      [],
+      sections,
+      headerless(sections),
+      [{ folderId: 1, offset: 0, count: 1 }],
+      [{ folderId: 1, offset: 0, count: 0 }, { folderId: 2, offset: 0, count: 7 }],
+      [sections[0], { folderId: null, offset: 5, count: 3 }],
+      // A header after a run that has none still gets the gap above it.
+      [{ folderId: null, offset: 0, count: 3 }, { folderId: 2, offset: 3, count: 3 }],
+      [{ folderId: null, period: { year: 2026, month: 7, day: null }, offset: 0, count: 23 }, { folderId: null, period: { year: 2026, month: 3, day: null }, offset: 23, count: 11 }],
+    ];
+    for (const shape of shapes) {
+      for (const columns of [1, 2, 3, 7]) {
+        for (const tile of [120, 181, 224]) {
+          expect(layoutHeight(shape, columns, tile), `${JSON.stringify(shape)} at ${columns} x ${tile}`).toBe(
+            totalHeight(buildRows(shape, columns, tile)),
+          );
+        }
+      }
+    }
+  });
+});
+
+describe('whether the year strip is shown', () => {
+  // Two years, nine photos each, so two rows of five each. Beside the strip the grid is 956
+  // wide and its tiles 181; with no strip 1000 and 190: four rows of those are 36px taller.
+  const two = [
+    { folderId: 1, offset: 0, count: 9 },
+    { folderId: 2, offset: 9, count: 9 },
+  ];
+  const outer = 1000;
+  const beside = layoutHeight(two, 5, 181);
+  const alone = layoutHeight(two, 5, 190);
+
+  it('lays the example out as the cases below assume', () => {
+    const row = rowWidth(outer - TIMELINE_WIDTH);
+    expect([columnsFor(row, TILE_WIDTH.medium), tileFor(row, TILE_WIDTH.medium)]).toEqual([5, 181]);
+    expect([columnsFor(rowWidth(outer), TILE_WIDTH.medium), tileFor(rowWidth(outer), TILE_WIDTH.medium)]).toEqual([5, 190]);
+    expect(alone).toBeGreaterThan(beside);
+  });
+
+  it('is shown when the grid beside it has something to scroll', () => {
+    expect(showsTimeline(two, 2, outer, 0, beside - 1, TILE_WIDTH.medium)).toBe(true);
+  });
+
+  // The strip takes width from the tiles, and tiles that fill the row are shorter for it:
+  // in this band the grid fits beside the strip and overflows without it. Asked of the grid
+  // as it stood, the answer changed the grid, which changed the answer - the strip came
+  // and went on every frame. It is asked of the grid as it would be beside the strip, which
+  // showing the strip does not change.
+  it('is not shown while the grid would fit beside it, though it overflows without', () => {
+    expect(beside).toBeLessThan(alone);
+    for (const viewport of [beside, beside + 1, alone - 1]) {
+      expect(showsTimeline(two, 2, outer, 0, viewport, TILE_WIDTH.medium), `${viewport}`).toBe(false);
+    }
+  });
+
+  it('needs more than one year to choose between', () => {
+    expect(showsTimeline(two, 1, outer, 0, 10, TILE_WIDTH.medium)).toBe(false);
+    expect(showsTimeline(two, 0, outer, 0, 10, TILE_WIDTH.medium)).toBe(false);
+  });
+
+  // A scrollbar that takes room narrows the grid as the strip does.
+  it('counts the room a scrollbar takes', () => {
+    const row = rowWidth(outer - TIMELINE_WIDTH - 15);
+    const narrower = layoutHeight(two, columnsFor(row, TILE_WIDTH.medium), tileFor(row, TILE_WIDTH.medium));
+    expect(narrower).toBeLessThan(beside);
+    expect(showsTimeline(two, 2, outer, 15, narrower, TILE_WIDTH.medium)).toBe(false);
+    expect(showsTimeline(two, 2, outer, 15, narrower - 1, TILE_WIDTH.medium)).toBe(true);
+  });
+});
+
+describe('where the grid is drawn after its rows change height', () => {
+  const run = [{ folderId: null, offset: 0, count: 300 }];
+  const before = buildRows(run, 5, 181);
+  const after = buildRows(run, 5, 169);
+
+  it('is where it was scrolled to while the tiles have not changed', () => {
+    expect(placeIn(before, 800, 12345, pinAt(before, 3000), false)).toBe(12345);
+  });
+
+  // The rows are new on the very render that follows a width change, and the viewport's own
+  // position is not corrected until an effect after it: drawn at the old number, that
+  // render showed other rows - blank ones, deep in a library - for a frame, on every frame.
+  it("is the pin's place in the new rows from the first render with them", () => {
+    const pin = pinAt(before, 40 * tileRow(181) + 50)!;
+    expect(placeIn(after, 800, 40 * tileRow(181) + 50, pin, true)).toBe(pinTop(after, pin));
+    expect(placeIn(after, 800, 40 * tileRow(181) + 50, pin, true)).not.toBe(40 * tileRow(181) + 50);
+  });
+
+  it('stops where the browser will stop, at the end of the grid', () => {
+    const end = totalHeight(before) - 10;
+    const pin = pinAt(before, end)!;
+    expect(pinTop(after, pin)!).toBeGreaterThan(totalHeight(after) - 800);
+    expect(placeIn(after, 800, end, pin, true)).toBe(totalHeight(after) - 800);
+    // A grid shorter than its viewport does not scroll at all.
+    const short = buildRows([{ folderId: null, offset: 0, count: 5 }], 5, 181);
+    expect(placeIn(short, 800, 0, { offset: 0, header: false, into: 0.5 }, true)).toBe(0);
+  });
+
+  it('stays where it was with no pin, or one whose photo has gone', () => {
+    expect(placeIn(after, 800, 500, null, true)).toBe(500);
+    expect(placeIn(after, 800, 500, { offset: 9999, header: false, into: 0 }, true)).toBe(500);
   });
 });
