@@ -91,8 +91,9 @@ here and listed under "Calls made here" so it can be vetoed.
 - `layout.ts`: a header row when `folderId !== null || period !== null`.
 - `Grid.svelte`'s header: a folder section is drawn as now; a period section shows the period's
   label and its count, with no path. The label is built from the period's numbers
-  (`new Date(year, month - 1, day)` formatted with `Intl`), never from a timestamp read in the
-  viewer's zone, so it cannot drift from the day Rust put the photos in.
+  (placed on the UTC calendar and formatted in UTC with `Intl`), never from a timestamp read
+  in the viewer's zone, so it cannot drift from the day Rust put the photos in. Not a local
+  date either: a zone whose calendar skipped that day would name the next one.
 - `timeline.ts`: a period section's year is `period.year`; a folder section's stays
   `yearOf(takenAtMin)`.
 - `viewKey`'s `order` carries the grouping, which is what scrolls a grouping change to the top.
