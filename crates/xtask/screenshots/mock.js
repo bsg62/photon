@@ -2,7 +2,7 @@
 // `cargo run -p xtask -- screenshots`. Served as /mock.js and loaded before theme-boot.js.
 //
 // The query string drives it: ?theme=system|light|dark is what the `theme` command answers,
-// ?view=<GridView> the grid's view, and ?do=<action> what to click once the app has settled.
+// ?view=<GridView> the grid's view, and ?do=<action> what to click once the app has settled, ?group=<Grouping> the grouping the sort starts with.
 //
 // Two lists below are read by a test in screenshots.rs, which fails when api.ts gains a
 // command that is in neither: `canned` (keys at four spaces' indent) and SILENT.
@@ -38,10 +38,10 @@
     { id: 5, watchedId: 1, parentId: 1, path: '/home/ada/Pictures/2025/Lisbon', name: 'Lisbon', hidden: false, alias: 'Lisbon with the Silvas' },
   ];
   const sections = [
-    { folderId: 2, offset: 0, count: 23, takenAtMin: day(2026, 7, 14) },
-    { folderId: 3, offset: 23, count: 11, takenAtMin: day(2026, 3, 2) },
-    { folderId: 4, offset: 34, count: 17, takenAtMin: day(2025, 12, 24) },
-    { folderId: 5, offset: 51, count: 40, takenAtMin: day(2025, 5, 9) },
+    { folderId: 2, offset: 0, count: 23, takenAtMin: day(2026, 7, 14), period: null },
+    { folderId: 3, offset: 23, count: 11, takenAtMin: day(2026, 3, 2), period: null },
+    { folderId: 4, offset: 34, count: 17, takenAtMin: day(2025, 12, 24), period: null },
+    { folderId: 5, offset: 51, count: 40, takenAtMin: day(2025, 5, 9), period: null },
   ];
   let len = 91;
 
@@ -56,7 +56,7 @@
     for (let f = 0; f < HUGE_FOLDERS; f++) {
       const id = 100 + f;
       folders.push({ id, watchedId: 1, parentId: null, path: `/p/${f}`, name: `Folder ${f}`, hidden: false, alias: null });
-      sections.push({ folderId: id, offset: f * per, count: Math.min(per, HUGE - f * per), takenAtMin: day(2026, 1, 1) - f * 86_400 });
+      sections.push({ folderId: id, offset: f * per, count: Math.min(per, HUGE - f * per), takenAtMin: day(2026, 1, 1) - f * 86_400, period: null });
     }
     len = HUGE;
   }
@@ -156,7 +156,17 @@
   // wipes what was typed - which is the box working correctly against a mock that was not.
   let searchQuery = '';
   // The sort the UI last set, echoed back the same way: the control reads it from grid_info.
-  let sort = { key: 'date', reverse: false };
+  // ?group=<Grouping> is what it starts as.
+  let sort = { key: 'date', reverse: false, group: P.get('group') || 'folder' };
+  // By month the four folder runs are shown as four months, which is what each happens to
+  // be. The photos are not re-sorted and the other groupings are not drawn: this is for the
+  // header's look, and the real order is the backend's.
+  const monthOf = (t) => {
+    const d = new Date(t * 1000);
+    return { year: d.getUTCFullYear(), month: d.getUTCMonth() + 1, day: null };
+  };
+  const shownSections = () =>
+    sort.key === 'date' && sort.group === 'month' ? sections.map((s) => ({ ...s, folderId: null, period: monthOf(s.takenAtMin) })) : sections;
 
   // Commands whose answer the UI draws.
   //
@@ -176,7 +186,7 @@
       // Always sent: a backend may, and the mock's layout never changes anyway.
       layout: {
         generation: 1,
-        sections,
+        sections: shownSections(),
         folders: sections.map(({ folderId, count, takenAtMin }) => ({ folderId, count, takenAtMin, bytes: count * 4_000_000, modifiedMs: takenAtMin * 1000 })),
       },
       starredCount: 13,
