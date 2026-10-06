@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildRows, columnsFor, layoutHeight, placeIn, rowWidth, showsTimeline, TIMELINE_WIDTH, defersThumbs, edgeScrollSpeed, fetchSpan, GAP, hasHeader, HEADER, itemSpan, itemsInRect, LEAD_MS, LEAD_OVERSCAN_MAX, pinAt, pinTop, RENDER_OVERSCAN, renderOverscan, renderRange, rowIndexAt, rowOfItem, TILE_MAX, tileFor, tileRow, TILE_WIDTH, topFolderId, totalHeight, TRAIL_OVERSCAN, visibleRange } from './layout';
+import { buildRows, columnsFor, layoutHeight, placeIn, rowWidth, showsTimeline, TIMELINE_WIDTH, defersThumbs, edgeScrollSpeed, fetchSpan, GAP, hasHeader, HEADER, itemSpan, itemsInRect, headerRows, LEAD_MS, LEAD_OVERSCAN_MAX, pinAt, pinnedHeader, pinTop, RENDER_OVERSCAN, renderOverscan, renderRange, rowIndexAt, rowOfItem, scrollIntoGrid, scrollToStart, SECTION_GAP, TILE_MAX, tileFor, tileRow, TILE_WIDTH, topFolderId, totalHeight, TRAIL_OVERSCAN, visibleRange } from './layout';
 import { type Motion, STILL } from './scroll-speed.svelte';
 import { TILE_SETTLE_MS } from './thumb-request.svelte';
 
@@ -734,5 +734,130 @@ describe('where the grid is drawn after its rows change height', () => {
   it('stays where it was with no pin, or one whose photo has gone', () => {
     expect(placeIn(after, 800, 500, null, true)).toBe(500);
     expect(placeIn(after, 800, 500, { offset: 9999, header: false, into: 0 }, true)).toBe(500);
+  });
+});
+
+describe('the header pinned to the top of the grid', () => {
+  // Two folders at two columns of medium tiles: header 0, rows at 32, 200, 368; then the
+  // section gap, header at 560, rows at 592 and 760.
+  const rows = buildRows(sections, 2, TILE_WIDTH.medium);
+  const headers = headerRows(rows);
+  const second = rows[headers[1]];
+
+  it('lists the header rows, in order', () => {
+    expect(headers.map((i) => [rows[i].kind, rows[i].section, rows[i].top])).toEqual([
+      ['header', 0, 0],
+      ['header', 1, 560],
+    ]);
+    expect(headerRows(buildRows(headerless(sections), 2, TILE_WIDTH.medium))).toEqual([]);
+  });
+
+  // The real header is there, exactly where the pinned one would be drawn.
+  it('pins nothing while the section header itself is at the top', () => {
+    expect(pinnedHeader(rows, headers, 0)).toBeNull();
+    expect(pinnedHeader(rows, headers, second.top)).toBeNull();
+  });
+
+  it('pins the header of the section the top of the grid is inside', () => {
+    expect(pinnedHeader(rows, headers, 1)).toEqual({ section: 0, y: 0 });
+    expect(pinnedHeader(rows, headers, 300)).toEqual({ section: 0, y: 0 });
+    expect(pinnedHeader(rows, headers, second.top + 1)).toEqual({ section: 1, y: 0 });
+    expect(pinnedHeader(rows, headers, 900)).toEqual({ section: 1, y: 0 });
+  });
+
+  // In the space between two folders it is still the folder above that the eye is leaving.
+  it('keeps the folder above pinned through the gap under its last row', () => {
+    const lastRowEnd = second.top - SECTION_GAP;
+    expect(pinnedHeader(rows, headers, lastRowEnd + 1)?.section).toBe(0);
+  });
+
+  // The next header arriving pushes the pinned one out, so the two never overlap: the
+  // pinned header's bottom edge rides on the arriving header's top.
+  it('is pushed up by the next header as it arrives', () => {
+    expect(pinnedHeader(rows, headers, second.top - HEADER)).toEqual({ section: 0, y: 0 });
+    expect(pinnedHeader(rows, headers, second.top - HEADER + 10)).toEqual({ section: 0, y: -10 });
+    expect(pinnedHeader(rows, headers, second.top - 1)).toEqual({ section: 0, y: -(HEADER - 1) });
+  });
+
+  it('pins nothing in a grid with no headers, or with no rows', () => {
+    const flat = buildRows(headerless(sections), 2, TILE_WIDTH.medium);
+    expect(pinnedHeader(flat, headerRows(flat), 300)).toBeNull();
+    expect(pinnedHeader([], [], 0)).toBeNull();
+  });
+
+  // A run with no header after one with: nothing above it is its header.
+  it('pins nothing over a run that has no header of its own', () => {
+    const mixed = buildRows([sections[0], { folderId: null, offset: 5, count: 3 }], 2, TILE_WIDTH.medium);
+    const run = mixed.find((r) => r.kind === 'tiles' && r.section === 1)!;
+    expect(pinnedHeader(mixed, headerRows(mixed), run.top + 10)).toBeNull();
+    expect(pinnedHeader(mixed, headerRows(mixed), 100)).toEqual({ section: 0, y: 0 });
+  });
+});
+
+describe('scrolling a row into view', () => {
+  const rows = buildRows(sections, 2, TILE_WIDTH.medium);
+  const tiles = rows.filter((r) => r.kind === 'tiles');
+  const viewport = 400;
+
+  it('leaves a row alone that is already wholly in view', () => {
+    expect(scrollIntoGrid(tiles[1], 150, viewport, HEADER)).toBeNull();
+  });
+
+  // The pinned header lies over the top of the grid: a row brought flush to the top would
+  // be under it, selected and half out of sight.
+  it('brings a row above the view down to just under the pinned header', () => {
+    expect(scrollIntoGrid(tiles[1], 300, viewport, HEADER)).toBe(tiles[1].top - HEADER);
+  });
+
+  it('takes a row behind the pinned header for one out of view', () => {
+    // 10px of the row is above the fold line under the header, all of it below the top edge.
+    expect(scrollIntoGrid(tiles[1], tiles[1].top - HEADER + 10, viewport, HEADER)).toBe(tiles[1].top - HEADER);
+    // Flush under the header is in view.
+    expect(scrollIntoGrid(tiles[1], tiles[1].top - HEADER, viewport, HEADER)).toBeNull();
+  });
+
+  // A section's first row has its own header directly above it, `HEADER` tall: the same
+  // sum lands on that header's top, so the real header shows where the pinned one would.
+  it("brings a section's first row into view with its header", () => {
+    const header = rows.find((r) => r.kind === 'header' && r.section === 1)!;
+    const first = rows.find((r) => r.kind === 'tiles' && r.section === 1)!;
+    expect(scrollIntoGrid(first, first.top + 50, viewport, HEADER)).toBe(header.top);
+  });
+
+  it('brings a row below the view up until its bottom edge shows', () => {
+    expect(scrollIntoGrid(tiles[2], 0, 300, HEADER)).toBe(tiles[2].top + tiles[2].height - 300);
+  });
+
+  it('goes flush to the top where nothing is pinned', () => {
+    expect(scrollIntoGrid(tiles[1], 300, viewport, 0)).toBe(tiles[1].top);
+    expect(scrollIntoGrid(tiles[1], tiles[1].top, viewport, 0)).toBeNull();
+  });
+
+  it('never asks for a place above the start of the grid', () => {
+    expect(scrollIntoGrid({ ...tiles[0], top: 10 }, 200, viewport, HEADER)).toBe(0);
+  });
+});
+
+describe('scrolling a row to the start of the view', () => {
+  const rows = buildRows(sections, 2, TILE_WIDTH.medium);
+
+  it("puts a section's first row under its own header", () => {
+    const header = rows.find((r) => r.kind === 'header' && r.section === 1)!;
+    const first = rows.find((r) => r.kind === 'tiles' && r.section === 1)!;
+    expect(scrollToStart(first, HEADER)).toBe(header.top);
+    expect(scrollToStart(rows[1], HEADER)).toBe(0);
+  });
+
+  // A folder jump under a date grouping lands on the folder's first photo, which is in the
+  // middle of a month: flush to the top, the pinned header covered the top of that row.
+  it('puts a row from the middle of a section under the pinned header, not behind it', () => {
+    const middle = rows.filter((r) => r.kind === 'tiles' && r.section === 0)[1];
+    expect(scrollToStart(middle, HEADER)).toBe(middle.top - HEADER);
+  });
+
+  it('puts a row flush to the top where there are no headers', () => {
+    const flat = buildRows(headerless(sections), 2, TILE_WIDTH.medium);
+    expect(scrollToStart(flat[2], 0)).toBe(flat[2].top);
+    expect(scrollToStart(flat[0], 0)).toBe(0);
   });
 });

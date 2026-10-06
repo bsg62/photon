@@ -470,6 +470,23 @@
       const box = row?.getBoundingClientRect();
       row?.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: box?.left + 60, clientY: box?.top + 10 }));
     },
+    // Scrolled into the third folder: its header is pinned over the top of the grid and its
+    // row is marked in the sidebar. The scroll event is dispatched for `probe-end`'s reason.
+    scrolled: () => {
+      const v = document.querySelector('.viewport');
+      if (!v) return;
+      v.scrollTop = 1180;
+      v.dispatchEvent(new Event('scroll'));
+    },
+    // The folder's menu from its pinned header.
+    headermenu: () => {
+      actions.scrolled();
+      later(300, () => {
+        const header = document.querySelector('.header.pinned');
+        const box = header?.getBoundingClientRect();
+        header?.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: box?.left + 80, clientY: box?.top + 16 }));
+      });
+    },
     band: () => {
       // A drag across the second and third rows of tiles, in three moves so the threshold
       // is passed and the band is drawn. A synthetic pointer is not one the browser knows,

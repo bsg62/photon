@@ -44,6 +44,7 @@
   import Viewer from './components/Viewer.svelte';
 
   let grid: ReturnType<typeof Grid> | undefined = $state();
+  let folderTree: ReturnType<typeof FolderTree> | undefined = $state();
   let peoplePage: ReturnType<typeof PeoplePage> | undefined = $state();
   let viewer: ReturnType<typeof Viewer> | undefined = $state();
   let viewerAt = $state<number | null>(null);
@@ -567,7 +568,7 @@
     >
   </div>
   <aside class="sidebar" inert={covered}>
-    <FolderTree onjump={jump} onopensettings={() => openSettings('folders')} />
+    <FolderTree bind:this={folderTree} onjump={jump} onopensettings={() => openSettings('folders')} />
   </aside>
   <!-- A focusable separator is a widget in WAI-ARIA (a window splitter); Svelte's a11y
        rules list `separator` as non-interactive regardless. -->
@@ -607,6 +608,7 @@
         onnameperson={(ids) => openPersonPicker({ kind: 'items', items: ids }, 'grid')}
         oncompare={openCompare}
         onshowcopies={showCopiesOf}
+        onrenamefolder={(id) => folderTree?.renameFolder(id)}
       />
     </div>
     {#if mainPage.current === 'people'}

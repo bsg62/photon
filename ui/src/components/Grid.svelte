@@ -7,10 +7,11 @@
   import { isCopyPhotoShortcut } from '../lib/copy-photo';
   import { folderLabel, folderSummary, photoCount } from '../lib/folders';
   import { buildFailure, showEmptyNotice } from '../lib/grid-state';
+  import { gridPlace } from '../lib/grid-place.svelte';
   import { laidOutByFolder, periodLabel } from '../lib/grouping';
   import { library } from '../lib/library.svelte';
   import { gridSize } from '../lib/app-grid-size.svelte';
-  import { buildRows, columnsFor, defersThumbs, edgeScrollSpeed, fetchSpan, GAP, itemSpan, itemsInRect, type Pin, pinAt, pinTop, placeIn, type Rect, renderRange, rowOfItem, rowWidth as rowWidthIn, showsTimeline, tileFor, topFolderId, totalHeight, visibleRange } from '../lib/layout';
+  import { buildRows, columnsFor, defersThumbs, edgeScrollSpeed, fetchSpan, GAP, hasHeader, HEADER, headerRows, itemSpan, itemsInRect, type Pin, pinAt, pinnedHeader, pinTop, placeIn, type Rect, renderRange, rowOfItem, rowWidth as rowWidthIn, scrollIntoGrid, scrollToStart, showsTimeline, tileFor, topFolderId, totalHeight, visibleRange } from '../lib/layout';
   import { CAP_FALLBACK, capFrom, createScrollMap, PROBE_HEIGHT } from '../lib/scroll-map';
   import { createScrollSpeed } from '../lib/scroll-speed.svelte';
   import { move, type NavKey } from '../lib/nav';
@@ -18,6 +19,7 @@
   import { decidingPhoto } from '../lib/star-key';
   import { isMac } from '../lib/url';
   import { yearMarks } from '../lib/timeline';
+  import FolderMenu from './FolderMenu.svelte';
   import Menu from './Menu.svelte';
   import Tile from './Tile.svelte';
   import Timeline from './Timeline.svelte';
@@ -29,6 +31,7 @@
     oncompare,
     onshowcopies,
     onnameperson,
+    onrenamefolder,
   }: {
     onopen: (offset: number) => void;
     onkeywords: (mode: 'add' | 'remove') => void;
@@ -38,6 +41,8 @@
     onshowcopies: (id: number) => void;
     /** "Add to a person…": App owns the dialog, for `pickKeyword`'s reason. */
     onnameperson: (ids: number[]) => void;
+    /** "Rename in photon…" on a folder's header: the name is edited in the sidebar's row. */
+    onrenamefolder: (folderId: number) => void;
   } = $props();
 
   const NAV_KEYS = ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'];
@@ -94,7 +99,6 @@
   const sections = $derived(library.info.sections);
   const rows = $derived(buildRows(sections, columns, tile));
   const total = $derived(totalHeight(rows));
-  const domHeight = $derived(Math.min(total, domMax));
   /** The year strip. It needs headers to mark (so a flat view, which has none, never
    *  shows it), more than one year to choose between, and something to scroll. */
   const marks = $derived(yearMarks(sections, rows));
@@ -109,6 +113,19 @@
   /** The position everything is drawn at: `scrollTop`, except on the render where the tiles
    *  have just changed width, when it is already the pin's place in the new rows (`placeIn`). */
   const viewTop = $derived(placeIn(rows, height, scrollTop, pinned, tile !== pinnedTile || columns !== pinnedColumns));
+  /** The header pinned over the top of the grid once its own has scrolled away
+   *  (`pinnedHeader`). As two numbers, for `renderSpan`'s reason below: the section changes
+   *  a handful of times in a scroll through the library, and `y` only while the next header
+   *  is pushing this one out. */
+  const headers = $derived(headerRows(rows));
+  const pinnedNow = $derived(pinnedHeader(rows, headers, viewTop));
+  const pinnedSection = $derived(pinnedNow?.section ?? -1);
+  const pinnedY = $derived(pinnedNow?.y ?? 0);
+  /** The folder at the top of the grid: what the sidebar marks and the next launch comes
+   *  back to. Null under a date grouping, no grouping or a flat sort, where the section at
+   *  the top names no folder. */
+  const topFolder = $derived(topFolderId(rows, sections, viewTop));
+  const domHeight = $derived(Math.min(total, domMax));
   const speed = createScrollSpeed();
   $effect(() => () => speed.dispose());
   /** What is mounted, as two numbers rather than one tuple: a `$derived` stops at an equal
@@ -199,10 +216,19 @@
   let remembered: number | null = null;
   $effect(() => {
     if (library.info.view !== 'all' || library.restoring) return;
-    const folderId = topFolderId(rows, sections, viewTop);
+    const folderId = topFolder;
     if (folderId === null || folderId === remembered) return;
     remembered = folderId;
     api.setLastFolder(folderId).catch(() => {});
+  });
+
+  // Where the grid is, for the sidebar (`gridPlace`). Cleared when the grid goes, so a list
+  // with no grid beside it marks nothing.
+  $effect(() => {
+    gridPlace.folderId = topFolder;
+  });
+  $effect(() => () => {
+    gridPlace.folderId = null;
   });
 
   // Tell the thumbnail queue what's on screen once scrolling settles. The ids are read here
@@ -260,13 +286,15 @@
     // Where the grid is now, read from the viewport rather than from `scrollTop`, which
     // trails it by a scroll event.
     const now = map.virtualAt(viewport.scrollTop);
+    // A grid with headers has one over its top edge - a section's own, or the pinned copy -
+    // and a row starts, or is in view, only below that.
+    const section = sections[row.section];
+    const inset = section && hasHeader(section) ? HEADER : 0;
     if (align === 'start') {
-      const header = rows[i - 1];
-      scrollToVirtual(header?.kind === 'header' && header.first === row.first ? header.top : row.top);
-    } else if (row.top < now) {
-      scrollToVirtual(row.top);
-    } else if (row.top + row.height > now + height) {
-      scrollToVirtual(row.top + row.height - height);
+      scrollToVirtual(scrollToStart(row, inset));
+    } else {
+      const to = scrollIntoGrid(row, now, height, inset);
+      if (to !== null) scrollToVirtual(to);
     }
     // Every programmatic scroll hands the pin over to where it just put the user, rather
     // than leaving it saying where they were. The browser's scroll event is a task away, so
@@ -447,7 +475,7 @@
       if (cancelBandKey()) return;
       // The window handler closes the menu on Escape. Clearing here as well would do both at
       // once, so the first Escape only ever dismisses the menu.
-      if (menu) return;
+      if (menu || folderMenu) return;
       // Nor a held key's repeat: Escape on an empty search box hands the focus here, and the
       // selection must not go with it.
       if (e.repeat) return;
@@ -509,6 +537,9 @@
   // ---- the tile's context menu ----
 
   let menu = $state<{ x: number; y: number } | null>(null);
+  /** The menu of a folder's header, the real one or the pinned copy: the sidebar's own
+   *  (`FolderMenu`). By id, so the folder is read as it is now, not as it was on the click. */
+  let folderMenu = $state<{ x: number; y: number; folderId: number } | null>(null);
   const mac = isMac();
   /** The copy count of the one photo the menu was opened on, once the backend answers.
    *  `menuSeq` makes a late answer harmless: one for a menu since closed, or reopened on a
@@ -567,7 +598,9 @@
   function bandDown(e: PointerEvent) {
     // The left button only: the right one opens the menu, and the middle one is nothing.
     // A press that lands on the open menu belongs to the menu.
-    if (e.button !== 0 || (e.target as HTMLElement).closest('.menu')) return;
+    // Nor does one on the pinned header start a band: it lies over a row of photos, and a
+    // drag from it would begin on photos the user cannot see.
+    if (e.button !== 0 || (e.target as HTMLElement).closest('.menu, .pinned')) return;
     // A press already owns the grid: a second finger must not take it over, or the band it
     // starts would capture `bandPrevious` from the first one's preview and the real
     // selection would be gone for good.
@@ -579,6 +612,7 @@
     // The menu's own dismissal is the click that follows a press, and a band swallows that
     // click; left alone the menu would sit over the new selection describing the old one.
     menu = null;
+    folderMenu = null;
     // A press on the photos clears any text selection left on the folder headers: a click
     // does not, and a stale selection would make the next Ctrl+C copy that text instead of
     // the photo (isCopyPhotoShortcut), silently. A press on a header is someone selecting it.
@@ -726,6 +760,7 @@
     const entry = library.entry(offset);
     if (!entry) return;
     if (!library.isSelected(entry.id)) library.selected = offset;
+    folderMenu = null;
     menu = { x: e.clientX, y: e.clientY };
     const seq = ++menuSeq;
     menuCopies = null;
@@ -741,8 +776,19 @@
     }
   }
 
+  /** Right-click on a section's header: a folder's gets the folder's menu, as its row in the
+   *  sidebar does. A period names no folder and has nothing to offer. */
+  function headerMenu(e: MouseEvent, index: number) {
+    const folderId = sections[index]?.folderId ?? null;
+    if (folderId === null || !library.folderOf(folderId)) return;
+    e.preventDefault();
+    menu = null;
+    folderMenu = { x: e.clientX, y: e.clientY, folderId };
+  }
+
   function closeMenu() {
     menu = null;
+    folderMenu = null;
   }
 
   /** The photo whose star says which way the star key goes: the lead, or failing that a
@@ -811,6 +857,25 @@
   }}
 />
 
+<!-- A section's header: the folder's or the period's. Drawn in its row, and again over the
+     top of the grid while that row is out of sight (`pinnedHeader`). -->
+{#snippet heading(index: number)}
+  {@const section = sections[index]}
+  {@const folder = section.folderId === null ? undefined : library.folderOf(section.folderId)}
+  {#if section.period}
+    <!-- A period names itself and belongs to no folder, so there is no path to
+         show; the count is the section's, as a folder's is. -->
+    <span class="name">{periodLabel(section.period)}</span>
+    <span class="summary">{photoCount(section.count)}</span>
+  {:else}
+    <span class="name">{folder ? folderLabel(folder) : ''}</span>
+    <!-- From the section, not the folder: it is there before the folder list is,
+         and it counts the photos under this header, which in a search are fewer. -->
+    <span class="summary">{folderSummary(section.count, section.takenAtMin)}</span>
+    <span class="path">{folder?.path ?? ''}</span>
+  {/if}
+{/snippet}
+
 <div class="grid" bind:clientWidth={outer}>
   <div
     class="viewport"
@@ -878,6 +943,17 @@
         {/if}
       </p>
     {/if}
+    {#if pinnedSection >= 0 && sections[pinnedSection]}
+      <!-- Sticky and of no height: it rides at the top of the viewport without taking a
+           pixel of the layout, which the rows are placed in by number. Its header is the
+           real one's twin, opaque so the photos pass under it. -->
+      <div class="stuck">
+        <!-- svelte-ignore a11y_no_static_element_interactions -->
+        <div class="header pinned" style:transform="translateY({pinnedY}px)" oncontextmenu={(e) => headerMenu(e, pinnedSection)}>
+          {@render heading(pinnedSection)}
+        </div>
+      </div>
+    {/if}
     <div class="canvas" class:banding style:height="{domHeight}px">
       {#if banding && band}
         <div
@@ -894,21 +970,11 @@
            mounted it again, blank until its thumbnail was decoded once more. -->
       {#each rendered as row, i (renderStart + i)}
         {#if row.kind === 'header'}
-          {@const section = sections[row.section]}
-          {@const folder = section.folderId === null ? undefined : library.folderOf(section.folderId)}
-          <div class="header" style:top="{row.top - shift}px">
-            {#if section.period}
-              <!-- A period names itself and belongs to no folder, so there is no path to
-                   show; the count is the section's, as a folder's is. -->
-              <span class="name">{periodLabel(section.period)}</span>
-              <span class="summary">{photoCount(section.count)}</span>
-            {:else}
-              <span class="name">{folder ? folderLabel(folder) : ''}</span>
-              <!-- From the section, not the folder: it is there before the folder list is,
-                   and it counts the photos under this header, which in a search are fewer. -->
-              <span class="summary">{folderSummary(section.count, section.takenAtMin)}</span>
-              <span class="path">{folder?.path ?? ''}</span>
-            {/if}
+          <!-- A right-click offers the folder's menu; the header is not a control, and the
+               same menu is on the folder's row in the sidebar, which the keyboard reaches. -->
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
+          <div class="header" style:top="{row.top - shift}px" oncontextmenu={(e) => headerMenu(e, row.section)}>
+            {@render heading(row.section)}
           </div>
         {:else}
           <div class="row" style:top="{row.top - shift}px" style:gap="{GAP}px" style:padding-left="{GAP}px">
@@ -946,6 +1012,13 @@
     <Timeline {marks} {total} viewport={height} scrollTop={viewTop} onscrub={(top) => scrollToVirtual(top)} />
   {/if}
 </div>
+
+{#if folderMenu}
+  {@const folder = library.folderOf(folderMenu.folderId)}
+  {#if folder}
+    <FolderMenu at={folderMenu} {folder} onclose={closeMenu} onrename={(f) => onrenamefolder(f.id)} restore={focus} />
+  {/if}
+{/if}
 
 {#if menu}
   <!-- Only photon's own album offers "Remove from": Picasa's are changed in Picasa. -->
@@ -1097,6 +1170,10 @@
     pointer-events: none;
   }
   .header, .row { position: absolute; left: 0; right: 0; }
+  /* Above the rubber band, which is drawn over the photos but must pass under this. */
+  .stuck { position: sticky; top: 0; z-index: 2; height: 0; }
+  /* The hairline is what says the photos go under it; the real header has none. */
+  .header.pinned { top: 0; background: var(--surface); box-shadow: 0 1px 0 var(--line); }
   /* 32px is layout.ts's HEADER: every row below is placed by it, so the type fits the box
      rather than the box growing to the type. */
   .header { display: flex; align-items: baseline; gap: var(--s-3); height: 32px; padding: 7px var(--s-2) 0; }

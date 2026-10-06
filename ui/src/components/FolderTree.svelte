@@ -5,11 +5,13 @@
   import { createAlbumEditor } from '../lib/album-editor.svelte';
   import { arrangeFolders, enterFolder, folderLabel, folderRows, returnToAll } from '../lib/folders';
   import { sidebarTags } from '../lib/tags';
+  import { gridPlace } from '../lib/grid-place.svelte';
   import { laidOutByFolder } from '../lib/grouping';
   import { library } from '../lib/library.svelte';
   import { mainPage } from '../lib/main-page.svelte';
   import { searchBox } from '../lib/search-box.svelte';
   import { onThisDayLabel, onThisDayQuery } from '../lib/searches';
+  import FolderMenu from './FolderMenu.svelte';
   import Icon from './Icon.svelte';
   import Menu from './Menu.svelte';
 
@@ -40,6 +42,25 @@
    *  below must stay reachable. Session state, not persisted. */
   let open = $state({ albums: true, searches: true, people: false, tags: false });
 
+  /** The folder the grid is in (`gridPlace`), while the grid is what the main area shows:
+   *  its row is marked, so the list says where the grid is as it scrolls. A mark of its own,
+   *  not `.active`: the view row above (All photos, an album) is the current *view* and stays
+   *  filled, and this is the place inside it. */
+  const here = $derived(onGrid ? gridPlace.folderId : null);
+  let tree = $state<HTMLElement | undefined>();
+
+  // The list follows the grid: the marked row is kept in view, by the least movement, as
+  // the grid scrolls through folders the list has scrolled past. Not while the pointer is
+  // over the list or a name is being typed in it - then it is the user's, and a list that
+  // moved under the pointer would put another row under a click already on its way.
+  $effect(() => {
+    const folderId = here;
+    const nav = tree;
+    if (folderId === null || !nav) return;
+    if (nav.matches(':hover') || nav.contains(document.activeElement?.closest('input') ?? null)) return;
+    nav.querySelector(`[data-folder="${folderId}"]`)?.scrollIntoView({ block: 'nearest' });
+  });
+
   let menu = $state<{ x: number; y: number; folder: Folder } | null>(null);
   let albumMenu = $state<{ x: number; y: number; album: AlbumSummary } | null>(null);
   let searchMenu = $state<{ x: number; y: number; search: SavedSearch } | null>(null);
@@ -52,25 +73,6 @@
    *  sidebar holding hundreds of folders. */
   const foldersById = $derived(new Map(library.folders.folders.map((f) => [f.id, f])));
   const folderById = (id: number) => foldersById.get(id);
-
-  async function rescan(f: Folder) {
-    menu = null;
-    await api.rescanFolder(f.watchedId).catch(library.reportError);
-  }
-
-  async function reveal(f: Folder) {
-    menu = null;
-    await api.revealFolder(f.id).catch(library.reportError);
-  }
-
-  /** Hide folder: its photos, and any added to it later, until Unhide folder. The row then
-   *  leaves this list on its own - the rows are the view's folders, and a hidden folder's
-   *  photos are in no view but Hidden, unless the user unhid one by hand, which keeps the
-   *  folder listed (and its menu offering Unhide folder) wherever that photo shows. */
-  async function toggleFolderHidden(f: Folder) {
-    menu = null;
-    await library.setFolderHidden(f.id, !f.hidden).catch(library.reportError);
-  }
 
   // ---- folder names ----
 
@@ -93,9 +95,12 @@
     folderEditorInput?.select();
   }
 
-  async function useFolderName(f: Folder) {
-    menu = null;
-    await library.setFolderAlias(f.id, null).catch(library.reportError);
+  /** "Rename in photon…" on the folder's header in the grid: the same field, in the folder's
+   *  row here, which focusing scrolls into view. A folder the list no longer holds has no
+   *  row to open it in. */
+  export function renameFolder(folderId: number) {
+    const folder = folderById(folderId);
+    if (folder && years.some((group) => group.rows.some((row) => row.folderId === folderId))) void startFolderRename(folder);
   }
 
   function commitFolderEditor() {
@@ -118,8 +123,6 @@
     searchMenu = null;
   }
 
-  /** A folder row's context menu offers Rescan and Reveal, which act on the watched folder
-   *  it belongs to. Adding and removing watched folders live in Settings. */
   function folderMenu(e: MouseEvent, folderId: number) {
     e.preventDefault();
     const folder = folderById(folderId);
@@ -313,7 +316,7 @@
 
 <svelte:window onclick={closeMenus} onkeydown={(e) => e.key === 'Escape' && closeMenus()} />
 
-<nav class="tree" aria-label="Folders">
+<nav class="tree" aria-label="Folders" bind:this={tree}>
   <!-- The way back from an excursion without losing your place: a folder click lands on that
        folder's top, this lands where the gallery was left (returnToAll). No count: the grid
        reports none for the whole library, and Recent has none either. -->
@@ -581,6 +584,9 @@
         {:else}
           <button
             class="node"
+            class:here={here === row.folderId}
+            aria-current={here === row.folderId ? 'location' : undefined}
+            data-folder={row.folderId}
             title={folderById(row.folderId)?.path}
             onclick={() => jumpToFolder(row.folderId)}
             oncontextmenu={(e) => folderMenu(e, row.folderId)}
@@ -600,24 +606,7 @@
 </nav>
 
 {#if menu}
-  {@const folder = menu.folder}
-  <Menu at={menu}>
-    <!-- `rescan_folder` is a no-op while a scan of that folder is running, and reports
-         nothing back, so don't offer it. -->
-    <button
-      role="menuitem"
-      disabled={library.isScanning(folder.watchedId)}
-      title={library.isScanning(folder.watchedId) ? 'This folder is being scanned' : undefined}
-      onclick={() => rescan(folder)}>Rescan</button
-    >
-    <button role="menuitem" onclick={() => reveal(folder)}>Reveal in file manager</button>
-    <!-- "in photon": the directory keeps its name; only photon's label for it changes. -->
-    <button role="menuitem" onclick={() => startFolderRename(folder)}>Rename in photon…</button>
-    {#if folder.alias !== null}
-      <button role="menuitem" title={`Show it as “${folder.name}” again`} onclick={() => useFolderName(folder)}>Use folder name</button>
-    {/if}
-    <button role="menuitem" onclick={() => toggleFolderHidden(folder)}>{folder.hidden ? 'Unhide folder' : 'Hide folder'}</button>
-  </Menu>
+  <FolderMenu at={menu} folder={menu.folder} onclose={() => (menu = null)} onrename={startFolderRename} />
 {/if}
 
 {#if albumMenu}
@@ -682,7 +671,19 @@
     cursor: pointer;
     transition: background-color 120ms ease-out;
   }
-  .node { padding-left: 28px; }
+  .node { position: relative; padding-left: 28px; }
+  /* Where the grid is: a bar in the row's indent, beside the name. Not the fill `.active`
+     has, which says which view the grid shows - both are on screen at once. */
+  .node.here::before {
+    content: '';
+    position: absolute;
+    left: 12px;
+    top: 7px;
+    bottom: 7px;
+    width: 3px;
+    border-radius: 2px;
+    background: var(--accent);
+  }
   /* A library can have thousands of folders, and the list is laid out again on every frame
      of a splitter drag. `content-visibility: auto` skips the layout and paint of whatever is
      off screen while keeping every row in the accessibility tree and focusable - unlike

@@ -66,7 +66,7 @@ cargo run -p xtask -- metadata            # licence and installer metadata are c
 **Seeing the UI without launching it** (not in CI; needs Chromium on `PATH` or in `CHROMIUM`):
 
 ```bash
-cargo run -p xtask -- screenshots                     # thirty-eight PNGs into target/screenshots/
+cargo run -p xtask -- screenshots                     # forty PNGs into target/screenshots/
 cargo run -p xtask -- screenshots --only viewer-info-light --no-build
 cargo run -p xtask -- scroll-probe   # the end of a 300k-photo library is reachable
 ```
@@ -1063,6 +1063,23 @@ viewer *and* over compare, so both sit in an `inert` `display: contents` wrapper
 up and the viewer is `paused`, as under the person dialog; it does not open over another
 dialog, or while the grid holds a rubber band (`Grid.dragging`, the "fourth ending" below).
 
+**A section's header is drawn twice.** In its row, and - once that row has scrolled away -
+pinned over the top of the grid (`pinnedHeader`, a sticky box of no height, so the rows it
+lies over keep their numbers); one snippet draws both, and both open the folder's menu
+(`FolderMenu.svelte`, the one the folder's sidebar row opens, so the two cannot come to offer
+different things - its Rename is the sidebar's inline field, reached through
+`FolderTree.renameFolder`). Because something now lies over the grid's top edge, "in view" is
+below it: `scrollToOffset` goes through `scrollIntoGrid` ('nearest') and `scrollToStart`
+('start') with the header's height as the inset, or the row the arrow keys had just selected,
+or the folder a sidebar click jumped to in the middle of a month, was half under the header. A
+press on the pinned header starts no rubber band, since it would begin on photos nobody can
+see. The folder at the top of the grid is also published as `gridPlace.folderId`
+(`grid-place.svelte.ts`), which the sidebar marks (`.here`, a bar - not `.active`'s fill, which
+is the current *view* and is on screen at the same time) and scrolls to keep in view, except
+while the pointer is over the list or a name is being typed in it. Not "while the focus is in
+the list": a clicked folder row keeps the focus, and the list would then stop following the
+very scroll that click began.
+
 **A context menu is `Menu.svelte`**, which every one of them is drawn by (the tile's, the
 sidebar's three, the viewer's, the People page's merge list): the surface, the placing, the
 keys and the focus. Its items are the caller's plain markup (`<button role="menuitem">`, with
@@ -1130,7 +1147,7 @@ anything sitting outside the tile's own box.
 
 The look cannot be tested here, but it can be seen without launching the app: `cargo run -p xtask --
 screenshots` builds the UI, serves `ui/dist` itself with `mock.js` (in
-`crates/xtask/screenshots/`) standing in for Tauri's IPC, and writes thirty-eight PNGs, in both themes,
+`crates/xtask/screenshots/`) standing in for Tauri's IPC, and writes forty PNGs, in both themes,
 to `target/screenshots/` with headless Chromium. It claims a Windows user agent and maps
 `photon.localhost` to its own port, because `mediaUrl` uses `http://photon.localhost` there
 and no plain browser can load `photon://`. It is Chromium's rendering, not WebKitGTK's or
