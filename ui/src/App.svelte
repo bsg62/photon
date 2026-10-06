@@ -16,7 +16,7 @@
   import { focusesSearch, opensShortcuts } from './lib/shortcuts';
   import type { SettingsSection } from './lib/settings';
   import { isMac } from './lib/url';
-  import { clampSidebarWidth, SIDEBAR_DEFAULT, SIDEBAR_STEP } from './lib/sidebar';
+  import { browserStore, clampSidebarWidth, SIDEBAR_STEP, storedSidebarWidth, storeSidebarWidth } from './lib/sidebar';
   import { createExportDialog } from './lib/export-dialog.svelte';
   import { createFolderDrop } from './lib/folder-drop.svelte';
   import { createPersonPicker, type PickerTarget } from './lib/person-picker.svelte';
@@ -119,7 +119,11 @@
       exporter.visible ||
       shortcutsOpen,
   );
-  let sidebarWidth = $state(SIDEBAR_DEFAULT);
+  /** The width the sidebar was last dragged to, on this machine (`sidebar.ts`). Read here,
+   *  before the first paint. Stored when a drag or a key resizes it, never when the window
+   *  does: a narrow window clamps the sidebar, and that is not the user choosing a width. */
+  const sidebarStore = browserStore();
+  let sidebarWidth = $state(storedSidebarWidth(sidebarStore, window.innerWidth));
   let dragFrom: { x: number; width: number } | null = null;
 
   // Pointer capture keeps the drag alive when the pointer outruns the 5px bar or crosses
@@ -137,6 +141,7 @@
   }
 
   function endResize() {
+    if (dragFrom) storeSidebarWidth(sidebarStore, sidebarWidth);
     dragFrom = null;
   }
 
@@ -145,6 +150,7 @@
     if (!delta) return;
     e.preventDefault();
     sidebarWidth = clampSidebarWidth(sidebarWidth + delta, window.innerWidth);
+    storeSidebarWidth(sidebarStore, sidebarWidth);
   }
 
   onMount(() => {
@@ -608,7 +614,7 @@
         onnameperson={(ids) => openPersonPicker({ kind: 'items', items: ids }, 'grid')}
         oncompare={openCompare}
         onshowcopies={showCopiesOf}
-        onrenamefolder={(id) => folderTree?.renameFolder(id)}
+        onrenamefolder={(id) => folderTree?.renameFolder(id, () => grid?.focus())}
       />
     </div>
     {#if mainPage.current === 'people'}

@@ -352,6 +352,24 @@ publishing it.
       grid's selection. Rename in photon… puts the caret in that folder's row in the sidebar,
       scrolled into view, with the name selected. A month's header has no menu. A drag begun
       on the pinned header draws no rubber band.
+- [ ] **The sidebar is as you left it.** Drag the sidebar's edge wider, fold Albums and unfold
+      Tags, quit and relaunch: the sidebar opens at that width, with no jump from the default
+      width as the window appears, and the groups are as you left them. Resize with the arrow
+      keys on the edge instead: remembered too. Make the window narrow enough to squeeze the
+      sidebar, quit, relaunch in a wide window: it is back at the width you dragged it to, not
+      the squeezed one. Clicking the People row (which opens its list) is remembered as open.
+- [ ] Right-click a folder, an album and a saved search in the sidebar, choose Rename, and
+      press Escape: the row has the focus (Tab moves on from it, Enter opens it). Rename again
+      and press Enter on a changed name: the same. Start "New album…" and press Escape: the
+      "New album…" row has the focus. Give an album another album's name and press Enter: the
+      error shows and the caret is back in the field. Click elsewhere instead of pressing a
+      key: the focus stays where you clicked. Rename from a folder's header in the grid
+      instead, and press Escape or Enter: the arrow keys move the grid's selection at once.
+- [ ] Rename an album and hold Enter down for a second: the album is renamed and its row has
+      the focus, but the grid does not switch to that album. Rename a folder from its header
+      in the grid, press Enter, and at once choose Rename on another folder's header (easiest
+      in a large library, where the first write takes a moment): the caret is in the second
+      field, and a letter typed goes into it, not to the photos.
 - [ ] Change the size in Recent (no headers) and in a Starred or search view too: your place is
       kept there as well. Try it scrolled to the very end of the library: it lands at the end,
       not past it.

@@ -4,6 +4,7 @@
   import { api, type AlbumSummary, type Folder, type SavedSearch } from '../lib/api';
   import { createAlbumEditor } from '../lib/album-editor.svelte';
   import { arrangeFolders, enterFolder, folderLabel, folderRows, returnToAll } from '../lib/folders';
+  import { browserStore, storedOpenGroups, storeOpenGroups, type OpenGroups } from '../lib/sidebar';
   import { sidebarTags } from '../lib/tags';
   import { gridPlace } from '../lib/grid-place.svelte';
   import { laidOutByFolder } from '../lib/grouping';
@@ -37,10 +38,68 @@
   const years = $derived(arrangeFolders(folderRows(library.info.folders, library.folders.folders), library.info.sort));
   const shownTags = $derived(sidebarTags(library.tags));
 
-  /** Which collection groups are open. Albums start open because they are the user's own;
-   *  People and Tags start closed because a real library has hundreds of each, and the years
-   *  below must stay reachable. Session state, not persisted. */
-  let open = $state({ albums: true, searches: true, people: false, tags: false });
+  /** Which collection groups are open, as they were left on this machine (`sidebar.ts`,
+   *  where the defaults are). */
+  const store = browserStore();
+  let open = $state(storedOpenGroups(store));
+
+  /** Opens or folds a group and remembers it. Stored here, where the user says so, not in
+   *  an effect on `open`: that would also run on mount and write back what it had just read. */
+  function setOpen(group: keyof OpenGroups, value: boolean) {
+    open[group] = value;
+    storeOpenGroups(store, open);
+  }
+
+  /** Whether the focus has nowhere to be: on `<body>`, which no key reaches anything from. */
+  function focusLost(): boolean {
+    const at = document.activeElement;
+    return !at || at === document.body;
+  }
+
+  /** A rename field closed from the keyboard - Escape, or Enter once the name is stored -
+   *  hands the focus to the row it stood in for (`selector`). The field is removed while it
+   *  holds the focus, which otherwise falls to `<body>`. Only then: a field closed by a click
+   *  elsewhere has lost the focus to what was clicked, and a rename of another row started
+   *  meanwhile holds it. `elsewhere` is for a rename that was not started from its row: the
+   *  focus goes back where it was started from. */
+  async function backToRow(selector: string, elsewhere?: (() => void) | null) {
+    await tick();
+    if (!focusLost()) return;
+    if (elsewhere) elsewhere();
+    else tree?.querySelector<HTMLElement>(selector)?.focus();
+  }
+
+  /** The keys of a rename field. Enter stores the name; a name the backend refuses leaves
+   *  the field open (`commit` rejects) with the caret in it.
+   *
+   *  While a write runs the field is read-only, not disabled. A disabled field cannot hold
+   *  the focus, and one editor serves every row of its list: a rename of a second folder
+   *  begun while the first was still being written opened its field disabled, the focus
+   *  stayed on the grid the header menu had handed it to, and what was typed for the name
+   *  went to the photos - `h` hid the selected one. */
+  function editorKeydown(
+    e: KeyboardEvent,
+    field: { commit(): Promise<boolean>; cancel(): void },
+    selector: string,
+    input: () => HTMLInputElement | undefined,
+    elsewhere?: () => (() => void) | null,
+  ) {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      field.commit().then(
+        () => backToRow(selector, elsewhere?.()),
+        async (error) => {
+          library.reportError(error);
+          await tick();
+          if (focusLost()) input()?.focus();
+        },
+      );
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      field.cancel();
+      void backToRow(selector, elsewhere?.());
+    }
+  }
 
   /** The folder the grid is in (`gridPlace`), while the grid is what the main area shows:
    *  its row is marked, so the list says where the grid is as it scrolls. A mark of its own,
@@ -59,6 +118,21 @@
     if (folderId === null || !nav) return;
     if (nav.matches(':hover') || nav.contains(document.activeElement?.closest('input') ?? null)) return;
     nav.querySelector(`[data-folder="${folderId}"]`)?.scrollIntoView({ block: 'nearest' });
+  });
+
+  // A held Enter does not press a row twice. Enter in a rename field hands the focus to the
+  // field's row once the name is stored, and the key, still down, repeats there: the album
+  // just renamed was opened, the folder jumped to, "New album…" opened its field again.
+  // Nothing in the list is worth doing again for a key held down. A listener rather than an
+  // `onkeydown` on the `<nav>`, which is not a control.
+  $effect(() => {
+    const nav = tree;
+    if (!nav) return;
+    const held = (e: KeyboardEvent) => {
+      if (e.key === 'Enter' && e.repeat && e.target instanceof HTMLButtonElement) e.preventDefault();
+    };
+    nav.addEventListener('keydown', held);
+    return () => nav.removeEventListener('keydown', held);
   });
 
   let menu = $state<{ x: number; y: number; folder: Folder } | null>(null);
@@ -87,8 +161,13 @@
     blankClears: true,
   });
 
-  async function startFolderRename(f: Folder) {
+  /** Where the focus goes when the folder's rename field closes, for a rename asked for from
+   *  outside the list (`renameFolder`); null for one started from the row's own menu. */
+  let folderRenameBack: (() => void) | null = null;
+
+  async function startFolderRename(f: Folder, back: (() => void) | null = null) {
     menu = null;
+    folderRenameBack = back;
     folderEditor.startRename(f.id, folderLabel(f));
     await tick();
     folderEditorInput?.focus();
@@ -97,24 +176,15 @@
 
   /** "Rename in photon…" on the folder's header in the grid: the same field, in the folder's
    *  row here, which focusing scrolls into view. A folder the list no longer holds has no
-   *  row to open it in. */
-  export function renameFolder(folderId: number) {
+   *  row to open it in. `back` takes the focus when the field is closed from the keyboard:
+   *  the rename was begun in the grid, and the keys go back to the photos. */
+  export function renameFolder(folderId: number, back: () => void) {
     const folder = folderById(folderId);
-    if (folder && years.some((group) => group.rows.some((row) => row.folderId === folderId))) void startFolderRename(folder);
+    if (folder && years.some((group) => group.rows.some((row) => row.folderId === folderId))) void startFolderRename(folder, back);
   }
 
   function commitFolderEditor() {
     folderEditor.commit().catch(library.reportError);
-  }
-
-  function onFolderEditorKeydown(e: KeyboardEvent) {
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      commitFolderEditor();
-    } else if (e.key === 'Escape') {
-      e.preventDefault();
-      folderEditor.cancel();
-    }
   }
 
   function closeMenus() {
@@ -189,16 +259,6 @@
     editor.commit().catch(library.reportError);
   }
 
-  function onEditorKeydown(e: KeyboardEvent) {
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      commitEditor();
-    } else if (e.key === 'Escape') {
-      e.preventDefault();
-      editor.cancel();
-    }
-  }
-
   function albumContextMenu(e: MouseEvent, album: AlbumSummary) {
     e.preventDefault();
     menu = null;
@@ -244,16 +304,6 @@
 
   function commitSearchEditor() {
     searchEditor.commit().catch(library.reportError);
-  }
-
-  function onSearchEditorKeydown(e: KeyboardEvent) {
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      commitSearchEditor();
-    } else if (e.key === 'Escape') {
-      e.preventDefault();
-      searchEditor.cancel();
-    }
   }
 
   function searchContextMenu(e: MouseEvent, search: SavedSearch) {
@@ -310,7 +360,7 @@
   function showPeople() {
     searchBox.cancel();
     mainPage.showPeople();
-    open.people = true;
+    setOpen('people', true);
   }
 </script>
 
@@ -410,7 +460,7 @@
   {/if}
 
   <!-- Albums: photon's own, editable, and Picasa's, mirrored from its INI and read-only. -->
-  <button class="group" aria-expanded={open.albums} onclick={() => (open.albums = !open.albums)}>
+  <button class="group" aria-expanded={open.albums} onclick={() => setOpen('albums', !open.albums)}>
     <span class="chevron"><Icon name={open.albums ? 'chevron-down' : 'chevron-right'} size={12} /></span><Icon name="folder" size={14} />
     <span class="name">Albums</span>
     <span class="count">{counted.format(library.albums.length)}</span>
@@ -422,15 +472,16 @@
           class="editor"
           bind:this={editorInput}
           bind:value={editor.text}
-          disabled={editor.busy}
+          readonly={editor.busy}
           aria-label="Album name"
-          onkeydown={onEditorKeydown}
+          onkeydown={(e) => editorKeydown(e, editor, `[data-album="${album.id}"]`, () => editorInput)}
           onblur={commitEditor}
         />
       {:else}
         <button
           class="node"
           class:active={onGrid && library.info.view === 'album' && library.info.album === album.id}
+          data-album={album.id}
           title={album.name}
           onclick={() => show(() => library.setAlbumView(album.id))}
           oncontextmenu={(e) => (album.picasa ? e.preventDefault() : albumContextMenu(e, album))}
@@ -452,10 +503,10 @@
         class="editor"
         bind:this={editorInput}
         bind:value={editor.text}
-        disabled={editor.busy}
+        readonly={editor.busy}
         placeholder="Album name"
         aria-label="New album name"
-        onkeydown={onEditorKeydown}
+        onkeydown={(e) => editorKeydown(e, editor, '.add-album', () => editorInput)}
         onblur={commitEditor}
       />
     {:else}
@@ -466,7 +517,7 @@
   <!-- Saved searches: a name over a query, re-run on every visit. No count - one would
        cost a full library pass per row on every change; see library/searches.rs. -->
   {#if library.searches.length > 0}
-    <button class="group" aria-expanded={open.searches} onclick={() => (open.searches = !open.searches)}>
+    <button class="group" aria-expanded={open.searches} onclick={() => setOpen('searches', !open.searches)}>
       <span class="chevron"><Icon name={open.searches ? 'chevron-down' : 'chevron-right'} size={12} /></span><Icon name="bookmark" size={14} />
       <span class="name">Searches</span>
       <span class="count">{counted.format(library.searches.length)}</span>
@@ -478,15 +529,16 @@
             class="editor"
             bind:this={searchEditorInput}
             bind:value={searchEditor.text}
-            disabled={searchEditor.busy}
+            readonly={searchEditor.busy}
             aria-label="Saved search name"
-            onkeydown={onSearchEditorKeydown}
+            onkeydown={(e) => editorKeydown(e, searchEditor, `[data-search="${search.id}"]`, () => searchEditorInput)}
             onblur={commitSearchEditor}
           />
         {:else}
           <button
             class="node"
             class:active={onGrid && library.info.view === 'search' && library.info.searchQuery === search.query}
+            data-search={search.id}
             title={search.name === search.query ? search.query : `${search.name} — ${search.query}`}
             onclick={() => showSearch(search)}
             oncontextmenu={(e) => searchContextMenu(e, search)}
@@ -508,7 +560,7 @@
       aria-expanded={open.people}
       aria-label={open.people ? 'Hide people' : 'Show people'}
       title={open.people ? 'Hide people' : 'Show people'}
-      onclick={() => (open.people = !open.people)}
+      onclick={() => setOpen('people', !open.people)}
     >
       <span class="chevron"><Icon name={open.people ? 'chevron-down' : 'chevron-right'} size={12} /></span>
     </button>
@@ -545,7 +597,7 @@
   {/if}
 
   <!-- Tags: keywords read from the photos' own XMP and IPTC. Read only. -->
-  <button class="group" aria-expanded={open.tags} onclick={() => (open.tags = !open.tags)}>
+  <button class="group" aria-expanded={open.tags} onclick={() => setOpen('tags', !open.tags)}>
     <span class="chevron"><Icon name={open.tags ? 'chevron-down' : 'chevron-right'} size={12} /></span><Icon name="tag" size={14} />
     <span class="name">Tags</span>
     <span class="count">{counted.format(shownTags.length)}</span>
@@ -575,10 +627,10 @@
             class="editor"
             bind:this={folderEditorInput}
             bind:value={folderEditor.text}
-            disabled={folderEditor.busy}
+            readonly={folderEditor.busy}
             aria-label="Folder name in photon"
             title={folderById(row.folderId)?.path}
-            onkeydown={onFolderEditorKeydown}
+            onkeydown={(e) => editorKeydown(e, folderEditor, `[data-folder="${row.folderId}"]`, () => folderEditorInput, () => folderRenameBack)}
             onblur={commitFolderEditor}
           />
         {:else}
@@ -606,7 +658,7 @@
 </nav>
 
 {#if menu}
-  <FolderMenu at={menu} folder={menu.folder} onclose={() => (menu = null)} onrename={startFolderRename} />
+  <FolderMenu at={menu} folder={menu.folder} onclose={() => (menu = null)} onrename={(f) => startFolderRename(f)} />
 {/if}
 
 {#if albumMenu}

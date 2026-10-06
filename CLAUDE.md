@@ -1037,6 +1037,19 @@ webview has loaded and asked for the setting, so without the first a pinned them
 the desktop's title bar. `System` is `None` in both, never the scheme resolved in code: `None`
 is what lets the title bar keep following the desktop while photon runs.
 
+**The sidebar's width and open groups are in `localStorage` alone** (`lib/sidebar.ts`), not
+in the settings table: they are how this window is laid out on this machine, and read there
+they are known before the first paint, with no mirror to keep in step. The width is stored
+when a drag or a key sets it, never when a narrow window clamps it. A sidebar rename field
+closed from the keyboard hands the focus to its row (`backToRow`; to the grid, when the rename
+was begun from a header there), and only while the focus is
+on `<body>`: the field is removed while focused. While its write runs a field is `readonly`,
+not `disabled`: one editor serves every row of its list, so a second rename begun during the
+first one's write opened a disabled field that could not take the focus, and the name typed
+for it went to the grid, where `h` hides the selected photo. And a held Enter does not press a
+sidebar row twice (a listener on the list): the focus handed to a row arrives under a key
+that is still down.
+
 **A dialog belongs in `App.svelte`, not in the component that opens it.** `covered` makes the
 topbar, sidebar, splitter and `<main>` `inert` while an overlay is up, and the grid is inside
 `<main>`: a dialog mounted there is made inert *by its own opening* - Tab walks out of an
