@@ -370,6 +370,14 @@ publishing it.
       in the grid, press Enter, and at once choose Rename on another folder's header (easiest
       in a large library, where the first write takes a moment): the caret is in the second
       field, and a letter typed goes into it, not to the photos.
+- [ ] **Larger faces.** Open the People page on a library with faces found: each face is drawn
+      at about 72 px, sharp (not enlarged from a smaller crop, also on a HiDPI screen), twelve
+      to a strip in one row at the default window size, and people can be told apart without
+      opening the photo. Upgrading from the previous release shows the new crops at once, not
+      the old ones enlarged. Selecting, confirming and "Show more" work as before.
+- [ ] In the viewer's info panel on a photo with no face: with Find faces off it reads "No
+      faces named in Picasa."; with it on, "No faces found."; and while the status bar shows
+      a face pass running, "No faces found yet."
 - [ ] Change the size in Recent (no headers) and in a Starred or search view too: your place is
       kept there as well. Try it scrolled to the very end of the library: it lands at the end,
       not past it.

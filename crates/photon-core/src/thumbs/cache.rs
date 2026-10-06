@@ -487,9 +487,9 @@ mod tests {
         };
         let bytes = cache.face_crop(5, &rect).unwrap();
         let crop = webp::Decoder::new(&bytes).decode().unwrap().to_image();
-        assert_eq!((crop.width(), crop.height()), (96, 96));
+        assert_eq!((crop.width(), crop.height()), (144, 144));
         let crop = crop.to_rgb8();
-        let centre = crop.get_pixel(48, 48).0;
+        let centre = crop.get_pixel(72, 72).0;
         assert!(
             centre[0] > 180 && centre[1] < 80 && centre[2] < 80,
             "{centre:?}"

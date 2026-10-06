@@ -864,7 +864,10 @@ to name" is `people_to_name`, equal to `unnamed_count`, and is fetched with the 
 `data_changed`. A write refused with `notAPerson` (its group is gone) is reported as "That group
 changed". "Confirm all" confirms the faces on screen, not the person's whole suggestion list.
 Confirmations (switching detection off with named people, Delete, Merge) are the native `ask`,
-as everywhere else. The page's crops are `/face/<face id>/<thumb key>` in `protocol.rs`, cut
+as everywhere else. The page's crops are `/face/<face id>/<thumb key>/<px>` in `protocol.rs`
+(one size is cut, `CROP_PX`, twice the 72px the page draws; it is in the URL because the
+webview keeps a crop for ever, so a new size must be a new name, and the UI's copy of the
+number is held to the backend's by `people.test.ts`), cut
 only from the cached preview: 404 for a gone face, a stale key or no cached preview (never a
 render, so a page of crops cannot start a burst of renders), 500 for an undecodable one, and
 `immutable` because a face id is never reused and never names another picture. It is the one

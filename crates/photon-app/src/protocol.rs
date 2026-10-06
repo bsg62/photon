@@ -9,8 +9,10 @@
 //! - `/image/<id>/uncropped`: the same without the crop, which is what the crop tool draws
 //!   its rectangle on.
 //!
-//! - `/face/<face id>/<thumbKey>`: a 96 px square WebP around a detected face, cut from the
-//!   photo's *cached* preview and nothing else (`ThumbCache::face_crop`), `immutable`. A
+//! - `/face/<face id>/<thumbKey>/<px>`: a square WebP around a detected face, `px` on a
+//!   side, cut from the photo's *cached* preview and nothing else (`ThumbCache::face_crop`),
+//!   `immutable`. One size is cut (`CROP_PX`) and any other is a 404; it is in the URL
+//!   because the webview keeps a crop for ever, so a crop of a new size needs a new name. A
 //!   face gone, a key that is not its photo's current one, or a preview not cached is a 404:
 //!   a page of crops must never start a burst of renders. Like an edited photo's `/image`,
 //!   it decodes a picture per request (unless the photo's decode is kept); unlike that
@@ -56,7 +58,7 @@ pub async fn handle(
         }
         ["image", _] => true,
         ["image", _, "uncropped"] => false,
-        ["face", id, key] => return face(engine, id, key).await,
+        ["face", id, key, px] => return face(engine, id, key, px).await,
         _ => return text(StatusCode::NOT_FOUND, "not found"),
     };
     let id = parts[1].to_owned();
@@ -163,10 +165,17 @@ async fn thumb(
 /// render, so a page of crops never queues a burst of renders. A face that is gone, a key
 /// that is no longer the photo's, or a preview not cached is a 404; a cached preview that
 /// will not decode is a 500. The page draws a placeholder for either.
-async fn face(engine: Arc<Engine>, id: &str, key: &str) -> Response<Vec<u8>> {
-    let (Ok(id), Some(key)) = (id.parse::<i64>(), parse_key(key)) else {
+///
+/// `px` is the crop's side, and there is one: the size the page draws at, doubled. It is in
+/// the URL so that changing it changes every crop's name - `immutable` means the webview
+/// never asks again, and under an unchanged URL it would go on showing the size it has.
+async fn face(engine: Arc<Engine>, id: &str, key: &str, px: &str) -> Response<Vec<u8>> {
+    let (Ok(id), Some(key), Ok(px)) = (id.parse::<i64>(), parse_key(key), px.parse::<u32>()) else {
         return text(StatusCode::BAD_REQUEST, "bad face");
     };
+    if px != photon_core::thumbs::face_crop::CROP_PX {
+        return text(StatusCode::NOT_FOUND, "not found");
+    }
     // Awaited here, before the blocking pool: a request waiting its turn holds no thread.
     // The semaphore is never closed, so `acquire` cannot fail.
     let _turn = FACE_CROPS.acquire().await.expect("never closed");
@@ -833,18 +842,36 @@ mod tests {
     #[test]
     fn serves_a_face_crop_as_immutable_webp() {
         let (f, face, _, key) = with_a_face();
-        let r = get(&f.engine, &format!("/face/{face}/{key}"));
+        let r = get(&f.engine, &format!("/face/{face}/{key}/144"));
         assert_eq!(r.status(), 200);
         assert_eq!(header(&r, "content-type"), "image/webp");
         assert_eq!(header(&r, "cache-control"), FOREVER);
-        assert_eq!(dims(&r), (96, 96));
+        assert_eq!(dims(&r), (144, 144));
+    }
+
+    /// The size is part of a crop's name. The webview keeps a crop for ever, so one of
+    /// another size has to be another URL - under the old one an upgraded photon went on
+    /// showing the 96 px crops it had, enlarged - and the one size cut is the only one
+    /// there is to ask for.
+    #[test]
+    fn a_face_crop_has_one_size_and_no_name_without_it() {
+        let (f, face, _, key) = with_a_face();
+        assert_eq!(
+            get(&f.engine, &format!("/face/{face}/{key}/96")).status(),
+            404
+        );
+        assert_eq!(get(&f.engine, &format!("/face/{face}/{key}")).status(), 404);
+        assert_eq!(
+            get(&f.engine, &format!("/face/{face}/{key}/large")).status(),
+            400
+        );
     }
 
     #[test]
     fn a_face_that_is_gone_is_not_found() {
         let (f, face, _, key) = with_a_face();
         assert_eq!(
-            get(&f.engine, &format!("/face/{}/{key}", face + 1000)).status(),
+            get(&f.engine, &format!("/face/{}/{key}/144", face + 1000)).status(),
             404
         );
     }
@@ -866,7 +893,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            get(&f.engine, &format!("/face/{face}/{other}")).status(),
+            get(&f.engine, &format!("/face/{face}/{other}/144")).status(),
             404
         );
     }
@@ -879,17 +906,20 @@ mod tests {
             .thumbs
             .path_for(u64::from_str_radix(&key, 16).unwrap(), ThumbSize::Preview);
         std::fs::remove_file(&preview).unwrap();
-        assert_eq!(get(&f.engine, &format!("/face/{face}/{key}")).status(), 404);
+        assert_eq!(
+            get(&f.engine, &format!("/face/{face}/{key}/144")).status(),
+            404
+        );
         assert!(!preview.exists(), "the route rendered a preview");
     }
 
     #[test]
     fn a_face_crop_url_that_does_not_parse_is_a_bad_request() {
         let (f, face, _, key) = with_a_face();
-        assert_eq!(get(&f.engine, "/face/x/abc").status(), 400);
-        assert_eq!(get(&f.engine, "/face/1/+1").status(), 400);
+        assert_eq!(get(&f.engine, "/face/x/abc/144").status(), 400);
+        assert_eq!(get(&f.engine, "/face/1/+1/144").status(), 400);
         assert_eq!(
-            get(&f.engine, &format!("/face/{face}/+{key}")).status(),
+            get(&f.engine, &format!("/face/{face}/+{key}/144")).status(),
             400
         );
     }

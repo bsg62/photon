@@ -5,9 +5,11 @@
 
 use crate::face_detect::Rect;
 
-/// The crop's side in pixels, as served: the page draws it at 48 CSS px, twice that for a
-/// high-density screen.
-pub const CROP_PX: u32 = 96;
+/// The crop's side in pixels, as served: the page draws it at 72 CSS px (`FACE_PX` in the
+/// UI's `people.ts`), twice that for a high-density screen. The size is part of the crop's
+/// URL (`protocol.rs`), which the UI builds from its own copy of this number
+/// (`FACE_CROP_PX`; `people.test.ts` reads this line and fails when the two differ).
+pub const CROP_PX: u32 = 144;
 /// How much of the face's width (and height) is added on each side.
 pub const WIDEN: f64 = 0.30;
 

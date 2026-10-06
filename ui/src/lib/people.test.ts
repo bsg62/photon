@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
+import faceCrop from '../../../crates/photon-core/src/thumbs/face_crop.rs?raw';
 import type { NamedItems } from './api';
 import {
+  FACE_CROP_PX,
+  FACE_PX,
   faceUrl,
   nameChoice,
   namedFaceMessage,
@@ -48,9 +51,19 @@ describe('switchOffWarning', () => {
 });
 
 describe('faceUrl', () => {
-  it('names the face and its picture', () => {
-    expect(faceUrl(7, '00ab', false)).toBe('photon://localhost/face/7/00ab');
-    expect(faceUrl(7, '00ab', true)).toBe('http://photon.localhost/face/7/00ab');
+  it('names the face, its picture and the size of the crop', () => {
+    expect(faceUrl(7, '00ab', false)).toBe('photon://localhost/face/7/00ab/144');
+    expect(faceUrl(7, '00ab', true)).toBe('http://photon.localhost/face/7/00ab/144');
+  });
+
+  // The route cuts one size and answers 404 for any other, so a size changed on one side
+  // alone is a People page of placeholders - which the screenshots cannot show, their
+  // server answering every `/face/` path.
+  it('asks for the size the backend cuts, twice the size the page draws', () => {
+    const cut = /pub const CROP_PX: u32 = (\d+);/.exec(faceCrop);
+    expect(cut, 'CROP_PX in face_crop.rs').not.toBeNull();
+    expect(FACE_CROP_PX).toBe(Number(cut![1]));
+    expect(FACE_CROP_PX).toBe(2 * FACE_PX);
   });
 });
 

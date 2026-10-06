@@ -35,9 +35,20 @@ export function switchOffWarning(named: number): string {
   return `This deletes ${named} ${named === 1 ? 'person' : 'people'} you named and everything photon found.`;
 }
 
-/** A face's crop, served by `protocol.rs` from the photo's cached preview. */
+/** The side a face is drawn at on the People page, in CSS pixels: large enough to tell two
+ *  people apart at a glance, which 48 was not, and twelve to a strip still fit one row. */
+export const FACE_PX = 72;
+
+/** The side of the crop asked for: twice the drawn size, for a high-density screen. The
+ *  backend cuts exactly this (`CROP_PX` in `face_crop.rs`) and answers 404 for any other;
+ *  `people.test.ts` holds the two together. */
+export const FACE_CROP_PX = 144;
+
+/** A face's crop, served by `protocol.rs` from the photo's cached preview. The size is in
+ *  the URL because the webview keeps a crop for ever: a crop of another size is another
+ *  URL, or an upgraded photon would go on showing the ones it has. */
 export function faceUrl(faceId: number, thumbKey: string, windows?: boolean): string {
-  return mediaUrl(`face/${faceId}/${thumbKey}`, windows);
+  return mediaUrl(`face/${faceId}/${thumbKey}/${FACE_CROP_PX}`, windows);
 }
 
 export interface OpenFaceDeps {
