@@ -2873,6 +2873,26 @@ describe('LibraryStore', () => {
         expect(store.selected).toBe(7);
       });
 
+      it('takes the lead photo\'s month under a date grouping: what is under its header', async () => {
+        const months = [
+          { folderId: null, offset: 0, count: 5, takenAtMin: 0, period: { year: 2026, month: 10, day: null } },
+          { folderId: null, offset: 5, count: 10, takenAtMin: 0, period: { year: 2026, month: 9, day: null } },
+        ];
+        const store = await storeOf(15, { sections: months });
+        store.selected = 7;
+        vi.mocked(api.gridFolderIdsAt).mockClear();
+
+        await store.selectAll();
+
+        // A range, like a folder's section - not the folder's scattered ids.
+        expect(api.gridFolderIdsAt).not.toHaveBeenCalled();
+        expect(store.selectionCount).toBe(10);
+        expect(store.isSelected(idAt(5))).toBe(true);
+        expect(store.isSelected(idAt(14))).toBe(true);
+        expect(store.isSelected(idAt(4))).toBe(false);
+        expect(store.selected).toBe(7);
+      });
+
       it('drops a flat folder answered against another version of the grid', async () => {
         const flat = [{ folderId: null, offset: 0, count: 15, takenAtMin: 0, period: null }];
         const store = await storeOf(15, { sections: flat });

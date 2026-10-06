@@ -5,6 +5,7 @@
   import { createAlbumEditor } from '../lib/album-editor.svelte';
   import { arrangeFolders, enterFolder, folderLabel, folderRows, returnToAll } from '../lib/folders';
   import { sidebarTags } from '../lib/tags';
+  import { laidOutByFolder } from '../lib/grouping';
   import { library } from '../lib/library.svelte';
   import { mainPage } from '../lib/main-page.svelte';
   import { searchBox } from '../lib/search-box.svelte';
@@ -144,7 +145,7 @@
       currentView: () => library.settledView(),
       setView: (view) => library.setView(view),
       lastFolder: () => api.lastFolder(),
-      sortedByDate: () => library.info.sort.key === 'date',
+      byFolder: () => laidOutByFolder(library.info.sort),
       jump: onjump,
     });
   }

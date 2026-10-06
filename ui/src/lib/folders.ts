@@ -175,11 +175,12 @@ export async function returnToAll(deps: {
   currentView: () => Promise<GridView>;
   setView: (view: GridView) => Promise<void>;
   lastFolder: () => Promise<number | null>;
-  /** Whether the grid is sorted by date. The remembered folder is a place in the date
-   *  order, written only while All is laid out by folder; in a flat sort a jump would land
-   *  on that folder's first photo wherever the key put it - somewhere, not where the user
-   *  was - so All opens at its top, as it does at launch (`Grid.svelte`'s restore). */
-  sortedByDate: () => boolean;
+  /** Whether the grid runs folder by folder (`laidOutByFolder`). The remembered folder is a
+   *  place in that arrangement, written only while All is in it; under a flat sort or a
+   *  date grouping a jump would land on that folder's first photo wherever the order put it
+   *  - somewhere, not where the user was - so All opens at its top, as it does at launch
+   *  (`Grid.svelte`'s restore). */
+  byFolder: () => boolean;
   jump: (folderId: number) => void;
 }): Promise<void> {
   deps.cancelSearch();
@@ -193,7 +194,7 @@ export async function returnToAll(deps: {
   // the remembered place could already have been overwritten with the library's top - the
   // very reset this exists to avoid. A folder id, unlike an offset, needs no index to be read
   // against.
-  const folderId = deps.sortedByDate() ? await deps.lastFolder().catch(() => null) : null;
+  const folderId = deps.byFolder() ? await deps.lastFolder().catch(() => null) : null;
   await deps.setView('all');
   if (folderId !== null) deps.jump(folderId);
 }

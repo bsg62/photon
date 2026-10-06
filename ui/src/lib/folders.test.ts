@@ -257,7 +257,7 @@ describe('returnToAll', () => {
           order.push('lastFolder');
           return remembered();
         },
-        sortedByDate: () => true,
+        byFolder: () => true,
         jump: (id: number) => {
           order.push('jump');
           jumped.push(id);
@@ -299,9 +299,9 @@ describe('returnToAll', () => {
     expect(order).toEqual(['cancel', 'lastFolder', 'setView:all', 'jump']);
   });
 
-  it('opens at the top under a sort other than date, whose grid has no folder place', async () => {
+  it('opens at the top unless the grid runs folder by folder, the only order a folder is a place in', async () => {
     const { order, jumped, deps } = spyDeps('starred');
-    await returnToAll({ ...deps, sortedByDate: () => false });
+    await returnToAll({ ...deps, byFolder: () => false });
     expect(order).toEqual(['cancel', 'setView:all']);
     expect(jumped).toEqual([]);
   });

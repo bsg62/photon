@@ -6,6 +6,7 @@
   import { isCopyPhotoShortcut } from '../lib/copy-photo';
   import { folderLabel, folderSummary } from '../lib/folders';
   import { buildFailure, showEmptyNotice } from '../lib/grid-state';
+  import { laidOutByFolder } from '../lib/grouping';
   import { library } from '../lib/library.svelte';
   import { gridSize } from '../lib/app-grid-size.svelte';
   import { buildRows, columnsFor, defersThumbs, edgeScrollSpeed, fetchSpan, firstVisibleOffset, GAP, itemSpan, itemsInRect, type Rect, renderRange, rowOfItem, topFolderId, totalHeight, visibleRange } from '../lib/layout';
@@ -136,10 +137,11 @@
     started = true;
     void (async () => {
       try {
-        // The folder remembered is a place in the date order, written only while All is laid
-        // out by folder. In a flat sort a jump would still land - on the folder's first photo
-        // wherever the key put it - which is somewhere, not where the user left off.
-        if (library.info.sort.key !== 'date') return;
+        // The folder remembered is a place in the folder order, written only while All is
+        // laid out by folder. Under a flat sort or a date grouping a jump would still land -
+        // on the folder's first photo wherever the order put it - which is somewhere, not
+        // where the user left off.
+        if (!laidOutByFolder(library.info.sort)) return;
         const folderId = await api.lastFolder();
         if (folderId === null) return;
         const offset = await api.gridOffsetOfFolder(folderId);

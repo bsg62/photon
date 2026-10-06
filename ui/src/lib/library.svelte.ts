@@ -21,7 +21,7 @@ import {
 import { untrack } from 'svelte';
 import { keepCopiesName } from './copies';
 import { removedMessage } from './people';
-import { lastIndexAtOrBefore } from './layout';
+import { hasHeader, lastIndexAtOrBefore } from './layout';
 import { PageSignals } from './page-signals.svelte';
 import { KEEP_SLACK, PAGE_SIZE, PageCache, pageOf } from './pages';
 import { singleFlight } from './single-flight';
@@ -302,16 +302,18 @@ export class LibraryStore {
     // same start rather than walking away from it.
   }
 
-  /** Ctrl/Cmd+A: selects the photos of the folder the lead is in, or — outside the library
-   *  view — every photo in the view.
+  /** Ctrl/Cmd+A: selects what is under the lead's header - its folder, or under a date
+   *  grouping its day, month or year - or, outside the library view, every photo in the view.
    *
    *  The lead stays where it is, so Enter still opens the photo the user was on. The anchor
    *  moves to the start of what was selected, which is what a Shift+click afterwards extends
    *  from: the selection began there. */
   async selectAll(): Promise<void> {
-    // All under a flat sort: still the folder being looked at, but its photos are scattered
-    // through the list, so it is a set of ids rather than a range.
-    if (this.info.view === 'all' && this.info.sections[0]?.folderId === null) {
+    // All with no headers (a flat sort, or grouped by nothing): still the folder being
+    // looked at, but its photos are scattered through the list, so it is a set of ids
+    // rather than a range. Under a header - a folder's or a period's - it is the section.
+    const first = this.info.sections[0];
+    if (this.info.view === 'all' && first && !hasHeader(first)) {
       return this.selectFolderAt(this.selectedOffset ?? 0);
     }
     const range = this.selectAllRange();
@@ -332,7 +334,7 @@ export class LibraryStore {
    *  Every view but All is a set the user asked for — an album, a search, the starred
    *  photos — so "all" is that set, and the folder sections inside it are an arrangement of
    *  it rather than a bound. All is the whole library, where the unit the user is actually
-   *  looking at is one folder: on a fifty-thousand photo library, selecting every photo is
+   *  looking at is one section, a folder or a period: on a fifty-thousand photo library, selecting every photo is
    *  never what this key was pressed for, and starring the result would be a long operation
    *  nobody asked for. That holds under a flat sort too, where the folder is no longer a
    *  range; `selectFolderAt` covers it. */
