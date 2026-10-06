@@ -53,6 +53,13 @@ pub const SHOTS: &[Shot] = &[
         query: "theme=dark&do=select",
         dark: true,
     },
+    // The grid as one timeline with a header a month, and the Group control saying so; small
+    // tiles, so several months' headers are in view.
+    Shot {
+        name: "main-by-month-light",
+        query: "theme=light&group=month&tile=small",
+        dark: false,
+    },
     // Whether 120 and 224 are the right widths is a looking question, and this is how it
     // is looked at without launching the app.
     Shot {

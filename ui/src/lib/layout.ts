@@ -1,7 +1,7 @@
-/** Grid geometry. Square tiles in fixed-height rows, with one header row per folder
- *  section. Everything here is pure, so 100k items lay out in microseconds. */
+/** Grid geometry. Square tiles in fixed-height rows, with one header row per section that
+ *  has one - a folder's or a period's. Everything here is pure, so 100k items lay out in microseconds. */
 
-import type { Section } from './api';
+import type { Period, Section } from './api';
 import type { Motion } from './scroll-speed.svelte';
 import { TILE_SETTLE_MS } from './thumb-request.svelte';
 
@@ -18,7 +18,7 @@ export const TILE_WIDTH: Record<TileSize, number> = { small: 120, medium: 160, l
 
 export const GAP = 8;
 export const HEADER = 32;
-/** Extra space above every folder's header but the first, on top of the gutter under the
+/** Extra space above every section's header but the first, on top of the gutter under the
  *  last row before it, so one folder reads as ending before the next begins. Space between
  *  rows rather than part of the header row: a jump to a folder puts its header, not this
  *  gap, at the top of the grid. */
@@ -30,8 +30,10 @@ export function tileRow(tile: number): number {
 }
 
 export interface SectionLike {
-  /** Null for a run drawn with no header: a flat view's, which spans many folders. */
+  /** Null for a run drawn under no folder: a period's, or a flat view's. */
   folderId: number | null;
+  /** The day, month or year a run is drawn under, when the grid is grouped by one. */
+  period?: Period | null;
   offset: number;
   count: number;
 }
@@ -52,12 +54,17 @@ export function columnsFor(width: number, tile: number): number {
   return Math.max(1, Math.floor((width + GAP) / tileRow(tile)));
 }
 
-/** A section gets a header row when it names a folder; a flat view's run names none. */
+/** A section gets a header row when it names a folder or a period; a flat view's run names
+ *  neither. */
+export function hasHeader(section: SectionLike): boolean {
+  return section.folderId !== null || (section.period ?? null) !== null;
+}
+
 export function buildRows(sections: SectionLike[], columns: number, tile: number): Row[] {
   const rows: Row[] = [];
   let top = 0;
   sections.forEach((s, section) => {
-    if (s.folderId !== null) {
+    if (hasHeader(s)) {
       if (rows.length > 0) top += SECTION_GAP;
       rows.push({ kind: 'header', section, first: s.offset, count: 0, top, height: HEADER });
       top += HEADER;

@@ -26,6 +26,11 @@ export function yearOf(takenAtMin: number): number {
   return new Date(takenAtMin * 1000).getFullYear();
 }
 
+/** "1 photo", "4,210 photos": what a header says it holds. */
+export function photoCount(count: number, locale?: string): string {
+  return count === 1 ? '1 photo' : `${count.toLocaleString(locale)} photos`;
+}
+
 /** What a folder's header in the grid says after its name: how many of its photos the view
  *  holds, and the month its oldest one was taken - "23 photos · July 2026".
  *
@@ -36,9 +41,8 @@ export function yearOf(takenAtMin: number): number {
  *  are the same instant read the same way. The count is the view's: in a search it is the
  *  photos that matched, which is what is under the header. */
 export function folderSummary(count: number, takenAtMin: number, locale?: string): string {
-  const photos = count === 1 ? '1 photo' : `${count.toLocaleString(locale)} photos`;
   const month = new Date(takenAtMin * 1000).toLocaleDateString(locale, { month: 'long', year: 'numeric' });
-  return `${photos} · ${month}`;
+  return `${photoCount(count, locale)} · ${month}`;
 }
 
 /** What photon calls a folder: the user's alias, else its directory name. The one place that
@@ -103,15 +107,18 @@ const FOLDER_ORDER: Record<Exclude<SortKey, 'date'>, (a: FolderRow, b: FolderRow
 /** The sidebar's folder list under the user's sort.
  *
  *  By date it is `groupByYear`, and reversed it is that list turned over - years oldest
- *  first and each year's folders oldest first - which is the order the reversed grid reaches
- *  them in. By any other key the grid is flat and has no folder order to follow, so the list
+ *  first and each year's folders oldest first - which, grouped by folder, is the order the
+ *  reversed grid reaches them in. Under a date grouping or none the tallies arrive in the
+ *  order the timeline first reaches each folder; `groupByYear` sorts them itself, so the
+ *  list is the same and only a tie (folders whose oldest photos share one second) falls
+ *  differently. By any other key the grid is flat and has no folder order to follow, so the list
  *  answers the key's question about folders instead (the biggest, the most recently touched)
  *  and drops the year headings, which would split a list sorted by name into pieces sorted
  *  by something else. Ties keep the order the grid first reaches each folder. */
 export function arrangeFolders(rows: FolderRow[], sort: Sort): YearGroup[] {
-  // Reversed by the comparison rather than by turning the result over: the rows already
-  // arrive in the reversed grid's order, and turning the list over would flip every tie
-  // back against it.
+  // Reversed by the comparison rather than by turning the result over: grouped by folder
+  // the rows already arrive in the reversed grid's order, and turning the list over would
+  // flip every tie back against it.
   if (sort.key === 'date') return groupByYear(rows, sort.reverse);
   const order = FOLDER_ORDER[sort.key];
   const sign = sort.reverse ? -1 : 1;
@@ -171,11 +178,12 @@ export async function returnToAll(deps: {
   currentView: () => Promise<GridView>;
   setView: (view: GridView) => Promise<void>;
   lastFolder: () => Promise<number | null>;
-  /** Whether the grid is sorted by date. The remembered folder is a place in the date
-   *  order, written only while All is laid out by folder; in a flat sort a jump would land
-   *  on that folder's first photo wherever the key put it - somewhere, not where the user
-   *  was - so All opens at its top, as it does at launch (`Grid.svelte`'s restore). */
-  sortedByDate: () => boolean;
+  /** Whether the grid runs folder by folder (`laidOutByFolder`). The remembered folder is a
+   *  place in that arrangement, written only while All is in it; under a flat sort or a
+   *  date grouping a jump would land on that folder's first photo wherever the order put it
+   *  - somewhere, not where the user was - so All opens at its top, as it does at launch
+   *  (`Grid.svelte`'s restore). */
+  byFolder: () => boolean;
   jump: (folderId: number) => void;
 }): Promise<void> {
   deps.cancelSearch();
@@ -189,7 +197,7 @@ export async function returnToAll(deps: {
   // the remembered place could already have been overwritten with the library's top - the
   // very reset this exists to avoid. A folder id, unlike an offset, needs no index to be read
   // against.
-  const folderId = deps.sortedByDate() ? await deps.lastFolder().catch(() => null) : null;
+  const folderId = deps.byFolder() ? await deps.lastFolder().catch(() => null) : null;
   await deps.setView('all');
   if (folderId !== null) deps.jump(folderId);
 }

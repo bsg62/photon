@@ -402,6 +402,28 @@ publishing it.
 - [ ] Choose a sort, quit and relaunch: photon opens in the same sort. Back on Date taken, the
       grid opens at the folder last browsed, as before.
 - [ ] Changing the sort with text in the search box keeps the search, now in the new order.
+- [ ] Group by (the menu between the sort and the photo sizes), sorted by Date taken: **By month**
+      shows one timeline across folders, newest photo first, with a header at each month
+      ("October 2026", then its count, "312 photos") and no path; **By day** and **By year** show the same photos
+      in the same order with headers at each day ("Sunday, 4 October 2026" in the system's
+      format) and each year; **No grouping** shows them with no headers and no year strip;
+      **By folder** is the grid as it was. The year strip works under day, month and year.
+      The reverse button turns each over, oldest first.
+- [ ] A photo taken late on the last evening of a month is under that month's header, and a
+      search for that month (`2026-09`) finds those photos too (it may also find a file or
+      folder with that text in its name).
+- [ ] Sort by Name, Size or Date modified: the Group menu is dimmed, does not open, and says
+      why on hover; the grid is flat as before. Back on Date taken, the grouping chosen before
+      is there again. Change the sort and the grouping quickly one after the other: both land.
+- [ ] Grouped by month, open Starred, an album, a search and Recent: each is laid out by month.
+      Grouped by folder, Recent has no headers, as before.
+- [ ] Grouped by month in All, select a photo and press Ctrl+A: that month is selected. With
+      No grouping, Ctrl+A selects that photo's folder, wherever its photos sit.
+- [ ] Grouped by month, click a folder in the sidebar: the grid scrolls to a photo of that
+      folder. Open a photo: the caption counts within the month ("3 / 312").
+- [ ] Choose a grouping, quit and relaunch: photon opens grouped the same way, at the top.
+      Back on By folder, quit and relaunch: the grid opens at the folder last browsed.
+- [ ] Changing the grouping scrolls the grid to the top and clears the selection.
 - [ ] Drag a folder from the file manager over photon's window: a card says "Drop folders to add them to photon"; drag out again and it goes. Drop it: a toast says "Watching “name”", the folder appears in the sidebar and under Settings → Folders, and its scan starts. Drop two folders at once: "Watching 2 folders". Drop a single photo: one toast says it is a file, not a folder, and nothing is added. Drop a folder that is already watched, or one inside a watched folder: no duplicate appears (the second says it overlaps). Do this once with the viewer open and once with Settings open. Check on each OS: the drag is the system's, and each webview reports it differently.
 
 ## Face detection

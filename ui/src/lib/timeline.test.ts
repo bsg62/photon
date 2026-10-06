@@ -10,9 +10,17 @@ const section = (folderId: number, offset: number, count: number, year: number):
   offset,
   count,
   takenAtMin: mid(year),
+  period: null,
 });
 
 describe('yearMarks', () => {
+  it('reads a period section\'s own year, not the instant of its oldest photo', () => {
+    // `takenAtMin` deliberately says another year: the period is what the header says.
+    const period = (year: number, offset: number): Section => ({ folderId: null, offset, count: 1, takenAtMin: mid(2030), period: { year, month: 12, day: 31 } });
+    const sections = [period(2026, 0), period(2025, 1), period(2025, 2)];
+    expect(yearMarks(sections, buildRows(sections, 4, TILE_WIDTH.medium)).map((m) => m.year)).toEqual([2026, 2025]);
+  });
+
   it('marks the first header of each run of a year', () => {
     const sections = [section(1, 0, 3, 2024), section(2, 3, 2, 2024), section(3, 5, 4, 2019)];
     const rows = buildRows(sections, 2, TILE_WIDTH.medium);

@@ -3,8 +3,8 @@
  *
  *  The strip is the grid's canvas scaled to the strip's height, so a year takes the share of
  *  the strip its photos take of the scroll, and a point on the strip is a scroll position.
- *  It reads each section's `takenAtMin` — the value the sidebar groups folders by — so the
- *  strip, the sidebar and the grid stay on one axis. */
+ *  It reads each folder section's `takenAtMin` — the value the sidebar groups folders by — so the
+ *  strip, the sidebar and the grid stay on one axis. A period section carries its own year. */
 
 import type { Section } from './api';
 import { yearOf } from './folders';
@@ -28,7 +28,9 @@ export function yearMarks(sections: Section[], rows: Row[]): YearMark[] {
     if (row.kind !== 'header') continue;
     const section = sections[row.section];
     if (!section) continue;
-    const year = yearOf(section.takenAtMin);
+    // A period section says its year itself, in the reading Rust grouped by; a folder's is
+    // the year of its oldest photo, as the sidebar files it.
+    const year = section.period?.year ?? yearOf(section.takenAtMin);
     if (marks[marks.length - 1]?.year !== year) marks.push({ year, top: row.top });
   }
   return marks;

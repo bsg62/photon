@@ -69,6 +69,55 @@ pub enum Layout {
     Folders,
     /// One section holding every row, belonging to no folder and drawn with no header.
     Flat,
+    /// One section per day, month or year the rows pass through, each under a header naming
+    /// it. The rows must already be in date order (`sort::Sort::arrange`), or a period comes
+    /// back as a second section the way a folder's interleaved photos do.
+    Periods(PeriodUnit),
+}
+
+/// How long a stretch one header of a date grouping covers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PeriodUnit {
+    Day,
+    Month,
+    Year,
+}
+
+impl PeriodUnit {
+    /// The period a capture time falls in. Read as the camera's wall-clock time
+    /// (`civil_from_unix`), the reading search's `2024-06` and Statistics use, so a month's
+    /// header and a search for that month hold the same photos.
+    pub fn of(self, taken_at: i64) -> Period {
+        let (year, month, day) = crate::metadata::civil_from_unix(taken_at);
+        match self {
+            Self::Day => Period {
+                year,
+                month: Some(month),
+                day: Some(day),
+            },
+            Self::Month => Period {
+                year,
+                month: Some(month),
+                day: None,
+            },
+            Self::Year => Period {
+                year,
+                month: None,
+                day: None,
+            },
+        }
+    }
+}
+
+/// A day, a month or a year: a month has no `day`, a year neither. Sent as its numbers
+/// rather than as a timestamp, so the UI names the day Rust put the photos in instead of
+/// reading an instant again in the viewer's own zone.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Period {
+    pub year: i64,
+    pub month: Option<u32>,
+    pub day: Option<u32>,
 }
 
 /// A u64 as 16 lowercase hex characters: exact in JavaScript, unlike a JSON number.
@@ -110,17 +159,19 @@ pub struct GridEntry {
 }
 
 /// A run of consecutive grid entries laid out together: one folder's photos under its
-/// header, or, in a flat layout, every row under none.
+/// header, one period's under its own, or, in a flat layout, every row under none.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Section {
-    /// The folder whose header the run is drawn under; `None` in a flat layout, whose one
-    /// run spans many folders and has no header.
+    /// The folder whose header the run is drawn under; `None` in every other layout, whose
+    /// runs span many folders.
     pub folder_id: Option<i64>,
     pub offset: usize,
     pub count: usize,
     /// Capture time of the run's oldest photo, in seconds. The timeline's year marks read it.
     pub taken_at_min: i64,
+    /// The day, month or year the run is drawn under; `None` unless the layout is by period.
+    pub period: Option<Period>,
 }
 
 /// One folder's share of the view: how many of its photos the view holds, and when the
@@ -173,22 +224,26 @@ impl GridIndex {
         let mut tally_of = foldhash::HashMap::<i64, usize>::default();
         let mut positions =
             foldhash::HashMap::with_capacity_and_hasher(entries.len(), Default::default());
-        let section_folder = |entry: &GridEntry| match layout {
-            Layout::Folders => Some(entry.folder_id),
-            Layout::Flat => None,
+        // What a run is of. A new section starts wherever this differs from the last one's.
+        let section_key = |entry: &GridEntry| match layout {
+            Layout::Folders => (Some(entry.folder_id), None),
+            Layout::Flat => (None, None),
+            Layout::Periods(unit) => (None, Some(unit.of(entry.taken_at))),
         };
         for (index, entry) in entries.iter().enumerate() {
             positions.insert(entry.id, index);
+            let (folder_id, period) = section_key(entry);
             // Real minimums, not "the run's first entry": entries are ordered by folder and
             // then by capture date, but nothing here fixes the direction, and assuming it
             // would silently file a folder under the wrong year.
             match sections.last_mut() {
-                Some(section) if section.folder_id == section_folder(entry) => {
+                Some(section) if section.folder_id == folder_id && section.period == period => {
                     section.count += 1;
                     section.taken_at_min = section.taken_at_min.min(entry.taken_at);
                 }
                 _ => sections.push(Section {
-                    folder_id: section_folder(entry),
+                    folder_id,
+                    period,
                     offset: index,
                     count: 1,
                     taken_at_min: entry.taken_at,
@@ -248,10 +303,11 @@ impl GridIndex {
         &self.folders
     }
 
-    /// Where a jump to the folder lands: its header, or in a flat layout, which has no
-    /// headers, the first of its photos the grid reaches. The flat answer is what makes a
-    /// sidebar click do something under a sort other than date, where All itself is flat;
-    /// Recent, the other flat view, is never asked, since a folder jump switches to All.
+    /// Where a jump to the folder lands: its header, or in a layout that gives folders no
+    /// header (flat, or by period), the first of its photos the grid reaches. The flat answer
+    /// is what makes a sidebar click do something under a sort other than date, where All
+    /// itself is flat; Recent, the other flat view, is never asked, since a folder jump
+    /// switches to All.
     pub fn offset_of_folder(&self, folder_id: i64) -> Option<usize> {
         match self.layout {
             Layout::Folders => self
@@ -259,7 +315,9 @@ impl GridIndex {
                 .iter()
                 .find(|s| s.folder_id == Some(folder_id))
                 .map(|s| s.offset),
-            Layout::Flat => self.entries.iter().position(|e| e.folder_id == folder_id),
+            Layout::Flat | Layout::Periods(_) => {
+                self.entries.iter().position(|e| e.folder_id == folder_id)
+            }
         }
     }
 
@@ -352,19 +410,22 @@ mod tests {
                     folder_id: Some(10),
                     offset: 0,
                     count: 2,
-                    taken_at_min: 1
+                    taken_at_min: 1,
+                    period: None
                 },
                 Section {
                     folder_id: Some(20),
                     offset: 2,
                     count: 1,
-                    taken_at_min: 3
+                    taken_at_min: 3,
+                    period: None
                 },
                 Section {
                     folder_id: Some(30),
                     offset: 3,
                     count: 2,
-                    taken_at_min: 4
+                    taken_at_min: 4,
+                    period: None
                 },
             ]
         );
@@ -395,7 +456,8 @@ mod tests {
                 folder_id: None,
                 offset: 0,
                 count: 4,
-                taken_at_min: 200
+                taken_at_min: 200,
+                period: None
             }]
         );
         // No header to land on: a jump lands on the first of the folder's photos instead.
@@ -589,16 +651,149 @@ mod tests {
             offset: 2,
             count: 3,
             taken_at_min: 4,
+            period: None,
         })
         .unwrap();
         assert_eq!(
             json,
-            r#"{"folderId":1,"offset":2,"count":3,"takenAtMin":4}"#
+            r#"{"folderId":1,"offset":2,"count":3,"takenAtMin":4,"period":null}"#
         );
         let json = serde_json::to_string(&entry(7, 1)).unwrap();
         assert_eq!(
             json,
             r#"{"id":7,"folderId":1,"takenAt":7,"aspect":1.5,"kind":"image","durationMs":null,"starred":false,"hasCopies":false,"thumbKey":"000000000000002a"}"#
+        );
+    }
+
+    /// Seconds for a wall-clock time, the way `taken_at` holds one.
+    fn at(year: i64, month: u32, day: u32, hour: u32, minute: u32, second: u32) -> i64 {
+        crate::metadata::naive_to_unix(year, month, day, hour, minute, second)
+    }
+
+    /// Newest first, across two folders: a second either side of new year's midnight, then
+    /// earlier on the 31st, then a month before.
+    fn timeline() -> Vec<GridEntry> {
+        vec![
+            entry_at(1, 10, at(2026, 1, 1, 0, 0, 0)),
+            entry_at(2, 20, at(2025, 12, 31, 23, 59, 59)),
+            entry_at(3, 10, at(2025, 12, 31, 8, 0, 0)),
+            entry_at(4, 20, at(2025, 11, 30, 12, 0, 0)),
+        ]
+    }
+
+    fn runs(grid: &GridIndex) -> Vec<(Option<Period>, usize, usize)> {
+        grid.sections()
+            .iter()
+            .map(|s| (s.period, s.offset, s.count))
+            .collect()
+    }
+
+    fn period(year: i64, month: Option<u32>, day: Option<u32>) -> Option<Period> {
+        Some(Period { year, month, day })
+    }
+
+    /// A second apart across midnight on 31 December is two days, two months and two years;
+    /// hours apart on one day is one of each. The folders the photos come from start nothing.
+    #[test]
+    fn a_period_layout_starts_a_section_where_the_period_changes() {
+        let days = GridIndex::build(timeline(), Layout::Periods(PeriodUnit::Day));
+        assert_eq!(
+            runs(&days),
+            [
+                (period(2026, Some(1), Some(1)), 0, 1),
+                (period(2025, Some(12), Some(31)), 1, 2),
+                (period(2025, Some(11), Some(30)), 3, 1),
+            ]
+        );
+        let months = GridIndex::build(timeline(), Layout::Periods(PeriodUnit::Month));
+        assert_eq!(
+            runs(&months),
+            [
+                (period(2026, Some(1), None), 0, 1),
+                (period(2025, Some(12), None), 1, 2),
+                (period(2025, Some(11), None), 3, 1),
+            ]
+        );
+        let years = GridIndex::build(timeline(), Layout::Periods(PeriodUnit::Year));
+        assert_eq!(
+            runs(&years),
+            [
+                (period(2026, None, None), 0, 1),
+                (period(2025, None, None), 1, 3)
+            ]
+        );
+        assert!(days.sections().iter().all(|s| s.folder_id.is_none()));
+        // The run's oldest photo, as for a folder: the 31st's is the one at 08:00.
+        assert_eq!(days.sections()[1].taken_at_min, at(2025, 12, 31, 8, 0, 0));
+        // The sidebar's folders are the same whatever the sections are.
+        assert_eq!(
+            days.folders(),
+            GridIndex::build(timeline(), Layout::Folders).folders()
+        );
+    }
+
+    /// Reversed, the timeline runs oldest first: still one section per period, none twice.
+    #[test]
+    fn a_reversed_timeline_has_each_period_once() {
+        let mut rows = timeline();
+        rows.reverse();
+        let months = GridIndex::build(rows, Layout::Periods(PeriodUnit::Month));
+        assert_eq!(
+            runs(&months),
+            [
+                (period(2025, Some(11), None), 0, 1),
+                (period(2025, Some(12), None), 1, 2),
+                (period(2026, Some(1), None), 3, 1),
+            ]
+        );
+    }
+
+    /// No folder has a header under a period layout, so a jump lands on the first of the
+    /// folder's photos, as in a flat one.
+    #[test]
+    fn a_folder_jump_under_periods_lands_on_the_folders_first_photo() {
+        let grid = GridIndex::build(timeline(), Layout::Periods(PeriodUnit::Month));
+        assert_eq!(grid.offset_of_folder(10), Some(0));
+        assert_eq!(grid.offset_of_folder(20), Some(1));
+        assert_eq!(grid.offset_of_folder(99), None);
+    }
+
+    /// A file with no capture date is dated by its modification time, which can be zero or
+    /// negative: the second before the epoch is the last day of 1969, not a panic.
+    #[test]
+    fn a_date_before_1970_has_its_own_period() {
+        assert_eq!(
+            PeriodUnit::Day.of(-1),
+            Period {
+                year: 1969,
+                month: Some(12),
+                day: Some(31)
+            }
+        );
+        assert_eq!(
+            PeriodUnit::Year.of(0),
+            Period {
+                year: 1970,
+                month: None,
+                day: None
+            }
+        );
+    }
+
+    /// A search with no hits under a date grouping: nothing to head.
+    #[test]
+    fn an_empty_view_has_no_period_sections() {
+        let grid = GridIndex::build(Vec::new(), Layout::Periods(PeriodUnit::Day));
+        assert!(grid.sections().is_empty());
+        assert_eq!(grid.offset_of_folder(10), None);
+    }
+
+    #[test]
+    fn a_period_serialises_with_the_parts_it_has() {
+        let grid = GridIndex::build(vec![entry_at(1, 10, 0)], Layout::Periods(PeriodUnit::Month));
+        assert_eq!(
+            serde_json::to_string(&grid.sections()[0]).unwrap(),
+            r#"{"folderId":null,"offset":0,"count":1,"takenAtMin":0,"period":{"year":1970,"month":1,"day":null}}"#
         );
     }
 }

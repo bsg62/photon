@@ -61,7 +61,8 @@ export function fieldOwnsKey(field: { type: string }, key: string): boolean {
 }
 
 export interface FolderPosition {
-  /** 1-based position within the folder, or 0 when there is nothing to number. */
+  /** 1-based position within the section (a folder, or a day, month or year), or 0 when
+   *  there is nothing to number. */
   index: number;
   count: number;
 }
@@ -123,9 +124,10 @@ function moveFrom(offset: number, key: NavKey, sections: SectionLike[], columns:
 }
 
 /** Where a grid offset sits within its own section, which is the number the viewer's caption
- *  shows. In a folder-first view that is its folder - "3 / 40" is the third of forty in this
- *  folder, the number a person can check against their file manager. A flat view (Recent)
- *  is one section, so it is counted flat: the photo's place among the newest. */
+ *  shows. Grouped by folder that is its folder - "3 / 40" is the third of forty in this
+ *  folder, the number a person can check against their file manager; under a date grouping
+ *  it is the day, month or year. A view with no headers (Recent, No grouping, a sort other
+ *  than date) is one section, so it is counted whole: the photo's place among them all. */
 export function positionInSection(sections: SectionLike[], offset: number): FolderPosition {
   if (sections.length === 0) return { index: 0, count: 0 };
   const s = sections[sectionIndexOf(sections, offset)];

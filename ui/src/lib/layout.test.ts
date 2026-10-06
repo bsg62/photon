@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildRows, columnsFor, defersThumbs, edgeScrollSpeed, fetchSpan, firstVisibleOffset, GAP, HEADER, itemSpan, itemsInRect, LEAD_MS, LEAD_OVERSCAN_MAX, RENDER_OVERSCAN, renderOverscan, renderRange, rowIndexAt, rowOfItem, tileRow, TILE_WIDTH, topFolderId, totalHeight, TRAIL_OVERSCAN, visibleRange } from './layout';
+import { buildRows, columnsFor, defersThumbs, edgeScrollSpeed, fetchSpan, firstVisibleOffset, GAP, hasHeader, HEADER, itemSpan, itemsInRect, LEAD_MS, LEAD_OVERSCAN_MAX, RENDER_OVERSCAN, renderOverscan, renderRange, rowIndexAt, rowOfItem, tileRow, TILE_WIDTH, topFolderId, totalHeight, TRAIL_OVERSCAN, visibleRange } from './layout';
 import { type Motion, STILL } from './scroll-speed.svelte';
 import { TILE_SETTLE_MS } from './thumb-request.svelte';
 
@@ -522,5 +522,22 @@ describe('edgeScrollSpeed', () => {
     expect(edgeScrollSpeed(130, 100, 160, 40, 20)).toBe(0);
     expect(edgeScrollSpeed(105, 100, 160, 40, 20)).toBeLessThan(0);
     expect(edgeScrollSpeed(155, 100, 160, 40, 20)).toBeGreaterThan(0);
+  });
+});
+
+describe('period sections', () => {
+  const month = (m: number, offset: number, count: number) => ({ folderId: null, period: { year: 2026, month: m, day: null }, offset, count });
+
+  it('get a header each, as a folder does', () => {
+    const rows = buildRows([month(10, 0, 3), month(9, 3, 2)], 2, TILE_WIDTH.medium);
+    expect(rows.map((r) => r.kind)).toEqual(['header', 'tiles', 'tiles', 'header', 'tiles']);
+    expect(rows[3].first).toBe(3);
+  });
+
+  it('and a run with neither a folder nor a period gets none', () => {
+    const rows = buildRows([{ folderId: null, period: null, offset: 0, count: 3 }], 2, TILE_WIDTH.medium);
+    expect(rows.map((r) => r.kind)).toEqual(['tiles', 'tiles']);
+    expect(hasHeader({ folderId: null, offset: 0, count: 3 })).toBe(false);
+    expect(hasHeader({ folderId: 7, offset: 0, count: 3 })).toBe(true);
   });
 });

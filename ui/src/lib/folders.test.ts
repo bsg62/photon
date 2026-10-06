@@ -7,6 +7,7 @@ import {
   folderSummary,
   groupByYear,
   locateItem,
+  photoCount,
   returnToAll,
   yearOf,
   type FolderRow,
@@ -88,45 +89,45 @@ describe('arrangeFolders', () => {
 
   it('keeps the year groups by date, and turns them over when reversed', () => {
     const rows = folderRows(tallies, folders);
-    expect(arrangeFolders(rows, { key: 'date', reverse: false })).toEqual(groupByYear(rows));
-    const reversed = arrangeFolders(rows, { key: 'date', reverse: true });
+    expect(arrangeFolders(rows, { key: 'date', reverse: false, group: 'folder' as const })).toEqual(groupByYear(rows));
+    const reversed = arrangeFolders(rows, { key: 'date', reverse: true, group: 'folder' as const });
     expect(reversed.map((g) => g.year)).toEqual([2019, 2024]);
     expect(names(reversed)).toEqual([['old'], ['rome', 'oslo']]);
   });
 
   it('lists every folder under one headerless group by size and by modified', () => {
     const rows = folderRows(tallies, folders);
-    const bySize = arrangeFolders(rows, { key: 'size', reverse: false });
+    const bySize = arrangeFolders(rows, { key: 'size', reverse: false, group: 'folder' as const });
     expect(bySize.map((g) => g.year)).toEqual([null]);
     expect(names(bySize)).toEqual([['oslo', 'rome', 'old']]);
-    expect(names(arrangeFolders(rows, { key: 'size', reverse: true }))).toEqual([['old', 'rome', 'oslo']]);
-    expect(names(arrangeFolders(rows, { key: 'modified', reverse: false }))).toEqual([['rome', 'old', 'oslo']]);
+    expect(names(arrangeFolders(rows, { key: 'size', reverse: true, group: 'folder' as const }))).toEqual([['old', 'rome', 'oslo']]);
+    expect(names(arrangeFolders(rows, { key: 'modified', reverse: false, group: 'folder' as const }))).toEqual([['rome', 'old', 'oslo']]);
   });
 
   it('sorts an aliased folder by its alias', () => {
     const aliased = folders.map((f) => (f.id === 3 ? { ...f, alias: 'Aarhus trip' } : f));
     const rows = folderRows(tallies, aliased);
-    expect(names(arrangeFolders(rows, { key: 'name', reverse: false }))).toEqual([['Aarhus trip', 'old', 'rome']]);
+    expect(names(arrangeFolders(rows, { key: 'name', reverse: false, group: 'folder' as const }))).toEqual([['Aarhus trip', 'old', 'rome']]);
   });
 
   it('sorts names ignoring case and reading numbers', () => {
     const row = (folderId: number, name: string): FolderRow => ({ folderId, name, count: 1, year: 2024, takenAtMin: 0, bytes: 0, modifiedMs: 0 });
     const rows = [row(1, 'Trip 10'), row(2, 'beach'), row(3, 'trip 2'), row(4, 'Attic')];
-    expect(names(arrangeFolders(rows, { key: 'name', reverse: false }))).toEqual([['Attic', 'beach', 'trip 2', 'Trip 10']]);
-    expect(names(arrangeFolders(rows, { key: 'name', reverse: true }))).toEqual([['Trip 10', 'trip 2', 'beach', 'Attic']]);
+    expect(names(arrangeFolders(rows, { key: 'name', reverse: false, group: 'folder' as const }))).toEqual([['Attic', 'beach', 'trip 2', 'Trip 10']]);
+    expect(names(arrangeFolders(rows, { key: 'name', reverse: true, group: 'folder' as const }))).toEqual([['Trip 10', 'trip 2', 'beach', 'Attic']]);
   });
 
   it('keeps the grid order between folders that tie, reversed or not', () => {
     // Reversed, the tallies already arrive in the reversed grid's order; ties must keep it.
     const row = (folderId: number, name: string): FolderRow => ({ folderId, name, count: 1, year: 2024, takenAtMin: 0, bytes: 7, modifiedMs: 0 });
     const rows = [row(1, 'c'), row(2, 'a'), row(3, 'b')];
-    expect(names(arrangeFolders(rows, { key: 'size', reverse: false }))).toEqual([['c', 'a', 'b']]);
-    expect(names(arrangeFolders(rows, { key: 'size', reverse: true }))).toEqual([['c', 'a', 'b']]);
-    expect(names(arrangeFolders(rows, { key: 'date', reverse: true }))).toEqual([['c', 'a', 'b']]);
+    expect(names(arrangeFolders(rows, { key: 'size', reverse: false, group: 'folder' as const }))).toEqual([['c', 'a', 'b']]);
+    expect(names(arrangeFolders(rows, { key: 'size', reverse: true, group: 'folder' as const }))).toEqual([['c', 'a', 'b']]);
+    expect(names(arrangeFolders(rows, { key: 'date', reverse: true, group: 'folder' as const }))).toEqual([['c', 'a', 'b']]);
   });
 
   it('lists nothing, not an empty group, when no folder has photos', () => {
-    expect(arrangeFolders([], { key: 'name', reverse: false })).toEqual([]);
+    expect(arrangeFolders([], { key: 'name', reverse: false, group: 'folder' as const })).toEqual([]);
   });
 });
 
@@ -256,7 +257,7 @@ describe('returnToAll', () => {
           order.push('lastFolder');
           return remembered();
         },
-        sortedByDate: () => true,
+        byFolder: () => true,
         jump: (id: number) => {
           order.push('jump');
           jumped.push(id);
@@ -298,9 +299,9 @@ describe('returnToAll', () => {
     expect(order).toEqual(['cancel', 'lastFolder', 'setView:all', 'jump']);
   });
 
-  it('opens at the top under a sort other than date, whose grid has no folder place', async () => {
+  it('opens at the top unless the grid runs folder by folder, the only order a folder is a place in', async () => {
     const { order, jumped, deps } = spyDeps('starred');
-    await returnToAll({ ...deps, sortedByDate: () => false });
+    await returnToAll({ ...deps, byFolder: () => false });
     expect(order).toEqual(['cancel', 'setView:all']);
     expect(jumped).toEqual([]);
   });
@@ -348,5 +349,12 @@ describe('folderSummary', () => {
     const morning = new Date(2026, 0, 1, 0, 30).getTime() / 1000;
     expect(folderSummary(2, morning, 'en-US')).toBe('2 photos · January 2026');
     expect(yearOf(morning)).toBe(2026);
+  });
+});
+
+describe('photoCount', () => {
+  it('counts photos, and does not call one "photos"', () => {
+    expect(photoCount(1, 'en-US')).toBe('1 photo');
+    expect(photoCount(4210, 'en-US')).toBe('4,210 photos');
   });
 });

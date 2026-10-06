@@ -36,9 +36,14 @@ export interface AppInfo { version: string; libraryPath: string; licence: string
 /** `includesWebview` is false on macOS, where the web view's processes cannot be told apart
  *  from other apps' and `bytes` is photon's own process alone. */
 export interface MemoryUsage { bytes: number; processes: number; includesWebview: boolean }
-/** Mirrors `grid::Section`: a run the grid lays out. `folderId` is null for a flat view's one
- *  run, which spans many folders and is drawn with no header. `takenAtMin` is in SECONDS. */
-export interface Section { folderId: number | null; offset: number; count: number; takenAtMin: number }
+/** Mirrors `grid::Period`: a day, a month (`day` null) or a year (both null), as numbers.
+ *  Never a timestamp: the UI names the day Rust put the photos in, and must not read an
+ *  instant again in the viewer's own zone. */
+export interface Period { year: number; month: number | null; day: number | null }
+/** Mirrors `grid::Section`: a run the grid lays out. `folderId` names the folder a run is
+ *  drawn under, `period` the day, month or year; a flat view's one run has neither and no
+ *  header. `takenAtMin` is in SECONDS. */
+export interface Section { folderId: number | null; offset: number; count: number; takenAtMin: number; period: Period | null }
 /** Mirrors `grid::FolderTally`: one folder's photos in the view, whatever the layout.
  *  `takenAtMin` is the capture time of the folder's OLDEST photo, in SECONDS (multiply by
  *  1000 for a JS Date). The sidebar groups folders by the year it falls in. Oldest rather
@@ -48,9 +53,13 @@ export interface Section { folderId: number | null; offset: number; count: numbe
 export interface FolderTally { folderId: number; count: number; takenAtMin: number; bytes: number; modifiedMs: number }
 /** Mirrors `sort::SortKey`. */
 export type SortKey = 'date' | 'modified' | 'name' | 'size';
-/** Mirrors `sort::Sort`: what every view is sorted by. `date` keeps the folder sections;
- *  any other key lays the grid out flat. `reverse` turns the whole order over. */
-export interface Sort { key: SortKey; reverse: boolean }
+/** Mirrors `sort::Grouping`. */
+export type Grouping = 'folder' | 'day' | 'month' | 'year' | 'none';
+/** Mirrors `sort::Sort`: what every view is sorted by. `date` keeps the headers `group`
+ *  chooses - a folder's, a period's, or none; any other key lays the grid out flat and
+ *  ignores `group`, which is kept for when the sort returns. `reverse` turns the whole
+ *  order over. */
+export interface Sort { key: SortKey; reverse: boolean; group: Grouping }
 /** `hasCopies`: another live file has the same bytes or is a look-alike, the same rule the
  *  Duplicates view uses (`GridEntry::has_copies`). `durationMs` is a video's running time;
  *  null for a photo. */

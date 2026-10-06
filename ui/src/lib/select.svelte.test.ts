@@ -3,7 +3,7 @@ import { createSelect, TYPEAHEAD_RESET_MS } from './select.svelte';
 
 const LABELS = ['Date taken', 'Date modified', 'Name', 'Size'];
 
-function make(selected = 0, labels = LABELS) {
+function make(selected = 0, labels = LABELS, disabled: () => boolean = () => false) {
   const chosen: number[] = [];
   let held = selected;
   const select = createSelect({
@@ -14,6 +14,7 @@ function make(selected = 0, labels = LABELS) {
       chosen.push(i);
       held = i;
     },
+    disabled,
   });
   const press = (key: string, mods: { altKey?: boolean; ctrlKey?: boolean } = {}) => select.key({ key, ...mods });
   return { select, chosen, press };
@@ -22,6 +23,22 @@ function make(selected = 0, labels = LABELS) {
 describe('createSelect', () => {
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
+
+  it('does not open while disabled, from a click or from a key, and opens once it is not', () => {
+    let off = true;
+    const { select, press } = make(2, LABELS, () => off);
+    select.toggle();
+    expect(select.open).toBe(false);
+    for (const key of ['ArrowDown', 'ArrowUp', 'Enter', ' ', 'Home', 'End', 'd']) {
+      expect(press(key)).toBe(false);
+      expect(select.open).toBe(false);
+    }
+    expect(select.active).toBe(0);
+    off = false;
+    select.toggle();
+    expect(select.open).toBe(true);
+    expect(select.active).toBe(2);
+  });
 
   it('opens on the held option from the keys a closed select answers', () => {
     for (const key of ['ArrowDown', 'ArrowUp', 'Enter', ' ']) {

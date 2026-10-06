@@ -4,8 +4,9 @@
   import { copiesNotice, showCopiesLabel } from '../lib/copies';
   import { isOwnAlbum, ownAlbums } from '../lib/albums';
   import { isCopyPhotoShortcut } from '../lib/copy-photo';
-  import { folderLabel, folderSummary } from '../lib/folders';
+  import { folderLabel, folderSummary, photoCount } from '../lib/folders';
   import { buildFailure, showEmptyNotice } from '../lib/grid-state';
+  import { laidOutByFolder, periodLabel } from '../lib/grouping';
   import { library } from '../lib/library.svelte';
   import { gridSize } from '../lib/app-grid-size.svelte';
   import { buildRows, columnsFor, defersThumbs, edgeScrollSpeed, fetchSpan, firstVisibleOffset, GAP, itemSpan, itemsInRect, type Rect, renderRange, rowOfItem, topFolderId, totalHeight, visibleRange } from '../lib/layout';
@@ -71,9 +72,9 @@
   let capTrusted = false;
 
   const columns = $derived(columnsFor(Math.max(0, width - 2 * GAP), gridSize.width));
-  /** The index's own sections: one per folder run, or a single headerless run in a flat view
-   *  (Recent). Both the layout and the keyboard navigation read these, so arrow keys move
-   *  along the rows the eye sees.
+  /** The index's own sections: one per folder run, one per day, month or year under a date
+   *  grouping, or a single headerless run in a flat view (Recent). Both the layout and the
+   *  keyboard navigation read these, so arrow keys move along the rows the eye sees.
    *
    *  A tile's offline dimming follows the photo's own folder, not its section's: one Recent
    *  row holds photos from several folders, and its run names none of them. */
@@ -81,7 +82,7 @@
   const rows = $derived(buildRows(sections, columns, gridSize.width));
   const total = $derived(totalHeight(rows));
   const domHeight = $derived(Math.min(total, domMax));
-  /** The year strip. It needs folder headers to mark (so a flat view, which has none, never
+  /** The year strip. It needs headers to mark (so a flat view, which has none, never
    *  shows it), more than one year to choose between, and something to scroll. */
   const marks = $derived(yearMarks(sections, rows));
   const scrubbable = $derived(marks.length > 1 && total > height);
@@ -136,10 +137,11 @@
     started = true;
     void (async () => {
       try {
-        // The folder remembered is a place in the date order, written only while All is laid
-        // out by folder. In a flat sort a jump would still land - on the folder's first photo
-        // wherever the key put it - which is somewhere, not where the user left off.
-        if (library.info.sort.key !== 'date') return;
+        // The folder remembered is a place in the folder order, written only while All is
+        // laid out by folder. Under a flat sort or a date grouping a jump would still land -
+        // on the folder's first photo wherever the order put it - which is somewhere, not
+        // where the user left off.
+        if (!laidOutByFolder(library.info.sort)) return;
         const folderId = await api.lastFolder();
         if (folderId === null) return;
         const offset = await api.gridOffsetOfFolder(folderId);
@@ -162,6 +164,10 @@
   // actually browsing. Only on change, too — the folder at the top changes a handful of
   // times a session, while `scrollTop` changes on every frame of a flick, and this is a
   // database write.
+  //
+  // Under a date grouping, no grouping or a flat sort the section at the top names no
+  // folder, so `topFolderId` answers null and nothing is written: that is the whole guard,
+  // and it is why the remembered place survives an excursion into another arrangement.
   //
   // `library.restoring` gates the first write: until the restore below has run (or found
   // nothing to restore), the top of a freshly built grid is offset 0, and writing that
@@ -833,11 +839,18 @@
           {@const section = sections[row.section]}
           {@const folder = section.folderId === null ? undefined : library.folderOf(section.folderId)}
           <div class="header" style:top="{row.top - shift}px">
-            <span class="name">{folder ? folderLabel(folder) : ''}</span>
-            <!-- From the section, not the folder: it is there before the folder list is,
-                 and it counts the photos under this header, which in a search are fewer. -->
-            <span class="summary">{folderSummary(section.count, section.takenAtMin)}</span>
-            <span class="path">{folder?.path ?? ''}</span>
+            {#if section.period}
+              <!-- A period names itself and belongs to no folder, so there is no path to
+                   show; the count is the section's, as a folder's is. -->
+              <span class="name">{periodLabel(section.period)}</span>
+              <span class="summary">{photoCount(section.count)}</span>
+            {:else}
+              <span class="name">{folder ? folderLabel(folder) : ''}</span>
+              <!-- From the section, not the folder: it is there before the folder list is,
+                   and it counts the photos under this header, which in a search are fewer. -->
+              <span class="summary">{folderSummary(section.count, section.takenAtMin)}</span>
+              <span class="path">{folder?.path ?? ''}</span>
+            {/if}
           </div>
         {:else}
           <div class="row" style:top="{row.top - shift}px" style:gap="{GAP}px" style:padding-left="{GAP}px">

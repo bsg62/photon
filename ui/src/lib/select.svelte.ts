@@ -26,6 +26,8 @@ export function createSelect(opts: {
   label: (index: number) => string;
   /** Called only for a different option: choosing the one already held is not a change. */
   choose: (index: number) => void;
+  /** While it answers true the list cannot be opened: no click, no key. */
+  disabled?: () => boolean;
 }) {
   let open = $state(false);
   let active = $state(0);
@@ -40,7 +42,10 @@ export function createSelect(opts: {
     typedTimer = undefined;
   }
 
+  const off = () => opts.disabled?.() ?? false;
+
   function show(at = opts.selected()) {
+    if (off()) return;
     active = clamp(at < 0 ? 0 : at);
     open = true;
   }
@@ -84,7 +89,7 @@ export function createSelect(opts: {
    *  still has to move focus on. */
   function key(e: SelectKey): boolean {
     const n = opts.count();
-    if (n === 0) return false;
+    if (n === 0 || off()) return false;
     if (!open) {
       switch (e.key) {
         case 'ArrowDown':

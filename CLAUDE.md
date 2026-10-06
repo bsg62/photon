@@ -66,7 +66,7 @@ cargo run -p xtask -- metadata            # licence and installer metadata are c
 **Seeing the UI without launching it** (not in CI; needs Chromium on `PATH` or in `CHROMIUM`):
 
 ```bash
-cargo run -p xtask -- screenshots                     # thirty-seven PNGs into target/screenshots/
+cargo run -p xtask -- screenshots                     # thirty-eight PNGs into target/screenshots/
 cargo run -p xtask -- screenshots --only viewer-info-light --no-build
 cargo run -p xtask -- scroll-probe   # the end of a 300k-photo library is reachable
 ```
@@ -168,8 +168,8 @@ beyond the obvious four are `restarred`, `refaced` (Picasa faces), `rehidden` (P
 row re-pointed to its file's new path, below).
 
 **Grid order** (`items.rs`, `GRID_ORDER`) is the folder's oldest photo descending, then each
-folder's photos oldest to newest. The sidebar groups by the same value, so the list is an index
-of the grid. Changing one without the other splits them onto different axes. `GRID_ORDER` reads
+folder's photos oldest to newest. While the grid is grouped by folder the sidebar groups by the same value, so the list is an
+index of the grid (under a date grouping it is not: see the grouping, below). Changing one without the other splits them onto different axes. `GRID_ORDER` reads
 columns only `folder_order(shown, filter)` supplies, and `grid_query(select, shown, filter)` is the one place
 the two are paired: in a filtered view (Starred) the driver's filter must equal the outer
 `WHERE`, so a folder is placed by its oldest *matching* photo, which is what keeps the sidebar
@@ -186,6 +186,23 @@ folders by `FolderTally`'s `bytes`/`modified_ms` or by name (`arrangeFolders`). 
 of the `ViewState` a rebuild snapshots, so a sort change is guarded by the epoch like a view
 switch; do not read it at query time instead. `GridEntry` carries `size`/`mtime_ms` unserialized
 for it, and a name sort reads the names in a side query, because `GridEntry` is `Copy`.
+
+**The grouping** (`sort::Grouping`, the `grid_group` setting) is a field of that `Sort`, not a
+value beside it: by date it decides the order as well as the headers. `Folder` is the view's own
+order and layout; `Day`, `Month` and `Year` are one timeline across folders, newest first
+(`arrange`: a stable sort by `taken_at` over the view's rows), laid out as `Layout::Periods`,
+in every view, Recent included; `None` is that timeline flat. Under any other key it is kept and
+ignored, so the sort control changes a `Sort` by spreading it - built from its two fields, it
+dropped the grouping. A `Section` carries its `period` as numbers (`grid::Period`, read with
+`civil_from_unix` like search's `2024-06`), and the UI formats those (`periodLabel`), never
+`takenAtMin`, which it would read again in the viewer's zone. A section has a header when it
+has a folder or a period (`hasHeader`); code that means "flat" asks that, not
+`folderId === null`, which a period section has too - `selectAll` did, and under a month header
+selected a folder's scattered photos. The place photon remembers in the library is a folder, so
+its restore and `returnToAll` ask `laidOutByFolder`, not the sort key. Under a date grouping or
+none a folder has no header, so a sidebar click lands on the first of its photos the grid
+reaches (`offset_of_folder`, the flat answer) and the sidebar is no longer an index of the
+grid. The control's dimmed `Select` is `createSelect`'s `disabled`, tested there.
 
 **Hidden photos** (`library/hidden.rs`, schema 13) are in no view but `GridView::Hidden`.
 `grid_query` takes a `Shown` argument (`Visible`, `Hidden`, or `Either` for bookkeeping like the
@@ -1078,7 +1095,7 @@ anything sitting outside the tile's own box.
 
 The look cannot be tested here, but it can be seen without launching the app: `cargo run -p xtask --
 screenshots` builds the UI, serves `ui/dist` itself with `mock.js` (in
-`crates/xtask/screenshots/`) standing in for Tauri's IPC, and writes thirty-seven PNGs, in both themes,
+`crates/xtask/screenshots/`) standing in for Tauri's IPC, and writes thirty-eight PNGs, in both themes,
 to `target/screenshots/` with headless Chromium. It claims a Windows user agent and maps
 `photon.localhost` to its own port, because `mediaUrl` uses `http://photon.localhost` there
 and no plain browser can load `photon://`. It is Chromium's rendering, not WebKitGTK's or
