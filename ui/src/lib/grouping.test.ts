@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import type { Grouping, Sort } from './api';
 import { GROUPINGS, groupingApplies, laidOutByFolder, periodLabel } from './grouping';
 
@@ -41,5 +41,23 @@ describe('periodLabel', () => {
     expect(periodLabel({ year: 2025, month: 12, day: 31 }, 'en-US')).toBe('Wednesday, December 31, 2025');
     expect(periodLabel({ year: 2026, month: 1, day: 1 }, 'en-US')).toBe('Thursday, January 1, 2026');
     expect(periodLabel({ year: 2026, month: 1, day: null }, 'en-US')).toBe('January 2026');
+  });
+
+  describe('in a zone that skipped a day', () => {
+    // The UI's tsconfig has no Node types, and this is the one test that reaches for them.
+    const env = (globalThis as unknown as { process: { env: Record<string, string | undefined> } }).process.env;
+    const before = env.TZ;
+    afterEach(() => {
+      if (before === undefined) delete env.TZ;
+      else env.TZ = before;
+    });
+
+    it('still names that day', () => {
+      env.TZ = 'Pacific/Apia';
+      // Apia went from 29 to 31 December 2011: a local date for the 30th reads as the 31st.
+      // Checking that the zone took effect, or the case would pass either way.
+      expect(new Date(2011, 11, 30).getDate()).toBe(31);
+      expect(periodLabel({ year: 2011, month: 12, day: 30 }, 'en-US')).toBe('Friday, December 30, 2011');
+    });
   });
 });

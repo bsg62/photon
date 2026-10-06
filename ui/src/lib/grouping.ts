@@ -26,13 +26,14 @@ export function laidOutByFolder(sort: Sort): boolean {
   return sort.key === 'date' && sort.group === 'folder';
 }
 
-/** What a period's header says: "2026", "October 2026", "Sunday, October 4, 2026". Built
- *  from the period's own numbers as a local date, which is then formatted as the same local
- *  date - so the zone cancels out, where a timestamp would be read back shifted by it. */
+/** What a period's header says: "2026", "October 2026", "Sunday, October 4, 2026". The
+ *  period's own numbers are placed on the UTC calendar and read back from it, so the viewer's
+ *  zone never enters. A local date was wrong for a day the local calendar skipped: Samoa has
+ *  no 30 December 2011, and two headers read the 31st. */
 export function periodLabel(period: Period, locale?: string): string {
   if (period.month === null) return String(period.year);
-  const date = new Date(period.year, period.month - 1, period.day ?? 1);
+  const date = new Date(Date.UTC(period.year, period.month - 1, period.day ?? 1));
   return period.day === null
-    ? date.toLocaleDateString(locale, { month: 'long', year: 'numeric' })
-    : date.toLocaleDateString(locale, { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+    ? date.toLocaleDateString(locale, { month: 'long', year: 'numeric', timeZone: 'UTC' })
+    : date.toLocaleDateString(locale, { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' });
 }

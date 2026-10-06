@@ -33,12 +33,12 @@
     selected: () => held,
     label: (i) => options[i].label,
     choose: (i) => onchange(options[i].value),
+    disabled: () => disabled,
   });
 
   let root = $state<HTMLDivElement | undefined>();
 
   function onkeydown(e: KeyboardEvent) {
-    if (disabled) return;
     // Stopped here as well as prevented: the viewer's keys live on the window, and a key the
     // list answered - Enter choosing, Escape closing - must not also apply or cancel a crop.
     if (select.key(e)) {
@@ -68,7 +68,7 @@
     aria-disabled={disabled}
     aria-controls="{id}-list"
     aria-activedescendant={select.open ? `${id}-${select.active}` : undefined}
-    onclick={() => !disabled && select.toggle()}
+    onclick={() => select.toggle()}
     {onkeydown}
     onblur={() => select.close()}
   >
