@@ -12,6 +12,7 @@
     onchange,
     label,
     placement = 'below',
+    disabled = false,
   }: {
     options: { value: T; label: string }[];
     value: T;
@@ -20,6 +21,9 @@
     label: string;
     /** Which way the list opens. `above` for a control near the bottom of the window. */
     placement?: 'below' | 'above';
+    /** Shown, focusable and named, but not openable: for a choice that does not apply right
+     *  now and will again, where hiding it would move its neighbours. */
+    disabled?: boolean;
   } = $props();
 
   const id = $props.id();
@@ -34,6 +38,7 @@
   let root = $state<HTMLDivElement | undefined>();
 
   function onkeydown(e: KeyboardEvent) {
+    if (disabled) return;
     // Stopped here as well as prevented: the viewer's keys live on the window, and a key the
     // list answered - Enter choosing, Escape closing - must not also apply or cancel a crop.
     if (select.key(e)) {
@@ -54,14 +59,16 @@
   <div
     class="field"
     class:open={select.open}
+    class:disabled
     role="combobox"
     tabindex="0"
     aria-label={label}
     aria-haspopup="listbox"
     aria-expanded={select.open}
+    aria-disabled={disabled}
     aria-controls="{id}-list"
     aria-activedescendant={select.open ? `${id}-${select.active}` : undefined}
-    onclick={() => select.toggle()}
+    onclick={() => !disabled && select.toggle()}
     {onkeydown}
     onblur={() => select.close()}
   >
@@ -111,6 +118,8 @@
     transition: background-color 120ms ease-out;
   }
   .field:hover, .field.open { background: var(--field-hover); }
+  /* Spelled with the hover state so a disabled field does not light up under the pointer. */
+  .field.disabled, .field.disabled:hover { background: var(--field); color: var(--text-dim); cursor: default; }
   .chevron { display: inline-flex; color: var(--text-dim); }
   /* The right-click menu's surface (Grid.svelte's .menu): raised, a hairline, the menu shadow. */
   .list {

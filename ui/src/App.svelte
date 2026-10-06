@@ -34,6 +34,7 @@
   import ShortcutSheet from './components/ShortcutSheet.svelte';
   import Compare from './components/Compare.svelte';
   import Settings from './components/Settings.svelte';
+  import GroupControl from './components/GroupControl.svelte';
   import SizeControl from './components/SizeControl.svelte';
   import SortControl from './components/SortControl.svelte';
   import ExportDialog from './components/ExportDialog.svelte';
@@ -558,6 +559,7 @@
          places; `visibility` takes them out of the tab order too. -->
     <div class="grid-controls" class:away={mainPage.current !== 'grid'}>
       <SortControl />
+      <GroupControl />
       <SizeControl />
     </div>
     <button class="gear" bind:this={gear} aria-label="Settings" title="Settings" onclick={() => openSettings('folders')}
