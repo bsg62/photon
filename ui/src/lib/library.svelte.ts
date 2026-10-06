@@ -334,9 +334,9 @@ export class LibraryStore {
    *  Every view but All is a set the user asked for — an album, a search, the starred
    *  photos — so "all" is that set, and the folder sections inside it are an arrangement of
    *  it rather than a bound. All is the whole library, where the unit the user is actually
-   *  looking at is one section, a folder or a period: on a fifty-thousand photo library, selecting every photo is
-   *  never what this key was pressed for, and starring the result would be a long operation
-   *  nobody asked for. That holds under a flat sort too, where the folder is no longer a
+   *  looking at is one section, a folder or a period: on a fifty-thousand photo library,
+   *  selecting every photo is never what this key was pressed for, and starring the result
+   *  would be a long operation nobody asked for. That holds under a flat sort too, where the folder is no longer a
    *  range; `selectFolderAt` covers it. */
   private selectAllRange(): [number, number] | null {
     const len = this.info.len;

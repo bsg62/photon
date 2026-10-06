@@ -304,9 +304,10 @@ impl GridIndex {
     }
 
     /// Where a jump to the folder lands: its header, or in a layout that gives folders no
-    /// header (flat, or by period), the first of its photos the grid reaches. The flat answer is what makes a
-    /// sidebar click do something under a sort other than date, where All itself is flat;
-    /// Recent, the other flat view, is never asked, since a folder jump switches to All.
+    /// header (flat, or by period), the first of its photos the grid reaches. The flat answer
+    /// is what makes a sidebar click do something under a sort other than date, where All
+    /// itself is flat; Recent, the other flat view, is never asked, since a folder jump
+    /// switches to All.
     pub fn offset_of_folder(&self, folder_id: i64) -> Option<usize> {
         match self.layout {
             Layout::Folders => self

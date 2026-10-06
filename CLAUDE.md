@@ -168,8 +168,8 @@ beyond the obvious four are `restarred`, `refaced` (Picasa faces), `rehidden` (P
 row re-pointed to its file's new path, below).
 
 **Grid order** (`items.rs`, `GRID_ORDER`) is the folder's oldest photo descending, then each
-folder's photos oldest to newest. The sidebar groups by the same value, so the list is an index
-of the grid. Changing one without the other splits them onto different axes. `GRID_ORDER` reads
+folder's photos oldest to newest. While the grid is grouped by folder the sidebar groups by the same value, so the list is an
+index of the grid (under a date grouping it is not: see the grouping, below). Changing one without the other splits them onto different axes. `GRID_ORDER` reads
 columns only `folder_order(shown, filter)` supplies, and `grid_query(select, shown, filter)` is the one place
 the two are paired: in a filtered view (Starred) the driver's filter must equal the outer
 `WHERE`, so a folder is placed by its oldest *matching* photo, which is what keeps the sidebar
@@ -199,7 +199,10 @@ dropped the grouping. A `Section` carries its `period` as numbers (`grid::Period
 has a folder or a period (`hasHeader`); code that means "flat" asks that, not
 `folderId === null`, which a period section has too - `selectAll` did, and under a month header
 selected a folder's scattered photos. The place photon remembers in the library is a folder, so
-its restore and `returnToAll` ask `laidOutByFolder`, not the sort key.
+its restore and `returnToAll` ask `laidOutByFolder`, not the sort key. Under a date grouping or
+none a folder has no header, so a sidebar click lands on the first of its photos the grid
+reaches (`offset_of_folder`, the flat answer) and the sidebar is no longer an index of the
+grid. The control's dimmed `Select` is `createSelect`'s `disabled`, tested there.
 
 **Hidden photos** (`library/hidden.rs`, schema 13) are in no view but `GridView::Hidden`.
 `grid_query` takes a `Shown` argument (`Visible`, `Hidden`, or `Either` for bookkeeping like the

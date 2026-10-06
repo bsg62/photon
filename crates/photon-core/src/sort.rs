@@ -23,8 +23,9 @@ use std::cmp::{Ordering, Reverse};
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum SortKey {
-    /// The capture date, in the view's own order: folders newest first, each read oldest to
-    /// newest; Recent newest first.
+    /// The capture date. Grouped by folder that is the view's own order: folders newest
+    /// first, each read oldest to newest; Recent newest first. By any other `Grouping` it is
+    /// every photo newest first.
     #[default]
     Date,
     /// The file's modification time, newest first.
@@ -98,9 +99,10 @@ impl Grouping {
     }
 }
 
-/// A key, whether it runs backwards, and where the headers fall by date. `reverse` turns the whole list upside down, the
-/// Date order included - folders oldest first, each read newest to oldest - so it means one
-/// thing for every key and the folder runs stay contiguous for the sections.
+/// A key, whether it runs backwards, and where the headers fall by date. `reverse` turns the
+/// whole list upside down, the Date order included - folders oldest first, each read newest
+/// to oldest - so it means one thing for every key and the folder runs stay contiguous for
+/// the sections.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Sort {

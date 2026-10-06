@@ -2,7 +2,8 @@
 // `cargo run -p xtask -- screenshots`. Served as /mock.js and loaded before theme-boot.js.
 //
 // The query string drives it: ?theme=system|light|dark is what the `theme` command answers,
-// ?view=<GridView> the grid's view, and ?do=<action> what to click once the app has settled, ?group=<Grouping> the grouping the sort starts with.
+// ?view=<GridView> the grid's view, ?group=<Grouping> the grouping the sort starts with, and
+// ?do=<action> what to click once the app has settled.
 //
 // Two lists below are read by a test in screenshots.rs, which fails when api.ts gains a
 // command that is in neither: `canned` (keys at four spaces' indent) and SILENT.

@@ -5,9 +5,8 @@
   import { isOwnAlbum, ownAlbums } from '../lib/albums';
   import { isCopyPhotoShortcut } from '../lib/copy-photo';
   import { folderLabel, folderSummary, photoCount } from '../lib/folders';
-  import { periodLabel } from '../lib/grouping';
   import { buildFailure, showEmptyNotice } from '../lib/grid-state';
-  import { laidOutByFolder } from '../lib/grouping';
+  import { laidOutByFolder, periodLabel } from '../lib/grouping';
   import { library } from '../lib/library.svelte';
   import { gridSize } from '../lib/app-grid-size.svelte';
   import { buildRows, columnsFor, defersThumbs, edgeScrollSpeed, fetchSpan, firstVisibleOffset, GAP, itemSpan, itemsInRect, type Rect, renderRange, rowOfItem, topFolderId, totalHeight, visibleRange } from '../lib/layout';
@@ -74,8 +73,8 @@
 
   const columns = $derived(columnsFor(Math.max(0, width - 2 * GAP), gridSize.width));
   /** The index's own sections: one per folder run, one per day, month or year under a date
-   *  grouping, or a single headerless run in a flat view (Recent). Both the layout and the keyboard navigation read
-   *  these, so arrow keys move along the rows the eye sees.
+   *  grouping, or a single headerless run in a flat view (Recent). Both the layout and the
+   *  keyboard navigation read these, so arrow keys move along the rows the eye sees.
    *
    *  A tile's offline dimming follows the photo's own folder, not its section's: one Recent
    *  row holds photos from several folders, and its run names none of them. */
@@ -165,6 +164,10 @@
   // actually browsing. Only on change, too — the folder at the top changes a handful of
   // times a session, while `scrollTop` changes on every frame of a flick, and this is a
   // database write.
+  //
+  // Under a date grouping, no grouping or a flat sort the section at the top names no
+  // folder, so `topFolderId` answers null and nothing is written: that is the whole guard,
+  // and it is why the remembered place survives an excursion into another arrangement.
   //
   // `library.restoring` gates the first write: until the restore below has run (or found
   // nothing to restore), the top of a freshly built grid is offset 0, and writing that

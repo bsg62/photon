@@ -1,5 +1,5 @@
-/** Grid geometry. Square tiles in fixed-height rows, with one header row per folder
- *  section. Everything here is pure, so 100k items lay out in microseconds. */
+/** Grid geometry. Square tiles in fixed-height rows, with one header row per section that
+ *  has one - a folder's or a period's. Everything here is pure, so 100k items lay out in microseconds. */
 
 import type { Period, Section } from './api';
 import type { Motion } from './scroll-speed.svelte';
@@ -18,7 +18,7 @@ export const TILE_WIDTH: Record<TileSize, number> = { small: 120, medium: 160, l
 
 export const GAP = 8;
 export const HEADER = 32;
-/** Extra space above every folder's header but the first, on top of the gutter under the
+/** Extra space above every section's header but the first, on top of the gutter under the
  *  last row before it, so one folder reads as ending before the next begins. Space between
  *  rows rather than part of the header row: a jump to a folder puts its header, not this
  *  gap, at the top of the grid. */
@@ -60,7 +60,6 @@ export function hasHeader(section: SectionLike): boolean {
   return section.folderId !== null || (section.period ?? null) !== null;
 }
 
-/** A section gets a header row when `hasHeader` says so. */
 export function buildRows(sections: SectionLike[], columns: number, tile: number): Row[] {
   const rows: Row[] = [];
   let top = 0;

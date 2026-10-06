@@ -275,11 +275,12 @@
     destroyed = true;
   });
 
-  /** Photos are numbered within their own folder, not across the library. In the All view
-   *  that count matches what the file manager shows for that directory; in Starred or
-   *  Search it is the folder's position among the current view's results instead, since
-   *  those views only show a subset of the folder's photos. Recent, and every view under a
-   *  sort other than date, is laid out as one run and so is numbered flat — see
+  /** Photos are numbered within their own section, not across the library: the folder, or
+   *  under a date grouping the day, month or year. Grouped by folder in the All view that
+   *  count matches what the file manager shows for that directory; in Starred or Search it
+   *  is the folder's position among the current view's results instead, since those views
+   *  only show a subset of the folder's photos. A view with no headers - Recent, No
+   *  grouping, a sort other than date - is one run and so is numbered whole; see
    *  `positionInSection`. */
   const position = $derived(positionInSection(library.info.sections, current));
   const caption = $derived(item ? formatCaption(item, orphaned ? { index: 0, count: 0 } : position) : '');

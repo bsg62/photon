@@ -18,8 +18,9 @@ here and listed under "Calls made here" so it can be vetoed.
 - **Folder** is today's grid, untouched: folders by their oldest photo, newest first, each read
   oldest to newest, under the folder's header. Recent stays flat.
 - **Day, Month, Year** are one timeline across folders, newest photo first, with a header
-  wherever the day, month or year changes: "Sunday, 4 October 2026 · 12 photos",
-  "October 2026 · 312 photos", "2026 · 4,210 photos". The three and None show the *same order*
+  wherever the day, month or year changes: each reads as its label followed by its count,
+  `"Sunday, 4 October 2026"` and `"12 photos"`, `"October 2026"` and `"312 photos"`, `"2026"`
+  and `"4,210 photos"`. The three and None show the *same order*
   and differ only in where the headers fall, so switching between them moves no photo past
   another.
 - **None** is that timeline with no headers: one continuous run, as Recent is.
@@ -95,9 +96,10 @@ here and listed under "Calls made here" so it can be vetoed.
 - `timeline.ts`: a period section's year is `period.year`; a folder section's stays
   `yearOf(takenAtMin)`.
 - `viewKey`'s `order` carries the grouping, which is what scrolls a grouping change to the top.
-- One predicate, "laid out by folder" (date key and `folder` grouping), replaces the three
-  `sort.key === 'date'` tests that guard the last-folder restore, its write, and
-  `returnToAll`. `arrangeFolders` keeps testing the key alone.
+- One predicate, "laid out by folder" (date key and `folder` grouping), replaces the two
+  `sort.key === 'date'` tests that guard the last-folder restore and `returnToAll`. The write
+  never tested the sort and needs none: a section with no folder names nothing to remember.
+  `arrangeFolders` keeps testing the key alone.
 - `LibraryStore.selectAll`: "flat" becomes "the first section has no header", not
   `folderId === null`, which a period section also has.
 
@@ -125,7 +127,9 @@ Each new test is shown to fail with its change reverted.
 - UI (`vitest`): header rows for period sections, the three labels, year marks from periods,
   `viewKey` differing by grouping, the "laid out by folder" predicate, `selectAll` under a date
   grouping (a range) and under None (the folder's ids).
-- A bench case in `grid` for the date-grouped build at 300k, to put a number on the extra sort.
+- A bench case in `grid` for the date-grouped build at 100k, the library that bench file
+  builds, to put a number on the extra sort (`startup_grid_100k_by_month`, 60.4 ms against
+  57.1 ms plain).
 
 ## Calls made here
 

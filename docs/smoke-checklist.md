@@ -404,13 +404,14 @@ publishing it.
 - [ ] Changing the sort with text in the search box keeps the search, now in the new order.
 - [ ] Group by (the menu between the sort and the photo sizes), sorted by Date taken: **By month**
       shows one timeline across folders, newest photo first, with a header at each month
-      ("October 2026 · 312 photos") and no path; **By day** and **By year** show the same photos
+      ("October 2026", then its count, "312 photos") and no path; **By day** and **By year** show the same photos
       in the same order with headers at each day ("Sunday, 4 October 2026" in the system's
       format) and each year; **No grouping** shows them with no headers and no year strip;
       **By folder** is the grid as it was. The year strip works under day, month and year.
       The reverse button turns each over, oldest first.
 - [ ] A photo taken late on the last evening of a month is under that month's header, and a
-      search for that month (`2026-09`) shows the same photos as the header counts.
+      search for that month (`2026-09`) finds those photos too (it may also find a file or
+      folder with that text in its name).
 - [ ] Sort by Name, Size or Date modified: the Group menu is dimmed, does not open, and says
       why on hover; the grid is flat as before. Back on Date taken, the grouping chosen before
       is there again. Change the sort and the grouping quickly one after the other: both land.

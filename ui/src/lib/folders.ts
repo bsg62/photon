@@ -107,15 +107,18 @@ const FOLDER_ORDER: Record<Exclude<SortKey, 'date'>, (a: FolderRow, b: FolderRow
 /** The sidebar's folder list under the user's sort.
  *
  *  By date it is `groupByYear`, and reversed it is that list turned over - years oldest
- *  first and each year's folders oldest first - which is the order the reversed grid reaches
- *  them in. By any other key the grid is flat and has no folder order to follow, so the list
+ *  first and each year's folders oldest first - which, grouped by folder, is the order the
+ *  reversed grid reaches them in. Under a date grouping or none the tallies arrive in the
+ *  order the timeline first reaches each folder; `groupByYear` sorts them itself, so the
+ *  list is the same and only a tie (folders whose oldest photos share one second) falls
+ *  differently. By any other key the grid is flat and has no folder order to follow, so the list
  *  answers the key's question about folders instead (the biggest, the most recently touched)
  *  and drops the year headings, which would split a list sorted by name into pieces sorted
  *  by something else. Ties keep the order the grid first reaches each folder. */
 export function arrangeFolders(rows: FolderRow[], sort: Sort): YearGroup[] {
-  // Reversed by the comparison rather than by turning the result over: the rows already
-  // arrive in the reversed grid's order, and turning the list over would flip every tie
-  // back against it.
+  // Reversed by the comparison rather than by turning the result over: grouped by folder
+  // the rows already arrive in the reversed grid's order, and turning the list over would
+  // flip every tie back against it.
   if (sort.key === 'date') return groupByYear(rows, sort.reverse);
   const order = FOLDER_ORDER[sort.key];
   const sign = sort.reverse ? -1 : 1;
