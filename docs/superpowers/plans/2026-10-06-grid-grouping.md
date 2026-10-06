@@ -1023,7 +1023,7 @@ describe('periodLabel', () => {
 });
 ```
 
-Append to `ui/src/lib/layout.test.ts` (add `hasHeader` and `topFolderId` to its import from `./layout` if they are not there):
+Append to `ui/src/lib/layout.test.ts` (add `hasHeader` to its import from `./layout`):
 
 ```ts
 describe('period sections', () => {
@@ -1040,11 +1040,6 @@ describe('period sections', () => {
     expect(rows.map((r) => r.kind)).toEqual(['tiles', 'tiles']);
     expect(hasHeader({ folderId: null, offset: 0, count: 3 })).toBe(false);
     expect(hasHeader({ folderId: 7, offset: 0, count: 3 })).toBe(true);
-  });
-
-  it('name no folder to remember as the place in the library', () => {
-    const sections = [month(10, 0, 3)];
-    expect(topFolderId(buildRows(sections, 2, TILE_WIDTH.medium), sections, 0)).toBeNull();
   });
 });
 ```
@@ -1262,7 +1257,7 @@ Expected: 0 errors, 0 warnings; all tests PASS.
 5. `timeline.ts`: restore `const year = yearOf(section.takenAtMin);`. Expected: the period year-mark test FAILS. Restore.
 6. `search.ts`: set `grouped` to `''`. Expected: the grouping view-key test FAILS on its second assertion. Then set it to `` `:${group}` `` unconditionally: FAILS on `order).toBe('date')` and on the by-size assertion. Restore.
 
-"name no folder to remember" passes with and without this task (a period section's `folderId` was always null); it is kept as a pin on behaviour the feature relies on, and the commit message says so. `photoCount` is an extraction: its test and the existing `folderSummary` tests fail together if its body is broken (make it return `''` to see).
+`photoCount` is an extraction: its test and the existing `folderSummary` tests fail together if its body is broken (make it return `''` to see).
 
 - [ ] **Step 6: Gate and commit**
 
@@ -1275,9 +1270,6 @@ git commit -m "feat(ui): sections with a period, and the grouping in the sort
 The mirror of grid::Period and sort::Grouping, a header for a period
 section, year marks from periods, and a view key that a grouping change
 moves by date and not under another key.
-
-'name no folder to remember' passes without this change: a period
-section never had a folder. It pins what the last-folder write relies on.
 
 Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 ```
@@ -1386,7 +1378,7 @@ Update `selectAll`'s doc comment's first sentence to: "Ctrl/Cmd+A: selects what 
         if (!laidOutByFolder(library.info.sort)) return;
 ```
 
-(The write, the effect below it, needs no change: `topFolderId` answers null for a section with no folder, which Task 4's "name no folder to remember" pins.)
+(The write, the effect below it, needs no change: `topFolderId` answers null for a section with no folder, as it does under a flat sort today. No test is added for that: it would pass with and without this branch.)
 
 - [ ] **Step 4: Run the tests**
 
