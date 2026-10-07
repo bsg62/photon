@@ -100,6 +100,24 @@ pub const SHOTS: &[Shot] = &[
         query: "theme=light&tile=small&do=scrolled",
         dark: false,
     },
+    // A first run: no folder watched, and the offer to add one where the photos will be.
+    Shot {
+        name: "first-run-light",
+        query: "theme=light&empty=first",
+        dark: false,
+    },
+    Shot {
+        name: "first-run-dark",
+        query: "theme=dark&empty=first",
+        dark: true,
+    },
+    // What most first runs show instead: the Pictures folder photon watches by itself, with
+    // nothing in it.
+    Shot {
+        name: "empty-folder-light",
+        query: "theme=light&empty=folders",
+        dark: false,
+    },
     // The sidebar hidden: the grid has the window's whole width, and the top bar's first
     // button brings the sidebar back.
     Shot {

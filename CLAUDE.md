@@ -66,7 +66,7 @@ cargo run -p xtask -- metadata            # licence and installer metadata are c
 **Seeing the UI without launching it** (not in CI; needs Chromium on `PATH` or in `CHROMIUM`):
 
 ```bash
-cargo run -p xtask -- screenshots                     # forty-one PNGs into target/screenshots/
+cargo run -p xtask -- screenshots                     # forty-four PNGs into target/screenshots/
 cargo run -p xtask -- screenshots --only viewer-info-light --no-build
 cargo run -p xtask -- scroll-probe   # the end of a 300k-photo library is reachable
 ```
@@ -132,6 +132,32 @@ left at `NOT_BUILT` the window drew nothing, and an unchanged library rebuilt on
 switch. The empty grid carries the error (`GridInfo::build_error`), so the UI says the
 library could not be read instead of "No photos yet"; it is never published over a grid something
 else built meanwhile, and the next successful publish clears it.
+
+**An empty library says why, and only what the UI knows** (`emptyLibrary` and `noPhotosLine`
+in `grid-state.ts`, drawn by `Grid.svelte` beside its viewport, in All photos and Recent
+only). The states are not the ones they look like. "No folder is watched" is the rare one:
+`startup` watches the Pictures folder by itself when nothing is watched, so most first runs
+are a watched folder with a scan in it, or with nothing in it - which therefore offers Add
+folder… as well. **The UI does not know when a scan is running, only when one has reported**:
+the backend sends no event when a scan starts (the first is after 64 photos, a flushed
+batch, or the walk's end), and events sent before the webview's listeners exist are lost. So
+`'no-photos'` is never worded as a finished search ("has found no photos", not "looked and
+found none") - it is on screen for a first scan's opening seconds, and a folder photon may
+not read is reported like an empty one. What can be known is patched in: a folder added
+through `library.addFolder` has its scan counted as running at once (unless a scan there
+has already reported - an empty folder's can be over before the command answers); a scan's
+first event in a folder the list does not hold reads the list again (the list read at launch
+may predate the automatic Pictures); a scan that reports done on an empty grid counts as
+running until the grid has been read again (`settling`: the rebuild's event and the scan's
+end arrive a fraction of a millisecond apart, a round trip before the photos). Hidden photos
+come before all of it: with any, the library is not empty. Nothing is said before the folder
+list has been read once (`foldersKnown`). The scanning and no-photos states are one block
+with one sentence changing, because a watched folder is rescanned at any time and buttons
+replaced on each flip lost the focus and a click on its way; and the focus is read before
+the panel's DOM changes (`$effect.pre`) and handed to the grid if its button is gone after.
+The panel is outside the viewport because the viewport is the rubber band's surface. The
+real fix for the blind window is the backend's: a not-done event at a scan's start and a
+command answering which scans are running; it has not been made.
 
 `LibraryChanged::data_changed` tells the UI whether to refetch the sidebar's collections
 (albums, people, tags - the tag counts alone are ~220ms at 300k photos carrying three keywords
@@ -1210,7 +1236,7 @@ anything sitting outside the tile's own box.
 
 The look cannot be tested here, but it can be seen without launching the app: `cargo run -p xtask --
 screenshots` builds the UI, serves `ui/dist` itself with `mock.js` (in
-`crates/xtask/screenshots/`) standing in for Tauri's IPC, and writes forty-one PNGs, in both themes,
+`crates/xtask/screenshots/`) standing in for Tauri's IPC, and writes forty-four PNGs, in both themes,
 to `target/screenshots/` with headless Chromium. It claims a Windows user agent and maps
 `photon.localhost` to its own port, because `mediaUrl` uses `http://photon.localhost` there
 and no plain browser can load `photon://`. It is Chromium's rendering, not WebKitGTK's or

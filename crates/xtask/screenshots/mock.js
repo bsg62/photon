@@ -65,6 +65,15 @@
     len = HUGE;
   }
 
+  // `?empty=first`: a first run, with no folder watched and nothing in the library.
+  // `?empty=folders`: a folder is watched and holds no photo.
+  const EMPTY = P.get('empty');
+  if (EMPTY) {
+    folders.length = 0;
+    sections.length = 0;
+    len = 0;
+  }
+
   function sectionOf(i) {
     let lo = 0;
     let hi = sections.length - 1;
@@ -193,10 +202,10 @@
         sections: shownSections(),
         folders: sections.map(({ folderId, count, takenAtMin }) => ({ folderId, count, takenAtMin, bytes: count * 4_000_000, modifiedMs: takenAtMin * 1000 })),
       },
-      starredCount: 13,
-      duplicateCount: 4,
-      hiddenCount: 7,
-      videoCount: 10,
+      starredCount: EMPTY ? 0 : 13,
+      duplicateCount: EMPTY ? 0 : 4,
+      hiddenCount: EMPTY ? 0 : 7,
+      videoCount: EMPTY ? 0 : 10,
       view: searchQuery === '' ? P.get('view') || 'all' : 'search',
       sort,
       searchQuery,
@@ -329,6 +338,20 @@
     media_base: () => 'http://127.0.0.1:9/0000',
     next_video_job: () => null,
   };
+
+  // An empty library has nothing in its collections either. Assigned over the answers above
+  // rather than written into them, so each stays one line for the test that reads this list.
+  if (EMPTY) {
+    Object.assign(canned, {
+      list_folders: () => ({ watched: EMPTY === 'first' ? [] : [{ id: 1, path: '/home/ada/Pictures', online: true }], folders: [] }),
+      list_people: () => [],
+      list_tags: () => [],
+      list_albums: () => [],
+      list_saved_searches: () => [],
+      people_to_name: () => 0,
+      watched_folder_stats: () => [],
+    });
+  }
 
   // Commands that change something: a screenshot never needs their answer, so they get null.
   const SILENT = [
