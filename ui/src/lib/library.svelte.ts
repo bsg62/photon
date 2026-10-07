@@ -165,6 +165,9 @@ export class LibraryStore {
   private pick(ids: Set<number>, ranges: Runs | null): void {
     this.selection = ids;
     this.picks++;
+    // Whatever a range was reaching for, the user has since selected something else - or
+    // this is that range landing.
+    this.reaching = null;
     this.runs = ranges === null ? null : { version: this.info.version, ranges: mergeRuns(ranges) };
   }
 
@@ -297,13 +300,47 @@ export class LibraryStore {
     const from = this.anchor ?? this.selectedOffset ?? 0;
     const start = Math.max(0, Math.min(from, offset));
     const end = Math.min(this.info.len - 1, Math.max(from, offset));
-    const ids = await this.fetchIds(start, end);
+    const reach = { offset };
+    this.reaching = reach;
+    const picks = this.picks;
+    let ids: Set<number> | null;
+    try {
+      ids = await this.fetchIds(start, end);
+    } finally {
+      // By identity, not by offset: a key held at the last photo asks for the same end
+      // again and again, and an earlier ask giving up must not end a later one's reach.
+      if (this.reaching === reach) this.reaching = null;
+    }
     if (!ids) return;
+    // Whatever was selected while the ids were on their way is the later choice. A range
+    // is a round trip per thousand photos and Shift+End is one key: landing regardless, it
+    // put the whole range back under an Escape or a click made meanwhile, for the next H.
+    if (this.picks !== picks) return;
     this.pick(ids, [[start, end]]);
     this.selectedOffset = offset;
-    this.selectedId = this.pages.get(offset)?.id ?? null;
+    // The lead's photo, from the range itself: the ids arrive in grid order, so the lead is
+    // its first or its last. Not from the loaded pages - Shift+End reaches a page the grid
+    // has not fetched, and a lead with no id is collapsed by the viewer closing on it and
+    // loses its anchor at the next rebuild.
+    const ordered = [...ids];
+    this.selectedId = (offset <= from ? ordered[0] : ordered[ordered.length - 1]) ?? null;
     // The anchor stays put, so dragging the far end back and forth re-ranges from the
     // same start rather than walking away from it.
+  }
+
+  /** The end a range is being extended to and has not reached: `extendSelection` moves the
+   *  lead only once the range's ids have arrived. Plain, not `$state` - nothing renders
+   *  from it. */
+  private reaching: { offset: number } | null = null;
+
+  /** The offset a navigation key moves on from: the lead, or the end a Shift+arrow has
+   *  already asked for. A held key repeats faster than the ids of each range arrive, and
+   *  read from the lead alone every repeat until then asked for the same photo again. */
+  get keyboardLead(): number | null {
+    const at = this.reaching?.offset ?? this.selectedOffset;
+    // A reach outlives a rebuild by as long as its fetch takes to come back and be dropped:
+    // in a library that has shrunk meanwhile it can name an offset past the end.
+    return at === null ? null : Math.max(0, Math.min(at, this.info.len - 1));
   }
 
   /** Ctrl/Cmd+A: selects what is under the lead's header - its folder, or under a date
@@ -1419,6 +1456,28 @@ export class LibraryStore {
     if (this.viewing !== null) keep.push([this.viewing - PAGE_SIZE, this.viewing + PAGE_SIZE + 1]);
     this.pageSignals.touch(this.pages.evict(keep));
     this.pageSignals.touch(await this.pages.ensure(start, Math.min(end, this.info.len)));
+    this.adoptLead();
+  }
+
+  /** The lead was put on an offset whose page had not loaded - End, Home, a folder jump, a
+   *  Page Down ahead of the fetch - so the plain setter recorded no photo and an empty
+   *  selection. Now that the page is here the photo is selected as a click on it would
+   *  have selected it. Until this, the tile lost its ring the moment its entry arrived
+   *  (`isSelectedTile` falls back to the offset only for a tile with no id yet), and H, the
+   *  star and Ctrl+C had nothing to act on until an arrow key was pressed.
+   *
+   *  Only while that is still the whole state: a lead, no id, nothing selected. Anything
+   *  selected or cleared since has written at least one of the three. Not a pick - the
+   *  user chose this photo when the lead was put there - so `picks` stays as it is, as it
+   *  does for a rebuild re-finding the lead. */
+  private adoptLead(): void {
+    const offset = this.selectedOffset;
+    if (offset === null || this.selectedId !== null || this.selection.size > 0) return;
+    const id = this.pages.get(offset)?.id;
+    if (id === undefined) return;
+    this.selectedId = id;
+    this.selection = new Set([id]);
+    this.runs = { version: this.info.version, ranges: [[offset, offset]] };
   }
 
   /** The grid offset the viewer shows, while it is open; see `setViewing`. Plain, not

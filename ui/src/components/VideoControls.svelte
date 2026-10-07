@@ -3,7 +3,17 @@
   import { formatDuration } from '../lib/video';
   import Icon from './Icon.svelte';
 
-  let { player }: { player: VideoPlayer } = $props();
+  let {
+    player,
+    room = 0,
+  }: {
+    player: VideoPlayer;
+    /** What the open info panel takes of the viewer's right side (`infoRoom`), or 0. The
+     *  video is fitted beside the panel, and its controls go under it there: centred in
+     *  what is left, and as wide as that allows. With no panel the stylesheet's own place
+     *  stands, which keeps clear of the bar's two sides. */
+    room?: number;
+  } = $props();
 
   const known = $derived(Number.isFinite(player.duration) && player.duration > 0);
   const progress = $derived(known ? Math.min(1, player.time / player.duration) : 0);
@@ -59,7 +69,11 @@
   }
 </script>
 
-<div class="video-controls">
+<div
+  class="video-controls"
+  style:left={room > 0 ? `calc((100% - ${room}px) / 2)` : null}
+  style:width={room > 0 ? `min(720px, calc(100% - ${room}px - 24px))` : null}
+>
   <button
     class="tool"
     onclick={() => player.toggle()}

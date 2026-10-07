@@ -2608,6 +2608,111 @@ describe('LibraryStore', () => {
       expect(store.isSelected(idAt(15))).toBe(false);
     });
 
+    describe('where the keyboard goes on from', () => {
+      // A held Shift+arrow asks for the next range before the last one's ids have arrived,
+      // and the lead only moves when they do.
+      it('is the end a range is still reaching for', async () => {
+        const store = await storeOf(20);
+        store.selected = 5;
+        const chunk = deferred<{ version: number; rows: ReturnType<typeof entryAt>[] }>();
+        vi.mocked(api.gridRows).mockImplementationOnce(() => chunk.promise);
+
+        const reaching = store.extendSelection(6);
+        expect(store.selected).toBe(5);
+        expect(store.keyboardLead).toBe(6);
+
+        chunk.resolve({ version: 1, rows: [entryAt(5), entryAt(6)] });
+        await reaching;
+        expect(store.selected).toBe(6);
+        expect(store.keyboardLead).toBe(6);
+      });
+
+      it('is the lead when nothing is being reached for', async () => {
+        const store = await storeOf(20);
+        expect(store.keyboardLead).toBeNull();
+        store.selected = 5;
+        expect(store.keyboardLead).toBe(5);
+      });
+
+      it('stays with the later of two ranges when the earlier one is dropped', async () => {
+        // Both ask for the same end, as a key held at the last photo does: the first one
+        // giving up must not take the second one's reach with it.
+        const store = await storeOf(20);
+        store.selected = 17;
+        const first = deferred<{ version: number; rows: ReturnType<typeof entryAt>[] }>();
+        const second = deferred<{ version: number; rows: ReturnType<typeof entryAt>[] }>();
+        vi.mocked(api.gridRows)
+          .mockImplementationOnce(() => first.promise)
+          .mockImplementationOnce(() => second.promise);
+
+        const a = store.extendSelection(19);
+        const b = store.extendSelection(19);
+        first.resolve({ version: 1, rows: [entryAt(17), entryAt(18), entryAt(19)] });
+        await a;
+        expect(store.selected).toBe(17);
+        expect(store.keyboardLead).toBe(19);
+
+        second.resolve({ version: 1, rows: [entryAt(17), entryAt(18), entryAt(19)] });
+        await b;
+        expect(store.selected).toBe(19);
+      });
+
+      it('falls back to the lead when the range is refused', async () => {
+        const store = await storeOf(20);
+        store.selected = 5;
+        // Rows of another index: the range is dropped, and nothing was reached.
+        vi.mocked(api.gridRows).mockImplementationOnce(async () => ({ version: 99, rows: [entryAt(5), entryAt(6)] }));
+        await store.extendSelection(6);
+        expect(store.selected).toBe(5);
+        expect(store.keyboardLead).toBe(5);
+      });
+
+      // A rebuild that shrinks the library drops the range, but only when its fetch comes
+      // back: until then the reach names an offset the new index does not have, and a key
+      // pressed in that window would move on from it.
+      it('is never past the end of a library that has shrunk under a reach', async () => {
+        const store = await storeOf(20);
+        store.selected = 5;
+        const chunk = deferred<{ version: number; rows: ReturnType<typeof entryAt>[] }>();
+        vi.mocked(api.gridRows).mockImplementationOnce(() => chunk.promise);
+        const reaching = store.extendSelection(19);
+        vi.mocked(api.gridInfo).mockResolvedValue({
+          version: 2,
+          len: 8,
+          layout: { generation: 2, sections: [], folders: [] },
+          starredCount: 0,
+          duplicateCount: 0,
+          hiddenCount: 0,
+          videoCount: 0,
+          view: 'all',
+          sort: { key: 'date' as const, reverse: false, group: 'folder' as const },
+          searchQuery: '',
+          person: null,
+          album: null,
+          tag: null,
+          copiesOf: null,
+          buildError: null,
+        });
+        await store.refresh();
+        expect(store.info.len).toBe(8);
+        expect(store.keyboardLead).toBe(7);
+        chunk.resolve({ version: 1, rows: [] });
+        await reaching;
+      });
+
+      it('is given up for a click made meanwhile', async () => {
+        const store = await storeOf(20);
+        store.selected = 5;
+        const chunk = deferred<{ version: number; rows: ReturnType<typeof entryAt>[] }>();
+        vi.mocked(api.gridRows).mockImplementationOnce(() => chunk.promise);
+        const reaching = store.extendSelection(9);
+        store.selected = 2;
+        expect(store.keyboardLead).toBe(2);
+        chunk.resolve({ version: 1, rows: [] });
+        await reaching;
+      });
+    });
+
     it('extends backwards from the anchor too', async () => {
       const store = await storeOf(20);
       store.selected = 10;
@@ -2680,6 +2785,139 @@ describe('LibraryStore', () => {
       expect(store.entry(250)).toBeUndefined();
       expect(store.isSelectedTile(250, undefined)).toBe(true);
       expect(store.isSelectedTile(249, undefined)).toBe(false);
+    });
+
+    describe('a lead put on a page that has not loaded', () => {
+      // End, Home, a folder jump and a fast Page Down can all put the lead where nothing is
+      // loaded: the setter records no photo. Once the page arrived the tile had an id, the
+      // offset fallback above no longer applied, and nothing was ringed or selected - H, the
+      // star and Ctrl+C did nothing until an arrow key was pressed.
+      it('is selected as a click on it would be, once its page arrives', async () => {
+        const store = await storeOf(500);
+        store.selected = 250;
+        expect(store.selectionCount).toBe(0);
+
+        await store.ensure(240, 260);
+
+        expect(store.selectedItemIds).toEqual([idAt(250)]);
+        expect(store.isSelectedTile(250, idAt(250))).toBe(true);
+        expect(store.isSelectedTile(249, idAt(249))).toBe(false);
+        expect(store.selected).toBe(250);
+      });
+
+      it('is the start of a range made from there', async () => {
+        const store = await storeOf(500);
+        store.selected = 250;
+        await store.ensure(240, 260);
+        await store.extendSelection(252);
+        expect(store.selectedItemIds.sort()).toEqual([idAt(250), idAt(251), idAt(252)]);
+      });
+
+      it('is left alone when something else has been selected since', async () => {
+        const store = await storeOf(500);
+        store.selected = 250;
+        store.selected = 3;
+        await store.ensure(240, 260);
+        expect(store.selectedItemIds).toEqual([idAt(3)]);
+        expect(store.selected).toBe(3);
+      });
+
+      // A rubber band over empty space previews an empty selection while the lead stays
+      // where it was, photo and all: that is a band in progress, not a lead waiting for its
+      // page, and a page landing under it - the band scrolls the grid - must not put the
+      // lead's photo back into the preview.
+      it('is not a lead whose photo is known, with a band previewing nothing around it', async () => {
+        const store = await storeOf(500);
+        store.selected = 5;
+        store.beginBand(false);
+        store.bandTo([]);
+        expect(store.selectionCount).toBe(0);
+
+        await store.ensure(0, 50);
+
+        expect(store.selectionCount).toBe(0);
+      });
+
+      it('is left alone when the selection has been cleared since', async () => {
+        const store = await storeOf(500);
+        store.selected = 250;
+        store.clearSelection();
+        await store.ensure(240, 260);
+        expect(store.selectionCount).toBe(0);
+        expect(store.selected).toBeNull();
+      });
+    });
+
+    describe('a range reaching a page that has not loaded', () => {
+      // Shift+End and Shift+Home: the ids of the range come from the backend, but the lead's
+      // own photo was read from the loaded pages, where the far end is not. With no id for
+      // the lead, the viewer closing on it collapsed the selection and the next rebuild
+      // dropped the anchor.
+      it('knows the photo its far end is on', async () => {
+        const store = await storeOf(1500);
+        store.selected = 10;
+        await store.extendSelection(1400);
+        expect(store.entry(1400)).toBeUndefined();
+
+        // The viewer closing on the lead keeps a selection it was opened inside of.
+        store.closeViewerOn(1400, idAt(1400));
+        expect(store.selectionCount).toBe(1391);
+      });
+
+      it('knows it when the range runs backwards too', async () => {
+        const store = await storeOf(1500);
+        store.selected = 1400;
+        await store.extendSelection(1000);
+        expect(store.entry(1000)).toBeUndefined();
+
+        store.closeViewerOn(1000, idAt(1000));
+        expect(store.selectionCount).toBe(401);
+      });
+    });
+
+    describe('a range still on its way', () => {
+      // A range is a round trip per thousand photos, and Shift+End is one key. Whatever the
+      // user selects while it is in flight is the later choice: the range landing over it
+      // put a thousand photos under the next H.
+      async function reaching(store: LibraryStore) {
+        const chunk = deferred<{ version: number; rows: ReturnType<typeof entryAt>[] }>();
+        vi.mocked(api.gridRows).mockImplementationOnce(() => chunk.promise);
+        const range = store.extendSelection(9);
+        return async () => {
+          chunk.resolve({ version: 1, rows: Array.from({ length: 5 }, (_, i) => entryAt(5 + i)) });
+          await range;
+        };
+      }
+
+      it('does not land over a photo selected meanwhile', async () => {
+        const store = await storeOf(20);
+        store.selected = 5;
+        const land = await reaching(store);
+        store.selected = 2;
+        await land();
+        expect(store.selectedItemIds).toEqual([idAt(2)]);
+        expect(store.selected).toBe(2);
+      });
+
+      it('does not land over a selection cleared meanwhile', async () => {
+        const store = await storeOf(20);
+        store.selected = 5;
+        const land = await reaching(store);
+        store.clearSelection();
+        await land();
+        expect(store.selectionCount).toBe(0);
+        expect(store.selected).toBeNull();
+      });
+
+      it('does not land over a photo toggled meanwhile', async () => {
+        const store = await storeOf(20);
+        store.selected = 5;
+        const land = await reaching(store);
+        store.toggleSelected(12);
+        await land();
+        expect(store.selectedItemIds.sort()).toEqual([idAt(5), idAt(12)].sort());
+        expect(store.selected).toBe(12);
+      });
     });
 
     it('carries the anchor with the lead across a refresh that shifts every offset', async () => {

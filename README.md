@@ -86,6 +86,10 @@ hand yet. A video's preview is drawn while photon's window is open.
 
 ### Camera data, keywords, people and albums
 
+The viewer has a button at each side of the photo for the previous and the next one, beside
+the arrow keys and the wheel. Its info panel stands beside the photo, not over it: while the
+panel is open the photo is fitted into the room left of it, so nothing in it is covered.
+
 The viewer's ⓘ button (or `I`) opens an info panel: camera, lens, focal length, aperture,
 shutter speed and ISO from the photo's EXIF; every date the photo has - taken, digitized and
 edited from its EXIF (a video's creation date), and the file's created and modified times -
@@ -382,6 +386,11 @@ selection is led by decides. In the viewer a double-click zooms to the photo's o
 where you clicked, and a second one fits it to the window again; `+`, `-` and `0` do the same
 from the keyboard, and the wheel zooms where the pointer is while Ctrl is held. Without Ctrl
 the wheel moves between photos, as it always has.
+
+In the grid, Page Up and Page Down move the selection a screenful, in the same column. Hold
+Shift with an arrow key, Home, End or a page key and the selection grows from where you
+started to there, as a Shift+click does; go back the other way and it shrinks again. With
+nothing selected the page keys simply scroll.
 
 ### Statistics
 

@@ -12,7 +12,7 @@
   import { laidOutByFolder, periodLabel } from '../lib/grouping';
   import { library } from '../lib/library.svelte';
   import { gridSize } from '../lib/app-grid-size.svelte';
-  import { buildRows, columnsFor, defersThumbs, edgeScrollSpeed, fetchSpan, GAP, hasHeader, HEADER, headerRows, itemSpan, itemsInRect, type Pin, pinAt, pinnedHeader, pinTop, placeIn, type Rect, renderRange, rowOfItem, rowWidth as rowWidthIn, scrollIntoGrid, scrollToStart, showsTimeline, tileFor, topFolderId, totalHeight, visibleRange } from '../lib/layout';
+  import { buildRows, columnsFor, defersThumbs, edgeScrollSpeed, fetchSpan, GAP, hasHeader, HEADER, headerRows, itemSpan, itemsInRect, pageMove, type Pin, pinAt, pinnedHeader, pinTop, placeIn, type Rect, renderRange, rowOfItem, rowWidth as rowWidthIn, scrollIntoGrid, scrollToStart, showsTimeline, tileFor, topFolderId, totalHeight, visibleRange } from '../lib/layout';
   import { CAP_FALLBACK, capFrom, createScrollMap, PROBE_HEIGHT } from '../lib/scroll-map';
   import { createScrollSpeed } from '../lib/scroll-speed.svelte';
   import { move, type NavKey } from '../lib/nav';
@@ -59,6 +59,8 @@
   );
 
   const NAV_KEYS = ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'];
+  /** The keys that move a screenful (`pageMove`). */
+  const PAGE_KEYS = ['PageUp', 'PageDown'];
   const VISIBLE_DEBOUNCE_MS = 150;
   /** How far the pointer must move before a press becomes a rubber band rather than a
    *  click. Below this a steady hand and a shaky one must mean the same thing. */
@@ -541,10 +543,24 @@
       star(ids, !starDecider()?.starred).catch(library.reportError);
       return;
     }
-    if (!NAV_KEYS.includes(e.key) || library.info.len === 0) return;
+    const paging = PAGE_KEYS.includes(e.key);
+    if ((!paging && !NAV_KEYS.includes(e.key)) || library.info.len === 0) return;
+    // Where the keyboard is: the lead, or the end a Shift+arrow asked for a moment ago and
+    // the selection has not reached yet - a held key repeats faster than that.
+    const from = library.keyboardLead;
+    // A page key with nothing selected is left to the viewport, which scrolls a page as it
+    // always has. Moving the selection instead would start from the first photo, as the
+    // arrows do: the top of the library, from wherever the wheel had got to.
+    if (paging && from === null) return;
     e.preventDefault();
-    const next = move(sel, e.key as NavKey, sections, columns);
-    library.selected = next;
+    const next =
+      paging && from !== null
+        ? pageMove(rows, from, e.key === 'PageDown' ? 1 : -1, height)
+        : move(from, e.key as NavKey, sections, columns);
+    // Shift selects from the anchor to there, as a Shift+click does. With nothing selected
+    // there is no anchor to select from, and the key is the plain one.
+    if (e.shiftKey && from !== null) void library.extendSelection(next).catch(library.reportError);
+    else library.selected = next;
     scrollToOffset(next, 'nearest');
   }
   // ---- the tile's context menu ----
@@ -909,6 +925,15 @@
     }}
     onpointermove={bandMove}
     onpointercancel={abandonBand}
+    onfocusin={(e) => {
+      // A click on a tile focuses the tile where a button takes the focus from the mouse
+      // (WebView2 and Chromium; WebKit gives it to the viewport). The keys still arrive
+      // here, bubbling - until the tile is scrolled out of the rendered rows and removed,
+      // which drops the focus to `<body>` and leaves every key dead: two Page Downs after a
+      // click, or a dozen arrows. So the viewport takes the focus a tile was given, by
+      // whatever means; `preventScroll`, since the viewport is already where the user is.
+      if ((e.target as HTMLElement).closest('.tile')) viewport.focus({ preventScroll: true });
+    }}
     onwheel={() => {
       // A wheel is never a thumb drag, and it fires before the scroll it causes: a scrollbar
       // release the grid never saw would otherwise have this step mapped as a drag.

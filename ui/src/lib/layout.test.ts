@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildRows, columnsFor, layoutHeight, placeIn, rowWidth, showsTimeline, TIMELINE_WIDTH, defersThumbs, edgeScrollSpeed, fetchSpan, GAP, hasHeader, HEADER, itemSpan, itemsInRect, headerRows, LEAD_MS, LEAD_OVERSCAN_MAX, pinAt, pinnedHeader, pinTop, RENDER_OVERSCAN, renderOverscan, renderRange, rowIndexAt, rowOfItem, scrollIntoGrid, scrollToStart, SECTION_GAP, TILE_MAX, tileFor, tileRow, TILE_WIDTH, topFolderId, totalHeight, TRAIL_OVERSCAN, visibleRange } from './layout';
+import { buildRows, columnsFor, layoutHeight, pageMove, placeIn, rowWidth, showsTimeline, TIMELINE_WIDTH, defersThumbs, edgeScrollSpeed, fetchSpan, GAP, hasHeader, HEADER, itemSpan, itemsInRect, headerRows, LEAD_MS, LEAD_OVERSCAN_MAX, pinAt, pinnedHeader, pinTop, RENDER_OVERSCAN, renderOverscan, renderRange, rowIndexAt, rowOfItem, scrollIntoGrid, scrollToStart, SECTION_GAP, TILE_MAX, tileFor, tileRow, TILE_WIDTH, topFolderId, totalHeight, TRAIL_OVERSCAN, visibleRange } from './layout';
 import { type Motion, STILL } from './scroll-speed.svelte';
 import { TILE_SETTLE_MS } from './thumb-request.svelte';
 
@@ -859,5 +859,55 @@ describe('scrolling a row to the start of the view', () => {
     const flat = buildRows(headerless(sections), 2, TILE_WIDTH.medium);
     expect(scrollToStart(flat[2], 0)).toBe(flat[2].top);
     expect(scrollToStart(flat[0], 0)).toBe(0);
+  });
+});
+
+describe('a page key in the grid', () => {
+  // Five rows of two in the first folder, three in the second: tile rows are 168px tall.
+  const runs = [
+    { folderId: 1, offset: 0, count: 10 },
+    { folderId: 2, offset: 10, count: 5 },
+  ];
+  const rows = buildRows(runs, 2, TILE_WIDTH.medium);
+
+  it('moves down by the rows a viewport holds, keeping the column', () => {
+    // 400px is two rows and a bit: from the first row to the third, not the fourth.
+    expect(pageMove(rows, 1, 1, 400)).toBe(5);
+    expect(pageMove(rows, 0, 1, 400)).toBe(4);
+  });
+
+  it('moves up by as many', () => {
+    expect(pageMove(rows, 5, -1, 400)).toBe(1);
+    expect(pageMove(rows, 9, -1, 400)).toBe(5);
+  });
+
+  it('crosses a header, whose height is part of the page', () => {
+    // From the folder's last row (top 704) a page of 400 reaches the next folder's first
+    // row (top 928) and its second (1096), and stops short of the third (1264).
+    expect(pageMove(rows, 9, 1, 400)).toBe(13);
+  });
+
+  it('lands on the last photo of a row too short to have the column', () => {
+    // The second folder ends on a row of one.
+    expect(pageMove(rows, 11, 1, 400)).toBe(14);
+  });
+
+  it('stops at the first and the last row', () => {
+    expect(pageMove(rows, 3, -1, 400)).toBe(1);
+    expect(pageMove(rows, 13, 1, 400)).toBe(14);
+    expect(pageMove(rows, 14, 1, 400)).toBe(14);
+    expect(pageMove(rows, 0, -1, 400)).toBe(0);
+  });
+
+  it('moves a row in a window shorter than one', () => {
+    // A key that moves nothing reads as broken, whatever the window's height.
+    expect(pageMove(rows, 0, 1, 100)).toBe(2);
+    expect(pageMove(rows, 4, -1, 100)).toBe(2);
+    expect(pageMove(rows, 0, 1, 0)).toBe(2);
+  });
+
+  it('leaves alone an offset the rows do not hold', () => {
+    expect(pageMove(rows, 99, 1, 400)).toBe(99);
+    expect(pageMove([], 0, 1, 400)).toBe(0);
   });
 });

@@ -277,6 +277,25 @@ between `prefixed("is:")` and the next prefix - so a parser rearranged away from
 changes the test with it; the wording and the examples nothing checks. The query string is the whole interface, so UI links (the info panel's camera
 and lens) go through `searchBox.search()`, which cancels a pending debounce first.
 
+**The grid's keys are answered on its viewport, and the focus is kept there.** A click
+focuses the tile itself where a button takes the focus from the mouse (WebView2; WebKit hands
+it to the viewport), and the keys then bubble - until that tile scrolls out of the rendered
+rows and is removed, which drops the focus to `<body>` and leaves every key dead: two Page
+Downs after a click. The viewport's `onfocusin` takes the focus any tile is given. A
+navigation key moves on from `library.keyboardLead`, not from `selected`: Shift with an arrow,
+Home, End or a page key is `extendSelection`, which moves the lead only when the range's ids
+arrive, and a held key repeats faster than that. Page Up and Page Down are `pageMove`
+(`layout.ts`); with nothing selected they are left to the viewport's own scrolling, because a
+move would start from the first photo. The keys reach what a click cannot - a page the grid
+has not loaded - and three rules in the store exist for that. A range takes its lead's photo
+from the ids it fetched, never from the loaded pages (`extendSelection`): Shift+End's far end
+is not loaded, and a lead with no id is collapsed by the viewer closing on it and loses its
+anchor at the next rebuild. A range does not land over anything selected while its ids were
+on their way (`picks`): it is a round trip per thousand photos, and Shift+End then Escape put
+the whole range back under the next `H`. And a lead the plain setter put on an unloaded page
+(End, Home, a folder jump) is selected once the page arrives (`adoptLead`): before, its tile
+lost the ring the moment its entry came, and `H`, the star and Ctrl+C had nothing to act on.
+
 **A grid offset is only meaningful against one index version.** Indexing a photo into a
 folder that sorts earlier shifts every later offset, so anything holding an offset across a
 rebuild — the viewer, the grid selection — must re-find its photo by id through
@@ -674,6 +693,22 @@ closes the crop tool, so the comparison must stay exact: `thumbState` counts onl
 `pictureChanged` takes a `Pick` of `ViewerItem` that leaves `faces` and `unnamedFaces` out on
 purpose: a detection landing on the photo on screen must not reload it. The type is the whole
 defence - there is no test, because a field the `Pick` cannot see cannot be compared.
+
+**The viewer's photo has an area, and it is not always the window.** While the info panel is
+open the photo is fitted beside it (`lib/viewer-layout.ts`: `infoRoom`, `photoArea`), in
+`.area`, which clips, so a zoomed photo stops at the panel too. Three things are measured in
+that area and must stay so: the frame the photo and the face outlines are fitted into, the
+zoom's and the pan's bounds (`viewport()`, worked out from the viewer and `info` rather than
+read off the element, which is laid out a render later than the toggle that needs it), and
+the point a zoom holds still (`fromCentre`: measured from the middle of the window, a
+double-click beside the panel zoomed to a place half the panel's room away). Three more
+things stand outside `.area` and are given its width by hand: the slideshow's crossfade
+layer (`.outgoing` - the panel can be opened during a show, and a leaving photo fitted to
+the window jumped larger on its way out), the error message, and the video's controls
+(`VideoControls`' `room`). Anything new drawn over or instead of the photo is a fourth. The panel's
+width and place are set on the element from the same constants. The previous and next
+buttons are `aria-disabled` at the ends, not `disabled`: a button disabled while it holds the
+focus drops the focus to `<body>`.
 
 **The window's fullscreen state is persisted** (`WINDOW_STATE_FLAGS`), and the slideshow uses
 the window's own fullscreen, so quitting mid-show reopens fullscreen with no title bar. `F11`

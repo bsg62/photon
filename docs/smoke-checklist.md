@@ -70,6 +70,14 @@ publishing it.
 - [ ] Select an unstarred photo in the grid and press `.`: it is starred; `.` again unstars it. Ctrl+click a starred and an unstarred photo, the starred one last: `.` unstars both; the other way round it stars both. `.` in the viewer and in compare flips the star on screen, and S in the viewer still starts the slideshow.
 - [ ] Viewer: double-click a detail of a large photo. It zooms in with that detail still under the pointer, and once the full image has loaded it is sharp (one photo pixel per screen pixel, or 400% when the photo is larger than that). Double-click again: the whole photo, centred. Double-click a turn button: two turns, no zoom. A video does not zoom.
 - [ ] Viewer: `+` (and `=`) zooms in, `-` out, `0` fits; the slider and the percentage follow. Hold Ctrl and turn the wheel: the photo zooms where the pointer is, and the page itself does not (WebView2, WebKitGTK). A trackpad pinch does the same where the webview reports one as Ctrl+wheel. The plain wheel still moves between photos. A trackpad pinch zooms about as far as the fingers move (the rate is computed, not measured on hardware), and a mouse wheel notch about a fifth. Zooming with `+` while dragging a zoomed photo does not make it jump on the next move.
+- [ ] Viewer: press `I` on a landscape photo with faces. The photo shrinks into the room left of the panel and nothing of it is under the panel; every face outline is on its face. Press `I` again: the photo fills the window again. At the window's smallest size the photo is still wholly visible beside the panel.
+- [ ] Viewer, info panel open: double-click a detail. It zooms with that detail still under the pointer (not a panel's half-width away), and a zoomed photo stops at the panel's edge instead of running on under it. Zoom in, drag the photo as far as it goes to the left, then open the panel: no black appears between the photo and the panel.
+- [ ] Viewer: the round buttons at the left and right edge step to the previous and the next photo. At the first photo the left one is dimmed and does nothing, at the last the right one; two quick clicks are two steps, not a zoom. With the info panel open the right button stands beside the panel. After a click on one, the arrow keys, `I` and Escape still work.
+- [ ] Slideshow: the two buttons step through the show's order and fade with the other controls while the pointer rests; they are never dimmed, since the show goes round. While cropping they are gone.
+- [ ] Slideshow with the info panel open (press `I` during a show): each photo fades out where it stood, beside the panel; it does not jump larger or run under the panel on its way out. A show of a single photo: both buttons fade with the other controls while the pointer rests.
+- [ ] A photo that cannot be shown, info panel open, at the window's smallest size: the message is in the room beside the panel, between the two buttons, not under either.
+- [ ] A video with the info panel open: its controls are centred under the video and end before the panel.
+- [ ] Close the viewer with Escape, then press an arrow key: the selection moves in the grid at once, without a click first.
 - [ ] Viewer: drag the zoom slider, then without clicking anything else press `0`, `i` and `.`: the photo fits, the info panel opens and the star flips. The arrow keys still move the slider while it has the focus. On a video, click the volume slider and press Space: it pauses.
 - [ ] Open a photo, press `?`: the sheet opens over the viewer. While it is up, the arrow keys, `H` and `R` do nothing to the photo behind it and Tab stays inside the sheet; Escape closes the sheet and not the viewer, and the arrows step photos again. The same over Compare (select two photos, `C`, then `?`): `1`-`4` and `S` are held, and work again after it closes. During a slideshow the sheet holds the show; closing it carries on.
 - [ ] Start a rubber band in the grid and press `?` with the button still down: nothing opens.
@@ -294,6 +302,23 @@ publishing it.
 - [ ] Ctrl+click (Cmd on macOS) three photos: each gets a ring, the status bar reads
       `3 selected`. Shift+click a fourth further down: the run between the last Ctrl+click and
       it is selected. A plain click anywhere collapses back to one.
+- [ ] Click a photo deep in a large library and press Page Down three times, then Page Up:
+      each press moves the ring about a screenful, in the same column, and the grid follows
+      it. The keys keep working however far the clicked photo has scrolled away (on Windows
+      the click used to leave the focus on the tile, and the keys died once it was gone).
+- [ ] Deep in a large library, click a photo and press End: the last photo is ringed, and
+      `H` hides it (and `.` stars it) without an arrow key first. The same with Home.
+- [ ] Click a photo, press Shift+End, then Enter and Escape: the whole range is still
+      selected. Star it with `.` and press Shift+Left: the range shrinks by one from its far
+      end; it does not collapse to two photos.
+- [ ] In a very large library press Shift+End and at once Escape (or click a photo): the
+      selection stays cleared (or on that photo); the range does not appear a moment later.
+- [ ] With nothing selected (click the grid's background), Page Down scrolls a page and
+      selects nothing.
+- [ ] Click a photo, then Shift+Right three times: four are selected. Shift+Down adds a row,
+      Shift+Left takes one back off, Shift+Page Down adds a screenful, Shift+End reaches the
+      last photo. A plain arrow collapses to one. Hold Shift+Right for a few seconds: the
+      selection grows a photo at a time without stalling or jumping back.
 - [ ] Right-click inside a selection: the menu reads `Star 4 photos`, and Reveal is absent.
       Right-click a photo outside it: the selection collapses to that one first.
 - [ ] Star a selection spanning two folders, then check both `.picasa.ini` files: each holds a
