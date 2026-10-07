@@ -2541,6 +2541,78 @@ describe('LibraryStore', () => {
       expect(store.isSelected(idAt(15))).toBe(false);
     });
 
+    describe('where the keyboard goes on from', () => {
+      // A held Shift+arrow asks for the next range before the last one's ids have arrived,
+      // and the lead only moves when they do.
+      it('is the end a range is still reaching for', async () => {
+        const store = await storeOf(20);
+        store.selected = 5;
+        const chunk = deferred<{ version: number; rows: ReturnType<typeof entryAt>[] }>();
+        vi.mocked(api.gridRows).mockImplementationOnce(() => chunk.promise);
+
+        const reaching = store.extendSelection(6);
+        expect(store.selected).toBe(5);
+        expect(store.keyboardLead).toBe(6);
+
+        chunk.resolve({ version: 1, rows: [entryAt(5), entryAt(6)] });
+        await reaching;
+        expect(store.selected).toBe(6);
+        expect(store.keyboardLead).toBe(6);
+      });
+
+      it('is the lead when nothing is being reached for', async () => {
+        const store = await storeOf(20);
+        expect(store.keyboardLead).toBeNull();
+        store.selected = 5;
+        expect(store.keyboardLead).toBe(5);
+      });
+
+      it('stays with the later of two ranges when the earlier one is dropped', async () => {
+        // Both ask for the same end, as a key held at the last photo does: the first one
+        // giving up must not take the second one's reach with it.
+        const store = await storeOf(20);
+        store.selected = 17;
+        const first = deferred<{ version: number; rows: ReturnType<typeof entryAt>[] }>();
+        const second = deferred<{ version: number; rows: ReturnType<typeof entryAt>[] }>();
+        vi.mocked(api.gridRows)
+          .mockImplementationOnce(() => first.promise)
+          .mockImplementationOnce(() => second.promise);
+
+        const a = store.extendSelection(19);
+        const b = store.extendSelection(19);
+        first.resolve({ version: 1, rows: [entryAt(17), entryAt(18), entryAt(19)] });
+        await a;
+        expect(store.selected).toBe(17);
+        expect(store.keyboardLead).toBe(19);
+
+        second.resolve({ version: 1, rows: [entryAt(17), entryAt(18), entryAt(19)] });
+        await b;
+        expect(store.selected).toBe(19);
+      });
+
+      it('falls back to the lead when the range is refused', async () => {
+        const store = await storeOf(20);
+        store.selected = 5;
+        // Rows of another index: the range is dropped, and nothing was reached.
+        vi.mocked(api.gridRows).mockImplementationOnce(async () => ({ version: 99, rows: [entryAt(5), entryAt(6)] }));
+        await store.extendSelection(6);
+        expect(store.selected).toBe(5);
+        expect(store.keyboardLead).toBe(5);
+      });
+
+      it('is given up for a click made meanwhile', async () => {
+        const store = await storeOf(20);
+        store.selected = 5;
+        const chunk = deferred<{ version: number; rows: ReturnType<typeof entryAt>[] }>();
+        vi.mocked(api.gridRows).mockImplementationOnce(() => chunk.promise);
+        const reaching = store.extendSelection(9);
+        store.selected = 2;
+        expect(store.keyboardLead).toBe(2);
+        chunk.resolve({ version: 1, rows: [] });
+        await reaching;
+      });
+    });
+
     it('extends backwards from the anchor too', async () => {
       const store = await storeOf(20);
       store.selected = 10;

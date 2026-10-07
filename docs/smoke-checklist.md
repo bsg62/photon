@@ -289,6 +289,16 @@ publishing it.
 - [ ] Ctrl+click (Cmd on macOS) three photos: each gets a ring, the status bar reads
       `3 selected`. Shift+click a fourth further down: the run between the last Ctrl+click and
       it is selected. A plain click anywhere collapses back to one.
+- [ ] Click a photo deep in a large library and press Page Down three times, then Page Up:
+      each press moves the ring about a screenful, in the same column, and the grid follows
+      it. The keys keep working however far the clicked photo has scrolled away (on Windows
+      the click used to leave the focus on the tile, and the keys died once it was gone).
+- [ ] With nothing selected (click the grid's background), Page Down scrolls a page and
+      selects nothing.
+- [ ] Click a photo, then Shift+Right three times: four are selected. Shift+Down adds a row,
+      Shift+Left takes one back off, Shift+Page Down adds a screenful, Shift+End reaches the
+      last photo. A plain arrow collapses to one. Hold Shift+Right for a few seconds: the
+      selection grows a photo at a time without stalling or jumping back.
 - [ ] Right-click inside a selection: the menu reads `Star 4 photos`, and Reveal is absent.
       Right-click a photo outside it: the selection collapses to that one first.
 - [ ] Star a selection spanning two folders, then check both `.picasa.ini` files: each holds a

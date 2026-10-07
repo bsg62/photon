@@ -24,7 +24,7 @@ const ANSWERED_IN: Record<string, ShortcutGroupId[]> = {
 };
 
 /** Parts of a chord that are not a key a handler compares `e.key` with. */
-const MODIFIERS = ['Mod', 'Shift', 'click', 'wheel'];
+const MODIFIERS = ['Mod', 'Shift', 'click', 'wheel', 'arrow'];
 
 const NAMES: Record<string, string> = {
   ' ': 'Space',
@@ -33,6 +33,8 @@ const NAMES: Record<string, string> = {
   ArrowRight: '→',
   ArrowUp: '↑',
   ArrowDown: '↓',
+  PageUp: 'PgUp',
+  PageDown: 'PgDn',
 };
 
 /** A key as the list spells it: a letter in capitals, a digit as the range of panes. */
@@ -81,7 +83,7 @@ describe('the shortcut list', () => {
       ['+', '-', '.', '0', '=', 'Backspace', 'C', 'End', 'Enter', 'Esc', 'H', 'Home', 'I', 'R', 'S', 'Space', '←', '→'].sort(),
     );
     expect([...keysIn(sources['../components/Grid.svelte'])].sort()).toEqual(
-      ['.', 'A', 'C', 'End', 'Enter', 'Esc', 'H', 'Home', 'R', '←', '→', '↑', '↓'].sort(),
+      ['.', 'A', 'C', 'End', 'Enter', 'Esc', 'H', 'Home', 'PgDn', 'PgUp', 'R', '←', '→', '↑', '↓'].sort(),
     );
     expect([...keysIn(sources['./video-player.svelte.ts'])].sort()).toEqual(['L', 'M', 'Space', '←', '→'].sort());
     expect([...keysIn(sources['../components/Compare.svelte'])].sort()).toEqual(

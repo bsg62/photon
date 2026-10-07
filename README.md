@@ -383,6 +383,11 @@ where you clicked, and a second one fits it to the window again; `+`, `-` and `0
 from the keyboard, and the wheel zooms where the pointer is while Ctrl is held. Without Ctrl
 the wheel moves between photos, as it always has.
 
+In the grid, Page Up and Page Down move the selection a screenful, in the same column. Hold
+Shift with an arrow key, Home, End or a page key and the selection grows from where you
+started to there, as a Shift+click does; go back the other way and it shrinks again. With
+nothing selected the page keys simply scroll.
+
 ### Statistics
 
 Settings → **Statistics** counts the library: how many photos and videos, how much disk they

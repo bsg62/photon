@@ -264,6 +264,17 @@ between `prefixed("is:")` and the next prefix - so a parser rearranged away from
 changes the test with it; the wording and the examples nothing checks. The query string is the whole interface, so UI links (the info panel's camera
 and lens) go through `searchBox.search()`, which cancels a pending debounce first.
 
+**The grid's keys are answered on its viewport, and the focus is kept there.** A click
+focuses the tile itself where a button takes the focus from the mouse (WebView2; WebKit hands
+it to the viewport), and the keys then bubble - until that tile scrolls out of the rendered
+rows and is removed, which drops the focus to `<body>` and leaves every key dead: two Page
+Downs after a click. The viewport's `onfocusin` takes the focus any tile is given. A
+navigation key moves on from `library.keyboardLead`, not from `selected`: Shift with an arrow,
+Home, End or a page key is `extendSelection`, which moves the lead only when the range's ids
+arrive, and a held key repeats faster than that. Page Up and Page Down are `pageMove`
+(`layout.ts`); with nothing selected they are left to the viewport's own scrolling, because a
+move would start from the first photo.
+
 **A grid offset is only meaningful against one index version.** Indexing a photo into a
 folder that sorts earlier shifts every later offset, so anything holding an offset across a
 rebuild — the viewer, the grid selection — must re-find its photo by id through

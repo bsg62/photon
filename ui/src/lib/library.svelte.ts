@@ -161,6 +161,9 @@ export class LibraryStore {
   private pick(ids: Set<number>, ranges: Runs | null): void {
     this.selection = ids;
     this.picks++;
+    // Whatever a range was reaching for, the user has since selected something else - or
+    // this is that range landing.
+    this.reaching = null;
     this.runs = ranges === null ? null : { version: this.info.version, ranges: mergeRuns(ranges) };
   }
 
@@ -293,13 +296,34 @@ export class LibraryStore {
     const from = this.anchor ?? this.selectedOffset ?? 0;
     const start = Math.max(0, Math.min(from, offset));
     const end = Math.min(this.info.len - 1, Math.max(from, offset));
-    const ids = await this.fetchIds(start, end);
+    const reach = { offset };
+    this.reaching = reach;
+    let ids: Set<number> | null;
+    try {
+      ids = await this.fetchIds(start, end);
+    } finally {
+      // By identity, not by offset: a key held at the last photo asks for the same end
+      // again and again, and an earlier ask giving up must not end a later one's reach.
+      if (this.reaching === reach) this.reaching = null;
+    }
     if (!ids) return;
     this.pick(ids, [[start, end]]);
     this.selectedOffset = offset;
     this.selectedId = this.pages.get(offset)?.id ?? null;
     // The anchor stays put, so dragging the far end back and forth re-ranges from the
     // same start rather than walking away from it.
+  }
+
+  /** The end a range is being extended to and has not reached: `extendSelection` moves the
+   *  lead only once the range's ids have arrived. Plain, not `$state` - nothing renders
+   *  from it. */
+  private reaching: { offset: number } | null = null;
+
+  /** The offset a navigation key moves on from: the lead, or the end a Shift+arrow has
+   *  already asked for. A held key repeats faster than the ids of each range arrive, and
+   *  read from the lead alone every repeat until then asked for the same photo again. */
+  get keyboardLead(): number | null {
+    return this.reaching?.offset ?? this.selectedOffset;
   }
 
   /** Ctrl/Cmd+A: selects what is under the lead's header - its folder, or under a date
