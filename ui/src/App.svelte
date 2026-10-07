@@ -615,6 +615,7 @@
         oncompare={openCompare}
         onshowcopies={showCopiesOf}
         onrenamefolder={(id) => folderTree?.renameFolder(id, () => grid?.focus())}
+        onopenfolders={() => openSettings('folders')}
       />
     </div>
     {#if mainPage.current === 'people'}

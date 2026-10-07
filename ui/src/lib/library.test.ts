@@ -434,6 +434,73 @@ describe('LibraryStore', () => {
     expect(store.toasts[0]?.message).toBe('boom');
   });
 
+  it('knows the watched folders only once the list has been read', async () => {
+    const list = deferred<{ watched: { id: number; path: string; online: boolean }[]; folders: never[] }>();
+    vi.mocked(api.listFolders).mockImplementationOnce(() => list.promise);
+    const store = new LibraryStore();
+    const started = store.init();
+    // An empty list here is "not read yet", not "no folder is watched".
+    expect(store.foldersKnown).toBe(false);
+    list.resolve({ watched: [], folders: [] });
+    await started;
+    expect(store.foldersKnown).toBe(true);
+  });
+
+  it('is scanning while any scan has not reported done, whichever folder it is in', async () => {
+    const store = new LibraryStore();
+    await store.init();
+    expect(store.scanning).toBe(false);
+    // Folder 7 is not in the list: the backend added it after the list was read.
+    handlers.scanProgress({ watchedId: 7, filesSeen: 1, added: 0, changed: 0, done: false, cancelled: false });
+    expect(store.scanning).toBe(true);
+    handlers.scanProgress({ watchedId: 7, filesSeen: 9, added: 2, changed: 0, done: true, cancelled: false });
+    expect(store.scanning).toBe(false);
+  });
+
+  // The backend watches the Pictures folder by itself on a first run, after the UI may have
+  // read an empty list: without this the status bar showed no scan and the sidebar said "No
+  // folders yet" until the scan was done.
+  it('reads the folder list again when a scan starts in a folder it does not hold', async () => {
+    const store = new LibraryStore();
+    await store.init();
+    expect(store.folders.watched).toEqual([]);
+    vi.mocked(api.listFolders).mockResolvedValue({ watched: [{ id: 7, path: '/home/ada/Pictures', online: true }], folders: [] });
+    handlers.scanProgress({ watchedId: 7, filesSeen: 1, added: 0, changed: 0, done: false, cancelled: false });
+    await vi.waitFor(() => expect(store.folders.watched.map((w) => w.id)).toEqual([7]));
+  });
+
+  // The list may still not hold the folder when it comes back - it was read a moment before
+  // the backend's write - and the scan reports many times a second.
+  it('reads the folder list once for a scan in a folder it does not hold, not once an event', async () => {
+    const store = new LibraryStore();
+    await store.init();
+    const before = vi.mocked(api.listFolders).mock.calls.length;
+    for (const filesSeen of [1, 2, 3]) {
+      handlers.scanProgress({ watchedId: 7, filesSeen, added: 0, changed: 0, done: false, cancelled: false });
+    }
+    await Promise.resolve();
+    expect(vi.mocked(api.listFolders).mock.calls.length).toBe(before + 1);
+    expect(store.folders.watched).toEqual([]);
+  });
+
+  it('does not read the folder list again for every event of a scan in a folder it holds', async () => {
+    vi.mocked(api.listFolders).mockResolvedValue({ watched: [{ id: 7, path: '/home/ada/Pictures', online: true }], folders: [] });
+    const store = new LibraryStore();
+    await store.init();
+    const before = vi.mocked(api.listFolders).mock.calls.length;
+    handlers.scanProgress({ watchedId: 7, filesSeen: 1, added: 0, changed: 0, done: false, cancelled: false });
+    handlers.scanProgress({ watchedId: 7, filesSeen: 2, added: 0, changed: 0, done: false, cancelled: false });
+    await Promise.resolve();
+    expect(vi.mocked(api.listFolders).mock.calls.length).toBe(before);
+  });
+
+  it('does not know the watched folders when the list could not be read', async () => {
+    vi.mocked(api.listFolders).mockRejectedValueOnce(new Error('folders-fail'));
+    const store = new LibraryStore();
+    await store.init().catch(() => {});
+    expect(store.foldersKnown).toBe(false);
+  });
+
   it('routes folder-status and done scan-progress failures into reportError too', async () => {
     const store = new LibraryStore();
     await store.init();

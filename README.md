@@ -493,6 +493,12 @@ Before each release, run the [manual smoke checklist](docs/smoke-checklist.md) o
 
 ## Adding folders
 
+On its first launch photon watches your Pictures folder by itself, if you have one. While the
+library is empty, the place where the photos will be says where things stand: that photon is
+still looking, that the folder it watches held no photos or cannot be reached, or - with no
+folder watched at all - that there is nothing to look in yet. Each of the last two offers
+**Add folder…** right there.
+
 Settings → Folders → **Add folder…** opens the system's folder picker. Or drag one or more
 folders from your file manager onto photon's window: photon says what dropping will do, and
 watches each of them. A photo dropped on its own is refused with a note to drop its folder

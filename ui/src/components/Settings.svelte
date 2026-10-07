@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { ask, open } from '@tauri-apps/plugin-dialog';
+  import { ask } from '@tauri-apps/plugin-dialog';
+  import { addFolderFromPicker } from '../lib/add-folder';
   import { onMount, tick } from 'svelte';
   import { api, errorMessage, type AppInfo, type LibraryStats, type MemoryUsage, type TagCount, type TagRule, type ThemeChoice, type WatchedFolder } from '../lib/api';
   import { theme } from '../lib/app-theme.svelte';
@@ -291,17 +292,6 @@
     return parts[parts.length - 1] ?? path;
   }
 
-  async function addFolder() {
-    const path = await open({ directory: true, multiple: false, title: 'Add a folder to photon' });
-    if (typeof path !== 'string') return;
-    try {
-      await api.addFolder(path);
-      await library.refreshFolders();
-    } catch (e) {
-      library.reportError(e);
-    }
-  }
-
   async function remove(watched: WatchedFolder) {
     try {
       const confirmed = await ask(`Remove “${watched.path}” from photon? Your files stay where they are.`, {
@@ -468,7 +458,7 @@
               {/each}
             </ul>
           {/if}
-          <button class="add" onclick={addFolder}>Add folder…</button>
+          <button class="add" onclick={addFolderFromPicker}>Add folder…</button>
         {:else if current === 'tags'}
           <h2>Tags</h2>
           <p class="hint">Tags are the keywords in your photos. Renaming or removing one changes how photon shows it; your files keep their keywords.</p>

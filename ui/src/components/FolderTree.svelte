@@ -651,7 +651,8 @@
     </div>
   {/each}
 
-  {#if library.folders.watched.length === 0}
+  <!-- Once the list has been read: before that an empty one is not "no folders". -->
+  {#if library.foldersKnown && library.folders.watched.length === 0}
     <p class="empty">No folders yet.</p>
     <button class="add" onclick={onopensettings}>Add a folder in Settings…</button>
   {/if}

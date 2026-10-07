@@ -66,7 +66,7 @@ cargo run -p xtask -- metadata            # licence and installer metadata are c
 **Seeing the UI without launching it** (not in CI; needs Chromium on `PATH` or in `CHROMIUM`):
 
 ```bash
-cargo run -p xtask -- screenshots                     # forty PNGs into target/screenshots/
+cargo run -p xtask -- screenshots                     # forty-three PNGs into target/screenshots/
 cargo run -p xtask -- screenshots --only viewer-info-light --no-build
 cargo run -p xtask -- scroll-probe   # the end of a 300k-photo library is reachable
 ```
@@ -132,6 +132,19 @@ left at `NOT_BUILT` the window drew nothing, and an unchanged library rebuilt on
 switch. The empty grid carries the error (`GridInfo::build_error`), so the UI says the
 library could not be read instead of "No photos yet"; it is never published over a grid something
 else built meanwhile, and the next successful publish clears it.
+
+**An empty library says why** (`emptyLibrary` and `noPhotosLine` in `grid-state.ts`, drawn
+by `Grid.svelte` beside its viewport, in All photos and Recent only). The states are not the
+ones they look like. "No folder is watched" is the rare one: `startup` watches the Pictures
+folder by itself when nothing is watched, so most first runs show a scan, and then either
+photos or "photon looked in /home/…/Pictures and found none" - which therefore offers Add
+folder… as well. A running scan comes first, and is `library.scanning` (any scan, by its
+events), not a scan of a folder in the list: the list the UI read at launch may be from
+before the backend added Pictures. For the same reason a scan's first event in a folder the
+list does not hold reads the list again, or the status bar showed no scan and the sidebar
+"No folders yet" until it was done. Nothing is said before the list has been read once
+(`foldersKnown`). A folder on an unplugged drive is "cannot reach", never "found no photos".
+The panel is outside the viewport because the viewport is the rubber band's surface.
 
 `LibraryChanged::data_changed` tells the UI whether to refetch the sidebar's collections
 (albums, people, tags - the tag counts alone are ~220ms at 300k photos carrying three keywords
@@ -1163,7 +1176,7 @@ anything sitting outside the tile's own box.
 
 The look cannot be tested here, but it can be seen without launching the app: `cargo run -p xtask --
 screenshots` builds the UI, serves `ui/dist` itself with `mock.js` (in
-`crates/xtask/screenshots/`) standing in for Tauri's IPC, and writes forty PNGs, in both themes,
+`crates/xtask/screenshots/`) standing in for Tauri's IPC, and writes forty-three PNGs, in both themes,
 to `target/screenshots/` with headless Chromium. It claims a Windows user agent and maps
 `photon.localhost` to its own port, because `mediaUrl` uses `http://photon.localhost` there
 and no plain browser can load `photon://`. It is Chromium's rendering, not WebKitGTK's or

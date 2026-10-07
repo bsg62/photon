@@ -99,6 +99,10 @@ export class LibraryStore {
     buildError: null,
   });
   folders = $state.raw<FolderList>({ watched: [], folders: [] });
+  /** Whether `folders` has been read from the backend at least once. Until then its empty
+   *  list means "not read yet", not "no folder is watched", and nothing may tell the user to
+   *  add one (`emptyLibrary`). */
+  foldersKnown = $state(false);
   /** The sidebar's collections. Refetched on every `library-changed` that says the data
    *  moved (a scan can add a face, a keyword or purge an album member) and after every
    *  album, saved-search and tag mutation. */
@@ -623,7 +627,11 @@ export class LibraryStore {
           const previous = this.scans[e.watchedId];
           this.scans[e.watchedId] = e;
           if (!e.done && (!previous || previous.done)) void this.snapshotExpected(e).catch(this.reportError);
-          if (e.done) void this.refreshFolders().catch(this.reportError);
+          // A scan starting in a folder the list does not hold: the backend watches the
+          // Pictures folder by itself on a first run, after the list may have been read.
+          // On the scan's first event only, like the snapshot above, not on every one.
+          const listed = this.folders.watched.some((w) => w.id === e.watchedId);
+          if (e.done || (!listed && (!previous || previous.done))) void this.refreshFolders().catch(this.reportError);
         }),
       ]);
       if (generation !== this.generation) {
@@ -862,6 +870,7 @@ export class LibraryStore {
     const folders = await api.listFolders();
     if (seq !== this.folderSeq) return;
     this.folders = folders;
+    this.foldersKnown = true;
   }
 
   /** Refetches albums, saved searches, people and tags together, one fetch at a time plus
@@ -1442,6 +1451,12 @@ export class LibraryStore {
   isOnline(folderId: number): boolean {
     const folder = this.folderById.get(folderId);
     return folder ? (this.onlineByWatched.get(folder.watchedId) ?? true) : true;
+  }
+
+  /** Whether any scan is running, in a folder the list holds or not (see `init`'s scan
+   *  listener): what an empty library asks before it offers to add a folder. */
+  get scanning(): boolean {
+    return Object.values(this.scans).some((scan) => !scan.done);
   }
 
   isScanning(watchedId: number): boolean {
