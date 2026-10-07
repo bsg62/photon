@@ -273,7 +273,15 @@ navigation key moves on from `library.keyboardLead`, not from `selected`: Shift 
 Home, End or a page key is `extendSelection`, which moves the lead only when the range's ids
 arrive, and a held key repeats faster than that. Page Up and Page Down are `pageMove`
 (`layout.ts`); with nothing selected they are left to the viewport's own scrolling, because a
-move would start from the first photo.
+move would start from the first photo. The keys reach what a click cannot - a page the grid
+has not loaded - and three rules in the store exist for that. A range takes its lead's photo
+from the ids it fetched, never from the loaded pages (`extendSelection`): Shift+End's far end
+is not loaded, and a lead with no id is collapsed by the viewer closing on it and loses its
+anchor at the next rebuild. A range does not land over anything selected while its ids were
+on their way (`picks`): it is a round trip per thousand photos, and Shift+End then Escape put
+the whole range back under the next `H`. And a lead the plain setter put on an unloaded page
+(End, Home, a folder jump) is selected once the page arrives (`adoptLead`): before, its tile
+lost the ring the moment its entry came, and `H`, the star and Ctrl+C had nothing to act on.
 
 **A grid offset is only meaningful against one index version.** Indexing a photo into a
 folder that sorts earlier shifts every later offset, so anything holding an offset across a

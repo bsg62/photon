@@ -293,6 +293,13 @@ publishing it.
       each press moves the ring about a screenful, in the same column, and the grid follows
       it. The keys keep working however far the clicked photo has scrolled away (on Windows
       the click used to leave the focus on the tile, and the keys died once it was gone).
+- [ ] Deep in a large library, click a photo and press End: the last photo is ringed, and
+      `H` hides it (and `.` stars it) without an arrow key first. The same with Home.
+- [ ] Click a photo, press Shift+End, then Enter and Escape: the whole range is still
+      selected. Star it with `.` and press Shift+Left: the range shrinks by one from its far
+      end; it does not collapse to two photos.
+- [ ] In a very large library press Shift+End and at once Escape (or click a photo): the
+      selection stays cleared (or on that photo); the range does not appear a moment later.
 - [ ] With nothing selected (click the grid's background), Page Down scrolls a page and
       selects nothing.
 - [ ] Click a photo, then Shift+Right three times: four are selected. Shift+Down adds a row,
