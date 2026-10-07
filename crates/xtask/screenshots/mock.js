@@ -247,6 +247,7 @@
     // the store's refetch race an answer it cannot read.
     save_search: (args) => ({ id: 3, name: args.name, query: args.query, createdMs: 0 }),
     watched_folder_stats: () => [{ watchedId: 1, photoCount: 12480 }],
+    scanning_folders: () => [],
     app_info: () => ({ version: '0.0.0', libraryPath: '/home/ada/.local/share/photon/library.db', licence: 'MIT' }),
     library_stats: () => ({
       photos: 12034,

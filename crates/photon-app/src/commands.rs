@@ -338,6 +338,13 @@ pub fn remove_folder(engine: &Arc<Engine>, watched_id: i64) -> CmdResult<()> {
     Ok(engine.remove_folder(watched_id)?)
 }
 
+/// The watched folders being scanned, for a UI that was not listening when their scans
+/// said so (`Engine::scanning_folders`): asked once, after it has subscribed to
+/// `scan-progress`, which is what tells it about every scan from then on.
+pub fn scanning_folders(engine: &Engine) -> Vec<i64> {
+    engine.scanning_folders()
+}
+
 /// Kept apart from `list_folders`, which runs on every scan completion and folder-status
 /// event; only the Settings dialog needs an aggregate over every item.
 pub fn watched_folder_stats(engine: &Engine) -> CmdResult<Vec<WatchedFolderStats>> {

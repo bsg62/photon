@@ -298,6 +298,7 @@ pub fn run() {
             ipc::open_in_default_app,
             ipc::open_in_map,
             ipc::reveal_folder,
+            ipc::scanning_folders,
             ipc::watched_folder_stats,
             ipc::library_stats,
             ipc::app_info,

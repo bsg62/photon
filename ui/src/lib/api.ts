@@ -344,6 +344,9 @@ export const api = {
   removeFolder: (watchedId: number) => invoke<void>('remove_folder', { watchedId }),
   rescanFolder: (watchedId: number) => invoke<void>('rescan_folder', { watchedId }),
   watchedFolderStats: () => invoke<WatchedFolderStats[]>('watched_folder_stats'),
+  /** The ids of the watched folders whose scan has reported and is not done: for a UI that
+   *  was not listening when they started. Asked once, after subscribing to `scan-progress`. */
+  scanningFolders: () => invoke<number[]>('scanning_folders'),
   libraryStats: () => invoke<LibraryStats>('library_stats'),
   appInfo: () => invoke<AppInfo>('app_info'),
   memoryUsage: () => invoke<MemoryUsage>('memory_usage'),

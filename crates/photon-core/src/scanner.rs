@@ -109,7 +109,8 @@ impl ScanReport {
 /// thumbnail cache. A caller that wants only progress wraps a closure in [`progress_only`].
 pub trait ScanSink {
     /// Called after every batch, every [`PROGRESS_EVERY`] files the walk passes, and once
-    /// more at the end of the scan.
+    /// more at the end of the scan. A full scan also calls it once before its walk, with
+    /// nothing seen, as soon as it has found its root (`scan_watched`).
     fn progress(&mut self, progress: &ScanProgress);
 
     /// Items just inserted, replaced or re-pointed to their file's new path. Each has
@@ -184,6 +185,21 @@ pub fn scan_watched(
     }
     // Online/offline is decided once, below, after the empty-root guard, so the folder
     // doesn't flicker online and back.
+
+    // The scan's opening report, with nothing seen. The walk's own first report is
+    // `PROGRESS_EVERY` photos in, a flushed batch, or its end: on a tree with many other
+    // files ahead of its photos, or a cold network share, that is a long time in which
+    // nothing says a scan is running. After the root has been found, not before: a root
+    // that is not there is polled twice a minute, and must not announce a scan each time.
+    // Nor a root last found offline, which is polled the same way and may be there as an
+    // empty mount point: telling that takes a read of every known row (below, and the
+    // guard after the walk), 200 ms at 300,000 photos, and the scan's line came and went
+    // with every poll. The first scan after such a drive is back goes without the report.
+    // Only here, not in `scan_subtree`: the watcher runs one of those for every directory
+    // a file changed in, most over in milliseconds, and each would flash the scan's line.
+    if watched.online {
+        progress.progress(&ScanProgress::default());
+    }
 
     let mut known = lib.known_items(watched.id)?;
     let mut folder_ids: HashMap<PathBuf, i64> = HashMap::new();
@@ -1841,9 +1857,135 @@ mod tests {
         assert_eq!((report.added, report.changed), (0, 0), "nothing changed");
         assert_eq!(
             reports,
-            [PROGRESS_EVERY, 2 * PROGRESS_EVERY, 2 * PROGRESS_EVERY + 5],
-            "two reports on the way and the final one, not just the final one"
+            [
+                0,
+                PROGRESS_EVERY,
+                2 * PROGRESS_EVERY,
+                2 * PROGRESS_EVERY + 5
+            ],
+            "the opening report, two on the way and the final one, not just the final one"
         );
+    }
+
+    /// A full scan reports once before it walks, with nothing seen: the walk's own first
+    /// report is `PROGRESS_EVERY` photos in, or at its end, and until then nothing told a
+    /// listener a scan was running at all - the status bar was empty for a network share's
+    /// first minute, and an empty library said photon had found no photos in the folder it
+    /// was in the middle of reading.
+    #[test]
+    fn a_full_scan_reports_before_it_walks() {
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        write_file(&root, "a.jpg", &jpeg_bytes(4, 4));
+        write_file(&root, "b.jpg", &jpeg_bytes(4, 5));
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
+
+        let mut reports: Vec<ScanProgress> = Vec::new();
+        scan_watched(
+            &lib,
+            &watched,
+            1,
+            &ScanOptions::default(),
+            &mut progress_only(|p| reports.push(*p)),
+        )
+        .unwrap();
+
+        assert_eq!(
+            reports.first(),
+            Some(&ScanProgress::default()),
+            "{reports:?}"
+        );
+        assert_eq!(reports.last().unwrap().files_seen, 2, "{reports:?}");
+    }
+
+    /// Not for a root that is not there. An unplugged drive is polled every thirty seconds,
+    /// and each poll would light the status bar's scan line for a scan that reads nothing.
+    #[test]
+    fn a_scan_of_a_root_that_is_not_there_reports_nothing() {
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        write_file(&root, "a.jpg", &jpeg_bytes(4, 4));
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
+        std::fs::remove_dir_all(&root).unwrap();
+
+        let mut reports = 0;
+        let report = scan_watched(
+            &lib,
+            &watched,
+            1,
+            &ScanOptions::default(),
+            &mut progress_only(|_| reports += 1),
+        )
+        .unwrap();
+
+        assert!(report.offline);
+        assert_eq!(reports, 0);
+    }
+
+    /// Nor for a root that is there but was last found offline. An unmounted volume leaves
+    /// its mount point behind, an empty directory; the empty-root guard marks the folder
+    /// offline and it is polled twice a minute like a missing one. Each poll reads every
+    /// known row before it can tell the root is still empty - 200 ms at 300,000 photos -
+    /// and with the opening report in front of that, the status bar's scan line came and
+    /// went every thirty seconds. The price is one scan without it: the first after the
+    /// drive is back, which reports as scans always did, from its first batch.
+    #[test]
+    fn a_scan_of_a_folder_last_found_offline_does_not_open_with_a_report() {
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        write_file(&root, "a.jpg", &jpeg_bytes(4, 4));
+        write_file(&root, "b.jpg", &jpeg_bytes(4, 5));
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
+        lib.set_watched_online(watched.id, false).unwrap();
+        let watched = lib
+            .watched_folders()
+            .unwrap()
+            .into_iter()
+            .find(|w| w.id == watched.id)
+            .unwrap();
+        assert!(!watched.online);
+
+        let mut reports: Vec<ScanProgress> = Vec::new();
+        let report = scan_watched(
+            &lib,
+            &watched,
+            1,
+            &ScanOptions::default(),
+            &mut progress_only(|p| reports.push(*p)),
+        )
+        .unwrap();
+
+        assert_eq!(report.added, 2);
+        assert!(!reports.is_empty());
+        assert!(
+            !reports.contains(&ScanProgress::default()),
+            "no report with nothing seen: {reports:?}"
+        );
+    }
+
+    /// Nor does a subtree scan open with one. The watcher runs one for every directory a
+    /// file changed in, most of them over in milliseconds: announced, each would flash the
+    /// status bar's scan line. It reports as it always has, on the way and at its end.
+    #[test]
+    fn a_subtree_scan_does_not_open_with_a_report() {
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        write_file(&root, "sub/a.jpg", &jpeg_bytes(4, 4));
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
+        scan(&lib, &watched, 1);
+
+        let mut reports: Vec<ScanProgress> = Vec::new();
+        scan_subtree(
+            &lib,
+            &watched,
+            &root.join("sub"),
+            2,
+            &ScanOptions::default(),
+            &mut progress_only(|p| reports.push(*p)),
+        )
+        .unwrap();
+
+        assert_eq!(reports.len(), 1, "only the closing report: {reports:?}");
     }
 
     #[test]

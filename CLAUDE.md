@@ -138,26 +138,44 @@ in `grid-state.ts`, drawn by `Grid.svelte` beside its viewport, in All photos an
 only). The states are not the ones they look like. "No folder is watched" is the rare one:
 `startup` watches the Pictures folder by itself when nothing is watched, so most first runs
 are a watched folder with a scan in it, or with nothing in it - which therefore offers Add
-folder… as well. **The UI does not know when a scan is running, only when one has reported**:
-the backend sends no event when a scan starts (the first is after 64 photos, a flushed
-batch, or the walk's end), and events sent before the webview's listeners exist are lost. So
-`'no-photos'` is never worded as a finished search ("has found no photos", not "looked and
-found none") - it is on screen for a first scan's opening seconds, and a folder photon may
-not read is reported like an empty one. What can be known is patched in: a folder added
-through `library.addFolder` has its scan counted as running at once (unless a scan there
-has already reported - an empty folder's can be over before the command answers); a scan's
-first event in a folder the list does not hold reads the list again (the list read at launch
-may predate the automatic Pictures); a scan that reports done on an empty grid counts as
-running until the grid has been read again (`settling`: the rebuild's event and the scan's
-end arrive a fraction of a millisecond apart, a round trip before the photos). Hidden photos
+folder… as well. **The UI knows a scan is running only because it is told, in two ways.**
+A full scan reports once before it walks, with nothing seen, as soon as it has found its
+root (`scan_watched`): the walk's own first report is 64 photos in, a flushed batch, or its
+end, and an empty library said photon had found no photos in a folder it was a minute into
+reading. Not a root that is not there (an unplugged drive is polled twice a minute), not one
+last found offline (`watched.online`: an unmounted volume leaves an empty mount point, polled
+the same way, and telling it from a live folder reads every known row first - the scan's
+line came and went with each poll; the price is that the first scan after the drive is back
+goes without the report), and not a subtree scan (the watcher runs one for every directory a
+file changed in, each over in milliseconds: announced, each would flash the scan's line). And because the
+startup scans begin before any webview exists and an event sent to no listener is lost, the
+UI asks once, after it has subscribed, which scans are running: `scanning_folders`, which
+answers from `Engine::reporting` - not from the scan slots, which hold INI passes that
+report nothing. `reporting` is kept by the code that sends the events, on the same side of
+each: in before a scan's first not-done event, out *before* its done. That order is the
+whole point - a listener told "scanning" is always still owed the done that ends it - and
+`scanning_folders_names_a_scan_from_its_first_report_until_it_is_done` reads the list from
+inside the event sink to hold it. The UI leaves alone a scan that has reported since it
+asked (its done can overtake the answer). What the UI writes into `scans` for a scan it was
+told of is a note, not an event (`noteRunning`, `unheard`): the scan's first real event must
+still count as its first, or the folder's size is never snapshotted and the status bar
+counts files with nothing to measure them against. The slot's release takes a panicked scan
+out of `reporting`, since it will never report done. `'no-photos'` is still never worded as a finished
+search ("has found no photos", not "looked and found none"): a folder photon may not read is
+scanned and reported like an empty one. Three smaller things beside it: a folder added
+through `library.addFolder` has its scan counted as running at once (the command's answer
+and the scan's opening event arrive in either order), unless a scan there has already
+reported; a scan's first event in a folder the list does not hold reads the list again (the
+list read at launch may predate the automatic Pictures); and a scan that reports done on an
+empty grid counts as running until the grid has been read again (`settling`: the rebuild's
+event and the scan's end arrive a fraction of a millisecond apart, a round trip before the
+photos). Hidden photos
 come before all of it: with any, the library is not empty. Nothing is said before the folder
 list has been read once (`foldersKnown`). The scanning and no-photos states are one block
 with one sentence changing, because a watched folder is rescanned at any time and buttons
 replaced on each flip lost the focus and a click on its way; and the focus is read before
 the panel's DOM changes (`$effect.pre`) and handed to the grid if its button is gone after.
-The panel is outside the viewport because the viewport is the rubber band's surface. The
-real fix for the blind window is the backend's: a not-done event at a scan's start and a
-command answering which scans are running; it has not been made.
+The panel is outside the viewport because the viewport is the rubber band's surface.
 
 `LibraryChanged::data_changed` tells the UI whether to refetch the sidebar's collections
 (albums, people, tags - the tag counts alone are ~220ms at 300k photos carrying three keywords
