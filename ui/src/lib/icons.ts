@@ -1,7 +1,7 @@
 // Icons from Lucide (https://lucide.dev), lucide-static 1.47.0. ISC License, Copyright (c)
-// Lucide Icons and Contributors; chevron-down, chevron-left, chevron-right, circle-help, clock, info,
-// search and x derive from Feather, MIT License, Copyright (c) 2013-present Cole Bemis. Both
-// licences are reproduced in THIRD-PARTY-NOTICES.md at the repository root.
+// Lucide Icons and Contributors; chevron-down, chevron-left, chevron-right, circle-help, clock,
+// info, panel-left, search and x derive from Feather, MIT License, Copyright (c) 2013-present
+// Cole Bemis. Both licences are reproduced in THIRD-PARTY-NOTICES.md at the repository root.
 //
 // Each value is the inside of the icon's <svg>, on Lucide's 24-unit grid. Vendored rather
 // than depended on: twenty icons do not justify a package and its update churn.
@@ -23,6 +23,7 @@ export type IconName =
   | 'images'
   | 'info'
   | 'layout-grid'
+  | 'panel-left'
   | 'pause'
   | 'play'
   | 'repeat'
@@ -57,6 +58,7 @@ export const ICONS: Record<IconName, string> = {
     '<path d="m22 11-1.296-1.296a2.4 2.4 0 0 0-3.408 0L11 16"/><path d="M4 8a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2"/><circle cx="13" cy="7" r="1" fill="currentColor"/><rect x="8" y="2" width="14" height="14" rx="2"/>',
   info: '<circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>',
   'layout-grid': '<rect width="7" height="7" x="3" y="3" rx="1"/><rect width="7" height="7" x="14" y="3" rx="1"/><rect width="7" height="7" x="14" y="14" rx="1"/><rect width="7" height="7" x="3" y="14" rx="1"/>',
+  'panel-left': '<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/>',
   pause: '<rect x="14" y="3" width="5" height="18" rx="1"/><rect x="5" y="3" width="5" height="18" rx="1"/>',
   play: '<path d="M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z"/>',
   repeat: '<path d="m17 2 4 4-4 4"/><path d="M3 11v-1a4 4 0 0 1 4-4h14"/><path d="m7 22-4-4 4-4"/><path d="M21 13v1a4 4 0 0 1-4 4H3"/>',

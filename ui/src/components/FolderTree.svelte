@@ -187,7 +187,8 @@
     folderEditor.commit().catch(library.reportError);
   }
 
-  function closeMenus() {
+  /** Exported for App, which closes them when the sidebar is hidden with one open. */
+  export function closeMenus() {
     menu = null;
     albumMenu = null;
     searchMenu = null;

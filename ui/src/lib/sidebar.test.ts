@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { clampSidebarWidth, GROUPS_DEFAULT, SIDEBAR_DEFAULT, SIDEBAR_GROUPS_KEY, SIDEBAR_MIN, SIDEBAR_WIDTH_KEY, storedOpenGroups, storedSidebarWidth, storeOpenGroups, storeSidebarWidth } from './sidebar';
+import { clampSidebarWidth, GROUPS_DEFAULT, SIDEBAR_DEFAULT, SIDEBAR_GROUPS_KEY, SIDEBAR_HIDDEN_KEY, SIDEBAR_MIN, SIDEBAR_WIDTH_KEY, storedOpenGroups, storedSidebarHidden, storedSidebarWidth, storeOpenGroups, storeSidebarHidden, storeSidebarWidth } from './sidebar';
 
 describe('clampSidebarWidth', () => {
   it('keeps a width inside the bounds', () => {
@@ -111,5 +111,43 @@ describe('the remembered open groups', () => {
   it('survive a store that refuses to be read or written', () => {
     expect(storedOpenGroups(refusing)).toEqual(GROUPS_DEFAULT);
     expect(() => storeOpenGroups(refusing, GROUPS_DEFAULT)).not.toThrow();
+  });
+});
+
+describe('whether the sidebar is hidden', () => {
+  it('is shown until it has been hidden', () => {
+    expect(storedSidebarHidden(fakeStore())).toBe(false);
+  });
+
+  it('is remembered either way', () => {
+    const store = fakeStore();
+    storeSidebarHidden(store, true);
+    expect(store.held.get(SIDEBAR_HIDDEN_KEY)).toBe('true');
+    expect(storedSidebarHidden(store)).toBe(true);
+    storeSidebarHidden(store, false);
+    expect(storedSidebarHidden(store)).toBe(false);
+  });
+
+  // Hidden is the state with no way back in sight but a small button: anything that is not
+  // a plain yes leaves the sidebar where a new user expects it.
+  it('is shown for anything stored that is not a yes', () => {
+    for (const value of ['', '1', 'yes', 'TRUE', 'null', '{}']) {
+      expect(storedSidebarHidden(fakeStore({ [SIDEBAR_HIDDEN_KEY]: value })), value).toBe(false);
+    }
+  });
+
+  it('is shown where there is no storage, and a refused write is dropped', () => {
+    expect(storedSidebarHidden(null)).toBe(false);
+    expect(storedSidebarHidden(refusing)).toBe(false);
+    expect(() => storeSidebarHidden(refusing, true)).not.toThrow();
+    expect(() => storeSidebarHidden(null, true)).not.toThrow();
+  });
+
+  it('leaves the width and the open groups as they were', () => {
+    const store = fakeStore();
+    storeSidebarWidth(store, 300);
+    storeSidebarHidden(store, true);
+    expect(storedSidebarWidth(store, 1200)).toBe(300);
+    expect(storedOpenGroups(store)).toEqual(GROUPS_DEFAULT);
   });
 });

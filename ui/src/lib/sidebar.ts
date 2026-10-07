@@ -31,6 +31,7 @@ export const GROUPS_DEFAULT: Readonly<OpenGroups> = { albums: true, searches: tr
  *  default width and jump once the answer arrived. */
 export const SIDEBAR_WIDTH_KEY = 'photon.sidebar.width';
 export const SIDEBAR_GROUPS_KEY = 'photon.sidebar.groups';
+export const SIDEBAR_HIDDEN_KEY = 'photon.sidebar.hidden';
 
 /** The two calls made of a `Storage`. */
 export type SidebarStore = Pick<Storage, 'getItem' | 'setItem'>;
@@ -95,4 +96,14 @@ export function storedOpenGroups(store: SidebarStore | null): OpenGroups {
 
 export function storeOpenGroups(store: SidebarStore | null, open: OpenGroups): void {
   write(store, SIDEBAR_GROUPS_KEY, JSON.stringify(open));
+}
+
+/** Whether the sidebar was left hidden. Only a stored yes hides it: hidden, the way back is
+ *  one small button and a key, so anything else leaves it where a new user expects it. */
+export function storedSidebarHidden(store: SidebarStore | null): boolean {
+  return read(store, SIDEBAR_HIDDEN_KEY) === 'true';
+}
+
+export function storeSidebarHidden(store: SidebarStore | null, hidden: boolean): void {
+  write(store, SIDEBAR_HIDDEN_KEY, String(hidden));
 }

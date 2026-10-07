@@ -66,7 +66,7 @@ cargo run -p xtask -- metadata            # licence and installer metadata are c
 **Seeing the UI without launching it** (not in CI; needs Chromium on `PATH` or in `CHROMIUM`):
 
 ```bash
-cargo run -p xtask -- screenshots                     # forty-three PNGs into target/screenshots/
+cargo run -p xtask -- screenshots                     # forty-four PNGs into target/screenshots/
 cargo run -p xtask -- screenshots --only viewer-info-light --no-build
 cargo run -p xtask -- scroll-probe   # the end of a 300k-photo library is reachable
 ```
@@ -1101,6 +1101,18 @@ webview has loaded and asked for the setting, so without the first a pinned them
 the desktop's title bar. `System` is `None` in both, never the scheme resolved in code: `None`
 is what lets the title bar keep following the desktop while photon runs.
 
+**A hidden sidebar is still there.** The top bar's first button and Ctrl+B
+(`togglesSidebar`) close its two columns and stand it out of the flow at the width it had,
+`visibility: hidden` and `inert` (`.no-sidebar` in `App.svelte`). Not `display: none`, which
+resets the list's scroll position, and not a column of no width, which lays the whole list
+out again as a sliver: unseen at its own width it goes on following the grid, and comes back
+where it was. That is why `.sidebar`, `.splitter` and `.content` each name their grid column -
+placed by order, taking one out of the flow moves the photos into its column. Hiding closes
+the sidebar's menus and moves the focus to the photos *before* the list is inert, which is
+also what stores a name being typed in a rename field. And anything that needs a row of the
+list shows the sidebar first: "Rename in photon…" on a grid header does
+(`renameFolderFromGrid`), because an inert list silently refuses the focus.
+
 **The sidebar's width and open groups are in `localStorage` alone** (`lib/sidebar.ts`), not
 in the settings table: they are how this window is laid out on this machine, and read there
 they are known before the first paint, with no mirror to keep in step. The width is stored
@@ -1224,7 +1236,7 @@ anything sitting outside the tile's own box.
 
 The look cannot be tested here, but it can be seen without launching the app: `cargo run -p xtask --
 screenshots` builds the UI, serves `ui/dist` itself with `mock.js` (in
-`crates/xtask/screenshots/`) standing in for Tauri's IPC, and writes forty-three PNGs, in both themes,
+`crates/xtask/screenshots/`) standing in for Tauri's IPC, and writes forty-four PNGs, in both themes,
 to `target/screenshots/` with headless Chromium. It claims a Windows user agent and maps
 `photon.localhost` to its own port, because `mediaUrl` uses `http://photon.localhost` there
 and no plain browser can load `photon://`. It is Chromium's rendering, not WebKitGTK's or
