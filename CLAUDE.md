@@ -662,6 +662,22 @@ closes the crop tool, so the comparison must stay exact: `thumbState` counts onl
 purpose: a detection landing on the photo on screen must not reload it. The type is the whole
 defence - there is no test, because a field the `Pick` cannot see cannot be compared.
 
+**The viewer's photo has an area, and it is not always the window.** While the info panel is
+open the photo is fitted beside it (`lib/viewer-layout.ts`: `infoRoom`, `photoArea`), in
+`.area`, which clips, so a zoomed photo stops at the panel too. Three things are measured in
+that area and must stay so: the frame the photo and the face outlines are fitted into, the
+zoom's and the pan's bounds (`viewport()`, worked out from the viewer and `info` rather than
+read off the element, which is laid out a render later than the toggle that needs it), and
+the point a zoom holds still (`fromCentre`: measured from the middle of the window, a
+double-click beside the panel zoomed to a place half the panel's room away). Three more
+things stand outside `.area` and are given its width by hand: the slideshow's crossfade
+layer (`.outgoing` - the panel can be opened during a show, and a leaving photo fitted to
+the window jumped larger on its way out), the error message, and the video's controls
+(`VideoControls`' `room`). Anything new drawn over or instead of the photo is a fourth. The panel's
+width and place are set on the element from the same constants. The previous and next
+buttons are `aria-disabled` at the ends, not `disabled`: a button disabled while it holds the
+focus drops the focus to `<body>`.
+
 **The window's fullscreen state is persisted** (`WINDOW_STATE_FLAGS`), and the slideshow uses
 the window's own fullscreen, so quitting mid-show reopens fullscreen with no title bar. `F11`
 (global, `App.svelte`) is the way out and the reason it exists.

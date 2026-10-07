@@ -86,6 +86,10 @@ hand yet. A video's preview is drawn while photon's window is open.
 
 ### Camera data, keywords, people and albums
 
+The viewer has a button at each side of the photo for the previous and the next one, beside
+the arrow keys and the wheel. Its info panel stands beside the photo, not over it: while the
+panel is open the photo is fitted into the room left of it, so nothing in it is covered.
+
 The viewer's ⓘ button (or `I`) opens an info panel: camera, lens, focal length, aperture,
 shutter speed and ISO from the photo's EXIF; every date the photo has - taken, digitized and
 edited from its EXIF (a video's creation date), and the file's created and modified times -
