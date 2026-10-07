@@ -314,6 +314,23 @@ publishing it.
       Shift+Left takes one back off, Shift+Page Down adds a screenful, Shift+End reaches the
       last photo. A plain arrow collapses to one. Hold Shift+Right for a few seconds: the
       selection grows a photo at a time without stalling or jumping back.
+- [ ] Click the button at the left end of the top bar (or press Ctrl+B; ⌘B on a Mac): the
+      sidebar goes and the photos take its room, a column or two more, with the photo that
+      was at the top still at the top. Again: the sidebar is back at the width and the scroll
+      position it had, its groups open as they were, and the grid is where it was. Do it deep
+      in a large library: the place is kept both ways. Scroll the grid through a few folders
+      while the sidebar is hidden, then show it: the marked folder's row is wholly in view,
+      not cut off at the bottom. Hold Ctrl+B down: the sidebar changes once, not on every
+      repeat of the key.
+- [ ] Hide the sidebar, quit and start photon: it starts hidden, with no flash of a sidebar.
+- [ ] With the focus on a sidebar row (click Starred, then Tab), press Ctrl+B: the arrow keys
+      move the selection in the grid at once. With a sidebar menu open, Ctrl+B closes it; with
+      a rename field open, the name typed is stored, as when clicking away.
+- [ ] Sidebar hidden: right-click a folder's header in the grid and choose "Rename in
+      photon…". The sidebar comes back with that folder's field open and focused; Escape
+      returns the keys to the grid.
+- [ ] Ctrl+B in the search box hides the sidebar and leaves the caret in the box. Under the
+      viewer, Settings or the shortcut sheet it does nothing.
 - [ ] Right-click inside a selection: the menu reads `Star 4 photos`, and Reveal is absent.
       Right-click a photo outside it: the selection collapses to that one first.
 - [ ] Star a selection spanning two folders, then check both `.picasa.ini` files: each holds a

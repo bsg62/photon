@@ -133,7 +133,9 @@ captions: that would mean writing the photo.
 **All photos**, at the top of the sidebar, goes back to the whole library from Starred, Recent,
 an album or a search, at the folder you were last browsing there - clicking a folder instead
 opens that folder at its top. Drag the sidebar's edge to make it wider or narrower; its width,
-and which of its groups are open, are remembered on this computer. The sidebar lists **Albums**, **People** and **Tags** above the years. Albums are photon's
+and which of its groups are open, are remembered on this computer. The button at the left end
+of the top bar, or `Ctrl+B`, hides the sidebar and gives its room to the photos, and brings it
+back as you left it; that too is remembered. The sidebar lists **Albums**, **People** and **Tags** above the years. Albums are photon's
 own and live only in its library: create one with "New album…", add photos from a tile's
 right-click menu or the info panel, and rename or delete from the album's right-click menu.
 Picasa's albums (see "Picasa albums" above) are read from its INI and cannot be edited here,
