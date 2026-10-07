@@ -5,10 +5,12 @@ done from a real installer, so run them against the draft release's artifacts be
 publishing it.
 
 - [ ] On first launch with a fresh profile, the Pictures folder is added and scanned without asking.
-- [ ] First launch with a fresh profile and photos in Pictures: while the scan runs the grid says "Looking for photos…" (never "Add a folder"), the status bar shows the scan, and the sidebar does not say "No folders yet".
-- [ ] First launch with a fresh profile and an empty Pictures folder: once the scan is done the grid says photon looked in that folder (its path) and found nothing, with "Add folder…" and "Watched folders…". "Add folder…" opens the system's picker directly; pick a folder with photos and they appear, and the arrow keys work in the grid without a click. "Watched folders…" opens Settings → Folders.
+- [ ] First launch with a fresh profile and photos in Pictures: the grid never says "Add a folder". It says photon watches that folder and has found nothing yet, then "Looking for photos…" once the scan reports (after its first 64 photos), then shows the photos; the sidebar does not say "No folders yet". Known limit: until that first report the status bar shows no scan.
+- [ ] First launch with a fresh profile and an empty Pictures folder: the grid says photon watches that folder (its path) and has found no photos or videos there, with "Add folder…" and "Watched folders…". "Add folder…" opens the system's picker directly; pick a folder with photos: at once the grid says "Looking for photos…" and the status bar shows the scan, then the photos appear, and the arrow keys work in the grid without a click. "Watched folders…" opens Settings → Folders.
 - [ ] First launch with a fresh profile and no Pictures folder at all: "No photos yet", one sentence, "Add folder…" and "Or drop a folder onto this window". Cancel the picker: nothing changes. Drop a folder on the window: it is watched and scanned.
-- [ ] With the only watched folder on an unplugged drive and nothing else in the library, the grid says photon cannot reach that folder, not that it found no photos.
+- [ ] With the only watched folder on an unplugged drive and nothing else in the library, the grid says photon cannot reach that folder, not that it has found no photos.
+- [ ] Hide the only folder (Hide folder in its menu): All photos says every photo is hidden, with "Show hidden photos", which opens Hidden. It does not say photon found none.
+- [ ] On the empty-library panel, Tab to "Add folder…" and change a file in the watched folder (so it is rescanned): the focus stays on the button and Enter still opens the picker. With the focus on the button, let a scan bring the first photos in: the arrow keys move the selection at once.
 - [ ] In an empty library, type a search: the grid says "No photos match …", not the first-run panel. Starred says "No starred photos".
 - [ ] Copy a few hundred photos into a watched folder while the grid shows it: as the scan adds them, the tiles already on screen never blink blank - they stay until the new rows replace them.
 - [ ] Thumbnails appear within seconds, and scrolling stays smooth while indexing continues.

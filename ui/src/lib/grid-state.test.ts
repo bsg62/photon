@@ -39,33 +39,41 @@ describe('grid state', () => {
 
 describe('what an empty library says', () => {
   it('offers to add a folder when none is watched', () => {
-    expect(emptyLibrary(true, 0, false)).toBe('first-run');
+    expect(emptyLibrary(true, 0, false, 0)).toBe('first-run');
   });
 
   // "No photos yet. Add a folder to get started" was said of a folder added a second ago,
   // while its first scan was still walking it.
   it('says it is looking while a watched folder is being scanned', () => {
-    expect(emptyLibrary(true, 1, true)).toBe('scanning');
-    expect(emptyLibrary(true, 3, true)).toBe('scanning');
+    expect(emptyLibrary(true, 1, true, 0)).toBe('scanning');
+    expect(emptyLibrary(true, 3, true, 0)).toBe('scanning');
   });
 
-  it('says the watched folders hold no photos once no scan is running', () => {
-    expect(emptyLibrary(true, 1, false)).toBe('no-photos');
+  it('says the watched folders have given no photos when no scan is known to be running', () => {
+    expect(emptyLibrary(true, 1, false, 0)).toBe('no-photos');
   });
 
   // The grid and the folder list are fetched side by side, and the grid can land first:
   // with no list yet, "none is watched" is not known, and a user with folders was told to
   // add one for as long as the list took.
   it('says nothing until the watched folders have been read', () => {
-    expect(emptyLibrary(false, 0, false)).toBeNull();
+    expect(emptyLibrary(false, 0, false, 0)).toBeNull();
   });
 
   // On a first run the backend watches the Pictures folder by itself and scans it, and the
   // list the UI read at launch may be from before that: a scan is running in a folder the
   // list does not hold. That is no time to say "add a folder".
   it('says it is looking whenever a scan is running, whatever the list holds', () => {
-    expect(emptyLibrary(true, 0, true)).toBe('scanning');
-    expect(emptyLibrary(false, 0, true)).toBe('scanning');
+    expect(emptyLibrary(true, 0, true, 0)).toBe('scanning');
+    expect(emptyLibrary(false, 0, true, 0)).toBe('scanning');
+  });
+
+  // Hide folder on the only folder: the library view is empty and the sidebar says
+  // "Hidden 240". "photon has found no photos" beside that is false.
+  it('says the photos are hidden when hidden ones are all there is', () => {
+    expect(emptyLibrary(true, 1, false, 240)).toBe('all-hidden');
+    expect(emptyLibrary(true, 1, true, 240)).toBe('all-hidden');
+    expect(emptyLibrary(false, 0, false, 1)).toBe('all-hidden');
   });
 });
 
@@ -73,12 +81,15 @@ describe('what is said of watched folders with no photos', () => {
   const on = (path: string) => ({ path, online: true });
   const off = (path: string) => ({ path, online: false });
 
-  it('names the one folder photon looked in', () => {
-    expect(noPhotosLine([on('/home/ada/Pictures')])).toBe('photon looked in /home/ada/Pictures and found no photos or videos.');
+  // "Has found none", never "looked and found none": the UI does not know a scan has
+  // finished, or started - the backend says nothing until a scan's first batch - and a
+  // folder photon is not allowed to read is reported like an empty one.
+  it('names the one folder, and claims only that nothing has been found', () => {
+    expect(noPhotosLine([on('/home/ada/Pictures')])).toBe('photon watches /home/ada/Pictures and has found no photos or videos there.');
   });
 
   it('counts several', () => {
-    expect(noPhotosLine([on('/a'), on('/b'), on('/c')])).toBe('photon looked in the 3 folders it watches and found no photos or videos.');
+    expect(noPhotosLine([on('/a'), on('/b'), on('/c')])).toBe('photon watches 3 folders and has found no photos or videos in them.');
   });
 
   // An unplugged drive has not been looked in: "found no photos" would be said of a folder
@@ -90,7 +101,7 @@ describe('what is said of watched folders with no photos', () => {
 
   it('says both when it can reach only some', () => {
     expect(noPhotosLine([on('/a'), off('/b'), off('/c')])).toBe(
-      'photon found no photos or videos in the folders it can reach; 2 of the 3 it watches cannot be reached right now.',
+      'photon has found no photos or videos in the folders it can reach; 2 of the 3 it watches cannot be reached right now.',
     );
   });
 });

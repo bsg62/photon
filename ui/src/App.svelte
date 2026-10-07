@@ -102,7 +102,8 @@
   /** Folders dragged in from a file manager are watched. Not an overlay in `covered`'s
    *  sense: it takes no focus and no clicks, it only says what letting go will do. */
   const folderDrop = createFolderDrop({
-    add: (path) => api.addFolder(path),
+    // Through the store, which counts the new folder's scan as running from here.
+    add: (path) => library.addFolder(path),
     refresh: () => library.refreshFolders(),
     notify: library.notify,
     reportError: library.reportError,

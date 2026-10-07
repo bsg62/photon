@@ -54,9 +54,30 @@
    *  empty, in the viewport. */
   const emptyState = $derived(
     showEmptyNotice(library.info) && (library.info.view === 'all' || library.info.view === 'recent')
-      ? emptyLibrary(library.foldersKnown, library.folders.watched.length, library.scanning)
+      ? emptyLibrary(library.foldersKnown, library.folders.watched.length, library.scanning, library.info.hiddenCount)
       : null,
   );
+
+  /** The empty library's panel, and whether the focus was in it when its state last changed. */
+  let welcome = $state<HTMLElement | undefined>();
+  let focusInWelcome = false;
+
+  // The panel's buttons go when its state changes - most of all when the first photos
+  // arrive and the whole panel does. The focus on a removed button falls to `<body>`, where
+  // the grid's keys are dead. So where the focus is is read before the DOM is changed, and
+  // one that was in the panel and no longer is afterwards is handed to the grid. Read
+  // before, not kept from `focusin`/`focusout`: the removal sends a `focusout` of its own,
+  // and a flag cleared by it had forgotten the focus by the time it was asked.
+  $effect.pre(() => {
+    void emptyState;
+    focusInWelcome = !!welcome?.contains(document.activeElement);
+  });
+  $effect(() => {
+    void emptyState;
+    if (!focusInWelcome || welcome?.contains(document.activeElement)) return;
+    focusInWelcome = false;
+    focus();
+  });
 
   const NAV_KEYS = ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'];
   /** The keys that move a screenful (`pageMove`). */
@@ -1047,27 +1068,35 @@
   {#if emptyState}
     <!-- Beside the viewport, not in it: the viewport is the grid's scroller and its drag
          surface, and a button in it would begin a rubber band under every press. -->
-    <div class="welcome">
-      {#if emptyState === 'first-run'}
+    <div class="welcome" bind:this={welcome}>
+      {#if emptyState === 'all-hidden'}
+        <h2>Every photo is hidden</h2>
+        <p>The library has no photo to show here: all of them are in Hidden, in the sidebar.</p>
+        <button onclick={() => void library.setView('hidden').catch(library.reportError)}>Show hidden photos</button>
+      {:else if emptyState === 'first-run'}
         <h2>No photos yet</h2>
         <p>
           Choose a folder and photon shows the photos in it. Your files stay where they are:
           photon never moves, changes or deletes them.
         </p>
-        <!-- The focus goes to the grid once the picker has closed, whatever was chosen: this
-             button is gone as soon as the first photo arrives, and a focus left on it would
-             fall to the body, where the grid's keys are dead. -->
+        <!-- The focus goes to the grid once the picker has closed, whatever was chosen: the
+             keys belong to the photos that are about to arrive. -->
         <button class="primary" onclick={() => void addFolderFromPicker().finally(focus)}>Add folder…</button>
         <p class="aside">Or drop a folder onto this window.</p>
-      {:else if emptyState === 'scanning'}
-        <p>Looking for photos…</p>
       {:else}
         <!-- The usual first screen, not a rare one: on a first run photon watches the
-             Pictures folder by itself, and this is that folder with nothing in it. -->
+             Pictures folder by itself. One block whether or not a scan is known to be
+             running, with only the sentence changing: a scan of a watched folder starts and
+             ends at any time (a file changed, a drive polled), and buttons that were
+             replaced on each flip lost the focus and a click already on its way. -->
         <h2>No photos yet</h2>
         <p>
-          {noPhotosLine(library.folders.watched)}
-          Add the folder your photos are in: photon never moves, changes or deletes them.
+          {#if emptyState === 'scanning'}
+            Looking for photos…
+          {:else}
+            {noPhotosLine(library.folders.watched)}
+            Add the folder your photos are in: photon never moves, changes or deletes them.
+          {/if}
         </p>
         <div class="choices">
           <button class="primary" onclick={() => void addFolderFromPicker().finally(focus)}>Add folder…</button>

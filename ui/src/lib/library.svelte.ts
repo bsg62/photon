@@ -17,6 +17,7 @@ import {
   type ScanProgressEvent,
   type Section,
   type TagCount,
+  type WatchedFolder,
 } from './api';
 import { untrack } from 'svelte';
 import { keepCopiesName } from './copies';
@@ -669,6 +670,17 @@ export class LibraryStore {
           // On the scan's first event only, like the snapshot above, not on every one.
           const listed = this.folders.watched.some((w) => w.id === e.watchedId);
           if (e.done || (!listed && (!previous || previous.done))) void this.refreshFolders().catch(this.reportError);
+          // The backend announces a scan's rebuild and then its end, a fraction of a
+          // millisecond apart, and the grid's answer is a round trip behind both. An empty
+          // library would read as "no scan, no photos" for that long, the moment before its
+          // photos appear, so the scan counts as running until the grid has been read again
+          // (`scanning`). Only while the grid is empty: nothing else asks.
+          if (e.done && this.info.len === 0) {
+            this.settling++;
+            void this.refresh()
+              .catch(this.reportError)
+              .finally(() => this.settling--);
+          }
         }),
       ]);
       if (generation !== this.generation) {
@@ -904,7 +916,16 @@ export class LibraryStore {
     // refreshes it again. Only the newest request may write, the same rule `refresh` applies
     // through the grid version.
     const seq = ++this.folderSeq;
-    const folders = await api.listFolders();
+    let folders: FolderList;
+    try {
+      folders = await api.listFolders();
+    } catch (e) {
+      // The list on hand is what there is to go by. Left as "not read", a failed read at
+      // launch kept the main area and the sidebar's "No folders yet" blank behind its toast
+      // until some later event read the list again.
+      if (seq === this.folderSeq) this.foldersKnown = true;
+      throw e;
+    }
     if (seq !== this.folderSeq) return;
     this.folders = folders;
     this.foldersKnown = true;
@@ -1515,7 +1536,30 @@ export class LibraryStore {
   /** Whether any scan is running, in a folder the list holds or not (see `init`'s scan
    *  listener): what an empty library asks before it offers to add a folder. */
   get scanning(): boolean {
-    return Object.values(this.scans).some((scan) => !scan.done);
+    return this.settling > 0 || Object.values(this.scans).some((scan) => !scan.done);
+  }
+
+  /** Scans that have reported done while the grid was empty and whose rebuild the UI has
+   *  not read yet; see the scan listener in `init`. */
+  private settling = $state(0);
+
+  /** Watches a folder: Settings' and the empty library's "Add folder…", and a folder
+   *  dropped on the window. A refusal is thrown to the caller.
+   *
+   *  The backend starts the folder's scan with the write and says nothing of it until the
+   *  scan's first batch - 64 photos, or the end of the walk. For that long an empty library
+   *  said photon had found no photos in the folder added a second ago, with nothing in the
+   *  status bar. So the scan is counted as running from here. Only when nothing has been
+   *  heard of a scan in that folder: an empty folder's scan can be over before this
+   *  command's answer arrives, and marked as running after that, nothing would mark it
+   *  done. (A scan always reports done once, however it ends.) */
+  async addFolder(path: string): Promise<WatchedFolder> {
+    const watched = await api.addFolder(path);
+    if (!(watched.id in this.scans)) {
+      this.scans[watched.id] = { watchedId: watched.id, filesSeen: 0, added: 0, changed: 0, done: false, cancelled: false };
+    }
+    await this.refreshFolders();
+    return watched;
   }
 
   isScanning(watchedId: number): boolean {
