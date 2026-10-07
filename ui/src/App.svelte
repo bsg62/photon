@@ -151,6 +151,14 @@
     storeSidebarHidden(sidebarStore, hidden);
   }
 
+  /** The button's click and the key's press. Not while the grid holds a rubber band or the
+   *  splitter a drag: each is measured against a width this would change under it, and a
+   *  splitter hidden mid-drag would go on resizing, unseen, and store what it came to. */
+  function toggleSidebar() {
+    if (grid?.dragging() || dragFrom !== null) return;
+    setSidebarHidden(!sidebarHidden);
+  }
+
   /** "Rename in photon…" on a folder's header in the grid. The name is typed in the folder's
    *  row in the sidebar, so a hidden sidebar is shown first - and has taken its place before
    *  the row is asked for the focus, which an `inert` list silently refuses. */
@@ -404,12 +412,12 @@
       return;
     }
     if (togglesSidebar(e, mac)) {
-      // Not under an overlay, where the sidebar is not what the user is at; nor while the
-      // grid holds a rubber band or the splitter a drag, each measured against a width this
-      // would change under it.
-      if (!covered && !grid?.dragging() && dragFrom === null) {
+      // Not under an overlay, where the sidebar is not what the user is at. And once a
+      // press: the chord held a moment too long repeats, and every repeat flipped the
+      // sidebar again, remounting the tiles each time and ending wherever the last one fell.
+      if (!covered) {
         e.preventDefault();
-        setSidebarHidden(!sidebarHidden);
+        if (!e.repeat) toggleSidebar();
       }
       return;
     }
@@ -611,7 +619,7 @@
       aria-label={sidebarHidden ? 'Show sidebar' : 'Hide sidebar'}
       aria-expanded={!sidebarHidden}
       title="{sidebarHidden ? 'Show sidebar' : 'Hide sidebar'} ({keyHint(['Mod', 'B'], mac)})"
-      onclick={() => setSidebarHidden(!sidebarHidden)}
+      onclick={toggleSidebar}
     >
       <Icon name="panel-left" size={18} />
     </button>
@@ -718,7 +726,8 @@
 
 <style>
   .app {
-    /* Positioned, so the hidden sidebar below is placed against its own grid area. */
+    /* Positioned, so the hidden sidebar below is placed against its own grid area - which it
+       is only because that area is named on all four sides (see `.sidebar`). */
     position: relative;
     display: grid;
     grid-template-columns: var(--sidebar-width) 5px 1fr;
@@ -726,10 +735,14 @@
     height: 100%;
   }
   /* Each part is given its column: placed by their order alone, taking the sidebar out of
-     the flow (below) would move the photos into its column. */
+     the flow (below) would move the photos into its column. The sidebar's area is spelled
+     out to its end lines: for an absolutely positioned grid item an `auto` end line is the
+     container's own edge, not the next line, and `grid-row: 2` alone put the hidden
+     sidebar's bottom under the status bar - 23px taller than the shown one, so the row it
+     had scrolled into view came back cut off. */
   .sidebar {
-    grid-column: 1;
-    grid-row: 2;
+    grid-column: 1 / 2;
+    grid-row: 2 / 3;
     overflow: auto;
     background: var(--chrome);
   }

@@ -35,7 +35,7 @@ export const SHORTCUTS: ShortcutGroup[] = [
       { keys: [['Mod', 'F'], ['/']], does: 'Go to the search box, from the grid or the People page' },
       { keys: [['Enter']], does: 'In the search box: go to the photos' },
       { keys: [['Esc']], does: 'In the search box: clear the search, or leave an empty box' },
-      { keys: [['Mod', 'B']], does: 'Hide or show the sidebar' },
+      { keys: [['Mod', 'B']], does: 'Hide or show the sidebar, from the grid or the People page' },
       { keys: [['←'], ['→']], does: "On the sidebar's edge: resize the sidebar" },
     ],
   },

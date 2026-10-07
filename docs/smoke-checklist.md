@@ -293,7 +293,10 @@ publishing it.
       sidebar goes and the photos take its room, a column or two more, with the photo that
       was at the top still at the top. Again: the sidebar is back at the width and the scroll
       position it had, its groups open as they were, and the grid is where it was. Do it deep
-      in a large library: no blank frame, and the place is kept.
+      in a large library: the place is kept both ways. Scroll the grid through a few folders
+      while the sidebar is hidden, then show it: the marked folder's row is wholly in view,
+      not cut off at the bottom. Hold Ctrl+B down: the sidebar changes once, not on every
+      repeat of the key.
 - [ ] Hide the sidebar, quit and start photon: it starts hidden, with no flash of a sidebar.
 - [ ] With the focus on a sidebar row (click Starred, then Tab), press Ctrl+B: the arrow keys
       move the selection in the grid at once. With a sidebar menu open, Ctrl+B closes it; with
