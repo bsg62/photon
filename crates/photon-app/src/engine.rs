@@ -4054,6 +4054,43 @@ mod tests {
         engine.shutdown();
     }
 
+    /// Panics at the first not-done scan event it is sent: a scan thread dying in the middle
+    /// of a scan, after it has said it is running.
+    #[derive(Default)]
+    struct PanicsAtAScanReport {
+        done: AtomicBool,
+    }
+
+    impl Events for PanicsAtAScanReport {
+        fn library_changed(&self, _: LibraryChanged) {}
+        fn scan_progress(&self, e: ScanProgressEvent) {
+            if !e.done && !self.done.swap(true, Ordering::SeqCst) {
+                panic!("a scan thread that dies after its first report");
+            }
+        }
+        fn folder_status(&self, _: FolderStatus) {}
+        fn export_progress(&self, _: ExportProgress) {}
+        fn face_progress(&self, _: FaceProgress) {}
+    }
+
+    /// A scan that panics never reports done, so nothing takes it out of `reporting` but
+    /// the release of its slot. Left in, every UI that asks from then on is told the folder
+    /// is being scanned, and waits for a done that will not come.
+    #[test]
+    fn a_scan_that_panics_is_not_left_named_as_scanning() {
+        let f = fixture(&[("a/1.jpg", &jpeg(8, 6))]);
+        f.engine.shutdown();
+
+        let sink = Arc::new(PanicsAtAScanReport::default());
+        let engine = Engine::open(f.config(), sink.clone()).unwrap();
+        engine.add_folder(&f.photos).unwrap();
+        engine.wait_for_scans();
+
+        assert!(sink.done.load(Ordering::SeqCst), "no scan reported");
+        assert_eq!(engine.scanning_folders(), Vec::<i64>::new());
+        engine.shutdown();
+    }
+
     /// Records like `Recorder`, and quits the engine it is given at the second face event
     /// that says a pass is running: the report after the first batch, the first being the
     /// one a pass with work opens with. That is the one place a test can stand between a

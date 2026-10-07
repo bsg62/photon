@@ -663,19 +663,26 @@ export class LibraryStore {
         }),
         events.onScanProgress((e) => {
           const previous = this.scans[e.watchedId];
+          // The first event heard of this scan: none before it, or only this store's own
+          // note that the scan is running (`unheard`), which is not an event.
+          const first = this.unheard.delete(e.watchedId) || !previous || previous.done;
+          const wasRunning = previous !== undefined && !previous.done;
           this.scans[e.watchedId] = e;
-          if (!e.done && (!previous || previous.done)) void this.snapshotExpected(e).catch(this.reportError);
+          if (!e.done && first) void this.snapshotExpected(e).catch(this.reportError);
           // A scan starting in a folder the list does not hold: the backend watches the
           // Pictures folder by itself on a first run, after the list may have been read.
           // On the scan's first event only, like the snapshot above, not on every one.
           const listed = this.folders.watched.some((w) => w.id === e.watchedId);
-          if (e.done || (!listed && (!previous || previous.done))) void this.refreshFolders().catch(this.reportError);
+          if (e.done || (!listed && first)) void this.refreshFolders().catch(this.reportError);
           // The backend announces a scan's rebuild and then its end, a fraction of a
           // millisecond apart, and the grid's answer is a round trip behind both. An empty
           // library would read as "no scan, no photos" for that long, the moment before its
           // photos appear, so the scan counts as running until the grid has been read again
-          // (`scanning`). Only while the grid is empty: nothing else asks.
-          if (e.done && this.info.len === 0) {
+          // (`scanning`). Only while the grid is empty: nothing else asks. And only for a
+          // scan that was heard running: an unplugged drive is polled twice a minute, each
+          // poll a done event and nothing else, and counted as a scan ending each one
+          // turned an empty library's panel to "Looking for photos…" for a round trip.
+          if (e.done && wasRunning && this.info.len === 0) {
             this.settling++;
             void this.refresh()
               .catch(this.reportError)
@@ -1549,7 +1556,7 @@ export class LibraryStore {
     let unlisted = false;
     for (const watchedId of ids) {
       if (watchedId in this.scans) continue;
-      this.scans[watchedId] = { watchedId, filesSeen: 0, added: 0, changed: 0, done: false, cancelled: false };
+      this.noteRunning(watchedId);
       unlisted ||= !this.folders.watched.some((w) => w.id === watchedId);
     }
     // The Pictures folder the backend watches by itself on a first run, after the list may
@@ -1580,11 +1587,24 @@ export class LibraryStore {
    *  ends.) */
   async addFolder(path: string): Promise<WatchedFolder> {
     const watched = await api.addFolder(path);
-    if (!(watched.id in this.scans)) {
-      this.scans[watched.id] = { watchedId: watched.id, filesSeen: 0, added: 0, changed: 0, done: false, cancelled: false };
-    }
+    if (!(watched.id in this.scans)) this.noteRunning(watched.id);
     await this.refreshFolders();
     return watched;
+  }
+
+  /** Watched ids whose entry in `scans` this store wrote itself (`noteRunning`) and whose
+   *  scan has not been heard from since. Plain, not `$state`: nothing renders from it. */
+  private unheard = new Set<number>();
+
+  /** Counts a scan as running that the store has been told of but not heard from: one
+   *  running at launch (`readScanning`), or just started by `addFolder`. The entry is a
+   *  note, not an event, and `unheard` says so: the scan's first real event must still be
+   *  treated as its first - that is when the folder's size is snapshotted for the status
+   *  bar's "N of ~M files". Written as an ordinary entry alone, a scan found running at
+   *  launch counted files with nothing to measure them against for its whole length. */
+  private noteRunning(watchedId: number): void {
+    this.scans[watchedId] = { watchedId, filesSeen: 0, added: 0, changed: 0, done: false, cancelled: false };
+    this.unheard.add(watchedId);
   }
 
   isScanning(watchedId: number): boolean {

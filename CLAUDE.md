@@ -142,9 +142,12 @@ folder… as well. **The UI knows a scan is running only because it is told, in 
 A full scan reports once before it walks, with nothing seen, as soon as it has found its
 root (`scan_watched`): the walk's own first report is 64 photos in, a flushed batch, or its
 end, and an empty library said photon had found no photos in a folder it was a minute into
-reading. Not a root that is not there (an unplugged drive is polled twice a minute), and not
-a subtree scan (the watcher runs one for every directory a file changed in, each over in
-milliseconds: announced, each would flash the status bar's scan line). And because the
+reading. Not a root that is not there (an unplugged drive is polled twice a minute), not one
+last found offline (`watched.online`: an unmounted volume leaves an empty mount point, polled
+the same way, and telling it from a live folder reads every known row first - the scan's
+line came and went with each poll; the price is that the first scan after the drive is back
+goes without the report), and not a subtree scan (the watcher runs one for every directory a
+file changed in, each over in milliseconds: announced, each would flash the scan's line). And because the
 startup scans begin before any webview exists and an event sent to no listener is lost, the
 UI asks once, after it has subscribed, which scans are running: `scanning_folders`, which
 answers from `Engine::reporting` - not from the scan slots, which hold INI passes that
@@ -153,7 +156,11 @@ each: in before a scan's first not-done event, out *before* its done. That order
 whole point - a listener told "scanning" is always still owed the done that ends it - and
 `scanning_folders_names_a_scan_from_its_first_report_until_it_is_done` reads the list from
 inside the event sink to hold it. The UI leaves alone a scan that has reported since it
-asked (its done can overtake the answer). `'no-photos'` is still never worded as a finished
+asked (its done can overtake the answer). What the UI writes into `scans` for a scan it was
+told of is a note, not an event (`noteRunning`, `unheard`): the scan's first real event must
+still count as its first, or the folder's size is never snapshotted and the status bar
+counts files with nothing to measure them against. The slot's release takes a panicked scan
+out of `reporting`, since it will never report done. `'no-photos'` is still never worded as a finished
 search ("has found no photos", not "looked and found none"): a folder photon may not read is
 scanned and reported like an empty one. Three smaller things beside it: a folder added
 through `library.addFolder` has its scan counted as running at once (the command's answer

@@ -509,6 +509,19 @@ describe('LibraryStore', () => {
     expect(store.folders.watched).toEqual([]);
   });
 
+  // An unplugged drive is polled twice a minute, and each poll sends a done event and
+  // nothing else. Counted as a scan that had just ended, each one turned an empty library's
+  // panel to "Looking for photos…" for a round trip, every thirty seconds.
+  it('does not count a done event as a scan ending when no scan was heard running', async () => {
+    const store = new LibraryStore();
+    await store.init();
+    const grid = deferred<Awaited<ReturnType<typeof api.gridInfo>>>();
+    vi.mocked(api.gridInfo).mockImplementationOnce(() => grid.promise);
+    handlers.scanProgress({ watchedId: 7, filesSeen: 0, added: 0, changed: 0, done: true, cancelled: false });
+    expect(store.scanning).toBe(false);
+    grid.resolve(asAnswer(store.info));
+  });
+
   describe('scans that were running before the UI was listening', () => {
     const pictures = { id: 7, path: '/home/ada/Pictures', online: true };
 
@@ -541,14 +554,41 @@ describe('LibraryStore', () => {
       expect(store.isScanning(7)).toBe(false);
     });
 
+    // What "still owed its done event" rests on. The order is written down and asserted
+    // out here: an assertion thrown inside the mock is a rejected question, which `init`
+    // reports as a toast and carries on from - this test passed with the question asked
+    // before the subscription.
     it('are asked about after the UI has subscribed to scan events, not before', async () => {
+      let listeningWhenAsked: boolean | null = null;
       vi.mocked(api.scanningFolders).mockImplementation(async () => {
-        expect(handlers.scanProgress).toBeDefined();
+        listeningWhenAsked = handlers.scanProgress !== undefined;
         return [];
       });
       const store = new LibraryStore();
       await store.init();
       expect(api.scanningFolders).toHaveBeenCalledTimes(1);
+      expect(listeningWhenAsked).toBe(true);
+    });
+
+    // The scan was marked as running from the answer, and its first real event then looked
+    // like a later tick of a scan already heard: no snapshot of the folder's size was
+    // taken, and the status bar counted files with nothing to measure them against.
+    it('still have their size taken at the first event heard from them', async () => {
+      vi.mocked(api.listFolders).mockResolvedValue({ watched: [pictures], folders: [] });
+      vi.mocked(api.scanningFolders).mockResolvedValue([7]);
+      vi.mocked(api.watchedFolderStats).mockResolvedValue([{ watchedId: 7, photoCount: 12_480 }]);
+      const store = new LibraryStore();
+      await store.init();
+      expect(store.expected[7]).toBeUndefined();
+
+      handlers.scanProgress({ watchedId: 7, filesSeen: 3_000, added: 0, changed: 0, done: false, cancelled: false });
+      await vi.waitFor(() => expect(store.expected[7]).toBe(12_480));
+      const asked = vi.mocked(api.watchedFolderStats).mock.calls.length;
+
+      // And only at the first.
+      handlers.scanProgress({ watchedId: 7, filesSeen: 9_000, added: 0, changed: 0, done: false, cancelled: false });
+      await Promise.resolve();
+      expect(vi.mocked(api.watchedFolderStats).mock.calls.length).toBe(asked);
     });
 
     // The Pictures folder the backend watches by itself on a first run: scanning, and not
@@ -624,6 +664,7 @@ describe('LibraryStore', () => {
     await store.init();
     expect(store.info.len).toBe(0);
     const grid = deferred<Awaited<ReturnType<typeof api.gridInfo>>>();
+    handlers.scanProgress({ watchedId: 7, filesSeen: 0, added: 0, changed: 0, done: false, cancelled: false });
     vi.mocked(api.gridInfo).mockImplementationOnce(() => grid.promise);
     handlers.scanProgress({ watchedId: 7, filesSeen: 5, added: 5, changed: 0, done: true, cancelled: false });
     expect(store.scanning).toBe(true);
