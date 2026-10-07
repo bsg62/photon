@@ -281,15 +281,14 @@
     // the hidden grid then holds the photo the user last saw rather than All's first folder,
     // as "Locate in photon" leaves it.
     grid?.scrollToOffset(at, 'nearest');
-    if (mainPage.current === 'people') {
-      // Opened from a face: the page is where the user was, and the grid under it is
-      // inert. After `tick`, for `closeSettings`' reason - `<main>` is inert until the DOM
-      // catches up with `covered`.
-      await tick();
-      peoplePage?.focus();
-      return;
-    }
-    grid?.focus();
+    // After `tick`, for `closeSettings`' reason: `<main>` is inert until the DOM catches up
+    // with `covered`, and focusing an inert element silently does nothing. The grid's own
+    // focus was asked for without the wait, so closing the viewer left the focus on
+    // `<body>` and the arrow keys dead until a click.
+    await tick();
+    // Opened from a face: the page is where the user was, and the grid under it is inert.
+    if (mainPage.current === 'people') peoplePage?.focus();
+    else grid?.focus();
   }
 
   /** A face double-clicked on the People page: its photo in the viewer, over the page. The

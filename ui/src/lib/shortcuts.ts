@@ -6,7 +6,7 @@ export type ShortcutGroupId = 'everywhere' | 'grid' | 'compare' | 'viewer' | 'cr
 export interface Shortcut {
   /** The chords that do it, any one of them, each a list of keys pressed together. `Mod`
    *  is Ctrl, or ⌘ on a Mac ([`chordLabel`]); `click` and `wheel` are the mouse, for the
-   *  gestures that need a key held. */
+   *  gestures that need a key held, and `arrow` is any of the four arrow keys. */
   keys: string[][];
   does: string;
 }
@@ -44,10 +44,14 @@ export const SHORTCUTS: ShortcutGroup[] = [
     title: 'Grid',
     rows: [
       { keys: [['←'], ['→'], ['↑'], ['↓']], does: 'Move to the next photo that way' },
+      { keys: [['PgUp'], ['PgDn']], does: 'Move a screenful up or down' },
       { keys: [['Home'], ['End']], does: 'First or last photo' },
       { keys: [['Enter']], does: 'Open the photo in the viewer' },
       { keys: [['Mod', 'click']], does: 'Add a photo to the selection, or take it out' },
       { keys: [['Shift', 'click']], does: 'Select every photo up to that one' },
+      // One row for every key that moves, or the list is taller than a small window: Shift
+      // does the same with each of them.
+      { keys: [['Shift', 'arrow']], does: 'Select up to the next photo that way; also with Home, End, PgUp and PgDn' },
       { keys: [['Mod', 'A']], does: 'Select every photo' },
       { keys: [['Esc']], does: 'Clear the selection' },
       { keys: [['C']], does: 'Compare the two to four selected photos' },

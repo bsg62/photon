@@ -301,6 +301,29 @@ export function rowOfItem(rows: Row[], offset: number): number {
   return row.kind === 'tiles' && offset < row.first + row.count ? found : -1;
 }
 
+/** The grid offset a Page Up (`dir` -1) or Page Down (1) moves to from `offset`: the row a
+ *  viewport's height away, in the same column, or that row's last photo when it is too
+ *  short to have the column - as an arrow key lands in a short row. Headers and the gaps
+ *  between sections are part of the distance, since they are part of the screen.
+ *
+ *  It always moves a row when there is one that way: in a window shorter than a row the
+ *  key would otherwise move nothing, which reads as broken. At the first or the last row
+ *  it stays; Home and End are the keys for the ends. */
+export function pageMove(rows: Row[], offset: number, dir: 1 | -1, viewport: number): number {
+  const from = rowOfItem(rows, offset);
+  if (from < 0) return offset;
+  const column = offset - rows[from].first;
+  const edge = rows[from].top + dir * viewport;
+  let to = from;
+  for (let i = from + dir; i >= 0 && i < rows.length; i += dir) {
+    const row = rows[i];
+    if (row.kind !== 'tiles') continue;
+    if (to !== from && (dir > 0 ? row.top > edge : row.top < edge)) break;
+    to = i;
+  }
+  return rows[to].first + Math.min(column, rows[to].count - 1);
+}
+
 /** Grid offsets covered by the tile rows in `rows`, as `[start, end)`, or null if none. */
 export function itemSpan(rows: Row[]): [number, number] | null {
   let start = Infinity;
