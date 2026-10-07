@@ -690,7 +690,9 @@ export class LibraryStore {
       }
       this.unlisten = unlisten;
       void this.readFindFaces().catch(this.reportError);
-      await Promise.all([this.refresh(), this.refreshFolders(), this.refreshCollections()]);
+      // After the listeners, not before: whatever `readScanning` is told is running is then
+      // still owed the event that ends it.
+      await Promise.all([this.refresh(), this.refreshFolders(), this.refreshCollections(), this.readScanning().catch(this.reportError)]);
     })();
     return this.initPromise;
   }
@@ -1533,6 +1535,28 @@ export class LibraryStore {
     return folder ? (this.onlineByWatched.get(folder.watchedId) ?? true) : true;
   }
 
+  /** The scans that were running before this UI was listening. The backend scans every
+   *  watched folder at startup, before the webview exists, and an event sent to no listener
+   *  is lost: without this an empty library said photon had found no photos while its
+   *  first scan ran, with nothing in the status bar.
+   *
+   *  Called once the scan listener is registered, so each scan named here will still send
+   *  the done event that ends it - the backend takes a scan off this list before it sends
+   *  that event, not after. One that has reported since the question was asked is left as
+   *  its own events have it: its done may have overtaken the answer. */
+  private async readScanning(): Promise<void> {
+    const ids = await api.scanningFolders();
+    let unlisted = false;
+    for (const watchedId of ids) {
+      if (watchedId in this.scans) continue;
+      this.scans[watchedId] = { watchedId, filesSeen: 0, added: 0, changed: 0, done: false, cancelled: false };
+      unlisted ||= !this.folders.watched.some((w) => w.id === watchedId);
+    }
+    // The Pictures folder the backend watches by itself on a first run, after the list may
+    // have been read.
+    if (unlisted) await this.refreshFolders();
+  }
+
   /** Whether any scan is running, in a folder the list holds or not (see `init`'s scan
    *  listener): what an empty library asks before it offers to add a folder. */
   get scanning(): boolean {
@@ -1546,13 +1570,14 @@ export class LibraryStore {
   /** Watches a folder: Settings' and the empty library's "Add folder…", and a folder
    *  dropped on the window. A refusal is thrown to the caller.
    *
-   *  The backend starts the folder's scan with the write and says nothing of it until the
-   *  scan's first batch - 64 photos, or the end of the walk. For that long an empty library
-   *  said photon had found no photos in the folder added a second ago, with nothing in the
-   *  status bar. So the scan is counted as running from here. Only when nothing has been
-   *  heard of a scan in that folder: an empty folder's scan can be over before this
-   *  command's answer arrives, and marked as running after that, nothing would mark it
-   *  done. (A scan always reports done once, however it ends.) */
+   *  The backend starts the folder's scan with the write, and the scan announces itself
+   *  from its own thread as soon as it has found its root. That event and this command's
+   *  answer arrive in either order, so the scan is counted as running from here: with the
+   *  answer first, an empty library said for a moment that photon had found no photos in
+   *  the folder just added. Only when nothing has been heard of a scan in that folder: an
+   *  empty folder's scan can be over before the answer arrives, and marked as running
+   *  after that, nothing would mark it done. (A scan always reports done once, however it
+   *  ends.) */
   async addFolder(path: string): Promise<WatchedFolder> {
     const watched = await api.addFolder(path);
     if (!(watched.id in this.scans)) {

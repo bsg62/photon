@@ -594,6 +594,11 @@ pub async fn reveal_folder(engine: Eng<'_>, folder_id: i64) -> Result<(), AppErr
 }
 
 #[tauri::command(async)]
+pub fn scanning_folders(engine: Eng<'_>) -> Vec<i64> {
+    commands::scanning_folders(&engine)
+}
+
+#[tauri::command(async)]
 pub fn watched_folder_stats(
     engine: Eng<'_>,
 ) -> Result<Vec<commands::WatchedFolderStats>, AppError> {

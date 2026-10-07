@@ -57,9 +57,11 @@ export type EmptyLibrary = 'first-run' | 'scanning' | 'no-photos' | 'all-hidden'
  *  something the UI knows - said anyway, a user with folders was told to add one for as
  *  long as the list took.
  *
- *  `scanning` is what the UI has heard, not what is so. The backend says nothing when a
- *  scan starts, only after its first 64 photos or at its end, and nothing at all of a scan
- *  that began before the webview was listening. So `'no-photos'` must never be worded as a
+ *  `scanning` is what the UI has been told. A full scan says so as it starts, and the scans
+ *  already running at launch are asked about (`library.readScanning`), so a first scan is
+ *  "looking" from its first moment. It is still not the whole truth: the watcher's scan of
+ *  one changed directory says nothing until its end, and a folder photon may not read is
+ *  scanned and reported exactly like an empty one. So `'no-photos'` is never worded as a
  *  finished search (`noPhotosLine`). */
 export function emptyLibrary(known: boolean, watched: number, scanning: boolean, hidden: number): EmptyLibrary | null {
   if (hidden > 0) return 'all-hidden';
@@ -70,9 +72,9 @@ export function emptyLibrary(known: boolean, watched: number, scanning: boolean,
 
 /** What is said of watched folders that have given no photos (`'no-photos'`).
  *
- *  "Has found none", never "looked and found none": the UI cannot tell a scan that is over
- *  from one that has not reported yet (`emptyLibrary`), and a folder photon is not allowed
- *  to read is reported by the backend exactly as an empty one is. A folder on a drive that
+ *  "Has found none", never "looked and found none": a folder photon is not allowed to read
+ *  is scanned and reported by the backend exactly as an empty one is, and a directory the
+ *  watcher is rescanning says nothing until it is done (`emptyLibrary`). A folder on a drive that
  *  is not connected is said to be out of reach rather than empty: it may hold every photo
  *  the user has. */
 export function noPhotosLine(watched: Pick<WatchedFolder, 'path' | 'online'>[]): string {

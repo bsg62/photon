@@ -333,6 +333,10 @@ pub struct Engine {
     counts_computed: AtomicUsize,
     events: Arc<dyn Events>,
     scans: Mutex<HashMap<i64, RunningScan>>,
+    /// Watched ids whose scan has sent a not-done progress event and not yet its done one:
+    /// exactly what a listening UI believes is scanning. See `scanning_folders`. Taken
+    /// alone, or inside `scans` (the slot's release), never the other way round.
+    reporting: Mutex<HashSet<i64>>,
     /// Watched ids whose removal is under way. Per folder what `shutting_down` is for the
     /// whole engine: `remove_folder` cancels the running scan and only then deletes the
     /// folder, and the watcher is live throughout that window - an event arriving in it
@@ -558,6 +562,7 @@ impl Engine {
             counts_computed: AtomicUsize::new(0),
             events,
             scans: Mutex::new(HashMap::new()),
+            reporting: Mutex::new(HashSet::new()),
             removing: Mutex::new(HashSet::new()),
             next_token: AtomicU64::new(0),
             shutting_down: AtomicBool::new(false),
@@ -1673,6 +1678,9 @@ impl Engine {
                 let mut scans = self.engine.scans.lock();
                 if scans.get(&self.id).is_some_and(|r| r.token == self.token) {
                     scans.remove(&self.id);
+                    // A scan that panicked never reported done; one that returned has
+                    // taken itself out already.
+                    self.engine.reporting.lock().remove(&self.id);
                 }
             }
         }
@@ -1736,6 +1744,21 @@ impl Engine {
                 }
             }
         }
+    }
+
+    /// The watched folders with a scan that has reported and is not done: what the UI shows
+    /// as scanning, for a UI that was not listening when the scan said so. The startup
+    /// scans begin before any webview exists, and an event sent to no listener is lost.
+    ///
+    /// Not `scans`, the slots: that holds INI passes, which report nothing, and a scan in
+    /// the moments before its first report and after its last. A listener told "scanning"
+    /// from a slot could wait for a done that was sent before it listened, or never is.
+    /// `reporting` is kept by the same code that sends the events, on the same side of
+    /// each: in before a scan's first not-done event, out before its done.
+    pub fn scanning_folders(&self) -> Vec<i64> {
+        let mut ids: Vec<i64> = self.reporting.lock().iter().copied().collect();
+        ids.sort_unstable();
+        ids
     }
 
     pub fn is_scanning(&self, watched_id: i64) -> bool {
@@ -2680,6 +2703,10 @@ impl Engine {
                 .is_some_and(|service| service.is_degraded(folder.id));
             self.emit_status(&folder, degraded);
         }
+        // Out of `reporting` before the event, not after: a listener told "scanning" by
+        // `scanning_folders` must still be owed this event, and one that asked a moment
+        // after it was sent - and so never heard it - must be told "not scanning".
+        self.reporting.lock().remove(&watched.id);
         self.events
             .scan_progress(ScanProgressEvent::new(watched.id, &last, true, cancelled));
         // After the scan has reported done, not before: the pass reads files, and on a
@@ -2840,6 +2867,9 @@ impl ScanSink for ScanReporter<'_> {
             self.refreshed_total = total;
         }
         if self.last_progress.is_none_or(|t| t.elapsed() >= THROTTLE) {
+            // Before the event, so `scanning_folders` never answers "not scanning" about a
+            // scan a listener has already been told is running.
+            self.engine.reporting.lock().insert(self.watched_id);
             self.engine.events.scan_progress(ScanProgressEvent::new(
                 self.watched_id,
                 p,
@@ -3939,6 +3969,89 @@ mod tests {
             }),
             "{events:?}"
         );
+    }
+
+    /// At each scan event, what the engine says is being scanned (`scanning_folders`): what
+    /// a listener arriving at that moment would be told.
+    #[derive(Default)]
+    struct ScanningAtEachReport {
+        engine: std::sync::OnceLock<std::sync::Weak<Engine>>,
+        seen: Mutex<Vec<(ScanProgressEvent, Vec<i64>)>>,
+    }
+
+    impl Events for ScanningAtEachReport {
+        fn library_changed(&self, _: LibraryChanged) {}
+        fn scan_progress(&self, e: ScanProgressEvent) {
+            if let Some(engine) = self.engine.get().and_then(|e| e.upgrade()) {
+                self.seen.lock().push((e, engine.scanning_folders()));
+            }
+        }
+        fn folder_status(&self, _: FolderStatus) {}
+        fn export_progress(&self, _: ExportProgress) {}
+        fn face_progress(&self, _: FaceProgress) {}
+    }
+
+    /// The first thing a full scan says is that it has started, with nothing seen. Before,
+    /// its first event came with its first batch of photos or at the end of its walk, and
+    /// the UI showed no scan until then.
+    #[test]
+    fn a_full_scan_announces_itself_before_its_first_photo() {
+        let f = fixture(&[("a/1.jpg", &jpeg(8, 6)), ("a/2.jpg", &jpeg(8, 7))]);
+        let watched = f.add_photos();
+        let scans: Vec<ScanProgressEvent> = f
+            .events
+            .all()
+            .into_iter()
+            .filter_map(|e| match e {
+                Recorded::Scan(p) => Some(p),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            scans.first(),
+            Some(&ScanProgressEvent {
+                watched_id: watched.id,
+                files_seen: 0,
+                added: 0,
+                changed: 0,
+                done: false,
+                cancelled: false,
+            }),
+            "{scans:?}"
+        );
+        assert!(scans.last().unwrap().done, "{scans:?}");
+    }
+
+    /// A webview that starts listening in the middle of a scan has missed its opening
+    /// event, and the startup scans begin before any webview exists. `scanning_folders` is
+    /// what it asks instead, and the answer has to agree with the events: a folder is listed
+    /// from before its first not-done event until just before its done event, so a listener
+    /// told "scanning" is always still owed the done that ends it, and one told nothing is
+    /// owed the opening event or nothing at all.
+    #[test]
+    fn scanning_folders_names_a_scan_from_its_first_report_until_it_is_done() {
+        let f = fixture(&[("a/1.jpg", &jpeg(8, 6))]);
+        f.engine.shutdown();
+
+        let sink = Arc::new(ScanningAtEachReport::default());
+        let engine = Engine::open(f.config(), sink.clone()).unwrap();
+        sink.engine.set(Arc::downgrade(&engine)).ok().unwrap();
+        assert_eq!(engine.scanning_folders(), Vec::<i64>::new());
+
+        let watched = engine.add_folder(&f.photos).unwrap();
+        engine.wait_for_scans();
+
+        let seen = sink.seen.lock().clone();
+        assert!(seen.iter().any(|(e, _)| !e.done), "{seen:?}");
+        for (event, scanning) in &seen {
+            if event.done {
+                assert_eq!(scanning, &Vec::<i64>::new(), "at {event:?}");
+            } else {
+                assert_eq!(scanning, &vec![watched.id], "at {event:?}");
+            }
+        }
+        assert_eq!(engine.scanning_folders(), Vec::<i64>::new());
+        engine.shutdown();
     }
 
     /// Records like `Recorder`, and quits the engine it is given at the second face event

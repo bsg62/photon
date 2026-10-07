@@ -51,6 +51,7 @@ vi.mock('./api', () => ({
     hideTag: vi.fn(),
     restoreTagRule: vi.fn(),
     watchedFolderStats: vi.fn(),
+    scanningFolders: vi.fn(),
     setItemsHidden: vi.fn(),
     setFolderHidden: vi.fn(),
     setFolderAlias: vi.fn(),
@@ -118,6 +119,7 @@ describe('LibraryStore', () => {
     vi.mocked(api.peopleToName).mockResolvedValue(0);
     vi.mocked(api.listTags).mockResolvedValue([]);
     vi.mocked(api.watchedFolderStats).mockResolvedValue([]);
+    vi.mocked(api.scanningFolders).mockResolvedValue([]);
     vi.mocked(api.faceDetection).mockResolvedValue(false);
   });
 
@@ -505,6 +507,69 @@ describe('LibraryStore', () => {
     await store.init().catch(() => {});
     expect(store.foldersKnown).toBe(true);
     expect(store.folders.watched).toEqual([]);
+  });
+
+  describe('scans that were running before the UI was listening', () => {
+    const pictures = { id: 7, path: '/home/ada/Pictures', online: true };
+
+    // The backend scans every watched folder at startup, before the webview exists, and an
+    // event sent to no listener is lost: an empty library said photon had found no photos
+    // while its first scan ran, and the status bar showed nothing.
+    it('count as running from launch', async () => {
+      vi.mocked(api.listFolders).mockResolvedValue({ watched: [pictures], folders: [] });
+      vi.mocked(api.scanningFolders).mockResolvedValue([7]);
+      const store = new LibraryStore();
+      await store.init();
+      expect(store.scanning).toBe(true);
+      expect(store.isScanning(7)).toBe(true);
+      handlers.scanProgress({ watchedId: 7, filesSeen: 3, added: 3, changed: 0, done: true, cancelled: false });
+      expect(store.isScanning(7)).toBe(false);
+    });
+
+    // Asked only once the UI is listening, so whatever the answer names is still owed its
+    // done event. But that event can overtake the answer.
+    it('are not marked running once they have reported done', async () => {
+      const answer = deferred<number[]>();
+      vi.mocked(api.scanningFolders).mockImplementationOnce(() => answer.promise);
+      const store = new LibraryStore();
+      const started = store.init();
+      await vi.waitFor(() => expect(handlers.scanProgress).toBeDefined());
+      handlers.scanProgress({ watchedId: 7, filesSeen: 3, added: 3, changed: 0, done: true, cancelled: false });
+      answer.resolve([7]);
+      await started;
+      await vi.waitFor(() => expect(store.scanning).toBe(false));
+      expect(store.isScanning(7)).toBe(false);
+    });
+
+    it('are asked about after the UI has subscribed to scan events, not before', async () => {
+      vi.mocked(api.scanningFolders).mockImplementation(async () => {
+        expect(handlers.scanProgress).toBeDefined();
+        return [];
+      });
+      const store = new LibraryStore();
+      await store.init();
+      expect(api.scanningFolders).toHaveBeenCalledTimes(1);
+    });
+
+    // The Pictures folder the backend watches by itself on a first run: scanning, and not
+    // in the list the UI read a moment before it was added.
+    it('have their folder read into the list when it does not hold it', async () => {
+      vi.mocked(api.listFolders)
+        .mockResolvedValueOnce({ watched: [], folders: [] })
+        .mockResolvedValue({ watched: [pictures], folders: [] });
+      vi.mocked(api.scanningFolders).mockResolvedValue([7]);
+      const store = new LibraryStore();
+      await store.init();
+      await vi.waitFor(() => expect(store.folders.watched).toEqual([pictures]));
+    });
+
+    it('leave the launch standing when the question cannot be answered', async () => {
+      vi.mocked(api.scanningFolders).mockRejectedValue(new Error('scans-fail'));
+      const store = new LibraryStore();
+      await store.init();
+      expect(store.scanning).toBe(false);
+      expect(store.toasts.some((t) => t.message === 'scans-fail')).toBe(true);
+    });
   });
 
   describe('adding a folder', () => {
