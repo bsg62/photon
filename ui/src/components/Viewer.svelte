@@ -26,6 +26,7 @@
   import { createStarToggle } from '../lib/star-toggle.svelte';
   import { library } from '../lib/library.svelte';
   import { pictureChanged } from '../lib/picture';
+  import { canStep, fromPhotoCentre, INFO_RIGHT, INFO_WIDTH, infoRoom, photoArea } from '../lib/viewer-layout';
   import Icon from './Icon.svelte';
   import Menu from './Menu.svelte';
   import Select from './Select.svelte';
@@ -103,7 +104,6 @@
    *  photo while it is open. */
   let info = $state(false);
   let dragging = $state(false);
-  let stage = $state<HTMLDivElement | null>(null);
   /** The frame's on-screen size, for placing the face outlines and the crop rectangle. */
   let frameW = $state(0);
   let frameH = $state(0);
@@ -357,6 +357,10 @@
   const crop = createCropTool();
   /** Where the uncropped picture sits in the frame while cropping: the rectangle's
    *  fractions are fractions of this box. */
+  /** Whether the previous and the next buttons lead anywhere (`canStep`). */
+  const canPrev = $derived(canStep(-1, current, library.info.len, slideshow.active, orphaned));
+  const canNext = $derived(canStep(1, current, library.info.len, slideshow.active, orphaned));
+
   const cropBox = $derived(
     crop.active && item ? containedBox(item.uncroppedWidth, item.uncroppedHeight, frameW, frameH) : null,
   );
@@ -574,8 +578,21 @@
     api.openInMap(item.id).catch(library.reportError);
   }
 
+  /** The area the photo is fitted into: the viewer, less the room the open info panel takes
+   *  (`photoArea`). Worked out from the viewer and the panel's state rather than read off
+   *  the area's element, which is only laid out again a render after the panel opens or
+   *  closes. */
   function viewport(): { width: number; height: number } {
-    return { width: stage?.clientWidth ?? 0, height: stage?.clientHeight ?? 0 };
+    return photoArea(root?.clientWidth ?? 0, root?.clientHeight ?? 0, info);
+  }
+
+  /** Opens or closes the info panel. The photo is fitted beside the panel, so its area
+   *  narrows as the panel opens: a pan that was legal in the wider one is pulled back in,
+   *  as it is when the zoom is turned down, rather than left hanging off the edge. */
+  function toggleInfo() {
+    info = !info;
+    const { width, height } = viewport();
+    pan = clampPan(pan.x, pan.y, zoom, width, height);
   }
 
   function goto(next: number) {
@@ -916,7 +933,7 @@
       }
       if (e.key === 'i' || e.key === 'I') {
         e.preventDefault();
-        info = !info;
+        toggleInfo();
         return;
       }
       // The star, on a key that is free here, in the grid and in compare alike: S, which
@@ -995,12 +1012,13 @@
     else goto(current + stepped.step);
   }
 
-  /** A pointer's place measured from the middle of the viewer, which is what the pan is
-   *  measured from too (`zoomAt`). */
+  /** A pointer's place measured from the middle of the photo's area, which is what the pan
+   *  is measured from too (`zoomAt`): the middle of the viewer, or of what the open info
+   *  panel leaves of it. */
   function fromCentre(e: MouseEvent): { x: number; y: number } {
     const box = root?.getBoundingClientRect();
     if (!box) return { x: 0, y: 0 };
-    return { x: e.clientX - (box.left + box.width / 2), y: e.clientY - (box.top + box.height / 2) };
+    return fromPhotoCentre(e.clientX, e.clientY, box, info);
   }
 
   /** Zooms to `next`, holding the photo under `point` still: the keys and the double-click's
@@ -1029,7 +1047,7 @@
     // The second click of a double-click on a menu item lands on the photo the menu was
     // over, the first having closed it: that is a slow hand on the menu, not a zoom.
     if (performance.now() - menuClosedAt < MENU_DOUBLE_CLICK_MS) return;
-    if ((e.target as HTMLElement).closest('.zoom, .close, .bar, .info, .face, .menu, .photo-caption')) return;
+    if ((e.target as HTMLElement).closest('.zoom, .close, .nav, .bar, .info, .face, .menu, .photo-caption')) return;
     if (zoom > MIN_ZOOM) {
       zoomTo(MIN_ZOOM);
       return;
@@ -1056,7 +1074,7 @@
     // outline sit on the same surface: a press on any of them is theirs, not the start of a
     // pan. An outline or a menu item that started one would capture the pointer, and its
     // click would never land.
-    if ((e.target as HTMLElement).closest('.zoom, .close, .bar, .info, .face, .menu')) return;
+    if ((e.target as HTMLElement).closest('.zoom, .close, .nav, .bar, .info, .face, .menu')) return;
     // Left button only. Without this every button panned, which is why the right button
     // looked like the pan control: the left one was being swallowed by the browser's native
     // image drag before the pointer stream could produce a move.
@@ -1114,14 +1132,17 @@
   {#if error}
     <p class="error">{error}</p>
   {:else if item}
+    <!-- The photo's area: the viewer, less the room the open info panel takes at its right
+         (`infoRoom`). It clips, so a zoomed photo stays beside the panel as the fitted one
+         does, rather than running on under it. -->
+    <div class="area" style:right="{infoRoom(info)}px">
     <div
       class="stage"
       class:grabbable={zoom > MIN_ZOOM}
       class:grabbing={dragging}
       style="transform: translate({pan.x}px, {pan.y}px) scale({zoom})"
-      bind:this={stage}
     >
-      <!-- The frame is the viewport's size; the photo is `contain`-fitted inside it. Turns
+      <!-- The frame is the area's size; the photo is `contain`-fitted inside it. Turns
            and crops are not drawn here - the backend renders them into the images. -->
       <div class="frame" bind:this={frameEl} bind:clientWidth={frameW} bind:clientHeight={frameH}>
         {#if crop.active && cropBox}
@@ -1230,6 +1251,7 @@
         {/each}
       </div>
     </div>
+    </div>
   {/if}
   {#if outgoing}
     <!-- Keyed, so each photo leaving gets an element of its own: reusing one would fade the
@@ -1238,8 +1260,31 @@
       <img class="outgoing" class:fading={outgoing.fading} src={outgoing.src} alt="" draggable="false" />
     {/key}
   {/if}
+  {#if !crop.active}
+    <!-- Previous and next, for the mouse: the arrow keys and the wheel do the same. In a
+         slideshow they step through the show's order, as the keys do there (`step`). -->
+    <button
+      class="nav prev"
+      onclick={() => canPrev && step(-1)}
+      aria-disabled={!canPrev}
+      aria-label="Previous photo"
+      title="Previous photo (←)"
+    >
+      <Icon name="chevron-left" size={22} />
+    </button>
+    <button
+      class="nav next"
+      style:right="{infoRoom(info) + 12}px"
+      onclick={() => canNext && step(1)}
+      aria-disabled={!canNext}
+      aria-label="Next photo"
+      title="Next photo (→)"
+    >
+      <Icon name="chevron-right" size={22} />
+    </button>
+  {/if}
   {#if info && item}
-    <aside class="info" aria-label="Photo information">
+    <aside class="info" style:width="{INFO_WIDTH}px" style:right="{INFO_RIGHT}px" aria-label="Photo information">
       <h2 class="info-title">{item.fileName}</h2>
       <p class="info-path" title={item.path}>{item.path}</p>
       {#if item.caption?.trim()}
@@ -1451,7 +1496,7 @@
     </button>
     <button
       class="tool"
-      onclick={() => (info = !info)}
+      onclick={toggleInfo}
       disabled={!item}
       aria-pressed={info}
       aria-label="Photo information"
@@ -1509,8 +1554,9 @@
      is why menu buttons and labels depend on it. accent-color needs no override here:
      tokens.css declares it on `[data-theme]`, which this element already matches. */
   .viewer { position: fixed; inset: 0; z-index: 20; display: grid; place-items: center; background: #000; overflow: hidden; color: var(--text); }
+  .area { position: absolute; inset: 0; overflow: hidden; }
   .stage { position: absolute; inset: 0; transform-origin: center; will-change: transform; }
-  .frame { position: absolute; left: 50%; top: 50%; width: 100vw; height: 100vh; translate: -50% -50%; }
+  .frame { position: absolute; inset: 0; }
   .face { position: absolute; border: 2px solid var(--photo-line); border-radius: var(--r-1); box-shadow: 0 0 0 1px var(--shadow-ink); pointer-events: none; }
   /* An outline that names its face on a click. The box is the outline's alone: no fill, so
      the face shows through, and the global focus ring outside the line, where a keyboard
@@ -1539,12 +1585,12 @@
   .outgoing.fading { opacity: 0; }
   /* A resting pointer during a slideshow: everything but the photo gets out of the way. */
   .quiet { cursor: none; }
-  .quiet .bar, .quiet .zoom, .quiet .close { opacity: 0; pointer-events: none; }
-  .bar, .zoom, .close { transition: opacity 200ms ease; }
+  .quiet .bar, .quiet .zoom, .quiet .close, .quiet .nav { opacity: 0; pointer-events: none; }
+  .bar, .zoom, .close, .nav { transition: opacity 200ms ease; }
   /* Glass: 90% opaque on its own, so it reads where backdrop-filter is slow or missing
      (some Linux GPUs); the blur is an enhancement on top. The opacity is set by contrast,
      not taste: dim text on it must still reach 4.5:1 over a white photo (tokens.test.ts). */
-  .bar, .zoom, .close, .info, .photo-caption {
+  .bar, .zoom, .close, .nav, .info, .photo-caption {
     background: var(--glass);
     box-shadow: 0 0 0 1px var(--glass-line), var(--shadow-menu);
     -webkit-backdrop-filter: blur(18px);
@@ -1580,6 +1626,14 @@
   .level { color: var(--text-dim); font-size: var(--t-2); min-width: 38px; text-align: right; font-variant-numeric: tabular-nums; }
   .close { position: absolute; top: 12px; right: 12px; display: grid; place-items: center; width: 32px; height: 32px; padding: 0; border: 0; border-radius: 50%; color: var(--text-dim); cursor: pointer; }
   .close:hover { color: var(--text); }
+  /* Previous and next, at the two edges of the photo's area: the right one stands clear of
+     the info panel, by the room the panel takes (set on the element). `aria-disabled`, not
+     `disabled`, at the first and the last photo: a button disabled while it holds the focus
+     drops the focus to the body. */
+  .nav { position: absolute; top: 50%; translate: 0 -50%; display: grid; place-items: center; width: 40px; height: 40px; padding: 0; border: 0; border-radius: 50%; color: var(--text-dim); cursor: pointer; }
+  .nav.prev { left: 12px; }
+  .nav:hover { color: var(--text); }
+  .nav[aria-disabled='true'] { opacity: 0.35; color: var(--text-dim); cursor: default; }
   .star, .tool { display: grid; place-items: center; width: 30px; height: 30px; padding: 0; border: 0; border-radius: var(--r-3); background: none; color: var(--text-dim); font-size: var(--t-2); line-height: 1; cursor: pointer; transition: background-color 120ms ease-out; }
   .star:hover:not(:disabled), .tool:hover:not(:disabled) { color: var(--text); background: var(--hover); }
   /* Spelled out with :hover, like .tool.primary below: the generic hover rule otherwise
@@ -1622,9 +1676,9 @@
   .info {
     position: absolute;
     top: 12px;
-    right: 56px;
     bottom: 56px;
-    width: 280px;
+    /* Its width and its distance from the right edge are set on the element, from the
+       numbers the photo's area is worked out with (`viewer-layout.ts`). */
     overflow: auto;
     padding: 14px var(--s-4);
     border-radius: var(--r-4);
