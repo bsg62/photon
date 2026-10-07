@@ -669,7 +669,11 @@ that area and must stay so: the frame the photo and the face outlines are fitted
 zoom's and the pan's bounds (`viewport()`, worked out from the viewer and `info` rather than
 read off the element, which is laid out a render later than the toggle that needs it), and
 the point a zoom holds still (`fromCentre`: measured from the middle of the window, a
-double-click beside the panel zoomed to a place half the panel's room away). The panel's
+double-click beside the panel zoomed to a place half the panel's room away). Three more
+things stand outside `.area` and are given its width by hand: the slideshow's crossfade
+layer (`.outgoing` - the panel can be opened during a show, and a leaving photo fitted to
+the window jumped larger on its way out), the error message, and the video's controls
+(`VideoControls`' `room`). Anything new drawn over or instead of the photo is a fourth. The panel's
 width and place are set on the element from the same constants. The previous and next
 buttons are `aria-disabled` at the ends, not `disabled`: a button disabled while it holds the
 focus drops the focus to `<body>`.

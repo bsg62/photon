@@ -355,12 +355,12 @@
   }
 
   const crop = createCropTool();
-  /** Where the uncropped picture sits in the frame while cropping: the rectangle's
-   *  fractions are fractions of this box. */
   /** Whether the previous and the next buttons lead anywhere (`canStep`). */
   const canPrev = $derived(canStep(-1, current, library.info.len, slideshow.active, orphaned));
   const canNext = $derived(canStep(1, current, library.info.len, slideshow.active, orphaned));
 
+  /** Where the uncropped picture sits in the frame while cropping: the rectangle's
+   *  fractions are fractions of this box. */
   const cropBox = $derived(
     crop.active && item ? containedBox(item.uncroppedWidth, item.uncroppedHeight, frameW, frameH) : null,
   );
@@ -1130,7 +1130,9 @@
   {ondblclick}
 >
   {#if error}
-    <p class="error">{error}</p>
+    <!-- In the photo's area, as the photo would be: centred on the window, the message ran
+         under the open info panel, and the Next button stood in the middle of it. -->
+    <div class="area centred" style:right="{infoRoom(info)}px"><p class="error">{error}</p></div>
   {:else if item}
     <!-- The photo's area: the viewer, less the room the open info panel takes at its right
          (`infoRoom`). It clips, so a zoomed photo stays beside the panel as the fitted one
@@ -1257,7 +1259,10 @@
     <!-- Keyed, so each photo leaving gets an element of its own: reusing one would fade the
          next outgoing photo *in* from the opacity the last one ended on. -->
     {#key outgoing.src}
-      <img class="outgoing" class:fading={outgoing.fading} src={outgoing.src} alt="" draggable="false" />
+      <!-- As wide as the photo's area, not the viewer: the info panel can be opened during
+           a show, and a leaving photo fitted to the whole window jumped larger and ran on
+           under the panel before it faded. -->
+      <img class="outgoing" class:fading={outgoing.fading} style:width="calc(100% - {infoRoom(info)}px)" src={outgoing.src} alt="" draggable="false" />
     {/key}
   {/if}
   {#if !crop.active}
@@ -1462,7 +1467,7 @@
     </div>
   {:else}
   {#if isVideo && videoFullSrc}
-    <VideoControls {player} />
+    <VideoControls {player} room={infoRoom(info)} />
   {/if}
   <div class="bar">
     <button
@@ -1555,6 +1560,7 @@
      tokens.css declares it on `[data-theme]`, which this element already matches. */
   .viewer { position: fixed; inset: 0; z-index: 20; display: grid; place-items: center; background: #000; overflow: hidden; color: var(--text); }
   .area { position: absolute; inset: 0; overflow: hidden; }
+  .area.centred { display: grid; place-items: center; }
   .stage { position: absolute; inset: 0; transform-origin: center; will-change: transform; }
   .frame { position: absolute; inset: 0; }
   .face { position: absolute; border: 2px solid var(--photo-line); border-radius: var(--r-1); box-shadow: 0 0 0 1px var(--shadow-ink); pointer-events: none; }
@@ -1585,7 +1591,9 @@
   .outgoing.fading { opacity: 0; }
   /* A resting pointer during a slideshow: everything but the photo gets out of the way. */
   .quiet { cursor: none; }
-  .quiet .bar, .quiet .zoom, .quiet .close, .quiet .nav { opacity: 0; pointer-events: none; }
+  /* The dimmed button is named too: its own rule further down sets an opacity and would
+     otherwise out-rank this one, leaving both buttons of a one-photo show on screen. */
+  .quiet .bar, .quiet .zoom, .quiet .close, .quiet .nav, .quiet .nav[aria-disabled='true'] { opacity: 0; pointer-events: none; }
   .bar, .zoom, .close, .nav { transition: opacity 200ms ease; }
   /* Glass: 90% opaque on its own, so it reads where backdrop-filter is slow or missing
      (some Linux GPUs); the blur is an enhancement on top. The opacity is set by contrast,
@@ -1661,7 +1669,8 @@
   .crop-handle.e, .crop-handle.ne, .crop-handle.se { right: -11px; }
   .crop-handle.nw, .crop-handle.se { cursor: nwse-resize; }
   .crop-handle.ne, .crop-handle.sw { cursor: nesw-resize; }
-  .error { color: var(--text-dim); }
+  /* The side padding keeps the message clear of the previous and next buttons. */
+  .error { margin: 0; padding: 0 64px; color: var(--text-dim); text-align: center; }
   /* Lies over the poster the way the face plate lies over a photo: the same glass and scrim
      technique as `.bar`, so the reason reads over a bright frame as well as a dark one. */
   .video-issue {
