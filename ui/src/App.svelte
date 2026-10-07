@@ -13,10 +13,10 @@
   import { openFacePhoto } from './lib/people';
   import { resultsChanged, viewKey } from './lib/search';
   import { searchBox } from './lib/search-box.svelte';
-  import { focusesSearch, opensShortcuts } from './lib/shortcuts';
+  import { focusesSearch, keyHint, opensShortcuts, togglesSidebar } from './lib/shortcuts';
   import type { SettingsSection } from './lib/settings';
   import { isMac } from './lib/url';
-  import { browserStore, clampSidebarWidth, SIDEBAR_STEP, storedSidebarWidth, storeSidebarWidth } from './lib/sidebar';
+  import { browserStore, clampSidebarWidth, SIDEBAR_STEP, storedSidebarHidden, storedSidebarWidth, storeSidebarHidden, storeSidebarWidth } from './lib/sidebar';
   import { createExportDialog } from './lib/export-dialog.svelte';
   import { createFolderDrop } from './lib/folder-drop.svelte';
   import { createPersonPicker, type PickerTarget } from './lib/person-picker.svelte';
@@ -125,6 +125,42 @@
   const sidebarStore = browserStore();
   let sidebarWidth = $state(storedSidebarWidth(sidebarStore, window.innerWidth));
   let dragFrom: { x: number; width: number } | null = null;
+  /** Whether the sidebar is put away, giving its room to the photos: remembered beside its
+   *  width, and read here for the same reason, before the first paint. */
+  let sidebarHidden = $state(storedSidebarHidden(sidebarStore));
+  let sidebar = $state<HTMLElement | undefined>();
+  let splitter = $state<HTMLElement | undefined>();
+
+  /** Hides or shows the sidebar: the top bar's button and Ctrl+B. Hidden, it stays mounted
+   *  and laid out at its own width (see `.no-sidebar` below), so its scroll position, its
+   *  open groups and its following of the grid are all as they were when it comes back.
+   *
+   *  What it held goes with it. An open menu is closed: it would otherwise stay open and
+   *  out of sight, taking the next Escape. And the focus moves to the photos, while they
+   *  can still take it: left in a list about to become `inert` it falls to `<body>`, where
+   *  the grid's keys are dead. Moving it is also what stores a name being typed in a rename
+   *  field, as a click elsewhere does. */
+  function setSidebarHidden(hidden: boolean) {
+    if (hidden === sidebarHidden) return;
+    if (hidden) {
+      const active = document.activeElement;
+      folderTree?.closeMenus();
+      if (active && (sidebar?.contains(active) || active === splitter)) leaveSearch();
+    }
+    sidebarHidden = hidden;
+    storeSidebarHidden(sidebarStore, hidden);
+  }
+
+  /** "Rename in photon…" on a folder's header in the grid. The name is typed in the folder's
+   *  row in the sidebar, so a hidden sidebar is shown first - and has taken its place before
+   *  the row is asked for the focus, which an `inert` list silently refuses. */
+  async function renameFolderFromGrid(folderId: number) {
+    if (sidebarHidden) {
+      setSidebarHidden(false);
+      await tick();
+    }
+    folderTree?.renameFolder(folderId, () => grid?.focus());
+  }
 
   // Pointer capture keeps the drag alive when the pointer outruns the 5px bar or crosses
   // the grid, which would otherwise take the move events.
@@ -367,6 +403,16 @@
       }
       return;
     }
+    if (togglesSidebar(e, mac)) {
+      // Not under an overlay, where the sidebar is not what the user is at; nor while the
+      // grid holds a rubber band or the splitter a drag, each measured against a width this
+      // would change under it.
+      if (!covered && !grid?.dragging() && dragFrom === null) {
+        e.preventDefault();
+        setSidebarHidden(!sidebarHidden);
+      }
+      return;
+    }
     if (opensShortcuts(e, e.target as HTMLElement | null)) {
       // The sheet's own handler closes it and stops the key there; this is the `?` that
       // arrives with focus on `<body>`.
@@ -558,8 +604,17 @@
   }}
   onblur={() => (slashHeld = false)}
 />
-<div class="app" style:--sidebar-width="{sidebarWidth}px">
+<div class="app" class:no-sidebar={sidebarHidden} style:--sidebar-width="{sidebarWidth}px">
   <div class="topbar" inert={covered}>
+    <button
+      class="gear side"
+      aria-label={sidebarHidden ? 'Show sidebar' : 'Hide sidebar'}
+      aria-expanded={!sidebarHidden}
+      title="{sidebarHidden ? 'Show sidebar' : 'Hide sidebar'} ({keyHint(['Mod', 'B'], mac)})"
+      onclick={() => setSidebarHidden(!sidebarHidden)}
+    >
+      <Icon name="panel-left" size={18} />
+    </button>
     <SearchBar bind:this={searchBar} onleave={leaveSearch} />
     <!-- The grid's own controls: under the People page they would sort and size a grid no
          one can see. Hidden rather than removed, so the search box and the gear keep their
@@ -573,7 +628,7 @@
       ><Icon name="settings" size={18} /></button
     >
   </div>
-  <aside class="sidebar" inert={covered}>
+  <aside class="sidebar" bind:this={sidebar} inert={covered || sidebarHidden}>
     <FolderTree bind:this={folderTree} onjump={jump} onopensettings={() => openSettings('folders')} />
   </aside>
   <!-- A focusable separator is a widget in WAI-ARIA (a window splitter); Svelte's a11y
@@ -586,7 +641,8 @@
     aria-label="Resize sidebar"
     aria-valuenow={sidebarWidth}
     tabindex="0"
-    inert={covered}
+    bind:this={splitter}
+    inert={covered || sidebarHidden}
     onpointerdown={startResize}
     onpointermove={moveResize}
     onpointerup={endResize}
@@ -614,7 +670,7 @@
         onnameperson={(ids) => openPersonPicker({ kind: 'items', items: ids }, 'grid')}
         oncompare={openCompare}
         onshowcopies={showCopiesOf}
-        onrenamefolder={(id) => folderTree?.renameFolder(id, () => grid?.focus())}
+        onrenamefolder={renameFolderFromGrid}
       />
     </div>
     {#if mainPage.current === 'people'}
@@ -662,15 +718,31 @@
 
 <style>
   .app {
+    /* Positioned, so the hidden sidebar below is placed against its own grid area. */
+    position: relative;
     display: grid;
     grid-template-columns: var(--sidebar-width) 5px 1fr;
     grid-template-rows: auto 1fr auto;
     height: 100%;
   }
+  /* Each part is given its column: placed by their order alone, taking the sidebar out of
+     the flow (below) would move the photos into its column. */
   .sidebar {
+    grid-column: 1;
+    grid-row: 2;
     overflow: auto;
     background: var(--chrome);
   }
+  .splitter { grid-column: 2; grid-row: 2; }
+  .content { grid-column: 3; grid-row: 2; }
+  /* The sidebar put away: its two columns close, and it stands out of the flow at the width
+     it had, unseen. Not `display: none`, which resets the list's scroll position, and not
+     left in a column of no width, where the whole list would be laid out again as a sliver:
+     at its own width nothing in it moves, and it goes on following the grid, so it comes
+     back at the folder the grid is in. `inert` (on the elements) keeps it from the keyboard. */
+  .app.no-sidebar { grid-template-columns: 0 0 1fr; }
+  .app.no-sidebar .sidebar { position: absolute; top: 0; bottom: 0; left: 0; width: var(--sidebar-width); visibility: hidden; }
+  .app.no-sidebar .splitter { visibility: hidden; }
   .splitter {
     cursor: col-resize;
     touch-action: none;
@@ -691,6 +763,7 @@
   /* Its own grid row, so it stays put while the sidebar and the grid scroll under it. */
   .topbar {
     grid-column: 1 / -1;
+    grid-row: 1;
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -719,8 +792,11 @@
     transition: background-color 120ms ease-out;
   }
   .gear:hover { color: var(--text); background: var(--hover); }
+  /* The sidebar's button, at the top bar's other end: the search box's own padding is what
+     stands between the two. */
+  .gear.side { flex: none; margin-left: var(--s-2); }
   @media (prefers-reduced-motion: reduce) { .gear { transition: none; } }
-  .statusbar { grid-column: 1 / -1; }
+  .statusbar { grid-column: 1 / -1; grid-row: 3; }
   .under-dialog { display: contents; }
   .drop {
     position: fixed;

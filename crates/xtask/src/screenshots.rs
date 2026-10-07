@@ -100,6 +100,13 @@ pub const SHOTS: &[Shot] = &[
         query: "theme=light&tile=small&do=scrolled",
         dark: false,
     },
+    // The sidebar hidden: the grid has the window's whole width, and the top bar's first
+    // button brings the sidebar back.
+    Shot {
+        name: "sidebar-hidden-light",
+        query: "theme=light&do=hidesidebar",
+        dark: false,
+    },
     // The same menu from the folder's header in the grid.
     Shot {
         name: "header-menu-dark",

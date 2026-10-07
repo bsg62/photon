@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { MAX_PANES } from './compare.svelte';
-import { chordLabel, focusesSearch, keyHint, opensShortcuts, SHORTCUTS, type ShortcutGroupId } from './shortcuts';
+import { chordLabel, focusesSearch, keyHint, opensShortcuts, SHORTCUTS, togglesSidebar, type ShortcutGroupId } from './shortcuts';
 
 /** The files that answer keys, as text. */
 const sources = import.meta.glob(['../App.svelte', '../components/*.svelte', './*.ts', '!./*.test.ts'], {
@@ -215,5 +215,41 @@ describe('opensShortcuts', () => {
     expect(opensShortcuts(key(), { tagName: 'INPUT' })).toBe(false);
     expect(opensShortcuts(key(), { tagName: 'textarea' })).toBe(false);
     expect(opensShortcuts(key(), { tagName: 'DIV', isContentEditable: true })).toBe(false);
+  });
+});
+
+describe('togglesSidebar', () => {
+  const key = (over: Partial<Pick<KeyboardEvent, 'key' | 'ctrlKey' | 'metaKey' | 'altKey' | 'shiftKey'>>) => ({
+    key: 'b',
+    ctrlKey: false,
+    metaKey: false,
+    altKey: false,
+    shiftKey: false,
+    ...over,
+  });
+
+  it('is Ctrl+B, in either case of the letter', () => {
+    expect(togglesSidebar(key({ ctrlKey: true }), false)).toBe(true);
+    expect(togglesSidebar(key({ ctrlKey: true, key: 'B' }), false)).toBe(true);
+  });
+
+  it('is not a plain b, which is a letter of a name or a search', () => {
+    expect(togglesSidebar(key({}), false)).toBe(false);
+  });
+
+  it('is not the chord with Shift or Alt beside it, nor another letter', () => {
+    expect(togglesSidebar(key({ ctrlKey: true, shiftKey: true }), false)).toBe(false);
+    expect(togglesSidebar(key({ ctrlKey: true, altKey: true }), false)).toBe(false);
+    expect(togglesSidebar(key({ ctrlKey: true, key: 'f' }), false)).toBe(false);
+  });
+
+  // Ctrl+B on a Mac is the text system's own "back a character", in every text field.
+  it('is ⌘B alone on a Mac', () => {
+    expect(togglesSidebar(key({ metaKey: true }), true)).toBe(true);
+    expect(togglesSidebar(key({ ctrlKey: true }), true)).toBe(false);
+  });
+
+  it('is listed', () => {
+    expect(group('everywhere').rows.some((row) => row.keys.some((chord) => chord.join('+') === 'Mod+B'))).toBe(true);
   });
 });

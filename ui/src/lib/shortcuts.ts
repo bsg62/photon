@@ -35,6 +35,7 @@ export const SHORTCUTS: ShortcutGroup[] = [
       { keys: [['Mod', 'F'], ['/']], does: 'Go to the search box, from the grid or the People page' },
       { keys: [['Enter']], does: 'In the search box: go to the photos' },
       { keys: [['Esc']], does: 'In the search box: clear the search, or leave an empty box' },
+      { keys: [['Mod', 'B']], does: 'Hide or show the sidebar' },
       { keys: [['←'], ['→']], does: "On the sidebar's edge: resize the sidebar" },
     ],
   },
@@ -149,6 +150,19 @@ export function focusesSearch(
     return !e.shiftKey && e.key.toLowerCase() === 'f';
   }
   return e.key === '/' && ownsSelectAll(target);
+}
+
+/** Whether a keydown asks for the sidebar to be hidden or shown: Ctrl+B (⌘B on a Mac), from
+ *  anywhere, a text entry included - the chord means nothing in a plain text field. Shift
+ *  and Alt make it another chord. On a Mac it is ⌘B alone, for `focusesSearch`'s reason:
+ *  Ctrl+B there is the text system's own "back a character". */
+export function togglesSidebar(
+  e: Pick<KeyboardEvent, 'key' | 'ctrlKey' | 'metaKey' | 'altKey' | 'shiftKey'>,
+  mac: boolean,
+): boolean {
+  if (e.altKey || e.shiftKey) return false;
+  if (!(mac ? e.metaKey : e.ctrlKey || e.metaKey)) return false;
+  return e.key.toLowerCase() === 'b';
 }
 
 /** Whether a keydown asks for the shortcut sheet: a plain `?`, anywhere but in a text entry,

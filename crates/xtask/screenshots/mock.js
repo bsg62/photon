@@ -31,6 +31,9 @@
   const P = new URLSearchParams(location.search);
   const day = (y, m, d) => Date.UTC(y, m - 1, d) / 1000;
 
+  // `?do=hidesidebar`: the sidebar's stored state, written before the app reads it.
+  if (P.get('do') === 'hidesidebar') localStorage.setItem('photon.sidebar.hidden', 'true');
+
   const folders = [
     { id: 1, watchedId: 1, parentId: null, path: '/home/ada/Pictures', name: 'Pictures', hidden: false, alias: null },
     { id: 2, watchedId: 1, parentId: 1, path: '/home/ada/Pictures/2026/Summer hike', name: 'Summer hike', hidden: false, alias: 'Up the Hohe Tauern' },
@@ -427,6 +430,10 @@
 
   const actions = {
     select: () => tile(7)?.click(),
+    // The sidebar put away: stored as hidden before the app read it (at the top of this
+    // file), so the app opens without it, as it does on a launch after hiding. Taken back
+    // out of storage here, so no later shot can open without a sidebar.
+    hidesidebar: () => localStorage.removeItem('photon.sidebar.hidden'),
     // `scroll-probe`: End through the grid's own key handling (a write from code), once the
     // layout has settled, then read what got mounted. The grid's `onscroll` is what turns a
     // written `scrollTop` into rendered rows, and headless Chromium under
