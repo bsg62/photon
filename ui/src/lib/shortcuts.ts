@@ -35,7 +35,9 @@ export const SHORTCUTS: ShortcutGroup[] = [
       { keys: [['Mod', 'F'], ['/']], does: 'Go to the search box, from the grid or the People page' },
       { keys: [['Enter']], does: 'In the search box: go to the photos' },
       { keys: [['Esc']], does: 'In the search box: clear the search, or leave an empty box' },
-      { keys: [['Mod', 'B']], does: 'Hide or show the sidebar, from the grid or the People page' },
+      // One line, where the search box's row says "from the grid or the People page" of the
+      // same rule: a second line here is the one that pushes the sheet past a small window.
+      { keys: [['Mod', 'B']], does: 'Hide or show the sidebar' },
       { keys: [['←'], ['→']], does: "On the sidebar's edge: resize the sidebar" },
     ],
   },
