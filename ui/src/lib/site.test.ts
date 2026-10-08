@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import tokens from '../tokens.css?raw';
 import index from '../../../site/index.html?raw';
 import notFound from '../../../site/404.html?raw';
+import { ICONS } from './icons';
 
 // The website (site/) is hand-written and has no build step, so nothing shares a line of CSS
 // with the app. Its stylesheet says its palette is the app's; this file is what holds it to
@@ -76,5 +77,31 @@ describe.each(PAGES)('site/%s', (_name, html) => {
     // `var(--chrome)` left behind after the token went computes to nothing, silently.
     const read = new Set([...pageCss(html).matchAll(/var\((--[\w-]+)\)/g)].map((m) => m[1]));
     for (const name of read) expect(Object.keys(page.light), name).toContain(name);
+  });
+});
+
+describe('the feature icons of site/index.html', () => {
+  const symbols = new Map(
+    [...index.matchAll(/<symbol id="i-([\w-]+)" viewBox="0 0 24 24">([\s\S]*?)<\/symbol>/g)].map((m) => [m[1], m[2]]),
+  );
+  const from = index.indexOf('<div class="features">');
+  const features = index.slice(from, index.indexOf('<figure>', from));
+  const headings = [...features.matchAll(/<h3>([\s\S]*?)<\/h3>/g)].map((m) => m[1]);
+  const used = headings.map((h) => /^<svg class="icon" aria-hidden="true"><use href="#i-([\w-]+)"\/><\/svg>/.exec(h)?.[1]);
+
+  it('gives every feature one icon, and no two the same', () => {
+    expect(headings.length).toBe(9);
+    expect(used.every((name) => name !== undefined)).toBe(true);
+    expect(new Set(used).size).toBe(9);
+  });
+
+  it('draws every icon from a symbol the page holds, and holds no other', () => {
+    // A <use> naming a symbol that is not there draws nothing and reports nothing.
+    expect([...symbols.keys()].sort()).toEqual([...used].sort());
+  });
+
+  it("copies each symbol from the app's icon, path for path", () => {
+    expect(symbols.size).toBe(9);
+    for (const [name, body] of symbols) expect(body, name).toBe((ICONS as Record<string, string>)[name]);
   });
 });
