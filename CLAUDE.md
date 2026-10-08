@@ -78,7 +78,10 @@ there (credited in their `CREDITS.md`) in place of the gradients. Regenerate `ma
 (`magick x.png -quality 85 x.webp`), and `main-light` to `site/img/og.jpg` at quality 88, the
 link preview. With `--photos` the server puts a flag before `mock.js`, and the mock then leaves
 out the faces it says nobody has named: they are rectangles placed for a gradient, and on a
-real photo they outlined skyline.
+real photo they outlined skyline. A photo kept large for the viewer shots has a small copy in
+`photos/thumbs/`, which the server gives to a grid tile and a face crop: a tile's `<img>`
+decodes off the main thread and the virtual-time budget does not wait for it, so the 1600px
+photo was blank in about one `main-dark` in fourteen, the website's own among them.
 
 `npm run dev` runs the app with hot reload. **Do not run it to verify a change** — see
 Conventions.

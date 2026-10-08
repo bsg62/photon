@@ -379,15 +379,27 @@ fn content_type(path: &Path) -> &'static str {
     }
 }
 
+/// A photo's small copy: `thumbs/<name>` beside it, if there is one.
+fn small_copy(photo: &Path) -> Option<PathBuf> {
+    let small = photo.parent()?.join("thumbs").join(photo.file_name()?);
+    small.is_file().then_some(small)
+}
+
 /// A photo from `--photos` for item `id`, wrapping round after the last; the gradient when
 /// none were given. Real photos are for the project website, where a grid of gradients says
-/// nothing about a photo manager.
-fn media(id: u64, photos: &[PathBuf]) -> Response {
+/// nothing about a photo manager. `small` is a request that draws the photo small, a grid
+/// tile or a face crop, and is given the photo's small copy when it has one: a tile's
+/// `<img>` decodes off the main thread and `--virtual-time-budget` does not wait for that,
+/// so a 1600px photo in a tile was not painted yet in about one shot in fourteen, and the
+/// website's dark screenshot went out with a blank tile.
+fn media(id: u64, photos: &[PathBuf], small: bool) -> Response {
     let Some(len) = u64::try_from(photos.len()).ok().filter(|&n| n > 0) else {
         return Response::ok("image/svg+xml", placeholder_svg(id));
     };
     let index = usize::try_from(id.saturating_sub(1) % len).unwrap_or_default();
-    match std::fs::read(&photos[index]) {
+    let photo = photos[index].as_path();
+    let file = small.then(|| small_copy(photo)).flatten();
+    match std::fs::read(file.as_deref().unwrap_or(photo)) {
         Ok(body) => Response::ok("image/jpeg", body),
         Err(_) => Response::not_found(),
     }
@@ -426,7 +438,11 @@ pub fn respond(path: &str, dist: &Path, photos: &[PathBuf]) -> Response {
             .next()
             .and_then(|s| s.parse().ok())
             .unwrap_or(1);
-        return media(id, photos);
+        // Drawn small: a grid tile and a face crop. The viewer's preview and the full image
+        // are the photo itself.
+        let small = path.starts_with("/face/")
+            || (path.starts_with("/thumb/") && rest.split('/').nth(1) == Some("grid"));
+        return media(id, photos, small);
     }
     if path == "/mock.js" {
         // With real photos the mock is told so: the faces it says photon found and nobody
@@ -754,6 +770,27 @@ mod tests {
             "image/jpeg"
         );
         assert!(list_photos(&temp_dist(&[("a.png", "x")])).is_err());
+    }
+
+    #[test]
+    fn a_tile_and_a_face_crop_are_given_the_photos_small_copy_when_it_has_one() {
+        // 03 has a small copy and 01 has none. Sorted, 01 is item 1 and 03 is item 2.
+        let dir = temp_dist(&[
+            ("01.jpg", "large 01"),
+            ("03.jpg", "large 03"),
+            ("thumbs/03.jpg", "small 03"),
+        ]);
+        let photos = list_photos(&dir).unwrap();
+        assert_eq!(photos.len(), 2, "a small copy is not a photo of its own");
+        let body = |path: &str| String::from_utf8(respond(path, &dir, &photos).body).unwrap();
+        assert_eq!(body("/thumb/2/grid/k1"), "small 03");
+        assert_eq!(body("/face/2/k1/144"), "small 03");
+        // What the viewer shows is the photo itself.
+        assert_eq!(body("/thumb/2/preview/k1"), "large 03");
+        assert_eq!(body("/image/2"), "large 03");
+        // And a photo with no small copy is served as it is.
+        assert_eq!(body("/thumb/1/grid/k0"), "large 01");
+        assert_eq!(body("/face/1/k0/144"), "large 01");
     }
 
     #[test]
