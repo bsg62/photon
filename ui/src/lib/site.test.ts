@@ -36,22 +36,27 @@ function appTheme(selector: string): Tokens {
   return out;
 }
 
-/** A page's stylesheet, without its comments. */
+/** A page's CSS, without its comments: every `<style>` block, since a second one would
+ *  override the first. */
 function pageCss(html: string): string {
-  const style = /<style>([\s\S]*?)<\/style>/.exec(html);
-  if (!style) throw new Error('the page has no <style> block');
-  return bare(style[1]);
+  const styles = [...html.matchAll(/<style[^>]*>([\s\S]*?)<\/style>/g)];
+  if (styles.length === 0) throw new Error('the page has no <style> block');
+  return bare(styles.map((m) => m[1]).join('\n'));
 }
 
 /** A page's own tokens: its `:root` block outside any media query, and the one inside
  *  `prefers-color-scheme: dark`. */
-function pageThemes(html: string): { light: Tokens; dark: Tokens } {
+function pageThemes(html: string): { light: Tokens; dark: Tokens; strays: string[] } {
   const css = pageCss(html);
   const dark = /@media \(prefers-color-scheme: dark\)\s*\{\s*:root\s*\{([^}]*)\}\s*\}/.exec(css);
   if (!dark) throw new Error('the page has no dark :root block');
-  const light = /:root\s*\{([^}]*)\}/.exec(css.replace(dark[0], ''));
+  const withoutDark = css.replace(dark[0], '');
+  const light = /:root\s*\{([^}]*)\}/.exec(withoutDark);
   if (!light) throw new Error('the page has no light :root block');
-  return { light: props(light[1]), dark: props(dark[1]) };
+  // What is left declares no token: a second `:root`, a second dark block or a `--line` on
+  // `body` would override the two blocks compared here, and be compared with nothing.
+  const strays = Object.keys(props(withoutDark.replace(light[0], '')));
+  return { light: props(light[1]), dark: props(dark[1]), strays };
 }
 
 describe.each(PAGES)('site/%s', (_name, html) => {
@@ -73,9 +78,15 @@ describe.each(PAGES)('site/%s', (_name, html) => {
     expect(Object.keys(page.dark).sort()).toEqual(Object.keys(page.light).sort());
   });
 
+  it('declares its tokens in those two blocks and nowhere else', () => {
+    expect(page.strays).toEqual([]);
+  });
+
   it('reads no token it does not declare', () => {
-    // `var(--chrome)` left behind after the token went computes to nothing, silently.
-    const read = new Set([...pageCss(html).matchAll(/var\((--[\w-]+)\)/g)].map((m) => m[1]));
+    // `var(--chrome)` left behind after the token went computes to nothing, silently. However
+    // it is spelled: with spaces inside, or with a fallback that hides it.
+    const read = new Set([...pageCss(html).matchAll(/var\(\s*(--[\w-]+)/g)].map((m) => m[1]));
+    expect(read.size).toBeGreaterThan(0);
     for (const name of read) expect(Object.keys(page.light), name).toContain(name);
   });
 });
@@ -100,8 +111,33 @@ describe('the feature icons of site/index.html', () => {
     expect([...symbols.keys()].sort()).toEqual([...used].sort());
   });
 
+  it('draws no icon anywhere else, and none from a symbol that is not there', () => {
+    // The nine headings are the only icons the page has; a <use> on any other heading would
+    // be checked by nothing above.
+    const all = [...index.matchAll(/<use href="#i-([\w-]+)"/g)].map((m) => m[1]);
+    expect(all).toEqual(used);
+    expect(index.match(/<use\b/g)?.length).toBe(9);
+  });
+
   it("copies each symbol from the app's icon, path for path", () => {
     expect(symbols.size).toBe(9);
     for (const [name, body] of symbols) expect(body, name).toBe((ICONS as Record<string, string>)[name]);
+  });
+});
+
+describe('the key caps of site/index.html', () => {
+  it('draws a key as inline text that does not wrap', () => {
+    // As an inline-block a cap is a box of its own, and a line may break on either side of a
+    // box: "Ctrl+" ended a line and "C" began the next, "(" was parted from "⌘C", and a full
+    // stop stood alone at the start of a line - at 174 of the 761 widths from 225px to 985px,
+    // 360 and 390 among them. As unwrapped inline text a cap breaks only where the sentence
+    // would.
+    const rule = /(?:^|\})\s*kbd\s*\{([^}]*)\}/.exec(pageCss(index));
+    if (!rule) throw new Error('the page has no kbd rule');
+    const decls = Object.fromEntries(
+      [...rule[1].matchAll(/([\w-]+)\s*:\s*([^;]+);/g)].map((m) => [m[1], m[2].trim()]),
+    );
+    expect(decls.display ?? 'inline').toBe('inline');
+    expect(decls['white-space']).toBe('nowrap');
   });
 });
