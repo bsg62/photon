@@ -116,7 +116,9 @@
     changed. Look-alikes are found from those local thumbnails, and the search for exact copies
     reads only files that share a size with another. When the share is offline, photon leaves
     the library as it is,
-    checks every 30 seconds, and picks up when it is back.
+    checks every 30 seconds, and picks up when it is back. It does not look inside a drive's or
+    a share's recycle bin (<code>$RECYCLE.BIN</code>, <code>#recycle</code>,
+    <code>@Recycle</code>), so a photo you delete leaves the library.
   </p>
 
   <h2>What it does</h2>
@@ -127,23 +129,35 @@
     </div>
     <div>
       <h3>Fast with big libraries</h3>
-      <p>Hundreds of thousands of photos scroll smoothly. New and changed files are picked up as they appear on disk.</p>
+      <p>Hundreds of thousands of photos scroll smoothly, grouped by folder, day, month or year, or sorted by date, name or size, with a strip of years to jump along. New and changed files are picked up as they appear on disk.</p>
+    </div>
+    <div>
+      <h3>Reorganise in your file manager</h3>
+      <p>Rename or move photos and folders inside the folders photon watches, and they keep their albums, keywords, turns and crops, and the names on their faces.</p>
     </div>
     <div>
       <h3>Search that knows your photos</h3>
-      <p>File and folder names, camera, lens, <code>50mm</code>, <code>f/1.8</code>, keywords, captions and dates. Save a search to run it again.</p>
+      <p>File and folder names, camera, lens, <code>50mm</code>, <code>f/1.8</code>, keywords, captions and dates. Narrow it with <code>tag:zoo</code>, <code>is:starred</code> or <code>iso:&gt;=1600</code>, bound it with <code>from:2019-06</code>, turn a term round with a hyphen. The <code>?</code> in the box lists every term. Save a search to run it again.</p>
     </div>
     <div>
-      <h3>Albums, people and tags</h3>
-      <p>Make your own albums. Browse Picasa's people and the keywords Lightroom, Bridge or digiKam wrote into your photos. Switch on face detection and photon finds and groups the faces itself, on your computer only; name them on the People page and search with <code>person:anna</code>, <code>has:face</code> or <code>faces:2+</code>.</p>
+      <h3>Albums and keywords</h3>
+      <p>Make your own albums. Browse the keywords Lightroom, Bridge or digiKam wrote into your photos, and add your own to one photo or to many. Rename or remove a tag in photon; the photos are not rewritten.</p>
+    </div>
+    <div>
+      <h3>People</h3>
+      <p>Switch on face detection and photon finds and groups the faces itself, on your computer only. Name them on the People page, in the grid or in the viewer, and search with <code>person:anna</code>, <code>has:face</code> or <code>faces:2+</code>.</p>
     </div>
     <div>
       <h3>Duplicates and look-alikes</h3>
       <p>Finds byte-identical copies and the same picture after a resize or re-save, and compares them side by side.</p>
     </div>
     <div>
+      <h3>Hides, never deletes</h3>
+      <p>Put a photo or a whole folder away with <code>H</code> or a right-click. It leaves every view, search and count, and comes back from the Hidden view. The file is not touched.</p>
+    </div>
+    <div>
       <h3>Rotate, crop, export</h3>
-      <p>Non-destructive turns and crops, a slideshow, and export of copies to a folder of your choice.</p>
+      <p>Non-destructive turns and crops, a slideshow in order or shuffled, and export of copies to a folder of your choice, at full size or scaled down for a mail.</p>
     </div>
   </div>
 
@@ -151,6 +165,28 @@
     <img src="img/viewer-info-light.webp" width="1280" height="800" loading="lazy" alt="photon's viewer with the info panel open, listing the caption, camera, lens, exposure, a histogram, dates, location, people, keywords and albums">
     <figcaption>The viewer's info panel: caption, camera data and histogram, every date a photo has, where it was taken, people, keywords and albums.</figcaption>
   </figure>
+
+  <h2>Also</h2>
+  <ul>
+    <li><strong>Where a photo was taken</strong>: the info panel finds the photos taken nearby,
+      and opens the spot on OpenStreetMap in your browser, only when you click it.</li>
+    <li><strong>On this day</strong>, <strong>Starred</strong>, <strong>Recent</strong> and
+      <strong>Videos</strong> are one click away in the sidebar.</li>
+    <li><strong>Zoom</strong> to the photo's own pixels with a double-click, <code>+</code> and
+      <code>-</code>, or Ctrl and the wheel.</li>
+    <li><strong>Copy a photo</strong> to the clipboard with Ctrl+C (⌘C on a Mac), as photon
+      shows it, open it in your default app, or reveal it in the file manager.</li>
+    <li><strong>Keys for most things</strong>: <code>?</code> lists them all, <code>.</code>
+      stars, <code>H</code> hides, and Shift with the arrows selects, as dragging a rectangle
+      over the photos does.</li>
+    <li><strong>Light and dark</strong>, following your desktop or pinned; three photo sizes;
+      a sidebar that gets out of the way with Ctrl+B.</li>
+    <li><strong>Rename a folder in photon</strong> without renaming the directory on disk.</li>
+    <li><strong>Statistics</strong>: photos by year, your most used cameras and lenses, each a
+      link to its photos.</li>
+    <li><strong>Getting started</strong>: photon watches your Pictures folder on its first
+      launch, and a folder dropped onto its window is added.</li>
+  </ul>
 
   <h2>Coming from Picasa</h2>
   <p>
@@ -160,7 +196,8 @@
   <ul>
     <li><strong>Stars</strong>, both ways: a star set in photon is written back into that file,
       touching only its <code>star=</code> line, so Picasa sees it too.</li>
-    <li><strong>People</strong> you named, outlined on the photo in the viewer.</li>
+    <li><strong>People</strong> you named, outlined on the photo in the viewer. Give a group of
+      faces photon found a name Picasa uses, and the two are one person.</li>
     <li><strong>Albums</strong>, kept up to date as you change them in Picasa.</li>
     <li><strong>Hidden photos</strong> stay hidden.</li>
     <li><strong>Captions and tags</strong>, which Picasa saved into the photos themselves.</li>
@@ -192,7 +229,7 @@
     </table>
   </div>
   <p>
-    photon reads JPEG, PNG, GIF, WebP, TIFF, BMP and AVIF, and plays MP4, MOV and WebM video
+    photon reads JPEG, PNG, GIF, WebP, TIFF, BMP and AVIF, and plays MP4, M4V, MOV and WebM video
     through the system's own support. Camera RAW and HEIC are not read.
   </p>
   <p>
@@ -221,8 +258,9 @@
     <h3>What should I back up?</h3>
     <p>
       Your photos, as always. Beyond them, the library folder holds what exists only in photon:
-      its own albums, keywords you added, rotations and crops, photos you hid, saved searches,
-      tag renames and settings. Copy it while photon is closed. The thumbnails are rebuilt on their own if lost. Stars, and everything else
+      its own albums, keywords you added, rotations and crops, photos and folders you hid, the
+      names you gave to faces and to folders, saved searches, tag renames and settings. Copy it
+      while photon is closed. The thumbnails are rebuilt on their own if lost. Stars, and everything else
       photon reads from Picasa's files or from the photos, live with the photos already.
     </p>
 
@@ -231,6 +269,19 @@
       Yes, if the photos are at the same paths there: the library remembers each photo by its full
       path. Otherwise, let the new computer build its own library. Stars and Picasa's people and
       albums come back by themselves; what exists only in photon, above, does not.
+    </p>
+
+    <h3>What happens when I rename or move photos?</h3>
+    <p>
+      Inside the folders photon watches, a renamed or moved photo or folder keeps what photon
+      knows about it: albums, keywords, turns and crops, its hidden flag and the names on its
+      faces. photon recognises the file by its size, dates and dimensions, and where two photos
+      fit equally well it does not guess. A photo moved out of the watched folders and brought
+      back later is a new photo. A star lives in the folder's <code>.picasa.ini</code> under the
+      file's name, so it follows a renamed or moved folder but not a single photo renamed or
+      moved on its own. The
+      <a href="https://github.com/bsg62/photon#renaming-and-moving-photos">README</a> lists
+      what is followed and what is not.
     </p>
 
     <h3>Can I keep using Picasa alongside it?</h3>
