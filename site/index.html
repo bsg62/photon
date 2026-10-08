@@ -12,24 +12,30 @@
 <meta property="og:image" content="https://photon.webcodr.io/img/og.jpg">
 <meta property="og:url" content="https://photon.webcodr.io/">
 <style>
-  /* The app's own palette (ui/src/tokens.css), so the page and the screenshots agree. */
+  /* The app's own tokens (ui/src/tokens.css), value for value, so the page and the
+     screenshots agree; ui/src/lib/site.test.ts fails when one differs. --shadow is the
+     page's own. */
   :root {
     color-scheme: light dark;
     --surface: #ffffff;
-    --chrome: #ebebed;
-    --line: #d9d9de;
+    --field: #0000000d;
+    --line: #00000018;
     --text: #1f1f23;
     --text-dim: #5f5f67;
     --accent: #1f6fd6;
+    --on-accent: #ffffff;
+    --shadow: 0 6px 24px #00000022;
   }
   @media (prefers-color-scheme: dark) {
     :root {
       --surface: #1b1b1e;
-      --chrome: #2c2c31;
-      --line: #3a3a40;
+      --field: #ffffff12;
+      --line: #ffffff14;
       --text: #ededf0;
       --text-dim: #a6a6af;
       --accent: #62a0ea;
+      --on-accent: #111111;
+      --shadow: 0 6px 24px #00000066;
     }
   }
   * { box-sizing: border-box; }
@@ -37,50 +43,92 @@
     margin: 0;
     background: var(--surface);
     color: var(--text);
-    font: 17px/1.6 system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+    font: 16px/1.6 system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
   }
-  main { max-width: 60rem; margin: 0 auto; padding: 3rem 1rem 4rem; }
-  a { color: var(--accent); }
+  main { max-width: 56rem; margin: 0 auto; padding: 3.5rem 1.5rem 4rem; }
+  a { color: var(--accent); text-underline-offset: 2px; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+
   header { text-align: center; }
-  header img { width: 96px; height: 96px; }
-  h1 { font-size: 2.75rem; margin: .25rem 0 0; letter-spacing: -.02em; }
-  .tagline { font-size: 1.25rem; color: var(--text-dim); margin: .25rem 0 1.5rem; }
+  header img { width: 84px; height: 84px; }
+  h1 { font-size: 2.5rem; line-height: 1.1; font-weight: 700; letter-spacing: -.02em; margin: .25rem 0 0; }
+  .tagline { font-size: 1.125rem; color: var(--text-dim); margin: .375rem 0 1.25rem; }
   .button {
     display: inline-block;
-    padding: .6rem 1.25rem;
+    padding: .625rem 1.25rem;
     border-radius: 8px;
     background: var(--accent);
-    color: var(--surface);
+    color: var(--on-accent);
+    font-size: .9375rem;
     font-weight: 600;
     text-decoration: none;
   }
-  .button.plain { background: var(--chrome); color: var(--text); margin-left: .5rem; }
-  .platforms { color: var(--text-dim); font-size: .95rem; margin-top: .75rem; }
-  figure { margin: 3rem 0; }
+  .button.plain { background: var(--field); color: var(--text); margin-left: .25rem; }
+  .platforms { color: var(--text-dim); font-size: .8125rem; margin: .75rem 0 0; }
+
+  figure { margin: 2.5rem 0; }
+  /* The hairline is a shadow, not a border: a border would change the picture's box. */
   figure img {
     display: block;
     width: 100%;
     height: auto;
-    border-radius: 10px;
-    border: 1px solid var(--line);
+    border-radius: 8px;
+    box-shadow: 0 0 0 1px var(--line), var(--shadow);
   }
-  figcaption { color: var(--text-dim); font-size: .95rem; text-align: center; margin-top: .5rem; }
-  h2 { font-size: 1.5rem; margin: 3rem 0 1rem; }
-  .features { display: grid; grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr)); gap: 1.25rem 2rem; }
-  .features h3 { font-size: 1.05rem; margin: 0 0 .25rem; }
-  .features p { margin: 0; color: var(--text-dim); }
+  figcaption { color: var(--text-dim); font-size: .8125rem; text-align: center; margin-top: .75rem; }
+
+  h2 { font-size: 1.375rem; line-height: 1.25; font-weight: 650; letter-spacing: -.01em; margin: 3.5rem 0 .75rem; }
+  /* Prose is held to a readable measure; the pictures, the features and the tables use the
+     width. */
+  main > p, main > ul, .faq > p { max-width: 44rem; }
+  p { margin: .75rem 0; }
   ul { padding-left: 1.25rem; }
-  .faq h3 { font-size: 1.05rem; margin: 1.75rem 0 .25rem; }
+  li { margin: .375rem 0; }
+  li::marker { color: var(--text-dim); }
+
+  .features { display: grid; grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr)); gap: 1.5rem 2rem; margin-top: 1.25rem; }
+  .features h3 { display: flex; align-items: flex-start; gap: .5rem; font-size: .9375rem; line-height: 1.35; font-weight: 600; margin: 0 0 .25rem; }
+  .features p { margin: 0; color: var(--text-dim); font-size: .90625rem; line-height: 1.55; }
+  /* The symbols the icons are drawn from: in the document, taking no room. */
+  .sprite { position: absolute; width: 0; height: 0; }
+  /* One of the app's icons (ui/src/lib/icons.ts), drawn as Icon.svelte draws it. `color`
+     and not `stroke` carries the accent: the tag's dot is filled with currentColor. */
+  .icon {
+    width: 16px; height: 16px; flex: none; margin-top: .15em;
+    color: var(--accent);
+    fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round;
+  }
+
+  .faq h3 { font-size: 1rem; font-weight: 600; margin: 1.75rem 0 .25rem; }
   .faq p { margin: .25rem 0; }
-  li { margin: .35rem 0; }
-  .table-wrap { overflow-x: auto; }
-  table { border-collapse: collapse; width: 100%; }
+
+  .table-wrap { overflow-x: auto; margin: .75rem 0; }
+  table { border-collapse: collapse; width: 100%; font-size: .90625rem; }
   th, td { text-align: left; padding: .5rem .75rem .5rem 0; border-bottom: 1px solid var(--line); vertical-align: top; }
-  th { font-weight: 600; }
-  code { font-size: .9em; background: var(--chrome); padding: .1em .3em; border-radius: 4px; }
-  footer { border-top: 1px solid var(--line); margin-top: 4rem; padding-top: 1.5rem; color: var(--text-dim); font-size: .95rem; text-align: center; }
+  th { font-size: .75rem; font-weight: 600; color: var(--text-dim); }
+  code {
+    font: .8125em ui-monospace, 'SF Mono', 'Cascadia Mono', Menlo, Consolas, monospace;
+    background: var(--field);
+    padding: .1em .35em;
+    border-radius: 4px;
+  }
+  /* A key, drawn as the app's shortcut sheet draws one (ShortcutList.svelte). */
+  kbd {
+    display: inline-block;
+    min-width: 1.6em;
+    padding: 0 .4em;
+    border-radius: 6px;
+    background: var(--field);
+    box-shadow: inset 0 0 0 1px var(--line);
+    font: inherit;
+    font-size: .8125em;
+    line-height: 1.5;
+    text-align: center;
+  }
+  footer { border-top: 1px solid var(--line); margin-top: 4rem; padding-top: 1.25rem; color: var(--text-dim); font-size: .8125rem; text-align: center; }
   @media (max-width: 30rem) {
-    h1 { font-size: 2.25rem; }
+    main { padding: 2.5rem 1rem 3rem; }
+    h1 { font-size: 2rem; }
     .button.plain { margin: .5rem 0 0; }
   }
 </style>
