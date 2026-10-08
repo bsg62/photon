@@ -81,7 +81,9 @@ out the faces it says nobody has named: they are rectangles placed for a gradien
 real photo they outlined skyline. A photo kept large for the viewer shots has a small copy in
 `photos/thumbs/`, which the server gives to a grid tile and a face crop: a tile's `<img>`
 decodes off the main thread and the virtual-time budget does not wait for it, so the 1600px
-photo was blank in about one `main-dark` in fourteen, the website's own among them.
+photo was blank in a few `main-dark` shots in a hundred (5 of 70, then 6 of 350; none of 250
+with the `<img>` decoded synchronously), the website's own among them. A loop that checks for
+it needs hundreds of shots: at that rate forty come out clean half the time with nothing fixed.
 
 `npm run dev` runs the app with hot reload. **Do not run it to verify a change** — see
 Conventions.

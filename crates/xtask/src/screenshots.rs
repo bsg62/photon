@@ -390,8 +390,11 @@ fn small_copy(photo: &Path) -> Option<PathBuf> {
 /// nothing about a photo manager. `small` is a request that draws the photo small, a grid
 /// tile or a face crop, and is given the photo's small copy when it has one: a tile's
 /// `<img>` decodes off the main thread and `--virtual-time-budget` does not wait for that,
-/// so a 1600px photo in a tile was not painted yet in about one shot in fourteen, and the
-/// website's dark screenshot went out with a blank tile.
+/// so a 1600px photo in a tile was not painted yet in a few `main-dark` shots in a hundred
+/// (5 of 70 in one sitting, 6 of 350 in another), and the website's dark screenshot went out
+/// with a blank tile. That it is the decode: with the tile's `<img>` made `decoding="sync"`
+/// in the built bundle, none of 250 was blank beside 4 of 250 without. A small photo decodes
+/// the same way, only sooner: none was blank in 290 shots, which is not the same as never.
 fn media(id: u64, photos: &[PathBuf], small: bool) -> Response {
     let Some(len) = u64::try_from(photos.len()).ok().filter(|&n| n > 0) else {
         return Response::ok("image/svg+xml", placeholder_svg(id));
