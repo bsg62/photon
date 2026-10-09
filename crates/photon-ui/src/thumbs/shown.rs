@@ -6,7 +6,7 @@ use super::{
     textures::{DEFAULT_LIMIT, Pixels, TexKey, Textures, UPLOADS_PER_FRAME},
 };
 use eframe::egui::{self, ColorImage, TextureHandle, TextureOptions};
-use std::collections::HashSet;
+use std::{collections::HashSet, time::Duration};
 
 pub struct Thumbs {
     textures: Textures<TextureHandle>,
@@ -50,6 +50,12 @@ impl Thumbs {
             ctx.request_repaint();
         }
 
+        // A still grid draws no frame by itself: without this one a thumbnail that was not
+        // there the first time would never be asked for again.
+        if let Some(at) = self.textures.next_retry(&wanted_keys) {
+            ctx.request_repaint_after(Duration::from_secs_f64((at - now).max(0.0)));
+        }
+
         let missing: HashSet<u64> = self
             .textures
             .missing(&keys, now)
@@ -75,6 +81,13 @@ impl Thumbs {
     /// Whether the picture under `key` could not be made.
     pub fn failed(&self, key: u64) -> bool {
         self.textures.failed(TexKey::grid(key))
+    }
+
+    /// Whether the picture under `key` was not to be had when last asked for, and has not
+    /// arrived since: not built in time, a video with no poster, a photo whose drive is
+    /// not there. It is asked for again; meanwhile the tile shows its mark.
+    pub fn troubled(&self, key: u64) -> bool {
+        self.textures.troubled(TexKey::grid(key))
     }
 
     /// Bytes of texture held.

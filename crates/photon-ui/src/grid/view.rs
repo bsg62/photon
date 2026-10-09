@@ -99,7 +99,7 @@ impl GridView {
         ui.allocate_rect(rect, Sense::hover());
         let bar = Rect::from_min_max(pos2(rect.right() - BAR_WIDTH as f32, rect.top()), rect.max);
         let area = Rect::from_min_max(rect.min, pos2(bar.left(), rect.bottom()));
-        let viewport = f64::from(area.height());
+        let viewport = f64::from(area.height()).max(0.0);
 
         let rebuilt = self.lay_out(data, f64::from(area.width()), viewport);
 
@@ -129,16 +129,13 @@ impl GridView {
             && let Some(section) = data.index.sections().get(pinned.section)
         {
             let heading = header::heading(section, data.folders, data.zone);
+            // The whole header, at the place the push has taken it to, cut at the grid's
+            // edge: painted in only the part still in view, its words stayed where the
+            // part was and were gone as soon as the push began.
             let at = pos2(area.left(), area.top() + pinned.y as f32);
             let rect = Rect::from_min_size(at, vec2(area.width(), HEADER as f32));
-            let clipped = ui.new_child(UiBuilder::new().max_rect(area));
-            header::paint(
-                &clipped,
-                rect.intersect(area),
-                &heading,
-                true,
-                palette(ui.ctx()),
-            );
+            let clipped = clipped_to(ui, area);
+            header::paint(&clipped, rect, &heading, true, palette(ui.ctx()));
         }
         self.draw_scrollbar(ui, bar);
 
@@ -301,9 +298,7 @@ impl GridView {
             return true;
         };
         let palette = palette(ui.ctx());
-        // A child whose clip is the grid's own area: a row half scrolled out is cut at the
-        // edge and not drawn over what lies beside the grid.
-        let clipped = ui.new_child(UiBuilder::new().max_rect(area));
+        let clipped = clipped_to(ui, area);
         let top = snapped(self.scroll.position(), f64::from(ui.pixels_per_point()));
         let mut settled = true;
         for row in &self.rows[first..last] {
@@ -321,17 +316,21 @@ impl GridView {
                         pos2(area.left(), y),
                         vec2(area.width(), HEADER as f32),
                     );
-                    header::paint(&clipped, rect.intersect(area), &heading, false, palette);
+                    header::paint(&clipped, rect, &heading, false, palette);
                 }
                 RowKind::Tiles => {
                     let entries = data.index.rows(row.first, row.count);
                     for (column, entry) in entries.iter().enumerate() {
                         let x = area.left() + (GAP + column as f64 * tile_row(laid.tile)) as f32;
                         let rect = Rect::from_min_size(pos2(x, y), Vec2::splat(laid.tile as f32));
-                        let failed = thumbs.failed(entry.thumb_key);
+                        // Its mark, for a picture that cannot be made and for one that
+                        // is not there yet: either way the tile says so and is not a
+                        // blank the eye waits on.
+                        let marked =
+                            thumbs.failed(entry.thumb_key) || thumbs.troubled(entry.thumb_key);
                         let texture = thumbs.texture(entry.thumb_key);
-                        settled &= failed || texture.is_some();
-                        tile::paint(&clipped, rect, entry, texture, failed, palette);
+                        settled &= marked || texture.is_some();
+                        tile::paint(&clipped, rect, entry, texture, marked, palette);
                     }
                 }
             }
@@ -356,6 +355,15 @@ impl GridView {
         ui.painter_at(bar)
             .rect_filled(thumb, thumb.width() / 2.0, color(tint));
     }
+}
+
+/// A child of `ui` that draws nothing outside `area`: a row half scrolled out is cut at the
+/// grid's edge and not drawn over what lies beside the grid. The clip has to be set:
+/// `new_child` gives the child the parent's, whatever its `max_rect`.
+fn clipped_to(ui: &mut egui::Ui, area: Rect) -> egui::Ui {
+    let mut clipped = ui.new_child(UiBuilder::new().max_rect(area));
+    clipped.set_clip_rect(area.intersect(ui.clip_rect()));
+    clipped
 }
 
 /// `position` on a whole device pixel at `scale` device pixels a point. Rows drawn at a
@@ -399,7 +407,7 @@ mod tests {
                 rgba: vec![255; 8],
             })
         }
-        fn build(&self, _id: i64) -> Building<'_> {
+        fn build(&self, _want: Want) -> Building<'_> {
             Box::pin(async { Err(LoadError::Unavailable) })
         }
     }
@@ -437,6 +445,27 @@ mod tests {
         layout_gen: u64,
         size: Vec2,
         time: f64,
+        /// How long the last frame said it can wait for the next one.
+        repaint_delay: Duration,
+        /// Room left above the grid, as a bar over it would take.
+        space_above: f32,
+        /// What the last frame drew: each text with where it is and what it is clipped
+        /// to, and the top of every clip rectangle anything was drawn in.
+        texts: Vec<(String, Rect, Rect)>,
+        clip_tops: Vec<f32>,
+    }
+
+    /// Every shape in `shape`, with the clip rectangle it is drawn in.
+    fn each_shape(shape: &egui::Shape, clip: Rect, visit: &mut impl FnMut(&egui::Shape, Rect)) {
+        match shape {
+            egui::Shape::Vec(shapes) => {
+                for shape in shapes {
+                    each_shape(shape, clip, visit);
+                }
+            }
+            egui::Shape::Noop => {}
+            other => visit(other, clip),
+        }
     }
 
     /// No thumbnail can be made.
@@ -446,8 +475,21 @@ mod tests {
         fn cached(&self, _key: u64) -> Option<Pixels> {
             None
         }
-        fn build(&self, _id: i64) -> Building<'_> {
+        fn build(&self, _want: Want) -> Building<'_> {
             Box::pin(async { Err(LoadError::Failed("not a picture".to_owned())) })
+        }
+    }
+
+    /// No thumbnail is there to be had yet: a video with no poster, a photo on a drive
+    /// that is not plugged in.
+    struct NoneYet;
+
+    impl ThumbSource for NoneYet {
+        fn cached(&self, _key: u64) -> Option<Pixels> {
+            None
+        }
+        fn build(&self, _want: Want) -> Building<'_> {
+            Box::pin(async { Err(LoadError::Unavailable) })
         }
     }
 
@@ -467,6 +509,10 @@ mod tests {
             layout_gen: 1,
             size: vec2(800.0, 600.0),
             time: 0.0,
+            repaint_delay: Duration::MAX,
+            space_above: 0.0,
+            texts: Vec::new(),
+            clip_tops: Vec::new(),
         }
     }
 
@@ -487,14 +533,38 @@ mod tests {
                 size: GridTile::Medium,
                 zone: &TimeZone::UTC,
             };
-            let (view, thumbs) = (&mut self.view, &mut self.thumbs);
+            let (view, thumbs, space) = (&mut self.view, &mut self.thumbs, self.space_above);
             let mut output = None;
             let mut full = self.ctx.run_ui(input, |ui| {
                 egui::CentralPanel::default()
                     .frame(egui::Frame::NONE)
-                    .show(ui, |ui| output = Some(view.show(ui, &data, thumbs)));
+                    .show(ui, |ui| {
+                        ui.spacing_mut().item_spacing = Vec2::ZERO;
+                        ui.add_space(space);
+                        output = Some(view.show(ui, &data, thumbs));
+                    });
             });
             full.textures_delta.clear();
+            self.texts.clear();
+            self.clip_tops.clear();
+            for clipped in &full.shapes {
+                each_shape(&clipped.shape, clipped.clip_rect, &mut |shape, clip| {
+                    // The panel's own background, which is not the grid's doing.
+                    if matches!(shape, egui::Shape::Rect(rect) if rect.rect.size() == self.size) {
+                        return;
+                    }
+                    self.clip_tops.push(clip.top());
+                    if let egui::Shape::Text(text) = shape {
+                        let place = text.visual_bounding_rect();
+                        self.texts
+                            .push((text.galley.text().to_owned(), place, clip));
+                    }
+                });
+            }
+            self.repaint_delay = full
+                .viewport_output
+                .get(&egui::ViewportId::ROOT)
+                .map_or(Duration::MAX, |viewport| viewport.repaint_delay);
             output.unwrap()
         }
 
@@ -754,5 +824,78 @@ mod tests {
         }
         assert_eq!(snapped(100.3, 1.0), 100.0);
         assert_eq!(snapped(100.3, 0.0), 100.3);
+    }
+
+    // The other half of "a thumbnail that can never be made": one that is not there *yet*.
+    // Its tile is not a blank for ever - it has its mark, the view counts as settled, and
+    // a frame is asked for when the thumbnail is due to be asked for again, since a still
+    // grid would otherwise never ask.
+    #[test]
+    fn a_thumbnail_not_to_be_had_yet_shows_its_mark_and_is_asked_for_again() {
+        let mut f = fixture_from(&[4], NoneYet);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !f.frame(Vec::new()).settled {
+            assert!(Instant::now() < deadline, "the tiles never settled");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert!(f.thumbs.troubled(1));
+        assert!(!f.thumbs.failed(1));
+        // Nothing else is going on, so what the frame asks to be woken for is the retry.
+        f.frame(Vec::new());
+        let retry = Duration::from_secs_f64(crate::thumbs::textures::RETRY_SECS);
+        assert!(
+            f.repaint_delay > Duration::from_secs(1) && f.repaint_delay <= retry,
+            "the next frame is in {:?}, not at the retry",
+            f.repaint_delay
+        );
+    }
+
+    // The grid may share its panel: a bar above it, a strip beside it. A row half scrolled
+    // out is cut at the grid's own edge and not drawn over what lies there.
+    #[test]
+    fn nothing_is_drawn_outside_the_grids_own_area() {
+        let mut f = fixture(&[40]);
+        f.space_above = 50.0;
+        f.frame(Vec::new());
+        // The first row of tiles starts 68px above the top of the grid now.
+        f.view.scroll_to(100.0);
+        f.frame(Vec::new());
+        assert!(!f.clip_tops.is_empty());
+        let highest = f.clip_tops.iter().copied().fold(f32::INFINITY, f32::min);
+        assert!(
+            highest >= 50.0,
+            "something is drawn from {highest}, above the grid"
+        );
+    }
+
+    // As the next folder's header arrives it pushes the pinned one out, and the pinned one
+    // slides: its words move up with it and are cut at the grid's top. Anchored to the
+    // part of the header still in view instead, they were gone as soon as the push began.
+    #[test]
+    fn a_pinned_header_being_pushed_out_slides_with_its_words() {
+        let mut f = fixture(&[8, 40]);
+        f.frame(Vec::new());
+        // Ten pixels short of the second folder's header: the pinned one is pushed up by 22.
+        f.view.scroll_to(436.0);
+        let pushed = f.frame(Vec::new()).pinned.unwrap();
+        assert_eq!((pushed.section, pushed.y), (0, -22.0));
+        // The first folder holds eight photos; no other header on screen says so.
+        let summaries: Vec<&(String, Rect, Rect)> = f
+            .texts
+            .iter()
+            .filter(|(text, _, _)| text.starts_with("8 photos"))
+            .collect();
+        assert_eq!(summaries.len(), 1, "{:?}", f.texts);
+        let (_, place, clip) = summaries[0];
+        // The header is 32 tall and 22 of it is above the grid: its line is centred 2.5px
+        // above the top edge, so its lower part is in view.
+        assert!(
+            place.top() < 0.0 && place.bottom() > 0.0,
+            "drawn at {place:?}"
+        );
+        assert!(
+            clip.intersects(*place),
+            "cut away altogether: {place:?} in {clip:?}"
+        );
     }
 }

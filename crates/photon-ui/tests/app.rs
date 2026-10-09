@@ -1,6 +1,7 @@
 //! The whole slice without a window: a library on disk, the engine, and frames of the app.
 
-use eframe::egui::vec2;
+use eframe::egui::{ThemePreference, vec2};
+use photon_core::library::{GridTile, Library, ThemeChoice};
 use photon_ui::{app::App, dirs};
 use std::{
     io::Cursor,
@@ -82,4 +83,31 @@ fn a_library_is_opened_scanned_and_shown_with_its_pictures() {
             .is_some_and(|frame| frame.settled && frame.on_screen.len() == 3)
     });
     assert!(dirs.db_path.is_file());
+}
+
+// A theme pinned against the desktop's must not show the desktop's for a frame at every
+// launch, nor the grid lay itself out twice: what is stored is read before the first
+// frame, as the Tauri shell reads the theme in `setup` for its title bar.
+#[test]
+fn the_stored_theme_and_tile_size_are_in_force_before_the_first_frame() {
+    let dir = tempfile::tempdir().unwrap();
+    let photos = dir.path().join("Pictures");
+    std::fs::create_dir_all(&photos).unwrap();
+    let dirs = dirs::within(&dir.path().join("data"), &dir.path().join("cache"));
+    std::fs::create_dir_all(dirs.db_path.parent().unwrap()).unwrap();
+    {
+        let library = Library::open(&dirs.db_path).unwrap();
+        library.set_theme(ThemeChoice::Light).unwrap();
+        library.set_grid_tile(GridTile::Large).unwrap();
+    }
+
+    let mut app = None;
+    let ctx = eframe::egui::Context::default();
+    let cc = eframe::CreationContext::_new_kittest(ctx.clone());
+    app.replace(App::new(&cc, dirs, Some(photos)).unwrap());
+    assert_eq!(
+        ctx.options(|options| options.theme_preference),
+        ThemePreference::Light
+    );
+    assert_eq!(app.as_ref().unwrap().tile_size(), GridTile::Large);
 }

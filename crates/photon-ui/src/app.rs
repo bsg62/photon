@@ -19,7 +19,7 @@ use eframe::egui;
 use jiff::tz::TimeZone;
 use photon_core::{
     grid::GridIndex,
-    library::{Folder, GridTile, ThemeChoice},
+    library::{Folder, GridTile},
 };
 use photon_engine::{
     commands,
@@ -34,13 +34,6 @@ const THUMB_TIMEOUT: Duration = Duration::from_secs(30);
 /// with a scroll and leave the cores to the engine's renders.
 const DECODERS: usize = 2;
 
-/// What is read from the settings table at launch.
-#[derive(Clone, Copy, Debug, Default)]
-struct Settings {
-    theme: ThemeChoice,
-    tile: GridTile,
-}
-
 pub struct App {
     engine: Arc<Engine>,
     events: Receiver<Event>,
@@ -52,7 +45,6 @@ pub struct App {
     layout_gen: u64,
     folders: HashMap<i64, Folder>,
     folder_list: Latest<(), Option<Vec<Folder>>>,
-    settings: Latest<(), Settings>,
     size: GridTile,
     zone: TimeZone,
     visible: VisibleReport,
@@ -81,6 +73,14 @@ impl App {
         };
         let engine = Engine::open(config, Arc::new(events))
             .map_err(|err| format!("could not open the photon library: {err}"))?;
+        // The theme and the tile size, here and not by a task: this is before the first
+        // frame, where a read is allowed and its answer is wanted. Read after it, a theme
+        // pinned against the desktop's showed the desktop's for a frame at every launch -
+        // what `app.rs` in the Tauri shell reads the theme in `setup` to avoid - and the
+        // grid laid itself out twice. `Engine::open` has just read two settings from the
+        // same table on this thread. A read that fails leaves the defaults.
+        theme::apply::choose(&ctx, commands::theme(&engine).unwrap_or_default());
+        let size = commands::grid_tile(&engine).unwrap_or_default();
         engine.startup(pictures);
 
         let repaint = |ctx: &egui::Context| {
@@ -105,19 +105,7 @@ impl App {
             },
             repaint(&ctx),
         );
-        let mut settings = Latest::spawn(
-            "settings",
-            {
-                let engine = engine.clone();
-                move |()| Settings {
-                    theme: commands::theme(&engine).unwrap_or_default(),
-                    tile: commands::grid_tile(&engine).unwrap_or_default(),
-                }
-            },
-            repaint(&ctx),
-        );
         folder_list.ask(());
-        settings.ask(());
 
         let (_, index, _, layout_gen) = engine.published();
         Ok(Self {
@@ -129,8 +117,7 @@ impl App {
             layout_gen,
             folders: HashMap::new(),
             folder_list,
-            settings,
-            size: GridTile::default(),
+            size,
             zone: TimeZone::system(),
             visible: VisibleReport::default(),
             last: None,
@@ -146,6 +133,11 @@ impl App {
     /// What the last frame of the grid came to.
     pub fn last_frame(&self) -> Option<&GridOutput> {
         self.last.as_ref()
+    }
+
+    /// The size the grid draws its tiles at.
+    pub fn tile_size(&self) -> GridTile {
+        self.size
     }
 
     /// The folders the headers are named from.
@@ -175,16 +167,12 @@ impl App {
         }
     }
 
-    fn take_answers(&mut self, ctx: &egui::Context) {
+    fn take_answers(&mut self) {
         if let Some(Ok(Some(folders))) = self.folder_list.answer() {
             self.folders = folders
                 .into_iter()
                 .map(|folder| (folder.id, folder))
                 .collect();
-        }
-        if let Some(Ok(settings)) = self.settings.answer() {
-            self.size = settings.tile;
-            theme::apply::choose(ctx, settings.theme);
         }
     }
 
@@ -198,7 +186,7 @@ impl App {
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.take_events();
-        self.take_answers(ui.ctx());
+        self.take_answers();
 
         let data = GridData {
             layout_gen: self.layout_gen,

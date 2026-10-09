@@ -9,7 +9,7 @@
 //! Three of the folders are named in other scripts on purpose. What their headers show is
 //! what the pull request reports about text (`src/text.rs`).
 
-use eframe::egui::vec2;
+use eframe::egui::{self, vec2};
 use photon_core::library::{Library, ThemeChoice};
 use photon_ui::{app::App, dirs};
 use std::{
@@ -21,8 +21,8 @@ use std::{
 const FOLDERS: [(&str, usize); 4] = [
     ("2026-07 Coast", 7),
     ("東京 2024 桜", 5),
-    ("رحلة 2024 الصيف", 5),
-    ("🎉 Party שלום abc", 6),
+    ("رحلة-الصيف (2024)", 5),
+    ("🎉 Party שלום-עולם abc", 6),
 ];
 
 fn manifest() -> &'static Path {
@@ -53,17 +53,23 @@ fn shot(theme: ThemeChoice, name: &str) {
     let pictures = dir.path().join("Pictures");
     library(&pictures);
     let dirs = dirs::within(&dir.path().join("data"), &dir.path().join("cache"));
-    // The theme is the stored one, read the way the application reads it: a harness has
-    // no desktop to follow.
+    // The theme twice. Stored, which is where the application reads it from before its
+    // first frame; and given to the harness, which sets one of its own - dark, unless told -
+    // after the application has been made, and would undo the first.
     std::fs::create_dir_all(dirs.db_path.parent().unwrap()).unwrap();
     Library::open(&dirs.db_path)
         .unwrap()
         .set_theme(theme)
         .unwrap();
+    let harness_theme = match theme {
+        ThemeChoice::Light => egui::Theme::Light,
+        ThemeChoice::Dark | ThemeChoice::System => egui::Theme::Dark,
+    };
 
     let mut harness = egui_kittest::Harness::builder()
         .with_size(vec2(1280.0, 1000.0))
         .with_pixels_per_point(1.0)
+        .with_theme(harness_theme)
         .wgpu()
         .build_eframe(|cc| App::new(cc, dirs, Some(pictures)).unwrap());
 

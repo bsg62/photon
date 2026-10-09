@@ -58,6 +58,10 @@ pub struct Textures<T> {
     failed: HashSet<TexKey>,
     /// Thumbnails that were unavailable, and when each may be asked for again.
     put_off: HashMap<TexKey, f64>,
+    /// Thumbnails that were unavailable and have not arrived since. Longer-lived than
+    /// `put_off`, whose entry goes when the delay is over: the mark must not blink off for
+    /// as long as the next attempt takes.
+    troubled: HashSet<TexKey>,
     bytes: usize,
     limit: usize,
     frame: u64,
@@ -71,6 +75,7 @@ impl<T> Textures<T> {
             waiting_keys: HashSet::new(),
             failed: HashSet::new(),
             put_off: HashMap::new(),
+            troubled: HashSet::new(),
             bytes: 0,
             limit,
             frame: 0,
@@ -101,6 +106,7 @@ impl<T> Textures<T> {
     /// photo gone. It is asked for again once `RETRY_SECS` have passed.
     pub fn put_off(&mut self, key: TexKey, now: f64) {
         self.put_off.insert(key, now + RETRY_SECS);
+        self.troubled.insert(key);
     }
 
     /// A decoded thumbnail, to be uploaded. Dropped - `false` - when it is no longer
@@ -116,6 +122,22 @@ impl<T> Textures<T> {
         self.waiting_keys.insert(key);
         self.waiting.push_back((key, pixels));
         true
+    }
+
+    /// Whether the thumbnail was not to be had the last time it was asked for and has not
+    /// arrived since. The tile shows its mark meanwhile, where `failed` is for good.
+    pub fn troubled(&self, key: TexKey) -> bool {
+        self.troubled.contains(&key)
+    }
+
+    /// When the earliest put-off thumbnail among `wanted` may be asked for again: the
+    /// frame to ask for, since a still grid draws none by itself and would never retry.
+    pub fn next_retry(&self, wanted: &HashSet<TexKey>) -> Option<f64> {
+        self.put_off
+            .iter()
+            .filter(|(key, _)| wanted.contains(key))
+            .map(|(_, until)| *until)
+            .min_by(f64::total_cmp)
     }
 
     /// The keys of `wanted`, in its order, that have neither a texture, nor pixels waiting
@@ -155,6 +177,8 @@ impl<T> Textures<T> {
                 continue;
             }
             let bytes = pixels.rgba.len();
+            self.troubled.remove(&key);
+            self.put_off.remove(&key);
             self.held.insert(
                 key,
                 Held {
@@ -343,6 +367,39 @@ mod tests {
         assert_eq!(textures.missing(&wanted, 100.0 + RETRY_SECS), wanted);
         // And it is not a failure: nothing draws a mark for it.
         assert!(!textures.failed(wanted[0]));
+    }
+
+    // A video with no poster, a photo on a drive that is not there: until its thumbnail
+    // arrives the tile has a mark to show, and is not a blank the eye waits on.
+    #[test]
+    fn a_thumbnail_that_was_not_to_be_had_is_marked_until_it_arrives() {
+        let mut textures: Textures<u64> = Textures::new(DEFAULT_LIMIT);
+        let wanted = keys(0..2);
+        let wanted_set = set(&wanted);
+        assert!(!textures.troubled(wanted[0]));
+        textures.put_off(wanted[0], 100.0);
+        assert!(textures.troubled(wanted[0]));
+        // Still marked once the delay is over and it is being asked for again.
+        assert_eq!(textures.missing(&wanted, 100.0 + RETRY_SECS), wanted);
+        assert!(textures.troubled(wanted[0]));
+        // And no longer once the picture is there.
+        assert!(textures.offer(wanted[0], pixels(), &wanted_set));
+        textures.upload(usize::MAX, &wanted_set, |key, _| key.key);
+        assert!(!textures.troubled(wanted[0]));
+        assert!(!textures.troubled(wanted[1]));
+    }
+
+    // A still grid draws no frame by itself, so the retry has to be asked for.
+    #[test]
+    fn the_next_retry_is_the_earliest_among_what_is_wanted() {
+        let mut textures: Textures<u64> = Textures::new(DEFAULT_LIMIT);
+        let wanted = set(&keys(0..2));
+        assert_eq!(textures.next_retry(&wanted), None);
+        textures.put_off(TexKey::grid(1), 20.0);
+        textures.put_off(TexKey::grid(0), 10.0);
+        // Put off, but scrolled away from: nothing waits on it.
+        textures.put_off(TexKey::grid(9), 1.0);
+        assert_eq!(textures.next_retry(&wanted), Some(10.0 + RETRY_SECS));
     }
 
     #[test]

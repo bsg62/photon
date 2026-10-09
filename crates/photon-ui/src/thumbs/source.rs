@@ -1,7 +1,7 @@
 //! The engine as the place thumbnails come from.
 
 use super::{
-    loader::{Building, LoadError, ThumbSource},
+    loader::{Building, LoadError, ThumbSource, Want},
     textures::Pixels,
 };
 use photon_core::thumbs::{ThumbService, ThumbSize};
@@ -16,13 +16,21 @@ impl ThumbSource for EngineThumbs {
         Some(pixels(image.width(), image.height(), image.into_raw()))
     }
 
-    fn build(&self, id: i64) -> Building<'_> {
+    fn build(&self, want: Want) -> Building<'_> {
         Box::pin(async move {
             let thumbs = &self.0.thumbs;
             let path = thumbs
-                .request_async(id, ThumbSize::Grid)
+                .request_async(want.id, ThumbSize::Grid)
                 .await
                 .map_err(load_error)?;
+            // `request_async` answers with the photo's thumbnail as it is now. If the photo
+            // has been edited since the grid named it, that is another picture than the
+            // one `want.key` names, and keys recur ("Original", a fourth quarter turn):
+            // stored under this key it would be drawn for the other picture when the photo
+            // comes back to it. The grid asks under the new key once it has the new index.
+            if path != thumbs.path_for(want.key, ThumbSize::Grid) {
+                return Err(LoadError::Unavailable);
+            }
             let image = ThumbService::decode_file(&path).map_err(load_error)?;
             Ok(pixels(image.width(), image.height(), image.into_raw()))
         })

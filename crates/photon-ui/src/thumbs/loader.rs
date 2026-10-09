@@ -53,8 +53,10 @@ pub trait ThumbSource: Send + Sync + 'static {
     /// The thumbnail cached under `key`, decoded; `None` when none is cached. Never waits
     /// for one to be built.
     fn cached(&self, key: u64) -> Option<Pixels>;
-    /// The photo's thumbnail, once it has been built. Dropping the future gives up the wait.
-    fn build(&self, id: i64) -> Building<'_>;
+    /// The thumbnail `want` names, once it has been built: the picture cached under
+    /// `want.key`, and an error if the photo has another by then. Dropping the future gives
+    /// up the wait.
+    fn build(&self, want: Want) -> Building<'_>;
 }
 
 struct State {
@@ -66,6 +68,10 @@ struct State {
     keys: HashSet<u64>,
     /// Keys being decoded or waited for.
     busy: HashSet<u64>,
+    /// Keys whose result is in the channel and has not been taken by `poll`. The grid
+    /// still lists them as wanted on every frame until then, and a decoder that took one
+    /// again would read the same file a second time.
+    handed_back: HashSet<u64>,
     closed: bool,
 }
 
@@ -77,7 +83,11 @@ struct Shared {
 
 impl Shared {
     fn finish(&self, loaded: &Sender<Loaded>, key: u64, result: Result<Pixels, LoadError>) {
-        self.state.lock().busy.remove(&key);
+        {
+            let mut state = self.state.lock();
+            state.busy.remove(&key);
+            state.handed_back.insert(key);
+        }
         if loaded.send(Loaded { key, result }).is_ok() {
             (self.notify)();
         }
@@ -113,6 +123,7 @@ impl Loader {
                 wanted: Vec::new(),
                 keys: HashSet::new(),
                 busy: HashSet::new(),
+                handed_back: HashSet::new(),
                 closed: false,
             }),
             work: Condvar::new(),
@@ -162,9 +173,17 @@ impl Loader {
         self.waiter.unpark();
     }
 
-    /// Every result ready now.
+    /// Every result ready now. From here on its key may be read again, should the grid
+    /// still want it after what it does with the result.
     pub fn poll(&self) -> Vec<Loaded> {
-        self.loaded.try_iter().collect()
+        let loaded: Vec<Loaded> = self.loaded.try_iter().collect();
+        if !loaded.is_empty() {
+            let mut state = self.shared.state.lock();
+            for result in &loaded {
+                state.handed_back.remove(&result.key);
+            }
+        }
+        loaded
     }
 }
 
@@ -192,10 +211,9 @@ fn decode<S: ThumbSource>(
                 if state.closed {
                     return;
                 }
-                let free = state
-                    .wanted
-                    .iter()
-                    .position(|want| !state.busy.contains(&want.key));
+                let free = state.wanted.iter().position(|want| {
+                    !state.busy.contains(&want.key) && !state.handed_back.contains(&want.key)
+                });
                 if let Some(free) = free {
                     let want = state.wanted.remove(free);
                     state.busy.insert(want.key);
@@ -232,7 +250,7 @@ fn wait_for_builds<S: ThumbSource>(
             return;
         }
         for want in misses.try_iter() {
-            waiting.push((want, source.build(want.id), Instant::now() + timeout));
+            waiting.push((want, source.build(want), Instant::now() + timeout));
         }
         let now = Instant::now();
         let mut next = 0;
@@ -288,6 +306,8 @@ mod tests {
     #[derive(Default)]
     struct Fake {
         cached: Mutex<HashSet<u64>>,
+        /// How often the cache was read.
+        reads: AtomicUsize,
         built: Mutex<HashSet<i64>>,
         wakers: Mutex<Vec<Waker>>,
         given_up: AtomicUsize,
@@ -330,12 +350,13 @@ mod tests {
 
     impl ThumbSource for Fake {
         fn cached(&self, key: u64) -> Option<Pixels> {
+            self.reads.fetch_add(1, Ordering::SeqCst);
             self.cached.lock().contains(&key).then(|| pixels(key))
         }
-        fn build(&self, id: i64) -> Building<'_> {
+        fn build(&self, want: Want) -> Building<'_> {
             Box::pin(FakeBuild {
                 fake: self,
-                id,
+                id: want.id,
                 done: false,
             })
         }
@@ -463,6 +484,32 @@ mod tests {
         loader.want(vec![want(1)]);
         results(&loader, 1);
         eventually("told once", || told.load(Ordering::SeqCst) == 1);
+    }
+
+    // The grid lists what it wants every frame, and a thumbnail is wanted until the frame
+    // that takes it from `poll`. Read again on each of those frames, a screenful on a cold
+    // disk was read one and a half times over (measured in review: 96 reads for 60).
+    #[test]
+    fn a_thumbnail_handed_back_and_not_yet_taken_is_not_read_again() {
+        let fake = Arc::new(Fake::default());
+        fake.cached.lock().insert(1);
+        let told = Arc::new(AtomicUsize::new(0));
+        let counter = told.clone();
+        let loader = Loader::spawn(fake.clone(), 1, LONG, move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+        });
+        loader.want(vec![want(1)]);
+        eventually("handed back", || told.load(Ordering::SeqCst) == 1);
+        for _ in 0..20 {
+            loader.want(vec![want(1)]);
+            thread::sleep(Duration::from_millis(2));
+        }
+        assert_eq!(fake.reads.load(Ordering::SeqCst), 1);
+        assert_eq!(loader.poll().len(), 1);
+        // Taken, and wanted again - its texture was let go: now it is read again.
+        loader.want(vec![want(1)]);
+        results(&loader, 1);
+        assert_eq!(fake.reads.load(Ordering::SeqCst), 2);
     }
 
     #[test]

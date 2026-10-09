@@ -153,7 +153,9 @@ pub fn visible_range(rows: &[Row], top: f64, viewport: f64, overscan: f64) -> (u
     }
     let start = row_index_at(rows, top - overscan);
     let end = row_index_at(rows, top + viewport + overscan) + 1;
-    (start, end.min(rows.len()))
+    // Never before the start: a viewport of less than no height would otherwise end the
+    // range above where it begins, and a slice of the rows by it panics.
+    (start, end.max(start).min(rows.len()))
 }
 
 /// How far past the viewport thumbnails are wanted, as `(above, below)`.
@@ -188,7 +190,7 @@ pub fn wanted_range(rows: &[Row], top: f64, viewport: f64, motion: Motion) -> (u
     let (above, below) = wanted_overscan(motion, viewport);
     let start = row_index_at(rows, top - above);
     let end = row_index_at(rows, top + viewport + below) + 1;
-    (start, end.min(rows.len()))
+    (start, end.max(start).min(rows.len()))
 }
 
 /// Whether the tiles in the wanted range wait before asking for their thumbnails.
@@ -432,6 +434,18 @@ mod tests {
         assert_eq!(visible_range(&[], 0.0, 100.0, 0.0), (0, 0));
         assert_eq!(item_span(&rows[0..3]), Some((0, 4)));
         assert_eq!(item_span(&rows[4..5]), None);
+    }
+
+    // A panel squeezed by its neighbours can hand the grid less than no height. The range
+    // is then empty, and never one that ends before it starts: `rows[start..end]` panics.
+    #[test]
+    fn a_viewport_of_less_than_no_height_shows_no_rows() {
+        let rows = build_rows(&[flat(0, 40)], 2, MEDIUM);
+        // The top is in the third row; 250px less than nothing below it is in the first.
+        let (start, end) = visible_range(&rows, 400.0, -250.0, 0.0);
+        assert!(start <= end, "{start}..{end}");
+        let (start, end) = wanted_range(&rows, 400.0, -2000.0, Motion::Still);
+        assert!(start <= end, "{start}..{end}");
     }
 
     #[test]
