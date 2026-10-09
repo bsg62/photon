@@ -7,6 +7,10 @@
 
 pub mod args;
 pub mod dirs;
+pub mod grid {
+    pub mod layout;
+    pub mod motion;
+}
 pub mod tasks;
 pub mod theme {
     pub mod tokens;
