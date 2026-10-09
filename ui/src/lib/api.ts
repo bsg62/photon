@@ -1,5 +1,5 @@
 /** The only module that talks to the Rust side. Types mirror the serde structs in
- *  crates/photon-app/src/commands.rs and events.rs (camelCase). */
+ *  crates/photon-engine/src/commands.rs and events.rs (camelCase). */
 
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';

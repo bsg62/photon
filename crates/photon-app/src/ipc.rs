@@ -641,7 +641,7 @@ pub async fn reveal_library(engine: Eng<'_>) -> Result<(), AppError> {
 
 #[tauri::command(async)]
 pub fn media_base(server: State<'_, crate::media_server::MediaServer>) -> Result<String, AppError> {
-    Ok(commands::media_base(&server))
+    Ok(server.base_url())
 }
 
 #[tauri::command(async)]
@@ -810,7 +810,7 @@ mod tests {
                 std::fs::create_dir_all(&dest).unwrap();
                 json!({ "ids": [id], "dest": dest, "applyEdits": true })
             },
-            || crate::protocol::RENDERING.lock(),
+            || crate::engine::RENDERING.lock(),
             |report| assert_eq!(report["written"], 1, "{report}"),
         );
     }

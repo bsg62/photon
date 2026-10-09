@@ -90,12 +90,15 @@ Conventions.
 
 ## Architecture
 
-Three crates plus the UI:
+Four crates plus the UI:
 
 - **`photon-core`** — headless. SQLite library, scanning, thumbnails, metadata. Knows nothing
   about Tauri.
-- **`photon-app`** — the Tauri shell. Owns `Engine`, the IPC surface and the custom protocol
-  that serves thumbnails.
+- **`photon-engine`** — `Engine`, the commands over it (`commands.rs`) and the folder
+  watcher. No UI runtime is a dependency, and `the_engine_depends_on_no_ui_runtime` reads
+  its manifest to keep it so: it is what a second shell stands on.
+- **`photon-app`** — the Tauri shell. Owns the IPC surface and the custom protocol that
+  serves thumbnails, and re-exports the engine's modules under the names they had there.
 - **`xtask`** — repository chores, and `screenshots`. Binary only, no `lib.rs`.
 - **`ui/`** — Svelte 5 runes + TypeScript, an npm workspace.
 
@@ -386,7 +389,8 @@ screenshot harness hides; and in a view about one screen tall with two years in 
 
 Adding a command means touching all three, in this order:
 
-1. `commands.rs` — a plain `pub fn` taking `&Engine`, returning `CmdResult<T>`. The logic.
+1. `commands.rs` (in `photon-engine`) — a plain `pub fn` taking `&Engine`, returning
+   `CmdResult<T>`. The logic.
 2. `ipc.rs` — a `#[tauri::command(async)]` wrapper that only delegates.
 3. `app.rs` — an entry in `tauri::generate_handler![...]`. Forgetting this compiles fine and
    fails at runtime.
@@ -397,7 +401,8 @@ only at runtime, inside the webview.
 
 ### TypeScript mirrors are hand-written and unchecked
 
-`ui/src/lib/api.ts` mirrors the serde structs in `commands.rs` and `events.rs` (camelCase).
+`ui/src/lib/api.ts` mirrors the serde structs in `photon-engine`'s `commands.rs` and
+`events.rs` (camelCase).
 **Nothing validates the mirror.** A Rust field added without its TS counterpart is silently
 `undefined` at runtime. Change both in the same commit.
 
@@ -717,7 +722,8 @@ thumbnail already cached under the URL's key from the key alone, with no databas
 the photo's *current* thumbnail and keys recur ("Original", a fourth turn), it is `immutable`
 only when the file served is the URL key's own and `no-store` otherwise; and
 every write of an edit takes `Engine.edit_write`, because a turn reads the edit it builds on.
-Full-size renders run one at a time (`protocol.rs`, `RENDERING`, which export shares - held
+Full-size renders run one at a time (`RENDERING`, in `photon-engine`'s `engine.rs`: `/image`
+in `protocol.rs` takes it and export shares it - held
 across the render and never across the write), outside the thumbnail pool
 that otherwise bounds decode memory, and `neighbours` leaves edited photos out of the preload.
 

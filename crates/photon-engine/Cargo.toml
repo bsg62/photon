@@ -1,0 +1,43 @@
+[package]
+name = "photon-engine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[features]
+# `testutil` and the event recorder, for another crate's tests: photon-app's protocol and
+# media-server tests build their fixtures with them. Inside this crate `cfg(test)` is enough.
+test-support = ["dep:tempfile", "dep:image"]
+
+[dependencies]
+photon-core = { path = "../photon-core" }
+parking_lot = "0.12.5"
+serde = { version = "1.0.229", features = ["derive"] }
+tracing = "0.1.44"
+tempfile = { version = "3.27.0", optional = true }
+image = { version = "0.25.10", default-features = false, features = ["jpeg"], optional = true }
+
+# Settings' memory figure (`memory.rs`): the page size on Linux, the physical footprint on
+# macOS; the process table and private working set on Windows.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_System_Diagnostics_ToolHelp",
+  "Win32_System_ProcessStatus",
+  "Win32_System_Threading",
+] }
+
+[dev-dependencies]
+image = { version = "0.25.10", default-features = false, features = ["jpeg"] }
+# Only to break a library on purpose: a rebuild that fails is the one thing a rollback test
+# cannot get from the engine's own API. The same version and features photon-core builds.
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+tempfile = "3.27.0"
+serde_json = "1"
