@@ -260,7 +260,12 @@ it. If text in other scripts cannot be drawn, that is a finding of the same weig
    embedded profile. Natively an Adobe RGB or Display P3 photo would look flat. Sub-project 4
    converts to sRGB on decode in pure Rust; which crate is that spec's decision.
 2. **Text.** File names, captions and people's names are in any script, and egui's text
-   layout and input method support are weaker than a browser's. Tested in sub-project 1.
+   layout and input method support are weaker than a browser's. Tested while sub-project
+   1's plan was written, and confirmed: egui shapes text but runs no bidirectional
+   algorithm, so a name that mixes right-to-left and left-to-right text was drawn wrong.
+   Lines photon paints are fixed by cutting them into runs first (that sub-project's
+   `text.rs`); a text field in such text is not, and is the search box's and the rename
+   field's problem when they come. Emoji are in one colour.
 3. **A GPU becomes a requirement.** A virtual machine, a remote desktop or an old driver
    works today and may not after. wgpu's GL backend and the software adapters are the
    fallbacks; a plain error dialog when none starts.

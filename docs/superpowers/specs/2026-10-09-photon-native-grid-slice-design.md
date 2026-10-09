@@ -4,6 +4,14 @@ Date: 2026-10-09. Sub-project 1 of `2026-10-09-photon-native-ui-design.md`. It i
 `native-ui`, after sub-project 0 (`2026-10-09-photon-engine-crate-design.md`) is on main and
 merged in.
 
+**Changed since approval**, each found while the plan was written against a scratch build
+(egui 0.36.2, the real engine): the fonts come from `fastframe-fonts` 0.4.1, which does
+offer the platform's own face; text needs a module of its own, because egui draws a line
+that mixes writing directions wrong ("Text in other scripts", below); a thumbnail that was
+not to be had is asked for again after five seconds, not on its next frame in view; dates
+are written in English; the workspace's Rust version becomes 1.98; and the sub-project has
+two plans, the grid first and the gate second.
+
 ## What this is for
 
 Two things, and the second is why it comes first.
@@ -31,29 +39,36 @@ when the plan is written. The plan reads that version's source for every API it 
 nothing here is written from memory of an older egui.
 
 ```
-src/main.rs        arguments, logging, run
+src/main.rs        logging, the window, run
+src/args.rs        the command line
 src/app.rs         the eframe App: owns the Engine and the state, orders a frame
 src/events.rs      the Events implementation
 src/tasks.rs       latest-wins mailboxes and generations
 src/dirs.rs        where the library and the cache are
-src/theme/         tokens.rs (the colours and scales), apply.rs (onto egui)
+src/text.rs        one line in any mix of scripts
+src/theme/         tokens.rs (the colours and scales), apply.rs (onto egui), fonts.rs
 src/icons.rs       the Lucide paths the slice draws
 src/grid/
   layout.rs        rows, sections, tiles: the port of layout.ts
   motion.rs        still, scrolling or jumping: the port of scroll-speed
   scroll.rs        the grid's position and its scrollbar
-  view.rs          draws the grid and turns input into calls on the three above
+  visible.rs       telling the engine what is on screen
+  labels.rs        what a header and a badge say
+  view.rs          draws the grid and turns input into calls on the above
   header.rs        a section's header, in its row and pinned
   tile.rs          one tile
 src/thumbs/
   loader.rs        reading, waiting for and decoding thumbnails, off the UI thread
-  textures.rs      the bounded cache of uploaded textures
-src/probe.rs       the scroll programme the gate measures
+  textures.rs      which textures are held: bookkeeping, no GPU in it
+  shown.rs         the loader's results uploaded as textures
+  source.rs        the engine as the place thumbnails come from
+src/probe.rs       the scroll programme the gate measures (the second plan)
 ```
 
-**State modules name no egui type.** `tasks.rs`, `dirs.rs`, `theme/tokens.rs`,
-`grid/layout.rs`, `grid/motion.rs`, `grid/scroll.rs` and the bookkeeping half of
-`thumbs/textures.rs` are plain Rust. A test reads their source and fails on `egui`.
+**State modules name no egui type.** `args.rs`, `tasks.rs`, `dirs.rs`, `theme/tokens.rs`,
+`grid/layout.rs`, `grid/motion.rs`, `grid/scroll.rs`, `grid/visible.rs`, `grid/labels.rs`,
+`thumbs/loader.rs` and `thumbs/textures.rs` are plain Rust. A test reads their source and
+fails on `egui`.
 
 ### The window and the engine
 
@@ -90,9 +105,19 @@ What the grid reads per frame is not a task: `Engine::published()` and
   test reads it and fails when a value differs. `apply.rs` maps the tokens onto egui's
   visuals and spacing. The stored `theme` setting chooses; System follows the desktop.
 - **Fonts.** The Svelte UI uses the platform's interface font (`system-ui`). The slice does
-  the same, with installed fonts for scripts that font lacks, through `fastframe-fonts` if
-  it does that job when tried and by loading the font files directly if not. egui's bundled
+  the same, with installed fonts for scripts that font lacks, through `fastframe-fonts`
+  0.4.1 (`Primary::System`, without its `inter` feature, so nothing is bundled). egui's own
   faces are the last fallback, not the look.
+- **Text in other scripts.** egui shapes text - Arabic letters join - but runs no
+  bidirectional algorithm: it sets stretches of one font face down left to right, each in
+  the direction of its first strong letter. Read out of its glyph positions on 2026-10-09,
+  a year inside a Hebrew name came out reversed, a two-word Arabic name with its first word
+  on the left, and a Latin word after Hebrew backwards. `text.rs` cuts a line into the runs
+  the algorithm finds (`unicode-bidi`), and a right-to-left run into its words, and lays
+  each piece out by itself in the place it is read at. That covers every line photon
+  paints. It does not cover a text field, whose caret and typing in mixed-direction text
+  are a finding for the sub-project that brings the search box. Emoji are drawn in one
+  colour, by egui's own emoji font.
 - **Icons.** The four the slice draws (star, play, copy, triangle-alert), from the same
   Lucide path data as `lib/icons.ts`, rasterised through egui's SVG loader and tinted with a
   token.
@@ -147,7 +172,9 @@ is what the Svelte grid does.
 
 - **A header** shows what the `heading` snippet shows: a folder's label, its summary
   (`folderSummary`) and its path, or a period's label (`periodLabel`, from the section's own
-  numbers) and its count. The same function draws it in its row and pinned over the top of
+  numbers) and its count. Its dates are in English: the browser wrote them in the system's
+  locale, photon takes no ICU, and what to do about locales is decided with the sidebar,
+  which reads the same instants. The same function draws it in its row and pinned over the top of
   the grid, pushed out by the next header as `pinnedHeader` says.
 - **A tile** is a square. The picture covers it, centre-cropped by the texture's own
   proportions. Over it: the star, the video badge with its running time, the copies mark,
@@ -184,8 +211,10 @@ The path of a picture: wanted range, loader, upload, texture cache, tile.
   first, and never evicts a texture in the wanted range. It starts at 256 MiB, 32 uploads a
   frame and two decode threads; all three are tuned against the gate and the values kept
   are recorded with their measurements.
-- **A failure** (`ThumbFailed`) is remembered per key and drawn as the icon. A timeout is
-  asked again the next time the tile is wanted.
+- **A failure** (`ThumbFailed`) is remembered per key and drawn as the icon. A thumbnail
+  that was not to be had - not built in time, its photo gone - is left alone for five
+  seconds and then asked for again, while it is still wanted: asked for on its next frame,
+  a photo that answers at once would be asked for sixty times a second.
 
 Each tile's texture is its own, so egui issues one draw call per tile. If the gate shows
 that to be the cost, the first answer is to pack thumbnails into a few large textures and
@@ -236,6 +265,9 @@ Each is shown to fail with its rule broken, as Conventions requires.
   the state modules name no egui type.
 
 ## The gate
+
+The second plan of this sub-project, written once the grid has landed: its native half
+hooks the frame loop built here, and its Svelte half is a patch against `Grid.svelte`.
 
 ### The fixture
 
