@@ -7,6 +7,7 @@
 
 pub mod args;
 pub mod dirs;
+pub mod tasks;
 pub mod theme {
     pub mod tokens;
 }
