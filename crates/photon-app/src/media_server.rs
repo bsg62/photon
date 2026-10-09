@@ -533,12 +533,17 @@ mod tests {
                 // reset counts as closed: the server may answer and hang up before reading
                 // the rest of what was sent, and macOS then resets the connection rather than
                 // ending it, so the read fails with ECONNRESET where Linux reads to the end
-                // (it did, intermittently, on macOS CI). What the test is about - the server
-                // still serving afterwards - is the assertion after the loop. A server that
-                // never answered still fails here, on the read timeout.
+                // (it did, intermittently, on macOS CI). Windows says the same thing as
+                // "connection aborted" (WSAECONNABORTED, os error 10053), and did on its CI
+                // runner on 2026-10-09. What the test is about - the server still serving
+                // afterwards - is the assertion after the loop. A server that never answered
+                // still fails here, on the read timeout.
                 let mut sink = Vec::new();
                 if let Err(err) = s.read_to_end(&mut sink)
-                    && err.kind() != std::io::ErrorKind::ConnectionReset
+                    && !matches!(
+                        err.kind(),
+                        std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted
+                    )
                 {
                     panic!("no answer to {junk:.60?}: {err}");
                 }
