@@ -51,6 +51,37 @@ mod tests {
         ("thumbs/textures.rs", include_str!("thumbs/textures.rs")),
     ];
 
+    /// The version of the `windows` crate that `package` is locked to, or `None` when it
+    /// does not depend on it.
+    fn locked_windows_crate(lock: &str, package: &str) -> Option<String> {
+        let entry = lock
+            .split("[[package]]")
+            .find(|entry| entry.contains(&format!("name = \"{package}\"\n")))?;
+        let dependency = entry
+            .lines()
+            .map(str::trim)
+            .find_map(|line| line.strip_prefix("\"windows "))?;
+        Some(dependency.trim_end_matches(['"', ',']).to_owned())
+    }
+
+    // gpu-allocator takes any `windows` crate from 0.53 to 0.62, and wgpu-hal exactly 0.62.
+    // Tauri, in the same lockfile until the switch-over, brings 0.61 - and cargo, adding
+    // photon-ui to a lock that already held 0.61, gave gpu-allocator that one. Its Direct3D
+    // types are then not wgpu-hal's, and wgpu-hal does not compile: on Windows only, four
+    // minutes into CI, as ten errors about `ID3D12Heap` that name neither crate's version.
+    // A `cargo update` can do it again; this says so on every platform, by name. The cure
+    // is to change gpu-allocator's `"windows 0.61.x"` line in Cargo.lock to wgpu-hal's.
+    #[test]
+    fn the_gpu_crates_are_locked_to_one_windows_crate() {
+        let lock = include_str!("../../../Cargo.lock");
+        let wgpu = locked_windows_crate(lock, "wgpu-hal");
+        assert!(
+            wgpu.is_some(),
+            "wgpu-hal no longer depends on the windows crate"
+        );
+        assert_eq!(locked_windows_crate(lock, "gpu-allocator"), wgpu);
+    }
+
     // A state module that reaches for egui can no longer be tested without a context, and
     // the next one copies it. Comments may name egui; code may not.
     #[test]
