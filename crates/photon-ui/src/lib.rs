@@ -8,6 +8,7 @@
 pub mod args;
 pub mod dirs;
 pub mod grid {
+    pub mod labels;
     pub mod layout;
     pub mod motion;
     pub mod scroll;
