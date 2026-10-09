@@ -18,3 +18,6 @@ pub mod tasks;
 pub mod theme {
     pub mod tokens;
 }
+pub mod thumbs {
+    pub mod textures;
+}
