@@ -8,6 +8,12 @@ description.workspace = true
 repository.workspace = true
 authors.workspace = true
 
+# `photon` is photon-app's binary until the switch-over; this one is named apart so both
+# can be built side by side.
+[[bin]]
+name = "photon-native"
+path = "src/main.rs"
+
 [dependencies]
 photon-core = { path = "../photon-core" }
 photon-engine = { path = "../photon-engine" }
