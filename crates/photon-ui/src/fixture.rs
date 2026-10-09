@@ -1,8 +1,8 @@
-//! A library made to be measured: any number of photos, every one with its grid thumbnail
+//! A library made to be measured: any number of photos, every one with its thumbnails
 //! already in the cache, and nothing for the engine to do when it opens it.
 //!
 //! The gate runs two applications over the same library and compares them, so the library
-//! has to be the same every time and has to keep the engine quiet. Three things do that:
+//! has to be the same every time and has to keep the engine quiet. Four things do that:
 //!
 //! - **The watched folder does not exist.** It is made, watched, and removed again. To the
 //!   engine that is an unplugged drive: its scan finds no root and stops, nothing is marked
@@ -10,6 +10,10 @@
 //! - **Every row is `Ready`.** Left `Pending`, the engine would queue every photo for a
 //!   render at launch and fail each one, the files not being there, all through the
 //!   measurement.
+//! - **Both sizes of every thumbnail are cached**, the preview as well as the one the grid
+//!   draws. The engine looks again at whatever comes to rest in view, and leaves it alone
+//!   only when both are there: the gate's first run, with the grid's size alone, logged
+//!   four hundred failed renders in each application.
 //! - **The cache is recorded as clean**, so the launch does not walk every file in it.
 //!
 //! The thumbnails are a few real pictures, each hard-linked under many keys: 300,000
@@ -36,7 +40,7 @@ pub const PER_FOLDER: usize = 300;
 
 /// Which builder this is. Moved whenever a fixture it builds would differ from the last
 /// one's, so that the gate does not measure over a library made to other rules.
-pub const BUILDER: u32 = 1;
+pub const BUILDER: u32 = 2;
 /// The file a finished fixture has, in its directory.
 pub const MARKER: &str = "fixture.json";
 
@@ -136,28 +140,31 @@ pub fn build(out: &Path, photos: usize, sources: &[PathBuf]) -> Result<Fixture, 
 
     // A few real thumbnails, made the way the engine makes them, under keys of their own.
     let made = ThumbCache::new(out.join("made-thumbnails"));
-    let mut pictures = Vec::with_capacity(sources.len());
     for (n, source) in sources.iter().enumerate() {
         made.generate(source, 1, n as u64)
             .map_err(|err| format!("{}: {err}", source.display()))?;
-        pictures.push(made.path_for(n as u64, ThumbSize::Grid));
     }
 
-    // Each photo's grid thumbnail is one of them, under the photo's own key.
+    // Each photo's thumbnail is one of them, under the photo's own key, in both sizes. The
+    // grid draws only the small one, but the engine leaves a photo alone only when both
+    // are cached (`ThumbCache::is_complete`): with one, it tried to make the other for
+    // every photo that came to rest in view, and failed, the file not being there.
     let cache = ThumbCache::new(&dirs.cache_dir);
     let entries = lib.grid_entries()?;
     let mut shards = HashSet::new();
     for (n, entry) in entries.iter().enumerate() {
-        let path = cache.path_for(entry.thumb_key, ThumbSize::Grid);
-        let shard = path.parent().expect("a thumbnail is in a directory");
-        if shards.insert(shard.to_path_buf()) {
-            std::fs::create_dir_all(shard)?;
-        }
-        let picture = &pictures[n % pictures.len()];
-        // A link where the filesystem has room for one more to this file; a copy where it
-        // has not, or `out` spans two filesystems.
-        if std::fs::hard_link(picture, &path).is_err() {
-            std::fs::copy(picture, &path)?;
+        for size in ThumbSize::ALL {
+            let path = cache.path_for(entry.thumb_key, size);
+            let shard = path.parent().expect("a thumbnail is in a directory");
+            if shards.insert(shard.to_path_buf()) {
+                std::fs::create_dir_all(shard)?;
+            }
+            let picture = made.path_for((n % sources.len()) as u64, size);
+            // A link where the filesystem has room for one more to this file; a copy
+            // where it has not, or `out` spans two filesystems.
+            if std::fs::hard_link(&picture, &path).is_err() {
+                std::fs::copy(&picture, &path)?;
+            }
         }
         lib.set_thumb_state(entry.id, ThumbState::Ready, None)?;
     }
