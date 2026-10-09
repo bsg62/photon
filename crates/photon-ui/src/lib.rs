@@ -19,5 +19,6 @@ pub mod theme {
     pub mod tokens;
 }
 pub mod thumbs {
+    pub mod loader;
     pub mod textures;
 }
