@@ -5,8 +5,10 @@
 //!   cargo run -p xtask -- metadata
 //!   cargo run -p xtask -- screenshots [--out <dir>] [--only <shot>] [--photos <dir>] [--no-build]
 //!   cargo run -p xtask -- scroll-probe [--no-build]
+//!   cargo run -p xtask -- native-shot
 
 mod checks;
+mod native_shot;
 mod screenshots;
 mod scroll_probe;
 
@@ -25,9 +27,10 @@ fn main() -> ExitCode {
         Some("metadata") => run_metadata(),
         Some("screenshots") => screenshots::run(&repo_root(), &args),
         Some("scroll-probe") => scroll_probe::run(&repo_root(), &args),
+        Some("native-shot") => native_shot::run(&repo_root()),
         other => {
             eprintln!(
-                "unknown command {other:?}; expected `versions`, `metadata`, `screenshots` or `scroll-probe`"
+                "unknown command {other:?}; expected `versions`, `metadata`, `screenshots`, `scroll-probe` or `native-shot`"
             );
             ExitCode::FAILURE
         }
