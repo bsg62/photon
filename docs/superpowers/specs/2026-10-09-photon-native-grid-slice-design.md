@@ -12,6 +12,12 @@ not to be had is asked for again after five seconds, not on its next frame in vi
 are written in English; the workspace's Rust version becomes 1.98; and the sub-project has
 two plans, the grid first and the gate second.
 
+**Changed by the review of the built slice** (2026-10-09): the stored theme and tile size
+are read in `App::new`, before the first frame, and not by the task layer, whose one user
+is the folder list; a thumbnail that is not there yet marks its tile and counts as settled,
+and a frame is requested for its retry; a built thumbnail is handed back only under its own
+key; a right-to-left run is cut at everything that is not a letter, with brackets mirrored.
+
 ## What this is for
 
 Two things, and the second is why it comes first.

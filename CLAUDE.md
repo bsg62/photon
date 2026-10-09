@@ -90,7 +90,7 @@ Conventions.
 
 ## Architecture
 
-Four crates plus the UI:
+Five crates plus the UI:
 
 - **`photon-core`** — headless. SQLite library, scanning, thumbnails, metadata. Knows nothing
   about Tauri.
@@ -99,6 +99,8 @@ Four crates plus the UI:
   its manifest to keep it so: it is what a second shell stands on.
 - **`photon-app`** — the Tauri shell. Owns the IPC surface and the custom protocol that
   serves thumbnails, and re-exports the engine's modules under the names they had there.
+- **`photon-ui`** — the native interface, on egui and wgpu, that is to replace `photon-app`
+  and `ui/` (below, "The native UI"). Unreleased; its binary is `photon-native`.
 - **`xtask`** — repository chores, and `screenshots`. Binary only, no `lib.rs`.
 - **`ui/`** — Svelte 5 runes + TypeScript, an npm workspace.
 
@@ -1275,6 +1277,73 @@ result): a test in `screenshots.rs` reads `api.ts` and fails otherwise, because 
 command resolves to null and the screenshot of what the UI makes of that reads as a styling
 bug. A new surface worth seeing is a new entry in `SHOTS` and, if it needs a click, a new
 action in `mock.js`.
+
+### The native UI (branch `native-ui`)
+
+`crates/photon-ui` is the interface being rebuilt in Rust on egui and wgpu, in place of
+`ui/` and the Tauri shell (spec `2026-10-09-photon-native-ui-design.md`). Its binary is
+`photon-native` until the switch-over. **It is not launched to verify a change either**:
+`cargo run -p xtask -- native-shot` writes the grid to `target/screenshots/native-grid-*.png`
+off screen, and those are read. It needs a GPU adapter (no display), so it is an ignored
+test that xtask runs, not part of the gate.
+
+Two kinds of module, and `state_modules_name_no_egui_type` holds the line between them:
+*state modules* are plain Rust tested without a context (`grid/layout.rs`, `motion.rs`,
+`scroll.rs`, `thumbs/loader.rs`, `textures.rs`, `tasks.rs`), and *views* draw one and turn
+input into calls on it, tested in whole frames without a window (`Context::run_ui`, or
+`egui_kittest` where the application itself is run, as `tests/app.rs` does). The test's
+list (`STATE_MODULES` in `lib.rs`) is kept by hand: a new state module is added to it.
+
+`eframe` is pinned to an exact version and its API moves between minors: read the pinned
+version's source, never an older egui from memory. `eframe::App` is `fn ui(&mut self, ui:
+&mut egui::Ui, ..)`.
+
+**Nothing that reads SQLite runs on the UI thread.** It goes through `tasks::Latest`, which
+answers only the latest question. `Engine::published` and the `GridIndex` are in memory and
+are read directly - `published` when the engine says the library changed, not per frame.
+
+**The grid has no scroll map.** Its position is an `f64` in the layout's coordinates and
+the rows are drawn at `row.top - position`; egui's `ScrollArea` is not used for it, because
+its offset is an `f32`. Several rules of the Svelte grid have no successor (`placeIn`,
+`viewTop`, pages, mounting): the spec of the slice lists them so they are not ported.
+
+**A thumbnail not built yet is waited for, never blocked on** (`thumbs/loader.rs`): one
+thread polls every pending `request_async`, as `protocol.rs` learned to. Three rules a
+review added, each with its test. A built thumbnail is handed back only under its own key
+(`thumbs/source.rs`): `request_async` answers with the photo's picture as it is *now*, and
+keys recur, so one stored under the key that was asked for would be drawn for another
+picture. A result is not read again between being handed back and being taken (`handed_back`):
+the grid lists what it wants every frame. And *not there yet* is not *cannot be made*: a
+video with no poster or a photo whose drive is unplugged answers `Unavailable`, which marks
+the tile (`troubled`), counts as settled, and is asked for again after `RETRY_SECS` - by a
+frame the grid requests for that moment, since a still grid draws none.
+
+**Text goes through `text::paint_line`**, not through egui directly, wherever it can be in
+another script: egui shapes text but runs no bidirectional algorithm, and draws a name that
+mixes directions wrong. A right-to-left run is cut at everything that is not a letter, not
+only at spaces, with what stands between two words turned round and its brackets mirrored.
+The tests lay text out with egui's own fonts, which draw everything with one face: they
+hold the cutting, and what a second face does is seen only in `native-shot`'s pictures or
+by shaping with real faces, as the review that found the hyphen did. Not covered: a text
+*field*, and cutting a right-to-left line short at its start.
+
+**The lockfile ties two crates to one `windows` crate, by hand.** gpu-allocator takes any
+version from 0.53 to 0.62 and wgpu-hal exactly 0.62; Tauri brings 0.61 into the same lock,
+and cargo gave gpu-allocator that one, whose Direct3D types are not wgpu-hal's. It fails on
+Windows only, as type errors that name no version. `the_gpu_crates_are_locked_to_one_windows_crate`
+says so on every platform, and its comment says which line of `Cargo.lock` to change.
+
+**A test that reads a file as text reads CRLF on Windows.** The runner's checkout converts
+line endings and `include_str!` hands them over as they are, so a match on text with a `\n`
+in it finds nothing there, and nowhere else: two of this crate's tripwires failed on Windows
+alone for it. Read by line (`lines()`, `trim()`), and give the reader a test that feeds it
+both endings (`the_lockfile_is_read_with_either_line_ending`).
+
+The stored theme and tile size are read in `App::new`, before the first frame, and not by a
+task: read after it, a theme pinned against the desktop's showed the desktop's for a frame
+at every launch. A screenshot sets its theme twice, stored in the library and given to the
+`egui_kittest` harness, because the harness sets one of its own (dark) after the
+application has been made.
 
 ## Conventions
 

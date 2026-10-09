@@ -1,0 +1,43 @@
+[package]
+name = "photon-ui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+# `photon` is photon-app's binary until the switch-over; this one is named apart so both
+# can be built side by side.
+[[bin]]
+name = "photon-native"
+path = "src/main.rs"
+
+[dependencies]
+photon-core = { path = "../photon-core" }
+photon-engine = { path = "../photon-engine" }
+# Pinned to the patch: egui changes behaviour, and its API, between releases. This is the
+# version `pch/rawmakase` ships on the same three platforms.
+eframe = { version = "=0.36.2", default-features = false, features = ["default_fonts", "wgpu", "wayland", "x11"] }
+# egui's SVG loader, for the icons.
+egui_extras = { version = "=0.36.2", default-features = false, features = ["svg"] }
+# The platform's interface face, and an installed face for every script it lacks. MIT. Not
+# on crates.io, so pinned to a tag; without its `inter` feature it bundles no font.
+fastframe-fonts = { git = "https://github.com/crmne/fastframe", tag = "v0.4.1", default-features = false }
+# The runs of a line that mixes right-to-left and left-to-right text (`text.rs`).
+unicode-bidi = "0.3.18"
+# The data and cache directories, through the crate Tauri resolves them with.
+dirs = "6.0.0"
+# The viewer's time zone, for the month a folder's header names. photon-core's version.
+jiff = "0.2.35"
+parking_lot = "0.12.5"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+
+[dev-dependencies]
+# Whole frames of the application without a window (`eframe`), and off-screen rendering
+# for `tests/screenshots.rs` (`wgpu`).
+egui_kittest = { version = "=0.36.2", features = ["wgpu", "eframe"] }
+image = { version = "0.25.10", default-features = false, features = ["jpeg"] }
+tempfile = "3.27.0"

@@ -187,14 +187,15 @@ impl ThumbCache {
         Ok(())
     }
 
-    /// Decodes a cached thumbnail with libwebp, the library that wrote it, rather than with
+    /// Decodes a thumbnail file with libwebp, the library that wrote it, rather than with
     /// `image`'s pure-Rust `image-webp`. The pixels are the same - the look-alike pass stored
     /// every `percep_hash` before this from `image-webp`'s decode, and a new hash has to be
     /// comparable with those (`reading_gives_image_webps_pixels` holds it) - and the decode
     /// is about three times faster: ~0.10 ms against ~0.32 for a grid thumbnail. That pass
-    /// reads every grid thumbnail in the library on its first run over it.
-    pub(crate) fn read(&self, fp: u64, size: ThumbSize) -> Result<DynamicImage> {
-        let bytes = fs::read(self.path_for(fp, size))?;
+    /// reads every grid thumbnail in the library on its first run over it, and the native
+    /// grid reads one for every tile it draws.
+    pub fn decode(path: &Path) -> Result<DynamicImage> {
+        let bytes = fs::read(path)?;
         // `None` is libwebp refusing the file, or an animation, which photon never writes.
         webp::Decoder::new(&bytes)
             .decode()
@@ -202,6 +203,11 @@ impl ThumbCache {
             .ok_or_else(|| {
                 std::io::Error::new(std::io::ErrorKind::InvalidData, "not a still WebP").into()
             })
+    }
+
+    /// The thumbnail cached for `fp` at `size`, decoded; see `decode`.
+    pub(crate) fn read(&self, fp: u64, size: ThumbSize) -> Result<DynamicImage> {
+        Self::decode(&self.path_for(fp, size))
     }
 
     /// A face's crop, as WebP: the square `face_crop::square` gives, cut from the cached

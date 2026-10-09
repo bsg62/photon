@@ -1,11 +1,11 @@
 [workspace]
 resolver = "3"
-members = ["crates/photon-core", "crates/photon-engine", "crates/photon-app", "crates/xtask"]
+members = ["crates/photon-core", "crates/photon-engine", "crates/photon-app", "crates/photon-ui", "crates/xtask"]
 
 [workspace.package]
 version = "0.53.1"
 edition = "2024"
-rust-version = "1.93"
+rust-version = "1.98"
 license = "MIT"
 description = "A fast, local photo manager for Linux, macOS and Windows."
 repository = "https://github.com/bsg62/photon"
