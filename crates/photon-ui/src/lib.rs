@@ -8,10 +8,13 @@
 pub mod args;
 pub mod dirs;
 pub mod grid {
+    pub mod header;
     pub mod labels;
     pub mod layout;
     pub mod motion;
     pub mod scroll;
+    pub mod tile;
+    pub mod view;
     pub mod visible;
 }
 pub mod icons;
@@ -24,5 +27,6 @@ pub mod theme {
 }
 pub mod thumbs {
     pub mod loader;
+    pub mod shown;
     pub mod textures;
 }
