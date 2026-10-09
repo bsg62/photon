@@ -55,6 +55,12 @@ well as a square does.
 **Waiting for CI on a PR:** `gh pr checks N --watch`. Straight after a push it can answer
 "no checks reported" and exit 0; wait until checks exist before trusting it.
 
+**CI's caches are saved from `main` and `native-ui` only**, and its builds carry no debug
+info (`ci.yml` says why: the 10 GB cap, and Windows' linker). So a pull request that changes
+`Cargo.lock` compiles the difference on every run, a backtrace in CI has no line numbers,
+and the benchmark is built on Linux alone. A job that takes twenty minutes where it took
+five has lost its cache: `gh cache list` shows what is there.
+
 **Repository chores** (also run in CI, so run them before tagging):
 
 ```bash
