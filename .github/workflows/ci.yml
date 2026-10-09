@@ -2,8 +2,27 @@ name: ci
 
 on:
   push:
-    branches: [main]
+    # `native-ui` as well as `main`: a pull request reads the caches of the branch it is
+    # into, and one into `native-ui` otherwise starts from `main`'s, which holds none of
+    # the egui and wgpu stack - a cold build of it on every first run (27 minutes on
+    # Windows, measured 2026-10-09).
+    branches: [main, native-ui]
   pull_request:
+
+# A push to a pull request makes the run for the commit before it pointless, and the
+# Windows runner is the slowest to come free. A push to `main` or `native-ui` is a group of
+# its own (the run's id), so it is neither cancelled nor, waiting, replaced by the next:
+# each commit there should have its own answer.
+concurrency:
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: true
+
+env:
+  # No debug info in CI's builds. It is most of what a cache holds and most of what the
+  # linker writes, and linking is where Windows loses to Linux (a warm run there took
+  # about twice as long). The price: a panic's backtrace in CI has no line numbers; the
+  # panic's own message, which names file and line, is unchanged.
+  CARGO_PROFILE_DEV_DEBUG: 0
 
 jobs:
   rust:
@@ -36,7 +55,14 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
+      # Saved from `main` and `native-ui` only; a pull request restores and does not save.
+      # The repository's caches are capped at 10 GB together, and three platforms at one to
+      # two GB each for every open pull request evicted the branches' own: `main`'s Linux
+      # and macOS caches were gone on 2026-10-09 and those jobs took twenty minutes for
+      # five. Not saving also spares a pull request the save itself, five minutes on Windows.
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/native-ui' }}
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
@@ -56,7 +82,11 @@ jobs:
         run: |
           cargo run -p xtask -- versions
           cargo run -p xtask -- metadata
-      - run: cargo bench -p photon-core --bench grid --no-run
+      # That the benchmark still compiles. Its code is the same on every platform, and a
+      # release build of photon-core and everything under it is a minute and a half on
+      # Windows and a large part of each platform's cache: one platform is enough.
+      - if: runner.os == 'Linux'
+        run: cargo bench -p photon-core --bench grid --no-run
 
   # Builds the release path (frontend embedded, `tauri::is_dev()` false), which the debug
   # builds above never exercise. Ubuntu only and unbundled: installers are built by
@@ -76,6 +106,8 @@ jobs:
           cache: npm
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/native-ui' }}
       - run: npm ci
       - run: npm run -w ui build
       - run: npm run tauri build -- --no-bundle
