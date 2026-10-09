@@ -1135,6 +1135,14 @@ impl Engine {
         self.refresh_after_write("a tag rule change");
     }
 
+    /// Holds the INI-write lock, so a test can park a star on it the way a slow share does.
+    /// The tests that do are photon-app's, of its IPC dispatch (`a_star_holds_no_ipc_worker`),
+    /// which is why this is behind `test-support` and not `cfg(test)` alone.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn hold_ini_write(&self) -> MutexGuard<'_, ()> {
+        self.ini_write.lock()
+    }
+
     /// Sets or clears a photo's star: into the folder's Picasa INI first, then into the
     /// database, then the grid.
     ///
@@ -1148,14 +1156,6 @@ impl Engine {
     ///
     /// A photo the scanner has marked missing is refused: its folder may be an unmounted
     /// drive, and the INI photon would create there would be the only thing on it.
-    /// Holds the INI-write lock, so a test can park a star on it the way a slow share does.
-    /// The tests that do are photon-app's, of its IPC dispatch (`a_star_holds_no_ipc_worker`),
-    /// which is why this is behind `test-support` and not `cfg(test)` alone.
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn hold_ini_write(&self) -> MutexGuard<'_, ()> {
-        self.ini_write.lock()
-    }
-
     pub fn set_star(&self, id: i64, starred: bool) -> Result<()> {
         let serialised = self.ini_write.lock();
         let item = self.lib.item(id)?.ok_or(Error::NotFound(id))?;

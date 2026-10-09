@@ -1,5 +1,5 @@
-//! Command implementations as plain functions over `Engine`. `ipc.rs` exposes them to
-//! the UI as Tauri commands.
+//! Command implementations as plain functions over `Engine`. photon-app's `ipc.rs` exposes
+//! them to the UI as Tauri commands.
 
 pub use crate::memory::MemoryUsage;
 use crate::{engine::Engine, error::AppError, memory};
@@ -1078,8 +1078,8 @@ pub fn set_item_edit(
 }
 
 /// The photo as the clipboard gets it: as shown, edits applied, capped at
-/// `edit::CLIPBOARD_MAX_EDGE`. The clipboard write itself is `ipc::copy_photo`'s, which holds
-/// the app handle this layer does not; here is everything a test can reach.
+/// `edit::CLIPBOARD_MAX_EDGE`. The clipboard write itself is photon-app's `ipc::copy_photo`'s,
+/// which holds the app handle this layer does not; here is everything a test can reach.
 pub fn copy_picture(engine: &Engine, id: i64) -> CmdResult<photon_core::edit::ClipboardPicture> {
     let item = engine.lib.item(id)?.ok_or(Error::NotFound(id))?;
     if item.kind != MediaKind::Image {

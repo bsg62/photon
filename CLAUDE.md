@@ -722,7 +722,8 @@ thumbnail already cached under the URL's key from the key alone, with no databas
 the photo's *current* thumbnail and keys recur ("Original", a fourth turn), it is `immutable`
 only when the file served is the URL key's own and `no-store` otherwise; and
 every write of an edit takes `Engine.edit_write`, because a turn reads the edit it builds on.
-Full-size renders run one at a time (`protocol.rs`, `RENDERING`, which export shares - held
+Full-size renders run one at a time (`RENDERING`, in `photon-engine`'s `engine.rs`: `/image`
+in `protocol.rs` takes it and export shares it - held
 across the render and never across the write), outside the thumbnail pool
 that otherwise bounds decode memory, and `neighbours` leaves edited photos out of the preload.
 

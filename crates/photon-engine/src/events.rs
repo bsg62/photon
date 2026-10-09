@@ -1,4 +1,5 @@
-//! Events the engine sends to the UI. The Tauri implementation lives in `app.rs`.
+//! Events the engine sends to the UI. The Tauri implementation lives in photon-app's
+//! `app.rs`.
 
 use photon_core::scanner::ScanProgress;
 use serde::Serialize;
