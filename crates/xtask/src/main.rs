@@ -6,8 +6,12 @@
 //!   cargo run -p xtask -- screenshots [--out <dir>] [--only <shot>] [--photos <dir>] [--no-build]
 //!   cargo run -p xtask -- scroll-probe [--no-build]
 //!   cargo run -p xtask -- native-shot
+//!   cargo run -p xtask -- fixture-library [--photos <n>] [--out <dir>]
+//!   cargo run -p xtask -- grid-gate (--go --refresh-hz <hz> | --dry-run) [--native-only] [--photos <n>]
 
 mod checks;
+mod fixture_library;
+mod grid_gate;
 mod native_shot;
 mod screenshots;
 mod scroll_probe;
@@ -28,9 +32,11 @@ fn main() -> ExitCode {
         Some("screenshots") => screenshots::run(&repo_root(), &args),
         Some("scroll-probe") => scroll_probe::run(&repo_root(), &args),
         Some("native-shot") => native_shot::run(&repo_root()),
+        Some("fixture-library") => fixture_library::run(&repo_root(), &args),
+        Some("grid-gate") => grid_gate::run(&repo_root(), &args),
         other => {
             eprintln!(
-                "unknown command {other:?}; expected `versions`, `metadata`, `screenshots`, `scroll-probe` or `native-shot`"
+                "unknown command {other:?}; expected `versions`, `metadata`, `screenshots`, `scroll-probe`, `native-shot`, `fixture-library` or `grid-gate`"
             );
             ExitCode::FAILURE
         }

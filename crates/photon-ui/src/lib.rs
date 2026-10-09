@@ -9,6 +9,7 @@ pub mod app;
 pub mod args;
 pub mod dirs;
 pub mod events;
+pub mod fixture;
 pub mod grid {
     pub mod header;
     pub mod labels;
@@ -20,6 +21,7 @@ pub mod grid {
     pub mod visible;
 }
 pub mod icons;
+pub mod probe;
 pub mod tasks;
 pub mod text;
 pub mod theme {
@@ -37,7 +39,7 @@ pub mod thumbs {
 #[cfg(test)]
 mod tests {
     /// The state modules, with their source.
-    const STATE_MODULES: [(&str, &str); 11] = [
+    const STATE_MODULES: [(&str, &str); 12] = [
         ("args.rs", include_str!("args.rs")),
         ("dirs.rs", include_str!("dirs.rs")),
         ("tasks.rs", include_str!("tasks.rs")),
@@ -47,6 +49,7 @@ mod tests {
         ("grid/motion.rs", include_str!("grid/motion.rs")),
         ("grid/scroll.rs", include_str!("grid/scroll.rs")),
         ("grid/visible.rs", include_str!("grid/visible.rs")),
+        ("probe.rs", include_str!("probe.rs")),
         ("thumbs/loader.rs", include_str!("thumbs/loader.rs")),
         ("thumbs/textures.rs", include_str!("thumbs/textures.rs")),
     ];

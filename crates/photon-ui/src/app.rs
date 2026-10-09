@@ -8,6 +8,7 @@ use crate::{
         visible::VisibleReport,
     },
     icons,
+    probe::{Facts, Move, Outside, Probe, Report},
     tasks::Latest,
     theme::{
         self,
@@ -49,7 +50,33 @@ pub struct App {
     zone: TimeZone,
     visible: VisibleReport,
     last: Option<GridOutput>,
+    /// The gate's scroll programme, when this run is a measurement.
+    probe: Option<ProbeRun>,
+    /// The GPU the window is drawn with, for the log and the gate's report.
+    adapter: Option<String>,
     closed: bool,
+}
+
+/// The gate's programme, where its report goes, and what the report says besides.
+struct ProbeRun {
+    probe: Probe,
+    outside: Outside,
+    out: PathBuf,
+}
+
+/// The report as it is written: the programme's, and what the application knows about
+/// the run it was measured in.
+#[derive(serde::Serialize)]
+struct Written<'a> {
+    app: &'static str,
+    /// The window's size in points, and how many device pixels a point is.
+    window: [f32; 2],
+    scale: f32,
+    adapter: Option<&'a str>,
+    /// photon's own memory at the end of the run (`commands::memory_usage`).
+    memory_bytes: Option<u64>,
+    #[serde(flatten)]
+    report: &'a Report,
 }
 
 impl App {
@@ -121,8 +148,41 @@ impl App {
             zone: TimeZone::system(),
             visible: VisibleReport::default(),
             last: None,
+            probe: None,
+            adapter: cc
+                .wgpu_render_state
+                .as_ref()
+                .map(|state| format!("{:?}", state.adapter.get_info())),
             closed: false,
         })
+    }
+
+    /// Makes this run a measurement: the gate's scroll programme drives the grid from the
+    /// first frame, writes its report to `out` and closes the window.
+    /// `started_epoch_ms` is when the harness started the process, for the launch time.
+    pub fn with_probe(mut self, out: PathBuf, started_epoch_ms: Option<f64>) -> Self {
+        self.probe = Some(ProbeRun {
+            probe: Probe::new(started_epoch_ms),
+            outside: Outside::default(),
+            out,
+        });
+        self
+    }
+
+    /// Makes this run the launch the gate throws away before the one it measures: it
+    /// ends, with a report nobody reads, as soon as the grid shows its pictures.
+    pub fn with_warm_up(mut self, out: PathBuf, started_epoch_ms: Option<f64>) -> Self {
+        self.probe = Some(ProbeRun {
+            probe: Probe::warm_up(started_epoch_ms),
+            outside: Outside::default(),
+            out,
+        });
+        self
+    }
+
+    /// The GPU the window is drawn with, as wgpu describes it.
+    pub fn adapter(&self) -> Option<&str> {
+        self.adapter.as_deref()
     }
 
     /// How many photos the grid holds.
@@ -145,12 +205,15 @@ impl App {
         &self.folders
     }
 
-    /// Takes what the engine has reported since the last frame. Only a changed library
-    /// is acted on in this slice; the rest is taken so the channel stays empty.
-    fn take_events(&mut self) {
+    /// Takes what the engine has reported since the last frame, and says whether it had
+    /// reported anything. Only a changed library is acted on in this slice; the rest is
+    /// taken so the channel stays empty.
+    fn take_events(&mut self) -> bool {
+        let mut reported = false;
         let mut changed = false;
         let mut data_changed = false;
         for event in self.events.try_iter() {
+            reported = true;
             if let Event::Library(library) = event {
                 changed = true;
                 data_changed |= library.data_changed;
@@ -165,6 +228,7 @@ impl App {
         if data_changed {
             self.folder_list.ask(());
         }
+        reported
     }
 
     fn take_answers(&mut self) {
@@ -173,6 +237,57 @@ impl App {
                 .into_iter()
                 .map(|folder| (folder.id, folder))
                 .collect();
+        }
+    }
+
+    /// One frame of the gate's programme, after the frame has been drawn: tells it what
+    /// the frame came to and does what it asks before the next.
+    fn run_probe(&mut self, ctx: &egui::Context, output: &GridOutput, reported: bool) {
+        let Some(run) = &mut self.probe else {
+            return;
+        };
+        if run.probe.done() {
+            return;
+        }
+        let now_ms = ctx.input(|input| input.time) * 1000.0;
+        let facts = Facts {
+            now_ms,
+            max: self.view.max_position(),
+            settled: output.settled,
+            photos: self.index.len(),
+            marked: output.marked,
+            outside: run.outside.frame(now_ms, reported),
+        };
+        let epoch_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0.0, |since| since.as_secs_f64() * 1000.0);
+        match run.probe.frame(facts, epoch_ms) {
+            Move::To(position) => {
+                self.view.move_to(position);
+                ctx.request_repaint();
+            }
+            Move::Wait => ctx.request_repaint(),
+            // Nothing is asked for but the frame that ends the rest: what is drawn before
+            // it is what the grid draws by itself.
+            Move::Rest { for_ms } => {
+                ctx.request_repaint_after(Duration::from_secs_f64(for_ms.max(0.0) / 1000.0));
+            }
+            Move::Done => {
+                let written = Written {
+                    app: "native",
+                    window: ctx.input(|input| input.content_rect().size()).into(),
+                    scale: ctx.pixels_per_point(),
+                    adapter: self.adapter.as_deref(),
+                    // The measurement is over: this read of /proc costs it nothing.
+                    memory_bytes: commands::memory_usage().ok().map(|usage| usage.bytes),
+                    report: run.probe.report(),
+                };
+                let json = serde_json::to_string_pretty(&written).unwrap_or_default();
+                if let Err(err) = std::fs::write(&run.out, json) {
+                    tracing::error!(%err, out = %run.out.display(), "could not write the probe's report");
+                }
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
         }
     }
 
@@ -185,7 +300,10 @@ impl App {
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        self.take_events();
+        // Whether this frame was asked for from outside the grid: by the engine, which
+        // reported, or by the person, whose mouse or keys are in the frame's input.
+        let touched = ui.input(|input| !input.events.is_empty());
+        let reported = self.take_events() || touched;
         self.take_answers();
 
         let data = GridData {
@@ -211,6 +329,9 @@ impl eframe::App for App {
                 let wait = Duration::from_secs_f64(((at - now) / 1000.0).max(0.0));
                 ui.ctx().request_repaint_after(wait);
             }
+        }
+        if let Some(output) = &output {
+            self.run_probe(ui.ctx(), output, reported);
         }
         self.last = output;
     }

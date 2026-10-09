@@ -55,6 +55,11 @@ pub struct GridOutput {
     pub position: f64,
     /// Whether every tile in view has its picture, or the mark that it will never have one.
     pub settled: bool,
+    /// How many tiles in view show that mark.
+    pub marked: usize,
+    /// Whether a picture the grid wants, in view or just outside it, is still on its way:
+    /// being read, or read and not yet uploaded.
+    pub loading: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -73,12 +78,24 @@ pub struct GridView {
     laid_out: Option<LaidOut>,
     /// Where on the thumb the pointer took hold, while the scrollbar is held.
     grab: Option<f64>,
+    /// A place asked for from outside (`move_to`), until the next frame takes it.
+    asked: Option<f64>,
 }
 
 impl GridView {
-    /// Moves the grid to `position`, as the probe's programme does.
-    pub fn scroll_to(&mut self, position: f64) {
+    /// Puts the grid at `position` without that counting as a scroll: for a test that
+    /// needs a place, not a move.
+    #[cfg(test)]
+    fn scroll_to(&mut self, position: f64) {
         self.scroll.set(position);
+    }
+
+    /// Asks for the grid to be at `position`, as the gate's programme does. Taken with
+    /// the next frame's input, so the move is a scroll like the wheel's or a key's: set
+    /// here and now, the grid was moved without knowing it, and drew every frame of a
+    /// sweep as if it had always been standing there.
+    pub fn move_to(&mut self, position: f64) {
+        self.asked = Some(position);
     }
 
     pub fn scroll_by(&mut self, delta: f64) {
@@ -121,9 +138,9 @@ impl GridView {
         let motion = self.speed.motion();
         let (first, last) = visible_range(&self.rows, top, viewport, 0.0);
         let (wanted, on_screen) = self.wanted(data.index, top, viewport, motion, (first, last));
-        thumbs.frame(ui.ctx(), &wanted, defers_thumbs(motion, viewport));
+        let loading = thumbs.frame(ui.ctx(), &wanted, defers_thumbs(motion, viewport));
 
-        let settled = self.draw(ui, area, data, thumbs, (first, last));
+        let (settled, marked) = self.draw(ui, area, data, thumbs, (first, last));
         let pinned = pinned_header(&self.rows, &self.headers, top);
         if let Some(pinned) = pinned
             && let Some(section) = data.index.sections().get(pinned.section)
@@ -145,6 +162,8 @@ impl GridView {
             rebuilt,
             position: top,
             settled,
+            marked,
+            loading,
         }
     }
 
@@ -184,6 +203,9 @@ impl GridView {
     }
 
     fn take_input(&mut self, ui: &egui::Ui, rect: Rect, bar: Rect, viewport: f64) {
+        if let Some(position) = self.asked.take() {
+            self.scroll.set(position);
+        }
         if ui.rect_contains_pointer(rect) {
             // Positive moves the content down, which is towards the top of the grid.
             let delta = ui.input(|input| input.smooth_scroll_delta.y);
@@ -293,14 +315,14 @@ impl GridView {
         data: &GridData<'_>,
         thumbs: &mut Thumbs,
         (first, last): (usize, usize),
-    ) -> bool {
+    ) -> (bool, usize) {
         let Some(laid) = self.laid_out else {
-            return true;
+            return (true, 0);
         };
         let palette = palette(ui.ctx());
         let clipped = clipped_to(ui, area);
         let top = snapped(self.scroll.position(), f64::from(ui.pixels_per_point()));
-        let mut settled = true;
+        let (mut settled, mut marks) = (true, 0);
         for row in &self.rows[first..last] {
             let y = area.top() + (row.top - top) as f32;
             match row.kind {
@@ -330,12 +352,13 @@ impl GridView {
                             thumbs.failed(entry.thumb_key) || thumbs.troubled(entry.thumb_key);
                         let texture = thumbs.texture(entry.thumb_key);
                         settled &= marked || texture.is_some();
+                        marks += usize::from(marked);
                         tile::paint(&clipped, rect, entry, texture, marked, palette);
                     }
                 }
             }
         }
-        settled
+        (settled, marks)
     }
 
     fn draw_scrollbar(&self, ui: &egui::Ui, bar: Rect) {
@@ -722,12 +745,23 @@ mod tests {
         // begins at 32 + 3 * 195 = 617.
         assert_eq!(first.on_screen, (1..=12).collect::<Vec<i64>>());
         assert!(!first.settled, "nothing has been read yet");
+        assert!(first.loading);
         let deadline = Instant::now() + Duration::from_secs(10);
         while !f.frame(Vec::new()).settled {
             assert!(Instant::now() < deadline, "the pictures never came");
             std::thread::sleep(Duration::from_millis(2));
         }
         assert!(f.thumbs.texture(1).is_some());
+        // Settled is what is in view. The rows wanted beyond it may still be on their
+        // way, and then they come too, and nothing is.
+        while f.frame(Vec::new()).loading {
+            assert!(
+                Instant::now() < deadline,
+                "the pictures never stopped coming"
+            );
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert!(f.frame(Vec::new()).settled);
     }
 
     // A first run, and every launch until the engine's first build: the index is empty.
@@ -840,6 +874,9 @@ mod tests {
         }
         assert!(f.thumbs.troubled(1));
         assert!(!f.thumbs.failed(1));
+        // All four tiles are marks, and the frame says how many: a grid that "shows its
+        // pictures" by showing none is what the gate must be able to tell apart.
+        assert_eq!(f.frame(Vec::new()).marked, 4);
         // Nothing else is going on, so what the frame asks to be woken for is the retry.
         f.frame(Vec::new());
         let retry = Duration::from_secs_f64(crate::thumbs::textures::RETRY_SECS);
@@ -897,5 +934,38 @@ mod tests {
             clip.intersects(*place),
             "cut away altogether: {place:?} in {clip:?}"
         );
+    }
+
+    // The gate's programme moves the grid from outside, between two frames. Moved by
+    // setting the position, the grid never knew it had moved: no lead was loaded ahead of
+    // a scroll, nothing was held back in a sweep, and the hold after a jump that the
+    // Svelte grid pays was not paid - so the two were not doing the same thing.
+    #[test]
+    fn a_move_asked_for_from_outside_is_a_scroll_like_any_other() {
+        let mut f = fixture(&[4000]);
+        f.frame(Vec::new());
+        assert_eq!(f.view.speed.motion(), Motion::Still);
+
+        // Under a viewport a frame: a scroll.
+        for step in 1..=4 {
+            f.view.move_to(f64::from(step) * 300.0);
+            let frame = f.frame(Vec::new());
+            assert_eq!(frame.position, f64::from(step) * 300.0);
+        }
+        assert!(
+            matches!(f.view.speed.motion(), Motion::Scroll { .. }),
+            "{:?}",
+            f.view.speed.motion()
+        );
+
+        // Many viewports a frame, frame after frame: a stream of jumps, with the
+        // thumbnails held back and a frame asked for in which it will count as over.
+        for step in 1..=3 {
+            f.view.move_to(f64::from(step) * 20_000.0);
+            f.frame(Vec::new());
+        }
+        assert_eq!(f.view.speed.motion(), Motion::Jump { stream: true });
+        assert!(f.view.speed.settles_at().is_some());
+        assert!(f.repaint_delay < Duration::from_secs(1));
     }
 }
