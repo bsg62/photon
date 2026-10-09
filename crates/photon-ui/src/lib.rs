@@ -15,6 +15,7 @@ pub mod grid {
     pub mod visible;
 }
 pub mod tasks;
+pub mod text;
 pub mod theme {
     pub mod tokens;
 }
