@@ -63,6 +63,11 @@ fn a_fixture_is_a_library_with_every_thumbnail_cached_and_no_folder_to_scan() {
         assert_eq!(item.thumb_state, ThumbState::Ready);
         let thumbnail = cache.path_for(entry.thumb_key, photon_core::thumbs::ThumbSize::Grid);
         assert!(thumbnail.is_file(), "{}", thumbnail.display());
+        // Both sizes, which is what the engine asks before it leaves a photo alone: with
+        // the grid's alone it tried to make the other for every photo that came to rest
+        // in view, from a file that is not there - four hundred failed jobs in a run of
+        // the gate, in each of the two applications.
+        assert!(cache.is_complete(entry.thumb_key), "photo {}", entry.id);
     }
     // The drive is unplugged: its folder is watched and is not there.
     let watched = lib.watched_folders().unwrap();
@@ -86,7 +91,9 @@ fn a_fixture_is_a_library_with_every_thumbnail_cached_and_no_folder_to_scan() {
     assert_eq!(fixture::complete(&out), Some(700));
     let marker = out.join(fixture::MARKER);
     let said = std::fs::read_to_string(&marker).unwrap();
-    std::fs::write(&marker, said.replace("\"builder\":1", "\"builder\":0")).unwrap();
+    let ours = format!("\"builder\":{}", fixture::BUILDER);
+    assert!(said.contains(&ours), "{said}");
+    std::fs::write(&marker, said.replace(&ours, "\"builder\":0")).unwrap();
     assert_eq!(fixture::complete(&out), None, "an older builder's");
     std::fs::remove_file(&marker).unwrap();
     assert_eq!(fixture::complete(&out), None, "an unfinished one");
