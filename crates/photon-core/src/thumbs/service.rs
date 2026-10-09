@@ -689,6 +689,19 @@ impl ThumbService {
         self.cache.path_for(key, size)
     }
 
+    /// The picture cached under `key`, decoded to straight RGBA. The cache and nothing
+    /// else: no database read, no render, no wait. An error when none is cached there,
+    /// which is how a caller learns to ask for it (`request_async`).
+    pub fn decoded(&self, key: u64, size: ThumbSize) -> Result<image::RgbaImage> {
+        Ok(self.cache.read(key, size)?.to_rgba8())
+    }
+
+    /// The thumbnail file at `path` - one `request_async` answered with - decoded the same
+    /// way.
+    pub fn decode_file(path: &Path) -> Result<image::RgbaImage> {
+        Ok(ThumbCache::decode(path)?.to_rgba8())
+    }
+
     /// A face's crop from the cached preview under `key`; see `ThumbCache::face_crop`. Never
     /// renders.
     pub fn face_crop(&self, key: u64, rect: &crate::face_detect::Rect) -> crate::Result<Vec<u8>> {
@@ -1408,6 +1421,25 @@ mod tests {
                 .unwrap(),
             "webp"
         );
+    }
+
+    // What the native grid reads a tile's picture with: by key, from the cache alone.
+    #[test]
+    fn a_cached_thumbnail_is_decoded_by_its_key_and_an_uncached_one_is_not_built() {
+        let (_dir, lib, cache, ids) = setup(&[("a.jpg", jpeg_bytes(64, 32))]);
+        let service = ThumbService::start(lib.clone(), cache, 1);
+        let key = lib.item(ids[0]).unwrap().unwrap().thumb_key();
+        assert!(service.decoded(key, ThumbSize::Grid).is_err());
+        assert_ne!(
+            state(&lib, ids[0]),
+            ThumbState::Ready,
+            "asking built nothing"
+        );
+
+        let path = service.get_or_generate(ids[0], ThumbSize::Grid).unwrap();
+        let by_key = service.decoded(key, ThumbSize::Grid).unwrap();
+        assert_eq!(by_key.dimensions(), (64, 32));
+        assert_eq!(ThumbService::decode_file(&path).unwrap(), by_key);
     }
 
     #[test]
