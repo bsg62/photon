@@ -1351,6 +1351,29 @@ at every launch. A screenshot sets its theme twice, stored in the library and gi
 `egui_kittest` harness, because the harness sets one of its own (dark) after the
 application has been made.
 
+**`cargo run -p xtask -- grid-gate` is the one command that launches the application**, and
+it does nothing unless told which: `--go --refresh-hz <hz>` opens two fullscreen windows,
+one after the other, for about two minutes on a desktop that has to stay awake; `--dry-run`
+builds everything and launches nothing. It is run by a person, or on their word at the
+time, because the interval between two frames does not exist without a compositor. It
+measures `photon-native --probe` (the scroll programme, `probe.rs`, a state module) against
+the Svelte grid, which is given the same programme by `crates/xtask/gate/svelte-probe.patch`
+in a throwaway worktree (`target/gate-svelte`) and never in `ui/`;
+`the_svelte_probe_still_applies` fails when `Grid.svelte` or `ipc.rs` has moved from under
+the patch. Both run over `target/gate-fixture` (`fixture-library`: 300,000 rows on a drive
+recorded as unplugged, every thumbnail cached, so the engine has nothing to do at launch).
+A fixture is not rebuilt when its builder changes: delete the directory.
+
+**A test that counts frames drives the application as an event loop does**
+(`the_programme_runs_over_a_fixture_to_its_report`): a frame only when egui's repaint
+callback asked for one, on a clock that jumps over the time nothing did. Stepping
+`egui_kittest` draws a frame at every step, asked for or not, and hid three things the
+gate's first count of idle frames got wrong: egui draws a second frame after every frame
+asked for at once, a frame asked for after a delay comes one frame early, and a scroll
+leaves two frames of its own behind (`SCROLL_SETTLE_MS`, `VISIBLE_DEBOUNCE_MS`). Each would
+have failed the gate on a perfectly still grid. Anything that asserts a still interface
+draws nothing is tested through that loop.
+
 ## Conventions
 
 - **photon never writes to, moves or deletes photo files.** The one file it writes inside a

@@ -18,6 +18,22 @@ is the folder list; a thumbnail that is not there yet marks its tile and counts 
 and a frame is requested for its retry; a built thumbnail is handed back only under its own
 key; a right-to-left run is cut at everything that is not a letter, with brackets mirrored.
 
+**Changed by the gate's plan** (2026-10-09), each found while the gate was built and driven
+without a window: the Svelte grid measured is the one on `native-ui` itself, patched in a
+throwaway worktree, not the commit the branch began from (main is merged in as it moves, so
+it is the newer of the two); "time to picture" is the time from a jump, or from the end of
+the sweep, to the first frame in which every tile in view has its picture, not a time per
+tile; the screen's refresh rate is given by whoever runs the gate (`--refresh-hz`) and not
+read; the native grid is run first and the library is read into the page cache before each
+run, so that what is cold counts against the grid that has to pass; the pass lines are
+numbers this spec did not give - a scroll passes with its 95th-percentile interval at or
+under one and a half refreshes (a missed refresh is two), and "no worse" is within 5%, plus
+one refresh on a time; and step 6 counts the frames the grid draws *by itself* - there is a
+second of rest before it, the frame that ends it is not counted, and neither is a frame the
+engine's own report asked for (it looks for the fixture's unplugged drive twice a minute).
+The fixture's builder lives in `photon-ui` (`fixture.rs`, run as an example), so xtask goes
+on depending on neither crate.
+
 ## What this is for
 
 Two things, and the second is why it comes first.
