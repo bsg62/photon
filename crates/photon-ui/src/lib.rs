@@ -10,6 +10,8 @@ pub mod dirs;
 pub mod grid {
     pub mod layout;
     pub mod motion;
+    pub mod scroll;
+    pub mod visible;
 }
 pub mod tasks;
 pub mod theme {
