@@ -4770,6 +4770,8 @@ dependencies = [
  "parking_lot",
  "photon-core",
  "photon-engine",
+ "serde",
+ "serde_json",
  "tempfile",
  "tracing",
  "tracing-subscriber",
