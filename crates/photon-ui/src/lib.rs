@@ -9,6 +9,7 @@ pub mod app;
 pub mod args;
 pub mod dirs;
 pub mod events;
+pub mod fixture;
 pub mod grid {
     pub mod header;
     pub mod labels;
