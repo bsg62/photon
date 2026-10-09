@@ -1,0 +1,264 @@
+diff --git i/crates/photon-app/src/app.rs w/crates/photon-app/src/app.rs
+index abdbd95..512150b 100644
+--- i/crates/photon-app/src/app.rs
++++ w/crates/photon-app/src/app.rs
+@@ -306,6 +306,8 @@ pub fn run() {
+             ipc::reveal_watched,
+             ipc::reveal_library,
+             ipc::media_base,
++            ipc::probe_config,
++            ipc::probe_done,
+             ipc::video_session_start,
+             ipc::next_video_job,
+             ipc::put_video_frame,
+diff --git i/crates/photon-app/src/ipc.rs w/crates/photon-app/src/ipc.rs
+index 791a864..1781c81 100644
+--- i/crates/photon-app/src/ipc.rs
++++ w/crates/photon-app/src/ipc.rs
+@@ -700,6 +700,37 @@ pub fn video_frame_failed(
+     commands::video_frame_failed(&engine, id, &key, reason)
+ }
+ 
++// THE GATE'S PROBE (`ui/src/lib/probe.ts`): where its report goes and when the harness
++// started this process, and the end of the run. Applied by `xtask grid-gate` to a throwaway
++// worktree; never merged.
++#[derive(serde::Serialize)]
++pub struct ProbeConfig {
++    out: String,
++    t0: Option<f64>,
++}
++
++#[tauri::command(async)]
++pub fn probe_config() -> Option<ProbeConfig> {
++    let out = std::env::var("PHOTON_PROBE_OUT").ok()?;
++    let t0 = std::env::var("PHOTON_PROBE_T0")
++        .ok()
++        .and_then(|t0| t0.parse().ok());
++    Some(ProbeConfig { out, t0 })
++}
++
++#[tauri::command(async)]
++pub fn probe_done(app: tauri::AppHandle, report: String) -> Result<(), AppError> {
++    let out = std::env::var("PHOTON_PROBE_OUT").map_err(AppError::internal)?;
++    let mut report: serde_json::Value =
++        serde_json::from_str(&report).map_err(AppError::internal)?;
++    // photon and its web view's processes, as Settings counts them.
++    report["memory_bytes"] = serde_json::json!(commands::memory_usage().ok().map(|m| m.bytes));
++    let text = serde_json::to_string_pretty(&report).map_err(AppError::internal)?;
++    std::fs::write(out, text).map_err(AppError::internal)?;
++    app.exit(0);
++    Ok(())
++}
++
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+diff --git i/ui/src/components/Grid.svelte w/ui/src/components/Grid.svelte
+index e576335..e3d30ad 100644
+--- i/ui/src/components/Grid.svelte
++++ w/ui/src/components/Grid.svelte
+@@ -16,6 +16,7 @@
+   import { CAP_FALLBACK, capFrom, createScrollMap, PROBE_HEIGHT } from '../lib/scroll-map';
+   import { createScrollSpeed } from '../lib/scroll-speed.svelte';
+   import { move, type NavKey } from '../lib/nav';
++  import { runProbe } from '../lib/probe';
+   import { keyHint } from '../lib/shortcuts';
+   import { decidingPhoto } from '../lib/star-key';
+   import { isMac } from '../lib/url';
+@@ -300,6 +301,20 @@
+     writeDom(map.setVirtual(v));
+   }
+ 
++  // THE GATE'S PROBE (see lib/probe.ts): once, when the grid has its viewport. It does
++  // nothing unless the harness started this process with PHOTON_PROBE_OUT.
++  let probed = false;
++  $effect(() => {
++    if (probed || !viewport) return;
++    probed = true;
++    void runProbe({
++      scrollTo: scrollToVirtual,
++      max: () => Math.max(0, total - height),
++      viewport: () => viewport,
++      photos: () => library.info.len,
++    });
++  });
++
+   /** How tall a box this engine will lay out, in CSS px, at this display scale. */
+   function measureCap() {
+     const probe = document.createElement('div');
+diff --git i/ui/src/lib/probe.ts w/ui/src/lib/probe.ts
+new file mode 100644
+index 0000000..63ba82f
+--- /dev/null
++++ w/ui/src/lib/probe.ts
+@@ -0,0 +1,170 @@
++/** THE GATE'S PROBE. Applied by `cargo run -p xtask -- grid-gate` to a throwaway worktree
++ *  and never merged: it is how the Svelte grid runs the scroll programme the native grid
++ *  runs (`crates/photon-ui/src/probe.rs`), so the two can be laid side by side.
++ *
++ *  The programme, its constants and the report's shape are that file's, step for step. A
++ *  frame here is a `requestAnimationFrame` callback, and the intervals between callbacks
++ *  are the cadence the compositor allowed. Every move is a place worked out from the time,
++ *  never a distance per frame.
++ *
++ *  One thing differs and cannot be otherwise: `requestAnimationFrame` itself asks for every
++ *  frame, so "frames drawn while idle" has no meaning here and is reported as null. */
++
++import { invoke } from '@tauri-apps/api/core';
++import { getCurrentWindow } from '@tauri-apps/api/window';
++
++const STEADY_PX_PER_S = 3_000;
++const STEADY_SECS = 10;
++const FAST_PX_PER_S = 30_000;
++const FAST_SECS = 5;
++const SWEEP_SECS = 5;
++const STILL_SECS = 1;
++const IDLE_SECS = 5;
++const CALM_SECS = 1;
++const SETTLE_TIMEOUT_SECS = 30;
++
++export interface ProbeHooks {
++  /** Puts the grid at a position of its layout. */
++  scrollTo(position: number): void;
++  /** The furthest the grid scrolls. */
++  max(): number;
++  viewport(): HTMLElement | undefined;
++  photos(): number;
++}
++
++interface Cadence {
++  frames: number;
++  median_ms: number;
++  p95_ms: number;
++  p99_ms: number;
++  longest_ms: number;
++}
++
++/** The value at `quantile` of `sorted`, by the nearest rank. */
++function at(sorted: number[], quantile: number): number {
++  const rank = Math.ceil(quantile * sorted.length);
++  return sorted[Math.min(Math.max(rank, 1), sorted.length) - 1];
++}
++
++export function cadenceOf(intervals: number[]): Cadence {
++  if (intervals.length === 0) return { frames: 0, median_ms: 0, p95_ms: 0, p99_ms: 0, longest_ms: 0 };
++  const sorted = [...intervals].sort((a, b) => a - b);
++  return {
++    frames: sorted.length,
++    median_ms: at(sorted, 0.5),
++    p95_ms: at(sorted, 0.95),
++    p99_ms: at(sorted, 0.99),
++    longest_ms: sorted[sorted.length - 1],
++  };
++}
++
++/** Whether every tile in view has its picture, or the mark that it will not. Asked only
++ *  by the steps that wait for it: it measures every tile on screen, which during a scroll
++ *  would be the probe slowing down what it is timing. */
++function settled(viewport: HTMLElement): boolean {
++  const box = viewport.getBoundingClientRect();
++  let seen = 0;
++  for (const tile of viewport.querySelectorAll<HTMLElement>('.tile')) {
++    const rect = tile.getBoundingClientRect();
++    if (rect.bottom <= box.top || rect.top >= box.bottom) continue;
++    seen++;
++    if (!tile.querySelector('img.loaded') && !tile.querySelector('.broken')) return false;
++  }
++  return seen > 0;
++}
++
++const frame = () => new Promise<number>((resolve) => requestAnimationFrame(resolve));
++const epoch = () => performance.timeOrigin + performance.now();
++
++export async function runProbe(hooks: ProbeHooks): Promise<void> {
++  const config = await invoke<{ out: string; t0: number | null } | null>('probe_config');
++  if (!config) return;
++  await getCurrentWindow().setFullscreen(true);
++
++  const viewport = (): HTMLElement => {
++    const element = hooks.viewport();
++    if (!element) throw new Error('the grid has no viewport');
++    return element;
++  };
++  let position = 0;
++  const to = (next: number) => {
++    position = next;
++    hooks.scrollTo(next);
++  };
++
++  /** Frames until the grid shows its pictures: how long that took, or null after the
++   *  timeout. The frame that made the move is not the one that shows them. */
++  const untilSettled = async (): Promise<number | null> => {
++    const since = await frame();
++    for (;;) {
++      const now = await frame();
++      if (settled(viewport())) return now - since;
++      if (now - since >= SETTLE_TIMEOUT_SECS * 1000) return null;
++    }
++  };
++
++  /** A step that moves the grid for `secs`, to wherever `place(elapsed ms)` says. */
++  const moving = async (secs: number, place: (elapsed: number) => number): Promise<Cadence> => {
++    const intervals: number[] = [];
++    const since = await frame();
++    let last = since;
++    for (;;) {
++      const now = await frame();
++      intervals.push(now - last);
++      last = now;
++      const elapsed = now - since;
++      if (elapsed >= secs * 1000) return cadenceOf(intervals);
++      to(Math.min(place(elapsed), hooks.max()));
++    }
++  };
++
++  // Launch: until the grid has photos and shows them.
++  for (;;) {
++    await frame();
++    if (hooks.photos() > 0 && hooks.viewport() && settled(viewport())) break;
++  }
++  const launch_ms = config.t0 === null ? null : epoch() - config.t0;
++  const photos = hooks.photos();
++  // From the top, whatever the launch showed: this grid goes back to the folder it was
++  // last left in, and a second run over the same fixture was left at the far end.
++  to(0);
++  await untilSettled();
++  await new Promise((resolve) => setTimeout(resolve, CALM_SECS * 1000));
++
++  const from = position;
++  const steady = await moving(STEADY_SECS, (elapsed) => from + (STEADY_PX_PER_S * elapsed) / 1000);
++  const fastFrom = position;
++  const fast = await moving(FAST_SECS, (elapsed) => fastFrom + (FAST_PX_PER_S * elapsed) / 1000);
++
++  to(hooks.max());
++  const jump_end_ms = await untilSettled();
++  to(hooks.max() / 2);
++  const jump_middle_ms = await untilSettled();
++
++  to(0);
++  await untilSettled();
++  const sweep = await moving(SWEEP_SECS, (elapsed) => (hooks.max() * elapsed) / (SWEEP_SECS * 1000));
++  to(hooks.max());
++  const sweep_settle_ms = await untilSettled();
++
++  // The rest before the idle step, and the step: nothing is counted in either here, but
++  // the memory is read at the same point of both programmes.
++  await new Promise((resolve) => setTimeout(resolve, (STILL_SECS + IDLE_SECS) * 1000));
++
++  const report = {
++    app: 'svelte',
++    window: [window.innerWidth, window.innerHeight],
++    scale: window.devicePixelRatio,
++    adapter: null,
++    photos,
++    launch_ms,
++    steady,
++    fast,
++    jump_end_ms,
++    jump_middle_ms,
++    sweep,
++    sweep_settle_ms,
++    idle_frames: null,
++  };
++  await invoke('probe_done', { report: JSON.stringify(report) });
++}
