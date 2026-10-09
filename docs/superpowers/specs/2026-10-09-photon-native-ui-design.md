@@ -75,8 +75,9 @@ Rejected:
 
 - **`photon-core`**: unchanged.
 - **`photon-engine`** (new): `engine.rs`, `commands.rs`, `watch.rs`, `events.rs`,
-  `memory.rs`, `error.rs` and `testutil.rs`, moved out of `photon-app` as they are. None of
-  them names Tauri today (checked: no mention in any of the seven). The move lands on
+  `memory.rs`, `error.rs` and `testutil.rs`, moved out of `photon-app`. None of them names
+  Tauri today (checked: no mention in any of the seven); three references into the files
+  that stay are settled in sub-project 0's spec. The move lands on
   **main**, before the branch exists, so that later fixes to the engine on main merge into
   the branch without conflict.
 - **`photon-ui`** (new, on the branch): the egui application and the `photon` binary. It
@@ -167,7 +168,8 @@ Each has its own spec, plan and reviewed pull request into the branch.
   icons, the `Events` wiring, the task layer, the texture cache.
 - The grid in All photos, read-only: rows, sections, headers, the pinned header, tiles
   widened to fill the row (`tileFor`), the place kept across a resize (`Pin`), and a scroll
-  map for a library taller than the toolkit can address.
+  position that reaches the end of a library taller than the toolkit's own scrolling can
+  address.
 - File names in CJK, Arabic and emoji drawn correctly.
 - The measurements of "The gate", below.
 
