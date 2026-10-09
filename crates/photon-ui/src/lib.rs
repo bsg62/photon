@@ -14,9 +14,12 @@ pub mod grid {
     pub mod scroll;
     pub mod visible;
 }
+pub mod icons;
 pub mod tasks;
 pub mod text;
 pub mod theme {
+    pub mod apply;
+    pub mod fonts;
     pub mod tokens;
 }
 pub mod thumbs {
