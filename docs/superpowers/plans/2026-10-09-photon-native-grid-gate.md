@@ -1399,7 +1399,7 @@ Change `crates/photon-ui/tests/probe.rs`:
  
  /// Three small JPEGs to make thumbnails from.
  fn sources(dir: &Path) -> Vec<PathBuf> {
-@@ -75,3 +85,160 @@
+@@ -75,3 +85,162 @@
      assert!(refused.contains("already holds a library"), "{refused}");
      assert!(!dir.path().join("fixture/unplugged-drive").exists());
  }
@@ -1504,8 +1504,10 @@ Change `crates/photon-ui/tests/probe.rs`:
 +// that is `cargo run -p xtask -- grid-gate`.
 +//
 +//   cargo run --release -p photon-ui --example fixture -- --out target/gate-fixture
-+//   PHOTON_GATE_FIXTURE=target/gate-fixture \
++//   PHOTON_GATE_FIXTURE=$PWD/target/gate-fixture \
 +//     cargo test --release -p photon-ui --test probe -- --ignored --nocapture
++//
++// The whole path: a test runs in its crate's directory, not where cargo was called.
 +#[test]
 +#[ignore = "a measurement over a fixture built beforehand; see the comment"]
 +fn the_work_of_a_frame_over_the_gate_fixture() {
@@ -1884,7 +1886,7 @@ No test holds the `false` half of `outside` in `App::ui`: no engine report arriv
 - [ ] **Step 5: The measurement that needs no screen (optional, not a test)**
 
 ```bash
-PHOTON_GATE_FIXTURE=target/gate-fixture \
+PHOTON_GATE_FIXTURE=$PWD/target/gate-fixture \
   cargo test --release -p photon-ui --test probe -- --ignored --nocapture
 ```
 

@@ -27,6 +27,7 @@ fn main() -> ExitCode {
         return ExitCode::FAILURE;
     };
 
+    let probe = args.probe.clone();
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("photon")
@@ -41,12 +42,17 @@ fn main() -> ExitCode {
         "photon",
         options,
         Box::new(move |cc| {
-            tracing::info!(
-                adapter = ?cc.wgpu_render_state.as_ref().map(|state| state.adapter.get_info()),
-                "started"
-            );
             match App::new(cc, dirs, ::dirs::picture_dir()) {
-                Ok(app) => Ok(Box::new(app) as Box<dyn eframe::App>),
+                Ok(app) => {
+                    tracing::info!(adapter = ?app.adapter(), "started");
+                    let app = match probe {
+                        // When the harness started this process, for the launch time; a
+                        // run by hand has none and the report says so.
+                        Some(out) => app.with_probe(out, started_epoch_ms()),
+                        None => app,
+                    };
+                    Ok(Box::new(app) as Box<dyn eframe::App>)
+                }
                 Err(message) => Err(message.into()),
             }
         }),
@@ -59,4 +65,10 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// `PHOTON_PROBE_T0`: the epoch time, in milliseconds, at which the gate's harness started
+/// this process.
+fn started_epoch_ms() -> Option<f64> {
+    std::env::var("PHOTON_PROBE_T0").ok()?.parse().ok()
 }

@@ -3,11 +3,13 @@
 use crate::dirs::{self, Dirs};
 use std::path::PathBuf;
 
-pub const USAGE: &str = "usage: photon-native [--data-dir DIR] [--cache-dir DIR] [--fullscreen]
+pub const USAGE: &str =
+    "usage: photon-native [--data-dir DIR] [--cache-dir DIR] [--fullscreen] [--probe FILE]
 
   --data-dir DIR    the directory that holds library.db
   --cache-dir DIR   the directory that holds thumbs/
   --fullscreen      open fullscreen
+  --probe FILE      run the gate's scroll programme, write its report to FILE, and quit
 
 Without --data-dir and --cache-dir the library the Tauri photon opens is opened.";
 
@@ -16,6 +18,8 @@ pub struct Args {
     pub data_dir: Option<PathBuf>,
     pub cache_dir: Option<PathBuf>,
     pub fullscreen: bool,
+    /// Where the gate's report goes; the scroll programme runs when this is given.
+    pub probe: Option<PathBuf>,
 }
 
 impl Args {
@@ -25,14 +29,15 @@ impl Args {
         let mut parsed = Self::default();
         let mut args = args.into_iter();
         while let Some(arg) = args.next() {
-            let mut value = |name: &str| {
+            let mut value = |name: &str, what: &str| {
                 args.next()
                     .map(PathBuf::from)
-                    .ok_or_else(|| format!("{name} needs a directory"))
+                    .ok_or_else(|| format!("{name} needs a {what}"))
             };
             match arg.as_str() {
-                "--data-dir" => parsed.data_dir = Some(value("--data-dir")?),
-                "--cache-dir" => parsed.cache_dir = Some(value("--cache-dir")?),
+                "--data-dir" => parsed.data_dir = Some(value("--data-dir", "directory")?),
+                "--cache-dir" => parsed.cache_dir = Some(value("--cache-dir", "directory")?),
+                "--probe" => parsed.probe = Some(value("--probe", "file")?),
                 "--fullscreen" => parsed.fullscreen = true,
                 other => return Err(format!("unknown argument {other}")),
             }
@@ -105,5 +110,13 @@ mod tests {
             parse(&["--frobnicate"]),
             Err("unknown argument --frobnicate".to_owned())
         );
+    }
+
+    #[test]
+    fn the_probe_is_given_the_file_its_report_goes_to() {
+        let args = parse(&["--probe", "/tmp/report.json", "--fullscreen"]).unwrap();
+        assert_eq!(args.probe.as_deref(), Some(Path::new("/tmp/report.json")));
+        assert_eq!(parse(&[]).unwrap().probe, None);
+        assert_eq!(parse(&["--probe"]), Err("--probe needs a file".to_owned()));
     }
 }
