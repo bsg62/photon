@@ -23,7 +23,8 @@
 //! webview revalidates rather than refetches: a photo revisited, or reached after its
 //! neighbour preload, is a 304 with no file read and no render.
 
-use crate::engine::Engine;
+use crate::commands::parse_key;
+use crate::engine::{Engine, RENDERING};
 use photon_core::{Error, thumbs::ThumbSize};
 use std::{
     future::Future,
@@ -208,24 +209,6 @@ static FACE_CROPS: LazyLock<tokio::sync::Semaphore> = LazyLock::new(|| {
 /// How long the webview may keep a thumbnail served under its own key: forever, since that
 /// is what the key is for - it changes whenever the picture does.
 const FOREVER: &str = "public, max-age=31536000, immutable";
-
-/// The URL's thumbnail key, only in the exact spelling `hex_key` gives it. A looser parse
-/// would read `+1` as key 1 and cache key 1's picture under a URL the UI never asks for.
-pub(crate) fn parse_key(key: &str) -> Option<u64> {
-    u64::from_str_radix(key, 16)
-        .ok()
-        .filter(|&parsed| photon_core::grid::hex_key(parsed) == key)
-}
-
-/// One full-size render at a time. A render holds a whole decoded photo (about 100 MB at its
-/// peak for 24 MP) on a protocol thread, outside the thumbnail pool whose `MAX_WORKERS` is what
-/// bounds decode memory; flicking through a run of edited photos would otherwise start one
-/// per photo passed.
-///
-/// An export takes the same lock: a full-size render is a full-size render whoever asked
-/// for it, and an export of a hundred edited photos beside a viewer flicking through them
-/// would otherwise be two at once.
-pub(crate) static RENDERING: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
 
 fn image(
     engine: &Engine,

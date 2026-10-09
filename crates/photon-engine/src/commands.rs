@@ -1088,7 +1088,7 @@ pub fn copy_picture(engine: &Engine, id: i64) -> CmdResult<photon_core::edit::Cl
     // One full-size decode at a time, the lock the viewer's render and export share. Held
     // across the render only: the caller's clipboard write must not keep the next render,
     // or the viewer's, waiting on the desktop's clipboard.
-    let _one_at_a_time = crate::protocol::RENDERING.lock();
+    let _one_at_a_time = crate::engine::RENDERING.lock();
     photon_core::edit::clipboard_picture(Path::new(&item.path), item.orientation, item.edit)
         .map_err(|err| match err {
             Error::Io(io) if io.kind() == std::io::ErrorKind::NotFound => AppError {
@@ -1228,8 +1228,12 @@ pub struct VideoJobDto {
 /// own IPC timeouts, and long enough that an idle page asks about twice a minute.
 pub const VIDEO_JOB_WAIT: Duration = Duration::from_secs(25);
 
-pub fn media_base(server: &crate::media_server::MediaServer) -> String {
-    server.base_url()
+/// A thumbnail key from its hex, only in the exact spelling `hex_key` gives it. A looser
+/// parse would read `+1` as key 1 and cache key 1's picture under a URL the UI never asks for.
+pub fn parse_key(key: &str) -> Option<u64> {
+    u64::from_str_radix(key, 16)
+        .ok()
+        .filter(|&parsed| hex_key(parsed) == key)
 }
 
 pub fn video_session_start(engine: &Engine, supported: bool) -> CmdResult<()> {
@@ -1246,7 +1250,7 @@ pub fn next_video_job(engine: &Engine, wait: Duration) -> CmdResult<Option<Video
 /// The grid rebuild is coalesced (`Engine::frame_stored`), and never an error of this call:
 /// the frame is stored by then, and a rejection would tell the page its `put` failed.
 pub fn put_video_frame(engine: &Arc<Engine>, id: i64, key: &str, jpeg: &[u8]) -> CmdResult<()> {
-    let key = crate::protocol::parse_key(key).ok_or(Error::NotFound(id))?;
+    let key = parse_key(key).ok_or(Error::NotFound(id))?;
     if engine.thumbs.put_video_frame(id, key, jpeg)? {
         engine.frame_stored();
     }
@@ -1259,7 +1263,7 @@ pub fn video_frame_failed(
     key: &str,
     reason: photon_core::thumbs::VideoFailure,
 ) -> CmdResult<()> {
-    let key = crate::protocol::parse_key(key).ok_or(Error::NotFound(id))?;
+    let key = parse_key(key).ok_or(Error::NotFound(id))?;
     Ok(engine.thumbs.video_frame_failed(id, key, reason)?)
 }
 
