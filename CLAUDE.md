@@ -1333,6 +1333,12 @@ and cargo gave gpu-allocator that one, whose Direct3D types are not wgpu-hal's. 
 Windows only, as type errors that name no version. `the_gpu_crates_are_locked_to_one_windows_crate`
 says so on every platform, and its comment says which line of `Cargo.lock` to change.
 
+**A test that reads a file as text reads CRLF on Windows.** The runner's checkout converts
+line endings and `include_str!` hands them over as they are, so a match on text with a `\n`
+in it finds nothing there, and nowhere else: two of this crate's tripwires failed on Windows
+alone for it. Read by line (`lines()`, `trim()`), and give the reader a test that feeds it
+both endings (`the_lockfile_is_read_with_either_line_ending`).
+
 The stored theme and tile size are read in `App::new`, before the first frame, and not by a
 task: read after it, a theme pinned against the desktop's showed the desktop's for a frame
 at every launch. A screenshot sets its theme twice, stored in the library and given to the

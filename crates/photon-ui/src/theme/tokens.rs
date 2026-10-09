@@ -128,18 +128,33 @@ mod tests {
 
     const CSS: &str = include_str!("../../../../ui/src/tokens.css");
 
-    /// The custom properties declared in the block that opens with `selector`, by name.
-    fn block(selector: &str) -> HashMap<&'static str, &'static str> {
-        let start = CSS
-            .find(selector)
-            .unwrap_or_else(|| panic!("no block for {selector}"));
-        let body = &CSS[start..];
-        let body = &body[body.find('{').unwrap() + 1..body.find('}').unwrap()];
+    /// The custom properties declared in `css` from `start` to the end of the block it is
+    /// in, by name.
+    fn properties(css: &str, start: usize) -> HashMap<&str, &str> {
+        let body = &css[start..];
+        let body = &body[..body.find('}').unwrap()];
         body.lines()
             .filter_map(|line| line.trim().strip_suffix(';')?.split_once(':'))
             .filter(|(name, _)| name.starts_with("--"))
             .map(|(name, value)| (name.trim(), value.trim()))
             .collect()
+    }
+
+    /// The custom properties of the block of `css` that opens with `selector`.
+    fn block<'a>(css: &'a str, selector: &str) -> HashMap<&'a str, &'a str> {
+        let start = css
+            .find(selector)
+            .unwrap_or_else(|| panic!("no block for {selector}"));
+        properties(css, start + selector.len())
+    }
+
+    /// The bare `:root` block that holds the scales and the unthemed colours: the block
+    /// that declares the first radius. Found by what it holds and not by its selector
+    /// with the line after it, which is two lines only where a line ends in `\n` alone.
+    fn scales(css: &str) -> HashMap<&str, &str> {
+        let first = css.find("--r-1").expect("no --r-1 in the stylesheet");
+        let open = css[..first].rfind('{').expect("--r-1 is in no block");
+        properties(css, open + 1)
     }
 
     fn parse(value: &str) -> Rgba {
@@ -166,13 +181,13 @@ mod tests {
             ("[data-theme='light'] {", LIGHT),
             ("[data-theme='dark'] {", DARK),
         ] {
-            let css = block(selector);
+            let css = block(CSS, selector);
             for (name, colour) in palette.named() {
                 assert_eq!(parse(css[name]), colour, "{name} in {selector}");
             }
         }
         // The scales and the unthemed colours are in the bare `:root` block.
-        let root = block(":root {\n  --r-1");
+        let root = scales(CSS);
         for (name, colour) in UNTHEMED {
             assert_eq!(parse(root[name]), colour, "{name}");
         }
@@ -192,5 +207,16 @@ mod tests {
         for (i, size) in T.iter().enumerate() {
             assert_eq!(px(&format!("--t-{}", i + 1)), *size);
         }
+    }
+
+    // A Windows checkout has CRLF line endings, and `include_str!` hands them over as they
+    // are. The scales' block is found by its first line and the one after, which is two
+    // lines only where a line ends in `\n` alone: the first version found nothing there.
+    #[test]
+    fn the_stylesheet_is_read_with_either_line_ending() {
+        let unix = CSS.replace("\r\n", "\n");
+        let windows = unix.replace('\n', "\r\n");
+        assert_eq!(scales(&windows), scales(&unix));
+        assert_eq!(scales(&unix)["--r-1"], "4px");
     }
 }

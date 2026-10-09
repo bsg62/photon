@@ -54,9 +54,11 @@ mod tests {
     /// The version of the `windows` crate that `package` is locked to, or `None` when it
     /// does not depend on it.
     fn locked_windows_crate(lock: &str, package: &str) -> Option<String> {
-        let entry = lock
-            .split("[[package]]")
-            .find(|entry| entry.contains(&format!("name = \"{package}\"\n")))?;
+        let entry = lock.split("[[package]]").find(|entry| {
+            // By line, so a checkout with CRLF endings reads the same.
+            let name = format!("name = \"{package}\"");
+            entry.lines().any(|line| line.trim() == name)
+        })?;
         let dependency = entry
             .lines()
             .map(str::trim)
@@ -80,6 +82,18 @@ mod tests {
             "wgpu-hal no longer depends on the windows crate"
         );
         assert_eq!(locked_windows_crate(lock, "gpu-allocator"), wgpu);
+    }
+
+    // A Windows checkout has CRLF line endings, and `include_str!` hands them over as they
+    // are: the first version of this reader matched a name with its `\n` and found nothing
+    // there, on the one platform the test is about.
+    #[test]
+    fn the_lockfile_is_read_with_either_line_ending() {
+        let lock = include_str!("../../../Cargo.lock").replace("\r\n", "\n");
+        let unix = locked_windows_crate(&lock, "wgpu-hal");
+        assert!(unix.is_some());
+        let windows = lock.replace('\n', "\r\n");
+        assert_eq!(locked_windows_crate(&windows, "wgpu-hal"), unix);
     }
 
     // A state module that reaches for egui can no longer be tested without a context, and
