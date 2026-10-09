@@ -2096,7 +2096,7 @@ mod tests {
 
     /// Real filesystem events are timing-dependent, so this is excluded from CI, matching
     /// the same convention as `photon_core::watcher::fs`'s ignored test.
-    /// Run it locally with: cargo test -p photon-app -- --ignored copying_a_photo
+    /// Run it locally with: cargo test -p photon-engine -- --ignored copying_a_photo
     #[test]
     #[ignore]
     fn copying_a_photo_into_a_folder_added_after_start_appears_without_a_restart() {

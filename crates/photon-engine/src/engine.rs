@@ -189,6 +189,16 @@ fn retry_after(
     result
 }
 
+/// One full-size render at a time. A render holds a whole decoded photo (about 100 MB at its
+/// peak for 24 MP) on a protocol thread, outside the thumbnail pool whose `MAX_WORKERS` is what
+/// bounds decode memory; flicking through a run of edited photos would otherwise start one
+/// per photo passed.
+///
+/// An export takes the same lock: a full-size render is a full-size render whoever asked
+/// for it, and an export of a hundred edited photos beside a viewer flicking through them
+/// would otherwise be two at once.
+pub static RENDERING: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
 pub struct EngineConfig {
     pub db_path: PathBuf,
     pub cache_dir: PathBuf,
@@ -1125,6 +1135,14 @@ impl Engine {
         self.refresh_after_write("a tag rule change");
     }
 
+    /// Holds the INI-write lock, so a test can park a star on it the way a slow share does.
+    /// The tests that do are photon-app's, of its IPC dispatch (`a_star_holds_no_ipc_worker`),
+    /// which is why this is behind `test-support` and not `cfg(test)` alone.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn hold_ini_write(&self) -> MutexGuard<'_, ()> {
+        self.ini_write.lock()
+    }
+
     /// Sets or clears a photo's star: into the folder's Picasa INI first, then into the
     /// database, then the grid.
     ///
@@ -1138,12 +1156,6 @@ impl Engine {
     ///
     /// A photo the scanner has marked missing is refused: its folder may be an unmounted
     /// drive, and the INI photon would create there would be the only thing on it.
-    /// Holds the INI-write lock, so a test can park a star on it the way a slow share does.
-    #[cfg(test)]
-    pub(crate) fn hold_ini_write(&self) -> MutexGuard<'_, ()> {
-        self.ini_write.lock()
-    }
-
     pub fn set_star(&self, id: i64, starred: bool) -> Result<()> {
         let serialised = self.ini_write.lock();
         let item = self.lib.item(id)?.ok_or(Error::NotFound(id))?;
@@ -1339,7 +1351,7 @@ impl Engine {
     /// fill the duplicate finder with pairs the user did not make.
     ///
     /// An edited photo is decoded at full size to be exported as it is shown, under
-    /// `protocol::RENDERING` - the lock that bounds how many full-size decodes exist at once
+    /// `RENDERING` - the lock that bounds how many full-size decodes exist at once
     /// across the whole app. It is held across the render and *not* across the write: by
     /// then the picture has been dropped, and a write to a slow stick or a share would
     /// otherwise stall the viewer for no memory benefit.
@@ -1427,7 +1439,7 @@ impl Engine {
         match source.plan(options) {
             Plan::Render { edit, max_edge } => {
                 let (bytes, mime) = {
-                    let _one_at_a_time = crate::protocol::RENDERING.lock();
+                    let _one_at_a_time = RENDERING.lock();
                     export::render_for_export(&source, edit, max_edge)?
                 };
                 export::write_rendered(&source, dest, mime, &bytes)?;

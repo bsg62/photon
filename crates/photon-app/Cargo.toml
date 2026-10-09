@@ -30,6 +30,7 @@ tauri-build = { version = "2.6.3", features = [] }
 
 [dependencies]
 photon-core = { path = "../photon-core" }
+photon-engine = { path = "../photon-engine" }
 dunce = "1.0.5"
 parking_lot = "0.12.5"
 serde = { version = "1.0.229", features = ["derive"] }
@@ -48,20 +49,9 @@ getrandom = "0.3"
 # that runtime with every driver its features enable.
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time"] }
 
-# Settings' memory figure (`memory.rs`): the page size on Linux, the physical footprint on
-# macOS; the process table and private working set on Windows.
-[target.'cfg(unix)'.dependencies]
-libc = "0.2"
-
-[target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = [
-  "Win32_Foundation",
-  "Win32_System_Diagnostics_ToolHelp",
-  "Win32_System_ProcessStatus",
-  "Win32_System_Threading",
-] }
-
 [dev-dependencies]
+# `testutil::Fixture` and the event recorder, for the protocol's and the media server's tests.
+photon-engine = { path = "../photon-engine", features = ["test-support"] }
 image = { version = "0.25.10", default-features = false, features = ["jpeg"] }
 # Only to break a library on purpose: a rebuild that fails is the one thing a rollback test
 # cannot get from the engine's own API. The same version and features photon-core builds.
