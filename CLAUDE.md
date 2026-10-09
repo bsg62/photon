@@ -1276,6 +1276,43 @@ command resolves to null and the screenshot of what the UI makes of that reads a
 bug. A new surface worth seeing is a new entry in `SHOTS` and, if it needs a click, a new
 action in `mock.js`.
 
+### The native UI (branch `native-ui`)
+
+`crates/photon-ui` is the interface being rebuilt in Rust on egui and wgpu, in place of
+`ui/` and the Tauri shell (spec `2026-10-09-photon-native-ui-design.md`). Its binary is
+`photon-native` until the switch-over. **It is not launched to verify a change either**:
+`cargo run -p xtask -- native-shot` writes the grid to `target/screenshots/native-grid-*.png`
+off screen, and those are read.
+
+Two kinds of module, and `state_modules_name_no_egui_type` holds the line between them:
+*state modules* are plain Rust tested without a context (`grid/layout.rs`, `motion.rs`,
+`scroll.rs`, `thumbs/loader.rs`, `textures.rs`, `tasks.rs`), and *views* draw one and turn
+input into calls on it, tested in whole frames without a window (`Context::run_ui`, or
+`egui_kittest` where the application itself is run, as `tests/app.rs` does).
+
+`eframe` is pinned to an exact version and its API moves between minors: read the pinned
+version's source, never an older egui from memory. `eframe::App` is `fn ui(&mut self, ui:
+&mut egui::Ui, ..)`.
+
+**Nothing that reads SQLite runs on the UI thread.** It goes through `tasks::Latest`, which
+answers only the latest question. `Engine::published` and the `GridIndex` are in memory and
+are read directly - `published` when the engine says the library changed, not per frame.
+
+**The grid has no scroll map.** Its position is an `f64` in the layout's coordinates and
+the rows are drawn at `row.top - position`; egui's `ScrollArea` is not used for it, because
+its offset is an `f32`. Several rules of the Svelte grid have no successor (`placeIn`,
+`viewTop`, pages, mounting): the spec of the slice lists them so they are not ported.
+
+**A thumbnail not built yet is waited for, never blocked on** (`thumbs/loader.rs`): one
+thread polls every pending `request_async`, as `protocol.rs` learned to.
+
+**Text goes through `text::paint_line`**, not through egui directly, wherever it can be in
+another script: egui shapes text but runs no bidirectional algorithm, and draws a name that
+mixes directions wrong. A text *field* is not covered.
+
+A screenshot's theme is the stored setting, written into the library before the
+application opens it: a harness has no desktop to follow.
+
 ## Conventions
 
 - **photon never writes to, moves or deletes photo files.** The one file it writes inside a
