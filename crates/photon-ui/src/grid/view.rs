@@ -57,6 +57,9 @@ pub struct GridOutput {
     pub settled: bool,
     /// How many tiles in view show that mark.
     pub marked: usize,
+    /// Whether a picture the grid wants, in view or just outside it, is still on its way:
+    /// being read, or read and not yet uploaded.
+    pub loading: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -135,7 +138,7 @@ impl GridView {
         let motion = self.speed.motion();
         let (first, last) = visible_range(&self.rows, top, viewport, 0.0);
         let (wanted, on_screen) = self.wanted(data.index, top, viewport, motion, (first, last));
-        thumbs.frame(ui.ctx(), &wanted, defers_thumbs(motion, viewport));
+        let loading = thumbs.frame(ui.ctx(), &wanted, defers_thumbs(motion, viewport));
 
         let (settled, marked) = self.draw(ui, area, data, thumbs, (first, last));
         let pinned = pinned_header(&self.rows, &self.headers, top);
@@ -160,6 +163,7 @@ impl GridView {
             position: top,
             settled,
             marked,
+            loading,
         }
     }
 
@@ -741,12 +745,23 @@ mod tests {
         // begins at 32 + 3 * 195 = 617.
         assert_eq!(first.on_screen, (1..=12).collect::<Vec<i64>>());
         assert!(!first.settled, "nothing has been read yet");
+        assert!(first.loading);
         let deadline = Instant::now() + Duration::from_secs(10);
         while !f.frame(Vec::new()).settled {
             assert!(Instant::now() < deadline, "the pictures never came");
             std::thread::sleep(Duration::from_millis(2));
         }
         assert!(f.thumbs.texture(1).is_some());
+        // Settled is what is in view. The rows wanted beyond it may still be on their
+        // way, and then they come too, and nothing is.
+        while f.frame(Vec::new()).loading {
+            assert!(
+                Instant::now() < deadline,
+                "the pictures never stopped coming"
+            );
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert!(f.frame(Vec::new()).settled);
     }
 
     // A first run, and every launch until the engine's first build: the index is empty.

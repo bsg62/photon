@@ -24,8 +24,9 @@ impl Thumbs {
     /// Once per frame, before the tiles are drawn: takes what the loader has finished,
     /// uploads within the budget, and tells the loader what is wanted now - `wanted`, most
     /// wanted first, or nothing at all while `defer` holds, since a tile that will be gone
-    /// before it settles must not cost a render.
-    pub fn frame(&mut self, ctx: &egui::Context, wanted: &[Want], defer: bool) {
+    /// before it settles must not cost a render. Answers whether any of them is still on
+    /// its way: wanted and not yet a texture, a failure or a thing put off.
+    pub fn frame(&mut self, ctx: &egui::Context, wanted: &[Want], defer: bool) -> bool {
         self.textures.begin_frame();
         let keys: Vec<TexKey> = wanted.iter().map(|want| TexKey::grid(want.key)).collect();
         let wanted_keys: HashSet<TexKey> = keys.iter().copied().collect();
@@ -71,6 +72,7 @@ impl Thumbs {
                 .copied()
                 .collect()
         });
+        more || !missing.is_empty()
     }
 
     /// The texture of the picture cached under `key`, if it has been uploaded.

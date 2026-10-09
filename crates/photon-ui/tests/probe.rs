@@ -17,6 +17,8 @@ use std::{
 
 /// The harness's screen: sixty frames a second.
 const REFRESH: f64 = 1.0 / 60.0;
+/// How long no other thread must have asked for a frame before they are taken to be done.
+const QUIET: Duration = Duration::from_millis(250);
 
 /// Three small JPEGs to make thumbnails from.
 fn sources(dir: &Path) -> Vec<PathBuf> {
@@ -123,9 +125,15 @@ fn the_programme_runs_over_a_fixture_to_its_report() {
     // in the idle step, which says nothing about a still grid.
     let clock = Arc::new(Mutex::new(0.0_f64));
     let due = Arc::new(Mutex::new(Some(0.0_f64)));
+    // When another thread last asked for a frame: the engine, a decoder, a task.
+    let stray = Arc::new(Mutex::new(Instant::now()));
     {
-        let (clock, due) = (clock.clone(), due.clone());
+        let (clock, due, stray) = (clock.clone(), due.clone(), stray.clone());
+        let ui_thread = std::thread::current().id();
         harness.ctx.set_request_repaint_callback(move |asked| {
+            if std::thread::current().id() != ui_thread {
+                *stray.lock().unwrap() = Instant::now();
+            }
             let at = *clock.lock().unwrap() + asked.delay.as_secs_f64();
             let mut due = due.lock().unwrap();
             *due = Some(due.map_or(at, |before| before.min(at)));
@@ -133,6 +141,10 @@ fn the_programme_runs_over_a_fixture_to_its_report() {
     }
     let mut now = 0.0;
     let (mut unasked, mut nudged) = (false, false);
+    // Since when the programme has been at its first long rest, until what the other
+    // threads were still doing has come in.
+    let mut draining: Option<Instant> = None;
+    let mut drained = false;
     let deadline = Instant::now() + Duration::from_secs(120);
     while !out.exists() {
         assert!(
@@ -144,6 +156,25 @@ fn the_programme_runs_over_a_fixture_to_its_report() {
             std::thread::sleep(Duration::from_millis(1));
             continue;
         };
+        // The programme's first long rest is where this clock first jumps, and a clock
+        // that jumps leaves the other threads behind: a second of it passes in no time at
+        // all, and the row of thumbnails still being decoded, or the engine's last word
+        // on its launch, then arrives "seconds later", in the idle step, as a frame the
+        // grid drew by itself. On a screen that second is a second and they are long
+        // done. So before the first jump they are waited for, in real time and none of
+        // this clock's: until no picture is on its way and no other thread has asked for
+        // a frame for a while. One run in fifty failed on one core without it, and the
+        // first on a macOS runner.
+        if !drained && asked - now > 0.5 {
+            let since = *draining.get_or_insert_with(Instant::now);
+            let loading = harness.state().last_frame().is_some_and(|f| f.loading);
+            let quiet = since.max(*stray.lock().unwrap()).elapsed() >= QUIET;
+            if loading || !quiet {
+                std::thread::sleep(Duration::from_millis(1));
+                continue;
+            }
+            drained = true;
+        }
         now = if asked - now > 3.0 && !unasked {
             // The only rest this long is the idle step's. One frame nobody asked for, in
             // the middle of it: what a grid that repaints by itself would draw.
@@ -157,7 +188,13 @@ fn the_programme_runs_over_a_fixture_to_its_report() {
             now + 1.0
         } else {
             *due.lock().unwrap() = None;
-            asked.max(now + REFRESH)
+            // While the others are waited for, what they ask for is drawn at once.
+            let refresh = if draining.is_some() && !drained {
+                0.001
+            } else {
+                REFRESH
+            };
+            asked.max(now + refresh)
         };
         *clock.lock().unwrap() = now;
         harness.input_mut().time = Some(now);
