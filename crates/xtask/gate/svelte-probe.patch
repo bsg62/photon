@@ -1,31 +1,33 @@
 diff --git i/crates/photon-app/src/app.rs w/crates/photon-app/src/app.rs
-index abdbd95..512150b 100644
+index abdbd95..505b2a2 100644
 --- i/crates/photon-app/src/app.rs
 +++ w/crates/photon-app/src/app.rs
-@@ -306,6 +306,8 @@ pub fn run() {
+@@ -306,6 +306,9 @@ pub fn run() {
              ipc::reveal_watched,
              ipc::reveal_library,
              ipc::media_base,
 +            ipc::probe_config,
 +            ipc::probe_done,
++            ipc::probe_exit,
              ipc::video_session_start,
              ipc::next_video_job,
              ipc::put_video_frame,
 diff --git i/crates/photon-app/src/ipc.rs w/crates/photon-app/src/ipc.rs
-index 791a864..1781c81 100644
+index 791a864..9ffd5eb 100644
 --- i/crates/photon-app/src/ipc.rs
 +++ w/crates/photon-app/src/ipc.rs
-@@ -700,6 +700,37 @@ pub fn video_frame_failed(
+@@ -700,6 +700,42 @@ pub fn video_frame_failed(
      commands::video_frame_failed(&engine, id, &key, reason)
  }
  
-+// THE GATE'S PROBE (`ui/src/lib/probe.ts`): where its report goes and when the harness
-+// started this process, and the end of the run. Applied by `xtask grid-gate` to a throwaway
-+// worktree; never merged.
++// THE GATE'S PROBE (`ui/src/lib/probe.ts`): where its report goes, when the harness
++// started this process and whether this is the launch it throws away; the report; and the
++// end of the run. Applied by `xtask grid-gate` to a throwaway worktree; never merged.
 +#[derive(serde::Serialize)]
 +pub struct ProbeConfig {
 +    out: String,
 +    t0: Option<f64>,
++    warm_up: bool,
 +}
 +
 +#[tauri::command(async)]
@@ -34,20 +36,24 @@ index 791a864..1781c81 100644
 +    let t0 = std::env::var("PHOTON_PROBE_T0")
 +        .ok()
 +        .and_then(|t0| t0.parse().ok());
-+    Some(ProbeConfig { out, t0 })
++    let warm_up = std::env::var_os("PHOTON_PROBE_WARMUP").is_some();
++    Some(ProbeConfig { out, t0, warm_up })
 +}
 +
 +#[tauri::command(async)]
-+pub fn probe_done(app: tauri::AppHandle, report: String) -> Result<(), AppError> {
++pub fn probe_done(report: String) -> Result<(), AppError> {
 +    let out = std::env::var("PHOTON_PROBE_OUT").map_err(AppError::internal)?;
 +    let mut report: serde_json::Value =
 +        serde_json::from_str(&report).map_err(AppError::internal)?;
 +    // photon and its web view's processes, as Settings counts them.
 +    report["memory_bytes"] = serde_json::json!(commands::memory_usage().ok().map(|m| m.bytes));
 +    let text = serde_json::to_string_pretty(&report).map_err(AppError::internal)?;
-+    std::fs::write(out, text).map_err(AppError::internal)?;
++    std::fs::write(out, text).map_err(AppError::internal)
++}
++
++#[tauri::command(async)]
++pub fn probe_exit(app: tauri::AppHandle) {
 +    app.exit(0);
-+    Ok(())
 +}
 +
  #[cfg(test)]
@@ -88,10 +94,10 @@ index e576335..e3d30ad 100644
      const probe = document.createElement('div');
 diff --git i/ui/src/lib/probe.ts w/ui/src/lib/probe.ts
 new file mode 100644
-index 0000000..63ba82f
+index 0000000..1c875d5
 --- /dev/null
 +++ w/ui/src/lib/probe.ts
-@@ -0,0 +1,170 @@
+@@ -0,0 +1,219 @@
 +/** THE GATE'S PROBE. Applied by `cargo run -p xtask -- grid-gate` to a throwaway worktree
 + *  and never merged: it is how the Svelte grid runs the scroll programme the native grid
 + *  runs (`crates/photon-ui/src/probe.rs`), so the two can be laid side by side.
@@ -112,6 +118,8 @@ index 0000000..63ba82f
 +const FAST_PX_PER_S = 30_000;
 +const FAST_SECS = 5;
 +const SWEEP_SECS = 5;
++const SWEEP_SHARE = 0.75;
++const PAUSE_SECS = 0.5;
 +const STILL_SECS = 1;
 +const IDLE_SECS = 5;
 +const CALM_SECS = 1;
@@ -152,26 +160,29 @@ index 0000000..63ba82f
 +  };
 +}
 +
-+/** Whether every tile in view has its picture, or the mark that it will not. Asked only
-+ *  by the steps that wait for it: it measures every tile on screen, which during a scroll
-+ *  would be the probe slowing down what it is timing. */
-+function settled(viewport: HTMLElement): boolean {
++/** How many tiles in view show the mark of a picture that cannot be had, or null while a
++ *  tile in view has neither its picture nor that mark. Asked only by the steps that wait
++ *  for it: it measures every tile on screen, which during a scroll would be the probe
++ *  slowing down what it is timing. */
++function marksWhenSettled(viewport: HTMLElement): number | null {
 +  const box = viewport.getBoundingClientRect();
 +  let seen = 0;
++  let marks = 0;
 +  for (const tile of viewport.querySelectorAll<HTMLElement>('.tile')) {
 +    const rect = tile.getBoundingClientRect();
 +    if (rect.bottom <= box.top || rect.top >= box.bottom) continue;
 +    seen++;
-+    if (!tile.querySelector('img.loaded') && !tile.querySelector('.broken')) return false;
++    if (tile.querySelector('.broken')) marks++;
++    else if (!tile.querySelector('img.loaded')) return null;
 +  }
-+  return seen > 0;
++  return seen > 0 ? marks : null;
 +}
 +
 +const frame = () => new Promise<number>((resolve) => requestAnimationFrame(resolve));
 +const epoch = () => performance.timeOrigin + performance.now();
 +
 +export async function runProbe(hooks: ProbeHooks): Promise<void> {
-+  const config = await invoke<{ out: string; t0: number | null } | null>('probe_config');
++  const config = await invoke<{ out: string; t0: number | null; warm_up: boolean } | null>('probe_config');
 +  if (!config) return;
 +  await getCurrentWindow().setFullscreen(true);
 +
@@ -185,14 +196,22 @@ index 0000000..63ba82f
 +    position = next;
 +    hooks.scrollTo(next);
 +  };
++  /** The time of the frame this code is running in. */
++  let now = 0;
++  const next = async () => (now = await frame());
++  let marked_tiles = 0;
 +
-+  /** Frames until the grid shows its pictures: how long that took, or null after the
-+   *  timeout. The frame that made the move is not the one that shows them. */
++  /** Frames until the grid shows its pictures: how long that took from the frame that
++   *  made the move, or null after the timeout. */
 +  const untilSettled = async (): Promise<number | null> => {
-+    const since = await frame();
++    const since = now;
 +    for (;;) {
-+      const now = await frame();
-+      if (settled(viewport())) return now - since;
++      await next();
++      const marks = marksWhenSettled(viewport());
++      if (marks !== null) {
++        marked_tiles = Math.max(marked_tiles, marks);
++        return now - since;
++      }
 +      if (now - since >= SETTLE_TIMEOUT_SECS * 1000) return null;
 +    }
 +  };
@@ -200,10 +219,10 @@ index 0000000..63ba82f
 +  /** A step that moves the grid for `secs`, to wherever `place(elapsed ms)` says. */
 +  const moving = async (secs: number, place: (elapsed: number) => number): Promise<Cadence> => {
 +    const intervals: number[] = [];
-+    const since = await frame();
++    const since = now;
 +    let last = since;
 +    for (;;) {
-+      const now = await frame();
++      await next();
 +      intervals.push(now - last);
 +      last = now;
 +      const elapsed = now - since;
@@ -212,46 +231,83 @@ index 0000000..63ba82f
 +    }
 +  };
 +
++  /** The grid left alone, frame after frame, for `secs`. */
++  const waiting = async (secs: number) => {
++    const since = now;
++    while (now - since < secs * 1000) await next();
++  };
++
++  /** Writes the report, then leaves the grid at the top before the application goes: the
++   *  folder at the top is remembered and the next launch comes back to it, and a launch
++   *  that began at the far end would not be the launch the last one was. */
++  const finish = async (report: Record<string, unknown>) => {
++    await invoke('probe_done', { report: JSON.stringify(report) });
++    to(0);
++    await untilSettled();
++    await waiting(PAUSE_SECS);
++    await invoke('probe_exit');
++  };
++
 +  // Launch: until the grid has photos and shows them.
 +  for (;;) {
-+    await frame();
-+    if (hooks.photos() > 0 && hooks.viewport() && settled(viewport())) break;
++    await next();
++    if (hooks.photos() > 0 && hooks.viewport()) {
++      const marks = marksWhenSettled(viewport());
++      if (marks !== null) {
++        marked_tiles = marks;
++        break;
++      }
++    }
 +  }
 +  const launch_ms = config.t0 === null ? null : epoch() - config.t0;
 +  const photos = hooks.photos();
-+  // From the top, whatever the launch showed: this grid goes back to the folder it was
-+  // last left in, and a second run over the same fixture was left at the far end.
-+  to(0);
-+  await untilSettled();
-+  await new Promise((resolve) => setTimeout(resolve, CALM_SECS * 1000));
-+
-+  const from = position;
-+  const steady = await moving(STEADY_SECS, (elapsed) => from + (STEADY_PX_PER_S * elapsed) / 1000);
-+  const fastFrom = position;
-+  const fast = await moving(FAST_SECS, (elapsed) => fastFrom + (FAST_PX_PER_S * elapsed) / 1000);
-+
-+  to(hooks.max());
-+  const jump_end_ms = await untilSettled();
-+  to(hooks.max() / 2);
-+  const jump_middle_ms = await untilSettled();
-+
-+  to(0);
-+  await untilSettled();
-+  const sweep = await moving(SWEEP_SECS, (elapsed) => (hooks.max() * elapsed) / (SWEEP_SECS * 1000));
-+  to(hooks.max());
-+  const sweep_settle_ms = await untilSettled();
-+
-+  // The rest before the idle step, and the step: nothing is counted in either here, but
-+  // the memory is read at the same point of both programmes.
-+  await new Promise((resolve) => setTimeout(resolve, (STILL_SECS + IDLE_SECS) * 1000));
-+
-+  const report = {
++  const about = {
 +    app: 'svelte',
 +    window: [window.innerWidth, window.innerHeight],
 +    scale: window.devicePixelRatio,
 +    adapter: null,
 +    photos,
 +    launch_ms,
++  };
++  // The launch the harness throws away before the one it measures.
++  if (config.warm_up) return finish({ ...about, marked_tiles });
++
++  // From the top, whatever the launch showed.
++  to(0);
++  await untilSettled();
++  await waiting(CALM_SECS);
++
++  const from = position;
++  const steady = await moving(STEADY_SECS, (elapsed) => from + (STEADY_PX_PER_S * elapsed) / 1000);
++  const fastFrom = position;
++  const fast = await moving(FAST_SECS, (elapsed) => fastFrom + (FAST_PX_PER_S * elapsed) / 1000);
++
++  // Every jump from rest, so that it is a jump on its own, as End is, and not the last
++  // of a stream, in which this grid holds each tile's request back.
++  await waiting(PAUSE_SECS);
++  to(hooks.max());
++  const jump_end_ms = await untilSettled();
++  await waiting(PAUSE_SECS);
++  to(hooks.max() / 2);
++  const jump_middle_ms = await untilSettled();
++
++  await waiting(PAUSE_SECS);
++  to(0);
++  await untilSettled();
++  await waiting(PAUSE_SECS);
++  // To a place the programme has not been: the end and the middle were the jumps'.
++  const sweepTo = () => hooks.max() * SWEEP_SHARE;
++  const sweep = await moving(SWEEP_SECS, (elapsed) => (sweepTo() * elapsed) / (SWEEP_SECS * 1000));
++  to(sweepTo());
++  const sweep_settle_ms = await untilSettled();
++
++  // The rest before the idle step, and the step: nothing is counted in either here, but
++  // the memory is read at the same point of both programmes.
++  await new Promise((resolve) => setTimeout(resolve, (STILL_SECS + IDLE_SECS) * 1000));
++
++  await finish({
++    ...about,
++    marked_tiles,
 +    steady,
 +    fast,
 +    jump_end_ms,
@@ -259,6 +315,5 @@ index 0000000..63ba82f
 +    sweep,
 +    sweep_settle_ms,
 +    idle_frames: null,
-+  };
-+  await invoke('probe_done', { report: JSON.stringify(report) });
++  });
 +}

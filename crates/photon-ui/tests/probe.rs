@@ -5,7 +5,7 @@
 //! What this cannot say is how long a frame takes on a screen. That is the gate itself
 //! (`cargo run -p xtask -- grid-gate`), which needs a compositor.
 
-use eframe::egui::vec2;
+use eframe::egui::{self, pos2, vec2};
 use photon_core::{library::Library, media::ThumbState};
 use photon_ui::{app::App, fixture};
 use std::{
@@ -77,6 +77,19 @@ fn a_fixture_is_a_library_with_every_thumbnail_cached_and_no_folder_to_scan() {
         None
     );
 
+    // It says of itself that it was finished, and by which builder: the last thing
+    // written. A build that was interrupted has a library and no such word, and one from
+    // an older builder is not the library this one makes.
+    let out = dir.path().join("fixture");
+    assert_eq!(fixture::complete(&out), Some(700));
+    let marker = out.join(fixture::MARKER);
+    let said = std::fs::read_to_string(&marker).unwrap();
+    std::fs::write(&marker, said.replace("\"builder\":1", "\"builder\":0")).unwrap();
+    assert_eq!(fixture::complete(&out), None, "an older builder's");
+    std::fs::remove_file(&marker).unwrap();
+    assert_eq!(fixture::complete(&out), None, "an unfinished one");
+    assert_eq!(fixture::complete(&dir.path().join("nowhere")), None);
+
     // A second build into the same place is refused before it writes anything, not
     // layered over the first: without the check it fails too, but half-way, on a folder
     // the library already watches, having made the folder again.
@@ -119,7 +132,7 @@ fn the_programme_runs_over_a_fixture_to_its_report() {
         });
     }
     let mut now = 0.0;
-    let mut unasked = false;
+    let (mut unasked, mut nudged) = (false, false);
     let deadline = Instant::now() + Duration::from_secs(120);
     while !out.exists() {
         assert!(
@@ -133,9 +146,15 @@ fn the_programme_runs_over_a_fixture_to_its_report() {
         };
         now = if asked - now > 3.0 && !unasked {
             // The only rest this long is the idle step's. One frame nobody asked for, in
-            // the middle of it, as a window uncovered would draw.
+            // the middle of it: what a grid that repaints by itself would draw.
             unasked = true;
             now + (asked - now) / 2.0
+        } else if asked - now > 1.5 && unasked && !nudged {
+            // And, later in the same rest, the mouse nudged: the frame that answers it
+            // and whatever egui draws after it are the person's, not the grid's.
+            nudged = true;
+            harness.event(egui::Event::PointerMoved(pos2(300.0, 200.0)));
+            now + 1.0
         } else {
             *due.lock().unwrap() = None;
             asked.max(now + REFRESH)
@@ -152,15 +171,19 @@ fn the_programme_runs_over_a_fixture_to_its_report() {
     // Ten seconds of the harness's clock at sixty steps a second.
     let frames = json["steady"]["frames"].as_u64().unwrap();
     assert!((595..=605).contains(&frames), "{frames}");
-    // The library is three screens of rows: the jumps land somewhere, and it shows its
-    // pictures there, every one of them from the cache.
+    // The library is many screens of rows: each jump lands somewhere it has not been,
+    // and it shows its pictures there, every one of them from the cache.
     for step in ["jump_end_ms", "jump_middle_ms", "sweep_settle_ms"] {
         assert!(json[step].is_number(), "{step}: {}", json[step]);
     }
     // The idle step: the one frame nobody asked for, and nothing else. Not what the last
     // scroll left to be drawn, not the second frame the toolkit draws after one asked for
-    // at once, and not the frame that ends the step, which comes a little early.
+    // at once, not the frame that ends the step, which comes a little early, and not
+    // the frames a nudged mouse was answered with.
+    assert!(unasked && nudged);
     assert_eq!(json["idle_frames"], 1);
+    // Every tile was a picture: the fixture's thumbnails are where the application looks.
+    assert_eq!(json["marked_tiles"], 0);
     // The programme moved the grid and left it where its last step ends: at the far end.
     let last = harness.state().last_frame().unwrap();
     assert!(last.position > 10_000.0, "the grid is at {}", last.position);
@@ -170,6 +193,56 @@ fn the_programme_runs_over_a_fixture_to_its_report() {
     drop(harness);
     let lib = Library::open(&fixture.dirs().db_path).unwrap();
     assert_eq!(lib.grid_entries().unwrap().len(), 900);
+}
+
+/// Runs the launch the gate throws away over `fixture`, and reads its report.
+fn warm_up(fixture: &fixture::Fixture, dir: &Path) -> (serde_json::Value, f64) {
+    let out = dir.join("report.json");
+    let report = out.clone();
+    let mut harness = egui_kittest::Harness::builder()
+        .with_size(vec2(800.0, 600.0))
+        .with_step_dt(REFRESH as f32)
+        .build_eframe(|cc| {
+            App::new(cc, fixture.dirs(), None)
+                .unwrap()
+                .with_warm_up(report, Some(0.0))
+        });
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while !out.exists() {
+        assert!(Instant::now() < deadline, "the warm-up never ended");
+        harness.step();
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let position = harness.state().last_frame().unwrap().position;
+    let json = serde_json::from_slice(&std::fs::read(&out).unwrap()).unwrap();
+    (json, position)
+}
+
+// The launch the gate throws away before the one it measures.
+#[test]
+fn a_warm_up_writes_its_report_at_the_first_pictures() {
+    let dir = tempfile::tempdir().unwrap();
+    let fixture = fixture::build(&dir.path().join("fixture"), 900, &sources(dir.path())).unwrap();
+    let (json, position) = warm_up(&fixture, dir.path());
+    assert_eq!(json["photos"], 900);
+    assert!(json["launch_ms"].is_number());
+    assert_eq!(json["steady"]["frames"], 0);
+    assert_eq!(json["marked_tiles"], 0);
+    // It never moved the grid.
+    assert_eq!(position, 0.0);
+}
+
+// A tile whose picture cannot be had shows a mark and counts as shown, so a run whose
+// thumbnails are not where the application looks "shows its pictures" in a frame. The
+// report says how many tiles were marks, and the gate fails on any.
+#[test]
+fn a_library_without_its_thumbnails_is_reported_as_marks() {
+    let dir = tempfile::tempdir().unwrap();
+    let fixture = fixture::build(&dir.path().join("fixture"), 900, &sources(dir.path())).unwrap();
+    std::fs::remove_dir_all(&fixture.cache_dir).unwrap();
+    let (json, _) = warm_up(&fixture, dir.path());
+    let marks = json["marked_tiles"].as_u64().unwrap();
+    assert!(marks >= 8, "{marks} tiles of a screen of them");
 }
 
 /// The value at `quantile` of `sorted`, by the nearest rank.

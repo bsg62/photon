@@ -169,6 +169,17 @@ impl App {
         self
     }
 
+    /// Makes this run the launch the gate throws away before the one it measures: it
+    /// ends, with a report nobody reads, as soon as the grid shows its pictures.
+    pub fn with_warm_up(mut self, out: PathBuf, started_epoch_ms: Option<f64>) -> Self {
+        self.probe = Some(ProbeRun {
+            probe: Probe::warm_up(started_epoch_ms),
+            outside: Outside::default(),
+            out,
+        });
+        self
+    }
+
     /// The GPU the window is drawn with, as wgpu describes it.
     pub fn adapter(&self) -> Option<&str> {
         self.adapter.as_deref()
@@ -238,19 +249,21 @@ impl App {
         if run.probe.done() {
             return;
         }
+        let now_ms = ctx.input(|input| input.time) * 1000.0;
         let facts = Facts {
-            now_ms: ctx.input(|input| input.time) * 1000.0,
+            now_ms,
             max: self.view.max_position(),
             settled: output.settled,
             photos: self.index.len(),
-            outside: run.outside.frame(reported),
+            marked: output.marked,
+            outside: run.outside.frame(now_ms, reported),
         };
         let epoch_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0.0, |since| since.as_secs_f64() * 1000.0);
         match run.probe.frame(facts, epoch_ms) {
             Move::To(position) => {
-                self.view.scroll_to(position);
+                self.view.move_to(position);
                 ctx.request_repaint();
             }
             Move::Wait => ctx.request_repaint(),
@@ -287,7 +300,10 @@ impl App {
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        let reported = self.take_events();
+        // Whether this frame was asked for from outside the grid: by the engine, which
+        // reported, or by the person, whose mouse or keys are in the frame's input.
+        let touched = ui.input(|input| !input.events.is_empty());
+        let reported = self.take_events() || touched;
         self.take_answers();
 
         let data = GridData {

@@ -1352,27 +1352,50 @@ at every launch. A screenshot sets its theme twice, stored in the library and gi
 application has been made.
 
 **`cargo run -p xtask -- grid-gate` is the one command that launches the application**, and
-it does nothing unless told which: `--go --refresh-hz <hz>` opens two fullscreen windows,
-one after the other, for about two minutes on a desktop that has to stay awake; `--dry-run`
-builds everything and launches nothing. It is run by a person, or on their word at the
-time, because the interval between two frames does not exist without a compositor. It
-measures `photon-native --probe` (the scroll programme, `probe.rs`, a state module) against
-the Svelte grid, which is given the same programme by `crates/xtask/gate/svelte-probe.patch`
-in a throwaway worktree (`target/gate-svelte`) and never in `ui/`;
-`the_svelte_probe_still_applies` fails when `Grid.svelte` or `ipc.rs` has moved from under
-the patch. Both run over `target/gate-fixture` (`fixture-library`: 300,000 rows on a drive
-recorded as unplugged, every thumbnail cached, so the engine has nothing to do at launch).
-A fixture is not rebuilt when its builder changes: delete the directory.
+it does nothing unless told which: `--go --refresh-hz <hz>` opens fullscreen windows that
+close by themselves, for about two minutes, on a desktop that has to stay awake and
+untouched; `--dry-run` builds everything and launches nothing. It is run by a person, or on
+their word at the time, because the interval between two frames does not exist without a
+compositor. It measures `photon-native --probe` (the scroll programme, `probe.rs`, a state
+module) against the Svelte grid, which is given the same programme by
+`crates/xtask/gate/svelte-probe.patch` in a throwaway worktree (`target/gate-svelte`) and
+never in `ui/`; `the_svelte_probe_still_applies` fails when `Grid.svelte` or `ipc.rs` has
+moved from under the patch. Both run over `target/gate-fixture` (`fixture-library`: 300,000
+rows on a drive recorded as unplugged, every thumbnail cached, so the engine has nothing to
+do at launch). The gate asks the builder whether the fixture there is finished and its own
+(`fixture --check`, `fixture::BUILDER`) and builds it again when it is not: **move
+`BUILDER` with any change to what a fixture is.**
+
+**The gate is only worth its table if the two columns are of the same thing**, and its
+first version was not, in ways a review found by reading the two programmes side by side.
+Kept so, each with a test: the programme moves the native grid through `GridView::move_to`,
+taken with the next frame's input - set directly, the grid never knew it had moved, while
+the Svelte grid's scroll event always tells it, so the native one skipped the hold after a
+jump that the Svelte one paid; every jump is made from rest (`PAUSE_SECS`), or it is the
+last of a stream and what is timed is each grid's own hold; the sweep ends short of the end
+(`SWEEP_SHARE`), where no jump has been; each application is launched once and thrown away
+before the launch that is measured, since the Svelte photon runs under directories of its
+own that a first launch has to fill; and `judge` fails a table whose runs differ in photos
+or window, whose given refresh rate neither grid keeps, or in which any tile was a mark
+(a library whose thumbnails are not where the application looks "shows its pictures" at
+once). A new step is written into both programmes, `probe.rs` and the patch's `probe.ts`.
 
 **A test that counts frames drives the application as an event loop does**
 (`the_programme_runs_over_a_fixture_to_its_report`): a frame only when egui's repaint
 callback asked for one, on a clock that jumps over the time nothing did. Stepping
-`egui_kittest` draws a frame at every step, asked for or not, and hid three things the
-gate's first count of idle frames got wrong: egui draws a second frame after every frame
-asked for at once, a frame asked for after a delay comes one frame early, and a scroll
-leaves two frames of its own behind (`SCROLL_SETTLE_MS`, `VISIBLE_DEBOUNCE_MS`). Each would
-have failed the gate on a perfectly still grid. Anything that asserts a still interface
-draws nothing is tested through that loop.
+`egui_kittest` draws a frame at every step, asked for or not, and hid what the gate's first
+count of idle frames got wrong: egui draws a second frame after every frame asked for at
+once, a frame asked for after a delay comes one frame early, a scroll leaves two frames of
+its own behind (`SCROLL_SETTLE_MS`, `VISIBLE_DEBOUNCE_MS`), and a nudged mouse is three
+frames, not one (`ECHO_MS`). Each would have failed the gate on a perfectly still grid.
+Anything that asserts a still interface draws nothing is tested through that loop.
+
+**Two checkouts do not share a `CARGO_TARGET_DIR`.** Cargo names a workspace member's
+build by its place in the workspace, not by where the checkout is, and decides whether it
+is fresh from the sources of whichever checkout built it last: a second checkout then runs
+the first one's binary without a word. It happened twice while the gate was built (a
+reviewer's copy, and the gate's own worktree running this tree's xtask). The gate builds
+its worktree into `target/gate-svelte-target` for that reason.
 
 ## Conventions
 

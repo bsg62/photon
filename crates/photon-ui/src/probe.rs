@@ -22,9 +22,16 @@ pub const STEADY_SECS: f64 = 10.0;
 /// jump (`motion::Motion`).
 pub const FAST_PX_PER_S: f64 = 30_000.0;
 pub const FAST_SECS: f64 = 5.0;
-/// The sweep: top to bottom by position, as a scrollbar drag is. In a large library every
-/// frame of it is a jump.
+/// The sweep: from the top most of the way down (`SWEEP_SHARE`) by position, as a scrollbar
+/// drag is. In a large library every frame of it is a jump.
 pub const SWEEP_SECS: f64 = 5.0;
+/// Where the sweep ends, as a share of the way down: short of the end, which a jump has
+/// already been to.
+pub const SWEEP_SHARE: f64 = 0.75;
+/// The rest before each jump and before the sweep. Longer than either grid takes to count
+/// a scroll as over (`motion::SCROLL_SETTLE_MS`, and the same 150 ms in the Svelte grid),
+/// so that a jump is a jump on its own, as End is.
+pub const PAUSE_SECS: f64 = 0.5;
 pub const IDLE_SECS: f64 = 5.0;
 /// The rest between the last sweep showing its pictures and the idle step. A scroll has
 /// business after its last move, none of which is a still grid repainting: the frame in
@@ -53,24 +60,34 @@ pub struct Facts {
     /// Whether every tile in view has its picture, or the mark that it will not.
     pub settled: bool,
     pub photos: usize,
-    /// Whether something outside the grid asked for this frame: the engine reporting, in
-    /// this frame or the one before it (the toolkit's second frame).
+    /// How many tiles in view show a mark and not a picture.
+    pub marked: usize,
+    /// Whether something outside the grid asked for this frame: the engine reporting or
+    /// the person's mouse or keys, in this frame or the one before it (the toolkit's
+    /// second frame).
     pub outside: bool,
 }
 
 /// Which frames something outside the grid asked for, from which frames the engine
-/// reported in.
+/// reported in or the person's input arrived in.
 #[derive(Debug, Default)]
 pub struct Outside {
-    before: bool,
+    /// Until when a frame is still the doing of the last thing from outside.
+    until_ms: Option<f64>,
 }
 
+/// How long after something from outside a frame is still taken to be its doing. The
+/// toolkit draws a second frame after every frame asked for at once, and a third when the
+/// first changed what the pointer is over: a few refreshes, on any screen.
+pub const ECHO_MS: f64 = 100.0;
+
 impl Outside {
-    /// One frame, and whether the engine reported in it.
-    pub fn frame(&mut self, reported: bool) -> bool {
-        let outside = reported || self.before;
-        self.before = reported;
-        outside
+    /// One frame, at `now_ms`, and whether anything from outside arrived in it.
+    pub fn frame(&mut self, now_ms: f64, reported: bool) -> bool {
+        if reported {
+            self.until_ms = Some(now_ms + ECHO_MS);
+        }
+        self.until_ms.is_some_and(|until| now_ms <= until)
     }
 }
 
@@ -138,6 +155,9 @@ pub struct Report {
     pub sweep: Cadence,
     /// From the sweep's last frame to every tile having its picture.
     pub sweep_settle_ms: Option<f64>,
+    /// The most tiles that showed a mark and not a picture when a step took the grid to be
+    /// showing its pictures. None, over a fixture whose every thumbnail is cached.
+    pub marked_tiles: usize,
     /// Frames the grid drew by itself in `IDLE_SECS` of nothing happening. A still grid
     /// draws none. Not counted: the frame that ends the step, and a frame something
     /// outside the grid asked for (`Facts::outside`).
@@ -151,9 +171,11 @@ enum Step {
     Calm,
     Steady,
     Fast,
+    /// At rest, before the move named.
+    Pause(Next),
     JumpEnd,
     JumpMiddle,
-    /// Back at the top, until it shows its pictures, so the sweep starts from rest.
+    /// Back at the top, until it shows its pictures.
     SweepReady,
     Sweep,
     SweepSettle,
@@ -161,6 +183,15 @@ enum Step {
     Still,
     Idle,
     Done,
+}
+
+/// What a pause is before.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Next {
+    JumpEnd,
+    JumpMiddle,
+    Top,
+    Sweep,
 }
 
 pub struct Probe {
@@ -177,6 +208,8 @@ pub struct Probe {
     position: f64,
     /// The epoch time the harness says the process was started at, in milliseconds.
     started_epoch_ms: Option<f64>,
+    /// Whether the programme is the launch and nothing more.
+    warm_up: bool,
     report: Report,
 }
 
@@ -191,7 +224,17 @@ impl Probe {
             idle_frames: 0,
             position: 0.0,
             started_epoch_ms,
+            warm_up: false,
             report: Report::default(),
+        }
+    }
+
+    /// A programme that is only the launch: the run the gate throws away before the one
+    /// it measures.
+    pub fn warm_up(started_epoch_ms: Option<f64>) -> Self {
+        Self {
+            warm_up: true,
+            ..Self::new(started_epoch_ms)
         }
     }
 
@@ -218,9 +261,10 @@ impl Probe {
 
     /// A step that waits for the grid to show its pictures: how long it has waited once it
     /// does, `Some(None)` once it has waited too long, `None` while it still waits.
-    fn settled_after(&self, facts: Facts) -> Option<Option<f64>> {
+    fn settled_after(&mut self, facts: Facts) -> Option<Option<f64>> {
         let waited = facts.now_ms - self.since_ms;
         if facts.settled {
+            self.report.marked_tiles = self.report.marked_tiles.max(facts.marked);
             Some(Some(waited))
         } else if waited >= SETTLE_TIMEOUT_SECS * 1000.0 {
             Some(None)
@@ -243,7 +287,12 @@ impl Probe {
             Step::Launch => {
                 if facts.photos > 0 && facts.settled {
                     self.report.photos = facts.photos;
+                    self.report.marked_tiles = facts.marked;
                     self.report.launch_ms = self.started_epoch_ms.map(|start| epoch_ms - start);
+                    if self.warm_up {
+                        self.step = Step::Done;
+                        return Move::Done;
+                    }
                     self.begin(Step::Calm, now);
                 }
                 Move::Wait
@@ -265,52 +314,74 @@ impl Probe {
             Step::Fast => {
                 if elapsed >= FAST_SECS * 1000.0 {
                     self.report.fast = Cadence::of(&self.intervals);
-                    self.begin(Step::JumpEnd, now);
-                    return self.to(facts.max);
+                    self.begin(Step::Pause(Next::JumpEnd), now);
+                    return Move::Wait;
                 }
                 self.to((self.from + FAST_PX_PER_S * elapsed / 1000.0).min(facts.max))
             }
-            Step::JumpEnd => match self.settled_after(facts) {
-                // The frame that made the jump cannot be the one that shows its pictures.
-                Some(waited) if elapsed > 0.0 => {
+            Step::Pause(next) => {
+                if elapsed < PAUSE_SECS * 1000.0 {
+                    return Move::Wait;
+                }
+                match next {
+                    Next::JumpEnd => {
+                        self.begin(Step::JumpEnd, now);
+                        self.to(facts.max)
+                    }
+                    Next::JumpMiddle => {
+                        self.begin(Step::JumpMiddle, now);
+                        self.to(facts.max / 2.0)
+                    }
+                    Next::Top => {
+                        self.begin(Step::SweepReady, now);
+                        self.to(0.0)
+                    }
+                    Next::Sweep => {
+                        self.begin(Step::Sweep, now);
+                        Move::Wait
+                    }
+                }
+            }
+            // The clock of each of these runs from the frame that asked for the move, and
+            // the grid makes it in the next: by the time this arm sees a frame, the frame
+            // is of the place moved to.
+            Step::JumpEnd => {
+                if let Some(waited) = self.settled_after(facts) {
                     self.report.jump_end_ms = waited;
-                    self.begin(Step::JumpMiddle, now);
-                    self.to(facts.max / 2.0)
+                    self.begin(Step::Pause(Next::JumpMiddle), now);
                 }
-                _ => Move::Wait,
-            },
-            Step::JumpMiddle => match self.settled_after(facts) {
-                Some(waited) if elapsed > 0.0 => {
+                Move::Wait
+            }
+            Step::JumpMiddle => {
+                if let Some(waited) = self.settled_after(facts) {
                     self.report.jump_middle_ms = waited;
-                    self.begin(Step::SweepReady, now);
-                    self.to(0.0)
+                    self.begin(Step::Pause(Next::Top), now);
                 }
-                _ => Move::Wait,
-            },
-            Step::SweepReady => match self.settled_after(facts) {
-                Some(_) if elapsed > 0.0 => {
-                    self.begin(Step::Sweep, now);
-                    Move::Wait
+                Move::Wait
+            }
+            Step::SweepReady => {
+                if self.settled_after(facts).is_some() {
+                    self.begin(Step::Pause(Next::Sweep), now);
                 }
-                _ => Move::Wait,
-            },
+                Move::Wait
+            }
             Step::Sweep => {
                 if elapsed >= SWEEP_SECS * 1000.0 {
                     self.report.sweep = Cadence::of(&self.intervals);
                     self.begin(Step::SweepSettle, now);
-                    return self.to(facts.max);
+                    return self.to(facts.max * SWEEP_SHARE);
                 }
-                self.to(facts.max * elapsed / (SWEEP_SECS * 1000.0))
+                self.to(facts.max * SWEEP_SHARE * elapsed / (SWEEP_SECS * 1000.0))
             }
             Step::SweepSettle => match self.settled_after(facts) {
-                Some(waited) if elapsed > 0.0 => {
+                Some(waited) => {
                     self.report.sweep_settle_ms = waited;
                     self.begin(Step::Still, now);
                     Move::Rest {
                         for_ms: STILL_SECS * 1000.0,
                     }
                 }
-                _ => Move::Wait,
+                None => Move::Wait,
             },
             Step::Still => {
                 let left = STILL_SECS * 1000.0 - elapsed;
@@ -357,6 +428,8 @@ mod tests {
         settle_frames: usize,
         /// Whether the next frame is one something outside the grid asked for.
         outside: bool,
+        /// Tiles in view that show a mark and not a picture.
+        marked: usize,
         /// Every position the grid was told to be at, with the time.
         moves: Vec<(f64, f64)>,
     }
@@ -371,6 +444,7 @@ mod tests {
                 still_for: 0,
                 settle_frames,
                 outside: false,
+                marked: 0,
                 moves: Vec::new(),
             }
         }
@@ -383,6 +457,7 @@ mod tests {
                 max: self.max,
                 settled: self.still_for >= self.settle_frames,
                 photos: 300_000,
+                marked: self.marked,
                 outside: std::mem::take(&mut self.outside),
             };
             let asked = self.probe.frame(facts, 1_000.0 + self.now_ms);
@@ -464,6 +539,85 @@ mod tests {
         }
         assert_eq!(report.idle_frames, 0);
         assert!(grid.probe.done());
+    }
+
+    // A jump made while the grid is still moving is the last of a stream to it, and both
+    // grids hold their thumbnails back in a stream: what would be timed is that hold,
+    // which is one grid's 100 ms and the other's 150, and not how long End takes.
+    #[test]
+    fn every_jump_is_made_from_rest() {
+        let mut grid = Grid::new(4_000_000.0, 3);
+        grid.run(1000.0 / 60.0);
+        let at = |position: f64, after: usize| {
+            after
+                + grid.moves[after..]
+                    .iter()
+                    .position(|(_, p)| *p == position)
+                    .unwrap()
+        };
+        let end = at(4_000_000.0, 0);
+        let middle = at(2_000_000.0, end);
+        let top = at(0.0, middle);
+        for jump in [end, middle, top] {
+            let rested = grid.moves[jump].0 - grid.moves[jump - 1].0;
+            assert!(rested >= PAUSE_SECS * 1000.0, "{rested} ms before {jump}");
+        }
+        // And the sweep starts from rest too.
+        let rested = grid.moves[top + 1].0 - grid.moves[top].0;
+        assert!(
+            rested >= PAUSE_SECS * 1000.0,
+            "{rested} ms before the sweep"
+        );
+    }
+
+    // The end and the middle are the jumps'. A sweep that ended at either would be
+    // timed showing pictures it already holds.
+    #[test]
+    fn the_sweep_ends_where_the_programme_has_not_been() {
+        let mut grid = Grid::new(4_000_000.0, 3);
+        grid.run(1000.0 / 60.0);
+        let (_, last) = *grid.moves.last().unwrap();
+        assert_eq!(last, 3_000_000.0);
+        // Its frames climb to there and no further.
+        let furthest = grid
+            .moves
+            .iter()
+            .rev()
+            .take(200)
+            .map(|(_, p)| *p)
+            .fold(0.0, f64::max);
+        assert_eq!(furthest, 3_000_000.0);
+    }
+
+    // A launch thrown away before the measured one: it ends at the first pictures.
+    #[test]
+    fn a_warm_up_ends_as_soon_as_the_grid_shows_its_pictures() {
+        let mut grid = Grid::new(4_000_000.0, 5);
+        grid.probe = Probe::warm_up(Some(1_000.0));
+        let report = grid.run(10.0);
+        assert_eq!(report.launch_ms, Some(60.0));
+        assert!(grid.moves.is_empty());
+        assert_eq!(report.steady.frames, 0);
+        assert!(grid.probe.done());
+    }
+
+    // A tile with a mark counts as showing its picture, so that a thumbnail that cannot
+    // be made does not hang the programme. A library whose thumbnails are not where the
+    // application looks is then all marks, and "shows its pictures" at once: the report
+    // has to say so.
+    #[test]
+    fn tiles_that_show_a_mark_and_not_a_picture_are_reported() {
+        let mut grid = Grid::new(4_000_000.0, 3);
+        assert_eq!(grid.run(1000.0 / 60.0).marked_tiles, 0);
+
+        let mut grid = Grid::new(4_000_000.0, 3);
+        loop {
+            if grid.frame(1000.0 / 60.0) == Move::To(4_000_000.0) {
+                break;
+            }
+        }
+        grid.marked = 40;
+        assert_eq!(grid.run(1000.0 / 60.0).marked_tiles, 40);
     }
 
     // The ground covered is the time's, not the frame count's: the same at 60Hz and 144Hz.
@@ -630,15 +784,18 @@ mod tests {
         assert_eq!(grid.probe.report().idle_frames, 1);
     }
 
-    // The toolkit draws a second frame after every frame asked for at once, so a report
-    // from the engine is two frames, and only the first has the report in it.
+    // One thing from outside is more than one frame: the toolkit draws a second after
+    // every frame asked for at once, and a third when the first changed what the pointer
+    // is over. They follow it within a few refreshes, and none is the grid's own.
     #[test]
-    fn a_report_explains_its_own_frame_and_the_one_after() {
+    fn what_comes_from_outside_explains_the_frames_right_after_it() {
         let mut outside = Outside::default();
-        assert!(!outside.frame(false));
-        assert!(outside.frame(true));
-        assert!(outside.frame(false), "the second frame of the same report");
-        assert!(!outside.frame(false));
+        assert!(!outside.frame(0.0, false));
+        assert!(outside.frame(1000.0, true));
+        assert!(outside.frame(1016.7, false), "the toolkit's second frame");
+        assert!(outside.frame(1033.3, false), "and its third");
+        assert!(!outside.frame(1000.0 + ECHO_MS + 1.0, false));
+        assert!(!outside.frame(3000.0, false));
     }
 
     #[test]
@@ -659,6 +816,7 @@ mod tests {
                 "jump_end_ms",
                 "jump_middle_ms",
                 "launch_ms",
+                "marked_tiles",
                 "photos",
                 "steady",
                 "sweep",

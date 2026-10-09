@@ -48,6 +48,7 @@ fn main() -> ExitCode {
                     let app = match probe {
                         // When the harness started this process, for the launch time; a
                         // run by hand has none and the report says so.
+                        Some(out) if warm_up() => app.with_warm_up(out, started_epoch_ms()),
                         Some(out) => app.with_probe(out, started_epoch_ms()),
                         None => app,
                     };
@@ -71,4 +72,10 @@ fn main() -> ExitCode {
 /// this process.
 fn started_epoch_ms() -> Option<f64> {
     std::env::var("PHOTON_PROBE_T0").ok()?.parse().ok()
+}
+
+/// `PHOTON_PROBE_WARMUP`: the gate's harness is launching this once to be thrown away,
+/// before the launch it measures.
+fn warm_up() -> bool {
+    std::env::var_os("PHOTON_PROBE_WARMUP").is_some()
 }

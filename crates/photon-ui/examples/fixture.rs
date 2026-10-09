@@ -3,7 +3,8 @@
 //!   cargo run --release -p photon-ui --example fixture -- --photos 300000 --out target/gate-fixture
 //!
 //! The thumbnails are made from the CC0 photos the screenshots use, unless `--sources`
-//! names another directory of JPEGs.
+//! names another directory of JPEGs. `--check --out DIR` builds nothing: it says whether
+//! DIR holds a fixture this builder finished, which is how the gate asks.
 
 use photon_ui::fixture;
 use std::{path::PathBuf, process::ExitCode};
@@ -11,9 +12,14 @@ use std::{path::PathBuf, process::ExitCode};
 fn main() -> ExitCode {
     let mut photos = 300_000usize;
     let mut out = None;
+    let mut check = false;
     let mut sources = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../xtask/screenshots/photos");
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
+        if arg == "--check" {
+            check = true;
+            continue;
+        }
         let value = args.next();
         match (arg.as_str(), value) {
             ("--photos", Some(value)) => match value.parse() {
@@ -28,6 +34,18 @@ fn main() -> ExitCode {
     let Some(out) = out else {
         return usage("--out is needed");
     };
+    if check {
+        return match fixture::complete(&out) {
+            Some(photos) => {
+                println!("{photos} photos in {}", out.display());
+                ExitCode::SUCCESS
+            }
+            None => {
+                eprintln!("{} holds no fixture this builder finished", out.display());
+                ExitCode::FAILURE
+            }
+        };
+    }
     let mut pictures: Vec<PathBuf> = match std::fs::read_dir(&sources) {
         Ok(entries) => entries
             .filter_map(Result::ok)
@@ -52,6 +70,8 @@ fn main() -> ExitCode {
 }
 
 fn usage(problem: &str) -> ExitCode {
-    eprintln!("{problem}\n\nusage: fixture --out DIR [--photos N] [--sources DIR]");
+    eprintln!(
+        "{problem}\n\nusage: fixture --out DIR [--photos N] [--sources DIR] | fixture --check --out DIR"
+    );
     ExitCode::from(2)
 }

@@ -34,6 +34,18 @@ engine's own report asked for (it looks for the fixture's unplugged drive twice 
 The fixture's builder lives in `photon-ui` (`fixture.rs`, run as an example), so xtask goes
 on depending on neither crate.
 
+**Changed by the review of the built gate** (2026-10-09), which read the two programmes side
+by side and found the two columns were not of the same thing. The native grid is moved
+through its own input path, so it classifies the move as the Svelte grid's scroll event
+makes that one do; there is half a second of rest before each jump and before the sweep, so
+that step 4 times a jump on its own and not the hold each grid applies in a stream; step 5
+runs from the top to three quarters of the way down, since the end is where step 4 has
+already been; each application is launched once and thrown away before the launch that is
+measured; the table fails when the two runs differ in photos or window, when neither grid
+keeps the refresh rate given, or when any tile was shown as a mark; a fixture says of
+itself that its build finished, and by which builder; and in step 6 a frame drawn for the
+person's own mouse or keys is not the grid's.
+
 ## What this is for
 
 Two things, and the second is why it comes first.

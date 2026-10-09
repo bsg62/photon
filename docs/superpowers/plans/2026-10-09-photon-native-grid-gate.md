@@ -10,6 +10,14 @@
 
 **Spec:** `docs/superpowers/specs/2026-10-09-photon-native-grid-slice-design.md`, section "The gate" (and the umbrella, `2026-10-09-photon-native-ui-design.md`, which sets the pass line). Task 5 records in the spec what this plan decided that the spec did not.
 
+> **After the plan: the review.** The whole-branch review found that the gate as planned
+> here compared two things that were not alike, and its fixes came after Task 5, in the
+> commit that follows it. Where this plan and the code differ, the code and the spec's
+> "Changed by the review of the built gate" paragraph are right: the programme has rests
+> before its jumps and a sweep that ends at three quarters, `GridView::move_to` replaces
+> the direct `scroll_to`, each application is launched twice, the fixture has a marker,
+> `judge` has four more lines, and the patch is longer.
+
 ## How this plan was written
 
 As the first plan of this sub-project was: every file below was **written, compiled, run and probed before the plan was**, in a scratch worktree at `native-ui` (9893bf1), on 2026-10-09. There, `cargo fmt --check` and `cargo clippy --workspace --all-targets -- -D warnings` were clean, the workspace's tests passed, every probe listed failed as stated, and three things were run that no test runs:

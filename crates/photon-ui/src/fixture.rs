@@ -34,6 +34,20 @@ use std::{
 /// Photos in each folder, and so under each header.
 pub const PER_FOLDER: usize = 300;
 
+/// Which builder this is. Moved whenever a fixture it builds would differ from the last
+/// one's, so that the gate does not measure over a library made to other rules.
+pub const BUILDER: u32 = 1;
+/// The file a finished fixture has, in its directory.
+pub const MARKER: &str = "fixture.json";
+
+/// How many photos the fixture in `out` holds, if it was finished, and by this builder.
+pub fn complete(out: &Path) -> Option<usize> {
+    let said = std::fs::read(out.join(MARKER)).ok()?;
+    let said: serde_json::Value = serde_json::from_slice(&said).ok()?;
+    (said["builder"] == BUILDER).then_some(())?;
+    Some(said["photos"].as_u64()? as usize)
+}
+
 /// Where a fixture is, in both spellings: the directories photon-native is given, and the
 /// two homes the Tauri photon is pointed at (`XDG_DATA_HOME`, `XDG_CACHE_HOME`), under
 /// which it resolves the same directories by its identifier.
@@ -158,5 +172,9 @@ pub fn build(out: &Path, photos: usize, sources: &[PathBuf]) -> Result<Fixture, 
     lib.set_watched_online(watched.id, false)?;
     drop(lib);
     std::fs::remove_dir_all(&root)?;
+    // Last: a build that stopped anywhere above left a library, and no word that it is
+    // one to measure over.
+    let said = serde_json::json!({ "builder": BUILDER, "photos": photos });
+    std::fs::write(out.join(MARKER), said.to_string())?;
     Ok(fixture)
 }

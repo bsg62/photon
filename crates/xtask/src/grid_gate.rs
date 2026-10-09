@@ -6,8 +6,9 @@
 //! the same scroll programme fullscreen, one after the other, and write what they measured;
 //! this lays the two reports side by side and says which lines pass.
 //!
-//! **It opens two fullscreen windows for about two minutes**, which is why it does nothing
-//! without `--go`: photon's conventions forbid launching the application to verify a change,
+//! **It opens fullscreen windows for about two minutes** - each application twice, a
+//! launch that is thrown away and then the one that is measured - which is why it does
+//! nothing without `--go`: photon's conventions forbid launching the application to verify a change,
 //! and this is the one exception, because the interval between two frames does not exist
 //! without a compositor. It needs a desktop that is awake and unlocked for that long.
 //! `--dry-run` builds everything and launches nothing.
@@ -35,6 +36,8 @@ const RUN_TIMEOUT: Duration = Duration::from_secs(360);
 /// instrument: an interval read in a frame callback and one read in the application's own
 /// frame are both the compositor's cadence, seen from two places.
 const TIE: f64 = 0.05;
+/// How long a launch that is thrown away may take.
+const WARM_UP_TIMEOUT: Duration = Duration::from_secs(120);
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Options {
@@ -71,13 +74,20 @@ impl Options {
                 "--dry-run" => options.dry_run = true,
                 "--native-only" => options.native_only = true,
                 "--refresh-hz" => options.refresh_hz = Some(number("--refresh-hz")?),
-                "--photos" => options.photos = number("--photos")? as usize,
+                "--photos" => {
+                    let value = args.next().ok_or("--photos needs a number")?;
+                    options.photos = value
+                        .parse::<usize>()
+                        .ok()
+                        .filter(|photos| *photos > 0)
+                        .ok_or_else(|| format!("--photos {value} is not a number above zero"))?;
+                }
                 other => return Err(format!("unknown argument {other}")),
             }
         }
         if options.go == options.dry_run {
             return Err(
-                "say which: --go opens two fullscreen windows for about two minutes; \
+                "say which: --go opens fullscreen windows for about two minutes; \
                  --dry-run builds everything and launches nothing"
                     .to_owned(),
             );
@@ -122,6 +132,74 @@ pub fn judge(native: &Value, svelte: Option<&Value>, refresh_hz: f64) -> Vec<Lin
     let refresh_ms = 1000.0 / refresh_hz;
     let of = |report: Option<&Value>, path: &[&str]| report.and_then(|r| number(r, path));
     let mut lines = Vec::new();
+
+    // First, whether the two columns are of the same thing: the same library, in the
+    // same window, with its pictures.
+    let photos = (number(native, &["photos"]), of(svelte, &["photos"]));
+    lines.push(Line {
+        what: "photos in the library",
+        native: photos.0,
+        svelte: photos.1,
+        outcome: match photos {
+            (Some(ours), Some(theirs)) if ours == theirs => Outcome::Pass,
+            (Some(_), None) if svelte.is_none() => Outcome::Shown,
+            _ => Outcome::Fail,
+        },
+        why: "the same library for both".to_owned(),
+    });
+    // In points, which is what the rows are laid out in. A point apart is two toolkits
+    // measuring one window; more is two windows.
+    let size = |report: &Value, axis: usize| report["window"][axis].as_f64();
+    let same = |axis: usize| match (size(native, axis), svelte.and_then(|r| size(r, axis))) {
+        (Some(ours), Some(theirs)) => (ours - theirs).abs() <= theirs * 0.02,
+        _ => false,
+    };
+    lines.push(Line {
+        what: "window, points wide",
+        native: size(native, 0),
+        svelte: svelte.and_then(|r| size(r, 0)),
+        outcome: match svelte {
+            None => Outcome::Shown,
+            Some(_) if same(0) && same(1) => Outcome::Pass,
+            Some(_) => Outcome::Fail,
+        },
+        why: "the same window for both".to_owned(),
+    });
+    let marks = (
+        number(native, &["marked_tiles"]),
+        of(svelte, &["marked_tiles"]),
+    );
+    lines.push(Line {
+        what: "tiles shown as a mark",
+        native: marks.0,
+        svelte: marks.1,
+        outcome: if marks.0 == Some(0.0) && marks.1.is_none_or(|marks| marks == 0.0) {
+            Outcome::Pass
+        } else {
+            Outcome::Fail
+        },
+        why: "every thumbnail is in the cache, so none".to_owned(),
+    });
+    // The pass line of a scroll is the refresh the person gave, and nothing else says it
+    // is the screen's. One grid that keeps it, at the median, does.
+    let medians = (
+        number(native, &["steady", "median_ms"]),
+        of(svelte, &["steady", "median_ms"]),
+    );
+    let keeps = |median: Option<f64>| {
+        median.is_some_and(|median| (median - refresh_ms).abs() <= refresh_ms * 0.1)
+    };
+    lines.push(Line {
+        what: "steady scroll, median frame",
+        native: medians.0,
+        svelte: medians.1,
+        outcome: if keeps(medians.0) || keeps(medians.1) {
+            Outcome::Pass
+        } else {
+            Outcome::Fail
+        },
+        why: format!("a refresh is {refresh_ms:.1} ms: one of the two keeps it, or it is not"),
+    });
 
     // A frame that missed its refresh shows as an interval of two. Half a refresh of
     // slack is the jitter of a frame that did not.
@@ -226,7 +304,14 @@ fn shown(value: Option<f64>, what: &str) -> String {
     match value {
         None => "-".to_owned(),
         Some(bytes) if what == "memory" => format!("{:.0} MB", bytes / 1_048_576.0),
-        Some(frames) if what.starts_with("frames") => format!("{frames:.0}"),
+        Some(count)
+            if ["frames", "photos", "tiles"]
+                .iter()
+                .any(|n| what.starts_with(n)) =>
+        {
+            format!("{count:.0}")
+        }
+        Some(points) if what.starts_with("window") => format!("{points:.0}"),
         Some(ms) => format!("{ms:.1} ms"),
     }
 }
@@ -329,7 +414,12 @@ fn warm(data: &Path) {
 }
 
 /// Runs `command` to its end, or kills it at the timeout, and reads the report it wrote.
-fn measure(what: &str, command: &mut Command, report: &Path) -> Result<Value, String> {
+fn measure(
+    what: &str,
+    command: &mut Command,
+    report: &Path,
+    timeout: Duration,
+) -> Result<Value, String> {
     println!("== {what}: running");
     let _ = std::fs::remove_file(report);
     let started = SystemTime::now()
@@ -339,13 +429,14 @@ fn measure(what: &str, command: &mut Command, report: &Path) -> Result<Value, St
         .env("PHOTON_PROBE_T0", format!("{started:.3}"))
         .spawn()
         .map_err(|err| format!("{what}: {err}"))?;
-    let deadline = Instant::now() + RUN_TIMEOUT;
+    let deadline = Instant::now() + timeout;
     loop {
         match child.try_wait() {
             Ok(Some(_)) => break,
             Ok(None) if Instant::now() >= deadline => {
                 let _ = child.kill();
-                return Err(format!("{what}: no report after {RUN_TIMEOUT:?}; killed"));
+                let _ = child.wait();
+                return Err(format!("{what}: no report after {timeout:?}; killed"));
             }
             Ok(None) => std::thread::sleep(Duration::from_millis(200)),
             Err(err) => return Err(format!("{what}: {err}")),
@@ -356,23 +447,111 @@ fn measure(what: &str, command: &mut Command, report: &Path) -> Result<Value, St
     serde_json::from_str(&text).map_err(|err| format!("{what}'s report: {err}"))
 }
 
-fn gate(root: &Path, options: &Options) -> Result<bool, String> {
-    let fixture = root.join("target/gate-fixture");
+/// photon-ui's fixture builder, run as its example.
+fn fixture_builder(root: &Path) -> Command {
+    let mut command = cargo(root);
+    command.args([
+        "run",
+        "--release",
+        "-q",
+        "-p",
+        "photon-ui",
+        "--example",
+        "fixture",
+        "--",
+    ]);
+    command
+}
+
+/// The two applications, launched and measured. Each is launched twice: the first launch
+/// is thrown away, so that the one measured finds what any launch after the first finds -
+/// the driver's shader cache, the web view's profile, the window state - and the two are
+/// measured alike. The Svelte photon runs under directories of its own, which a first
+/// launch has to fill; the native one would otherwise have had the user's.
+fn launch_both(
+    native: &Path,
+    svelte: Option<&Path>,
+    fixture: &Path,
+    reports: &Path,
+) -> Result<(Value, Option<Value>), String> {
     let data = fixture.join("data/io.github.bsg62.photon");
     let cache = fixture.join("cache/io.github.bsg62.photon");
-    if !data.join("library.db").is_file() {
+    let run_native = |name: &str| {
+        let out = reports.join(name);
+        let mut command = Command::new(native);
+        command
+            .arg("--data-dir")
+            .arg(&data)
+            .arg("--cache-dir")
+            .arg(&cache)
+            .arg("--fullscreen")
+            .arg("--probe")
+            .arg(&out);
+        (command, out)
+    };
+    let run_svelte = |binary: &Path, name: &str| {
+        let out = reports.join(name);
+        let mut command = Command::new(binary);
+        // The Tauri photon finds its library, its cache and its window state under these
+        // three; nothing of the user's own photon is read or written.
+        command
+            .env("XDG_DATA_HOME", fixture.join("data"))
+            .env("XDG_CACHE_HOME", fixture.join("cache"))
+            .env("XDG_CONFIG_HOME", fixture.join("config"))
+            .env("PHOTON_PROBE_OUT", &out);
+        (command, out)
+    };
+
+    // The native grid first. Whatever the first run finds cold - a directory entry, a page
+    // of the library the warm-up did not reach - then counts against the grid that has
+    // to pass, never for it.
+    let (mut command, out) = run_native("native-warm-up.json");
+    measure(
+        "the native grid, a launch to throw away",
+        command.env("PHOTON_PROBE_WARMUP", "1"),
+        &out,
+        WARM_UP_TIMEOUT,
+    )?;
+    let (mut command, out) = run_native("native.json");
+    warm(&data);
+    let native_report = measure("the native grid", &mut command, &out, RUN_TIMEOUT)?;
+
+    let Some(binary) = svelte else {
+        return Ok((native_report, None));
+    };
+    let (mut command, out) = run_svelte(binary, "svelte-warm-up.json");
+    measure(
+        "the Svelte grid, a launch to throw away",
+        command.env("PHOTON_PROBE_WARMUP", "1"),
+        &out,
+        WARM_UP_TIMEOUT,
+    )?;
+    let (mut command, out) = run_svelte(binary, "svelte.json");
+    warm(&data);
+    let svelte_report = measure("the Svelte grid", &mut command, &out, RUN_TIMEOUT)?;
+    Ok((native_report, Some(svelte_report)))
+}
+
+fn gate(root: &Path, options: &Options) -> Result<bool, String> {
+    let fixture = root.join("target/gate-fixture");
+    // Asked of the builder, not of the directory: a build that was interrupted left a
+    // library there, and one from an older builder is not this one's library.
+    println!("== the fixture library");
+    let finished = fixture_builder(root)
+        .arg("--check")
+        .arg("--out")
+        .arg(&fixture)
+        .status()
+        .is_ok_and(|status| status.success());
+    if !finished {
+        if fixture.exists() {
+            println!("   not one this builder finished: building it again");
+            std::fs::remove_dir_all(&fixture)
+                .map_err(|err| format!("{}: {err}", fixture.display()))?;
+        }
         step(
-            "the fixture library",
-            cargo(root)
-                .args([
-                    "run",
-                    "--release",
-                    "-p",
-                    "photon-ui",
-                    "--example",
-                    "fixture",
-                    "--",
-                ])
+            "the fixture library, built",
+            fixture_builder(root)
                 .args(["--photos", &options.photos.to_string(), "--out"])
                 .arg(&fixture),
         )?;
@@ -394,47 +573,17 @@ fn gate(root: &Path, options: &Options) -> Result<bool, String> {
 
     let reports = root.join("target/gate");
     std::fs::create_dir_all(&reports).map_err(|err| format!("{}: {err}", reports.display()))?;
-    // The native grid first. Whatever the first run finds cold - a directory entry, a page
-    // of the library the warm-up did not reach - then counts against the grid that has
-    // to pass, never for it.
-    let out = reports.join("native.json");
-    warm(&data);
-    let native_report = measure(
-        "the native grid",
-        Command::new(&native)
-            .arg("--data-dir")
-            .arg(&data)
-            .arg("--cache-dir")
-            .arg(&cache)
-            .arg("--fullscreen")
-            .arg("--probe")
-            .arg(&out),
-        &out,
-    )?;
+    println!(
+        "\n== {} windows will open and close by themselves. Leave the mouse and the keyboard \
+         alone until the table is printed: a frame drawn for a nudged mouse is a frame.\n",
+        if svelte.is_some() { "four" } else { "two" }
+    );
+    let (native_report, svelte_report) =
+        launch_both(&native, svelte.as_deref(), &fixture, &reports)?;
 
-    let svelte_report = match &svelte {
-        Some(binary) => {
-            let out = reports.join("svelte.json");
-            // The Tauri photon finds its library, its cache and its window state under
-            // these three; nothing of the user's own photon is read or written.
-            warm(&data);
-            let report = measure(
-                "the Svelte grid",
-                Command::new(binary)
-                    .env("XDG_DATA_HOME", fixture.join("data"))
-                    .env("XDG_CACHE_HOME", fixture.join("cache"))
-                    .env("XDG_CONFIG_HOME", fixture.join("config"))
-                    .env("PHOTON_PROBE_OUT", &out),
-                &out,
-            )?;
-            Some(report)
-        }
-        None => None,
-    };
     let refresh_hz = options.refresh_hz.unwrap_or(60.0);
     let lines = judge(&native_report, svelte_report.as_ref(), refresh_hz);
-    // The fixture's own count: one built before with another `--photos` is used as it is.
-    println!("\n{} photos, {refresh_hz} Hz", native_report["photos"]);
+    println!("\n{refresh_hz} Hz, as given");
     for (name, report) in [
         ("native", Some(&native_report)),
         ("svelte", svelte_report.as_ref()),
@@ -448,6 +597,10 @@ fn gate(root: &Path, options: &Options) -> Result<bool, String> {
     }
     println!("\n{}", table(&lines));
     println!("reports: {}", reports.display());
+    if svelte_report.is_none() {
+        // Said, because the exit status alone would read as the gate passing.
+        println!("--native-only: nothing was compared, and this is not the gate.");
+    }
     Ok(lines.iter().all(|line| line.outcome != Outcome::Fail))
 }
 
@@ -495,6 +648,7 @@ mod tests {
             "steady": cadence, "fast": cadence, "sweep": cadence,
             "jump_end_ms": settle, "jump_middle_ms": settle, "sweep_settle_ms": settle,
             "launch_ms": 800.0, "memory_bytes": mb * 1_048_576.0, "idle_frames": 0,
+            "photos": 300_000, "window": [2560.0, 1440.0], "scale": 1.0, "marked_tiles": 0,
         })
     }
 
@@ -507,7 +661,7 @@ mod tests {
             .clone()
     }
 
-    // Opening two fullscreen windows is never something this does by default, or by a
+    // Opening fullscreen windows is never something this does by default, or by a
     // flag that could mean something else.
     #[test]
     fn nothing_is_launched_without_being_told_to() {
@@ -600,6 +754,88 @@ mod tests {
             outcome(&lines, "frames drawn in five idle seconds"),
             Outcome::Fail
         );
+    }
+
+    // Two columns are a comparison only when they are of the same thing. Every one of
+    // these would otherwise print a table that looks like an answer.
+    #[test]
+    fn two_runs_that_were_not_of_the_same_thing_fail() {
+        let svelte = report(16.7, 120.0, 600.0);
+        let same = judge(&report(16.7, 80.0, 300.0), Some(&svelte), 60.0);
+        assert_eq!(outcome(&same, "photos in the library"), Outcome::Pass);
+        assert_eq!(outcome(&same, "window, points wide"), Outcome::Pass);
+
+        // Another library: a fixture rebuilt between the two runs.
+        let mut native = report(16.7, 80.0, 300.0);
+        native["photos"] = json!(3_000);
+        let lines = judge(&native, Some(&svelte), 60.0);
+        assert_eq!(outcome(&lines, "photos in the library"), Outcome::Fail);
+
+        // Another window: one of the two did not go fullscreen. A few points apart is
+        // the same window, measured by two toolkits.
+        let mut native = report(16.7, 80.0, 300.0);
+        native["window"] = json!([1280.0, 800.0]);
+        let lines = judge(&native, Some(&svelte), 60.0);
+        assert_eq!(outcome(&lines, "window, points wide"), Outcome::Fail);
+        let mut native = report(16.7, 80.0, 300.0);
+        native["window"] = json!([2558.0, 1440.0]);
+        let lines = judge(&native, Some(&svelte), 60.0);
+        assert_eq!(outcome(&lines, "window, points wide"), Outcome::Pass);
+        // The same width and another height is another window too.
+        let mut native = report(16.7, 80.0, 300.0);
+        native["window"] = json!([2560.0, 900.0]);
+        let lines = judge(&native, Some(&svelte), 60.0);
+        assert_eq!(outcome(&lines, "window, points wide"), Outcome::Fail);
+    }
+
+    // The scroll's pass line is the refresh the person gave. Given 60 on a 120Hz screen
+    // every scroll would pass with half its frames late; given 120 on a 60Hz one, none
+    // could.
+    #[test]
+    fn a_refresh_rate_no_frame_keeps_fails() {
+        let at_120 = report(8.3, 80.0, 300.0);
+        let lines = judge(&at_120, Some(&at_120), 60.0);
+        assert_eq!(
+            outcome(&lines, "steady scroll, median frame"),
+            Outcome::Fail
+        );
+        let lines = judge(&at_120, Some(&at_120), 120.0);
+        assert_eq!(
+            outcome(&lines, "steady scroll, median frame"),
+            Outcome::Pass
+        );
+        // A native grid too slow for the screen is not a wrong refresh rate: the Svelte
+        // grid kept it, and the scroll's own line is what fails.
+        let slow = report(33.3, 80.0, 300.0);
+        let lines = judge(&slow, Some(&report(16.7, 120.0, 600.0)), 60.0);
+        assert_eq!(
+            outcome(&lines, "steady scroll, median frame"),
+            Outcome::Pass
+        );
+        assert_eq!(outcome(&lines, "steady scroll, p95 frame"), Outcome::Fail);
+        // Alone, with nothing to say the screen is as given, it fails.
+        let lines = judge(&slow, None, 60.0);
+        assert_eq!(
+            outcome(&lines, "steady scroll, median frame"),
+            Outcome::Fail
+        );
+    }
+
+    // A tile that shows a mark counts as showing its picture. A run whose thumbnails were
+    // not where the application looked is all marks, settles at once, and would win.
+    #[test]
+    fn tiles_shown_as_marks_fail() {
+        let svelte = report(16.7, 120.0, 600.0);
+        let lines = judge(&report(16.7, 80.0, 300.0), Some(&svelte), 60.0);
+        assert_eq!(outcome(&lines, "tiles shown as a mark"), Outcome::Pass);
+        let mut native = report(16.7, 1.0, 300.0);
+        native["marked_tiles"] = json!(48);
+        let lines = judge(&native, Some(&svelte), 60.0);
+        assert_eq!(outcome(&lines, "tiles shown as a mark"), Outcome::Fail);
+        let mut marked = svelte.clone();
+        marked["marked_tiles"] = json!(1);
+        let lines = judge(&report(16.7, 80.0, 300.0), Some(&marked), 60.0);
+        assert_eq!(outcome(&lines, "tiles shown as a mark"), Outcome::Fail);
     }
 
     // The patch is against files that go on changing, and nothing else reads it until
