@@ -70,6 +70,8 @@ pub enum Step {
     /// A person's key: `p:<id>`, or `c:<hash>` for a Picasa contact no person is linked to.
     Person(String),
     Tag(String),
+    /// The order and the grouping, whatever the view: the engine holds one for all.
+    Sort(Sort),
 }
 
 impl Step {
@@ -81,9 +83,11 @@ impl Step {
         matches!(self, Step::Search(_))
     }
 
-    /// Where the grid is once this step has landed.
-    pub fn leads_to(&self) -> Place {
-        match self {
+    /// Where the grid is once this step has landed, for a step that goes anywhere: a
+    /// sort leaves the user in the view they are in.
+    pub fn leads_to(&self) -> Option<Place> {
+        Some(match self {
+            Step::Sort(_) => return None,
             Step::View(view) => Place::of(*view),
             Step::Search(query) => Place::search(query),
             // The argument as the engine keeps it (`Engine::set_album_view`).
@@ -99,7 +103,7 @@ impl Step {
                 view: GridView::Tag,
                 arg: tag.clone(),
             },
-        }
+        })
     }
 }
 
@@ -180,12 +184,25 @@ impl Nav {
     /// place when none is on its way. The sidebar marks this row, so a click is answered
     /// at once and not when a rebuild of the whole library has landed.
     pub fn target(&self) -> Place {
-        self.asked
-            .back()
-            .map(|(_, step)| step.leads_to())
+        // The last step asked that goes anywhere: a sort behind it moves no view.
+        (self.asked.iter().rev())
+            .find_map(|(_, step)| step.leads_to())
             // Made, and its grid not on screen yet: still where they are going.
             .or_else(|| self.landed.back().map(|(_, landed)| landed.place.clone()))
             .unwrap_or_else(|| self.settled.clone())
+    }
+
+    /// The sort the user is going to, as `target` is the place: what the controls show,
+    /// and what a control changes one field of. Read from the grid on screen instead, a
+    /// second change made before the first had landed undid the first.
+    pub fn sort_target(&self) -> Sort {
+        (self.asked.iter().rev())
+            .find_map(|(_, step)| match step {
+                Step::Sort(sort) => Some(*sort),
+                _ => None,
+            })
+            .or_else(|| self.landed.back().map(|(_, landed)| landed.sort))
+            .unwrap_or(self.sort)
     }
 
     /// Whether a step is on its way: asked, or made and its grid not yet on screen.
@@ -197,7 +214,10 @@ impl Nav {
     /// the view that is shown asks for nothing: All photos most of all, where the click
     /// means "back to where I was" and the user is there.
     pub fn wants(&self, step: &Step) -> bool {
-        step.leads_to() != self.target()
+        match step {
+            Step::Sort(sort) => *sort != self.sort_target(),
+            _ => step.leads_to() != Some(self.target()),
+        }
     }
 
     /// `step` was given to the queue under `number`. A number already held is a step the
@@ -616,14 +636,14 @@ mod tests {
     fn a_blank_search_leads_to_all_photos() {
         assert_eq!(
             Step::Search("  ".to_owned()).leads_to(),
-            Place::of(GridView::All)
+            Some(Place::of(GridView::All))
         );
         assert_eq!(
             Step::Search("lake".to_owned()).leads_to(),
-            Place {
+            Some(Place {
                 view: GridView::Search,
                 arg: "lake".to_owned()
-            }
+            })
         );
     }
 
@@ -829,24 +849,24 @@ mod tests {
         // `Engine::set_album_view` keeps the id as the view's argument, in digits.
         assert_eq!(
             Step::Album(42).leads_to(),
-            Place {
+            Some(Place {
                 view: GridView::Album,
                 arg: "42".to_owned()
-            }
+            })
         );
         assert_eq!(
             Step::Person("p:7".to_owned()).leads_to(),
-            Place {
+            Some(Place {
                 view: GridView::Person,
                 arg: "p:7".to_owned()
-            }
+            })
         );
         assert_eq!(
             Step::Tag("lake".to_owned()).leads_to(),
-            Place {
+            Some(Place {
                 view: GridView::Tag,
                 arg: "lake".to_owned()
-            }
+            })
         );
     }
 
@@ -1099,5 +1119,101 @@ mod tests {
         assert_eq!(off.at_top(GridView::All, Some(31)), None);
         assert_eq!(off.left(by_folder()), None);
         assert_eq!(off.at_top(GridView::All, Some(32)), None);
+    }
+
+    fn by_name() -> Sort {
+        sorted(SortKey::Name, Grouping::Folder)
+    }
+
+    // The controls show the sort the user is going to, as the sidebar marks the view
+    // they are going to: at the click, not when a rebuild of the library has landed.
+    #[test]
+    fn a_sort_asked_is_the_sort_the_controls_show_before_it_lands() {
+        let mut nav = nav();
+        assert_eq!(nav.sort_target(), Sort::default());
+        nav.asked(1, Step::Sort(by_name()));
+        assert_eq!(nav.sort_target(), by_name());
+        assert_eq!(
+            nav.sort(),
+            Sort::default(),
+            "the grid on screen is not sorted yet"
+        );
+        // A sort moves no view: the user is where they were.
+        assert_eq!(nav.target(), Place::of(GridView::All));
+        assert_eq!(Step::Sort(by_name()).leads_to(), None);
+        nav.answered(
+            1,
+            Ok(Landed {
+                place: Place::of(GridView::All),
+                sort: by_name(),
+                shown_at: Some(4),
+            }),
+        );
+        // Made, and not on screen yet: still the sort they are going to.
+        assert_eq!(nav.sort_target(), by_name());
+        assert_eq!(adopt(&mut nav, 4), Some(true));
+        assert_eq!((nav.sort(), nav.sort_target()), (by_name(), by_name()));
+    }
+
+    // A control changes the sort it read by replacing one field of it. Read from the grid
+    // on screen, a second change made before the first had landed would undo the first.
+    #[test]
+    fn a_second_change_builds_on_the_first_before_it_has_landed() {
+        let mut nav = nav();
+        nav.asked(1, Step::Sort(by_name()));
+        let reversed = Sort {
+            reverse: true,
+            ..nav.sort_target()
+        };
+        nav.asked(2, Step::Sort(reversed));
+        assert_eq!(nav.sort_target().key, SortKey::Name);
+        assert!(nav.sort_target().reverse);
+    }
+
+    #[test]
+    fn the_sort_that_is_in_force_asks_for_nothing_and_another_does() {
+        let mut nav = nav();
+        assert!(!nav.wants(&Step::Sort(Sort::default())));
+        assert!(nav.wants(&Step::Sort(by_name())));
+        nav.asked(1, Step::Sort(by_name()));
+        assert!(!nav.wants(&Step::Sort(by_name())));
+        assert!(
+            nav.wants(&Step::Sort(Sort::default())),
+            "back again is a change"
+        );
+        // And it says nothing of the view: All photos is still where the user is.
+        assert!(!nav.wants(&Step::View(GridView::All)));
+        assert!(nav.wants(&Step::View(GridView::Starred)));
+    }
+
+    // Both are steps on one queue, and neither forgets the other.
+    #[test]
+    fn a_view_asked_behind_a_sort_keeps_the_sort_and_a_sort_behind_a_view_the_view() {
+        let mut nav = nav();
+        nav.asked(1, Step::Sort(by_name()));
+        nav.asked(2, Step::View(GridView::Starred));
+        assert_eq!(nav.target(), Place::of(GridView::Starred));
+        assert_eq!(nav.sort_target(), by_name());
+        nav.asked(3, Step::Sort(Sort::default()));
+        assert_eq!(nav.target(), Place::of(GridView::Starred));
+        assert_eq!(nav.sort_target(), Sort::default());
+        // Folders are gone to in All photos: a sort on its way does not hide that the
+        // user is in Starred.
+        assert_eq!(nav.home_of_folders(), Some(Step::View(GridView::All)));
+    }
+
+    #[test]
+    fn a_refused_sort_leaves_the_controls_on_the_sort_in_force() {
+        let mut nav = nav();
+        nav.asked(1, Step::Sort(by_name()));
+        let refused = nav.answered(1, Err("no".to_owned())).unwrap();
+        assert_eq!(refused.step, Some(Step::Sort(by_name())));
+        assert_eq!(nav.sort_target(), Sort::default());
+    }
+
+    // A sort is wanted even with another step behind it: only a search gives way.
+    #[test]
+    fn a_sort_gives_way_to_nothing() {
+        assert!(!Step::Sort(by_name()).is_search());
     }
 }

@@ -213,6 +213,7 @@ impl App {
                         Step::Album(id) => commands::set_album_view(&engine, id),
                         Step::Person(key) => commands::set_person_view(&engine, &key),
                         Step::Tag(tag) => commands::set_tag_view(&engine, &tag),
+                        Step::Sort(sort) => commands::set_sort(&engine, sort),
                     }
                     .map_err(|err| err.message)?;
                     // Where the step led, read here: after it is made and before the next
@@ -501,6 +502,14 @@ impl App {
         if let Step::Search(query) = step {
             self.search.search(&query);
             self.search_for(query);
+            return;
+        }
+        // A sort moves no view and clears no query: the search box is left as it is.
+        if let Step::Sort(_) = step {
+            if self.nav.wants(&step) {
+                let number = self.steps.push(step.clone());
+                self.nav.asked(number, step);
+            }
             return;
         }
         if !self.nav.wants(&step) {
