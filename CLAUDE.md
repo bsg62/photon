@@ -1457,7 +1457,43 @@ icon of such a row stood on the top bar.
 data change, built or failed, and that is what reads them. A row tells AccessKit whether
 it is where the user is (`WidgetInfo::selected`), which is how a test of the whole
 application sees the fill; a test that clicks two rows in a row draws a frame between
-them, because the second is clicked where the last frame drew it and a fold moves it.
+them, because the second is clicked where the last frame drew it and a fold moves it. And
+a test that waits for something *not* to happen settles after the clock has passed the
+moment it was due, not only before: `frames_in` jumps the clock without waiting for the
+other threads, and a search sent in it has not been answered when it returns.
+
+**The search box is three modules.** `search_box.rs` (state) holds the text and the send
+that typing has made due, on a clock that is a number; `search_help.rs` (state) is the
+grammar's list, string for string `search-help.ts`'s, held to `Query::terms` and to that
+file by its tests; `search_bar.rs` draws egui's own text field, the two buttons and the
+panel. A typed search is a `Step::Search` on the views' queue, taking the place of a search
+still waiting there (`Step::is_search`) and of nothing else. **Whatever switches the view
+tells the box first** (`App::go`: `cancel` before anything, `leave` as the switch is
+asked for, `search` for a row that is a search), or a search half typed lands after the
+switch and replaces the grid that was asked for; a folder click and All photos cancel too.
+The box's text is written from this side alone: it is never read back from the engine.
+Things about egui's field that cost a test, a picture or a review each. Escape is claimed
+for the field (`TextEdit::event_filter`): left to egui it takes the focus away at the start
+of the frame, before anything is drawn, the box cannot tell it had had the keys, and the
+grid hears the key too. The field stands at the top of the room it is given, so it is given
+a room one line tall, and a press on the rest of the field is answered by a second,
+unfocusable widget under it. An `Area` starts at egui's default size, four hundred points
+tall, and keeps the size it was first given: the help panel says how tall it may be every
+frame. **The `/` that opens the box is let go of by whatever key comes up, and by the
+window being left** - not by a release named Slash: where `/` is Shift+7 the key that comes
+up after Shift is `7`, the slash was held for good, and every `/` typed in the box was
+swallowed, `f/1.8` among them. And **the grid's keys are a text field's while it has the
+focus, its scrollbar is not** (`grid/view.rs`): the early return that made the grid deaf
+stood above the scrollbar too, and with the caret in the box the thumb did nothing - egui
+gives up a field's focus on a click elsewhere, not on a press that is held. A press on the
+bookmark is a write, made on a queue of writes (`App::writes`) and followed by a read of
+the lists, since the engine announces no data change for a search saved; until they are
+read the search does not look saved, so the box itself knows what is being saved
+(`SearchBox::save`, `can_save`) and a second press saves nothing. **A window with the
+caret in a text field is not still**: the caret blinks, about six frames a second, as in
+any application. `egui_kittest` switches the blink off, so no test of the whole
+application sees it, and `a_window_with_a_search_shown_draws_nothing` leaves the box with
+Enter first to say what it does hold: a search shown, with the keys back in the grid.
 
 **Tests of the whole application drive it through `tests/common`'s `Driver`**: `until`
 draws the frames that are asked for, `settle` waits in real time for the other threads,

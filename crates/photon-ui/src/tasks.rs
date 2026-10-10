@@ -231,7 +231,10 @@ impl<J: Send + 'static, R: Send + 'static> Queue<J, R> {
 }
 
 /// As `Latest`: the worker ends at its next wait and is not joined. Jobs still waiting
-/// are not done: the window is closing, and each is a rebuild nobody will see.
+/// are not done: the window is closing. For the views' queue each is a rebuild nobody
+/// will see. For a queue of writes it is something the user asked for in the instant
+/// before closing the window, and it is lost: whoever puts a write here that must not
+/// be has to wait for the queue before the window goes.
 impl<J, R> Drop for Queue<J, R> {
     fn drop(&mut self) {
         let mut line = self.shared.line.lock();

@@ -210,3 +210,24 @@ fn native_album_dark() {
         });
     });
 }
+
+// A search typed, with what the box understands open under it.
+#[test]
+#[ignore = "renders through a GPU adapter: cargo run -p xtask -- native-shot"]
+fn native_search_help_light() {
+    shot(
+        ThemeChoice::Light,
+        "native-search-help-light.png",
+        |harness| {
+            harness.key_press_modifiers(Modifiers::COMMAND, Key::F);
+            harness.step();
+            harness.event(egui::Event::Text("mountains".to_owned()));
+            until(harness, "the search shown", |app| {
+                app.settled().view == GridView::Search
+                    && app.last_frame().is_some_and(|frame| frame.settled)
+            });
+            harness.get_by_label("What you can search for").click();
+            until(harness, "the help open", |app| app.search_help_open());
+        },
+    );
+}
