@@ -7,6 +7,7 @@
 
 use crate::{
     icons::Icon,
+    search_bar::{SearchAction, SearchBar, SearchBarData},
     sidebar::{
         list::{List, What},
         view::{SidebarData, SidebarView},
@@ -39,6 +40,8 @@ pub struct ShellData<'a> {
     /// The sidebar's entries, and the folder at the top of the grid, which it marks.
     pub list: &'a List,
     pub here: Option<i64>,
+    /// What the search box needs to know of the search it holds.
+    pub search: SearchBarData<'a>,
     /// The status bar's photo count, when there is one to give.
     pub count: Option<&'a str>,
     /// The line shown in the middle of the content in place of photos.
@@ -52,6 +55,8 @@ pub enum Action {
     ToggleSidebar,
     /// An entry of the sidebar: a view, a folder, a heading to fold.
     Row(What),
+    /// Something done in the search box.
+    Search(SearchAction),
     /// The splitter moved to `width`. `store` when the user has let go of it or moved it
     /// by a key: a width is stored when it was chosen, not at every point on the way.
     Width {
@@ -70,6 +75,7 @@ pub struct Shell {
     pointer_focus: bool,
     /// The sidebar's list, which keeps its place while the sidebar is hidden.
     sidebar: SidebarView,
+    search: SearchBar,
 }
 
 fn rect_of(area: Area, window: Rect) -> Rect {
@@ -90,12 +96,19 @@ impl Shell {
         self.grab.is_some()
     }
 
+    /// Whether the panel that lists what the search box understands is open.
+    pub fn search_help_open(&self) -> bool {
+        self.search.help_open()
+    }
+
     /// Draws the shell in the whole of `ui`, and `content` - the grid - in the area left
-    /// for it. Answers what the user did, in the order they did it.
+    /// for it. `search` is the search box's text, which the box edits in place. Answers
+    /// what the user did, in the order they did it.
     pub fn show(
         &mut self,
         ui: &mut egui::Ui,
         data: &ShellData<'_>,
+        search: &mut String,
         content: impl FnOnce(&mut egui::Ui),
     ) -> Vec<Action> {
         let window = ui.max_rect();
@@ -123,6 +136,7 @@ impl Shell {
             ui,
             rect_of(found.top_bar, window),
             data,
+            search,
             palette,
             &mut actions,
         );
@@ -164,10 +178,11 @@ impl Shell {
     }
 
     fn top_bar(
-        &self,
+        &mut self,
         ui: &mut egui::Ui,
         rect: Rect,
         data: &ShellData<'_>,
+        search: &mut String,
         palette: &Palette,
         actions: &mut Vec<Action>,
     ) {
@@ -217,13 +232,16 @@ impl Shell {
             hint: None,
             enabled: false,
         };
-        bar_button(
-            ui,
-            at(rect.right() - S[1] - BUTTON),
-            "settings",
-            &gear,
-            palette,
+        let gear_at = at(rect.right() - S[1] - BUTTON);
+        bar_button(ui, gear_at, "settings", &gear, palette);
+
+        // The search box, between the toggle and what stands at the bar's right.
+        let room = Rect::from_min_max(
+            pos2(rect.left() + S[1] + BUTTON + S[1], rect.top()),
+            pos2(gear_at.left() - S[1], rect.bottom() - 1.0),
         );
+        let done = self.search.show(ui, room, search, &data.search);
+        actions.extend(done.into_iter().map(Action::Search));
     }
 
     fn splitter(
@@ -602,17 +620,23 @@ mod tests {
                 layout: &self.layout,
                 list: &self.list,
                 here: None,
+                search: SearchBarData {
+                    saved_as: None,
+                    can_save: false,
+                    in_search: false,
+                },
                 count: Some("1,234 photos"),
                 notice: self.notice.as_deref(),
                 toasts: self.toasts.held(),
             };
             let (shell, mut actions) = (&mut self.shell, Vec::new());
+            let mut search = String::new();
             let (mut content, mut clip) = (Rect::NOTHING, Rect::NOTHING);
             let mut full = self.ctx.run_ui(input, |ui| {
                 egui::CentralPanel::default()
                     .frame(egui::Frame::NONE)
                     .show(ui, |ui| {
-                        actions = shell.show(ui, &data, |ui| {
+                        actions = shell.show(ui, &data, &mut search, |ui| {
                             content = ui.max_rect();
                             clip = ui.clip_rect();
                         });
@@ -641,7 +665,7 @@ mod tests {
                     }
                     Action::Width { width, .. } => self.layout.sidebar_width = *width,
                     Action::Dismiss(id) => self.toasts.dismiss(*id),
-                    Action::Row(_) => {}
+                    Action::Row(_) | Action::Search(_) => {}
                 }
             }
             actions

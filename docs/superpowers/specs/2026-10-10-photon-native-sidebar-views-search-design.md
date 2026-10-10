@@ -31,6 +31,15 @@ or a test showed:
 - A row tells AccessKit whether it is where the user is, ahead of sub-project 7: it is
   how a test of the whole application sees which row is filled.
 
+**Changed while the third pull request was built** (2026-10-10):
+
+- Saving a search is a write, made on a queue of writes off the UI thread; the lists are
+  read again when it is done, the engine announcing no data change for it.
+- The help closes on Escape, on a press outside and on a pick, as written; not when the
+  focus walks out of the field by Tab, as the Svelte box also does.
+- An Enter or Escape that ends an input method's composition is not told apart from the
+  box's own: egui's field gives no sign of a composition. On the smoke checklist.
+
 ## What this is for
 
 After sub-project 1 `photon-native` is a window with one thing in it: the grid of whatever

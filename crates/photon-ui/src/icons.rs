@@ -13,6 +13,7 @@ pub enum Icon {
     Calendar,
     ChevronDown,
     ChevronRight,
+    CircleHelp,
     Clock,
     Copy,
     EyeOff,
@@ -21,6 +22,7 @@ pub enum Icon {
     LayoutGrid,
     PanelLeft,
     Play,
+    Search,
     Settings,
     Star,
     Tag,
@@ -30,11 +32,12 @@ pub enum Icon {
 }
 
 impl Icon {
-    pub const ALL: [Icon; 18] = [
+    pub const ALL: [Icon; 20] = [
         Icon::Bookmark,
         Icon::Calendar,
         Icon::ChevronDown,
         Icon::ChevronRight,
+        Icon::CircleHelp,
         Icon::Clock,
         Icon::Copy,
         Icon::EyeOff,
@@ -43,6 +46,7 @@ impl Icon {
         Icon::LayoutGrid,
         Icon::PanelLeft,
         Icon::Play,
+        Icon::Search,
         Icon::Settings,
         Icon::Star,
         Icon::Tag,
@@ -54,6 +58,8 @@ impl Icon {
     fn name(self) -> &'static str {
         match self {
             Icon::Bookmark => "bookmark",
+            Icon::CircleHelp => "circle-help",
+            Icon::Search => "search",
             Icon::Calendar => "calendar",
             Icon::ChevronDown => "chevron-down",
             Icon::ChevronRight => "chevron-right",
@@ -82,6 +88,10 @@ impl Icon {
             }
             Icon::Clock => r#"<circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>"#,
             Icon::Bookmark => r#"<path d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16z"/>"#,
+            Icon::CircleHelp => {
+                r#"<circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><path d="M12 17h.01"/>"#
+            }
+            Icon::Search => r#"<path d="m21 21-4.34-4.34"/><circle cx="11" cy="11" r="8"/>"#,
             Icon::ChevronDown => r#"<path d="m6 9 6 6 6-6"/>"#,
             Icon::ChevronRight => r#"<path d="m9 18 6-6-6-6"/>"#,
             Icon::Folder => {

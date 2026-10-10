@@ -73,6 +73,14 @@ pub enum Step {
 }
 
 impl Step {
+    /// Whether this is a search: the one kind of step a newer one of its kind takes the
+    /// place of while it waits its turn. Each word typed while a rebuild runs asks for
+    /// another search, and only the last is wanted; a view asked for is wanted even with
+    /// another behind it, and so will a change of sort be.
+    pub fn is_search(&self) -> bool {
+        matches!(self, Step::Search(_))
+    }
+
     /// Where the grid is once this step has landed.
     pub fn leads_to(&self) -> Place {
         match self {
@@ -557,6 +565,20 @@ mod tests {
         nav.asked(4, Step::View(GridView::Recent));
         let refused = nav.answered(9, Err("no".to_owned())).unwrap();
         assert_eq!(refused.step, None);
+    }
+
+    #[test]
+    fn only_a_search_gives_way_to_a_newer_one_while_it_waits() {
+        assert!(Step::Search("lake".to_owned()).is_search());
+        assert!(Step::Search(String::new()).is_search());
+        for step in [
+            Step::View(GridView::Starred),
+            Step::Album(4),
+            Step::Person("p:7".to_owned()),
+            Step::Tag("lake".to_owned()),
+        ] {
+            assert!(!step.is_search(), "{step:?}");
+        }
     }
 
     #[test]

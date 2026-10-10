@@ -24,6 +24,7 @@ pub mod grid {
 pub mod icons;
 pub mod nav;
 pub mod probe;
+pub mod search_bar;
 pub mod search_box;
 pub mod search_help;
 pub mod shell;

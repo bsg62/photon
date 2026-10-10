@@ -11,6 +11,8 @@ use crate::{
     icons,
     nav::{Landed, LastFolder, Nav, Place, Step},
     probe::{Facts, Move, Outside, Probe, Report},
+    search_bar::{SearchAction, SearchBarData},
+    search_box::{SearchBox, can_save_search, default_search_name, saved_search_for},
     shell::{Action, Shell, ShellData},
     sidebar::{
         list::{Collections, Group, Held, List, Sources, What},
@@ -61,6 +63,11 @@ pub struct App {
     /// Where the user is and is going, and the queue the steps there are made on.
     nav: Nav,
     steps: Queue<Step, Result<Landed, String>>,
+    /// The search box's text and the send that typing has made due.
+    search: SearchBox,
+    /// What the user has asked to be written to the library, made in the order asked and
+    /// off this thread.
+    writes: Queue<Write, Result<(), String>>,
     /// Whether the engine has published a grid that is not on screen yet. It waits while
     /// a step is on its way and no answer says what it shows (`Nav::adopt`).
     stale: bool,
@@ -95,6 +102,12 @@ pub struct App {
     /// The GPU the window is drawn with, for the log and the gate's report.
     adapter: Option<String>,
     closed: bool,
+}
+
+/// Something to write to the library.
+enum Write {
+    /// The search in the box, under a name: the bookmark.
+    SaveSearch { name: String, query: String },
 }
 
 /// The gate's programme, where its report goes, and what the report says besides.
@@ -207,6 +220,20 @@ impl App {
             },
             repaint(&ctx),
         );
+        let writes = Queue::spawn(
+            "writes",
+            {
+                let engine = engine.clone();
+                move |write: Write| match write {
+                    Write::SaveSearch { name, query } => {
+                        commands::save_search(&engine, &name, &query)
+                            .map(|_| ())
+                            .map_err(|err| err.message)
+                    }
+                }
+            },
+            repaint(&ctx),
+        );
         let mut counting = Latest::spawn(
             "counts",
             {
@@ -301,6 +328,8 @@ impl App {
             folder_list,
             nav: Nav::new(Place { view, arg }, engine.sort()),
             steps,
+            search: SearchBox::default(),
+            writes,
             stale: false,
             counts: Counts::default(),
             counting,
@@ -403,6 +432,16 @@ impl App {
         self.held.collections()
     }
 
+    /// What the search box holds.
+    pub fn search_text(&self) -> &str {
+        &self.search.text
+    }
+
+    /// Whether the panel that lists what the search box understands is open.
+    pub fn search_help_open(&self) -> bool {
+        self.shell.search_help_open()
+    }
+
     /// The folder the sidebar's list was last drawn marking.
     pub fn marked(&self) -> Option<i64> {
         self.marked
@@ -441,17 +480,44 @@ impl App {
 
     /// Asks for `step`, unless it leads to where the user already is. What a click on a
     /// row of the sidebar does, and the one way the engine's view is moved.
+    ///
+    /// The search box goes with it. A search - a saved one's row, On this day - is what
+    /// the box then holds. Any other step is a switch away, which clears the engine's
+    /// query: a search half typed is dropped, or it would land after the switch and
+    /// replace the grid that was asked for, and the box is emptied as the switch is made.
     pub fn go(&mut self, step: Step) {
+        if let Step::Search(query) = step {
+            self.search.search(&query);
+            self.search_for(query);
+            return;
+        }
+        self.search.cancel();
         if !self.nav.wants(&step) {
             return;
         }
         let number = self.steps.push(step.clone());
+        self.nav.asked(number, step);
+        self.search.leave(number);
+    }
+
+    /// Asks for the search for `query`, unless that is where the user already is. It
+    /// takes the place of a search still waiting its turn: while one rebuild runs, each
+    /// further word typed is one more search asked for, and only the last is wanted.
+    fn search_for(&mut self, query: String) {
+        let step = Step::Search(query);
+        if !self.nav.wants(&step) {
+            return;
+        }
+        let number = self.steps.push_or_replace(step.clone(), Step::is_search);
         self.nav.asked(number, step);
     }
 
     /// A click on a folder: to All photos if the user is on an excursion, and to the
     /// folder's place in the grid once the grid that holds it is on screen.
     fn enter_folder(&mut self, folder: i64) {
+        // A search typed and not yet sent would land after the jump and replace the
+        // grid that was jumped in.
+        self.search.cancel();
         if let Some(home) = self.nav.home_of_folders() {
             self.go(home);
         }
@@ -467,6 +533,7 @@ impl App {
     /// to the top of the folder they are in the middle of.
     fn return_to_all(&mut self) {
         let home = Step::View(View::All);
+        self.search.cancel();
         if !self.nav.wants(&home) {
             return;
         }
@@ -505,8 +572,19 @@ impl App {
         }
     }
 
-    fn act(&mut self, action: Action) {
+    fn act(&mut self, action: Action, now_ms: f64) {
         match action {
+            Action::Search(SearchAction::Typed) => self.search.typed(now_ms),
+            Action::Search(SearchAction::Clear) => {
+                self.search.clear();
+                self.search_for(String::new());
+            }
+            Action::Search(SearchAction::Save) => {
+                // Under its own text: the sidebar is where it gets a friendlier name.
+                let query = default_search_name(&self.search.text).to_owned();
+                let name = query.clone();
+                self.writes.push(Write::SaveSearch { name, query });
+            }
             Action::ToggleSidebar => {
                 self.layout.sidebar_hidden = !self.layout.sidebar_hidden;
                 self.layout_store.ask(self.layout);
@@ -597,7 +675,28 @@ impl App {
             let outcome =
                 answer.unwrap_or_else(|_| Err("photon could not change the view.".to_owned()));
             if let Some(refused) = self.nav.answered(number, outcome) {
+                // The box shows what the grid shows: its text back after a refused
+                // switch, the search the grid is left on after a refused search.
+                let asked = match &refused.step {
+                    Some(Step::Search(query)) => Some(query.as_str()),
+                    _ => None,
+                };
+                let shown = (refused.shown.view == View::Search).then_some(&refused.shown.arg);
+                self.search
+                    .refused(number, asked, shown.map_or("", String::as_str));
                 self.toasts.error(refused.said, now_ms);
+            }
+        }
+        for (_, answer) in self.writes.answers() {
+            answered = true;
+            match answer {
+                // The engine announces no data change for a search saved: the lists are
+                // read again because this side knows it wrote one.
+                Ok(Ok(())) => self.collecting.ask(()),
+                Ok(Err(said)) => self.toasts.error(said, now_ms),
+                Err(_) => self
+                    .toasts
+                    .error("photon could not save the search.", now_ms),
             }
         }
         answered
@@ -719,6 +818,10 @@ impl eframe::App for App {
             self.go_to_folder(folder);
         }
         self.take_folder();
+        // A search typed, whose time has come.
+        if let Some(query) = self.search.take_due(now) {
+            self.search_for(query);
+        }
 
         let data = GridData {
             layout_gen: self.layout_gen,
@@ -753,21 +856,36 @@ impl eframe::App for App {
             let wait = Duration::from_secs_f64(((at - now) / 1000.0).max(0.0));
             ui.ctx().request_repaint_after(wait);
         }
+        let searches = &self.held.collections().searches;
+        let saved_as =
+            saved_search_for(searches, &self.search.text).map(|saved| saved.name.clone());
         let shell = ShellData {
             layout: &self.layout,
             list: &self.list,
             here: self.marked,
+            search: SearchBarData {
+                saved_as: saved_as.as_deref(),
+                can_save: can_save_search(searches, &self.search.text),
+                in_search: self.nav.target().view == View::Search,
+            },
             count: count.as_deref(),
             notice: notice.as_deref(),
             toasts,
         };
         let (view, thumbs) = (&mut self.view, &mut self.thumbs);
         let mut output = None;
-        let actions = self.shell.show(ui, &shell, |ui| {
+        let actions = self.shell.show(ui, &shell, &mut self.search.text, |ui| {
             output = Some(view.show(ui, &data, thumbs));
         });
         for action in actions {
-            self.act(action);
+            self.act(action, now);
+        }
+        // A typed search is sent in a frame of its own, which a still window would not
+        // draw: asked for here, at every frame until it is sent, since a frame asked for
+        // after a delay comes a frame early.
+        if let Some(at) = self.search.due_at() {
+            let wait = Duration::from_secs_f64(((at - now) / 1000.0).max(0.0));
+            ui.ctx().request_repaint_after(wait);
         }
 
         if let Some(output) = &output {
