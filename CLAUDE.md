@@ -1308,6 +1308,16 @@ version's source, never an older egui from memory. `eframe::App` is `fn ui(&mut 
 answers only the latest question. `Engine::published` and the `GridIndex` are in memory and
 are read directly - `published` when the engine says the library changed, not per frame.
 
+**A notch of the mouse wheel is as far as the web view of the system moved it**
+(`scroll::WHEEL_NOTCH`, set once in `App::new`). A wheel reports notches and leaves the
+distance to the application: egui's is forty points, which is WebKitGTK's too, and
+WebView2's is a hundred - so the native grid looked right on Linux and was two and a half
+times slower on Windows, which was the first thing said by the first person to run it
+(2026-10-10). Anything measured against the Tauri photon is measured on each system: the
+test of this through the whole application can only fail on Windows, where CI runs it,
+the two numbers being equal everywhere else. Windows' setting of lines a notch is not
+read, and a Mac's wheel has not been compared.
+
 **The grid has no scroll map.** Its position is an `f64` in the layout's coordinates and
 the rows are drawn at `row.top - position`; egui's `ScrollArea` is not used for it, because
 its offset is an `f32`. Several rules of the Svelte grid have no successor (`placeIn`,

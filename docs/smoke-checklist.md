@@ -647,6 +647,7 @@ Not released: these are for whoever tries the branch `native-ui`. The Svelte int
 - [ ] Quit and start again: the sidebar is as wide as it was left, and hidden if it was hidden.
 - [ ] Rest the pointer on a sidebar row: its hint shows. Leave it there and watch the processor: photon-native goes quiet, it does not go on drawing.
 - [ ] Make the window as small as the desktop allows: nothing overlaps, and nothing crashes.
+- [ ] Turn the mouse wheel over the grid, one notch at a time, with the Tauri photon beside it: both move the same distance a notch (on Windows about a hundred pixels, on Linux about forty). On a Mac, with a mouse and with a trackpad: say what differs.
 - [ ] The sidebar lists Albums and Searches unfolded, People and Tags folded, and under them the folders that hold photos, under the years of their oldest photos, newest year first. An album of Picasa's has its small mark after its name. The names are the ones the Svelte photon shows.
 - [ ] Click a heading: Albums, Searches and Tags fold and unfold anywhere along the row, People at its chevron only (its label does nothing yet). Quit and start again: each is as it was left.
 - [ ] Unfold People in a library with nobody named, and Tags in one with no keywords: each says why it is empty, in small dimmed words wrapped to the sidebar, and the rows under it start where the words end. Drag the sidebar narrower and wider: the words wrap again and nothing overlaps.
