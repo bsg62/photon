@@ -242,3 +242,13 @@ chevron-right, folder, bookmark, user, tag, images.
 
 One fresh reviewer over the whole branch, the Review focus given verbatim; one fix pass,
 each fix test-first; the pull request merged into `native-ui` when CI is green.
+
+**The review** (one fresh reader, 2026-10-10) found nothing critical and two things a user
+would see: a row's icon drawn over the top bar when the row straddles the sidebar's top
+edge, and the marked folder's row pushed out of sight at launch when the albums arrive
+after the list has followed the grid. Both are fixed, with a folder looked up in the grid
+that is drawn (review focus 1, in a variant the tests had not reached), the frame after a
+resize (focus 4: the request that had been removed is back), the day in the list's key, a
+gate that keeps no folder, and a folder's row that no longer says it is "not pressed".
+Its model of `Nav` over 20,000 random interleavings found no state it sticks in.
+

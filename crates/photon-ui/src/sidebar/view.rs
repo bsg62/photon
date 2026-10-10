@@ -20,7 +20,8 @@ use crate::{
     },
 };
 use eframe::egui::{
-    self, Align2, Color32, Painter, Rect, Response, Sense, Vec2, WidgetInfo, WidgetType, pos2, vec2,
+    self, Align2, Color32, Painter, Rect, Response, Sense, UiBuilder, Vec2, WidgetInfo, WidgetType,
+    pos2, vec2,
 };
 
 /// What a row is inset by from the panel's left edge.
@@ -60,6 +61,21 @@ pub struct SidebarView {
     followed: Option<i64>,
     /// Where on the thumb the pointer took hold, while the scrollbar is held.
     grab: Option<f64>,
+    /// The entry the list is held by when its entries change.
+    kept: Option<Kept>,
+}
+
+/// An entry and where it was when the list was last drawn. When the entries are built
+/// again - the albums read a moment after the folders, a scan that found a folder, a group
+/// folded - or a note wraps to another height, the list is put where this entry is where
+/// it was. Without it rows slid under a resting pointer, and at launch the folder the
+/// list had just followed the grid to was pushed out under the bottom edge by the albums
+/// arriving above it, with nothing to bring it back until the grid reached another folder.
+struct Kept {
+    what: What,
+    index: usize,
+    /// Its top in the list, not on the screen.
+    top: f64,
 }
 
 fn icon(what: Fixed) -> Option<Icon> {
@@ -98,7 +114,7 @@ fn note_font() -> egui::FontId {
 /// What draws an entry: the panel it is in, and where the grid is.
 struct Frame<'a> {
     painter: &'a Painter,
-    /// The sidebar's own area, which no row takes a press outside of.
+    /// The sidebar's own area.
     panel: Rect,
     palette: &'a Palette,
     here: Option<i64>,
@@ -119,7 +135,11 @@ impl SidebarView {
         let list = data.list;
         self.measure(ui, list, rect.width());
         let viewport = f64::from(rect.height()).max(0.0);
+        let held = self.held_place(list);
         self.scroll.set_extent(self.stack.total(), viewport);
+        if let Some(place) = held {
+            self.scroll.set(place);
+        }
         let over = ui.rect_contains_pointer(rect);
         self.follow(list, data.here, over, viewport);
         let bar = Rect::from_min_max(pos2(rect.right() - BAR, rect.top()), rect.max);
@@ -132,8 +152,16 @@ impl SidebarView {
             palette,
             here: data.here,
         };
+        // A child that draws nothing and takes no press outside the sidebar: a row half
+        // scrolled out is cut at the edge, its icon with it, and the bar over that edge
+        // keeps its own presses. The clip has to be set: `new_child` gives the child the
+        // parent's, whatever its `max_rect`.
+        let mut inner = ui.new_child(UiBuilder::new().max_rect(rect));
+        inner.set_clip_rect(rect.intersect(ui.clip_rect()));
+        let ui = &mut inner;
         let mut clicked = None;
-        for index in self.stack.range(top, top + viewport) {
+        let in_view = self.stack.range(top, top + viewport);
+        for index in in_view.clone() {
             let entry = &list.entries[index];
             let band = Rect::from_min_max(
                 pos2(
@@ -150,7 +178,60 @@ impl SidebarView {
             }
         }
         self.draw_scrollbar(&painter, bar, palette);
+
+        // What the list is held by, should its entries change before the next frame: the
+        // row under the pointer, else the marked folder's if it is in sight, else the
+        // first in view.
+        let pointer = ui.input(|input| input.pointer.hover_pos());
+        let under = pointer.filter(|_| over).and_then(|pointer| {
+            let y = top + f64::from(pointer.y - rect.top());
+            (in_view.clone())
+                .find(|&index| (self.stack.top(index)..self.stack.bottom(index)).contains(&y))
+        });
+        let marked = (data.here)
+            .and_then(|folder| list.folder(folder))
+            .filter(|index| in_view.contains(index));
+        let first = (!in_view.is_empty()).then_some(in_view.start);
+        self.keep(list, under.or(marked).or(first));
         clicked
+    }
+
+    /// Where the list is to be put so that the entry it is held by is where it was, when
+    /// that entry has moved in the list.
+    fn held_place(&self, list: &List) -> Option<f64> {
+        let kept = self.kept.as_ref()?;
+        let same =
+            |index: usize| (list.entries.get(index)).is_some_and(|entry| entry.what == kept.what);
+        let index = if same(kept.index) {
+            kept.index
+        } else {
+            // The entries are another list: look for it, once.
+            (0..list.entries.len()).find(|&index| same(index))?
+        };
+        let moved = self.stack.top(index) - kept.top;
+        (moved != 0.0).then(|| self.scroll.position() + moved)
+    }
+
+    fn keep(&mut self, list: &List, index: Option<usize>) {
+        let Some(index) = index else {
+            self.kept = None;
+            return;
+        };
+        let top = self.stack.top(index);
+        match &mut self.kept {
+            // The same entry as last frame, which is every frame but a few: no copy of
+            // its name is made.
+            Some(kept) if kept.index == index && list.entries[index].what == kept.what => {
+                kept.top = top;
+            }
+            kept => {
+                *kept = Some(Kept {
+                    what: list.entries[index].what.clone(),
+                    index,
+                    top,
+                });
+            }
+        }
     }
 
     /// Stacks the entries: each as tall as its kind, and a note as tall as its words are
@@ -255,17 +336,12 @@ impl SidebarView {
 /// whoever reads the window without seeing its fill.
 fn button(
     ui: &egui::Ui,
-    frame: &Frame<'_>,
     rect: Rect,
     entry: &Entry,
     label: &str,
     current: Option<bool>,
 ) -> Response {
-    let response = ui.interact(
-        rect.intersect(frame.panel),
-        ui.id().with(("sidebar", &entry.what)),
-        Sense::click(),
-    );
+    let response = ui.interact(rect, ui.id().with(("sidebar", &entry.what)), Sense::click());
     response.widget_info(|| match current {
         Some(current) => WidgetInfo::selected(WidgetType::Button, true, current, label),
         None => WidgetInfo::labeled(WidgetType::Button, true, label),
@@ -324,11 +400,10 @@ fn draw(ui: &mut egui::Ui, frame: &Frame<'_>, band: Rect, entry: &Entry) -> bool
             // click - the view is already open - so it must not offer one.
             let pressable = *fixed != Fixed::CopiesOf;
             let response = if pressable {
-                button(ui, frame, row, entry, &entry.label, Some(entry.active))
+                button(ui, row, entry, &entry.label, Some(entry.active))
             } else {
-                let rect = row.intersect(frame.panel);
                 let response =
-                    ui.interact(rect, ui.id().with(("sidebar", &entry.what)), Sense::hover());
+                    ui.interact(row, ui.id().with(("sidebar", &entry.what)), Sense::hover());
                 response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, &entry.label));
                 response
             };
@@ -377,7 +452,7 @@ fn draw(ui: &mut egui::Ui, frame: &Frame<'_>, band: Rect, entry: &Entry) -> bool
                 (true, false) => "Show people",
                 (false, _) => entry.label.as_str(),
             };
-            let response = button(ui, frame, pressed, entry, name, None);
+            let response = button(ui, pressed, entry, name, None);
             let response = if people {
                 hinted(response, name)
             } else {
@@ -410,10 +485,9 @@ fn draw(ui: &mut egui::Ui, frame: &Frame<'_>, band: Rect, entry: &Entry) -> bool
             response.clicked()
         }
         What::Album(_) | What::Search { .. } | What::Person(_) | What::Tag(_) | What::Folder(_) => {
-            let response = hinted(
-                button(ui, frame, row, entry, &entry.label, Some(entry.active)),
-                &entry.hint,
-            );
+            // A folder is a place in the grid, never the view shown: it says neither.
+            let current = (!matches!(entry.what, What::Folder(_))).then_some(entry.active);
+            let response = hinted(button(ui, row, entry, &entry.label, current), &entry.hint);
             if entry.active {
                 painter.rect_filled(row, R[2], color(palette.accent_soft));
             } else if response.hovered() {
@@ -1277,6 +1351,173 @@ mod tests {
         let soft = f.filled(f.tint(|palette| palette.accent_soft));
         assert_eq!(soft.len(), 1);
         assert_eq!(soft[0].top(), 8.0 + 28.0 - 10.0);
+    }
+
+    // A bar lies over the sidebar's top edge, and an icon is a picture like any other
+    // thing drawn: painted through the window's own clip it stood on the bar, over the
+    // edge its row's words were cut at.
+    #[test]
+    fn an_icon_is_cut_at_the_sidebars_edge_as_its_row_is() {
+        let mut f = Fixture::new(200);
+        f.above = 46.0;
+        f.frame(Vec::new());
+        for what in [
+            What::Fixed(Fixed::Starred),
+            What::Group(Group::Albums),
+            What::Album(9),
+        ] {
+            // Half of the row above the sidebar's top edge.
+            let bottom = f.view.stack.bottom(f.index(&what));
+            f.view.scroll.set(bottom - 14.0);
+            f.frame(Vec::new());
+            let reaching = (f.icons.iter())
+                .filter(|(rect, _)| rect.top() < 46.0 && rect.bottom() > 46.0)
+                .count();
+            assert!(reaching > 0, "{what:?}: no icon is at the edge");
+            assert!(
+                f.clip_tops.iter().all(|top| *top >= 46.0),
+                "{what:?}: {:?}",
+                f.clip_tops
+            );
+        }
+    }
+
+    /// Six albums more, as a library's collections arriving after its folders.
+    fn more_albums(f: &mut Fixture) {
+        for id in 20..26 {
+            f.world.collections.albums.push(AlbumSummary {
+                id,
+                name: format!("Album {id}"),
+                count: 1,
+                picasa: false,
+            });
+        }
+        f.rebuild();
+    }
+
+    // At launch the grid goes back to the folder it was left in and the list follows, its
+    // row flush at the bottom edge. The albums are read a moment later and their rows go in
+    // above: the row must stay where it was, not be pushed out under the edge - nothing
+    // would bring it back until the grid reached another folder. Ten folders: the first
+    // row in view is above the albums, and holding the list by that one would not do.
+    #[test]
+    fn rows_arriving_above_the_marked_folder_leave_it_where_it_is() {
+        let mut f = Fixture::new(10);
+        f.here = Some(10);
+        f.frame(Vec::new());
+        f.frame(Vec::new());
+        let before = f.band(&folder(10));
+        assert_eq!(before.bottom(), 600.0, "followed to the bottom edge");
+        let position = f.view.position();
+        assert!(position > 0.0 && position < f.view.stack.top(f.index(&What::Album(4))));
+
+        more_albums(&mut f);
+        f.frame(Vec::new());
+        assert_eq!(f.band(&folder(10)), before);
+        assert_eq!(f.view.position(), position + 6.0 * f64::from(ROW));
+        assert!(f.drew("folder-0010").is_some());
+    }
+
+    // The same of the row under a resting pointer, wherever the grid is: a list that
+    // moved under it would put another row under a click already on its way. A scan
+    // finds a folder that belongs between the one the grid is in and the one under the
+    // pointer: it is the pointer's row that stays, and the marked one that gives way.
+    #[test]
+    fn a_row_arriving_above_does_not_move_the_row_under_the_pointer() {
+        let mut f = Fixture::new(200);
+        f.here = Some(1);
+        f.frame(Vec::new());
+        let at = pos2(100.0, 590.0);
+        f.pointer(at);
+        f.frame(Vec::new());
+        assert_eq!(f.view.position(), 0.0);
+        let under = |f: &Fixture| {
+            (f.list.entries.iter())
+                .map(|entry| entry.what.clone())
+                .find(|what| f.band(what).contains(at))
+                .expect("a row is under the pointer")
+        };
+        let row = under(&f);
+        assert!(matches!(row, What::Folder(id) if id > 3), "{row:?}");
+        let (band, marked) = (f.band(&row), f.band(&folder(1)));
+
+        // A day and a bit older than the second folder: listed after it.
+        f.world.folders.push(Folder {
+            id: 500,
+            watched_id: 1,
+            parent_id: None,
+            path: "/photos/found".to_owned(),
+            name: "found".to_owned(),
+            hidden: false,
+            alias: None,
+        });
+        f.world.tallies.push(FolderTally {
+            folder_id: 500,
+            count: 1,
+            taken_at_min: IN_2024 - 2 * 86_400 - 60,
+            bytes: 0,
+            modified_ms: 0,
+        });
+        f.rebuild();
+        f.frame(Vec::new());
+        assert!(f.drew("found").is_some());
+        assert_eq!(under(&f), row);
+        assert_eq!(f.band(&row), band);
+        assert_eq!(f.band(&folder(1)).top(), marked.top() - ROW);
+    }
+
+    // With neither a pointer nor a marked row in sight, the first row in view is what
+    // stays: a list at its top stays at its top, and one in its middle does not slide.
+    #[test]
+    fn a_list_built_again_keeps_the_first_row_in_view() {
+        let mut f = Fixture::new(200);
+        f.frame(Vec::new());
+        more_albums(&mut f);
+        f.frame(Vec::new());
+        assert_eq!(f.view.position(), 0.0);
+
+        f.view.scroll.set(f.view.stack.top(f.index(&folder(60))));
+        f.frame(Vec::new());
+        let band = f.band(&folder(60));
+        f.world.collections.albums.clear();
+        f.rebuild();
+        f.frame(Vec::new());
+        assert_eq!(f.band(&folder(60)), band);
+
+        // The marked folder holds the list only while it is in sight. The user has
+        // scrolled back to the top since the list followed the grid far down: rows
+        // arriving in between do not move a list whose marked row nobody is looking at.
+        f.here = Some(150);
+        f.frame(Vec::new());
+        assert!(f.view.position() > 1000.0);
+        f.view.scroll.set(0.0);
+        f.frame(Vec::new());
+        more_albums(&mut f);
+        f.frame(Vec::new());
+        assert_eq!(f.view.position(), 0.0);
+    }
+
+    // The row the list was held by is gone - the folder under the pointer emptied, an
+    // album deleted: the list stays where it is, and is not thrown to its first row.
+    #[test]
+    fn a_list_whose_held_row_is_gone_stays_where_it_is() {
+        let mut f = Fixture::new(200);
+        f.frame(Vec::new());
+        f.view.scroll.set(1000.0);
+        let at = pos2(100.0, 300.0);
+        f.pointer(at);
+        f.frame(Vec::new());
+        let held = (f.list.entries.iter())
+            .map(|entry| entry.what.clone())
+            .find(|what| f.band(what).contains(at))
+            .expect("a row is under the pointer");
+        let What::Folder(gone) = held else {
+            panic!("{held:?} is under the pointer");
+        };
+        f.world.tallies.retain(|tally| tally.folder_id != gone);
+        f.rebuild();
+        f.frame(Vec::new());
+        assert_eq!(f.view.position(), 1000.0);
     }
 
     // The entry that names the photo whose copies are shown does nothing: the view is open.

@@ -31,6 +31,7 @@ use photon_core::{
 use photon_engine::{
     commands,
     engine::{Engine, EngineConfig},
+    error::AppError,
 };
 use std::{collections::HashMap, path::PathBuf, sync::Arc, sync::mpsc::Receiver, time::Duration};
 
@@ -72,6 +73,9 @@ pub struct App {
     list: List,
     /// The folder the sidebar's list was last drawn marking.
     marked: Option<i64>,
+    /// A folder to put at the top of the grid in the next frame drawn, looked up in the
+    /// grid that frame draws.
+    going: Option<i64>,
     /// The folder at the top of All photos, as photon remembers it.
     last_folder: LastFolder,
     /// Stores the folder remembered, off this thread, the latest alone.
@@ -232,14 +236,21 @@ impl App {
                 move |()| {
                     // All of them or none: a read that failed leaves the lists as they
                     // were, and the next change to the library reads them again.
-                    Some(Collections {
-                        albums: commands::list_albums(&engine).ok()?,
-                        searches: commands::list_saved_searches(&engine).ok()?,
-                        people: commands::list_people(&engine).ok()?,
-                        to_name: usize::try_from(commands::people_to_name(&engine).ok()?)
-                            .unwrap_or(0),
-                        tags: commands::list_tags(&engine).ok()?,
-                    })
+                    let read = || -> Result<Collections, AppError> {
+                        Ok(Collections {
+                            albums: commands::list_albums(&engine)?,
+                            searches: commands::list_saved_searches(&engine)?,
+                            people: commands::list_people(&engine)?,
+                            to_name: usize::try_from(commands::people_to_name(&engine)?)
+                                .unwrap_or(0),
+                            tags: commands::list_tags(&engine)?,
+                        })
+                    };
+                    read()
+                        .inspect_err(|err| {
+                            tracing::warn!(err = %err.message, "the sidebar's lists were not read");
+                        })
+                        .ok()
                 }
             },
             repaint(&ctx),
@@ -296,6 +307,7 @@ impl App {
             collecting,
             list: List::default(),
             marked: None,
+            going: None,
             last_folder,
             remembering,
             today: today(&zone),
@@ -320,6 +332,7 @@ impl App {
     /// first frame, writes its report to `out` and closes the window.
     /// `started_epoch_ms` is when the harness started the process, for the launch time.
     pub fn with_probe(mut self, out: PathBuf, started_epoch_ms: Option<f64>) -> Self {
+        self.last_folder = LastFolder::off();
         self.probe = Some(ProbeRun {
             probe: Probe::new(started_epoch_ms),
             outside: Outside::default(),
@@ -331,6 +344,7 @@ impl App {
     /// Makes this run the launch the gate throws away before the one it measures: it
     /// ends, with a report nobody reads, as soon as the grid shows its pictures.
     pub fn with_warm_up(mut self, out: PathBuf, started_epoch_ms: Option<f64>) -> Self {
+        self.last_folder = LastFolder::off();
         self.probe = Some(ProbeRun {
             probe: Probe::warm_up(started_epoch_ms),
             outside: Outside::default(),
@@ -471,11 +485,22 @@ impl App {
         }
     }
 
-    /// Puts `folder` at the top of the grid on screen. One the grid does not hold - every
-    /// photo of it gone since the click - moves nothing: staying where the grid is beats
-    /// scrolling nowhere.
+    /// Asks for `folder` at the top of the grid in the next frame drawn. It is kept as
+    /// the folder, not as its offset: a click is acted on after its frame is drawn, and
+    /// the next frame may draw another grid - a scan's, with a hundred photos more above
+    /// the folder - in which the offset of the grid that was clicked in names a photo of
+    /// the folder beside it.
     fn go_to_folder(&mut self, folder: i64) {
-        if let Some(offset) = self.index.offset_of_folder(folder) {
+        self.going = Some(folder);
+    }
+
+    /// Hands the grid the folder asked for, as its place in the grid about to be drawn.
+    /// One that grid does not hold - every photo of it gone since the click - moves
+    /// nothing: staying where the grid is beats scrolling nowhere.
+    fn take_folder(&mut self) {
+        if let Some(folder) = self.going.take()
+            && let Some(offset) = self.index.offset_of_folder(folder)
+        {
             self.view.go_to(offset, Align::Start);
         }
     }
@@ -603,6 +628,9 @@ impl App {
         // Other results are another list: a place in the old one names nothing here.
         if shown.other_results {
             self.view.to_top();
+            // A folder asked for in the results that were on screen is not a place in
+            // these.
+            self.going = None;
         }
         // A folder clicked from an excursion: this is the grid it was to be looked up in.
         if let Some(folder) = shown.jump {
@@ -690,6 +718,7 @@ impl eframe::App for App {
         if let Some(folder) = self.last_folder.restore(photos, view, sort) {
             self.go_to_folder(folder);
         }
+        self.take_folder();
 
         let data = GridData {
             layout_gen: self.layout_gen,
@@ -712,13 +741,8 @@ impl eframe::App for App {
             zone: &self.zone,
         });
         // The folder the grid was in when it was last drawn. The grid is drawn after the
-        // sidebar and takes its input then, so this is a frame behind - and no frame is
-        // asked for to make that up, because one always follows: the grid moves on input,
-        // on a task's answer or in a scroll, each of which is an immediate request for a
-        // frame, and egui draws two for every one of those ("to give some things time to
-        // settle"). A request of our own changed nothing a test could see;
-        // `a_folder_clicked_is_at_the_top_of_the_grid_and_marked_in_the_list` draws only
-        // the frames asked for, and is what fails if egui ever stops.
+        // sidebar and takes its place then, so this is a frame behind, which the end of
+        // this frame makes up for when it has to.
         self.marked = self.last.as_ref().and_then(|frame| frame.top_folder);
         let count = self.photo_count();
         let notice = self.notice();
@@ -759,6 +783,16 @@ impl eframe::App for App {
             let view = self.nav.settled().view;
             if let Some(folder) = self.last_folder.at_top(view, output.top_folder) {
                 self.remembering.ask(folder);
+            }
+            // The sidebar was drawn before the grid took its place, marking the folder of
+            // the frame before. Nearly always a frame follows by itself - the grid moves
+            // on input, on a task's answer or in a scroll, each an immediate request, and
+            // egui draws two frames for each of those - but not after a resize: eframe
+            // draws one frame for it that nothing asked egui for, and a grid held to a
+            // new end in it left the mark a folder behind until the grid's own report of
+            // what is in view, a hundred and fifty milliseconds later.
+            if output.top_folder != self.marked {
+                ui.ctx().request_repaint();
             }
             self.run_probe(ui.ctx(), output, reported);
         }

@@ -21,8 +21,13 @@ or a test showed:
   application is its only writer, so the way back from an excursion reads nothing.
 - "No folders yet." and its button are the fifth pull request's, with the folder list's
   refetches: read at launch the list may predate the Pictures folder the engine adds.
-- No frame is asked for to bring the folder's mark up to the grid. egui draws two frames
-  for every immediate request, so one always follows the frame the grid moved in.
+- A frame is asked for to bring the folder's mark up to the grid. It was taken out once,
+  as doing nothing - egui draws two frames for every immediate request - and put back by
+  the review, which found the frame eframe draws for a resize, which nothing asked for.
+- The list is held by an entry when its entries change (the row under the pointer, the
+  marked folder's, the first in view): the review found the marked row pushed out of
+  sight at launch by the albums arriving after the list had followed the grid.
+- A run of the gate neither goes back to a folder nor remembers one.
 - A row tells AccessKit whether it is where the user is, ahead of sub-project 7: it is
   how a test of the whole application sees which row is filled.
 

@@ -343,6 +343,8 @@ pub struct LastFolder {
     folder: Option<i64>,
     /// Whether the launch has yet to go back to it.
     restoring: bool,
+    /// Whether no folder is kept at all (`off`).
+    off: bool,
 }
 
 impl LastFolder {
@@ -351,6 +353,18 @@ impl LastFolder {
         Self {
             folder: stored,
             restoring: true,
+            off: false,
+        }
+    }
+
+    /// No folder kept at all: none gone back to, none remembered. For a run of the gate,
+    /// whose programme starts from the top of the grid, over a library the other
+    /// application has left a folder in and that the next run has to find as it was.
+    pub fn off() -> Self {
+        Self {
+            folder: None,
+            restoring: false,
+            off: true,
         }
     }
 
@@ -381,7 +395,7 @@ impl LastFolder {
     /// names no folder at the top there is nothing to remember, which is why the place
     /// survives an excursion into another order.
     pub fn at_top(&mut self, view: GridView, top: Option<i64>) -> Option<i64> {
-        let folder = top.filter(|_| view == GridView::All)?;
+        let folder = top.filter(|_| view == GridView::All && !self.off)?;
         (self.folder != Some(folder)).then(|| {
             self.folder = Some(folder);
             folder
@@ -997,5 +1011,16 @@ mod tests {
         assert_eq!(last.left(sorted(SortKey::Date, Grouping::Month)), None);
         assert_eq!(last.left(sorted(SortKey::Name, Grouping::Folder)), None);
         assert_eq!(LastFolder::new(None).left(by_folder()), None);
+    }
+
+    // The gate measures a grid that starts at its top, over a library the other
+    // application has left a folder in: a measured run neither goes back nor remembers.
+    #[test]
+    fn a_folder_that_is_not_kept_is_neither_gone_back_to_nor_remembered() {
+        let mut off = LastFolder::off();
+        assert_eq!(off.restore(900, GridView::All, by_folder()), None);
+        assert_eq!(off.at_top(GridView::All, Some(31)), None);
+        assert_eq!(off.left(by_folder()), None);
+        assert_eq!(off.at_top(GridView::All, Some(32)), None);
     }
 }

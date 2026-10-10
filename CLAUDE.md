@@ -1420,15 +1420,38 @@ memory, since the application is its only writer - which is why the way back fro
 excursion reads nothing, where the Svelte UI has to read the setting before the switch can
 overwrite it. The launch goes back to it in the frame its first photos are on screen and
 before they are drawn, so there is no frame with the grid at its top for `at_top` to
-remember; a guard for that frame was removed as doing nothing.
+remember; a guard for that frame was removed as doing nothing. A run of the gate keeps no
+folder at all (`LastFolder::off`): its programme starts from the top, over a library the
+Svelte photon leaves a folder in.
 
-**The mark of the folder at the top of the grid is a frame behind the grid, and nothing
-asks for the frame that makes it up.** The sidebar is drawn before the grid has taken its
-input. A frame always follows: the grid moves on input, on a task's answer or in a scroll,
-each an immediate request for a frame, and egui draws two for each of those. A request of
-our own changed nothing a test could see and was removed;
-`a_folder_clicked_is_at_the_top_of_the_grid_and_marked_in_the_list` draws only the frames
-asked for and is the tripwire for egui changing that.
+**The mark of the folder at the top of the grid is a frame behind the grid**, the sidebar
+being drawn before the grid has taken its place, and the application asks for the frame
+that makes it up (`top_folder != marked`). Nearly always one would follow by itself: the
+grid moves on input, on a task's answer or in a scroll, each an immediate request, and egui
+draws two frames for each of those - which is why taking the request out changed nothing
+any test could see, and it was taken out. A review put it back with the case that needs
+it: eframe draws one frame for a window resize that nothing asked egui for, a grid at the
+end of a library is held to its new end in it, and the mark was a folder behind for the
+hundred and fifty milliseconds until the grid's own report of what is in view
+(`the_mark_is_brought_up_to_a_grid_that_moved_in_a_frame_nobody_asked_for`). "Each way a
+thing can move asks for a frame" has to be checked against eframe's own frames too.
+
+**The list is held by an entry when its entries change** (`Kept`, in `sidebar/view.rs`):
+the row under the pointer, else the marked folder's while it is in sight, else the first in
+view, by what it is and not by its index, and the list is put where that entry is where it
+was. The albums are read a moment after the folders, and at launch the list has by then
+followed the grid to the remembered folder, flush at the bottom edge: their rows went in
+above and pushed it out of sight, with nothing to bring it back, since the list follows
+once for each folder. A fixture's lists are read inside a frame, so no test of the whole
+application saw it; a review did, with a sleep in the task.
+
+**A folder asked for is kept as the folder until the frame that draws it** (`App::going`,
+`take_folder`), not as its offset: a click is acted on after its frame is drawn, and the
+next frame may draw a scan's grid with photos more above the folder. Everything that sets
+a place in the grid from outside goes through it, after `adopt` and before the grid is
+shown. A row half scrolled out is drawn and pressed through a child clipped to the
+sidebar: `Icon::paint` paints through the `Ui` it is given, and through the shell's the
+icon of such a row stood on the top bar.
 
 **The collections are not asked for at launch**: the first grid the engine publishes is a
 data change, built or failed, and that is what reads them. A row tells AccessKit whether

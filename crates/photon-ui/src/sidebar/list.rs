@@ -563,6 +563,7 @@ mod tests {
     struct World {
         counts: Counts,
         at: Place,
+        today: Today,
         open: OpenGroups,
         sort: Sort,
         held: Held,
@@ -576,6 +577,7 @@ mod tests {
             Self {
                 counts: Counts::default(),
                 at: Place::of(GridView::All),
+                today: TODAY,
                 open: OpenGroups {
                     albums: true,
                     searches: true,
@@ -602,7 +604,7 @@ mod tests {
             Sources {
                 counts: &self.counts,
                 at: &self.at,
-                today: TODAY,
+                today: self.today,
                 open: self.open,
                 sort: self.sort,
                 held: &self.held,
@@ -946,7 +948,10 @@ mod tests {
         moved(&world, "the folder list");
         world.layout_gen += 1;
         moved(&world, "the grid's folders");
-        assert_eq!(list.generation, first + 7);
+        // Past midnight "On this day" is another search, with another hint.
+        world.today.day += 1;
+        moved(&world, "the day");
+        assert_eq!(list.generation, first + 8);
     }
 
     // The collections and the folder list are too large to compare, and are replaced only

@@ -4,7 +4,7 @@
 mod common;
 
 use common::{Driver, Harness, click, launch, library, opened, photo_ids};
-use eframe::egui::{self, Modifiers, pos2, vec2};
+use eframe::egui::{self, Key, Modifiers, pos2, vec2};
 use egui_kittest::kittest::{NodeT, Queryable};
 use photon_core::{
     grid::GridView,
@@ -86,6 +86,11 @@ fn the_lists_are_read_and_a_click_on_one_of_them_shows_it() {
     for name in ["folder-0000", "folder-0001", "folder-0002"] {
         assert!(harness.query_by_label(name).is_some(), "{name}");
     }
+    // A view's row says whether it is where the user is. A folder's says neither: it is
+    // a place in the grid, never the view shown.
+    assert!(current(&harness, "All photos") && !current(&harness, "Best of"));
+    let folder_row = harness.get_by_label("folder-0000");
+    assert_eq!(folder_row.accesskit_node().toggled(), None);
 
     click(&mut driver, &mut harness, "Best of");
     let shown = Place {
@@ -527,4 +532,78 @@ fn the_list_is_where_the_grid_is() {
         harness.query_by_label("All photos").is_none(),
         "scrolled out"
     );
+}
+
+// A click on a folder in All photos, and a scan's grid published before the next frame:
+// the folder is looked up in the grid it is gone to in. Looked up at the click, its offset
+// named a photo a hundred further on in the grid that was drawn, in the folder beside it -
+// which was then remembered as the place the user had left.
+#[test]
+fn a_folder_clicked_as_the_library_changes_is_found_in_the_grid_that_is_drawn() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = library(dir.path(), 900, 0, 0);
+    let ids = photo_ids(&library);
+    // A hundred photos of the newest folder, the first in the grid, are put away for now.
+    let lib = Library::open(&library.dirs().db_path).unwrap();
+    lib.set_hidden(&ids[..100], true).unwrap();
+    let (mut harness, mut driver) = opened_with_lists(&library, 800);
+    let oldest = folder(harness.state(), "folder-0000");
+    let version = harness.state().version();
+
+    click(&mut driver, &mut harness, "folder-0000");
+    // Before the next frame the library changes above the folder: a hundred photos more.
+    lib.set_hidden(&ids[..100], false).unwrap();
+    harness.state().engine().refresh_grid().unwrap();
+    driver.act(&mut harness);
+    driver.settle(&mut harness);
+    driver.frames_in(&mut harness, 1.0);
+    let app = harness.state();
+    assert_eq!(app.photos(), 900);
+    assert_ne!(app.version(), version);
+    assert_eq!(top_folder(app), Some(oldest));
+    // At its header, which is therefore not pinned over it.
+    assert_eq!(app.last_frame().unwrap().pinned, None);
+    assert_eq!(
+        commands::last_folder(app.engine()).unwrap(),
+        Some(oldest),
+        "and that is the folder remembered"
+    );
+}
+
+// The window is made taller with nobody touching it, at the end of the library: the grid
+// is held to its new end, and the top of it is in another folder. eframe draws one frame
+// for a resize, which nothing asked egui for, so no second frame follows by itself - and
+// the mark was a folder behind until the grid's own report of what is in view, a hundred
+// and fifty milliseconds later.
+#[test]
+fn the_mark_is_brought_up_to_a_grid_that_moved_in_a_frame_nobody_asked_for() {
+    let dir = tempfile::tempdir().unwrap();
+    // The oldest folder, the last in the grid, keeps sixteen photos: a little more than
+    // a screen of them.
+    let library = library(dir.path(), 900, 0, 284);
+    let (mut harness, mut driver) = opened_with_lists(&library, 616);
+    let rest = |driver: &mut Driver, harness: &mut Harness<'_>| {
+        for _ in 0..12 {
+            driver.frames_in(harness, 0.5);
+            std::thread::sleep(std::time::Duration::from_millis(80));
+        }
+        assert!(!harness.state().last_frame().unwrap().loading);
+        assert_eq!(driver.frames_in(harness, 1.0), 0, "at rest");
+    };
+    for key in [Key::End, Key::PageUp, Key::PageUp, Key::End] {
+        harness.key_press_modifiers(Modifiers::NONE, key);
+        driver.act(&mut harness);
+        rest(&mut driver, &mut harness);
+    }
+    let oldest = folder(harness.state(), "folder-0000");
+    assert_eq!(top_folder(harness.state()), Some(oldest));
+    assert_eq!(harness.state().marked(), Some(oldest));
+
+    harness.set_size(vec2(1000.0, 900.0));
+    driver.act(&mut harness);
+    let top = top_folder(harness.state());
+    assert_ne!(top, Some(oldest), "the taller window did not move the grid");
+    // The frames asked for at once, and not the one the grid asks for a moment later.
+    driver.frames_in(&mut harness, 0.05);
+    assert_eq!(harness.state().marked(), top);
 }
