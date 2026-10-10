@@ -455,7 +455,7 @@ fn clipped_to(ui: &mut egui::Ui, area: Rect) -> egui::Ui {
 /// `position` on a whole device pixel at `scale` device pixels a point. Rows drawn at a
 /// fraction of one have every picture and every letter resampled, differently on each
 /// frame of a scroll.
-fn snapped(position: f64, scale: f64) -> f64 {
+pub(crate) fn snapped(position: f64, scale: f64) -> f64 {
     if scale > 0.0 {
         (position * scale).round() / scale
     } else {

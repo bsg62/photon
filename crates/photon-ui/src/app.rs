@@ -12,7 +12,10 @@ use crate::{
     nav::{Landed, Nav, Place, Step},
     probe::{Facts, Move, Outside, Probe, Report},
     shell::{Action, Shell, ShellData},
-    sidebar::rows::{Counts, Today, fixed_rows},
+    sidebar::{
+        list::{Collections, List, Sources},
+        rows::{Counts, Today},
+    },
     tasks::{Latest, Queue},
     theme,
     thumbs::{loader::Loader, shown::Thumbs, source::EngineThumbs},
@@ -51,6 +54,8 @@ pub struct App {
     /// read: what the rules about saying nothing yet are asked of.
     grid: GridState,
     folders: HashMap<i64, Folder>,
+    /// Moves when `folders` is replaced: the sidebar's list is built from them.
+    folders_gen: u64,
     folder_list: Latest<(), Option<Vec<Folder>>>,
     /// Where the user is and is going, and the queue the steps there are made on.
     nav: Nav,
@@ -62,6 +67,12 @@ pub struct App {
     /// generation held, so that the answer need not carry the layout.
     counts: Counts,
     counting: Latest<u64, Counts>,
+    /// The albums, saved searches, people and tags, and the number that moves when they
+    /// are replaced.
+    collections: Collections,
+    collections_gen: u64,
+    /// The sidebar's entries, built again only when what they are built from has moved.
+    list: List,
     today: Today,
     shell: Shell,
     layout: Layout,
@@ -234,12 +245,16 @@ impl App {
             index,
             layout_gen,
             folders: HashMap::new(),
+            folders_gen: 0,
             folder_list,
             nav: Nav::new(Place { view, arg }, engine.sort()),
             steps,
             stale: false,
             counts: Counts::default(),
             counting,
+            collections: Collections::default(),
+            collections_gen: 0,
+            list: List::default(),
             today: today(&zone),
             shell: Shell::default(),
             layout,
@@ -367,10 +382,10 @@ impl App {
                 self.layout.sidebar_hidden = !self.layout.sidebar_hidden;
                 self.layout_store.ask(self.layout);
             }
-            Action::Go(row) => {
+            Action::Row(entry) => {
                 // The clock itself, not the day the row was drawn with: a click is never a
                 // day behind.
-                if let Some(step) = row.step(today(&self.zone)) {
+                if let Some(step) = entry.step(today(&self.zone)) {
                     self.go(step);
                 }
             }
@@ -418,6 +433,7 @@ impl App {
                     .into_iter()
                     .map(|folder| (folder.id, folder))
                     .collect();
+                self.folders_gen += 1;
             }
         }
         if let Some(counts) = self.counting.answer() {
@@ -549,9 +565,22 @@ impl eframe::App for App {
             size: self.size,
             zone: &self.zone,
         };
-        // The row marked is where the user is going; the line an empty view shows is
-        // about the grid that is on screen.
-        let rows = fixed_rows(&self.counts, &self.nav.target(), self.today);
+        // The entry marked as the view is where the user is going; the folders listed
+        // and the line an empty view shows are of the grid that is on screen.
+        self.list.follow(&Sources {
+            counts: &self.counts,
+            at: &self.nav.target(),
+            today: self.today,
+            open: self.layout.open,
+            sort: self.nav.sort(),
+            collections: &self.collections,
+            collections_gen: self.collections_gen,
+            folders: &self.folders,
+            folders_gen: self.folders_gen,
+            tallies: self.index.folders(),
+            layout_gen: self.layout_gen,
+            zone: &self.zone,
+        });
         let count = self.photo_count();
         let notice = self.notice();
         let (toasts, next_toast) = self.toasts.at(now);
@@ -563,7 +592,8 @@ impl eframe::App for App {
         }
         let shell = ShellData {
             layout: &self.layout,
-            rows: &rows,
+            list: &self.list,
+            here: self.last.as_ref().and_then(|frame| frame.top_folder),
             count: count.as_deref(),
             notice: notice.as_deref(),
             toasts,

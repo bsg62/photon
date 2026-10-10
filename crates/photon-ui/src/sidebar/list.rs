@@ -178,8 +178,7 @@ fn count(number: i64) -> usize {
 #[derive(Default)]
 pub struct List {
     pub entries: Vec<Entry>,
-    /// Moves every time the entries are built again: what a view keeps its measurements
-    /// of them by.
+    /// Moves every time the entries are built again.
     pub generation: u64,
     key: Option<Key>,
     /// Where each folder's entry is.
