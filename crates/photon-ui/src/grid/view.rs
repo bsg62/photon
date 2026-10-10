@@ -98,6 +98,14 @@ impl GridView {
         self.asked = Some(position);
     }
 
+    /// Puts the grid at its top, which is no scroll: the photos shown are another list -
+    /// another view, another search, another order - and a place in the old one names
+    /// nothing in this one.
+    pub fn to_top(&mut self) {
+        self.asked = None;
+        self.scroll.set(0.0);
+    }
+
     pub fn scroll_by(&mut self, delta: f64) {
         self.scroll.scroll_by(delta);
     }
@@ -214,6 +222,11 @@ impl GridView {
             }
         }
 
+        // The keys are the grid's unless a text field has them: with the search box
+        // focused, Home and End move its caret and not the library.
+        if ui.ctx().text_edit_focused() {
+            return;
+        }
         let row = self.laid_out.map_or(0.0, |laid| tile_row(laid.tile));
         let page = (viewport - row).max(ARROW_STEP);
         let scroll = &mut self.scroll;
@@ -472,6 +485,8 @@ mod tests {
         repaint_delay: Duration,
         /// Room left above the grid, as a bar over it would take.
         space_above: f32,
+        /// A text field above the grid that has the focus, and what is typed in it.
+        typing: Option<String>,
         /// What the last frame drew: each text with where it is and what it is clipped
         /// to, and the top of every clip rectangle anything was drawn in.
         texts: Vec<(String, Rect, Rect)>,
@@ -534,6 +549,7 @@ mod tests {
             time: 0.0,
             repaint_delay: Duration::MAX,
             space_above: 0.0,
+            typing: None,
             texts: Vec::new(),
             clip_tops: Vec::new(),
         }
@@ -557,6 +573,7 @@ mod tests {
                 zone: &TimeZone::UTC,
             };
             let (view, thumbs, space) = (&mut self.view, &mut self.thumbs, self.space_above);
+            let typing = &mut self.typing;
             let mut output = None;
             let mut full = self.ctx.run_ui(input, |ui| {
                 egui::CentralPanel::default()
@@ -564,6 +581,9 @@ mod tests {
                     .show(ui, |ui| {
                         ui.spacing_mut().item_spacing = Vec2::ZERO;
                         ui.add_space(space);
+                        if let Some(typed) = typing {
+                            ui.add(egui::TextEdit::singleline(typed)).request_focus();
+                        }
                         output = Some(view.show(ui, &data, thumbs));
                     });
             });
@@ -967,5 +987,41 @@ mod tests {
         assert_eq!(f.view.speed.motion(), Motion::Jump { stream: true });
         assert!(f.view.speed.settles_at().is_some());
         assert!(f.repaint_delay < Duration::from_secs(1));
+    }
+
+    // Another view, another search, another order: the photos are another list, and the
+    // place held in the old one names nothing in this one.
+    #[test]
+    fn other_results_are_shown_from_their_top() {
+        let mut f = fixture(&[4000]);
+        f.frame(Vec::new());
+        f.view.move_to(5000.0);
+        assert_eq!(f.frame(Vec::new()).position, 5000.0);
+        // With a move still asked for and not yet taken: that was for the old list too.
+        f.view.move_to(9000.0);
+        f.view.to_top();
+        assert_eq!(f.frame(Vec::new()).position, 0.0);
+        assert_eq!(f.frame(Vec::new()).position, 0.0);
+    }
+
+    // With the search box focused, Home and End move its caret, and Page Down is not the
+    // library's either: the grid has the keys only while no text field does.
+    #[test]
+    fn the_keys_are_a_text_fields_while_it_has_the_focus() {
+        let mut f = fixture(&[4000]);
+        f.frame(Vec::new());
+        f.typing = Some(String::new());
+        // The field asks for the focus in one frame and has it in the next.
+        f.frame(Vec::new());
+        f.frame(Vec::new());
+        assert_eq!(f.key(Key::End).position, 0.0);
+        assert_eq!(f.key(Key::PageDown).position, 0.0);
+
+        // The field gone, the keys are the grid's again.
+        f.typing = None;
+        f.frame(Vec::new());
+        f.frame(Vec::new());
+        assert!(f.key(Key::PageDown).position > 0.0);
+        assert_eq!(f.key(Key::End).position, f.view.max_position());
     }
 }

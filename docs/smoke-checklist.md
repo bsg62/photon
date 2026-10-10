@@ -632,3 +632,18 @@ named person (Anna below) and a Picasa contact linked to her by name.
 - [ ] Hide a photo in Picasa (or add `hidden=yes` under its `[name]` in the folder's `.picasa.ini`) and let photon scan: it is in Hidden. Rename the file in the file manager: it is still in Hidden, under its new name, and not back in the grid. Unhide another photo Picasa hid in photon (its `hidden=yes` line stays), then rename its folder: that one is still visible.
 - [ ] On Windows with a drive's root watched (or on a NAS share with its recycle bin switched on), put a photo in an album and delete it in Explorer: within a few seconds it leaves the grid and the album, and it does not turn up again in a folder named `$RECYCLE.BIN`, `#recycle` or `@Recycle`.
 - [ ] Star a photo, then rename the file in the file manager: the star is gone (it is kept in `.picasa.ini` under the old name). Star another photo and rename its *folder* instead: the star stays.
+
+## The native interface (photon-native)
+
+Not released: these are for whoever tries the branch `native-ui`. The Svelte interface's items above are the list it has to answer in the end.
+
+- [ ] Start `photon-native`: the top bar, the sidebar with All photos marked, the grid and the status bar's photo count are there, in the theme photon is set to. The gear at the right of the top bar is fainter than the toggle at the left and does nothing.
+- [ ] Click Starred, Recent, On this day and All photos: each row is marked at the click, the grid follows, and each view starts at its top. With no starred photo, Starred says "No starred photos. Star one in the viewer, or in Picasa." in the middle, in the dimmed colour, and the status bar says "0 photos".
+- [ ] Scroll far down All photos, click Starred and at once All photos: the starred photos, if they show for a moment, show from their top and under Starred's row, never where All photos was scrolled to.
+- [ ] Videos, Duplicates and Hidden are in the sidebar only while the library has some, each with its count; hide a photo in the Svelte photon while photon-native runs and the Hidden row appears with a 1.
+- [ ] Drag the edge between the sidebar and the grid: the sidebar follows the pointer, stops at 160 points and at half the window, and is where the button was let go. The edge is lit while the pointer is on it and while it is held, and not afterwards. Press the left and right arrows after letting go: the edge moves by 16 points a press.
+- [ ] Press Tab until the edge is lit: the arrows move it, and it stays lit while it has the focus.
+- [ ] Ctrl+B (⌘B on a Mac) and the button at the left of the top bar hide the sidebar and bring it back; the grid takes its room. Held down, the key does not flap it. Ctrl+Shift+B does nothing.
+- [ ] Quit and start again: the sidebar is as wide as it was left, and hidden if it was hidden.
+- [ ] Rest the pointer on a sidebar row: its hint shows. Leave it there and watch the processor: photon-native goes quiet, it does not go on drawing.
+- [ ] Make the window as small as the desktop allows: nothing overlaps, and nothing crashes.

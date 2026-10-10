@@ -157,12 +157,11 @@ pub fn paint_line(
         if left_over <= 0.0 {
             break;
         }
-        let galley = WidgetText::from(run.text.as_ref()).into_galley(
-            ui,
-            Some(TextWrapMode::Truncate),
-            left_over,
-            font.clone(),
-        );
+        // The colour is the text's own, not left to the painter's fallback: the
+        // application sets one colour for all of egui's text (`theme::apply`), which
+        // egui puts in place of that fallback, and every line came out in it.
+        let galley = WidgetText::from(egui::RichText::new(run.text.as_ref()).color(tint))
+            .into_galley(ui, Some(TextWrapMode::Truncate), left_over, font.clone());
         let size = galley.size();
         let at: Pos2 = pos2(left + used, middle - size.y / 2.0);
         painter.galley(at, galley, tint);
@@ -351,5 +350,59 @@ mod tests {
         assert_eq!(drawn("/p/שלום/a.jpg"), "/p/םולש/a.jpg");
         assert_eq!(drawn("קיץ (2)"), "(2) ץיק");
         assert_eq!(drawn("שלום-עולם"), "םלוע-םולש");
+    }
+
+    // The application sets one colour for all of egui's text, and egui puts that colour in
+    // place of the one a widget's text asks for by default. A line painted here in the
+    // dimmed colour - a header's count, the line of an empty view - came out in the full
+    // one.
+    #[test]
+    fn a_line_is_painted_in_the_colour_it_is_given() {
+        let ctx = egui::Context::default();
+        ctx.all_styles_mut(|style| {
+            style.visuals.override_text_color = Some(Color32::from_rgb(200, 0, 0));
+        });
+        let dim = Color32::from_rgb(0, 0, 200);
+        let mut full = ctx.run_ui(egui::RawInput::default(), |ui| {
+            egui::CentralPanel::default().show(ui, |ui| {
+                let painter = ui.painter().clone();
+                paint_line(
+                    ui,
+                    &painter,
+                    (10.0, 20.0),
+                    400.0,
+                    "7 photos",
+                    FontId::proportional(13.0),
+                    dim,
+                );
+            });
+        });
+        full.textures_delta.clear();
+        let mut colours = Vec::new();
+        fn each(shape: &egui::Shape, visit: &mut impl FnMut(&egui::Shape)) {
+            match shape {
+                egui::Shape::Vec(shapes) => shapes.iter().for_each(|shape| each(shape, visit)),
+                other => visit(other),
+            }
+        }
+        for clipped in &full.shapes {
+            each(&clipped.shape, &mut |shape| {
+                if let egui::Shape::Text(text) = shape
+                    && text.galley.text() == "7 photos"
+                {
+                    // The colour the glyphs are drawn in: the override when there is one,
+                    // else each section's own, else the fallback.
+                    let own = text.galley.job.sections[0].format.color;
+                    colours.push(text.override_text_color.unwrap_or(
+                        if own == Color32::PLACEHOLDER {
+                            text.fallback_color
+                        } else {
+                            own
+                        },
+                    ));
+                }
+            });
+        }
+        assert_eq!(colours, [dim]);
     }
 }

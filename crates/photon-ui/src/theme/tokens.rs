@@ -114,6 +114,24 @@ pub const UNTHEMED: [(&str, Rgba); 3] = [
     ("--scrim", SCRIM),
 ];
 
+/// A shadow: how far it is offset, how far it is blurred, and its ink.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Shadow {
+    pub x: f32,
+    pub y: f32,
+    pub blur: f32,
+    pub ink: Rgba,
+}
+
+/// `--shadow-menu`: what lies under a message, a menu, a list. Dark ink in both themes: a
+/// shadow reads dark against a light surface too.
+pub const SHADOW_MENU: Shadow = Shadow {
+    x: 0.0,
+    y: 6.0,
+    blur: 24.0,
+    ink: rgba(0x00000040),
+};
+
 /// Corner radii, `--r-1` to `--r-4`.
 pub const R: [f32; 4] = [4.0, 6.0, 8.0, 12.0];
 /// Spacing, `--s-1` to `--s-6`.
@@ -198,6 +216,18 @@ mod tests {
                 .parse::<f32>()
                 .unwrap()
         };
+        // A shadow is "x y blur colour".
+        let shadow: Vec<&str> = root["--shadow-menu"].split_whitespace().collect();
+        let length = |text: &str| text.trim_end_matches("px").parse::<f32>().unwrap();
+        assert_eq!(
+            Shadow {
+                x: length(shadow[0]),
+                y: length(shadow[1]),
+                blur: length(shadow[2]),
+                ink: parse(shadow[3]),
+            },
+            SHADOW_MENU
+        );
         for (i, radius) in R.iter().enumerate() {
             assert_eq!(px(&format!("--r-{}", i + 1)), *radius);
         }

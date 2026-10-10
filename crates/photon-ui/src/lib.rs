@@ -8,6 +8,7 @@
 pub mod app;
 pub mod args;
 pub mod dirs;
+pub mod empty;
 pub mod events;
 pub mod fixture;
 pub mod grid {
@@ -21,7 +22,13 @@ pub mod grid {
     pub mod visible;
 }
 pub mod icons;
+pub mod nav;
 pub mod probe;
+pub mod shell;
+pub mod sidebar {
+    pub mod rows;
+    pub mod view;
+}
 pub mod tasks;
 pub mod text;
 pub mod theme {
@@ -35,13 +42,18 @@ pub mod thumbs {
     pub mod source;
     pub mod textures;
 }
+pub mod toasts;
+pub mod window_layout;
 
 #[cfg(test)]
 mod tests {
     /// The state modules, with their source.
-    const STATE_MODULES: [(&str, &str); 12] = [
+    const STATE_MODULES: [(&str, &str); 17] = [
         ("args.rs", include_str!("args.rs")),
         ("dirs.rs", include_str!("dirs.rs")),
+        ("empty.rs", include_str!("empty.rs")),
+        ("nav.rs", include_str!("nav.rs")),
+        ("sidebar/rows.rs", include_str!("sidebar/rows.rs")),
         ("tasks.rs", include_str!("tasks.rs")),
         ("theme/tokens.rs", include_str!("theme/tokens.rs")),
         ("grid/labels.rs", include_str!("grid/labels.rs")),
@@ -52,6 +64,8 @@ mod tests {
         ("probe.rs", include_str!("probe.rs")),
         ("thumbs/loader.rs", include_str!("thumbs/loader.rs")),
         ("thumbs/textures.rs", include_str!("thumbs/textures.rs")),
+        ("toasts.rs", include_str!("toasts.rs")),
+        ("window_layout.rs", include_str!("window_layout.rs")),
     ];
 
     /// The version of the `windows` crate that `package` is locked to, or `None` when it

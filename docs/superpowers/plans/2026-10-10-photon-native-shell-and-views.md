@@ -10,6 +10,14 @@
 
 **Spec:** `docs/superpowers/specs/2026-10-10-photon-native-sidebar-views-search-design.md` - this is the first of its five pull requests ("The shell and the views"). The umbrella is `2026-10-09-photon-native-ui-design.md`.
 
+> **After the plan: the review.** The whole-branch review found two things this plan got
+> wrong and several smaller ones; their fixes are the commit after Task 8. Where the plan
+> and the code differ, the code and the spec's "Changed by the review of the first pull
+> request" paragraph are right: `Nav::settle` is fed by `Nav::adopt` from the answers of
+> the steps (`Landed`) and no longer from the engine's view; `Toasts::tick` and `showing`
+> are `at` and `held`; the splitter, Ctrl+B and the top bar's buttons changed as the
+> commit says; `paint_line` colours its own text.
+
 ## How this plan was written
 
 As the two plans of sub-project 1 were: every file below was **written, compiled, run and probed before the plan was**, in a scratch worktree at `native-ui` (4c7dd0e), on 2026-10-10. There the Rust gate was green, every probe listed failed as stated, and the window was rendered off screen and looked at (`native-main-light`, `native-main-dark`, `native-starred-empty-light`, `native-sidebar-hidden-dark`).

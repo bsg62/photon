@@ -1289,7 +1289,7 @@ action in `mock.js`.
 `crates/photon-ui` is the interface being rebuilt in Rust on egui and wgpu, in place of
 `ui/` and the Tauri shell (spec `2026-10-09-photon-native-ui-design.md`). Its binary is
 `photon-native` until the switch-over. **It is not launched to verify a change either**:
-`cargo run -p xtask -- native-shot` writes the grid to `target/screenshots/native-grid-*.png`
+`cargo run -p xtask -- native-shot` writes the window to `target/screenshots/native-*.png`
 off screen, and those are read. It needs a GPU adapter (no display), so it is an ignored
 test that xtask runs, not part of the gate.
 
@@ -1350,6 +1350,67 @@ task: read after it, a theme pinned against the desktop's showed the desktop's f
 at every launch. A screenshot sets its theme twice, stored in the library and given to the
 `egui_kittest` harness, because the harness sets one of its own (dark) after the
 application has been made.
+
+**The window is four areas around the grid** (`window_layout.rs`: the top bar, the sidebar
+with its splitter, the status bar, the content), drawn by `shell.rs`, a view that answers
+what the user did as a list of `Action`s; `app.rs` is the one place an action changes
+anything. What needs a later sub-project is drawn in place and takes no press (the gear):
+a button that will be there is there, so nothing moves when it starts to work
+(spec `2026-10-10-photon-native-sidebar-views-search-design.md`).
+
+**A step that moves the engine's view goes through `tasks::Queue`, never `Latest`.** The
+view setters rebuild the grid on the thread that calls them, and a step begun cannot be
+taken back, so they are made in the order asked; `Latest` keeps one waiting question and
+would put a view clicked in the place of a sort still waiting, which would then never be
+made. `nav.rs` holds where the user is: `settled` is what the grid on screen shows, and
+`target` is where the last step asked leads - which is what the sidebar marks, at the
+click and not when a rebuild of the whole library has landed. A step to where the user is
+already going is not asked (`Nav::wants`). `grid_info` reads SQLite on a cache miss
+although it returns no `CmdResult`: the sidebar's counts are a `Latest`, asked again at
+every change.
+
+**What a grid shows is known from the step that built it, never read from the engine when
+the grid arrives.** `Engine::view_and_arg` and `sort` move when a step *begins*, a whole
+rebuild before its grid is published, so with two steps on their way the first's grid
+arrives under the second's view: read then, the starred photos were drawn as All photos,
+at the place All photos had been scrolled to (a review found it; the Svelte store avoids it
+by awaiting each step's `grid_info` before the next). So the queue's worker reads the view
+when its step is done and before the next begins, and hands it back with the version the
+setter answers (`nav::Landed`); and a grid published while a step is on its way is not put
+on screen until an answer vouches for it (`Nav::adopt`, `App::adopt`). **An answer vouches
+for the grid it names, and for a later one only when no step is on its way**: with the
+first of two steps answered and the second still being made, a grid newer than the first's
+may be the second's own, and taken as the first's it stood under the wrong name for good,
+the second's answer finding no new grid to put on screen. Windows' CI found that by timing,
+in a test of four quick clicks that had passed a hundred runs on Linux; the rule's test is
+`a_grid_newer_than_the_last_answer_waits_while_a_step_is_on_its_way`, in `nav.rs`, which
+needs no timing. All of it is exact only while nothing but the queue moves the engine's
+view: **a new caller of a view setter goes through the queue.**
+
+**How the window is laid out is in `layout.json` beside `library.db`** - the sidebar's
+width, whether it is hidden, which groups are open - and not in the settings table, whose
+accessors are photon-core's and which the Tauri photon reads too. It is read before the
+first frame and written off the UI thread when the user changes one of the three; the
+width is stored as it was dragged and clamped where it is shown.
+
+**Tests of the whole application drive it through `tests/common`'s `Driver`**: `until`
+draws the frames that are asked for, `settle` waits in real time for the other threads,
+`frames_in` counts what a stretch of the clock draws. A row is clicked by its name
+(`harness.get_by_label("Starred").click()`), which is why every row and button tells
+AccessKit what it is (`widget_info`) although AccessKit itself is switched on only in
+sub-project 7. Two things about egui's input that a frame test meets: egui works out for
+itself whether a key going down is a repeat, whatever the event says, and it shows a new
+`Area` - a toast - only in the frame after the one it measures it in.
+
+Three smaller things the same review found. The list of messages a frame draws comes from
+`Toasts::at`, which lets go of those whose time is over first: drawn first and let go of
+after, the frame asked for at a message's end drew it once more, and on a still window
+that picture stayed. `text::paint_line` gives its text its own colour: the application sets
+one colour for all of egui's text, egui puts that in place of a painter's fallback, and
+every dimmed line - a header's count, the line of an empty view - had come out in the full
+colour since sub-project 1. And the splitter is lit under the pointer, while it is held and
+when the keyboard brought the focus to it, not while it merely still has the focus a
+press gave it (`Shell::pointer_focus`): egui has no `:focus-visible` of its own.
 
 **`cargo run -p xtask -- grid-gate` is the one command that launches the application**, and
 it does nothing unless told which: `--go --refresh-hz <hz>` opens fullscreen windows that

@@ -15,6 +15,9 @@ pub const IDENTIFIER: &str = "io.github.bsg62.photon";
 pub struct Dirs {
     pub db_path: PathBuf,
     pub cache_dir: PathBuf,
+    /// Where the window's layout is kept (`window_layout.rs`): beside the library, and
+    /// this application's alone.
+    pub layout_path: PathBuf,
 }
 
 /// The paths inside an app data directory and an app cache directory. This is what
@@ -23,6 +26,7 @@ pub fn within(app_data: &Path, app_cache: &Path) -> Dirs {
     Dirs {
         db_path: app_data.join("library.db"),
         cache_dir: app_cache.join("thumbs"),
+        layout_path: app_data.join("layout.json"),
     }
 }
 
@@ -43,6 +47,7 @@ mod tests {
         let dirs = within(Path::new("/data/app"), Path::new("/cache/app"));
         assert_eq!(dirs.db_path, Path::new("/data/app/library.db"));
         assert_eq!(dirs.cache_dir, Path::new("/cache/app/thumbs"));
+        assert_eq!(dirs.layout_path, Path::new("/data/app/layout.json"));
     }
 
     #[test]

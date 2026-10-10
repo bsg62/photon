@@ -9,18 +9,44 @@ use eframe::egui::{self, Color32, Rect, Vec2};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Icon {
+    Calendar,
+    Clock,
     Copy,
+    EyeOff,
+    LayoutGrid,
+    PanelLeft,
     Play,
+    Settings,
     Star,
     TriangleAlert,
+    X,
 }
 
 impl Icon {
-    pub const ALL: [Icon; 4] = [Icon::Copy, Icon::Play, Icon::Star, Icon::TriangleAlert];
+    pub const ALL: [Icon; 11] = [
+        Icon::Calendar,
+        Icon::Clock,
+        Icon::Copy,
+        Icon::EyeOff,
+        Icon::LayoutGrid,
+        Icon::PanelLeft,
+        Icon::Play,
+        Icon::Settings,
+        Icon::Star,
+        Icon::TriangleAlert,
+        Icon::X,
+    ];
 
     fn name(self) -> &'static str {
         match self {
+            Icon::Calendar => "calendar",
+            Icon::Clock => "clock",
             Icon::Copy => "copy",
+            Icon::EyeOff => "eye-off",
+            Icon::LayoutGrid => "layout-grid",
+            Icon::PanelLeft => "panel-left",
+            Icon::Settings => "settings",
+            Icon::X => "x",
             Icon::Play => "play",
             Icon::Star => "star",
             Icon::TriangleAlert => "triangle-alert",
@@ -30,6 +56,23 @@ impl Icon {
     /// The inside of the icon's `<svg>`.
     fn inner(self) -> &'static str {
         match self {
+            Icon::Calendar => {
+                r#"<path d="M8 2v4"/><path d="M16 2v4"/><rect width="18" height="18" x="3" y="4" rx="2"/><path d="M3 10h18"/>"#
+            }
+            Icon::Clock => r#"<circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>"#,
+            Icon::EyeOff => {
+                r#"<path d="M10.733 5.076a10.744 10.744 0 0 1 11.205 6.575 1 1 0 0 1 0 .696 10.747 10.747 0 0 1-1.444 2.49"/><path d="M14.084 14.158a3 3 0 0 1-4.242-4.242"/><path d="M17.479 17.499a10.75 10.75 0 0 1-15.417-5.151 1 1 0 0 1 0-.696 10.75 10.75 0 0 1 4.446-5.143"/><path d="m2 2 20 20"/>"#
+            }
+            Icon::LayoutGrid => {
+                r#"<rect width="7" height="7" x="3" y="3" rx="1"/><rect width="7" height="7" x="14" y="3" rx="1"/><rect width="7" height="7" x="14" y="14" rx="1"/><rect width="7" height="7" x="3" y="14" rx="1"/>"#
+            }
+            Icon::PanelLeft => {
+                r#"<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/>"#
+            }
+            Icon::Settings => {
+                r#"<path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915"/><circle cx="12" cy="12" r="3"/>"#
+            }
+            Icon::X => r#"<path d="M18 6 6 18"/><path d="m6 6 12 12"/>"#,
             Icon::Copy => {
                 r#"<rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>"#
             }

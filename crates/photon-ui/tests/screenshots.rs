@@ -1,5 +1,5 @@
-//! The grid as it is drawn, written to PNG without a window: the application itself, over
-//! a library made of the CC0 photos the Svelte screenshots use (credited in their
+//! The window as it is drawn, written to PNG without a window: the application itself,
+//! over a library made of the CC0 photos the Svelte screenshots use (credited in their
 //! `CREDITS.md`), rendered off screen through wgpu.
 //!
 //! Ignored by default - it needs a GPU adapter, which a CI runner need not have - and run
@@ -9,8 +9,12 @@
 //! Three of the folders are named in other scripts on purpose. What their headers show is
 //! what the pull request reports about text (`src/text.rs`).
 
-use eframe::egui::{self, vec2};
-use photon_core::library::{Library, ThemeChoice};
+use eframe::egui::{self, Key, Modifiers, vec2};
+use egui_kittest::kittest::Queryable;
+use photon_core::{
+    grid::GridView,
+    library::{Library, ThemeChoice},
+};
 use photon_ui::{app::App, dirs};
 use std::{
     path::{Path, PathBuf},
@@ -48,7 +52,23 @@ fn library(pictures: &Path) {
     }
 }
 
-fn shot(theme: ThemeChoice, name: &str) {
+type Harness<'a> = egui_kittest::Harness<'a, App>;
+
+/// Steps the application until `shown`, giving its other threads the time they take.
+fn until(harness: &mut Harness<'_>, what: &str, shown: impl Fn(&App) -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(120);
+    loop {
+        harness.step();
+        if shown(harness.state()) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "never: {what}");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// The library opened in `theme`, then whatever `then` does to it, as `name`.
+fn shot(theme: ThemeChoice, name: &str, then: impl Fn(&mut Harness<'_>)) {
     let dir = tempfile::tempdir().unwrap();
     let pictures = dir.path().join("Pictures");
     library(&pictures);
@@ -74,17 +94,11 @@ fn shot(theme: ThemeChoice, name: &str) {
         .build_eframe(|cc| App::new(cc, dirs, Some(pictures)).unwrap());
 
     let total: usize = FOLDERS.iter().map(|(_, count)| count).sum();
-    let deadline = Instant::now() + Duration::from_secs(120);
-    loop {
-        harness.step();
-        let app = harness.state();
+    until(&mut harness, "the library shown", |app| {
         let shown = app.last_frame().is_some_and(|frame| frame.settled);
-        if app.photos() == total && app.folders().len() >= FOLDERS.len() && shown {
-            break;
-        }
-        assert!(Instant::now() < deadline, "the library never came up");
-        std::thread::sleep(Duration::from_millis(10));
-    }
+        app.photos() == total && app.folders().len() >= FOLDERS.len() && shown
+    });
+    then(&mut harness);
     // The icons are rasterised a frame after they are first asked for.
     for _ in 0..5 {
         harness.step();
@@ -99,12 +113,43 @@ fn shot(theme: ThemeChoice, name: &str) {
 
 #[test]
 #[ignore = "renders through a GPU adapter: cargo run -p xtask -- native-shot"]
-fn native_grid_light() {
-    shot(ThemeChoice::Light, "native-grid-light.png");
+fn native_main_light() {
+    shot(ThemeChoice::Light, "native-main-light.png", |_| {});
 }
 
 #[test]
 #[ignore = "renders through a GPU adapter: cargo run -p xtask -- native-shot"]
-fn native_grid_dark() {
-    shot(ThemeChoice::Dark, "native-grid-dark.png");
+fn native_main_dark() {
+    shot(ThemeChoice::Dark, "native-main-dark.png", |_| {});
+}
+
+// A view with nothing in it: the row marked, the line in the middle, the count at none.
+#[test]
+#[ignore = "renders through a GPU adapter: cargo run -p xtask -- native-shot"]
+fn native_starred_empty_light() {
+    shot(
+        ThemeChoice::Light,
+        "native-starred-empty-light.png",
+        |harness| {
+            harness.get_by_label("Starred").click();
+            until(harness, "the starred view shown", |app| {
+                app.settled().view == GridView::Starred
+            });
+        },
+    );
+}
+
+#[test]
+#[ignore = "renders through a GPU adapter: cargo run -p xtask -- native-shot"]
+fn native_sidebar_hidden_dark() {
+    shot(
+        ThemeChoice::Dark,
+        "native-sidebar-hidden-dark.png",
+        |harness| {
+            harness.key_press_modifiers(Modifiers::COMMAND, Key::B);
+            until(harness, "the sidebar hidden", |app| {
+                app.layout().sidebar_hidden
+            });
+        },
+    );
 }
