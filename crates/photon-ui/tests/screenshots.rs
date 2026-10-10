@@ -15,6 +15,7 @@ use photon_core::{
     grid::GridView,
     library::{Library, ThemeChoice},
 };
+use photon_engine::commands;
 use photon_ui::{app::App, dirs};
 use std::{
     path::{Path, PathBuf},
@@ -67,6 +68,29 @@ fn until(harness: &mut Harness<'_>, what: &str, shown: impl Fn(&App) -> bool) {
     }
 }
 
+/// Two albums, a saved search and three keywords, as a library someone has used has
+/// them. One keyword is in Hebrew: the sidebar's names go through `text.rs` too.
+fn collect(harness: &mut Harness<'_>, photos: usize) {
+    let engine = harness.state().engine().clone();
+    let ids: Vec<i64> = (engine.grid().1.rows(0, photos).iter())
+        .map(|entry| entry.id)
+        .collect();
+    let best = commands::create_album(&engine, "Best of the Alps").unwrap();
+    commands::add_to_album(&engine, best.id, &ids[..9]).unwrap();
+    let print = commands::create_album(&engine, "To print").unwrap();
+    commands::add_to_album(&engine, print.id, &ids[4..7]).unwrap();
+    commands::save_search(&engine, "Taken in July", "2026-07").unwrap();
+    commands::add_items_tag(&engine, &ids[..12], "mountains").unwrap();
+    commands::add_items_tag(&engine, &ids[3..8], "hiking").unwrap();
+    commands::add_items_tag(&engine, &ids[10..12], "פרחים").unwrap();
+    // The lists are read when the library says its data changed.
+    engine.refresh_grid().unwrap();
+    until(harness, "the collections read", |app| {
+        let read = app.collections();
+        read.albums.len() == 2 && read.searches.len() == 1 && read.tags.len() == 3
+    });
+}
+
 /// The library opened in `theme`, then whatever `then` does to it, as `name`.
 fn shot(theme: ThemeChoice, name: &str, then: impl Fn(&mut Harness<'_>)) {
     let dir = tempfile::tempdir().unwrap();
@@ -98,6 +122,7 @@ fn shot(theme: ThemeChoice, name: &str, then: impl Fn(&mut Harness<'_>)) {
         let shown = app.last_frame().is_some_and(|frame| frame.settled);
         app.photos() == total && app.folders().len() >= FOLDERS.len() && shown
     });
+    collect(&mut harness, total);
     then(&mut harness);
     // The icons are rasterised a frame after they are first asked for.
     for _ in 0..5 {
@@ -152,4 +177,36 @@ fn native_sidebar_hidden_dark() {
             });
         },
     );
+}
+
+// The lists a window does not open with: People, which nobody has named anyone in, and
+// the keywords.
+#[test]
+#[ignore = "renders through a GPU adapter: cargo run -p xtask -- native-shot"]
+fn native_lists_open_light() {
+    shot(
+        ThemeChoice::Light,
+        "native-lists-open-light.png",
+        |harness| {
+            harness.get_by_label("Show people").click();
+            until(harness, "people unfolded", |app| app.layout().open.people);
+            // Drawn again before the next click: Tags is further down now.
+            harness.step();
+            harness.get_by_label("Tags").click();
+            until(harness, "tags unfolded", |app| app.layout().open.tags);
+        },
+    );
+}
+
+// An album shown: its row filled, its photos under their folders' headers.
+#[test]
+#[ignore = "renders through a GPU adapter: cargo run -p xtask -- native-shot"]
+fn native_album_dark() {
+    shot(ThemeChoice::Dark, "native-album-dark.png", |harness| {
+        harness.get_by_label("Best of the Alps").click();
+        until(harness, "the album shown", |app| {
+            app.settled().view == GridView::Album
+                && app.last_frame().is_some_and(|frame| frame.settled)
+        });
+    });
 }

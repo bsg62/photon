@@ -8,8 +8,8 @@
 use crate::{
     icons::Icon,
     sidebar::{
-        rows::{Fixed, Row},
-        view as sidebar,
+        list::{List, What},
+        view::{SidebarData, SidebarView},
     },
     text::paint_line,
     theme::{
@@ -36,7 +36,9 @@ const TOAST_EDGE: f32 = 3.0;
 
 pub struct ShellData<'a> {
     pub layout: &'a Layout,
-    pub rows: &'a [Row],
+    /// The sidebar's entries, and the folder at the top of the grid, which it marks.
+    pub list: &'a List,
+    pub here: Option<i64>,
     /// The status bar's photo count, when there is one to give.
     pub count: Option<&'a str>,
     /// The line shown in the middle of the content in place of photos.
@@ -48,8 +50,8 @@ pub struct ShellData<'a> {
 pub enum Action {
     /// The toggle in the top bar, or its key.
     ToggleSidebar,
-    /// A row of the sidebar.
-    Go(Fixed),
+    /// An entry of the sidebar: a view, a folder, a heading to fold.
+    Row(What),
     /// The splitter moved to `width`. `store` when the user has let go of it or moved it
     /// by a key: a width is stored when it was chosen, not at every point on the way.
     Width {
@@ -66,6 +68,8 @@ pub struct Shell {
     grab: Option<f32>,
     /// Whether the splitter has the focus because it was pressed, not tabbed to.
     pointer_focus: bool,
+    /// The sidebar's list, which keeps its place while the sidebar is hidden.
+    sidebar: SidebarView,
 }
 
 fn rect_of(area: Area, window: Rect) -> Rect {
@@ -76,6 +80,11 @@ fn rect_of(area: Area, window: Rect) -> Rect {
 }
 
 impl Shell {
+    /// Where the sidebar's list is.
+    pub fn sidebar_position(&self) -> f64 {
+        self.sidebar.position()
+    }
+
     /// Whether the splitter is being dragged.
     pub fn resizing(&self) -> bool {
         self.grab.is_some()
@@ -117,10 +126,14 @@ impl Shell {
             palette,
             &mut actions,
         );
+        let sidebar = SidebarData {
+            list: data.list,
+            here: data.here,
+        };
         if let Some(area) = found.sidebar
-            && let Some(row) = sidebar::show(ui, rect_of(area, window), data.rows)
+            && let Some(entry) = self.sidebar.show(ui, rect_of(area, window), &sidebar)
         {
-            actions.push(Action::Go(row));
+            actions.push(Action::Row(entry));
         }
         if let Some(area) = found.splitter {
             self.splitter(
@@ -491,7 +504,10 @@ mod tests {
     use super::*;
     use crate::{
         nav::Place,
-        sidebar::rows::{Counts, Today, fixed_rows},
+        sidebar::{
+            list::{Held, Sources},
+            rows::{Counts, Fixed, Today},
+        },
         toasts::Toasts,
         window_layout::{SIDEBAR_DEFAULT, SIDEBAR_MIN, SPLITTER, STATUS_BAR, TOP_BAR},
     };
@@ -499,6 +515,27 @@ mod tests {
     use photon_core::grid::GridView;
 
     const TODAY: Today = Today { month: 7, day: 4 };
+
+    /// The sidebar of a library with `counts` and nothing else in it, for a user at `at`.
+    fn list(counts: &Counts, at: &Place) -> List {
+        let mut list = List::default();
+        list.follow(&Sources {
+            counts,
+            at,
+            today: TODAY,
+            open: Default::default(),
+            sort: Default::default(),
+            held: &Held::default(),
+            tallies: &[],
+            layout_gen: 0,
+            zone: &jiff::tz::TimeZone::UTC,
+        });
+        list
+    }
+
+    fn row(what: Fixed) -> Action {
+        Action::Row(What::Fixed(what))
+    }
 
     /// Every shape in `shape`.
     fn each_shape(shape: &egui::Shape, visit: &mut impl FnMut(&egui::Shape)) {
@@ -514,7 +551,7 @@ mod tests {
         ctx: egui::Context,
         shell: Shell,
         layout: Layout,
-        rows: Vec<Row>,
+        list: List,
         toasts: Toasts,
         notice: Option<String>,
         size: egui::Vec2,
@@ -539,7 +576,7 @@ mod tests {
                 ctx: egui::Context::default(),
                 shell: Shell::default(),
                 layout: Layout::default(),
-                rows: fixed_rows(&counts, &Place::of(GridView::All), TODAY),
+                list: list(&counts, &Place::of(GridView::All)),
                 toasts: Toasts::default(),
                 notice: None,
                 size: vec2(1280.0, 800.0),
@@ -563,7 +600,8 @@ mod tests {
             self.time += 1.0 / 60.0;
             let data = ShellData {
                 layout: &self.layout,
-                rows: &self.rows,
+                list: &self.list,
+                here: None,
                 count: Some("1,234 photos"),
                 notice: self.notice.as_deref(),
                 toasts: self.toasts.held(),
@@ -603,7 +641,7 @@ mod tests {
                     }
                     Action::Width { width, .. } => self.layout.sidebar_width = *width,
                     Action::Dismiss(id) => self.toasts.dismiss(*id),
-                    Action::Go(_) => {}
+                    Action::Row(_) => {}
                 }
             }
             actions
@@ -700,12 +738,12 @@ mod tests {
     fn a_click_on_a_row_asks_for_it() {
         let mut f = Fixture::new();
         f.frame(Vec::new());
-        assert_eq!(f.click(f.row(1)), [Action::Go(Fixed::Starred)]);
-        assert_eq!(f.click(f.row(0)), [Action::Go(Fixed::All)]);
+        assert_eq!(f.click(f.row(1)), [row(Fixed::Starred)]);
+        assert_eq!(f.click(f.row(0)), [row(Fixed::All)]);
         // The fifth row of this library is Hidden: Videos and Duplicates hold nothing.
-        assert_eq!(f.click(f.row(4)), [Action::Go(Fixed::Hidden)]);
-        // Below the last row there is nothing to click.
-        assert_eq!(f.click(f.row(7)), []);
+        assert_eq!(f.click(f.row(4)), [row(Fixed::Hidden)]);
+        // Below the last entry there is nothing to click.
+        assert_eq!(f.click(pos2(100.0, 700.0)), []);
     }
 
     // It names the photo whose copies are shown and does nothing: the view is open.
@@ -716,16 +754,14 @@ mod tests {
             view: GridView::Copies,
             arg: "42".to_owned(),
         };
-        f.rows = fixed_rows(&Counts::default(), &at, TODAY);
-        let copies = f
-            .rows
-            .iter()
-            .position(|row| row.what == Fixed::CopiesOf)
+        f.list = list(&Counts::default(), &at);
+        let copies = (f.list.entries.iter())
+            .position(|entry| entry.what == What::Fixed(Fixed::CopiesOf))
             .unwrap();
         f.frame(Vec::new());
         assert!(f.drew("Copies of a photo").is_some());
         assert_eq!(f.click(f.row(copies)), []);
-        assert_eq!(f.click(f.row(copies - 1)), [Action::Go(Fixed::Duplicates)]);
+        assert_eq!(f.click(f.row(copies - 1)), [row(Fixed::Duplicates)]);
     }
 
     #[test]

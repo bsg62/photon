@@ -3,9 +3,9 @@
 
 mod common;
 
-use common::{Driver, Harness, launch, library};
+use common::{Driver, Harness, click, library, opened};
 use eframe::egui::{self, Key, Modifiers, pos2, vec2};
-use egui_kittest::kittest::Queryable;
+use egui_kittest::kittest::{NodeT, Queryable};
 use photon_core::grid::GridView;
 use photon_ui::{
     nav::Place,
@@ -13,22 +13,6 @@ use photon_ui::{
     window_layout::{Layout, SIDEBAR_DEFAULT},
 };
 use std::time::{Duration, Instant};
-
-/// Clicks the sidebar row called `label`, and draws the frames the click is in.
-fn click(driver: &mut Driver, harness: &mut Harness<'_>, label: &str) {
-    harness.get_by_label(label).click();
-    driver.act(harness);
-}
-
-/// Launches over `library` and waits until its grid and its counts are there.
-fn opened<'a>(library: &photon_ui::fixture::Fixture, photos: usize) -> (Harness<'a>, Driver) {
-    let mut harness = launch(library);
-    let mut driver = Driver::new(&harness);
-    driver.until(&mut harness, "the library shown", |app| {
-        app.photos() == photos && app.last_frame().is_some_and(|frame| frame.settled)
-    });
-    (harness, driver)
-}
 
 #[test]
 fn a_click_on_a_view_shows_it_and_the_row_follows_at_once() {
@@ -50,8 +34,15 @@ fn a_click_on_a_view_shows_it_and_the_row_follows_at_once() {
     assert!(harness.query_by_label("Duplicates").is_none());
 
     click(&mut driver, &mut harness, "Starred");
-    // Where the user is going, before the rebuild has landed.
+    // Where the user is going, before the rebuild has landed - and the row says so in
+    // the very next frame, which is not the one the grid arrives in.
     assert_eq!(harness.state().place(), Place::of(GridView::Starred));
+    driver.act(&mut harness);
+    let current = |harness: &Harness<'_>, label: &str| {
+        let row = harness.get_by_label(label);
+        row.accesskit_node().toggled() == Some(egui::accesskit::Toggled::True)
+    };
+    assert!(current(&harness, "Starred") && !current(&harness, "All photos"));
     driver.until(&mut harness, "the starred photos shown", |app| {
         *app.settled() == Place::of(GridView::Starred)
     });

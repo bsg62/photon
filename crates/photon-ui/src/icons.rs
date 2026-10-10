@@ -9,37 +9,58 @@ use eframe::egui::{self, Color32, Rect, Vec2};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Icon {
+    Bookmark,
     Calendar,
+    ChevronDown,
+    ChevronRight,
     Clock,
     Copy,
     EyeOff,
+    Folder,
+    Images,
     LayoutGrid,
     PanelLeft,
     Play,
     Settings,
     Star,
+    Tag,
     TriangleAlert,
+    User,
     X,
 }
 
 impl Icon {
-    pub const ALL: [Icon; 11] = [
+    pub const ALL: [Icon; 18] = [
+        Icon::Bookmark,
         Icon::Calendar,
+        Icon::ChevronDown,
+        Icon::ChevronRight,
         Icon::Clock,
         Icon::Copy,
         Icon::EyeOff,
+        Icon::Folder,
+        Icon::Images,
         Icon::LayoutGrid,
         Icon::PanelLeft,
         Icon::Play,
         Icon::Settings,
         Icon::Star,
+        Icon::Tag,
         Icon::TriangleAlert,
+        Icon::User,
         Icon::X,
     ];
 
     fn name(self) -> &'static str {
         match self {
+            Icon::Bookmark => "bookmark",
             Icon::Calendar => "calendar",
+            Icon::ChevronDown => "chevron-down",
+            Icon::ChevronRight => "chevron-right",
+            Icon::Folder => "folder",
+            Icon::Images => "images",
+            Icon::Tag => "tag",
+            Icon::User => "user",
             Icon::Clock => "clock",
             Icon::Copy => "copy",
             Icon::EyeOff => "eye-off",
@@ -60,6 +81,21 @@ impl Icon {
                 r#"<path d="M8 2v4"/><path d="M16 2v4"/><rect width="18" height="18" x="3" y="4" rx="2"/><path d="M3 10h18"/>"#
             }
             Icon::Clock => r#"<circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>"#,
+            Icon::Bookmark => r#"<path d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16z"/>"#,
+            Icon::ChevronDown => r#"<path d="m6 9 6 6 6-6"/>"#,
+            Icon::ChevronRight => r#"<path d="m9 18 6-6-6-6"/>"#,
+            Icon::Folder => {
+                r#"<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>"#
+            }
+            Icon::Images => {
+                r#"<path d="m22 11-1.296-1.296a2.4 2.4 0 0 0-3.408 0L11 16"/><path d="M4 8a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2"/><circle cx="13" cy="7" r="1" fill="currentColor"/><rect x="8" y="2" width="14" height="14" rx="2"/>"#
+            }
+            Icon::Tag => {
+                r#"<path d="M12.586 2.586A2 2 0 0 0 11.172 2H4a2 2 0 0 0-2 2v7.172a2 2 0 0 0 .586 1.414l8.704 8.704a2.426 2.426 0 0 0 3.42 0l6.58-6.58a2.426 2.426 0 0 0 0-3.42z"/><circle cx="7.5" cy="7.5" r=".5" fill="currentColor"/>"#
+            }
+            Icon::User => {
+                r#"<path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>"#
+            }
             Icon::EyeOff => {
                 r#"<path d="M10.733 5.076a10.744 10.744 0 0 1 11.205 6.575 1 1 0 0 1 0 .696 10.747 10.747 0 0 1-1.444 2.49"/><path d="M14.084 14.158a3 3 0 0 1-4.242-4.242"/><path d="M17.479 17.499a10.75 10.75 0 0 1-15.417-5.151 1 1 0 0 1 0-.696 10.75 10.75 0 0 1 4.446-5.143"/><path d="m2 2 20 20"/>"#
             }
@@ -89,10 +125,12 @@ impl Icon {
     }
 
     /// The whole document, in white: `filled` fills the outline as well as stroking it.
+    /// `color` is white too, for the dots two icons fill with `currentColor`: left to its
+    /// default that is black, which no tint lightens.
     pub fn svg(self, filled: bool) -> String {
         let fill = if filled { "white" } else { "none" };
         format!(
-            r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="{fill}" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">{}</svg>"#,
+            r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" color="white" fill="{fill}" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">{}</svg>"#,
             self.inner()
         )
     }
@@ -128,6 +166,14 @@ mod tests {
                 icon.name()
             );
         }
+    }
+
+    // The dot of a tag and the sun of a picture are filled with `currentColor`, which is
+    // black unless the document says otherwise, and the icons are tinted by multiplying.
+    #[test]
+    fn what_an_icon_fills_with_the_current_colour_is_white_like_the_rest() {
+        assert!(Icon::Tag.inner().contains(r#"fill="currentColor""#));
+        assert!(Icon::Tag.svg(false).contains(r#" color="white" "#));
     }
 
     #[test]

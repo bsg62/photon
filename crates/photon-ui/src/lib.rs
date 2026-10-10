@@ -26,6 +26,8 @@ pub mod nav;
 pub mod probe;
 pub mod shell;
 pub mod sidebar {
+    pub mod folders;
+    pub mod list;
     pub mod rows;
     pub mod view;
 }
@@ -48,11 +50,13 @@ pub mod window_layout;
 #[cfg(test)]
 mod tests {
     /// The state modules, with their source.
-    const STATE_MODULES: [(&str, &str); 17] = [
+    const STATE_MODULES: [(&str, &str); 19] = [
         ("args.rs", include_str!("args.rs")),
         ("dirs.rs", include_str!("dirs.rs")),
         ("empty.rs", include_str!("empty.rs")),
         ("nav.rs", include_str!("nav.rs")),
+        ("sidebar/folders.rs", include_str!("sidebar/folders.rs")),
+        ("sidebar/list.rs", include_str!("sidebar/list.rs")),
         ("sidebar/rows.rs", include_str!("sidebar/rows.rs")),
         ("tasks.rs", include_str!("tasks.rs")),
         ("theme/tokens.rs", include_str!("theme/tokens.rs")),

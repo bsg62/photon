@@ -11,6 +11,26 @@ grid arrived under the second's view. What a grid shows is taken from the answer
 step that built it, and a grid published while a step is on its way waits for that answer
 before it is put on screen.
 
+**Changed while the second pull request was built** (2026-10-10), each from what a probe
+or a test showed:
+
+- The albums, saved searches, people and tags are one read, not five tasks, and are not
+  asked for at launch: the engine's first grid is a data change, and asking as well read
+  them twice.
+- The last folder is read once, in `App::new`, and kept in memory from then on. The
+  application is its only writer, so the way back from an excursion reads nothing.
+- "No folders yet." and its button are the fifth pull request's, with the folder list's
+  refetches: read at launch the list may predate the Pictures folder the engine adds.
+- A frame is asked for to bring the folder's mark up to the grid. It was taken out once,
+  as doing nothing - egui draws two frames for every immediate request - and put back by
+  the review, which found the frame eframe draws for a resize, which nothing asked for.
+- The list is held by an entry when its entries change (the row under the pointer, the
+  marked folder's, the first in view): the review found the marked row pushed out of
+  sight at launch by the albums arriving after the list had followed the grid.
+- A run of the gate neither goes back to a folder nor remembers one.
+- A row tells AccessKit whether it is where the user is, ahead of sub-project 7: it is
+  how a test of the whole application sees which row is filled.
+
 ## What this is for
 
 After sub-project 1 `photon-native` is a window with one thing in it: the grid of whatever

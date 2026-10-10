@@ -237,6 +237,10 @@ fn the_programme_runs_over_a_fixture_to_its_report() {
     drop(harness);
     let lib = Library::open(&fixture.dirs().db_path).unwrap();
     assert_eq!(lib.grid_entries().unwrap().len(), 900);
+    // And no folder is remembered in it: the programme has been through every folder of
+    // All photos, and the next run - the other application's, or this one's again - has
+    // to open the library as this one found it, at its top.
+    assert_eq!(lib.last_folder().unwrap(), None);
 }
 
 /// Runs the launch the gate throws away over `fixture`, and reads its report.
