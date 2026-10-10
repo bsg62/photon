@@ -1,5 +1,5 @@
-//! `cargo run -p xtask -- native-shot`: the native grid as two PNGs, light and dark, in
-//! `target/screenshots/`.
+//! `cargo run -p xtask -- native-shot`: the native window as PNGs, in
+//! `target/screenshots/native-*.png`.
 //!
 //! The rendering is a test of photon-ui (`tests/screenshots.rs`), ignored by default and
 //! run from here, so that xtask does not itself depend on a GPU stack. Like `screenshots`

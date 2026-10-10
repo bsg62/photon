@@ -1289,7 +1289,7 @@ action in `mock.js`.
 `crates/photon-ui` is the interface being rebuilt in Rust on egui and wgpu, in place of
 `ui/` and the Tauri shell (spec `2026-10-09-photon-native-ui-design.md`). Its binary is
 `photon-native` until the switch-over. **It is not launched to verify a change either**:
-`cargo run -p xtask -- native-shot` writes the grid to `target/screenshots/native-grid-*.png`
+`cargo run -p xtask -- native-shot` writes the window to `target/screenshots/native-*.png`
 off screen, and those are read. It needs a GPU adapter (no display), so it is an ignored
 test that xtask runs, not part of the gate.
 
@@ -1350,6 +1350,39 @@ task: read after it, a theme pinned against the desktop's showed the desktop's f
 at every launch. A screenshot sets its theme twice, stored in the library and given to the
 `egui_kittest` harness, because the harness sets one of its own (dark) after the
 application has been made.
+
+**The window is four areas around the grid** (`window_layout.rs`: the top bar, the sidebar
+with its splitter, the status bar, the content), drawn by `shell.rs`, a view that answers
+what the user did as a list of `Action`s; `app.rs` is the one place an action changes
+anything. What needs a later sub-project is drawn in place and takes no press (the gear):
+a button that will be there is there, so nothing moves when it starts to work
+(spec `2026-10-10-photon-native-sidebar-views-search-design.md`).
+
+**A step that moves the engine's view goes through `tasks::Queue`, never `Latest`.** The
+view setters rebuild the grid on the thread that calls them, and a step begun cannot be
+taken back, so they are made in the order asked; answered by the latest alone, a search
+already sent lands after the click that emptied its box. `nav.rs` holds where the user is:
+`settled` is what the published grid shows, read from the engine when it says the library
+changed, and `target` is where the last step asked leads - which is what the sidebar
+marks, at the click and not when a rebuild of the whole library has landed. A step to
+where the user is already going is not asked (`Nav::wants`). `grid_info` reads SQLite on a
+cache miss although it returns no `CmdResult`: the sidebar's counts are a `Latest`, asked
+again at every change.
+
+**How the window is laid out is in `layout.json` beside `library.db`** - the sidebar's
+width, whether it is hidden, which groups are open - and not in the settings table, whose
+accessors are photon-core's and which the Tauri photon reads too. It is read before the
+first frame and written off the UI thread when the user changes one of the three; the
+width is stored as it was dragged and clamped where it is shown.
+
+**Tests of the whole application drive it through `tests/common`'s `Driver`**: `until`
+draws the frames that are asked for, `settle` waits in real time for the other threads,
+`frames_in` counts what a stretch of the clock draws. A row is clicked by its name
+(`harness.get_by_label("Starred").click()`), which is why every row and button tells
+AccessKit what it is (`widget_info`) although AccessKit itself is switched on only in
+sub-project 7. Two things about egui's input that a frame test meets: egui works out for
+itself whether a key going down is a repeat, whatever the event says, and it shows a new
+`Area` - a toast - only in the frame after the one it measures it in.
 
 **`cargo run -p xtask -- grid-gate` is the one command that launches the application**, and
 it does nothing unless told which: `--go --refresh-hz <hz>` opens fullscreen windows that
