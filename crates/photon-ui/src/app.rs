@@ -148,6 +148,8 @@ impl App {
     ) -> Result<Self, String> {
         let ctx = cc.egui_ctx.clone();
         theme::apply::install(&ctx);
+        // A notch of the wheel as far as the web view of this system moved it.
+        crate::grid::view::set_wheel_notch(&ctx, crate::grid::scroll::WHEEL_NOTCH);
         icons::install(&ctx);
         theme::fonts::install(&ctx);
 

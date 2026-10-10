@@ -32,6 +32,12 @@ use std::{collections::HashMap, time::Duration};
 /// How far an arrow key moves the grid.
 const ARROW_STEP: f64 = 40.0;
 
+/// Sets how far a notch of the mouse wheel scrolls, for everything in `ctx` that scrolls:
+/// the grid and the sidebar's list alike. Once, at startup (`scroll::WHEEL_NOTCH`).
+pub fn set_wheel_notch(ctx: &egui::Context, points: f64) {
+    ctx.options_mut(|options| options.input_options.line_scroll_speed = points as f32);
+}
+
 /// What the grid draws this frame.
 pub struct GridData<'a> {
     /// Moves when a publish changes the sections (`Engine::published`): what the rows are
@@ -679,6 +685,31 @@ mod tests {
         fn top_photo(&self) -> usize {
             let rows = &self.view.rows;
             rows[row_index_at(rows, self.view.scroll.position())].first
+        }
+    }
+
+    // A mouse wheel reports notches, not points, and how far a notch goes is the
+    // application's to say (`set_wheel_notch`).
+    #[test]
+    fn a_notch_of_the_wheel_moves_the_grid_as_far_as_it_is_set_to() {
+        for notch in [40.0, 100.0] {
+            let mut f = fixture(&[200]);
+            set_wheel_notch(&f.ctx, notch);
+            f.frame(vec![Event::PointerMoved(Pos2::new(300.0, 300.0))]);
+            f.frame(vec![Event::MouseWheel {
+                unit: MouseWheelUnit::Line,
+                delta: vec2(0.0, -2.0),
+                phase: TouchPhase::Move,
+                modifiers: Modifiers::NONE,
+            }]);
+            let mut position = 0.0;
+            for _ in 0..60 {
+                position = f.frame(Vec::new()).position;
+            }
+            assert!(
+                (position - 2.0 * notch).abs() < 0.5,
+                "{notch}: moved {position}"
+            );
         }
     }
 
