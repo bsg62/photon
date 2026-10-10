@@ -1514,7 +1514,13 @@ them, and the sort drawn is `Nav::sort_target`: the sort the last step asked lea
 change of sort is a `Step::Sort` on the views' queue, where it gives way to nothing and
 nothing gives way to it - so a second change made before the first has landed builds on
 the first, and a refused one puts the controls back. A sort moves no view and clears no
-query: `App::go` leaves the search box alone for it. The size is not a step: it is
+query: `App::go` leaves the search box alone for it. **A sort's error does not always mean
+nothing moved**: `Engine::set_sort` rebuilds and publishes, then stores, so a sort it
+could not store is on screen all the same, and the queue's worker answers that as a step
+made, with the engine's words for a message - taken as refused, the photos were in one
+order and the controls said the other for the rest of the session. And anything asked
+*behind* a sort on its way asks `sort_target`, not the sort on screen: All photos did
+not, and came back to the remembered folder in an order that has no folders. The size is not a step: it is
 applied at the press and stored on the queue of writes, and a size the library would not
 store is kept for the session, as the Svelte store keeps it.
 
@@ -1524,20 +1530,31 @@ around a focused widget decided most of the view, each learnt from a test that f
 a probe that passed. A click does not give a widget the keyboard: the control asks for it
 at a press. Enter and Space on a focused widget are a click to egui, and so is the press
 a screen reader makes: the keys are read as keys, and a click in a frame with Enter or
-Space in it is not a press. **Tab is read in the frame the control loses the focus**
+Space in it is not a press. **Tab is read as the control loses the focus**
 (`lost_focus`): egui has moved the focus on by the time the control is drawn, and read
 only while it had the keyboard, Tab closed the list without taking the option it was on.
-The arrows are claimed (`set_focus_lock_filter`), or egui walks the focus to a
-neighbouring widget with them, and Escape while the list is open, or egui drops the
-focus before the control sees the key. A key the list used is taken out of the frame's
-input, because the grid is drawn after the bar and would scroll by the same arrow - which
-is why the controls are drawn after the search box, which has read its own keys by then.
+The up and down arrows are claimed (`set_focus_lock_filter`), or egui walks the focus to
+a neighbouring widget with them; while the list is open so are the sideways ones, which
+do nothing in it and otherwise closed it by walking the focus off, and Escape, or egui
+drops the focus before the control sees the key. A key the list used is taken out of the
+frame's input - a letter typed with the key that typed it, as well as an arrow - because
+the grid is drawn after the bar and would scroll by the same arrow, and will one day hide
+a photo by the same letter; which is why the controls are drawn after the search box,
+which has read its own keys by then. **A pointer that closes the list gives the keyboard
+up**: by choosing from it, by pressing the control again, by pressing elsewhere. egui
+lets go of the focus only at a click on something else, never at a wheel turned or a
+scrollbar dragged, so a sort chosen with the mouse left End opening the list from
+wherever the grid had been scrolled to, and Enter after it sorting by size (a review
+found it). A screen reader's press is no pointer and leaves the keyboard where it is. A
+dimmed control is no stop of the Tab key, where the Svelte one is focusable and inert.
 **The list closes at a press outside it, by the view's own rule**: egui gives up the focus
 at a *click* elsewhere, which is the button let go of, and never at a press that becomes
 a drag - with only the "no keyboard, no list" rule, a list stayed open over a scrollbar
-being dragged. A press on the list takes the focus from the control and is given it back.
-The pointer makes a row the active one when it moves, not while it rests where the list
-opened. And the list is as wide as its longest option needs in a row, where the mark's
+being dragged. A click on the list is a click elsewhere to egui, so the list is spared for the frame of
+that click and for nothing else: a pointer merely resting on it does not hold it open
+when Ctrl+F takes the keyboard. The pointer makes a row the active one when it moves
+(`pointer.delta()`, not `is_moving()`, which is a smoothed speed that one step after a
+rest does not move), not while it rests where the list opened. And the list is as wide as its longest option needs in a row, where the mark's
 room is more than the chevron's: at the control's own width it printed "Date modi…",
 which a picture showed and no test had (`Galley::elided` is how a test sees a text cut
 short; `Galley::text` is the whole text either way).
@@ -1547,8 +1564,11 @@ they are** (`GridView::strip`): `shows_timeline` wants the number of year marks,
 `timeline::year_runs` counts them from the sections alone, held to `year_marks` by a test
 that runs both. The count is kept for the layout generation it was made in. The strip
 stands at the grid's right edge with the scrollbar left of it, as in the Svelte grid, and
-the photos have what is left; the grid keeps its photo when the strip comes or goes with
-a new index because the tile changes with it, which is the pin's own trigger. A press on
+the photos have what is left. When the strip comes or goes with a new index the tile
+changes with it, which is the pin's own trigger - so the place carried over is the
+photo's *offset*, from one index into another: right while nothing arrived before that
+photo, and off by what did otherwise, as the kept number is across any new index (a
+review's test with a folder of a newer year; the grid does not follow a photo by id). A press on
 the strip is the primary button's and follows the pointer on or off the strip
 (`is_pointer_button_down_on`); the year under the pointer is named over the photos, so it
 is painted last and through the grid's own painter. It is no stop of the Tab key

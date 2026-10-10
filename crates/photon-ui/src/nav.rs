@@ -78,7 +78,7 @@ impl Step {
     /// Whether this is a search: the one kind of step a newer one of its kind takes the
     /// place of while it waits its turn. Each word typed while a rebuild runs asks for
     /// another search, and only the last is wanted; a view asked for is wanted even with
-    /// another behind it, and so will a change of sort be.
+    /// another behind it, and so is a change of sort.
     pub fn is_search(&self) -> bool {
         matches!(self, Step::Search(_))
     }
@@ -265,7 +265,8 @@ impl Nav {
     /// refused it. Answers a refusal, for the user to be told.
     ///
     /// A refused step changes nothing but that: the engine put its own state back
-    /// (`rebuild_or_restore`), and the grid on screen never moved.
+    /// (`rebuild_or_restore`), and the grid on screen never moved. A sort the engine made
+    /// and could not store is not one: the application answers it as made.
     pub fn answered(&mut self, number: u64, outcome: Result<Landed, String>) -> Option<Refused> {
         // Answers come in the order the steps were given, so everything up to this one
         // is done with.

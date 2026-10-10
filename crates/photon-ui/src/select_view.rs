@@ -3,7 +3,15 @@
 //!
 //! The control takes the keyboard and the list never does: the keys are read where the
 //! focus is, and the list is only pointed at. A key the list used is taken out of the
-//! frame's input, so that the grid under it does not scroll by the same arrow.
+//! frame's input - an arrow, a letter typed and the key that typed it - so that the grid
+//! under it does not scroll by the same arrow, or hide a photo by the same letter.
+//!
+//! The keyboard is the control's for as long as the keyboard is what is being used. A
+//! pointer that closes the list - by choosing from it, by pressing the control again, by
+//! pressing anywhere else - gives the keyboard up, back to the photos: egui lets go of
+//! the focus only at a click on something else, so a sort chosen with the mouse left
+//! End, the arrows and every letter opening the list again from wherever the wheel had
+//! scrolled to.
 
 use crate::{
     icons::Icon,
@@ -16,8 +24,8 @@ use crate::{
     },
 };
 use eframe::egui::{
-    self, Event, EventFilter, Id, Key, Modifiers, Order, Rect, Sense, Stroke, StrokeKind,
-    WidgetInfo, WidgetType, pos2, vec2,
+    self, Event, EventFilter, Id, Key, Modifiers, Order, PointerButton, Rect, Sense, Stroke,
+    StrokeKind, WidgetInfo, WidgetType, pos2, vec2,
 };
 
 /// The closed control, as tall as the top bar's buttons.
@@ -69,6 +77,18 @@ fn widest(ui: &egui::Ui, options: &[&str]) -> f32 {
         .fold(0.0, f32::max)
 }
 
+/// Where a key the control read came from, for taking it out of the frame's input.
+enum Used {
+    Key(Key, Modifiers),
+    Typed(char),
+}
+
+/// The key that types `letter`, where egui knows one by it: a letter, a digit, the space
+/// bar, the punctuation it names by its sign.
+fn key_of(letter: char) -> Option<Key> {
+    Key::from_name(&letter.to_uppercase().to_string())
+}
+
 impl SelectView {
     pub fn open(&self) -> bool {
         self.select.open()
@@ -111,28 +131,35 @@ impl SelectView {
             && ui.input(|input| input.key_pressed(Key::Enter) || input.key_pressed(Key::Space));
         let pressed = response.clicked() && !by_key;
         if pressed {
-            // A press gives it the keyboard, as it does not by itself in egui: the keys
-            // are read where the focus is, and a list whose control has lost it closes.
-            response.request_focus();
             self.select.toggle(&options);
+            if self.select.open() {
+                // A press gives it the keyboard, as it does not by itself in egui: the
+                // keys are read where the focus is, and a list whose control has lost
+                // it closes.
+                response.request_focus();
+            } else if response.clicked_by(PointerButton::Primary) {
+                // Opened and shut by the pointer: the keyboard is not left behind.
+                response.surrender_focus();
+            }
         }
-        // A press on the list takes the keyboard from the control, as a press anywhere
-        // does. It is given back: the list never has the focus, and a control that
-        // closed its list at that press would have nothing left for the click to choose.
-        let on_list = ui
-            .input(|input| input.pointer.interact_pos())
-            .is_some_and(|at| self.list.is_some_and(|list| list.contains(at)));
-        if self.select.open() && !response.has_focus() && on_list {
-            response.request_focus();
-        }
-        // The keys, while the control has the keyboard - and in the frame it loses it,
-        // which is the frame of the Tab that takes the option the list is on: egui has
-        // moved the focus on by the time the control is drawn. Without the keyboard an
-        // open list is closed: the focus has walked on, or a press took it elsewhere.
+        // The keys, while the control has the keyboard - and as it loses it, which is
+        // when the Tab arrives that takes the option the list is on: egui has moved the
+        // focus on by the time the control is drawn.
         if response.has_focus() || response.lost_focus() {
             chosen = self.take_keys(ui, id, &options).or(chosen);
         }
-        if !response.has_focus() && self.select.open() && !pressed {
+        // Without the keyboard an open list is closed: the focus has walked on, or a
+        // click took it elsewhere. Not in the frame of a click on the list itself, which
+        // is a click elsewhere to egui: the list has to be there for the click to choose
+        // from, and choosing closes it.
+        let click_on_list = ui
+            .input(|input| {
+                (input.pointer.any_click())
+                    .then(|| input.pointer.interact_pos())
+                    .flatten()
+            })
+            .is_some_and(|at| self.list.is_some_and(|list| list.contains(at)));
+        if !response.has_focus() && self.select.open() && !click_on_list {
             self.select.close();
         }
 
@@ -188,6 +215,8 @@ impl SelectView {
             let inside = |at| rect.contains(at) || self.list.is_some_and(|list| list.contains(at));
             if pressed.is_some_and(|at| !inside(at)) {
                 self.select.close();
+                // And the keyboard goes with the pointer.
+                response.surrender_focus();
             }
         }
         if self.select.open() {
@@ -201,22 +230,26 @@ impl SelectView {
     /// Reads the keys of this frame for the control. One the list used is taken out of
     /// the input: the grid is drawn after the bar, and would scroll by the same arrow.
     fn take_keys(&mut self, ui: &egui::Ui, id: Id, options: &Options<'_>) -> Option<usize> {
-        // While the list is open the arrows, Escape and the rest are its own, and not
-        // egui's for moving the focus on or dropping it. Tab is left to egui: it chooses
-        // here and still has to move the focus.
+        // The arrows that open the list and move through it are the control's, and not
+        // egui's for moving the focus on; while the list is open so are the sideways
+        // ones, which do nothing in it - left to egui they walked the keyboard to the
+        // next control, and the list closed behind it - and Escape, which egui would
+        // drop the focus for. Tab is left to egui: it chooses here and still has to move
+        // the focus.
         let open = self.select.open();
         ui.memory_mut(|memory| {
             memory.set_focus_lock_filter(
                 id,
                 EventFilter {
                     vertical_arrows: true,
+                    horizontal_arrows: open,
                     escape: open,
                     ..EventFilter::default()
                 },
             );
         });
         let now_ms = ui.input(|input| input.time) * 1000.0;
-        let events: Vec<(SelectKey, Option<(Key, Modifiers)>)> = ui.input(|input| {
+        let events: Vec<(SelectKey, Used)> = ui.input(|input| {
             (input.events.iter())
                 .filter_map(|event| match event {
                     Event::Key {
@@ -237,7 +270,7 @@ impl SelectView {
                             Key::Tab => SelectKey::Tab,
                             _ => return None,
                         };
-                        Some((named, Some((*key, *modifiers))))
+                        Some((named, Used::Key(*key, *modifiers)))
                     }
                     // What is typed, for the type-ahead - a space among it. A shortcut
                     // types nothing, so Ctrl+A never arrives here.
@@ -247,20 +280,36 @@ impl SelectView {
                         letters
                             .next()
                             .is_none()
-                            .then_some((SelectKey::Char(letter), None))
+                            .then_some((SelectKey::Char(letter), Used::Typed(letter)))
                     }
                     _ => None,
                 })
                 .collect()
         });
         let mut chosen = None;
-        for (key, pressed) in events {
+        for (key, from) in events {
             let answer = self.select.key(key, now_ms, options);
             chosen = answer.chosen.or(chosen);
-            if answer.used
-                && let Some((key, modifiers)) = pressed
-            {
-                ui.input_mut(|input| input.consume_key(modifiers, key));
+            if !answer.used {
+                continue;
+            }
+            match from {
+                Used::Key(key, modifiers) => {
+                    ui.input_mut(|input| input.consume_key(modifiers, key));
+                }
+                // What was typed, and the key that typed it, whatever was held with it.
+                Used::Typed(letter) => {
+                    let typed_by = key_of(letter);
+                    ui.input_mut(|input| {
+                        input.events.retain(|event| match event {
+                            Event::Text(typed) => !typed.chars().eq([letter]),
+                            Event::Key {
+                                key, pressed: true, ..
+                            } => Some(*key) != typed_by,
+                            _ => true,
+                        });
+                    });
+                }
             }
         }
         chosen
@@ -322,7 +371,8 @@ impl SelectView {
                     // The pointer over an option makes it the active one, as a native
                     // list does - when it moves, not while it rests where the list
                     // happened to open under it, or the keys could not leave that row.
-                    if response.hovered() && ui.input(|input| input.pointer.is_moving()) {
+                    let moved = ui.input(|input| input.pointer.delta() != egui::Vec2::ZERO);
+                    if response.hovered() && moved {
                         hovered = Some(index);
                     }
                     if response.clicked() {
@@ -361,7 +411,7 @@ impl SelectView {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use eframe::egui::{PointerButton, Pos2, RawInput};
+    use eframe::egui::{Pos2, RawInput};
 
     const LABELS: [&str; 4] = ["Date taken", "Date modified", "Name", "Size"];
     const AT: Rect = Rect {
@@ -389,8 +439,10 @@ mod tests {
         texts: Vec<(String, Rect)>,
         /// The texts the last frame drew short of their end, for want of room.
         cut_short: Vec<String>,
-        /// Whether a key of the last frame was still there for what is drawn after.
+        /// Whether a key of the last frame was still there for what is drawn after, and
+        /// whether anything typed in it was: a letter, or the key that typed it.
         down_left: bool,
+        typed_left: bool,
     }
 
     impl Fixture {
@@ -406,6 +458,7 @@ mod tests {
                 texts: Vec::new(),
                 cut_short: Vec::new(),
                 down_left: false,
+                typed_left: false,
             }
         }
 
@@ -426,7 +479,7 @@ mod tests {
                 hint: None,
             };
             let (view, at) = (&mut self.view, self.at);
-            let (mut chosen, mut down_left) = (None, false);
+            let (mut chosen, mut down_left, mut typed_left) = (None, false, false);
             let mut full = self.ctx.run_ui(input, |ui| {
                 crate::icons::install(ui.ctx());
                 egui::CentralPanel::default()
@@ -435,10 +488,17 @@ mod tests {
                         chosen = view.show(ui, at, &data);
                         // What the grid would still see of the arrow.
                         down_left = ui.input(|input| input.key_pressed(Key::ArrowDown));
+                        typed_left = ui.input(|input| {
+                            let typed = |event: &Event| matches!(event, Event::Text(_));
+                            input.events.iter().any(typed)
+                                || input.key_pressed(Key::S)
+                                || input.key_pressed(Key::Space)
+                        });
                     });
             });
             full.textures_delta.clear();
             self.down_left = down_left;
+            self.typed_left = typed_left;
             if let Some(index) = chosen {
                 self.chosen.push(index);
                 self.held = index;
@@ -526,8 +586,11 @@ mod tests {
         assert!((size.center().y - f.option(3).y).abs() < 3.0, "{size:?}");
         // The list is as wide as the control, which is wider than these options need.
         assert_eq!(f.view.list.unwrap().width(), AT.width());
-        // The control again closes it.
+        // The control again closes it, and the keyboard is not left behind in it: the
+        // pointer opened the list and the pointer closed it, and End is the grid's.
         f.click(AT.center());
+        assert!(!f.view.open());
+        f.key(Key::End);
         assert!(!f.view.open());
     }
 
@@ -540,10 +603,11 @@ mod tests {
         f.click(at);
         assert_eq!(f.chosen, [3]);
         assert!(!f.view.open());
-        // The keyboard is still the control's: the press on the list did not take it.
-        f.key(Key::ArrowUp);
-        assert!(f.view.open());
-        f.key(Key::Escape);
+        // The pointer chose, and the keyboard is not left in the control: scrolled away
+        // from with the wheel, End opened the list, and Enter after it sorted by size.
+        f.key(Key::End);
+        assert!(!f.view.open());
+        assert_eq!(f.ctx.memory(|memory| memory.focused()), None);
         // The one held, clicked, is no change.
         f.click(AT.center());
         let at = f.option(3);
@@ -559,6 +623,29 @@ mod tests {
         f.click(AT.center());
         assert!(f.view.open());
         f.click(pos2(600.0, 400.0));
+        assert!(!f.view.open());
+        assert!(f.chosen.is_empty());
+    }
+
+    // The list is spared for the click that chooses from it, and for nothing else: a
+    // pointer that merely rests on it does not hold it open when the keyboard goes
+    // elsewhere - to the search box, by Ctrl+F.
+    #[test]
+    fn a_list_whose_control_lost_the_keyboard_closes_though_the_pointer_rests_on_it() {
+        let mut f = Fixture::new(0);
+        f.frame(Vec::new());
+        f.click(AT.center());
+        assert!(f.view.open());
+        let over = f.option(2);
+        f.frame(vec![Event::PointerMoved(over)]);
+        f.frame(Vec::new());
+        assert!(f.view.open());
+        // Something else takes the keyboard.
+        f.ctx.memory_mut(|memory| {
+            let control = memory.focused().expect("the control has the keyboard");
+            memory.surrender_focus(control);
+        });
+        f.frame(Vec::new());
         assert!(!f.view.open());
         assert!(f.chosen.is_empty());
     }
@@ -584,6 +671,10 @@ mod tests {
         f.frame(vec![Event::PointerMoved(pos2(600.0, 100.0))]);
         assert!(!f.view.open());
         assert!(f.chosen.is_empty());
+        // The keyboard went with the pointer, though no click has taken it: the arrows
+        // do not open the list again under whatever is being dragged.
+        f.key(Key::ArrowDown);
+        assert!(!f.view.open());
     }
 
     // The keys are the control's while it has the keyboard, and the list's own while it
@@ -592,12 +683,9 @@ mod tests {
     fn the_keys_move_through_the_list_and_do_not_reach_what_is_drawn_after() {
         let mut f = Fixture::new(0);
         f.frame(Vec::new());
-        f.click(AT.center());
-        f.click(AT.center());
-        assert!(
-            !f.view.open(),
-            "closed again, with the keyboard still in it"
-        );
+        // The keyboard comes to the control by Tab.
+        f.key(Key::Tab);
+        assert!(!f.view.open());
         f.frame(vec![Event::Key {
             key: Key::ArrowDown,
             physical_key: None,
@@ -623,11 +711,32 @@ mod tests {
         f.key(Key::Escape);
         assert!(!f.view.open());
         assert!(f.chosen.is_empty());
-        // A letter opens it on the option that begins so, and Enter takes it.
-        f.frame(vec![Event::Text("s".to_owned())]);
+        // A letter opens it on the option that begins so, and Enter takes it. The letter
+        // is the list's, as an arrow is: neither it nor the key that typed it is left
+        // for the photos, where a letter will hide one.
+        let key = |key| Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        };
+        f.frame(vec![key(Key::S), Event::Text("s".to_owned())]);
         assert!(f.view.open());
+        assert!(!f.typed_left);
         f.key(Key::Enter);
         assert_eq!(f.chosen, [3]);
+        // A space in an open list takes the option it is on, and is used up too.
+        f.key(Key::ArrowUp);
+        f.key(Key::ArrowUp);
+        f.frame(vec![key(Key::Space), Event::Text(" ".to_owned())]);
+        assert_eq!(f.chosen, [3, 2]);
+        assert!(!f.typed_left);
+        // What a closed control without the keyboard does not use stays.
+        let mut idle = Fixture::new(0);
+        idle.frame(Vec::new());
+        idle.frame(vec![key(Key::S), Event::Text("s".to_owned())]);
+        assert!(idle.typed_left && !idle.view.open());
     }
 
     // Tab takes the option the list is on and lets the keyboard go on, as it does in a
@@ -668,8 +777,7 @@ mod tests {
         f.frame(Vec::new());
         // The keyboard in the control, the list closed, the pointer where its third row
         // will be, and at rest there.
-        f.click(AT.center());
-        f.click(AT.center());
+        f.key(Key::Tab);
         let over = f.option(2);
         f.frame(vec![Event::PointerMoved(over)]);
         for _ in 0..20 {
@@ -681,11 +789,14 @@ mod tests {
         f.key(Key::Enter);
         assert_eq!(f.chosen, [1]);
 
-        // Moved, the pointer takes the list with it.
+        // Moved, the pointer takes the list with it - by the one move, in the frame it
+        // is made: asked whether the pointer "is moving", egui wants several samples
+        // of it, and a single step onto a row after a rest lit nothing.
         f.key(Key::ArrowDown);
         assert!(f.view.open());
+        // A still window draws no frame: the next one is a second later.
+        f.time += 1.0;
         f.frame(vec![Event::PointerMoved(over + vec2(3.0, OPTION))]);
-        f.frame(Vec::new());
         f.key(Key::Enter);
         assert_eq!(f.chosen, [1, 3]);
     }

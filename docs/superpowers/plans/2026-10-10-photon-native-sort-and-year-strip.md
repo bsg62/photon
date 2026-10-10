@@ -133,3 +133,23 @@ impl Nav { pub fn sort_target(&self) -> Sort; }   // the sort the last step aske
   a still window draws nothing with a list closed.
 - [ ] Pictures: by month with the strip; the sort's list open. The checklist. CLAUDE.md.
 - [ ] One fresh reviewer; one fix pass; merge.
+
+**Changed in the making.** The strip stands right of the scrollbar, as in the Svelte
+grid; this plan's "left of its scrollbar" was written without looking. The sidebar's
+folders follow the sort of the grid on screen, not the one being gone to. A dimmed
+control is no stop of the Tab key. Tab in an open list closed it without choosing, which
+a probe's planning found and no test had asked.
+
+**The review** (one fresh reader, 2026-10-10) found nothing critical and three things a
+user would have met. All photos clicked behind a sort still on its way asked the sort on
+screen whether its remembered folder was a place, and opened by name at a photo of that
+folder. A sort the engine made and could not store was taken as not made, and the photos
+were in one order while the controls said the other. And a sort chosen with the mouse
+left the keyboard in the control, so End, scrolled away from, opened the list and Enter
+sorted by size. All three are fixed, with: a letter typed into a list taken out of the
+frame's input like an arrow; the sideways arrows claimed while a list is open; a row lit
+by the pointer's step, not its smoothed speed. Its test with a folder of a newer year
+showed the pin across a new index carries an offset and not a photo, which the comment,
+CLAUDE.md and the checklist now say instead of claiming more. Left for later: a focus
+mark on the toggle and the size segments, `/` and Alt with a letter in an open list, the
+strip's hold when the pointer leaves the window, `shows_timeline` summed every frame.

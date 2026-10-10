@@ -552,6 +552,30 @@ mod tests {
         assert_eq!(f.sort, Sort::default(), "the size is no part of the sort");
     }
 
+    // The arrows that are not the list's are nobody's while it is open: left to egui,
+    // they walk the keyboard to the next control, and the list closes behind it.
+    #[test]
+    fn a_sideways_arrow_leaves_an_open_list_open() {
+        for key in [egui::Key::ArrowRight, egui::Key::ArrowLeft] {
+            let mut f = Fixture::new();
+            f.click(f.places().group.center());
+            assert!(f.bar.group.open());
+            let before = f.ctx.memory(|memory| memory.focused());
+            for pressed in [true, false] {
+                f.frame(vec![Event::Key {
+                    key,
+                    physical_key: None,
+                    pressed,
+                    repeat: false,
+                    modifiers: Modifiers::NONE,
+                }]);
+            }
+            f.frame(Vec::new());
+            assert!(f.bar.group.open(), "{key:?}");
+            assert_eq!(f.ctx.memory(|memory| memory.focused()), before, "{key:?}");
+        }
+    }
+
     // A press on the other control is a press outside the first one's list.
     #[test]
     fn one_list_is_open_at_a_time() {

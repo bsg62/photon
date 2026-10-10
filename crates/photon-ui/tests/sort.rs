@@ -230,6 +230,18 @@ fn a_list_is_opened_and_chosen_from_without_a_pointer() {
     driver.act(&mut harness);
     driver.act(&mut harness);
     assert!(harness.query_by_label("Date modified").is_some());
+    // Shut the same way, the keyboard stays where it was put: it is a pointer that
+    // takes the keys back to the photos when it closes a list, and this was none.
+    harness
+        .get_by_label("Sort by: Date taken")
+        .click_accesskit();
+    driver.act(&mut harness);
+    driver.act(&mut harness);
+    assert!(harness.query_by_label("Date modified").is_none());
+    harness.key_press_modifiers(Modifiers::NONE, Key::ArrowDown);
+    driver.act(&mut harness);
+    driver.act(&mut harness);
+    assert!(harness.query_by_label("Date modified").is_some());
     harness.get_by_label("Size").click_accesskit();
     driver.act(&mut harness);
     sorted(&mut driver, &mut harness, by(SortKey::Size));
@@ -333,6 +345,94 @@ fn a_sort_chosen_in_a_search_keeps_the_search_and_its_words() {
     assert_eq!(app.settled().view, GridView::Search);
     assert_eq!(app.photos(), 10);
     assert_eq!(frame(app).on_screen[0], ids[609]);
+}
+
+// All photos clicked while a sort is still being made: the folder that was left is a
+// place in All photos only where All photos runs folder by folder, and that is asked of
+// the order it will be shown in - not of the one still on screen, a rebuild behind.
+#[test]
+fn all_photos_behind_a_sort_on_its_way_is_opened_as_that_sort_has_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = library(dir.path(), 12_000, 6_000, 0);
+    let (mut harness, mut driver) = opened(&library, 12_000);
+    driver.until(&mut harness, "the folders read", |app| {
+        !app.folders().is_empty()
+    });
+    driver.settle(&mut harness);
+    // A folder some way down is the one left.
+    click(&mut driver, &mut harness, "folder-0032");
+    driver.settle(&mut harness);
+    driver.frames_in(&mut harness, 1.0);
+    let left = frame(harness.state()).top_folder;
+    assert!(left.is_some() && frame(harness.state()).position > 0.0);
+    let starred = |driver: &mut Driver, harness: &mut Harness<'_>| {
+        click(driver, harness, "Starred");
+        driver.until(harness, "the starred photos shown", |app| {
+            app.settled().view == GridView::Starred
+        });
+        driver.settle(harness);
+    };
+
+    // By name All photos has no folders to be at: it opens at its top.
+    starred(&mut driver, &mut harness);
+    choose(&mut driver, &mut harness, "Sort by: Date taken", "Name");
+    click(&mut driver, &mut harness, "All photos");
+    driver.until(&mut harness, "all photos by name", |app| {
+        app.settled().view == GridView::All && app.settled_sort() == by(SortKey::Name)
+    });
+    driver.settle(&mut harness);
+    driver.frames_in(&mut harness, 1.0);
+    assert_eq!(frame(harness.state()).position, 0.0);
+
+    // And back by date it has: it opens at the folder that was left.
+    starred(&mut driver, &mut harness);
+    choose(&mut driver, &mut harness, "Sort by: Name", "Date taken");
+    click(&mut driver, &mut harness, "All photos");
+    driver.until(&mut harness, "all photos by date", |app| {
+        app.settled().view == GridView::All && app.settled_sort() == Sort::default()
+    });
+    driver.settle(&mut harness);
+    driver.frames_in(&mut harness, 1.0);
+    assert_eq!(frame(harness.state()).top_folder, left);
+}
+
+// The engine sorts first and stores second, so a sort it cannot store - the disk full,
+// the library locked by something else past the five seconds a write waits - is on
+// screen all the same. Taken for a sort that was not made, the photos were in one order
+// and the controls and the sidebar said the other, and choosing that other did nothing.
+#[test]
+fn a_sort_made_and_not_stored_is_the_sort_shown() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = library(dir.path(), 900, 0, 0);
+    let ids = photo_ids(&library);
+    let (mut harness, mut driver) = opened(&library, 900);
+    driver.settle(&mut harness);
+
+    let other = rusqlite::Connection::open(library.dirs().db_path).unwrap();
+    other
+        .busy_timeout(std::time::Duration::from_secs(20))
+        .unwrap();
+    other.execute_batch("BEGIN IMMEDIATE").unwrap();
+    choose(&mut driver, &mut harness, "Sort by: Date taken", "Name");
+    driver.until(
+        &mut harness,
+        "the library said it could not store it",
+        |app| !app.toasts().is_empty(),
+    );
+    other.execute_batch("ROLLBACK").unwrap();
+    driver.settle(&mut harness);
+    driver.frames_in(&mut harness, 0.2);
+
+    let app = harness.state();
+    assert_eq!(app.engine().sort(), by(SortKey::Name));
+    assert_eq!(app.settled_sort(), by(SortKey::Name));
+    assert_eq!(app.sort(), by(SortKey::Name));
+    let shown = frame(app);
+    assert_eq!((shown.position, shown.on_screen[0]), (0.0, ids[600]));
+    assert!(harness.query_by_label("Sort by: Name").is_some());
+    // The other sort can be chosen again.
+    choose(&mut driver, &mut harness, "Sort by: Name", "Date taken");
+    sorted(&mut driver, &mut harness, Sort::default());
 }
 
 // Sixty folders, three days apart from the middle of July 2017: the last of them are in

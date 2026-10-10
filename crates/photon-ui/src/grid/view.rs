@@ -293,8 +293,14 @@ impl GridView {
     /// Tiles fill the row, so every row's height moves with every pixel of a resize and a
     /// position kept as a number would name another photo: across a change of the tile or
     /// the columns the place is read from the rows as they were (`pin_at`) and found in the
-    /// rows as they are (`pin_top`). Across a rebuilt index it is kept as the number it
-    /// was, held to the new end, as the Svelte grid keeps it.
+    /// rows as they are (`pin_top`). Across a rebuilt index alone it is kept as the number
+    /// it was, held to the new end, as the Svelte grid keeps it.
+    ///
+    /// A new index can change the tile too, by bringing the year strip or taking it away,
+    /// and then the place is the photo's offset carried from the old index into the new
+    /// one - right while nothing arrived before that photo, and off by what did when
+    /// something has, which is as far as the kept number is off across any new index.
+    /// Neither follows the photo by its id.
     fn lay_out(&mut self, data: &GridData<'_>, width: f64, viewport: f64) -> bool {
         let nominal = tile_width(data.size);
         let row = row_width(width);
@@ -1022,9 +1028,10 @@ mod tests {
         assert!(f.view.max_position() > 0.0);
     }
 
-    // A scan finds a folder of another year, or loses the only one: the strip comes or
+    // A scan finds a folder of an older year, or loses the only one: the strip comes or
     // goes with the new index, the tiles change with it, and the row at the top of the
-    // grid still holds the photo it held.
+    // grid still holds the photo it held. (A folder that sorts before that photo moves
+    // the grid by its rows, as it does when no strip comes with it: `lay_out`.)
     #[test]
     fn the_grid_stays_on_its_photo_when_the_strip_comes_and_when_it_goes() {
         let mut f = fixture(&[]);

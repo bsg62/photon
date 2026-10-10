@@ -63,7 +63,9 @@ pub struct App {
     folder_list: Latest<(), Option<Vec<Folder>>>,
     /// Where the user is and is going, and the queue the steps there are made on.
     nav: Nav,
-    steps: Queue<Step, Result<Landed, String>>,
+    /// A step made answers where it led, and with it what the engine said when it made
+    /// the step and could not finish the rest of it (a sort shown and not stored).
+    steps: Queue<Step, Result<(Landed, Option<String>), String>>,
     /// The search box's text and the send that typing has made due.
     search: SearchBox,
     /// What the user has asked to be written to the library, made in the order asked and
@@ -216,24 +218,39 @@ impl App {
             {
                 let engine = engine.clone();
                 move |step: Step| {
+                    let mut said = None;
                     let shown_at = match step {
                         Step::View(view) => commands::set_grid_view(&engine, view),
                         Step::Search(query) => commands::set_search_query(&engine, &query),
                         Step::Album(id) => commands::set_album_view(&engine, id),
                         Step::Person(key) => commands::set_person_view(&engine, &key),
                         Step::Tag(tag) => commands::set_tag_view(&engine, &tag),
-                        Step::Sort(sort) => commands::set_sort(&engine, sort),
+                        // The one setter whose error does not mean "nothing moved": the
+                        // engine sorts first and stores second (`Engine::set_sort`), so
+                        // a sort it could not store is published all the same. That is
+                        // a step made, with something to say - answered as refused, the
+                        // photos were in one order and the controls said the other, for
+                        // the rest of the session. Its grid is whichever is published.
+                        Step::Sort(sort) => commands::set_sort(&engine, sort).or_else(|err| {
+                            if engine.sort() == sort {
+                                said = Some(err.message);
+                                Ok(None)
+                            } else {
+                                Err(err)
+                            }
+                        }),
                     }
                     .map_err(|err| err.message)?;
                     // Where the step led, read here: after it is made and before the next
                     // one begins, which is the only time the engine's view is known to be
                     // this step's. The interface must not read it when a grid arrives.
                     let (view, arg) = engine.view_and_arg();
-                    Ok(Landed {
+                    let landed = Landed {
                         place: Place { view, arg },
                         sort: engine.sort(),
                         shown_at,
-                    })
+                    };
+                    Ok((landed, said))
                 }
             },
             repaint(&ctx),
@@ -584,7 +601,9 @@ impl App {
             self.search.clear();
             return;
         }
-        let left = self.last_folder.left(self.nav.sort());
+        // The order All photos will be shown in: a sort still on its way is ahead of
+        // this step on the queue, and the grid on screen is a rebuild behind it.
+        let left = self.last_folder.left(self.nav.sort_target());
         self.go(home);
         if let Some(folder) = left {
             self.jump(folder);
@@ -730,6 +749,12 @@ impl App {
             // A step that panicked is a step the engine did not make.
             let outcome =
                 answer.unwrap_or_else(|_| Err("photon could not change the view.".to_owned()));
+            let outcome = outcome.map(|(landed, said)| {
+                if let Some(said) = said {
+                    self.toasts.error(said, now_ms);
+                }
+                landed
+            });
             if let Some(refused) = self.nav.answered(number, outcome) {
                 // The box shows what the grid shows: its text back after a refused
                 // switch, the search the grid is left on after a refused search.
