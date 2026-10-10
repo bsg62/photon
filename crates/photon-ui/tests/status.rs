@@ -71,18 +71,45 @@ fn first_run<'a>(dir: &Path, pictures: Option<PathBuf>) -> (Harness<'a>, Driver)
 
 const LOOKING: &str = "Looking for photos…";
 
-// A first run: the engine watches the Pictures folder by itself and scans it. From the
-// first thing the window says to the photos being there, it is looking - never offering
-// a folder to a library about to have one, never saying it has found nothing in a folder
-// it is a moment into reading. And the scan has its line in the status bar meanwhile.
+/// A library that watches `folder` and has not scanned it, with its write lock held from
+/// outside: the scan that the launch starts finds its root, says so, reads its files and
+/// then waits at its first write, for as long as the answer is kept. How fast a machine
+/// reads eight hundred files then decides nothing - on one of CI's the whole scan was
+/// over before the window had drawn its second frame.
+fn held_at_its_first_write(dir: &Path, folder: &Path) -> rusqlite::Connection {
+    let made = dirs::within(&dir.join("data"), &dir.join("cache"));
+    std::fs::create_dir_all(made.db_path.parent().unwrap()).unwrap();
+    let library = Library::open(&made.db_path).unwrap();
+    library.add_watched_folder(folder, &[]).unwrap();
+    drop(library);
+    let other = rusqlite::Connection::open(&made.db_path).unwrap();
+    other
+        .busy_timeout(std::time::Duration::from_secs(20))
+        .unwrap();
+    other.execute_batch("BEGIN IMMEDIATE").unwrap();
+    other
+}
+
+// A folder being scanned for the first time. From the first thing the window says to
+// the photos being there, it is looking - never offering a folder to a library that has
+// one, never saying it has found nothing in a folder it is a moment into reading. And
+// the scan has its line in the status bar meanwhile.
 #[test]
 fn a_first_scan_is_looked_through_and_said_so_until_its_photos_are_there() {
     let dir = tempfile::tempdir().unwrap();
-    let folder = pictures(dir.path(), 800);
-    let (mut harness, mut driver) = first_run(dir.path(), Some(folder));
-    let seen = watched(&mut driver, &mut harness, "the photos shown", |app| {
-        app.photos() == 800 && app.status().is_empty()
+    let folder = pictures(dir.path(), 200);
+    let other = held_at_its_first_write(dir.path(), &folder);
+    let (mut harness, mut driver) = first_run(dir.path(), None);
+    let mut seen = watched(&mut driver, &mut harness, "the scan heard from", |app| {
+        !app.status().is_empty() && app.panel().is_some()
     });
+    other.execute_batch("ROLLBACK").unwrap();
+    seen.extend(watched(
+        &mut driver,
+        &mut harness,
+        "the photos shown",
+        |app| app.photos() == 200 && app.status().is_empty(),
+    ));
 
     let panels: Vec<&str> = (seen.iter())
         .filter_map(|said| said.panel.as_deref())
@@ -108,7 +135,7 @@ fn a_first_scan_is_looked_through_and_said_so_until_its_photos_are_there() {
     let last = seen.last().unwrap();
     assert_eq!(
         (last.photos, &last.panel, last.lines.len()),
-        (800, &None, 0)
+        (200, &None, 0)
     );
     assert_eq!(harness.state().watched().len(), 1);
 }
@@ -155,12 +182,13 @@ fn nothing_is_said_of_an_empty_library_before_the_engine_has_started_its_scans()
     assert!(panels.iter().all(|text| *text == LOOKING), "{panels:#?}");
 }
 
-// The line is drawn, in the frame it is first there to draw.
+// The line is drawn, and the sidebar lists no want of folders beside it.
 #[test]
 fn a_first_scan_has_its_line_drawn_in_the_status_bar() {
     let dir = tempfile::tempdir().unwrap();
-    let folder = pictures(dir.path(), 800);
-    let (mut harness, mut driver) = first_run(dir.path(), Some(folder));
+    let folder = pictures(dir.path(), 200);
+    let other = held_at_its_first_write(dir.path(), &folder);
+    let (mut harness, mut driver) = first_run(dir.path(), None);
     driver.until(&mut harness, "the scan's line", |app| {
         !app.status().is_empty()
     });
@@ -170,8 +198,8 @@ fn a_first_scan_has_its_line_drawn_in_the_status_bar() {
         harness.query_by_label(&line).is_some(),
         "{line} is not drawn"
     );
-    // And no folder is missing from the sidebar's words meanwhile.
     assert!(harness.query_by_label("No folders yet.").is_none());
+    other.execute_batch("ROLLBACK").unwrap();
 }
 
 // Hide folder on the only folder: the library is not empty, and says where its photos
