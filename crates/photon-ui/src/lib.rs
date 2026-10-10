@@ -21,6 +21,7 @@ pub mod grid {
     pub mod visible;
 }
 pub mod icons;
+pub mod nav;
 pub mod probe;
 pub mod tasks;
 pub mod text;
@@ -39,9 +40,10 @@ pub mod thumbs {
 #[cfg(test)]
 mod tests {
     /// The state modules, with their source.
-    const STATE_MODULES: [(&str, &str); 12] = [
+    const STATE_MODULES: [(&str, &str); 13] = [
         ("args.rs", include_str!("args.rs")),
         ("dirs.rs", include_str!("dirs.rs")),
+        ("nav.rs", include_str!("nav.rs")),
         ("tasks.rs", include_str!("tasks.rs")),
         ("theme/tokens.rs", include_str!("theme/tokens.rs")),
         ("grid/labels.rs", include_str!("grid/labels.rs")),
