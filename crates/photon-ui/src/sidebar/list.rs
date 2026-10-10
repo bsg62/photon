@@ -123,8 +123,41 @@ pub struct Collections {
     pub tags: Vec<TagCount>,
 }
 
-/// Everything the list is built from. The three that are too large to compare come with a
-/// number that moves whenever they are replaced.
+/// What the application holds of the library for the list: the collections and the folder
+/// list, each as it was last read. Too large to compare, so they come with a number that
+/// moves whenever either is replaced - and they can be replaced in no other way, so that a
+/// list built from the old ones cannot be left standing.
+#[derive(Default)]
+pub struct Held {
+    collections: Collections,
+    folders: HashMap<i64, Folder>,
+    generation: u64,
+}
+
+impl Held {
+    pub fn collections(&self) -> &Collections {
+        &self.collections
+    }
+
+    pub fn folders(&self) -> &HashMap<i64, Folder> {
+        &self.folders
+    }
+
+    pub fn set_collections(&mut self, collections: Collections) {
+        self.collections = collections;
+        self.generation += 1;
+    }
+
+    pub fn set_folders(&mut self, folders: Vec<Folder>) {
+        self.folders = folders
+            .into_iter()
+            .map(|folder| (folder.id, folder))
+            .collect();
+        self.generation += 1;
+    }
+}
+
+/// Everything the list is built from.
 pub struct Sources<'a> {
     pub counts: &'a Counts,
     /// Where the user is, or is going.
@@ -132,10 +165,7 @@ pub struct Sources<'a> {
     pub today: Today,
     pub open: OpenGroups,
     pub sort: Sort,
-    pub collections: &'a Collections,
-    pub collections_gen: u64,
-    pub folders: &'a HashMap<i64, Folder>,
-    pub folders_gen: u64,
+    pub held: &'a Held,
     /// The published grid's folders, and the generation of its layout, which moves when
     /// they do (`Engine::published`).
     pub tallies: &'a [FolderTally],
@@ -151,8 +181,7 @@ struct Key {
     today: Today,
     open: OpenGroups,
     sort: Sort,
-    collections_gen: u64,
-    folders_gen: u64,
+    held: u64,
     layout_gen: u64,
 }
 
@@ -164,8 +193,7 @@ impl Sources<'_> {
             today: self.today,
             open: self.open,
             sort: self.sort,
-            collections_gen: self.collections_gen,
-            folders_gen: self.folders_gen,
+            held: self.held.generation,
             layout_gen: self.layout_gen,
         }
     }
@@ -238,7 +266,7 @@ fn entries(sources: &Sources<'_>) -> Vec<Entry> {
         people,
         to_name,
         tags,
-    } = sources.collections;
+    } = sources.held.collections();
     let open = sources.open;
 
     let mut entries: Vec<Entry> = fixed_rows(sources.counts, at, sources.today)
@@ -365,14 +393,15 @@ fn entries(sources: &Sources<'_>) -> Vec<Entry> {
 
     // The folders that hold photos in the view, in the user's sort: under the years of
     // their oldest photos by date, one headerless list otherwise.
-    let rows = folder_rows(sources.tallies, sources.folders, sources.zone);
+    let folders = sources.held.folders();
+    let rows = folder_rows(sources.tallies, folders, sources.zone);
     for group in arrange_folders(rows, sources.sort) {
         if let Some(year) = group.year {
             entries.push(plain(What::Year(year), &year.to_string(), None, false, ""));
         }
         entries.extend(group.rows.into_iter().map(|row| {
             // The path is what keeps the real name in sight beside an alias.
-            let path = (sources.folders.get(&row.folder_id)).map_or("", |folder| &folder.path);
+            let path = (folders.get(&row.folder_id)).map_or("", |folder| &folder.path);
             let counted = Some(Count::Of(row.count));
             plain(What::Folder(row.folder_id), &row.name, counted, false, path)
         }));
@@ -536,10 +565,7 @@ mod tests {
         at: Place,
         open: OpenGroups,
         sort: Sort,
-        collections: Collections,
-        collections_gen: u64,
-        folders: HashMap<i64, Folder>,
-        folders_gen: u64,
+        held: Held,
         tallies: Vec<FolderTally>,
         layout_gen: u64,
         zone: TimeZone,
@@ -557,10 +583,11 @@ mod tests {
                     tags: true,
                 },
                 sort: Sort::default(),
-                collections: collections(),
-                collections_gen: 1,
-                folders: [folder(2, "rome"), folder(3, "oslo"), folder(4, "old")].into(),
-                folders_gen: 1,
+                held: Held {
+                    collections: collections(),
+                    folders: [folder(2, "rome"), folder(3, "oslo"), folder(4, "old")].into(),
+                    generation: 1,
+                },
                 tallies: vec![
                     tally(2, 12, IN_2024),
                     tally(3, 3, IN_2024 + 86_400),
@@ -578,10 +605,7 @@ mod tests {
                 today: TODAY,
                 open: self.open,
                 sort: self.sort,
-                collections: &self.collections,
-                collections_gen: self.collections_gen,
-                folders: &self.folders,
-                folders_gen: self.folders_gen,
+                held: &self.held,
                 tallies: &self.tallies,
                 layout_gen: self.layout_gen,
                 zone: &self.zone,
@@ -698,10 +722,10 @@ mod tests {
     #[test]
     fn searches_have_no_heading_while_there_is_none() {
         let mut world = World::new();
-        world.collections.searches.clear();
+        world.held.collections.searches.clear();
         assert!(!world.holds(&What::Group(Group::Searches)));
         // Albums are made from the list itself, so its heading is always there.
-        world.collections.albums.clear();
+        world.held.collections.albums.clear();
         assert_eq!(
             world.entry(&What::Group(Group::Albums)).count,
             Some(Count::Of(0))
@@ -713,16 +737,16 @@ mod tests {
         let mut world = World::new();
         let people = What::Group(Group::People);
         assert_eq!(world.entry(&people).count, Some(Count::Of(1)));
-        world.collections.to_name = 14;
+        world.held.collections.to_name = 14;
         assert_eq!(world.entry(&people).count, Some(Count::ToName(14)));
     }
 
     #[test]
     fn an_open_group_with_nothing_in_it_says_so_and_a_folded_one_says_nothing() {
         let mut world = World::new();
-        world.collections.people.clear();
+        world.held.collections.people.clear();
         // Every keyword is on hidden photos alone.
-        world.collections.tags.retain(|tag| tag.count == 0);
+        world.held.collections.tags.retain(|tag| tag.count == 0);
         let people = world.entry(&What::Note(Group::People));
         assert!(people.label.starts_with("No named people yet."));
         let tags = world.entry(&What::Note(Group::Tags));
@@ -803,10 +827,10 @@ mod tests {
         let mut world = World::new();
         assert_eq!(world.entry(&search()).hint, "Lakes — lake 2024");
         // A search saved under its own text says it once.
-        world.collections.searches[0].name = "lake 2024".to_owned();
+        world.held.collections.searches[0].name = "lake 2024".to_owned();
         assert_eq!(world.entry(&search()).hint, "lake 2024");
         // A folder says where it is, which keeps its real name in sight beside an alias.
-        world.folders.get_mut(&2).unwrap().alias = Some("Roma".to_owned());
+        world.held.folders.get_mut(&2).unwrap().alias = Some("Roma".to_owned());
         let rome = world.entry(&What::Folder(2));
         assert_eq!(
             (rome.label.as_str(), rome.hint.as_str()),
@@ -850,7 +874,7 @@ mod tests {
     #[test]
     fn a_folder_the_list_has_not_read_yet_is_a_row_with_no_name() {
         let mut world = World::new();
-        world.folders.remove(&3);
+        world.held.folders.remove(&3);
         let unnamed = world.entry(&What::Folder(3));
         assert_eq!((unnamed.label.as_str(), unnamed.hint.as_str()), ("", ""));
     }
@@ -916,35 +940,41 @@ mod tests {
         moved(&world, "a count");
         world.sort.reverse = true;
         moved(&world, "the sort");
-        world.collections_gen += 1;
+        world.held.set_collections(collections());
         moved(&world, "the collections");
-        world.folders_gen += 1;
+        world.held.set_folders(vec![folder(2, "rome").1]);
         moved(&world, "the folder list");
         world.layout_gen += 1;
         moved(&world, "the grid's folders");
         assert_eq!(list.generation, first + 7);
     }
 
-    // The generations are the application's word for it: without one moving, what was
-    // replaced is not looked at.
+    // The collections and the folder list are too large to compare, and are replaced only
+    // by a setter that says so: the list drawn is of the ones that are held.
     #[test]
-    fn what_is_too_large_to_compare_is_followed_by_its_number() {
+    fn collections_and_folders_replaced_are_what_the_list_is_built_from() {
         let mut world = World::new();
         let mut list = world.list();
-        world.collections.albums.clear();
-        assert!(!list.follow(&world.sources()));
-        assert!(
-            list.entries
-                .iter()
-                .any(|entry| entry.what == What::Album(4))
-        );
-        world.collections_gen += 1;
+        let holds = |list: &List, what: What| list.entries.iter().any(|entry| entry.what == what);
+        assert!(holds(&list, What::Album(4)));
+
+        let mut fewer = collections();
+        fewer.albums.clear();
+        world.held.set_collections(fewer);
         assert!(list.follow(&world.sources()));
-        assert!(
-            !list
-                .entries
-                .iter()
-                .any(|entry| entry.what == What::Album(4))
+        assert!(!holds(&list, What::Album(4)));
+        assert!(world.held.collections().albums.is_empty());
+
+        let mut renamed = folder(2, "rome").1;
+        renamed.alias = Some("Roma".to_owned());
+        world.held.set_folders(vec![renamed]);
+        assert!(list.follow(&world.sources()));
+        let rome = &list.entries[list.folder(2).expect("still listed")];
+        assert_eq!(rome.label, "Roma");
+        assert_eq!(
+            world.held.folders().len(),
+            1,
+            "the list read is the whole of it"
         );
     }
 

@@ -251,19 +251,25 @@ impl SidebarView {
 }
 
 /// Something of the list that takes a press: `rect` of it, under the entry's own name.
+/// `current` is whether it is where the user is, for an entry that can be: it is said to
+/// whoever reads the window without seeing its fill.
 fn button(
     ui: &egui::Ui,
     frame: &Frame<'_>,
     rect: Rect,
-    id: impl std::hash::Hash + std::fmt::Debug,
+    entry: &Entry,
     label: &str,
+    current: Option<bool>,
 ) -> Response {
     let response = ui.interact(
         rect.intersect(frame.panel),
-        ui.id().with(("sidebar", id)),
+        ui.id().with(("sidebar", &entry.what)),
         Sense::click(),
     );
-    response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, label));
+    response.widget_info(|| match current {
+        Some(current) => WidgetInfo::selected(WidgetType::Button, true, current, label),
+        None => WidgetInfo::labeled(WidgetType::Button, true, label),
+    });
     response
 }
 
@@ -318,7 +324,7 @@ fn draw(ui: &mut egui::Ui, frame: &Frame<'_>, band: Rect, entry: &Entry) -> bool
             // click - the view is already open - so it must not offer one.
             let pressable = *fixed != Fixed::CopiesOf;
             let response = if pressable {
-                button(ui, frame, row, &entry.what, &entry.label)
+                button(ui, frame, row, entry, &entry.label, Some(entry.active))
             } else {
                 let rect = row.intersect(frame.panel);
                 let response =
@@ -371,7 +377,7 @@ fn draw(ui: &mut egui::Ui, frame: &Frame<'_>, band: Rect, entry: &Entry) -> bool
                 (true, false) => "Show people",
                 (false, _) => entry.label.as_str(),
             };
-            let response = button(ui, frame, pressed, &entry.what, name);
+            let response = button(ui, frame, pressed, entry, name, None);
             let response = if people {
                 hinted(response, name)
             } else {
@@ -405,7 +411,7 @@ fn draw(ui: &mut egui::Ui, frame: &Frame<'_>, band: Rect, entry: &Entry) -> bool
         }
         What::Album(_) | What::Search { .. } | What::Person(_) | What::Tag(_) | What::Folder(_) => {
             let response = hinted(
-                button(ui, frame, row, &entry.what, &entry.label),
+                button(ui, frame, row, entry, &entry.label, Some(entry.active)),
                 &entry.hint,
             );
             if entry.active {
@@ -470,7 +476,7 @@ mod tests {
     use crate::{
         nav::Place,
         sidebar::{
-            list::{Collections, Sources},
+            list::{Collections, Held, Sources},
             rows::{Counts, Today},
         },
         window_layout::OpenGroups,
@@ -484,7 +490,6 @@ mod tests {
         library::{AlbumSummary, Folder, Person, SavedSearch, TagCount},
         sort::Sort,
     };
-    use std::collections::HashMap;
 
     const TODAY: Today = Today { month: 7, day: 4 };
     /// Noon UTC on 2024-06-01.
@@ -504,9 +509,8 @@ mod tests {
         at: Place,
         open: OpenGroups,
         collections: Collections,
-        folders: HashMap<i64, Folder>,
+        folders: Vec<Folder>,
         tallies: Vec<FolderTally>,
-        generation: u64,
     }
 
     impl World {
@@ -557,17 +561,14 @@ mod tests {
                 },
                 folders: ids
                     .clone()
-                    .map(|id| {
-                        let folder = Folder {
-                            id,
-                            watched_id: 1,
-                            parent_id: None,
-                            path: format!("/photos/folder-{id:04}"),
-                            name: format!("folder-{id:04}"),
-                            hidden: false,
-                            alias: None,
-                        };
-                        (id, folder)
+                    .map(|id| Folder {
+                        id,
+                        watched_id: 1,
+                        parent_id: None,
+                        path: format!("/photos/folder-{id:04}"),
+                        name: format!("folder-{id:04}"),
+                        hidden: false,
+                        alias: None,
                     })
                     .collect(),
                 tallies: ids
@@ -579,31 +580,26 @@ mod tests {
                         modified_ms: 0,
                     })
                     .collect(),
-                generation: 1,
             }
         }
 
         fn list(&self) -> List {
+            let mut held = Held::default();
+            held.set_collections(self.collections.clone());
+            held.set_folders(self.folders.clone());
             let mut list = List::default();
-            self.follow(&mut list);
-            list
-        }
-
-        fn follow(&self, list: &mut List) {
             list.follow(&Sources {
                 counts: &Counts::default(),
                 at: &self.at,
                 today: TODAY,
                 open: self.open,
                 sort: Sort::default(),
-                collections: &self.collections,
-                collections_gen: self.generation,
-                folders: &self.folders,
-                folders_gen: self.generation,
+                held: &held,
                 tallies: &self.tallies,
-                layout_gen: self.generation,
+                layout_gen: 1,
                 zone: &TimeZone::UTC,
             });
+            list
         }
     }
 
@@ -651,8 +647,7 @@ mod tests {
 
         /// Builds the list again from the world as the test has changed it.
         fn rebuild(&mut self) {
-            self.world.generation += 1;
-            self.world.follow(&mut self.list);
+            self.list = self.world.list();
         }
 
         fn frame(&mut self, events: Vec<Event>) -> Option<What> {

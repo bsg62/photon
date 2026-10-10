@@ -5,16 +5,16 @@ use crate::{
     empty::{self, GridState},
     events::{Event, UiEvents},
     grid::{
-        view::{GridData, GridOutput, GridView},
+        view::{Align, GridData, GridOutput, GridView},
         visible::VisibleReport,
     },
     icons,
-    nav::{Landed, Nav, Place, Step},
+    nav::{Landed, LastFolder, Nav, Place, Step},
     probe::{Facts, Move, Outside, Probe, Report},
     shell::{Action, Shell, ShellData},
     sidebar::{
-        list::{Collections, List, Sources},
-        rows::{Counts, Today},
+        list::{Collections, Group, Held, List, Sources, What},
+        rows::{Counts, Fixed, Today},
     },
     tasks::{Latest, Queue},
     theme,
@@ -25,7 +25,7 @@ use crate::{
 use eframe::egui;
 use jiff::tz::TimeZone;
 use photon_core::{
-    grid::GridIndex,
+    grid::{GridIndex, GridView as View},
     library::{Folder, GridTile},
 };
 use photon_engine::{
@@ -53,9 +53,9 @@ pub struct App {
     /// The published grid's version and length, and why it is empty when it could not be
     /// read: what the rules about saying nothing yet are asked of.
     grid: GridState,
-    folders: HashMap<i64, Folder>,
-    /// Moves when `folders` is replaced: the sidebar's list is built from them.
-    folders_gen: u64,
+    /// The folder list and the collections as last read: what the headers are named
+    /// from and the sidebar's list is built from.
+    held: Held,
     folder_list: Latest<(), Option<Vec<Folder>>>,
     /// Where the user is and is going, and the queue the steps there are made on.
     nav: Nav,
@@ -67,12 +67,15 @@ pub struct App {
     /// generation held, so that the answer need not carry the layout.
     counts: Counts,
     counting: Latest<u64, Counts>,
-    /// The albums, saved searches, people and tags, and the number that moves when they
-    /// are replaced.
-    collections: Collections,
-    collections_gen: u64,
+    collecting: Latest<(), Option<Collections>>,
     /// The sidebar's entries, built again only when what they are built from has moved.
     list: List,
+    /// The folder the sidebar's list was last drawn marking.
+    marked: Option<i64>,
+    /// The folder at the top of All photos, as photon remembers it.
+    last_folder: LastFolder,
+    /// Stores the folder remembered, off this thread, the latest alone.
+    remembering: Latest<i64, ()>,
     today: Today,
     shell: Shell,
     layout: Layout,
@@ -217,6 +220,45 @@ impl App {
             },
             repaint(&ctx),
         );
+        // The albums, saved searches, people and tags: read together, since they change
+        // together - at a data change - and the tag counts alone are 220 ms in a library
+        // of 300,000 photos. Not asked for here: the first grid the engine publishes is
+        // a data change, built or failed, and asking here as well read them twice at
+        // every launch.
+        let collecting = Latest::spawn(
+            "collections",
+            {
+                let engine = engine.clone();
+                move |()| {
+                    // All of them or none: a read that failed leaves the lists as they
+                    // were, and the next change to the library reads them again.
+                    Some(Collections {
+                        albums: commands::list_albums(&engine).ok()?,
+                        searches: commands::list_saved_searches(&engine).ok()?,
+                        people: commands::list_people(&engine).ok()?,
+                        to_name: usize::try_from(commands::people_to_name(&engine).ok()?)
+                            .unwrap_or(0),
+                        tags: commands::list_tags(&engine).ok()?,
+                    })
+                }
+            },
+            repaint(&ctx),
+        );
+        // The folder to come back to, here and not by a task, as the theme is: it is
+        // wanted with the first grid, and it is one row of the settings table.
+        let last_folder = LastFolder::new(commands::last_folder(&engine).ok().flatten());
+        let remembering = Latest::spawn(
+            "last folder",
+            {
+                let engine = engine.clone();
+                move |folder: i64| {
+                    if let Err(err) = commands::set_last_folder(&engine, folder) {
+                        tracing::warn!(err = %err.message, "the folder shown was not remembered");
+                    }
+                }
+            },
+            || {},
+        );
         // Nothing is drawn from this, so nothing is asked to be drawn for it.
         let layout_store = Latest::spawn(
             "layout",
@@ -244,17 +286,18 @@ impl App {
             },
             index,
             layout_gen,
-            folders: HashMap::new(),
-            folders_gen: 0,
+            held: Held::default(),
             folder_list,
             nav: Nav::new(Place { view, arg }, engine.sort()),
             steps,
             stale: false,
             counts: Counts::default(),
             counting,
-            collections: Collections::default(),
-            collections_gen: 0,
+            collecting,
             list: List::default(),
+            marked: None,
+            last_folder,
+            remembering,
             today: today(&zone),
             shell: Shell::default(),
             layout,
@@ -323,7 +366,7 @@ impl App {
 
     /// The folders the headers are named from.
     pub fn folders(&self) -> &HashMap<i64, Folder> {
-        &self.folders
+        self.held.folders()
     }
 
     /// Where the user is: the place the last step asked leads to, or the one shown.
@@ -339,6 +382,21 @@ impl App {
     /// What the library holds of each kind, as the sidebar last learnt it.
     pub fn counts(&self) -> &Counts {
         &self.counts
+    }
+
+    /// The albums, saved searches, people and tags, as last read.
+    pub fn collections(&self) -> &Collections {
+        self.held.collections()
+    }
+
+    /// The folder the sidebar's list was last drawn marking.
+    pub fn marked(&self) -> Option<i64> {
+        self.marked
+    }
+
+    /// Where the sidebar's list is.
+    pub fn sidebar_position(&self) -> f64 {
+        self.shell.sidebar_position()
     }
 
     /// How the window is laid out.
@@ -364,11 +422,12 @@ impl App {
     /// The line shown in place of photos. It is about the grid that is on screen, not
     /// about the view being gone to.
     pub fn notice(&self) -> Option<String> {
-        empty::view_notice(&self.grid, self.nav.settled())
+        empty::view_notice(&self.grid, self.nav.settled(), self.held.collections())
     }
 
-    /// Asks for `step`, unless it leads to where the user already is.
-    fn go(&mut self, step: Step) {
+    /// Asks for `step`, unless it leads to where the user already is. What a click on a
+    /// row of the sidebar does, and the one way the engine's view is moved.
+    pub fn go(&mut self, step: Step) {
         if !self.nav.wants(&step) {
             return;
         }
@@ -376,10 +435,69 @@ impl App {
         self.nav.asked(number, step);
     }
 
+    /// A click on a folder: to All photos if the user is on an excursion, and to the
+    /// folder's place in the grid once the grid that holds it is on screen.
+    fn enter_folder(&mut self, folder: i64) {
+        if let Some(home) = self.nav.home_of_folders() {
+            self.go(home);
+        }
+        self.jump(folder);
+    }
+
+    /// A click on All photos: back to the whole library, at the folder last browsed there.
+    ///
+    /// An excursion - Starred, an album, a search - leaves All's place alone, so the folder
+    /// remembered is where the user left the gallery; a click on a folder instead lands on
+    /// that folder's top, which is what made going back feel like a reset. Already in All
+    /// photos the user is at their own place, and the click asks for nothing: not a jump
+    /// to the top of the folder they are in the middle of.
+    fn return_to_all(&mut self) {
+        let home = Step::View(View::All);
+        if !self.nav.wants(&home) {
+            return;
+        }
+        let left = self.last_folder.left(self.nav.sort());
+        self.go(home);
+        if let Some(folder) = left {
+            self.jump(folder);
+        }
+    }
+
+    /// Goes to `folder` in the grid: now, when the grid on screen is the one to look it
+    /// up in, and otherwise when that grid is (`adopt`).
+    fn jump(&mut self, folder: i64) {
+        if let Some(folder) = self.nav.jump(folder) {
+            self.go_to_folder(folder);
+        }
+    }
+
+    /// Puts `folder` at the top of the grid on screen. One the grid does not hold - every
+    /// photo of it gone since the click - moves nothing: staying where the grid is beats
+    /// scrolling nowhere.
+    fn go_to_folder(&mut self, folder: i64) {
+        if let Some(offset) = self.index.offset_of_folder(folder) {
+            self.view.go_to(offset, Align::Start);
+        }
+    }
+
     fn act(&mut self, action: Action) {
         match action {
             Action::ToggleSidebar => {
                 self.layout.sidebar_hidden = !self.layout.sidebar_hidden;
+                self.layout_store.ask(self.layout);
+            }
+            Action::Row(What::Folder(folder)) => self.enter_folder(folder),
+            Action::Row(What::Fixed(Fixed::All)) => self.return_to_all(),
+            // A group is folded and unfolded where the user clicks, and stored then.
+            Action::Row(What::Group(group)) => {
+                let open = &mut self.layout.open;
+                let fold = match group {
+                    Group::Albums => &mut open.albums,
+                    Group::Searches => &mut open.searches,
+                    Group::People => &mut open.people,
+                    Group::Tags => &mut open.tags,
+                };
+                *fold = !*fold;
                 self.layout_store.ask(self.layout);
             }
             Action::Row(entry) => {
@@ -417,8 +535,10 @@ impl App {
         // shows, and not here.
         self.stale |= changed;
         // A folder renamed, added or given an alias: the headers are named from the list.
+        // And an album made, a face named, a keyword renamed: the sidebar lists them.
         if data_changed {
             self.folder_list.ask(());
+            self.collecting.ask(());
         }
         reported
     }
@@ -429,11 +549,7 @@ impl App {
         if let Some(folders) = self.folder_list.answer() {
             answered = true;
             if let Ok(Some(folders)) = folders {
-                self.folders = folders
-                    .into_iter()
-                    .map(|folder| (folder.id, folder))
-                    .collect();
-                self.folders_gen += 1;
+                self.held.set_folders(folders);
             }
         }
         if let Some(counts) = self.counting.answer() {
@@ -442,7 +558,14 @@ impl App {
                 self.counts = counts;
             }
         }
+        if let Some(read) = self.collecting.answer() {
+            answered = true;
+            if let Ok(Some(read)) = read {
+                self.held.set_collections(read);
+            }
+        }
         let _ = self.layout_store.answer();
+        let _ = self.remembering.answer();
         for (number, answer) in self.steps.answers() {
             answered = true;
             // A step that panicked is a step the engine did not make.
@@ -480,6 +603,10 @@ impl App {
         // Other results are another list: a place in the old one names nothing here.
         if shown.other_results {
             self.view.to_top();
+        }
+        // A folder clicked from an excursion: this is the grid it was to be looked up in.
+        if let Some(folder) = shown.jump {
+            self.go_to_folder(folder);
         }
         // The counts read SQLite when they are not cached, so they are asked for.
         self.counting.ask(layout_gen);
@@ -557,11 +684,17 @@ impl eframe::App for App {
         // not one the grid drew by itself.
         let reported = self.take_answers(now) || reported;
         self.adopt();
+        // The launch's way back, in the frame its first photos are on screen and before
+        // they are drawn.
+        let (photos, view, sort) = (self.grid.len, self.nav.settled().view, self.nav.sort());
+        if let Some(folder) = self.last_folder.restore(photos, view, sort) {
+            self.go_to_folder(folder);
+        }
 
         let data = GridData {
             layout_gen: self.layout_gen,
             index: &self.index,
-            folders: &self.folders,
+            folders: self.held.folders(),
             size: self.size,
             zone: &self.zone,
         };
@@ -573,14 +706,20 @@ impl eframe::App for App {
             today: self.today,
             open: self.layout.open,
             sort: self.nav.sort(),
-            collections: &self.collections,
-            collections_gen: self.collections_gen,
-            folders: &self.folders,
-            folders_gen: self.folders_gen,
+            held: &self.held,
             tallies: self.index.folders(),
             layout_gen: self.layout_gen,
             zone: &self.zone,
         });
+        // The folder the grid was in when it was last drawn. The grid is drawn after the
+        // sidebar and takes its input then, so this is a frame behind - and no frame is
+        // asked for to make that up, because one always follows: the grid moves on input,
+        // on a task's answer or in a scroll, each of which is an immediate request for a
+        // frame, and egui draws two for every one of those ("to give some things time to
+        // settle"). A request of our own changed nothing a test could see;
+        // `a_folder_clicked_is_at_the_top_of_the_grid_and_marked_in_the_list` draws only
+        // the frames asked for, and is what fails if egui ever stops.
+        self.marked = self.last.as_ref().and_then(|frame| frame.top_folder);
         let count = self.photo_count();
         let notice = self.notice();
         let (toasts, next_toast) = self.toasts.at(now);
@@ -593,7 +732,7 @@ impl eframe::App for App {
         let shell = ShellData {
             layout: &self.layout,
             list: &self.list,
-            here: self.last.as_ref().and_then(|frame| frame.top_folder),
+            here: self.marked,
             count: count.as_deref(),
             notice: notice.as_deref(),
             toasts,
@@ -617,6 +756,10 @@ impl eframe::App for App {
             }
         }
         if let Some(output) = &output {
+            let view = self.nav.settled().view;
+            if let Some(folder) = self.last_folder.at_top(view, output.top_folder) {
+                self.remembering.ask(folder);
+            }
             self.run_probe(ui.ctx(), output, reported);
         }
         self.last = output;

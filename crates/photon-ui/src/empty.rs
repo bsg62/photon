@@ -6,6 +6,7 @@
 
 use crate::grid::labels::photo_count as counted;
 use crate::nav::Place;
+use crate::sidebar::list::Collections;
 use photon_core::grid::GridView;
 use photon_engine::engine::NOT_BUILT;
 
@@ -47,9 +48,10 @@ pub fn photo_count(grid: &GridState) -> Option<String> {
 }
 
 /// The line an empty view shows in place of its photos. All photos and Recent have none
-/// here: an empty library says why in a panel of its own. Nor have the views that are
-/// reached through a list the sidebar does not hold yet.
-pub fn view_notice(grid: &GridState, place: &Place) -> Option<String> {
+/// here: an empty library says why in a panel of its own. Nor has the view of a photo's
+/// copies, which nothing native opens yet. An album and a person are named from the lists
+/// the sidebar holds.
+pub fn view_notice(grid: &GridState, place: &Place, collections: &Collections) -> Option<String> {
     if let Some(failure) = build_failure(grid) {
         return Some(failure);
     }
@@ -61,6 +63,26 @@ pub fn view_notice(grid: &GridState, place: &Place) -> Option<String> {
             Some("No starred photos. Star one in the viewer, or in Picasa.".to_owned())
         }
         GridView::Search => Some(format!("No photos match “{}”", place.arg)),
+        GridView::Album => {
+            // An album of photon's own is the user's to fill. One of Picasa's is not, and
+            // neither is one deleted while it was shown.
+            let own = (collections.albums.iter())
+                .find(|album| album.id.to_string() == place.arg && !album.picasa);
+            Some(match own {
+                Some(album) => {
+                    format!("“{}” is empty. Right-click a photo to add it.", album.name)
+                }
+                None => "This album has no photos in the library.".to_owned(),
+            })
+        }
+        GridView::Person => {
+            // A person deleted while shown has no name left to read.
+            let name = (collections.people.iter())
+                .find(|person| person.key == place.arg)
+                .map_or("this person", |person| person.name.as_str());
+            Some(format!("No photos of {name}."))
+        }
+        GridView::Tag => Some(format!("No photos tagged “{}”.", place.arg)),
         GridView::Duplicates => {
             Some("No duplicates. Every photo in the library is the only copy of itself.".to_owned())
         }
@@ -79,6 +101,10 @@ pub fn view_notice(grid: &GridState, place: &Place) -> Option<String> {
 mod tests {
     use super::*;
 
+    fn none() -> Collections {
+        Collections::default()
+    }
+
     fn grid(version: u64, len: usize) -> GridState {
         GridState {
             version,
@@ -93,7 +119,10 @@ mod tests {
         assert!(!grid_built(&unbuilt));
         assert!(!show_empty_notice(&unbuilt));
         assert_eq!(photo_count(&unbuilt), None);
-        assert_eq!(view_notice(&unbuilt, &Place::of(GridView::Starred)), None);
+        assert_eq!(
+            view_notice(&unbuilt, &Place::of(GridView::Starred), &none()),
+            None
+        );
     }
 
     #[test]
@@ -117,7 +146,7 @@ mod tests {
         assert_eq!(photo_count(&failed), None);
         for view in [GridView::All, GridView::Starred] {
             assert_eq!(
-                view_notice(&failed, &Place::of(view)).as_deref(),
+                view_notice(&failed, &Place::of(view), &none()).as_deref(),
                 Some("photon could not read the library: disk I/O error")
             );
         }
@@ -126,7 +155,7 @@ mod tests {
     #[test]
     fn an_empty_view_says_what_it_is_empty_of() {
         let empty = grid(2, 0);
-        let said = |place: &Place| view_notice(&empty, place).unwrap_or_default();
+        let said = |place: &Place| view_notice(&empty, place, &none()).unwrap_or_default();
         assert!(said(&Place::of(GridView::Starred)).starts_with("No starred photos."));
         assert_eq!(
             said(&Place::search("lake 2031")),
@@ -136,11 +165,65 @@ mod tests {
         assert!(said(&Place::of(GridView::Videos)).starts_with("No videos."));
         assert!(said(&Place::of(GridView::Hidden)).starts_with("No hidden photos."));
         // An empty library has a panel of its own for these two.
-        assert_eq!(view_notice(&empty, &Place::of(GridView::All)), None);
-        assert_eq!(view_notice(&empty, &Place::of(GridView::Recent)), None);
+        assert_eq!(
+            view_notice(&empty, &Place::of(GridView::All), &none()),
+            None
+        );
+        assert_eq!(
+            view_notice(&empty, &Place::of(GridView::Recent), &none()),
+            None
+        );
         // And a view with photos has no line.
         assert_eq!(
-            view_notice(&grid(2, 5), &Place::of(GridView::Starred)),
+            view_notice(&grid(2, 5), &Place::of(GridView::Starred), &none()),
+            None
+        );
+    }
+
+    #[test]
+    fn an_empty_album_person_or_tag_is_named_from_the_lists() {
+        use photon_core::library::{AlbumSummary, Person};
+        let album = |id, name: &str, picasa| AlbumSummary {
+            id,
+            name: name.to_owned(),
+            count: 0,
+            picasa,
+        };
+        let lists = Collections {
+            albums: vec![album(4, "Best of", false), album(9, "Scans", true)],
+            people: vec![Person {
+                key: "p:7".to_owned(),
+                name: "Anna".to_owned(),
+                count: 0,
+            }],
+            ..Collections::default()
+        };
+        let empty = grid(2, 0);
+        let at = |view, arg: &str| Place {
+            view,
+            arg: arg.to_owned(),
+        };
+        let said = |place: Place| view_notice(&empty, &place, &lists).unwrap_or_default();
+        assert_eq!(
+            said(at(GridView::Album, "4")),
+            "“Best of” is empty. Right-click a photo to add it."
+        );
+        // Picasa's album is not the user's to fill here, and one that is gone has no name.
+        let not_ours = "This album has no photos in the library.";
+        assert_eq!(said(at(GridView::Album, "9")), not_ours);
+        assert_eq!(said(at(GridView::Album, "77")), not_ours);
+        assert_eq!(said(at(GridView::Person, "p:7")), "No photos of Anna.");
+        assert_eq!(
+            said(at(GridView::Person, "p:99")),
+            "No photos of this person."
+        );
+        assert_eq!(
+            said(at(GridView::Tag, "coast")),
+            "No photos tagged “coast”."
+        );
+        // With photos in it there is no line.
+        assert_eq!(
+            view_notice(&grid(2, 3), &at(GridView::Album, "4"), &lists),
             None
         );
     }

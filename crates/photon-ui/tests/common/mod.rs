@@ -16,6 +16,7 @@
 #![allow(dead_code)]
 
 use eframe::egui;
+use egui_kittest::kittest::Queryable;
 use photon_core::library::Library;
 use photon_ui::{app::App, fixture};
 use std::{
@@ -205,4 +206,28 @@ pub fn launch<'a>(library: &fixture::Fixture) -> Harness<'a> {
         .with_size(egui::vec2(1000.0, 700.0))
         .with_step_dt(REFRESH as f32)
         .build_eframe(move |cc| App::new(cc, dirs, None).unwrap())
+}
+
+/// Clicks the sidebar row called `label`, and draws the frame the click is in.
+pub fn click(driver: &mut Driver, harness: &mut Harness<'_>, label: &str) {
+    harness.get_by_label(label).click();
+    driver.act(harness);
+}
+
+/// Launches over `library` and waits until its grid is there.
+pub fn opened<'a>(library: &fixture::Fixture, photos: usize) -> (Harness<'a>, Driver) {
+    let mut harness = launch(library);
+    let mut driver = Driver::new(&harness);
+    driver.until(&mut harness, "the library shown", |app| {
+        app.photos() == photos && app.last_frame().is_some_and(|frame| frame.settled)
+    });
+    (harness, driver)
+}
+
+/// The ids of `library`'s photos, in grid order: the newest folder first.
+pub fn photo_ids(library: &fixture::Fixture) -> Vec<i64> {
+    let lib = Library::open(&library.dirs().db_path).unwrap();
+    (lib.grid_entries().unwrap().iter())
+        .map(|entry| entry.id)
+        .collect()
 }

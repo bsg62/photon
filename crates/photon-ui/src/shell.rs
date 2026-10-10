@@ -80,6 +80,11 @@ fn rect_of(area: Area, window: Rect) -> Rect {
 }
 
 impl Shell {
+    /// Where the sidebar's list is.
+    pub fn sidebar_position(&self) -> f64 {
+        self.sidebar.position()
+    }
+
     /// Whether the splitter is being dragged.
     pub fn resizing(&self) -> bool {
         self.grab.is_some()
@@ -500,7 +505,7 @@ mod tests {
     use crate::{
         nav::Place,
         sidebar::{
-            list::{Collections, Sources},
+            list::{Held, Sources},
             rows::{Counts, Fixed, Today},
         },
         toasts::Toasts,
@@ -520,10 +525,7 @@ mod tests {
             today: TODAY,
             open: Default::default(),
             sort: Default::default(),
-            collections: &Collections::default(),
-            collections_gen: 0,
-            folders: &Default::default(),
-            folders_gen: 0,
+            held: &Held::default(),
             tallies: &[],
             layout_gen: 0,
             zone: &jiff::tz::TimeZone::UTC,

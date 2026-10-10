@@ -331,6 +331,70 @@ pub fn laid_out_by_folder(sort: Sort) -> bool {
     sort.key == SortKey::Date && sort.group == Grouping::Folder
 }
 
+/// The folder at the top of All photos, as photon remembers it: for the next launch, and
+/// for the way back from an excursion.
+///
+/// It is read from the library once, before the first frame, and kept here from then on:
+/// the application is the only thing that writes it, so what it wrote is what is stored.
+/// That is also why the way back needs no read before its step, where the Svelte UI has
+/// to read the setting before the switch can overwrite it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LastFolder {
+    folder: Option<i64>,
+    /// Whether the launch has yet to go back to it.
+    restoring: bool,
+}
+
+impl LastFolder {
+    /// `stored` is what the last session left in the library.
+    pub fn new(stored: Option<i64>) -> Self {
+        Self {
+            folder: stored,
+            restoring: true,
+        }
+    }
+
+    /// The folder for the launch to go back to, answered once: in the frame the first
+    /// grid with photos is on screen, and before that grid is drawn - so there is no
+    /// frame in which the grid stands at its top and `at_top` remembers the library's
+    /// first folder over the one the user left.
+    ///
+    /// An empty grid is waited out: the engine starts on an index it has not built, and
+    /// on a first run the scan is still working; asked of an empty index, every folder is
+    /// gone. A user who has already gone to another view is left there, and under an
+    /// order that is not by folder the launch opens at the top.
+    pub fn restore(&mut self, photos: usize, view: GridView, sort: Sort) -> Option<i64> {
+        if !self.restoring || photos == 0 {
+            return None;
+        }
+        self.restoring = false;
+        (view == GridView::All).then(|| self.left(sort)).flatten()
+    }
+
+    /// The grid shows `view` with `top` at its top. Answers the folder to store, when it
+    /// is another than the one remembered.
+    ///
+    /// Only in All photos: Starred, Recent and a search are excursions, and one of them
+    /// overwriting this would lose the place the user was browsing. Only when it becomes
+    /// another folder, which is a handful of times a session, where the position changes
+    /// on every frame of a flick: this is a write to the library. Under an order that
+    /// names no folder at the top there is nothing to remember, which is why the place
+    /// survives an excursion into another order.
+    pub fn at_top(&mut self, view: GridView, top: Option<i64>) -> Option<i64> {
+        let folder = top.filter(|_| view == GridView::All)?;
+        (self.folder != Some(folder)).then(|| {
+            self.folder = Some(folder);
+            folder
+        })
+    }
+
+    /// The folder to come back to from an excursion, where it is a place: under `sort`
+    /// the grid runs folder by folder. Under any other All photos opens at its top.
+    pub fn left(&self, sort: Sort) -> Option<i64> {
+        self.folder.filter(|_| laid_out_by_folder(sort))
+    }
+}
+
 /// Whether the grid shows a different list of photos than it did. Keyed on the view alone
 /// it would miss a search refined within Search, or one album replacing another.
 pub fn results_changed(before: &ViewKey, now: &ViewKey) -> bool {
@@ -861,5 +925,77 @@ mod tests {
             reverse: true,
             ..sorted(SortKey::Date, Grouping::Folder)
         }));
+    }
+
+    fn by_folder() -> Sort {
+        sorted(SortKey::Date, Grouping::Folder)
+    }
+
+    // An empty grid is waited out: the engine starts on an index it has not built, and on
+    // a first run the scan is still working. Asked of an empty index every folder is gone.
+    #[test]
+    fn the_launch_goes_back_to_the_folder_left_once_there_is_a_grid_to_go_back_in() {
+        let mut last = LastFolder::new(Some(30));
+        assert_eq!(last.restore(0, GridView::All, by_folder()), None);
+        assert_eq!(last.restore(0, GridView::All, by_folder()), None);
+        assert_eq!(last.restore(900, GridView::All, by_folder()), Some(30));
+        // Once: after it the grid is the user's.
+        assert_eq!(last.restore(900, GridView::All, by_folder()), None);
+        // And with nothing remembered there is nowhere to go.
+        assert_eq!(
+            LastFolder::new(None).restore(900, GridView::All, by_folder()),
+            None
+        );
+    }
+
+    // The folder is a place in All photos as it runs folder by folder. A user who has
+    // already gone elsewhere is left there, and under another order the launch opens at
+    // the top - and neither is made up for later.
+    #[test]
+    fn the_launch_goes_back_only_in_all_photos_laid_out_by_folder() {
+        let mut gone = LastFolder::new(Some(30));
+        assert_eq!(gone.restore(40, GridView::Starred, by_folder()), None);
+        assert_eq!(gone.restore(900, GridView::All, by_folder()), None);
+        let mut by_month = LastFolder::new(Some(30));
+        let month = sorted(SortKey::Date, Grouping::Month);
+        assert_eq!(by_month.restore(900, GridView::All, month), None);
+        assert_eq!(by_month.restore(900, GridView::All, by_folder()), None);
+    }
+
+    #[test]
+    fn the_folder_at_the_top_of_all_photos_is_remembered_when_it_becomes_another() {
+        let mut last = LastFolder::new(Some(30));
+        // The one remembered already is not written again: the position changes on
+        // every frame of a flick, and this is a write to the library.
+        assert_eq!(last.at_top(GridView::All, Some(30)), None);
+        assert_eq!(last.at_top(GridView::All, Some(31)), Some(31));
+        assert_eq!(last.at_top(GridView::All, Some(31)), None);
+        assert_eq!(last.left(by_folder()), Some(31));
+        // No folder at the top - an empty grid, an order that names none - is nothing to
+        // remember, and does not forget.
+        assert_eq!(last.at_top(GridView::All, None), None);
+        assert_eq!(last.left(by_folder()), Some(31));
+    }
+
+    // Starred, Recent, a search: one of them overwriting the folder would lose the place
+    // the user was browsing.
+    #[test]
+    fn an_excursion_does_not_change_the_folder_remembered() {
+        let mut last = LastFolder::new(Some(30));
+        for view in [GridView::Starred, GridView::Recent, GridView::Search] {
+            assert_eq!(last.at_top(view, Some(44)), None, "{view:?}");
+        }
+        assert_eq!(last.left(by_folder()), Some(30));
+    }
+
+    // Under a month grouping a jump to the folder would land on one of its photos
+    // wherever the order put it: somewhere, not where the user was.
+    #[test]
+    fn the_folder_left_is_a_place_only_where_the_grid_runs_folder_by_folder() {
+        let last = LastFolder::new(Some(30));
+        assert_eq!(last.left(by_folder()), Some(30));
+        assert_eq!(last.left(sorted(SortKey::Date, Grouping::Month)), None);
+        assert_eq!(last.left(sorted(SortKey::Name, Grouping::Folder)), None);
+        assert_eq!(LastFolder::new(None).left(by_folder()), None);
     }
 }
