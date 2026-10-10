@@ -15,6 +15,22 @@ pub const BAR_WIDTH: f64 = 12.0;
 /// thousands of viewports tall.
 pub const MIN_THUMB: f64 = 32.0;
 
+/// How far one notch of a mouse wheel moves what is under it, in points.
+///
+/// A wheel reports notches and leaves the distance to the application. egui's own answer
+/// is forty points, which is also what WebKitGTK scrolls a page by - so on Linux the
+/// native grid moved as the Tauri photon's did. WebView2 scrolls a hundred pixels a notch
+/// at Windows' own setting of three lines, and there the native grid was two and a half
+/// times slower than the one it replaces: the first thing said by the first person to run
+/// it. Windows' setting of lines a notch is not read; it would be a system call photon
+/// has no other need of, and three is what nearly everyone has.
+pub const fn wheel_notch(windows: bool) -> f64 {
+    if windows { 100.0 } else { 40.0 }
+}
+
+/// `wheel_notch` for the system this was built for.
+pub const WHEEL_NOTCH: f64 = wheel_notch(cfg!(target_os = "windows"));
+
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Scroll {
     position: f64,
@@ -84,6 +100,17 @@ impl Scroll {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // WebView2 moves a page a hundred pixels for a notch of the wheel, at Windows' own
+    // setting of three lines a notch; WebKitGTK moves it forty. The first person to run
+    // the native grid on Windows found it "very slow" beside the Tauri photon: egui's
+    // forty, where the web view's hundred had been.
+    #[test]
+    fn a_wheel_notch_moves_the_grid_as_far_as_the_web_view_moved_it() {
+        assert_eq!(wheel_notch(true), 100.0);
+        assert_eq!(wheel_notch(false), 40.0);
+        assert_eq!(WHEEL_NOTCH, wheel_notch(cfg!(target_os = "windows")));
+    }
 
     /// Taller than twice what an `f32` counts exactly, and than a browser's box.
     const TALL: f64 = 40_000_000.0;

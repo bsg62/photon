@@ -378,3 +378,30 @@ fn a_still_window_draws_nothing() {
     driver.frames_in(&mut harness, 1.0);
     assert_eq!(driver.frames_in(&mut harness, 5.0), 0);
 }
+
+// A notch of the mouse wheel moves the grid as far as the web view of this system moved
+// it: a hundred points on Windows, forty elsewhere. The first person to run the native
+// grid on Windows found it very slow beside the Tauri photon, at egui's forty.
+#[test]
+fn a_notch_of_the_wheel_moves_the_grid_as_far_as_the_web_view_did() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = library(dir.path(), 900, 0, 0);
+    let (mut harness, mut driver) = opened(&library, 900);
+    driver.settle(&mut harness);
+    harness.event(egui::Event::PointerMoved(pos2(700.0, 400.0)));
+    harness.event(egui::Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Line,
+        delta: vec2(0.0, -3.0),
+        phase: egui::TouchPhase::Move,
+        modifiers: Modifiers::NONE,
+    });
+    driver.act(&mut harness);
+    driver.settle(&mut harness);
+    driver.frames_in(&mut harness, 1.0);
+    let moved = harness.state().last_frame().unwrap().position;
+    let notch = photon_ui::grid::scroll::WHEEL_NOTCH;
+    assert!(
+        (moved - 3.0 * notch).abs() < 1.0,
+        "three notches moved {moved}"
+    );
+}
