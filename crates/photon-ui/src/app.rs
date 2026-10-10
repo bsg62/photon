@@ -12,7 +12,7 @@ use crate::{
     nav::{Landed, LastFolder, Nav, Place, Step},
     probe::{Facts, Move, Outside, Probe, Report},
     search_bar::{SearchAction, SearchBarData},
-    search_box::{SearchBox, can_save_search, default_search_name, saved_search_for},
+    search_box::{SearchBox, saved_search_for},
     shell::{Action, Shell, ShellData},
     sidebar::{
         list::{Collections, Group, Held, List, Sources, What},
@@ -67,7 +67,7 @@ pub struct App {
     search: SearchBox,
     /// What the user has asked to be written to the library, made in the order asked and
     /// off this thread.
-    writes: Queue<Write, Result<(), String>>,
+    writes: Queue<Write, Result<(), Unsaved>>,
     /// Whether the engine has published a grid that is not on screen yet. It waits while
     /// a step is on its way and no answer says what it shows (`Nav::adopt`).
     stale: bool,
@@ -102,6 +102,12 @@ pub struct App {
     /// The GPU the window is drawn with, for the log and the gate's report.
     adapter: Option<String>,
     closed: bool,
+}
+
+/// A search the library would not save, and what it said.
+struct Unsaved {
+    query: String,
+    said: String,
 }
 
 /// Something to write to the library.
@@ -226,9 +232,13 @@ impl App {
                 let engine = engine.clone();
                 move |write: Write| match write {
                     Write::SaveSearch { name, query } => {
-                        commands::save_search(&engine, &name, &query)
-                            .map(|_| ())
-                            .map_err(|err| err.message)
+                        match commands::save_search(&engine, &name, &query) {
+                            Ok(_) => Ok(()),
+                            Err(err) => Err(Unsaved {
+                                query,
+                                said: err.message,
+                            }),
+                        }
                     }
                 }
             },
@@ -491,8 +501,11 @@ impl App {
             self.search_for(query);
             return;
         }
-        self.search.cancel();
         if !self.nav.wants(&step) {
+            // The user is there already. What they had half typed is dropped all the
+            // same, and its text with it: left in the box it would be searched for by
+            // nothing, and cleared by an Escape that then went to All photos.
+            self.search.clear();
             return;
         }
         let number = self.steps.push(step.clone());
@@ -533,8 +546,8 @@ impl App {
     /// to the top of the folder they are in the middle of.
     fn return_to_all(&mut self) {
         let home = Step::View(View::All);
-        self.search.cancel();
         if !self.nav.wants(&home) {
+            self.search.clear();
             return;
         }
         let left = self.last_folder.left(self.nav.sort());
@@ -580,10 +593,10 @@ impl App {
                 self.search_for(String::new());
             }
             Action::Search(SearchAction::Save) => {
-                // Under its own text: the sidebar is where it gets a friendlier name.
-                let query = default_search_name(&self.search.text).to_owned();
-                let name = query.clone();
-                self.writes.push(Write::SaveSearch { name, query });
+                if let Some(query) = self.search.save() {
+                    let name = query.clone();
+                    self.writes.push(Write::SaveSearch { name, query });
+                }
             }
             Action::ToggleSidebar => {
                 self.layout.sidebar_hidden = !self.layout.sidebar_hidden;
@@ -664,6 +677,7 @@ impl App {
         if let Some(read) = self.collecting.answer() {
             answered = true;
             if let Ok(Some(read)) = read {
+                self.search.lists_read(&read.searches);
                 self.held.set_collections(read);
             }
         }
@@ -677,8 +691,11 @@ impl App {
             if let Some(refused) = self.nav.answered(number, outcome) {
                 // The box shows what the grid shows: its text back after a refused
                 // switch, the search the grid is left on after a refused search.
+                // The latter only when nothing asked since is on its way: the same text
+                // may be waiting its turn behind the search that was refused, and the
+                // box emptied of it would then show nothing over its results.
                 let asked = match &refused.step {
-                    Some(Step::Search(query)) => Some(query.as_str()),
+                    Some(Step::Search(query)) if refused.last => Some(query.as_str()),
                     _ => None,
                 };
                 let shown = (refused.shown.view == View::Search).then_some(&refused.shown.arg);
@@ -693,7 +710,10 @@ impl App {
                 // The engine announces no data change for a search saved: the lists are
                 // read again because this side knows it wrote one.
                 Ok(Ok(())) => self.collecting.ask(()),
-                Ok(Err(said)) => self.toasts.error(said, now_ms),
+                Ok(Err(unsaved)) => {
+                    self.search.save_refused(&unsaved.query);
+                    self.toasts.error(unsaved.said, now_ms);
+                }
                 Err(_) => self
                     .toasts
                     .error("photon could not save the search.", now_ms),
@@ -865,7 +885,7 @@ impl eframe::App for App {
             here: self.marked,
             search: SearchBarData {
                 saved_as: saved_as.as_deref(),
-                can_save: can_save_search(searches, &self.search.text),
+                can_save: self.search.can_save(searches),
                 in_search: self.nav.target().view == View::Search,
             },
             count: count.as_deref(),

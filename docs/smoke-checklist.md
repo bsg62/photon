@@ -662,7 +662,11 @@ Not released: these are for whoever tries the branch `native-ui`. The Svelte int
 - [ ] Enter leaves the box and the grid has the keys again. Escape in a box with text clears it and goes back to All photos, with the caret still in the box; Escape in an empty box in Starred leaves the box and stays in Starred.
 - [ ] Type half a word and click Starred at once: Starred is shown, the box is empty, and no search arrives a moment later. The same with a folder.
 - [ ] Click the `?` in the box: the panel opens under it in two columns, and does not jump about as it opens. Click a term: it is added to what is typed, the panel closes, the caret is after it. A term after an unclosed `"` closes the quote first. Escape and a click elsewhere close the panel; a click in the box does not.
-- [ ] Make the window short: the panel scrolls instead of running off the window.
+- [ ] Make the window short: the panel scrolls instead of running off the window. Make it tall again: the panel is tall again.
+- [ ] With the caret in the search box and a search shown, drag the grid's scrollbar: the grid follows. Click the magnifier at the field's left: the caret is in the box.
+- [ ] On a keyboard where `/` is typed with Shift (German, Nordic, Spanish, Italian): press it to get to the box, then type `f/1.8`: the slash is typed. Leave the box with Enter and press `/` again: the caret is back in the box.
+- [ ] Press Enter with the help panel open: the panel closes with the box.
+- [ ] Press the bookmark twice quickly: the search is under Searches once.
 - [ ] With a search typed, click the bookmark: it fills, the search is under Searches in the sidebar, and the bookmark takes no further press. Click that row from another view: the box holds its text.
 - [ ] Type a name in Hebrew or Arabic mixed with Latin letters: the photos are found; the box shows the text in typing order, not reordered (known: egui's field has no bidirectional text).
 - [ ] Type with an input method (Japanese, Chinese, a dead key for an accent): the composition is not searched for until it is committed, and Enter or Escape that ends a composition is not taken as the box's.

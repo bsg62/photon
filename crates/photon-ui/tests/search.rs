@@ -203,7 +203,9 @@ fn a_term_picked_from_the_help_is_searched_for() {
 }
 
 // A search shown is as still as any other view, and the frame its send was due in is the
-// last one asked for.
+// last one asked for. With the keys back in the grid: while the caret is in the box it
+// blinks, in a real window, and this harness switches the blink off - so what a caret
+// costs is not what this test holds, with or without its Enter.
 #[test]
 fn a_window_with_a_search_shown_draws_nothing() {
     let dir = tempfile::tempdir().unwrap();
@@ -217,4 +219,69 @@ fn a_window_with_a_search_shown_draws_nothing() {
     driver.settle(&mut harness);
     driver.frames_in(&mut harness, 1.0);
     assert_eq!(driver.frames_in(&mut harness, 5.0), 0);
+}
+
+// The lists come back a moment after the write, and until they do the search does not
+// look saved: a second press in that moment saved it twice, which nothing native can
+// yet undo.
+#[test]
+fn two_quick_presses_on_the_bookmark_save_the_search_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = library(dir.path(), 300, 0, 0);
+    let (mut harness, mut driver) = opened(&library, 300);
+    find(&mut driver, &mut harness);
+    typed(&mut driver, &mut harness, TEN);
+    shown(&mut driver, &mut harness, &Place::search(TEN));
+    driver.settle(&mut harness);
+
+    // Both presses before a frame is drawn: the frames they are in follow each other
+    // with no time between, less than any write takes.
+    harness.get_by_label("Save this search").click();
+    harness.get_by_label("Save this search").click();
+    driver.act(&mut harness);
+    driver.until(&mut harness, "the search saved and read back", |app| {
+        !app.collections().searches.is_empty()
+    });
+    driver.settle(&mut harness);
+    driver.frames_in(&mut harness, 1.0);
+    driver.settle(&mut harness);
+    let saved = Library::open(&library.dirs().db_path)
+        .unwrap()
+        .saved_searches()
+        .unwrap();
+    assert_eq!(saved.len(), 1, "{saved:?}");
+    assert!(harness.state().toasts().is_empty());
+}
+
+// The user is in Starred, types half a word and clicks Starred again, or All photos from
+// All photos: the search is dropped, and with it the text - left in the box it would be
+// searched for by nothing, and cleared by an Escape that then went to All photos.
+#[test]
+fn a_click_on_the_view_that_is_shown_drops_the_search_half_typed_and_its_text() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = library(dir.path(), 900, 5, 0);
+    let (mut harness, mut driver) = opened(&library, 900);
+    for row in ["All photos", "Starred"] {
+        click(&mut driver, &mut harness, row);
+        driver.until(&mut harness, "the view shown", |app| {
+            *app.settled() == app.place()
+        });
+        driver.settle(&mut harness);
+        let here = harness.state().place();
+        let version = harness.state().version();
+
+        find(&mut driver, &mut harness);
+        typed(&mut driver, &mut harness, "IMG_0");
+        click(&mut driver, &mut harness, row);
+        assert_eq!(harness.state().search_text(), "", "{row}");
+        driver.settle(&mut harness);
+        driver.frames_in(&mut harness, 1.0);
+        assert_eq!(harness.state().place(), here, "{row}");
+        driver.settle(&mut harness);
+        assert_eq!(
+            harness.state().version(),
+            version,
+            "{row}: no grid was built"
+        );
+    }
 }

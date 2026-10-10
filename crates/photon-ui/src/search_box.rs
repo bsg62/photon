@@ -29,6 +29,9 @@ pub struct SearchBox {
     /// The text a view switch emptied the box of, and the number of the step that was
     /// the switch: put back if that step is refused.
     left: Option<(u64, String)>,
+    /// The searches being saved: written, or on their way to be, and not yet in the
+    /// lists as they were last read.
+    saving: Vec<String>,
 }
 
 impl SearchBox {
@@ -95,6 +98,38 @@ impl SearchBox {
         } else if asked == Some(self.text.as_str()) {
             self.text = shown.to_owned();
         }
+    }
+}
+
+impl SearchBox {
+    /// Whether the bookmark can save what the box holds: a search that is neither saved
+    /// nor being saved. The lists are read a moment after the write, and until they are
+    /// the search does not look saved; a second press in that moment saved it twice.
+    pub fn can_save(&self, searches: &[SavedSearch]) -> bool {
+        let query = default_search_name(&self.text);
+        can_save_search(searches, &self.text) && !self.saving.iter().any(|saving| saving == query)
+    }
+
+    /// The bookmark was pressed. Answers the search to write, under its own text - the
+    /// sidebar is where it gets a friendlier name - or nothing when it is being saved
+    /// already or there is none.
+    pub fn save(&mut self) -> Option<String> {
+        let query = default_search_name(&self.text).to_owned();
+        if query.is_empty() || self.saving.contains(&query) {
+            return None;
+        }
+        self.saving.push(query.clone());
+        Some(query)
+    }
+
+    /// The library would not save `query`.
+    pub fn save_refused(&mut self, query: &str) {
+        self.saving.retain(|saving| saving != query);
+    }
+
+    /// The lists were read: what they hold is saved, and no longer being saved.
+    pub fn lists_read(&mut self, searches: &[SavedSearch]) {
+        (self.saving).retain(|saving| !searches.iter().any(|search| search.query == *saving));
     }
 }
 
@@ -271,6 +306,44 @@ mod tests {
         );
         // An empty box holds none, even if a blank one had been saved.
         assert_eq!(saved_search_for(&saved(&[""]), "   "), None);
+    }
+
+    // The lists come back a moment after the write, and until they do the search does
+    // not look saved: a second press in that moment saved it twice.
+    #[test]
+    fn a_search_being_saved_is_not_saved_again() {
+        let mut search = holding(" lake 2024 ");
+        let none = saved(&[]);
+        assert!(search.can_save(&none));
+        assert_eq!(
+            search.save().as_deref(),
+            Some("lake 2024"),
+            "trimmed, as it is stored"
+        );
+        assert!(!search.can_save(&none));
+        assert_eq!(search.save(), None);
+        // Another search is another matter.
+        search.text = "pond".to_owned();
+        assert!(search.can_save(&none));
+        // The lists hold it now: it is saved, and no longer being saved.
+        search.text = "lake 2024".to_owned();
+        let lists = saved(&["lake 2024"]);
+        search.lists_read(&lists);
+        assert!(!search.can_save(&lists));
+        // Deleted again elsewhere, it can be saved again.
+        search.lists_read(&none);
+        assert!(search.can_save(&none));
+    }
+
+    // The library would not have it: the button is the user's again, to try once more.
+    #[test]
+    fn a_save_that_was_refused_can_be_tried_again() {
+        let mut search = holding("lake 2024");
+        let none = saved(&[]);
+        assert_eq!(search.save().as_deref(), Some("lake 2024"));
+        search.save_refused("lake 2024");
+        assert!(search.can_save(&none));
+        assert_eq!(search.save().as_deref(), Some("lake 2024"));
     }
 
     #[test]

@@ -133,3 +133,13 @@ Two icons more: search, circle-help.
 
 - [ ] A picture of a search with its help open; the checklist's items, the field's two
   limits among them; CLAUDE.md; push; one fresh reviewer; one fix pass; merge.
+
+**The review** (one fresh reader, 2026-10-10) found nothing critical and two things a user
+would have met at once: the grid's scrollbar did nothing while the caret was in the box,
+and on a keyboard that reaches `/` with Shift the slash that opens the box was never let
+go of, so no slash could be typed in it. Both are fixed, with: a search saved once however
+fast the bookmark is pressed; the box emptied by a click on the view already shown; the
+whole field taking the press; Enter closing the panel; the panel as tall as the window
+lets it be; Escape claimed for the field in place of a remembered focus. Its checks of
+the order of typed searches, with a sleep in the worker, found it right.
+

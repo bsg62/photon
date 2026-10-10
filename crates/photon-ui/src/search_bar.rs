@@ -17,8 +17,8 @@ use crate::{
     },
 };
 use eframe::egui::{
-    self, Event, Id, Key, Order, Rect, Sense, Stroke, StrokeKind, UiBuilder, WidgetInfo,
-    WidgetType, epaint::Shadow, pos2, text::CCursor, text::CCursorRange, vec2,
+    self, Event, EventFilter, Id, Key, Order, Rect, Sense, Stroke, StrokeKind, UiBuilder,
+    WidgetInfo, WidgetType, epaint::Shadow, pos2, text::CCursor, text::CCursorRange, vec2,
 };
 
 /// The field: at most this wide, and this tall in the middle of the bar.
@@ -69,10 +69,6 @@ pub struct SearchBar {
     slash_held: bool,
     /// Where the panel was last drawn, for a press outside it.
     panel: Option<Rect>,
-    /// Whether the field had the keyboard when it was last drawn. egui takes the focus
-    /// from whatever has it at the start of a frame with Escape in it, before anything
-    /// is drawn: asked of egui in that frame, the box never had it.
-    focused: bool,
 }
 
 /// The field's own name to egui: where the keyboard is, and the caret.
@@ -102,8 +98,8 @@ impl SearchBar {
             pos2(rect.left(), rect.center().y - FIELD_HEIGHT / 2.0),
             vec2(FIELD_WIDTH.min(rect.width()).max(0.0), FIELD_HEIGHT),
         );
-        let had_focus = self.focused;
-        let select = self.take_keys(ui, had_focus);
+        let had_focus = ui.memory(|memory| memory.has_focus(id));
+        let select = self.take_keys(ui);
 
         // The buttons stand inside the field's right end, and the text stops short of them.
         let holding = !text.trim().is_empty();
@@ -138,6 +134,11 @@ impl SearchBar {
             pos2(text_left, field.center().y - line / 2.0),
             pos2(text_right.max(text_left), field.center().y + line / 2.0),
         );
+        // The magnifier and the room around the line are the field too: a press there
+        // puts the keys in it. Under the line itself, which is drawn after and so takes
+        // its own presses, to place the caret. It takes the press and not the keyboard:
+        // Tab stops at the line, once.
+        let around = ui.interact(field, ui.id().with("search-field"), Sense::CLICK);
         let escape = ui.input(|input| input.key_pressed(Key::Escape));
         let output = ui
             .scope_builder(UiBuilder::new().max_rect(edit_rect), |ui| {
@@ -147,6 +148,13 @@ impl SearchBar {
                 ui.set_clip_rect(room.intersect(ui.clip_rect()));
                 egui::TextEdit::singleline(text)
                     .id(id)
+                    // Escape is the field's own key while the keys are in it. Left to
+                    // egui it takes the focus away at the start of the frame, before
+                    // anything is drawn, and the box could not tell that it had had it.
+                    .event_filter(EventFilter {
+                        escape: true,
+                        ..EventFilter::default()
+                    })
                     .frame(egui::Frame::NONE)
                     .margin(egui::Margin::ZERO)
                     .font(font)
@@ -181,25 +189,33 @@ impl SearchBar {
         // key only leaves the box, which egui's field does by itself.
         if escape && self.help {
             self.help = false;
-            if had_focus {
-                ui.memory_mut(|memory| memory.request_focus(id));
-            }
         } else if escape && had_focus && (!text.is_empty() || data.in_search) {
             text.clear();
             actions.push(SearchAction::Clear);
-            ui.memory_mut(|memory| memory.request_focus(id));
+        } else if escape && had_focus {
+            // Nothing to clear: the second Escape of two, or a box opened by mistake.
+            // The way out of it without the mouse.
+            ui.memory_mut(|memory| memory.surrender_focus(id));
+        }
+        // Enter moves on to the results, where the arrow keys are, and the panel goes
+        // with the box: left open it lay over the photos.
+        if had_focus
+            && output.response.lost_focus()
+            && ui.input(|input| input.key_pressed(Key::Enter))
+        {
+            self.help = false;
+        }
+        if around.clicked() {
+            output.response.request_focus();
         }
 
-        self.focused = ui.memory(|memory| memory.has_focus(id));
-        if self.focused {
+        if ui.memory(|memory| memory.has_focus(id)) {
             painter.rect_stroke(
                 field,
                 R[2],
                 Stroke::new(2.0, color(palette.accent)),
                 StrokeKind::Inside,
             );
-        } else {
-            self.slash_held = false;
         }
 
         // What the box understands.
@@ -277,8 +293,8 @@ impl SearchBar {
     /// Reads the keys that are the box's wherever the keyboard is, and keeps the slash
     /// that opened the box from being typed into it. Answers whether the box is to take
     /// the keyboard with its text selected.
-    fn take_keys(&mut self, ui: &egui::Ui, had_focus: bool) -> bool {
-        let typing = had_focus || ui.ctx().text_edit_focused();
+    fn take_keys(&mut self, ui: &egui::Ui) -> bool {
+        let typing = ui.ctx().text_edit_focused();
         let (mut find, mut slash, mut let_go) = (false, false, false);
         ui.input(|input| {
             for event in &input.events {
@@ -293,21 +309,26 @@ impl SearchBar {
                         find = true;
                     }
                     // Not with Ctrl or Alt, which make it another key. Shift is how some
-                    // keyboards reach it at all.
+                    // keyboards reach it at all. A repeat counts: egui calls a press a
+                    // repeat when it believes the key is down already, which it does
+                    // for as long as it has seen no release under the same name - and
+                    // while the box has the keys a slash is a character anyway.
                     Event::Key {
                         key: Key::Slash,
                         pressed: true,
-                        repeat: false,
                         modifiers,
                         ..
                     } if !modifiers.command && !modifiers.ctrl && !modifiers.alt => {
                         slash = true;
                     }
-                    Event::Key {
-                        key: Key::Slash,
-                        pressed: false,
-                        ..
-                    } => let_go = true,
+                    // The slash is let go of by whatever key comes up. Where it is
+                    // reached with Shift, the key that comes up after Shift is the one
+                    // under it - `7`, on a German keyboard - and a slash waited for by
+                    // name was held for good. And by the window being left: the release
+                    // then goes to another window.
+                    Event::Key { pressed: false, .. } | Event::WindowFocused(false) => {
+                        let_go = true;
+                    }
                     _ => {}
                 }
             }
@@ -322,9 +343,7 @@ impl SearchBar {
         }
         if self.slash_held {
             ui.input_mut(|input| {
-                input
-                    .events
-                    .retain(|event| !matches!(event, Event::Text(typed) if typed == "/"));
+                (input.events).retain(|event| !matches!(event, Event::Text(typed) if typed == "/"));
             });
         }
         find || slash
@@ -340,9 +359,6 @@ impl SearchBar {
         let shown = egui::Area::new(Id::new("search-help-panel"))
             .order(Order::Foreground)
             .fixed_pos(pos2(field.left(), field.bottom() + S[1]))
-            // An area starts at egui's own default size, four hundred points tall, and
-            // what scrolls inside it never asks for more: the panel was cut there.
-            .default_size(vec2(width, tallest))
             .show(ui.ctx(), |ui| {
                 egui::Frame::new()
                     .fill(color(palette.raised))
@@ -356,6 +372,12 @@ impl SearchBar {
                     })
                     .inner_margin(egui::Margin::symmetric(S[3] as i8, S[2] as i8))
                     .show(ui, |ui| {
+                        // How tall it may be, said every frame. An area starts at egui's
+                        // own default size, four hundred points tall, and keeps what it
+                        // was first given: what scrolls inside it never asks for more, so
+                        // the panel was cut there, and one opened in a short window
+                        // stayed that short in a tall one.
+                        ui.set_max_height((tallest - 2.0 * S[2]).max(0.0));
                         ui.set_width(width - 2.0 * S[3]);
                         egui::ScrollArea::vertical()
                             .max_height((tallest - 2.0 * S[2]).max(0.0))
@@ -521,6 +543,7 @@ mod tests {
         in_search: bool,
         /// Another text field, under the bar, with the keyboard: a name being typed.
         other: Option<String>,
+        size: egui::Vec2,
         time: f64,
         /// Every text the last frame drew, with where.
         texts: Vec<(String, Rect)>,
@@ -536,6 +559,7 @@ mod tests {
                 can_save: true,
                 in_search: false,
                 other: None,
+                size: vec2(1280.0, 800.0),
                 time: 0.0,
                 texts: Vec::new(),
             }
@@ -543,7 +567,7 @@ mod tests {
 
         fn frame(&mut self, events: Vec<Event>) -> Vec<SearchAction> {
             let input = RawInput {
-                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1280.0, 800.0))),
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, self.size)),
                 time: Some(self.time),
                 events,
                 ..Default::default()
@@ -880,9 +904,11 @@ mod tests {
         let mut f = Fixture::new("lake");
         f.find();
         f.open_help();
+        f.find();
         assert_eq!(f.key(Key::Escape), []);
         assert!(!f.bar.help_open());
         assert_eq!(f.text, "lake");
+        assert!(f.focused(), "the keys are still the box's");
         // The second Escape is the box's.
         f.find();
         assert_eq!(f.key(Key::Escape), [SearchAction::Clear]);
@@ -901,5 +927,112 @@ mod tests {
         f.saved_as = Some("lake 2024".to_owned());
         f.can_save = false;
         assert_eq!(f.click(SAVE), []);
+    }
+
+    /// `/` on a keyboard that reaches it with Shift: German, Nordic, Spanish, Italian.
+    fn slash_with_shift(f: &mut Fixture) -> Vec<SearchAction> {
+        f.key_with(Key::Slash, Modifiers::SHIFT, Some("/"))
+    }
+
+    // On such a keyboard `/` is Shift+7. Pressed, the key is `/`; let go after Shift has
+    // come up, the key that comes up is `7` - and a slash waited for by name was held for
+    // good: every `/` typed in the box was swallowed, `f/1.8` among them, and egui, which
+    // still had the slash down, called every later press of it a repeat.
+    #[test]
+    fn a_slash_reached_with_shift_is_let_go_of_by_whatever_key_comes_up() {
+        let mut f = Fixture::new("lake");
+        f.frame(Vec::new());
+        assert_eq!(slash_with_shift(&mut f), []);
+        assert!(f.focused());
+        f.key_up(Key::Num7);
+        f.key(Key::End);
+        f.typed(" f");
+        assert_eq!(slash_with_shift(&mut f), [SearchAction::Typed]);
+        f.key_up(Key::Num7);
+        f.typed("1.8");
+        assert_eq!(f.text, "lake f/1.8");
+        // And the same key asks for the box again once it has been left.
+        f.key(Key::Enter);
+        assert!(!f.focused());
+        slash_with_shift(&mut f);
+        f.key_up(Key::Num7);
+        assert!(f.focused());
+        assert_eq!(f.text, "lake f/1.8", "and types nothing as it does");
+    }
+
+    // The window loses the focus while the slash is down: its release never arrives.
+    #[test]
+    fn a_slash_is_let_go_of_when_the_window_is_left() {
+        let mut f = Fixture::new("lake");
+        f.frame(Vec::new());
+        f.key_with(Key::Slash, Modifiers::NONE, Some("/"));
+        assert!(f.focused());
+        f.frame(vec![Event::WindowFocused(false)]);
+        f.frame(vec![Event::WindowFocused(true)]);
+        // Back in the window, with no key let go since: the slash typed now is a
+        // character, in place of the text that Ctrl+F or `/` left selected.
+        assert!(f.focused());
+        f.key_with(Key::Slash, Modifiers::NONE, Some("/"));
+        assert_eq!(f.text, "/");
+    }
+
+    // The magnifier and the room around the line are the field too: in the Svelte UI
+    // the whole of it is the input.
+    #[test]
+    fn a_press_anywhere_in_the_field_puts_the_keys_in_it() {
+        for at in [pos2(55.0, 22.5), pos2(150.0, 9.5), pos2(150.0, 36.0)] {
+            let mut f = Fixture::new("lake");
+            f.frame(Vec::new());
+            f.click(at);
+            f.frame(Vec::new());
+            assert!(f.focused(), "{at:?}");
+        }
+        // Beside the field it is not.
+        let mut f = Fixture::new("lake");
+        f.frame(Vec::new());
+        f.click(pos2(46.0 + FIELD_WIDTH + 40.0, 22.5));
+        f.frame(Vec::new());
+        assert!(!f.focused());
+    }
+
+    // Enter moves on to the results, and the panel would lie over them with nothing but
+    // the mouse or another key to close it.
+    #[test]
+    fn enter_closes_the_panel_with_the_box() {
+        let mut f = Fixture::new("lake");
+        f.frame(Vec::new());
+        f.open_help();
+        f.find();
+        assert!(f.focused() && f.bar.help_open());
+        assert_eq!(f.key(Key::Enter), []);
+        assert!(!f.focused());
+        assert!(!f.bar.help_open());
+    }
+
+    // An area keeps the size it was first given. Opened in a short window the panel
+    // stayed that short for good, scrolling what a taller window had room for.
+    #[test]
+    fn the_panel_is_as_tall_as_the_window_it_is_in_lets_it_be() {
+        let mut f = Fixture::new("");
+        f.size = vec2(1280.0, 400.0);
+        f.frame(Vec::new());
+        f.open_help();
+        let short = f.bar.panel.expect("the panel is drawn").height();
+        assert!(short <= 400.0 - 64.0 + 4.0, "{short}");
+        f.size = vec2(1280.0, 900.0);
+        for _ in 0..4 {
+            f.frame(Vec::new());
+        }
+        let tall = f.bar.panel.unwrap().height();
+        assert!(tall > short + 200.0, "{short} then {tall}");
+        // Its last entry is in sight without scrolling.
+        let last = f.drew("focal:").expect("the last term is drawn");
+        assert!(last.bottom() < f.bar.panel.unwrap().bottom());
+        // And shorter again when the window is.
+        f.size = vec2(1280.0, 400.0);
+        for _ in 0..4 {
+            f.frame(Vec::new());
+        }
+        assert!(f.bar.panel.unwrap().height() <= 400.0 - 64.0 + 4.0);
     }
 }

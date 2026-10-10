@@ -123,6 +123,8 @@ pub struct Refused {
     pub said: String,
     /// What the grid shows once the engine has put itself back.
     pub shown: Place,
+    /// Whether no step asked after this one is still on its way.
+    pub last: bool,
 }
 
 /// What taking a grid came to.
@@ -260,6 +262,7 @@ impl Nav {
             Err(said) => Some(Refused {
                 step,
                 said,
+                last: self.asked.is_empty(),
                 // Where the engine put itself back to: the last step made, shown or not.
                 shown: (self.landed.back())
                     .map_or_else(|| self.settled.clone(), |(_, landed)| landed.place.clone()),
@@ -561,6 +564,14 @@ mod tests {
         nav.asked(3, Step::View(GridView::Starred));
         let refused = nav.answered(3, Err("no".to_owned())).unwrap();
         assert_eq!(refused.step, Some(Step::View(GridView::Starred)));
+        // Whether anything asked after it is still on its way: the search box takes what
+        // the grid shows only when nothing is, or it would be emptied of a search that
+        // is about to be made.
+        assert!(refused.last);
+        nav.asked(5, Step::Search("pond".to_owned()));
+        nav.asked(6, Step::Search("pond 2024".to_owned()));
+        assert!(!nav.answered(5, Err("no".to_owned())).unwrap().last);
+        assert!(nav.answered(6, Err("no".to_owned())).unwrap().last);
         // An answer for a step nobody holds names none - not the step before it either.
         nav.asked(4, Step::View(GridView::Recent));
         let refused = nav.answered(9, Err("no".to_owned())).unwrap();

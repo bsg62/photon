@@ -273,33 +273,33 @@ impl GridView {
         }
 
         // The keys are the grid's unless a text field has them: with the search box
-        // focused, Home and End move its caret and not the library.
-        if ui.ctx().text_edit_focused() {
-            return;
+        // focused, Home and End move its caret and not the library. The keys alone: the
+        // scrollbar below is the pointer's whoever has the keys.
+        if !ui.ctx().text_edit_focused() {
+            let row = self.laid_out.map_or(0.0, |laid| tile_row(laid.tile));
+            let page = (viewport - row).max(ARROW_STEP);
+            let scroll = &mut self.scroll;
+            ui.input(|input| {
+                if input.key_pressed(Key::Home) {
+                    scroll.set(0.0);
+                }
+                if input.key_pressed(Key::End) {
+                    scroll.set(f64::INFINITY);
+                }
+                if input.key_pressed(Key::PageDown) {
+                    scroll.scroll_by(page);
+                }
+                if input.key_pressed(Key::PageUp) {
+                    scroll.scroll_by(-page);
+                }
+                if input.key_pressed(Key::ArrowDown) {
+                    scroll.scroll_by(ARROW_STEP);
+                }
+                if input.key_pressed(Key::ArrowUp) {
+                    scroll.scroll_by(-ARROW_STEP);
+                }
+            });
         }
-        let row = self.laid_out.map_or(0.0, |laid| tile_row(laid.tile));
-        let page = (viewport - row).max(ARROW_STEP);
-        let scroll = &mut self.scroll;
-        ui.input(|input| {
-            if input.key_pressed(Key::Home) {
-                scroll.set(0.0);
-            }
-            if input.key_pressed(Key::End) {
-                scroll.set(f64::INFINITY);
-            }
-            if input.key_pressed(Key::PageDown) {
-                scroll.scroll_by(page);
-            }
-            if input.key_pressed(Key::PageUp) {
-                scroll.scroll_by(-page);
-            }
-            if input.key_pressed(Key::ArrowDown) {
-                scroll.scroll_by(ARROW_STEP);
-            }
-            if input.key_pressed(Key::ArrowUp) {
-                scroll.scroll_by(-ARROW_STEP);
-            }
-        });
 
         // A press on the thumb holds it where it was taken; a press on the track brings
         // the thumb's middle under the pointer. Either way the grid follows the pointer
@@ -1166,6 +1166,31 @@ mod tests {
         f.index = index(&[400]);
         f.layout_gen += 1;
         assert_eq!(f.frame(Vec::new()).position, 1000.0);
+    }
+
+    // The keys are the text field's while it has them; the pointer is not. With the
+    // caret in the search box the scrollbar did nothing, however often it was pressed:
+    // egui gives up a field's focus on a click elsewhere, not on a press that is held.
+    #[test]
+    fn the_scrollbar_is_the_pointers_while_a_text_field_has_the_keys() {
+        let mut f = fixture(&[4000]);
+        f.typing = Some(String::new());
+        f.space_above = 0.0;
+        f.frame(Vec::new());
+        f.frame(Vec::new());
+        let on_track = Pos2::new(794.0, 400.0);
+        f.frame(vec![Event::PointerMoved(on_track)]);
+        let pressed = f.frame(vec![Event::PointerButton {
+            pos: on_track,
+            button: PointerButton::Primary,
+            pressed: true,
+            modifiers: Modifiers::NONE,
+        }]);
+        assert!(
+            pressed.position > 1000.0,
+            "the grid is at {}",
+            pressed.position
+        );
     }
 
     // With the search box focused, Home and End move its caret, and Page Down is not the
