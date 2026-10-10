@@ -29,6 +29,7 @@ use jiff::tz::TimeZone;
 use photon_core::{
     grid::{GridIndex, GridView as View},
     library::{Folder, GridTile},
+    sort::Sort,
 };
 use photon_engine::{
     commands,
@@ -62,12 +63,14 @@ pub struct App {
     folder_list: Latest<(), Option<Vec<Folder>>>,
     /// Where the user is and is going, and the queue the steps there are made on.
     nav: Nav,
-    steps: Queue<Step, Result<Landed, String>>,
+    /// A step made answers where it led, and with it what the engine said when it made
+    /// the step and could not finish the rest of it (a sort shown and not stored).
+    steps: Queue<Step, Result<(Landed, Option<String>), String>>,
     /// The search box's text and the send that typing has made due.
     search: SearchBox,
     /// What the user has asked to be written to the library, made in the order asked and
     /// off this thread.
-    writes: Queue<Write, Result<(), Unsaved>>,
+    writes: Queue<Write, Result<Wrote, Unwritten>>,
     /// Whether the engine has published a grid that is not on screen yet. It waits while
     /// a step is on its way and no answer says what it shows (`Nav::adopt`).
     stale: bool,
@@ -104,16 +107,24 @@ pub struct App {
     closed: bool,
 }
 
-/// A search the library would not save, and what it said.
-struct Unsaved {
-    query: String,
-    said: String,
-}
-
 /// Something to write to the library.
 enum Write {
     /// The search in the box, under a name: the bookmark.
     SaveSearch { name: String, query: String },
+    /// The size of the tiles, as the size control was last pressed.
+    TileSize(GridTile),
+}
+
+/// A write that was made.
+enum Wrote {
+    Search,
+    TileSize,
+}
+
+/// A write the library refused, and what it said.
+enum Unwritten {
+    Search { query: String, said: String },
+    TileSize { said: String },
 }
 
 /// The gate's programme, where its report goes, and what the report says besides.
@@ -207,23 +218,39 @@ impl App {
             {
                 let engine = engine.clone();
                 move |step: Step| {
+                    let mut said = None;
                     let shown_at = match step {
                         Step::View(view) => commands::set_grid_view(&engine, view),
                         Step::Search(query) => commands::set_search_query(&engine, &query),
                         Step::Album(id) => commands::set_album_view(&engine, id),
                         Step::Person(key) => commands::set_person_view(&engine, &key),
                         Step::Tag(tag) => commands::set_tag_view(&engine, &tag),
+                        // The one setter whose error does not mean "nothing moved": the
+                        // engine sorts first and stores second (`Engine::set_sort`), so
+                        // a sort it could not store is published all the same. That is
+                        // a step made, with something to say - answered as refused, the
+                        // photos were in one order and the controls said the other, for
+                        // the rest of the session. Its grid is whichever is published.
+                        Step::Sort(sort) => commands::set_sort(&engine, sort).or_else(|err| {
+                            if engine.sort() == sort {
+                                said = Some(err.message);
+                                Ok(None)
+                            } else {
+                                Err(err)
+                            }
+                        }),
                     }
                     .map_err(|err| err.message)?;
                     // Where the step led, read here: after it is made and before the next
                     // one begins, which is the only time the engine's view is known to be
                     // this step's. The interface must not read it when a grid arrives.
                     let (view, arg) = engine.view_and_arg();
-                    Ok(Landed {
+                    let landed = Landed {
                         place: Place { view, arg },
                         sort: engine.sort(),
                         shown_at,
-                    })
+                    };
+                    Ok((landed, said))
                 }
             },
             repaint(&ctx),
@@ -235,13 +262,17 @@ impl App {
                 move |write: Write| match write {
                     Write::SaveSearch { name, query } => {
                         match commands::save_search(&engine, &name, &query) {
-                            Ok(_) => Ok(()),
-                            Err(err) => Err(Unsaved {
+                            Ok(_) => Ok(Wrote::Search),
+                            Err(err) => Err(Unwritten::Search {
                                 query,
                                 said: err.message,
                             }),
                         }
                     }
+                    Write::TileSize(size) => match commands::set_grid_tile(&engine, size) {
+                        Ok(()) => Ok(Wrote::TileSize),
+                        Err(err) => Err(Unwritten::TileSize { said: err.message }),
+                    },
                 }
             },
             repaint(&ctx),
@@ -419,6 +450,16 @@ impl App {
         self.size
     }
 
+    /// The sort the user is going to: what the controls in the top bar show.
+    pub fn sort(&self) -> Sort {
+        self.nav.sort_target()
+    }
+
+    /// The sort of the grid on screen.
+    pub fn settled_sort(&self) -> Sort {
+        self.nav.sort()
+    }
+
     /// The folders the headers are named from.
     pub fn folders(&self) -> &HashMap<i64, Folder> {
         self.held.folders()
@@ -503,6 +544,14 @@ impl App {
             self.search_for(query);
             return;
         }
+        // A sort moves no view and clears no query: the search box is left as it is.
+        if let Step::Sort(_) = step {
+            if self.nav.wants(&step) {
+                let number = self.steps.push(step.clone());
+                self.nav.asked(number, step);
+            }
+            return;
+        }
         if !self.nav.wants(&step) {
             // The user is there already. What they had half typed is dropped all the
             // same, and its text with it: left in the box it would be searched for by
@@ -552,7 +601,9 @@ impl App {
             self.search.clear();
             return;
         }
-        let left = self.last_folder.left(self.nav.sort());
+        // The order All photos will be shown in: a sort still on its way is ahead of
+        // this step on the queue, and the grid on screen is a rebuild behind it.
+        let left = self.last_folder.left(self.nav.sort_target());
         self.go(home);
         if let Some(folder) = left {
             self.jump(folder);
@@ -632,6 +683,14 @@ impl App {
                 }
             }
             Action::Dismiss(id) => self.toasts.dismiss(id),
+            Action::Sort(sort) => self.go(Step::Sort(sort)),
+            // Applied first and stored second, so the press is answered at once. A size
+            // the library would not store is kept for this session all the same: going
+            // back would answer a disk error with the whole grid laid out again.
+            Action::Size(size) => {
+                self.size = size;
+                self.writes.push(Write::TileSize(size));
+            }
         }
     }
 
@@ -690,6 +749,12 @@ impl App {
             // A step that panicked is a step the engine did not make.
             let outcome =
                 answer.unwrap_or_else(|_| Err("photon could not change the view.".to_owned()));
+            let outcome = outcome.map(|(landed, said)| {
+                if let Some(said) = said {
+                    self.toasts.error(said, now_ms);
+                }
+                landed
+            });
             if let Some(refused) = self.nav.answered(number, outcome) {
                 // The box shows what the grid shows: its text back after a refused
                 // switch, the search the grid is left on after a refused search.
@@ -711,14 +776,16 @@ impl App {
             match answer {
                 // The engine announces no data change for a search saved: the lists are
                 // read again because this side knows it wrote one.
-                Ok(Ok(())) => self.collecting.ask(()),
-                Ok(Err(unsaved)) => {
-                    self.search.save_refused(&unsaved.query);
-                    self.toasts.error(unsaved.said, now_ms);
+                Ok(Ok(Wrote::Search)) => self.collecting.ask(()),
+                Ok(Ok(Wrote::TileSize)) => {}
+                Ok(Err(Unwritten::Search { query, said })) => {
+                    self.search.save_refused(&query);
+                    self.toasts.error(said, now_ms);
                 }
+                Ok(Err(Unwritten::TileSize { said })) => self.toasts.error(said, now_ms),
                 Err(_) => self
                     .toasts
-                    .error("photon could not save the search.", now_ms),
+                    .error("photon could not store that change.", now_ms),
             }
         }
         answered
@@ -890,6 +957,8 @@ impl eframe::App for App {
                 can_save: self.search.can_save(searches),
                 in_search: self.nav.target().view == View::Search,
             },
+            sort: self.nav.sort_target(),
+            size: self.size,
             count: count.as_deref(),
             notice: notice.as_deref(),
             toasts,

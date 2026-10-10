@@ -10,18 +10,29 @@ use super::{
     layout::{
         GAP, HEADER, PinnedHeader, Row, RowKind, build_rows, columns_for, defers_thumbs,
         has_header, header_rows, pin_at, pin_top, pinned_header, row_of_item, row_width,
-        scroll_into_grid, scroll_to_start, tile_for, tile_row, tile_width, top_folder_id,
-        total_height, visible_range, wanted_range,
+        scroll_into_grid, scroll_to_start, shows_timeline, tile_for, tile_row, tile_width,
+        top_folder_id, total_height, visible_range, wanted_range,
     },
     motion::{Direction, Motion, ScrollSpeed},
     scroll::{BAR_WIDTH, Scroll},
     tile,
+    timeline::{
+        TIMELINE_WIDTH, YearMark, labelled_marks, scroll_top_for, strip_y, year_at, year_marks,
+        year_runs,
+    },
 };
 use crate::{
-    theme::apply::{color, palette},
+    theme::{
+        apply::{color, menu_shadow, palette},
+        fonts,
+        tokens::{R, S, T},
+    },
     thumbs::{loader::Want, shown::Thumbs},
 };
-use eframe::egui::{self, Key, Rect, Sense, UiBuilder, Vec2, pos2, vec2};
+use eframe::egui::{
+    self, Align2, CursorIcon, Key, Rect, Sense, Stroke, StrokeKind, UiBuilder, Vec2, WidgetInfo,
+    pos2, vec2,
+};
 use jiff::tz::TimeZone;
 use photon_core::{
     grid::GridIndex,
@@ -31,6 +42,10 @@ use std::{collections::HashMap, time::Duration};
 
 /// How far an arrow key moves the grid.
 const ARROW_STEP: f64 = 40.0;
+/// Strip points between two printed years: a line of the label's type plus air.
+const MIN_LABEL_GAP: f64 = 16.0;
+/// The line a year is printed in, its top where the year begins.
+const LABEL_LINE: f32 = 14.0;
 
 /// Sets how far a notch of the mouse wheel scrolls, for everything in `ctx` that scrolls:
 /// the grid and the sidebar's list alike. Once, at startup (`scroll::WHEEL_NOTCH`).
@@ -70,6 +85,8 @@ pub struct GridOutput {
     /// The folder whose photos are at the top of the grid while it runs folder by folder,
     /// and none otherwise: what the sidebar marks and the next launch comes back to.
     pub top_folder: Option<i64>,
+    /// Whether the year strip stands beside the grid.
+    pub strip: bool,
 }
 
 /// Where a photo asked for is put.
@@ -102,6 +119,13 @@ pub struct GridView {
     /// A photo asked for from outside (`go_to`), until the next frame has laid the rows
     /// out and knows where it is.
     wanted: Option<(usize, Align)>,
+    /// How many runs of a year the sections make, and the layout generation that was
+    /// counted in: asked before the rows are built, since it decides how wide they are.
+    years: Option<(u64, usize)>,
+    /// Where each run of a year begins in the rows: what the strip prints, built with them.
+    marks: Vec<YearMark>,
+    /// Whether the strip is held.
+    scrubbing: bool,
 }
 
 impl GridView {
@@ -153,16 +177,22 @@ impl GridView {
     ) -> GridOutput {
         let rect = ui.available_rect_before_wrap();
         ui.allocate_rect(rect, Sense::hover());
-        let bar = Rect::from_min_max(pos2(rect.right() - BAR_WIDTH as f32, rect.top()), rect.max);
+        let viewport = f64::from(rect.height()).max(0.0);
+        // The strip at the right edge, the scrollbar beside it, the photos in what is left.
+        let strip = self.strip(data, rect, viewport);
+        let right = strip.map_or(rect.right(), |strip| strip.left());
+        let bar = Rect::from_min_max(
+            pos2(right - BAR_WIDTH as f32, rect.top()),
+            pos2(right, rect.bottom()),
+        );
         let area = Rect::from_min_max(rect.min, pos2(bar.left(), rect.bottom()));
-        let viewport = f64::from(area.height()).max(0.0);
 
         let rebuilt = self.lay_out(data, f64::from(area.width()), viewport);
         self.take_place(data.index, viewport);
 
         // Measured after the layout: a place restored across a resize is not a scroll.
         let before = self.scroll.position();
-        self.take_input(ui, rect, bar, viewport);
+        self.take_input(ui, rect, bar, strip, viewport);
         let now = ui.input(|input| input.time) * 1000.0;
         if self.scroll.position() != before {
             self.speed.sample(self.scroll.position(), now, viewport);
@@ -195,6 +225,9 @@ impl GridView {
             header::paint(&clipped, rect, &heading, true, palette(ui.ctx()));
         }
         self.draw_scrollbar(ui, bar);
+        if let Some(strip) = strip {
+            self.draw_strip(ui, strip, top);
+        }
 
         GridOutput {
             on_screen,
@@ -205,7 +238,31 @@ impl GridView {
             marked,
             loading,
             top_folder: top_folder_id(&self.rows, data.index.sections(), top),
+            strip: strip.is_some(),
         }
+    }
+
+    /// Where the year strip stands in `rect`, when it is shown: asked of the grid as it
+    /// would be beside the strip (`shows_timeline`), before the rows are laid out for the
+    /// room that answer leaves them.
+    fn strip(&mut self, data: &GridData<'_>, rect: Rect, viewport: f64) -> Option<Rect> {
+        let sections = data.index.sections();
+        let years = match self.years {
+            Some((counted_in, years)) if counted_in == data.layout_gen => years,
+            _ => {
+                let years = year_runs(sections, data.zone);
+                self.years = Some((data.layout_gen, years));
+                years
+            }
+        };
+        let outer = f64::from(rect.width());
+        let nominal = tile_width(data.size);
+        shows_timeline(sections, years, outer, BAR_WIDTH, viewport, nominal).then(|| {
+            Rect::from_min_max(
+                pos2(rect.right() - TIMELINE_WIDTH as f32, rect.top()),
+                rect.max,
+            )
+        })
     }
 
     /// Puts the grid where a photo asked for is (`go_to`). One the rows do not hold - its
@@ -236,8 +293,14 @@ impl GridView {
     /// Tiles fill the row, so every row's height moves with every pixel of a resize and a
     /// position kept as a number would name another photo: across a change of the tile or
     /// the columns the place is read from the rows as they were (`pin_at`) and found in the
-    /// rows as they are (`pin_top`). Across a rebuilt index it is kept as the number it
-    /// was, held to the new end, as the Svelte grid keeps it.
+    /// rows as they are (`pin_top`). Across a rebuilt index alone it is kept as the number
+    /// it was, held to the new end, as the Svelte grid keeps it.
+    ///
+    /// A new index can change the tile too, by bringing the year strip or taking it away,
+    /// and then the place is the photo's offset carried from the old index into the new
+    /// one - right while nothing arrived before that photo, and off by what did when
+    /// something has, which is as far as the kept number is off across any new index.
+    /// Neither follows the photo by its id.
     fn lay_out(&mut self, data: &GridData<'_>, width: f64, viewport: f64) -> bool {
         let nominal = tile_width(data.size);
         let row = row_width(width);
@@ -257,6 +320,7 @@ impl GridView {
             }
             self.rows = build_rows(data.index.sections(), now.columns, now.tile);
             self.headers = header_rows(&self.rows);
+            self.marks = year_marks(data.index.sections(), &self.rows, data.zone);
             self.laid_out = Some(now);
         }
         self.scroll.set_extent(total_height(&self.rows), viewport);
@@ -266,7 +330,14 @@ impl GridView {
         rebuilt
     }
 
-    fn take_input(&mut self, ui: &egui::Ui, rect: Rect, bar: Rect, viewport: f64) {
+    fn take_input(
+        &mut self,
+        ui: &egui::Ui,
+        rect: Rect,
+        bar: Rect,
+        strip: Option<Rect>,
+        viewport: f64,
+    ) {
         if let Some(position) = self.asked.take() {
             self.scroll.set(position);
         }
@@ -328,6 +399,38 @@ impl GridView {
                     .set(self.scroll.position_for_thumb(track, y - grab));
             }
             _ => self.grab = None,
+        }
+
+        // A press on the strip puts the grid at that share of its layout, and the grid
+        // follows the pointer for as long as the button is down, on the strip or off it:
+        // it is forty-four points wide, and a drag strays. Not in the tab order - the
+        // sidebar's years are the keyboard's way to a year.
+        self.scrubbing = false;
+        if let Some(strip) = strip {
+            let response = ui.interact(
+                strip,
+                ui.id().with("grid-timeline"),
+                Sense::CLICK | Sense::DRAG,
+            );
+            let here = year_at(&self.marks, self.scroll.position());
+            response.widget_info(|| {
+                WidgetInfo::slider(true, here.unwrap_or_default() as f64, "Timeline")
+            });
+            let held = (response.is_pointer_button_down_on()
+                && ui.input(|input| input.pointer.primary_down()))
+            .then(|| response.interact_pointer_pos())
+            .flatten();
+            if let Some(pointer) = held {
+                let y = f64::from(pointer.y - strip.top());
+                let total = total_height(&self.rows);
+                self.scroll.set(scroll_top_for(
+                    y,
+                    f64::from(strip.height()),
+                    total,
+                    viewport,
+                ));
+                self.scrubbing = true;
+            }
         }
     }
 
@@ -449,6 +552,78 @@ impl GridView {
     }
 }
 
+impl GridView {
+    /// The strip: the years where they begin, a line where the grid is, and the year
+    /// under the pointer, named beside the strip over the photos.
+    fn draw_strip(&self, ui: &egui::Ui, strip: Rect, top: f64) {
+        let palette = palette(ui.ctx());
+        let painter = ui.painter_at(strip);
+        let (total, height) = (total_height(&self.rows), f64::from(strip.height()));
+        let down = |place: f64| strip.top() + strip_y(place, total, height) as f32;
+        painter.vline(
+            strip.left() + 0.5,
+            strip.y_range(),
+            (1.0, color(palette.line)),
+        );
+        for mark in labelled_marks(&self.marks, total, height, MIN_LABEL_GAP) {
+            painter.text(
+                pos2(strip.center().x, down(mark.top) + LABEL_LINE / 2.0),
+                Align2::CENTER_CENTER,
+                mark.year,
+                fonts::regular(T[0]),
+                color(palette.text_dim),
+            );
+        }
+        let here = down(top);
+        painter.rect_filled(
+            Rect::from_min_max(
+                pos2(strip.left() + 4.0, here - 1.0),
+                pos2(strip.right() - 4.0, here + 1.0),
+            ),
+            1.0,
+            color(palette.accent),
+        );
+
+        // While the strip is held the pointer may be anywhere, and is still on it.
+        let pointer = ui
+            .input(|input| input.pointer.latest_pos())
+            .filter(|_| self.scrubbing || ui.rect_contains_pointer(strip));
+        let Some(pointer) = pointer else {
+            return;
+        };
+        ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+        let y = (pointer.y - strip.top()).clamp(0.0, strip.height());
+        let Some(year) = year_at(&self.marks, f64::from(y) / height * total) else {
+            return;
+        };
+        // Beside the strip and over the photos, so through the grid's own painter.
+        let painter = ui.painter();
+        let galley = painter.layout_no_wrap(
+            year.to_string(),
+            fonts::semibold(ui.ctx(), T[1]),
+            color(palette.text),
+        );
+        let size = galley.size() + vec2(2.0 * S[1], 6.0);
+        let bubble = Rect::from_min_size(
+            pos2(strip.left() - 6.0 - size.x, strip.top() + y - size.y / 2.0),
+            size,
+        );
+        painter.add(menu_shadow().as_shape(bubble, R[1]));
+        painter.rect_filled(bubble, R[1], color(palette.raised));
+        painter.rect_stroke(
+            bubble,
+            R[1],
+            Stroke::new(1.0, color(palette.line)),
+            StrokeKind::Outside,
+        );
+        painter.galley(
+            bubble.center() - galley.size() / 2.0,
+            galley,
+            color(palette.text),
+        );
+    }
+}
+
 /// A child of `ui` that draws nothing outside `area`: a row half scrolled out is cut at the
 /// grid's edge and not drawn over what lies beside the grid. The clip has to be set:
 /// `new_child` gives the child the parent's, whatever its `max_rect`.
@@ -473,7 +648,10 @@ pub(crate) fn snapped(position: f64, scale: f64) -> f64 {
 mod tests {
     use super::*;
     use crate::{
-        grid::layout::{row_index_at, row_of_item},
+        grid::{
+            layout::{layout_height, row_index_at, row_of_item},
+            timeline::{scroll_top_for, strip_y},
+        },
         thumbs::{
             loader::{Building, LoadError, Loader, ThumbSource},
             textures::Pixels,
@@ -547,6 +725,9 @@ mod tests {
         space_above: f32,
         /// A text field above the grid that has the focus, and what is typed in it.
         typing: Option<String>,
+        tile: GridTile,
+        /// Every filled rectangle the last frame drew.
+        fills: Vec<(Rect, egui::Color32)>,
         /// What the last frame drew: each text with where it is and what it is clipped
         /// to, and the top of every clip rectangle anything was drawn in.
         texts: Vec<(String, Rect, Rect)>,
@@ -610,10 +791,56 @@ mod tests {
             repaint_delay: Duration::MAX,
             space_above: 0.0,
             typing: None,
+            tile: GridTile::Medium,
+            fills: Vec::new(),
             texts: Vec::new(),
             clip_tops: Vec::new(),
         }
     }
+
+    /// Noon on 1 July, so no time zone can move it into a neighbouring year.
+    fn mid(year: i16) -> i64 {
+        jiff::civil::date(year, 7, 1)
+            .at(12, 0, 0, 0)
+            .to_zoned(TimeZone::UTC)
+            .unwrap()
+            .timestamp()
+            .as_second()
+    }
+
+    /// An index of folders, each of so many photos taken in one year.
+    fn index_of_years(folders: &[(usize, i16)], layout: Layout) -> GridIndex {
+        let mut entries = Vec::new();
+        for (folder, (count, year)) in folders.iter().enumerate() {
+            for _ in 0..*count {
+                let id = entries.len() as i64 + 1;
+                entries.push(GridEntry {
+                    id,
+                    folder_id: folder as i64 + 1,
+                    taken_at: mid(*year) + id,
+                    aspect: 1.5,
+                    kind: MediaKind::Image,
+                    duration_ms: None,
+                    starred: false,
+                    has_copies: false,
+                    thumb_key: id as u64,
+                    size: 0,
+                    mtime_ms: 0,
+                });
+            }
+        }
+        GridIndex::build(entries, layout)
+    }
+
+    /// A grid of two years that scrolls: forty photos of 2024, then four hundred of 2019.
+    fn two_years() -> Fixture {
+        let mut f = fixture(&[]);
+        f.index = index_of_years(&[(40, 2024), (400, 2019)], Layout::Folders);
+        f
+    }
+
+    /// Where the strip is in the fixture's window, beside a scrollbar of twelve points.
+    const STRIP_LEFT: f32 = 800.0 - TIMELINE_WIDTH as f32;
 
     impl Fixture {
         fn frame(&mut self, events: Vec<Event>) -> GridOutput {
@@ -629,7 +856,7 @@ mod tests {
                 layout_gen: self.layout_gen,
                 index: &self.index,
                 folders: &folders,
-                size: GridTile::Medium,
+                size: self.tile,
                 zone: &TimeZone::UTC,
             };
             let (view, thumbs, space) = (&mut self.view, &mut self.thumbs, self.space_above);
@@ -650,6 +877,7 @@ mod tests {
             full.textures_delta.clear();
             self.texts.clear();
             self.clip_tops.clear();
+            self.fills.clear();
             for clipped in &full.shapes {
                 each_shape(&clipped.shape, clipped.clip_rect, &mut |shape, clip| {
                     // The panel's own background, which is not the grid's doing.
@@ -657,6 +885,9 @@ mod tests {
                         return;
                     }
                     self.clip_tops.push(clip.top());
+                    if let egui::Shape::Rect(rect) = shape {
+                        self.fills.push((rect.rect, rect.fill));
+                    }
                     if let egui::Shape::Text(text) = shape {
                         let place = text.visual_bounding_rect();
                         self.texts
@@ -686,6 +917,284 @@ mod tests {
             let rows = &self.view.rows;
             rows[row_index_at(rows, self.view.scroll.position())].first
         }
+
+        /// The tile the rows are laid out with.
+        fn tile(&self) -> f64 {
+            self.view.laid_out.unwrap().tile
+        }
+
+        /// Where `year` is printed on the strip.
+        fn label(&self, year: &str) -> Option<Rect> {
+            (self.texts.iter())
+                .find(|(text, place, _)| text == year && place.left() >= STRIP_LEFT)
+                .map(|(_, place, _)| *place)
+        }
+
+        /// The year named beside the strip, under the pointer, with where.
+        fn named(&self) -> Option<(&str, Rect)> {
+            (self.texts.iter())
+                .find(|(text, place, _)| text.parse::<i64>().is_ok() && place.right() <= STRIP_LEFT)
+                .map(|(text, place, _)| (text.as_str(), *place))
+        }
+
+        fn button(&mut self, at: Pos2, pressed: bool) -> GridOutput {
+            self.frame(vec![Event::PointerButton {
+                pos: at,
+                button: PointerButton::Primary,
+                pressed,
+                modifiers: Modifiers::NONE,
+            }])
+        }
+    }
+
+    #[test]
+    fn the_strip_stands_beside_a_grid_of_several_years_that_scrolls() {
+        let mut f = two_years();
+        let frame = f.frame(Vec::new());
+        assert!(frame.strip);
+        // The tiles are laid out for the room beside it and the scrollbar.
+        let row = row_width(800.0 - TIMELINE_WIDTH - BAR_WIDTH);
+        assert_eq!(f.tile(), tile_for(row, tile_width(GridTile::Medium)));
+        // Each year where its first header is in the layout, scaled to the strip.
+        let total = total_height(&f.view.rows);
+        let first = f.label("2024").expect("the first year is printed");
+        let second = f.label("2019").expect("the second year is printed");
+        let at = strip_y(header_of(&f.view, 1).top, total, 600.0) as f32;
+        assert!(at > 20.0, "{at}");
+        assert!((first.center().y - 7.0).abs() < 3.0, "{first:?}");
+        assert!((second.center().y - (at + 7.0)).abs() < 3.0, "{second:?}");
+        let middle = STRIP_LEFT + TIMELINE_WIDTH as f32 / 2.0;
+        assert!((second.center().x - middle).abs() < 2.0, "{second:?}");
+        // And no tile under it: the widest thing the grid draws ends at its scrollbar.
+        assert!(
+            f.fills
+                .iter()
+                .all(|(rect, _)| rect.left() >= STRIP_LEFT - BAR_WIDTH as f32
+                    || rect.right() <= STRIP_LEFT - BAR_WIDTH as f32 + 0.5),
+            "{:?}",
+            f.fills
+        );
+    }
+
+    #[test]
+    fn there_is_no_strip_over_one_year_or_nothing_to_scroll_or_no_headers() {
+        let alone = tile_for(row_width(800.0 - BAR_WIDTH), tile_width(GridTile::Medium));
+        for (folders, layout) in [
+            // One year, however long.
+            (&[(400, 2024)][..], Layout::Folders),
+            // Two years on one screen.
+            (&[(4, 2024), (4, 2019)][..], Layout::Folders),
+            // Sorted by name: every photo together, under no header.
+            (&[(40, 2024), (400, 2019)][..], Layout::Flat),
+        ] {
+            let mut f = fixture(&[]);
+            f.index = index_of_years(folders, layout);
+            let frame = f.frame(Vec::new());
+            assert!(!frame.strip, "{folders:?}");
+            assert_eq!(f.tile(), alone, "{folders:?}");
+            assert_eq!(f.label("2024"), None);
+        }
+    }
+
+    // The strip takes width from the tiles, and tiles that fill the row are shorter for
+    // it: there is a band of heights where the grid fits beside the strip and overflows
+    // without it. Asked of the grid as it stands, the strip came and went on every frame.
+    #[test]
+    fn the_strip_does_not_come_and_go_where_it_would_make_the_grid_fit() {
+        let mut f = fixture(&[]);
+        f.index = index_of_years(&[(8, 2024), (8, 2019)], Layout::Folders);
+        let nominal = tile_width(GridTile::Medium);
+        let height = |outer: f64| {
+            let row = row_width(outer);
+            layout_height(
+                f.index.sections(),
+                columns_for(row, nominal),
+                tile_for(row, nominal),
+            )
+        };
+        let alone = height(800.0 - BAR_WIDTH);
+        let beside = height(800.0 - BAR_WIDTH - TIMELINE_WIDTH);
+        assert!(beside + 10.0 < alone, "{beside} and {alone}");
+        f.size.y = ((alone + beside) / 2.0) as f32;
+        let frames: Vec<(bool, bool)> = (0..6)
+            .map(|_| {
+                let frame = f.frame(Vec::new());
+                (frame.strip, frame.rebuilt)
+            })
+            .collect();
+        assert_eq!(frames[0], (false, true));
+        assert_eq!(frames[1..], [(false, false); 5]);
+        // A grid that scrolls by a few points, without a strip.
+        assert!(f.view.max_position() > 0.0);
+    }
+
+    // A scan finds a folder of an older year, or loses the only one: the strip comes or
+    // goes with the new index, the tiles change with it, and the row at the top of the
+    // grid still holds the photo it held. (A folder that sorts before that photo moves
+    // the grid by its rows, as it does when no strip comes with it: `lay_out`.)
+    #[test]
+    fn the_grid_stays_on_its_photo_when_the_strip_comes_and_when_it_goes() {
+        let mut f = fixture(&[]);
+        f.index = index_of_years(&[(400, 2024)], Layout::Folders);
+        f.frame(Vec::new());
+        f.view.scroll_to(5000.0);
+        assert!(!f.frame(Vec::new()).strip);
+        let photo = f.top_photo();
+        assert!(photo > 0);
+
+        f.index = index_of_years(&[(400, 2024), (8, 2019)], Layout::Folders);
+        f.layout_gen = 2;
+        let came = f.frame(Vec::new());
+        assert!(came.strip && came.rebuilt);
+        assert_eq!(f.top_photo(), photo);
+        assert!(came.position < 5000.0, "narrower tiles make shorter rows");
+
+        f.index = index_of_years(&[(400, 2024)], Layout::Folders);
+        f.layout_gen = 3;
+        let went = f.frame(Vec::new());
+        assert!(!went.strip && went.rebuilt);
+        assert_eq!(f.top_photo(), photo);
+    }
+
+    // The size control: other tiles, other rows, the same photo.
+    #[test]
+    fn another_tile_size_keeps_the_photo_at_the_top() {
+        let mut f = fixture(&[400]);
+        f.frame(Vec::new());
+        f.view.scroll_to(5000.0);
+        f.frame(Vec::new());
+        for size in [GridTile::Small, GridTile::Large, GridTile::Medium] {
+            // The photo the top row begins with: rows of another length begin with
+            // others, and the row that holds this one is the one at the top next.
+            let photo = f.top_photo();
+            assert!(photo > 0);
+            f.tile = size;
+            let after = f.frame(Vec::new());
+            assert!(after.rebuilt);
+            let rows = &f.view.rows;
+            assert_eq!(
+                row_of_item(rows, photo),
+                Some(row_index_at(rows, after.position)),
+                "{size:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_press_on_the_strip_goes_to_that_place_and_a_drag_goes_on_from_there() {
+        let mut f = two_years();
+        f.frame(Vec::new());
+        let total = total_height(&f.view.rows);
+        let header = header_of(&f.view, 1).top;
+        // On the second year's label.
+        let on = Pos2::new(STRIP_LEFT + 22.0, strip_y(header, total, 600.0) as f32);
+        f.frame(vec![Event::PointerMoved(on)]);
+        let pressed = f.button(on, true);
+        let held = f.frame(Vec::new());
+        assert_eq!(pressed.position, held.position);
+        assert!((held.position - header).abs() < 0.5, "{}", held.position);
+
+        // A drag that strays off the narrow strip keeps scrubbing.
+        let to = Pos2::new(500.0, 300.0);
+        let dragged = f.frame(vec![Event::PointerMoved(to)]);
+        let there = scroll_top_for(300.0, 600.0, total, 600.0);
+        assert!(
+            (dragged.position - there).abs() < 0.5,
+            "{}",
+            dragged.position
+        );
+        assert!(there > header + 1000.0);
+        // The year is still named, level with the pointer, though the pointer is off
+        // the strip: it is the strip that is held.
+        let (year, place) = f
+            .named()
+            .expect("the year is named while the strip is held");
+        assert_eq!(year, "2019");
+        assert!((place.center().y - 300.0).abs() < 3.0, "{place:?}");
+        // Past the strip's end is the grid's end, and the year is named at the strip's.
+        let below = f.frame(vec![Event::PointerMoved(Pos2::new(500.0, 900.0))]);
+        assert_eq!(below.position, f.view.max_position());
+        let (_, place) = f.named().expect("the year is named");
+        assert!((place.center().y - 600.0).abs() < 3.0, "{place:?}");
+
+        // Let go of, it follows the pointer no more.
+        f.button(Pos2::new(500.0, 900.0), false);
+        let after = f.frame(vec![Event::PointerMoved(Pos2::new(
+            STRIP_LEFT + 22.0,
+            100.0,
+        ))]);
+        assert_eq!(after.position, below.position);
+    }
+
+    // The button that opens a menu is not the one that moves the grid.
+    #[test]
+    fn the_other_button_on_the_strip_moves_nothing() {
+        let mut f = two_years();
+        f.frame(Vec::new());
+        let on = Pos2::new(STRIP_LEFT + 22.0, 400.0);
+        f.frame(vec![Event::PointerMoved(on)]);
+        let pressed = f.frame(vec![Event::PointerButton {
+            pos: on,
+            button: PointerButton::Secondary,
+            pressed: true,
+            modifiers: Modifiers::NONE,
+        }]);
+        assert_eq!(pressed.position, 0.0);
+        assert_eq!(f.frame(Vec::new()).position, 0.0);
+    }
+
+    // A press that began on the photos and wandered onto the strip is not a press on it.
+    #[test]
+    fn a_press_begun_elsewhere_does_not_move_the_grid_from_the_strip() {
+        let mut f = two_years();
+        f.frame(Vec::new());
+        let on_photos = Pos2::new(300.0, 300.0);
+        f.frame(vec![Event::PointerMoved(on_photos)]);
+        f.button(on_photos, true);
+        let over = f.frame(vec![Event::PointerMoved(Pos2::new(
+            STRIP_LEFT + 22.0,
+            400.0,
+        ))]);
+        assert_eq!(over.position, 0.0);
+        assert_eq!(f.frame(Vec::new()).position, 0.0);
+    }
+
+    #[test]
+    fn the_strip_marks_where_the_grid_is_and_names_the_year_under_the_pointer() {
+        let mut f = two_years();
+        f.frame(Vec::new());
+        f.view.scroll_to(3000.0);
+        f.frame(Vec::new());
+        let total = total_height(&f.view.rows);
+        let accent = color(palette(&f.ctx).accent);
+        let lines: Vec<Rect> = (f.fills.iter())
+            .filter(|(rect, fill)| *fill == accent && rect.left() >= STRIP_LEFT)
+            .map(|(rect, _)| *rect)
+            .collect();
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        let at = strip_y(3000.0, total, 600.0) as f32;
+        assert!((lines[0].center().y - at).abs() < 0.6, "{:?}", lines[0]);
+        assert_eq!(lines[0].width(), TIMELINE_WIDTH as f32 - 8.0);
+        // No year is named with the pointer elsewhere.
+        assert_eq!(f.named(), None);
+
+        // Deep in the second year's share of the strip.
+        f.frame(vec![Event::PointerMoved(Pos2::new(
+            STRIP_LEFT + 22.0,
+            400.0,
+        ))]);
+        f.frame(Vec::new());
+        let (year, place) = f.named().expect("the year under the pointer is named");
+        assert_eq!(year, "2019");
+        assert!((place.center().y - 400.0).abs() < 3.0, "{place:?}");
+        // And at its top, the first.
+        f.frame(vec![Event::PointerMoved(Pos2::new(STRIP_LEFT + 22.0, 3.0))]);
+        f.frame(Vec::new());
+        assert_eq!(f.named().map(|(year, _)| year), Some("2024"));
+        // Off the strip, none again.
+        f.frame(vec![Event::PointerMoved(Pos2::new(300.0, 300.0))]);
+        f.frame(Vec::new());
+        assert_eq!(f.named(), None);
     }
 
     // A mouse wheel reports notches, not points, and how far a notch goes is the
@@ -910,6 +1419,30 @@ mod tests {
         // And it is a grid again when the room comes back.
         f.size = vec2(800.0, 600.0);
         assert!(!f.frame(Vec::new()).on_screen.is_empty());
+    }
+
+    // The same window with a strip in it, the pointer on the strip and the button down:
+    // a strip of no height has no place to name and none to go to.
+    #[test]
+    fn a_strip_with_no_room_is_drawn_and_pressed_without_a_panic() {
+        let mut f = two_years();
+        f.frame(Vec::new());
+        for size in [
+            vec2(0.0, 0.0),
+            vec2(5.0, 5.0),
+            vec2(800.0, 0.0),
+            vec2(30.0, 600.0),
+        ] {
+            f.size = size;
+            let on = Pos2::new(size.x - 2.0, 0.0);
+            f.frame(vec![Event::PointerMoved(on)]);
+            let pressed = f.button(on, true);
+            assert!(pressed.position.is_finite(), "{size:?}");
+            f.button(on, false);
+        }
+        f.size = vec2(800.0, 600.0);
+        let back = f.frame(Vec::new());
+        assert!(back.strip && !back.on_screen.is_empty());
     }
 
     // The rows are built for the sections of one index. An index swapped in without its

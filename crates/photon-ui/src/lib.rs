@@ -7,6 +7,8 @@
 
 pub mod app;
 pub mod args;
+pub mod controls;
+pub mod controls_bar;
 pub mod dirs;
 pub mod empty;
 pub mod events;
@@ -18,6 +20,7 @@ pub mod grid {
     pub mod motion;
     pub mod scroll;
     pub mod tile;
+    pub mod timeline;
     pub mod view;
     pub mod visible;
 }
@@ -27,6 +30,8 @@ pub mod probe;
 pub mod search_bar;
 pub mod search_box;
 pub mod search_help;
+pub mod select;
+pub mod select_view;
 pub mod shell;
 pub mod sidebar {
     pub mod folders;
@@ -53,13 +58,15 @@ pub mod window_layout;
 #[cfg(test)]
 mod tests {
     /// The state modules, with their source.
-    const STATE_MODULES: [(&str, &str); 21] = [
+    const STATE_MODULES: [(&str, &str); 24] = [
         ("args.rs", include_str!("args.rs")),
+        ("controls.rs", include_str!("controls.rs")),
         ("dirs.rs", include_str!("dirs.rs")),
         ("empty.rs", include_str!("empty.rs")),
         ("nav.rs", include_str!("nav.rs")),
         ("search_box.rs", include_str!("search_box.rs")),
         ("search_help.rs", include_str!("search_help.rs")),
+        ("select.rs", include_str!("select.rs")),
         ("sidebar/folders.rs", include_str!("sidebar/folders.rs")),
         ("sidebar/list.rs", include_str!("sidebar/list.rs")),
         ("sidebar/rows.rs", include_str!("sidebar/rows.rs")),
@@ -67,6 +74,7 @@ mod tests {
         ("theme/tokens.rs", include_str!("theme/tokens.rs")),
         ("grid/labels.rs", include_str!("grid/labels.rs")),
         ("grid/layout.rs", include_str!("grid/layout.rs")),
+        ("grid/timeline.rs", include_str!("grid/timeline.rs")),
         ("grid/motion.rs", include_str!("grid/motion.rs")),
         ("grid/scroll.rs", include_str!("grid/scroll.rs")),
         ("grid/visible.rs", include_str!("grid/visible.rs")),

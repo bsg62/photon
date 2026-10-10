@@ -44,3 +44,5 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 egui_kittest = { version = "=0.36.2", features = ["wgpu", "eframe"] }
 image = { version = "0.25.10", default-features = false, features = ["jpeg"] }
 tempfile = "3.27.0"
+# A second connection to a test's library, to hold its write lock (`tests/sort.rs`).
+rusqlite = { version = "0.40.2", features = ["bundled"] }

@@ -22,12 +22,15 @@ use std::{
     time::{Duration, Instant},
 };
 
-/// The folders of the library, and how many of the photos each takes.
-const FOLDERS: [(&str, usize); 4] = [
-    ("2026-07 Coast", 7),
-    ("東京 2024 桜", 5),
-    ("رحلة-الصيف (2024)", 5),
-    ("🎉 Party שלום-עולם abc", 6),
+/// The folders of the library, how many of the photos each takes, and the day its photos
+/// are dated: the files carry no capture date, so photon reads the day they were last
+/// written, and copied here that would be today for all of them - one month, one year,
+/// and no year strip to draw.
+const FOLDERS: [(&str, usize, (i16, i8, i8)); 4] = [
+    ("2026-07 Coast", 7, (2026, 7, 14)),
+    ("東京 2024 桜", 5, (2024, 4, 3)),
+    ("رحلة-الصيف (2024)", 5, (2024, 8, 21)),
+    ("🎉 Party שלום-עולם abc", 6, (2025, 12, 31)),
 ];
 
 fn manifest() -> &'static Path {
@@ -44,11 +47,25 @@ fn library(pictures: &Path) {
         .collect();
     photos.sort();
     let mut photos = photos.into_iter();
-    for (folder, count) in FOLDERS {
+    for (folder, count, (year, month, day)) in FOLDERS {
         let folder = pictures.join(folder);
         std::fs::create_dir_all(&folder).unwrap();
-        for photo in photos.by_ref().take(count) {
-            std::fs::copy(&photo, folder.join(photo.file_name().unwrap())).unwrap();
+        let noon = jiff::civil::date(year, month, day)
+            .at(12, 0, 0, 0)
+            .to_zoned(jiff::tz::TimeZone::UTC)
+            .unwrap()
+            .timestamp();
+        for (n, photo) in photos.by_ref().take(count).enumerate() {
+            let copy = folder.join(photo.file_name().unwrap());
+            std::fs::copy(&photo, &copy).unwrap();
+            // A photo every ten minutes from noon.
+            let taken = std::time::SystemTime::from(noon) + Duration::from_secs(600 * n as u64);
+            std::fs::File::options()
+                .write(true)
+                .open(&copy)
+                .unwrap()
+                .set_modified(taken)
+                .unwrap();
         }
     }
 }
@@ -117,7 +134,7 @@ fn shot(theme: ThemeChoice, name: &str, then: impl Fn(&mut Harness<'_>)) {
         .wgpu()
         .build_eframe(|cc| App::new(cc, dirs, Some(pictures)).unwrap());
 
-    let total: usize = FOLDERS.iter().map(|(_, count)| count).sum();
+    let total: usize = FOLDERS.iter().map(|(_, count, _)| count).sum();
     until(&mut harness, "the library shown", |app| {
         let shown = app.last_frame().is_some_and(|frame| frame.settled);
         app.photos() == total && app.folders().len() >= FOLDERS.len() && shown
@@ -228,6 +245,48 @@ fn native_search_help_light() {
             });
             harness.get_by_label("What you can search for").click();
             until(harness, "the help open", |app| app.search_help_open());
+        },
+    );
+}
+
+// The controls at the right of the top bar, with the sort's list open over the photos.
+#[test]
+#[ignore = "renders through a GPU adapter: cargo run -p xtask -- native-shot"]
+fn native_sort_list_dark() {
+    shot(ThemeChoice::Dark, "native-sort-list-dark.png", |harness| {
+        harness.get_by_label("Sort by: Date taken").click();
+        harness.step();
+        harness.step();
+        harness.get_by_label("Date modified").hover();
+    });
+}
+
+// By month, at the largest size: a header for each month, and - the photos being of
+// several years and more than a screen of them - the year strip beside the scrollbar.
+#[test]
+#[ignore = "renders through a GPU adapter: cargo run -p xtask -- native-shot"]
+fn native_by_month_large_light() {
+    shot(
+        ThemeChoice::Light,
+        "native-by-month-large-light.png",
+        |harness| {
+            harness.get_by_label("Large").click();
+            harness.step();
+            harness.get_by_label("Group by: By folder").click();
+            harness.step();
+            harness.step();
+            harness.get_by_label("By month").click();
+            until(harness, "the months shown", |app| {
+                app.settled_sort().group == photon_core::sort::Grouping::Month
+                    && app.last_frame().is_some_and(|frame| frame.settled)
+            });
+            // Somewhere in the middle, with the pointer on the strip: the line where
+            // the grid is, and the year under the pointer.
+            harness.key_press_modifiers(Modifiers::NONE, Key::PageDown);
+            harness.step();
+            if let Some(strip) = harness.query_by_label("Timeline") {
+                strip.hover();
+            }
         },
     );
 }

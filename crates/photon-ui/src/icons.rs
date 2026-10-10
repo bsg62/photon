@@ -9,8 +9,10 @@ use eframe::egui::{self, Color32, Rect, Vec2};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Icon {
+    ArrowDownUp,
     Bookmark,
     Calendar,
+    Check,
     ChevronDown,
     ChevronRight,
     CircleHelp,
@@ -32,9 +34,11 @@ pub enum Icon {
 }
 
 impl Icon {
-    pub const ALL: [Icon; 20] = [
+    pub const ALL: [Icon; 22] = [
+        Icon::ArrowDownUp,
         Icon::Bookmark,
         Icon::Calendar,
+        Icon::Check,
         Icon::ChevronDown,
         Icon::ChevronRight,
         Icon::CircleHelp,
@@ -57,6 +61,8 @@ impl Icon {
 
     fn name(self) -> &'static str {
         match self {
+            Icon::ArrowDownUp => "arrow-down-up",
+            Icon::Check => "check",
             Icon::Bookmark => "bookmark",
             Icon::CircleHelp => "circle-help",
             Icon::Search => "search",
@@ -92,6 +98,10 @@ impl Icon {
                 r#"<circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><path d="M12 17h.01"/>"#
             }
             Icon::Search => r#"<path d="m21 21-4.34-4.34"/><circle cx="11" cy="11" r="8"/>"#,
+            Icon::ArrowDownUp => {
+                r#"<path d="m3 16 4 4 4-4"/><path d="M7 20V4"/><path d="m21 8-4-4-4 4"/><path d="M17 4v16"/>"#
+            }
+            Icon::Check => r#"<path d="M20 6 9 17l-5-5"/>"#,
             Icon::ChevronDown => r#"<path d="m6 9 6 6 6-6"/>"#,
             Icon::ChevronRight => r#"<path d="m9 18 6-6-6-6"/>"#,
             Icon::Folder => {
