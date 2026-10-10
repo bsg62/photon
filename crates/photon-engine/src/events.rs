@@ -24,6 +24,10 @@ pub struct ScanProgressEvent {
     pub changed: u64,
     pub done: bool,
     pub cancelled: bool,
+    /// How many photos the folder being scanned held before the scan - or the subtree,
+    /// for the watcher's scan of one directory: what `files_seen` is measured against.
+    /// None in a full scan's first report alone (`ScanProgress::known`).
+    pub known: Option<u64>,
 }
 
 impl ScanProgressEvent {
@@ -35,6 +39,7 @@ impl ScanProgressEvent {
             changed: p.changed,
             done,
             cancelled,
+            known: p.known,
         }
     }
 }

@@ -358,6 +358,9 @@ pub struct Engine {
     /// Set once by `shutdown`. Once true, no new scan starts and the startup thread stops
     /// at its next checkpoint.
     shutting_down: AtomicBool,
+    /// Whether `startup` has settled which folders are watched and started the first
+    /// scan of each (`startup_scans_started`).
+    startup_scans_started: AtomicBool,
     /// The handle of the thread spawned by `startup`, if any is still outstanding.
     /// `wait_for_startup` takes it and joins it, and is safe to call more than once.
     startup: Mutex<Option<JoinHandle<()>>>,
@@ -576,6 +579,7 @@ impl Engine {
             removing: Mutex::new(HashSet::new()),
             next_token: AtomicU64::new(0),
             shutting_down: AtomicBool::new(false),
+            startup_scans_started: AtomicBool::new(false),
             startup: Mutex::new(None),
             background_passes: AtomicUsize::new(0),
             thumb_hashing: Mutex::new(None),
@@ -1909,6 +1913,7 @@ impl Engine {
                     }
                     engine.start_scan(watched);
                 }
+                engine.startup_scans_started.store(true, Ordering::SeqCst);
                 engine.wait_for_scans();
                 if shutting_down() {
                     return;
@@ -1955,6 +1960,21 @@ impl Engine {
             }
             Err(err) => tracing::warn!(%err, "thumbnail garbage collection failed"),
         }
+    }
+
+    /// Whether `startup` has settled which folders are watched - the Pictures folder it
+    /// adds by itself among them - and started the first scan of each.
+    ///
+    /// The first grid is published before that, on purpose, and an interface that is
+    /// there to draw it knows nothing yet of an empty library but that it is empty: the
+    /// folder list it reads may be from before the Pictures folder was added, and no scan
+    /// has reported. Until this is true neither "no folder is watched" nor "nothing has
+    /// been found" is known. After it, every folder the library watched at that moment
+    /// has had its scan started, and a scan reports at least its end - unless it dies:
+    /// one that panics releases its slot and says nothing more. (When the read of the
+    /// watched folders itself fails here, this is true over no scan at all.)
+    pub fn startup_scans_started(&self) -> bool {
+        self.startup_scans_started.load(Ordering::SeqCst)
     }
 
     /// Blocks until the thread spawned by `startup` has finished, if it hasn't already.
@@ -2857,6 +2877,10 @@ struct ScanReporter<'a> {
 
 impl ScanSink for ScanReporter<'_> {
     fn progress(&mut self, p: &ScanProgress) {
+        // The first report that says what the scan is measured against is sent whatever
+        // the clock says: it follows the scan's opening report by one read, well inside
+        // the throttle, and the next may be a long walk away.
+        let measured = p.known.is_some() && self.last.known.is_none();
         self.last = *p;
         let total = p.added + p.changed;
         // Inline, on the scan thread, rather than on a thread of its own. The pacer already
@@ -2878,7 +2902,7 @@ impl ScanSink for ScanReporter<'_> {
                 .record(start, Instant::now());
             self.refreshed_total = total;
         }
-        if self.last_progress.is_none_or(|t| t.elapsed() >= THROTTLE) {
+        if measured || self.last_progress.is_none_or(|t| t.elapsed() >= THROTTLE) {
             // Before the event, so `scanning_folders` never answers "not scanning" about a
             // scan a listener has already been told is running.
             self.engine.reporting.lock().insert(self.watched_id);
@@ -3063,6 +3087,7 @@ mod tests {
             files_seen: 1,
             added: 1,
             changed: 0,
+            known: None,
         };
         let before = f.engine.grid().0;
         a.progress(&progress);
@@ -3094,6 +3119,7 @@ mod tests {
             files_seen: 1,
             added: 1,
             changed: 0,
+            known: None,
         });
         assert_eq!(f.engine.grid().0, before);
     }
@@ -4028,6 +4054,7 @@ mod tests {
                 changed: 0,
                 done: false,
                 cancelled: false,
+                known: None,
             }),
             "{scans:?}"
         );
@@ -4064,6 +4091,37 @@ mod tests {
         }
         assert_eq!(engine.scanning_folders(), Vec::<i64>::new());
         engine.shutdown();
+    }
+
+    /// A scan too quick for a second report inside the throttle still says what it is
+    /// measured against while it runs: that report is let through whatever the clock
+    /// says. Without it a rescan of a folder that has not changed - the scan a launch
+    /// makes of every folder - was drawn as a scan of a folder that held nothing, for as
+    /// long as its walk took to reach the throttle.
+    #[test]
+    fn a_scan_says_what_it_is_measured_against_as_soon_as_it_knows() {
+        let f = fixture(&[("a/1.jpg", &jpeg(8, 6)), ("a/2.jpg", &jpeg(8, 7))]);
+        let watched = f.engine.add_folder(&f.photos).unwrap();
+        f.engine.wait_for_scans();
+        let before = f.events.all().len();
+
+        assert!(f.engine.start_scan(watched.clone()));
+        f.engine.wait_for_scans();
+        let reports: Vec<ScanProgressEvent> = (f.events.all()[before..].iter())
+            .filter_map(|event| match event {
+                Recorded::Scan(scan) if scan.watched_id == watched.id => Some(*scan),
+                _ => None,
+            })
+            .collect();
+        let running: Vec<Option<u64>> = (reports.iter())
+            .filter(|scan| !scan.done)
+            .map(|scan| scan.known)
+            .collect();
+        assert_eq!(running, [None, Some(2)], "{reports:?}");
+        assert_eq!(
+            reports.last().map(|scan| (scan.done, scan.known)),
+            Some((true, Some(2)))
+        );
     }
 
     /// Panics at the first not-done scan event it is sent: a scan thread dying in the middle
@@ -6294,6 +6352,42 @@ mod tests {
         f.engine.startup(Some(other));
         f.engine.wait_for_startup();
         assert_eq!(f.engine.lib.watched_folders().unwrap().len(), 1);
+    }
+
+    // What an interface that is there from the first moment asks before it says anything
+    // of an empty library: until the folders to watch are settled and each one's scan has
+    // been started, "none is watched" and "nothing has been found" are both not known
+    // yet. Held to the scans having been *started*, not to the thread having got as far
+    // as them: with the scan slots held here the startup thread waits at its first scan,
+    // and must not have said so by then.
+    #[test]
+    fn startup_says_its_first_scans_are_started_only_once_they_are() {
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a.jpg", &img)]);
+        assert!(!f.engine.startup_scans_started());
+        let slots = f.engine.scans.lock();
+        f.engine.startup(Some(f.photos.clone()));
+        // The thread builds the first grid, watches the Pictures folder and then waits
+        // for the slots: long enough for all of that, on a runner under load too.
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while f.engine.lib.watched_folders().unwrap().is_empty() {
+            assert!(
+                Instant::now() < deadline,
+                "the Pictures folder was never watched"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(!f.engine.startup_scans_started());
+        drop(slots);
+        f.engine.wait_for_startup();
+        assert!(f.engine.startup_scans_started());
+
+        // With nothing to watch there is nothing to start, and that is known as soon.
+        let empty = fixture(&[]);
+        empty.engine.startup(None);
+        empty.engine.wait_for_startup();
+        assert!(empty.engine.startup_scans_started());
     }
 
     #[test]

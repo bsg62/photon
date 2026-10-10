@@ -22,10 +22,13 @@ fn choose(driver: &mut Driver, harness: &mut Harness<'_>, control: &str, option:
     click(driver, harness, option);
 }
 
-/// Draws frames until the grid on screen is sorted as `sort`.
+/// Draws frames until the grid on screen is sorted as `sort` and no step is on its way.
+/// Not only until the sort on screen is the one wanted: of four changes that end where
+/// the second was, the second's grid is that already, with two more behind it - which
+/// Windows' CI met, the engine being by then in the middle of the third.
 fn sorted(driver: &mut Driver, harness: &mut Harness<'_>, sort: Sort) {
     driver.until(harness, "the sort shown", |app| {
-        app.settled_sort() == sort && app.sort() == sort
+        app.settled_sort() == sort && app.sort() == sort && !app.busy()
     });
 }
 

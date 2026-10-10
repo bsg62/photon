@@ -33,6 +33,20 @@ pub struct ScanProgress {
     pub files_seen: u64,
     pub added: u64,
     pub changed: u64,
+    /// How many live photos the scan's folder - or, for a scan of a subtree, the subtree -
+    /// held before it: what `files_seen` is measured against by whoever draws a bar. None
+    /// only in a full scan's very first report, sent before the rows are read.
+    ///
+    /// Said by the scan because only the scan knows it. Counted by a listener after the
+    /// scan's first report, it holds what the scan has added by then: a batch of five
+    /// hundred is written every few hundred milliseconds, and a first scan was measured
+    /// against its own first batches.
+    pub known: Option<u64>,
+}
+
+/// How many of `known` are live: the photos a scan's folder holds, as it begins.
+fn live(known: &HashMap<String, KnownItem>) -> u64 {
+    known.values().filter(|item| !item.missing).count() as u64
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -202,6 +216,15 @@ pub fn scan_watched(
     }
 
     let mut known = lib.known_items(watched.id)?;
+    // And again, now that it is known what the scan is measured against: the walk's own
+    // first report may be a long way off, and until it comes a rescan is drawn as a scan
+    // of a folder that held nothing.
+    if watched.online {
+        progress.progress(&ScanProgress {
+            known: Some(live(&known)),
+            ..ScanProgress::default()
+        });
+    }
     let mut folder_ids: HashMap<PathBuf, i64> = HashMap::new();
     let mut rows = FolderRows::load(lib, watched.id)?;
 
@@ -697,7 +720,10 @@ fn walk_tree(
     progress: &mut dyn ScanSink,
 ) -> Result<WalkOutcome> {
     let mut report = ScanReport::default();
-    let mut seen = ScanProgress::default();
+    let mut seen = ScanProgress {
+        known: Some(live(known)),
+        ..ScanProgress::default()
+    };
     let mut new_batch: Vec<NewItem> = Vec::new();
     let mut changed_batch: Vec<(i64, NewItem)> = Vec::new();
     let mut meta_batch: Vec<(i64, NewItem)> = Vec::new();
@@ -1859,12 +1885,85 @@ mod tests {
             reports,
             [
                 0,
+                0,
                 PROGRESS_EVERY,
                 2 * PROGRESS_EVERY,
                 2 * PROGRESS_EVERY + 5
             ],
-            "the opening report, two on the way and the final one, not just the final one"
+            "the two opening reports, two on the way and the final one, not just the final one"
         );
+    }
+
+    /// A scan does not know how many files it will see, and whoever draws its progress
+    /// measures it against what the folder held before. Only the scan can say that
+    /// number: it reads the folder's rows before it walks, and anyone who counts them
+    /// later counts what the scan has added meanwhile - a first scan of a new folder was
+    /// drawn as "3,000 of ~500 files", five hundred being its own first batch. So every
+    /// report says it, but the very first, which is sent before the rows are read.
+    #[test]
+    fn a_scan_says_how_many_photos_its_folder_held_before_it() {
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        for i in 0..3 {
+            write_file(&root, &format!("{i}.jpg"), &jpeg_bytes(4, 4 + i));
+        }
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
+        let held = |scan_id| {
+            let mut reports: Vec<Option<u64>> = Vec::new();
+            scan_watched(
+                &lib,
+                &watched,
+                scan_id,
+                &ScanOptions::default(),
+                &mut progress_only(|p| reports.push(p.known)),
+            )
+            .unwrap();
+            reports
+        };
+        // A first scan: nothing, said as soon as it is known and in every report after.
+        let first = held(1);
+        assert_eq!(first[..2], [None, Some(0)], "{first:?}");
+        assert!(
+            first[1..].iter().all(|known| *known == Some(0)),
+            "{first:?}"
+        );
+        // A rescan: the three it found, not the three plus whatever it adds.
+        write_file(&root, "more.jpg", &jpeg_bytes(4, 9));
+        let second = held(2);
+        assert_eq!(second[..2], [None, Some(3)], "{second:?}");
+        assert!(
+            second[1..].iter().all(|known| *known == Some(3)),
+            "{second:?}"
+        );
+        // A photo that is gone is not among what the folder holds.
+        std::fs::remove_file(root.join("0.jpg")).unwrap();
+        held(3);
+        let fourth = held(4);
+        assert_eq!(fourth[1], Some(3), "{fourth:?}");
+    }
+
+    /// The watcher's scan of one directory measures itself against that directory.
+    #[test]
+    fn a_scan_of_a_subtree_says_how_many_photos_the_subtree_held() {
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        write_file(&root, "top.jpg", &jpeg_bytes(4, 4));
+        write_file(&root, "trip/a.jpg", &jpeg_bytes(4, 5));
+        write_file(&root, "trip/b.jpg", &jpeg_bytes(4, 6));
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
+        scan(&lib, &watched, 1);
+        let mut reports: Vec<Option<u64>> = Vec::new();
+        scan_subtree(
+            &lib,
+            &watched,
+            &root.join("trip"),
+            2,
+            &ScanOptions::default(),
+            &mut progress_only(|p| reports.push(p.known)),
+        )
+        .unwrap();
+        assert!(!reports.is_empty());
+        assert!(reports.iter().all(|known| *known == Some(2)), "{reports:?}");
     }
 
     /// A full scan reports once before it walks, with nothing seen: the walk's own first

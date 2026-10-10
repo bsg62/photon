@@ -11,6 +11,7 @@ pub mod controls;
 pub mod controls_bar;
 pub mod dirs;
 pub mod empty;
+pub mod empty_panel;
 pub mod events;
 pub mod fixture;
 pub mod grid {
@@ -27,12 +28,14 @@ pub mod grid {
 pub mod icons;
 pub mod nav;
 pub mod probe;
+pub mod scans;
 pub mod search_bar;
 pub mod search_box;
 pub mod search_help;
 pub mod select;
 pub mod select_view;
 pub mod shell;
+pub mod status;
 pub mod sidebar {
     pub mod folders;
     pub mod list;
@@ -58,9 +61,11 @@ pub mod window_layout;
 #[cfg(test)]
 mod tests {
     /// The state modules, with their source.
-    const STATE_MODULES: [(&str, &str); 24] = [
+    const STATE_MODULES: [(&str, &str); 26] = [
         ("args.rs", include_str!("args.rs")),
         ("controls.rs", include_str!("controls.rs")),
+        ("scans.rs", include_str!("scans.rs")),
+        ("status.rs", include_str!("status.rs")),
         ("dirs.rs", include_str!("dirs.rs")),
         ("empty.rs", include_str!("empty.rs")),
         ("nav.rs", include_str!("nav.rs")),

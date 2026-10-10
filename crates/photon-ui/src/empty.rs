@@ -7,7 +7,7 @@
 use crate::grid::labels::photo_count as counted;
 use crate::nav::Place;
 use crate::sidebar::list::Collections;
-use photon_core::grid::GridView;
+use photon_core::{grid::GridView, library::WatchedFolder};
 use photon_engine::engine::NOT_BUILT;
 
 /// The grid on hand, as far as these rules need it.
@@ -95,6 +95,183 @@ pub fn view_notice(grid: &GridState, place: &Place, collections: &Collections) -
         ),
         _ => None,
     }
+}
+
+/// What the library says in place of photos while it shows none: an offer to add the
+/// first folder, that a scan is looking, that the watched folders have given no photos,
+/// or that every photo there is has been hidden.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EmptyLibrary {
+    FirstRun,
+    Scanning,
+    NoPhotos,
+    AllHidden,
+}
+
+/// Which of them applies, or none when nothing can be said yet.
+///
+/// Hidden photos first: with any, the library is not empty, and "photon has found no
+/// photos" beside a sidebar row reading "Hidden 240" is false - Hide folder on the only
+/// folder is all it takes.
+///
+/// Then a running scan, whatever the folder list holds: on a first run the engine watches
+/// the Pictures folder by itself and scans it, and the list read at launch may be from
+/// before that.
+///
+/// Otherwise nothing while the watched folders have not been read (`known`): until the
+/// list lands, "none is watched" is not something the interface knows - said anyway, a
+/// user with folders was told to add one for as long as the list took.
+///
+/// `scanning` is what the interface has been told, which is not the whole truth: the
+/// watcher's scan of one changed directory says nothing until its 64th file or its end,
+/// and a folder photon may not read is scanned and reported exactly like an empty one. So
+/// `NoPhotos` is never worded as a finished search (`no_photos_line`).
+pub fn empty_library(
+    known: bool,
+    watched: usize,
+    scanning: bool,
+    hidden: usize,
+) -> Option<EmptyLibrary> {
+    if hidden > 0 {
+        Some(EmptyLibrary::AllHidden)
+    } else if scanning {
+        Some(EmptyLibrary::Scanning)
+    } else if !known {
+        None
+    } else if watched == 0 {
+        Some(EmptyLibrary::FirstRun)
+    } else {
+        Some(EmptyLibrary::NoPhotos)
+    }
+}
+
+/// What is said of watched folders that have given no photos.
+///
+/// "Has found none", never "looked and found none": a folder photon is not allowed to
+/// read is scanned and reported by the engine exactly as an empty one is. A folder on a
+/// drive that is not connected is said to be out of reach rather than empty: it may hold
+/// every photo the user has.
+pub fn no_photos_line(watched: &[WatchedFolder]) -> String {
+    let all = watched.len();
+    let away = watched.iter().filter(|folder| !folder.online).count();
+    match (watched, away) {
+        ([only], 0) => format!(
+            "photon watches {} and has found no photos or videos there.",
+            only.path
+        ),
+        (_, 0) => {
+            format!("photon watches {all} folders and has found no photos or videos in them.")
+        }
+        ([only], _) => format!("photon cannot reach {} right now.", only.path),
+        _ if away == all => format!("photon cannot reach the {all} folders it watches right now."),
+        _ => format!(
+            "photon has found no photos or videos in the folders it can reach; {away} of the \
+             {all} it watches cannot be reached right now."
+        ),
+    }
+}
+
+/// A button of the empty library's panel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum PanelButton {
+    ShowHidden,
+    AddFolder,
+    WatchedFolders,
+}
+
+impl PanelButton {
+    pub fn label(self) -> &'static str {
+        match self {
+            PanelButton::ShowHidden => "Show hidden photos",
+            PanelButton::AddFolder => "Add folder…",
+            PanelButton::WatchedFolders => "Watched folders…",
+        }
+    }
+
+    /// The one the panel puts forward.
+    pub fn primary(self) -> bool {
+        self == PanelButton::AddFolder
+    }
+
+    /// Whether it does anything yet. Adding a folder and the list of watched folders come
+    /// with a later part of the native interface: their buttons are drawn where they will
+    /// be, and take no press.
+    pub fn works(self) -> bool {
+        self == PanelButton::ShowHidden
+    }
+}
+
+/// What the library itself says where its photos would be.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Panel {
+    pub title: &'static str,
+    pub text: String,
+    pub buttons: &'static [PanelButton],
+}
+
+/// What the panel is decided from.
+#[derive(Clone, Copy, Debug)]
+pub struct LibraryFacts<'a> {
+    /// Whether the watched folders are known: read after the engine has settled which
+    /// they are (`Scans::known`).
+    pub known: bool,
+    pub watched: &'a [WatchedFolder],
+    pub scanning: bool,
+    /// How many photos are hidden, when that has been counted for the library as it is:
+    /// before it has, "none" is not known, and a library whose photos are all hidden
+    /// said for a moment that photon had found none.
+    pub hidden: Option<usize>,
+}
+
+/// The empty library's panel: in the views that are the library itself, All photos and
+/// Recent, and where an empty view may say that it is empty. Every other view says why
+/// *it* is empty, in one line (`view_notice`).
+pub fn library_panel(grid: &GridState, place: &Place, library: &LibraryFacts<'_>) -> Option<Panel> {
+    let ours = matches!(place.view, GridView::All | GridView::Recent);
+    if !ours || !show_empty_notice(grid) {
+        return None;
+    }
+    let state = empty_library(
+        library.known,
+        library.watched.len(),
+        library.scanning,
+        library.hidden?,
+    )?;
+    // The scanning and the nothing-found states are one block with one sentence changing:
+    // a scan of a watched folder starts and ends at any time - a file changed, a drive
+    // polled - and buttons that came and went with it would be gone under a press on its
+    // way.
+    const CHOICES: &[PanelButton] = &[PanelButton::AddFolder, PanelButton::WatchedFolders];
+    Some(match state {
+        EmptyLibrary::AllHidden => Panel {
+            title: "Every photo is hidden",
+            text: "The library has no photo to show here: all of them are in Hidden, in the \
+                   sidebar."
+                .to_owned(),
+            buttons: &[PanelButton::ShowHidden],
+        },
+        EmptyLibrary::FirstRun => Panel {
+            title: "No photos yet",
+            text: "Choose a folder and photon shows the photos in it. Your files stay where \
+                   they are: photon never moves, changes or deletes them."
+                .to_owned(),
+            buttons: &[PanelButton::AddFolder],
+        },
+        EmptyLibrary::Scanning => Panel {
+            title: "No photos yet",
+            text: "Looking for photos…".to_owned(),
+            buttons: CHOICES,
+        },
+        EmptyLibrary::NoPhotos => Panel {
+            title: "No photos yet",
+            text: format!(
+                "{} Add the folder your photos are in: photon never moves, changes or deletes \
+                 them.",
+                no_photos_line(library.watched)
+            ),
+            buttons: CHOICES,
+        },
+    })
 }
 
 #[cfg(test)]
@@ -226,5 +403,252 @@ mod tests {
             view_notice(&grid(2, 3), &at(GridView::Album, "4"), &lists),
             None
         );
+    }
+
+    #[test]
+    fn a_library_that_watches_nothing_offers_the_first_folder() {
+        assert_eq!(
+            empty_library(true, 0, false, 0),
+            Some(EmptyLibrary::FirstRun)
+        );
+    }
+
+    // "No photos yet. Add a folder to get started" was said of a folder added a second
+    // ago, while its first scan was still walking it.
+    #[test]
+    fn it_is_looking_while_a_scan_runs_whatever_the_list_holds() {
+        use EmptyLibrary::Scanning;
+        assert_eq!(empty_library(true, 1, true, 0), Some(Scanning));
+        assert_eq!(empty_library(true, 3, true, 0), Some(Scanning));
+        // A scan in a folder the list does not hold yet: the Pictures folder the engine
+        // watches by itself. That is no time to say "add a folder".
+        assert_eq!(empty_library(true, 0, true, 0), Some(Scanning));
+        assert_eq!(empty_library(false, 0, true, 0), Some(Scanning));
+    }
+
+    #[test]
+    fn watched_folders_with_no_scan_known_to_run_have_given_no_photos() {
+        assert_eq!(
+            empty_library(true, 1, false, 0),
+            Some(EmptyLibrary::NoPhotos)
+        );
+    }
+
+    // With no list yet, "none is watched" is not known, and a user with folders was told
+    // to add one for as long as the list took.
+    #[test]
+    fn nothing_is_said_until_the_watched_folders_have_been_read() {
+        assert_eq!(empty_library(false, 0, false, 0), None);
+    }
+
+    // Hide folder on the only folder: the library view is empty and the sidebar says
+    // "Hidden 240". "photon has found no photos" beside that is false.
+    #[test]
+    fn hidden_photos_come_before_everything_else() {
+        use EmptyLibrary::AllHidden;
+        assert_eq!(empty_library(true, 1, false, 240), Some(AllHidden));
+        assert_eq!(empty_library(true, 1, true, 240), Some(AllHidden));
+        assert_eq!(empty_library(false, 0, false, 1), Some(AllHidden));
+    }
+
+    fn on(path: &str) -> WatchedFolder {
+        WatchedFolder {
+            id: 0,
+            path: path.to_owned(),
+            online: true,
+        }
+    }
+
+    fn off(path: &str) -> WatchedFolder {
+        WatchedFolder {
+            online: false,
+            ..on(path)
+        }
+    }
+
+    // "Has found none", never "looked and found none".
+    #[test]
+    fn the_one_folder_is_named_and_several_are_counted() {
+        assert_eq!(
+            no_photos_line(&[on("/home/ada/Pictures")]),
+            "photon watches /home/ada/Pictures and has found no photos or videos there."
+        );
+        assert_eq!(
+            no_photos_line(&[on("/a"), on("/b"), on("/c")]),
+            "photon watches 3 folders and has found no photos or videos in them."
+        );
+    }
+
+    // An unplugged drive has not been looked in: "found no photos" would be said of a
+    // folder that may hold thousands.
+    #[test]
+    fn a_folder_that_cannot_be_reached_is_said_to_be_that_and_not_empty() {
+        assert_eq!(
+            no_photos_line(&[off("/mnt/photos")]),
+            "photon cannot reach /mnt/photos right now."
+        );
+        assert_eq!(
+            no_photos_line(&[off("/a"), off("/b")]),
+            "photon cannot reach the 2 folders it watches right now."
+        );
+        assert_eq!(
+            no_photos_line(&[on("/a"), off("/b"), off("/c")]),
+            "photon has found no photos or videos in the folders it can reach; 2 of the 3 it \
+             watches cannot be reached right now."
+        );
+    }
+
+    fn facts(watched: &[WatchedFolder], scanning: bool, hidden: usize) -> LibraryFacts<'_> {
+        LibraryFacts {
+            known: true,
+            watched,
+            scanning,
+            hidden: Some(hidden),
+        }
+    }
+
+    // The library's own panel, where the library itself is shown; every other view has
+    // its line.
+    #[test]
+    fn the_panel_is_the_empty_librarys_in_all_photos_and_recent_alone() {
+        let pictures = [on("/home/ada/Pictures")];
+        let empty = grid(2, 0);
+        for view in [GridView::All, GridView::Recent] {
+            let panel = library_panel(&empty, &Place::of(view), &facts(&pictures, false, 0));
+            assert_eq!(panel.unwrap().title, "No photos yet", "{view:?}");
+        }
+        for view in [GridView::Starred, GridView::Hidden, GridView::Videos] {
+            assert_eq!(
+                library_panel(&empty, &Place::of(view), &facts(&pictures, false, 0)),
+                None,
+                "{view:?}"
+            );
+        }
+        // Nor over photos, nor before the grid is built, nor when it could not be read.
+        let all = Place::of(GridView::All);
+        assert_eq!(
+            library_panel(&grid(2, 1), &all, &facts(&pictures, false, 0)),
+            None
+        );
+        assert_eq!(
+            library_panel(&grid(NOT_BUILT, 0), &all, &facts(&pictures, false, 0)),
+            None
+        );
+        let failed = GridState {
+            build_error: Some("disk I/O error".to_owned()),
+            ..grid(1, 0)
+        };
+        assert_eq!(
+            library_panel(&failed, &all, &facts(&pictures, false, 0)),
+            None
+        );
+    }
+
+    #[test]
+    fn the_panel_says_what_the_library_is_empty_of_and_offers_what_helps() {
+        use PanelButton::{AddFolder, ShowHidden, WatchedFolders};
+        let (empty, all) = (grid(2, 0), Place::of(GridView::All));
+        let pictures = [on("/home/ada/Pictures")];
+        let panel = |facts: &LibraryFacts<'_>| library_panel(&empty, &all, facts).unwrap();
+
+        let hidden = panel(&facts(&pictures, true, 240));
+        assert_eq!(hidden.title, "Every photo is hidden");
+        assert_eq!(hidden.buttons, [ShowHidden]);
+
+        let first = panel(&facts(&[], false, 0));
+        assert_eq!(first.title, "No photos yet");
+        assert!(
+            first
+                .text
+                .starts_with("Choose a folder and photon shows the photos in it.")
+        );
+        assert_eq!(first.buttons, [AddFolder]);
+
+        let none = panel(&facts(&pictures, false, 0));
+        assert_eq!(
+            none.text,
+            "photon watches /home/ada/Pictures and has found no photos or videos there. Add \
+             the folder your photos are in: photon never moves, changes or deletes them."
+        );
+        assert_eq!(none.buttons, [AddFolder, WatchedFolders]);
+    }
+
+    // A watched folder is rescanned at any time: one block, with one sentence changing.
+    #[test]
+    fn looking_and_nothing_found_are_one_block_with_one_sentence_changing() {
+        let (empty, all) = (grid(2, 0), Place::of(GridView::All));
+        let pictures = [on("/home/ada/Pictures")];
+        let looking = library_panel(&empty, &all, &facts(&pictures, true, 0)).unwrap();
+        let found_none = library_panel(&empty, &all, &facts(&pictures, false, 0)).unwrap();
+        assert_eq!(looking.text, "Looking for photos…");
+        assert_eq!(
+            (looking.title, looking.buttons),
+            (found_none.title, found_none.buttons)
+        );
+        assert_ne!(looking.text, found_none.text);
+    }
+
+    // Before the hidden count has been read "none are hidden" is not known: a library
+    // whose photos are all hidden said for a moment that photon had found none.
+    #[test]
+    fn nothing_is_said_before_the_hidden_photos_have_been_counted() {
+        let (empty, all) = (grid(2, 0), Place::of(GridView::All));
+        let pictures = [on("/home/ada/Pictures")];
+        for scanning in [false, true] {
+            let uncounted = LibraryFacts {
+                hidden: None,
+                ..facts(&pictures, scanning, 0)
+            };
+            assert_eq!(library_panel(&empty, &all, &uncounted), None);
+        }
+    }
+
+    // Adding a folder and the list of watched folders come later: drawn, and inactive.
+    #[test]
+    fn the_one_button_that_works_yet_is_the_one_that_shows_the_hidden_photos() {
+        use PanelButton::{AddFolder, ShowHidden, WatchedFolders};
+        assert!(ShowHidden.works() && !AddFolder.works() && !WatchedFolders.works());
+        assert!(AddFolder.primary() && !ShowHidden.primary() && !WatchedFolders.primary());
+    }
+
+    // The words are the Svelte grid's, until the switch-over.
+    #[test]
+    fn the_panel_is_worded_as_the_svelte_grid_words_it() {
+        let grid_svelte = include_str!("../../../ui/src/components/Grid.svelte");
+        // Markup wraps its sentences; a Windows checkout ends its lines otherwise.
+        let said: String = grid_svelte.split_whitespace().collect::<Vec<_>>().join(" ");
+        let (empty, all) = (grid(2, 0), Place::of(GridView::All));
+        let pictures = [on("/p")];
+        let panels = [
+            library_panel(&empty, &all, &facts(&pictures, false, 9)).unwrap(),
+            library_panel(&empty, &all, &facts(&[], false, 0)).unwrap(),
+            library_panel(&empty, &all, &facts(&pictures, true, 0)).unwrap(),
+        ];
+        for panel in &panels {
+            assert!(
+                said.contains(&format!("<h2>{}</h2>", panel.title)),
+                "{}",
+                panel.title
+            );
+            assert!(said.contains(&panel.text), "{}", panel.text);
+            for button in panel.buttons {
+                assert!(
+                    said.contains(&format!(">{}</button>", button.label())),
+                    "{button:?}"
+                );
+            }
+        }
+        assert!(said.contains(
+            "Add the folder your photos are in: photon never moves, changes or deletes them."
+        ));
+        let rules = include_str!("../../../ui/src/lib/grid-state.ts");
+        for words in [
+            "and has found no photos or videos there.",
+            "folders and has found no photos or videos in them.",
+            "right now.",
+            "it watches cannot be reached right now.",
+        ] {
+            assert!(rules.contains(words), "{words}");
+        }
     }
 }
