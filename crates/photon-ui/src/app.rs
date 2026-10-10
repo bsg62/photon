@@ -596,8 +596,8 @@ impl App {
             // A step that panicked is a step the engine did not make.
             let outcome =
                 answer.unwrap_or_else(|_| Err("photon could not change the view.".to_owned()));
-            if let Some(said) = self.nav.answered(number, outcome) {
-                self.toasts.error(said, now_ms);
+            if let Some(refused) = self.nav.answered(number, outcome) {
+                self.toasts.error(refused.said, now_ms);
             }
         }
         answered

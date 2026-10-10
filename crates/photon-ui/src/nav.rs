@@ -106,6 +106,17 @@ pub struct Landed {
     pub shown_at: Option<u64>,
 }
 
+/// A step the engine would not make.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Refused {
+    /// The step, when it is one this side still held.
+    pub step: Option<Step>,
+    /// What the engine said.
+    pub said: String,
+    /// What the grid shows once the engine has put itself back.
+    pub shown: Place,
+}
+
 /// What taking a grid came to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Shown {
@@ -221,19 +232,16 @@ impl Nav {
     }
 
     /// The queue's answer to step `number`: where it led, or what the engine said when it
-    /// refused it. Answers what to tell the user.
+    /// refused it. Answers a refusal, for the user to be told.
     ///
     /// A refused step changes nothing but that: the engine put its own state back
     /// (`rebuild_or_restore`), and the grid on screen never moved.
-    pub fn answered(&mut self, number: u64, outcome: Result<Landed, String>) -> Option<String> {
+    pub fn answered(&mut self, number: u64, outcome: Result<Landed, String>) -> Option<Refused> {
         // Answers come in the order the steps were given, so everything up to this one
         // is done with.
-        while self
-            .asked
-            .front()
-            .is_some_and(|(asked, _)| *asked <= number)
-        {
-            self.asked.pop_front();
+        let mut step = None;
+        while let Some((asked, held)) = self.asked.pop_front_if(|(asked, _)| *asked <= number) {
+            step = (asked == number).then_some(held);
         }
         match outcome {
             Ok(landed) => {
@@ -241,7 +249,13 @@ impl Nav {
                 None
             }
             // A jump that waited for this step is never made: its number does not land.
-            Err(refused) => Some(refused),
+            Err(said) => Some(Refused {
+                step,
+                said,
+                // Where the engine put itself back to: the last step made, shown or not.
+                shown: (self.landed.back())
+                    .map_or_else(|| self.settled.clone(), |(_, landed)| landed.place.clone()),
+            }),
         }
     }
 
@@ -499,8 +513,9 @@ mod tests {
     fn a_refused_step_is_said_and_leaves_the_user_where_the_grid_is() {
         let mut nav = nav();
         nav.asked(1, Step::View(GridView::Starred));
-        let said = nav.answered(1, Err("the library is locked".to_owned()));
-        assert_eq!(said.as_deref(), Some("the library is locked"));
+        let refused = nav.answered(1, Err("the library is locked".to_owned()));
+        let refused = refused.expect("a refusal is said");
+        assert_eq!(refused.said, "the library is locked");
         assert_eq!(nav.target(), Place::of(GridView::All));
         assert!(!nav.busy());
     }
@@ -513,6 +528,35 @@ mod tests {
         nav.asked(2, Step::View(GridView::Recent));
         assert!(nav.answered(1, Err("no".to_owned())).is_some());
         assert_eq!(nav.target(), Place::of(GridView::Recent));
+    }
+
+    // The search box has to tell a refused search from a refused switch, and to show what
+    // the grid still shows: the step is named, with where the engine put itself back to.
+    #[test]
+    fn a_refusal_names_its_step_and_where_the_grid_is_left() {
+        let mut nav = nav();
+        nav.asked(1, Step::Search("lake".to_owned()));
+        nav.answered(
+            1,
+            Ok(Landed {
+                place: Place::search("lake"),
+                sort: Sort::default(),
+                shown_at: Some(1),
+            }),
+        );
+        nav.asked(2, Step::Search("beach".to_owned()));
+        let refused = nav.answered(2, Err("no".to_owned())).unwrap();
+        assert_eq!(refused.step, Some(Step::Search("beach".to_owned())));
+        // Back to the search before it, whose grid is not even on screen yet.
+        assert_eq!(refused.shown, Place::search("lake"));
+
+        nav.asked(3, Step::View(GridView::Starred));
+        let refused = nav.answered(3, Err("no".to_owned())).unwrap();
+        assert_eq!(refused.step, Some(Step::View(GridView::Starred)));
+        // An answer for a step nobody holds names none - not the step before it either.
+        nav.asked(4, Step::View(GridView::Recent));
+        let refused = nav.answered(9, Err("no".to_owned())).unwrap();
+        assert_eq!(refused.step, None);
     }
 
     #[test]
