@@ -4,6 +4,13 @@ Date: 2026-10-10. Sub-project 2 of `2026-10-09-photon-native-ui-design.md`. It i
 `native-ui`, after sub-project 1 (`2026-10-09-photon-native-grid-slice-design.md`) and its
 gate, which was run on 2026-10-10 and passed every line (the table is on pull request #173).
 
+**Changed by the review of the first pull request** (2026-10-10): the settled place is
+not read from the engine when a grid arrives. The engine's view moves when a step begins,
+a whole rebuild before its grid is published, so with two steps on their way the first's
+grid arrived under the second's view. What a grid shows is taken from the answer of the
+step that built it, and a grid published while a step is on its way waits for that answer
+before it is put on screen.
+
 ## What this is for
 
 After sub-project 1 `photon-native` is a window with one thing in it: the grid of whatever

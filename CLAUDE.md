@@ -1360,14 +1360,26 @@ a button that will be there is there, so nothing moves when it starts to work
 
 **A step that moves the engine's view goes through `tasks::Queue`, never `Latest`.** The
 view setters rebuild the grid on the thread that calls them, and a step begun cannot be
-taken back, so they are made in the order asked; answered by the latest alone, a search
-already sent lands after the click that emptied its box. `nav.rs` holds where the user is:
-`settled` is what the published grid shows, read from the engine when it says the library
-changed, and `target` is where the last step asked leads - which is what the sidebar
-marks, at the click and not when a rebuild of the whole library has landed. A step to
-where the user is already going is not asked (`Nav::wants`). `grid_info` reads SQLite on a
-cache miss although it returns no `CmdResult`: the sidebar's counts are a `Latest`, asked
-again at every change.
+taken back, so they are made in the order asked; `Latest` keeps one waiting question and
+would put a view clicked in the place of a sort still waiting, which would then never be
+made. `nav.rs` holds where the user is: `settled` is what the grid on screen shows, and
+`target` is where the last step asked leads - which is what the sidebar marks, at the
+click and not when a rebuild of the whole library has landed. A step to where the user is
+already going is not asked (`Nav::wants`). `grid_info` reads SQLite on a cache miss
+although it returns no `CmdResult`: the sidebar's counts are a `Latest`, asked again at
+every change.
+
+**What a grid shows is known from the step that built it, never read from the engine when
+the grid arrives.** `Engine::view_and_arg` and `sort` move when a step *begins*, a whole
+rebuild before its grid is published, so with two steps on their way the first's grid
+arrives under the second's view: read then, the starred photos were drawn as All photos,
+at the place All photos had been scrolled to (a review found it; the Svelte store avoids it
+by awaiting each step's `grid_info` before the next). So the queue's worker reads the view
+when its step is done and before the next begins, and hands it back with the version the
+setter answers (`nav::Landed`); and a grid published while a step is on its way is not put
+on screen until an answer vouches for it (`Nav::adopt`, `App::adopt`). That is exact only
+while nothing but the queue moves the engine's view: **a new caller of a view setter goes
+through the queue.**
 
 **How the window is laid out is in `layout.json` beside `library.db`** - the sidebar's
 width, whether it is hidden, which groups are open - and not in the settings table, whose
@@ -1383,6 +1395,16 @@ AccessKit what it is (`widget_info`) although AccessKit itself is switched on on
 sub-project 7. Two things about egui's input that a frame test meets: egui works out for
 itself whether a key going down is a repeat, whatever the event says, and it shows a new
 `Area` - a toast - only in the frame after the one it measures it in.
+
+Three smaller things the same review found. The list of messages a frame draws comes from
+`Toasts::at`, which lets go of those whose time is over first: drawn first and let go of
+after, the frame asked for at a message's end drew it once more, and on a still window
+that picture stayed. `text::paint_line` gives its text its own colour: the application sets
+one colour for all of egui's text, egui puts that in place of a painter's fallback, and
+every dimmed line - a header's count, the line of an empty view - had come out in the full
+colour since sub-project 1. And the splitter is lit under the pointer, while it is held and
+when the keyboard brought the focus to it, not while it merely still has the focus a
+press gave it (`Shell::pointer_focus`): egui has no `:focus-visible` of its own.
 
 **`cargo run -p xtask -- grid-gate` is the one command that launches the application**, and
 it does nothing unless told which: `--go --refresh-hz <hz>` opens fullscreen windows that

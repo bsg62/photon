@@ -2,12 +2,21 @@
 //!
 //! The engine holds one view and one sort, and a step that changes either rebuilds the grid
 //! on the thread that makes it. Steps are therefore made on `tasks::Queue`, in the order
-//! asked, and this module holds what the interface knows meanwhile: the place the published
-//! grid shows, and the steps asked that have not landed. It is the part of the Svelte UI's
+//! asked, and this module holds what the interface knows meanwhile: the place the grid on
+//! screen shows, and the steps asked that have not landed. It is the part of the Svelte UI's
 //! `LibraryStore` that `switchView`, `viewChain` and `settledView` were.
 //!
-//! No egui here, and no engine: the application reads the engine's view when a grid is
-//! published and tells this module.
+//! **What a grid shows is known from the step that built it, never read from the engine
+//! when the grid arrives.** The engine's own view moves when a step *begins*, a whole
+//! rebuild before its grid is published: with two steps on their way, the first's grid
+//! arrives while the engine already says the second's view. Read then, the starred photos
+//! were shown as All photos - at the place All photos had been scrolled to, under its
+//! line. So a step's answer carries the place it led to and the version of the grid that
+//! shows it (`Landed`), and a grid that arrives while a step is on its way is not taken
+//! until an answer vouches for it (`adopt`). That holds as long as nothing but these steps
+//! moves the engine's view, which is so: the queue is the only caller of its setters.
+//!
+//! No egui here, and no engine.
 
 use photon_core::{
     grid::GridView,
@@ -63,12 +72,25 @@ impl Step {
     }
 }
 
+/// What a step came to, as the worker that made it read the engine when the step was
+/// done and before the next one began.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Landed {
+    pub place: Place,
+    pub sort: Sort,
+    /// The version of the grid that shows it (`Engine::set_view`'s answer), or none when
+    /// the engine could not say.
+    pub shown_at: Option<u64>,
+}
+
 pub struct Nav {
-    /// What the published grid shows.
+    /// What the grid on screen shows.
     settled: Place,
     sort: Sort,
     /// The steps asked and not yet answered, oldest first, each with its number.
     asked: VecDeque<(u64, Step)>,
+    /// The steps made whose grids have not been taken yet, oldest first.
+    landed: VecDeque<Landed>,
 }
 
 impl Nav {
@@ -77,10 +99,11 @@ impl Nav {
             settled,
             sort,
             asked: VecDeque::new(),
+            landed: VecDeque::new(),
         }
     }
 
-    /// What the published grid shows.
+    /// What the grid on screen shows.
     pub fn settled(&self) -> &Place {
         &self.settled
     }
@@ -119,13 +142,12 @@ impl Nav {
         }
     }
 
-    /// The queue's answer to step `number`: what the engine said when it refused it, or
-    /// nothing when it was made. Answers what to tell the user.
+    /// The queue's answer to step `number`: where it led, or what the engine said when it
+    /// refused it. Answers what to tell the user.
     ///
     /// A refused step changes nothing but that: the engine put its own state back
-    /// (`rebuild_or_restore`), and the place this holds is the published grid's, which
-    /// never moved.
-    pub fn answered(&mut self, number: u64, refused: Option<String>) -> Option<String> {
+    /// (`rebuild_or_restore`), and the grid on screen never moved.
+    pub fn answered(&mut self, number: u64, outcome: Result<Landed, String>) -> Option<String> {
         // Answers come in the order the steps were given, so everything up to this one
         // is done with.
         while self
@@ -135,10 +157,41 @@ impl Nav {
         {
             self.asked.pop_front();
         }
-        refused
+        match outcome {
+            Ok(landed) => {
+                self.landed.push_back(landed);
+                None
+            }
+            Err(refused) => Some(refused),
+        }
     }
 
-    /// The grid now published shows `place` under `sort`. Answers whether those are other
+    /// A grid has been published at `version`: may it be put on screen, and does it show
+    /// other results than the one there?
+    ///
+    /// `None` is "not yet": a step is on its way and no answer vouches for this grid. It
+    /// may be that step's own, published a moment before its answer arrives, and what it
+    /// shows is known only from the answer. The grid on screen stays until then, which is
+    /// at most the time of that step's rebuild.
+    pub fn adopt(&mut self, version: u64) -> Option<bool> {
+        // The latest step made that this grid can be showing.
+        let mut shown = None;
+        while self
+            .landed
+            .front()
+            .is_some_and(|landed| landed.shown_at.is_none_or(|at| at <= version))
+        {
+            shown = self.landed.pop_front();
+        }
+        match shown {
+            Some(landed) => Some(self.settle(landed.place, landed.sort)),
+            // No step in between: the library changed under the view that is settled.
+            None if self.asked.is_empty() && self.landed.is_empty() => Some(false),
+            None => None,
+        }
+    }
+
+    /// The grid on screen now shows `place` under `sort`. Answers whether those are other
     /// results than before, in which case a position in the old ones means nothing.
     pub fn settle(&mut self, place: Place, sort: Sort) -> bool {
         let before = view_key(&self.settled, self.sort);
@@ -187,6 +240,15 @@ mod tests {
         Nav::new(Place::of(GridView::All), Sort::default())
     }
 
+    /// A step to `view` that the engine made, shown by the grid at `version`.
+    fn landed(view: GridView, version: u64) -> Landed {
+        Landed {
+            place: Place::of(view),
+            sort: Sort::default(),
+            shown_at: Some(version),
+        }
+    }
+
     fn sorted(key: SortKey, group: Grouping) -> Sort {
         Sort {
             key,
@@ -215,9 +277,9 @@ mod tests {
         // A second click before the first has landed: the last asked is where they go.
         nav.asked(2, Step::View(GridView::Recent));
         assert_eq!(nav.target(), Place::of(GridView::Recent));
-        assert_eq!(nav.answered(1, None), None);
+        assert_eq!(nav.answered(1, Ok(landed(GridView::Starred, 1))), None);
         assert_eq!(nav.target(), Place::of(GridView::Recent));
-        assert_eq!(nav.answered(2, None), None);
+        assert_eq!(nav.answered(2, Ok(landed(GridView::Recent, 2))), None);
         assert!(!nav.busy());
     }
 
@@ -241,7 +303,7 @@ mod tests {
     fn a_refused_step_is_said_and_leaves_the_user_where_the_grid_is() {
         let mut nav = nav();
         nav.asked(1, Step::View(GridView::Starred));
-        let said = nav.answered(1, Some("the library is locked".to_owned()));
+        let said = nav.answered(1, Err("the library is locked".to_owned()));
         assert_eq!(said.as_deref(), Some("the library is locked"));
         assert_eq!(nav.target(), Place::of(GridView::All));
         assert!(!nav.busy());
@@ -253,7 +315,7 @@ mod tests {
         let mut nav = nav();
         nav.asked(1, Step::View(GridView::Starred));
         nav.asked(2, Step::View(GridView::Recent));
-        assert!(nav.answered(1, Some("no".to_owned())).is_some());
+        assert!(nav.answered(1, Err("no".to_owned())).is_some());
         assert_eq!(nav.target(), Place::of(GridView::Recent));
     }
 
@@ -264,7 +326,14 @@ mod tests {
         // The same number: the queue put the later search in the first one's place.
         nav.asked(1, Step::Search("lake".to_owned()));
         assert_eq!(nav.target(), Place::search("lake"));
-        nav.answered(1, None);
+        nav.answered(
+            1,
+            Ok(Landed {
+                place: Place::search("lake"),
+                sort: Sort::default(),
+                shown_at: Some(1),
+            }),
+        );
         assert!(!nav.busy());
     }
 
@@ -332,5 +401,113 @@ mod tests {
             &key(SortKey::Size, Grouping::Day),
             &key(SortKey::Size, Grouping::None)
         ));
+    }
+
+    // A scan, a star, a hide: the library changed under the view that is shown. With no
+    // step on its way the grid is taken, and it is the same results.
+    #[test]
+    fn a_grid_published_with_no_step_on_its_way_is_taken_as_the_view_that_is_shown() {
+        let mut nav = nav();
+        assert_eq!(nav.adopt(4), Some(false));
+        assert_eq!(nav.settled(), &Place::of(GridView::All));
+    }
+
+    // The engine publishes a step's grid a moment before the step's answer is back, and a
+    // scan may publish while a step is being made. Which of the two a grid is, and so what
+    // it shows, is known only from the answer.
+    #[test]
+    fn a_grid_that_arrives_while_a_step_is_on_its_way_waits_for_the_steps_answer() {
+        let mut nav = nav();
+        nav.asked(1, Step::View(GridView::Starred));
+        assert_eq!(nav.adopt(5), None);
+        assert_eq!(nav.settled(), &Place::of(GridView::All));
+        nav.answered(1, Ok(landed(GridView::Starred, 5)));
+        assert_eq!(nav.adopt(5), Some(true));
+        assert_eq!(nav.settled(), &Place::of(GridView::Starred));
+        // The same grid asked about again, or a later one in that view: the same results.
+        assert_eq!(nav.adopt(5), Some(false));
+        assert_eq!(nav.adopt(6), Some(false));
+    }
+
+    // Starred, then All photos before Starred has landed. Starred's grid arrives while All
+    // photos is being built - when the engine already says All photos. It is Starred's
+    // grid: other results than the ones on screen, shown as Starred.
+    #[test]
+    fn the_first_of_two_steps_is_shown_as_itself_while_the_second_is_built() {
+        let mut nav = nav();
+        nav.asked(1, Step::View(GridView::Starred));
+        nav.asked(2, Step::View(GridView::All));
+        nav.answered(1, Ok(landed(GridView::Starred, 5)));
+        assert_eq!(nav.adopt(5), Some(true));
+        assert_eq!(nav.settled(), &Place::of(GridView::Starred));
+        assert_eq!(
+            nav.target(),
+            Place::of(GridView::All),
+            "still on the way there"
+        );
+
+        // A scan's grid in Starred while All photos is still being built: no answer
+        // vouches for it, and it waits.
+        assert_eq!(nav.adopt(6), None);
+        nav.answered(2, Ok(landed(GridView::All, 7)));
+        assert_eq!(nav.adopt(7), Some(true));
+        assert_eq!(nav.settled(), &Place::of(GridView::All));
+    }
+
+    // Both answers back before the interface drew a frame: the grid published is the
+    // second's, and the first's is never shown.
+    #[test]
+    fn two_steps_landed_between_two_frames_are_the_second() {
+        let mut nav = nav();
+        nav.asked(1, Step::View(GridView::Starred));
+        nav.asked(2, Step::View(GridView::Recent));
+        nav.answered(1, Ok(landed(GridView::Starred, 5)));
+        nav.answered(2, Ok(landed(GridView::Recent, 6)));
+        assert_eq!(nav.adopt(6), Some(true));
+        assert_eq!(nav.settled(), &Place::of(GridView::Recent));
+        assert!(!nav.busy());
+    }
+
+    // The engine put its own view back and published that. Nothing on screen changed
+    // view, so nothing is thrown back to its top.
+    #[test]
+    fn the_grid_after_a_refused_step_is_the_view_that_was_shown() {
+        let mut nav = nav();
+        nav.asked(1, Step::View(GridView::Starred));
+        nav.answered(1, Ok(landed(GridView::Starred, 5)));
+        assert_eq!(nav.adopt(5), Some(true));
+        nav.asked(2, Step::View(GridView::Hidden));
+        assert!(nav.answered(2, Err("no".to_owned())).is_some());
+        assert_eq!(nav.adopt(7), Some(false));
+        assert_eq!(nav.settled(), &Place::of(GridView::Starred));
+    }
+
+    // A grid older than the one a landed step is shown by is not that step's.
+    #[test]
+    fn a_landed_step_is_not_shown_by_a_grid_from_before_it() {
+        let mut nav = nav();
+        nav.asked(1, Step::View(GridView::Starred));
+        nav.answered(1, Ok(landed(GridView::Starred, 5)));
+        assert_eq!(nav.adopt(4), None);
+        assert_eq!(nav.settled(), &Place::of(GridView::All));
+        assert_eq!(nav.adopt(5), Some(true));
+    }
+
+    // The sort a step led to is the step's too.
+    #[test]
+    fn a_landed_step_brings_its_sort() {
+        let mut nav = nav();
+        nav.asked(1, Step::View(GridView::All));
+        let by_name = sorted(SortKey::Name, Grouping::Folder);
+        nav.answered(
+            1,
+            Ok(Landed {
+                place: Place::of(GridView::All),
+                sort: by_name,
+                shown_at: Some(3),
+            }),
+        );
+        assert_eq!(nav.adopt(3), Some(true), "another order is other results");
+        assert_eq!(nav.sort(), by_name);
     }
 }

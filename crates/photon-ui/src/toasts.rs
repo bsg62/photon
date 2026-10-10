@@ -53,18 +53,25 @@ impl Toasts {
         self.list.retain(|toast| toast.id != id);
     }
 
-    /// Lets go of those whose time is over, and answers when the next one's is: a still
-    /// window draws no frame by itself, and a message nobody removed would stay.
-    pub fn tick(&mut self, now_ms: f64) -> Option<f64> {
+    /// The messages to draw in a frame at `now_ms`, oldest first, and when the next of
+    /// them ends: a still window draws no frame by itself, so the frame in which a
+    /// message is to be gone has to be asked for.
+    ///
+    /// One call, so that the list a frame draws is never one from before its own time was
+    /// taken off it: drawn first and let go of after, the frame asked for at a message's
+    /// end drew the message once more, and nothing asked for another.
+    pub fn at(&mut self, now_ms: f64) -> (&[Toast], Option<f64>) {
         self.list.retain(|toast| toast.until_ms > now_ms);
-        self.list
+        let next = self
+            .list
             .iter()
             .map(|toast| toast.until_ms)
-            .min_by(f64::total_cmp)
+            .min_by(f64::total_cmp);
+        (&self.list, next)
     }
 
-    /// The messages showing, oldest first.
-    pub fn showing(&self) -> &[Toast] {
+    /// The messages held, oldest first, whether or not their time is over.
+    pub fn held(&self) -> &[Toast] {
         &self.list
     }
 }
@@ -73,27 +80,43 @@ impl Toasts {
 mod tests {
     use super::*;
 
+    fn said(list: &[Toast]) -> Vec<&str> {
+        list.iter().map(|toast| toast.message.as_str()).collect()
+    }
+
     #[test]
     fn a_message_goes_away_by_itself_and_a_failure_stays_longer() {
         let mut toasts = Toasts::default();
         toasts.done("3 photos starred", 1_000.0);
         toasts.error("could not read the library", 1_000.0);
-        assert_eq!(toasts.showing().len(), 2);
         // The frame to be drawn next is the one in which the first is over.
-        assert_eq!(toasts.tick(1_000.0), Some(5_000.0));
-        assert_eq!(toasts.tick(4_999.0), Some(5_000.0));
+        let (showing, next) = toasts.at(1_000.0);
+        assert_eq!(showing.len(), 2);
+        assert_eq!(next, Some(5_000.0));
+        assert_eq!(toasts.at(4_999.0).1, Some(5_000.0));
 
-        assert_eq!(toasts.tick(5_000.0), Some(7_000.0));
-        let left: Vec<&str> = toasts
-            .showing()
-            .iter()
-            .map(|t| t.message.as_str())
-            .collect();
-        assert_eq!(left, ["could not read the library"]);
-        assert_eq!(toasts.showing()[0].kind, Kind::Error);
+        let (showing, next) = toasts.at(5_000.0);
+        assert_eq!(said(showing), ["could not read the library"]);
+        assert_eq!(showing[0].kind, Kind::Error);
+        assert_eq!(next, Some(7_000.0));
 
-        assert_eq!(toasts.tick(7_000.0), None);
-        assert!(toasts.showing().is_empty());
+        let (showing, next) = toasts.at(7_000.0);
+        assert!(showing.is_empty());
+        assert_eq!(next, None);
+    }
+
+    // The frame a message's end asked for is the frame it is gone in. Handed the list as
+    // it was before that frame's time was taken off it, the frame drew the message once
+    // more, and on a still window that picture stayed.
+    #[test]
+    fn the_frame_asked_for_at_a_messages_end_does_not_draw_it() {
+        let mut toasts = Toasts::default();
+        toasts.error("refused", 0.0);
+        let (_, next) = toasts.at(16.0);
+        let end = next.expect("a frame is asked for at its end");
+        let (showing, next) = toasts.at(end);
+        assert!(showing.is_empty(), "{:?}", said(showing));
+        assert_eq!(next, None);
     }
 
     #[test]
@@ -102,20 +125,13 @@ mod tests {
         toasts.error("one", 0.0);
         toasts.error("two", 0.0);
         toasts.error("three", 0.0);
-        let showing = |toasts: &Toasts| -> Vec<String> {
-            toasts
-                .showing()
-                .iter()
-                .map(|toast| toast.message.clone())
-                .collect()
-        };
         // The one in the middle: neither the older nor the newer goes with it.
-        let second = toasts.showing()[1].id;
+        let second = toasts.held()[1].id;
         toasts.dismiss(second);
-        assert_eq!(showing(&toasts), ["one", "three"]);
+        assert_eq!(said(toasts.held()), ["one", "three"]);
         // An id is never given twice, so a late dismissal of one long gone hits nothing.
         toasts.error("four", 0.0);
         toasts.dismiss(second);
-        assert_eq!(showing(&toasts), ["one", "three", "four"]);
+        assert_eq!(said(toasts.held()), ["one", "three", "four"]);
     }
 }

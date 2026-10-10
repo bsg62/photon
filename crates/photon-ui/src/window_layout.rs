@@ -120,8 +120,12 @@ impl Layout {
         std::fs::read_to_string(path).map_or_else(|_| Self::default(), |text| Self::read(&text))
     }
 
+    /// Written beside `path` and moved over it: a launch that reads while this writes
+    /// finds the layout as it was or as it is, never half of one.
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
-        std::fs::write(path, self.written())
+        let beside = path.with_extension("json.new");
+        std::fs::write(&beside, self.written())?;
+        std::fs::rename(&beside, path)
     }
 
     /// The width the sidebar is drawn at in a window `window` wide.
@@ -174,10 +178,12 @@ pub fn areas(width: f32, height: f32, layout: &Layout) -> Areas {
     } else {
         layout.shown_width(width)
     };
+    // Held to the window: the sidebar's minimum wins over half a narrow window, and in
+    // one narrower than the minimum itself the content has no room, not less than none.
     let column = |left: f32, right: f32| Area {
-        left,
+        left: left.min(width),
         top,
-        right,
+        right: right.min(width),
         bottom,
     };
     let shown = !layout.sidebar_hidden;
@@ -268,6 +274,20 @@ mod tests {
         };
         layout.save(&path).unwrap();
         assert_eq!(Layout::load(&path), layout);
+        // Written beside it and moved over it, so that a launch never reads half a file;
+        // nothing of that is left behind.
+        let left: Vec<String> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(left, ["layout.json"]);
+        // And a second save goes over the first.
+        let narrower = Layout {
+            sidebar_width: 180.0,
+            ..layout
+        };
+        narrower.save(&path).unwrap();
+        assert_eq!(Layout::load(&path), narrower);
     }
 
     // The width is stored as it was dragged, and clamped where it is shown: stored clamped,
@@ -326,8 +346,17 @@ mod tests {
     fn no_area_is_inside_out_in_a_window_too_small_for_the_bars() {
         for (width, height) in [(200.0, 40.0), (0.0, 0.0), (120.0, 60.0)] {
             let found = areas(width, height, &Layout::default());
-            for area in [found.top_bar, found.content, found.status_bar] {
+            let all = [
+                Some(found.top_bar),
+                found.sidebar,
+                found.splitter,
+                Some(found.content),
+                Some(found.status_bar),
+            ];
+            for area in all.into_iter().flatten() {
                 assert!(area.height() >= 0.0, "{area:?} in {width}x{height}");
+                assert!(area.width() >= 0.0, "{area:?} in {width}x{height}");
+                assert!(area.right <= width, "{area:?} in {width}x{height}");
             }
         }
     }

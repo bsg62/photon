@@ -141,8 +141,9 @@ struct SharedLine<J> {
 ///
 /// A step that moves the engine's view rebuilds the grid on the thread that makes it, so
 /// it is made here; and a step already begun cannot be taken back, so the one after it
-/// waits. Answered by the latest alone, a click on Starred straight after a search was
-/// sent would let the search land last, under a box the click had emptied.
+/// waits. `Latest` keeps one waiting question and puts a newer one in its place: a sort
+/// asked for and then a view clicked while a rebuild was running, and the sort would
+/// never be made.
 pub struct Queue<J, R> {
     shared: Arc<SharedLine<J>>,
     answers: Receiver<(u64, Result<R, Panicked>)>,

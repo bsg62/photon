@@ -9,7 +9,7 @@ use crate::{
         visible::VisibleReport,
     },
     icons,
-    nav::{Nav, Place, Step},
+    nav::{Landed, Nav, Place, Step},
     probe::{Facts, Move, Outside, Probe, Report},
     shell::{Action, Shell, ShellData},
     sidebar::rows::{Counts, Today, fixed_rows},
@@ -54,7 +54,10 @@ pub struct App {
     folder_list: Latest<(), Option<Vec<Folder>>>,
     /// Where the user is and is going, and the queue the steps there are made on.
     nav: Nav,
-    steps: Queue<Step, Result<(), String>>,
+    steps: Queue<Step, Result<Landed, String>>,
+    /// Whether the engine has published a grid that is not on screen yet. It waits while
+    /// a step is on its way and no answer says what it shows (`Nav::adopt`).
+    stale: bool,
     /// What the library holds of each kind, for the sidebar. Asked for by the layout
     /// generation held, so that the answer need not carry the layout.
     counts: Counts,
@@ -165,12 +168,20 @@ impl App {
             {
                 let engine = engine.clone();
                 move |step: Step| {
-                    match step {
+                    let shown_at = match step {
                         Step::View(view) => commands::set_grid_view(&engine, view),
                         Step::Search(query) => commands::set_search_query(&engine, &query),
                     }
-                    .map(|_| ())
-                    .map_err(|err| err.message)
+                    .map_err(|err| err.message)?;
+                    // Where the step led, read here: after it is made and before the next
+                    // one begins, which is the only time the engine's view is known to be
+                    // this step's. The interface must not read it when a grid arrives.
+                    let (view, arg) = engine.view_and_arg();
+                    Ok(Landed {
+                        place: Place { view, arg },
+                        sort: engine.sort(),
+                        shown_at,
+                    })
                 }
             },
             repaint(&ctx),
@@ -223,6 +234,7 @@ impl App {
             folder_list,
             nav: Nav::new(Place { view, arg }, engine.sort()),
             steps,
+            stale: false,
             counts: Counts::default(),
             counting,
             today: today(&zone),
@@ -318,7 +330,7 @@ impl App {
 
     /// The messages showing.
     pub fn toasts(&self) -> &[Toast] {
-        self.toasts.showing()
+        self.toasts.held()
     }
 
     /// The version of the grid on screen. Every grid the engine publishes has another.
@@ -383,26 +395,9 @@ impl App {
                 data_changed |= library.data_changed;
             }
         }
-        if changed {
-            let (version, index, build_error, layout_gen) = self.engine.published();
-            self.grid = GridState {
-                version,
-                len: index.len(),
-                build_error,
-            };
-            self.index = index;
-            self.layout_gen = layout_gen;
-            // Other results are another list: a place in the old one names nothing here.
-            let (view, arg) = self.engine.view_and_arg();
-            if self.nav.settle(Place { view, arg }, self.engine.sort()) {
-                self.view.to_top();
-            }
-            // The counts read SQLite when they are not cached, so they are asked for.
-            self.counting.ask(layout_gen);
-            // And today is read again, so that a window left open past midnight catches
-            // up the next time anything in the library moves.
-            self.today = today(&self.zone);
-        }
+        // A grid has been published. It is taken in `adopt`, once it is known what it
+        // shows, and not here.
+        self.stale |= changed;
         // A folder renamed, added or given an alias: the headers are named from the list.
         if data_changed {
             self.folder_list.ask(());
@@ -410,27 +405,68 @@ impl App {
         reported
     }
 
-    fn take_answers(&mut self, now_ms: f64) {
-        if let Some(Ok(Some(folders))) = self.folder_list.answer() {
-            self.folders = folders
-                .into_iter()
-                .map(|folder| (folder.id, folder))
-                .collect();
+    /// Takes what the tasks have answered since the last frame, and says whether any had.
+    fn take_answers(&mut self, now_ms: f64) -> bool {
+        let mut answered = false;
+        if let Some(folders) = self.folder_list.answer() {
+            answered = true;
+            if let Ok(Some(folders)) = folders {
+                self.folders = folders
+                    .into_iter()
+                    .map(|folder| (folder.id, folder))
+                    .collect();
+            }
         }
-        if let Some(Ok(counts)) = self.counting.answer() {
-            self.counts = counts;
+        if let Some(counts) = self.counting.answer() {
+            answered = true;
+            if let Ok(counts) = counts {
+                self.counts = counts;
+            }
         }
         let _ = self.layout_store.answer();
         for (number, answer) in self.steps.answers() {
-            let refused = match answer {
-                Ok(Ok(())) => None,
-                Ok(Err(why)) => Some(why),
-                Err(_) => Some("photon could not change the view.".to_owned()),
-            };
-            if let Some(said) = self.nav.answered(number, refused) {
+            answered = true;
+            // A step that panicked is a step the engine did not make.
+            let outcome =
+                answer.unwrap_or_else(|_| Err("photon could not change the view.".to_owned()));
+            if let Some(said) = self.nav.answered(number, outcome) {
                 self.toasts.error(said, now_ms);
             }
         }
+        answered
+    }
+
+    /// Puts the grid the engine has published on screen, when it is known what it shows.
+    ///
+    /// The engine's own view is not asked: it moves when a step begins, a whole rebuild
+    /// before the step's grid is published, so with two steps on their way the first's grid
+    /// arrives under the second's view. What a grid shows comes from the answer of the
+    /// step that built it, and a grid that arrives before that answer waits for it.
+    fn adopt(&mut self) {
+        if !self.stale {
+            return;
+        }
+        let (version, index, build_error, layout_gen) = self.engine.published();
+        let Some(other_results) = self.nav.adopt(version) else {
+            return;
+        };
+        self.stale = false;
+        self.grid = GridState {
+            version,
+            len: index.len(),
+            build_error,
+        };
+        self.index = index;
+        self.layout_gen = layout_gen;
+        // Other results are another list: a place in the old one names nothing here.
+        if other_results {
+            self.view.to_top();
+        }
+        // The counts read SQLite when they are not cached, so they are asked for.
+        self.counting.ask(layout_gen);
+        // And today is read again, so that a window left open past midnight catches up
+        // the next time anything in the library moves.
+        self.today = today(&self.zone);
     }
 
     /// One frame of the gate's programme, after the frame has been drawn: tells it what
@@ -498,7 +534,10 @@ impl eframe::App for App {
         let touched = ui.input(|input| !input.events.is_empty());
         let reported = self.take_events() || touched;
         let now = ui.input(|input| input.time) * 1000.0;
-        self.take_answers(now);
+        // A task's answer asked for this frame as an engine's report does: the frame is
+        // not one the grid drew by itself.
+        let reported = self.take_answers(now) || reported;
+        self.adopt();
 
         let data = GridData {
             layout_gen: self.layout_gen,
@@ -512,12 +551,19 @@ impl eframe::App for App {
         let rows = fixed_rows(&self.counts, &self.nav.target(), self.today);
         let count = self.photo_count();
         let notice = self.notice();
+        let (toasts, next_toast) = self.toasts.at(now);
+        // A still window draws no frame by itself: the one a message is gone in is asked
+        // for.
+        if let Some(at) = next_toast {
+            let wait = Duration::from_secs_f64(((at - now) / 1000.0).max(0.0));
+            ui.ctx().request_repaint_after(wait);
+        }
         let shell = ShellData {
             layout: &self.layout,
             rows: &rows,
             count: count.as_deref(),
             notice: notice.as_deref(),
-            toasts: self.toasts.showing(),
+            toasts,
         };
         let (view, thumbs) = (&mut self.view, &mut self.thumbs);
         let mut output = None;
@@ -526,11 +572,6 @@ impl eframe::App for App {
         });
         for action in actions {
             self.act(action);
-        }
-        // A still window draws no frame by itself, and a message would stay.
-        if let Some(at) = self.toasts.tick(now) {
-            let wait = Duration::from_secs_f64(((at - now) / 1000.0).max(0.0));
-            ui.ctx().request_repaint_after(wait);
         }
 
         if let Some(output) = &output {

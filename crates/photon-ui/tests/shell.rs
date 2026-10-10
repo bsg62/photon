@@ -72,11 +72,12 @@ fn a_click_on_a_view_shows_it_and_the_row_follows_at_once() {
     assert_eq!(harness.state().notice(), None);
 }
 
-// Two clicks before the first has landed. Each is a rebuild on the engine's side that
-// cannot be taken back once begun, so they are made in the order asked: answered by the
-// latest alone, the first could land last, under a row marking the second.
+// Several clicks before the first has landed: the last is where the user ends, and the
+// row follows it from the click. That each step is made, and in the order asked, is what
+// `tasks::Queue`'s own tests hold; with views alone, which each replace the last, a queue
+// that kept only the newest would end in the same place.
 #[test]
-fn clicks_land_in_the_order_they_were_made() {
+fn the_last_of_several_clicks_is_where_the_user_ends() {
     let dir = tempfile::tempdir().unwrap();
     let library = library(dir.path(), 900, 5, 0);
     let (mut harness, mut driver) = opened(&library, 900);
@@ -123,6 +124,95 @@ fn a_click_on_the_row_that_is_shown_asks_for_nothing() {
     driver.settle(&mut harness);
     driver.frames_in(&mut harness, 1.0);
     assert_eq!(harness.state().version(), version + 1);
+}
+
+/// What the application says of the grid it has just drawn.
+#[derive(Clone, Debug, PartialEq)]
+struct Shown {
+    photos: usize,
+    settled: Place,
+    notice: Option<String>,
+    position: f64,
+}
+
+/// Draws frames until `done`, and answers every different thing the application said
+/// of the grid on the way.
+fn watched(
+    driver: &mut Driver,
+    harness: &mut Harness<'_>,
+    what: &str,
+    done: impl Fn(&photon_ui::app::App) -> bool,
+) -> Vec<Shown> {
+    let seen = std::cell::RefCell::new(Vec::<Shown>::new());
+    driver.until(harness, what, |app| {
+        let now = Shown {
+            photos: app.photos(),
+            settled: app.settled().clone(),
+            notice: app.notice(),
+            position: app.last_frame().map_or(0.0, |frame| frame.position),
+        };
+        let mut seen = seen.borrow_mut();
+        if seen.last() != Some(&now) {
+            seen.push(now);
+        }
+        done(app)
+    });
+    seen.into_inner()
+}
+
+// Two steps on their way: the first's grid is published while the second's is being
+// built, and the engine's own view is by then the second's. Read from the engine at that
+// moment, "the view on screen" was the one still to come: the starred photos were drawn
+// as All photos, where the grid had been - not from their top.
+#[test]
+fn a_grid_is_shown_as_the_view_it_was_built_for_with_another_step_behind_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = library(dir.path(), 12_000, 6_000, 0);
+    let (mut harness, mut driver) = opened(&library, 12_000);
+    harness.event(egui::Event::PointerMoved(pos2(700.0, 400.0)));
+    harness.event(egui::Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Point,
+        delta: vec2(0.0, -4000.0),
+        phase: egui::TouchPhase::Move,
+        modifiers: Modifiers::NONE,
+    });
+    driver.act(&mut harness);
+    driver.until(&mut harness, "the grid scrolled", |app| {
+        app.last_frame()
+            .is_some_and(|frame| frame.position > 1000.0)
+    });
+    driver.settle(&mut harness);
+
+    for round in 0..6 {
+        let version = harness.state().version();
+        click(&mut driver, &mut harness, "Starred");
+        click(&mut driver, &mut harness, "All photos");
+        let seen = watched(&mut driver, &mut harness, "both steps landed", |app| {
+            app.version() >= version + 2 && *app.settled() == Place::of(GridView::All)
+        });
+        let wrong: Vec<&Shown> = seen
+            .iter()
+            .filter(|shown| {
+                shown.photos == 6_000
+                    && (shown.settled != Place::of(GridView::Starred) || shown.position != 0.0)
+            })
+            .collect();
+        assert!(wrong.is_empty(), "round {round}: {wrong:?}\nof {seen:?}");
+        // Back down All photos for the next round: the pointer is on the row it clicked.
+        harness.event(egui::Event::PointerMoved(pos2(700.0, 400.0)));
+        harness.event(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: vec2(0.0, -4000.0),
+            phase: egui::TouchPhase::Move,
+            modifiers: Modifiers::NONE,
+        });
+        driver.act(&mut harness);
+        driver.until(&mut harness, "the grid scrolled again", |app| {
+            app.last_frame()
+                .is_some_and(|frame| frame.position > 1000.0)
+        });
+        driver.settle(&mut harness);
+    }
 }
 
 #[test]

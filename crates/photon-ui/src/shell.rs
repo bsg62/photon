@@ -64,6 +64,8 @@ pub struct Shell {
     /// How far right of the sidebar's edge the pointer took hold of the splitter, while it
     /// is held.
     grab: Option<f32>,
+    /// Whether the splitter has the focus because it was pressed, not tabbed to.
+    pointer_focus: bool,
 }
 
 fn rect_of(area: Area, window: Rect) -> Rect {
@@ -92,14 +94,15 @@ impl Shell {
         let palette = palette(ui.ctx());
         let mut actions = Vec::new();
 
-        // Ctrl+B, or Command+B. Not on a key held down, which would flap the sidebar, and
+        // Ctrl+B, or Command+B, and nothing beside it: with Shift or Alt it is another
+        // chord. Not on a key held down, which would flap the sidebar, and
         // not while the splitter is held, which would take away what is being dragged.
         let pressed = ui.input(|input| {
             input.events.iter().any(|event| {
                 matches!(
                     event,
                     Event::Key { key: Key::B, pressed: true, repeat: false, modifiers, .. }
-                        if modifiers.command
+                        if modifiers.command && !modifiers.shift && !modifiers.alt
                 )
             })
         });
@@ -172,24 +175,40 @@ impl Shell {
         } else {
             "Hide sidebar"
         };
+        // "Hide sidebar (Ctrl+B)", as the Svelte button's title says it.
+        let chord = if cfg!(target_os = "macos") {
+            "⌘+B"
+        } else {
+            "Ctrl+B"
+        };
+        let toggle = Button {
+            icon: Icon::PanelLeft,
+            label,
+            hint: Some(format!("{label} ({chord})")),
+            enabled: true,
+        };
         if bar_button(
             ui,
             at(rect.left() + S[1]),
-            Icon::PanelLeft,
-            label,
-            true,
+            "toggle-sidebar",
+            &toggle,
             palette,
         ) {
             actions.push(Action::ToggleSidebar);
         }
         // Settings come with a later part of the native interface: the gear is drawn where
         // it will be, so nothing moves when it starts to work, and takes no press yet.
+        let gear = Button {
+            icon: Icon::Settings,
+            label: "Settings",
+            hint: None,
+            enabled: false,
+        };
         bar_button(
             ui,
             at(rect.right() - S[1] - BUTTON),
-            Icon::Settings,
-            "Settings",
-            false,
+            "settings",
+            &gear,
             palette,
         );
     }
@@ -206,8 +225,14 @@ impl Shell {
         let id = ui.id().with("splitter");
         let response = ui.interact(rect, id, Sense::click_and_drag());
         response.widget_info(|| WidgetInfo::labeled(WidgetType::Other, true, "Resize sidebar"));
+        // A press gives it the focus, as a press on anything that takes the keyboard does,
+        // so the arrows move it afterwards. That focus is not shown: see `lit`, below.
         if response.clicked() || response.drag_started() {
             response.request_focus();
+            self.pointer_focus = true;
+        }
+        if !response.has_focus() {
+            self.pointer_focus = false;
         }
         let shown = layout.shown_width(window.width());
         let pointer = ui.input(|input| input.pointer.interact_pos());
@@ -218,23 +243,28 @@ impl Shell {
         {
             self.grab = Some(pressed.x - window.left() - shown);
         }
-        if let (Some(grab), Some(pointer)) = (self.grab, pointer)
-            && response.dragged()
-        {
-            let width = clamp_sidebar_width(pointer.x - window.left() - grab, window.width());
-            if width != shown {
-                actions.push(Action::Width {
-                    width,
-                    store: false,
-                });
+        // Where the pointer has the edge now. Worked out in the frame the button is let
+        // go in too: the last move and the release can arrive together, and by then the
+        // press is no longer a drag.
+        let held = match (self.grab, pointer) {
+            (Some(grab), Some(pointer)) => {
+                clamp_sidebar_width(pointer.x - window.left() - grab, window.width())
             }
+            _ => shown,
+        };
+        if self.grab.is_some() && response.dragged() && held != shown {
+            actions.push(Action::Width {
+                width: held,
+                store: false,
+            });
         }
-        // Every way a drag ends - the button let go, the pointer gone - comes here: a
-        // splitter left held would follow the pointer for ever.
+        // The end of a drag as egui tells it: the button let go, or Escape. A release the
+        // window is never told of leaves the splitter held until the next press, as it
+        // leaves every drag in egui.
         if self.grab.is_some() && !response.dragged() {
             self.grab = None;
             actions.push(Action::Width {
-                width: shown,
+                width: held,
                 store: true,
             });
         }
@@ -260,7 +290,12 @@ impl Shell {
             }
         }
 
-        let lit = response.hovered() || response.dragged() || response.has_focus();
+        // Lit under the pointer, while it is held, and when the keyboard has brought the
+        // focus here - not while it merely still has the focus a press gave it: the Svelte
+        // splitter is lit on `:focus-visible`, and one left lit after every drag reads as
+        // something still going on.
+        let by_keyboard = response.has_focus() && !self.pointer_focus;
+        let lit = response.hovered() || response.dragged() || by_keyboard;
         if response.hovered() || response.dragged() {
             ui.ctx().set_cursor_icon(CursorIcon::ResizeHorizontal);
         }
@@ -278,37 +313,50 @@ impl Shell {
     }
 }
 
-/// One button of the top bar. Answers whether it was pressed, which one that is not
-/// `enabled` never is.
+/// A button of the top bar.
+struct Button<'a> {
+    icon: Icon,
+    /// What it is called, which changes with what it would do.
+    label: &'a str,
+    /// What it says when the pointer rests on it.
+    hint: Option<String>,
+    enabled: bool,
+}
+
+/// One button of the top bar, under `name`: the same button whatever it is called at the
+/// moment, so that it keeps the focus when its label flips. Answers whether it was
+/// pressed, which one that is not enabled never is.
 fn bar_button(
     ui: &mut egui::Ui,
     rect: Rect,
-    icon: Icon,
-    label: &str,
-    enabled: bool,
+    name: &str,
+    button: &Button<'_>,
     palette: &Palette,
 ) -> bool {
-    let sense = if enabled {
+    let sense = if button.enabled {
         Sense::click()
     } else {
         Sense::hover()
     };
-    let response = ui.interact(rect, ui.id().with(("bar", label)), sense);
-    response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, enabled, label));
-    let hovered = enabled && response.hovered();
+    let mut response = ui.interact(rect, ui.id().with(("bar", name)), sense);
+    response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, button.enabled, button.label));
+    if let Some(hint) = &button.hint {
+        response = response.on_hover_text(hint);
+    }
+    let hovered = button.enabled && response.hovered();
     if hovered {
         ui.painter().rect_filled(rect, R[2], color(palette.hover));
     }
     let tint = if hovered {
         color(palette.text)
-    } else if enabled {
+    } else if button.enabled {
         color(palette.text_dim)
     } else {
         // What cannot be pressed yet is there, and fainter than what can.
         color(palette.text_dim).gamma_multiply(0.5)
     };
-    icon.paint(ui, rect, BUTTON_ICON, false, tint);
-    enabled && response.clicked()
+    button.icon.paint(ui, rect, BUTTON_ICON, false, tint);
+    button.enabled && response.clicked()
 }
 
 fn status_bar(ui: &egui::Ui, rect: Rect, count: Option<&str>, palette: &Palette) {
@@ -473,8 +521,11 @@ mod tests {
         time: f64,
         /// Every text the last frame drew, with where.
         texts: Vec<(String, Rect)>,
-        /// The area the last frame gave the content.
+        /// Every filled rectangle the last frame drew.
+        fills: Vec<(Rect, egui::Color32)>,
+        /// The area the last frame gave the content, and what it was clipped to.
         content: Rect,
+        clip: Rect,
     }
 
     impl Fixture {
@@ -494,7 +545,9 @@ mod tests {
                 size: vec2(1280.0, 800.0),
                 time: 0.0,
                 texts: Vec::new(),
+                fills: Vec::new(),
                 content: Rect::NOTHING,
+                clip: Rect::NOTHING,
             }
         }
 
@@ -513,26 +566,34 @@ mod tests {
                 rows: &self.rows,
                 count: Some("1,234 photos"),
                 notice: self.notice.as_deref(),
-                toasts: self.toasts.showing(),
+                toasts: self.toasts.held(),
             };
-            let (shell, mut actions, mut content) = (&mut self.shell, Vec::new(), Rect::NOTHING);
+            let (shell, mut actions) = (&mut self.shell, Vec::new());
+            let (mut content, mut clip) = (Rect::NOTHING, Rect::NOTHING);
             let mut full = self.ctx.run_ui(input, |ui| {
                 egui::CentralPanel::default()
                     .frame(egui::Frame::NONE)
                     .show(ui, |ui| {
-                        actions = shell.show(ui, &data, |ui| content = ui.max_rect());
+                        actions = shell.show(ui, &data, |ui| {
+                            content = ui.max_rect();
+                            clip = ui.clip_rect();
+                        });
                     });
             });
             // The font atlas and the icons: nothing here draws to a screen.
             full.textures_delta.clear();
             self.content = content;
+            self.clip = clip;
             self.texts.clear();
+            self.fills.clear();
             for clipped in &full.shapes {
-                each_shape(&clipped.shape, &mut |shape| {
-                    if let egui::Shape::Text(text) = shape {
+                each_shape(&clipped.shape, &mut |shape| match shape {
+                    egui::Shape::Text(text) => {
                         self.texts
                             .push((text.galley.text().to_owned(), text.visual_bounding_rect()));
                     }
+                    egui::Shape::Rect(rect) => self.fills.push((rect.rect, rect.fill)),
+                    _ => {}
                 });
             }
             for action in &actions {
@@ -596,6 +657,14 @@ mod tests {
                 .iter()
                 .find(|(drawn, _)| drawn == text)
                 .map(|(_, place)| *place)
+        }
+
+        /// Whether the splitter is drawn in the accent colour.
+        fn splitter_lit(&self) -> bool {
+            let accent = color(palette(&self.ctx).accent);
+            self.fills
+                .iter()
+                .any(|(rect, fill)| rect.width() == SPLITTER && *fill == accent)
         }
 
         /// The middle of the sidebar row `index` from the top.
@@ -846,11 +915,135 @@ mod tests {
         assert!(error.left() > 800.0);
 
         // The button is at the message's right end, level with its text.
-        let first = f.toasts.showing()[0].id;
+        let first = f.toasts.held()[0].id;
         let button = pos2(1280.0 - S[3] - S[2] - TOAST_BUTTON / 2.0, error.center().y);
         assert_eq!(f.click(button), [Action::Dismiss(first)]);
         f.frame(Vec::new());
         assert_eq!(f.drew("could not read the library"), None);
         assert!(f.drew("3 photos starred").is_some());
+    }
+
+    // What the content draws stays in its area: a grid that overran it would paint over
+    // the bars, which are drawn first.
+    #[test]
+    fn the_content_is_clipped_to_its_area() {
+        let mut f = Fixture::new();
+        f.frame(Vec::new());
+        assert!(
+            f.content.contains_rect(f.clip),
+            "{:?} in {:?}",
+            f.clip,
+            f.content
+        );
+        assert!(f.clip.width() > 0.0);
+    }
+
+    // Ctrl+Shift+B and Ctrl+Alt+B are other chords, as they are in the Svelte UI.
+    #[test]
+    fn the_key_with_another_modifier_beside_it_is_another_chord() {
+        let mut f = Fixture::new();
+        f.frame(Vec::new());
+        for more in [Modifiers::SHIFT, Modifiers::ALT] {
+            assert_eq!(f.key(Key::B, Modifiers::COMMAND | more), []);
+            f.key_up(Key::B, Modifiers::COMMAND | more);
+        }
+        assert_eq!(f.key(Key::B, Modifiers::COMMAND), [Action::ToggleSidebar]);
+    }
+
+    // The last move and the release can come in one frame, and by then the press is no
+    // longer a drag: the edge has to go where the button was let go, not stay where the
+    // frame before left it.
+    #[test]
+    fn the_splitter_is_left_where_the_button_was_let_go() {
+        let mut f = Fixture::new();
+        f.frame(Vec::new());
+        let hold = pos2(SIDEBAR_DEFAULT + 2.0, 400.0);
+        f.pointer(hold);
+        f.button(hold, true);
+        f.pointer(pos2(hold.x + 60.0, 400.0));
+        let to = pos2(hold.x + 100.0, 400.0);
+        let let_go = f.frame(vec![
+            Event::PointerMoved(to),
+            Event::PointerButton {
+                pos: to,
+                button: PointerButton::Primary,
+                pressed: false,
+                modifiers: Modifiers::NONE,
+            },
+        ]);
+        assert_eq!(
+            let_go,
+            [Action::Width {
+                width: SIDEBAR_DEFAULT + 100.0,
+                store: true
+            }]
+        );
+        f.frame(Vec::new());
+        assert_eq!(f.content.left(), SIDEBAR_DEFAULT + 100.0 + SPLITTER);
+    }
+
+    // The arrows are the splitter's for as long as it has the focus. Without that, egui
+    // takes an arrow to move the focus to the next thing in that direction - leftwards, a
+    // row of the sidebar - and the second press moves nothing.
+    #[test]
+    fn the_focused_splitter_keeps_the_arrows_press_after_press() {
+        let mut f = Fixture::new();
+        f.frame(Vec::new());
+        f.click(pos2(SIDEBAR_DEFAULT + 2.0, 400.0));
+        f.frame(Vec::new());
+        for step in 1..=3 {
+            assert_eq!(
+                f.key(Key::ArrowLeft, Modifiers::NONE),
+                [Action::Width {
+                    width: SIDEBAR_DEFAULT - step as f32 * 16.0,
+                    store: true
+                }]
+            );
+            f.key_up(Key::ArrowLeft, Modifiers::NONE);
+        }
+    }
+
+    // Lit under the pointer and while it is held, and when the keyboard has put the focus
+    // on it - not for ever after a mouse let go of it, which is when it still has the
+    // focus and nobody is looking for where the focus is.
+    #[test]
+    fn the_splitter_is_lit_under_the_pointer_and_for_the_keyboard_not_after_a_drag() {
+        let mut f = Fixture::new();
+        f.frame(Vec::new());
+        assert!(!f.splitter_lit());
+        let hold = pos2(SIDEBAR_DEFAULT + 2.0, 400.0);
+        f.pointer(hold);
+        f.frame(Vec::new());
+        assert!(f.splitter_lit(), "under the pointer");
+        f.button(hold, true);
+        let to = pos2(hold.x + 60.0, 400.0);
+        f.pointer(to);
+        assert!(f.splitter_lit(), "while it is held");
+        f.button(to, false);
+        // The pointer goes off over the grid. The splitter still has the focus - the
+        // arrows still move it - and is not lit.
+        f.pointer(pos2(900.0, 400.0));
+        f.frame(Vec::new());
+        assert!(!f.splitter_lit(), "after the drag");
+        assert!(matches!(
+            f.key(Key::ArrowRight, Modifiers::NONE).as_slice(),
+            [Action::Width { store: true, .. }]
+        ));
+        f.key_up(Key::ArrowRight, Modifiers::NONE);
+
+        // The focus taken away and brought back by the keyboard: Tab until it is here.
+        let mut g = Fixture::new();
+        g.frame(Vec::new());
+        let mut found = false;
+        for _ in 0..12 {
+            g.key(Key::Tab, Modifiers::NONE);
+            g.key_up(Key::Tab, Modifiers::NONE);
+            g.frame(Vec::new());
+            if g.splitter_lit() {
+                found = true;
+                break;
+            }
+        }
+        assert!(found, "Tab never lit the splitter");
     }
 }
