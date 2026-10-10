@@ -18,6 +18,7 @@ pub mod grid {
     pub mod motion;
     pub mod scroll;
     pub mod tile;
+    pub mod timeline;
     pub mod view;
     pub mod visible;
 }
@@ -54,7 +55,7 @@ pub mod window_layout;
 #[cfg(test)]
 mod tests {
     /// The state modules, with their source.
-    const STATE_MODULES: [(&str, &str); 22] = [
+    const STATE_MODULES: [(&str, &str); 23] = [
         ("args.rs", include_str!("args.rs")),
         ("dirs.rs", include_str!("dirs.rs")),
         ("empty.rs", include_str!("empty.rs")),
@@ -69,6 +70,7 @@ mod tests {
         ("theme/tokens.rs", include_str!("theme/tokens.rs")),
         ("grid/labels.rs", include_str!("grid/labels.rs")),
         ("grid/layout.rs", include_str!("grid/layout.rs")),
+        ("grid/timeline.rs", include_str!("grid/timeline.rs")),
         ("grid/motion.rs", include_str!("grid/motion.rs")),
         ("grid/scroll.rs", include_str!("grid/scroll.rs")),
         ("grid/visible.rs", include_str!("grid/visible.rs")),

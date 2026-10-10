@@ -5,7 +5,10 @@
 //! Everything is pure, and in `f64`: a large library is taller than an `f32` can count
 //! pixels in (it is exact only to 16,777,216), and every `top` here is such a count.
 
-use super::motion::{Direction, Motion};
+use super::{
+    motion::{Direction, Motion},
+    timeline::TIMELINE_WIDTH,
+};
 use photon_core::{grid::Section, library::GridTile};
 
 pub const GAP: f64 = 8.0;
@@ -122,6 +125,52 @@ pub fn build_rows(sections: &[Section], columns: usize, tile: f64) -> Vec<Row> {
         }
     }
     rows
+}
+
+/// How tall `build_rows` lays these sections out, without building a row: a sum over the
+/// sections, for a question asked of a layout that is not the one on screen.
+pub fn layout_height(sections: &[Section], columns: usize, tile: f64) -> f64 {
+    let columns = columns.max(1);
+    let mut top = 0.0;
+    let mut any = false;
+    for section in sections {
+        if has_header(section) {
+            if any {
+                top += SECTION_GAP;
+            }
+            top += HEADER;
+            any = true;
+        }
+        let rows = section.count.div_ceil(columns);
+        any |= rows > 0;
+        top += rows as f64 * tile_row(tile);
+    }
+    top
+}
+
+/// Whether the year strip is drawn beside the grid: with more than one year to choose
+/// between, and something to scroll.
+///
+/// "Something to scroll" is asked of the grid *as it would be beside the strip* - `outer`
+/// is the width the grid and the strip share, `gutter` what a scrollbar takes of it - and
+/// not of the grid as it stands. The strip takes width from the tiles, and tiles that fill
+/// the row are shorter for it, so there is a band of heights where the grid fits beside
+/// the strip and overflows without it: asked of the grid as it stood, the answer changed
+/// the grid, which changed the answer, and the strip came and went on every frame. In
+/// that band there is no strip, and a grid that scrolls by a few points without one.
+pub fn shows_timeline(
+    sections: &[Section],
+    years: usize,
+    outer: f64,
+    gutter: f64,
+    viewport: f64,
+    nominal: f64,
+) -> bool {
+    if years < 2 {
+        return false;
+    }
+    let row = row_width(outer - TIMELINE_WIDTH - gutter);
+    layout_height(sections, columns_for(row, nominal), tile_for(row, nominal)) > viewport
 }
 
 /// The width of a row of tiles in a viewport `viewport` wide: what is left between the
@@ -528,6 +577,113 @@ mod tests {
             scroll_into_grid(&near_top, 200.0, viewport, HEADER),
             Some(0.0)
         );
+    }
+
+    // A question asked of a layout that is not on screen has to give the answer the rows
+    // themselves would.
+    #[test]
+    fn the_height_of_a_layout_is_what_its_rows_come_to() {
+        for sections in [
+            two_folders(),
+            vec![flat(0, 5)],
+            vec![folder(1, 0, 0), folder(2, 0, 7)],
+            vec![flat(0, 4), folder(2, 4, 3)],
+            Vec::new(),
+        ] {
+            for (columns, tile) in [(2, MEDIUM), (5, 181.0), (1, LARGE)] {
+                assert_eq!(
+                    layout_height(&sections, columns, tile),
+                    total_height(&build_rows(&sections, columns, tile)),
+                    "{sections:?} in {columns} columns"
+                );
+            }
+        }
+    }
+
+    /// Two years, nine photos each, so two rows of five each. Beside the strip the grid is
+    /// 956 wide and its tiles 181; with no strip 1000 and 190: four rows of those are 36
+    /// taller.
+    fn two_years() -> Vec<Section> {
+        vec![folder(1, 0, 9), folder(2, 9, 9)]
+    }
+    const OUTER: f64 = 1000.0;
+
+    #[test]
+    fn the_strips_example_is_laid_out_as_its_cases_assume() {
+        let row = row_width(OUTER - TIMELINE_WIDTH);
+        assert_eq!(
+            (columns_for(row, MEDIUM), tile_for(row, MEDIUM)),
+            (5, 181.0)
+        );
+        let alone = row_width(OUTER);
+        assert_eq!(
+            (columns_for(alone, MEDIUM), tile_for(alone, MEDIUM)),
+            (5, 190.0)
+        );
+        assert!(layout_height(&two_years(), 5, 190.0) > layout_height(&two_years(), 5, 181.0));
+    }
+
+    #[test]
+    fn the_strip_is_shown_when_the_grid_beside_it_has_something_to_scroll() {
+        let beside = layout_height(&two_years(), 5, 181.0);
+        assert!(shows_timeline(
+            &two_years(),
+            2,
+            OUTER,
+            0.0,
+            beside - 1.0,
+            MEDIUM
+        ));
+    }
+
+    // The strip takes width from the tiles, and tiles that fill the row are shorter for
+    // it: where the grid fits beside the strip and overflows without it, asking the grid
+    // as it stands has the strip come and go on every frame. There is none in that band.
+    #[test]
+    fn there_is_no_strip_where_the_grid_would_fit_beside_it() {
+        let beside = layout_height(&two_years(), 5, 181.0);
+        let alone = layout_height(&two_years(), 5, 190.0);
+        assert!(beside < alone);
+        for viewport in [beside, beside + 1.0, alone - 1.0] {
+            assert!(
+                !shows_timeline(&two_years(), 2, OUTER, 0.0, viewport, MEDIUM),
+                "{viewport}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_strip_needs_more_than_one_year_to_choose_between() {
+        assert!(!shows_timeline(&two_years(), 1, OUTER, 0.0, 10.0, MEDIUM));
+        assert!(!shows_timeline(&two_years(), 0, OUTER, 0.0, 10.0, MEDIUM));
+    }
+
+    // A scrollbar that takes room narrows the grid as the strip does.
+    #[test]
+    fn the_strip_is_asked_of_the_grid_beside_its_scrollbar_too() {
+        let row = row_width(OUTER - TIMELINE_WIDTH - 15.0);
+        let narrower = layout_height(
+            &two_years(),
+            columns_for(row, MEDIUM),
+            tile_for(row, MEDIUM),
+        );
+        assert!(narrower < layout_height(&two_years(), 5, 181.0));
+        assert!(!shows_timeline(
+            &two_years(),
+            2,
+            OUTER,
+            15.0,
+            narrower,
+            MEDIUM
+        ));
+        assert!(shows_timeline(
+            &two_years(),
+            2,
+            OUTER,
+            15.0,
+            narrower - 1.0,
+            MEDIUM
+        ));
     }
 
     #[test]
