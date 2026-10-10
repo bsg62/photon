@@ -350,8 +350,16 @@ fn a_pictures_folder_that_could_not_be_watched_leaves_the_first_folder_offered()
     driver.until(&mut harness, "the empty grid counted", |app| {
         app.photo_count().is_some()
     });
-    // Held until the engine's write has given up, and a little longer.
-    let mut seen = for_a_while(&mut driver, &mut harness, 5600);
+    // Held until the engine's write has given up: it says its scans are started only
+    // after that, having started none. Not for a length of time - on a runner under load
+    // the engine reached its write later than a margin allowed for, the lock was let go
+    // of while it still waited, and the folder was watched after all.
+    let mut seen = watched(
+        &mut driver,
+        &mut harness,
+        "the engine's write given up",
+        |app| app.engine().startup_scans_started(),
+    );
     other.execute_batch("ROLLBACK").unwrap();
     seen.extend(watched(
         &mut driver,
@@ -392,8 +400,18 @@ fn a_folder_back_since_the_last_session_is_looked_through_before_anything_is_sai
     driver.until(&mut harness, "the empty grid counted", |app| {
         app.photo_count().is_some()
     });
-    let held = for_a_while(&mut driver, &mut harness, 700);
-    assert_eq!(panels(&held), [LOOKING], "while its scan is held");
+    // Held until the window says something, and for a while after it: with its scan
+    // held, the one thing it says is that it is looking.
+    let mut held = watched(&mut driver, &mut harness, "something said", |app| {
+        app.panel().is_some()
+    });
+    held.extend(for_a_while(&mut driver, &mut harness, 400));
+    let said = panels(&held);
+    assert!(!said.is_empty());
+    assert!(
+        said.iter().all(|text| *text == LOOKING),
+        "while its scan is held: {said:#?}"
+    );
 
     other.execute_batch("ROLLBACK").unwrap();
     let seen = watched(&mut driver, &mut harness, "nothing found in it", |app| {
@@ -484,7 +502,11 @@ fn a_rescan_is_measured_against_what_the_folder_held() {
     }
     let other = locked(dir.path());
     let (mut harness, mut driver) = first_run(dir.path(), None);
-    let held = for_a_while(&mut driver, &mut harness, 700);
+    // Held until the scan has said what it is measured against, however long this
+    // machine takes to get there.
+    let held = watched(&mut driver, &mut harness, "the rescan measured", |app| {
+        (app.status().iter()).any(|line| line.label.contains(" of ~"))
+    });
     other.execute_batch("ROLLBACK").unwrap();
     assert_eq!(
         held.last().unwrap().lines,

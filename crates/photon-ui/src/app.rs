@@ -480,6 +480,12 @@ impl App {
         self.held.folders()
     }
 
+    /// Whether a step is on its way: asked of the engine, or made and its grid not yet
+    /// on screen. What is on screen may be the grid of a step before it.
+    pub fn busy(&self) -> bool {
+        self.nav.busy()
+    }
+
     /// Where the user is: the place the last step asked leads to, or the one shown.
     pub fn place(&self) -> Place {
         self.nav.target()
