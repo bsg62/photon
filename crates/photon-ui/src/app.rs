@@ -171,6 +171,9 @@ impl App {
                     let shown_at = match step {
                         Step::View(view) => commands::set_grid_view(&engine, view),
                         Step::Search(query) => commands::set_search_query(&engine, &query),
+                        Step::Album(id) => commands::set_album_view(&engine, id),
+                        Step::Person(key) => commands::set_person_view(&engine, &key),
+                        Step::Tag(tag) => commands::set_tag_view(&engine, &tag),
                     }
                     .map_err(|err| err.message)?;
                     // Where the step led, read here: after it is made and before the next
@@ -447,7 +450,7 @@ impl App {
             return;
         }
         let (version, index, build_error, layout_gen) = self.engine.published();
-        let Some(other_results) = self.nav.adopt(version) else {
+        let Some(shown) = self.nav.adopt(version) else {
             return;
         };
         self.stale = false;
@@ -459,7 +462,7 @@ impl App {
         self.index = index;
         self.layout_gen = layout_gen;
         // Other results are another list: a place in the old one names nothing here.
-        if other_results {
+        if shown.other_results {
             self.view.to_top();
         }
         // The counts read SQLite when they are not cached, so they are asked for.
