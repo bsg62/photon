@@ -6,6 +6,7 @@
 //! the application's business.
 
 use crate::{
+    controls_bar::{self, ControlAction, ControlsBar, ControlsData},
     icons::Icon,
     search_bar::{SearchAction, SearchBar, SearchBarData},
     sidebar::{
@@ -25,6 +26,7 @@ use eframe::egui::{
     self, CursorIcon, Event, EventFilter, Id, Key, Order, Rect, Sense, Stroke, UiBuilder,
     WidgetInfo, WidgetType, epaint::Shadow, pos2, vec2,
 };
+use photon_core::{library::GridTile, sort::Sort};
 
 /// A button of the top bar: thirty points square, its icon eighteen.
 const BUTTON: f32 = 30.0;
@@ -42,6 +44,10 @@ pub struct ShellData<'a> {
     pub here: Option<i64>,
     /// What the search box needs to know of the search it holds.
     pub search: SearchBarData<'a>,
+    /// The sort the user is going to, and the size of the tiles: what the controls at the
+    /// right of the top bar say.
+    pub sort: Sort,
+    pub size: GridTile,
     /// The status bar's photo count, when there is one to give.
     pub count: Option<&'a str>,
     /// The line shown in the middle of the content in place of photos.
@@ -57,6 +63,10 @@ pub enum Action {
     Row(What),
     /// Something done in the search box.
     Search(SearchAction),
+    /// The sort wanted: the one the controls showed, with one field of it changed.
+    Sort(Sort),
+    /// The size of the tiles wanted.
+    Size(GridTile),
     /// The splitter moved to `width`. `store` when the user has let go of it or moved it
     /// by a key: a width is stored when it was chosen, not at every point on the way.
     Width {
@@ -76,6 +86,7 @@ pub struct Shell {
     /// The sidebar's list, which keeps its place while the sidebar is hidden.
     sidebar: SidebarView,
     search: SearchBar,
+    controls: ControlsBar,
 }
 
 fn rect_of(area: Area, window: Rect) -> Rect {
@@ -234,14 +245,29 @@ impl Shell {
         };
         let gear_at = at(rect.right() - S[1] - BUTTON);
         bar_button(ui, gear_at, "settings", &gear, palette);
+        // The grid's own controls, left of the gear, as wide as what they offer.
+        let controls_left = gear_at.left() - S[1] - controls_bar::width(ui);
 
-        // The search box, between the toggle and what stands at the bar's right.
+        // The search box, between the toggle and the controls: the one thing in the bar
+        // that gives way to a narrow window.
         let room = Rect::from_min_max(
             pos2(rect.left() + S[1] + BUTTON + S[1], rect.top()),
-            pos2(gear_at.left() - S[1], rect.bottom() - 1.0),
+            pos2(controls_left - S[1], rect.bottom() - 1.0),
         );
         let done = self.search.show(ui, room, search, &data.search);
         actions.extend(done.into_iter().map(Action::Search));
+
+        // After the search box: a key a list of theirs used is taken out of the frame's
+        // input, and the box has read its own by then.
+        let controls = ControlsData {
+            sort: data.sort,
+            size: data.size,
+        };
+        let done = self.controls.show(ui, controls_left, middle, &controls);
+        actions.extend(done.into_iter().map(|action| match action {
+            ControlAction::Sort(sort) => Action::Sort(sort),
+            ControlAction::Size(size) => Action::Size(size),
+        }));
     }
 
     fn splitter(
@@ -572,6 +598,8 @@ mod tests {
         list: List,
         toasts: Toasts,
         notice: Option<String>,
+        sort: Sort,
+        tile: GridTile,
         size: egui::Vec2,
         time: f64,
         /// Every text the last frame drew, with where.
@@ -597,6 +625,8 @@ mod tests {
                 list: list(&counts, &Place::of(GridView::All)),
                 toasts: Toasts::default(),
                 notice: None,
+                sort: Sort::default(),
+                tile: GridTile::Medium,
                 size: vec2(1280.0, 800.0),
                 time: 0.0,
                 texts: Vec::new(),
@@ -625,6 +655,8 @@ mod tests {
                     can_save: false,
                     in_search: false,
                 },
+                sort: self.sort,
+                size: self.tile,
                 count: Some("1,234 photos"),
                 notice: self.notice.as_deref(),
                 toasts: self.toasts.held(),
@@ -633,6 +665,7 @@ mod tests {
             let mut search = String::new();
             let (mut content, mut clip) = (Rect::NOTHING, Rect::NOTHING);
             let mut full = self.ctx.run_ui(input, |ui| {
+                crate::icons::install(ui.ctx());
                 egui::CentralPanel::default()
                     .frame(egui::Frame::NONE)
                     .show(ui, |ui| {
@@ -665,6 +698,8 @@ mod tests {
                     }
                     Action::Width { width, .. } => self.layout.sidebar_width = *width,
                     Action::Dismiss(id) => self.toasts.dismiss(*id),
+                    Action::Sort(sort) => self.sort = *sort,
+                    Action::Size(size) => self.tile = *size,
                     Action::Row(_) | Action::Search(_) => {}
                 }
             }
@@ -824,6 +859,77 @@ mod tests {
         f.key_up(Key::B, Modifiers::COMMAND);
         assert_eq!(f.key(Key::B, Modifiers::NONE), []);
         assert_eq!(f.key(Key::N, Modifiers::COMMAND), []);
+    }
+
+    // The grid's own controls: left of the gear, and what they answer is the shell's
+    // answer. The search box ends before them.
+    #[test]
+    fn the_controls_stand_left_of_the_gear_and_their_choices_are_answered() {
+        let mut f = Fixture::new();
+        f.frame(Vec::new());
+        let gear_left = 1280.0 - S[1] - BUTTON;
+        let large = f.drew("Large").expect("the size control is drawn");
+        let by_folder = f.drew("By folder").expect("the grouping is drawn");
+        let date = f.drew("Date taken").expect("the sort is drawn");
+        assert!(large.right() < gear_left && large.left() > by_folder.right());
+        assert!(by_folder.left() > date.right());
+        // The last of them ends a gap short of the gear.
+        let field = color(palette(&f.ctx).field);
+        let last = (f.fills.iter())
+            .filter(|(rect, fill)| *fill == field && rect.top() < TOP_BAR)
+            .map(|(rect, _)| rect.right())
+            .fold(0.0, f32::max);
+        assert_eq!(last, gear_left - S[1]);
+        assert!(date.top() > 0.0 && date.bottom() < TOP_BAR);
+        // The search field's own fill ends short of them.
+        let search = (f.fills.iter())
+            .filter(|(rect, fill)| *fill == field && rect.left() < 100.0)
+            .map(|(rect, _)| *rect)
+            .next()
+            .expect("the search field is drawn");
+        assert!(
+            search.right() < date.left() - S[1],
+            "{search:?} and {date:?}"
+        );
+
+        assert_eq!(f.click(large.center()), [Action::Size(GridTile::Large)]);
+        // The sort's list opens under the bar, over the content, and an option of it is
+        // the sort wanted.
+        assert_eq!(f.click(date.center()), []);
+        f.frame(Vec::new());
+        let name = (f.texts.iter())
+            .find(|(text, place)| text == "Name" && place.top() > TOP_BAR)
+            .map(|(_, place)| place.center())
+            .expect("the list is open");
+        let by_name = Sort {
+            key: photon_core::sort::SortKey::Name,
+            ..Sort::default()
+        };
+        assert_eq!(f.click(name), [Action::Sort(by_name)]);
+    }
+
+    // In a window at its narrowest the controls keep their width and the search box has
+    // what is left: nothing stands on anything else.
+    #[test]
+    fn in_a_narrow_window_the_search_box_gives_way_to_the_controls() {
+        let mut f = Fixture::new();
+        f.size = vec2(800.0, 500.0);
+        f.frame(Vec::new());
+        let date = f.drew("Date taken").expect("the sort is drawn");
+        let field = color(palette(&f.ctx).field);
+        let search = (f.fills.iter())
+            .filter(|(rect, fill)| *fill == field && rect.left() < 100.0)
+            .map(|(rect, _)| *rect)
+            .next()
+            .expect("the search field is drawn");
+        assert!(search.left() >= S[1] + BUTTON + S[1]);
+        assert!(
+            search.right() < date.left() - S[1],
+            "{search:?} and {date:?}"
+        );
+        assert!(search.width() > 120.0, "{search:?}");
+        let large = f.drew("Large").expect("the size control is drawn");
+        assert!(large.right() < 800.0 - S[1] - BUTTON);
     }
 
     // The gear is where it will be and takes no press: Settings are a later part.
@@ -1095,7 +1201,7 @@ mod tests {
         let mut g = Fixture::new();
         g.frame(Vec::new());
         let mut found = false;
-        for _ in 0..12 {
+        for _ in 0..24 {
             g.key(Key::Tab, Modifiers::NONE);
             g.key_up(Key::Tab, Modifiers::NONE);
             g.frame(Vec::new());

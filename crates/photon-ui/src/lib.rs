@@ -7,6 +7,8 @@
 
 pub mod app;
 pub mod args;
+pub mod controls;
+pub mod controls_bar;
 pub mod dirs;
 pub mod empty;
 pub mod events;
@@ -29,6 +31,7 @@ pub mod search_bar;
 pub mod search_box;
 pub mod search_help;
 pub mod select;
+pub mod select_view;
 pub mod shell;
 pub mod sidebar {
     pub mod folders;
@@ -55,8 +58,9 @@ pub mod window_layout;
 #[cfg(test)]
 mod tests {
     /// The state modules, with their source.
-    const STATE_MODULES: [(&str, &str); 23] = [
+    const STATE_MODULES: [(&str, &str); 24] = [
         ("args.rs", include_str!("args.rs")),
+        ("controls.rs", include_str!("controls.rs")),
         ("dirs.rs", include_str!("dirs.rs")),
         ("empty.rs", include_str!("empty.rs")),
         ("nav.rs", include_str!("nav.rs")),

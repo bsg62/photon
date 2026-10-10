@@ -7,7 +7,7 @@
 //! folders under years by - so the strip, the sidebar and the grid stay on one axis. A
 //! period section carries its own year.
 
-use super::layout::{Row, RowKind, last_index_at_or_before};
+use super::layout::{Row, RowKind, has_header, last_index_at_or_before};
 use crate::sidebar::folders::year_of;
 use jiff::tz::TimeZone;
 use photon_core::grid::Section;
@@ -34,17 +34,39 @@ pub fn year_marks(sections: &[Section], rows: &[Row], zone: &TimeZone) -> Vec<Ye
         let Some(section) = sections.get(row.section) else {
             continue;
         };
-        // A period section says its year itself, in the reading the engine grouped by; a
-        // folder's is the year of its oldest photo, as the sidebar files it.
-        let year = (section.period).map_or_else(
-            || i64::from(year_of(section.taken_at_min, zone)),
-            |period| period.year,
-        );
+        let year = section_year(section, zone);
         if marks.last().is_none_or(|last| last.year != year) {
             marks.push(YearMark { year, top: row.top });
         }
     }
     marks
+}
+
+/// The year a section with a header stands under. A period section says its year itself,
+/// in the reading the engine grouped by; a folder's is the year of its oldest photo, as
+/// the sidebar files it.
+fn section_year(section: &Section, zone: &TimeZone) -> i64 {
+    (section.period).map_or_else(
+        || i64::from(year_of(section.taken_at_min, zone)),
+        |period| period.year,
+    )
+}
+
+/// How many marks `year_marks` makes of these sections, in whatever rows they are laid
+/// out: the rows decide where a mark is, not whether there is one. Whether the strip is
+/// shown is asked before the rows are built - it decides how wide they are - and what it
+/// needs of the marks is how many there are.
+pub fn year_runs(sections: &[Section], zone: &TimeZone) -> usize {
+    let mut runs = 0;
+    let mut last = None;
+    for section in sections.iter().filter(|section| has_header(section)) {
+        let year = section_year(section, zone);
+        if last != Some(year) {
+            runs += 1;
+            last = Some(year);
+        }
+    }
+    runs
 }
 
 /// The year showing at `y` in the layout, or none with no marks.
@@ -187,6 +209,64 @@ mod tests {
             years(&year_marks(&sections, &rows, &TimeZone::UTC)),
             [2020, 2024, 2020]
         );
+    }
+
+    // The number is asked for before there are rows, and has to be the number of marks
+    // the rows will then be given: one more or fewer and the strip is shown over a grid
+    // with one year, or not over one with two.
+    #[test]
+    fn the_years_are_counted_without_rows_as_the_marks_will_count_them() {
+        let period = |year, offset| Section {
+            folder_id: None,
+            offset,
+            count: 1,
+            taken_at_min: mid(2030),
+            period: Some(Period {
+                year,
+                month: None,
+                day: None,
+            }),
+        };
+        let flat = Section {
+            folder_id: None,
+            ..section(1, 0, 3, 2024)
+        };
+        let west = TimeZone::fixed(jiff::tz::offset(-5));
+        let new_year = mid(2026) - 181 * 86_400 - 12 * 3600 + 1800;
+        let cases: [(&[Section], usize); 6] = [
+            (&[], 0),
+            (&[flat], 0),
+            (&[section(1, 0, 3, 2024), section(2, 3, 2, 2024)], 1),
+            (
+                &[
+                    section(1, 0, 1, 2020),
+                    section(2, 1, 1, 2024),
+                    section(3, 2, 1, 2020),
+                ],
+                3,
+            ),
+            (&[period(2026, 0), period(2025, 1), period(2025, 2)], 2),
+            (
+                &[
+                    section(1, 0, 1, 2026),
+                    Section {
+                        taken_at_min: new_year,
+                        ..section(2, 1, 1, 2026)
+                    },
+                ],
+                1,
+            ),
+        ];
+        for (sections, runs) in cases {
+            let rows = build_rows(sections, 4, MEDIUM);
+            for zone in [&TimeZone::UTC, &west] {
+                let marks = year_marks(sections, &rows, zone);
+                assert_eq!(year_runs(sections, zone), marks.len(), "{sections:?}");
+            }
+            assert_eq!(year_runs(sections, &TimeZone::UTC), runs, "{sections:?}");
+        }
+        // The last case is two years where the viewer is five hours west.
+        assert_eq!(year_runs(cases[5].0, &west), 2);
     }
 
     #[test]
