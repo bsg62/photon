@@ -647,3 +647,13 @@ Not released: these are for whoever tries the branch `native-ui`. The Svelte int
 - [ ] Quit and start again: the sidebar is as wide as it was left, and hidden if it was hidden.
 - [ ] Rest the pointer on a sidebar row: its hint shows. Leave it there and watch the processor: photon-native goes quiet, it does not go on drawing.
 - [ ] Make the window as small as the desktop allows: nothing overlaps, and nothing crashes.
+- [ ] The sidebar lists Albums and Searches unfolded, People and Tags folded, and under them the folders that hold photos, under the years of their oldest photos, newest year first. An album of Picasa's has its small mark after its name. The names are the ones the Svelte photon shows.
+- [ ] Click a heading: Albums, Searches and Tags fold and unfold anywhere along the row, People at its chevron only (its label does nothing yet). Quit and start again: each is as it was left.
+- [ ] Unfold People in a library with nobody named, and Tags in one with no keywords: each says why it is empty, in small dimmed words wrapped to the sidebar, and the rows under it start where the words end. Drag the sidebar narrower and wider: the words wrap again and nothing overlaps.
+- [ ] Click an album, a saved search, a person and a tag: the row is filled at the click and the grid follows. An album with no photos says "“name” is empty. Right-click a photo to add it." (the right-click does nothing yet).
+- [ ] In a library with more folders than fit, turn the wheel over the sidebar: the list moves and the grid does not; over the grid, the grid moves and the list does not. A thin thumb at the sidebar's right edge shows where the list is and can be dragged.
+- [ ] Click a folder far down the list: its header is at the top of the grid and a bar marks its row. Scroll the grid through several folders with the pointer over the grid: the bar goes from row to row, and the list moves to keep it in sight. Do the same with the pointer resting over the sidebar: the bar moves, the list stays put.
+- [ ] In Starred, click a folder: the grid shows All photos at that folder, not the top of All photos and not a place in Starred. In Hidden, click a folder: the view stays Hidden.
+- [ ] Scroll All photos into the middle of a folder, click Starred, then All photos: the grid is back at that folder. Click All photos again while in it: nothing moves.
+- [ ] Quit with All photos scrolled to some folder and start again: the grid opens at that folder, with its row marked and in sight in the list.
+- [ ] Hide the sidebar, scroll the grid through several folders, show the sidebar: the list is where it was left, then follows the grid at the next folder.

@@ -1393,6 +1393,49 @@ accessors are photon-core's and which the Tauri photon reads too. It is read bef
 first frame and written off the UI thread when the user changes one of the three; the
 width is stored as it was dragged and clamped where it is shown.
 
+**The sidebar is one list, drawn a window at a time** (`sidebar/list.rs`, a state module,
+and `sidebar/view.rs`). Every row is an `Entry` with what it is (`What`, its identity from
+frame to frame and what a click answers), and a height; `Stack` adds them up and the view
+draws the entries its position takes in, as the grid draws rows. The position is the
+view's own number, kept by `Shell`, so a hidden sidebar is not drawn at all and comes back
+where it was. Building the entries is an allocation each, so `List::follow` builds them
+again only when a key of what they were built from has moved - the counts, where the user
+is going, the folds, the sort, the grid's layout generation - and the two sources too large
+to compare, the collections and the folder list, live in `Held`, which has no way to
+replace either but a setter that moves its number. A new thing the list is built from goes
+into `Sources` and into its key; left out of the key, the list goes stale and no test of
+the others will say so. The stack is *not* cached: it is a sum over the entries, and a
+cache keyed by list, width and scale was removed when no test could tell it was there.
+A press that lands a few points beside a row is the nearest row's: egui gives it to the
+nearest button in reach, so the room between two rows is not dead as it is in a browser.
+
+**A folder is gone to in the grid that holds it** (`Nav::jump`, `Nav::home_of_folders`,
+`GridView::go_to`). A click on a folder from an excursion asks for All photos and keeps the
+jump with the number of that step; `Nav::adopt` hands it out with that step's grid and with
+no other, and the application looks the folder up in the index it has just put on screen.
+Hidden is left as it is. The offset is given to the grid in the same frame as the index it
+was looked up in, and the grid takes it once its rows are laid out. `LastFolder` (also
+`nav.rs`) is the folder photon remembers: read once before the first frame and kept in
+memory, since the application is its only writer - which is why the way back from an
+excursion reads nothing, where the Svelte UI has to read the setting before the switch can
+overwrite it. The launch goes back to it in the frame its first photos are on screen and
+before they are drawn, so there is no frame with the grid at its top for `at_top` to
+remember; a guard for that frame was removed as doing nothing.
+
+**The mark of the folder at the top of the grid is a frame behind the grid, and nothing
+asks for the frame that makes it up.** The sidebar is drawn before the grid has taken its
+input. A frame always follows: the grid moves on input, on a task's answer or in a scroll,
+each an immediate request for a frame, and egui draws two for each of those. A request of
+our own changed nothing a test could see and was removed;
+`a_folder_clicked_is_at_the_top_of_the_grid_and_marked_in_the_list` draws only the frames
+asked for and is the tripwire for egui changing that.
+
+**The collections are not asked for at launch**: the first grid the engine publishes is a
+data change, built or failed, and that is what reads them. A row tells AccessKit whether
+it is where the user is (`WidgetInfo::selected`), which is how a test of the whole
+application sees the fill; a test that clicks two rows in a row draws a frame between
+them, because the second is clicked where the last frame drew it and a fold moves it.
+
 **Tests of the whole application drive it through `tests/common`'s `Driver`**: `until`
 draws the frames that are asked for, `settle` waits in real time for the other threads,
 `frames_in` counts what a stretch of the clock draws. A row is clicked by its name
