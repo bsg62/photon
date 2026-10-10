@@ -24,8 +24,10 @@ pub mod grid {
 pub mod icons;
 pub mod nav;
 pub mod probe;
+pub mod shell;
 pub mod sidebar {
     pub mod rows;
+    pub mod view;
 }
 pub mod tasks;
 pub mod text;
