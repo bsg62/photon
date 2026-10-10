@@ -36,11 +36,12 @@ pub mod thumbs {
     pub mod source;
     pub mod textures;
 }
+pub mod window_layout;
 
 #[cfg(test)]
 mod tests {
     /// The state modules, with their source.
-    const STATE_MODULES: [(&str, &str); 13] = [
+    const STATE_MODULES: [(&str, &str); 14] = [
         ("args.rs", include_str!("args.rs")),
         ("dirs.rs", include_str!("dirs.rs")),
         ("nav.rs", include_str!("nav.rs")),
@@ -54,6 +55,7 @@ mod tests {
         ("probe.rs", include_str!("probe.rs")),
         ("thumbs/loader.rs", include_str!("thumbs/loader.rs")),
         ("thumbs/textures.rs", include_str!("thumbs/textures.rs")),
+        ("window_layout.rs", include_str!("window_layout.rs")),
     ];
 
     /// The version of the `windows` crate that `package` is locked to, or `None` when it
