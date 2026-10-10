@@ -1290,7 +1290,9 @@ action in `mock.js`.
 `ui/` and the Tauri shell (spec `2026-10-09-photon-native-ui-design.md`). Its binary is
 `photon-native` until the switch-over. **It is not launched to verify a change either**:
 `cargo run -p xtask -- native-shot` writes the window to `target/screenshots/native-*.png`
-off screen, and those are read. It needs a GPU adapter (no display), so it is an ignored
+off screen, and those are read. Its library's photos are dated by the day their copies
+are given (`FOLDERS` in `tests/screenshots.rs`): they carry no capture date, and copied
+they were all of today - one month, one year, no year strip. It needs a GPU adapter (no display), so it is an ignored
 test that xtask runs, not part of the gate.
 
 Two kinds of module, and `state_modules_name_no_egui_type` holds the line between them:
@@ -1504,6 +1506,54 @@ caret in a text field is not still**: the caret blinks, about six frames a secon
 any application. `egui_kittest` switches the blink off, so no test of the whole
 application sees it, and `a_window_with_a_search_shown_draws_nothing` leaves the box with
 Enter first to say what it does hold: a search shown, with the keys back in the grid.
+
+**The controls at the right of the top bar hold nothing of their own.** `controls.rs`
+(state) is what they offer and what a choice makes of the sort, `controls_bar.rs` draws
+them, and the sort drawn is `Nav::sort_target`: the sort the last step asked leads to, as
+`target` is the place. A control answers that sort with one field of it replaced, and a
+change of sort is a `Step::Sort` on the views' queue, where it gives way to nothing and
+nothing gives way to it - so a second change made before the first has landed builds on
+the first, and a refused one puts the controls back. A sort moves no view and clears no
+query: `App::go` leaves the search box alone for it. The size is not a step: it is
+applied at the press and stored on the queue of writes, and a size the library would not
+store is kept for the session, as the Svelte store keeps it.
+
+**The dropdown is `select.rs` and `select_view.rs`**, the Svelte `createSelect` and
+`Select.svelte`. The control has the keyboard and the list never does. What egui does
+around a focused widget decided most of the view, each learnt from a test that failed or
+a probe that passed. A click does not give a widget the keyboard: the control asks for it
+at a press. Enter and Space on a focused widget are a click to egui, and so is the press
+a screen reader makes: the keys are read as keys, and a click in a frame with Enter or
+Space in it is not a press. **Tab is read in the frame the control loses the focus**
+(`lost_focus`): egui has moved the focus on by the time the control is drawn, and read
+only while it had the keyboard, Tab closed the list without taking the option it was on.
+The arrows are claimed (`set_focus_lock_filter`), or egui walks the focus to a
+neighbouring widget with them, and Escape while the list is open, or egui drops the
+focus before the control sees the key. A key the list used is taken out of the frame's
+input, because the grid is drawn after the bar and would scroll by the same arrow - which
+is why the controls are drawn after the search box, which has read its own keys by then.
+**The list closes at a press outside it, by the view's own rule**: egui gives up the focus
+at a *click* elsewhere, which is the button let go of, and never at a press that becomes
+a drag - with only the "no keyboard, no list" rule, a list stayed open over a scrollbar
+being dragged. A press on the list takes the focus from the control and is given it back.
+The pointer makes a row the active one when it moves, not while it rests where the list
+opened. And the list is as wide as its longest option needs in a row, where the mark's
+room is more than the chevron's: at the control's own width it printed "Date modi…",
+which a picture showed and no test had (`Galley::elided` is how a test sees a text cut
+short; `Galley::text` is the whole text either way).
+
+**The year strip is asked for before the rows are laid out, because it decides how wide
+they are** (`GridView::strip`): `shows_timeline` wants the number of year marks, and
+`timeline::year_runs` counts them from the sections alone, held to `year_marks` by a test
+that runs both. The count is kept for the layout generation it was made in. The strip
+stands at the grid's right edge with the scrollbar left of it, as in the Svelte grid, and
+the photos have what is left; the grid keeps its photo when the strip comes or goes with
+a new index because the tile changes with it, which is the pin's own trigger. A press on
+the strip is the primary button's and follows the pointer on or off the strip
+(`is_pointer_button_down_on`); the year under the pointer is named over the photos, so it
+is painted last and through the grid's own painter. It is no stop of the Tab key
+(`Sense::CLICK | Sense::DRAG`). A guard against a strip of no height was removed: nothing
+divides by it that a test or a panic could tell.
 
 **Tests of the whole application drive it through `tests/common`'s `Driver`**: `until`
 draws the frames that are asked for, `settle` waits in real time for the other threads,
