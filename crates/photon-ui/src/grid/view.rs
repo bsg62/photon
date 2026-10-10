@@ -9,7 +9,8 @@ use super::{
     header,
     layout::{
         GAP, HEADER, PinnedHeader, Row, RowKind, build_rows, columns_for, defers_thumbs,
-        header_rows, pin_at, pin_top, pinned_header, row_width, tile_for, tile_row, tile_width,
+        has_header, header_rows, pin_at, pin_top, pinned_header, row_of_item, row_width,
+        scroll_into_grid, scroll_to_start, tile_for, tile_row, tile_width, top_folder_id,
         total_height, visible_range, wanted_range,
     },
     motion::{Direction, Motion, ScrollSpeed},
@@ -60,6 +61,18 @@ pub struct GridOutput {
     /// Whether a picture the grid wants, in view or just outside it, is still on its way:
     /// being read, or read and not yet uploaded.
     pub loading: bool,
+    /// The folder whose photos are at the top of the grid while it runs folder by folder,
+    /// and none otherwise: what the sidebar marks and the next launch comes back to.
+    pub top_folder: Option<i64>,
+}
+
+/// Where a photo asked for is put.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Align {
+    /// Its row at the top of the grid, under whatever lies over the top.
+    Start,
+    /// Its row in view, by the least movement, and none when it already is.
+    Nearest,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -80,6 +93,9 @@ pub struct GridView {
     grab: Option<f64>,
     /// A place asked for from outside (`move_to`), until the next frame takes it.
     asked: Option<f64>,
+    /// A photo asked for from outside (`go_to`), until the next frame has laid the rows
+    /// out and knows where it is.
+    wanted: Option<(usize, Align)>,
 }
 
 impl GridView {
@@ -103,7 +119,16 @@ impl GridView {
     /// nothing in this one.
     pub fn to_top(&mut self) {
         self.asked = None;
+        self.wanted = None;
         self.scroll.set(0.0);
+    }
+
+    /// Asks for the photo at grid offset `offset` to be shown: the Svelte grid's
+    /// `scrollToOffset`. Taken by the next frame, once the rows are laid out for the index
+    /// the offset was looked up in - the caller holds both, and gives them in one frame.
+    /// A place, like the top, and not a scroll.
+    pub fn go_to(&mut self, offset: usize, align: Align) {
+        self.wanted = Some((offset, align));
     }
 
     pub fn scroll_by(&mut self, delta: f64) {
@@ -127,6 +152,7 @@ impl GridView {
         let viewport = f64::from(area.height()).max(0.0);
 
         let rebuilt = self.lay_out(data, f64::from(area.width()), viewport);
+        self.take_place(data.index, viewport);
 
         // Measured after the layout: a place restored across a resize is not a scroll.
         let before = self.scroll.position();
@@ -172,6 +198,30 @@ impl GridView {
             settled,
             marked,
             loading,
+            top_folder: top_folder_id(&self.rows, data.index.sections(), top),
+        }
+    }
+
+    /// Puts the grid where a photo asked for is (`go_to`). One the rows do not hold - its
+    /// folder left the view between the click and the grid - moves nothing, and is not
+    /// kept for a grid that does.
+    fn take_place(&mut self, index: &GridIndex, viewport: f64) {
+        let Some((offset, align)) = self.wanted.take() else {
+            return;
+        };
+        let Some(row) = row_of_item(&self.rows, offset).map(|at| self.rows[at]) else {
+            return;
+        };
+        // A grid with headers has one over its top edge - a section's own, or the pinned
+        // copy - and a row starts, or is in view, only below that.
+        let headed = index.sections().get(row.section).is_some_and(has_header);
+        let inset = if headed { HEADER } else { 0.0 };
+        let to = match align {
+            Align::Start => Some(scroll_to_start(&row, inset)),
+            Align::Nearest => scroll_into_grid(&row, self.scroll.position(), viewport, inset),
+        };
+        if let Some(to) = to {
+            self.scroll.set(to);
         }
     }
 
@@ -451,6 +501,10 @@ mod tests {
     /// An index of folders holding `counts` photos each. A photo's id is its place plus
     /// one, and its thumbnail key its id.
     fn index(counts: &[usize]) -> GridIndex {
+        index_laid_out(counts, Layout::Folders)
+    }
+
+    fn index_laid_out(counts: &[usize], layout: Layout) -> GridIndex {
         let mut entries = Vec::new();
         for (folder, count) in counts.iter().enumerate() {
             for _ in 0..*count {
@@ -470,7 +524,7 @@ mod tests {
                 });
             }
         }
-        GridIndex::build(entries, Layout::Folders)
+        GridIndex::build(entries, layout)
     }
 
     struct Fixture {
@@ -1002,6 +1056,116 @@ mod tests {
         f.view.to_top();
         assert_eq!(f.frame(Vec::new()).position, 0.0);
         assert_eq!(f.frame(Vec::new()).position, 0.0);
+    }
+
+    /// The row that is the header of section `section`.
+    fn header_of(view: &GridView, section: usize) -> Row {
+        (view.rows.iter().copied())
+            .find(|row| row.kind == RowKind::Header && row.section == section)
+            .expect("the section has a header")
+    }
+
+    // A click on a folder in the sidebar: its header at the top of the grid.
+    #[test]
+    fn a_photo_asked_for_is_at_the_start_of_the_next_frame_under_its_header() {
+        let mut f = fixture(&[50, 50, 50]);
+        assert_eq!(f.frame(Vec::new()).top_folder, Some(1));
+        // The second folder's first photo.
+        f.view.go_to(50, Align::Start);
+        let frame = f.frame(Vec::new());
+        assert_eq!(frame.position, header_of(&f.view, 1).top);
+        assert_eq!(frame.top_folder, Some(2));
+        // Once: the grid is the user's again afterwards.
+        f.view.scroll_by(-100.0);
+        assert_eq!(
+            f.frame(Vec::new()).position,
+            header_of(&f.view, 1).top - 100.0
+        );
+    }
+
+    // From the middle of a section the row goes under the pinned header, not behind it.
+    #[test]
+    fn a_photo_in_the_middle_of_a_folder_is_put_under_the_pinned_header() {
+        let mut f = fixture(&[200]);
+        f.frame(Vec::new());
+        f.view.go_to(100, Align::Start);
+        let frame = f.frame(Vec::new());
+        let row = f.view.rows[row_of_item(&f.view.rows, 100).unwrap()];
+        assert_eq!(frame.position, row.top - HEADER);
+        assert!(frame.pinned.is_some());
+    }
+
+    // Under no header there is nothing over the top of the grid to stay clear of.
+    #[test]
+    fn a_photo_asked_for_in_a_flat_view_is_flush_to_the_top_and_names_no_folder() {
+        let mut f = fixture(&[200]);
+        f.index = index_laid_out(&[200], Layout::Flat);
+        assert_eq!(f.frame(Vec::new()).top_folder, None);
+        f.view.go_to(100, Align::Start);
+        let frame = f.frame(Vec::new());
+        let row = f.view.rows[row_of_item(&f.view.rows, 100).unwrap()];
+        assert_eq!(frame.position, row.top);
+        assert_eq!(frame.top_folder, None);
+    }
+
+    // A place is not a move: the grid is put there, as it is put at its top, and does not
+    // hold its thumbnails back as it does after a jump of the scrollbar.
+    #[test]
+    fn going_to_a_place_is_not_a_scroll() {
+        let mut f = fixture(&[4000]);
+        f.frame(Vec::new());
+        f.view.go_to(3000, Align::Start);
+        let frame = f.frame(Vec::new());
+        assert!(frame.position > 10_000.0);
+        assert_eq!(f.view.speed.motion(), Motion::Still);
+    }
+
+    #[test]
+    fn a_photo_is_brought_into_view_by_the_least_movement() {
+        let mut f = fixture(&[400]);
+        f.frame(Vec::new());
+        let row_of = |f: &Fixture, offset| f.view.rows[row_of_item(&f.view.rows, offset).unwrap()];
+        // In view already: nothing moves.
+        f.view.go_to(5, Align::Nearest);
+        assert_eq!(f.frame(Vec::new()).position, 0.0);
+        // Below: up until its bottom edge shows.
+        f.view.go_to(100, Align::Nearest);
+        let below = row_of(&f, 100);
+        assert_eq!(
+            f.frame(Vec::new()).position,
+            below.top + below.height - 600.0
+        );
+        // Above: down to just under the pinned header.
+        f.view.go_to(40, Align::Nearest);
+        assert_eq!(f.frame(Vec::new()).position, row_of(&f, 40).top - HEADER);
+    }
+
+    // Other results are shown from their top, and a place asked for in the old ones names
+    // nothing in these; a place asked for in the new ones is where they are shown.
+    #[test]
+    fn the_top_and_a_place_asked_for_are_each_the_last_word() {
+        let mut f = fixture(&[50, 50, 50]);
+        f.frame(Vec::new());
+        f.view.go_to(50, Align::Start);
+        f.view.to_top();
+        assert_eq!(f.frame(Vec::new()).position, 0.0);
+        f.view.to_top();
+        f.view.go_to(50, Align::Start);
+        assert_eq!(f.frame(Vec::new()).position, header_of(&f.view, 1).top);
+    }
+
+    // The folder has left the view between the click and the grid.
+    #[test]
+    fn a_photo_the_grid_does_not_hold_moves_nothing() {
+        let mut f = fixture(&[200]);
+        f.frame(Vec::new());
+        f.view.scroll_to(1000.0);
+        f.view.go_to(200, Align::Start);
+        assert_eq!(f.frame(Vec::new()).position, 1000.0);
+        // And is not kept for a grid that does.
+        f.index = index(&[400]);
+        f.layout_gen += 1;
+        assert_eq!(f.frame(Vec::new()).position, 1000.0);
     }
 
     // With the search box focused, Home and End move its caret, and Page Down is not the

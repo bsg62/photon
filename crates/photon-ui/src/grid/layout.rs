@@ -230,6 +230,41 @@ pub fn row_of_item(rows: &[Row], offset: usize) -> Option<usize> {
     (row.kind == RowKind::Tiles && offset < row.first + row.count).then_some(found)
 }
 
+/// The folder whose section is at the top of the grid, or none: in a view that is not laid
+/// out by folder, and in an empty grid.
+///
+/// This is what photon remembers across a restart and what the sidebar marks. It follows
+/// the eye rather than the last click, so scrolling into a folder counts as being in it -
+/// and it answers none rather than a guess for an empty grid, so a launch whose first scan
+/// has found nothing yet cannot overwrite what the last session remembered.
+pub fn top_folder_id(rows: &[Row], sections: &[Section], top: f64) -> Option<i64> {
+    let row = rows.get(row_index_at(rows, top))?;
+    sections.get(row.section)?.folder_id
+}
+
+/// Where to put the grid so that `row` starts the view: its top just under what lies over
+/// the top of the grid (`inset`, as in `scroll_into_grid`). For a section's first row that
+/// is its own header's top, the header being exactly that tall and directly above; for a
+/// row from the middle of a section - a folder jump under a date grouping lands on one -
+/// it is the room the pinned header takes, which flush to the top covered the row's first
+/// 32 points.
+pub fn scroll_to_start(row: &Row, inset: f64) -> f64 {
+    row.top - inset
+}
+
+/// Where to put the grid so that `row` is in view, or `None` when it already is: the least
+/// movement. `inset` is what lies over the top of the grid - the pinned header's height, in
+/// a grid that has headers - and a row is in view only below it.
+pub fn scroll_into_grid(row: &Row, top: f64, viewport: f64, inset: f64) -> Option<f64> {
+    if row.top < top + inset {
+        Some((row.top - inset).max(0.0))
+    } else if row.top + row.height > top + viewport {
+        Some(row.top + row.height - viewport)
+    } else {
+        None
+    }
+}
+
 /// The indexes of the header rows in `rows`, in order: what `pinned_header` searches, built
 /// once per layout.
 pub fn header_rows(rows: &[Row]) -> Vec<usize> {
@@ -384,6 +419,115 @@ mod tests {
         );
         assert_eq!(total_height(&rows), 928.0);
         assert_eq!(total_height(&[]), 0.0);
+    }
+
+    // What photon remembers across a restart, and what the sidebar marks. It follows the
+    // eye rather than the last click, so scrolling into a folder counts as being in it.
+    #[test]
+    fn the_folder_at_the_top_is_the_one_whose_section_the_top_edge_is_in() {
+        let sections = two_folders();
+        let rows = build_rows(&sections, 2, MEDIUM);
+        assert_eq!(top_folder_id(&rows, &sections, 0.0), Some(1));
+        // Still inside folder 1's last tile row.
+        assert_eq!(top_folder_id(&rows, &sections, 400.0), Some(1));
+        // The gap between the two folders still belongs to folder 1: nothing of 2 is up.
+        assert_eq!(top_folder_id(&rows, &sections, 545.0), Some(1));
+        // Folder 2's header is at 560.
+        assert_eq!(top_folder_id(&rows, &sections, 560.0), Some(2));
+        assert_eq!(top_folder_id(&rows, &sections, 10_000.0), Some(2));
+    }
+
+    // A flat view names none: nothing to remember, and nothing to mark. And an empty grid
+    // names none rather than guess, so a launch whose first scan has found nothing yet
+    // cannot overwrite what the last session remembered.
+    #[test]
+    fn no_folder_is_at_the_top_of_a_flat_view_or_of_no_grid() {
+        let sections = [flat(0, 5)];
+        let rows = build_rows(&sections, 2, MEDIUM);
+        assert_eq!(top_folder_id(&rows, &sections, 0.0), None);
+        assert_eq!(top_folder_id(&[], &[], 0.0), None);
+        assert_eq!(
+            top_folder_id(&build_rows(&two_folders(), 2, MEDIUM), &[], 0.0),
+            None
+        );
+    }
+
+    #[test]
+    fn a_row_is_put_at_the_start_of_the_view_under_what_lies_over_it() {
+        let rows = build_rows(&two_folders(), 2, MEDIUM);
+        // A section's first row under its own header, which is exactly that tall and
+        // directly above it.
+        let header = rows[4];
+        let first = rows[5];
+        assert_eq!(scroll_to_start(&first, HEADER), header.top);
+        assert_eq!(scroll_to_start(&rows[1], HEADER), 0.0);
+        // A row from the middle of a section - a folder jump under a date grouping lands
+        // on one - under the pinned header, not behind it.
+        assert_eq!(scroll_to_start(&rows[2], HEADER), rows[2].top - HEADER);
+        // Flush to the top where there are no headers.
+        let flat = build_rows(&[flat(0, 5)], 2, MEDIUM);
+        assert_eq!(scroll_to_start(&flat[2], 0.0), flat[2].top);
+        assert_eq!(scroll_to_start(&flat[0], 0.0), 0.0);
+    }
+
+    #[test]
+    fn a_row_is_brought_into_view_by_the_least_movement() {
+        let rows = build_rows(&two_folders(), 2, MEDIUM);
+        let tiles: Vec<Row> = (rows.iter().copied())
+            .filter(|row| row.kind == RowKind::Tiles)
+            .collect();
+        let viewport = 400.0;
+        // Wholly in view already.
+        assert_eq!(scroll_into_grid(&tiles[1], 150.0, viewport, HEADER), None);
+        // Above the view: down to just under the pinned header, which lies over the top
+        // of the grid. Flush to the top it would be under it.
+        assert_eq!(
+            scroll_into_grid(&tiles[1], 300.0, viewport, HEADER),
+            Some(tiles[1].top - HEADER)
+        );
+        // Ten pixels of it behind the header count as out of view; flush under it is in.
+        assert_eq!(
+            scroll_into_grid(&tiles[1], tiles[1].top - HEADER + 10.0, viewport, HEADER),
+            Some(tiles[1].top - HEADER)
+        );
+        assert_eq!(
+            scroll_into_grid(&tiles[1], tiles[1].top - HEADER, viewport, HEADER),
+            None
+        );
+        // A section's first row comes into view with its header: the same sum.
+        let (header, first) = (rows[4], rows[5]);
+        assert_eq!(
+            scroll_into_grid(&first, first.top + 50.0, viewport, HEADER),
+            Some(header.top)
+        );
+        // Below the view: up until its bottom edge shows.
+        assert_eq!(
+            scroll_into_grid(&tiles[2], 0.0, 300.0, HEADER),
+            Some(tiles[2].top + tiles[2].height - 300.0)
+        );
+        // The same of one cut by the bottom edge, its top in view: it is not in view.
+        assert_eq!(
+            scroll_into_grid(&tiles[2], 0.0, viewport, HEADER),
+            Some(tiles[2].top + tiles[2].height - viewport)
+        );
+        // Flush to the top where nothing is pinned.
+        assert_eq!(
+            scroll_into_grid(&tiles[1], 300.0, viewport, 0.0),
+            Some(tiles[1].top)
+        );
+        assert_eq!(
+            scroll_into_grid(&tiles[1], tiles[1].top, viewport, 0.0),
+            None
+        );
+        // Never a place above the start of the grid.
+        let near_top = Row {
+            top: 10.0,
+            ..tiles[0]
+        };
+        assert_eq!(
+            scroll_into_grid(&near_top, 200.0, viewport, HEADER),
+            Some(0.0)
+        );
     }
 
     #[test]
