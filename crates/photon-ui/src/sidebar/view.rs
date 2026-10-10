@@ -531,7 +531,7 @@ fn draw(ui: &mut egui::Ui, frame: &Frame<'_>, band: Rect, entry: &Entry) -> bool
             paint_line(ui, painter, at, room, &entry.label, font, dim);
             false
         }
-        What::Note(_) => {
+        What::Note(_) | What::NoFolders => {
             let room = (frame.panel.width() - NOTE_LEFT - NOTE_RIGHT).max(0.0);
             let words = painter.layout(entry.label.clone(), note_font(), dim, room);
             painter.galley(
@@ -539,6 +539,9 @@ fn draw(ui: &mut egui::Ui, frame: &Frame<'_>, band: Rect, entry: &Entry) -> bool
                 words,
                 dim,
             );
+            // Words, and said as words to whoever reads the window without seeing it.
+            ui.interact(band, ui.id().with(("sidebar", &entry.what)), Sense::hover())
+                .widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, &entry.label));
             false
         }
     }
@@ -672,6 +675,7 @@ mod tests {
                 tallies: &self.tallies,
                 layout_gen: 1,
                 zone: &TimeZone::UTC,
+                no_folders: false,
             });
             list
         }

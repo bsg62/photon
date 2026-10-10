@@ -172,7 +172,7 @@ pub fn no_photos_line(watched: &[WatchedFolder]) -> String {
 }
 
 /// A button of the empty library's panel.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum PanelButton {
     ShowHidden,
     AddFolder,

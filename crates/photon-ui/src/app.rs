@@ -2,7 +2,7 @@
 
 use crate::{
     dirs::Dirs,
-    empty::{self, GridState},
+    empty::{self, GridState, LibraryFacts, Panel, PanelButton},
     events::{Event, UiEvents},
     grid::{
         view::{Align, GridData, GridOutput, GridView},
@@ -11,6 +11,7 @@ use crate::{
     icons,
     nav::{Landed, LastFolder, Nav, Place, Step},
     probe::{Facts, Move, Outside, Probe, Report},
+    scans::Scans,
     search_bar::{SearchAction, SearchBarData},
     search_box::{SearchBox, saved_search_for},
     shell::{Action, Shell, ShellData},
@@ -18,6 +19,7 @@ use crate::{
         list::{Collections, Group, Held, List, Sources, What},
         rows::{Counts, Fixed, Today},
     },
+    status::Line,
     tasks::{Latest, Queue},
     theme,
     thumbs::{loader::Loader, shown::Thumbs, source::EngineThumbs},
@@ -28,13 +30,14 @@ use eframe::egui;
 use jiff::tz::TimeZone;
 use photon_core::{
     grid::{GridIndex, GridView as View},
-    library::{Folder, GridTile},
+    library::{Folder, GridTile, WatchedFolder},
     sort::Sort,
 };
 use photon_engine::{
-    commands,
+    commands::{self, FolderList},
     engine::{Engine, EngineConfig},
     error::AppError,
+    events::ScanProgressEvent,
 };
 use std::{collections::HashMap, path::PathBuf, sync::Arc, sync::mpsc::Receiver, time::Duration};
 
@@ -44,6 +47,8 @@ const THUMB_TIMEOUT: Duration = Duration::from_secs(30);
 /// Threads decoding cached thumbnails. A decode is a tenth of a millisecond; two keep up
 /// with a scroll and leave the cores to the engine's renders.
 const DECODERS: usize = 2;
+/// How often the engine is asked whether its first scans are started, until they are.
+const LAUNCH_POLL: Duration = Duration::from_millis(50);
 
 pub struct App {
     engine: Arc<Engine>,
@@ -60,7 +65,17 @@ pub struct App {
     /// The folder list and the collections as last read: what the headers are named
     /// from and the sidebar's list is built from.
     held: Held,
-    folder_list: Latest<(), Option<Vec<Folder>>>,
+    folder_list: Latest<(), Option<FolderList>>,
+    /// The folders photon watches, as last read. Whether that is known yet is the
+    /// launch's to say (`Scans::known`): until then an empty list is "not read yet", not
+    /// "no folder is watched".
+    watched: Vec<WatchedFolder>,
+    /// What photon is doing in the background, as the engine has reported it.
+    scans: Scans,
+    /// Counts a folder's photos for the first report of its scan, off this thread: what
+    /// the scan's bar is measured against. A queue, since two folders' scans start side
+    /// by side and each wants its own count.
+    expecting: Queue<ScanProgressEvent, (ScanProgressEvent, Option<i64>)>,
     /// Where the user is and is going, and the queue the steps there are made on.
     nav: Nav,
     /// A step made answers where it led, and with it what the engine said when it made
@@ -77,6 +92,8 @@ pub struct App {
     /// What the library holds of each kind, for the sidebar. Asked for by the layout
     /// generation held, so that the answer need not carry the layout.
     counts: Counts,
+    /// Whether they have been read once: before that "no photo is hidden" is not known.
+    counted: bool,
     counting: Latest<u64, Counts>,
     collecting: Latest<(), Option<Collections>>,
     /// The sidebar's entries, built again only when what they are built from has moved.
@@ -201,11 +218,7 @@ impl App {
             "folders",
             {
                 let engine = engine.clone();
-                move |()| {
-                    commands::list_folders(&engine)
-                        .ok()
-                        .map(|list| list.folders)
-                }
+                move |()| commands::list_folders(&engine).ok()
             },
             repaint(&ctx),
         );
@@ -251,6 +264,22 @@ impl App {
                         shown_at,
                     };
                     Ok((landed, said))
+                }
+            },
+            repaint(&ctx),
+        );
+        let expecting = Queue::spawn(
+            "scan sizes",
+            {
+                let engine = engine.clone();
+                move |first: ScanProgressEvent| {
+                    // A folder with no photo yet is not among the counts: none, not unknown.
+                    let count = commands::watched_folder_stats(&engine).ok().map(|stats| {
+                        (stats.iter())
+                            .find(|folder| folder.watched_id == first.watched_id)
+                            .map_or(0, |folder| folder.photo_count)
+                    });
+                    (first, count)
                 }
             },
             repaint(&ctx),
@@ -369,12 +398,16 @@ impl App {
             layout_gen,
             held: Held::default(),
             folder_list,
+            watched: Vec::new(),
+            scans: Scans::default(),
+            expecting,
             nav: Nav::new(Place { view, arg }, engine.sort()),
             steps,
             search: SearchBox::default(),
             writes,
             stale: false,
             counts: Counts::default(),
+            counted: false,
             counting,
             collecting,
             list: List::default(),
@@ -523,6 +556,29 @@ impl App {
     /// The status bar's count of the photos shown, when there is one to give.
     pub fn photo_count(&self) -> Option<String> {
         empty::photo_count(&self.grid)
+    }
+
+    /// What photon is doing in the background, as the status bar says it.
+    pub fn status(&self) -> Vec<Line> {
+        self.scans.lines(&self.watched)
+    }
+
+    /// The folders photon watches, as last read.
+    pub fn watched(&self) -> &[WatchedFolder] {
+        &self.watched
+    }
+
+    /// What an empty library says where its photos would be: about the grid that is on
+    /// screen, like the line of an empty view, and only what is known - nothing before
+    /// the watched folders and the hidden photos have each been read once.
+    pub fn panel(&self) -> Option<Panel> {
+        let library = LibraryFacts {
+            known: self.scans.known(),
+            watched: &self.watched,
+            scanning: self.scans.scanning(),
+            hidden: self.counted.then_some(self.counts.hidden),
+        };
+        empty::library_panel(&self.grid, self.nav.settled(), &library)
     }
 
     /// The line shown in place of photos. It is about the grid that is on screen, not
@@ -684,6 +740,9 @@ impl App {
             }
             Action::Dismiss(id) => self.toasts.dismiss(id),
             Action::Sort(sort) => self.go(Step::Sort(sort)),
+            Action::Panel(PanelButton::ShowHidden) => self.go(Step::View(View::Hidden)),
+            // Drawn where they will be, and not answered yet (`PanelButton::works`).
+            Action::Panel(PanelButton::AddFolder | PanelButton::WatchedFolders) => {}
             // Applied first and stored second, so the press is answered at once. A size
             // the library would not store is kept for this session all the same: going
             // back would answer a disk error with the whole grid laid out again.
@@ -698,14 +757,44 @@ impl App {
     /// reported anything. Only a changed library is acted on in this slice; the rest is
     /// taken so the channel stays empty.
     fn take_events(&mut self) -> bool {
+        // The launch: until the engine has settled its folders and started their scans,
+        // the list on hand may be from before the Pictures folder was watched. It is
+        // read again then, and that read is the one to go by.
+        if self.scans.starting() && self.engine.startup_scans_started() {
+            self.scans.started();
+            self.folder_list.ask(());
+        }
         let mut reported = false;
         let mut changed = false;
         let mut data_changed = false;
+        let mut folders_changed = false;
         for event in self.events.try_iter() {
             reported = true;
-            if let Event::Library(library) = event {
-                changed = true;
-                data_changed |= library.data_changed;
+            match event {
+                Event::Library(library) => {
+                    changed = true;
+                    data_changed |= library.data_changed;
+                }
+                Event::Scan(scan) => {
+                    let listed = self
+                        .watched
+                        .iter()
+                        .any(|folder| folder.id == scan.watched_id);
+                    let asks = self.scans.scan(scan, listed, self.grid.len);
+                    folders_changed |= asks.folders;
+                    if asks.expected {
+                        self.expecting.push(scan);
+                    }
+                    // The grid on screen is read again in `adopt`, which says so.
+                    changed |= asks.settle;
+                }
+                // Whether a folder can be reached is in the list too.
+                Event::Folder(status) => {
+                    self.scans.folder_status(status);
+                    folders_changed = true;
+                }
+                Event::Export(export) => self.scans.export(export),
+                Event::Face(face) => self.scans.face(face),
             }
         }
         // A grid has been published. It is taken in `adopt`, once it is known what it
@@ -714,8 +803,10 @@ impl App {
         // A folder renamed, added or given an alias: the headers are named from the list.
         // And an album made, a face named, a keyword renamed: the sidebar lists them.
         if data_changed {
-            self.folder_list.ask(());
             self.collecting.ask(());
+        }
+        if data_changed || folders_changed {
+            self.folder_list.ask(());
         }
         reported
     }
@@ -723,16 +814,27 @@ impl App {
     /// Takes what the tasks have answered since the last frame, and says whether any had.
     fn take_answers(&mut self, now_ms: f64) -> bool {
         let mut answered = false;
-        if let Some(folders) = self.folder_list.answer() {
+        if let Some(read) = self.folder_list.answer() {
             answered = true;
-            if let Ok(Some(folders)) = folders {
-                self.held.set_folders(folders);
+            if let Ok(Some(list)) = read {
+                self.watched = list.watched;
+                self.held.set_folders(list.folders);
             }
+            // Read or not: the list on hand is what there is to go by. Left as "not
+            // read", a read that failed at launch kept an empty library saying nothing.
+            self.scans.listed(&self.watched);
         }
         if let Some(counts) = self.counting.answer() {
             answered = true;
             if let Ok(counts) = counts {
                 self.counts = counts;
+                self.counted = true;
+            }
+        }
+        for (_, answer) in self.expecting.answers() {
+            answered = true;
+            if let Ok((first, Some(photos))) = answer {
+                self.scans.expected_read(&first, photos);
             }
         }
         if let Some(read) = self.collecting.answer() {
@@ -806,6 +908,8 @@ impl App {
             return;
         };
         self.stale = false;
+        // A scan that ended over an empty grid counts as running until this (`Scans`).
+        self.scans.settled();
         self.grid = GridState {
             version,
             len: index.len(),
@@ -907,6 +1011,11 @@ impl eframe::App for App {
             self.go_to_folder(folder);
         }
         self.take_folder();
+        // Nothing reports the moment the engine has started its first scans: it is asked
+        // for, a few times a second, for as long as the launch takes and no longer.
+        if self.scans.starting() {
+            ui.ctx().request_repaint_after(LAUNCH_POLL);
+        }
         // A search typed, whose time has come.
         if let Some(query) = self.search.take_due(now) {
             self.search_for(query);
@@ -931,6 +1040,7 @@ impl eframe::App for App {
             tallies: self.index.folders(),
             layout_gen: self.layout_gen,
             zone: &self.zone,
+            no_folders: self.scans.known() && self.watched.is_empty(),
         });
         // The folder the grid was in when it was last drawn. The grid is drawn after the
         // sidebar and takes its place then, so this is a frame behind, which the end of
@@ -938,6 +1048,8 @@ impl eframe::App for App {
         self.marked = self.last.as_ref().and_then(|frame| frame.top_folder);
         let count = self.photo_count();
         let notice = self.notice();
+        let lines = self.status();
+        let panel = self.panel();
         let (toasts, next_toast) = self.toasts.at(now);
         // A still window draws no frame by itself: the one a message is gone in is asked
         // for.
@@ -960,6 +1072,8 @@ impl eframe::App for App {
             sort: self.nav.sort_target(),
             size: self.size,
             count: count.as_deref(),
+            lines: &lines,
+            panel: panel.as_ref(),
             notice: notice.as_deref(),
             toasts,
         };

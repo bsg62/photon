@@ -11,6 +11,7 @@ pub mod controls;
 pub mod controls_bar;
 pub mod dirs;
 pub mod empty;
+pub mod empty_panel;
 pub mod events;
 pub mod fixture;
 pub mod grid {

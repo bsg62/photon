@@ -7,12 +7,15 @@
 
 use crate::{
     controls_bar::{self, ControlAction, ControlsBar, ControlsData},
+    empty::{Panel, PanelButton},
+    empty_panel,
     icons::Icon,
     search_bar::{SearchAction, SearchBar, SearchBarData},
     sidebar::{
         list::{List, What},
         view::{SidebarData, SidebarView},
     },
+    status::{Bar, Line},
     text::paint_line,
     theme::{
         apply::{color, palette},
@@ -50,6 +53,10 @@ pub struct ShellData<'a> {
     pub size: GridTile,
     /// The status bar's photo count, when there is one to give.
     pub count: Option<&'a str>,
+    /// What photon is doing in the background, for the status bar's left.
+    pub lines: &'a [Line],
+    /// What an empty library says where its photos would be.
+    pub panel: Option<&'a Panel>,
     /// The line shown in the middle of the content in place of photos.
     pub notice: Option<&'a str>,
     pub toasts: &'a [Toast],
@@ -67,6 +74,8 @@ pub enum Action {
     Sort(Sort),
     /// The size of the tiles wanted.
     Size(GridTile),
+    /// A button of the empty library's panel.
+    Panel(PanelButton),
     /// The splitter moved to `width`. `store` when the user has let go of it or moved it
     /// by a key: a width is stored when it was chosen, not at every point on the way.
     Width {
@@ -170,7 +179,7 @@ impl Shell {
                 &mut actions,
             );
         }
-        status_bar(ui, rect_of(found.status_bar, window), data.count, palette);
+        status_bar(ui, rect_of(found.status_bar, window), data, palette);
 
         let place = rect_of(found.content, window);
         ui.painter_at(place)
@@ -181,6 +190,11 @@ impl Shell {
         });
         if let Some(notice) = data.notice {
             self::notice(ui, place, notice, palette);
+        }
+        if let Some(panel) = data.panel
+            && let Some(button) = empty_panel::show(ui, place, panel)
+        {
+            actions.push(Action::Panel(button));
         }
         if let Some(id) = toasts(ui, window, data.toasts, palette) {
             actions.push(Action::Dismiss(id));
@@ -416,18 +430,83 @@ fn bar_button(
     button.enabled && response.clicked()
 }
 
-fn status_bar(ui: &egui::Ui, rect: Rect, count: Option<&str>, palette: &Palette) {
+/// The bar beside a status line: a hundred and twenty points of track, six tall.
+const STATUS_TRACK: f32 = 120.0;
+/// Between two lines of the status bar.
+const STATUS_GAP: f32 = 16.0;
+/// The least of a line's words worth drawing: with less room the line is left out.
+const STATUS_LEAST: f32 = 80.0;
+/// How many places the bar of a first scan has along its track, and how many files seen
+/// move it one on: a scan reports every sixty-four.
+const UNKNOWN_PLACES: u64 = 4;
+const UNKNOWN_STEP: u64 = 64;
+
+fn status_bar(ui: &egui::Ui, rect: Rect, data: &ShellData<'_>, palette: &Palette) {
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 0.0, color(palette.chrome));
     painter.hline(rect.x_range(), rect.top() + 0.5, (1.0, color(palette.line)));
-    if let Some(count) = count {
-        painter.text(
-            pos2(rect.right() - S[2], rect.center().y + 0.5),
+    let (font, dim) = (fonts::regular(T[1]), color(palette.text_dim));
+    let middle = rect.center().y + 0.5;
+    // The count first: it is the one thing here that is always wanted, and the lines
+    // have what is left of it.
+    let mut right = rect.right() - S[2];
+    if let Some(count) = data.count {
+        let drawn = painter.text(
+            pos2(right, middle),
             egui::Align2::RIGHT_CENTER,
             count,
-            fonts::regular(T[1]),
-            color(palette.text_dim),
+            font.clone(),
+            dim,
         );
+        right = drawn.left() - STATUS_GAP;
+    }
+    let mut left = rect.left() + S[2];
+    for (index, line) in data.lines.iter().enumerate() {
+        let bar = line.bar.map_or(0.0, |_| S[1] + STATUS_TRACK);
+        let room = right - left - bar;
+        if room < STATUS_LEAST {
+            break;
+        }
+        let wide = painter
+            .layout_no_wrap(line.label.clone(), font.clone(), dim)
+            .size()
+            .x;
+        paint_line(
+            ui,
+            &painter,
+            (left, middle),
+            room,
+            &line.label,
+            font.clone(),
+            dim,
+        );
+        let mut end = left + wide.min(room);
+        if let Some(bar) = line.bar {
+            let track = Rect::from_min_size(
+                pos2(end + S[1], (middle - 3.0).round()),
+                vec2(STATUS_TRACK, 6.0),
+            );
+            painter.rect_filled(track, 3.0, color(palette.line));
+            let (from, width) = match bar {
+                Bar::Share(share) => (0.0, STATUS_TRACK * share.clamp(0.0, 1.0) as f32),
+                // No clock: it stands where the scan's last report put it.
+                Bar::Unknown { beat } => {
+                    let place = (beat / UNKNOWN_STEP) % UNKNOWN_PLACES;
+                    let width = STATUS_TRACK / UNKNOWN_PLACES as f32;
+                    (place as f32 * width, width)
+                }
+            };
+            let filled =
+                Rect::from_min_size(pos2(track.left() + from, track.top()), vec2(width, 6.0));
+            painter.rect_filled(filled, 3.0, color(palette.accent));
+            end = track.right();
+        }
+        // Said to whoever reads the window without seeing it, as the footer's
+        // `role="status"` says it.
+        let said = Rect::from_min_max(pos2(left, rect.top()), pos2(end, rect.bottom()));
+        ui.interact(said, ui.id().with(("status-line", index)), Sense::hover())
+            .widget_info(|| WidgetInfo::labeled(WidgetType::ProgressIndicator, true, &line.label));
+        left = end + STATUS_GAP;
     }
 }
 
@@ -552,6 +631,7 @@ mod tests {
             list::{Held, Sources},
             rows::{Counts, Fixed, Today},
         },
+        status::Bar,
         toasts::Toasts,
         window_layout::{SIDEBAR_DEFAULT, SIDEBAR_MIN, SPLITTER, STATUS_BAR, TOP_BAR},
     };
@@ -573,6 +653,7 @@ mod tests {
             tallies: &[],
             layout_gen: 0,
             zone: &jiff::tz::TimeZone::UTC,
+            no_folders: false,
         });
         list
     }
@@ -598,6 +679,8 @@ mod tests {
         list: List,
         toasts: Toasts,
         notice: Option<String>,
+        lines: Vec<Line>,
+        panel: Option<Panel>,
         sort: Sort,
         tile: GridTile,
         size: egui::Vec2,
@@ -625,6 +708,8 @@ mod tests {
                 list: list(&counts, &Place::of(GridView::All)),
                 toasts: Toasts::default(),
                 notice: None,
+                lines: Vec::new(),
+                panel: None,
                 sort: Sort::default(),
                 tile: GridTile::Medium,
                 size: vec2(1280.0, 800.0),
@@ -658,6 +743,8 @@ mod tests {
                 sort: self.sort,
                 size: self.tile,
                 count: Some("1,234 photos"),
+                lines: &self.lines,
+                panel: self.panel.as_ref(),
                 notice: self.notice.as_deref(),
                 toasts: self.toasts.held(),
             };
@@ -700,7 +787,7 @@ mod tests {
                     Action::Dismiss(id) => self.toasts.dismiss(*id),
                     Action::Sort(sort) => self.sort = *sort,
                     Action::Size(size) => self.tile = *size,
-                    Action::Row(_) | Action::Search(_) => {}
+                    Action::Row(_) | Action::Search(_) | Action::Panel(_) => {}
                 }
             }
             actions
@@ -859,6 +946,163 @@ mod tests {
         f.key_up(Key::B, Modifiers::COMMAND);
         assert_eq!(f.key(Key::B, Modifiers::NONE), []);
         assert_eq!(f.key(Key::N, Modifiers::COMMAND), []);
+    }
+
+    fn line(label: &str, bar: Option<Bar>) -> Line {
+        Line {
+            label: label.to_owned(),
+            bar,
+        }
+    }
+
+    /// The bars the last frame drew in the status bar: each track, and the part of it
+    /// that is filled.
+    fn bars(f: &Fixture) -> Vec<(Rect, Rect)> {
+        let (track, value) = (color(palette(&f.ctx).line), color(palette(&f.ctx).accent));
+        let in_bar = |rect: &Rect| rect.top() > f.size.y - STATUS_BAR && rect.height() == 6.0;
+        let tracks = (f.fills.iter()).filter(|(rect, fill)| in_bar(rect) && *fill == track);
+        tracks
+            .map(|(track, _)| {
+                let filled = (f.fills.iter())
+                    .find(|(rect, fill)| {
+                        in_bar(rect) && *fill == value && track.contains_rect(*rect)
+                    })
+                    .map_or(Rect::NOTHING, |(rect, _)| *rect);
+                (*track, filled)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_status_bar_says_what_photon_is_doing_at_its_left_each_with_its_bar() {
+        let mut f = Fixture::new();
+        f.lines = vec![
+            line("Live updates limited.", None),
+            line(
+                "Scanning Pictures… 1,250 of ~5,000 files (25%)",
+                Some(Bar::Share(0.25)),
+            ),
+            line("Finding faces: 5 of 10", Some(Bar::Share(0.5))),
+        ];
+        f.frame(Vec::new());
+        let bar_top = 800.0 - STATUS_BAR;
+        let places: Vec<Rect> = (f.lines.iter())
+            .map(|line| f.drew(&line.label).expect("the line is drawn"))
+            .collect();
+        // In order from the left edge, all in the bar, none over the count.
+        let count = f.drew("1,234 photos").unwrap();
+        assert!(places[0].left() >= S[2] - 1.0 && places[0].left() < S[2] + 4.0);
+        for pair in places.windows(2) {
+            assert!(pair[0].right() < pair[1].left(), "{pair:?}");
+        }
+        // Sixteen points between one line and the next: after the words of a line that
+        // has no bar, after the bar of one that has.
+        assert!(places[1].left() >= places[0].right() + 15.0, "{places:?}");
+        for place in &places {
+            assert!(place.top() > bar_top && place.right() < count.left());
+        }
+        // A bar after each line that has one, and none after the notice: a hundred and
+        // twenty points of track, filled as far as the line has got.
+        let drawn = bars(&f);
+        assert_eq!(drawn.len(), 2);
+        for ((track, filled), (at, share)) in drawn.iter().zip([(1, 0.25), (2, 0.5)]) {
+            assert_eq!(track.width(), 120.0);
+            assert!(track.left() > places[at].right() && track.left() < places[at].right() + 16.0);
+            assert_eq!(filled.left(), track.left());
+            assert!((filled.width() - 120.0 * share).abs() < 0.01, "{filled:?}");
+        }
+        assert!(
+            places[2].left() >= drawn[0].0.right() + 15.0,
+            "the next line is a gap after the bar"
+        );
+    }
+
+    // A first scan has nothing to be measured against, and its bar no clock of its own:
+    // a part of the track that moves when the scan reports, and stands still between.
+    #[test]
+    fn the_bar_of_a_first_scan_moves_with_the_scans_reports_and_not_by_itself() {
+        let mut f = Fixture::new();
+        let scanning = |beat| {
+            vec![line(
+                "Scanning Pictures… files",
+                Some(Bar::Unknown { beat }),
+            )]
+        };
+        let mut seen = Vec::new();
+        for beat in [0, 0, 64, 128, 192, 256, 257] {
+            f.lines = scanning(beat);
+            f.frame(Vec::new());
+            let (track, part) = bars(&f)[0];
+            assert!(track.contains_rect(part), "{part:?} in {track:?}");
+            assert!(part.width() > 20.0 && part.width() < track.width() / 2.0);
+            seen.push(part.left() - track.left());
+        }
+        assert_eq!(seen[0], seen[1], "still while nothing is reported");
+        assert_ne!(seen[1], seen[2]);
+        assert_ne!(seen[2], seen[3]);
+        assert_ne!(seen[3], seen[4]);
+        assert_eq!(seen[5], seen[1], "and round again");
+        assert_eq!(seen[6], seen[5], "a report of one file more is no step");
+    }
+
+    // The bar is one row. What does not fit is cut short or left out; nothing is drawn
+    // over the photo count, which is the one thing here that is always wanted.
+    #[test]
+    fn lines_too_long_for_the_bar_stop_short_of_the_count() {
+        let mut f = Fixture::new();
+        f.size = vec2(800.0, 500.0);
+        f.lines = vec![
+            line(
+                "Scanning Pictures… 15,200 of ~15,000 files (100%), 1,200 new or changed",
+                Some(Bar::Share(1.0)),
+            ),
+            line(
+                "Scanning Holidays… 15,200 of ~15,000 files (100%), 1,200 new or changed",
+                Some(Bar::Share(0.5)),
+            ),
+            line("Finding faces: 12,400 of 98,000", Some(Bar::Share(0.1))),
+        ];
+        f.frame(Vec::new());
+        let count = f.drew("1,234 photos").expect("the count is drawn");
+        assert!(count.right() > 700.0);
+        let in_bar = |rect: &Rect| rect.top() > 500.0 - STATUS_BAR;
+        let lines: Vec<&(String, Rect)> = (f.texts.iter())
+            .filter(|(text, rect)| in_bar(rect) && text != "1,234 photos")
+            .collect();
+        assert!(!lines.is_empty());
+        for (text, rect) in &lines {
+            assert!(rect.right() < count.left() - 4.0, "{text} at {rect:?}");
+        }
+        for (track, _) in bars(&f) {
+            assert!(track.right() < count.left() - 4.0, "{track:?}");
+        }
+        // The first is whole, with its bar. What has no room for its words is left out
+        // with its bar: a bar beside nothing says nothing.
+        assert!(f.drew(&f.lines[0].label).is_some());
+        let said = lines.iter().filter(|(text, _)| !text.is_empty()).count();
+        assert_eq!(bars(&f).len(), said);
+        assert!((1..3).contains(&said), "{said}");
+    }
+
+    // The empty library's panel stands where the photos would be, and its one working
+    // button is answered.
+    #[test]
+    fn the_empty_librarys_panel_is_in_the_content_and_its_button_is_answered() {
+        let mut f = Fixture::new();
+        f.panel = Some(Panel {
+            title: "Every photo is hidden",
+            text: "The library has no photo to show here.".to_owned(),
+            buttons: &[PanelButton::ShowHidden],
+        });
+        f.frame(Vec::new());
+        let title = f.drew("Every photo is hidden").expect("the title is drawn");
+        assert!(f.content.contains_rect(title));
+        assert!((title.center().x - f.content.center().x).abs() < 2.0);
+        let button = f.drew("Show hidden photos").expect("the button is drawn");
+        assert_eq!(
+            f.click(button.center()),
+            [Action::Panel(PanelButton::ShowHidden)]
+        );
     }
 
     // The grid's own controls: left of the gear, and what they answer is the shell's

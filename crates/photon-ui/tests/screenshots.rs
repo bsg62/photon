@@ -290,3 +290,35 @@ fn native_by_month_large_light() {
         },
     );
 }
+
+// A library that watches nothing, as a first run is where there is no Pictures folder:
+// what it says where its photos would be, its buttons drawn and not yet answering, and
+// "No folders yet." in the sidebar.
+#[test]
+#[ignore = "renders through a GPU adapter: cargo run -p xtask -- native-shot"]
+fn native_empty_library_light() {
+    let dir = tempfile::tempdir().unwrap();
+    let dirs = dirs::within(&dir.path().join("data"), &dir.path().join("cache"));
+    std::fs::create_dir_all(dirs.db_path.parent().unwrap()).unwrap();
+    Library::open(&dirs.db_path)
+        .unwrap()
+        .set_theme(ThemeChoice::Light)
+        .unwrap();
+    let mut harness = egui_kittest::Harness::builder()
+        .with_size(vec2(1280.0, 1000.0))
+        .with_pixels_per_point(1.0)
+        .with_theme(egui::Theme::Light)
+        .wgpu()
+        .build_eframe(|cc| App::new(cc, dirs, None).unwrap());
+    until(&mut harness, "the empty library's panel", |app| {
+        app.panel().is_some()
+    });
+    for _ in 0..5 {
+        harness.step();
+    }
+    let out = manifest().join("../../target/screenshots");
+    std::fs::create_dir_all(&out).unwrap();
+    let path = out.join("native-empty-library-light.png");
+    harness.render().unwrap().save(&path).unwrap();
+    println!("wrote {}", path.display());
+}

@@ -10,12 +10,31 @@
 //! and a report sent to no listener is lost; this interface's channel is made before the
 //! engine is opened, so every report of every scan arrives.
 //!
+//! What is here and not there is the launch (`Launch`). The engine publishes its first
+//! grid before it has settled which folders it watches and started their scans, and a
+//! webview is nowhere near loaded by then; this interface is drawing.
+//!
 //! No egui here.
 
 use crate::status::{LIVE_UPDATES_LIMITED, Line, export_line, face_line, scan_line};
 use photon_core::library::WatchedFolder;
 use photon_engine::events::{ExportProgress, FaceProgress, FolderStatus, ScanProgressEvent};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+
+/// How far the launch has got, as far as an empty library needs to know.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+enum Launch {
+    /// The engine has not yet settled which folders it watches and started their first
+    /// scans (`Engine::startup_scans_started`). The Pictures folder it watches by itself
+    /// may not be watched yet, and a folder list read now may be from before it.
+    #[default]
+    Starting,
+    /// It has, and the folder list has been asked for again.
+    Listing,
+    /// The list is read. Each folder it held has a scan that will report at least its
+    /// end; these have not been heard from yet.
+    Awaiting(HashSet<i64>),
+}
 
 /// What a scan's report asks of the application.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -43,12 +62,48 @@ pub struct Scans {
     settling: bool,
     export: Option<ExportProgress>,
     faces: Option<FaceProgress>,
+    launch: Launch,
 }
 
 impl Scans {
+    /// Whether the engine has yet to say that its first scans are started: asked of it
+    /// until it has, since nothing reports the moment.
+    pub fn starting(&self) -> bool {
+        self.launch == Launch::Starting
+    }
+
+    /// The engine has settled its folders and started their scans. The folder list is to
+    /// be read again, and the next one read is the one to go by (`listed`).
+    pub fn started(&mut self) {
+        if self.launch == Launch::Starting {
+            self.launch = Launch::Listing;
+        }
+    }
+
+    /// The folder list has been read. The first one read after the scans were started is
+    /// the launch's: its folders are the ones whose scans are still owed a report.
+    pub fn listed(&mut self, watched: &[WatchedFolder]) {
+        if self.launch == Launch::Listing {
+            let unheard = (watched.iter().map(|folder| folder.id))
+                .filter(|id| !self.scans.contains_key(id))
+                .collect();
+            self.launch = Launch::Awaiting(unheard);
+        }
+    }
+
+    /// Whether it is known which folders photon watches: not before the list read after
+    /// the first scans were started. Until then an empty list is "not read yet", and
+    /// nothing may say that no folder is watched.
+    pub fn known(&self) -> bool {
+        matches!(self.launch, Launch::Awaiting(_))
+    }
+
     /// A scan's report. `listed` is whether the folder list holds its folder, and
     /// `photos` how many the grid on screen holds.
     pub fn scan(&mut self, event: ScanProgressEvent, listed: bool, photos: usize) -> Asks {
+        if let Launch::Awaiting(unheard) = &mut self.launch {
+            unheard.remove(&event.watched_id);
+        }
         let previous = self.scans.insert(event.watched_id, event);
         // The first report heard of this scan: none before it, or the end of the last.
         let first = previous.is_none_or(|previous| previous.done);
@@ -110,8 +165,12 @@ impl Scans {
 
     /// Whether any scan is running, in a folder the list holds or not: what an empty
     /// library asks before it says that nothing has been found.
+    ///
+    /// A folder watched at launch whose scan has not been heard from counts: its scan is
+    /// started, and has yet to find its root and say so.
     pub fn scanning(&self) -> bool {
-        self.settling || self.scans.values().any(|scan| !scan.done)
+        let awaited = matches!(&self.launch, Launch::Awaiting(unheard) if !unheard.is_empty());
+        awaited || self.settling || self.scans.values().any(|scan| !scan.done)
     }
 
     pub fn is_scanning(&self, watched: i64) -> bool {
@@ -283,6 +342,61 @@ mod tests {
             assert!(!poll.settle && !poll.expected);
             assert!(!scans.scanning());
         }
+    }
+
+    // The engine publishes its first grid before it has settled which folders it watches
+    // and started their scans, and this interface is there to draw it: for those
+    // moments an empty library is only known to be empty. Said then, "add a folder"
+    // stood over a Pictures folder about to be watched, and "has found no photos" over
+    // a folder whose scan was a moment from starting.
+    #[test]
+    fn nothing_is_known_of_the_folders_until_the_list_read_after_the_first_scans_started() {
+        let mut scans = Scans::default();
+        assert!(scans.starting() && !scans.known());
+        // A list read before the engine has started its scans may be from before the
+        // Pictures folder was watched: it settles nothing.
+        scans.listed(&[]);
+        assert!(scans.starting() && !scans.known());
+        scans.started();
+        assert!(!scans.starting() && !scans.known());
+        scans.listed(&[folder(1, "/a")]);
+        assert!(scans.known());
+    }
+
+    // After that, each folder watched at launch has a scan that will report at least its
+    // end: until it has been heard from, photon is looking.
+    #[test]
+    fn photon_is_looking_until_every_folder_watched_at_launch_has_been_heard_from() {
+        let mut scans = Scans::default();
+        // One scan was quick, and has reported before the list arrived.
+        scans.scan(report(2, 0, 0, true), false, 0);
+        scans.started();
+        assert!(!scans.scanning(), "nothing is known to be looked in yet");
+        scans.listed(&[folder(1, "/a"), folder(2, "/b"), folder(3, "/c")]);
+        assert!(scans.scanning());
+        // An unplugged drive's scan says only that it is done.
+        scans.scan(report(3, 0, 0, true), true, 0);
+        assert!(scans.scanning(), "the first folder has not been heard from");
+        scans.scan(report(1, 0, 0, false), true, 0);
+        assert!(scans.scanning(), "and now it is running");
+        scans.scan(report(1, 4, 0, true), true, 4);
+        assert!(!scans.scanning());
+        // Only the folders of that first list are waited for: one watched later is not
+        // owed a report by a launch it was no part of.
+        scans.listed(&[folder(1, "/a"), folder(9, "/later")]);
+        assert!(!scans.scanning());
+        // And the launch is over once: told again that the scans are started, what is
+        // known stays known.
+        scans.started();
+        assert!(scans.known());
+    }
+
+    #[test]
+    fn a_library_that_watches_nothing_at_launch_is_looking_for_nothing() {
+        let mut scans = Scans::default();
+        scans.started();
+        scans.listed(&[]);
+        assert!(scans.known() && !scans.scanning());
     }
 
     #[test]

@@ -358,6 +358,9 @@ pub struct Engine {
     /// Set once by `shutdown`. Once true, no new scan starts and the startup thread stops
     /// at its next checkpoint.
     shutting_down: AtomicBool,
+    /// Whether `startup` has settled which folders are watched and started the first
+    /// scan of each (`startup_scans_started`).
+    startup_scans_started: AtomicBool,
     /// The handle of the thread spawned by `startup`, if any is still outstanding.
     /// `wait_for_startup` takes it and joins it, and is safe to call more than once.
     startup: Mutex<Option<JoinHandle<()>>>,
@@ -576,6 +579,7 @@ impl Engine {
             removing: Mutex::new(HashSet::new()),
             next_token: AtomicU64::new(0),
             shutting_down: AtomicBool::new(false),
+            startup_scans_started: AtomicBool::new(false),
             startup: Mutex::new(None),
             background_passes: AtomicUsize::new(0),
             thumb_hashing: Mutex::new(None),
@@ -1909,6 +1913,7 @@ impl Engine {
                     }
                     engine.start_scan(watched);
                 }
+                engine.startup_scans_started.store(true, Ordering::SeqCst);
                 engine.wait_for_scans();
                 if shutting_down() {
                     return;
@@ -1955,6 +1960,19 @@ impl Engine {
             }
             Err(err) => tracing::warn!(%err, "thumbnail garbage collection failed"),
         }
+    }
+
+    /// Whether `startup` has settled which folders are watched - the Pictures folder it
+    /// adds by itself among them - and started the first scan of each.
+    ///
+    /// The first grid is published before that, on purpose, and an interface that is
+    /// there to draw it knows nothing yet of an empty library but that it is empty: the
+    /// folder list it reads may be from before the Pictures folder was added, and no scan
+    /// has reported. Until this is true neither "no folder is watched" nor "nothing has
+    /// been found" is known. After it, every folder watched at launch has a scan that
+    /// will report at least its end.
+    pub fn startup_scans_started(&self) -> bool {
+        self.startup_scans_started.load(Ordering::SeqCst)
     }
 
     /// Blocks until the thread spawned by `startup` has finished, if it hasn't already.
@@ -6294,6 +6312,42 @@ mod tests {
         f.engine.startup(Some(other));
         f.engine.wait_for_startup();
         assert_eq!(f.engine.lib.watched_folders().unwrap().len(), 1);
+    }
+
+    // What an interface that is there from the first moment asks before it says anything
+    // of an empty library: until the folders to watch are settled and each one's scan has
+    // been started, "none is watched" and "nothing has been found" are both not known
+    // yet. Held to the scans having been *started*, not to the thread having got as far
+    // as them: with the scan slots held here the startup thread waits at its first scan,
+    // and must not have said so by then.
+    #[test]
+    fn startup_says_its_first_scans_are_started_only_once_they_are() {
+        let img = jpeg(16, 16);
+        let f = fixture(&[("a.jpg", &img)]);
+        assert!(!f.engine.startup_scans_started());
+        let slots = f.engine.scans.lock();
+        f.engine.startup(Some(f.photos.clone()));
+        // The thread builds the first grid, watches the Pictures folder and then waits
+        // for the slots: long enough for all of that, on a runner under load too.
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while f.engine.lib.watched_folders().unwrap().is_empty() {
+            assert!(
+                Instant::now() < deadline,
+                "the Pictures folder was never watched"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(!f.engine.startup_scans_started());
+        drop(slots);
+        f.engine.wait_for_startup();
+        assert!(f.engine.startup_scans_started());
+
+        // With nothing to watch there is nothing to start, and that is known as soon.
+        let empty = fixture(&[]);
+        empty.engine.startup(None);
+        empty.engine.wait_for_startup();
+        assert!(empty.engine.startup_scans_started());
     }
 
     #[test]

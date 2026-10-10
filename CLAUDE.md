@@ -1575,6 +1575,49 @@ is painted last and through the grid's own painter. It is no stop of the Tab key
 (`Sense::CLICK | Sense::DRAG`). A guard against a strip of no height was removed: nothing
 divides by it that a test or a panic could tell.
 
+**The status bar's lines are `scans.rs` and `status.rs`**, what the Svelte store holds of
+the engine's reports and `status.ts`. The application gives `Scans` every report and is
+told what to do next (`Asks`): read the folder list again, count a folder's photos for
+the scan's bar, read the published grid again. Each of the Svelte store's rules is there
+with its reason and its test - the count read once at a scan's first report and net of
+what it has already added, the list read once for a scan in a folder it does not hold, a
+done from a drive that is only polled being no scan ending, a notice only for a folder
+still watched. **The bar of a first scan has no clock** (`Bar::Unknown`): it stands where
+the count of files seen puts it and moves when the scan reports, because a bar that
+moved by itself would draw a frame sixty times a second for as long as the scan ran. The
+bar is one row: the count is drawn first and the lines have what is left, and a line with
+no room for its words is left out with its bar.
+
+**The launch is the one thing an empty library has to wait for that the Svelte UI never
+met** (`scans::Launch`, `Engine::startup_scans_started`). The engine publishes its first
+grid, *then* watches the Pictures folder and starts its scans; a webview is nowhere near
+loaded by then, and this window is drawing. For those moments it has an empty grid, a
+folder list with nothing in it and a count of hidden photos - everything it would need to
+say "Choose a folder" over a library a moment from being scanned, and "No folders yet."
+beside it. So nothing is known of the folders until the list *read after* the engine says
+its first scans are started, and each folder of that list counts as being scanned until
+its scan has been heard from (every scan reports at least its end). The engine is asked
+every fifty milliseconds until it says so, since nothing reports the moment; usually
+another frame comes anyway, and nothing promises one.
+`nothing_is_said_of_an_empty_library_before_the_engine_has_started_its_scans` holds the
+engine at that point by taking the library's write lock from a second connection, which
+is what the write that watches the folder waits on. **What the Svelte UI's
+`scanning_folders` and `noteRunning` are for does not exist here**: the channel is made
+before the engine is opened, so no report is sent before someone listens. Not pinned by
+any test, for want of a seam: that the list is asked for again at that moment (a library
+that watches nothing has no write to hold), and that the hidden photos are counted before
+anything is said (a read cannot be held). Both rules are tested where they are decided,
+in `scans.rs` and `empty.rs`.
+
+**The empty library's panel is `empty.rs` and `empty_panel.rs`**, and the view of it in
+All photos and Recent alone; every other view has its one line. "Add folder…" and
+"Watched folders…" are drawn fainter and sense no click (`PanelButton::works`), and "Or
+drop a folder onto this window" is left out: nothing native takes a drop, and a line that
+offered one would be false, not inactive. The block is centred, so a longer sentence
+pushes its buttons down, as in the Svelte grid. The sidebar's notes - the empty groups',
+and "No folders yet." - tell AccessKit their words, which is how a test of the whole
+application reads them.
+
 **Tests of the whole application drive it through `tests/common`'s `Driver`**: `until`
 draws the frames that are asked for, `settle` waits in real time for the other threads,
 `frames_in` counts what a stretch of the clock draws. A row is clicked by its name

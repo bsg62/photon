@@ -37,6 +37,7 @@ pub const BELOW: f64 = 12.0;
 
 const NO_PEOPLE: &str = "No named people yet. Name the faces photon found on the People page; names Picasa recorded are listed here too.";
 const NO_TAGS: &str = "No keywords. photon reads them from the photos themselves.";
+const NO_FOLDERS: &str = "No folders yet.";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Group {
@@ -66,6 +67,8 @@ pub enum What {
     Folder(i64),
     /// The line an unfolded group shows when it holds nothing.
     Note(Group),
+    /// The line under everything when no folder is watched.
+    NoFolders,
 }
 
 impl What {
@@ -78,7 +81,9 @@ impl What {
             What::Search { query, .. } => Some(Step::Search(query.clone())),
             What::Person(key) => Some(Step::Person(key.clone())),
             What::Tag(tag) => Some(Step::Tag(tag.clone())),
-            What::Group(_) | What::Year(_) | What::Folder(_) | What::Note(_) => None,
+            What::Group(_) | What::Year(_) | What::Folder(_) | What::Note(_) | What::NoFolders => {
+                None
+            }
         }
     }
 }
@@ -171,6 +176,9 @@ pub struct Sources<'a> {
     pub tallies: &'a [FolderTally],
     pub layout_gen: u64,
     pub zone: &'a TimeZone,
+    /// Whether the watched folders have been read and there are none. Before they have
+    /// been read an empty list is "not read yet", and says nothing.
+    pub no_folders: bool,
 }
 
 /// What a list was built from, as far as that can change: compared, never read.
@@ -183,6 +191,7 @@ struct Key {
     sort: Sort,
     held: u64,
     layout_gen: u64,
+    no_folders: bool,
 }
 
 impl Sources<'_> {
@@ -195,6 +204,7 @@ impl Sources<'_> {
             sort: self.sort,
             held: self.held.generation,
             layout_gen: self.layout_gen,
+            no_folders: self.no_folders,
         }
     }
 }
@@ -406,6 +416,9 @@ fn entries(sources: &Sources<'_>) -> Vec<Entry> {
             plain(What::Folder(row.folder_id), &row.name, counted, false, path)
         }));
     }
+    if sources.no_folders {
+        entries.push(plain(What::NoFolders, NO_FOLDERS, None, false, ""));
+    }
     entries
 }
 
@@ -415,7 +428,7 @@ pub fn height(what: &What) -> Option<f64> {
     match what {
         What::Group(_) => Some(GROUP_GAP + f64::from(ROW)),
         What::Year(_) => Some(YEAR),
-        What::Note(_) => None,
+        What::Note(_) | What::NoFolders => None,
         _ => Some(f64::from(ROW)),
     }
 }
@@ -570,6 +583,7 @@ mod tests {
         tallies: Vec<FolderTally>,
         layout_gen: u64,
         zone: TimeZone,
+        no_folders: bool,
     }
 
     impl World {
@@ -597,6 +611,7 @@ mod tests {
                 ],
                 layout_gen: 1,
                 zone: TimeZone::UTC,
+                no_folders: false,
             }
         }
 
@@ -611,6 +626,7 @@ mod tests {
                 tallies: &self.tallies,
                 layout_gen: self.layout_gen,
                 zone: &self.zone,
+                no_folders: self.no_folders,
             }
         }
 
@@ -951,7 +967,31 @@ mod tests {
         // Past midnight "On this day" is another search, with another hint.
         world.today.day += 1;
         moved(&world, "the day");
-        assert_eq!(list.generation, first + 8);
+        world.no_folders = true;
+        moved(&world, "the last watched folder gone");
+        assert_eq!(list.generation, first + 9);
+    }
+
+    // Once the list has been read and holds no folder: said under everything else, and
+    // not while a folder is watched.
+    #[test]
+    fn a_library_that_watches_nothing_says_so_under_everything() {
+        let mut world = World::new();
+        assert!(!world.holds(&What::NoFolders));
+        world.no_folders = true;
+        world.tallies.clear();
+        let list = world.list();
+        let last = list.entries.last().unwrap();
+        assert_eq!(
+            (&last.what, last.label.as_str()),
+            (&What::NoFolders, "No folders yet.")
+        );
+        // Words, like the notes of the empty groups: wrapped where they are drawn, and
+        // nothing to press.
+        assert_eq!(height(&What::NoFolders), None);
+        assert_eq!(What::NoFolders.step(Today { month: 1, day: 1 }), None);
+        let svelte = include_str!("../../../../ui/src/components/FolderTree.svelte");
+        assert!(svelte.contains(&format!("<p class=\"empty\">{}</p>", last.label)));
     }
 
     // The collections and the folder list are too large to compare, and are replaced only
