@@ -118,12 +118,15 @@ impl Nav {
     pub fn target(&self) -> Place {
         self.asked
             .back()
-            .map_or_else(|| self.settled.clone(), |(_, step)| step.leads_to())
+            .map(|(_, step)| step.leads_to())
+            // Made, and its grid not on screen yet: still where they are going.
+            .or_else(|| self.landed.back().map(|landed| landed.place.clone()))
+            .unwrap_or_else(|| self.settled.clone())
     }
 
-    /// Whether a step is on its way.
+    /// Whether a step is on its way: asked, or made and its grid not yet on screen.
     pub fn busy(&self) -> bool {
-        !self.asked.is_empty()
+        !self.asked.is_empty() || !self.landed.is_empty()
     }
 
     /// Whether `step` leads anywhere the user is not already going. A click on the row of
@@ -175,20 +178,25 @@ impl Nav {
     /// at most the time of that step's rebuild.
     pub fn adopt(&mut self, version: u64) -> Option<bool> {
         // The latest step made that this grid can be showing.
-        let mut shown = None;
-        while self
+        let Some(latest) = self
             .landed
-            .front()
-            .is_some_and(|landed| landed.shown_at.is_none_or(|at| at <= version))
-        {
-            shown = self.landed.pop_front();
-        }
-        match shown {
-            Some(landed) => Some(self.settle(landed.place, landed.sort)),
+            .iter()
+            .rposition(|landed| landed.shown_at.is_none_or(|at| at <= version))
+        else {
             // No step in between: the library changed under the view that is settled.
-            None if self.asked.is_empty() && self.landed.is_empty() => Some(false),
-            None => None,
+            let still = self.asked.is_empty() && self.landed.is_empty();
+            return still.then_some(false);
+        };
+        // An answer vouches for the grid it names, and for a later one only when no step
+        // is on its way: a later grid may be that step's own, in another view. Taken as
+        // this answer's, it stood under the wrong name for good - the step's own answer,
+        // arriving after it, found no new grid to put on screen.
+        let named = self.landed[latest].shown_at == Some(version);
+        if !self.asked.is_empty() && !named {
+            return None;
         }
+        let landed = self.landed.drain(..=latest).next_back()?;
+        Some(self.settle(landed.place, landed.sort))
     }
 
     /// The grid on screen now shows `place` under `sort`. Answers whether those are other
@@ -280,6 +288,9 @@ mod tests {
         assert_eq!(nav.answered(1, Ok(landed(GridView::Starred, 1))), None);
         assert_eq!(nav.target(), Place::of(GridView::Recent));
         assert_eq!(nav.answered(2, Ok(landed(GridView::Recent, 2))), None);
+        // Made, and on its way to the screen until its grid is taken.
+        assert!(nav.busy());
+        assert_eq!(nav.adopt(2), Some(true));
         assert!(!nav.busy());
     }
 
@@ -334,6 +345,8 @@ mod tests {
                 shown_at: Some(1),
             }),
         );
+        assert_eq!(nav.adopt(1), Some(true));
+        assert_eq!(nav.settled(), &Place::search("lake"));
         assert!(!nav.busy());
     }
 
@@ -452,6 +465,40 @@ mod tests {
         nav.answered(2, Ok(landed(GridView::All, 7)));
         assert_eq!(nav.adopt(7), Some(true));
         assert_eq!(nav.settled(), &Place::of(GridView::All));
+    }
+
+    // The first step's answer is back and its grid was never drawn; the grid published now
+    // is newer than the one that answer vouches for, and the second step is still on its
+    // way. It may be the second's own - the engine publishes a moment before it answers -
+    // so it is not taken as the first's: taken so, the starred photos stood under "All
+    // photos" for good, the answer that followed finding nothing new to put on screen.
+    #[test]
+    fn a_grid_newer_than_the_last_answer_waits_while_a_step_is_on_its_way() {
+        let mut nav = nav();
+        nav.asked(1, Step::View(GridView::Starred));
+        nav.asked(2, Step::View(GridView::Recent));
+        nav.answered(1, Ok(landed(GridView::Starred, 5)));
+        assert_eq!(nav.adopt(6), None);
+        assert_eq!(nav.settled(), &Place::of(GridView::All));
+        nav.answered(2, Ok(landed(GridView::Recent, 6)));
+        assert_eq!(nav.adopt(6), Some(true));
+        assert_eq!(nav.settled(), &Place::of(GridView::Recent));
+        assert!(!nav.busy());
+    }
+
+    // Answered, and its grid not on screen yet: the user is still going there. Read as
+    // "nothing on its way", the row marked fell back to the view on screen for a frame.
+    #[test]
+    fn a_step_answered_and_not_yet_shown_is_still_where_the_user_is_going() {
+        let mut nav = nav();
+        nav.asked(1, Step::View(GridView::Starred));
+        nav.answered(1, Ok(landed(GridView::Starred, 5)));
+        assert_eq!(nav.adopt(4), None);
+        assert_eq!(nav.target(), Place::of(GridView::Starred));
+        assert!(nav.busy());
+        assert!(!nav.wants(&Step::View(GridView::Starred)));
+        assert_eq!(nav.adopt(5), Some(true));
+        assert!(!nav.busy());
     }
 
     // Both answers back before the interface drew a frame: the grid published is the

@@ -1377,9 +1377,15 @@ at the place All photos had been scrolled to (a review found it; the Svelte stor
 by awaiting each step's `grid_info` before the next). So the queue's worker reads the view
 when its step is done and before the next begins, and hands it back with the version the
 setter answers (`nav::Landed`); and a grid published while a step is on its way is not put
-on screen until an answer vouches for it (`Nav::adopt`, `App::adopt`). That is exact only
-while nothing but the queue moves the engine's view: **a new caller of a view setter goes
-through the queue.**
+on screen until an answer vouches for it (`Nav::adopt`, `App::adopt`). **An answer vouches
+for the grid it names, and for a later one only when no step is on its way**: with the
+first of two steps answered and the second still being made, a grid newer than the first's
+may be the second's own, and taken as the first's it stood under the wrong name for good,
+the second's answer finding no new grid to put on screen. Windows' CI found that by timing,
+in a test of four quick clicks that had passed a hundred runs on Linux; the rule's test is
+`a_grid_newer_than_the_last_answer_waits_while_a_step_is_on_its_way`, in `nav.rs`, which
+needs no timing. All of it is exact only while nothing but the queue moves the engine's
+view: **a new caller of a view setter goes through the queue.**
 
 **How the window is laid out is in `layout.json` beside `library.db`** - the sidebar's
 width, whether it is hidden, which groups are open - and not in the settings table, whose
