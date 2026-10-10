@@ -37,7 +37,6 @@ use photon_engine::{
     commands::{self, FolderList},
     engine::{Engine, EngineConfig},
     error::AppError,
-    events::ScanProgressEvent,
 };
 use std::{collections::HashMap, path::PathBuf, sync::Arc, sync::mpsc::Receiver, time::Duration};
 
@@ -72,10 +71,6 @@ pub struct App {
     watched: Vec<WatchedFolder>,
     /// What photon is doing in the background, as the engine has reported it.
     scans: Scans,
-    /// Counts a folder's photos for the first report of its scan, off this thread: what
-    /// the scan's bar is measured against. A queue, since two folders' scans start side
-    /// by side and each wants its own count.
-    expecting: Queue<ScanProgressEvent, (ScanProgressEvent, Option<i64>)>,
     /// Where the user is and is going, and the queue the steps there are made on.
     nav: Nav,
     /// A step made answers where it led, and with it what the engine said when it made
@@ -92,7 +87,11 @@ pub struct App {
     /// What the library holds of each kind, for the sidebar. Asked for by the layout
     /// generation held, so that the answer need not carry the layout.
     counts: Counts,
-    /// Whether they have been read once: before that "no photo is hidden" is not known.
+    /// Whether they have been read for the library as it is: before that "no photo is
+    /// hidden" is not known. Not at launch, and not when a grid that held photos comes
+    /// back empty - the count on hand is then of the library before, and every photo
+    /// hidden at once (Picasa's flags, a folder hidden) said for a round trip that photon
+    /// had found none.
     counted: bool,
     counting: Latest<u64, Counts>,
     collecting: Latest<(), Option<Collections>>,
@@ -268,22 +267,6 @@ impl App {
             },
             repaint(&ctx),
         );
-        let expecting = Queue::spawn(
-            "scan sizes",
-            {
-                let engine = engine.clone();
-                move |first: ScanProgressEvent| {
-                    // A folder with no photo yet is not among the counts: none, not unknown.
-                    let count = commands::watched_folder_stats(&engine).ok().map(|stats| {
-                        (stats.iter())
-                            .find(|folder| folder.watched_id == first.watched_id)
-                            .map_or(0, |folder| folder.photo_count)
-                    });
-                    (first, count)
-                }
-            },
-            repaint(&ctx),
-        );
         let writes = Queue::spawn(
             "writes",
             {
@@ -400,7 +383,6 @@ impl App {
             folder_list,
             watched: Vec::new(),
             scans: Scans::default(),
-            expecting,
             nav: Nav::new(Place { view, arg }, engine.sort()),
             steps,
             search: SearchBox::default(),
@@ -570,7 +552,8 @@ impl App {
 
     /// What an empty library says where its photos would be: about the grid that is on
     /// screen, like the line of an empty view, and only what is known - nothing before
-    /// the watched folders and the hidden photos have each been read once.
+    /// the watched folders have been read for this launch and the hidden photos counted
+    /// for this library.
     pub fn panel(&self) -> Option<Panel> {
         let library = LibraryFacts {
             known: self.scans.known(),
@@ -754,8 +737,7 @@ impl App {
     }
 
     /// Takes what the engine has reported since the last frame, and says whether it had
-    /// reported anything. Only a changed library is acted on in this slice; the rest is
-    /// taken so the channel stays empty.
+    /// reported anything.
     fn take_events(&mut self) -> bool {
         // The launch: until the engine has settled its folders and started their scans,
         // the list on hand may be from before the Pictures folder was watched. It is
@@ -782,15 +764,21 @@ impl App {
                         .any(|folder| folder.id == scan.watched_id);
                     let asks = self.scans.scan(scan, listed, self.grid.len);
                     folders_changed |= asks.folders;
-                    if asks.expected {
-                        self.expecting.push(scan);
-                    }
                     // The grid on screen is read again in `adopt`, which says so.
                     changed |= asks.settle;
                 }
-                // Whether a folder can be reached is in the list too.
+                // Whether a folder can be reached is in the list too, and is written into
+                // the list on hand here and now: the scan that found a drive back, or
+                // gone, says so before it says it is done, and the list read again for it
+                // is a frame behind at best - for that long a folder just found was one
+                // photon "cannot reach", and one just lost "held no photos".
                 Event::Folder(status) => {
                     self.scans.folder_status(status);
+                    if let Some(folder) =
+                        (self.watched.iter_mut()).find(|folder| folder.id == status.watched_id)
+                    {
+                        folder.online = status.online;
+                    }
                     folders_changed = true;
                 }
                 Event::Export(export) => self.scans.export(export),
@@ -829,12 +817,6 @@ impl App {
             if let Ok(counts) = counts {
                 self.counts = counts;
                 self.counted = true;
-            }
-        }
-        for (_, answer) in self.expecting.answers() {
-            answered = true;
-            if let Ok((first, Some(photos))) = answer {
-                self.scans.expected_read(&first, photos);
             }
         }
         if let Some(read) = self.collecting.answer() {
@@ -910,6 +892,12 @@ impl App {
         self.stale = false;
         // A scan that ended over an empty grid counts as running until this (`Scans`).
         self.scans.settled();
+        // A grid that held photos and holds none: the hidden photos are counted again
+        // before anything is said of it (`counted`). Not on every empty grid, which
+        // would blink the panel off at each rebuild of an empty library.
+        if self.grid.len > 0 && index.is_empty() {
+            self.counted = false;
+        }
         self.grid = GridState {
             version,
             len: index.len(),

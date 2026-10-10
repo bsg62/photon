@@ -3,7 +3,7 @@
 //! holds of these (`library.svelte.ts`), with its rules.
 //!
 //! The application gives every report to this and is told what to do next - read the
-//! folder list again, count a folder's photos - which it does off its own thread.
+//! folder list again, read the published grid again - which it does off its own thread.
 //!
 //! Not here: the note of a scan the interface was only *told* is running. The Svelte UI
 //! asks which scans are running because the startup scans begin before a webview exists
@@ -31,8 +31,11 @@ enum Launch {
     Starting,
     /// It has, and the folder list has been asked for again.
     Listing,
-    /// The list is read. Each folder it held has a scan that will report at least its
-    /// end; these have not been heard from yet.
+    /// The list is read. Each folder it held has had a scan started, which reports at
+    /// least its end unless it dies; these have not been heard from yet. A scan that
+    /// panics reports nothing more, and an empty library waiting for it goes on looking
+    /// until the folder is no longer watched (`listed`) - the engine does not say when a
+    /// scan has died.
     Awaiting(HashSet<i64>),
 }
 
@@ -41,8 +44,6 @@ enum Launch {
 pub struct Asks {
     /// Read the folder list again.
     pub folders: bool,
-    /// Count the folder's photos, for `expected_read`: this is the first report of a scan.
-    pub expected: bool,
     /// Read the published grid again, and say so (`settled`).
     pub settle: bool,
 }
@@ -51,10 +52,14 @@ pub struct Asks {
 pub struct Scans {
     /// The last report of each watched folder's scan.
     scans: HashMap<i64, ScanProgressEvent>,
-    /// How many photos each folder held when its current scan started, for the bar: a
-    /// scan does not know its total ahead of time, and the count before it is the best
-    /// estimate. Absent for a folder's first scan.
+    /// How many photos each folder held when its scan started, for the bar: a scan does
+    /// not know its total ahead of time, and the count before it is the best estimate.
+    /// The scan says it (`ScanProgressEvent::known`); counted here instead, after the
+    /// scan's first report had been drawn, it held the scan's own first batches, and a
+    /// first scan read "3,000 of ~500 files". Absent for a folder that held nothing.
     expected: HashMap<i64, u64>,
+    /// How many reports each folder's current scan has made.
+    heard: HashMap<i64, u64>,
     /// The folders the system will not let photon watch live, from the last report of
     /// each: they fall back to periodic rescans.
     degraded: HashMap<i64, bool>,
@@ -83,11 +88,20 @@ impl Scans {
     /// The folder list has been read. The first one read after the scans were started is
     /// the launch's: its folders are the ones whose scans are still owed a report.
     pub fn listed(&mut self, watched: &[WatchedFolder]) {
-        if self.launch == Launch::Listing {
-            let unheard = (watched.iter().map(|folder| folder.id))
-                .filter(|id| !self.scans.contains_key(id))
-                .collect();
-            self.launch = Launch::Awaiting(unheard);
+        match &mut self.launch {
+            Launch::Starting => {}
+            Launch::Listing => {
+                let unheard = (watched.iter().map(|folder| folder.id))
+                    .filter(|id| !self.scans.contains_key(id))
+                    .collect();
+                self.launch = Launch::Awaiting(unheard);
+            }
+            // A folder no longer watched is owed nothing: its scan may never have been
+            // started, or may have been called off with the folder, and waited for it
+            // would keep an empty library looking for good.
+            Launch::Awaiting(unheard) => {
+                unheard.retain(|id| watched.iter().any(|folder| folder.id == *id));
+            }
         }
     }
 
@@ -108,13 +122,28 @@ impl Scans {
         // The first report heard of this scan: none before it, or the end of the last.
         let first = previous.is_none_or(|previous| previous.done);
         let was_running = previous.is_some_and(|previous| !previous.done);
+        let heard = self.heard.entry(event.watched_id).or_default();
+        *heard = if first { 1 } else { *heard + 1 };
+        // What the scan says its folder held. Its opening report does not know yet, and
+        // leaves the count of the scan before standing for the moment until it does.
+        match event.known {
+            Some(0) => {
+                self.expected.remove(&event.watched_id);
+            }
+            Some(held) => {
+                self.expected.insert(event.watched_id, held);
+            }
+            None => {}
+        }
         // The engine announces a scan's rebuild and then its end, and the grid on screen
-        // may be a moment behind both: an empty library would read as "no scan, no
-        // photos" for that long, the moment before its photos appear. So the scan counts
-        // as running until the grid has been read again. Only over an empty grid: nothing
-        // else asks. And only for a scan that was heard running: an unplugged drive is
-        // polled twice a minute, each poll a done and nothing else, and counted as a
-        // scan ending each one turned the panel to "Looking for photos…".
+        // can be behind both: a grid published while a step is on its way is not put on
+        // screen until that step has answered (`Nav::adopt`), and for that long an empty
+        // library would read as "no scan, no photos", with its photos already found. So
+        // the scan counts as running until the grid has been read again. Only over an
+        // empty grid: nothing else asks. And only for a scan that was heard running: an
+        // unplugged drive is polled twice a minute, each poll a done and nothing else,
+        // and counted as a scan ending each one turned the panel to "Looking for
+        // photos…".
         let settle = event.done && was_running && photos == 0;
         self.settling |= settle;
         Asks {
@@ -122,24 +151,10 @@ impl Scans {
             // does not hold: the engine watches the Pictures folder by itself on a first
             // run, after the list may have been read - asked on the scan's first report
             // only, since the list may still lack the folder when it comes back and the
-            // scan reports many times a second.
+            // scan reports several times a second.
             folders: event.done || (!listed && first),
-            expected: !event.done && first,
             settle,
         }
-    }
-
-    /// The count of the folder's photos, read for the first report of its scan. That
-    /// report arrives after the first batch has been written, so what the scan has
-    /// already added is taken back out: on a brand-new folder the count would otherwise
-    /// equal what was added, and the bar would read 100% from the first tick and then run
-    /// past it. Nothing to measure against is recorded as absent.
-    pub fn expected_read(&mut self, first: &ScanProgressEvent, photo_count: i64) {
-        let before = photo_count.saturating_sub_unsigned(first.added);
-        match u64::try_from(before) {
-            Ok(before) if before > 0 => self.expected.insert(first.watched_id, before),
-            _ => self.expected.remove(&first.watched_id),
-        };
     }
 
     /// The published grid has been read again.
@@ -200,7 +215,8 @@ impl Scans {
         for folder in watched {
             if let Some(scan) = self.scans.get(&folder.id).filter(|scan| !scan.done) {
                 let expected = self.expected.get(&folder.id).copied();
-                lines.push(scan_line(folder, scan, expected));
+                let beat = self.heard.get(&folder.id).copied().unwrap_or(0);
+                lines.push(scan_line(folder, scan, expected, beat));
             }
         }
         lines.extend(face_line(self.faces.as_ref()));
@@ -222,6 +238,15 @@ mod tests {
             changed: 0,
             done,
             cancelled: false,
+            known: None,
+        }
+    }
+
+    /// `report`, from a scan that knows by now what its folder held.
+    fn measured(report: ScanProgressEvent, held: u64) -> ScanProgressEvent {
+        ScanProgressEvent {
+            known: Some(held),
+            ..report
         }
     }
 
@@ -233,48 +258,68 @@ mod tests {
         }
     }
 
+    // The scan says what its folder held before it, in every report but its first.
     #[test]
-    fn the_count_a_scan_is_measured_against_is_read_once_when_it_starts() {
+    fn a_scan_is_measured_against_what_it_says_its_folder_held() {
         let mut scans = Scans::default();
-        // The first report of a scan arrives after its first batch: 200 of the 5,000 rows
-        // counted were added by this very scan, so 4,800 is what it started with.
-        let first = report(1, 200, 200, false);
-        assert!(scans.scan(first, true, 5000).expected);
-        scans.expected_read(&first, 5000);
-        let line = &scans.lines(&[folder(1, "/a")])[0];
+        let watched = [folder(1, "/a")];
+        let line = |scans: &Scans| scans.lines(&watched)[0].clone();
+        // Its opening report does not know yet.
+        scans.scan(report(1, 0, 0, false), true, 4800);
+        assert_eq!(line(&scans).label, "Scanning a… 0 files");
+        scans.scan(measured(report(1, 200, 200, false), 4800), true, 4800);
         assert_eq!(
-            line.label,
+            line(&scans).label,
             "Scanning a… 200 of ~4,800 files (4%), 200 new or changed"
         );
+        scans.scan(measured(report(1, 5000, 200, true), 4800), true, 5000);
 
-        // Later reports of the same scan do not ask again: the count would drift upwards
-        // with every batch and the bar would never reach the end.
-        assert!(!scans.scan(report(1, 900, 300, false), true, 5000).expected);
-        assert!(!scans.scan(report(1, 5000, 300, true), true, 5000).expected);
-        // The next scan of the folder asks afresh.
-        assert!(scans.scan(report(1, 64, 0, false), true, 5000).expected);
+        // The next scan's opening report leaves that count standing for the moment it
+        // takes the scan to say its own.
+        scans.scan(report(1, 0, 0, false), true, 5000);
+        assert_eq!(line(&scans).label, "Scanning a… 0 of ~4,800 files (0%)");
+        scans.scan(measured(report(1, 0, 0, false), 5000), true, 5000);
+        assert_eq!(line(&scans).label, "Scanning a… 0 of ~5,000 files (0%)");
     }
 
+    // A first scan, and the scan of a folder that has since lost every photo.
     #[test]
-    fn a_brand_new_folder_has_nothing_to_be_measured_against() {
+    fn a_folder_that_held_nothing_has_nothing_to_be_measured_against() {
         let mut scans = Scans::default();
-        // Everything counted so far is this scan's own work.
-        let first = report(2, 150, 150, false);
-        scans.scan(first, true, 0);
-        scans.expected_read(&first, 150);
-        let line = &scans.lines(&[folder(2, "/new")])[0];
-        assert_eq!(line.bar, Some(Bar::Unknown { beat: 150 }));
-        // And a count that came to less than nothing is nothing.
-        scans.expected_read(&first, 10);
-        assert_eq!(scans.lines(&[folder(2, "/new")])[0].bar, line.bar);
-        // A count there was, gone with the next scan that has none.
-        scans.expected_read(&report(2, 1, 0, false), 40);
-        assert!(matches!(
-            scans.lines(&[folder(2, "/new")])[0].bar,
-            Some(Bar::Share(_))
-        ));
-        scans.expected_read(&first, 150);
-        assert_eq!(scans.lines(&[folder(2, "/new")])[0].bar, line.bar);
+        let watched = [folder(2, "/new")];
+        let bar = |scans: &Scans| scans.lines(&watched)[0].bar;
+        scans.scan(measured(report(2, 150, 150, false), 0), true, 0);
+        assert_eq!(bar(&scans), Some(Bar::Unknown { beat: 1 }));
+        // However much it has added by now, it is measured against nothing.
+        scans.scan(measured(report(2, 3000, 3000, false), 0), true, 0);
+        assert_eq!(bar(&scans), Some(Bar::Unknown { beat: 2 }));
+        scans.scan(measured(report(2, 3000, 3000, true), 0), true, 3000);
+        // A count there was is gone with a scan that says there is none.
+        scans.scan(measured(report(2, 1, 0, false), 40), true, 0);
+        assert!(matches!(bar(&scans), Some(Bar::Share(_))));
+        scans.scan(measured(report(2, 2, 0, false), 0), true, 0);
+        assert_eq!(bar(&scans), Some(Bar::Unknown { beat: 2 }));
+    }
+
+    // The bar of a scan with nothing to be measured against steps once for each report
+    // heard of it, whatever the report counts, and starts again with the next scan.
+    #[test]
+    fn the_bar_of_a_first_scan_steps_once_a_report() {
+        let mut scans = Scans::default();
+        let watched = [folder(3, "/c")];
+        let beat = |scans: &Scans| match scans.lines(&watched)[0].bar {
+            Some(Bar::Unknown { beat }) => beat,
+            other => panic!("{other:?}"),
+        };
+        let mut seen = Vec::new();
+        for files in [0, 2500, 2500, 4500, 7500] {
+            scans.scan(report(3, files, 0, false), true, 0);
+            seen.push(beat(&scans));
+        }
+        assert_eq!(seen, [1, 2, 3, 4, 5]);
+        scans.scan(report(3, 7500, 0, true), true, 0);
+        scans.scan(report(3, 0, 0, false), true, 0);
+        assert_eq!(beat(&scans), 1);
     }
 
     #[test]
@@ -338,8 +383,7 @@ mod tests {
         let mut scans = Scans::default();
         for _ in 0..2 {
             let poll = scans.scan(report(7, 0, 0, true), true, 0);
-            // Nor one starting: there is no bar to count a folder's photos for.
-            assert!(!poll.settle && !poll.expected);
+            assert!(!poll.settle);
             assert!(!scans.scanning());
         }
     }
@@ -363,8 +407,8 @@ mod tests {
         assert!(scans.known());
     }
 
-    // After that, each folder watched at launch has a scan that will report at least its
-    // end: until it has been heard from, photon is looking.
+    // After that, each folder watched at launch has had a scan started, which reports at
+    // least its end: until it has been heard from, photon is looking.
     #[test]
     fn photon_is_looking_until_every_folder_watched_at_launch_has_been_heard_from() {
         let mut scans = Scans::default();
@@ -389,6 +433,19 @@ mod tests {
         // known stays known.
         scans.started();
         assert!(scans.known());
+    }
+
+    // A folder that is no longer watched is owed no report: its scan may never have been
+    // started, or been called off with the folder.
+    #[test]
+    fn a_folder_no_longer_watched_is_not_waited_for() {
+        let mut scans = Scans::default();
+        scans.started();
+        scans.listed(&[folder(1, "/a"), folder(2, "/b")]);
+        scans.scan(report(1, 0, 0, true), true, 0);
+        assert!(scans.scanning(), "the second has not been heard from");
+        scans.listed(&[folder(1, "/a")]);
+        assert!(!scans.scanning());
     }
 
     #[test]

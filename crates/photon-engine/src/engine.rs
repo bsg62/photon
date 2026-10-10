@@ -1969,8 +1969,10 @@ impl Engine {
     /// there to draw it knows nothing yet of an empty library but that it is empty: the
     /// folder list it reads may be from before the Pictures folder was added, and no scan
     /// has reported. Until this is true neither "no folder is watched" nor "nothing has
-    /// been found" is known. After it, every folder watched at launch has a scan that
-    /// will report at least its end.
+    /// been found" is known. After it, every folder the library watched at that moment
+    /// has had its scan started, and a scan reports at least its end - unless it dies:
+    /// one that panics releases its slot and says nothing more. (When the read of the
+    /// watched folders itself fails here, this is true over no scan at all.)
     pub fn startup_scans_started(&self) -> bool {
         self.startup_scans_started.load(Ordering::SeqCst)
     }
@@ -2875,6 +2877,10 @@ struct ScanReporter<'a> {
 
 impl ScanSink for ScanReporter<'_> {
     fn progress(&mut self, p: &ScanProgress) {
+        // The first report that says what the scan is measured against is sent whatever
+        // the clock says: it follows the scan's opening report by one read, well inside
+        // the throttle, and the next may be a long walk away.
+        let measured = p.known.is_some() && self.last.known.is_none();
         self.last = *p;
         let total = p.added + p.changed;
         // Inline, on the scan thread, rather than on a thread of its own. The pacer already
@@ -2896,7 +2902,7 @@ impl ScanSink for ScanReporter<'_> {
                 .record(start, Instant::now());
             self.refreshed_total = total;
         }
-        if self.last_progress.is_none_or(|t| t.elapsed() >= THROTTLE) {
+        if measured || self.last_progress.is_none_or(|t| t.elapsed() >= THROTTLE) {
             // Before the event, so `scanning_folders` never answers "not scanning" about a
             // scan a listener has already been told is running.
             self.engine.reporting.lock().insert(self.watched_id);
@@ -3081,6 +3087,7 @@ mod tests {
             files_seen: 1,
             added: 1,
             changed: 0,
+            known: None,
         };
         let before = f.engine.grid().0;
         a.progress(&progress);
@@ -3112,6 +3119,7 @@ mod tests {
             files_seen: 1,
             added: 1,
             changed: 0,
+            known: None,
         });
         assert_eq!(f.engine.grid().0, before);
     }
@@ -4046,6 +4054,7 @@ mod tests {
                 changed: 0,
                 done: false,
                 cancelled: false,
+                known: None,
             }),
             "{scans:?}"
         );
@@ -4082,6 +4091,37 @@ mod tests {
         }
         assert_eq!(engine.scanning_folders(), Vec::<i64>::new());
         engine.shutdown();
+    }
+
+    /// A scan too quick for a second report inside the throttle still says what it is
+    /// measured against while it runs: that report is let through whatever the clock
+    /// says. Without it a rescan of a folder that has not changed - the scan a launch
+    /// makes of every folder - was drawn as a scan of a folder that held nothing, for as
+    /// long as its walk took to reach the throttle.
+    #[test]
+    fn a_scan_says_what_it_is_measured_against_as_soon_as_it_knows() {
+        let f = fixture(&[("a/1.jpg", &jpeg(8, 6)), ("a/2.jpg", &jpeg(8, 7))]);
+        let watched = f.engine.add_folder(&f.photos).unwrap();
+        f.engine.wait_for_scans();
+        let before = f.events.all().len();
+
+        assert!(f.engine.start_scan(watched.clone()));
+        f.engine.wait_for_scans();
+        let reports: Vec<ScanProgressEvent> = (f.events.all()[before..].iter())
+            .filter_map(|event| match event {
+                Recorded::Scan(scan) if scan.watched_id == watched.id => Some(*scan),
+                _ => None,
+            })
+            .collect();
+        let running: Vec<Option<u64>> = (reports.iter())
+            .filter(|scan| !scan.done)
+            .map(|scan| scan.known)
+            .collect();
+        assert_eq!(running, [None, Some(2)], "{reports:?}");
+        assert_eq!(
+            reports.last().map(|scan| (scan.done, scan.known)),
+            Some((true, Some(2)))
+        );
     }
 
     /// Panics at the first not-done scan event it is sent: a scan thread dying in the middle

@@ -254,8 +254,11 @@ fn a_library_that_watches_nothing_offers_a_folder() {
     let add = harness.get_by_label("Add folder…");
     assert!(add.accesskit_node().is_disabled());
     assert!(harness.query_by_label("Watched folders…").is_none());
-    // And the sidebar says there is no folder, where its folders would be listed.
+    // And the sidebar says there is no folder, where its folders would be listed, over
+    // a button that is not one yet.
     assert!(harness.query_by_label("No folders yet.").is_some());
+    let settings = harness.get_by_label("Add a folder in Settings…");
+    assert!(settings.accesskit_node().is_disabled());
     assert_eq!(harness.state().photo_count().as_deref(), Some("0 photos"));
     // With nothing reporting, the window is still.
     driver.settle(&mut harness);
@@ -295,4 +298,228 @@ fn a_library_whose_drive_is_away_says_it_cannot_reach_it() {
     for label in ["Add folder…", "Watched folders…"] {
         assert!(harness.get_by_label(label).accesskit_node().is_disabled());
     }
+}
+
+/// The library under `dir`, with its write lock taken: whatever the engine writes next
+/// waits for as long as the answer is kept, up to the five seconds a write waits.
+fn locked(dir: &Path) -> rusqlite::Connection {
+    let made = dirs::within(&dir.join("data"), &dir.join("cache"));
+    let other = rusqlite::Connection::open(&made.db_path).unwrap();
+    other
+        .busy_timeout(std::time::Duration::from_secs(20))
+        .unwrap();
+    other.execute_batch("BEGIN IMMEDIATE").unwrap();
+    other
+}
+
+/// An empty library under `dir`, as `first_run` will open it.
+fn empty_library(dir: &Path) -> Library {
+    let made = dirs::within(&dir.join("data"), &dir.join("cache"));
+    std::fs::create_dir_all(made.db_path.parent().unwrap()).unwrap();
+    Library::open(&made.db_path).unwrap()
+}
+
+/// Draws the frames that are asked for, for `millis` of real time, and answers what the
+/// application said meanwhile.
+fn for_a_while(driver: &mut Driver, harness: &mut Harness<'_>, millis: u64) -> Vec<Said> {
+    let since = std::time::Instant::now();
+    watched(driver, harness, "a while", |_| {
+        since.elapsed() > std::time::Duration::from_millis(millis)
+    })
+}
+
+fn panels(seen: &[Said]) -> Vec<&str> {
+    (seen.iter())
+        .filter_map(|said| said.panel.as_deref())
+        .collect()
+}
+
+// The two rules of the launch that nothing reports the moment of. The library's write
+// lock is held past the five seconds a write waits: the engine's write that watches the
+// Pictures folder fails, it starts no scan, says its scans are started - and sends no
+// event at all. The window has by then long read its (empty) folder list and its counts
+// and is still. Only its asking the engine notices, and only the list it asks for at
+// that moment makes the folders known. (A review found the seam.)
+#[test]
+fn a_pictures_folder_that_could_not_be_watched_leaves_the_first_folder_offered() {
+    let dir = tempfile::tempdir().unwrap();
+    let folder = pictures(dir.path(), 3);
+    drop(empty_library(dir.path()));
+    let other = locked(dir.path());
+    let (mut harness, mut driver) = first_run(dir.path(), Some(folder));
+    driver.until(&mut harness, "the empty grid counted", |app| {
+        app.photo_count().is_some()
+    });
+    // Held until the engine's write has given up, and a little longer.
+    let mut seen = for_a_while(&mut driver, &mut harness, 5600);
+    other.execute_batch("ROLLBACK").unwrap();
+    seen.extend(watched(
+        &mut driver,
+        &mut harness,
+        "the first folder offered",
+        |app| app.panel().is_some(),
+    ));
+    // One thing is said, once the engine has said there is nothing to wait for.
+    let said = panels(&seen);
+    assert!(!said.is_empty(), "{seen:#?}");
+    assert!(
+        said.iter().all(|text| text.starts_with("Choose a folder")),
+        "{seen:#?}"
+    );
+    assert!(harness.query_by_label("No folders yet.").is_some());
+    assert!(harness.state().watched().is_empty());
+}
+
+// A folder last found away, that is back and holds no photo. Its scan sends no opening
+// report, and is held before its first word by the write lock: marking the folder
+// reachable again is a write. From the moment the folders are known, only the launch's
+// rule says photon is looking - the list on hand says the folder cannot be reached. And
+// when the scan has spoken, the folder is one that has been reached: the scan says so
+// before it says it is done, and the list read again for it is a frame behind.
+#[test]
+fn a_folder_back_since_the_last_session_is_looked_through_before_anything_is_said_of_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let back = dir.path().join("Holidays");
+    std::fs::create_dir_all(back.join("2024")).unwrap();
+    std::fs::write(back.join("2024").join("notes.txt"), b"x").unwrap();
+    let library = empty_library(dir.path());
+    let folder = library.add_watched_folder(&back, &[]).unwrap();
+    library.set_watched_online(folder.id, false).unwrap();
+    drop(library);
+    let other = locked(dir.path());
+
+    let (mut harness, mut driver) = first_run(dir.path(), None);
+    driver.until(&mut harness, "the empty grid counted", |app| {
+        app.photo_count().is_some()
+    });
+    let held = for_a_while(&mut driver, &mut harness, 700);
+    assert_eq!(panels(&held), [LOOKING], "while its scan is held");
+
+    other.execute_batch("ROLLBACK").unwrap();
+    let seen = watched(&mut driver, &mut harness, "nothing found in it", |app| {
+        app.panel()
+            .is_some_and(|panel| panel.text.starts_with("photon watches "))
+    });
+    let said = panels(&seen);
+    assert!(
+        said[..said.len() - 1].iter().all(|text| *text == LOOKING),
+        "{said:#?}"
+    );
+}
+
+// The mirror: a drive that was there when photon was last closed and is not now.
+#[test]
+fn a_drive_gone_since_the_last_session_is_never_said_to_hold_no_photos() {
+    let dir = tempfile::tempdir().unwrap();
+    let gone = dir.path().join("Holidays");
+    std::fs::create_dir_all(&gone).unwrap();
+    let library = empty_library(dir.path());
+    assert!(library.add_watched_folder(&gone, &[]).unwrap().online);
+    drop(library);
+    std::fs::remove_dir_all(&gone).unwrap();
+
+    let (mut harness, mut driver) = first_run(dir.path(), None);
+    let seen = watched(
+        &mut driver,
+        &mut harness,
+        "the drive known to be away",
+        |app| {
+            app.panel()
+                .is_some_and(|panel| panel.text.starts_with("photon cannot reach "))
+        },
+    );
+    let said = panels(&seen);
+    assert!(
+        said.iter()
+            .all(|text| !text.contains("has found no photos")),
+        "{said:#?}"
+    );
+}
+
+// Every photo hidden at once while photon runs - Picasa's flags here, Hide folder soon.
+// The hidden photos are counted a round trip after the grid that lost them is on
+// screen: decided from the count of the grid before, the panel said that photon had
+// found none.
+#[test]
+fn photos_all_hidden_while_photon_runs_are_never_said_not_to_have_been_found() {
+    let dir = tempfile::tempdir().unwrap();
+    let folder = pictures(dir.path(), 3);
+    let (mut harness, mut driver) = first_run(dir.path(), Some(folder.clone()));
+    driver.until(&mut harness, "the photos shown", |app| {
+        app.photos() == 3 && app.status().is_empty()
+    });
+    driver.settle(&mut harness);
+    // Picasa hides all three, and the folder is scanned again.
+    let ini: String = (0..3)
+        .map(|n| format!("[IMG_{n:05}.jpg]\r\nhidden=yes\r\n"))
+        .collect();
+    std::fs::write(folder.join(".picasa.ini"), ini).unwrap();
+    let pictures = harness.state().watched()[0].clone();
+    harness.state().engine().start_scan(pictures);
+    let seen = watched(&mut driver, &mut harness, "every photo hidden", |app| {
+        app.panel()
+            .is_some_and(|panel| panel.title == "Every photo is hidden")
+    });
+    let said = panels(&seen);
+    assert!(
+        said.iter()
+            .all(|text| !text.contains("has found no photos")),
+        "{said:#?}"
+    );
+}
+
+// A rescan says what it is measured against as soon as it knows. Held at its first write
+// - a rescan of files that have not changed is otherwise over in milliseconds - its line
+// stands, with the count the folder held.
+#[test]
+fn a_rescan_is_measured_against_what_the_folder_held() {
+    let dir = tempfile::tempdir().unwrap();
+    let folder = pictures(dir.path(), 3);
+    {
+        let (mut harness, mut driver) = first_run(dir.path(), Some(folder));
+        driver.until(&mut harness, "the photos shown", |app| {
+            app.photos() == 3 && app.status().is_empty()
+        });
+        driver.settle(&mut harness);
+    }
+    let other = locked(dir.path());
+    let (mut harness, mut driver) = first_run(dir.path(), None);
+    let held = for_a_while(&mut driver, &mut harness, 700);
+    other.execute_batch("ROLLBACK").unwrap();
+    assert_eq!(
+        held.last().unwrap().lines,
+        ["Scanning Pictures… 0 of ~3 files (0%)"],
+        "{held:#?}"
+    );
+    driver.until(&mut harness, "the rescan over", |app| {
+        app.status().is_empty()
+    });
+}
+
+// A first scan is measured against nothing, however late the window hears of it. No
+// frame is drawn for the scan's first moments - a window not yet shown, or minimised,
+// draws none - while the scan writes its first batches. Counted by the window after
+// that, they were what the scan was measured against: "3,000 of ~500 files". (A review
+// found it; the scan says the number itself now.)
+#[test]
+fn a_first_scan_is_measured_against_nothing_however_late_the_window_hears_of_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let folder = pictures(dir.path(), 2500);
+    drop(empty_library(dir.path()));
+    let other = locked(dir.path());
+    let (mut harness, mut driver) = first_run(dir.path(), Some(folder));
+    driver.until(&mut harness, "the empty grid counted", |app| {
+        app.photo_count().is_some()
+    });
+    // The engine goes on: it watches the folder and scans it. No frame is drawn.
+    other.execute_batch("ROLLBACK").unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let seen = watched(&mut driver, &mut harness, "the photos shown", |app| {
+        app.photos() == 2500 && app.status().is_empty()
+    });
+    let lines: Vec<&String> = seen.iter().flat_map(|said| &said.lines).collect();
+    assert!(
+        lines.iter().all(|line| !line.contains(" of ~")),
+        "{lines:#?}"
+    );
 }

@@ -41,6 +41,13 @@ const NOTE_LEFT: f32 = 34.0;
 const NOTE_RIGHT: f32 = 14.0;
 const NOTE_ABOVE: f32 = 2.0;
 const NOTE_BELOW: f32 = 6.0;
+/// The words that say no folder is watched are no group's note: they start where a
+/// year's heading would, the folders' own place, with air over them. At a note's indent,
+/// right under the last group's heading, they read as that group's - "Tags: No folders
+/// yet." - which a picture showed.
+const NO_FOLDERS_ABOVE: f32 = 12.0;
+/// The button under them, which takes no press yet: as tall as this, in a row.
+const ADD_FOLDER: f32 = 24.0;
 /// Where a year's heading starts, and where its line's middle is under the room above it.
 const YEAR_LEFT: f32 = 14.0;
 const YEAR_MIDDLE: f32 = 20.0;
@@ -104,6 +111,14 @@ fn count_text(count: Count) -> String {
     match count {
         Count::Of(number) => grouped(number),
         Count::ToName(number) => format!("{} to name", grouped(number)),
+    }
+}
+
+/// Where a note's words begin in its band: how far in, and how far down.
+fn note_place(what: &What) -> (f32, f32) {
+    match what {
+        What::NoFolders => (YEAR_LEFT, NO_FOLDERS_ABOVE),
+        _ => (NOTE_LEFT, NOTE_ABOVE),
     }
 }
 
@@ -237,13 +252,14 @@ impl SidebarView {
     /// Stacks the entries: each as tall as its kind, and a note as tall as its words are
     /// when wrapped to the list.
     fn measure(&mut self, ui: &egui::Ui, list: &List, width: f32) {
-        let room = (width - NOTE_LEFT - NOTE_RIGHT).max(0.0);
         let heights = list.entries.iter().map(|entry| {
             height(&entry.what).unwrap_or_else(|| {
+                let (left, above) = note_place(&entry.what);
+                let room = (width - left - NOTE_RIGHT).max(0.0);
                 let words =
                     ui.painter()
                         .layout(entry.label.clone(), note_font(), Color32::WHITE, room);
-                f64::from(NOTE_ABOVE + words.size().y + NOTE_BELOW)
+                f64::from(above + words.size().y + NOTE_BELOW)
             })
         });
         self.stack = Stack::new(heights, ABOVE, BELOW);
@@ -531,14 +547,37 @@ fn draw(ui: &mut egui::Ui, frame: &Frame<'_>, band: Rect, entry: &Entry) -> bool
             paint_line(ui, painter, at, room, &entry.label, font, dim);
             false
         }
-        What::Note(_) | What::NoFolders => {
-            let room = (frame.panel.width() - NOTE_LEFT - NOTE_RIGHT).max(0.0);
-            let words = painter.layout(entry.label.clone(), note_font(), dim, room);
-            painter.galley(
-                pos2(band.left() + NOTE_LEFT, band.top() + NOTE_ABOVE),
-                words,
-                dim,
+        What::AddFolder => {
+            // Drawn where it will be and fainter than what can be pressed: Settings, and
+            // their list of folders, come with a later part of the native interface.
+            // The words are laid out in their own colour: a galley is painted in the one
+            // it was laid out with, whatever it is handed afterwards.
+            let faint = 0.5;
+            let tint = text.gamma_multiply(faint);
+            let words = painter.layout_no_wrap(entry.label.clone(), fonts::regular(T[1]), tint);
+            let button = Rect::from_min_size(
+                pos2(band.left() + YEAR_LEFT, middle - ADD_FOLDER / 2.0),
+                vec2(words.size().x + 2.0 * S[1], ADD_FOLDER),
             );
+            painter.rect_filled(button, R[2], color(palette.field).gamma_multiply(faint));
+            painter.galley(
+                pos2(button.left() + S[1], middle - words.size().y / 2.0),
+                words,
+                tint,
+            );
+            ui.interact(
+                button,
+                ui.id().with(("sidebar", &entry.what)),
+                Sense::hover(),
+            )
+            .widget_info(|| WidgetInfo::labeled(WidgetType::Button, false, &entry.label));
+            false
+        }
+        What::Note(_) | What::NoFolders => {
+            let (left, above) = note_place(&entry.what);
+            let room = (frame.panel.width() - left - NOTE_RIGHT).max(0.0);
+            let words = painter.layout(entry.label.clone(), note_font(), dim, room);
+            painter.galley(pos2(band.left() + left, band.top() + above), words, dim);
             // Words, and said as words to whoever reads the window without seeing it.
             ui.interact(band, ui.id().with(("sidebar", &entry.what)), Sense::hover())
                 .widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, &entry.label));
@@ -588,6 +627,8 @@ mod tests {
         collections: Collections,
         folders: Vec<Folder>,
         tallies: Vec<FolderTally>,
+        /// Whether the library is known to watch no folder.
+        no_folders: bool,
     }
 
     impl World {
@@ -657,6 +698,7 @@ mod tests {
                         modified_ms: 0,
                     })
                     .collect(),
+                no_folders: false,
             }
         }
 
@@ -675,7 +717,7 @@ mod tests {
                 tallies: &self.tallies,
                 layout_gen: 1,
                 zone: &TimeZone::UTC,
-                no_folders: false,
+                no_folders: self.no_folders,
             });
             list
         }
@@ -978,6 +1020,43 @@ mod tests {
         assert_eq!(f.click(pos2(40.0, year.top() + 14.0)), None);
         let note = f.band(&What::Note(Group::People));
         assert_eq!(f.click(note.center()), None);
+    }
+
+    // A library that watches nothing: said where its folders would be listed - at their
+    // inset, with air over the words, not as the note of the group above - and under it
+    // the button that will lead to where one is added, which takes no press yet.
+    #[test]
+    fn no_folders_is_said_in_the_folders_place_over_a_button_that_does_nothing_yet() {
+        let mut f = Fixture::new(0);
+        f.world.no_folders = true;
+        f.world.tallies.clear();
+        f.rebuild();
+        f.frame(Vec::new());
+        let words = f.drew("No folders yet.").expect("the words are drawn");
+        let band = f.band(&What::NoFolders);
+        assert!((words.left() - YEAR_LEFT).abs() < 2.0, "{words:?}");
+        assert!(
+            words.top() >= band.top() + NO_FOLDERS_ABOVE - 1.0,
+            "{words:?} in {band:?}"
+        );
+        assert!(words.bottom() <= band.bottom());
+
+        let button = f
+            .drew("Add a folder in Settings…")
+            .expect("the button is drawn");
+        assert!(
+            button.top() >= band.bottom() - 1.0,
+            "{button:?} under {band:?}"
+        );
+        assert!(button.left() > YEAR_LEFT);
+        assert_eq!(f.click(button.center()), None);
+        assert_eq!(f.click(band.center()), None);
+        // Fainter than what can be pressed, its words as well as its ground.
+        let full = color(palette(&f.ctx).text);
+        assert_eq!(
+            f.tint_of("Add a folder in Settings…"),
+            full.gamma_multiply(0.5)
+        );
     }
 
     // Its chevron folds the list; its label is the People page's, which is not built yet.

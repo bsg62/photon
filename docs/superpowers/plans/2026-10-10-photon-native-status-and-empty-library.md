@@ -115,3 +115,31 @@ pub fn library_panel(grid: &GridState, place: &Place, state: Option<EmptyLibrary
   library that watches nothing offers a folder; one whose drive is away says it cannot
   reach it; a still window draws nothing while nothing reports.
 - [ ] Pictures; the checklist; CLAUDE.md; push; one fresh reviewer; one fix pass; merge.
+
+**Changed in the making.** The engine gained `startup_scans_started`: it publishes its
+first grid before it watches the Pictures folder and starts its scans, and this window is
+drawing by then. `settled`, `counted` and the launch's phases are what the native
+interface needs in place of the Svelte store's round trips. "No folders yet." has its
+button, drawn and inactive, as the spec gives it to this pull request.
+
+**macOS' CI** failed the two tests that waited to see a scan in progress: on that runner
+eight hundred files were read before the window had drawn its second frame. They hold
+the scan at its first write now, by the library's write lock.
+
+**The review** (one fresh reader, 2026-10-10) found nothing critical and one fault three
+times: a number shown beside a thing it was not read with. A first scan was measured
+against its own first batches, since the folder was counted when a frame heard of the
+scan and not when the scan began ("3,000 of ~500 files" with no frame for 400 ms); the
+scan says the number itself now (`ScanProgress::known`), and the count's queue is gone.
+Every photo hidden at once said for a round trip that photon had found none, the hidden
+count being the grid before's. A drive just back was one photon "cannot reach" for a
+frame, its `online` read a frame after its scan's done. All three are fixed, with the
+reviewer's tests. It also found seams for two rules this plan called unpinned - the
+write lock held past the five seconds a write waits makes the one launch that sends no
+event - and that the bar of a first scan, placed by the count of files, hopped backwards
+as often as forwards; it steps once a report now. Left for later: a scan that panics
+keeps its line and keeps an empty library looking (the engine does not say a scan died);
+the panel's buttons are not clipped to a place narrower than they are; a failed read of
+the folder list during the launch makes the list from before it the launch's; each of
+the watcher's subtree scans reads the folder list and rebuilds the sidebar's list.
+

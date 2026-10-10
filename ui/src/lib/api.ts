@@ -329,6 +329,12 @@ export interface ScanProgressEvent {
   changed: number;
   done: boolean;
   cancelled: boolean;
+  /** How many photos the folder (or, for the watcher's scan of one directory, the subtree)
+   *  held before the scan; absent in a full scan's first report. The native interface
+   *  measures a scan against it. This one still counts the folder itself
+   *  (`snapshotExpected`), which is the scan's own first batches too when the count is
+   *  read late. */
+  known?: number | null;
 }
 export interface FolderStatus { watchedId: number; online: boolean; degraded: boolean }
 /** `dataChanged`: the data may have moved since the last event, not only the view, the sort

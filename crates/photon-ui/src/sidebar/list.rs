@@ -38,6 +38,7 @@ pub const BELOW: f64 = 12.0;
 const NO_PEOPLE: &str = "No named people yet. Name the faces photon found on the People page; names Picasa recorded are listed here too.";
 const NO_TAGS: &str = "No keywords. photon reads them from the photos themselves.";
 const NO_FOLDERS: &str = "No folders yet.";
+const ADD_FOLDER: &str = "Add a folder in Settings…";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Group {
@@ -67,8 +68,10 @@ pub enum What {
     Folder(i64),
     /// The line an unfolded group shows when it holds nothing.
     Note(Group),
-    /// The line under everything when no folder is watched.
+    /// The line under everything when no folder is watched, and the button under it
+    /// that will open Settings' list of folders. Not a button yet.
     NoFolders,
+    AddFolder,
 }
 
 impl What {
@@ -81,9 +84,12 @@ impl What {
             What::Search { query, .. } => Some(Step::Search(query.clone())),
             What::Person(key) => Some(Step::Person(key.clone())),
             What::Tag(tag) => Some(Step::Tag(tag.clone())),
-            What::Group(_) | What::Year(_) | What::Folder(_) | What::Note(_) | What::NoFolders => {
-                None
-            }
+            What::Group(_)
+            | What::Year(_)
+            | What::Folder(_)
+            | What::Note(_)
+            | What::NoFolders
+            | What::AddFolder => None,
         }
     }
 }
@@ -418,6 +424,7 @@ fn entries(sources: &Sources<'_>) -> Vec<Entry> {
     }
     if sources.no_folders {
         entries.push(plain(What::NoFolders, NO_FOLDERS, None, false, ""));
+        entries.push(plain(What::AddFolder, ADD_FOLDER, None, false, ""));
     }
     entries
 }
@@ -981,17 +988,27 @@ mod tests {
         world.no_folders = true;
         world.tallies.clear();
         let list = world.list();
-        let last = list.entries.last().unwrap();
+        let [.., last, button] = list.entries.as_slice() else {
+            panic!("{:?}", list.entries);
+        };
         assert_eq!(
             (&last.what, last.label.as_str()),
             (&What::NoFolders, "No folders yet.")
         );
+        // And the button that will lead to where one is added, a row of its own.
+        assert_eq!(
+            (&button.what, button.label.as_str()),
+            (&What::AddFolder, "Add a folder in Settings…")
+        );
+        assert_eq!(height(&What::AddFolder), Some(f64::from(ROW)));
+        assert_eq!(What::AddFolder.step(Today { month: 1, day: 1 }), None);
         // Words, like the notes of the empty groups: wrapped where they are drawn, and
         // nothing to press.
         assert_eq!(height(&What::NoFolders), None);
         assert_eq!(What::NoFolders.step(Today { month: 1, day: 1 }), None);
         let svelte = include_str!("../../../../ui/src/components/FolderTree.svelte");
         assert!(svelte.contains(&format!("<p class=\"empty\">{}</p>", last.label)));
+        assert!(svelte.contains(&format!(">{}</button>", button.label)));
     }
 
     // The collections and the folder list are too large to compare, and are replaced only

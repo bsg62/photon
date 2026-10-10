@@ -17,10 +17,12 @@ pub const LIVE_UPDATES_LIMITED: &str =
 pub enum Bar {
     /// How far along, 0 to 1.
     Share(f64),
-    /// Nothing to measure against: a folder's first scan. `beat` is how many files the
-    /// scan has seen, which is all that moves the bar - it has no clock of its own, and a
+    /// Nothing to measure against: a folder's first scan. `beat` is how many reports the
+    /// scan has made, which is all that moves the bar - it has no clock of its own, and a
     /// bar that moved by itself would draw a frame sixty times a second for as long as
-    /// the scan ran.
+    /// the scan ran. Reports, not files: the engine sends one every quarter of a second
+    /// at most, whatever the scan has read meanwhile, and a bar placed by the count of
+    /// files hopped about, backwards as often as forwards.
     Unknown { beat: u64 },
 }
 
@@ -42,11 +44,17 @@ fn count(number: u64) -> String {
 }
 
 /// A scan walks the disk and does not know its total ahead of time, so the count the
-/// folder had after its last scan stands in for one (`expected`). A rescan of an unchanged
-/// folder therefore runs to exactly 100%; one with new photos runs past it, which the bar
-/// clamps and the label shows honestly as "of ~N". Photos the scan has added or replaced
-/// are called out because they are the point of watching.
-pub fn scan_line(watched: &WatchedFolder, scan: &ScanProgressEvent, expected: Option<u64>) -> Line {
+/// folder had before it stands in for one (`expected`). A rescan of an unchanged folder
+/// therefore runs to exactly 100%; one with new photos runs past it, which the bar clamps
+/// and the label shows honestly as "of ~N". Photos the scan has added or replaced are
+/// called out because they are the point of watching. `beat` is how many reports the
+/// scan has made, for the bar of one with nothing to be measured against.
+pub fn scan_line(
+    watched: &WatchedFolder,
+    scan: &ScanProgressEvent,
+    expected: Option<u64>,
+    beat: u64,
+) -> Line {
     let seen = count(scan.files_seen);
     let (mut label, bar) = match expected.filter(|expected| *expected > 0) {
         Some(expected) => {
@@ -57,12 +65,7 @@ pub fn scan_line(watched: &WatchedFolder, scan: &ScanProgressEvent, expected: Op
                 Bar::Share(share),
             )
         }
-        None => (
-            format!("{seen} files"),
-            Bar::Unknown {
-                beat: scan.files_seen,
-            },
-        ),
+        None => (format!("{seen} files"), Bar::Unknown { beat }),
     };
     let moved = scan.added + scan.changed;
     if moved > 0 {
@@ -136,6 +139,7 @@ mod tests {
             changed,
             done: false,
             cancelled: false,
+            known: None,
         }
     }
 
@@ -151,7 +155,7 @@ mod tests {
     #[test]
     fn a_rescan_is_measured_against_the_count_the_folder_had_last_time() {
         assert_eq!(
-            scan_line(&watched(), &scan(1250, 0, 0), Some(5000)),
+            scan_line(&watched(), &scan(1250, 0, 0), Some(5000), 3),
             Line {
                 label: "Scanning Pictures… 1,250 of ~5,000 files (25%)".to_owned(),
                 bar: Some(Bar::Share(0.25)),
@@ -162,19 +166,19 @@ mod tests {
     #[test]
     fn a_first_scan_has_nothing_to_be_measured_against() {
         assert_eq!(
-            scan_line(&watched(), &scan(1250, 0, 0), None),
+            scan_line(&watched(), &scan(1250, 0, 0), None, 3),
             Line {
                 label: "Scanning Pictures… 1,250 files".to_owned(),
-                bar: Some(Bar::Unknown { beat: 1250 }),
+                bar: Some(Bar::Unknown { beat: 3 }),
             }
         );
-        let none = scan_line(&watched(), &scan(1250, 0, 0), Some(0));
-        assert_eq!(none.bar, Some(Bar::Unknown { beat: 1250 }));
+        let none = scan_line(&watched(), &scan(1250, 0, 0), Some(0), 4);
+        assert_eq!(none.bar, Some(Bar::Unknown { beat: 4 }));
     }
 
     #[test]
     fn new_photos_push_the_scan_past_the_old_count_and_the_line_says_so() {
-        let line = scan_line(&watched(), &scan(5200, 200, 0), Some(5000));
+        let line = scan_line(&watched(), &scan(5200, 200, 0), Some(5000), 1);
         assert_eq!(line.bar, Some(Bar::Share(1.0)));
         assert_eq!(
             line.label,
@@ -185,7 +189,7 @@ mod tests {
     #[test]
     fn added_and_changed_photos_are_counted_together() {
         assert_eq!(
-            scan_line(&watched(), &scan(10, 2, 3), None).label,
+            scan_line(&watched(), &scan(10, 2, 3), None, 1).label,
             "Scanning Pictures… 10 files, 5 new or changed"
         );
     }
@@ -198,7 +202,7 @@ mod tests {
                 path: path.to_owned(),
                 ..watched()
             };
-            scan_line(&watched, &scan(1, 0, 0), None).label
+            scan_line(&watched, &scan(1, 0, 0), None, 1).label
         };
         assert_eq!(named(r"\\nas\photos\2024"), "Scanning 2024… 1 files");
         assert_eq!(named("/mnt/photos/"), "Scanning photos… 1 files");

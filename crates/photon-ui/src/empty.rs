@@ -212,13 +212,14 @@ pub struct Panel {
 /// What the panel is decided from.
 #[derive(Clone, Copy, Debug)]
 pub struct LibraryFacts<'a> {
-    /// Whether the watched folders have been read once.
+    /// Whether the watched folders are known: read after the engine has settled which
+    /// they are (`Scans::known`).
     pub known: bool,
     pub watched: &'a [WatchedFolder],
     pub scanning: bool,
-    /// How many photos are hidden, and whether that has been read once: before it has,
-    /// "none" is not known, and a library whose photos are all hidden said for a moment
-    /// that photon had found none.
+    /// How many photos are hidden, when that has been counted for the library as it is:
+    /// before it has, "none" is not known, and a library whose photos are all hidden
+    /// said for a moment that photon had found none.
     pub hidden: Option<usize>,
 }
 

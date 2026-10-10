@@ -436,10 +436,9 @@ const STATUS_TRACK: f32 = 120.0;
 const STATUS_GAP: f32 = 16.0;
 /// The least of a line's words worth drawing: with less room the line is left out.
 const STATUS_LEAST: f32 = 80.0;
-/// How many places the bar of a first scan has along its track, and how many files seen
-/// move it one on: a scan reports every sixty-four.
+/// How many places the bar of a first scan has along its track: one on for each report
+/// of the scan, and round again.
 const UNKNOWN_PLACES: u64 = 4;
-const UNKNOWN_STEP: u64 = 64;
 
 fn status_bar(ui: &egui::Ui, rect: Rect, data: &ShellData<'_>, palette: &Palette) {
     let painter = ui.painter_at(rect);
@@ -491,7 +490,7 @@ fn status_bar(ui: &egui::Ui, rect: Rect, data: &ShellData<'_>, palette: &Palette
                 Bar::Share(share) => (0.0, STATUS_TRACK * share.clamp(0.0, 1.0) as f32),
                 // No clock: it stands where the scan's last report put it.
                 Bar::Unknown { beat } => {
-                    let place = (beat / UNKNOWN_STEP) % UNKNOWN_PLACES;
+                    let place = beat % UNKNOWN_PLACES;
                     let width = STATUS_TRACK / UNKNOWN_PLACES as f32;
                     (place as f32 * width, width)
                 }
@@ -1029,7 +1028,7 @@ mod tests {
             )]
         };
         let mut seen = Vec::new();
-        for beat in [0, 0, 64, 128, 192, 256, 257] {
+        for beat in [1, 1, 2, 3, 4, 5] {
             f.lines = scanning(beat);
             f.frame(Vec::new());
             let (track, part) = bars(&f)[0];
@@ -1042,7 +1041,8 @@ mod tests {
         assert_ne!(seen[2], seen[3]);
         assert_ne!(seen[3], seen[4]);
         assert_eq!(seen[5], seen[1], "and round again");
-        assert_eq!(seen[6], seen[5], "a report of one file more is no step");
+        // One place on at each report, never back but to begin again.
+        assert!(seen[1] < seen[2] && seen[2] < seen[3], "{seen:?}");
     }
 
     // The bar is one row. What does not fit is cut short or left out; nothing is drawn
