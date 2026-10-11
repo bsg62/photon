@@ -1861,6 +1861,52 @@ was opened inside a selection of several - and its items could act on the neighb
 selection landed on, a photo nobody asked about. It closes more often than it must,
 never less.
 
+**The sidebar's rows and the grid's headers have menus, and the one menu is whose it
+is** (`side_menu.rs` for what an album's, a saved search's and a folder's hold;
+`App::menu` is where it was opened and a `MenuOf`). The items are built again in every
+frame from the selection and the lists as they are then, so a menu whose album, search
+or folder is no longer listed has no items, and closes - the same rule that closes the
+tile's menu when nothing is selected. A folder's menu is one list on its row in the
+sidebar, on its header in the grid and on the copy of that header pinned over the photos
+(`header_at`, in `grid/layout.rs`, says which header a point is on; a period's names no
+folder and has no menu). "Delete…" and "Reveal in file manager" are in their place and
+take no press: the first asks before it acts, and what it asks with is the dialog
+layer's. The other button on a row is read from its own press (`menu_press`), as on a
+photo, and not through what lies over the list.
+
+**A name is typed in the row itself, in the one field the sidebar has**
+(`rename.rs`, `createAlbumEditor`; drawn by `sidebar/view.rs`'s `field`). One field keyed
+by what it stands in for (`rename::Of`), where the Svelte list has three editors because
+its rows' ids collide - album 3, search 3, folder 3. Storing a name is a write on the
+queue of writes, whose answer comes frames later: meanwhile the field stays, takes no
+typing and keeps the keyboard - what is typed next must not reach the grid, where `h`
+hides a photo - and the answer closes it only if it is still the field that was sent
+(`Rename::landed`, by the number the field was sent under): a second rename begun
+meanwhile is another field. A blank name is a cancel, but a folder's, which is how its
+directory's own name is asked back. A name the library refuses leaves the field open,
+under a message. **A field whose row is not drawn cannot hold the keyboard**: scrolled
+out of sight its name is stored, as leaving it stores it, and with no entry left in the
+list it closes; hiding the sidebar stores it too. The list does not follow the grid
+while a name is typed, and the field's row is the entry the list is held by. "Rename in
+photon…" on a header shows a hidden sidebar and brings the folder's row into sight
+(`SidebarView::reveal`); in an order that lists no folders the item takes no press.
+Nothing here writes outside `library.db`: a folder's name in photon is the library's
+`alias`, and the directory keeps its own.
+
+**egui's text field, twice now.** What the search box learnt holds for this field, and
+one thing the search box had wrong until the second field was built: **a filter built
+from `EventFilter::default()` takes the arrow keys away from the field.** The default
+leaves them to egui, which walks the keyboard to a neighbouring widget with them
+(`TextEdit`'s own filter claims them; replacing it to claim Escape dropped them). In the
+search box an arrow key moved the caret *and* handed the keyboard to the button beside
+the box, and what was typed next was typed nowhere - since sub-project 2, unseen
+because its frame tests draw the box alone, with no neighbour to walk to
+(`the_arrow_keys_move_the_caret_in_the_box_and_the_keyboard_stays`, through the whole
+application, is the test). Also: Enter and Escape are read and taken out of the frame
+*before* the field is drawn (egui's field gives the keyboard up at Enter; an Escape left
+in the frame is the grid's next); a press elsewhere stores at the press, by the view's
+own rule; an empty field draws its placeholder in the frame it is first typed in.
+
 **A star is tested in a library of real files** (`tests/menu.rs`, `pictures`,
 `over_files`): the folder's `.picasa.ini` is read back, and every write goes into a
 temporary directory the test made. A fixture's folders are on a drive that is not there,

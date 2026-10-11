@@ -737,3 +737,12 @@ Not released: these are for whoever tries the branch `native-ui`. The Svelte int
 - [ ] Press `H` on a photo and close the window at once: start photon again, and the photo is in Hidden.
 - [ ] On a Mac, hold Control and click a photo: its menu opens.
 - [ ] Leave a menu open and watch the processor: photon-native goes quiet.
+- [ ] Right-click an album of your own in the sidebar: "Rename…" and a fainter "Delete…" that takes no press. An album of Picasa's, a person, a keyword and a view have no menu. Right-click a saved search: the same two. Right-click a folder's row, its header in the grid, and that header while it is pinned over the photos: the same menu each time - Rescan, a fainter "Reveal in file manager", "Rename in photon…", "Hide folder" - and none on a month's header.
+- [ ] "Rename…" on an album: the name is in a field in the row's own place, all of it selected. Type a new one, move the caret with the arrow keys, Enter: the row shows it. Again, and Escape: nothing changes. Again, and click a photo: the name is stored and the photo selected.
+- [ ] "New album…" under the albums: type a name, Enter - the album is there with a count of 0, and the tile's menu offers it. Enter on an empty field makes nothing.
+- [ ] "Rename in photon…" on a folder: the row and the header in the grid show the new name; the folder on disk is called what it was. "Use folder name" is now in its menu and brings the directory's name back; so does renaming it to nothing.
+- [ ] Hide the sidebar (Ctrl+B), right-click a header in the grid, "Rename in photon…": the sidebar comes back with the field in that folder's row, in sight. Type `h` and `.` in it: they are typed, and no photo is hidden or starred.
+- [ ] With a name half typed, press Ctrl+B: the name is stored. With a name half typed, turn the wheel over the list until its row is out of sight: the name is stored.
+- [ ] "Hide folder": its photos leave the grid and its row the list, and Hidden counts them. In Hidden, the folder's row offers "Unhide folder", which brings them back.
+- [ ] "Rescan" on a folder: the status bar says it is scanning. While it scans, the folder's menu shows Rescan fainter.
+- [ ] In the search box, type a few letters and press the left arrow, then type another: it goes in where the caret is. (An arrow key used to hand the keyboard to the button beside the box.)

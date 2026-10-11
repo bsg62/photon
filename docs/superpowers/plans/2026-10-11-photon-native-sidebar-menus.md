@@ -187,3 +187,37 @@ AlbumRename, SearchRename, FolderAlias, FolderHidden, Rescan}` and their answers
 - [ ] Pictures: a folder's menu on its header; a name being typed in an album's row;
   light and dark.
 - [ ] The smoke checklist; CLAUDE.md; push; one fresh reviewer; one fix pass; merge.
+
+## Changed in the making
+
+- **No held Enter is kept track of.** The spec has "the Enter that stores a name presses
+  nothing else, and neither does its repeat", and Task 2 gave `Rename` the state for it.
+  Nothing can be pressed by that Enter: the field closes into nothing that has the
+  keyboard, where the Svelte field hands the focus to its row. When the grid is given
+  Enter (the viewer's sub-project), it must not answer a repeat, as `.` and `H` do not.
+- **Escape closes a field whose name is being stored**, as the Svelte editor's `cancel`
+  does: the write is on its way and its answer finds no field. Task 2 had it stay.
+- **A field whose row is not drawn is closed**: stored when it is scrolled out of sight,
+  cancelled when its entry has gone from the list. The Svelte input stays in the DOM
+  wherever the list is scrolled to; here a row out of sight is not drawn, egui takes
+  the keyboard off a widget that is gone, and the next name typed would be the grid's.
+- **The arrow keys in the search box**, found while the second text field was built
+  (CLAUDE.md, "egui's text field, twice now"): fixed here, with a test through the whole
+  application.
+- **On a Mac, Control with a click on a row opens its menu and does not go to the row**
+  (`menu_click`): the menu was opened at the press, and the same click is not the row's
+  as well. Read from source and not run: it is one line no test here reaches.
+- The folder's menu on a header asks `header_at`, a function of the layout with its own
+  cases, and not the view's "is this the pinned header's height" used for photos.
+
+**Probes**: a hundred rules broken in turn, each with the test that was to fail. Eight
+passed at first. Four were lines that did nothing and went: a read of the folder list
+after a folder's write (the engine's rebuild already asks for one); a check that a point
+in a header's row is within the row (it is, the rows of photos beginning where a header
+ends); a "not while it is stored" on what was typed (nothing is typed then: the input
+is stripped); and an empty folder name turned into none (the library takes it for none).
+Four were tests that could not see their rule and were sharpened: a menu whose album is
+gone (the list was empty either way), the name a folder's field opens with (it had no
+name in photon when asked), and Rescan twice over - a file added for the scan to find
+was found by the watcher as well, so the test now adds none and holds the scan at the
+one write every scan ends with.
