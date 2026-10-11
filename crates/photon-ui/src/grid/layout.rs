@@ -525,6 +525,97 @@ pub fn page_move(rows: &[Row], offset: usize, down: bool, viewport: f64) -> usiz
     rows[to].first + column.min(rows[to].count.saturating_sub(1))
 }
 
+/// A rectangle in the layout's own coordinates - the space a row's `top` is in, `x`
+/// from the left edge of the photos' room - so that a rubber band keeps its grip on the
+/// photos it was started over while the grid scrolls under it. Its corners in any order.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Span {
+    pub x0: f64,
+    pub y0: f64,
+    pub x1: f64,
+    pub y1: f64,
+}
+
+/// The grid offsets a rubber band touches, as inclusive ranges: one for each row it
+/// crosses, with rows that join up merged into one.
+///
+/// Ranges and not one span: a band narrower than the grid takes a few photos from each
+/// row it crosses, and one range from its first photo to its last would select
+/// everything between them.
+///
+/// A row's tiles are `tile` tall from its top, not `tile_row(tile)`: the gutter under a
+/// row belongs to no photo, so a band drawn inside it selects nothing and not both
+/// neighbours. Touching counts, on both axes, as it does in `tile_at`: a band of no size
+/// is the photo it is on.
+pub fn items_in_rect(rows: &[Row], rect: Span, tile: f64) -> Vec<(usize, usize)> {
+    let (left, right) = (rect.x0.min(rect.x1), rect.x0.max(rect.x1));
+    let (top, bottom) = (rect.y0.min(rect.y1), rect.y0.max(rect.y1));
+    let mut ranges: Vec<(usize, usize)> = Vec::new();
+    // Asked on every frame of a drag, so only the rows the band can reach are visited.
+    // It starts at the row holding `top`: every row before it ends, gutter and all, at
+    // or above that row's top. Rows are in the order of their tops, so the first one
+    // that starts below `bottom` ends the walk.
+    for row in rows.iter().skip(row_index_at(rows, top)) {
+        if row.top > bottom {
+            break;
+        }
+        // The row holding `top` can still end above it, when `top` is in the gutter
+        // under its tiles. A header is asked like any row: it holds no photo.
+        if row.top + tile < top || row.count == 0 {
+            continue;
+        }
+        // Tile k is `tile` wide from `GAP + k * tile_row(tile)`. The first column is
+        // measured from each tile's *right* edge, so a band whose left edge is in the
+        // gutter after tile k starts at k + 1; the last from the left edges, held to
+        // what the row holds, which is what stops a band running off the end of a
+        // short last row into the next section's offsets.
+        let first = ((left - GAP - tile) / tile_row(tile)).ceil().max(0.0);
+        let last = ((right - GAP) / tile_row(tile)).floor();
+        if last < first {
+            continue;
+        }
+        let last = (last as usize).min(row.count - 1);
+        let first = first as usize;
+        if last < first {
+            continue;
+        }
+        let (from, to) = (row.first + first, row.first + last);
+        match ranges.last_mut() {
+            Some(before) if before.1 + 1 == from => before.1 = to,
+            _ => ranges.push((from, to)),
+        }
+    }
+    ranges
+}
+
+/// How fast the grid scrolls while a rubber band is held towards an edge, in points a
+/// second: negative up, positive down, nothing while the pointer is well inside.
+///
+/// `y`, `top` and `bottom` are in the window's coordinates, which is where the pointer
+/// is. A speed and not a distance: the caller multiplies by the frame's own duration, so
+/// the grid scrolls as fast at 120 Hz as at 60. It grows with how far into `margin` the
+/// pointer has gone and stops at `max`, so a pointer dragged clean off the window - the
+/// usual case, the drag following it there - scrolls fast and not wildly.
+///
+/// A grid shorter than two margins would have every point inside both, and a band in it
+/// would scroll wherever the pointer rested: a margin is at most a third of the height,
+/// so there is always a middle third that holds still.
+pub fn edge_scroll_speed(y: f64, top: f64, bottom: f64, margin: f64, max: f64) -> f64 {
+    let band = margin.min((bottom - top) / 3.0);
+    // No height, or no margin, has no edge to be near, and dividing by it would answer
+    // the full speed for every point.
+    if band <= 0.0 {
+        return 0.0;
+    }
+    if y < top + band {
+        -max * ((top + band - y) / band).min(1.0)
+    } else if y > bottom - band {
+        max * ((y - (bottom - band)) / band).min(1.0)
+    } else {
+        0.0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1406,5 +1497,325 @@ mod tests {
     fn a_page_from_a_photo_the_rows_do_not_hold_stays() {
         assert_eq!(page_move(&paged(), 99, true, 400.0), 99);
         assert_eq!(page_move(&[], 0, true, 400.0), 0);
+    }
+
+    // ---- what a rubber band touches: layout.test.ts's "itemsInRect" ----
+
+    fn span(x0: f64, y0: f64, x1: f64, y1: f64) -> Span {
+        Span { x0, y0, x1, y1 }
+    }
+
+    /// One run of `count` photos in rows of three, under no header: rows from 0.
+    fn threes(count: usize, tile: f64) -> Vec<Row> {
+        build_rows(&[flat(0, count)], 3, tile)
+    }
+
+    // The point of ranges: merged into one, a narrow band would select everything
+    // between its first photo and its last.
+    #[test]
+    fn a_narrow_band_down_one_column_is_one_range_a_row() {
+        let rows = threes(9, MEDIUM);
+        let column = GAP + 2.0 * tile_row(MEDIUM);
+        let band = span(
+            column + 1.0,
+            0.0,
+            column + MEDIUM - 1.0,
+            3.0 * tile_row(MEDIUM),
+        );
+        assert_eq!(items_in_rect(&rows, band, MEDIUM), [(2, 2), (5, 5), (8, 8)]);
+    }
+
+    // The left edge is measured from each tile's right edge. Measured from the left
+    // edges it agrees everywhere but here.
+    #[test]
+    fn a_band_that_starts_in_the_gutter_does_not_take_the_tile_left_of_it() {
+        let rows = threes(5, MEDIUM);
+        let after_first = GAP + MEDIUM + 2.0;
+        let band = span(after_first, 10.0, 1000.0, 20.0);
+        assert_eq!(items_in_rect(&rows, band, MEDIUM), [(1, 2)]);
+    }
+
+    #[test]
+    fn a_band_takes_the_tiles_it_touches_in_a_row() {
+        // The second tile begins at 176.
+        let rows = threes(5, MEDIUM);
+        let band = span(180.0, 10.0, 200.0, 20.0);
+        assert_eq!(items_in_rect(&rows, band, MEDIUM), [(1, 1)]);
+    }
+
+    // A band is dragged in any direction: up and to the left as well as down and right.
+    #[test]
+    fn a_band_is_the_same_from_any_of_its_corners() {
+        let rows = threes(5, MEDIUM);
+        for band in [
+            span(10.0, 10.0, 400.0, 300.0),
+            span(400.0, 300.0, 10.0, 10.0),
+            span(400.0, 10.0, 10.0, 300.0),
+            span(10.0, 300.0, 400.0, 10.0),
+        ] {
+            assert_eq!(items_in_rect(&rows, band, MEDIUM), [(0, 4)], "{band:?}");
+        }
+    }
+
+    // Left of the first tile there is a gutter, and beyond it nothing of the grid's.
+    #[test]
+    fn a_band_left_of_the_photos_takes_none_of_them() {
+        let rows = threes(5, MEDIUM);
+        assert_eq!(
+            items_in_rect(&rows, span(-50.0, 10.0, 2.0, 20.0), MEDIUM),
+            []
+        );
+        assert_eq!(
+            items_in_rect(&rows, span(-500.0, 10.0, -300.0, 20.0), MEDIUM),
+            []
+        );
+        // Reaching the first tile's edge from there, it has it.
+        assert_eq!(
+            items_in_rect(&rows, span(-50.0, 10.0, 8.0, 20.0), MEDIUM),
+            [(0, 0)]
+        );
+    }
+
+    #[test]
+    fn rows_that_join_up_are_one_range() {
+        let rows = threes(5, MEDIUM);
+        let all = span(0.0, 0.0, 1000.0, 1000.0);
+        assert_eq!(items_in_rect(&rows, all, MEDIUM), [(0, 4)]);
+        // Across sections too, where the offsets run on.
+        let two = build_rows(&[flat(0, 3), flat(3, 3)], 3, MEDIUM);
+        assert_eq!(items_in_rect(&two, all, MEDIUM), [(0, 5)]);
+    }
+
+    // The gutter under a row belongs to no tile: a band that only grazes it selects
+    // nothing, or a drag between two rows would sweep up both.
+    #[test]
+    fn a_band_inside_the_gutter_between_rows_selects_nothing() {
+        let rows = threes(5, MEDIUM);
+        let band = span(0.0, MEDIUM + 1.0, 1000.0, tile_row(MEDIUM) - 1.0);
+        assert_eq!(items_in_rect(&rows, band, MEDIUM), []);
+    }
+
+    #[test]
+    fn a_band_stops_at_the_last_tile_of_a_short_row() {
+        // The second row holds two of the five photos.
+        let rows = threes(5, MEDIUM);
+        let band = span(
+            0.0,
+            tile_row(MEDIUM) + 1.0,
+            1000.0,
+            tile_row(MEDIUM) + MEDIUM,
+        );
+        assert_eq!(items_in_rect(&rows, band, MEDIUM), [(3, 4)]);
+        // And a band wholly right of what the row holds takes nothing from it.
+        let band = span(
+            400.0,
+            tile_row(MEDIUM) + 1.0,
+            1000.0,
+            tile_row(MEDIUM) + 20.0,
+        );
+        assert_eq!(items_in_rect(&rows, band, MEDIUM), []);
+    }
+
+    #[test]
+    fn a_band_ignores_headers() {
+        let rows = build_rows(&[folder(1, 0, 2)], 3, MEDIUM);
+        let over_header = span(0.0, 0.0, 1000.0, HEADER - 1.0);
+        assert_eq!(items_in_rect(&rows, over_header, MEDIUM), []);
+        let further = span(0.0, 0.0, 1000.0, HEADER + MEDIUM);
+        assert_eq!(items_in_rect(&rows, further, MEDIUM), [(0, 1)]);
+    }
+
+    #[test]
+    fn a_band_of_no_size_is_the_photo_it_is_on_and_an_empty_grid_has_none() {
+        let rows = threes(5, MEDIUM);
+        assert_eq!(
+            items_in_rect(&rows, span(10.0, 10.0, 10.0, 10.0), MEDIUM),
+            [(0, 0)]
+        );
+        assert_eq!(
+            items_in_rect(&[], span(0.0, 0.0, 1000.0, 1000.0), MEDIUM),
+            []
+        );
+    }
+
+    // The same rules at both ends of the sizes: pinned only at 160 they are pinned by
+    // the one size where a number written out would still be right.
+    #[test]
+    fn a_band_is_measured_by_the_tile_at_every_size() {
+        for tile in [SMALL, LARGE] {
+            let row = tile_row(tile);
+            let rows = threes(5, tile);
+            let all = span(0.0, 0.0, 1000.0, 1000.0);
+            assert_eq!(items_in_rect(&rows, all, tile), [(0, 4)], "{tile}");
+            let after_first = span(GAP + tile + 2.0, 10.0, 1000.0, 20.0);
+            assert_eq!(items_in_rect(&rows, after_first, tile), [(1, 2)], "{tile}");
+            let in_gutter = span(0.0, tile + 1.0, 1000.0, row - 1.0);
+            assert_eq!(items_in_rect(&rows, in_gutter, tile), [], "{tile}");
+            // Two rows of three: the bottom edge a point short of the third row's top,
+            // since touching counts and would take it.
+            let tall = threes(9, tile);
+            let two_rows = span(0.0, 0.0, 1000.0, 2.0 * row - 1.0);
+            assert_eq!(items_in_rect(&tall, two_rows, tile), [(0, 5)], "{tile}");
+            let short = span(0.0, row + 1.0, 1000.0, row + tile);
+            assert_eq!(items_in_rect(&rows, short, tile), [(3, 4)], "{tile}");
+        }
+    }
+
+    // A band of no height - a click - on a tile's own top or bottom edge is on the tile.
+    // The first row's top edge is 0, so a rule that left a touching edge out would drop
+    // a click there.
+    #[test]
+    fn touching_counts_on_a_tiles_top_and_bottom_edge() {
+        for tile in [SMALL, MEDIUM, LARGE] {
+            let rows = threes(3, tile);
+            assert_eq!(
+                items_in_rect(&rows, span(10.0, 0.0, 10.0, 0.0), tile),
+                [(0, 0)]
+            );
+            assert_eq!(
+                items_in_rect(&rows, span(10.0, tile, 10.0, tile), tile),
+                [(0, 0)]
+            );
+        }
+    }
+
+    /// Deep in a grid with headers: a header at 0, rows of three at 32 and 200 (tiles
+    /// to 360); the gap; a header at 392, rows at 424 and 592 (tiles to 752).
+    fn deep() -> Vec<Row> {
+        build_rows(&[folder(1, 0, 5), folder(2, 5, 4)], 3, MEDIUM)
+    }
+
+    fn across(y0: f64, y1: f64) -> Vec<(usize, usize)> {
+        items_in_rect(&deep(), span(0.0, y0, 1000.0, y1), MEDIUM)
+    }
+
+    #[test]
+    fn the_deep_grid_is_laid_out_as_its_cases_assume() {
+        assert_eq!(
+            shape(&deep()),
+            [
+                (RowKind::Header, 0, 0, 0.0),
+                (RowKind::Tiles, 0, 3, 32.0),
+                (RowKind::Tiles, 3, 2, 200.0),
+                (RowKind::Header, 5, 0, 392.0),
+                (RowKind::Tiles, 5, 3, 424.0),
+                (RowKind::Tiles, 8, 1, 592.0),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_band_takes_the_row_it_starts_inside_deep_in_the_grid() {
+        assert_eq!(across(250.0, 260.0), [(3, 4)]);
+        assert_eq!(across(600.0, 610.0), [(8, 8)]);
+    }
+
+    #[test]
+    fn a_band_takes_the_row_whose_bottom_edge_it_starts_on_and_whose_top_it_ends_on() {
+        assert_eq!(across(360.0, 360.0), [(3, 4)]);
+        // Within a section the next row starts one gutter below that edge.
+        assert_eq!(across(32.0 + MEDIUM, 32.0 + MEDIUM), [(0, 2)]);
+        assert_eq!(across(200.0 + MEDIUM, 430.0), [(3, 7)]);
+        assert_eq!(across(250.0, 424.0), [(3, 7)]);
+        assert_eq!(across(100.0, 200.0), [(0, 4)]);
+    }
+
+    #[test]
+    fn a_band_starts_from_a_header_a_section_gap_or_a_gutter() {
+        // Its top in the second folder's header, in the gap above that, in the gutter
+        // under the row before, and in the first header.
+        assert_eq!(across(400.0, 430.0), [(5, 7)]);
+        assert_eq!(across(380.0, 430.0), [(5, 7)]);
+        assert_eq!(across(362.0, 430.0), [(5, 7)]);
+        assert_eq!(across(10.0, 40.0), [(0, 2)]);
+    }
+
+    #[test]
+    fn a_band_reaches_past_either_end_of_the_grid() {
+        assert_eq!(across(-100.0, 40.0), [(0, 2)]);
+        assert_eq!(across(600.0, 100_000.0), [(8, 8)]);
+        assert_eq!(across(-100.0, 100_000.0), [(0, 8)]);
+        assert_eq!(across(5000.0, 6000.0), []);
+        assert_eq!(across(-500.0, -100.0), []);
+    }
+
+    // The click and the band are one rule: a band of no size names the photo a click
+    // there selects, and none where a click selects none.
+    #[test]
+    fn a_point_is_the_same_photo_to_a_click_and_to_a_band() {
+        let rows = deep();
+        let mut y = -20.0;
+        while y < 800.0 {
+            let mut x = -20.0;
+            while x < 620.0 {
+                let clicked = tile_at(&rows, x, y, MEDIUM);
+                let banded = items_in_rect(&rows, span(x, y, x, y), MEDIUM);
+                let banded = banded.first().map(|range| {
+                    assert_eq!(range.0, range.1, "({x}, {y})");
+                    range.0
+                });
+                assert_eq!(clicked, banded, "({x}, {y})");
+                x += 7.0;
+            }
+            y += 7.0;
+        }
+    }
+
+    // ---- how fast an edge scrolls: layout.test.ts's "edgeScrollSpeed" ----
+
+    /// A grid 500 tall on screen, from 100 to 600, with a margin of 40.
+    fn speed(y: f64) -> f64 {
+        edge_scroll_speed(y, 100.0, 600.0, 40.0, 20.0)
+    }
+
+    #[test]
+    fn nothing_scrolls_while_the_pointer_is_well_inside() {
+        assert_eq!(speed(300.0), 0.0);
+        assert_eq!(speed(141.0), 0.0);
+        assert_eq!(speed(559.0), 0.0);
+    }
+
+    #[test]
+    fn it_holds_still_at_the_edge_of_the_margin_and_moves_a_point_further_out() {
+        assert_eq!(speed(140.0).abs(), 0.0);
+        assert_eq!(speed(560.0).abs(), 0.0);
+        assert!(speed(139.0) < 0.0);
+        assert!(speed(561.0) > 0.0);
+    }
+
+    // Without the guard the ramp divides by nothing and answers the full speed for
+    // every point: a grid measured before its first layout would scroll at once.
+    #[test]
+    fn a_grid_with_no_height_or_no_margin_never_scrolls() {
+        assert_eq!(edge_scroll_speed(100.0, 100.0, 100.0, 40.0, 20.0), 0.0);
+        assert_eq!(edge_scroll_speed(120.0, 100.0, 100.0, 40.0, 20.0), 0.0);
+        assert_eq!(edge_scroll_speed(300.0, 100.0, 600.0, 0.0, 20.0), 0.0);
+        assert_eq!(edge_scroll_speed(110.0, 100.0, 600.0, 0.0, 20.0), 0.0);
+    }
+
+    #[test]
+    fn it_scrolls_up_at_the_top_down_at_the_bottom_and_faster_the_deeper_in() {
+        assert!(speed(110.0) < 0.0);
+        assert!(speed(590.0) > 0.0);
+        assert!(speed(599.0) > speed(590.0));
+        assert!(speed(101.0) < speed(110.0));
+    }
+
+    // A pointer dragged off the window must not scroll as fast as it is far: the drag
+    // follows it there, so this is the usual case.
+    #[test]
+    fn it_never_scrolls_faster_than_the_most_however_far_out_the_pointer_is() {
+        assert_eq!(speed(601.0), 20.0);
+        assert_eq!(speed(5000.0), 20.0);
+        assert_eq!(speed(99.0), -20.0);
+        assert_eq!(speed(-5000.0), -20.0);
+    }
+
+    // 100 to 160 is 60 tall: each margin is held to 20, and the middle third is still.
+    #[test]
+    fn a_grid_shorter_than_its_margins_keeps_a_still_middle_third() {
+        assert_eq!(edge_scroll_speed(130.0, 100.0, 160.0, 40.0, 20.0), 0.0);
+        assert!(edge_scroll_speed(105.0, 100.0, 160.0, 40.0, 20.0) < 0.0);
+        assert!(edge_scroll_speed(155.0, 100.0, 160.0, 40.0, 20.0) > 0.0);
     }
 }
