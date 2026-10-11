@@ -26,6 +26,7 @@ pub mod grid {
     pub mod visible;
 }
 pub mod icons;
+pub mod menu;
 pub mod nav;
 pub mod probe;
 pub mod scans;
@@ -50,6 +51,7 @@ pub mod theme {
     pub mod fonts;
     pub mod tokens;
 }
+pub mod tile_menu;
 pub mod thumbs {
     pub mod loader;
     pub mod shown;
@@ -62,13 +64,14 @@ pub mod window_layout;
 #[cfg(test)]
 mod tests {
     /// The state modules, with their source.
-    const STATE_MODULES: [(&str, &str); 27] = [
+    const STATE_MODULES: [(&str, &str); 29] = [
         ("args.rs", include_str!("args.rs")),
         ("controls.rs", include_str!("controls.rs")),
         ("scans.rs", include_str!("scans.rs")),
         ("status.rs", include_str!("status.rs")),
         ("dirs.rs", include_str!("dirs.rs")),
         ("empty.rs", include_str!("empty.rs")),
+        ("menu.rs", include_str!("menu.rs")),
         ("nav.rs", include_str!("nav.rs")),
         ("search_box.rs", include_str!("search_box.rs")),
         ("search_help.rs", include_str!("search_help.rs")),
@@ -88,6 +91,7 @@ mod tests {
         ("probe.rs", include_str!("probe.rs")),
         ("thumbs/loader.rs", include_str!("thumbs/loader.rs")),
         ("thumbs/textures.rs", include_str!("thumbs/textures.rs")),
+        ("tile_menu.rs", include_str!("tile_menu.rs")),
         ("toasts.rs", include_str!("toasts.rs")),
         ("window_layout.rs", include_str!("window_layout.rs")),
     ];
