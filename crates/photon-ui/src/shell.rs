@@ -187,6 +187,8 @@ impl Shell {
             actions.extend(shown.named.into_iter().map(Action::Named));
             actions.extend(shown.clicked.map(Action::Row));
             actions.extend((shown.menu).map(|(what, at)| Action::RowMenu { what, at }));
+        } else {
+            self.sidebar.not_drawn();
         }
         if let Some(area) = found.splitter {
             self.splitter(
@@ -218,6 +220,11 @@ impl Shell {
         if let Some(id) = toasts(ui, window, data.toasts, palette) {
             actions.push(Action::Dismiss(id));
         }
+        // What was typed in a name's field comes first: a letter and the key that
+        // stores the name - Ctrl+B, which is read before the sidebar is drawn and hides
+        // it over the field - can arrive in one frame, and the name stored is the one
+        // with the letter.
+        actions.sort_by_key(|action| !matches!(action, Action::Named(Named::Typed(_))));
         actions
     }
 
@@ -717,6 +724,8 @@ mod tests {
         selected: usize,
         sort: Sort,
         tile: GridTile,
+        /// The name being typed in the sidebar: what for, and what it holds.
+        naming: Option<(crate::rename::Of, String)>,
         size: egui::Vec2,
         time: f64,
         /// Every text the last frame drew, with where.
@@ -749,6 +758,7 @@ mod tests {
                 selected: 0,
                 sort: Sort::default(),
                 tile: GridTile::Medium,
+                naming: None,
                 size: vec2(1280.0, 800.0),
                 time: 0.0,
                 texts: Vec::new(),
@@ -773,7 +783,11 @@ mod tests {
                 layout: &self.layout,
                 list: &self.list,
                 here: None,
-                naming: None,
+                naming: self.naming.as_ref().map(|(of, text)| Naming {
+                    of,
+                    text,
+                    busy: false,
+                }),
                 search: SearchBarData {
                     saved_as: None,
                     can_save: false,
@@ -979,6 +993,34 @@ mod tests {
         f.frame(Vec::new());
         assert_eq!(f.content.left(), SIDEBAR_DEFAULT + SPLITTER);
         assert!(f.drew("Starred").is_some());
+    }
+
+    // A frame can be long, and a letter and the key that hides the sidebar over the
+    // field in it together: the application stores the name at the toggle, and must
+    // have been told the letter by then.
+    #[test]
+    fn what_was_typed_in_a_name_is_said_before_the_key_that_hides_the_sidebar() {
+        let mut f = Fixture::new();
+        f.naming = Some((crate::rename::Of::NewAlbum, String::new()));
+        f.frame(Vec::new());
+        f.frame(Vec::new());
+        let actions = f.frame(vec![
+            Event::Text("x".to_owned()),
+            Event::Key {
+                key: Key::B,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: Modifiers::COMMAND,
+            },
+        ]);
+        assert_eq!(
+            actions,
+            [
+                Action::Named(Named::Typed("x".to_owned())),
+                Action::ToggleSidebar
+            ]
+        );
     }
 
     #[test]

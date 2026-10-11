@@ -82,8 +82,6 @@ pub struct FolderFacts {
     pub hidden: bool,
     /// Whether its watched folder is being scanned.
     pub scanning: bool,
-    /// Whether the sidebar's list holds a row for it: the name is typed in that row.
-    pub listed: bool,
 }
 
 pub fn folder_menu(facts: &FolderFacts) -> Vec<Item<SideAction>> {
@@ -103,12 +101,12 @@ pub fn folder_menu(facts: &FolderFacts) -> Vec<Item<SideAction>> {
             true,
             SideAction::RevealFolder(id),
         ),
-        // A folder with no row has no place to type its name in: in an order that
-        // lists the folders it has one, and a hidden sidebar is shown for it.
+        // The name is typed in the folder's row in the sidebar, which a folder with a
+        // menu always has: the list holds the folders of the view, in every order.
         pick(
             "Rename in photon…",
             Look::Plain,
-            facts.listed,
+            true,
             SideAction::RenameFolder(id),
         ),
     ];
@@ -179,7 +177,6 @@ mod tests {
             named: false,
             hidden: false,
             scanning: false,
-            listed: true,
         }
     }
 
@@ -272,17 +269,6 @@ mod tests {
         });
         assert_eq!(lines(&menu)[0], "Rescan (off)");
         assert_eq!(lines(&menu)[2], "Rename in photon…");
-    }
-
-    // Its name is typed in its row, and it has none.
-    #[test]
-    fn a_folder_the_list_does_not_hold_cannot_be_named() {
-        let menu = folder_menu(&FolderFacts {
-            listed: false,
-            ..folder()
-        });
-        assert_eq!(lines(&menu)[2], "Rename in photon… (off)");
-        assert_eq!(lines(&menu)[0], "Rescan");
     }
 
     #[test]

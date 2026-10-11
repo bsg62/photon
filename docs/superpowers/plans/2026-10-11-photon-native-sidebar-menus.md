@@ -68,8 +68,7 @@ As the first pull request's plan, and four of this one's own:
 - **A folder's menu on a header in the grid** is asked for on the real header and on the
   pinned copy alike, from the header's own rectangle; a period's header answers nothing.
 - **"Rename in photon…" from the grid** shows the sidebar first when it is hidden and
-  brings the folder's row into sight. In an order that lists no folders it does not
-  work.
+  brings the folder's row into sight.
 
 ## Review focus
 
@@ -171,8 +170,9 @@ AlbumRename, SearchRename, FolderAlias, FolderHidden, Rescan}` and their answers
 
 - [ ] Tests first, through the application and the real engine: an album renamed from
   its row's menu reads its new name in the sidebar; "New album…" makes one, with no
-  photos, and a blank name makes none; a name the library refuses (an album's name
-  taken) leaves the field open under a message; a saved search renamed; a folder named
+  photos, and a blank name makes none; a name the library refuses (its album deleted
+  from elsewhere meanwhile - two albums may share a name) leaves the field open under a
+  message; a saved search renamed; a folder named
   in photon reads so on its row and on its header in the grid, "Use folder name" and a
   blank name bring its own back; a folder hidden leaves the grid and the list, and its
   photos the selection; in Hidden its menu brings it back; Rescan starts a scan and is
@@ -221,3 +221,49 @@ gone (the list was empty either way), the name a folder's field opens with (it h
 name in photon when asked), and Rescan twice over - a file added for the scan to find
 was found by the watcher as well, so the test now adds none and holds the scan at the
 one write every scan ends with.
+
+## What the review found
+
+One fresh reviewer on the whole branch; no critical finding, and these, each fixed with
+a test that fails without the fix (thirty probes more).
+
+- **A field being stored took the keyboard back in every frame** - from the search box
+  after Ctrl+F or a click in it, and from the sort control, whose list closed. When the
+  write landed nothing had the keyboard, and the search typed next was the grid's: `h`
+  hid a photo. It no longer asks; stored by Enter it has the keyboard anyway.
+- **"Hide folder" with no photo left to hide left the folder list stale**: the read of
+  the folder list after a folder's write, taken out above as doing nothing, is back. The
+  engine's rebuild asks for one only when a photo changed. The probe that passed had no
+  test with such a folder; it has one now.
+- **A refused name out of sight was sent again in every frame**, a write and a message
+  each. Sent once now, until the field has been drawn again.
+- **A refused name's field shown again had no keyboard** - its row scrolled back into
+  sight, or the sidebar shown again - and what was typed "into" it was the grid's. A
+  field not drawn in the last frame is opened when it is drawn.
+- **The other button inside the field opened the row's menu**, which took the keyboard
+  and stored the name half typed.
+- **The Enter that picked "Rename…", held, stored the field at its repeat.** "No held
+  Enter is kept track of" above was wrong about there being nothing for it to press:
+  the field itself. No state for it after all: the field answers an Enter that is no
+  repeat, and takes every Enter out of the frame.
+- **Ctrl+Z in a new field brought back another row's name**: one field under one id,
+  and egui keeps the history by id.
+- **A letter and the key that stores the name in one frame lost the letter**: Enter (the
+  field says what was typed first) and Ctrl+B (the shell does).
+- **On a Mac, Control let go of before the button** made the click the row's as well as
+  the menu's: whether the press asked for a menu is kept from the press.
+- Untested rules given tests: the folder far down the list brought into sight from a
+  header (`reveal`); a menu whose saved search is gone; a folder's menu staying open
+  when the selected photo leaves; the other button beside the sidebar; showing the
+  sidebar sending no name.
+- Statements put right: "in an order that lists no folders" (there is none: the list
+  holds the view's folders in every order, and `FolderFacts::listed` went - a folder's
+  menu closes when the view no longer lists the folder); "an album's name taken" (names
+  are not unique).
+
+Left as they are, and recorded: an album's, a saved search's and a folder's id is not
+`AUTOINCREMENT`, so one deleted from elsewhere under an open menu or field and another
+made at once can take its number - the menu or the name would then be the new one's.
+Closing that is a migration, which is a spec's decision. Keys typed while a name is
+being stored are dropped, not kept. And the row shows its old name for the frames
+between the answer and the lists read again.

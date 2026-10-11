@@ -266,8 +266,8 @@ enum Wrote {
     Named {
         sent: u64,
     },
-    /// Something of a folder stored - its name, whether it is hidden: the field that
-    /// sent a name, if one did, closes.
+    /// Something of a folder stored - its name, whether it is hidden: the folder list
+    /// is read again, and the field that sent a name, if one did, closes.
     Folder {
         sent: Option<u64>,
     },
@@ -828,16 +828,19 @@ impl App {
             MenuOf::Search(id) => (collections.searches.iter())
                 .any(|search| search.id == id)
                 .then(|| side(side_menu::search_menu(id))),
-            MenuOf::Folder(id) => self.held.folders().get(&id).map(|folder| {
-                side(side_menu::folder_menu(&FolderFacts {
-                    id,
-                    watched: folder.watched_id,
-                    named: folder.alias.is_some(),
-                    hidden: folder.hidden,
-                    scanning: self.scans.is_scanning(folder.watched_id),
-                    listed: self.list.folder(id).is_some(),
-                }))
-            }),
+            // A folder the view no longer holds has no row and no header: its name is
+            // typed in its row, and its menu was opened on one of the two.
+            MenuOf::Folder(id) => (self.held.folders().get(&id))
+                .filter(|_| self.list.folder(id).is_some())
+                .map(|folder| {
+                    side(side_menu::folder_menu(&FolderFacts {
+                        id,
+                        watched: folder.watched_id,
+                        named: folder.alias.is_some(),
+                        hidden: folder.hidden,
+                        scanning: self.scans.is_scanning(folder.watched_id),
+                    }))
+                }),
         }
     }
 
@@ -1375,12 +1378,16 @@ impl App {
                     self.rename.landed(sent);
                     self.collecting.ask(());
                 }
-                // The folder list is read again by the rebuild the engine makes for a
-                // folder's name or its hiding, as after any change of the library.
+                // The folder list is read again here, and not left to the rebuild the
+                // engine makes for a folder's name or its hiding: it makes none when no
+                // photo changed. "Hide folder" on a folder whose photos were all hidden
+                // one by one changes the folder and no photo, and its menu went on
+                // offering to hide it, with no way to bring it back.
                 Ok(Ok(Wrote::Folder { sent })) => {
                     if let Some(sent) = sent {
                         self.rename.landed(sent);
                     }
+                    self.folder_list.ask(());
                 }
                 Ok(Err(Unwritten::Name { sent, said })) => {
                     self.rename.refused(sent);

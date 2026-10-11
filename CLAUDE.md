@@ -1878,9 +1878,8 @@ photo, and not through what lies over the list.
 (`rename.rs`, `createAlbumEditor`; drawn by `sidebar/view.rs`'s `field`). One field keyed
 by what it stands in for (`rename::Of`), where the Svelte list has three editors because
 its rows' ids collide - album 3, search 3, folder 3. Storing a name is a write on the
-queue of writes, whose answer comes frames later: meanwhile the field stays, takes no
-typing and keeps the keyboard - what is typed next must not reach the grid, where `h`
-hides a photo - and the answer closes it only if it is still the field that was sent
+queue of writes, whose answer comes frames later: meanwhile the field stays and takes
+no typing, and the answer closes it only if it is still the field that was sent
 (`Rename::landed`, by the number the field was sent under): a second rename begun
 meanwhile is another field. A blank name is a cancel, but a folder's, which is how its
 directory's own name is asked back. A name the library refuses leaves the field open,
@@ -1889,9 +1888,36 @@ out of sight its name is stored, as leaving it stores it, and with no entry left
 list it closes; hiding the sidebar stores it too. The list does not follow the grid
 while a name is typed, and the field's row is the entry the list is held by. "Rename in
 photon…" on a header shows a hidden sidebar and brings the folder's row into sight
-(`SidebarView::reveal`); in an order that lists no folders the item takes no press.
-Nothing here writes outside `library.db`: a folder's name in photon is the library's
-`alias`, and the directory keeps its own.
+(`SidebarView::reveal`). Nothing here writes outside `library.db`: a folder's name in
+photon is the library's `alias`, and the directory keeps its own.
+
+**What a review of the field found, each with its test.** *While its name is stored a
+field does not ask for the keyboard back.* Stored by Enter it still has it, so what is
+typed next does not reach the grid, where `h` hides a photo. Stored by being left it has
+given the keyboard to what the user went to: asked back in every frame, Ctrl+F out of a
+name left the search box without it, the sort's list closed under the click that opened
+it, and when the write landed nothing had the keyboard - the search typed next was the
+grid's. *A name out of sight is sent once* (`SidebarView`'s `unseen`): a name the library refuses leaves the field open, still out of sight, and
+sent in every frame it was a write and a message in every frame. *A field that was not
+drawn in the last frame is opened* when it is drawn - its row scrolled back, the sidebar
+shown again (`SidebarView::not_drawn`, which the shell calls for a frame it does not
+draw the sidebar in) - and takes the keyboard: a refused name's field came back into sight
+without it, and what was typed "into" it was the grid's. *The other button on the row a
+name is typed in opens no menu*: it took the keyboard, which stored the name half typed.
+*Enter is answered when it is no repeat, and every Enter is taken out of the frame*: the
+Enter that picked "Rename…" in the menu is still down when the field opens, and its
+repeat stored and closed the field before anything was typed. *A field opens with a
+history of its own*: one field under one id serves every row, egui keeps a field's undo
+by id, and Ctrl+Z in a folder's field brought back the name typed for an album. *What
+was typed is said before what stores it*, by the field (a letter and Enter in one long
+frame) and by the shell (a letter and Ctrl+B, which is read before the sidebar is
+drawn). *The folder list is read again by a folder's write itself*: the engine rebuilds
+nothing when no photo changed, and "Hide folder" on a folder whose photos were hidden
+one by one left its menu offering to hide it. *A folder's menu is of a folder the view
+lists*, and closes when it no longer is; a menu of the selection closes when the lead
+lands on another photo, and a folder's does not. *On a Mac the click of a press that
+asked for a menu is not the row's*, whenever Control is let go of: that is kept from the
+press (`menu_button`), and can only fail on a Mac - checked by building as one.
 
 **egui's text field, twice now.** What the search box learnt holds for this field, and
 one thing the search box had wrong until the second field was built: **a filter built

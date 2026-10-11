@@ -742,6 +742,10 @@ Not released: these are for whoever tries the branch `native-ui`. The Svelte int
 - [ ] "New album…" under the albums: type a name, Enter - the album is there with a count of 0, and the tile's menu offers it. Enter on an empty field makes nothing.
 - [ ] "Rename in photon…" on a folder: the row and the header in the grid show the new name; the folder on disk is called what it was. "Use folder name" is now in its menu and brings the directory's name back; so does renaming it to nothing.
 - [ ] Hide the sidebar (Ctrl+B), right-click a header in the grid, "Rename in photon…": the sidebar comes back with the field in that folder's row, in sight. Type `h` and `.` in it: they are typed, and no photo is hidden or starred.
+- [ ] With a photo selected and a name half typed in a sidebar row, press Ctrl+F and type `h`: the name is stored, the `h` is in the search box, and the photo is still there. Again, clicking the sort control instead: its list opens and stays open.
+- [ ] Open an album's menu with the mouse, go to "Rename…" with the arrow key and hold Enter down for a second: the field opens and stays open, with the name selected.
+- [ ] Right-click inside the field while a name is half typed: no menu opens and the caret stays. Rename an album, then open a folder's field and press Ctrl+Z: its name does not change.
+- [ ] Hide every photo of one folder one by one, go to Hidden, and choose "Hide folder" on that folder: its menu now offers "Unhide folder".
 - [ ] With a name half typed, press Ctrl+B: the name is stored. With a name half typed, turn the wheel over the list until its row is out of sight: the name is stored.
 - [ ] "Hide folder": its photos leave the grid and its row the list, and Hidden counts them. In Hidden, the folder's row offers "Unhide folder", which brings them back.
 - [ ] "Rescan" on a folder: the status bar says it is scanning. While it scans, the folder's menu shows Rescan fainter.

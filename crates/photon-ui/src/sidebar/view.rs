@@ -23,8 +23,8 @@ use crate::{
     },
 };
 use eframe::egui::{
-    self, Align2, Color32, Event, EventFilter, Id, Key, Modifiers, Painter, Pos2, Rect, Response,
-    Sense, Stroke, StrokeKind, UiBuilder, Vec2, WidgetInfo, WidgetType, pos2,
+    self, Align2, Color32, Event, EventFilter, Id, Key, Painter, Pos2, Rect, Response, Sense,
+    Stroke, StrokeKind, UiBuilder, Vec2, WidgetInfo, WidgetType, pos2,
     text::{CCursor, CCursorRange},
     vec2,
 };
@@ -130,9 +130,17 @@ pub struct SidebarView {
     grab: Option<f64>,
     /// The entry the list is held by when its entries change.
     kept: Option<Kept>,
-    /// What the field stood in for when the sidebar was last drawn: one that stands in
-    /// for something else now has just been opened, and takes the keyboard.
+    /// What the field stood in for when it was last drawn, in the frame before this
+    /// one: a field that was not drawn then - another row's, or this one's while its row
+    /// was out of sight or the sidebar hidden - is opened now, and takes the keyboard.
     field: Option<Of>,
+    /// The field whose name was sent because its row is out of sight: once, not in
+    /// every frame it stays there. A name the library refuses leaves the field open,
+    /// unseen, and sent again each frame it was refused again each frame.
+    unseen: Option<Of>,
+    /// Whether the button that is down, or was last, asked for a menu: its click is
+    /// not a row's as well.
+    menu_button: bool,
     /// An entry to bring into sight when the sidebar is next drawn.
     reveal: Option<What>,
 }
@@ -192,14 +200,24 @@ fn note_font() -> egui::FontId {
 }
 
 /// What draws an entry: the panel it is in, and where the grid is.
-/// Whether a click of the first button is a click at all, and not how a mouse with one
-/// button asks for a menu: with Control held on a Mac, the row's menu has been opened at
-/// the press, and the row is not gone to as well.
-fn menu_click(ui: &egui::Ui) -> bool {
+/// Whether the last button to go down in this frame asked for a menu, if one went down:
+/// with Control held on a Mac the first button does, the row's menu is opened at that
+/// press, and the click the same button ends in is not the row's as well - whenever
+/// Control is let go of.
+fn menu_button(ui: &egui::Ui) -> Option<bool> {
     ui.input(|input| {
-        input.events.iter().any(|event| {
-            matches!(event, Event::PointerButton { button, pressed: false, modifiers, .. }
-                if asks_for_menu(*button, *modifiers, cfg!(target_os = "macos")))
+        input.events.iter().rev().find_map(|event| match event {
+            Event::PointerButton {
+                button,
+                pressed: true,
+                modifiers,
+                ..
+            } => Some(asks_for_menu(
+                *button,
+                *modifiers,
+                cfg!(target_os = "macos"),
+            )),
+            _ => None,
         })
     })
 }
@@ -222,6 +240,14 @@ impl SidebarView {
     /// about to be typed in, asked for from a header in the grid.
     pub fn reveal(&mut self, what: What) {
         self.reveal = Some(what);
+    }
+
+    /// The sidebar is not drawn in this frame: it is hidden. A field left open under
+    /// it - a name the library refused - is opened again when it is next drawn, and
+    /// takes the keyboard then: drawn without it, what was typed "into" it was the
+    /// grid's, where `h` hides a photo.
+    pub fn not_drawn(&mut self) {
+        self.field = None;
     }
 
     /// Draws the sidebar in `rect` and answers what was done in it.
@@ -276,6 +302,7 @@ impl SidebarView {
         inner.set_clip_rect(rect.intersect(ui.clip_rect()));
         let ui = &mut inner;
         let mut shown = Shown::default();
+        let mut drawn = None;
         let in_view = self.stack.range(top, top + viewport);
         for index in in_view.clone() {
             let entry = &list.entries[index];
@@ -293,6 +320,7 @@ impl SidebarView {
                 Some((at, naming)) if at == index => {
                     let opened = self.field.as_ref() != Some(naming.of);
                     shown.named = field(ui, &frame, band, &naming, opened);
+                    drawn = Some(naming.of.clone());
                 }
                 _ => {
                     if draw(ui, &frame, band, entry) {
@@ -307,15 +335,28 @@ impl SidebarView {
         // go to the grid, where `h` hides a photo. Scrolled out of sight, its name is
         // stored, as leaving the field stores it; with no entry left in the list - the
         // album deleted from elsewhere, the folder no longer in the view - it closes.
+        // Sent once: a name the library refuses leaves the field open, unseen, and
+        // sent in every frame it was refused in every frame, a message each. One that
+        // is being stored already is sent all the same, and the application, which
+        // stores a name once, drops it.
         match (data.naming, naming) {
             (Some(_), None) => shown.named.push(Named::Cancel),
-            (Some(naming), Some((at, _))) if !in_view.contains(&at) && !naming.busy => {
+            (Some(naming), Some((at, _)))
+                if !in_view.contains(&at) && self.unseen.as_ref() != Some(naming.of) =>
+            {
                 shown.named.push(Named::Commit);
+                self.unseen = Some(naming.of.clone());
             }
             _ => {}
         }
-        self.field = data.naming.map(|naming| naming.of.clone());
-        if menu_click(ui) {
+        if drawn.is_some() || data.naming.is_none() {
+            self.unseen = None;
+        }
+        self.field = drawn;
+        if let Some(asked) = menu_button(ui) {
+            self.menu_button = asked;
+        }
+        if self.menu_button {
             shown.clicked = None;
         }
 
@@ -327,8 +368,12 @@ impl SidebarView {
             && ui.ctx().layer_id_at(at) == Some(ui.layer_id())
         {
             let y = top + f64::from(at.y - rect.top());
+            // Not the row a name is being typed in: the other button in a text field is
+            // the field's own, and a menu opened there took the keyboard from the
+            // field, which stored the name half typed.
             let entry = (in_view.clone())
                 .find(|&index| (self.stack.top(index)..self.stack.bottom(index)).contains(&y))
+                .filter(|&index| naming.is_none_or(|(at, _)| at != index))
                 .map(|index| &list.entries[index]);
             if let Some(entry) = entry.filter(|entry| entry.has_menu()) {
                 shown.menu = Some((entry.what.clone(), at));
@@ -554,8 +599,12 @@ fn draw_count(frame: &Frame<'_>, row: Rect, entry: &Entry) -> f32 {
 /// - **A press anywhere else stores the name**, at the press: egui lets go of a field at
 ///   a click elsewhere, which is the button coming up, and never at a press that becomes
 ///   a drag.
-/// - **While the name is stored nothing typed is taken**, and the keyboard is asked back
-///   if it went: what is typed next must not reach the grid.
+/// - **While the name is stored nothing typed is taken.** A field stored by Enter still
+///   has the keyboard, so what is typed next does not reach the grid, where `h` hides a
+///   photo. One stored by being left has given the keyboard to what the user went to,
+///   and does not ask for it back: asked back, Ctrl+F out of a name left the search box
+///   without the keyboard, and when the write landed nothing had it - the search typed
+///   next was the grid's.
 fn field(
     ui: &mut egui::Ui,
     frame: &Frame<'_>,
@@ -574,36 +623,50 @@ fn field(
     let mut named = Vec::new();
     let had_keys = ui.memory(|memory| memory.has_focus(id));
     if had_keys {
-        let took = |key| ui.input_mut(|input| input.consume_key(Modifiers::NONE, key));
-        if took(Key::Enter) {
+        // Every press of the key is taken out of the frame, and only one that is no
+        // repeat is answered: the Enter that picked "Rename…" in the menu is still down
+        // when the field opens, and its repeat stored and closed the field before
+        // anything was typed in it.
+        let pressed = |key: Key| {
+            ui.input_mut(|input| {
+                let mut fresh = false;
+                input.events.retain(|event| match event {
+                    Event::Key {
+                        key: at,
+                        pressed: true,
+                        repeat,
+                        ..
+                    } if *at == key => {
+                        fresh |= !repeat;
+                        false
+                    }
+                    _ => true,
+                });
+                fresh
+            })
+        };
+        if pressed(Key::Enter) {
             named.push(Named::Commit);
-        } else if took(Key::Escape) {
+        } else if pressed(Key::Escape) {
             named.push(Named::Cancel);
         }
-    }
-
-    // While the name is stored nothing typed is taken: not by the field, which would
-    // show it for a frame, and not by anything drawn after.
-    if naming.busy {
-        ui.input_mut(|input| {
-            input.events.retain(|event| {
-                !matches!(
-                    event,
-                    Event::Text(_)
-                        | Event::Paste(_)
-                        | Event::Cut
-                        | Event::Key { pressed: true, .. }
-                )
+        // While the name is stored nothing typed is taken by the field, which would
+        // show it for a frame and then forget it.
+        if naming.busy {
+            ui.input_mut(|input| {
+                input.events.retain(|event| {
+                    !matches!(event, Event::Text(_) | Event::Paste(_) | Event::Cut)
+                });
             });
-        });
+        }
     }
 
     frame
         .painter
-        .rect_filled(ground, R[2], color(palette.surface));
+        .rect_filled(ground, R[1], color(palette.surface));
     frame.painter.rect_stroke(
         ground,
-        R[2],
+        R[1],
         Stroke::new(2.0, color(palette.accent)),
         StrokeKind::Inside,
     );
@@ -648,30 +711,38 @@ fn field(
         .widget_info(|| WidgetInfo::text_edit(true, "", naming.text, label));
     if opened {
         // With the name in it, all of it selected: typing replaces it, and an arrow
-        // keeps it to correct.
+        // keeps it to correct. And with a history of its own: one field serves every
+        // row, egui keeps a field's undo by its id, and Ctrl+Z in a folder's field
+        // brought back the name typed for an album a moment before.
         output.response.request_focus();
-        let mut state = output.state.clone();
+        let mut state = egui::text_edit::TextEditState::default();
         let end = CCursor::new(naming.text.chars().count());
         state
             .cursor
             .set_char_range(Some(CCursorRange::two(CCursor::new(0), end)));
         state.store(ui.ctx(), id);
-    } else if naming.busy {
-        output.response.request_focus();
     }
-    if !named.is_empty() {
-        return named;
+    // What was typed in this frame is said before the Enter of the same frame: a frame
+    // can be long, and a name's last letter and its Enter in it together - stored
+    // without the letter, a rename stored the name as it was. Not before Escape, which
+    // keeps nothing.
+    let typed = (output.response.changed()).then_some(Named::Typed(text));
+    match named.first() {
+        Some(Named::Commit) => {
+            named.splice(0..0, typed);
+        }
+        Some(_) => return named,
+        None => named.extend(typed),
     }
-    if output.response.changed() {
-        named.push(Named::Typed(text));
-    }
-    let elsewhere = ui.input(|input| {
-        input.pointer.any_pressed()
-            && (input.pointer.interact_pos()).is_some_and(|at| !ground.contains(at))
-    });
-    // The keyboard walked on with Tab, too: the field has been left.
-    if elsewhere || output.response.lost_focus() {
-        named.push(Named::Commit);
+    if !named.contains(&Named::Commit) {
+        let elsewhere = ui.input(|input| {
+            input.pointer.any_pressed()
+                && (input.pointer.interact_pos()).is_some_and(|at| !ground.contains(at))
+        });
+        // The keyboard walked on with Tab, too: the field has been left.
+        if elsewhere || output.response.lost_focus() {
+            named.push(Named::Commit);
+        }
     }
     named
 }
@@ -1045,6 +1116,10 @@ mod tests {
         over: Option<Rect>,
         /// The keys the frame's input still held after the sidebar had read it.
         left_over: Vec<Key>,
+        /// What was typed that the frame's input still held after the sidebar read it.
+        left_typed: Vec<String>,
+        /// How often the field has said its name is to be stored, in every frame so far.
+        stores: usize,
     }
 
     impl Fixture {
@@ -1068,6 +1143,8 @@ mod tests {
                 last: Shown::default(),
                 over: None,
                 left_over: Vec::new(),
+                left_typed: Vec::new(),
+                stores: 0,
             }
         }
 
@@ -1097,6 +1174,7 @@ mod tests {
             let over = self.over;
             let mut shown = Shown::default();
             let mut left_over = Vec::new();
+            let mut left_typed = Vec::new();
             let mut full = self.ctx.run_ui(input, |ui| {
                 crate::icons::install(ui.ctx());
                 if let Some(over) = over {
@@ -1118,17 +1196,22 @@ mod tests {
                         shown = view.show(ui, rect, &data);
                         ui.input(|input| {
                             for event in &input.events {
-                                if let Event::Key {
-                                    key, pressed: true, ..
-                                } = event
-                                {
-                                    left_over.push(*key);
+                                match event {
+                                    Event::Key {
+                                        key, pressed: true, ..
+                                    } => left_over.push(*key),
+                                    Event::Text(text) => left_typed.push(text.clone()),
+                                    _ => {}
                                 }
                             }
                         });
                     });
             });
             self.left_over = left_over;
+            self.left_typed = left_typed;
+            self.stores += (shown.named.iter())
+                .filter(|named| **named == Named::Commit)
+                .count();
             // What was typed is the field's from now on, as the application keeps it.
             for named in &shown.named {
                 if let (Named::Typed(text), Some(naming)) = (named, self.naming.as_mut()) {
@@ -2057,6 +2140,53 @@ mod tests {
         assert_eq!(f.other_down(pos2(100.0, 590.0)), None);
     }
 
+    // A bar lies over the sidebar's top edge, and a row with a menu is scrolled half
+    // under it: the other button on the bar there is the bar's, not that row's.
+    #[test]
+    fn the_other_button_outside_the_sidebar_asks_for_no_rows_menu() {
+        let mut f = Fixture::new(200);
+        f.above = 46.0;
+        f.frame(Vec::new());
+        let third = f.view.stack.top(f.index(&folder(3)));
+        f.view.scroll.set(third + 14.0);
+        f.frame(Vec::new());
+        let row = f.band(&folder(3));
+        assert!(row.top() < 46.0 && row.bottom() > 46.0, "{row:?}");
+        assert_eq!(
+            f.other_down(pos2(100.0, 46.0 - 8.0)),
+            None,
+            "above the edge"
+        );
+        let below = pos2(100.0, 46.0 + 7.0);
+        assert_eq!(f.other_down(below), Some((folder(3), below)), "below it");
+    }
+
+    // On a Mac the first button with Control held asks for the row's menu, and the click
+    // that button ends in is not the row's as well - whether or not Control is still
+    // held when the button comes up. Elsewhere it is a click like any other. (What a
+    // Mac does is seen on a Mac: the system is not a thing a test can set.)
+    #[test]
+    fn the_click_of_a_press_that_asked_for_a_menu_is_not_the_rows() {
+        let mac = cfg!(target_os = "macos");
+        let mut f = Fixture::new(3);
+        f.frame(Vec::new());
+        let at = f.middle(&folder(2));
+        f.pointer(at);
+        let button = |pressed, modifiers| Event::PointerButton {
+            pos: at,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers,
+        };
+        f.frame(vec![button(true, Modifiers::CTRL)]);
+        assert_eq!(f.last.menu.is_some(), mac);
+        // Control let go of first, as often as not.
+        let clicked = f.frame(vec![button(false, Modifiers::NONE)]);
+        assert_eq!(clicked.is_none(), mac);
+        // The next press is judged for itself.
+        assert_eq!(f.click(at), Some(folder(2)));
+    }
+
     // A menu already open lies over the row it was opened on, its corner at the pointer.
     #[test]
     fn the_other_button_asks_nothing_through_what_lies_over_the_list() {
@@ -2162,6 +2292,41 @@ mod tests {
         assert_eq!(f.left_over, [Key::ArrowLeft]);
     }
 
+    // A frame can be long, and a letter and the Enter after it in it together: the name
+    // stored is the one with the letter, which is said before the Enter is.
+    #[test]
+    fn a_letter_and_enter_in_one_frame_store_the_name_with_the_letter() {
+        let mut f = Fixture::new(3);
+        f.frame(Vec::new());
+        f.name(Of::Album(4), "Best of");
+        f.typed("Lisbo");
+        let enter = Event::Key {
+            key: Key::Enter,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        };
+        f.frame(vec![Event::Text("n".to_owned()), enter]);
+        assert_eq!(
+            f.last.named,
+            [Named::Typed("Lisbon".to_owned()), Named::Commit]
+        );
+        // Escape with it: what was typed is not kept, and nothing is stored.
+        let mut f = Fixture::new(3);
+        f.frame(Vec::new());
+        f.name(Of::Album(4), "Best of");
+        let escape = Event::Key {
+            key: Key::Escape,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        };
+        f.frame(vec![Event::Text("x".to_owned()), escape]);
+        assert_eq!(f.last.named, [Named::Cancel]);
+    }
+
     // At the press, not at the click: egui lets go of a field when a button comes up
     // somewhere else, and a press that becomes a drag never does.
     #[test]
@@ -2200,31 +2365,123 @@ mod tests {
     }
 
     // What is typed while the name is on its way must not reach the grid, where `h`
-    // hides a photo: the field takes none of it, and has the keyboard.
+    // hides a photo: a field stored by Enter still has the keyboard, and takes none of
+    // it.
     #[test]
-    fn while_its_name_is_stored_the_field_takes_no_typing_and_keeps_the_keyboard() {
+    fn while_its_name_is_stored_the_field_takes_no_typing() {
         let mut f = Fixture::new(3);
         f.frame(Vec::new());
         f.name(Of::Album(4), "Best of");
+        assert_eq!(f.key(Key::Enter), [Named::Commit]);
+        assert!(f.in_field());
         f.naming.as_mut().unwrap().2 = true;
         f.frame(Vec::new());
         assert_eq!(f.typed("h"), []);
         assert!(f.drew("Best of").is_some());
         assert!(f.in_field());
-        // A click elsewhere takes the keyboard off it, and it asks for it back.
-        let elsewhere = pos2(100.0, 590.0);
-        f.click(elsewhere);
-        f.frame(Vec::new());
-        f.frame(Vec::new());
-        assert!(f.in_field());
-        // A field that is not being stored lets the keyboard go.
+    }
+
+    // The keyboard is where the user took it: asked back, Ctrl+F out of a name left the
+    // search box without it, and when the write landed nothing had it - the search typed
+    // next was the grid's.
+    #[test]
+    fn a_field_stored_by_being_left_does_not_take_the_keyboard_back() {
         let mut f = Fixture::new(3);
         f.frame(Vec::new());
         f.name(Of::Album(4), "Best of");
-        f.click(elsewhere);
+        let elsewhere = pos2(100.0, 590.0);
+        f.pointer(elsewhere);
+        f.button(elsewhere, true);
+        assert_eq!(f.last.named, [Named::Commit]);
+        f.naming.as_mut().unwrap().2 = true;
+        f.button(elsewhere, false);
         f.frame(Vec::new());
         f.frame(Vec::new());
         assert!(!f.in_field());
+        // And what is typed then is not the field's to take out of the frame: it is
+        // whose the keyboard is now.
+        f.frame(vec![Event::Text("h".to_owned())]);
+        assert_eq!(f.left_typed, ["h"]);
+    }
+
+    // The Enter that picked "Rename…" in the menu is still down when the field opens:
+    // its repeat is not a second Enter, and it goes no further than the field.
+    #[test]
+    fn a_held_enter_stores_nothing_and_reaches_nothing_behind_the_field() {
+        let enter = |pressed| Event::Key {
+            key: Key::Enter,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        };
+        // egui decides for itself what a repeat is: the key went down before the field
+        // was there, and has not come up.
+        let mut f = Fixture::new(3);
+        f.frame(vec![enter(true)]);
+        f.name(Of::Album(4), "Best of");
+        f.frame(vec![enter(true)]);
+        assert_eq!(f.last.named, []);
+        assert_eq!(f.left_over, []);
+        assert!(f.in_field());
+        assert_eq!(f.stores, 0);
+        // Let go of and pressed again, it stores.
+        f.frame(vec![enter(false)]);
+        f.frame(vec![enter(true)]);
+        assert_eq!(f.last.named, [Named::Commit]);
+    }
+
+    // One field under one name for every row, and egui keeps a field's history by that
+    // name: Ctrl+Z in a field just opened must not bring back what was typed for the
+    // row before.
+    #[test]
+    fn undo_in_a_new_field_does_not_bring_back_another_rows_name() {
+        let mut f = Fixture::new(3);
+        f.frame(Vec::new());
+        f.name(Of::Album(4), "Best of");
+        // Typed with pauses, as a person types: egui notes a point to go back to when
+        // the text has rested.
+        for letter in ["P", "o", "r", "t", "o"] {
+            f.typed(letter);
+            for _ in 0..90 {
+                f.frame(Vec::new());
+            }
+        }
+        f.naming = None;
+        f.frame(Vec::new());
+        f.frame(Vec::new());
+        f.name(Of::Folder(2), "folder-0002");
+        for _ in 0..90 {
+            f.frame(Vec::new());
+        }
+        let undo = Event::Key {
+            key: Key::Z,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::COMMAND,
+        };
+        f.frame(vec![undo]);
+        assert_eq!(f.last.named, []);
+        assert!(f.drew("folder-0002").is_some());
+    }
+
+    // The other button in a text field is the field's own: a menu of the row under it
+    // took the keyboard, which stored the name half typed.
+    #[test]
+    fn the_other_button_in_the_field_asks_for_no_menu() {
+        let mut f = Fixture::new(3);
+        f.frame(Vec::new());
+        f.name(Of::Album(4), "Best of");
+        let inside = f.drew("Best of").unwrap().center();
+        assert_eq!(f.other_down(inside), None);
+        assert_eq!(f.stores, 0);
+        assert!(f.in_field());
+        // On another row it does, as ever.
+        let other = f.band(&folder(2)).center();
+        f.naming = None;
+        f.frame(Vec::new());
+        assert!(f.other_down(other).is_some());
     }
 
     // A field opened in another row's place while one is open is another field: it
@@ -2294,11 +2551,7 @@ mod tests {
         f.frame(Vec::new());
         f.name(Of::Album(4), "Best of");
         f.wheel(pos2(100.0, 300.0), -2000.0);
-        assert!(f.last.named.contains(&Named::Commit), "{:?}", f.last.named);
-        // Being stored already, it is not sent again.
-        f.naming.as_mut().unwrap().2 = true;
-        f.frame(Vec::new());
-        assert_eq!(f.last.named, []);
+        assert_eq!(f.stores, 1);
 
         let mut f = Fixture::new(3);
         f.frame(Vec::new());
@@ -2307,6 +2560,63 @@ mod tests {
         f.rebuild();
         f.frame(Vec::new());
         assert_eq!(f.last.named, [Named::Cancel]);
+    }
+
+    // A name the library refuses leaves the field open (`Rename::refused`), and its row
+    // is still out of sight: sent again in every frame, it was refused again in every
+    // frame, a write and a message each. Back in sight it is a field again, with the
+    // keyboard - without it, what was typed "into" it was the grid's.
+    #[test]
+    fn a_name_out_of_sight_is_sent_once_and_its_field_is_opened_again_in_sight() {
+        let mut f = Fixture::new(200);
+        f.frame(Vec::new());
+        f.name(Of::Album(4), "Best of");
+        f.wheel(pos2(100.0, 300.0), -2000.0);
+        assert_eq!(f.stores, 1);
+        assert!(!f.in_field());
+        // Being stored, and then refused: not being stored any more, and still open.
+        f.naming.as_mut().unwrap().2 = true;
+        f.frame(Vec::new());
+        f.naming.as_mut().unwrap().2 = false;
+        for _ in 0..5 {
+            f.frame(Vec::new());
+        }
+        assert_eq!(f.stores, 1);
+        // Brought back into sight, it has the keyboard and its name selected.
+        f.wheel(pos2(100.0, 300.0), 2000.0);
+        assert!(f.drew("Best of").is_some());
+        assert!(f.in_field());
+        assert_eq!(f.selected(), Some((0, 7)));
+        assert_eq!(f.stores, 1);
+        // And out of sight once more, it is sent once more.
+        f.wheel(pos2(100.0, 300.0), -2000.0);
+        assert_eq!(f.stores, 2);
+        // Closed there, and opened anew for the same row before it was ever drawn
+        // again: another field, which is sent too, and not left open where nobody
+        // sees it.
+        f.naming = None;
+        f.frame(Vec::new());
+        f.naming = Some((Of::Album(4), "Best of".to_owned(), false));
+        f.frame(Vec::new());
+        f.frame(Vec::new());
+        assert_eq!(f.stores, 3);
+    }
+
+    // A sidebar that is hidden is not drawn, and says so: the field of a name the
+    // library refused under it is opened again when the sidebar is back.
+    #[test]
+    fn a_field_under_a_hidden_sidebar_takes_the_keyboard_when_it_is_shown_again() {
+        let mut f = Fixture::new(3);
+        f.frame(Vec::new());
+        f.name(Of::Album(4), "Best of");
+        // Hidden: nothing of it is drawn, and egui takes the keyboard off a widget
+        // that is gone.
+        f.view.not_drawn();
+        f.ctx
+            .memory_mut(|memory| memory.surrender_focus(field_id()));
+        f.frame(Vec::new());
+        assert!(f.in_field());
+        assert_eq!(f.selected(), Some((0, 7)));
     }
 
     // A name asked for from a header in the grid: its row is far down the list.
