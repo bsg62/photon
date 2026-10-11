@@ -135,6 +135,12 @@ fn no_key_but_escape_is_answered_while_a_band_is_held() {
     driver.act(&mut harness);
     harness.key_press_modifiers(Modifiers::NONE, Key::End);
     driver.act(&mut harness);
+    // Tab is read by egui before anything is drawn, and walks the keyboard to the first
+    // widget that takes it: the grid's keys would be that widget's after the band.
+    harness.key_press_modifiers(Modifiers::NONE, Key::Tab);
+    driver.act(&mut harness);
+    driver.act(&mut harness);
+    assert_eq!(harness.ctx.memory(|memory| memory.focused()), None);
     assert_eq!(harness.state().layout().sidebar_hidden, hidden);
     assert_eq!(harness.state().search_text(), "");
     assert!(banding(&harness));

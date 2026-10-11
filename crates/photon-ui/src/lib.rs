@@ -27,6 +27,7 @@ pub mod grid {
 }
 pub mod icons;
 pub mod menu;
+pub mod menu_view;
 pub mod nav;
 pub mod probe;
 pub mod scans;

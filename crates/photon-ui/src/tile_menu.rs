@@ -55,9 +55,10 @@ impl TileAction {
     }
 }
 
-/// The one photo a menu was opened on.
+/// The photo a menu takes its direction from (`Selection::deciding`): the photo itself
+/// when one is selected, and among several the one the star key goes by.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Sole {
+pub struct Deciding {
     pub video: bool,
     pub starred: bool,
 }
@@ -66,11 +67,10 @@ pub struct Sole {
 pub struct Facts<'a> {
     /// How many photos are selected.
     pub count: usize,
-    /// The photo, when it is one.
-    pub sole: Option<Sole>,
-    /// Whether the photo the star key goes by is starred (`Selection::deciding`): the
-    /// key's hint stands beside the item it would do.
-    pub decider_starred: bool,
+    /// The deciding photo. Of one photo it says which star item there is and whether
+    /// the photo can be copied; of several, which star item the key would do, and the
+    /// key's hint stands beside that one.
+    pub deciding: Option<Deciding>,
     /// The view the grid shows.
     pub place: &'a Place,
     pub albums: &'a [AlbumSummary],
@@ -148,7 +148,7 @@ pub fn tile_menu(facts: &Facts<'_>) -> Vec<Item<TileAction>> {
             TileAction::OpenInApp,
         ));
         // The clipboard holds one picture, and a video is not one.
-        if !facts.sole.is_some_and(|sole| sole.video) {
+        if !facts.deciding.is_some_and(|photo| photo.video) {
             let copy = if facts.mac { "⌘+C" } else { "Ctrl+C" };
             items.push(plain(
                 "Copy photo".to_owned(),
@@ -159,7 +159,7 @@ pub fn tile_menu(facts: &Facts<'_>) -> Vec<Item<TileAction>> {
         items.push(Item::Separator);
     }
 
-    match facts.sole.filter(|_| facts.count == 1) {
+    match facts.deciding.filter(|_| facts.count == 1) {
         // One photo whose star is known: the one item that changes it.
         Some(sole) => {
             let label = if sole.starred {
@@ -176,7 +176,8 @@ pub fn tile_menu(facts: &Facts<'_>) -> Vec<Item<TileAction>> {
         // Several photos can be part starred, so both are offered, the key shown beside
         // the one it would do.
         None => {
-            let key = |star: bool| (star != facts.decider_starred).then_some(".");
+            let starred = facts.deciding.is_some_and(|photo| photo.starred);
+            let key = |star: bool| (star != starred).then_some(".");
             items.push(plain(
                 format!("Star {subject}"),
                 key(true),
@@ -267,6 +268,66 @@ pub fn tile_menu(facts: &Facts<'_>) -> Vec<Item<TileAction>> {
 
 pub const NO_ALBUMS: &str = "No albums of your own yet — create one in the sidebar.";
 
+/// "1 photo", or "12 photos": a count that a message names.
+fn counted(count: usize) -> String {
+    if count == 1 {
+        "1 photo".to_owned()
+    } else {
+        format!("{} photos", grouped(count))
+    }
+}
+
+/// What is said when fewer stars were written than were asked for, and nothing when all
+/// were. The engine skips a folder whose `.picasa.ini` it cannot write and answers with
+/// how many landed, so a read-only folder in the selection costs a message and not the
+/// other photos.
+pub fn stars_missed(asked: usize, done: usize, starred: bool) -> Option<String> {
+    let way = if starred { "starred" } else { "unstarred" };
+    (done < asked).then(|| {
+        format!(
+            "{} of {} could not be {way}",
+            counted(asked - done),
+            grouped(asked)
+        )
+    })
+}
+
+/// What is said after photos were taken from a person: `people.ts`'s `removedMessage`.
+/// `asked` is how many photos were given. A photo Picasa names the person on stays
+/// theirs, since photon never writes Picasa's names, and this is how the user learns why
+/// it did not leave the grid. Neither removed nor kept means none of the photos was
+/// theirs by the time the write landed.
+pub fn removed_message(name: &str, removed: usize, kept: usize, asked: usize) -> String {
+    match (removed, kept) {
+        (0, 0) => {
+            let these = if asked == 1 {
+                "this photo"
+            } else {
+                "these photos"
+            };
+            format!("{name} is no longer on {these}: nothing to remove.")
+        }
+        (removed, 0) => format!("Removed {} from {name}.", counted(removed)),
+        (0, 1) => format!("1 stays with {name}: Picasa names {name} on it."),
+        (0, kept) => format!(
+            "{} stay with {name}: Picasa names {name} on them.",
+            grouped(kept)
+        ),
+        (removed, kept) => {
+            let (stay, it) = if kept == 1 {
+                ("stays", "it")
+            } else {
+                ("stay", "them")
+            };
+            format!(
+                "Removed {} from {name}. {} {stay}: Picasa names {name} on {it}.",
+                counted(removed),
+                grouped(kept)
+            )
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -290,8 +351,7 @@ mod tests {
 
     struct World {
         count: usize,
-        sole: Option<Sole>,
-        decider_starred: bool,
+        deciding: Option<Deciding>,
         place: Place,
         albums: Vec<AlbumSummary>,
         people: Vec<Person>,
@@ -305,11 +365,10 @@ mod tests {
         fn one() -> Self {
             Self {
                 count: 1,
-                sole: Some(Sole {
+                deciding: Some(Deciding {
                     video: false,
                     starred: false,
                 }),
-                decider_starred: false,
                 place: Place::of(GridView::All),
                 albums: vec![album(4, "Lisbon", false), album(9, "From Picasa", true)],
                 people: vec![person("p:7", "Anna"), person("c:ab12", "Ben")],
@@ -321,7 +380,6 @@ mod tests {
         fn several(count: usize) -> Self {
             Self {
                 count,
-                sole: None,
                 ..Self::one()
             }
         }
@@ -329,8 +387,7 @@ mod tests {
         fn menu(&self) -> Vec<Item<TileAction>> {
             tile_menu(&Facts {
                 count: self.count,
-                sole: self.sole,
-                decider_starred: self.decider_starred,
+                deciding: self.deciding,
                 place: &self.place,
                 albums: &self.albums,
                 people: &self.people,
@@ -400,7 +457,7 @@ mod tests {
         let mut w = World::one();
         assert_eq!(w.does("Star photo"), Some(TileAction::Star(true)));
         assert_eq!(w.does("Unstar photo"), None);
-        w.sole = Some(Sole {
+        w.deciding = Some(Deciding {
             video: false,
             starred: true,
         });
@@ -412,7 +469,7 @@ mod tests {
     #[test]
     fn a_video_is_not_offered_to_be_copied() {
         let mut w = World::one();
-        w.sole = Some(Sole {
+        w.deciding = Some(Deciding {
             video: true,
             starred: false,
         });
@@ -452,7 +509,10 @@ mod tests {
         );
         assert_eq!(w.does("Star 3 photos"), Some(TileAction::Star(true)));
         assert_eq!(w.does("Unstar 3 photos"), Some(TileAction::Star(false)));
-        w.decider_starred = true;
+        w.deciding = Some(Deciding {
+            video: false,
+            starred: true,
+        });
         let lines = w.lines();
         assert_eq!(lines[0], "Star 3 photos");
         assert_eq!(lines[1], "Unstar 3 photos [.]");
@@ -656,6 +716,59 @@ mod tests {
             assert!(
                 svelte.lines().any(|line| line.contains(words)),
                 "Grid.svelte no longer says {words:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn stars_that_could_not_be_written_are_counted_of_those_asked() {
+        assert_eq!(stars_missed(12, 12, true), None);
+        assert_eq!(
+            stars_missed(12, 9, true).as_deref(),
+            Some("3 photos of 12 could not be starred")
+        );
+        assert_eq!(
+            stars_missed(1, 0, false).as_deref(),
+            Some("1 photo of 1 could not be unstarred")
+        );
+        assert_eq!(
+            stars_missed(12_000, 500, true).as_deref(),
+            Some("11,500 photos of 12,000 could not be starred")
+        );
+    }
+
+    // people.test.ts's cases.
+    #[test]
+    fn taking_photos_from_a_person_says_what_came_of_it() {
+        assert_eq!(
+            removed_message("Anna", 3, 0, 3),
+            "Removed 3 photos from Anna."
+        );
+        assert_eq!(
+            removed_message("Anna", 1, 2, 3),
+            "Removed 1 photo from Anna. 2 stay: Picasa names Anna on them."
+        );
+        assert_eq!(
+            removed_message("Anna", 2, 1, 3),
+            "Removed 2 photos from Anna. 1 stays: Picasa names Anna on it."
+        );
+        assert_eq!(
+            removed_message("Anna", 0, 2, 2),
+            "2 stay with Anna: Picasa names Anna on them."
+        );
+        assert_eq!(
+            removed_message("Anna", 0, 1, 1),
+            "1 stays with Anna: Picasa names Anna on it."
+        );
+        // A stale "Not Anna": her face was found again between the menu and the click.
+        assert_eq!(
+            removed_message("Anna", 0, 0, 1),
+            "Anna is no longer on this photo: nothing to remove."
+        );
+        for several in [2, 4] {
+            assert_eq!(
+                removed_message("Anna", 0, 0, several),
+                "Anna is no longer on these photos: nothing to remove."
             );
         }
     }
