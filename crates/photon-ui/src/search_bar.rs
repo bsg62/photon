@@ -152,9 +152,15 @@ impl SearchBar {
                     // Escape is the field's own key while the keys are in it. Left to
                     // egui it takes the focus away at the start of the frame, before
                     // anything is drawn, and the box could not tell that it had had it.
+                    // The arrows are the field's too: they move the caret. A filter
+                    // built from the default leaves them to egui, which walks the
+                    // keyboard to the button beside the box with them, and what is
+                    // typed next is typed nowhere.
                     .event_filter(EventFilter {
                         escape: true,
-                        ..EventFilter::default()
+                        horizontal_arrows: true,
+                        vertical_arrows: true,
+                        tab: false,
                     })
                     .frame(egui::Frame::NONE)
                     .margin(egui::Margin::ZERO)

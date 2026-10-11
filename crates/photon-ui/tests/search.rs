@@ -285,3 +285,28 @@ fn a_click_on_the_view_that_is_shown_drops_the_search_half_typed_and_its_text() 
         );
     }
 }
+
+// The arrows are the box's while the caret is in it: they move the caret. Left to egui
+// they walk the keyboard to the button beside the box, and what is typed next is typed
+// nowhere.
+#[test]
+fn the_arrow_keys_move_the_caret_in_the_box_and_the_keyboard_stays() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = library(dir.path(), 900, 0, 0);
+    let (mut harness, mut driver) = opened(&library, 900);
+    find(&mut driver, &mut harness);
+    typed(&mut driver, &mut harness, "abc");
+    for key in [Key::ArrowLeft, Key::ArrowUp, Key::ArrowDown, Key::ArrowLeft] {
+        harness.key_press_modifiers(Modifiers::NONE, key);
+        driver.act(&mut harness);
+        driver.act(&mut harness);
+    }
+    // Up and Down in a field of one line are the line's ends.
+    typed(&mut driver, &mut harness, "x");
+    assert!(harness.ctx.memory(|memory| memory.focused()).is_some());
+    assert_eq!(harness.state().search_text(), "abxc");
+    harness.key_press_modifiers(Modifiers::NONE, Key::ArrowRight);
+    driver.act(&mut harness);
+    typed(&mut driver, &mut harness, "y");
+    assert_eq!(harness.state().search_text(), "abxcy");
+}
