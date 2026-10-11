@@ -1026,6 +1026,19 @@ impl eframe::App for App {
         // Whether this frame was asked for from outside the grid: by the engine, which
         // reported, or by the person, whose mouse or keys are in the frame's input.
         let touched = ui.input(|input| !input.events.is_empty());
+        // A rubber band owns the window while it is held: Escape abandons it, and
+        // every other key is nobody's. Not the grid's keys alone - Ctrl+F put the caret
+        // in the search box under a band, where the box then answered the Escape meant
+        // for the band, and Ctrl+B built the rows again under its corner. Escape goes
+        // with the rest: the band reads it from the key being down, not from its event.
+        if self.last.as_ref().is_some_and(|frame| frame.banding) {
+            ui.input_mut(|input| {
+                input.events.retain(|event| match event {
+                    egui::Event::Key { pressed, .. } => !*pressed,
+                    _ => true,
+                });
+            });
+        }
         let reported = self.take_events() || touched;
         let now = ui.input(|input| input.time) * 1000.0;
         // A task's answer asked for this frame as an engine's report does: the frame is

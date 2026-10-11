@@ -6,7 +6,8 @@ mod common;
 use common::{Driver, Harness, library, opened, photo_ids};
 use eframe::egui::{self, Key, Modifiers, PointerButton, Pos2};
 use egui_kittest::kittest::Queryable;
-use photon_ui::nav::Place;
+use photon_core::grid::GridView;
+use photon_ui::nav::{Place, Step};
 
 fn button(pos: Pos2, pressed: bool) -> egui::Event {
     egui::Event::PointerButton {
@@ -75,13 +76,11 @@ fn a_band_does_not_outlive_the_grid_it_was_begun_in() {
     let (mut harness, mut driver) = opened(&library, 900);
     let to = drag(&mut driver, &mut harness, 0, 2);
     assert!(banding(&harness));
-    // A search, typed with the button still down.
-    harness.key_press_modifiers(Modifiers::COMMAND, Key::F);
-    driver.act(&mut harness);
-    harness.event(egui::Event::Text("IMG_00000".to_owned()));
-    driver.act(&mut harness);
-    driver.until(&mut harness, "the search shown", |app| {
-        app.settled() == &Place::search("IMG_00000")
+    // Another view, asked for with the button still down: no key or click can ask
+    // under a band, but a step asked for a moment before it began can land under it.
+    harness.state_mut().go(Step::View(GridView::Recent));
+    driver.until(&mut harness, "the other view shown", |app| {
+        app.settled() == &Place::of(GridView::Recent)
     });
     driver.act(&mut harness);
     assert!(!banding(&harness));
@@ -107,4 +106,42 @@ fn a_window_with_a_band_held_still_draws_nothing() {
     driver.settle(&mut harness);
     assert!(banding(&harness));
     assert_eq!(driver.frames_in(&mut harness, 5.0), 0);
+}
+
+// A band owns the window while it is held: Escape abandons it, and every other key is
+// nobody's - not the search box's, not the sidebar's.
+#[test]
+fn no_key_but_escape_is_answered_while_a_band_is_held() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = library(dir.path(), 900, 0, 0);
+    let ids = photo_ids(&library);
+    let (mut harness, mut driver) = opened(&library, 900);
+    // One photo selected first, to be put back.
+    let at = middle(&harness, 8);
+    harness.event(egui::Event::PointerMoved(at));
+    harness.event(button(at, true));
+    harness.event(button(at, false));
+    driver.act(&mut harness);
+    assert_eq!(harness.state().selected(), [ids[8]]);
+
+    drag(&mut driver, &mut harness, 0, 2);
+    assert_eq!(harness.state().selected(), ids[0..=2]);
+    let hidden = harness.state().layout().sidebar_hidden;
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::B);
+    driver.act(&mut harness);
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::F);
+    driver.act(&mut harness);
+    harness.event(egui::Event::Text("mountains".to_owned()));
+    driver.act(&mut harness);
+    harness.key_press_modifiers(Modifiers::NONE, Key::End);
+    driver.act(&mut harness);
+    assert_eq!(harness.state().layout().sidebar_hidden, hidden);
+    assert_eq!(harness.state().search_text(), "");
+    assert!(banding(&harness));
+    assert_eq!(harness.state().selected(), ids[0..=2]);
+    // Escape is the band's: what was selected before it is back.
+    harness.key_press_modifiers(Modifiers::NONE, Key::Escape);
+    driver.act(&mut harness);
+    assert!(!banding(&harness));
+    assert_eq!(harness.state().selected(), [ids[8]]);
 }

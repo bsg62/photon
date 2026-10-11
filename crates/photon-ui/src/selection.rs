@@ -259,9 +259,20 @@ impl Selection {
 
     /// The band is abandoned - Escape, or the drag lost: the selection is what it was
     /// when the band began, less what has left the grid since.
+    ///
+    /// All of it may have left, and the lead with it: `follow` then landed the lead
+    /// beside where it was, without selecting it, the band's own photos being selected
+    /// at the time. With those gone again the lead would be on a photo with nothing
+    /// selected, which nothing else here leaves behind: it is selected, alone, as
+    /// `follow` selects a landing when nothing else is.
     pub fn band_cancel(&mut self) {
-        if let Some(band) = self.band.take() {
-            self.ids = band.previous;
+        let Some(band) = self.band.take() else {
+            return;
+        };
+        self.ids = band.previous;
+        if let Some(lead) = self.lead.filter(|_| self.ids.is_empty()) {
+            self.ids.insert(lead.id);
+            self.anchor = Some(lead);
         }
     }
 
@@ -952,5 +963,33 @@ mod tests {
         s.band_cancel();
         assert!(s.is_empty());
         assert_eq!(lead(&s), None);
+    }
+
+    // The lead's photo leaves under a band, and so does everything else that was
+    // selected before it: `follow` lands the lead without selecting it, the band's own
+    // photos being selected then. Abandoned, the band puts back a selection that is
+    // gone, and the lead would be on a photo with nothing selected.
+    #[test]
+    fn a_lead_that_landed_under_a_band_is_selected_when_the_band_is_abandoned() {
+        let old = ten();
+        let mut s = Selection::default();
+        s.select(&old, 8);
+        s.band_begin(false);
+        s.band_to(&old, &[(1, 2)]);
+        let new = folders(&[&[10, 11, 12, 13, 14, 15, 16, 17, 19]]);
+        s.follow(&old, &new);
+        assert_eq!(lead(&s), Some((8, 19)));
+        s.band_cancel();
+        assert_eq!(selected(&s, &new), [19]);
+        assert_eq!(anchor(&s), Some((8, 19)));
+        // With something of the old selection left, that is what is put back.
+        let mut s = Selection::default();
+        s.select(&old, 7);
+        s.toggle(&old, 8);
+        s.band_begin(false);
+        s.band_to(&old, &[(1, 2)]);
+        s.follow(&old, &new);
+        s.band_cancel();
+        assert_eq!(selected(&s, &new), [17]);
     }
 }

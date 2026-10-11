@@ -151,3 +151,40 @@ called by the application: the view finds the selection's band gone - cleared wi
 selection - and drops its rectangle. Four probes passed at first, each a test that did
 not tell: a band given by its other corners, one wholly left of the photos, and the
 frame's lag between the grid's scroll and what the band covers.
+
+**The review** (one fresh reader, 2026-10-11, its own worktree and proving tests) found
+nothing critical and three things important, two of them with one root: **the band
+deduced how a drag ended from egui's `dragged` flag and one key it might not get to
+see.**
+
+- Escape with Ctrl or Cmd still held - how an adding band is held - kept the band's
+  photos: egui ends a drag at Escape whatever is held, the band read a plain Escape
+  only, and took "no longer dragged" for the button coming up. The same with the caret
+  in the search box, which takes its Escape out of the frame first.
+- A touch the system cancels never tore the band down, and it scrolled on - 11,000
+  points in ten seconds in the reviewer's test. "Changed in the making" above had
+  argued this ending away ("there is no `pointercancel`"); there is one, on Wayland.
+- The corner was taken where the pointer was when egui called the press a drag, not
+  where the button went down: the wheel turned in between began the band on other
+  photos.
+
+The band no longer asks egui what a click and a drag are. It keeps the press itself,
+from the button's own events (CLAUDE.md, "A press on the photos"), which also fixed four
+of the minor findings: a release never heard of left the next drag dead; another
+button's release ended the band; a press held still past 0.8 seconds was a band over
+one point, so a slow Ctrl+click did not take a photo out and a slow press on empty room
+cleared the selection (the plan's own ruling, withdrawn: a press held still is a click
+however long); and the focus guard was the level, not the focus being lost, so a window
+with the pointer and not the keyboard drew no band at all.
+
+Also fixed from it: the corner is held by its photo when the rows are built again under
+a held band (this plan's own review focus, with nothing in the code for it); a band
+resting in a margin where the grid cannot move asked for a frame every frame, on a
+comment whose reason was the Svelte loop's and false here; an abandoned band could leave
+a lead with nothing selected; a band was drawn over an empty library; while a band is
+held the application now takes every key press out of the frame, where only the
+grid's own keys had been ignored; and the statements about egui that were wrong.
+
+Recorded and left: whether a touch drag should be a band at all, the native grid having
+no touch panning (a later sub-project's question); focus bouncing on X11 under a global
+hotkey, which the reviewer could not trace without a window.

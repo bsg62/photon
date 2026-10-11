@@ -616,6 +616,58 @@ pub fn edge_scroll_speed(y: f64, top: f64, bottom: f64, margin: f64, max: f64) -
     }
 }
 
+/// A place in the layout kept by what is there, across rows that are built again: the
+/// corner a rubber band began at. Tiles fill the row, so a narrower window is other
+/// rows at other heights, and a place kept as two numbers names another photo.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Hold {
+    /// On a photo: which, and how far into its tile, as shares of the tile.
+    Photo {
+        offset: usize,
+        across: f64,
+        down: f64,
+    },
+    /// On no photo - a gutter, a header: the row at that height (`Pin`), and how far
+    /// across, which the rows do not change.
+    Row { pin: Pin, x: f64 },
+}
+
+/// What is at (`x`, `y`) in `rows`, to find the place again by; none in a grid with no
+/// rows.
+pub fn hold_at(rows: &[Row], x: f64, y: f64, tile: f64) -> Option<Hold> {
+    match tile_at(rows, x, y, tile).and_then(|offset| Some((offset, row_of_item(rows, offset)?))) {
+        Some((offset, row)) => {
+            let row = &rows[row];
+            let left = GAP + (offset - row.first) as f64 * tile_row(tile);
+            Some(Hold::Photo {
+                offset,
+                across: (x - left) / tile,
+                down: (y - row.top) / tile,
+            })
+        }
+        None => Some(Hold::Row {
+            pin: pin_at(rows, y)?,
+            x,
+        }),
+    }
+}
+
+/// Where `hold` is in `rows`, or none when what it held on to is not there.
+pub fn held_place(rows: &[Row], hold: Hold, tile: f64) -> Option<(f64, f64)> {
+    match hold {
+        Hold::Photo {
+            offset,
+            across,
+            down,
+        } => {
+            let row = &rows[row_of_item(rows, offset)?];
+            let left = GAP + (offset - row.first) as f64 * tile_row(tile);
+            Some((left + across * tile, row.top + down * tile))
+        }
+        Hold::Row { pin, x } => Some((x, pin_top(rows, pin)?)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1817,5 +1869,72 @@ mod tests {
         assert_eq!(edge_scroll_speed(130.0, 100.0, 160.0, 40.0, 20.0), 0.0);
         assert!(edge_scroll_speed(105.0, 100.0, 160.0, 40.0, 20.0) < 0.0);
         assert!(edge_scroll_speed(155.0, 100.0, 160.0, 40.0, 20.0) > 0.0);
+    }
+
+    // ---- a place held across rows built again ----
+
+    // A narrower window is other rows at other heights: the corner of a band is kept on
+    // the photo it was on, at the same place in its tile.
+    #[test]
+    fn a_place_on_a_photo_is_found_again_on_that_photo_when_the_rows_are_built_again() {
+        let sections = [folder(1, 0, 40), folder(2, 40, 40)];
+        let wide = build_rows(&sections, 4, MEDIUM);
+        // Photo 47, the last of the second folder's second row: half way across its
+        // tile and a quarter down.
+        let row = wide[row_of_item(&wide, 47).unwrap()];
+        let (x, y) = (GAP + 3.0 * tile_row(MEDIUM) + 80.0, row.top + 40.0);
+        assert_eq!(tile_at(&wide, x, y, MEDIUM), Some(47));
+        let hold = hold_at(&wide, x, y, MEDIUM).unwrap();
+        // Three columns of larger tiles: it is the second of the folder's third row.
+        let narrow = build_rows(&sections, 3, LARGE);
+        let (x, y) = held_place(&narrow, hold, LARGE).unwrap();
+        assert_eq!(tile_at(&narrow, x, y, LARGE), Some(47));
+        let row = narrow[row_of_item(&narrow, 47).unwrap()];
+        assert_eq!(x, GAP + tile_row(LARGE) + 112.0);
+        assert_eq!(y, row.top + 56.0);
+        // In the same rows it is where it was.
+        let again = hold_at(&narrow, x, y, LARGE).unwrap();
+        assert_eq!(held_place(&narrow, again, LARGE), Some((x, y)));
+    }
+
+    #[test]
+    fn a_place_on_no_photo_keeps_its_row_and_how_far_across_it_is() {
+        let sections = [folder(1, 0, 40), folder(2, 40, 40)];
+        let wide = build_rows(&sections, 4, MEDIUM);
+        // The gutter between the first two photos of the row that begins with photo 44.
+        let row = wide[row_of_item(&wide, 44).unwrap()];
+        let (x, y) = (GAP + MEDIUM + 4.0, row.top + 84.0);
+        assert_eq!(tile_at(&wide, x, y, MEDIUM), None);
+        let hold = hold_at(&wide, x, y, MEDIUM).unwrap();
+        let narrow = build_rows(&sections, 3, LARGE);
+        let (held_x, held_y) = held_place(&narrow, hold, LARGE).unwrap();
+        assert_eq!(held_x, x);
+        // In the row that now holds photo 44, as far down it as before.
+        let row = narrow[row_of_item(&narrow, 44).unwrap()];
+        assert!(
+            held_y > row.top && held_y < row.top + row.height,
+            "{held_y}"
+        );
+        // And a header is held as a header.
+        let header = wide
+            .iter()
+            .find(|row| row.kind == RowKind::Header && row.first == 40);
+        let hold = hold_at(&wide, 100.0, header.unwrap().top + 10.0, MEDIUM).unwrap();
+        let (_, y) = held_place(&narrow, hold, LARGE).unwrap();
+        let header = narrow
+            .iter()
+            .find(|row| row.kind == RowKind::Header && row.first == 40);
+        assert!((y - (header.unwrap().top + 10.0)).abs() < 1e-9, "{y}");
+    }
+
+    #[test]
+    fn a_place_is_not_found_again_where_what_it_held_is_gone_or_nothing_is_there() {
+        let wide = build_rows(&[folder(1, 0, 40)], 4, MEDIUM);
+        let row = wide[row_of_item(&wide, 30).unwrap()];
+        let hold = hold_at(&wide, GAP + 10.0, row.top + 10.0, MEDIUM).unwrap();
+        // The library has shrunk under it.
+        let fewer = build_rows(&[folder(1, 0, 12)], 4, MEDIUM);
+        assert_eq!(held_place(&fewer, hold, MEDIUM), None);
+        assert_eq!(hold_at(&[], 10.0, 10.0, MEDIUM), None);
     }
 }

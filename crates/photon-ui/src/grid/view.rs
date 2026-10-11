@@ -9,10 +9,10 @@ use super::{
     header,
     layout::{
         GAP, HEADER, NavKey, PinnedHeader, Row, RowKind, Span, build_rows, columns_for,
-        defers_thumbs, edge_scroll_speed, has_header, header_rows, items_in_rect, move_from,
-        page_move, pin_at, pin_top, pinned_header, row_of_item, row_width, scroll_into_grid,
-        scroll_to_start, shows_timeline, tile_at, tile_for, tile_row, tile_width, top_folder_id,
-        total_height, visible_range, wanted_range,
+        defers_thumbs, edge_scroll_speed, has_header, header_rows, held_place, hold_at,
+        items_in_rect, move_from, page_move, pin_at, pin_top, pinned_header, row_of_item,
+        row_width, scroll_into_grid, scroll_to_start, shows_timeline, tile_at, tile_for, tile_row,
+        tile_width, top_folder_id, total_height, visible_range, wanted_range,
     },
     motion::{Direction, Motion, ScrollSpeed},
     scroll::{BAR_WIDTH, Scroll},
@@ -33,7 +33,7 @@ use crate::{
 };
 use eframe::egui::{
     self, Align2, CursorIcon, Event, Key, Modifiers, PointerButton, Rect, Sense, Stroke,
-    StrokeKind, UiBuilder, Vec2, WidgetInfo, pos2, vec2,
+    StrokeKind, TouchPhase, UiBuilder, Vec2, WidgetInfo, pos2, vec2,
 };
 use jiff::tz::TimeZone;
 use photon_core::{
@@ -53,33 +53,51 @@ const BAND_SCROLL_MAX: f64 = 1400.0;
 /// scroll.
 const BAND_FRAME_MAX: f64 = 0.05;
 
-/// A rubber band being drawn.
+/// A press of the primary button on the photos, from the frame the button goes down in
+/// to the frame it comes up in: a click if the pointer stays where it went down, a
+/// rubber band once it has gone further than a click may.
+///
+/// Kept from the button's own events and not from what egui calls dragged, which says
+/// less than it seems to: it ends at the release of *any* button and at Escape with
+/// anything held, and it goes stale for good after a release that is never heard of.
+#[derive(Clone, Copy, Debug)]
+struct Press {
+    /// Where the button went down, in the window's coordinates.
+    at: egui::Pos2,
+    /// And in the layout's, as the grid stood in that frame: the corner a band keeps
+    /// its grip by while the grid scrolls under it - also before it is a band, when the
+    /// wheel turns under a button that is down and still.
+    origin: (f64, f64),
+    /// What was held as it went down: a band begun with Ctrl, Cmd or Shift adds.
+    modifiers: Modifiers,
+    /// Whether it has been a band. One that has is no click when the button comes up,
+    /// and one whose band was abandoned draws no second: the rest of it is nobody's.
+    banded: bool,
+}
+
+/// A rubber band being drawn, from its press's origin to the pointer.
 #[derive(Clone, Copy, Debug)]
 struct Band {
-    /// Where the button went down, in the layout's coordinates: the band keeps its grip
-    /// on the photos it was started over while the grid scrolls under it.
-    origin: (f64, f64),
-    /// Where the pointer was last seen, in the window's: the far corner is worked out
-    /// from it again in every frame, the grid having moved under a pointer that holds
-    /// still. Kept because a pointer that leaves the window is no longer seen at all,
-    /// and is then where it left - at the edge it is scrolling towards.
+    /// Where the pointer was last seen, in the window's coordinates: the far corner is
+    /// worked out from it again in every frame, the grid having moved under a pointer
+    /// that holds still. Kept because a pointer that leaves the window is no longer seen
+    /// at all, and is then where it left - at the edge it is scrolling towards.
     pointer: egui::Pos2,
     /// When the last frame of its scroll was drawn, in seconds.
     scrolled_at: Option<f64>,
 }
 
-impl Band {
-    /// The band's rectangle in the layout's coordinates, for a grid drawn in `area`
-    /// at `position`.
-    fn span(&self, area: Rect, position: f64) -> Span {
-        Span {
-            x0: self.origin.0,
-            y0: self.origin.1,
-            x1: f64::from(self.pointer.x - area.left()),
-            y1: f64::from(self.pointer.y - area.top()) + position,
-        }
+/// A band's rectangle in the layout's coordinates, for a grid drawn in `area` at
+/// `position`.
+fn span(press: &Press, band: &Band, area: Rect, position: f64) -> Span {
+    Span {
+        x0: press.origin.0,
+        y0: press.origin.1,
+        x1: f64::from(band.pointer.x - area.left()),
+        y1: f64::from(band.pointer.y - area.top()) + position,
     }
 }
+
 /// Strip points between two printed years: a line of the label's type plus air.
 const MIN_LABEL_GAP: f64 = 16.0;
 /// The line a year is printed in, its top where the year begins.
@@ -229,7 +247,11 @@ pub struct GridView {
     drawn: Option<(Rect, f64)>,
     /// Whether something else had the keyboard when the grid was last drawn.
     elsewhere: bool,
+    /// The press of the primary button on the photos that is going on, and its band.
+    press: Option<Press>,
     band: Option<Band>,
+    /// Whether Escape was down when the grid was last drawn.
+    escape_down: bool,
 }
 
 impl GridView {
@@ -435,6 +457,11 @@ impl GridView {
         };
         let rebuilt = self.laid_out != Some(now);
         let mut pin = None;
+        // The corner of a press or a band is a place in the rows as they were: it is
+        // found again in the rows as they are, on the photo it was on.
+        let held = (self.press.zip(self.laid_out))
+            .filter(|_| rebuilt)
+            .and_then(|(press, was)| hold_at(&self.rows, press.origin.0, press.origin.1, was.tile));
         if rebuilt {
             let resized = self
                 .laid_out
@@ -450,6 +477,11 @@ impl GridView {
         self.scroll.set_extent(total_height(&self.rows), viewport);
         if let Some(top) = pin.and_then(|pin| pin_top(&self.rows, pin)) {
             self.scroll.set(top);
+        }
+        if let Some(press) = &mut self.press
+            && let Some(place) = held.and_then(|hold| held_place(&self.rows, hold, now.tile))
+        {
+            press.origin = place;
         }
         rebuilt
     }
@@ -571,9 +603,8 @@ impl GridView {
             ui.id().with("grid-photos"),
             Sense::CLICK | Sense::DRAG,
         );
-        self.take_band(ui, area, &response, index, selection, laid.tile);
-        if response.clicked()
-            && let Some(pointer) = response.interact_pointer_pos()
+        if let Some((pointer, modifiers)) =
+            self.take_pointer(ui, area, &response, index, selection, laid.tile)
         {
             let top = self.scroll.position();
             // The pinned header lies over a row of photos, and a press on it is the
@@ -586,21 +617,6 @@ impl GridView {
             let x = f64::from(pointer.x - area.left());
             let y = f64::from(pointer.y - area.top()) + top;
             if !on_pinned && let Some(offset) = tile_at(&self.rows, x, y, laid.tile) {
-                // What was held as the button came up, from the release itself: read
-                // at the end of the frame, a Shift let go of in the frame of the click
-                // made it a plain one, and a frame is not always short.
-                let modifiers = ui.input(|input| {
-                    let released = input.events.iter().rev().find_map(|event| match event {
-                        Event::PointerButton {
-                            button: PointerButton::Primary,
-                            pressed: false,
-                            modifiers,
-                            ..
-                        } => Some(*modifiers),
-                        _ => None,
-                    });
-                    released.unwrap_or(input.modifiers)
-                });
                 if modifiers.shift {
                     selection.extend(index, offset);
                 } else if modifiers.command {
@@ -648,24 +664,32 @@ impl GridView {
         }
     }
 
-    /// The rubber band: a press on the photos that becomes a drag draws a rectangle, and
-    /// what it touches is selected - in place of what was, or with Ctrl, Cmd or Shift
-    /// held as it begins, as well.
+    /// The primary button on the photos: a click, answered as where and with what
+    /// held, or a rubber band - a press that goes further than a click may draws a
+    /// rectangle, and what it touches is selected, in place of what was or, with Ctrl,
+    /// Cmd or Shift held as the button went down, as well.
     ///
-    /// Whether a press is a drag is egui's to say (the pointer six points from where
-    /// the button went down, or the button held past the time a click may take), and a
-    /// drag is this widget's until the button comes up, wherever the pointer goes.
+    /// **Both are read from the button's own events, not from what egui calls clicked
+    /// and dragged.** egui's click has a time limit, so a press held still for a second
+    /// selected nothing; and its drag ends at the release of any button and at Escape
+    /// with anything held, and after a release that is never heard of it is stale for
+    /// good, so the next drag began no band (a review found each, with a test). A press
+    /// is this widget's when the button goes down with the pointer over the photos and
+    /// nothing above them.
     ///
-    /// **It has one teardown, and every ending comes through it**: the button coming up,
-    /// which keeps what the band covers; Escape, which puts back what was selected;
-    /// the window left with the button still down, which does the same; and the
-    /// selection cleared under it by a grid of other results, which leaves nothing to
-    /// put back. A band that outlived its drag would go on scrolling the grid and
-    /// rewriting the selection, which is what the Svelte grid's did when a touch was
-    /// taken from it. The window left is that case here: a button let go of over
-    /// another window may never be heard of, egui goes on calling the photos dragged,
-    /// and a pointer last seen in a margin would scroll to the end of the library.
-    fn take_band(
+    /// **A band has one teardown, and every ending comes through it**:
+    /// - the button comes up: what the band covers stays selected;
+    /// - Escape, whatever is held and whoever read the key first: what was selected
+    ///   before the band is put back, and the key is nobody's after that - left in the
+    ///   frame, the keys below would clear the selection the band has just restored;
+    /// - the gesture is taken away - the window loses the focus with the button down, or
+    ///   the system cancels a touch: the same. Neither sends a release. A button let go
+    ///   of over another window may never be heard of, and a band that outlived it
+    ///   would go on scrolling to the end of the library, selecting all the way: what
+    ///   the Svelte grid's did when a touch was taken from it;
+    /// - the selection is cleared under it by a grid of other results: nothing is put
+    ///   back, the band having begun in the grid before.
+    fn take_pointer(
         &mut self,
         ui: &egui::Ui,
         area: Rect,
@@ -673,71 +697,150 @@ impl GridView {
         index: &GridIndex,
         selection: &mut Selection,
         tile: f64,
-    ) {
+    ) -> Option<(egui::Pos2, Modifiers)> {
         let top = self.scroll.position();
-        if response.drag_started_by(PointerButton::Primary)
-            && let Some(origin) = ui.input(|input| input.pointer.press_origin())
-        {
-            let y = f64::from(origin.y - area.top());
-            // Not from the pinned header: it lies over a row of photos, and a band
-            // from it would begin on photos nobody can see.
-            let on_pinned = pinned_header(&self.rows, &self.headers, top).is_some() && y < HEADER;
-            if !on_pinned {
-                let modifiers = ui.input(|input| input.modifiers);
-                selection.band_begin(modifiers.command || modifiers.shift);
-                self.band = Some(Band {
-                    origin: (f64::from(origin.x - area.left()), y + top),
-                    pointer: origin,
-                    scrolled_at: None,
+        let (buttons, pointer, taken, escape) = ui.input(|input| {
+            let buttons: Vec<(bool, egui::Pos2, Modifiers)> = (input.events.iter())
+                .filter_map(|event| match event {
+                    Event::PointerButton {
+                        pos,
+                        button: PointerButton::Primary,
+                        pressed,
+                        modifiers,
+                    } => Some((*pressed, *pos, *modifiers)),
+                    _ => None,
+                })
+                .collect();
+            let taken = input.events.iter().any(|event| {
+                let cancelled = matches!(
+                    event,
+                    Event::Touch {
+                        phase: TouchPhase::Cancel,
+                        ..
+                    }
+                );
+                cancelled || matches!(event, Event::WindowFocused(false))
+            });
+            (
+                buttons,
+                input.pointer.latest_pos(),
+                taken,
+                input.key_down(Key::Escape),
+            )
+        });
+        // Escape, by the key being down that was not: whoever read its event first.
+        let escaped = escape && !std::mem::replace(&mut self.escape_down, escape);
+
+        if taken {
+            self.abandon(selection);
+            self.press = None;
+        }
+        let mut clicked = None;
+        for (pressed, at, modifiers) in buttons {
+            if pressed {
+                // A press with a band still held: its release was never heard of.
+                self.abandon(selection);
+                let y = f64::from(at.y - area.top());
+                // Not from the pinned header: it lies over a row of photos, and a band
+                // from it would begin on photos nobody can see. Nor in a grid with no
+                // photos, where the shell draws what an empty library says.
+                let on_pinned =
+                    pinned_header(&self.rows, &self.headers, top).is_some() && y < HEADER;
+                let photos = response.contains_pointer() && !on_pinned && !index.is_empty();
+                self.press = photos.then_some(Press {
+                    at,
+                    origin: (f64::from(at.x - area.left()), y + top),
+                    modifiers,
+                    banded: false,
                 });
-                // A drag on the photos gives them the keys, as a click on one does:
-                // egui takes the keyboard off a widget at a click elsewhere, not at a
-                // press that becomes a drag, and the Escape that abandons this band
-                // would be a text field's.
-                if let Some(focused) = ui.memory(|memory| memory.focused()) {
-                    ui.memory_mut(|memory| memory.surrender_focus(focused));
+            } else if let Some(press) = self.press.take() {
+                match self.band.take() {
+                    // (One whose selection was cleared under it ends as nothing:
+                    // `band_end` finds no band to end.)
+                    Some(band) => {
+                        let covered =
+                            items_in_rect(&self.rows, span(&press, &band, area, top), tile);
+                        selection.band_end(index, &covered);
+                    }
+                    // It never was a band: a click, however long the button was down.
+                    None if !press.banded => clicked = Some((at, modifiers)),
+                    None => {}
                 }
             }
         }
-        let Some(mut band) = self.band.take() else {
-            return;
+
+        let Some(mut press) = self.press else {
+            return clicked;
         };
         // The selection was cleared under the band: it began in another grid.
-        if !selection.banding() {
-            return;
+        if self.band.is_some() && !selection.banding() {
+            self.band = None;
         }
-        // Escape is the band's key and nobody's after it: left in the frame, the keys
-        // below would clear the selection the band has just put back. (egui itself ends
-        // a drag at Escape, before anything is drawn.)
-        let escaped = ui.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Escape));
-        if escaped || !ui.input(|input| input.focused) {
-            selection.band_cancel();
-            return;
+        if escaped && self.band.is_some() {
+            self.abandon(selection);
+            ui.input_mut(|input| {
+                input.events.retain(|event| {
+                    !matches!(
+                        event,
+                        Event::Key {
+                            key: Key::Escape,
+                            pressed: true,
+                            ..
+                        }
+                    )
+                });
+            });
         }
-        if let Some(pointer) = ui.input(|input| input.pointer.latest_pos()) {
+        // It is a band once the pointer has gone further from where the button went
+        // down than a click may; a press held still, however long, is none.
+        let reach = ui
+            .ctx()
+            .options(|options| options.input_options.max_click_dist);
+        if self.band.is_none()
+            && !press.banded
+            && let Some(pointer) = pointer.filter(|pointer| pointer.distance(press.at) > reach)
+        {
+            press.banded = true;
+            self.press = Some(press);
+            selection.band_begin(press.modifiers.command || press.modifiers.shift);
+            self.band = Some(Band {
+                pointer,
+                scrolled_at: None,
+            });
+            // A drag on the photos gives them the keys, as a click on one does: egui
+            // takes the keyboard off a widget at a click elsewhere, not at a press that
+            // becomes a drag, and the Escape that abandons this band would be a text
+            // field's to answer first.
+            if let Some(focused) = ui.memory(|memory| memory.focused()) {
+                ui.memory_mut(|memory| memory.surrender_focus(focused));
+            }
+        }
+        let Some(mut band) = self.band else {
+            return clicked;
+        };
+        if let Some(pointer) = pointer {
             band.pointer = pointer;
-        }
-        // No longer dragged, and neither of the above: the button came up.
-        if !response.dragged_by(PointerButton::Primary) {
-            let covered = items_in_rect(&self.rows, band.span(area, top), tile);
-            selection.band_end(index, &covered);
-            return;
         }
         // Held near the top or the bottom edge, the grid scrolls under it: by the
         // edge's speed times this frame's own duration, so as fast on a screen of 120
-        // frames a second as on one of 60. A frame is asked for for as long as the
-        // pointer rests there, also where the grid cannot move: the wheel still turns
-        // during a drag and a scan can lengthen the grid, and neither would start the
-        // scroll again.
-        let (edge_top, edge_bottom) = (f64::from(area.top()), f64::from(area.bottom()));
+        // frames a second as on one of 60. A frame is asked for only while the grid can
+        // move that way: at its top or its end the band rests, and whatever makes room
+        // again - the wheel, a scan's longer grid - draws a frame that comes through
+        // here.
         let speed = edge_scroll_speed(
             f64::from(band.pointer.y),
-            edge_top,
-            edge_bottom,
+            f64::from(area.top()),
+            f64::from(area.bottom()),
             BAND_EDGE,
             BAND_SCROLL_MAX,
         );
-        if speed == 0.0 {
+        let position = self.scroll.position();
+        let room = if speed < 0.0 {
+            position > 0.0
+        } else {
+            position < self.scroll.max()
+        };
+        if speed == 0.0 || !room {
             band.scrolled_at = None;
         } else {
             let now = ui.input(|input| input.time);
@@ -747,17 +850,29 @@ impl GridView {
                 .scroll_by(speed * elapsed.clamp(0.0, BAND_FRAME_MAX));
             ui.ctx().request_repaint();
         }
-        let covered = items_in_rect(&self.rows, band.span(area, self.scroll.position()), tile);
+        let covered = items_in_rect(
+            &self.rows,
+            span(&press, &band, area, self.scroll.position()),
+            tile,
+        );
         selection.band_to(index, &covered);
         self.band = Some(band);
+        clicked
+    }
+
+    /// Lets go of a band without keeping it: what was selected before it is put back.
+    fn abandon(&mut self, selection: &mut Selection) {
+        if self.band.take().is_some() {
+            selection.band_cancel();
+        }
     }
 
     /// Draws the band over the photos, cut at the grid's edges.
     fn draw_band(&self, ui: &egui::Ui, area: Rect, top: f64) {
-        let Some(band) = self.band else {
+        let (Some(press), Some(band)) = (self.press, self.band) else {
             return;
         };
-        let span = band.span(area, top);
+        let span = span(&press, &band, area, top);
         let at = |x: f64, y: f64| pos2(area.left() + x as f32, area.top() + (y - top) as f32);
         let rect = Rect::from_two_pos(at(span.x0, span.y0), at(span.x1, span.y1));
         let palette = palette(ui.ctx());
@@ -1072,8 +1187,9 @@ mod tests {
         library: bool,
         /// How long a frame is, in seconds.
         dt: f64,
-        /// Whether the window has been left for another.
+        /// Whether the window has been left for another, and whether egui has been told.
         left: bool,
+        told_left: bool,
         /// The modifier keys held in the frames to come, and those egui was last told of.
         held: Modifiers,
         told: Modifiers,
@@ -1150,6 +1266,7 @@ mod tests {
             library: true,
             dt: 1.0 / 60.0,
             left: false,
+            told_left: false,
             held: Modifiers::NONE,
             told: Modifiers::NONE,
             rings: Vec::new(),
@@ -1205,6 +1322,11 @@ mod tests {
 
     impl Fixture {
         fn frame(&mut self, mut events: Vec<Event>) -> GridOutput {
+            // So is the window being left, or come back to.
+            if self.told_left != self.left {
+                self.told_left = self.left;
+                events.insert(0, Event::WindowFocused(!self.left));
+            }
             // The keys held are told when they change, as a window tells them.
             if self.told != self.held {
                 self.told = self.held;
@@ -1320,12 +1442,14 @@ mod tests {
                 .map(|(text, place, _)| (text.as_str(), *place))
         }
 
+        /// The primary button down or up at `at`, with what is held, as a window
+        /// reports a button: the keys held are in the event.
         fn button(&mut self, at: Pos2, pressed: bool) -> GridOutput {
             self.frame(vec![Event::PointerButton {
                 pos: at,
                 button: PointerButton::Primary,
                 pressed,
-                modifiers: Modifiers::NONE,
+                modifiers: self.held,
             }])
         }
 
@@ -3088,5 +3212,327 @@ mod tests {
         let (from, to) = (f.top_photo() + 5, f.top_photo() + 6);
         f.drag(f.middle(from), f.middle(to));
         assert_eq!(f.picked(), [from as i64 + 1, to as i64 + 1]);
+    }
+
+    // ---- from the review of the band ----
+
+    fn ctrl() -> Modifiers {
+        Modifiers {
+            ctrl: true,
+            command: true,
+            ..Modifiers::NONE
+        }
+    }
+
+    // An adding band is begun with Ctrl held, and Escape is pressed with it still down.
+    // egui ends a drag at Escape whatever is held; read as a plain key only, the Escape
+    // was not seen, and "no longer dragged" was taken for the button coming up.
+    #[test]
+    fn escape_with_ctrl_still_held_abandons_an_adding_band() {
+        let mut f = fixture(&[200]);
+        f.frame(Vec::new());
+        f.click(9, Modifiers::NONE);
+        f.held = ctrl();
+        f.drag(f.middle(1), f.middle(6));
+        assert_eq!(f.picked(), [2, 3, 6, 7, 10]);
+        let frame = f.key_with(Key::Escape, ctrl());
+        assert!(!frame.banding);
+        assert_eq!(f.picked(), [10]);
+        assert_eq!(f.lead(), Some(9));
+    }
+
+    // The release that is never heard of: the band is abandoned as the window is left,
+    // the window is come back to, and no button-up was ever delivered.
+    #[test]
+    fn after_a_release_never_heard_of_the_next_drag_is_a_band() {
+        let mut f = fixture(&[4000]);
+        f.frame(Vec::new());
+        f.drag(f.middle(1), f.middle(6));
+        f.left = true;
+        assert!(!f.frame(Vec::new()).banding);
+        f.left = false;
+        f.frame(Vec::new());
+        let frame = f.drag(f.middle(1), f.middle(2));
+        assert!(frame.banding);
+        assert_eq!(f.picked(), [2, 3]);
+    }
+
+    // Another button coming up says nothing about this drag.
+    #[test]
+    fn another_button_let_go_of_does_not_end_the_band() {
+        let mut f = fixture(&[200]);
+        f.frame(Vec::new());
+        f.drag(f.middle(1), f.middle(2));
+        assert_eq!(f.picked(), [2, 3]);
+        let other = |pos, pressed| Event::PointerButton {
+            pos,
+            button: PointerButton::Secondary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        };
+        f.frame(vec![other(f.middle(2), true)]);
+        let frame = f.frame(vec![other(f.middle(2), false)]);
+        assert!(frame.banding);
+        // The first button is still down: the band follows the pointer.
+        f.to(f.middle(6));
+        assert_eq!(f.picked(), [2, 3, 6, 7]);
+        f.button(f.middle(6), false);
+        assert_eq!(f.picked(), [2, 3, 6, 7]);
+        assert_eq!(f.lead(), Some(1));
+    }
+
+    fn touch(phase: TouchPhase, pos: Pos2) -> Event {
+        Event::Touch {
+            device_id: egui::TouchDeviceId(1),
+            id: egui::TouchId(1),
+            phase,
+            pos,
+            force: None,
+        }
+    }
+
+    // The system takes a touch for a gesture of its own: a cancel and the pointer gone,
+    // with no release. The Svelte band's old bug: a loop left running to the end of the
+    // library, selecting all the way.
+    #[test]
+    fn a_touch_the_system_takes_ends_the_band_and_nothing_scrolls() {
+        let mut f = fixture(&[4000]);
+        f.frame(Vec::new());
+        f.click(9, Modifiers::NONE);
+        let (from, to) = (f.middle(1), Pos2::new(300.0, 590.0));
+        // A touch as a window reports one: the touch, and the pointer it stands for.
+        f.frame(vec![
+            touch(TouchPhase::Start, from),
+            Event::PointerMoved(from),
+            Event::PointerButton {
+                pos: from,
+                button: PointerButton::Primary,
+                pressed: true,
+                modifiers: Modifiers::NONE,
+            },
+        ]);
+        let frame = f.frame(vec![touch(TouchPhase::Move, to), Event::PointerMoved(to)]);
+        assert!(frame.banding);
+        f.frame(Vec::new());
+        assert!(f.frame(Vec::new()).position > 0.0);
+        let frame = f.frame(vec![touch(TouchPhase::Cancel, to), Event::PointerGone]);
+        assert!(!frame.banding);
+        assert_eq!(f.picked(), [10]);
+        let at = frame.position;
+        for _ in 0..120 {
+            assert_eq!(f.frame(Vec::new()).position, at);
+        }
+        // The next touch is a band of its own.
+        f.frame(vec![Event::PointerButton {
+            pos: to,
+            button: PointerButton::Primary,
+            pressed: false,
+            modifiers: Modifiers::NONE,
+        }]);
+        let (first, last) = (f.top_photo() + 5, f.top_photo() + 6);
+        f.drag(f.middle(first), f.middle(last));
+        assert_eq!(f.picked(), [first as i64 + 1, last as i64 + 1]);
+    }
+
+    // The origin is where the button went down: the wheel turned under a button that is
+    // down and still must not move it to other photos.
+    #[test]
+    fn the_origin_is_where_the_button_went_down_whatever_the_wheel_did_before_the_drag() {
+        let mut f = fixture(&[200]);
+        f.frame(Vec::new());
+        let from = f.middle(1);
+        f.frame(vec![Event::PointerMoved(from)]);
+        f.button(from, true);
+        f.frame(vec![Event::MouseWheel {
+            unit: MouseWheelUnit::Point,
+            delta: vec2(0.0, -390.0),
+            phase: TouchPhase::Move,
+            modifiers: Modifiers::NONE,
+        }]);
+        for _ in 0..30 {
+            f.frame(Vec::new());
+        }
+        assert!(f.view.scroll.position() > 380.0);
+        assert!(!f.frame(Vec::new()).banding);
+        // Now the pointer moves, a column to the right.
+        let frame = f.to(from + vec2(195.0, 0.0));
+        assert!(frame.banding);
+        // From the photo the button went down on, now two rows above the pointer.
+        assert_eq!(f.picked(), [2, 3, 6, 7, 10, 11]);
+    }
+
+    // At its top the grid cannot go further up: a band resting in the top margin
+    // there asks for no frame. Whatever makes room again draws one.
+    #[test]
+    fn a_band_resting_in_a_margin_where_the_grid_cannot_move_asks_for_no_frame() {
+        let mut f = fixture(&[4000]);
+        f.frame(Vec::new());
+        f.drag(f.middle(5), Pos2::new(300.0, 10.0));
+        // egui draws a frame of its own after one with input in it.
+        f.frame(Vec::new());
+        f.frame(Vec::new());
+        for _ in 0..20 {
+            let frame = f.frame(Vec::new());
+            assert_eq!(frame.position, 0.0);
+            assert_ne!(f.repaint_delay, Duration::ZERO);
+        }
+        // The wheel takes the grid down, and the band takes it back up.
+        f.frame(vec![Event::MouseWheel {
+            unit: MouseWheelUnit::Point,
+            delta: vec2(0.0, -2000.0),
+            phase: TouchPhase::Move,
+            modifiers: Modifiers::NONE,
+        }]);
+        let mut seen = Vec::new();
+        for _ in 0..240 {
+            seen.push(f.frame(Vec::new()).position);
+        }
+        let deepest = seen.iter().copied().fold(0.0, f64::max);
+        assert!(deepest > 500.0, "{deepest}");
+        assert_eq!(seen.last(), Some(&0.0));
+        // And at the end of the library the same, in the bottom margin.
+        let mut f = fixture(&[400]);
+        f.frame(Vec::new());
+        f.view.scroll_to(f64::INFINITY);
+        f.frame(Vec::new());
+        f.drag(Pos2::new(300.0, 300.0), Pos2::new(300.0, 590.0));
+        f.frame(Vec::new());
+        f.frame(Vec::new());
+        f.frame(Vec::new());
+        assert_ne!(f.repaint_delay, Duration::ZERO);
+    }
+
+    // Where a library has no photos the shell draws what it says in the grid's room.
+    #[test]
+    fn no_band_is_drawn_in_a_grid_with_no_photos() {
+        let mut f = fixture(&[]);
+        f.frame(Vec::new());
+        let frame = f.drag(Pos2::new(100.0, 100.0), Pos2::new(400.0, 400.0));
+        assert!(!frame.banding);
+        assert_eq!(f.band(), None);
+    }
+
+    // The window narrowed under a held band - a tiling window manager, a sidebar shown:
+    // the rows are built again with another tile, and the band still begins on its photo.
+    #[test]
+    fn a_band_keeps_the_photo_it_began_on_when_the_rows_are_built_again_under_it() {
+        let mut f = fixture(&[4000]);
+        f.frame(Vec::new());
+        f.view.scroll_to(40_000.0);
+        f.frame(Vec::new());
+        let first = f.top_photo() + 5;
+        let from = f.middle(first);
+        f.drag(from, from + vec2(20.0, 20.0));
+        assert_eq!(f.picked(), [first as i64 + 1]);
+        f.size = vec2(620.0, 600.0);
+        f.frame(Vec::new());
+        f.frame(Vec::new());
+        assert!(f.picked().contains(&(first as i64 + 1)), "{:?}", f.picked());
+        // From its photo to the pointer, and not from a place a hundred rows off.
+        assert!(f.picked().len() < 12, "{:?}", f.picked());
+    }
+
+    // A window that has the pointer and not the keyboard: it is the focus being lost
+    // that takes a gesture away, not the focus being elsewhere.
+    #[test]
+    fn a_band_can_be_drawn_in_a_window_that_does_not_have_the_keyboard() {
+        let mut f = fixture(&[200]);
+        f.left = true;
+        f.frame(Vec::new());
+        let frame = f.drag(f.middle(1), f.middle(6));
+        assert!(frame.banding);
+        assert_eq!(f.picked(), [2, 3, 6, 7]);
+    }
+
+    // egui's click has a time limit. A press held still is a click however long it
+    // lasts, as in a browser: the slow Ctrl+click still takes a photo out.
+    #[test]
+    fn a_press_held_still_is_a_click_however_long_it_is_held() {
+        let mut f = fixture(&[200]);
+        f.frame(Vec::new());
+        f.click(2, Modifiers::NONE);
+        let at = f.middle(5);
+        f.frame(vec![Event::PointerMoved(at)]);
+        f.held = ctrl();
+        let button = |pressed| Event::PointerButton {
+            pos: at,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers: ctrl(),
+        };
+        f.frame(vec![button(true)]);
+        f.dt = 1.0;
+        let held = f.frame(Vec::new());
+        assert!(!held.banding);
+        f.frame(Vec::new());
+        f.dt = 1.0 / 60.0;
+        f.frame(vec![button(false)]);
+        assert_eq!(f.picked(), [3, 6]);
+        // On the room between photos it selects nothing and clears nothing.
+        f.held = Modifiers::NONE;
+        let gutter = Pos2::new(199.0, 100.0);
+        f.frame(vec![Event::PointerMoved(gutter)]);
+        f.button(gutter, true);
+        f.dt = 1.0;
+        f.frame(Vec::new());
+        f.dt = 1.0 / 60.0;
+        f.button(gutter, false);
+        assert_eq!(f.picked(), [3, 6]);
+    }
+
+    // A tap of a touchpad: the button down and up before a frame is drawn.
+    #[test]
+    fn a_press_and_its_release_in_one_frame_are_a_click() {
+        let mut f = fixture(&[200]);
+        f.frame(Vec::new());
+        let at = f.middle(5);
+        f.frame(vec![Event::PointerMoved(at)]);
+        let button = |pressed| Event::PointerButton {
+            pos: at,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        };
+        f.frame(vec![button(true), button(false)]);
+        assert_eq!(f.picked(), [6]);
+    }
+
+    // The window is left with the button down on a photo and the pointer still: the
+    // release is never heard of. Come back to, the pointer moves with no button down -
+    // and that is no band.
+    #[test]
+    fn a_press_left_behind_with_the_window_is_no_band_when_the_pointer_comes_back() {
+        let mut f = fixture(&[200]);
+        f.frame(Vec::new());
+        let at = f.middle(1);
+        f.frame(vec![Event::PointerMoved(at)]);
+        f.button(at, true);
+        f.left = true;
+        f.frame(Vec::new());
+        f.left = false;
+        f.frame(Vec::new());
+        let frame = f.to(f.middle(6));
+        assert!(!frame.banding);
+        assert!(f.picked().is_empty());
+    }
+
+    // Escape is the key going down, not the key being down: one held from before a
+    // band began does not abandon it.
+    #[test]
+    fn an_escape_held_since_before_a_band_began_does_not_abandon_it() {
+        let mut f = fixture(&[200]);
+        f.frame(Vec::new());
+        f.frame(vec![Event::Key {
+            key: Key::Escape,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        }]);
+        let frame = f.drag(f.middle(1), f.middle(6));
+        assert!(frame.banding);
+        let frame = f.to(f.middle(10));
+        assert!(frame.banding);
+        assert_eq!(f.picked(), [2, 3, 6, 7, 10, 11]);
     }
 }
