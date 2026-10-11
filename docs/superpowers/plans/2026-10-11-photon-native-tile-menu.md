@@ -152,3 +152,55 @@ their answers; the toasts (`counted`, `removedMessage`), string for string.
 - [ ] Pictures: the menu for one photo and for several, light and dark.
 - [ ] The smoke checklist (a star read back in Picasa's own file); CLAUDE.md; push; one
   fresh reviewer; one fix pass; merge.
+
+## Changed in the making
+
+- **The menu is asked for where the other button goes down, from the button's own
+  event** (`GridView::take_pointer`, `Taken::menu`), not at egui's click of it as Task 3
+  says. The rubber band's review, which landed while this was being built, is why: egui's
+  click of either button gives up after 0.8 seconds, and "clicked" and "dragged" say less
+  than they seem to. At the press is also where GTK's and macOS's own menus open (a
+  Windows one opens at the release). Not while the first button is down, so a press on
+  its way to a click or a band is not interrupted; a test this plan's first draft had -
+  the other button ending a band and opening the menu of what it covered - described
+  egui's old behaviour and went with it.
+- **An open menu takes every key press, chords included**, where `menu-keys.ts`'s
+  `menuOwnsKey` lets a chord and a function key through to the window. With the menu
+  drawn first in the frame, Ctrl+F put the caret in the search box behind it, where
+  nothing typed arrives, and Ctrl+A selected a folder the menu was not about. Nothing
+  native answers a function key yet; one that must work whatever is open is read before
+  the menu is shown.
+- **Tab cannot be taken out of the frame**: egui decides its walk of the keyboard from
+  the raw input before anything is drawn. The menu calls the walk off
+  (`Memory::move_focus(FocusDirection::None)`), and the application does the same under
+  a held band, where the second pull request had missed it: a Tab during a drag left the
+  keyboard on the sidebar's toggle, and the grid's keys dead after the band.
+- **A menu closes when the photo it was opened on leaves the grid** (`follow` lands the
+  lead). The ruling above said "a scan's grid leaves it open, and what an item acts on
+  is read at the pick" - which, for a menu of one photo, is the neighbour the selection
+  landed on: a photo nobody asked about. A grid that loses another photo, or one of
+  several selected, still leaves it open.
+- **`Facts` has one deciding photo**, not a sole photo and a deciding photo's star
+  beside it: the two were the same photo whenever there was one, and a probe showed the
+  application could fill either wrongly unseen.
+
+- **The star's key is the key that types a period**, with Shift where a keyboard needs
+  it (a French one) and not where Shift with the period's own key types `>`: egui calls
+  both `Key::Period`, and the event's `physical_key` tells them apart. The first version
+  refused Shift outright.
+
+**Probes**: 109 rules broken in turn, each with the test that was to fail. Six passed at
+first. Two were lines that did nothing and went: a frame asked for when a menu opens
+(egui asks for one after any frame with input in it, and a menu is opened by a button),
+and a read of the lists after photos are taken off a person (a write of the people is
+announced as a change of the data, which reads them). Two were the doubled fact above.
+Two were tests that could not see their rule and were sharpened: the keyboard taken from
+a text field at the press (egui does it itself at a *click* elsewhere, so the test now
+holds the button and lets go of it after moving), and "these photos" for two. Also
+removed on the way, each covered by another rule: a guard against a pick with nothing
+selected, and closing the menu in `adopt` for other results (the frame's own "nothing is
+selected" does both).
+
+**Not done here**: "a view switched while a write is out" is tested for a hide only; two
+presses of `.` before the first one's grid has arrived both read the photo as it was;
+a long touch opens no menu (left with the question of whether a touch drag is a band).

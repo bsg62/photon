@@ -1687,7 +1687,7 @@ of its own and gives it up itself - the search box - takes its Escape out of the
 (`consume_key`) instead. And what lies open over the photos with no keyboard of its own
 says so (`GridData::keys`: the search box's help). A click on a photo gives the keys
 back, egui taking the keyboard off whatever had it at a click elsewhere. **Every key the
-grid gains goes through this one gate**: the third pull request gives it `H`.
+grid gains goes through this one gate**: `.` and `H`, which write, came through it.
 
 egui decides for itself whether a press is a repeat (the key has not come up), whatever
 the event says: a test of a repeat holds the key down across frames. The held modifiers
@@ -1770,6 +1770,67 @@ makes room again - the wheel, a longer grid - draws a frame that comes through t
 code. A band begun with Shift adds, as one begun with Ctrl does, though a Shift+click
 ranges. No band begins in a grid with no photos, where the shell draws what an empty
 library says.
+
+**The native window writes through one queue, and tells the grid nothing**
+(`App::writes`: `Write::Stars`, `Hidden`, `AlbumAdd`, `AlbumRemove`, `PersonRemove`). Each
+is one of the engine's own commands, made in its turn off the UI thread, and the only one
+that writes outside `library.db` is `commands::set_stars` - the `star=` line in the
+folder's `.picasa.ini`. The photos acted on are read from the selection **at the pick**,
+in the grid's order, not when a menu opened. What comes after a write is the engine's
+rebuild, arriving like a scan's: `Selection::follow` takes out what left and lands the
+lead, which is all of the Svelte store's `setHidden` (the landing after a hide, `H` again
+going on from there, the last photo's neighbour) with no line here that knows a hide
+happened. What a write's answer adds is only what a rebuild cannot say: a message when
+fewer stars were written than asked (`stars_missed`: a folder whose INI cannot be written
+costs that and not the photos beside it), the engine's own words for a refusal, what came
+of taking photos off a person (`removed_message`), and a read of the lists after an album
+changed - `albums_changed` announces a change only when the album on screen is the one.
+`.` goes by one photo, `Selection::deciding`: the lead while it is selected, else the
+selected photo that comes first in the grid. Neither `.` nor `H` is answered at its
+repeat: each press writes, and a held `H` would hide its way through the library.
+**The star's key is the key that types a period, wherever a keyboard has it**: egui names
+a key by what it types and, for want of a name for that, by its place, so Shift with the
+period's own key - `>` on most keyboards - is `Key::Period` too, and is told from a
+period typed with Shift on a French keyboard by the event's `physical_key`.
+
+**A menu is `menu.rs`, `menu_view.rs` and whoever opened it** (`App::menu`, `tile_menu.rs`
+for what the tile's holds): `Menu.svelte`, `menu-keys.ts` and `menu-place.ts`. One menu
+for the whole window, **shown before anything else in the frame**, because while it is
+open the keys are its own, as a desktop's menus have them: it takes every key press and
+everything typed out of the frame's input before the search box, the sidebar or the grid
+reads it. A chord too, where the Svelte menu lets one through to the window: Ctrl+F put
+the caret in a box behind the menu, where nothing typed arrives. **Tab is not a key that
+can be taken out of the frame**: egui decides its walk of the keyboard from the raw input
+before anything is drawn, so the menu calls it off (`Memory::move_focus` with
+`FocusDirection::None`), and so does the application under a held band. The menu is
+placed in every frame from its own size, worked out from its items before it is drawn
+(`place_menu`), so items that change under it and a window resized need nothing more. A
+press outside closes it at the press, not at the click - a press that becomes a band is
+never a click - and the press is left for what it landed on. egui fades a new `Area` in
+over a few frames, each asked for: `fade_in(false)`.
+
+**The menu is asked for where the other button goes down**, read from that button's own
+event as the band's press is (`take_pointer`, `Taken::menu`): egui's click of either
+button gives up after 0.8 seconds, and a desktop's own menus open at the press. Not while
+the first button is down - a press on its way to a click or a band is not interrupted,
+and its release would change the selection under the menu - and not through anything
+that lies over the photos, the open menu itself among it (`contains_pointer`). A photo
+outside the selection is selected first, alone: what a menu acts on is always what is
+ringed. Opening takes the keyboard off whatever had it, as a click on a photo does.
+**A menu does not outlive the photos it is of.** Its items are built again in every
+frame from the selection, so a grid that loses one of several is simply a shorter
+subject. It is closed when nothing is selected any more (a grid of other results; a grid
+that lost its photos and had none to land on), and when `follow` lands the lead: the
+photo it was opened on has left, and its items would act on the neighbour the selection
+landed on - a photo nobody asked about.
+
+**A star is tested in a library of real files** (`tests/menu.rs`, `pictures`,
+`over_files`): the folder's `.picasa.ini` is read back, and every write goes into a
+temporary directory the test made. A fixture's folders are on a drive that is not there,
+so a star there is the engine refusing - which is the test of a refusal's message. A
+person to take photos off is made through the library's own calls before the launch
+(`write_face_batch` for every photo, so the launch's face pass finds nothing to detect,
+then `name_items`).
 
 **Tests of the whole application drive it through `tests/common`'s `Driver`**: `until`
 draws the frames that are asked for, `settle` waits in real time for the other threads,
