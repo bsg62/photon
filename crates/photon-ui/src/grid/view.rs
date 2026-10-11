@@ -3353,9 +3353,13 @@ mod tests {
 
     // ---- from the review of the band ----
 
+    /// The key held to add to a selection, as a keyboard reports it: Ctrl, and on a Mac
+    /// Cmd - where Control with the first button is how a mouse with one button asks
+    /// for the menu, and begins no band.
     fn ctrl() -> Modifiers {
         Modifiers {
-            ctrl: true,
+            ctrl: !cfg!(target_os = "macos"),
+            mac_cmd: cfg!(target_os = "macos"),
             command: true,
             ..Modifiers::NONE
         }
