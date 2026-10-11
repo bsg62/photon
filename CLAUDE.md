@@ -1727,7 +1727,8 @@ was no evidence that the button had come up - Escape with Ctrl still down, which
 an adding band is held, kept the band's photos; and after a release that is never heard
 of the drag is stale for good, so the next one began no band. Now a press is the
 photos' when the primary button goes down with the pointer over them and nothing above
-them (`contains_pointer`), it is a click when the button comes up without ever having
+them (`contains_pointer`, and the layer egui finds on top there: below, "one judge"), it
+is a click when the button comes up without ever having
 been a band, however long it was down, and a band once the pointer is further from where
 the button went down than a click may be (`max_click_dist`). The corner a band begins at
 is taken in the frame of the press, not in the frame it becomes a band: the wheel turned
@@ -1784,7 +1785,8 @@ happened. What a write's answer adds is only what a rebuild cannot say: a messag
 fewer stars were written than asked (`stars_missed`: a folder whose INI cannot be written
 costs that and not the photos beside it), the engine's own words for a refusal, what came
 of taking photos off a person (`removed_message`), and a read of the lists after an album
-changed - `albums_changed` announces a change only when the album on screen is the one.
+changed - `albums_changed` announces a change only while an album is on screen, and the
+sidebar's counts are wanted in every view.
 `.` goes by one photo, `Selection::deciding`: the lead while it is selected, else the
 selected photo that comes first in the grid. Neither `.` nor `H` is answered at its
 repeat: each press writes, and a held `H` would hide its way through the library.
@@ -1792,13 +1794,24 @@ repeat: each press writes, and a held `H` would hide its way through the library
 a key by what it types and, for want of a name for that, by its place, so Shift with the
 period's own key - `>` on most keyboards - is `Key::Period` too, and is told from a
 period typed with Shift on a French keyboard by the event's `physical_key`.
+**A key that writes carries the selection it was pressed on** (`grid::view::Asked`: the
+ids, and the deciding photo). The application acts on it after the frame, when the
+frame's later keys have been answered: read then, `H` and an arrow in one frame - a long
+one, such as puts a rebuilt grid of a large library on screen - hid the photo the arrow
+went to (a review's test). And in a frame with a mouse button in it no such key is
+answered at all: a click is taken before the frame's keys, whichever came first, and a
+write does not guess. **The window waits for its writes when it closes**
+(`Queue::finish`, `WRITES_PATIENCE`): dropped with the queue, a hide pressed in the
+instant before was lost without a word - and not for ever, since a write can hang.
 
 **A menu is `menu.rs`, `menu_view.rs` and whoever opened it** (`App::menu`, `tile_menu.rs`
 for what the tile's holds): `Menu.svelte`, `menu-keys.ts` and `menu-place.ts`. One menu
 for the whole window, **shown before anything else in the frame**, because while it is
 open the keys are its own, as a desktop's menus have them: it takes every key press and
 everything typed out of the frame's input before the search box, the sidebar or the grid
-reads it. A chord too, where the Svelte menu lets one through to the window: Ctrl+F put
+reads it - a cut, a copy and a paste among it, which is what egui makes of their chords
+and no key at all (nothing reads one under a held band yet; Copy photo will have to). A
+chord too, where the Svelte menu lets one through to the window: Ctrl+F put
 the caret in a box behind the menu, where nothing typed arrives. **Tab is not a key that
 can be taken out of the frame**: egui decides its walk of the keyboard from the raw input
 before anything is drawn, so the menu calls it off (`Memory::move_focus` with
@@ -1807,22 +1820,46 @@ placed in every frame from its own size, worked out from its items before it is 
 (`place_menu`), so items that change under it and a window resized need nothing more. A
 press outside closes it at the press, not at the click - a press that becomes a band is
 never a click - and the press is left for what it landed on. egui fades a new `Area` in
-over a few frames, each asked for: `fade_in(false)`.
+over a few frames, each asked for: `fade_in(false)`. **The keys are on an item by its
+number, and the items are built again in every frame**: when they are other items - a
+grid took one of two photos, and two star items became one - the keys go back to the
+menu itself (`signature`), or Enter picked what they were never taken to; and an item's
+widget is named by its words as well as its place, so a press on one that is another by
+the time the button comes up is no click.
+
+**Whether a press is on something is asked of one judge.** egui answers "does this
+widget contain the pointer" for one layer: a widget of a layer below still contains it
+all along the inside of an area's edge, wherever no widget of the area covers the five
+points round the pointer (`hit_test.rs`, `included_layers`). A menu opens with its
+corner exactly at the pointer, which rests there - so a click in place was inside the
+open menu and the photo's under it as well, and a drag from there drew a band under the
+menu (a review found both). The grid now asks both `contains_pointer` and which layer
+egui finds on top at the press (`Context::layer_id_at`), and the menu asks the same of
+its own layer for "outside", not its own rectangle: egui puts an area on whole points
+whatever it is asked for, and two judges half a point apart disagreed about the one
+place every right-click leaves the pointer. For the same reason the menu's area is a
+point larger all round than the menu drawn in it (`RIM`). An egui widget under an
+area needs none of this: an area takes the clicks on its own ground. (`layer_id_at`
+locks egui's memory: not inside an `input` closure.)
 
 **The menu is asked for where the other button goes down**, read from that button's own
 event as the band's press is (`take_pointer`, `Taken::menu`): egui's click of either
 button gives up after 0.8 seconds, and a desktop's own menus open at the press. Not while
 the first button is down - a press on its way to a click or a band is not interrupted,
 and its release would change the selection under the menu - and not through anything
-that lies over the photos, the open menu itself among it (`contains_pointer`). A photo
+that lies over the photos, the open menu itself among it (above). On a Mac the first
+button with Control held asks for it too (`asks_for_menu`): that is how a mouse with one
+button asks, and the system reports it as the first button. A photo
 outside the selection is selected first, alone: what a menu acts on is always what is
 ringed. Opening takes the keyboard off whatever had it, as a click on a photo does.
 **A menu does not outlive the photos it is of.** Its items are built again in every
 frame from the selection, so a grid that loses one of several is simply a shorter
 subject. It is closed when nothing is selected any more (a grid of other results; a grid
 that lost its photos and had none to land on), and when `follow` lands the lead: the
-photo it was opened on has left, and its items would act on the neighbour the selection
-landed on - a photo nobody asked about.
+photo the keys were on has left - which is the photo the menu was opened on, unless it
+was opened inside a selection of several - and its items could act on the neighbour the
+selection landed on, a photo nobody asked about. It closes more often than it must,
+never less.
 
 **A star is tested in a library of real files** (`tests/menu.rs`, `pictures`,
 `over_files`): the folder's `.picasa.ini` is read back, and every write goes into a

@@ -204,3 +204,59 @@ selected" does both).
 **Not done here**: "a view switched while a write is out" is tested for a hide only; two
 presses of `.` before the first one's grid has arrived both read the photo as it was;
 a long touch opens no menu (left with the question of whether a touch drag is a band).
+
+## The review
+
+One fresh reader (2026-10-11), its own worktree and proving tests. Nothing critical:
+every id written comes from the selection on the grid on screen, and no path writes a
+file but `commands::set_stars`. Two things important, both on what a press or a key was
+*of*:
+
+- **A press where the menu had opened was the menu's and the photo's under it.** egui
+  answers "does this widget contain the pointer" for one layer, and lets the layer below
+  go on containing it all along the inside of an area's edge. A menu opens with its
+  corner at the pointer, which rests there: a click in place left the menu open and
+  collapsed the selection under it, and a drag from there drew a band under the menu -
+  the very case the menu's "closes at the press" was written against. The grid now asks
+  which layer egui finds on top at the press, the menu asks the same for "outside", and
+  the menu's area is a point larger all round than the menu, since egui puts an area on
+  whole points and the two would otherwise disagree by where on a point the pointer was.
+  It was the rubber band's code, armed by this pull request, and held for the search
+  help, the dropdown's list and the toasts too.
+- **A key that writes acted on what was selected at the end of the frame.** `H` and
+  then an arrow in one frame hid the photo the arrow went to. The ask now carries the
+  selection it was pressed on, and in a frame with a mouse button in it no such key is
+  answered: a click is taken before the frame's keys, whichever came first.
+
+Fixed from the minor ones: the keys of a menu stayed on an item's *number* when the
+items became others under them (a grid takes one of two photos, two star items become
+one, and Enter picked an album); a menu was not held to the window's width; nothing
+held "the view on screen, not the one being gone to" for `H` and for the menu's items
+(the test is the reviewer's, with the library's write lock for a seam); a cut, a copy
+and a paste are no keys to egui and passed an open menu; Control with a click on a Mac
+opened no menu; **writes still waiting were dropped when the window closed**, which this
+pull request made matter (`Queue::finish`, ten seconds at most); and four statements
+that were wrong - what `albums_changed` announces, "every key press", the spec's two
+sentences on chords, and what `follow`'s landing says of the menu's photo. The wheel
+over a menu took the scroll out of the frame for nothing under it to read: nothing
+could, and the line went.
+
+Rulings in it, unseen by the user: a click exactly where a menu opened is the menu's
+and does nothing; a key that writes pressed in the same frame as a click is dropped,
+not guessed at; a closing window waits ten seconds for its writes and then closes.
+
+Recorded and left:
+
+- A toast that arrives while a menu is open is drawn over it where they meet (all four
+  overlays are in egui's foreground order, the newest on top).
+- A menu taller than the window shows no sign that it scrolls.
+- `H` or `.` in the very frame a rebuild lands the lead acts on the photo landed on:
+  one frame wide, and the key was pressed before that frame was seen.
+- The engine's INI pass does not take the lock a star's write takes: a pass that read
+  the file before a star and wrote its rows after could undo the star on screen until
+  the next pass. It predates this, and is milliseconds wide at the watcher's two seconds.
+- An egui widget under the edge of the search help, the dropdown's list or a toast is
+  not pressed through it (an area takes the clicks on its own ground); only what reads
+  a press from the frame's events had the hole.
+- Copy photo, when it comes, is an `Event::Copy` and not a key: it has to be kept from
+  under a held band, as the keys are.

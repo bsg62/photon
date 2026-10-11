@@ -17,6 +17,7 @@ use std::{
         mpsc::{self, Receiver},
     },
     thread,
+    time::{Duration, Instant},
 };
 
 /// The work panicked. Its own answer fails; the worker goes on to the next question.
@@ -129,12 +130,16 @@ impl<J, R> Drop for Latest<J, R> {
 struct Line<J> {
     /// The jobs not yet started, oldest first, each with its number.
     waiting: VecDeque<(u64, J)>,
+    /// Whether a job is being done.
+    working: bool,
     closed: bool,
 }
 
 struct SharedLine<J> {
     line: Mutex<Line<J>>,
     wake: Condvar,
+    /// Told when a job is done, for whoever waits for the queue to be empty.
+    done: Condvar,
 }
 
 /// Every job, in the order it was given.
@@ -161,9 +166,11 @@ impl<J: Send + 'static, R: Send + 'static> Queue<J, R> {
         let shared = Arc::new(SharedLine {
             line: Mutex::new(Line {
                 waiting: VecDeque::new(),
+                working: false,
                 closed: false,
             }),
             wake: Condvar::new(),
+            done: Condvar::new(),
         });
         let (tx, answers) = mpsc::channel();
         let theirs = shared.clone();
@@ -178,6 +185,7 @@ impl<J: Send + 'static, R: Send + 'static> Queue<J, R> {
                                 return;
                             }
                             if let Some(next) = line.waiting.pop_front() {
+                                line.working = true;
                                 break next;
                             }
                             theirs.wake.wait(&mut line);
@@ -186,7 +194,12 @@ impl<J: Send + 'static, R: Send + 'static> Queue<J, R> {
                     // A job that panics fails its own answer and no other: a queue that
                     // ended here would leave every later click unanswered for the session.
                     let answer = catch_unwind(AssertUnwindSafe(|| work(job))).map_err(|_| Panicked);
-                    if tx.send((number, answer)).is_err() {
+                    // The answer first, then the word that the job is done: whoever
+                    // waited for the queue finds every answer there.
+                    let sent = tx.send((number, answer)).is_ok();
+                    theirs.line.lock().working = false;
+                    theirs.done.notify_all();
+                    if !sent {
                         return;
                     }
                     notify();
@@ -228,13 +241,29 @@ impl<J: Send + 'static, R: Send + 'static> Queue<J, R> {
     pub fn answers(&mut self) -> Vec<(u64, Result<R, Panicked>)> {
         self.answers.try_iter().collect()
     }
+
+    /// Waits until every job given has been done, for `patience` at most, and says
+    /// whether they all were. For a queue of writes as the window closes: dropped
+    /// there, a star pressed in the instant before was lost without a word. Not for
+    /// ever, because a write can hang - a folder on a share that has gone - and a
+    /// window that cannot be closed is worse than a star not written.
+    pub fn finish(&mut self, patience: Duration) -> bool {
+        let until = Instant::now() + patience;
+        let mut line = self.shared.line.lock();
+        while line.working || !line.waiting.is_empty() {
+            if self.shared.done.wait_until(&mut line, until).timed_out() {
+                return false;
+            }
+        }
+        true
+    }
 }
 
 /// As `Latest`: the worker ends at its next wait and is not joined. Jobs still waiting
 /// are not done: the window is closing. For the views' queue each is a rebuild nobody
 /// will see. For a queue of writes it is something the user asked for in the instant
 /// before closing the window, and it is lost: whoever puts a write here that must not
-/// be has to wait for the queue before the window goes.
+/// be waits for the queue before the window goes (`finish`).
 impl<J, R> Drop for Queue<J, R> {
     fn drop(&mut self) {
         let mut line = self.shared.line.lock();
@@ -473,5 +502,54 @@ mod tests {
         queue.push(7);
         told.recv_timeout(Duration::from_secs(10)).unwrap();
         assert_eq!(queue.answers(), [(1, Ok(7))]);
+    }
+
+    // A star pressed in the instant before the window is closed: the window waits for
+    // it, where dropping the queue would lose it without a word.
+    #[test]
+    fn a_queue_that_is_finished_does_every_job_it_was_given_first() {
+        // The worker rests a moment after each answer, before it takes its next job:
+        // whoever waits for the queue is awake then, with a job still waiting and none
+        // being done.
+        let mut queue = Queue::spawn(
+            "test",
+            |job: u32| job * 10,
+            || std::thread::sleep(Duration::from_millis(30)),
+        );
+        queue.push(1);
+        queue.push(2);
+        queue.push(3);
+        assert!(queue.finish(Duration::from_secs(30)));
+        assert_eq!(queue.answers(), [(1, Ok(10)), (2, Ok(20)), (3, Ok(30))]);
+        // With nothing given, there is nothing to wait for.
+        let mut idle = Queue::spawn("test", |job: u32| job, || {});
+        assert!(idle.finish(Duration::from_secs(30)));
+    }
+
+    // The last job is no longer waiting: it is being done, and that is waited for too.
+    #[test]
+    fn a_job_being_done_is_waited_for_as_one_still_waiting_is() {
+        let (mut queue, started, go) = gated_queue();
+        queue.push(1);
+        assert_eq!(started.recv().unwrap(), 1);
+        assert!(!queue.finish(Duration::from_millis(50)));
+        go.send(()).unwrap();
+        assert!(queue.finish(Duration::from_secs(30)));
+        assert_eq!(queue.answers(), [(1, Ok(10))]);
+    }
+
+    // A write that hangs - a folder on a share that has gone - must not keep the window
+    // from closing for good.
+    #[test]
+    fn a_queue_is_waited_for_only_so_long() {
+        let (mut queue, started, go) = gated_queue();
+        queue.push(1);
+        queue.push(2);
+        assert_eq!(started.recv().unwrap(), 1);
+        assert!(!queue.finish(Duration::from_millis(50)));
+        // The job that had not begun is let go of with the queue: it is never started.
+        drop(queue);
+        go.send(()).unwrap();
+        assert!(started.recv_timeout(Duration::from_millis(200)).is_err());
     }
 }

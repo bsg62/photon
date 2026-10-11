@@ -214,8 +214,24 @@ fn the_star_key_takes_several_photos_the_way_of_the_deciding_one() {
     let (mut harness, mut driver, _) = over_files(dir.path(), &root);
     until_starred(&mut driver, &mut harness, &[2]);
 
-    // From `e` in the other folder to `a`: three photos in two folders, the lead on
-    // `a`, which is starred. The menu offers both, and the key takes the stars off.
+    // From `e` in the other folder to `b`: three photos in two folders, `a` among them
+    // and starred - but the lead is on `b`, which is not, and the key stars all three.
+    pick(&mut driver, &mut harness, 1, Modifiers::NONE);
+    pick(&mut driver, &mut harness, 3, Modifiers::SHIFT);
+    assert_eq!(harness.state().lead(), Some(harness.state().shown()[3]));
+    key(&mut driver, &mut harness, Key::Period, Modifiers::NONE);
+    until_starred(&mut driver, &mut harness, &[1, 2, 3]);
+    // Back to `a` alone starred, by the menu's own item for one photo.
+    for offset in [1, 3] {
+        pick(&mut driver, &mut harness, offset, Modifiers::NONE);
+        right_click(&mut driver, &mut harness, offset);
+        harness.get_by_label("Unstar photo").click();
+        driver.act(&mut harness);
+    }
+    until_starred(&mut driver, &mut harness, &[2]);
+
+    // The same three, the lead on `a`, which is starred. The menu offers both, and the
+    // key takes the stars off.
     pick(&mut driver, &mut harness, 1, Modifiers::NONE);
     pick(&mut driver, &mut harness, 3, Modifiers::SHIFT);
     // Out and in again: the lead is on the photo last clicked.
@@ -767,6 +783,214 @@ fn a_menu_closes_when_nothing_is_left_selected() {
     driver.act(&mut harness);
     assert!(harness.state().selected().is_empty());
     assert!(!harness.state().menu_open());
+}
+
+// ---- from the review ----
+
+fn key_down(key: Key) -> egui::Event {
+    egui::Event::Key {
+        key,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: Modifiers::NONE,
+    }
+}
+
+// The menu opens with its corner at the pointer, and the pointer rests there. A press
+// of the first button at that very point is inside the menu, by the menu's own rule,
+// and was the photo's under it as well: egui lets a press through to the layer below
+// wherever no widget of the layer above covers all of the five points round the pointer,
+// which is all along the inside of a menu's edge.
+#[test]
+fn a_click_where_the_menu_opened_is_not_also_the_photos_under_the_menu() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = library(dir.path(), 900, 0, 0);
+    let ids = photo_ids(&library);
+    let (mut harness, mut driver) = opened(&library, 900);
+    pick(&mut driver, &mut harness, 1, Modifiers::NONE);
+    pick(&mut driver, &mut harness, 3, Modifiers::SHIFT);
+    right_click(&mut driver, &mut harness, 2);
+    driver.settle(&mut harness);
+    assert!(harness.state().menu_open());
+    assert_eq!(harness.state().selected(), ids[1..=3]);
+
+    // The pointer has not moved since the menu opened under it.
+    let at = middle(&harness, 2);
+    harness.event(button(at, PointerButton::Primary, true, Modifiers::NONE));
+    harness.event(button(at, PointerButton::Primary, false, Modifiers::NONE));
+    driver.act(&mut harness);
+    assert!(harness.state().menu_open());
+    assert_eq!(harness.state().selected(), ids[1..=3]);
+    // Nor the other button's: the menu is not opened again on the photo under it.
+    harness.event(button(at, PointerButton::Secondary, true, Modifiers::NONE));
+    harness.event(button(at, PointerButton::Secondary, false, Modifiers::NONE));
+    driver.act(&mut harness);
+    assert!(harness.state().menu_open());
+    assert_eq!(harness.state().selected(), ids[1..=3]);
+}
+
+// The same, as a drag: a band under an open menu selects other photos than the ones
+// the menu is about.
+#[test]
+fn a_drag_from_where_the_menu_opened_draws_no_band_under_the_open_menu() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = library(dir.path(), 900, 0, 0);
+    let ids = photo_ids(&library);
+    let (mut harness, mut driver) = opened(&library, 900);
+    right_click(&mut driver, &mut harness, 2);
+    driver.settle(&mut harness);
+    assert!(harness.state().menu_open());
+
+    let (from, to) = (middle(&harness, 2), middle(&harness, 0));
+    harness.event(button(from, PointerButton::Primary, true, Modifiers::NONE));
+    harness.event(egui::Event::PointerMoved(to));
+    driver.act(&mut harness);
+    assert!(!harness.state().last_frame().unwrap().banding);
+    assert_eq!(harness.state().selected(), [ids[2]]);
+    harness.event(button(to, PointerButton::Primary, false, Modifiers::NONE));
+    driver.act(&mut harness);
+    assert_eq!(harness.state().selected(), [ids[2]]);
+}
+
+// The keys of a frame are answered in order, and a key that writes acts on what was
+// selected when it was pressed: `H` and then an arrow in one frame - a long frame, the
+// one that puts a rebuilt grid of a large library on screen - hid the photo the arrow
+// went to, and left the one `H` was pressed on.
+#[test]
+fn a_key_that_writes_acts_on_what_was_selected_when_it_was_pressed() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = library(dir.path(), 900, 0, 0);
+    let ids = photo_ids(&library);
+    let (mut harness, mut driver) = opened(&library, 900);
+    pick(&mut driver, &mut harness, 4, Modifiers::NONE);
+    assert_eq!(harness.state().selected(), [ids[4]]);
+    // Both in one frame's input, `H` first.
+    harness.input_mut().events.push(key_down(Key::H));
+    harness.input_mut().events.push(key_down(Key::ArrowRight));
+    driver.act(&mut harness);
+    driver.until(&mut harness, "one hidden", |app| app.photos() == 899);
+    let shown = harness.state().shown();
+    assert!(!shown.contains(&ids[4]) && shown.contains(&ids[5]));
+}
+
+// Which way `H` goes, and what a menu offers, is decided by the view of the grid on
+// screen, whose photos are the ones selected - not by the view a step on its way leads
+// to. The seam is the library's write lock: a sort is rebuilt and then stored, so it
+// stands at its store, and the switch to Hidden waits its turn behind it.
+#[test]
+fn the_hide_key_and_the_menu_go_by_the_view_on_screen_not_by_the_one_being_gone_to() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = library(dir.path(), 900, 0, 0);
+    let ids = photo_ids(&library);
+    let (mut harness, mut driver) = opened(&library, 900);
+    pick(&mut driver, &mut harness, 4, Modifiers::NONE);
+    driver.settle(&mut harness);
+
+    let other = rusqlite::Connection::open(library.dirs().db_path).unwrap();
+    other.busy_timeout(Duration::from_secs(20)).unwrap();
+    other.execute_batch("BEGIN IMMEDIATE").unwrap();
+    let sort = photon_core::sort::Sort {
+        reverse: true,
+        ..harness.state().sort()
+    };
+    harness.state_mut().go(Step::Sort(sort));
+    harness.state_mut().go(Step::View(GridView::Hidden));
+    driver.act(&mut harness);
+    // All photos is on screen, with its photo selected; Hidden is where the user is going.
+    assert_eq!(harness.state().settled(), &Place::of(GridView::All));
+    assert_eq!(harness.state().place(), Place::of(GridView::Hidden));
+    assert_eq!(harness.state().selected(), [ids[4]]);
+    right_click(&mut driver, &mut harness, 4);
+    assert!(harness.query_by_label("Hide photo").is_some());
+    assert!(harness.query_by_label("Unhide photo").is_none());
+    key(&mut driver, &mut harness, Key::Escape, Modifiers::NONE);
+    key(&mut driver, &mut harness, Key::H, Modifiers::NONE);
+    other.execute_batch("ROLLBACK").unwrap();
+
+    driver.until(&mut harness, "Hidden shown", |app| {
+        app.settled() == &Place::of(GridView::Hidden) && !app.busy()
+    });
+    driver.settle(&mut harness);
+    // The photo was hidden: it was a photo of All photos that `H` was pressed on.
+    assert_eq!(harness.state().shown(), [ids[4]]);
+}
+
+// A hide pressed in the instant before the window is closed is made: the window waits
+// for its writes. The first of two stands at the library's write lock, held from
+// outside, and the second waits its turn behind it; the window is closed over both.
+#[test]
+fn a_write_asked_for_just_before_the_window_closes_is_made() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = library(dir.path(), 900, 0, 0);
+    let ids = photo_ids(&library);
+    let (mut harness, mut driver) = opened(&library, 900);
+    let other = rusqlite::Connection::open(library.dirs().db_path).unwrap();
+    other.busy_timeout(Duration::from_secs(20)).unwrap();
+    other.execute_batch("BEGIN IMMEDIATE").unwrap();
+    pick(&mut driver, &mut harness, 4, Modifiers::NONE);
+    key(&mut driver, &mut harness, Key::H, Modifiers::NONE);
+    pick(&mut driver, &mut harness, 8, Modifiers::NONE);
+    key(&mut driver, &mut harness, Key::H, Modifiers::NONE);
+    // The lock is let go of a moment after the window has begun to close. (Should this
+    // thread be held up for longer than that moment, the writes are made before the
+    // window closes, and the test says less: it does not fail for it.)
+    let release = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(300));
+        other.execute_batch("ROLLBACK").unwrap();
+    });
+    drop(harness);
+    release.join().unwrap();
+    let lib = Library::open(&library.dirs().db_path).unwrap();
+    let hidden = |id: i64| lib.item(id).unwrap().unwrap().hidden;
+    assert!(hidden(ids[4]) && hidden(ids[8]));
+}
+
+// A menu taller than the window: the wheel over it scrolls the menu, and the photos
+// under it stay where they are.
+#[test]
+fn the_wheel_over_a_menu_does_not_move_the_photos_under_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = library(dir.path(), 900, 0, 0);
+    for n in 0..60 {
+        album(&library, &format!("Album {n:02}"));
+    }
+    let (mut harness, mut driver) = opened(&library, 900);
+    driver.until(&mut harness, "the albums read", |app| {
+        app.collections().albums.len() == 60
+    });
+    right_click(&mut driver, &mut harness, 1);
+    driver.settle(&mut harness);
+    assert!(harness.query_by_label("Hide photo").is_some());
+    let on_screen = harness.state().last_frame().unwrap().on_screen.clone();
+    let over = middle(&harness, 1) + egui::vec2(40.0, 40.0);
+    harness.event(egui::Event::PointerMoved(over));
+    for _ in 0..5 {
+        harness.event(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, -300.0),
+            phase: egui::TouchPhase::Move,
+            modifiers: Modifiers::NONE,
+        });
+    }
+    driver.act(&mut harness);
+    driver.settle(&mut harness);
+    driver.frames_in(&mut harness, 1.0);
+    assert!(harness.state().menu_open());
+    assert_eq!(harness.state().last_frame().unwrap().on_screen, on_screen);
+    // Beside the menu the wheel is the photos'.
+    let beside = middle(&harness, 0);
+    harness.event(egui::Event::PointerMoved(beside));
+    harness.event(egui::Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Point,
+        delta: egui::vec2(0.0, -600.0),
+        phase: egui::TouchPhase::Move,
+        modifiers: Modifiers::NONE,
+    });
+    driver.act(&mut harness);
+    driver.settle(&mut harness);
+    driver.frames_in(&mut harness, 1.0);
+    assert_ne!(harness.state().last_frame().unwrap().on_screen, on_screen);
 }
 
 #[test]

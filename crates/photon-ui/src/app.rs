@@ -5,7 +5,7 @@ use crate::{
     empty::{self, GridState, LibraryFacts, Panel, PanelButton},
     events::{Event, UiEvents},
     grid::{
-        view::{Align, Ask, GridData, GridOutput, GridView},
+        view::{Align, Ask, Asked, GridData, GridOutput, GridView},
         visible::VisibleReport,
     },
     icons,
@@ -53,6 +53,10 @@ const THUMB_TIMEOUT: Duration = Duration::from_secs(30);
 const DECODERS: usize = 2;
 /// How often the engine is asked whether its first scans are started, until they are.
 const LAUNCH_POLL: Duration = Duration::from_millis(50);
+/// How long a closing window waits for the writes it was asked for. Longer than the five
+/// seconds a write waits for the library's lock, and short enough that a folder on a
+/// share that has gone does not keep the window open.
+const WRITES_PATIENCE: Duration = Duration::from_secs(10);
 
 pub struct App {
     engine: Arc<Engine>,
@@ -182,8 +186,9 @@ enum Wrote {
     },
     /// A write whose rebuild says everything there is to say: a hide.
     Grid,
-    /// A write the lists are read again for: the engine announces a change only when
-    /// the album on screen is the one that changed.
+    /// A write the lists are read again for: the engine announces a change of the
+    /// albums only while an album is on screen (`Engine::albums_changed`), and the
+    /// counts in the sidebar are wanted in every view.
     Lists,
     Removed {
         name: String,
@@ -701,7 +706,11 @@ impl App {
     /// in its turn off this thread; the grid is told nothing, its rebuild arrives like
     /// any other, and `Selection::follow` takes out what left and lands the lead.
     fn pick(&mut self, action: TileAction) {
-        let ids = self.selection.ids(&self.index);
+        self.write(action, self.selection.ids(&self.index));
+    }
+
+    /// Queues what `action` writes, for the photos `ids`.
+    fn write(&mut self, action: TileAction, ids: Vec<i64>) {
         let write = match action {
             TileAction::Star(starred) => Write::Stars { ids, starred },
             TileAction::Hide(hidden) => Write::Hidden { ids, hidden },
@@ -727,15 +736,22 @@ impl App {
         self.writes.push(write);
     }
 
-    /// What a key asked of the selection: the menu's item, without the menu.
-    fn ask(&mut self, ask: Ask) {
-        let action = match ask {
+    /// What a key asked of the selection: the menu's item, without the menu - for the
+    /// photos that were selected at the key, which the ask carries. The frame's later
+    /// keys and clicks have been answered by now, and the selection is theirs.
+    fn ask(&mut self, asked: Asked) {
+        let action = match asked.ask {
             // One key for the menu's two items: starred, the deciding photo has the
             // whole selection unstarred; not, all of it is starred.
-            Ask::Star => TileAction::Star(!self.deciding().is_some_and(|entry| entry.starred)),
+            Ask::Star => {
+                let starred = (asked.deciding)
+                    .and_then(|id| self.entry(id))
+                    .is_some_and(|entry| entry.starred);
+                TileAction::Star(!starred)
+            }
             Ask::Hide => TileAction::Hide(self.nav.settled().view != View::Hidden),
         };
-        self.pick(action);
+        self.write(action, asked.ids);
     }
 
     /// The status bar's count of the photos shown, when there is one to give.
@@ -1222,6 +1238,13 @@ impl App {
 
     fn close(&mut self) {
         if !std::mem::replace(&mut self.closed, true) {
+            // What the user asked to be written is written before the engine goes: a
+            // star or a hide pressed in the instant before the window was closed was
+            // dropped with the queue, without a word. Not for ever - a write can hang,
+            // and the window has to close.
+            if !self.writes.finish(WRITES_PATIENCE) {
+                tracing::warn!("the window closed before every change was stored");
+            }
             self.engine.shutdown();
         }
     }

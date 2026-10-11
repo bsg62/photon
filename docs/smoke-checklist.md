@@ -732,4 +732,8 @@ Not released: these are for whoever tries the branch `native-ui`. The Svelte int
 - [ ] "Add to album" → an album: its count in the sidebar goes up and the photos stay selected. In the album, "Remove photo from “…”" takes it out and the next is ringed. In a named person's view, "Remove photo from “Anna”" takes the photo off her and a message says so (or says that Picasa names her on it, and it stays).
 - [ ] Open the menu on a photo and let a scan take that photo away (delete its file): the menu closes. Take another photo away instead: the menu stays, on the same photo.
 - [ ] With the caret in the search box, right-click a photo: the caret is gone from the box, and after Escape the arrow keys move the selection.
+- [ ] Right-click a photo inside a selection of several and, without moving the mouse, click: the menu stays and the selection is what it was. Drag from that same place: no band is drawn under the menu.
+- [ ] Give an album a very long name: the menu is no wider than the window and the name is cut short in it.
+- [ ] Press `H` on a photo and close the window at once: start photon again, and the photo is in Hidden.
+- [ ] On a Mac, hold Control and click a photo: its menu opens.
 - [ ] Leave a menu open and watch the processor: photon-native goes quiet.

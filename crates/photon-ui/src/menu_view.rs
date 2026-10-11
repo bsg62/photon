@@ -24,7 +24,7 @@ use crate::{
     },
 };
 use eframe::egui::{
-    self, Event, Id, Key, Order, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2, WidgetInfo,
+    self, Event, Id, Key, LayerId, Order, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2, WidgetInfo,
     WidgetType, pos2, vec2,
 };
 
@@ -42,6 +42,10 @@ const LEAD: f32 = 10.0;
 const SUB_LEAD: f32 = 18.0;
 /// The least room between an item's words and the key beside them.
 const HINT_GAP: f32 = S[4];
+/// The menu's area, by name.
+const AREA: &str = "context-menu";
+/// How far the area reaches beyond the menu drawn in it.
+const RIM: f32 = 1.0;
 
 /// What a frame of an open menu came to.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -61,6 +65,21 @@ pub struct MenuView {
     active: Option<usize>,
     /// How far a menu taller than the window is scrolled.
     scrolled: f32,
+    /// What the items were when the keys were last put somewhere: `active` is a number
+    /// among them, and means nothing among others.
+    items: u64,
+}
+
+/// A menu's items as one number: which can be picked, under which words.
+fn signature<A>(items: &[Item<A>]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    for item in items {
+        if let Item::Pick { label, works, .. } = item {
+            (label, works).hash(&mut hasher);
+        }
+    }
+    hasher.finish()
 }
 
 fn height<A>(item: &Item<A>) -> f32 {
@@ -106,10 +125,11 @@ impl MenuView {
             .ceil();
         let whole: f32 = items.iter().map(height).sum::<f32>() + 2.0 * S[0];
         let window = ctx.content_rect();
-        // Never taller than the window, so that all of it can be placed on screen: what
-        // does not fit is scrolled to.
+        // Never larger than the window, so that all of it can be placed on screen: what
+        // is too tall is scrolled to, and words too long - an album's name is as long
+        // as its owner likes - are cut short.
         let size = vec2(
-            inner + 2.0 * S[0],
+            (inner + 2.0 * S[0]).min(window.width() - 2.0 * MENU_MARGIN),
             whole.min(window.height() - 2.0 * MENU_MARGIN),
         );
         let (x, y) = place_menu(
@@ -126,7 +146,14 @@ impl MenuView {
             .filter(|(_, item)| item.works())
             .map(|(index, _)| index)
             .collect();
-        self.active = self.active.filter(|active| *active < working.len());
+        // The keys are on an item by its number, and the items are built again in
+        // every frame: when they are other items - a grid took one of two photos, and
+        // two star items became one - the number names another, and Enter would pick
+        // what the keys were never taken to. They go back to the menu itself.
+        let now = signature(items);
+        if std::mem::replace(&mut self.items, now) != now {
+            self.active = None;
+        }
 
         // The keys, before anything else in the frame reads them.
         let mut pressed = Vec::new();
@@ -144,8 +171,9 @@ impl MenuView {
                     }
                     false
                 }
-                // What a key types is the menu's too, and it types nothing.
-                Event::Text(_) => false,
+                // What a key types is the menu's too, and it types nothing. So are a
+                // cut, a copy and a paste, which is what egui makes of their chords.
+                Event::Text(_) | Event::Copy | Event::Cut | Event::Paste(_) => false,
                 _ => true,
             });
         });
@@ -175,25 +203,33 @@ impl MenuView {
         // becomes a drag is never a click, and the menu stayed open over a rubber band
         // that had selected other photos than the ones it was about. The press is left
         // for whatever it landed on.
-        let outside = ctx.input(|input| {
-            input.pointer.any_pressed()
-                && (input.pointer.interact_pos()).is_some_and(|pointer| !rect.contains(pointer))
+        //
+        // Outside is where egui says the menu's area is not the top one - the question
+        // the grid asks of a press too (`GridView::take_pointer`), so the two cannot
+        // come to different answers about one press: asked of this rectangle here and
+        // of egui there, a press where the menu had opened was inside the menu and the
+        // photo's under it as well, egui putting an area on whole points whatever it is
+        // asked for.
+        let layer = LayerId::new(Order::Foreground, Id::new(AREA));
+        let on_menu = |at: Pos2| ctx.layer_id_at(at) == Some(layer);
+        // (Asked after the input is let go of: egui's memory is another lock.)
+        let pressed = ctx.input(|input| {
+            (input.pointer.any_pressed())
+                .then(|| input.pointer.interact_pos())
+                .flatten()
         });
+        let outside = pressed.is_some_and(|pointer| !on_menu(pointer));
         if outside {
             return Outcome::Closed;
         }
 
-        // The wheel over a menu taller than the window scrolls the menu, and nothing
-        // under it.
-        let over = ctx.input(|input| {
-            input
-                .pointer
-                .latest_pos()
-                .is_some_and(|at| rect.contains(at))
-        });
-        if over {
-            let turned = ctx.input_mut(|input| std::mem::take(&mut input.smooth_scroll_delta));
-            self.scrolled -= turned.y;
+        // The wheel over a menu taller than the window scrolls the menu. (Nothing under
+        // it does: what scrolls asks egui whether the pointer is over its own layer.)
+        if ctx
+            .input(|input| input.pointer.latest_pos())
+            .is_some_and(on_menu)
+        {
+            self.scrolled -= ctx.input(|input| input.smooth_scroll_delta.y);
         }
         // The item the keys went to is brought into sight.
         if stepped && let Some(active) = self.active {
@@ -207,14 +243,20 @@ impl MenuView {
 
         let moved = ctx.input(|input| input.pointer.delta() != Vec2::ZERO);
         let mut hovered = None;
-        egui::Area::new(Id::new("context-menu"))
+        // The area is a point larger all round than the menu drawn in it: the pointer
+        // rests exactly where the menu opened, at its corner, and egui puts an area on
+        // whole points - half a point away, the corner was outside the menu or inside
+        // it by where on a point the pointer happened to be.
+        egui::Area::new(Id::new(AREA))
             .order(Order::Foreground)
-            .fixed_pos(rect.min)
+            .fixed_pos(rect.min - Vec2::splat(RIM))
             // There at once, as a menu is: egui fades a new area in over a few frames,
             // each of them asked for.
             .fade_in(false)
             .show(ctx, |ui| {
-                let (menu, _) = ui.allocate_exact_size(size, Sense::hover());
+                let (ground, _) =
+                    ui.allocate_exact_size(size + Vec2::splat(2.0 * RIM), Sense::hover());
+                let menu = ground.shrink(RIM);
                 let painter = ui.painter().clone();
                 painter.add(menu_shadow().as_shape(menu, R[2]));
                 painter.rect_filled(menu, R[2], color(palette.raised));
@@ -246,8 +288,11 @@ impl MenuView {
                             let shown = row.intersect(inside);
                             // Pressed, never given the keyboard: the keys are the
                             // menu's because it is open.
-                            let response =
-                                ui.interact(shown, ui.id().with(("item", index)), Sense::CLICK);
+                            // By its words as well as its place: a press on an item
+                            // that is another by the time the button comes up is no
+                            // click of the new one.
+                            let id = ui.id().with(("item", index, label));
+                            let response = ui.interact(shown, id, Sense::CLICK);
                             response.widget_info(|| {
                                 WidgetInfo::labeled(WidgetType::Button, *works, label)
                             });
@@ -393,6 +438,11 @@ mod tests {
         repaint: std::time::Duration,
         /// Whether something that takes the keyboard is drawn behind the menu.
         button: bool,
+        /// A button behind the menu, where it is, and whether the last frame clicked it.
+        behind: Option<Rect>,
+        behind_clicked: bool,
+        /// Whether a cut, a copy or a paste was left in the frame's input.
+        clipboard_left_over: bool,
     }
 
     fn each_shape(shape: &egui::Shape, visit: &mut impl FnMut(&egui::Shape)) {
@@ -417,6 +467,9 @@ mod tests {
                 typed_left_over: false,
                 repaint: std::time::Duration::MAX,
                 button: false,
+                behind: None,
+                behind_clicked: false,
+                clipboard_left_over: false,
             }
         }
 
@@ -429,13 +482,17 @@ mod tests {
             };
             self.time += 1.0 / 60.0;
             let (view, at, items) = (&mut self.view, self.at, &self.items);
-            let button = self.button;
+            let (button, behind) = (self.button, self.behind);
             let mut outcome = Outcome::Open;
-            let (mut left_over, mut typed) = (Vec::new(), false);
+            let (mut left_over, mut typed, mut clipboard) = (Vec::new(), false, false);
+            let mut behind_clicked = false;
             let mut full = self.ctx.run_ui(input, |ui| {
                 outcome = view.show(ui, at, items);
                 if button {
                     let _ = ui.button("behind");
+                }
+                if let Some(behind) = behind {
+                    behind_clicked = ui.put(behind, egui::Button::new("under")).clicked();
                 }
                 ui.input(|input| {
                     for event in &input.events {
@@ -444,11 +501,14 @@ mod tests {
                                 key, pressed: true, ..
                             } => left_over.push(*key),
                             Event::Text(_) => typed = true,
+                            Event::Copy | Event::Cut | Event::Paste(_) => clipboard = true,
                             _ => {}
                         }
                     }
                 });
             });
+            self.behind_clicked = behind_clicked;
+            self.clipboard_left_over = clipboard;
             full.textures_delta.clear();
             self.left_over = left_over;
             self.typed_left_over = typed;
@@ -802,6 +862,155 @@ mod tests {
         // The keys are on the menu itself again, and Enter picks nothing.
         assert_eq!(f.active(), None);
         assert_eq!(f.key(Key::Enter), Outcome::Open);
+    }
+
+    // The wheel is the menu's only over the menu: beside it, it is whatever lies there.
+    #[test]
+    fn the_wheel_beside_a_menu_is_not_the_menus() {
+        let mut f = Fixture::new(pos2(300.0, 200.0));
+        f.items = (0..60)
+            .map(|n| pick(&format!("Album {n}"), None, true, n))
+            .collect();
+        f.open();
+        let first = f.drew("Album 0").unwrap();
+        f.frame(vec![Event::PointerMoved(pos2(40.0, 300.0))]);
+        for _ in 0..3 {
+            f.frame(vec![Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: vec2(0.0, -200.0),
+                phase: egui::TouchPhase::Move,
+                modifiers: Modifiers::NONE,
+            }]);
+        }
+        f.frame(Vec::new());
+        assert_eq!(f.drew("Album 0").unwrap(), first);
+    }
+
+    // ---- from the review ----
+
+    // The keys are on an item by its number among those that work, and the tile's menu
+    // is built again in every frame: a grid that takes one of two selected photos turns
+    // "Star 2 photos" and "Unstar 2 photos" into one item, and the number that was
+    // "Hide 2 photos" is another item's. Enter picked what the keys were never taken
+    // to. Items that are other items put the keys back on the menu itself.
+    #[test]
+    fn the_keys_go_back_to_the_menu_itself_when_its_items_become_others() {
+        let mut f = Fixture::new(pos2(300.0, 200.0));
+        f.items = vec![
+            pick("Star 2 photos", Some("."), true, 1),
+            pick("Unstar 2 photos", None, true, 2),
+            pick("Hide 2 photos", Some("H"), true, 3),
+            Item::Separator,
+            pick("Lisbon", None, true, 5),
+        ];
+        f.open();
+        f.key(Key::ArrowDown);
+        f.key(Key::ArrowDown);
+        f.key(Key::ArrowDown);
+        assert_eq!(f.active().as_deref(), Some("Hide 2 photos"));
+        // The same items drawn again are the same items.
+        f.frame(Vec::new());
+        assert_eq!(f.active().as_deref(), Some("Hide 2 photos"));
+        // One of the two photos leaves the grid: the menu is of one photo now.
+        f.items = vec![
+            pick("Star photo", Some("."), true, 1),
+            pick("Hide photo", Some("H"), true, 3),
+            Item::Separator,
+            pick("Lisbon", None, true, 5),
+        ];
+        assert_eq!(f.key(Key::Enter), Outcome::Open);
+        assert_eq!(f.active(), None);
+        // And an item that only stops working is another item too.
+        f.key(Key::End);
+        assert_eq!(f.active().as_deref(), Some("Lisbon"));
+        f.items[3] = pick("Lisbon", None, false, 5);
+        assert_eq!(f.key(Key::Enter), Outcome::Open);
+        assert_eq!(f.active(), None);
+    }
+
+    // A press on an item that has become another between the button going down and
+    // coming up is no pick of the new one.
+    #[test]
+    fn a_click_begun_on_an_item_that_is_replaced_under_it_picks_nothing() {
+        let mut f = Fixture::new(pos2(300.0, 200.0));
+        f.open();
+        let hide = f.drew("Hide photo").unwrap().center();
+        f.frame(vec![Event::PointerMoved(hide)]);
+        f.press(hide, true);
+        // What stands there now is another item.
+        f.items[2] = pick("Hide 2 photos", Some("H"), true, 9);
+        assert_eq!(f.press(hide, false), Outcome::Open);
+    }
+
+    // An album's name, or a person's in "Remove photo from", can be as long as it likes.
+    #[test]
+    fn a_menu_wider_than_the_window_is_held_to_it_and_its_words_cut_short() {
+        let mut f = Fixture::new(pos2(300.0, 200.0));
+        let long = "Summer in the mountains ".repeat(12);
+        f.items = vec![
+            pick(&long, Some("H"), true, 1),
+            pick("Lisbon", None, true, 2),
+        ];
+        f.open();
+        let menu = f.menu();
+        let window = Rect::from_min_size(Pos2::ZERO, WINDOW).shrink(MENU_MARGIN - 0.5);
+        assert!(window.contains_rect(menu), "{menu:?}");
+        // Its key's hint is still at the trailing edge, inside the menu.
+        let hint = f.drew("H").expect("the hint is drawn");
+        assert!(hint.right() < menu.right() && hint.left() > menu.center().x);
+        // And the words end before it.
+        let words = f.drew(&long).expect("the item's words are drawn");
+        assert!(words.left() > menu.left() && words.right() < hint.left());
+    }
+
+    // A button under the menu's edge is not pressed through it: an area takes the
+    // clicks on its own ground. (What reads a press from the frame's events, as the
+    // grid does, has to ask which layer is on top itself.)
+    #[test]
+    fn a_press_just_inside_the_menus_edge_is_not_a_buttons_under_it() {
+        let mut f = Fixture::new(pos2(300.0, 200.0));
+        f.behind = Some(Rect::from_min_size(pos2(280.0, 180.0), vec2(120.0, 60.0)));
+        f.open();
+        for at in [pos2(300.0, 200.0), pos2(302.0, 215.0), pos2(350.0, 202.0)] {
+            assert_eq!(f.click(at), Outcome::Open, "{at:?}");
+            assert!(!f.behind_clicked, "{at:?}");
+        }
+        // Beside the menu it is pressed as ever, and the menu closes at that press.
+        let beside = pos2(290.0, 190.0);
+        f.frame(vec![Event::PointerMoved(beside)]);
+        assert_eq!(f.press(beside, true), Outcome::Closed);
+    }
+
+    // The pointer rests where the menu opened, and that place is the menu's, wherever
+    // on a point it is and whichever way the menu stands from it: a click there closes
+    // nothing and is nobody else's.
+    #[test]
+    fn the_place_a_menu_opened_at_is_inside_it() {
+        for at in [
+            pos2(300.0, 200.0),
+            pos2(300.5, 200.5),
+            pos2(300.4, 200.6),
+            // Up and to the left of the pointer.
+            pos2(900.5, 600.5),
+            pos2(900.6, 600.4),
+        ] {
+            let mut f = Fixture::new(at);
+            f.open();
+            f.frame(vec![Event::PointerMoved(at)]);
+            assert_eq!(f.press(at, true), Outcome::Open, "{at:?}");
+            assert_eq!(f.press(at, false), Outcome::Open, "{at:?}");
+        }
+    }
+
+    // Ctrl+C is no key to egui: it arrives as a copy.
+    #[test]
+    fn a_cut_a_copy_and_a_paste_are_the_menus_too() {
+        let mut f = Fixture::new(pos2(300.0, 200.0));
+        f.open();
+        for event in [Event::Copy, Event::Cut, Event::Paste("lisbon".to_owned())] {
+            assert_eq!(f.frame(vec![event]), Outcome::Open);
+            assert!(!f.clipboard_left_over);
+        }
     }
 
     #[test]
