@@ -1705,6 +1705,39 @@ selected" before the count from two photos on, and gives AccessKit those words, 
 how a test of the whole application reads them. A test presses a photo where
 `App::tile_rect` says it was last drawn.
 
+**The rubber band is a rectangle in the layout's coordinates** (`grid/view.rs`'s `Band`,
+`take_band`), so it keeps its grip on the photos it began over while the grid scrolls
+under it; its far corner is worked out again in every frame from where the pointer was
+last seen in the window. `items_in_rect` says what it touches, by the rule `tile_at`
+clicks by (a test walks a grid asking both of every point). The selection holds what the
+band started from (`Selection::band_begin`, `band_to`, `band_end`, `band_cancel`): every
+frame is that plus what the rectangle covers now, read from the index on screen - which
+is why the Svelte band's second answer from the backend, its count of photos not yet
+resolved and its abandoning when the grid was rebuilt under it have no successor: a
+scan's grid arrives, `follow` takes what left out of the band's two sets, and the
+rectangle covers what it covers in the new grid.
+
+**What ends a drag is egui's to say, and it says less than a browser.** egui ends a drag
+at Escape itself, before anything is drawn (so the band reads Escape from the frame and
+takes it out: left in, the keys after it cleared the selection the band had just put
+back), and at the button coming up - and at nothing else: a pointer that leaves the
+window stays a drag, with no position (`latest_pos` is none, so the band keeps the last
+one it saw - the edge it was scrolling towards). There is no `pointercancel`. The ending
+that is left to guard against is a button let go of over another window and never heard
+of: egui goes on calling the photos dragged, and a pointer last seen in a margin would
+scroll to the end of the library selecting all the way - the Svelte band's old bug. So
+**a band is abandoned when the window loses the focus** with the button down. Its fourth
+ending is the selection cleared under it by a grid of other results: the view finds its
+band's sets gone and drops its rectangle. While a band is held the grid answers no key
+but Escape, and `GridOutput::banding` says so to whatever would open over it. A drag on
+the photos takes the keyboard off whatever had it, as a click on one does: egui does that
+at a click elsewhere and not at a press that becomes a drag, and the Escape that
+abandons a band was a text field's. The scroll at an edge is the edge's speed times the
+time since the band's last frame, at most fifty milliseconds of it, and a frame is asked
+for only while the pointer rests in a margin; a band begun with Shift adds, as one begun
+with Ctrl does, though a Shift+click ranges. A press held still past egui's click limit
+is a drag, so it is a band over the one point: the photo under it, or nothing.
+
 **Tests of the whole application drive it through `tests/common`'s `Driver`**: `until`
 draws the frames that are asked for, `settle` waits in real time for the other threads,
 `frames_in` counts what a stretch of the clock draws. A row is clicked by its name

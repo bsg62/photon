@@ -140,3 +140,14 @@ impl Selection {
   selected and no band; a window with a band held still draws nothing.
 - [ ] Pictures: a band half drawn, light and dark.
 - [ ] The smoke checklist; CLAUDE.md; push; one fresh reviewer; one fix pass; merge.
+
+**Changed in the making.** The spec's "the pointer lost to the window" is no ending egui
+has: a pointer that leaves the window stays a drag, and egui ends one only at the button
+coming up and at Escape. What is left to guard against is the button let go of over
+another window and never heard of, and the band is abandoned when the window loses the
+focus. The part of a point the Svelte loop carries over from frame to frame is not
+ported: the native grid's position is not a whole number of points. No `drop_band` is
+called by the application: the view finds the selection's band gone - cleared with the
+selection - and drops its rectangle. Four probes passed at first, each a test that did
+not tell: a band given by its other corners, one wholly left of the photos, and the
+frame's lag between the grid's scroll and what the band covers.

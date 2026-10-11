@@ -8,10 +8,11 @@
 use super::{
     header,
     layout::{
-        GAP, HEADER, NavKey, PinnedHeader, Row, RowKind, build_rows, columns_for, defers_thumbs,
-        has_header, header_rows, move_from, page_move, pin_at, pin_top, pinned_header, row_of_item,
-        row_width, scroll_into_grid, scroll_to_start, shows_timeline, tile_at, tile_for, tile_row,
-        tile_width, top_folder_id, total_height, visible_range, wanted_range,
+        GAP, HEADER, NavKey, PinnedHeader, Row, RowKind, Span, build_rows, columns_for,
+        defers_thumbs, edge_scroll_speed, has_header, header_rows, items_in_rect, move_from,
+        page_move, pin_at, pin_top, pinned_header, row_of_item, row_width, scroll_into_grid,
+        scroll_to_start, shows_timeline, tile_at, tile_for, tile_row, tile_width, top_folder_id,
+        total_height, visible_range, wanted_range,
     },
     motion::{Direction, Motion, ScrollSpeed},
     scroll::{BAR_WIDTH, Scroll},
@@ -31,8 +32,8 @@ use crate::{
     thumbs::{loader::Want, shown::Thumbs},
 };
 use eframe::egui::{
-    self, Align2, CursorIcon, Event, Key, PointerButton, Rect, Sense, Stroke, StrokeKind,
-    UiBuilder, Vec2, WidgetInfo, pos2, vec2,
+    self, Align2, CursorIcon, Event, Key, Modifiers, PointerButton, Rect, Sense, Stroke,
+    StrokeKind, UiBuilder, Vec2, WidgetInfo, pos2, vec2,
 };
 use jiff::tz::TimeZone;
 use photon_core::{
@@ -43,6 +44,42 @@ use std::{collections::HashMap, time::Duration};
 
 /// The least a page key scrolls a grid with nothing selected in it.
 const LEAST_PAGE: f64 = 40.0;
+/// How near the top or the bottom of the grid a rubber band scrolls it, and how fast at
+/// the most, in points a second. The Svelte grid's numbers.
+const BAND_EDGE: f64 = 48.0;
+const BAND_SCROLL_MAX: f64 = 1400.0;
+/// The longest frame a band's scroll is worked out for, in seconds: a frame that took
+/// half a second - the window dragged, the machine asleep - is not half a second of
+/// scroll.
+const BAND_FRAME_MAX: f64 = 0.05;
+
+/// A rubber band being drawn.
+#[derive(Clone, Copy, Debug)]
+struct Band {
+    /// Where the button went down, in the layout's coordinates: the band keeps its grip
+    /// on the photos it was started over while the grid scrolls under it.
+    origin: (f64, f64),
+    /// Where the pointer was last seen, in the window's: the far corner is worked out
+    /// from it again in every frame, the grid having moved under a pointer that holds
+    /// still. Kept because a pointer that leaves the window is no longer seen at all,
+    /// and is then where it left - at the edge it is scrolling towards.
+    pointer: egui::Pos2,
+    /// When the last frame of its scroll was drawn, in seconds.
+    scrolled_at: Option<f64>,
+}
+
+impl Band {
+    /// The band's rectangle in the layout's coordinates, for a grid drawn in `area`
+    /// at `position`.
+    fn span(&self, area: Rect, position: f64) -> Span {
+        Span {
+            x0: self.origin.0,
+            y0: self.origin.1,
+            x1: f64::from(self.pointer.x - area.left()),
+            y1: f64::from(self.pointer.y - area.top()) + position,
+        }
+    }
+}
 /// Strip points between two printed years: a line of the label's type plus air.
 const MIN_LABEL_GAP: f64 = 16.0;
 /// The line a year is printed in, its top where the year begins.
@@ -146,6 +183,8 @@ pub struct GridOutput {
     pub top_folder: Option<i64>,
     /// Whether the year strip stands beside the grid.
     pub strip: bool,
+    /// Whether a rubber band is being drawn: nothing opens over one.
+    pub banding: bool,
 }
 
 /// Where a photo asked for is put.
@@ -190,6 +229,7 @@ pub struct GridView {
     drawn: Option<(Rect, f64)>,
     /// Whether something else had the keyboard when the grid was last drawn.
     elsewhere: bool,
+    band: Option<Band>,
 }
 
 impl GridView {
@@ -295,6 +335,7 @@ impl GridView {
 
         let (settled, marked) = self.draw(ui, area, data, thumbs, selection, (first, last));
         self.drawn = Some((area, top));
+        self.draw_band(ui, area, top);
         let pinned = pinned_header(&self.rows, &self.headers, top);
         if let Some(pinned) = pinned
             && let Some(section) = data.index.sections().get(pinned.section)
@@ -323,6 +364,7 @@ impl GridView {
             loading,
             top_folder: top_folder_id(&self.rows, data.index.sections(), top),
             strip: strip.is_some(),
+            banding: self.band.is_some(),
         }
     }
 
@@ -523,8 +565,13 @@ impl GridView {
             return;
         };
         let index = data.index;
-        // No stop of the Tab key: the grid has the keys whenever no text field does.
-        let response = ui.interact(area, ui.id().with("grid-photos"), Sense::CLICK);
+        // No stop of the Tab key: the grid has the keys whenever nothing else does.
+        let response = ui.interact(
+            area,
+            ui.id().with("grid-photos"),
+            Sense::CLICK | Sense::DRAG,
+        );
+        self.take_band(ui, area, &response, index, selection, laid.tile);
         if response.clicked()
             && let Some(pointer) = response.interact_pointer_pos()
         {
@@ -566,7 +613,9 @@ impl GridView {
 
         let elsewhere = ui.memory(|memory| memory.focused().is_some());
         let was_elsewhere = std::mem::replace(&mut self.elsewhere, elsewhere);
-        if elsewhere || was_elsewhere || !data.keys {
+        // A drag owns the grid while it lasts: Escape abandons it (`take_band`) and
+        // every other key is ignored, not acted on under a rectangle that is selecting.
+        if elsewhere || was_elsewhere || !data.keys || self.band.is_some() {
             return;
         }
         for (key, shift) in ui.input(grid_keys) {
@@ -597,6 +646,129 @@ impl GridView {
             }
             self.place(index, to, Align::Nearest, viewport);
         }
+    }
+
+    /// The rubber band: a press on the photos that becomes a drag draws a rectangle, and
+    /// what it touches is selected - in place of what was, or with Ctrl, Cmd or Shift
+    /// held as it begins, as well.
+    ///
+    /// Whether a press is a drag is egui's to say (the pointer six points from where
+    /// the button went down, or the button held past the time a click may take), and a
+    /// drag is this widget's until the button comes up, wherever the pointer goes.
+    ///
+    /// **It has one teardown, and every ending comes through it**: the button coming up,
+    /// which keeps what the band covers; Escape, which puts back what was selected;
+    /// the window left with the button still down, which does the same; and the
+    /// selection cleared under it by a grid of other results, which leaves nothing to
+    /// put back. A band that outlived its drag would go on scrolling the grid and
+    /// rewriting the selection, which is what the Svelte grid's did when a touch was
+    /// taken from it. The window left is that case here: a button let go of over
+    /// another window may never be heard of, egui goes on calling the photos dragged,
+    /// and a pointer last seen in a margin would scroll to the end of the library.
+    fn take_band(
+        &mut self,
+        ui: &egui::Ui,
+        area: Rect,
+        response: &egui::Response,
+        index: &GridIndex,
+        selection: &mut Selection,
+        tile: f64,
+    ) {
+        let top = self.scroll.position();
+        if response.drag_started_by(PointerButton::Primary)
+            && let Some(origin) = ui.input(|input| input.pointer.press_origin())
+        {
+            let y = f64::from(origin.y - area.top());
+            // Not from the pinned header: it lies over a row of photos, and a band
+            // from it would begin on photos nobody can see.
+            let on_pinned = pinned_header(&self.rows, &self.headers, top).is_some() && y < HEADER;
+            if !on_pinned {
+                let modifiers = ui.input(|input| input.modifiers);
+                selection.band_begin(modifiers.command || modifiers.shift);
+                self.band = Some(Band {
+                    origin: (f64::from(origin.x - area.left()), y + top),
+                    pointer: origin,
+                    scrolled_at: None,
+                });
+                // A drag on the photos gives them the keys, as a click on one does:
+                // egui takes the keyboard off a widget at a click elsewhere, not at a
+                // press that becomes a drag, and the Escape that abandons this band
+                // would be a text field's.
+                if let Some(focused) = ui.memory(|memory| memory.focused()) {
+                    ui.memory_mut(|memory| memory.surrender_focus(focused));
+                }
+            }
+        }
+        let Some(mut band) = self.band.take() else {
+            return;
+        };
+        // The selection was cleared under the band: it began in another grid.
+        if !selection.banding() {
+            return;
+        }
+        // Escape is the band's key and nobody's after it: left in the frame, the keys
+        // below would clear the selection the band has just put back. (egui itself ends
+        // a drag at Escape, before anything is drawn.)
+        let escaped = ui.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Escape));
+        if escaped || !ui.input(|input| input.focused) {
+            selection.band_cancel();
+            return;
+        }
+        if let Some(pointer) = ui.input(|input| input.pointer.latest_pos()) {
+            band.pointer = pointer;
+        }
+        // No longer dragged, and neither of the above: the button came up.
+        if !response.dragged_by(PointerButton::Primary) {
+            let covered = items_in_rect(&self.rows, band.span(area, top), tile);
+            selection.band_end(index, &covered);
+            return;
+        }
+        // Held near the top or the bottom edge, the grid scrolls under it: by the
+        // edge's speed times this frame's own duration, so as fast on a screen of 120
+        // frames a second as on one of 60. A frame is asked for for as long as the
+        // pointer rests there, also where the grid cannot move: the wheel still turns
+        // during a drag and a scan can lengthen the grid, and neither would start the
+        // scroll again.
+        let (edge_top, edge_bottom) = (f64::from(area.top()), f64::from(area.bottom()));
+        let speed = edge_scroll_speed(
+            f64::from(band.pointer.y),
+            edge_top,
+            edge_bottom,
+            BAND_EDGE,
+            BAND_SCROLL_MAX,
+        );
+        if speed == 0.0 {
+            band.scrolled_at = None;
+        } else {
+            let now = ui.input(|input| input.time);
+            let elapsed = band.scrolled_at.map_or(0.0, |before| now - before);
+            band.scrolled_at = Some(now);
+            self.scroll
+                .scroll_by(speed * elapsed.clamp(0.0, BAND_FRAME_MAX));
+            ui.ctx().request_repaint();
+        }
+        let covered = items_in_rect(&self.rows, band.span(area, self.scroll.position()), tile);
+        selection.band_to(index, &covered);
+        self.band = Some(band);
+    }
+
+    /// Draws the band over the photos, cut at the grid's edges.
+    fn draw_band(&self, ui: &egui::Ui, area: Rect, top: f64) {
+        let Some(band) = self.band else {
+            return;
+        };
+        let span = band.span(area, top);
+        let at = |x: f64, y: f64| pos2(area.left() + x as f32, area.top() + (y - top) as f32);
+        let rect = Rect::from_two_pos(at(span.x0, span.y0), at(span.x1, span.y1));
+        let palette = palette(ui.ctx());
+        let painter = ui.painter_at(area);
+        painter.rect_filled(rect, R[0], color(palette.accent_soft));
+        painter.rect_stroke(
+            rect,
+            R[0],
+            Stroke::new(1.0, color(palette.accent)),
+            StrokeKind::Outside,
+        );
     }
 
     /// The thumbnails to ask for, most wanted first - what is in view, then what the scroll
@@ -898,6 +1070,10 @@ mod tests {
         selection: Selection,
         /// Whether the grid is drawn as All photos.
         library: bool,
+        /// How long a frame is, in seconds.
+        dt: f64,
+        /// Whether the window has been left for another.
+        left: bool,
         /// The modifier keys held in the frames to come, and those egui was last told of.
         held: Modifiers,
         told: Modifiers,
@@ -972,6 +1148,8 @@ mod tests {
             tile: GridTile::Medium,
             selection: Selection::default(),
             library: true,
+            dt: 1.0 / 60.0,
+            left: false,
             held: Modifiers::NONE,
             told: Modifiers::NONE,
             rings: Vec::new(),
@@ -1036,9 +1214,10 @@ mod tests {
                 screen_rect: Some(Rect::from_min_size(Pos2::ZERO, self.size)),
                 time: Some(self.time),
                 events,
+                focused: !self.left,
                 ..Default::default()
             };
-            self.time += 1.0 / 60.0;
+            self.time += self.dt;
             let folders = HashMap::new();
             let data = GridData {
                 layout_gen: self.layout_gen,
@@ -1180,6 +1359,36 @@ mod tests {
                 repeat: false,
                 modifiers,
             }])
+        }
+
+        /// The button down at `from`, and the pointer taken to `to` with it held: far
+        /// enough, and it is a drag. Each a frame.
+        fn drag(&mut self, from: Pos2, to: Pos2) -> GridOutput {
+            self.frame(vec![Event::PointerMoved(from)]);
+            self.button(from, true);
+            self.to(to)
+        }
+
+        /// The pointer taken to `at`, whatever is held.
+        fn to(&mut self, at: Pos2) -> GridOutput {
+            self.frame(vec![Event::PointerMoved(at)])
+        }
+
+        /// The middle of the photo at grid offset `offset`.
+        fn middle(&self, offset: usize) -> Pos2 {
+            self.view
+                .rect_of(offset)
+                .expect("the photo is laid out")
+                .center()
+        }
+
+        /// The band's rectangle as the last frame drew it: the one filled in the soft
+        /// accent.
+        fn band(&self) -> Option<Rect> {
+            let soft = color(palette(&self.ctx).accent_soft);
+            (self.fills.iter())
+                .find(|(_, fill)| *fill == soft)
+                .map(|(rect, _)| *rect)
         }
 
         /// The ids selected, in the grid's order.
@@ -2496,5 +2705,388 @@ mod tests {
         // And on the bar itself the grid goes there, as before.
         let frame = f.click_at(Pos2::new(794.0, 400.0), Modifiers::NONE);
         assert!(frame.position > 1000.0, "{}", frame.position);
+    }
+
+    // ---- the rubber band ----
+
+    #[test]
+    fn a_drag_across_the_photos_selects_what_its_rectangle_touches() {
+        let mut f = fixture(&[200]);
+        f.frame(Vec::new());
+        // From the second photo of the first row to the third of the second.
+        let (from, to) = (f.middle(1), f.middle(6));
+        let frame = f.drag(from, to);
+        assert!(frame.banding);
+        assert_eq!(f.picked(), [2, 3, 6, 7]);
+        assert_eq!(f.ringed(), [1, 2, 5, 6]);
+        // The rectangle is drawn from where the button went down to the pointer.
+        let band = f.band().expect("the band is drawn");
+        assert!((band.min - from).length() < 1.0, "{band:?}");
+        assert!((band.max - to).length() < 1.0, "{band:?}");
+        // The lead is not moved by a band being drawn.
+        assert_eq!(f.lead(), None);
+
+        let frame = f.button(to, false);
+        assert!(!frame.banding);
+        assert_eq!(f.band(), None);
+        assert_eq!(f.picked(), [2, 3, 6, 7]);
+        // Let go of, the lead is on the band's first photo.
+        assert_eq!(f.lead(), Some(1));
+    }
+
+    #[test]
+    fn a_band_dragged_back_takes_photos_off_again() {
+        let mut f = fixture(&[200]);
+        f.frame(Vec::new());
+        f.drag(f.middle(1), f.middle(10));
+        assert_eq!(f.picked(), [2, 3, 6, 7, 10, 11]);
+        f.to(f.middle(2));
+        assert_eq!(f.picked(), [2, 3]);
+        // Up and to the left of where it began.
+        f.to(f.middle(0));
+        assert_eq!(f.picked(), [1, 2]);
+        f.button(f.middle(0), false);
+        assert_eq!(f.picked(), [1, 2]);
+        assert_eq!(f.lead(), Some(0));
+    }
+
+    #[test]
+    fn a_band_replaces_the_selection_and_with_ctrl_or_shift_adds_to_it() {
+        for (held, picked) in [
+            (Modifiers::NONE, vec![2, 3]),
+            (Modifiers::COMMAND, vec![2, 3, 10]),
+            (Modifiers::SHIFT, vec![2, 3, 10]),
+        ] {
+            let mut f = fixture(&[200]);
+            f.frame(Vec::new());
+            f.click(9, Modifiers::NONE);
+            f.held = held;
+            let to = f.middle(2);
+            f.drag(f.middle(1), to);
+            assert_eq!(f.picked(), picked, "{held:?}");
+            // Whatever is held when the button comes up: it is how the band began.
+            f.held = Modifiers::NONE;
+            f.button(to, false);
+            assert_eq!(f.picked(), picked, "{held:?}");
+        }
+    }
+
+    // Dragging over empty room is how a selection is cleared with the mouse.
+    #[test]
+    fn a_band_over_no_photo_clears_the_selection() {
+        let mut f = fixture(&[200]);
+        f.frame(Vec::new());
+        f.click(5, Modifiers::NONE);
+        // Down the gutter between the first two columns.
+        let (from, to) = (Pos2::new(199.0, 50.0), Pos2::new(199.0, 400.0));
+        f.drag(from, to);
+        assert!(f.picked().is_empty());
+        f.button(to, false);
+        assert!(f.picked().is_empty());
+        assert_eq!(f.lead(), None);
+    }
+
+    #[test]
+    fn a_press_that_does_not_move_is_still_a_click() {
+        let mut f = fixture(&[200]);
+        f.frame(Vec::new());
+        let at = f.middle(5);
+        f.frame(vec![Event::PointerMoved(at)]);
+        f.button(at, true);
+        // A few points, as a hand does: not a drag.
+        let frame = f.to(at + vec2(3.0, 2.0));
+        assert!(!frame.banding);
+        assert_eq!(f.band(), None);
+        f.button(at + vec2(3.0, 2.0), false);
+        assert_eq!(f.picked(), [6]);
+        assert_eq!(f.lead(), Some(5));
+    }
+
+    #[test]
+    fn escape_abandons_a_band_and_the_rest_of_that_press_selects_nothing() {
+        let mut f = fixture(&[200]);
+        f.frame(Vec::new());
+        f.click(9, Modifiers::NONE);
+        f.drag(f.middle(1), f.middle(6));
+        assert_eq!(f.picked(), [2, 3, 6, 7]);
+        let frame = f.key(Key::Escape);
+        assert!(!frame.banding);
+        assert_eq!(f.band(), None);
+        // What was selected before the band is back, not cleared by the key.
+        assert_eq!(f.picked(), [10]);
+        assert_eq!(f.lead(), Some(9));
+        // The button is still down and the pointer goes on: nothing follows it.
+        let frame = f.to(f.middle(11));
+        assert!(!frame.banding);
+        assert_eq!(f.picked(), [10]);
+        f.button(f.middle(11), false);
+        assert_eq!(f.picked(), [10]);
+        // And the next press is a band again.
+        f.frame(vec![Event::Key {
+            key: Key::Escape,
+            physical_key: None,
+            pressed: false,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        }]);
+        f.drag(f.middle(1), f.middle(2));
+        assert_eq!(f.picked(), [2, 3]);
+    }
+
+    // The pinned header lies over photos nobody can see; the scrollbar and the strip
+    // are their own.
+    #[test]
+    fn a_drag_begun_on_the_pinned_header_the_scrollbar_or_the_strip_is_no_band() {
+        let mut f = two_years();
+        f.frame(Vec::new());
+        f.view.scroll_to(430.0);
+        f.frame(Vec::new());
+        let strip = STRIP_LEFT + 20.0;
+        let bar = STRIP_LEFT - BAR_WIDTH as f32 / 2.0;
+        for from in [
+            Pos2::new(100.0, 10.0),
+            Pos2::new(bar, 200.0),
+            Pos2::new(strip, 200.0),
+        ] {
+            let frame = f.drag(from, Pos2::new(300.0, 300.0));
+            assert!(!frame.banding, "{from:?}");
+            assert!(f.picked().is_empty(), "{from:?}");
+            f.button(Pos2::new(300.0, 300.0), false);
+            assert!(f.picked().is_empty(), "{from:?}");
+        }
+    }
+
+    #[test]
+    fn a_band_keeps_its_grip_on_the_photos_it_began_over_while_the_wheel_turns() {
+        let mut f = fixture(&[200]);
+        f.frame(Vec::new());
+        let (from, to) = (f.middle(1), f.middle(6));
+        f.drag(from, to);
+        // The grid goes down two rows under a pointer that holds still. egui spreads a
+        // turn of the wheel over a few frames.
+        f.frame(vec![Event::MouseWheel {
+            unit: MouseWheelUnit::Point,
+            delta: vec2(0.0, -390.0),
+            phase: TouchPhase::Move,
+            modifiers: Modifiers::NONE,
+        }]);
+        for _ in 0..60 {
+            f.frame(Vec::new());
+        }
+        assert!((f.view.scroll.position() - 390.0).abs() < 0.5);
+        // The origin is still on the second photo; the pointer is two rows further on.
+        assert_eq!(f.picked(), [2, 3, 6, 7, 10, 11, 14, 15]);
+        let band = f.band().unwrap();
+        assert!((band.top() - (from.y - 390.0)).abs() < 1.0, "{band:?}");
+        assert!((band.bottom() - to.y).abs() < 1.0, "{band:?}");
+    }
+
+    /// A band held in the bottom margin for `frames` frames of `dt` seconds: how far
+    /// the grid went.
+    fn held_at_the_bottom(dt: f64, frames: usize) -> (Fixture, f64) {
+        let mut f = fixture(&[4000]);
+        f.frame(Vec::new());
+        f.dt = dt;
+        // Twelve points from the bottom edge: three quarters of the way into the margin.
+        f.drag(f.middle(1), Pos2::new(300.0, 588.0));
+        let mut position = 0.0;
+        for _ in 0..frames {
+            position = f.frame(Vec::new()).position;
+        }
+        (f, position)
+    }
+
+    #[test]
+    fn a_band_held_near_the_bottom_edge_scrolls_the_grid_and_grows() {
+        let (mut f, position) = held_at_the_bottom(1.0 / 60.0, 60);
+        // Three quarters of 1,400 points a second, for a second.
+        assert!((position - 1050.0).abs() < 25.0, "{position}");
+        // The band has grown with it: from the photo it began on to the one under the
+        // pointer now, rows further down.
+        // It is one column wide - the pointer is straight under where it began - so
+        // one photo of each row it has passed, down to the row under the pointer.
+        let picked = f.picked();
+        assert_eq!(picked[0], 2);
+        assert!(picked.len() >= 8, "{picked:?}");
+        assert!(picked.iter().all(|id| id % 4 == 2), "{picked:?}");
+        // And each frame of it was asked for.
+        assert_eq!(f.repaint_delay, Duration::ZERO);
+        // In the top margin it goes back up.
+        f.to(Pos2::new(300.0, 12.0));
+        let up = f.frame(Vec::new()).position;
+        assert!(up < position, "{up}");
+    }
+
+    // In the frame the grid moves, the band covers what it is drawn over: worked out
+    // from where the grid was, the photo under the pointer was a frame late in each row.
+    #[test]
+    fn a_scrolling_band_selects_what_is_under_the_pointer_in_the_same_frame() {
+        let mut f = fixture(&[400]);
+        f.frame(Vec::new());
+        let pointer = Pos2::new(300.0, 590.0);
+        f.drag(f.middle(1), pointer);
+        let mut rows_met = std::collections::HashSet::new();
+        for _ in 0..90 {
+            f.frame(Vec::new());
+            let under = (0..400).find(|offset| f.view.rect_of(*offset).unwrap().contains(pointer));
+            if let Some(under) = under {
+                rows_met.insert(under);
+                assert!(f.picked().contains(&(under as i64 + 1)), "photo {under}");
+            }
+        }
+        assert!(rows_met.len() > 5, "{rows_met:?}");
+    }
+
+    // The speed is points a second: a faster screen draws more frames of less each.
+    #[test]
+    fn a_band_scrolls_as_far_in_a_second_whatever_the_frame_rate() {
+        let (_, at_60) = held_at_the_bottom(1.0 / 60.0, 60);
+        let (_, at_120) = held_at_the_bottom(1.0 / 120.0, 120);
+        assert!((at_60 - at_120).abs() < 25.0, "{at_60} {at_120}");
+    }
+
+    // A frame that took half a second - the window dragged, the machine asleep - is
+    // not half a second of scroll.
+    #[test]
+    fn a_long_frame_scrolls_no_further_than_fifty_milliseconds_does() {
+        let (_, position) = held_at_the_bottom(0.5, 4);
+        assert!(position <= 4.0 * 0.05 * 1400.0, "{position}");
+        assert!(position > 0.0);
+    }
+
+    #[test]
+    fn a_band_held_still_away_from_the_edges_asks_for_no_frame() {
+        let mut f = fixture(&[4000]);
+        f.frame(Vec::new());
+        f.drag(f.middle(1), f.middle(6));
+        f.frame(Vec::new());
+        let frame = f.frame(Vec::new());
+        assert_eq!(frame.position, 0.0);
+        assert_eq!(f.repaint_delay, Duration::MAX);
+    }
+
+    #[test]
+    fn the_keys_do_nothing_while_a_band_is_held() {
+        let mut f = fixture(&[200]);
+        f.frame(Vec::new());
+        f.drag(f.middle(1), f.middle(6));
+        for (key, held) in [
+            (Key::ArrowRight, Modifiers::NONE),
+            (Key::End, Modifiers::NONE),
+            (Key::PageDown, Modifiers::NONE),
+            (Key::A, Modifiers::COMMAND),
+        ] {
+            let frame = f.key_with(key, held);
+            assert!(frame.banding, "{key:?}");
+            assert_eq!(f.picked(), [2, 3, 6, 7], "{key:?}");
+            assert_eq!(frame.position, 0.0, "{key:?}");
+        }
+    }
+
+    // A drag on the photos gives them the keys, as a click on one does: the Escape
+    // that abandons the band must not be a text field's.
+    #[test]
+    fn a_band_takes_the_keyboard_from_whatever_had_it() {
+        let mut f = fixture(&[200]);
+        f.frame(Vec::new());
+        f.click(9, Modifiers::NONE);
+        f.button = Some(true);
+        f.frame(Vec::new());
+        f.frame(Vec::new());
+        f.button = Some(false);
+        assert!(f.ctx.memory(|memory| memory.focused().is_some()));
+        f.drag(f.middle(1), f.middle(6));
+        assert!(f.ctx.memory(|memory| memory.focused().is_none()));
+        f.key(Key::Escape);
+        assert_eq!(f.picked(), [10]);
+    }
+
+    // The selection was cleared under the band - a step's grid arrived: the band began
+    // in the grid before, and nothing of it goes on.
+    #[test]
+    fn a_band_ends_when_the_selection_is_cleared_under_it() {
+        let mut f = fixture(&[200]);
+        f.frame(Vec::new());
+        f.drag(f.middle(1), f.middle(6));
+        f.selection.clear();
+        let frame = f.to(f.middle(10));
+        assert!(!frame.banding);
+        assert_eq!(f.band(), None);
+        assert!(f.picked().is_empty());
+        f.button(f.middle(10), false);
+        assert!(f.picked().is_empty());
+        // The next press is a band of its own.
+        f.drag(f.middle(1), f.middle(2));
+        assert_eq!(f.picked(), [2, 3]);
+    }
+
+    // The origin is a place in the layout, not in the window: deep in a library the
+    // two are thousands of points apart.
+    #[test]
+    fn a_band_begun_deep_in_the_grid_is_over_the_photos_under_the_pointer() {
+        let mut f = fixture(&[200]);
+        f.frame(Vec::new());
+        f.view.scroll_to(4000.0);
+        f.frame(Vec::new());
+        let (first, last) = (f.top_photo() + 5, f.top_photo() + 10);
+        f.drag(f.middle(first), f.middle(last));
+        let ids = |offsets: [usize; 4]| offsets.map(|offset| offset as i64 + 1);
+        assert_eq!(f.picked(), ids([first, first + 1, last - 1, last]));
+        f.button(f.middle(last), false);
+        assert_eq!(f.lead(), Some(first));
+    }
+
+    #[test]
+    fn a_drag_with_the_other_button_is_no_band() {
+        let mut f = fixture(&[200]);
+        f.frame(Vec::new());
+        f.click(9, Modifiers::NONE);
+        let (from, to) = (f.middle(1), f.middle(6));
+        f.frame(vec![Event::PointerMoved(from)]);
+        let other = |pos, pressed| Event::PointerButton {
+            pos,
+            button: PointerButton::Secondary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        };
+        f.frame(vec![other(from, true)]);
+        let frame = f.to(to);
+        assert!(!frame.banding);
+        assert_eq!(f.band(), None);
+        f.frame(vec![other(to, false)]);
+        assert_eq!(f.picked(), [10]);
+    }
+
+    // A button let go of over another window may never be heard of: egui goes on
+    // calling the photos dragged, and a pointer last seen in a margin would scroll to
+    // the end of the library, selecting all the way.
+    #[test]
+    fn a_band_is_abandoned_when_the_window_is_left_with_the_button_down() {
+        let mut f = fixture(&[4000]);
+        f.frame(Vec::new());
+        f.click(9, Modifiers::NONE);
+        f.drag(f.middle(1), Pos2::new(300.0, 590.0));
+        f.frame(Vec::new());
+        assert!(f.frame(Vec::new()).position > 0.0);
+        f.left = true;
+        let frame = f.frame(Vec::new());
+        assert!(!frame.banding);
+        assert_eq!(f.picked(), [10]);
+        // Nothing scrolls while it is away, and once the scroll that was has counted as
+        // over nothing is asked for; nor when the window is come back to.
+        let at = frame.position;
+        for _ in 0..30 {
+            assert_eq!(f.frame(Vec::new()).position, at);
+        }
+        assert_eq!(f.repaint_delay, Duration::MAX);
+        f.left = false;
+        assert_eq!(f.frame(Vec::new()).position, at);
+        assert_eq!(f.picked(), [10]);
+        // The button comes up at last, and the next press is a band of its own.
+        f.button(Pos2::new(300.0, 590.0), false);
+        assert_eq!(f.picked(), [10]);
+        let (from, to) = (f.top_photo() + 5, f.top_photo() + 6);
+        f.drag(f.middle(from), f.middle(to));
+        assert_eq!(f.picked(), [from as i64 + 1, to as i64 + 1]);
     }
 }

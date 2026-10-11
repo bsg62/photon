@@ -323,6 +323,36 @@ fn selection(harness: &mut Harness<'_>) {
     harness.step();
 }
 
+/// A rubber band half drawn, the button still down: its rectangle over the photos it
+/// has taken, added to one picked before it.
+fn band(harness: &mut Harness<'_>) {
+    pick(harness, 12, Modifiers::NONE);
+    let from = harness.state().tile_rect(1).unwrap().center();
+    let to = harness.state().tile_rect(9).unwrap().center() + vec2(30.0, 40.0);
+    harness.event(egui::Event::ModifiersChanged(Modifiers::COMMAND));
+    harness.event(egui::Event::PointerMoved(from));
+    harness.event(egui::Event::PointerButton {
+        pos: from,
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: Modifiers::COMMAND,
+    });
+    harness.event(egui::Event::PointerMoved(to));
+    harness.step();
+}
+
+#[test]
+#[ignore = "renders through a GPU adapter: cargo run -p xtask -- native-shot"]
+fn native_band_light() {
+    shot(ThemeChoice::Light, "native-band-light.png", band);
+}
+
+#[test]
+#[ignore = "renders through a GPU adapter: cargo run -p xtask -- native-shot"]
+fn native_band_dark() {
+    shot(ThemeChoice::Dark, "native-band-dark.png", band);
+}
+
 #[test]
 #[ignore = "renders through a GPU adapter: cargo run -p xtask -- native-shot"]
 fn native_selection_light() {
