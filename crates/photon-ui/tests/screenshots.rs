@@ -291,6 +291,50 @@ fn native_by_month_large_light() {
     );
 }
 
+/// Clicks the photo at grid offset `offset` with `held` down.
+fn pick(harness: &mut Harness<'_>, offset: usize, held: Modifiers) {
+    let at = (harness.state().tile_rect(offset))
+        .expect("the photo is laid out")
+        .center();
+    harness.event(egui::Event::ModifiersChanged(held));
+    harness.event(egui::Event::PointerMoved(at));
+    harness.step();
+    for pressed in [true, false] {
+        harness.event(egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: held,
+        });
+        harness.step();
+    }
+    harness.event(egui::Event::ModifiersChanged(Modifiers::NONE));
+    harness.step();
+}
+
+/// A run of photos picked with Shift and one more with Ctrl: their rings, and the count
+/// of them in the status bar, before the photos'.
+fn selection(harness: &mut Harness<'_>) {
+    pick(harness, 1, Modifiers::NONE);
+    pick(harness, 4, Modifiers::SHIFT);
+    pick(harness, 9, Modifiers::COMMAND);
+    // The pointer off the photos, as it is not in the picture.
+    harness.event(egui::Event::PointerGone);
+    harness.step();
+}
+
+#[test]
+#[ignore = "renders through a GPU adapter: cargo run -p xtask -- native-shot"]
+fn native_selection_light() {
+    shot(ThemeChoice::Light, "native-selection-light.png", selection);
+}
+
+#[test]
+#[ignore = "renders through a GPU adapter: cargo run -p xtask -- native-shot"]
+fn native_selection_dark() {
+    shot(ThemeChoice::Dark, "native-selection-dark.png", selection);
+}
+
 // A library that watches nothing, as a first run is where there is no Pictures folder:
 // what it says where its photos would be, its buttons drawn and not yet answering, and
 // "No folders yet." in the sidebar.

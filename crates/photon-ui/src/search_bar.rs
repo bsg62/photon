@@ -17,8 +17,9 @@ use crate::{
     },
 };
 use eframe::egui::{
-    self, Event, EventFilter, Id, Key, Order, Rect, Sense, Stroke, StrokeKind, UiBuilder,
-    WidgetInfo, WidgetType, epaint::Shadow, pos2, text::CCursor, text::CCursorRange, vec2,
+    self, Event, EventFilter, Id, Key, Modifiers, Order, Rect, Sense, Stroke, StrokeKind,
+    UiBuilder, WidgetInfo, WidgetType, epaint::Shadow, pos2, text::CCursor, text::CCursorRange,
+    vec2,
 };
 
 /// The field: at most this wide, and this tall in the middle of the bar.
@@ -187,6 +188,11 @@ impl SearchBar {
         // search has nothing: clearing sends the empty query, which is All photos, and
         // would throw the user out of Starred with a key that cleared nothing. There the
         // key only leaves the box, which egui's field does by itself.
+        if escape && (self.help || had_focus) {
+            // The key is the box's, and nothing drawn after it hears it: the grid would
+            // take it for its own, and clear the selection with the key that left the box.
+            ui.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Escape));
+        }
         if escape && self.help {
             self.help = false;
         } else if escape && had_focus && (!text.is_empty() || data.in_search) {

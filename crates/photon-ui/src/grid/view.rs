@@ -8,10 +8,10 @@
 use super::{
     header,
     layout::{
-        GAP, HEADER, PinnedHeader, Row, RowKind, build_rows, columns_for, defers_thumbs,
-        has_header, header_rows, pin_at, pin_top, pinned_header, row_of_item, row_width,
-        scroll_into_grid, scroll_to_start, shows_timeline, tile_for, tile_row, tile_width,
-        top_folder_id, total_height, visible_range, wanted_range,
+        GAP, HEADER, NavKey, PinnedHeader, Row, RowKind, build_rows, columns_for, defers_thumbs,
+        has_header, header_rows, move_from, page_move, pin_at, pin_top, pinned_header, row_of_item,
+        row_width, scroll_into_grid, scroll_to_start, shows_timeline, tile_at, tile_for, tile_row,
+        tile_width, top_folder_id, total_height, visible_range, wanted_range,
     },
     motion::{Direction, Motion, ScrollSpeed},
     scroll::{BAR_WIDTH, Scroll},
@@ -22,6 +22,7 @@ use super::{
     },
 };
 use crate::{
+    selection::Selection,
     theme::{
         apply::{color, menu_shadow, palette},
         fonts,
@@ -30,8 +31,8 @@ use crate::{
     thumbs::{loader::Want, shown::Thumbs},
 };
 use eframe::egui::{
-    self, Align2, CursorIcon, Key, Rect, Sense, Stroke, StrokeKind, UiBuilder, Vec2, WidgetInfo,
-    pos2, vec2,
+    self, Align2, CursorIcon, Event, Key, PointerButton, Rect, Sense, Stroke, StrokeKind,
+    UiBuilder, Vec2, WidgetInfo, pos2, vec2,
 };
 use jiff::tz::TimeZone;
 use photon_core::{
@@ -40,8 +41,8 @@ use photon_core::{
 };
 use std::{collections::HashMap, time::Duration};
 
-/// How far an arrow key moves the grid.
-const ARROW_STEP: f64 = 40.0;
+/// The least a page key scrolls a grid with nothing selected in it.
+const LEAST_PAGE: f64 = 40.0;
 /// Strip points between two printed years: a line of the label's type plus air.
 const MIN_LABEL_GAP: f64 = 16.0;
 /// The line a year is printed in, its top where the year begins.
@@ -63,6 +64,64 @@ pub struct GridData<'a> {
     pub size: GridTile,
     /// The viewer's zone, for the month a folder's header names.
     pub zone: &'a TimeZone,
+    /// Whether the grid shows All photos: there Ctrl+A is the section under the lead,
+    /// and everywhere else the whole view (`Selection::select_all`).
+    pub library: bool,
+    /// Whether the keys may be the grid's at all: not while something lies open over the
+    /// photos that has no keyboard of its own to say so with (the search box's help).
+    pub keys: bool,
+}
+
+/// A key the grid answers, read from the frame's input.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GridKey {
+    Move(NavKey),
+    /// Page Down, or Page Up.
+    Page {
+        down: bool,
+    },
+    SelectAll,
+    Clear,
+}
+
+/// The keys of this frame that are the grid's, in the order they were pressed, each with
+/// whether Shift was held.
+///
+/// A key held down repeats, and each repeat moves again - but not Escape's: Escape in an
+/// empty search box hands the keys to the grid, and a key still held from there must not
+/// take the selection with it. A chord with Ctrl, Cmd or Alt is the system's or another
+/// part of the window's, but for Ctrl/Cmd+A.
+fn grid_keys(input: &egui::InputState) -> Vec<(GridKey, bool)> {
+    let mut keys = Vec::new();
+    for event in &input.events {
+        let Event::Key {
+            key,
+            pressed: true,
+            repeat,
+            modifiers,
+            ..
+        } = event
+        else {
+            continue;
+        };
+        let chord = modifiers.command || modifiers.ctrl || modifiers.alt;
+        let grid_key = match key {
+            Key::A if modifiers.command && !modifiers.alt => GridKey::SelectAll,
+            _ if chord => continue,
+            Key::ArrowLeft => GridKey::Move(NavKey::Left),
+            Key::ArrowRight => GridKey::Move(NavKey::Right),
+            Key::ArrowUp => GridKey::Move(NavKey::Up),
+            Key::ArrowDown => GridKey::Move(NavKey::Down),
+            Key::Home => GridKey::Move(NavKey::Home),
+            Key::End => GridKey::Move(NavKey::End),
+            Key::PageDown => GridKey::Page { down: true },
+            Key::PageUp => GridKey::Page { down: false },
+            Key::Escape if !repeat => GridKey::Clear,
+            _ => continue,
+        };
+        keys.push((grid_key, modifiers.shift));
+    }
+    keys
 }
 
 /// What a frame of the grid came to.
@@ -126,6 +185,11 @@ pub struct GridView {
     marks: Vec<YearMark>,
     /// Whether the strip is held.
     scrubbing: bool,
+    /// Where the photos were drawn in the last frame, and the position they were drawn
+    /// at: what `rect_of` answers from.
+    drawn: Option<(Rect, f64)>,
+    /// Whether something else had the keyboard when the grid was last drawn.
+    elsewhere: bool,
 }
 
 impl GridView {
@@ -169,11 +233,27 @@ impl GridView {
         self.scroll.max()
     }
 
+    /// Where the photo at grid offset `offset` was drawn in the last frame, in view or
+    /// not: what a test of the whole application presses.
+    pub fn rect_of(&self, offset: usize) -> Option<Rect> {
+        let (area, position) = self.drawn?;
+        let laid = self.laid_out?;
+        let row = self.rows[row_of_item(&self.rows, offset)?];
+        let column = (offset - row.first) as f64;
+        let x = area.left() + (GAP + column * tile_row(laid.tile)) as f32;
+        let y = area.top() + (row.top - position) as f32;
+        Some(Rect::from_min_size(
+            pos2(x, y),
+            Vec2::splat(laid.tile as f32),
+        ))
+    }
+
     pub fn show(
         &mut self,
         ui: &mut egui::Ui,
         data: &GridData<'_>,
         thumbs: &mut Thumbs,
+        selection: &mut Selection,
     ) -> GridOutput {
         let rect = ui.available_rect_before_wrap();
         ui.allocate_rect(rect, Sense::hover());
@@ -188,11 +268,14 @@ impl GridView {
         let area = Rect::from_min_max(rect.min, pos2(bar.left(), rect.bottom()));
 
         let rebuilt = self.lay_out(data, f64::from(area.width()), viewport);
-        self.take_place(data.index, viewport);
+        if let Some((offset, align)) = self.wanted.take() {
+            self.place(data.index, offset, align, viewport);
+        }
 
         // Measured after the layout: a place restored across a resize is not a scroll.
         let before = self.scroll.position();
         self.take_input(ui, rect, bar, strip, viewport);
+        self.take_picks(ui, area, data, selection, viewport);
         let now = ui.input(|input| input.time) * 1000.0;
         if self.scroll.position() != before {
             self.speed.sample(self.scroll.position(), now, viewport);
@@ -210,7 +293,8 @@ impl GridView {
         let (wanted, on_screen) = self.wanted(data.index, top, viewport, motion, (first, last));
         let loading = thumbs.frame(ui.ctx(), &wanted, defers_thumbs(motion, viewport));
 
-        let (settled, marked) = self.draw(ui, area, data, thumbs, (first, last));
+        let (settled, marked) = self.draw(ui, area, data, thumbs, selection, (first, last));
+        self.drawn = Some((area, top));
         let pinned = pinned_header(&self.rows, &self.headers, top);
         if let Some(pinned) = pinned
             && let Some(section) = data.index.sections().get(pinned.section)
@@ -265,13 +349,11 @@ impl GridView {
         })
     }
 
-    /// Puts the grid where a photo asked for is (`go_to`). One the rows do not hold - its
-    /// folder left the view between the click and the grid - moves nothing, and is not
-    /// kept for a grid that does.
-    fn take_place(&mut self, index: &GridIndex, viewport: f64) {
-        let Some((offset, align)) = self.wanted.take() else {
-            return;
-        };
+    /// Puts the grid where the photo at `offset` is: one asked for from outside (`go_to`),
+    /// or the one a key has just moved the lead to. One the rows do not hold - its folder
+    /// left the view between the click and the grid - moves nothing, and is not kept for
+    /// a grid that does.
+    fn place(&mut self, index: &GridIndex, offset: usize, align: Align, viewport: f64) {
         let Some(row) = row_of_item(&self.rows, offset).map(|at| self.rows[at]) else {
             return;
         };
@@ -349,35 +431,6 @@ impl GridView {
             }
         }
 
-        // The keys are the grid's unless a text field has them: with the search box
-        // focused, Home and End move its caret and not the library. The keys alone: the
-        // scrollbar below is the pointer's whoever has the keys.
-        if !ui.ctx().text_edit_focused() {
-            let row = self.laid_out.map_or(0.0, |laid| tile_row(laid.tile));
-            let page = (viewport - row).max(ARROW_STEP);
-            let scroll = &mut self.scroll;
-            ui.input(|input| {
-                if input.key_pressed(Key::Home) {
-                    scroll.set(0.0);
-                }
-                if input.key_pressed(Key::End) {
-                    scroll.set(f64::INFINITY);
-                }
-                if input.key_pressed(Key::PageDown) {
-                    scroll.scroll_by(page);
-                }
-                if input.key_pressed(Key::PageUp) {
-                    scroll.scroll_by(-page);
-                }
-                if input.key_pressed(Key::ArrowDown) {
-                    scroll.scroll_by(ARROW_STEP);
-                }
-                if input.key_pressed(Key::ArrowUp) {
-                    scroll.scroll_by(-ARROW_STEP);
-                }
-            });
-        }
-
         // A press on the thumb holds it where it was taken; a press on the track brings
         // the thumb's middle under the pointer. Either way the grid follows the pointer
         // for as long as the button is down.
@@ -434,6 +487,118 @@ impl GridView {
         }
     }
 
+    /// What the mouse and the keys pick this frame.
+    ///
+    /// A click on a photo selects it: alone, or with Ctrl/Cmd in or out of what is
+    /// selected, or with Shift everything from the anchor to it - and Shift wins when both
+    /// are held, as in every file manager. A click that is on no photo - a gutter, a
+    /// header, the room beside a short row - selects nothing and clears nothing.
+    ///
+    /// The arrows, Home and End move the lead and select the photo it lands on; with
+    /// Shift they select from the anchor to there, as a Shift+click does, and with
+    /// nothing selected there is no anchor to select from and the key is the plain one.
+    /// The page keys do the same a screenful at a time - but with nothing selected they
+    /// scroll: a move would start from the first photo, the top of the library from
+    /// wherever the wheel had got to. The grid follows the lead into sight.
+    ///
+    /// **The keys are the grid's only while nothing else has the keyboard**, and had
+    /// none when the grid was last drawn. Not "while no text field has it": the splitter
+    /// answers the arrows, a control with its list open the arrows, Home, End and the
+    /// letters, a button the Tab key reached lets the arrows walk on from it - and the
+    /// grid, drawn after all of them in the same frame, answered each of those keys a
+    /// second time, moving or clearing a selection behind what the user was working.
+    /// And not "has it now" alone: egui takes the keyboard off a widget at Escape
+    /// before anything is drawn, so in the frame of that Escape nothing has it, and
+    /// the key that left a control cleared the selection too. A click on a photo gives
+    /// the keys back: egui takes the keyboard off whatever had it at a click elsewhere.
+    fn take_picks(
+        &mut self,
+        ui: &egui::Ui,
+        area: Rect,
+        data: &GridData<'_>,
+        selection: &mut Selection,
+        viewport: f64,
+    ) {
+        let Some(laid) = self.laid_out else {
+            return;
+        };
+        let index = data.index;
+        // No stop of the Tab key: the grid has the keys whenever no text field does.
+        let response = ui.interact(area, ui.id().with("grid-photos"), Sense::CLICK);
+        if response.clicked()
+            && let Some(pointer) = response.interact_pointer_pos()
+        {
+            let top = self.scroll.position();
+            // The pinned header lies over a row of photos, and a press on it is the
+            // header's: the photo under it is one nobody can see. Its full height from
+            // the top, wherever it is drawn: while the next header pushes it out, what
+            // shows under it in those points is that header's own row, which is no
+            // photo either.
+            let on_pinned = pinned_header(&self.rows, &self.headers, top).is_some()
+                && f64::from(pointer.y - area.top()) < HEADER;
+            let x = f64::from(pointer.x - area.left());
+            let y = f64::from(pointer.y - area.top()) + top;
+            if !on_pinned && let Some(offset) = tile_at(&self.rows, x, y, laid.tile) {
+                // What was held as the button came up, from the release itself: read
+                // at the end of the frame, a Shift let go of in the frame of the click
+                // made it a plain one, and a frame is not always short.
+                let modifiers = ui.input(|input| {
+                    let released = input.events.iter().rev().find_map(|event| match event {
+                        Event::PointerButton {
+                            button: PointerButton::Primary,
+                            pressed: false,
+                            modifiers,
+                            ..
+                        } => Some(*modifiers),
+                        _ => None,
+                    });
+                    released.unwrap_or(input.modifiers)
+                });
+                if modifiers.shift {
+                    selection.extend(index, offset);
+                } else if modifiers.command {
+                    selection.toggle(index, offset);
+                } else {
+                    selection.select(index, offset);
+                }
+            }
+        }
+
+        let elsewhere = ui.memory(|memory| memory.focused().is_some());
+        let was_elsewhere = std::mem::replace(&mut self.elsewhere, elsewhere);
+        if elsewhere || was_elsewhere || !data.keys {
+            return;
+        }
+        for (key, shift) in ui.input(grid_keys) {
+            let lead = selection.lead().map(|lead| lead.offset);
+            let to = match key {
+                GridKey::SelectAll => {
+                    selection.select_all(index, data.library);
+                    continue;
+                }
+                GridKey::Clear => {
+                    selection.clear();
+                    continue;
+                }
+                GridKey::Page { down } => match lead {
+                    Some(lead) => page_move(&self.rows, lead, down, viewport),
+                    None => {
+                        let page = (viewport - tile_row(laid.tile)).max(LEAST_PAGE);
+                        self.scroll.scroll_by(if down { page } else { -page });
+                        continue;
+                    }
+                },
+                GridKey::Move(key) => move_from(lead, key, index.sections(), laid.columns),
+            };
+            if shift && lead.is_some() {
+                selection.extend(index, to);
+            } else {
+                selection.select(index, to);
+            }
+            self.place(index, to, Align::Nearest, viewport);
+        }
+    }
+
     /// The thumbnails to ask for, most wanted first - what is in view, then what the scroll
     /// is heading for, nearest first, then what it has just left - and the photos in view.
     fn wanted(
@@ -486,6 +651,7 @@ impl GridView {
         area: Rect,
         data: &GridData<'_>,
         thumbs: &mut Thumbs,
+        selection: &Selection,
         (first, last): (usize, usize),
     ) -> (bool, usize) {
         let Some(laid) = self.laid_out else {
@@ -525,7 +691,8 @@ impl GridView {
                         let texture = thumbs.texture(entry.thumb_key);
                         settled &= marked || texture.is_some();
                         marks += usize::from(marked);
-                        tile::paint(&clipped, rect, entry, texture, marked, palette);
+                        let selected = selection.is_selected(entry.id);
+                        tile::paint(&clipped, rect, entry, texture, marked, selected, palette);
                     }
                 }
             }
@@ -725,7 +892,17 @@ mod tests {
         space_above: f32,
         /// A text field above the grid that has the focus, and what is typed in it.
         typing: Option<String>,
+        /// A button above the grid, and whether it asks for the keyboard this frame.
+        button: Option<bool>,
         tile: GridTile,
+        selection: Selection,
+        /// Whether the grid is drawn as All photos.
+        library: bool,
+        /// The modifier keys held in the frames to come, and those egui was last told of.
+        held: Modifiers,
+        told: Modifiers,
+        /// Every rectangle the last frame outlined two points wide, inside it: the rings.
+        rings: Vec<Rect>,
         /// Every filled rectangle the last frame drew.
         fills: Vec<(Rect, egui::Color32)>,
         /// What the last frame drew: each text with where it is and what it is clipped
@@ -791,7 +968,13 @@ mod tests {
             repaint_delay: Duration::MAX,
             space_above: 0.0,
             typing: None,
+            button: None,
             tile: GridTile::Medium,
+            selection: Selection::default(),
+            library: true,
+            held: Modifiers::NONE,
+            told: Modifiers::NONE,
+            rings: Vec::new(),
             fills: Vec::new(),
             texts: Vec::new(),
             clip_tops: Vec::new(),
@@ -843,7 +1026,12 @@ mod tests {
     const STRIP_LEFT: f32 = 800.0 - TIMELINE_WIDTH as f32;
 
     impl Fixture {
-        fn frame(&mut self, events: Vec<Event>) -> GridOutput {
+        fn frame(&mut self, mut events: Vec<Event>) -> GridOutput {
+            // The keys held are told when they change, as a window tells them.
+            if self.told != self.held {
+                self.told = self.held;
+                events.insert(0, Event::ModifiersChanged(self.held));
+            }
             let input = RawInput {
                 screen_rect: Some(Rect::from_min_size(Pos2::ZERO, self.size)),
                 time: Some(self.time),
@@ -858,9 +1046,13 @@ mod tests {
                 folders: &folders,
                 size: self.tile,
                 zone: &TimeZone::UTC,
+                library: self.library,
+                keys: true,
             };
             let (view, thumbs, space) = (&mut self.view, &mut self.thumbs, self.space_above);
+            let selection = &mut self.selection;
             let typing = &mut self.typing;
+            let button = self.button;
             let mut output = None;
             let mut full = self.ctx.run_ui(input, |ui| {
                 egui::CentralPanel::default()
@@ -871,11 +1063,18 @@ mod tests {
                         if let Some(typed) = typing {
                             ui.add(egui::TextEdit::singleline(typed)).request_focus();
                         }
-                        output = Some(view.show(ui, &data, thumbs));
+                        if let Some(asks) = button {
+                            let response = ui.button("Something else");
+                            if asks {
+                                response.request_focus();
+                            }
+                        }
+                        output = Some(view.show(ui, &data, thumbs, selection));
                     });
             });
             full.textures_delta.clear();
             self.texts.clear();
+            self.rings.clear();
             self.clip_tops.clear();
             self.fills.clear();
             for clipped in &full.shapes {
@@ -887,6 +1086,11 @@ mod tests {
                     self.clip_tops.push(clip.top());
                     if let egui::Shape::Rect(rect) = shape {
                         self.fills.push((rect.rect, rect.fill));
+                        // Inside the tile: a ring around it is cut at the grid's top
+                        // edge, where a row lies flush.
+                        if rect.stroke.width == 2.0 && rect.stroke_kind == StrokeKind::Inside {
+                            self.rings.push(rect.rect);
+                        }
                     }
                     if let egui::Shape::Text(text) = shape {
                         let place = text.visual_bounding_rect();
@@ -944,6 +1148,62 @@ mod tests {
                 pressed,
                 modifiers: Modifiers::NONE,
             }])
+        }
+
+        /// A click at `at` with `held` down: the pointer there, the button down, and up.
+        fn click_at(&mut self, at: Pos2, held: Modifiers) -> GridOutput {
+            self.held = held;
+            self.frame(vec![Event::PointerMoved(at)]);
+            for pressed in [true, false] {
+                self.frame(vec![Event::PointerButton {
+                    pos: at,
+                    button: PointerButton::Primary,
+                    pressed,
+                    modifiers: held,
+                }]);
+            }
+            self.held = Modifiers::NONE;
+            self.frame(Vec::new())
+        }
+
+        /// A click in the middle of the photo at grid offset `offset`.
+        fn click(&mut self, offset: usize, held: Modifiers) -> GridOutput {
+            let at = self.view.rect_of(offset).expect("the photo is laid out");
+            self.click_at(at.center(), held)
+        }
+
+        fn key_with(&mut self, key: Key, modifiers: Modifiers) -> GridOutput {
+            self.frame(vec![Event::Key {
+                key,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers,
+            }])
+        }
+
+        /// The ids selected, in the grid's order.
+        fn picked(&self) -> Vec<i64> {
+            self.selection.ids(&self.index)
+        }
+
+        /// The grid offset the lead is on.
+        fn lead(&self) -> Option<usize> {
+            self.selection.lead().map(|lead| lead.offset)
+        }
+
+        /// The grid offsets of the tiles the last frame drew a ring in.
+        fn ringed(&self) -> Vec<usize> {
+            let mut ringed: Vec<usize> = (0..self.index.len())
+                .filter(|offset| {
+                    let tile = self.view.rect_of(*offset).unwrap();
+                    self.rings
+                        .iter()
+                        .any(|ring| (ring.min - tile.min).length() < 0.5)
+                })
+                .collect();
+            ringed.sort_unstable();
+            ringed
         }
     }
 
@@ -1256,15 +1516,30 @@ mod tests {
         assert_eq!(f.key(Key::Home).position, 0.0);
     }
 
+    // With nothing selected a page key scrolls, as it always has: moving the selection
+    // would start from the first photo, the top of the library from wherever the wheel
+    // had got to.
     #[test]
-    fn a_page_key_moves_a_viewport_less_a_row_and_an_arrow_forty_pixels() {
+    fn a_page_key_scrolls_a_viewport_less_a_row_while_nothing_is_selected() {
         let mut f = fixture(&[200]);
         f.frame(Vec::new());
         // Rows of 195px: a 600px viewport less a row is 405.
         assert_eq!(f.key(Key::PageDown).position, 405.0);
-        assert_eq!(f.key(Key::ArrowDown).position, 445.0);
-        assert_eq!(f.key(Key::ArrowUp).position, 405.0);
-        assert_eq!(f.key(Key::PageUp).position, 0.0);
+        assert_eq!(f.key(Key::PageDown).position, 810.0);
+        assert_eq!(f.key(Key::PageUp).position, 405.0);
+        assert_eq!(f.lead(), None);
+        assert!(f.picked().is_empty());
+    }
+
+    // A viewport less a row is less than nothing there, and Page Down went up.
+    #[test]
+    fn a_page_key_still_scrolls_the_right_way_in_a_window_shorter_than_a_row() {
+        let mut f = fixture(&[200]);
+        f.size = vec2(800.0, 150.0);
+        f.frame(Vec::new());
+        assert_eq!(f.key(Key::PageDown).position, 40.0);
+        assert_eq!(f.key(Key::PageDown).position, 80.0);
+        assert_eq!(f.key(Key::PageUp).position, 40.0);
     }
 
     // Tiles fill the row, so a narrower window is other rows at other heights: the grid
@@ -1397,6 +1672,12 @@ mod tests {
         ] {
             assert_eq!(f.key(key).position, 0.0, "{key:?}");
         }
+        // And picks nothing: there is no photo for a key or a click to land on.
+        f.key_with(Key::A, Modifiers::COMMAND);
+        f.key_with(Key::End, Modifiers::SHIFT);
+        f.click_at(Pos2::new(100.0, 100.0), Modifiers::NONE);
+        assert!(f.picked().is_empty());
+        assert_eq!(f.lead(), None);
     }
 
     // A window being dragged shut, or minimised: the grid is given no room, or less than a
@@ -1769,6 +2050,10 @@ mod tests {
         f.frame(Vec::new());
         assert_eq!(f.key(Key::End).position, 0.0);
         assert_eq!(f.key(Key::PageDown).position, 0.0);
+        f.key(Key::ArrowRight);
+        f.key_with(Key::A, Modifiers::COMMAND);
+        assert!(f.picked().is_empty());
+        assert_eq!(f.lead(), None);
 
         // The field gone, the keys are the grid's again.
         f.typing = None;
@@ -1776,5 +2061,440 @@ mod tests {
         f.frame(Vec::new());
         assert!(f.key(Key::PageDown).position > 0.0);
         assert_eq!(f.key(Key::End).position, f.view.max_position());
+    }
+
+    // ---- picking: the mouse ----
+
+    #[test]
+    fn a_click_selects_the_photo_under_it_and_its_tile_alone_is_ringed() {
+        let mut f = fixture(&[200]);
+        f.frame(Vec::new());
+        assert_eq!(f.ringed(), [] as [usize; 0]);
+        f.click(5, Modifiers::NONE);
+        assert_eq!(f.picked(), [6]);
+        assert_eq!(f.lead(), Some(5));
+        assert_eq!(f.ringed(), [5]);
+        // Another click is another photo, alone.
+        f.click(2, Modifiers::NONE);
+        assert_eq!(f.picked(), [3]);
+        assert_eq!(f.ringed(), [2]);
+    }
+
+    #[test]
+    fn ctrl_click_adds_a_photo_and_takes_it_out_and_shift_click_ranges() {
+        let mut f = fixture(&[200]);
+        f.frame(Vec::new());
+        f.click(1, Modifiers::NONE);
+        f.click(6, Modifiers::COMMAND);
+        assert_eq!(f.picked(), [2, 7]);
+        assert_eq!(f.ringed(), [1, 6]);
+        f.click(1, Modifiers::COMMAND);
+        assert_eq!(f.picked(), [7]);
+        // From the anchor - the photo last clicked, in or out - to the photo.
+        f.click(4, Modifiers::SHIFT);
+        assert_eq!(f.picked(), [2, 3, 4, 5]);
+        assert_eq!(f.ringed(), [1, 2, 3, 4]);
+        assert_eq!(f.lead(), Some(4));
+    }
+
+    // The grid is not the window: a bar stands over it, and the sidebar beside it.
+    #[test]
+    fn a_click_is_measured_from_where_the_photos_are_drawn() {
+        let mut f = fixture(&[200]);
+        f.space_above = 100.0;
+        f.frame(Vec::new());
+        // The second row, a point above its bottom edge: a hundred points further down
+        // is the row under it.
+        let tile = f.view.rect_of(5).unwrap();
+        assert_eq!(tile.top(), 100.0 + 32.0 + 195.0);
+        f.click_at(tile.center_bottom() - vec2(0.0, 1.0), Modifiers::NONE);
+        assert_eq!(f.picked(), [6]);
+        // And the pinned header is where it is drawn, not a header's height from the
+        // top of the window.
+        f.view.scroll_to(430.0);
+        f.frame(Vec::new());
+        f.click_at(Pos2::new(100.0, 110.0), Modifiers::NONE);
+        assert_eq!(f.picked(), [6]);
+        f.click_at(Pos2::new(100.0, 140.0), Modifiers::NONE);
+        assert_eq!(f.picked(), [9]);
+    }
+
+    // As in every file manager.
+    #[test]
+    fn shift_wins_when_ctrl_is_held_too() {
+        let mut f = fixture(&[200]);
+        f.frame(Vec::new());
+        f.click(1, Modifiers::NONE);
+        f.click(3, Modifiers::SHIFT | Modifiers::COMMAND);
+        assert_eq!(f.picked(), [2, 3, 4]);
+    }
+
+    #[test]
+    fn a_click_on_no_photo_selects_nothing_and_clears_nothing() {
+        let mut f = fixture(&[200]);
+        f.frame(Vec::new());
+        f.click(5, Modifiers::NONE);
+        // The gutter between the first two tiles of the first row, the gutter under
+        // that row, and the folder's header.
+        for at in [
+            Pos2::new(199.0, 100.0),
+            Pos2::new(100.0, 223.0),
+            Pos2::new(100.0, 10.0),
+        ] {
+            f.click_at(at, Modifiers::NONE);
+            assert_eq!(f.picked(), [6], "{at:?}");
+            assert_eq!(f.lead(), Some(5), "{at:?}");
+        }
+        // And with nothing selected, nothing is.
+        let mut f = fixture(&[200]);
+        f.frame(Vec::new());
+        f.click_at(Pos2::new(199.0, 100.0), Modifiers::NONE);
+        assert!(f.picked().is_empty());
+    }
+
+    // The pinned header lies over a row of photos: the photo under it is one nobody can
+    // see, and a press there is the header's.
+    #[test]
+    fn a_click_on_the_pinned_header_is_not_a_click_on_the_photo_under_it() {
+        let mut f = fixture(&[200]);
+        f.frame(Vec::new());
+        // The third row's photos under the top edge: its top is at 422.
+        f.view.scroll_to(430.0);
+        let frame = f.frame(Vec::new());
+        assert!(frame.pinned.is_some());
+        f.click_at(Pos2::new(100.0, 10.0), Modifiers::NONE);
+        assert!(f.picked().is_empty());
+        // Just under the header the same photo is there to be clicked.
+        f.click_at(Pos2::new(100.0, 40.0), Modifiers::NONE);
+        assert_eq!(f.picked(), [9]);
+    }
+
+    // Where the grid has no headers nothing is pinned, and the photos begin at its top
+    // edge: the first points of the grid are a photo's there.
+    #[test]
+    fn a_click_at_the_top_of_a_grid_with_no_headers_is_on_the_photo_there() {
+        let mut f = fixture(&[]);
+        f.index = index_laid_out(&[200], Layout::Flat);
+        f.frame(Vec::new());
+        f.click_at(Pos2::new(100.0, 10.0), Modifiers::NONE);
+        assert_eq!(f.picked(), [1]);
+        f.view.scroll_to(400.0);
+        f.frame(Vec::new());
+        f.click_at(Pos2::new(100.0, 10.0), Modifiers::NONE);
+        assert_eq!(f.picked(), [9]);
+    }
+
+    #[test]
+    fn a_press_on_the_scrollbar_or_the_strip_picks_nothing() {
+        let mut f = two_years();
+        f.frame(Vec::new());
+        // The strip at the right edge, the scrollbar left of it.
+        let strip = STRIP_LEFT + 20.0;
+        let bar = STRIP_LEFT - BAR_WIDTH as f32 / 2.0;
+        for x in [strip, bar] {
+            f.click_at(Pos2::new(x, 100.0), Modifiers::NONE);
+            assert!(f.picked().is_empty(), "{x}");
+            assert_eq!(f.lead(), None, "{x}");
+        }
+    }
+
+    // ---- picking: the keys ----
+
+    #[test]
+    fn the_arrows_home_and_end_move_the_lead_and_select_the_photo_it_lands_on() {
+        // Two folders, in rows of four: eight photos and five.
+        let mut f = fixture(&[8, 5]);
+        f.frame(Vec::new());
+        f.click(5, Modifiers::NONE);
+        for (key, lands) in [
+            (Key::ArrowRight, 6),
+            (Key::ArrowUp, 2),
+            (Key::ArrowLeft, 1),
+            (Key::ArrowDown, 5),
+            // Into the next folder, in the same column.
+            (Key::ArrowDown, 9),
+            (Key::End, 12),
+            (Key::Home, 0),
+        ] {
+            f.key(key);
+            assert_eq!(f.lead(), Some(lands), "{key:?}");
+            assert_eq!(f.picked(), [lands as i64 + 1], "{key:?}");
+            assert_eq!(f.ringed(), [lands], "{key:?}");
+        }
+    }
+
+    // Each key answers for itself from nothing: End reaches the last photo.
+    #[test]
+    fn a_key_with_nothing_selected_starts_from_the_first_photo() {
+        let mut f = fixture(&[8, 5]);
+        f.frame(Vec::new());
+        f.key(Key::End);
+        assert_eq!(f.lead(), Some(12));
+        f.selection.clear();
+        f.key(Key::ArrowDown);
+        assert_eq!(f.lead(), Some(4));
+    }
+
+    #[test]
+    fn shift_with_a_key_selects_from_the_anchor_to_where_the_key_leads() {
+        let mut f = fixture(&[8, 5]);
+        f.frame(Vec::new());
+        f.click(1, Modifiers::NONE);
+        f.key_with(Key::ArrowRight, Modifiers::SHIFT);
+        f.key_with(Key::ArrowDown, Modifiers::SHIFT);
+        assert_eq!(f.picked(), [2, 3, 4, 5, 6, 7]);
+        assert_eq!(f.lead(), Some(6));
+        // Back across the anchor: the range is measured from it, not grown.
+        f.key_with(Key::Home, Modifiers::SHIFT);
+        assert_eq!(f.picked(), [1, 2]);
+        f.key_with(Key::End, Modifiers::SHIFT);
+        assert_eq!(f.picked().len(), 12);
+        // The plain key is one photo again.
+        f.key(Key::ArrowLeft);
+        assert_eq!(f.picked(), [12]);
+    }
+
+    // With nothing selected there is no anchor to select from.
+    #[test]
+    fn shift_with_a_key_is_the_plain_key_while_nothing_is_selected() {
+        let mut f = fixture(&[8, 5]);
+        f.frame(Vec::new());
+        f.key_with(Key::End, Modifiers::SHIFT);
+        assert_eq!(f.picked(), [13]);
+        assert_eq!(f.lead(), Some(12));
+    }
+
+    #[test]
+    fn a_page_key_moves_the_lead_a_screenful_in_its_column() {
+        let mut f = fixture(&[200]);
+        f.frame(Vec::new());
+        f.click(1, Modifiers::NONE);
+        // Rows of 195 in a viewport of 600: three rows down, the fourth being past it.
+        f.key(Key::PageDown);
+        assert_eq!(f.lead(), Some(13));
+        assert_eq!(f.picked(), [14]);
+        f.key_with(Key::PageDown, Modifiers::SHIFT);
+        assert_eq!(f.lead(), Some(25));
+        assert_eq!(f.picked().len(), 13);
+        f.key(Key::PageUp);
+        assert_eq!(f.lead(), Some(13));
+        assert_eq!(f.picked(), [14]);
+    }
+
+    #[test]
+    fn the_grid_follows_the_lead_into_sight_and_stays_while_it_is_in_sight() {
+        let mut f = fixture(&[200]);
+        f.frame(Vec::new());
+        f.click(0, Modifiers::NONE);
+        // The second row is in sight: nothing moves.
+        assert_eq!(f.key(Key::ArrowDown).position, 0.0);
+        // The third row begins at 422 and ends, gutter and all, at 617, past the bottom
+        // edge at 600: it is brought in by the least movement. So is the fourth.
+        assert_eq!(f.key(Key::ArrowDown).position, 17.0);
+        assert_eq!(f.key(Key::ArrowDown).position, 212.0);
+        assert_eq!(f.lead(), Some(12));
+        // Back up. The third row is in sight, below the pinned header: nothing moves.
+        assert_eq!(f.key(Key::ArrowUp).position, 212.0);
+        // The second begins at 227, under the pinned header's 32 points: it comes in
+        // below the header, not flush to the edge under it.
+        assert_eq!(f.key(Key::ArrowUp).position, 227.0 - HEADER);
+        assert_eq!(f.key(Key::ArrowUp).position, 0.0);
+        assert_eq!(f.lead(), Some(0));
+    }
+
+    #[test]
+    fn ctrl_a_is_the_section_in_the_library_and_the_whole_view_elsewhere() {
+        let mut f = fixture(&[8, 5]);
+        f.frame(Vec::new());
+        f.click(9, Modifiers::NONE);
+        f.key_with(Key::A, Modifiers::COMMAND);
+        assert_eq!(f.picked(), [9, 10, 11, 12, 13]);
+        assert_eq!(f.lead(), Some(9));
+        f.library = false;
+        f.key_with(Key::A, Modifiers::COMMAND);
+        assert_eq!(f.picked().len(), 13);
+        // The letter alone is no key of the grid's, nor is it with Alt held too: Ctrl
+        // and Alt together are AltGr, which types a letter.
+        f.click(9, Modifiers::NONE);
+        f.key(Key::A);
+        f.key_with(Key::A, Modifiers::COMMAND | Modifiers::ALT);
+        assert_eq!(f.picked(), [10]);
+    }
+
+    // Escape in an empty search box hands the keys to the grid, and a key still held
+    // from there must not take the selection with it.
+    #[test]
+    fn escape_clears_the_selection_and_its_repeat_does_not() {
+        let mut f = fixture(&[200]);
+        f.frame(Vec::new());
+        // The key goes down with nothing selected, and stays down. egui works out for
+        // itself whether a press is a repeat: it is one while the key has not come up.
+        let escape = |pressed| Event::Key {
+            key: Key::Escape,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        };
+        f.frame(vec![escape(true)]);
+        f.click(5, Modifiers::NONE);
+        f.frame(vec![escape(true)]);
+        assert_eq!(f.picked(), [6]);
+        // Let go of and pressed, it is the grid's key.
+        f.frame(vec![escape(false)]);
+        f.frame(vec![escape(true)]);
+        assert!(f.picked().is_empty());
+        assert_eq!(f.lead(), None);
+        assert_eq!(f.ringed(), [] as [usize; 0]);
+    }
+
+    // A chord is the system's, or another part of the window's: Alt+Left is "back" on
+    // some desktops, and Ctrl+End is nobody's here.
+    #[test]
+    fn a_key_with_ctrl_or_alt_held_is_not_the_grids() {
+        let mut f = fixture(&[200]);
+        f.frame(Vec::new());
+        f.click(5, Modifiers::NONE);
+        for held in [Modifiers::ALT, Modifiers::COMMAND, Modifiers::CTRL] {
+            for key in [Key::ArrowRight, Key::End, Key::PageDown, Key::Escape] {
+                let frame = f.key_with(key, held);
+                assert_eq!(f.picked(), [6], "{held:?} {key:?}");
+                assert_eq!(frame.position, 0.0, "{held:?} {key:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_held_arrow_moves_at_each_repeat() {
+        let mut f = fixture(&[200]);
+        f.frame(Vec::new());
+        f.click(0, Modifiers::NONE);
+        let repeat = |repeat| Event::Key {
+            key: Key::ArrowRight,
+            physical_key: None,
+            pressed: true,
+            repeat,
+            modifiers: Modifiers::NONE,
+        };
+        // Two in one frame, as a slow frame gets them.
+        f.frame(vec![repeat(false), repeat(true)]);
+        f.frame(vec![repeat(true)]);
+        assert_eq!(f.lead(), Some(3));
+    }
+
+    #[test]
+    fn a_selection_draws_no_frame_by_itself() {
+        let mut f = fixture(&[200]);
+        f.frame(Vec::new());
+        f.click(5, Modifiers::NONE);
+        f.frame(Vec::new());
+        f.frame(Vec::new());
+        assert_eq!(f.repaint_delay, Duration::MAX);
+    }
+
+    // ---- from the review ----
+
+    // The keys are whoever's has the keyboard. A splitter that answers the arrows, a
+    // control with its list open, a row the Tab key reached: each key they answer would
+    // otherwise be answered here as well, by a grid drawn later in the same frame.
+    #[test]
+    fn the_keys_are_not_the_grids_while_anything_else_has_the_keyboard() {
+        let mut f = fixture(&[200]);
+        f.frame(Vec::new());
+        f.click(5, Modifiers::NONE);
+        // From the frame it takes the keyboard in: a key in that frame is not the grid's
+        // because nothing had the keyboard a frame ago.
+        f.button = Some(true);
+        f.key(Key::ArrowRight);
+        assert_eq!(f.picked(), [6]);
+        f.frame(Vec::new());
+        f.button = Some(false);
+        for (key, held) in [
+            (Key::ArrowRight, Modifiers::NONE),
+            (Key::End, Modifiers::NONE),
+            (Key::PageDown, Modifiers::SHIFT),
+            (Key::A, Modifiers::COMMAND),
+        ] {
+            let frame = f.key_with(key, held);
+            assert_eq!(f.picked(), [6], "{key:?}");
+            assert_eq!(frame.position, 0.0, "{key:?}");
+        }
+    }
+
+    // egui takes the keyboard off a widget at Escape before anything is drawn: by the
+    // time the grid is, nothing has it. The key was that widget's all the same.
+    #[test]
+    fn the_escape_that_takes_the_keyboard_off_something_else_is_not_the_grids() {
+        let mut f = fixture(&[200]);
+        f.frame(Vec::new());
+        f.click(5, Modifiers::NONE);
+        f.button = Some(true);
+        f.frame(Vec::new());
+        f.frame(Vec::new());
+        f.button = Some(false);
+        let escape = |pressed| Event::Key {
+            key: Key::Escape,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        };
+        f.frame(vec![escape(true)]);
+        assert!(f.ctx.memory(|memory| memory.focused().is_none()));
+        assert_eq!(f.picked(), [6]);
+        // The next one is the grid's.
+        f.frame(vec![escape(false)]);
+        f.frame(vec![escape(true)]);
+        assert!(f.picked().is_empty());
+    }
+
+    // The Shift held when the button came up is the click's, whatever becomes of Shift
+    // later in the same frame: a frame is sixteen milliseconds when nothing is slow.
+    #[test]
+    fn a_shift_click_is_one_when_shift_comes_up_in_the_frame_of_the_click() {
+        let mut f = fixture(&[200]);
+        f.frame(Vec::new());
+        f.click(1, Modifiers::NONE);
+        let at = f.view.rect_of(4).unwrap().center();
+        f.held = Modifiers::SHIFT;
+        f.frame(vec![Event::PointerMoved(at)]);
+        let button = |pressed, modifiers| Event::PointerButton {
+            pos: at,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers,
+        };
+        f.frame(vec![button(true, Modifiers::SHIFT)]);
+        // The button up with Shift held, then Shift up, in one frame.
+        f.held = Modifiers::NONE;
+        f.told = Modifiers::NONE;
+        f.frame(vec![
+            button(false, Modifiers::SHIFT),
+            Event::ModifiersChanged(Modifiers::NONE),
+        ]);
+        assert_eq!(f.picked(), [2, 3, 4, 5]);
+        // And the other way round: Shift down in the frame of a plain click's release.
+        f.frame(vec![button(true, Modifiers::NONE)]);
+        f.held = Modifiers::SHIFT;
+        f.told = Modifiers::SHIFT;
+        f.frame(vec![
+            button(false, Modifiers::NONE),
+            Event::ModifiersChanged(Modifiers::SHIFT),
+        ]);
+        assert_eq!(f.picked(), [5]);
+    }
+
+    // The photos sense a click, so a press on them is theirs however near the scrollbar
+    // it lands: egui hands a near miss to a neighbouring widget only where nothing is hit.
+    #[test]
+    fn a_press_on_the_photos_beside_the_scrollbar_is_not_the_scrollbars() {
+        let mut f = fixture(&[4000]);
+        f.frame(Vec::new());
+        // The bar is the last twelve points; this is three points left of it.
+        let frame = f.click_at(Pos2::new(785.0, 400.0), Modifiers::NONE);
+        assert_eq!(frame.position, 0.0);
+        // And on the bar itself the grid goes there, as before.
+        let frame = f.click_at(Pos2::new(794.0, 400.0), Modifiers::NONE);
+        assert!(frame.position > 1000.0, "{}", frame.position);
     }
 }

@@ -76,8 +76,10 @@ impl Driver {
         *self.due.lock().unwrap()
     }
 
-    /// Draws one frame at `at`. Whatever the user was made to do since the last one
-    /// (`Harness::event`, a node's `click`) is in it.
+    /// Draws the frame at `at`. Whatever the user was made to do since the last one
+    /// (`Harness::event`, a node's `click`) is drawn with it - one frame for each event
+    /// queued, which is how `egui_kittest` steps, and counted here as one: two events in
+    /// one frame are a test in whole frames of a view's, not this driver's.
     pub fn frame(&mut self, harness: &mut Harness<'_>, at: f64) {
         *self.due.lock().unwrap() = None;
         self.now = at;

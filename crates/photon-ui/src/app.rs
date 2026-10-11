@@ -14,6 +14,7 @@ use crate::{
     scans::Scans,
     search_bar::{SearchAction, SearchBarData},
     search_box::{SearchBox, saved_search_for},
+    selection::Selection,
     shell::{Action, Shell, ShellData},
     sidebar::{
         list::{Collections, Group, Held, List, Sources, What},
@@ -73,6 +74,8 @@ pub struct App {
     scans: Scans,
     /// Where the user is and is going, and the queue the steps there are made on.
     nav: Nav,
+    /// The photos picked in the grid on screen.
+    selection: Selection,
     /// A step made answers where it led, and with it what the engine said when it made
     /// the step and could not finish the rest of it (a sort shown and not stored).
     steps: Queue<Step, Result<(Landed, Option<String>), String>>,
@@ -384,6 +387,7 @@ impl App {
             watched: Vec::new(),
             scans: Scans::default(),
             nav: Nav::new(Place { view, arg }, engine.sort()),
+            selection: Selection::default(),
             steps,
             search: SearchBox::default(),
             writes,
@@ -539,6 +543,22 @@ impl App {
     /// The version of the grid on screen. Every grid the engine publishes has another.
     pub fn version(&self) -> u64 {
         self.grid.version
+    }
+
+    /// The photos selected, in the grid's order.
+    pub fn selected(&self) -> Vec<i64> {
+        self.selection.ids(&self.index)
+    }
+
+    /// The photo the keyboard moves on from.
+    pub fn lead(&self) -> Option<i64> {
+        self.selection.lead().map(|lead| lead.id)
+    }
+
+    /// Where the photo at grid offset `offset` was drawn in the last frame: what a test
+    /// presses.
+    pub fn tile_rect(&self, offset: usize) -> Option<egui::Rect> {
+        self.view.rect_of(offset)
     }
 
     /// The status bar's count of the photos shown, when there is one to give.
@@ -909,7 +929,7 @@ impl App {
             len: index.len(),
             build_error,
         };
-        self.index = index;
+        let before = std::mem::replace(&mut self.index, index);
         self.layout_gen = layout_gen;
         // Other results are another list: a place in the old one names nothing here.
         if shown.other_results {
@@ -917,6 +937,20 @@ impl App {
             // A folder asked for in the results that were on screen is not a place in
             // these.
             self.going = None;
+            // Nor are the photos picked there these, or the anchor's offset the same
+            // photo in another order.
+            self.selection.clear();
+        } else if let Some(landed) = self.selection.follow(&before, &self.index) {
+            // The lead's photo has left - hidden, taken out of the album shown, purged by
+            // a scan - and the lead is on the photo beside where it was. That photo is
+            // brought into sight if the one that left was in sight: a person working
+            // through a view goes on from where they were. If it was not, they are
+            // somewhere else in the grid, and it stays where they are.
+            let seen =
+                (self.last.as_ref()).is_some_and(|frame| frame.on_screen.contains(&landed.left));
+            if seen {
+                self.view.go_to(landed.at, Align::Nearest);
+            }
         }
         // A folder clicked from an excursion: this is the grid it was to be looked up in.
         if let Some(folder) = shown.jump {
@@ -1021,6 +1055,10 @@ impl eframe::App for App {
             folders: self.held.folders(),
             size: self.size,
             zone: &self.zone,
+            library: self.nav.settled().view == View::All,
+            // The panel that lists what the search box understands lies over the
+            // photos, and has no keyboard of its own.
+            keys: !self.shell.search_help_open(),
         };
         // The entry marked as the view is where the user is going; the folders listed
         // and the line an empty view shows are of the grid that is on screen.
@@ -1066,15 +1104,16 @@ impl eframe::App for App {
             sort: self.nav.sort_target(),
             size: self.size,
             count: count.as_deref(),
+            selected: self.selection.len(),
             lines: &lines,
             panel: panel.as_ref(),
             notice: notice.as_deref(),
             toasts,
         };
-        let (view, thumbs) = (&mut self.view, &mut self.thumbs);
+        let (view, thumbs, selection) = (&mut self.view, &mut self.thumbs, &mut self.selection);
         let mut output = None;
         let actions = self.shell.show(ui, &shell, &mut self.search.text, |ui| {
-            output = Some(view.show(ui, &data, thumbs));
+            output = Some(view.show(ui, &data, thumbs, selection));
         });
         for action in actions {
             self.act(action, now);

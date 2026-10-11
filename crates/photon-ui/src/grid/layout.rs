@@ -398,6 +398,133 @@ pub fn pin_top(rows: &[Row], pin: Pin) -> Option<f64> {
     Some(row.top + pin.into * row.height)
 }
 
+/// The photo at (`x`, `y`) in the layout's coordinates, `x` measured from the left edge
+/// of the room the photos are drawn in; none where there is no photo - a header, the
+/// gutter between two tiles or under a row, the room beside a short last row.
+///
+/// A tile is its own square: `tile` wide from `GAP + column * tile_row(tile)`, and `tile`
+/// tall from its row's top. The gutters belong to no photo, so a click between two
+/// selects neither, which is the rule the rubber band's hit test has too.
+pub fn tile_at(rows: &[Row], x: f64, y: f64, tile: f64) -> Option<usize> {
+    if y < 0.0 || x < GAP {
+        return None;
+    }
+    let row = rows.get(row_index_at(rows, y))?;
+    // A header is asked like any row: it holds no photo, so no column of it is one.
+    if y > row.top + tile {
+        return None;
+    }
+    let column = ((x - GAP) / tile_row(tile)).floor();
+    let into = x - GAP - column * tile_row(tile);
+    let column = column as usize;
+    (into <= tile && column < row.count).then_some(row.first + column)
+}
+
+/// A key that moves through the photos one at a time, a row at a time, or to an end.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NavKey {
+    Left,
+    Right,
+    Up,
+    Down,
+    Home,
+    End,
+}
+
+/// The grid offset a key leads to from `offset`: `nav.ts`'s `move`. Vertical moves follow
+/// the rows on screen, which start again at every section.
+///
+/// `None` is nothing selected, and the key then starts from the first photo, so that each
+/// key still answers for itself: End reaches the last photo, where treating every key as
+/// "select the first photo" sent End and the up arrow to the top of the library.
+pub fn move_from(
+    offset: Option<usize>,
+    key: NavKey,
+    sections: &[Section],
+    columns: usize,
+) -> usize {
+    let offset = offset.unwrap_or(0);
+    let columns = columns.max(1);
+    let len = sections.last().map_or(0, |last| last.offset + last.count);
+    if len == 0 {
+        return 0;
+    }
+    match key {
+        NavKey::Left => return offset.saturating_sub(1),
+        NavKey::Right => return (offset + 1).min(len - 1),
+        NavKey::Home => return 0,
+        NavKey::End => return len - 1,
+        NavKey::Up | NavKey::Down => {}
+    }
+    let at = sections
+        .partition_point(|section| section.offset <= offset)
+        .saturating_sub(1);
+    let section = &sections[at];
+    let local = offset.saturating_sub(section.offset);
+    let column = local % columns;
+    if key == NavKey::Down {
+        if local + columns < section.count {
+            return offset + columns;
+        }
+        // From any row but the section's last, a column the last row is too short for
+        // lands on that row's last photo.
+        let last_row = (section.count.saturating_sub(1) / columns) * columns;
+        if local < last_row {
+            return section.offset + section.count - 1;
+        }
+        return match sections.get(at + 1) {
+            Some(next) if next.count > 0 => next.offset + column.min(next.count - 1),
+            _ => offset,
+        };
+    }
+    if local >= columns {
+        return offset - columns;
+    }
+    let Some(before) = at.checked_sub(1).map(|before| &sections[before]) else {
+        return offset;
+    };
+    if before.count == 0 {
+        return offset;
+    }
+    let last_row = ((before.count - 1) / columns) * columns;
+    before.offset + (last_row + column).min(before.count - 1)
+}
+
+/// The grid offset a Page Down (`down`) or a Page Up leads to from `offset`: the row a
+/// viewport's height away, in the same column, or that row's last photo when it is too
+/// short to have the column - as an arrow key lands in a short row. Headers and the gaps
+/// between sections are part of the distance, since they are part of the screen.
+///
+/// It always moves a row when there is one that way: in a window shorter than a row the
+/// key would otherwise move nothing, which reads as broken. At the first or the last row
+/// it stays; Home and End are the keys for the ends.
+pub fn page_move(rows: &[Row], offset: usize, down: bool, viewport: f64) -> usize {
+    let Some(from) = row_of_item(rows, offset) else {
+        return offset;
+    };
+    let column = offset - rows[from].first;
+    let edge = rows[from].top + if down { viewport } else { -viewport };
+    let mut to = from;
+    let mut at = from;
+    loop {
+        at = match (down, at.checked_sub(1)) {
+            (true, _) if at + 1 < rows.len() => at + 1,
+            (false, Some(above)) => above,
+            _ => break,
+        };
+        let row = &rows[at];
+        if row.kind != RowKind::Tiles {
+            continue;
+        }
+        let past = if down { row.top > edge } else { row.top < edge };
+        if to != from && past {
+            break;
+        }
+        to = at;
+    }
+    rows[to].first + column.min(rows[to].count.saturating_sub(1))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1105,5 +1232,179 @@ mod tests {
             assert_eq!(pinned_header(&mixed, &headers, run.top + 10.0), None);
             assert_eq!(pinned_header(&mixed, &headers, 100.0), at(0, 0.0));
         }
+    }
+
+    // ---- the photo under a point ----
+
+    /// Two folders of five and three in rows of two medium tiles: a header at 0, rows at
+    /// 32, 200 and 368; the second header at 560, rows at 592 and 760.
+    fn two_by_two() -> Vec<Row> {
+        build_rows(&two_folders(), 2, MEDIUM)
+    }
+
+    #[test]
+    fn a_point_on_a_tile_is_that_photo() {
+        let rows = two_by_two();
+        // The first row's two tiles: 8..168 and 176..336 across, 32..192 down.
+        assert_eq!(tile_at(&rows, 9.0, 33.0, MEDIUM), Some(0));
+        assert_eq!(tile_at(&rows, 90.0, 100.0, MEDIUM), Some(0));
+        assert_eq!(tile_at(&rows, 177.0, 100.0, MEDIUM), Some(1));
+        assert_eq!(tile_at(&rows, 300.0, 250.0, MEDIUM), Some(3));
+        // The second folder's first row.
+        assert_eq!(tile_at(&rows, 90.0, 600.0, MEDIUM), Some(5));
+    }
+
+    #[test]
+    fn a_tiles_own_edges_are_the_tile() {
+        let rows = two_by_two();
+        assert_eq!(tile_at(&rows, 8.0, 32.0, MEDIUM), Some(0));
+        assert_eq!(tile_at(&rows, 168.0, 192.0, MEDIUM), Some(0));
+        assert_eq!(tile_at(&rows, 176.0, 32.0, MEDIUM), Some(1));
+    }
+
+    #[test]
+    fn the_gutters_are_no_photo() {
+        let rows = two_by_two();
+        // Left of the first tile, between the two, and under the row.
+        assert_eq!(tile_at(&rows, 4.0, 100.0, MEDIUM), None);
+        assert_eq!(tile_at(&rows, 172.0, 100.0, MEDIUM), None);
+        assert_eq!(tile_at(&rows, 90.0, 196.0, MEDIUM), None);
+    }
+
+    #[test]
+    fn a_header_and_the_room_beside_a_short_row_are_no_photo() {
+        let rows = two_by_two();
+        assert_eq!(tile_at(&rows, 90.0, 10.0, MEDIUM), None);
+        assert_eq!(tile_at(&rows, 90.0, 570.0, MEDIUM), None);
+        // The first folder's last row holds one photo of two; so does the second's.
+        assert_eq!(tile_at(&rows, 90.0, 400.0, MEDIUM), Some(4));
+        assert_eq!(tile_at(&rows, 250.0, 400.0, MEDIUM), None);
+        // A third column there is none of.
+        assert_eq!(tile_at(&rows, 400.0, 100.0, MEDIUM), None);
+    }
+
+    #[test]
+    fn a_point_outside_the_layout_is_no_photo() {
+        let rows = two_by_two();
+        assert_eq!(tile_at(&rows, 90.0, 5_000.0, MEDIUM), None);
+        assert_eq!(tile_at(&[], 90.0, 100.0, MEDIUM), None);
+        // Left of the photos' room, a whole tile and its gutter away from the first.
+        assert_eq!(tile_at(&rows, -100.0, 100.0, MEDIUM), None);
+        // Above a grid that begins with a row of photos and no header.
+        let flat = build_rows(&[flat(0, 4)], 2, MEDIUM);
+        assert_eq!(tile_at(&flat, 90.0, 5.0, MEDIUM), Some(0));
+        assert_eq!(tile_at(&flat, 90.0, -5.0, MEDIUM), None);
+    }
+
+    // ---- where the keys lead: nav.test.ts's "move" ----
+
+    #[test]
+    fn the_arrows_step_left_and_right_across_the_whole_grid() {
+        let s = two_folders();
+        assert_eq!(move_from(Some(0), NavKey::Left, &s, 2), 0);
+        assert_eq!(move_from(Some(4), NavKey::Right, &s, 2), 5);
+        assert_eq!(move_from(Some(7), NavKey::Right, &s, 2), 7);
+        assert_eq!(move_from(Some(3), NavKey::Home, &s, 2), 0);
+        assert_eq!(move_from(Some(3), NavKey::End, &s, 2), 7);
+    }
+
+    #[test]
+    fn down_moves_by_rows_into_the_next_section_at_the_same_column() {
+        let s = two_folders();
+        assert_eq!(move_from(Some(0), NavKey::Down, &s, 2), 2);
+        assert_eq!(move_from(Some(3), NavKey::Down, &s, 2), 4);
+        assert_eq!(move_from(Some(4), NavKey::Down, &s, 2), 5);
+        assert_eq!(move_from(Some(6), NavKey::Down, &s, 2), 7);
+        assert_eq!(move_from(Some(7), NavKey::Down, &s, 2), 7);
+        // The second column stays the second column across a header, and lands on the
+        // last photo of a first row too short to have it.
+        let even = [folder(1, 0, 4), folder(2, 4, 3)];
+        assert_eq!(move_from(Some(3), NavKey::Down, &even, 2), 5);
+        let short = [folder(1, 0, 4), folder(2, 4, 1)];
+        assert_eq!(move_from(Some(3), NavKey::Down, &short, 2), 4);
+    }
+
+    #[test]
+    fn up_moves_by_rows_into_the_section_befores_last_row() {
+        let s = two_folders();
+        assert_eq!(move_from(Some(3), NavKey::Up, &s, 2), 1);
+        assert_eq!(move_from(Some(5), NavKey::Up, &s, 2), 4);
+        assert_eq!(move_from(Some(6), NavKey::Up, &s, 2), 4);
+        assert_eq!(move_from(Some(1), NavKey::Up, &s, 2), 1);
+    }
+
+    #[test]
+    fn a_key_in_an_empty_grid_leads_nowhere() {
+        assert_eq!(move_from(Some(0), NavKey::Down, &[], 4), 0);
+        assert_eq!(move_from(None, NavKey::End, &[], 4), 0);
+    }
+
+    // Clicking the grid's background clears the selection. Treating every key as "select
+    // the first photo" from there sent End and the up arrow to the top of the library.
+    #[test]
+    fn a_key_answers_for_itself_when_nothing_is_selected() {
+        let s = two_folders();
+        assert_eq!(move_from(None, NavKey::End, &s, 4), 7);
+        assert_eq!(move_from(None, NavKey::Home, &s, 4), 0);
+        assert_eq!(move_from(None, NavKey::Right, &s, 4), 1);
+        assert_eq!(move_from(Some(3), NavKey::Right, &s, 4), 4);
+        assert_eq!(move_from(Some(3), NavKey::End, &s, 4), 7);
+    }
+
+    // ---- a page key: layout.test.ts's "a page key in the grid" ----
+
+    /// Five rows of two in the first folder, three in the second: tile rows are 168 tall.
+    fn paged() -> Vec<Row> {
+        build_rows(&[folder(1, 0, 10), folder(2, 10, 5)], 2, MEDIUM)
+    }
+
+    #[test]
+    fn a_page_moves_by_the_rows_a_viewport_holds_keeping_the_column() {
+        let rows = paged();
+        // 400 is two rows and a bit: from the first row to the third, not the fourth.
+        assert_eq!(page_move(&rows, 1, true, 400.0), 5);
+        assert_eq!(page_move(&rows, 0, true, 400.0), 4);
+        assert_eq!(page_move(&rows, 5, false, 400.0), 1);
+        assert_eq!(page_move(&rows, 9, false, 400.0), 5);
+    }
+
+    #[test]
+    fn a_page_crosses_a_header_whose_height_is_part_of_it() {
+        // From the folder's last row (top 704) a page of 400 reaches the next folder's
+        // first row (928) and its second (1096), and stops short of the third (1264).
+        assert_eq!(page_move(&paged(), 9, true, 400.0), 13);
+        // A page that ends on the header itself (896) lands in the row under it, in the
+        // column it left: a header is not a row to land on.
+        assert_eq!(page_move(&paged(), 9, true, 200.0), 11);
+    }
+
+    #[test]
+    fn a_page_lands_on_the_last_photo_of_a_row_too_short_for_the_column() {
+        // The second folder ends on a row of one.
+        assert_eq!(page_move(&paged(), 11, true, 400.0), 14);
+    }
+
+    #[test]
+    fn a_page_stops_at_the_first_and_the_last_row() {
+        let rows = paged();
+        assert_eq!(page_move(&rows, 3, false, 400.0), 1);
+        assert_eq!(page_move(&rows, 13, true, 400.0), 14);
+        assert_eq!(page_move(&rows, 14, true, 400.0), 14);
+        assert_eq!(page_move(&rows, 0, false, 400.0), 0);
+    }
+
+    // A key that moves nothing reads as broken, whatever the window's height.
+    #[test]
+    fn a_page_moves_a_row_in_a_window_shorter_than_one() {
+        let rows = paged();
+        assert_eq!(page_move(&rows, 0, true, 100.0), 2);
+        assert_eq!(page_move(&rows, 4, false, 100.0), 2);
+        assert_eq!(page_move(&rows, 0, true, 0.0), 2);
+    }
+
+    #[test]
+    fn a_page_from_a_photo_the_rows_do_not_hold_stays() {
+        assert_eq!(page_move(&paged(), 99, true, 400.0), 99);
+        assert_eq!(page_move(&[], 0, true, 400.0), 0);
     }
 }
