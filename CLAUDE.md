@@ -1705,6 +1705,72 @@ selected" before the count from two photos on, and gives AccessKit those words, 
 how a test of the whole application reads them. A test presses a photo where
 `App::tile_rect` says it was last drawn.
 
+**The rubber band is a rectangle in the layout's coordinates** (`grid/view.rs`'s `Band`,
+`take_band`), so it keeps its grip on the photos it began over while the grid scrolls
+under it; its far corner is worked out again in every frame from where the pointer was
+last seen in the window. `items_in_rect` says what it touches, by the rule `tile_at`
+clicks by (a test walks a grid asking both of every point). The selection holds what the
+band started from (`Selection::band_begin`, `band_to`, `band_end`, `band_cancel`): every
+frame is that plus what the rectangle covers now, read from the index on screen - which
+is why the Svelte band's second answer from the backend, its count of photos not yet
+resolved and its abandoning when the grid was rebuilt under it have no successor: a
+scan's grid arrives, `follow` takes what left out of the band's two sets, and the
+rectangle covers what it covers in the new grid.
+
+**A press on the photos is read from the button's own events, not from what egui calls
+clicked and dragged** (`grid/view.rs`'s `Press`, `take_pointer`). The first version
+asked egui, and a review found what that costs, each with a test: egui's click has a
+time limit (`max_click_duration`, 0.8 seconds, which is also a touch's long press and so
+is left alone), so a press held still for a second selected nothing; its drag ends at
+the release of *any* button, and at Escape with anything held, so "no longer dragged"
+was no evidence that the button had come up - Escape with Ctrl still down, which is how
+an adding band is held, kept the band's photos; and after a release that is never heard
+of the drag is stale for good, so the next one began no band. Now a press is the
+photos' when the primary button goes down with the pointer over them and nothing above
+them (`contains_pointer`), it is a click when the button comes up without ever having
+been a band, however long it was down, and a band once the pointer is further from where
+the button went down than a click may be (`max_click_dist`). The corner a band begins at
+is taken in the frame of the press, not in the frame it becomes a band: the wheel turned
+under a button that is down and still had moved it two rows.
+
+**A band has one teardown and four endings**: the button comes up, which keeps what the
+band covers; Escape, which puts back what was selected before it; the gesture taken
+away, which does the same; and the selection cleared under it by a grid of other
+results, which leaves nothing to put back (the view finds the selection's band gone and
+drops its rectangle). **Escape is read as the key being down that was not**
+(`key_down`, an edge kept from frame to frame), not as an event: whoever read the event
+first - the search box takes its Escape out of the frame - and whatever is held, the
+band sees it; and the band takes the event out too, or the keys after it clear the
+selection it has just put back. **A gesture is taken away without a release** in two
+ways a window reports: `Event::WindowFocused(false)` - a button let go of over another
+window may never be heard of, and a band that outlived it scrolled to the end of the
+library selecting all the way, the Svelte band's old bug - and a touch the system
+cancels (`Event::Touch` with `TouchPhase::Cancel`, which egui-winit sends with the
+pointer gone and no button up; winit reports it on Wayland). The focus being *lost* is
+the ending, not the focus being elsewhere: a window with the pointer and not the
+keyboard draws bands. A pointer that leaves the window is no ending: it stays a press,
+with no position (`latest_pos` is none), and the band keeps the last one it saw - the
+edge it was scrolling towards.
+
+**While a band is held it owns the window**: the application takes every key press
+out of the frame before anything reads it (`GridOutput::banding`, of the frame before) -
+Escape's too, which the band reads from the key being down. The grid's own gate was not
+enough - Ctrl+F put the caret in the search box
+under a band, and Ctrl+B built the rows again under its corner. A drag on the photos
+takes the keyboard off whatever had it, as a click on one does: egui does that at a
+click elsewhere and not at a press that becomes a drag. **The corner is a place in the
+rows, and rows are built again**: a window narrowed under a held band - a tiling window
+manager, the year strip arriving with a scan's grid - is other rows at other heights,
+so the press's origin is held by the photo it was on, or the row where it was on none
+(`hold_at`, `held_place`), as the grid's own place is by its `Pin`. The scroll at an
+edge is the edge's speed times the time since the band's last frame, at most fifty
+milliseconds of it, and a frame is asked for only while the pointer rests in a margin
+*and the grid can move that way*: at its top or its end the band rests, and whatever
+makes room again - the wheel, a longer grid - draws a frame that comes through the same
+code. A band begun with Shift adds, as one begun with Ctrl does, though a Shift+click
+ranges. No band begins in a grid with no photos, where the shell draws what an empty
+library says.
+
 **Tests of the whole application drive it through `tests/common`'s `Driver`**: `until`
 draws the frames that are asked for, `settle` waits in real time for the other threads,
 `frames_in` counts what a stretch of the clock draws. A row is clicked by its name
