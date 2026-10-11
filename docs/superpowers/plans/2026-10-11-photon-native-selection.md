@@ -186,7 +186,10 @@ on: the Svelte store leaves it without one, and the next Shift+click then ranges
 lead the last one moved - the walking away the anchor exists to prevent. A key with Ctrl,
 Cmd or Alt held is not the grid's, but for Ctrl/Cmd+A (the Svelte handler answers the
 arrows whatever is held). The status bar's count is given to AccessKit, so that a test of
-the whole application reads it. Five lines went because a probe passed with them changed:
-`tile_at`'s check that a row is a row of photos (a header holds none, so no column of it
-is one), three clamps of an offset `follow` already keeps true, and a guard against an
-empty grid that every call it stood before already was.
+the whole application reads it. Eleven probes passed at first. Two were lines that did
+nothing and went: `tile_at`'s check that a row is a row of photos (a header holds none,
+so no column of it is one) and `extend`'s return in an empty grid. Nine were tests that
+did not tell, one of them a rule with no test at all (Escape closing the search help
+over a selection). Five more lines went before a probe was written for them, on the same
+reasoning: clamps of an offset `follow` already keeps true, and a guard against an empty
+grid before calls that do nothing in one.
