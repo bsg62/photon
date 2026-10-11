@@ -5,6 +5,7 @@ use crate::{
     empty::{self, GridState, LibraryFacts, Panel, PanelButton},
     events::{Event, UiEvents},
     grid::{
+        labels::folder_label,
         view::{Align, Ask, Asked, GridData, GridOutput, GridView},
         visible::VisibleReport,
     },
@@ -13,14 +14,17 @@ use crate::{
     menu_view::{MenuView, Outcome},
     nav::{Landed, LastFolder, Nav, Place, Step},
     probe::{Facts, Move, Outside, Probe, Report},
+    rename::{Commit, Of, Rename},
     scans::Scans,
     search_bar::{SearchAction, SearchBarData},
     search_box::{SearchBox, saved_search_for},
     selection::Selection,
     shell::{Action, Shell, ShellData},
+    side_menu::{self, FolderFacts, SideAction},
     sidebar::{
         list::{Collections, Group, Held, List, Sources, What},
         rows::{Counts, Fixed, Today},
+        view::{Named, Naming},
     },
     status::Line,
     tasks::{Latest, Queue},
@@ -84,9 +88,11 @@ pub struct App {
     nav: Nav,
     /// The photos picked in the grid on screen.
     selection: Selection,
-    /// The menu of the selection, where it was opened: one menu for the whole window.
-    menu: Option<egui::Pos2>,
+    /// The menu that is open: one for the whole window, so opening any closes any other.
+    menu: Option<Open>,
     menu_view: MenuView,
+    /// The name being typed in the sidebar.
+    rename: Rename,
     /// A step made answers where it led, and with it what the engine said when it made
     /// the step and could not finish the rest of it (a sort shown and not stored).
     steps: Queue<Step, Result<(Landed, Option<String>), String>>,
@@ -137,6 +143,33 @@ pub struct App {
     closed: bool,
 }
 
+/// A menu that is open: where it was opened, and whose it is.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Open {
+    at: egui::Pos2,
+    of: MenuOf,
+}
+
+/// What a menu is the menu of. Its items are built from this in every frame, from the
+/// selection and the lists as they are then - so a menu whose album, saved search or
+/// folder is no longer listed has no items, and closes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MenuOf {
+    /// The photos selected: the tile's menu.
+    Selection,
+    Album(i64),
+    Search(i64),
+    /// A folder: on its row in the sidebar, and on its header in the grid.
+    Folder(i64),
+}
+
+/// What an item of whichever menu is open does.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Picked {
+    Tile(TileAction),
+    Side(SideAction),
+}
+
 /// Something to write to the library.
 enum Write {
     /// The search in the box, under a name: the bookmark.
@@ -172,6 +205,38 @@ enum Write {
         name: String,
         ids: Vec<i64>,
     },
+    /// A name typed in the sidebar, and the number its field was sent under
+    /// (`rename::Commit`): a new album's, an album's, a saved search's.
+    AlbumNew {
+        name: String,
+        sent: u64,
+    },
+    AlbumRename {
+        album: i64,
+        name: String,
+        sent: u64,
+    },
+    SearchRename {
+        search: i64,
+        name: String,
+        sent: u64,
+    },
+    /// A folder's name in photon - the directory keeps its own - or none, which shows
+    /// the directory's again. `sent` when it was typed in a field, which waits for it.
+    FolderAlias {
+        folder: i64,
+        name: Option<String>,
+        sent: Option<u64>,
+    },
+    /// A folder hidden - its photos, and any added to it later - or brought back.
+    FolderHidden {
+        folder: i64,
+        hidden: bool,
+    },
+    /// A watched folder scanned again.
+    Rescan {
+        watched: i64,
+    },
 }
 
 /// A write that was made.
@@ -196,13 +261,33 @@ enum Wrote {
         kept: usize,
         asked: usize,
     },
+    /// A name stored that the sidebar's lists show: its field closes, and they are read
+    /// again.
+    Named {
+        sent: u64,
+    },
+    /// Something of a folder stored - its name, whether it is hidden: the folder list
+    /// is read again, and the field that sent a name, if one did, closes.
+    Folder {
+        sent: Option<u64>,
+    },
 }
 
 /// A write the library refused, and what it said.
 enum Unwritten {
-    Search { query: String, said: String },
-    TileSize { said: String },
+    Search {
+        query: String,
+        said: String,
+    },
+    TileSize {
+        said: String,
+    },
     Said(String),
+    /// A name the library would not take: its field stays open, to be put right.
+    Name {
+        sent: u64,
+        said: String,
+    },
 }
 
 /// The gate's programme, where its report goes, and what the report says besides.
@@ -377,6 +462,47 @@ impl App {
                             })
                             .map_err(|err| Unwritten::Said(err.message))
                     }
+                    Write::AlbumNew { name, sent } => commands::create_album(&engine, &name)
+                        .map(|_| Wrote::Named { sent })
+                        .map_err(|err| Unwritten::Name {
+                            sent,
+                            said: err.message,
+                        }),
+                    Write::AlbumRename { album, name, sent } => {
+                        commands::rename_album(&engine, album, &name)
+                            .map(|()| Wrote::Named { sent })
+                            .map_err(|err| Unwritten::Name {
+                                sent,
+                                said: err.message,
+                            })
+                    }
+                    Write::SearchRename { search, name, sent } => {
+                        commands::rename_saved_search(&engine, search, &name)
+                            .map(|()| Wrote::Named { sent })
+                            .map_err(|err| Unwritten::Name {
+                                sent,
+                                said: err.message,
+                            })
+                    }
+                    Write::FolderAlias { folder, name, sent } => {
+                        let stored = commands::set_folder_alias(&engine, folder, name);
+                        match (stored, sent) {
+                            (Ok(_), sent) => Ok(Wrote::Folder { sent }),
+                            (Err(err), Some(sent)) => Err(Unwritten::Name {
+                                sent,
+                                said: err.message,
+                            }),
+                            (Err(err), None) => Err(Unwritten::Said(err.message)),
+                        }
+                    }
+                    Write::FolderHidden { folder, hidden } => {
+                        commands::set_folder_hidden(&engine, folder, hidden)
+                            .map(|_| Wrote::Folder { sent: None })
+                            .map_err(|err| Unwritten::Said(err.message))
+                    }
+                    Write::Rescan { watched } => commands::rescan_folder(&engine, watched)
+                        .map(|()| Wrote::Grid)
+                        .map_err(|err| Unwritten::Said(err.message)),
                 }
             },
             repaint(&ctx),
@@ -479,6 +605,7 @@ impl App {
             selection: Selection::default(),
             menu: None,
             menu_view: MenuView::default(),
+            rename: Rename::default(),
             steps,
             search: SearchBox::default(),
             writes,
@@ -670,6 +797,132 @@ impl App {
     /// Whether a menu is open.
     pub fn menu_open(&self) -> bool {
         self.menu.is_some()
+    }
+
+    /// The name being typed in the sidebar: what for, what it holds, and whether it is
+    /// being stored.
+    pub fn naming(&self) -> Option<(Of, String, bool)> {
+        let (of, text) = self.rename.field()?;
+        Some((of.clone(), text.to_owned(), self.rename.busy()))
+    }
+
+    /// The items of the menu that is open, as things are in this frame - or none, when
+    /// what it is the menu of is no longer there: nothing selected, an album deleted
+    /// from elsewhere, a folder the library no longer holds.
+    fn menu_items(&self, of: MenuOf) -> Option<Vec<Item<Picked>>> {
+        let collections = self.held.collections();
+        let side = |items: Vec<Item<SideAction>>| {
+            (items.into_iter())
+                .map(|item| item.map(Picked::Side))
+                .collect()
+        };
+        match of {
+            MenuOf::Selection => (!self.selection.is_empty()).then(|| {
+                (self.tile_items().into_iter())
+                    .map(|item| item.map(Picked::Tile))
+                    .collect()
+            }),
+            MenuOf::Album(id) => (collections.albums.iter())
+                .any(|album| album.id == id)
+                .then(|| side(side_menu::album_menu(id))),
+            MenuOf::Search(id) => (collections.searches.iter())
+                .any(|search| search.id == id)
+                .then(|| side(side_menu::search_menu(id))),
+            // A folder the view no longer holds has no row and no header: its name is
+            // typed in its row, and its menu was opened on one of the two.
+            MenuOf::Folder(id) => (self.held.folders().get(&id))
+                .filter(|_| self.list.folder(id).is_some())
+                .map(|folder| {
+                    side(side_menu::folder_menu(&FolderFacts {
+                        id,
+                        watched: folder.watched_id,
+                        named: folder.alias.is_some(),
+                        hidden: folder.hidden,
+                        scanning: self.scans.is_scanning(folder.watched_id),
+                    }))
+                }),
+        }
+    }
+
+    /// Opens the menu of `of` at `at`, in the place of any that was open.
+    fn open_menu(&mut self, ctx: &egui::Context, at: egui::Pos2, of: MenuOf) {
+        self.menu = Some(Open { at, of });
+        self.menu_view.reset();
+        // The keys are the menu's from now on: whatever had the keyboard gives it
+        // up, or a text field would go on blinking its caret under the menu.
+        if let Some(focused) = ctx.memory(|memory| memory.focused()) {
+            ctx.memory_mut(|memory| memory.surrender_focus(focused));
+        }
+        // It is drawn first in a frame, and this one is drawn: the next one is its,
+        // and needs no asking for - a menu is opened by a button going down, and egui
+        // asks for another frame after any frame with input in it.
+    }
+
+    /// Does what an item of one of the sidebar's menus does.
+    fn side(&mut self, action: SideAction) {
+        let collections = self.held.collections();
+        match action {
+            SideAction::RenameAlbum(id) => {
+                if let Some(album) = collections.albums.iter().find(|album| album.id == id) {
+                    self.rename.start(Of::Album(id), &album.name);
+                }
+            }
+            SideAction::RenameSearch(id) => {
+                if let Some(search) = collections.searches.iter().find(|search| search.id == id) {
+                    self.rename.start(Of::Search(id), &search.name);
+                }
+            }
+            // The name is typed in the folder's row in the sidebar, wherever the menu
+            // was opened: a hidden sidebar is shown for it, and the row brought into
+            // sight. With the name photon shows the folder by in it, to be corrected.
+            SideAction::RenameFolder(id) => {
+                let Some(folder) = self.held.folders().get(&id) else {
+                    return;
+                };
+                self.rename.start(Of::Folder(id), folder_label(folder));
+                if self.layout.sidebar_hidden {
+                    self.layout.sidebar_hidden = false;
+                    self.layout_store.ask(self.layout);
+                }
+                self.shell.reveal(What::Folder(id));
+            }
+            SideAction::UseFolderName(folder) => {
+                self.writes.push(Write::FolderAlias {
+                    folder,
+                    name: None,
+                    sent: None,
+                });
+            }
+            SideAction::HideFolder { folder, hidden } => {
+                self.writes.push(Write::FolderHidden { folder, hidden });
+            }
+            SideAction::Rescan { watched } => {
+                self.writes.push(Write::Rescan { watched });
+            }
+            // What does not work yet takes no press, and so answers nothing.
+            SideAction::DeleteAlbum(_)
+            | SideAction::DeleteSearch(_)
+            | SideAction::RevealFolder(_) => {}
+        }
+    }
+
+    /// Stores the name in the sidebar's field: Enter, or the field left.
+    fn store_name(&mut self) {
+        let Some(Commit { of, name, sent }) = self.rename.commit() else {
+            return;
+        };
+        self.writes.push(match of {
+            Of::NewAlbum => Write::AlbumNew { name, sent },
+            Of::Album(album) => Write::AlbumRename { album, name, sent },
+            Of::Search(search) => Write::SearchRename { search, name, sent },
+            // A folder's blank name is how its directory's own is asked back: the
+            // library takes the empty name for none.
+            Of::Folder(folder) => Write::FolderAlias {
+                folder,
+                name: Some(name),
+                sent: Some(sent),
+            },
+        });
     }
 
     /// The photo in the grid on screen with this id.
@@ -910,9 +1163,20 @@ impl App {
                 }
             }
             Action::ToggleSidebar => {
+                // A name half typed in a sidebar that is hidden is stored, as leaving
+                // its field stores it: the field goes with the sidebar.
+                if !self.layout.sidebar_hidden {
+                    self.store_name();
+                }
                 self.layout.sidebar_hidden = !self.layout.sidebar_hidden;
                 self.layout_store.ask(self.layout);
             }
+            Action::Row(What::NewAlbum) => self.rename.start(Of::NewAlbum, ""),
+            Action::Named(Named::Typed(text)) => self.rename.type_in(text),
+            Action::Named(Named::Cancel) => self.rename.cancel(),
+            Action::Named(Named::Commit) => self.store_name(),
+            // Opened where the frame's context is at hand (`eframe::App::ui`).
+            Action::RowMenu { .. } => {}
             Action::Row(What::Folder(folder)) => self.enter_folder(folder),
             Action::Row(What::Fixed(Fixed::All)) => self.return_to_all(),
             // A group is folded and unfolded where the user clicks, and stored then.
@@ -1110,6 +1374,25 @@ impl App {
                     let said = tile_menu::removed_message(&name, removed, kept, asked);
                     self.toasts.done(said, now_ms);
                 }
+                Ok(Ok(Wrote::Named { sent })) => {
+                    self.rename.landed(sent);
+                    self.collecting.ask(());
+                }
+                // The folder list is read again here, and not left to the rebuild the
+                // engine makes for a folder's name or its hiding: it makes none when no
+                // photo changed. "Hide folder" on a folder whose photos were all hidden
+                // one by one changes the folder and no photo, and its menu went on
+                // offering to hide it, with no way to bring it back.
+                Ok(Ok(Wrote::Folder { sent })) => {
+                    if let Some(sent) = sent {
+                        self.rename.landed(sent);
+                    }
+                    self.folder_list.ask(());
+                }
+                Ok(Err(Unwritten::Name { sent, said })) => {
+                    self.rename.refused(sent);
+                    self.toasts.error(said, now_ms);
+                }
                 Ok(Err(Unwritten::Said(said))) => self.toasts.error(said, now_ms),
                 Err(_) => self
                     .toasts
@@ -1169,10 +1452,12 @@ impl App {
             if seen {
                 self.view.go_to(landed.at, Align::Nearest);
             }
-            // A menu open then was of the photo that left. Its items act on what is
-            // selected at the pick, which may now be the photo landed on: one nobody
-            // asked about.
-            self.menu = None;
+            // A menu of the selection open then was of the photo that left. Its items
+            // act on what is selected at the pick, which may now be the photo landed
+            // on: one nobody asked about.
+            if self.menu.is_some_and(|open| open.of == MenuOf::Selection) {
+                self.menu = None;
+            }
         }
         // A folder clicked from an excursion: this is the grid it was to be looked up in.
         if let Some(folder) = shown.jump {
@@ -1297,21 +1582,23 @@ impl eframe::App for App {
         // The menu, before anything else is drawn: while it is open the keys are its
         // own, and it takes them out of the frame before the search box, the sidebar
         // or the grid can read them (`menu_view.rs`).
-        if self.selection.is_empty() {
-            // Nothing is selected any more - a grid of other results, or one that has
-            // lost the menu's photos and has none to land on: there is nothing for its
-            // items to act on.
-            self.menu = None;
-        }
-        if let Some(at) = self.menu {
-            let items = self.tile_items();
-            match self.menu_view.show(ui, at, &items) {
-                Outcome::Open => {}
-                Outcome::Closed => self.menu = None,
-                Outcome::Picked(action) => {
-                    self.menu = None;
-                    self.pick(action);
-                }
+        if let Some(open) = self.menu {
+            match self.menu_items(open.of) {
+                // What it was the menu of is gone: nothing is selected any more - a
+                // grid of other results, or one that has lost the menu's photos and has
+                // none to land on - or its album, search or folder is no longer listed.
+                None => self.menu = None,
+                Some(items) => match self.menu_view.show(ui, open.at, &items) {
+                    Outcome::Open => {}
+                    Outcome::Closed => self.menu = None,
+                    Outcome::Picked(picked) => {
+                        self.menu = None;
+                        match picked {
+                            Picked::Tile(action) => self.pick(action),
+                            Picked::Side(action) => self.side(action),
+                        }
+                    }
+                },
             }
         }
 
@@ -1362,6 +1649,11 @@ impl eframe::App for App {
             layout: &self.layout,
             list: &self.list,
             here: self.marked,
+            naming: self.rename.field().map(|(of, text)| Naming {
+                of,
+                text,
+                busy: self.rename.busy(),
+            }),
             search: SearchBarData {
                 saved_as: saved_as.as_deref(),
                 can_save: self.search.can_save(searches),
@@ -1382,23 +1674,31 @@ impl eframe::App for App {
             output = Some(view.show(ui, &data, thumbs, selection));
         });
         for action in actions {
+            // The other button on a row of the sidebar that has a menu.
+            if let Action::RowMenu { what, at } = &action {
+                let of = match what {
+                    What::Album(id) => Some(MenuOf::Album(*id)),
+                    What::Search { id, .. } => Some(MenuOf::Search(*id)),
+                    What::Folder(id) => Some(MenuOf::Folder(*id)),
+                    _ => None,
+                };
+                if let Some(of) = of {
+                    self.open_menu(ui.ctx(), *at, of);
+                }
+            }
             self.act(action, now);
         }
         // What the grid's own input asked that is this side's to do.
-        let (menu, asked) = (output.as_ref()).map_or((None, Vec::new()), |output| {
-            (output.menu, output.asked.clone())
-        });
+        let (menu, header_menu, asked) = (output.as_ref())
+            .map_or((None, None, Vec::new()), |output| {
+                (output.menu, output.header_menu, output.asked.clone())
+            });
         if let Some(at) = menu {
-            self.menu = Some(at);
-            self.menu_view.reset();
-            // The keys are the menu's from now on: whatever had the keyboard gives it
-            // up, or a text field would go on blinking its caret under the menu.
-            if let Some(focused) = ui.memory(|memory| memory.focused()) {
-                ui.memory_mut(|memory| memory.surrender_focus(focused));
-            }
-            // It is drawn first in a frame, and this one is drawn: the next one is
-            // its, and needs no asking for - a menu is opened by a button going down,
-            // and egui asks for another frame after any frame with input in it.
+            self.open_menu(ui.ctx(), at, MenuOf::Selection);
+        }
+        // On a folder's header, real or pinned: the menu its row in the sidebar has.
+        if let Some((folder, at)) = header_menu {
+            self.open_menu(ui.ctx(), at, MenuOf::Folder(folder));
         }
         for ask in asked {
             self.ask(ask);

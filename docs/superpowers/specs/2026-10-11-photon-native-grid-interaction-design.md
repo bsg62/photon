@@ -368,19 +368,25 @@ entry it stands in for, so a rename begun while another is half typed takes its 
   user asks for the directory's own name back.
 - **A name the library refuses leaves the field open**, with a toast, so the name can be
   put right.
-- **While its write runs the field takes no typing and keeps the keyboard.** A field that
-  gave the keyboard up would send the next name typed to the grid, where `h` hides a
-  photo.
+- **While its write runs the field takes no typing.** Stored by Enter it still has the
+  keyboard, so the next name typed does not reach the grid, where `h` hides a photo.
+  Stored by being left - a press elsewhere, Ctrl+F - it has given the keyboard to what
+  the user went to, and does not ask for it back. (Corrected after the fourth pull
+  request's review: this said "and keeps the keyboard", and a field that asked for it
+  back took it from the search box the user had just gone to.)
 - A write that comes back closes the field only if it is still the field that was sent:
   a folder's write waits for a rebuild, long enough for another row's rename to have
   begun.
-- The Enter that stores a name presses nothing else, and neither does its repeat.
+- The Enter that stores a name presses nothing else, and neither does its repeat. The
+  Enter that opened the field - it picked "Rename…" in the menu - does not store it at
+  its repeat.
 - Closed, the keys are the grid's.
 - The list does not follow the grid while a name is being typed, and its field's row is
   the entry the list is held by (`Kept`).
 - **"Rename in photon…" on a header in the grid** shows the sidebar first when it is
-  hidden, and opens the field in the folder's row, brought into sight. A folder the list
-  does not hold has no row to open it in, and the item does not work.
+  hidden, and opens the field in the folder's row, brought into sight. A folder's menu
+  is of a folder the view lists - it was opened on its row or its header - and closes
+  when the view no longer lists it.
 
 ### The dialog layer
 

@@ -9,7 +9,7 @@ use super::{
     header,
     layout::{
         GAP, HEADER, NavKey, PinnedHeader, Row, RowKind, Span, build_rows, columns_for,
-        defers_thumbs, edge_scroll_speed, has_header, header_rows, held_place, hold_at,
+        defers_thumbs, edge_scroll_speed, has_header, header_at, header_rows, held_place, hold_at,
         items_in_rect, move_from, page_move, pin_at, pin_top, pinned_header, row_of_item,
         row_width, scroll_into_grid, scroll_to_start, shows_timeline, tile_at, tile_for, tile_row,
         tile_width, top_folder_id, total_height, visible_range, wanted_range,
@@ -23,6 +23,7 @@ use super::{
     },
 };
 use crate::{
+    menu_view::asks_for_menu,
     selection::Selection,
     theme::{
         apply::{color, menu_shadow, palette},
@@ -73,15 +74,6 @@ struct Press {
     /// Whether it has been a band. One that has is no click when the button comes up,
     /// and one whose band was abandoned draws no second: the rest of it is nobody's.
     banded: bool,
-}
-
-/// Whether a button going down or coming up is the one that asks for the menu: the
-/// other button, and on a Mac the first one with Control held, which is how a mouse
-/// with one button asks - the system reports it as the first button, and the web view
-/// opened its menu for it.
-fn asks_for_menu(button: PointerButton, modifiers: Modifiers, mac: bool) -> bool {
-    button == PointerButton::Secondary
-        || (mac && button == PointerButton::Primary && modifiers.ctrl)
 }
 
 /// What a frame's presses on the photos came to (`GridView::take_pointer`).
@@ -248,6 +240,9 @@ pub struct GridOutput {
     pub menu: Option<egui::Pos2>,
     /// What the keys asked for the selection.
     pub asked: Vec<Asked>,
+    /// Where the other button went down on a folder's header - its own row, or the
+    /// copy pinned over the photos - and the folder: the folder's menu.
+    pub header_menu: Option<(i64, egui::Pos2)>,
 }
 
 /// A key that asks something of the selection, with the selection as it was at that
@@ -313,6 +308,7 @@ pub struct GridView {
     /// frame's output.
     menu: Option<egui::Pos2>,
     asks: Vec<Asked>,
+    header_menu: Option<(i64, egui::Pos2)>,
 }
 
 impl GridView {
@@ -450,6 +446,7 @@ impl GridView {
             banding: self.band.is_some(),
             menu: self.menu.take(),
             asked: std::mem::take(&mut self.asks),
+            header_menu: self.header_menu.take(),
         }
     }
 
@@ -705,6 +702,17 @@ impl GridView {
                 selection.select(index, offset);
             }
             self.menu = Some(pointer);
+        } else if let Some(pointer) = taken.menu {
+            // On a folder's header - its own row, or the copy pinned over the photos,
+            // one and the same to whoever presses it - the folder's menu. A period's
+            // header names no folder, and has none.
+            let y = f64::from(pointer.y - area.top());
+            let folder = header_at(&self.rows, &self.headers, top, y)
+                .and_then(|section| index.sections().get(section))
+                .and_then(|section| section.folder_id);
+            if let Some(folder) = folder {
+                self.header_menu = Some((folder, pointer));
+            }
         }
 
         let elsewhere = ui.memory(|memory| memory.focused().is_some());
@@ -4008,20 +4016,79 @@ mod tests {
         f.frame(vec![button(false)]);
     }
 
-    // A mouse with one button asks for the menu with Control held, and the system
-    // reports that as the first button.
+    // ---- the folder's menu, on its header ----
+
+    // A folder's header is drawn twice - in its row, and pinned over the photos once
+    // that row has scrolled away - and the two are one thing to whoever presses them.
     #[test]
-    fn on_a_mac_the_first_button_with_control_asks_for_the_menu() {
-        let (first, other) = (PointerButton::Primary, PointerButton::Secondary);
-        for mac in [true, false] {
-            assert!(asks_for_menu(other, Modifiers::NONE, mac));
-            assert!(asks_for_menu(other, Modifiers::CTRL, mac));
-            assert!(!asks_for_menu(first, Modifiers::NONE, mac));
-            assert!(!asks_for_menu(first, Modifiers::SHIFT, mac));
-            assert!(!asks_for_menu(first, Modifiers::MAC_CMD, mac));
-        }
-        assert!(asks_for_menu(first, Modifiers::CTRL, true));
-        // Elsewhere Control with a click takes a photo in or out of the selection.
-        assert!(!asks_for_menu(first, Modifiers::CTRL, false));
+    fn the_other_button_on_a_folders_header_asks_for_the_folders_menu() {
+        let mut f = fixture(&[200, 200]);
+        f.frame(Vec::new());
+        f.click(1, Modifiers::NONE);
+        // The first folder's own header, at the top of the grid.
+        let at = Pos2::new(300.0, 10.0);
+        let frame = f.right_click(at);
+        assert_eq!(frame.header_menu, Some((1, at)));
+        assert_eq!(frame.menu, None);
+        // It selects nothing and clears nothing: it is no photo's.
+        assert_eq!(f.picked(), [2]);
+        // Asked for once.
+        assert_eq!(f.frame(Vec::new()).header_menu, None);
+        // Deep in the first folder its header is pinned over the photos.
+        f.view.scroll_to(430.0);
+        f.frame(Vec::new());
+        assert_eq!(f.right_click(at).header_menu, Some((1, at)));
+        // In the second folder, the second's.
+        let second = f.view.rect_of(200).expect("the second folder is laid out");
+        f.view.scroll_to(f64::from(second.top()) + 430.0 + 400.0);
+        f.frame(Vec::new());
+        assert_eq!(f.right_click(at).header_menu, Some((2, at)));
+        // A photo's place under the header's height is the photo's, further down.
+        let photo = f.middle(f.top_photo() + 4);
+        let frame = f.right_click(photo);
+        assert_eq!(frame.header_menu, None);
+        assert_eq!(frame.menu, Some(photo));
+    }
+
+    // A period's header names no folder, and a flat grid has no header at all.
+    #[test]
+    fn a_header_that_names_no_folder_has_no_menu() {
+        let at = Pos2::new(300.0, 10.0);
+        let mut f = fixture(&[200]);
+        f.index = index_laid_out(
+            &[200],
+            Layout::Periods(photon_core::grid::PeriodUnit::Month),
+        );
+        f.frame(Vec::new());
+        assert_eq!(f.right_click(at).header_menu, None);
+        let mut f = fixture(&[200]);
+        f.index = index_laid_out(&[200], Layout::Flat);
+        f.frame(Vec::new());
+        let frame = f.right_click(at);
+        assert_eq!(frame.header_menu, None);
+        // There a photo is at the top, and it is the photo's menu.
+        assert_eq!(frame.menu, Some(at));
+    }
+
+    // Not while the first button is down, and not through what lies over the grid: the
+    // header's press is read with the photos'.
+    #[test]
+    fn a_headers_menu_is_asked_for_as_a_photos_is() {
+        let at = Pos2::new(300.0, 10.0);
+        let mut f = fixture(&[200]);
+        f.frame(Vec::new());
+        let photo = f.middle(6);
+        f.frame(vec![Event::PointerMoved(photo)]);
+        f.button(photo, true);
+        assert_eq!(f.frame(vec![other(at, true)]).header_menu, None);
+        f.frame(vec![other(at, false)]);
+        f.button(photo, false);
+        f.over = Some(Rect::from_min_size(
+            Pos2::new(280.0, 0.0),
+            vec2(200.0, 100.0),
+        ));
+        f.frame(Vec::new());
+        f.frame(Vec::new());
+        assert_eq!(f.right_click(at).header_menu, None);
     }
 }

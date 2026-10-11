@@ -36,6 +36,29 @@ impl<A> Item<A> {
     pub fn works(&self) -> bool {
         matches!(self, Self::Pick { works: true, .. })
     }
+
+    /// The same item, answering `to(does)`: so that whoever holds menus of several
+    /// kinds can hold one menu.
+    pub fn map<B>(self, to: impl FnOnce(A) -> B) -> Item<B> {
+        match self {
+            Self::Pick {
+                label,
+                hint,
+                works,
+                look,
+                does,
+            } => Item::Pick {
+                label,
+                hint,
+                works,
+                look,
+                does: to(does),
+            },
+            Self::Separator => Item::Separator,
+            Self::Heading(heading) => Item::Heading(heading),
+            Self::Note(note) => Item::Note(note),
+        }
+    }
 }
 
 /// A key that moves through a menu's items.
@@ -208,5 +231,33 @@ mod tests {
         assert_eq!(placed((10.0, 50.0), (200.0, 900.0), WINDOW).1, MENU_MARGIN);
         // And one wider than it to the left margin.
         assert_eq!(placed((50.0, 10.0), (1200.0, 100.0), WINDOW).0, MENU_MARGIN);
+    }
+
+    #[test]
+    fn an_item_mapped_is_the_same_item_with_another_answer() {
+        let pick = Item::Pick {
+            label: "Hide photo".to_owned(),
+            hint: Some("H"),
+            works: false,
+            look: Look::Danger,
+            does: 3_u8,
+        };
+        assert_eq!(
+            pick.map(|does| (does, "tile")),
+            Item::Pick {
+                label: "Hide photo".to_owned(),
+                hint: Some("H"),
+                works: false,
+                look: Look::Danger,
+                does: (3_u8, "tile"),
+            }
+        );
+        let other = |_: u8| 0_u16;
+        assert_eq!(Item::Separator.map(other), Item::Separator);
+        assert_eq!(
+            Item::Heading("Add to album").map(other),
+            Item::Heading("Add to album")
+        );
+        assert_eq!(Item::Note("None yet").map(other), Item::Note("None yet"));
     }
 }
