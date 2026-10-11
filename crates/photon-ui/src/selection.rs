@@ -44,6 +44,32 @@ pub struct Selection {
     /// The photo a Shift+click ranges from: where the user last clicked plainly or with
     /// Ctrl, or where a range or a select-all began.
     anchor: Option<At>,
+    /// The two sets a rubber band holds while it is drawn.
+    band: Option<Band>,
+}
+
+/// What a rubber band started from.
+#[derive(Debug)]
+struct Band {
+    /// What it adds to: what was selected as it began, for a band that adds, and
+    /// nothing for one that replaces. Every frame of the band is this plus what the
+    /// rectangle covers, so a rectangle dragged smaller takes photos back off instead
+    /// of piling each frame's on the last.
+    base: HashSet<i64>,
+    /// What was selected as it began, whichever kind it is: what an abandoned band puts
+    /// back.
+    ///
+    /// There is no lead beside it, on purpose. A band does not move the lead while it
+    /// is drawn - only its release does - so there is none to put back, and a kept one
+    /// would be an offset from before whatever grid arrived under the drag.
+    previous: HashSet<i64>,
+}
+
+fn ids_of(index: &GridIndex, ranges: &[(usize, usize)]) -> impl Iterator<Item = i64> {
+    ranges.iter().flat_map(|&(start, end)| {
+        let count = (end + 1).saturating_sub(start);
+        index.rows(start, count).iter().map(|entry| entry.id)
+    })
 }
 
 fn at(index: &GridIndex, offset: usize) -> Option<At> {
@@ -170,10 +196,73 @@ impl Selection {
         }
     }
 
+    /// Clears the selection, and with it a band being drawn: what it started from is of
+    /// the grid that was cleared.
     pub fn clear(&mut self) {
         self.ids.clear();
         self.lead = None;
         self.anchor = None;
+        self.band = None;
+    }
+
+    /// A rubber band begins. One that is `adding` - begun with Ctrl, Cmd or Shift held -
+    /// builds on what is selected; any other replaces it.
+    pub fn band_begin(&mut self, adding: bool) {
+        self.band = Some(Band {
+            base: if adding {
+                self.ids.clone()
+            } else {
+                HashSet::new()
+            },
+            previous: self.ids.clone(),
+        });
+    }
+
+    pub fn banding(&self) -> bool {
+        self.band.is_some()
+    }
+
+    /// The band covers `ranges` of the grid now: what is selected is what it started
+    /// with and those. The lead and the anchor stay where they are until it is let go.
+    pub fn band_to(&mut self, index: &GridIndex, ranges: &[(usize, usize)]) {
+        let Some(band) = &self.band else {
+            return;
+        };
+        self.ids = band.base.clone();
+        self.ids.extend(ids_of(index, ranges));
+    }
+
+    /// The band is let go of over `ranges`. The lead and the anchor go to its first
+    /// photo, so that Enter opens something inside it and a Shift+click afterwards
+    /// ranges from where it began.
+    ///
+    /// A band over nothing is a band, not a failure: dragging over empty room is how a
+    /// selection is cleared with the mouse, and how an adding band that ends up covering
+    /// nothing leaves what it started with - with its lead, which the band never moved.
+    pub fn band_end(&mut self, index: &GridIndex, ranges: &[(usize, usize)]) {
+        self.band_to(index, ranges);
+        if self.band.take().is_none() {
+            return;
+        }
+        match ranges.first().and_then(|first| at(index, first.0)) {
+            Some(first) => {
+                self.lead = Some(first);
+                self.anchor = Some(first);
+            }
+            None if self.ids.is_empty() => {
+                self.lead = None;
+                self.anchor = None;
+            }
+            None => {}
+        }
+    }
+
+    /// The band is abandoned - Escape, or the drag lost: the selection is what it was
+    /// when the band began, less what has left the grid since.
+    pub fn band_cancel(&mut self) {
+        if let Some(band) = self.band.take() {
+            self.ids = band.previous;
+        }
     }
 
     /// A new grid is put on screen in place of `old`, showing the same view: the
@@ -190,12 +279,19 @@ impl Selection {
     ///   pressed again and again from where the user was.
     /// - An anchor whose photo has left is no anchor, and the next range starts at the
     ///   lead.
+    /// - A band being drawn goes on: its rectangle covers what it covers in the new grid.
     ///
     /// It does not ask what rebuilt the grid, so it has no account to keep of a click made
     /// while a write was out: the photos clicked are still there, and stay selected.
     pub fn follow(&mut self, old: &GridIndex, new: &GridIndex) -> Option<Landed> {
         let found = |id: i64| new.position_of(id).map(|offset| At { offset, id });
         self.ids.retain(|id| new.position_of(*id).is_some());
+        // And of what a band being drawn started from: neither its next frame nor its
+        // abandoning brings back a photo the grid no longer holds.
+        if let Some(band) = &mut self.band {
+            band.base.retain(|id| new.position_of(*id).is_some());
+            band.previous.retain(|id| new.position_of(*id).is_some());
+        }
         self.anchor = self.anchor.and_then(|anchor| found(anchor.id));
         let lead = self.lead?;
         if let Some(lead) = found(lead.id) {
@@ -682,6 +778,178 @@ mod tests {
         let new = folders(&[&[10, 11]]);
         let mut s = Selection::default();
         assert_eq!(s.follow(&old, &new), None);
+        assert!(s.is_empty());
+        assert_eq!(lead(&s), None);
+    }
+
+    // ---- a rubber band ----
+
+    #[test]
+    fn a_band_replaces_the_selection_with_what_it_covers() {
+        let index = ten();
+        let mut s = Selection::default();
+        s.select(&index, 8);
+        assert!(!s.banding());
+        s.band_begin(false);
+        assert!(s.banding());
+        s.band_to(&index, &[(1, 2), (5, 6)]);
+        assert_eq!(selected(&s, &index), [11, 12, 15, 16]);
+        // Dragged smaller, photos come off: each frame is what the band covers now.
+        s.band_to(&index, &[(1, 1)]);
+        assert_eq!(selected(&s, &index), [11]);
+        s.band_end(&index, &[(1, 2)]);
+        assert!(!s.banding());
+        assert_eq!(selected(&s, &index), [11, 12]);
+    }
+
+    #[test]
+    fn an_adding_band_adds_to_what_it_started_with_and_shrinks_back_again() {
+        let index = ten();
+        let mut s = Selection::default();
+        s.select(&index, 8);
+        s.toggle(&index, 9);
+        s.band_begin(true);
+        s.band_to(&index, &[(1, 3)]);
+        assert_eq!(selected(&s, &index), [11, 12, 13, 18, 19]);
+        s.band_to(&index, &[(1, 1)]);
+        assert_eq!(selected(&s, &index), [11, 18, 19]);
+        // Over a photo that was selected already, it stays selected.
+        s.band_to(&index, &[(7, 8)]);
+        assert_eq!(selected(&s, &index), [17, 18, 19]);
+        s.band_end(&index, &[(1, 1)]);
+        assert_eq!(selected(&s, &index), [11, 18, 19]);
+    }
+
+    #[test]
+    fn a_band_does_not_move_the_lead_until_it_is_let_go_of() {
+        let index = ten();
+        let mut s = Selection::default();
+        s.select(&index, 8);
+        s.band_begin(false);
+        s.band_to(&index, &[(1, 3)]);
+        assert_eq!(lead(&s), Some((8, 18)));
+        assert_eq!(anchor(&s), Some((8, 18)));
+        // Let go of: on the band's first photo, both.
+        s.band_end(&index, &[(2, 3), (5, 5)]);
+        assert_eq!(lead(&s), Some((2, 12)));
+        assert_eq!(anchor(&s), Some((2, 12)));
+        // So a Shift+click afterwards ranges from where the band began.
+        s.extend(&index, 4);
+        assert_eq!(selected(&s, &index), [12, 13, 14]);
+    }
+
+    // Dragging over empty room is how a selection is cleared with the mouse.
+    #[test]
+    fn a_band_over_nothing_clears_the_selection() {
+        let index = ten();
+        let mut s = Selection::default();
+        s.select(&index, 8);
+        s.band_begin(false);
+        s.band_to(&index, &[]);
+        assert!(s.is_empty());
+        s.band_end(&index, &[]);
+        assert!(s.is_empty());
+        assert_eq!(lead(&s), None);
+        assert_eq!(anchor(&s), None);
+        assert!(!s.banding());
+    }
+
+    #[test]
+    fn an_adding_band_over_nothing_leaves_what_it_started_with() {
+        let index = ten();
+        let mut s = Selection::default();
+        s.select(&index, 7);
+        s.toggle(&index, 8);
+        s.band_begin(true);
+        s.band_to(&index, &[(1, 2)]);
+        s.band_end(&index, &[]);
+        assert_eq!(selected(&s, &index), [17, 18]);
+        // With its lead, which the band never moved.
+        assert_eq!(lead(&s), Some((8, 18)));
+        assert_eq!(anchor(&s), Some((8, 18)));
+    }
+
+    #[test]
+    fn an_abandoned_band_puts_the_selection_back_and_leaves_the_lead_alone() {
+        let index = ten();
+        for adding in [false, true] {
+            let mut s = Selection::default();
+            s.select(&index, 7);
+            s.toggle(&index, 8);
+            s.band_begin(adding);
+            s.band_to(&index, &[(1, 3)]);
+            s.band_cancel();
+            assert!(!s.banding());
+            assert_eq!(selected(&s, &index), [17, 18], "{adding}");
+            assert_eq!(lead(&s), Some((8, 18)), "{adding}");
+            assert_eq!(anchor(&s), Some((8, 18)), "{adding}");
+        }
+    }
+
+    #[test]
+    fn a_range_past_the_end_of_the_grid_is_held_to_it() {
+        let index = ten();
+        let mut s = Selection::default();
+        s.band_begin(false);
+        s.band_to(&index, &[(8, 40)]);
+        assert_eq!(selected(&s, &index), [18, 19]);
+        s.band_end(&index, &[(30, 40)]);
+        assert!(s.is_empty());
+        assert_eq!(lead(&s), None);
+    }
+
+    #[test]
+    fn nothing_is_a_band_before_one_begins_or_after_it_ends() {
+        let index = ten();
+        let mut s = Selection::default();
+        s.select(&index, 4);
+        s.band_to(&index, &[(1, 2)]);
+        s.band_end(&index, &[(1, 2)]);
+        s.band_cancel();
+        assert_eq!(selected(&s, &index), [14]);
+        assert_eq!(lead(&s), Some((4, 14)));
+    }
+
+    // A scan's grid arrives under the drag: the rectangle covers what it covers there,
+    // and a photo that left comes back with neither the next frame nor an Escape.
+    #[test]
+    fn a_photo_that_left_under_a_band_is_in_neither_of_its_sets() {
+        let old = ten();
+        let new = folders(&[&[10, 11, 12, 13, 14, 15, 16, 19]]);
+        for end in ["frame", "cancel"] {
+            let mut s = Selection::default();
+            s.select(&old, 7);
+            s.toggle(&old, 8);
+            s.toggle(&old, 9);
+            s.band_begin(true);
+            s.band_to(&old, &[(1, 2)]);
+            s.follow(&old, &new);
+            assert!(s.banding());
+            if end == "frame" {
+                s.band_to(&new, &[(1, 1)]);
+                assert_eq!(selected(&s, &new), [11, 19]);
+            } else {
+                s.band_cancel();
+                assert_eq!(selected(&s, &new), [19]);
+            }
+            assert_eq!(s.len(), selected(&s, &new).len(), "{end}");
+        }
+    }
+
+    // A step's grid: the photos are another set, and the band began in the one before.
+    #[test]
+    fn clearing_the_selection_forgets_a_band_being_drawn() {
+        let index = ten();
+        let mut s = Selection::default();
+        s.select(&index, 7);
+        s.band_begin(true);
+        s.band_to(&index, &[(1, 2)]);
+        s.clear();
+        assert!(!s.banding());
+        // Nothing of it comes back with a frame or a release that arrives late.
+        s.band_to(&index, &[(1, 2)]);
+        s.band_end(&index, &[(1, 2)]);
+        s.band_cancel();
         assert!(s.is_empty());
         assert_eq!(lead(&s), None);
     }

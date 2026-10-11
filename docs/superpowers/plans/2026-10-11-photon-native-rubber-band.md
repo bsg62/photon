@@ -99,8 +99,7 @@ impl Selection {
   adding one leaves what it began with, lead and all; cancel puts back what it began
   from and leaves the lead alone; `follow` under a band takes a photo that left out of
   both sets, so neither the next frame nor a cancel brings it back; `clear` under a
-  band forgets it; a plain selection made under a band (a key cannot, but a test of the
-  rule can) is not undone by the band's end.
+  band forgets it; a frame, a release and a cancel with no band begun do nothing.
 - [ ] Implement, gate, commit.
 
 ## Task 3: the view
