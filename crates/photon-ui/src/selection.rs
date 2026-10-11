@@ -139,7 +139,8 @@ impl Selection {
     ///
     /// The lead stays where it is, so that Enter still opens the photo the user was on.
     /// The anchor goes to the start of what was selected, which is where a Shift+click
-    /// afterwards ranges from: the selection began there.
+    /// afterwards ranges from: the selection began there. A folder's scattered photos
+    /// have no such start in the grid, and there the anchor is the lead's own photo.
     pub fn select_all(&mut self, index: &GridIndex, library: bool) {
         let here = self.lead.map_or(0, |lead| lead.offset);
         let sections = index.sections();

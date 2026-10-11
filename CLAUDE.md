@@ -1667,17 +1667,40 @@ header or beside a short last row, and the pinned header's rectangle is taken ou
 view, since a photo lies under it. A click on no photo selects nothing and clears
 nothing. The arrows, Home and End move the lead (`move_from`, `nav.ts`'s `move`: with
 nothing selected a key starts from the first photo) and the page keys a screenful
-(`page_move`), where until this they scrolled; with nothing selected the page keys
+(`page_move`). Until this the up and down arrows, Home, End and the page keys scrolled
+the grid, and the sideways arrows did nothing; with nothing selected the page keys
 still scroll. The grid follows the lead by the least movement, under the pinned
 header's height. The keys are read from the frame's events, in order, repeats included -
-but not Escape's repeat, and not a chord with Ctrl, Cmd or Alt, but for Ctrl/Cmd+A. **A
-key used by something drawn before the grid is taken out of the frame's input**
-(`consume_key`), or the grid, drawn later in the same frame, answers it too: the search
-box's Escape left the box and cleared the selection with one press. egui decides for
-itself whether a press is a repeat (the key has not come up), whatever the event says:
-a test of a repeat holds the key down across frames. The held modifiers reach egui by
-`Event::ModifiersChanged`, not by a field of `RawInput`: a test that clicks with Shift
-sends it. A selected tile's ring is drawn inside the tile. The status bar says "N
+but not Escape's repeat, and not a chord with Ctrl, Cmd or Alt, but for Ctrl/Cmd+A.
+
+**The keys are the grid's only while nothing else has the keyboard, and had none when
+the grid was last drawn** (`GridView::elsewhere`). The grid is drawn after everything
+else in a frame and reads the frame's keys, and "unless a text field has them", which
+was the rule while its keys only scrolled, had it answer every key a second time that
+something else had just answered: the arrow that moved the splitter moved the selection,
+Ctrl+A in an open list selected a folder behind it, the arrow that walked the focus from
+a button the Tab key had reached moved the lead (a review found all of them, each with a
+test). "Had none when last drawn" is for Escape: egui takes the keyboard off a widget at
+Escape before anything is drawn, so in the frame of that key nothing has it, and the
+Escape that left a control cleared the selection too. What keeps the keyboard by a lock
+of its own and gives it up itself - the search box - takes its Escape out of the frame
+(`consume_key`) instead. And what lies open over the photos with no keyboard of its own
+says so (`GridData::keys`: the search box's help). A click on a photo gives the keys
+back, egui taking the keyboard off whatever had it at a click elsewhere. **Every key the
+grid gains goes through this one gate**: the third pull request gives it `H`.
+
+egui decides for itself whether a press is a repeat (the key has not come up), whatever
+the event says: a test of a repeat holds the key down across frames. The held modifiers
+reach egui by `Event::ModifiersChanged`, not by a field of `RawInput`: a test that
+clicks with Shift sends it - and a click takes its modifiers from the release's own
+event, not from what is held at the end of the frame, in which Shift may have come up.
+`egui_kittest`'s `step` draws a frame for *each* queued event, so only a test in whole
+frames of a view can put two events in one. **The area that senses the click takes
+every press on the photos**, however near the scrollbar or the splitter: egui hands a
+near miss to a neighbouring widget only where nothing is hit, so the splitter's reach is
+its own five points now, as the Svelte one's is. A press held longer than egui's 0.8
+seconds is no click (`max_click_duration`, which is also a touch's long press, so it is
+left alone). A selected tile's ring is drawn inside the tile. The status bar says "N
 selected" before the count from two photos on, and gives AccessKit those words, which is
 how a test of the whole application reads them. A test presses a photo where
 `App::tile_rect` says it was last drawn.

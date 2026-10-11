@@ -4,11 +4,14 @@
 mod common;
 
 use common::{Driver, Harness, click, library, opened, photo_ids};
-use eframe::egui::{self, Key, Modifiers, PointerButton};
-use egui_kittest::kittest::Queryable;
+use eframe::egui::{self, Key, Modifiers, PointerButton, pos2};
+use egui_kittest::kittest::{NodeT, Queryable};
 use photon_core::grid::GridView;
 use photon_engine::commands;
-use photon_ui::nav::Place;
+use photon_ui::{
+    nav::Place,
+    window_layout::{SIDEBAR_DEFAULT, SIDEBAR_STEP},
+};
 
 /// Clicks the photo at grid offset `offset` with `held` down, and draws the frames the
 /// click is in.
@@ -327,4 +330,148 @@ fn a_window_with_photos_selected_draws_nothing() {
     driver.frames_in(&mut harness, 1.0);
     driver.settle(&mut harness);
     assert_eq!(driver.frames_in(&mut harness, 5.0), 0);
+}
+
+// ---- whose key it is: from the review ----
+//
+// The grid is drawn after everything else in the frame, and read the frame's keys
+// whenever no text field had the keyboard. Each of these keys was answered twice: by
+// what had the keyboard, and by the grid behind it.
+
+/// Three photos selected, offsets 3 to 5, the lead on 5.
+fn three<'a>(dir: &std::path::Path) -> (Harness<'a>, Driver, Vec<i64>) {
+    let library = library(dir, 900, 0, 0);
+    let ids = photo_ids(&library);
+    let (mut harness, mut driver) = opened(&library, 900);
+    pick(&mut driver, &mut harness, 3, Modifiers::NONE);
+    pick(&mut driver, &mut harness, 5, Modifiers::SHIFT);
+    assert_eq!(harness.state().selected(), ids[3..=5]);
+    (harness, driver, ids)
+}
+
+// The splitter keeps the keyboard a press gave it, so that the arrows move it afterwards.
+#[test]
+fn an_arrow_that_moves_the_splitter_does_not_move_the_selection() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut harness, mut driver, ids) = three(dir.path());
+    // Dragged eighty points to the right with the mouse.
+    let hold = pos2(SIDEBAR_DEFAULT + 2.0, 300.0);
+    let to = pos2(hold.x + 80.0, 300.0);
+    let button = |pos, pressed| egui::Event::PointerButton {
+        pos,
+        button: PointerButton::Primary,
+        pressed,
+        modifiers: Modifiers::NONE,
+    };
+    harness.event(egui::Event::PointerMoved(hold));
+    harness.event(button(hold, true));
+    harness.event(egui::Event::PointerMoved(to));
+    driver.act(&mut harness);
+    harness.event(button(to, false));
+    driver.act(&mut harness);
+    driver.act(&mut harness);
+    let dragged = SIDEBAR_DEFAULT + 80.0;
+    assert_eq!(harness.state().layout().sidebar_width, dragged);
+    assert_eq!(harness.state().selected(), ids[3..=5]);
+
+    key(&mut driver, &mut harness, Modifiers::NONE, Key::ArrowRight);
+    assert_eq!(
+        harness.state().layout().sidebar_width,
+        dragged + SIDEBAR_STEP
+    );
+    assert_eq!(harness.state().selected(), ids[3..=5]);
+    // A click on a photo gives the keys back to the photos.
+    pick(&mut driver, &mut harness, 3, Modifiers::NONE);
+    key(&mut driver, &mut harness, Modifiers::NONE, Key::ArrowRight);
+    assert_eq!(harness.state().selected(), [ids[4]]);
+    assert_eq!(
+        harness.state().layout().sidebar_width,
+        dragged + SIDEBAR_STEP
+    );
+}
+
+#[test]
+fn the_keys_are_an_open_lists_and_not_the_grids_behind_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut harness, mut driver, ids) = three(dir.path());
+    click(&mut driver, &mut harness, "Sort by: Date taken");
+    driver.act(&mut harness);
+    assert!(harness.query_by_label("Date modified").is_some());
+    // Keys that do nothing in the list do nothing at all.
+    for (held, pressed) in [
+        (Modifiers::NONE, Key::ArrowRight),
+        (Modifiers::NONE, Key::ArrowLeft),
+        (Modifiers::COMMAND, Key::A),
+    ] {
+        key(&mut driver, &mut harness, held, pressed);
+        assert!(harness.query_by_label("Date modified").is_some());
+        assert_eq!(harness.state().selected(), ids[3..=5], "{pressed:?}");
+    }
+}
+
+// Escape closes the nearest thing, and that is all it does. The first closes the list
+// and the control keeps the keyboard; the second takes the keyboard off the control.
+#[test]
+fn the_escape_that_leaves_a_control_does_not_clear_the_selection() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut harness, mut driver, ids) = three(dir.path());
+    let focused = |harness: &Harness<'_>| {
+        (harness.get_by_label("Sort by: Date taken"))
+            .accesskit_node()
+            .is_focused()
+    };
+    click(&mut driver, &mut harness, "Sort by: Date taken");
+    driver.act(&mut harness);
+    key(&mut driver, &mut harness, Modifiers::NONE, Key::Escape);
+    driver.act(&mut harness);
+    assert!(harness.query_by_label("Date modified").is_none());
+    assert!(focused(&harness));
+    assert_eq!(harness.state().selected(), ids[3..=5]);
+
+    key(&mut driver, &mut harness, Modifiers::NONE, Key::Escape);
+    driver.act(&mut harness);
+    assert!(!focused(&harness));
+    assert_eq!(harness.state().selected(), ids[3..=5]);
+    // And the third, with the keyboard nowhere, is the grid's.
+    key(&mut driver, &mut harness, Modifiers::NONE, Key::Escape);
+    assert!(harness.state().selected().is_empty());
+}
+
+// The keyboard's way round the window: Tab to a button, and the arrows walk on from it.
+#[test]
+fn an_arrow_that_walks_the_focus_does_not_move_the_selection() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut harness, mut driver, ids) = three(dir.path());
+    key(&mut driver, &mut harness, Modifiers::NONE, Key::Tab);
+    driver.act(&mut harness);
+    let focused = |harness: &Harness<'_>| {
+        harness
+            .query_all_by_role(egui::accesskit::Role::Button)
+            .find(|node| node.accesskit_node().is_focused())
+            .map(|node| node.accesskit_node().label().unwrap_or_default())
+    };
+    let first = focused(&harness);
+    assert!(first.is_some(), "Tab gave no button the keyboard");
+    key(&mut driver, &mut harness, Modifiers::NONE, Key::ArrowDown);
+    driver.act(&mut harness);
+    assert_ne!(focused(&harness), first, "the arrow did not walk on");
+    assert_eq!(harness.state().selected(), ids[3..=5]);
+}
+
+// The panel lies over the photos: an arrow must not move a ring the user cannot see.
+#[test]
+fn the_keys_are_not_the_grids_under_the_open_search_help() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut harness, mut driver, ids) = three(dir.path());
+    click(&mut driver, &mut harness, "What you can search for");
+    driver.until(&mut harness, "the help open", |app| app.search_help_open());
+    for (held, pressed) in [
+        (Modifiers::NONE, Key::ArrowDown),
+        (Modifiers::NONE, Key::End),
+        (Modifiers::COMMAND, Key::A),
+    ] {
+        key(&mut driver, &mut harness, held, pressed);
+        assert!(harness.state().search_help_open());
+        assert_eq!(harness.state().selected(), ids[3..=5], "{pressed:?}");
+    }
 }

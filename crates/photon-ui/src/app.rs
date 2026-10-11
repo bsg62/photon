@@ -1056,6 +1056,9 @@ impl eframe::App for App {
             size: self.size,
             zone: &self.zone,
             library: self.nav.settled().view == View::All,
+            // The panel that lists what the search box understands lies over the
+            // photos, and has no keyboard of its own.
+            keys: !self.shell.search_help_open(),
         };
         // The entry marked as the view is where the user is going; the folders listed
         // and the line an empty view shows are of the grid that is on screen.

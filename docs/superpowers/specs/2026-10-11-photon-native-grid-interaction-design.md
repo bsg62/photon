@@ -199,8 +199,11 @@ no photo in the gap between two tiles or beside a short last row.
 
 ### The keys
 
-Answered by the grid while no text field has the keyboard, no menu or dialog is open and
-no dropdown has its list open - and, while a band is held, Escape alone.
+Answered by the grid while nothing else has the keyboard - a text field, a dropdown, the
+splitter, a button the Tab key reached - and nothing lies open over the photos: no menu,
+no dialog, no list, the search box's help. And, while a band is held, Escape alone.
+(Changed by the review of the first pull request, which found the grid answering keys
+that something else had just answered.)
 
 - **The arrows, Home and End** move the lead and select the photo it lands on, alone
   (`nav.ts`'s `move`: vertical moves follow the rows on screen, which start again at every

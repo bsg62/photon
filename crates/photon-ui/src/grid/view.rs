@@ -31,8 +31,8 @@ use crate::{
     thumbs::{loader::Want, shown::Thumbs},
 };
 use eframe::egui::{
-    self, Align2, CursorIcon, Event, Key, Rect, Sense, Stroke, StrokeKind, UiBuilder, Vec2,
-    WidgetInfo, pos2, vec2,
+    self, Align2, CursorIcon, Event, Key, PointerButton, Rect, Sense, Stroke, StrokeKind,
+    UiBuilder, Vec2, WidgetInfo, pos2, vec2,
 };
 use jiff::tz::TimeZone;
 use photon_core::{
@@ -67,6 +67,9 @@ pub struct GridData<'a> {
     /// Whether the grid shows All photos: there Ctrl+A is the section under the lead,
     /// and everywhere else the whole view (`Selection::select_all`).
     pub library: bool,
+    /// Whether the keys may be the grid's at all: not while something lies open over the
+    /// photos that has no keyboard of its own to say so with (the search box's help).
+    pub keys: bool,
 }
 
 /// A key the grid answers, read from the frame's input.
@@ -185,6 +188,8 @@ pub struct GridView {
     /// Where the photos were drawn in the last frame, and the position they were drawn
     /// at: what `rect_of` answers from.
     drawn: Option<(Rect, f64)>,
+    /// Whether something else had the keyboard when the grid was last drawn.
+    elsewhere: bool,
 }
 
 impl GridView {
@@ -495,6 +500,17 @@ impl GridView {
     /// The page keys do the same a screenful at a time - but with nothing selected they
     /// scroll: a move would start from the first photo, the top of the library from
     /// wherever the wheel had got to. The grid follows the lead into sight.
+    ///
+    /// **The keys are the grid's only while nothing else has the keyboard**, and had
+    /// none when the grid was last drawn. Not "while no text field has it": the splitter
+    /// answers the arrows, a control with its list open the arrows, Home, End and the
+    /// letters, a button the Tab key reached lets the arrows walk on from it - and the
+    /// grid, drawn after all of them in the same frame, answered each of those keys a
+    /// second time, moving or clearing a selection behind what the user was working.
+    /// And not "has it now" alone: egui takes the keyboard off a widget at Escape
+    /// before anything is drawn, so in the frame of that Escape nothing has it, and
+    /// the key that left a control cleared the selection too. A click on a photo gives
+    /// the keys back: egui takes the keyboard off whatever had it at a click elsewhere.
     fn take_picks(
         &mut self,
         ui: &egui::Ui,
@@ -514,13 +530,30 @@ impl GridView {
         {
             let top = self.scroll.position();
             // The pinned header lies over a row of photos, and a press on it is the
-            // header's: the photo under it is one nobody can see.
-            let on_pinned = pinned_header(&self.rows, &self.headers, top)
-                .is_some_and(|pinned| f64::from(pointer.y - area.top()) < pinned.y + HEADER);
+            // header's: the photo under it is one nobody can see. Its full height from
+            // the top, wherever it is drawn: while the next header pushes it out, what
+            // shows under it in those points is that header's own row, which is no
+            // photo either.
+            let on_pinned = pinned_header(&self.rows, &self.headers, top).is_some()
+                && f64::from(pointer.y - area.top()) < HEADER;
             let x = f64::from(pointer.x - area.left());
             let y = f64::from(pointer.y - area.top()) + top;
             if !on_pinned && let Some(offset) = tile_at(&self.rows, x, y, laid.tile) {
-                let modifiers = ui.input(|input| input.modifiers);
+                // What was held as the button came up, from the release itself: read
+                // at the end of the frame, a Shift let go of in the frame of the click
+                // made it a plain one, and a frame is not always short.
+                let modifiers = ui.input(|input| {
+                    let released = input.events.iter().rev().find_map(|event| match event {
+                        Event::PointerButton {
+                            button: PointerButton::Primary,
+                            pressed: false,
+                            modifiers,
+                            ..
+                        } => Some(*modifiers),
+                        _ => None,
+                    });
+                    released.unwrap_or(input.modifiers)
+                });
                 if modifiers.shift {
                     selection.extend(index, offset);
                 } else if modifiers.command {
@@ -531,9 +564,9 @@ impl GridView {
             }
         }
 
-        // The keys are the grid's unless a text field has them: with the search box
-        // focused, Home and End move its caret and not the library.
-        if ui.ctx().text_edit_focused() {
+        let elsewhere = ui.memory(|memory| memory.focused().is_some());
+        let was_elsewhere = std::mem::replace(&mut self.elsewhere, elsewhere);
+        if elsewhere || was_elsewhere || !data.keys {
             return;
         }
         for (key, shift) in ui.input(grid_keys) {
@@ -859,6 +892,8 @@ mod tests {
         space_above: f32,
         /// A text field above the grid that has the focus, and what is typed in it.
         typing: Option<String>,
+        /// A button above the grid, and whether it asks for the keyboard this frame.
+        button: Option<bool>,
         tile: GridTile,
         selection: Selection,
         /// Whether the grid is drawn as All photos.
@@ -933,6 +968,7 @@ mod tests {
             repaint_delay: Duration::MAX,
             space_above: 0.0,
             typing: None,
+            button: None,
             tile: GridTile::Medium,
             selection: Selection::default(),
             library: true,
@@ -1011,10 +1047,12 @@ mod tests {
                 size: self.tile,
                 zone: &TimeZone::UTC,
                 library: self.library,
+                keys: true,
             };
             let (view, thumbs, space) = (&mut self.view, &mut self.thumbs, self.space_above);
             let selection = &mut self.selection;
             let typing = &mut self.typing;
+            let button = self.button;
             let mut output = None;
             let mut full = self.ctx.run_ui(input, |ui| {
                 egui::CentralPanel::default()
@@ -1024,6 +1062,12 @@ mod tests {
                         ui.add_space(space);
                         if let Some(typed) = typing {
                             ui.add(egui::TextEdit::singleline(typed)).request_focus();
+                        }
+                        if let Some(asks) = button {
+                            let response = ui.button("Something else");
+                            if asks {
+                                response.request_focus();
+                            }
                         }
                         output = Some(view.show(ui, &data, thumbs, selection));
                     });
@@ -2125,6 +2169,21 @@ mod tests {
         assert_eq!(f.picked(), [9]);
     }
 
+    // Where the grid has no headers nothing is pinned, and the photos begin at its top
+    // edge: the first points of the grid are a photo's there.
+    #[test]
+    fn a_click_at_the_top_of_a_grid_with_no_headers_is_on_the_photo_there() {
+        let mut f = fixture(&[]);
+        f.index = index_laid_out(&[200], Layout::Flat);
+        f.frame(Vec::new());
+        f.click_at(Pos2::new(100.0, 10.0), Modifiers::NONE);
+        assert_eq!(f.picked(), [1]);
+        f.view.scroll_to(400.0);
+        f.frame(Vec::new());
+        f.click_at(Pos2::new(100.0, 10.0), Modifiers::NONE);
+        assert_eq!(f.picked(), [9]);
+    }
+
     #[test]
     fn a_press_on_the_scrollbar_or_the_strip_picks_nothing() {
         let mut f = two_years();
@@ -2331,5 +2390,111 @@ mod tests {
         f.frame(Vec::new());
         f.frame(Vec::new());
         assert_eq!(f.repaint_delay, Duration::MAX);
+    }
+
+    // ---- from the review ----
+
+    // The keys are whoever's has the keyboard. A splitter that answers the arrows, a
+    // control with its list open, a row the Tab key reached: each key they answer would
+    // otherwise be answered here as well, by a grid drawn later in the same frame.
+    #[test]
+    fn the_keys_are_not_the_grids_while_anything_else_has_the_keyboard() {
+        let mut f = fixture(&[200]);
+        f.frame(Vec::new());
+        f.click(5, Modifiers::NONE);
+        // From the frame it takes the keyboard in: a key in that frame is not the grid's
+        // because nothing had the keyboard a frame ago.
+        f.button = Some(true);
+        f.key(Key::ArrowRight);
+        assert_eq!(f.picked(), [6]);
+        f.frame(Vec::new());
+        f.button = Some(false);
+        for (key, held) in [
+            (Key::ArrowRight, Modifiers::NONE),
+            (Key::End, Modifiers::NONE),
+            (Key::PageDown, Modifiers::SHIFT),
+            (Key::A, Modifiers::COMMAND),
+        ] {
+            let frame = f.key_with(key, held);
+            assert_eq!(f.picked(), [6], "{key:?}");
+            assert_eq!(frame.position, 0.0, "{key:?}");
+        }
+    }
+
+    // egui takes the keyboard off a widget at Escape before anything is drawn: by the
+    // time the grid is, nothing has it. The key was that widget's all the same.
+    #[test]
+    fn the_escape_that_takes_the_keyboard_off_something_else_is_not_the_grids() {
+        let mut f = fixture(&[200]);
+        f.frame(Vec::new());
+        f.click(5, Modifiers::NONE);
+        f.button = Some(true);
+        f.frame(Vec::new());
+        f.frame(Vec::new());
+        f.button = Some(false);
+        let escape = |pressed| Event::Key {
+            key: Key::Escape,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        };
+        f.frame(vec![escape(true)]);
+        assert!(f.ctx.memory(|memory| memory.focused().is_none()));
+        assert_eq!(f.picked(), [6]);
+        // The next one is the grid's.
+        f.frame(vec![escape(false)]);
+        f.frame(vec![escape(true)]);
+        assert!(f.picked().is_empty());
+    }
+
+    // The Shift held when the button came up is the click's, whatever becomes of Shift
+    // later in the same frame: a frame is sixteen milliseconds when nothing is slow.
+    #[test]
+    fn a_shift_click_is_one_when_shift_comes_up_in_the_frame_of_the_click() {
+        let mut f = fixture(&[200]);
+        f.frame(Vec::new());
+        f.click(1, Modifiers::NONE);
+        let at = f.view.rect_of(4).unwrap().center();
+        f.held = Modifiers::SHIFT;
+        f.frame(vec![Event::PointerMoved(at)]);
+        let button = |pressed, modifiers| Event::PointerButton {
+            pos: at,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers,
+        };
+        f.frame(vec![button(true, Modifiers::SHIFT)]);
+        // The button up with Shift held, then Shift up, in one frame.
+        f.held = Modifiers::NONE;
+        f.told = Modifiers::NONE;
+        f.frame(vec![
+            button(false, Modifiers::SHIFT),
+            Event::ModifiersChanged(Modifiers::NONE),
+        ]);
+        assert_eq!(f.picked(), [2, 3, 4, 5]);
+        // And the other way round: Shift down in the frame of a plain click's release.
+        f.frame(vec![button(true, Modifiers::NONE)]);
+        f.held = Modifiers::SHIFT;
+        f.told = Modifiers::SHIFT;
+        f.frame(vec![
+            button(false, Modifiers::NONE),
+            Event::ModifiersChanged(Modifiers::SHIFT),
+        ]);
+        assert_eq!(f.picked(), [5]);
+    }
+
+    // The photos sense a click, so a press on them is theirs however near the scrollbar
+    // it lands: egui hands a near miss to a neighbouring widget only where nothing is hit.
+    #[test]
+    fn a_press_on_the_photos_beside_the_scrollbar_is_not_the_scrollbars() {
+        let mut f = fixture(&[4000]);
+        f.frame(Vec::new());
+        // The bar is the last twelve points; this is three points left of it.
+        let frame = f.click_at(Pos2::new(785.0, 400.0), Modifiers::NONE);
+        assert_eq!(frame.position, 0.0);
+        // And on the bar itself the grid goes there, as before.
+        let frame = f.click_at(Pos2::new(794.0, 400.0), Modifiers::NONE);
+        assert!(frame.position > 1000.0, "{}", frame.position);
     }
 }

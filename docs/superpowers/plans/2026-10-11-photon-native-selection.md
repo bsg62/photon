@@ -193,3 +193,34 @@ did not tell, one of them a rule with no test at all (Escape closing the search 
 over a selection). Five more lines went before a probe was written for them, on the same
 reasoning: clamps of an offset `follow` already keeps true, and a guard against an empty
 grid before calls that do nothing in one.
+
+**The review** (one fresh reader, 2026-10-11, its own worktree and proving tests) found
+nothing critical and one thing important: **the grid answered keys that something else
+had just answered.** Its only test for "the keys are mine" was "no text field has the
+keyboard", which had cost a forty-point scroll while the keys scrolled and now moved or
+cleared a selection. Five failing tests: the arrow that moved the splitter moved the
+selection; a sideways arrow and Ctrl+A in an open list reached the grid behind it; the
+Escape that took the keyboard off a control cleared the selection (the search box's bug,
+on another widget); and the arrow that walked the focus on from a button moved the lead.
+The grid now has the keys only while nothing else has the keyboard and had none when the
+grid was last drawn - egui takes the keyboard away at Escape before anything is drawn -
+and not under the search box's open help. The spec's sentence is changed to say so.
+
+Also from it, and fixed: a click took the modifiers held at the end of its frame and not
+at its release (a Shift let go of in the frame of the click made it a plain one); the
+pinned header's `y` in the click's test did nothing (while it is pushed out, what shows
+in those points is the next header's own row) and is gone; a comment on `select_all`
+was wrong for one of its three cases; "where until this they scrolled" was not true of
+the sideways arrows.
+
+Recorded and left: the area that senses the click takes every press on the photos, so
+egui no longer hands a press just beside the splitter or the scrollbar to them (the
+splitter's reach is its own five points, as the Svelte one's - a change nobody chose,
+now said and pinned by a test); a press held longer than 0.8 seconds selects nothing
+(egui's limit, which is also a touch's long press; with the second pull request such a
+press is a band over the one photo); Ctrl+A on a Mac is Cmd+A alone, where the Svelte
+handler takes either; an arrow with nothing selected starts from the top of the library,
+as in the Svelte grid, where until now the up and down arrows scrolled.
+
+The reviewer measured `follow` over 300,000 selected photos: 1.9 ms in a release build
+(24 ms in a debug one), so the spec's fifth risk needs no bound.
