@@ -14,7 +14,7 @@ use crate::{
     search_bar::{SearchAction, SearchBar, SearchBarData},
     sidebar::{
         list::{List, What},
-        view::{SidebarData, SidebarView},
+        view::{Named, Naming, SidebarData, SidebarView},
     },
     status::{Bar, Line},
     text::paint_line,
@@ -27,7 +27,7 @@ use crate::{
     window_layout::{Area, Layout, SIDEBAR_STEP, areas, clamp_sidebar_width},
 };
 use eframe::egui::{
-    self, CursorIcon, Event, EventFilter, Id, Key, Order, Rect, Sense, Stroke, UiBuilder,
+    self, CursorIcon, Event, EventFilter, Id, Key, Order, Pos2, Rect, Sense, Stroke, UiBuilder,
     WidgetInfo, WidgetType, epaint::Shadow, pos2, vec2,
 };
 use photon_core::{library::GridTile, sort::Sort};
@@ -46,6 +46,8 @@ pub struct ShellData<'a> {
     /// The sidebar's entries, and the folder at the top of the grid, which it marks.
     pub list: &'a List,
     pub here: Option<i64>,
+    /// The name being typed in the sidebar, if one is.
+    pub naming: Option<Naming<'a>>,
     /// What the search box needs to know of the search it holds.
     pub search: SearchBarData<'a>,
     /// The sort the user is going to, and the size of the tiles: what the controls at the
@@ -71,6 +73,13 @@ pub enum Action {
     ToggleSidebar,
     /// An entry of the sidebar: a view, a folder, a heading to fold.
     Row(What),
+    /// The other button went down on an entry that has a menu, there.
+    RowMenu {
+        what: What,
+        at: Pos2,
+    },
+    /// Something done to the name being typed in the sidebar.
+    Named(Named),
     /// Something done in the search box.
     Search(SearchAction),
     /// The sort wanted: the one the controls showed, with one field of it changed.
@@ -112,6 +121,11 @@ impl Shell {
     /// Where the sidebar's list is.
     pub fn sidebar_position(&self) -> f64 {
         self.sidebar.position()
+    }
+
+    /// Has an entry of the sidebar brought into sight when it is next drawn.
+    pub fn reveal(&mut self, what: What) {
+        self.sidebar.reveal(what);
     }
 
     /// Whether the splitter is being dragged.
@@ -166,11 +180,13 @@ impl Shell {
         let sidebar = SidebarData {
             list: data.list,
             here: data.here,
+            naming: data.naming,
         };
-        if let Some(area) = found.sidebar
-            && let Some(entry) = self.sidebar.show(ui, rect_of(area, window), &sidebar)
-        {
-            actions.push(Action::Row(entry));
+        if let Some(area) = found.sidebar {
+            let shown = self.sidebar.show(ui, rect_of(area, window), &sidebar);
+            actions.extend(shown.named.into_iter().map(Action::Named));
+            actions.extend(shown.clicked.map(Action::Row));
+            actions.extend((shown.menu).map(|(what, at)| Action::RowMenu { what, at }));
         }
         if let Some(area) = found.splitter {
             self.splitter(
@@ -757,6 +773,7 @@ mod tests {
                 layout: &self.layout,
                 list: &self.list,
                 here: None,
+                naming: None,
                 search: SearchBarData {
                     saved_as: None,
                     can_save: false,
@@ -815,7 +832,11 @@ mod tests {
                     Action::Dismiss(id) => self.toasts.dismiss(*id),
                     Action::Sort(sort) => self.sort = *sort,
                     Action::Size(size) => self.tile = *size,
-                    Action::Row(_) | Action::Search(_) | Action::Panel(_) => {}
+                    Action::Row(_)
+                    | Action::RowMenu { .. }
+                    | Action::Named(_)
+                    | Action::Search(_)
+                    | Action::Panel(_) => {}
                 }
             }
             actions

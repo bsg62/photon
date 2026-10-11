@@ -17,6 +17,7 @@ use super::{
 };
 use crate::{
     nav::{Place, Step},
+    rename::Of,
     window_layout::OpenGroups,
 };
 use jiff::tz::TimeZone;
@@ -56,6 +57,8 @@ pub enum What {
     /// A group's heading, which folds and unfolds it.
     Group(Group),
     Album(i64),
+    /// "New album…", under the albums: where a new one's name is typed.
+    NewAlbum,
     Search {
         id: i64,
         query: String,
@@ -85,6 +88,7 @@ impl What {
             What::Person(key) => Some(Step::Person(key.clone())),
             What::Tag(tag) => Some(Step::Tag(tag.clone())),
             What::Group(_)
+            | What::NewAlbum
             | What::Year(_)
             | What::Folder(_)
             | What::Note(_)
@@ -111,6 +115,22 @@ pub enum Detail {
     Picasa,
 }
 
+pub const NEW_ALBUM: &str = "New album…";
+
+impl What {
+    /// What a name typed in this entry's place is the name of, for the entries a name
+    /// can be typed in (`rename::Of`).
+    pub fn named(&self) -> Option<Of> {
+        match self {
+            What::Album(id) => Some(Of::Album(*id)),
+            What::NewAlbum => Some(Of::NewAlbum),
+            What::Search { id, .. } => Some(Of::Search(*id)),
+            What::Folder(id) => Some(Of::Folder(*id)),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Entry {
     pub what: What,
@@ -121,6 +141,20 @@ pub struct Entry {
     /// What the entry says when the pointer rests on it.
     pub hint: String,
     pub detail: Detail,
+}
+
+impl Entry {
+    /// Whether the other button opens a menu on this entry: an album of the user's own,
+    /// a saved search, a folder. Not an album of Picasa's, which is changed in Picasa -
+    /// Rename and Delete are all its menu would hold, and the library refuses both -
+    /// and not a person or a keyword, which have none in the Svelte sidebar either.
+    pub fn has_menu(&self) -> bool {
+        match self.what {
+            What::Album(_) => self.detail != Detail::Picasa,
+            What::Search { .. } | What::Folder(_) => true,
+            _ => false,
+        }
+    }
 }
 
 /// The user's collections, as the engine lists them.
@@ -325,6 +359,8 @@ fn entries(sources: &Sources<'_>) -> Vec<Entry> {
                 )
             }
         }));
+        // Under them, and there with none: it is how the first one is made.
+        entries.push(plain(What::NewAlbum, NEW_ALBUM, None, false, ""));
     }
 
     // Saved searches: a name over a query, run again on every visit. No count - one would
@@ -680,6 +716,7 @@ mod tests {
                 "Albums",
                 "Best of",
                 "From Picasa",
+                "New album…",
                 "Searches",
                 "Lakes",
                 "People",
@@ -787,6 +824,74 @@ mod tests {
         let full = World::new();
         assert!(!full.holds(&What::Note(Group::People)));
         assert!(!full.holds(&What::Note(Group::Tags)));
+    }
+
+    // "New album…" is under the albums while their group is open - with none too, where
+    // it is how the first is made - and goes with them when it is folded.
+    #[test]
+    fn a_new_album_is_offered_under_the_albums() {
+        let mut world = World::new();
+        let labels = world.labels();
+        let at = labels.iter().position(|label| *label == NEW_ALBUM).unwrap();
+        assert_eq!(labels[at - 1], "From Picasa");
+        assert_eq!(world.entry(&What::NewAlbum).count, None);
+        world.held.collections.albums.clear();
+        let labels = world.labels();
+        let at = labels.iter().position(|label| *label == NEW_ALBUM).unwrap();
+        assert_eq!(labels[at - 1], "Albums");
+        world.open.albums = false;
+        assert!(!world.holds(&What::NewAlbum));
+    }
+
+    #[test]
+    fn an_album_of_ones_own_a_saved_search_and_a_folder_have_a_menu() {
+        let world = World::new();
+        let menu = |what: &What| world.entry(what).has_menu();
+        // The world's first album is the user's own, its second Picasa's.
+        assert!(menu(&What::Album(4)));
+        assert!(!menu(&What::Album(9)));
+        assert!(menu(&search()));
+        assert!(menu(&What::Folder(2)));
+        // And nothing else: not a view, a heading, "New album…", a person, a keyword
+        // or a year.
+        let others: Vec<Entry> = (world.list().entries.into_iter())
+            .filter(|entry| {
+                !matches!(
+                    entry.what,
+                    What::Album(_) | What::Search { .. } | What::Folder(_)
+                )
+            })
+            .collect();
+        assert!(others.len() >= 12, "{}", others.len());
+        for entry in others {
+            assert!(!entry.has_menu(), "{:?}", entry.what);
+        }
+    }
+
+    // A name is typed in the place of the entry it is the name of, and the lists' ids
+    // collide: album 3 is not search 3 is not folder 3.
+    #[test]
+    fn a_name_is_typed_for_what_its_entry_is() {
+        assert_eq!(What::Album(3).named(), Some(Of::Album(3)));
+        assert_eq!(What::Folder(3).named(), Some(Of::Folder(3)));
+        assert_eq!(What::NewAlbum.named(), Some(Of::NewAlbum));
+        let search = What::Search {
+            id: 3,
+            query: "lake".to_owned(),
+        };
+        assert_eq!(search.named(), Some(Of::Search(3)));
+        for none in [
+            What::Fixed(Fixed::All),
+            What::Group(Group::Albums),
+            What::Person("p:3".to_owned()),
+            What::Tag("3".to_owned()),
+            What::Year(3),
+            What::Note(Group::Tags),
+            What::NoFolders,
+            What::AddFolder,
+        ] {
+            assert_eq!(none.named(), None, "{none:?}");
+        }
     }
 
     #[test]

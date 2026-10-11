@@ -357,6 +357,25 @@ pub fn pinned_header(rows: &[Row], headers: &[usize], top: f64) -> Option<Pinned
     })
 }
 
+/// The section whose header is drawn at `y` - measured down from the grid's top edge,
+/// with the grid at `top` - or none where no header is: the copy pinned over the photos,
+/// where it is drawn, and under or beside that a header's own row. A header is as wide
+/// as the grid, so there is no `x` to ask.
+pub fn header_at(rows: &[Row], headers: &[usize], top: f64, y: f64) -> Option<usize> {
+    if y < 0.0 {
+        return None;
+    }
+    if let Some(pinned) = pinned_header(rows, headers, top)
+        && y < pinned.y + HEADER
+    {
+        return Some(pinned.section);
+    }
+    // (A header's row ends where the row of photos under it begins, so a point in a
+    // header's row is on the header.)
+    let row = rows.get(row_index_at(rows, top + y))?;
+    (row.kind == RowKind::Header).then_some(row.section)
+}
+
 /// A place in the grid that survives the rows changing height: the row at the top of the
 /// viewport, by its first photo, and how much of it has been scrolled past.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1313,6 +1332,43 @@ mod tests {
         }
         fn at(section: usize, y: f64) -> Option<PinnedHeader> {
             Some(PinnedHeader { section, y })
+        }
+
+        // What a press on a header is a press on: the pinned copy where it is drawn, a
+        // header's own row elsewhere, and no header anywhere else.
+        #[test]
+        fn the_header_at_a_point() {
+            let rows = rows();
+            let headers = header_rows(&rows);
+            let at = |top: f64, y: f64| header_at(&rows, &headers, top, y);
+            // At the top of the grid: the first header's own row, then its photos.
+            assert_eq!(at(0.0, 0.0), Some(0));
+            assert_eq!(at(0.0, HEADER - 1.0), Some(0));
+            assert_eq!(at(0.0, HEADER), None);
+            assert_eq!(at(0.0, 300.0), None);
+            assert_eq!(at(0.0, -1.0), None);
+            // The second header's own row, further down, and the gap over it is none.
+            assert_eq!(at(0.0, SECOND + 1.0), Some(1));
+            assert_eq!(at(0.0, SECOND - 1.0), None);
+            // Scrolled into the first folder: its header is pinned over the photos.
+            assert_eq!(at(100.0, 0.0), Some(0));
+            assert_eq!(at(100.0, HEADER - 1.0), Some(0));
+            assert_eq!(at(100.0, HEADER), None);
+            // The second header arriving pushes the pinned one out: what shows under it
+            // is that header's own row.
+            let top = SECOND - 10.0;
+            assert_eq!(pinned(top), self::at(0, -(HEADER - 10.0)));
+            assert_eq!(at(top, 5.0), Some(0));
+            assert_eq!(at(top, 9.0), Some(0));
+            assert_eq!(at(top, 10.0), Some(1));
+            assert_eq!(at(top, 10.0 + HEADER - 1.0), Some(1));
+            assert_eq!(at(top, 10.0 + HEADER), None);
+            // Past the end of the rows there is nothing.
+            assert_eq!(at(0.0, 100_000.0), None);
+            // A grid with no headers has none anywhere.
+            let flat = build_rows(&[flat(0, 10)], 2, MEDIUM);
+            assert_eq!(header_at(&flat, &header_rows(&flat), 0.0, 5.0), None);
+            assert_eq!(header_at(&[], &[], 0.0, 5.0), None);
         }
 
         #[test]

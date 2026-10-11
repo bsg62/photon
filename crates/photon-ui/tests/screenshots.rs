@@ -439,6 +439,90 @@ fn native_menu_several_dark() {
     );
 }
 
+/// The other button at `at`, and the frames a menu is measured and shown in.
+fn right_click_at(harness: &mut Harness<'_>, at: egui::Pos2) {
+    harness.event(egui::Event::PointerMoved(at));
+    harness.step();
+    for pressed in [true, false] {
+        harness.event(egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Secondary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        });
+        harness.step();
+    }
+    harness.step();
+}
+
+/// A folder's menu, opened on its header in the grid: the folder has a name in photon,
+/// so "Use folder name" is in it, and the pointer is on an item.
+fn folder_menu(harness: &mut Harness<'_>) {
+    let engine = harness.state().engine().clone();
+    let party = (harness.state().folders().values())
+        .find(|folder| folder.name.contains("Party"))
+        .map(|folder| folder.id)
+        .expect("the folder is listed");
+    commands::set_folder_alias(&engine, party, Some("New Year".to_owned())).unwrap();
+    until(harness, "the folder's name shown", |app| {
+        app.folders()[&party].alias.is_some()
+    });
+    harness.step();
+    let tile = harness
+        .state()
+        .tile_rect(7)
+        .expect("its first photo is laid out");
+    right_click_at(harness, tile.left_top() + vec2(120.0, -14.0));
+    harness.get_by_label("Hide folder").hover();
+    harness.step();
+}
+
+/// A name being typed in an album's row: the field in the row's own place, half typed.
+fn naming(harness: &mut Harness<'_>) {
+    let at = harness.get_by_label("Best of the Alps").rect().center();
+    right_click_at(harness, at);
+    harness.get_by_label("Rename…").click();
+    for _ in 0..3 {
+        harness.step();
+    }
+    harness.event(egui::Event::Text("Best of 20".to_owned()));
+    harness.step();
+    harness.event(egui::Event::PointerGone);
+    harness.step();
+}
+
+#[test]
+#[ignore = "renders through a GPU adapter: cargo run -p xtask -- native-shot"]
+fn native_folder_menu_light() {
+    shot(
+        ThemeChoice::Light,
+        "native-folder-menu-light.png",
+        folder_menu,
+    );
+}
+
+#[test]
+#[ignore = "renders through a GPU adapter: cargo run -p xtask -- native-shot"]
+fn native_folder_menu_dark() {
+    shot(
+        ThemeChoice::Dark,
+        "native-folder-menu-dark.png",
+        folder_menu,
+    );
+}
+
+#[test]
+#[ignore = "renders through a GPU adapter: cargo run -p xtask -- native-shot"]
+fn native_naming_light() {
+    shot(ThemeChoice::Light, "native-naming-light.png", naming);
+}
+
+#[test]
+#[ignore = "renders through a GPU adapter: cargo run -p xtask -- native-shot"]
+fn native_naming_dark() {
+    shot(ThemeChoice::Dark, "native-naming-dark.png", naming);
+}
+
 // A library that watches nothing, as a first run is where there is no Pictures folder:
 // what it says where its photos would be, its buttons drawn and not yet answering, and
 // "No folders yet." in the sidebar.

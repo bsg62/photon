@@ -24,8 +24,8 @@ use crate::{
     },
 };
 use eframe::egui::{
-    self, Event, Id, Key, LayerId, Order, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2, WidgetInfo,
-    WidgetType, pos2, vec2,
+    self, Event, Id, Key, LayerId, Modifiers, Order, PointerButton, Pos2, Rect, Sense, Stroke,
+    StrokeKind, Vec2, WidgetInfo, WidgetType, pos2, vec2,
 };
 
 /// The least a menu is wide.
@@ -46,6 +46,32 @@ const HINT_GAP: f32 = S[4];
 const AREA: &str = "context-menu";
 /// How far the area reaches beyond the menu drawn in it.
 const RIM: f32 = 1.0;
+
+/// Whether a button going down or coming up is the one that asks for the menu: the
+/// other button, and on a Mac the first one with Control held, which is how a mouse
+/// with one button asks - the system reports it as the first button, and the web view
+/// opened its menu for it.
+pub fn asks_for_menu(button: PointerButton, modifiers: Modifiers, mac: bool) -> bool {
+    button == PointerButton::Secondary
+        || (mac && button == PointerButton::Primary && modifiers.ctrl)
+}
+
+/// Where a button went down in this frame that asks for a menu, if one did: for what is
+/// made of egui's own widgets, a row in the sidebar. (The grid reads its presses itself,
+/// in their order with the first button's.)
+pub fn menu_press(ui: &egui::Ui) -> Option<Pos2> {
+    ui.input(|input| {
+        input.events.iter().find_map(|event| match event {
+            Event::PointerButton {
+                pos,
+                button,
+                pressed: true,
+                modifiers,
+            } if asks_for_menu(*button, *modifiers, cfg!(target_os = "macos")) => Some(*pos),
+            _ => None,
+        })
+    })
+}
 
 /// What a frame of an open menu came to.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -388,7 +414,7 @@ impl MenuView {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use eframe::egui::{Modifiers, PointerButton, RawInput};
+    use eframe::egui::RawInput;
 
     const WINDOW: Vec2 = vec2(1000.0, 700.0);
 
@@ -1032,5 +1058,22 @@ mod tests {
         f.frame(Vec::new());
         assert_eq!(f.active(), None);
         assert_eq!(f.menu().min, pos2(600.0, 300.0));
+    }
+
+    // A mouse with one button asks for the menu with Control held, and the system
+    // reports that as the first button.
+    #[test]
+    fn on_a_mac_the_first_button_with_control_asks_for_the_menu() {
+        let (first, other) = (PointerButton::Primary, PointerButton::Secondary);
+        for mac in [true, false] {
+            assert!(asks_for_menu(other, Modifiers::NONE, mac));
+            assert!(asks_for_menu(other, Modifiers::CTRL, mac));
+            assert!(!asks_for_menu(first, Modifiers::NONE, mac));
+            assert!(!asks_for_menu(first, Modifiers::SHIFT, mac));
+            assert!(!asks_for_menu(first, Modifiers::MAC_CMD, mac));
+        }
+        assert!(asks_for_menu(first, Modifiers::CTRL, true));
+        // Elsewhere Control with a click takes a photo in or out of the selection.
+        assert!(!asks_for_menu(first, Modifiers::CTRL, false));
     }
 }
