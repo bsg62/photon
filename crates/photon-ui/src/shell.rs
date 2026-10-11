@@ -9,6 +9,7 @@ use crate::{
     controls_bar::{self, ControlAction, ControlsBar, ControlsData},
     empty::{Panel, PanelButton},
     empty_panel,
+    grid::labels::grouped,
     icons::Icon,
     search_bar::{SearchAction, SearchBar, SearchBarData},
     sidebar::{
@@ -53,6 +54,8 @@ pub struct ShellData<'a> {
     pub size: GridTile,
     /// The status bar's photo count, when there is one to give.
     pub count: Option<&'a str>,
+    /// How many photos are selected: said before the count when more than one is.
+    pub selected: usize,
     /// What photon is doing in the background, for the status bar's left.
     pub lines: &'a [Line],
     /// What an empty library says where its photos would be.
@@ -447,17 +450,32 @@ fn status_bar(ui: &egui::Ui, rect: Rect, data: &ShellData<'_>, palette: &Palette
     let (font, dim) = (fonts::regular(T[1]), color(palette.text_dim));
     let middle = rect.center().y + 0.5;
     // The count first: it is the one thing here that is always wanted, and the lines
-    // have what is left of it.
+    // have what is left of it. Before it, how many photos are selected, when more than
+    // one is - one is the ring on its tile - in the text's full colour: it is the one
+    // thing in the bar the user did.
     let mut right = rect.right() - S[2];
+    let said = |text: &str, tint, right: &mut f32| {
+        let at = pos2(*right, middle);
+        let drawn = painter.text(at, egui::Align2::RIGHT_CENTER, text, font.clone(), tint);
+        *right = drawn.left();
+        drawn
+    };
     if let Some(count) = data.count {
-        let drawn = painter.text(
-            pos2(right, middle),
-            egui::Align2::RIGHT_CENTER,
-            count,
-            font.clone(),
-            dim,
-        );
-        right = drawn.left() - STATUS_GAP;
+        said(count, dim, &mut right);
+    }
+    if data.selected > 1 {
+        if data.count.is_some() {
+            said(" · ", dim, &mut right);
+        }
+        let selected = format!("{} selected", grouped(data.selected));
+        let drawn = said(&selected, color(palette.text), &mut right);
+        // Its words for AccessKit, which is also how a test of the whole application
+        // reads them.
+        ui.interact(drawn, ui.id().with("status-selected"), Sense::hover())
+            .widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, &selected));
+    }
+    if data.count.is_some() || data.selected > 1 {
+        right -= STATUS_GAP;
     }
     let mut left = rect.left() + S[2];
     for (index, line) in data.lines.iter().enumerate() {
@@ -680,12 +698,15 @@ mod tests {
         notice: Option<String>,
         lines: Vec<Line>,
         panel: Option<Panel>,
+        selected: usize,
         sort: Sort,
         tile: GridTile,
         size: egui::Vec2,
         time: f64,
         /// Every text the last frame drew, with where.
         texts: Vec<(String, Rect)>,
+        /// And the colour each was laid out in.
+        tints: Vec<(String, egui::Color32)>,
         /// Every filled rectangle the last frame drew.
         fills: Vec<(Rect, egui::Color32)>,
         /// The area the last frame gave the content, and what it was clipped to.
@@ -709,11 +730,13 @@ mod tests {
                 notice: None,
                 lines: Vec::new(),
                 panel: None,
+                selected: 0,
                 sort: Sort::default(),
                 tile: GridTile::Medium,
                 size: vec2(1280.0, 800.0),
                 time: 0.0,
                 texts: Vec::new(),
+                tints: Vec::new(),
                 fills: Vec::new(),
                 content: Rect::NOTHING,
                 clip: Rect::NOTHING,
@@ -742,6 +765,7 @@ mod tests {
                 sort: self.sort,
                 size: self.tile,
                 count: Some("1,234 photos"),
+                selected: self.selected,
                 lines: &self.lines,
                 panel: self.panel.as_ref(),
                 notice: self.notice.as_deref(),
@@ -766,12 +790,17 @@ mod tests {
             self.content = content;
             self.clip = clip;
             self.texts.clear();
+            self.tints.clear();
             self.fills.clear();
             for clipped in &full.shapes {
                 each_shape(&clipped.shape, &mut |shape| match shape {
                     egui::Shape::Text(text) => {
                         self.texts
                             .push((text.galley.text().to_owned(), text.visual_bounding_rect()));
+                        if let Some(section) = text.galley.job.sections.first() {
+                            self.tints
+                                .push((text.galley.text().to_owned(), section.format.color));
+                        }
                     }
                     egui::Shape::Rect(rect) => self.fills.push((rect.rect, rect.fill)),
                     _ => {}
@@ -1047,6 +1076,60 @@ mod tests {
 
     // The bar is one row. What does not fit is cut short or left out; nothing is drawn
     // over the photo count, which is the one thing here that is always wanted.
+    #[test]
+    fn the_status_bar_says_how_many_photos_are_selected_when_more_than_one_is() {
+        let mut f = Fixture::new();
+        let selected = |f: &Fixture| {
+            (f.texts.iter())
+                .find(|(text, _)| text.ends_with("selected"))
+                .cloned()
+        };
+        // None, and one - which the ring on its tile says - are not counted.
+        for none in [0, 1] {
+            f.selected = none;
+            f.frame(Vec::new());
+            assert_eq!(selected(&f), None, "{none}");
+            assert_eq!(f.drew(" · "), None, "{none}");
+        }
+        f.selected = 1234;
+        f.frame(Vec::new());
+        let (text, place) = selected(&f).expect("the selection is counted");
+        assert_eq!(text, "1,234 selected");
+        // Before the count, on its line, with the dot between.
+        let count = f.drew("1,234 photos").unwrap();
+        let dot = f.drew(" · ").expect("the dot between the two");
+        assert!(place.right() <= dot.left() + 1.0, "{place:?} {dot:?}");
+        assert!(dot.right() <= count.left() + 1.0, "{dot:?} {count:?}");
+        assert!((place.center().y - count.center().y).abs() < 1.0);
+        // In the text's full colour, where the count is dimmed.
+        let palette = palette(&f.ctx);
+        let tint = |text: &str| f.tints.iter().find(|(drawn, _)| drawn == text).unwrap().1;
+        assert_eq!(tint("1,234 selected"), color(palette.text));
+        assert_eq!(tint("1,234 photos"), color(palette.text_dim));
+    }
+
+    #[test]
+    fn a_line_stops_short_of_the_selections_count_too() {
+        let mut f = Fixture::new();
+        // Narrower than the line is long: it has to be cut.
+        f.size = vec2(600.0, 500.0);
+        f.selected = 1234;
+        f.lines = vec![line(
+            "Scanning Pictures… 15,200 of ~15,000 files (100%), 1,200 new or changed, and more words than the bar has room for at this width",
+            None,
+        )];
+        f.frame(Vec::new());
+        let selected = f.drew("1,234 selected").expect("the selection is counted");
+        let in_bar = |rect: &Rect| rect.top() > 500.0 - STATUS_BAR;
+        let lines: Vec<&(String, Rect)> = (f.texts.iter())
+            .filter(|(text, rect)| in_bar(rect) && text.starts_with("Scanning"))
+            .collect();
+        assert!(!lines.is_empty());
+        for (text, rect) in lines {
+            assert!(rect.right() < selected.left() - 4.0, "{text} at {rect:?}");
+        }
+    }
+
     #[test]
     fn lines_too_long_for_the_bar_stop_short_of_the_count() {
         let mut f = Fixture::new();

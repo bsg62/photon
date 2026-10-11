@@ -180,3 +180,13 @@ the whole application to press it.
   nothing.
 - [ ] Pictures (`native-shot`): a selection with its count, light and dark.
 - [ ] The smoke checklist; CLAUDE.md; push; one fresh reviewer; one fix pass; merge.
+
+**Changed in the making.** A range with no anchor keeps its start as the anchor from then
+on: the Svelte store leaves it without one, and the next Shift+click then ranges from the
+lead the last one moved - the walking away the anchor exists to prevent. A key with Ctrl,
+Cmd or Alt held is not the grid's, but for Ctrl/Cmd+A (the Svelte handler answers the
+arrows whatever is held). The status bar's count is given to AccessKit, so that a test of
+the whole application reads it. Five lines went because a probe passed with them changed:
+`tile_at`'s check that a row is a row of photos (a header holds none, so no column of it
+is one), three clamps of an offset `follow` already keeps true, and a guard against an
+empty grid that every call it stood before already was.

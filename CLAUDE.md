@@ -1642,6 +1642,46 @@ tell AccessKit their words, which is how a test of the whole application reads t
 Settings that is drawn and takes no press: at a note's indent it read as the note of the
 group above it.
 
+**The selection is `selection.rs`, and most of the Svelte store's has no successor**
+(spec `2026-10-11-photon-native-grid-interaction-design.md`). The ids picked, the lead
+(the photo the keys move on from) and the anchor (the photo a Shift+click ranges from),
+each of the two as an offset *and* an id. Every call is given the index on screen: this
+window holds the whole `GridIndex`, so a range's ids and the photo a key lands on are
+read in the frame that asks, and `fetchIds`, `extendCall`, `reaching`, `picks`,
+`adoptLead` and the landing lookups of `setHidden` are not ported - each guards a round
+trip that does not exist here. **A new grid of the same view is followed** (`follow`,
+given the old index and the new, in `App::adopt`): photos the new one does not hold
+leave the selection, the lead and the anchor are found again by id, and a lead whose
+photo left lands on the nearest that stays - the first after it in the old grid that the
+new one holds, else the last before - and is selected there if nothing else is. It does
+not ask what rebuilt the grid, which is why a hide, a star taken off in Starred and a
+scan's purge need no rule each. **A grid of other results clears it**
+(`Shown::other_results`: another view, search or order). An offset of the lead or the
+anchor read after a new grid without `follow` names another photo. The photo landed on
+is brought into sight only if the one that left was on screen in the last frame: a scan
+purging a photo while the user is elsewhere must not carry the grid back to it.
+
+**The grid has no widget for a tile**: it paints rows, one area senses the click, and
+`tile_at` (in `grid/layout.rs`) says which photo a point is on - none in a gutter, on a
+header or beside a short last row, and the pinned header's rectangle is taken out by the
+view, since a photo lies under it. A click on no photo selects nothing and clears
+nothing. The arrows, Home and End move the lead (`move_from`, `nav.ts`'s `move`: with
+nothing selected a key starts from the first photo) and the page keys a screenful
+(`page_move`), where until this they scrolled; with nothing selected the page keys
+still scroll. The grid follows the lead by the least movement, under the pinned
+header's height. The keys are read from the frame's events, in order, repeats included -
+but not Escape's repeat, and not a chord with Ctrl, Cmd or Alt, but for Ctrl/Cmd+A. **A
+key used by something drawn before the grid is taken out of the frame's input**
+(`consume_key`), or the grid, drawn later in the same frame, answers it too: the search
+box's Escape left the box and cleared the selection with one press. egui decides for
+itself whether a press is a repeat (the key has not come up), whatever the event says:
+a test of a repeat holds the key down across frames. The held modifiers reach egui by
+`Event::ModifiersChanged`, not by a field of `RawInput`: a test that clicks with Shift
+sends it. A selected tile's ring is drawn inside the tile. The status bar says "N
+selected" before the count from two photos on, and gives AccessKit those words, which is
+how a test of the whole application reads them. A test presses a photo where
+`App::tile_rect` says it was last drawn.
+
 **Tests of the whole application drive it through `tests/common`'s `Driver`**: `until`
 draws the frames that are asked for, `settle` waits in real time for the other threads,
 `frames_in` counts what a stretch of the clock draws. A row is clicked by its name

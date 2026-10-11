@@ -9,7 +9,9 @@ use crate::{
         tokens::{PHOTO_LINE, Palette, R, T},
     },
 };
-use eframe::egui::{self, Align2, Color32, Pos2, Rect, TextureHandle, Vec2, pos2, vec2};
+use eframe::egui::{
+    self, Align2, Color32, Pos2, Rect, Stroke, StrokeKind, TextureHandle, Vec2, pos2, vec2,
+};
 use photon_core::{grid::GridEntry, media::MediaKind};
 
 /// How far a mark stands in from the tile's edges.
@@ -39,14 +41,19 @@ pub fn cover_uv(width: f32, height: f32) -> Rect {
     }
 }
 
-/// Paints `entry`'s tile in `rect`. `texture` is its thumbnail when it has arrived, and
-/// `failed` whether it never will.
+/// How wide the ring of a selected tile is, and the line that sets it off the photo.
+const RING: f32 = 2.0;
+const RING_EDGE: f32 = 1.0;
+
+/// Paints `entry`'s tile in `rect`. `texture` is its thumbnail when it has arrived,
+/// `failed` whether it never will, and `selected` whether it is one of the photos picked.
 pub fn paint(
     ui: &egui::Ui,
     rect: Rect,
     entry: &GridEntry,
     texture: Option<&TextureHandle>,
     failed: bool,
+    selected: bool,
     palette: &Palette,
 ) {
     let painter = ui.painter_at(rect);
@@ -91,6 +98,24 @@ pub fn paint(
     if entry.has_copies {
         let corner = pos2(rect.left() + INSET, rect.bottom() - INSET - MARK);
         mark(ui, Icon::Copy, corner, false, on_photo);
+    }
+    if selected {
+        // Inside the tile, not around it: a row lies flush to the top of the grid, and
+        // anything outside the tile's own square is cut there. The thin line inside the
+        // ring, in the ground's colour, keeps it legible over a photo of the accent's
+        // own blue.
+        painter.rect_stroke(
+            rect,
+            R[1],
+            Stroke::new(RING, color(palette.accent)),
+            StrokeKind::Inside,
+        );
+        painter.rect_stroke(
+            rect.shrink(RING),
+            (R[1] - RING).max(0.0),
+            Stroke::new(RING_EDGE, color(palette.surface)),
+            StrokeKind::Inside,
+        );
     }
 }
 
