@@ -218,7 +218,10 @@ that something else had just answered.)
 - **Ctrl/Cmd+A**, **Escape**: above. Escape is not answered on a key's repeat - Escape in
   an empty search box hands the keys to the grid, and the selection must not go with it.
 - **`.`** stars the selection, or takes its stars off; **`H`** hides it, or in Hidden
-  brings it back (the third pull request). Neither with a modifier held.
+  brings it back (the third pull request). Neither in a chord with Ctrl, Cmd or Alt.
+  (Changed in the third plan from "neither with a modifier held": Shift+H is the same
+  letter, and the star's key is the key that types a period, which takes Shift on some
+  keyboards.)
 - Enter, `C`, Ctrl/Cmd+C and Ctrl/Cmd+Shift+R do nothing until the sub-project that has
   what they open.
 
@@ -297,12 +300,16 @@ heading, a note, a separator, a dangerous one) and what picking it answers - wit
   the window. It is placed again in every frame from the size it was measured at, so one
   that changes or a window that is resized needs nothing more.
 - **While it is open the keys are its own.** The arrows move through the items that work
-  and wrap; Home and End; Enter and Space pick; Escape closes. No other plain key reaches
-  the grid behind it - an `h` must not hide the photos the menu is about. A chord and a
-  function key are let through.
+  and wrap; Home and End; Enter and Space pick; Escape closes. No other key reaches
+  what lies behind it - an `h` must not hide the photos the menu is about. A chord
+  neither (changed in the third plan: let through, as the Svelte menu lets one, Ctrl+F
+  put the caret in the search box behind the menu and Ctrl+A selected a folder the menu
+  was not about).
 - **It closes** at a pick, at Escape, at a press outside it (the press, not the click: the
-  dropdown's lesson), when a step's grid arrives, and when the sidebar is hidden under
-  one of its menus. Closed, the keys are the grid's again.
+  dropdown's lesson), when a step's grid arrives, when what it is of has left the grid or
+  the lists (the third plan: the tile's menu when its photo leaves and the selection
+  lands on a neighbour), and when the sidebar is hidden under one of its menus. Closed,
+  the keys are the grid's again.
 - An item that does not work is drawn fainter, is skipped by the arrows and takes no
   press.
 - What an item acts on is read when it is picked, not when the menu opened: a grid that

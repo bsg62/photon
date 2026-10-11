@@ -103,6 +103,25 @@ impl Selection {
         self.lead
     }
 
+    /// The selected photo whose star says which way the star key goes: starred, the
+    /// selection is unstarred; not, it is starred.
+    ///
+    /// The lead, when it is selected. It is not always: a Ctrl+click that takes a photo
+    /// out leaves the lead on it, and a lead can land beside photos that stayed
+    /// selected. Read regardless, the key took its direction from a photo with no ring
+    /// on it, and a lone starred photo beside such a lead could not be unstarred at all.
+    /// Then the selected photo that comes first in the grid stands in. (The Svelte rule
+    /// takes the first one on screen, for want of the rest.)
+    pub fn deciding(&self, index: &GridIndex) -> Option<i64> {
+        match self.lead {
+            Some(lead) if self.ids.contains(&lead.id) => Some(lead.id),
+            _ => (self.ids.iter())
+                .filter_map(|id| Some((index.position_of(*id)?, *id)))
+                .min()
+                .map(|(_, id)| id),
+        }
+    }
+
     pub fn anchor(&self) -> Option<At> {
         self.anchor
     }
@@ -991,5 +1010,31 @@ mod tests {
         s.follow(&old, &new);
         s.band_cancel();
         assert_eq!(selected(&s, &new), [17]);
+    }
+
+    // ---- the photo the star key goes by ----
+
+    #[test]
+    fn the_star_key_goes_by_the_lead_when_it_is_selected() {
+        let index = ten();
+        let mut s = Selection::default();
+        assert_eq!(s.deciding(&index), None);
+        s.select(&index, 2);
+        s.extend(&index, 6);
+        assert_eq!(s.deciding(&index), Some(16));
+    }
+
+    // A Ctrl+click that takes a photo out leaves the lead on it. Read regardless, the
+    // key took its direction from a photo with no ring on it.
+    #[test]
+    fn a_lead_that_is_not_selected_gives_way_to_the_first_selected_photo_in_the_grid() {
+        let index = ten();
+        let mut s = Selection::default();
+        s.select(&index, 7);
+        s.toggle(&index, 3);
+        s.toggle(&index, 5);
+        s.toggle(&index, 5);
+        assert_eq!(lead(&s), Some((5, 15)));
+        assert_eq!(s.deciding(&index), Some(13));
     }
 }

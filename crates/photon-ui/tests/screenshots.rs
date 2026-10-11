@@ -365,6 +365,80 @@ fn native_selection_dark() {
     shot(ThemeChoice::Dark, "native-selection-dark.png", selection);
 }
 
+/// A click of the other button on the photo at `offset`, and the frames its menu is
+/// measured and shown in.
+fn right_click(harness: &mut Harness<'_>, offset: usize) {
+    let at = (harness.state().tile_rect(offset))
+        .expect("the photo is laid out")
+        .center();
+    harness.event(egui::Event::PointerMoved(at));
+    harness.step();
+    for pressed in [true, false] {
+        harness.event(egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Secondary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        });
+        harness.step();
+    }
+    harness.step();
+}
+
+/// The menu of one photo, which nothing had selected: the photo ringed, what is not
+/// there yet dimmed, the albums of the user's own at its end, and the pointer on an item.
+fn menu_of_one(harness: &mut Harness<'_>) {
+    right_click(harness, 2);
+    harness.get_by_label("Hide photo").hover();
+    harness.step();
+}
+
+/// The menu of several photos of which one is starred: both star items, the key beside
+/// the one it would do. Opened near the window's bottom edge, so it stands up from the
+/// pointer.
+fn menu_of_several(harness: &mut Harness<'_>) {
+    pick(harness, 9, Modifiers::NONE);
+    harness.key_press_modifiers(Modifiers::NONE, Key::Period);
+    until(harness, "the star shown", |app| app.starred().len() == 1);
+    pick(harness, 8, Modifiers::NONE);
+    pick(harness, 12, Modifiers::SHIFT);
+    right_click(harness, 12);
+    harness.key_press_modifiers(Modifiers::NONE, Key::ArrowDown);
+    harness.step();
+}
+
+#[test]
+#[ignore = "renders through a GPU adapter: cargo run -p xtask -- native-shot"]
+fn native_menu_light() {
+    shot(ThemeChoice::Light, "native-menu-light.png", menu_of_one);
+}
+
+#[test]
+#[ignore = "renders through a GPU adapter: cargo run -p xtask -- native-shot"]
+fn native_menu_dark() {
+    shot(ThemeChoice::Dark, "native-menu-dark.png", menu_of_one);
+}
+
+#[test]
+#[ignore = "renders through a GPU adapter: cargo run -p xtask -- native-shot"]
+fn native_menu_several_light() {
+    shot(
+        ThemeChoice::Light,
+        "native-menu-several-light.png",
+        menu_of_several,
+    );
+}
+
+#[test]
+#[ignore = "renders through a GPU adapter: cargo run -p xtask -- native-shot"]
+fn native_menu_several_dark() {
+    shot(
+        ThemeChoice::Dark,
+        "native-menu-several-dark.png",
+        menu_of_several,
+    );
+}
+
 // A library that watches nothing, as a first run is where there is no Pictures folder:
 // what it says where its photos would be, its buttons drawn and not yet answering, and
 // "No folders yet." in the sidebar.

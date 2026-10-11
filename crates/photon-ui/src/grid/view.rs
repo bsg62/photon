@@ -75,6 +75,24 @@ struct Press {
     banded: bool,
 }
 
+/// Whether a button going down or coming up is the one that asks for the menu: the
+/// other button, and on a Mac the first one with Control held, which is how a mouse
+/// with one button asks - the system reports it as the first button, and the web view
+/// opened its menu for it.
+fn asks_for_menu(button: PointerButton, modifiers: Modifiers, mac: bool) -> bool {
+    button == PointerButton::Secondary
+        || (mac && button == PointerButton::Primary && modifiers.ctrl)
+}
+
+/// What a frame's presses on the photos came to (`GridView::take_pointer`).
+#[derive(Default)]
+struct Taken {
+    /// A click of the first button, and what was held as it came up.
+    click: Option<(egui::Pos2, Modifiers)>,
+    /// Where the other button went down, asking for the menu.
+    menu: Option<egui::Pos2>,
+}
+
 /// A rubber band being drawn, from its press's origin to the pointer.
 #[derive(Clone, Copy, Debug)]
 struct Band {
@@ -137,6 +155,18 @@ enum GridKey {
     },
     SelectAll,
     Clear,
+    Ask(Ask),
+}
+
+/// Something asked of the selection from the keyboard, which is the application's to
+/// do: it is a write.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Ask {
+    /// `.`: star the selection, or take its stars off.
+    Star,
+    /// `H`: hide it, or in Hidden bring it back. Not Delete: photon never deletes, and
+    /// a key that reads as "delete" would promise it.
+    Hide,
 }
 
 /// The keys of this frame that are the grid's, in the order they were pressed, each with
@@ -151,15 +181,21 @@ fn grid_keys(input: &egui::InputState) -> Vec<(GridKey, bool)> {
     for event in &input.events {
         let Event::Key {
             key,
+            physical_key,
             pressed: true,
             repeat,
             modifiers,
-            ..
         } = event
         else {
             continue;
         };
         let chord = modifiers.command || modifiers.ctrl || modifiers.alt;
+        // The key that types a period, wherever a keyboard has it. egui names a key by
+        // what it types and, for want of a name for that, by its place: Shift with the
+        // period's own key types `>` on most keyboards and is still called Period, and
+        // that one is not the star's. A period typed with Shift from another place - a
+        // French keyboard's - is.
+        let types_period = !modifiers.shift || *physical_key != Some(Key::Period);
         let grid_key = match key {
             Key::A if modifiers.command && !modifiers.alt => GridKey::SelectAll,
             _ if chord => continue,
@@ -172,6 +208,10 @@ fn grid_keys(input: &egui::InputState) -> Vec<(GridKey, bool)> {
             Key::PageDown => GridKey::Page { down: true },
             Key::PageUp => GridKey::Page { down: false },
             Key::Escape if !repeat => GridKey::Clear,
+            // Not at a key's repeat either: each press writes, and the lead then lands
+            // on the next photo - a key held down would hide its way through the library.
+            Key::Period if !repeat && types_period => GridKey::Ask(Ask::Star),
+            Key::H if !repeat => GridKey::Ask(Ask::Hide),
             _ => continue,
         };
         keys.push((grid_key, modifiers.shift));
@@ -203,6 +243,23 @@ pub struct GridOutput {
     pub strip: bool,
     /// Whether a rubber band is being drawn: nothing opens over one.
     pub banding: bool,
+    /// Where the other button went down on a photo: the menu of the selection, which
+    /// that photo is in - alone, if it was not in it before.
+    pub menu: Option<egui::Pos2>,
+    /// What the keys asked for the selection.
+    pub asked: Vec<Asked>,
+}
+
+/// A key that asks something of the selection, with the selection as it was at that
+/// key: the photos picked then, in the grid's order, and the one that decides which way
+/// a star goes (`Selection::deciding`). Read at the key and not when the application
+/// gets to it after the frame: `H` and then an arrow in one frame - a long one, such as
+/// puts a rebuilt grid of a large library on screen - hid the photo the arrow went to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Asked {
+    pub ask: Ask,
+    pub ids: Vec<i64>,
+    pub deciding: Option<i64>,
 }
 
 /// Where a photo asked for is put.
@@ -252,6 +309,10 @@ pub struct GridView {
     band: Option<Band>,
     /// Whether Escape was down when the grid was last drawn.
     escape_down: bool,
+    /// What this frame's input asked that the application answers: taken with the
+    /// frame's output.
+    menu: Option<egui::Pos2>,
+    asks: Vec<Asked>,
 }
 
 impl GridView {
@@ -387,6 +448,8 @@ impl GridView {
             top_folder: top_folder_id(&self.rows, data.index.sections(), top),
             strip: strip.is_some(),
             banding: self.band.is_some(),
+            menu: self.menu.take(),
+            asked: std::mem::take(&mut self.asks),
         }
     }
 
@@ -603,37 +666,57 @@ impl GridView {
             ui.id().with("grid-photos"),
             Sense::CLICK | Sense::DRAG,
         );
-        if let Some((pointer, modifiers)) =
-            self.take_pointer(ui, area, &response, index, selection, laid.tile)
-        {
-            let top = self.scroll.position();
-            // The pinned header lies over a row of photos, and a press on it is the
-            // header's: the photo under it is one nobody can see. Its full height from
-            // the top, wherever it is drawn: while the next header pushes it out, what
-            // shows under it in those points is that header's own row, which is no
-            // photo either.
-            let on_pinned = pinned_header(&self.rows, &self.headers, top).is_some()
-                && f64::from(pointer.y - area.top()) < HEADER;
+        let taken = self.take_pointer(ui, area, &response, index, selection, laid.tile);
+        let top = self.scroll.position();
+        // The pinned header lies over a row of photos, and a press on it is the
+        // header's: the photo under it is one nobody can see. Its full height from the
+        // top, wherever it is drawn: while the next header pushes it out, what shows
+        // under it in those points is that header's own row, which is no photo either.
+        let pinned = pinned_header(&self.rows, &self.headers, top).is_some();
+        let rows = &self.rows;
+        let photo_at = |pointer: egui::Pos2| {
+            let on_pinned = pinned && f64::from(pointer.y - area.top()) < HEADER;
             let x = f64::from(pointer.x - area.left());
             let y = f64::from(pointer.y - area.top()) + top;
-            if !on_pinned && let Some(offset) = tile_at(&self.rows, x, y, laid.tile) {
-                if modifiers.shift {
-                    selection.extend(index, offset);
-                } else if modifiers.command {
-                    selection.toggle(index, offset);
-                } else {
-                    selection.select(index, offset);
-                }
+            (!on_pinned)
+                .then(|| tile_at(rows, x, y, laid.tile))
+                .flatten()
+        };
+        if let Some((pointer, modifiers)) = taken.click
+            && let Some(offset) = photo_at(pointer)
+        {
+            if modifiers.shift {
+                selection.extend(index, offset);
+            } else if modifiers.command {
+                selection.toggle(index, offset);
+            } else {
+                selection.select(index, offset);
             }
+        }
+        // The other button on a photo opens the menu of the selection. On a photo
+        // outside it, that photo is selected first, alone: what a menu acts on is
+        // always what is ringed. Inside it, the whole selection stands.
+        if let Some(pointer) = taken.menu
+            && let Some(offset) = photo_at(pointer)
+        {
+            let selected = (index.rows(offset, 1).first())
+                .is_some_and(|entry| selection.is_selected(entry.id));
+            if !selected {
+                selection.select(index, offset);
+            }
+            self.menu = Some(pointer);
         }
 
         let elsewhere = ui.memory(|memory| memory.focused().is_some());
         let was_elsewhere = std::mem::replace(&mut self.elsewhere, elsewhere);
-        // A drag owns the grid while it lasts: Escape abandons it (`take_band`) and
+        // A drag owns the grid while it lasts: Escape abandons it (`take_pointer`) and
         // every other key is ignored, not acted on under a rectangle that is selecting.
         if elsewhere || was_elsewhere || !data.keys || self.band.is_some() {
             return;
         }
+        let pointed = ui.input(|input| {
+            (input.events.iter()).any(|event| matches!(event, Event::PointerButton { .. }))
+        });
         for (key, shift) in ui.input(grid_keys) {
             let lead = selection.lead().map(|lead| lead.offset);
             let to = match key {
@@ -643,6 +726,20 @@ impl GridView {
                 }
                 GridKey::Clear => {
                     selection.clear();
+                    continue;
+                }
+                // With nothing selected there is nothing to ask it of. And in a frame
+                // with a mouse button in it nothing is asked at all: a click is taken
+                // before the frame's keys, whichever came first, and a write does not
+                // guess which photos a key was meant for.
+                GridKey::Ask(ask) => {
+                    if !selection.is_empty() && !pointed {
+                        self.asks.push(Asked {
+                            ask,
+                            ids: selection.ids(index),
+                            deciding: selection.deciding(index),
+                        });
+                    }
                     continue;
                 }
                 GridKey::Page { down } => match lead {
@@ -697,17 +794,17 @@ impl GridView {
         index: &GridIndex,
         selection: &mut Selection,
         tile: f64,
-    ) -> Option<(egui::Pos2, Modifiers)> {
+    ) -> Taken {
         let top = self.scroll.position();
         let (buttons, pointer, taken, escape) = ui.input(|input| {
-            let buttons: Vec<(bool, egui::Pos2, Modifiers)> = (input.events.iter())
+            let buttons: Vec<(PointerButton, bool, egui::Pos2, Modifiers)> = (input.events.iter())
                 .filter_map(|event| match event {
                     Event::PointerButton {
                         pos,
-                        button: PointerButton::Primary,
+                        button: button @ (PointerButton::Primary | PointerButton::Secondary),
                         pressed,
                         modifiers,
-                    } => Some((*pressed, *pos, *modifiers)),
+                    } => Some((*button, *pressed, *pos, *modifiers)),
                     _ => None,
                 })
                 .collect();
@@ -735,9 +832,27 @@ impl GridView {
             self.abandon(selection);
             self.press = None;
         }
-        let mut clicked = None;
-        for (pressed, at, modifiers) in buttons {
-            if pressed {
+        // A press is the photos' when they are what is pressed and nothing lies over
+        // them there. Two questions, because egui answers the first for one layer: a
+        // widget of a layer below still "contains the pointer" all along the inside of
+        // an area's edge, wherever no widget of the area covers the five points round
+        // the pointer - and a menu opens with its corner exactly at the pointer, which
+        // rests there. A click in that place was the open menu's and the photo's under
+        // it, and a drag from it drew a band under the menu.
+        let (ctx, layer) = (ui.ctx(), ui.layer_id());
+        let on_photos =
+            |at: egui::Pos2| response.contains_pointer() && ctx.layer_id_at(at) == Some(layer);
+        let mut answer = Taken::default();
+        for (button, pressed, at, modifiers) in buttons {
+            if asks_for_menu(button, modifiers, cfg!(target_os = "macos")) {
+                // The other button asks for the menu where it goes down, as a desktop's
+                // own menus open: on the photos, with nothing above them. Not while the
+                // first button is down: a press on its way to a click or a band is not
+                // interrupted, and its release would change the selection under a menu.
+                if pressed && self.press.is_none() && on_photos(at) {
+                    answer.menu = Some(at);
+                }
+            } else if pressed {
                 // A press with a band still held: its release was never heard of.
                 self.abandon(selection);
                 let y = f64::from(at.y - area.top());
@@ -746,7 +861,7 @@ impl GridView {
                 // photos, where the shell draws what an empty library says.
                 let on_pinned =
                     pinned_header(&self.rows, &self.headers, top).is_some() && y < HEADER;
-                let photos = response.contains_pointer() && !on_pinned && !index.is_empty();
+                let photos = on_photos(at) && !on_pinned && !index.is_empty();
                 self.press = photos.then_some(Press {
                     at,
                     origin: (f64::from(at.x - area.left()), y + top),
@@ -763,14 +878,14 @@ impl GridView {
                         selection.band_end(index, &covered);
                     }
                     // It never was a band: a click, however long the button was down.
-                    None if !press.banded => clicked = Some((at, modifiers)),
+                    None if !press.banded => answer.click = Some((at, modifiers)),
                     None => {}
                 }
             }
         }
 
         let Some(mut press) = self.press else {
-            return clicked;
+            return answer;
         };
         // The selection was cleared under the band: it began in another grid.
         if self.band.is_some() && !selection.banding() {
@@ -816,7 +931,7 @@ impl GridView {
             }
         }
         let Some(mut band) = self.band else {
-            return clicked;
+            return answer;
         };
         if let Some(pointer) = pointer {
             band.pointer = pointer;
@@ -857,7 +972,7 @@ impl GridView {
         );
         selection.band_to(index, &covered);
         self.band = Some(band);
-        clicked
+        answer
     }
 
     /// Lets go of a band without keeping it: what was selected before it is put back.
@@ -1177,6 +1292,8 @@ mod tests {
         repaint_delay: Duration,
         /// Room left above the grid, as a bar over it would take.
         space_above: f32,
+        /// Something lying over the photos, in a layer of its own: a menu, a panel.
+        over: Option<Rect>,
         /// A text field above the grid that has the focus, and what is typed in it.
         typing: Option<String>,
         /// A button above the grid, and whether it asks for the keyboard this frame.
@@ -1259,6 +1376,7 @@ mod tests {
             time: 0.0,
             repaint_delay: Duration::MAX,
             space_above: 0.0,
+            over: None,
             typing: None,
             button: None,
             tile: GridTile::Medium,
@@ -1354,8 +1472,17 @@ mod tests {
             let selection = &mut self.selection;
             let typing = &mut self.typing;
             let button = self.button;
+            let over = self.over;
             let mut output = None;
             let mut full = self.ctx.run_ui(input, |ui| {
+                if let Some(over) = over {
+                    egui::Area::new(egui::Id::new("over"))
+                        .order(egui::Order::Foreground)
+                        .fixed_pos(over.min)
+                        .show(ui.ctx(), |ui| {
+                            ui.allocate_exact_size(over.size(), Sense::hover());
+                        });
+                }
                 egui::CentralPanel::default()
                     .frame(egui::Frame::NONE)
                     .show(ui, |ui| {
@@ -1473,6 +1600,21 @@ mod tests {
         fn click(&mut self, offset: usize, held: Modifiers) -> GridOutput {
             let at = self.view.rect_of(offset).expect("the photo is laid out");
             self.click_at(at.center(), held)
+        }
+
+        /// `key` pressed and let go of: what the frame of the press came to. A key left
+        /// down is repeating to egui the next time it is pressed.
+        fn tap(&mut self, key: Key, modifiers: Modifiers) -> GridOutput {
+            let event = |pressed| Event::Key {
+                key,
+                physical_key: None,
+                pressed,
+                repeat: false,
+                modifiers,
+            };
+            let frame = self.frame(vec![event(true)]);
+            self.frame(vec![event(false)]);
+            frame
         }
 
         fn key_with(&mut self, key: Key, modifiers: Modifiers) -> GridOutput {
@@ -3167,18 +3309,13 @@ mod tests {
         f.click(9, Modifiers::NONE);
         let (from, to) = (f.middle(1), f.middle(6));
         f.frame(vec![Event::PointerMoved(from)]);
-        let other = |pos, pressed| Event::PointerButton {
-            pos,
-            button: PointerButton::Secondary,
-            pressed,
-            modifiers: Modifiers::NONE,
-        };
         f.frame(vec![other(from, true)]);
         let frame = f.to(to);
         assert!(!frame.banding);
         assert_eq!(f.band(), None);
         f.frame(vec![other(to, false)]);
-        assert_eq!(f.picked(), [10]);
+        // What its press did is the menu's: the photo it went down on, selected.
+        assert_eq!(f.picked(), [2]);
     }
 
     // A button let go of over another window may never be heard of: egui goes on
@@ -3216,9 +3353,13 @@ mod tests {
 
     // ---- from the review of the band ----
 
+    /// The key held to add to a selection, as a keyboard reports it: Ctrl, and on a Mac
+    /// Cmd - where Control with the first button is how a mouse with one button asks
+    /// for the menu, and begins no band.
     fn ctrl() -> Modifiers {
         Modifiers {
-            ctrl: true,
+            ctrl: !cfg!(target_os = "macos"),
+            mac_cmd: cfg!(target_os = "macos"),
             command: true,
             ..Modifiers::NONE
         }
@@ -3264,12 +3405,6 @@ mod tests {
         f.frame(Vec::new());
         f.drag(f.middle(1), f.middle(2));
         assert_eq!(f.picked(), [2, 3]);
-        let other = |pos, pressed| Event::PointerButton {
-            pos,
-            button: PointerButton::Secondary,
-            pressed,
-            modifiers: Modifiers::NONE,
-        };
         f.frame(vec![other(f.middle(2), true)]);
         let frame = f.frame(vec![other(f.middle(2), false)]);
         assert!(frame.banding);
@@ -3534,5 +3669,359 @@ mod tests {
         let frame = f.to(f.middle(10));
         assert!(frame.banding);
         assert_eq!(f.picked(), [2, 3, 6, 7, 10, 11]);
+    }
+
+    // ---- the menu's click, and the keys that write ----
+
+    impl GridOutput {
+        /// What the keys asked, without the selection each was asked of.
+        fn asks(&self) -> Vec<Ask> {
+            self.asked.iter().map(|asked| asked.ask).collect()
+        }
+    }
+
+    fn other(pos: Pos2, pressed: bool) -> Event {
+        Event::PointerButton {
+            pos,
+            button: PointerButton::Secondary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        }
+    }
+
+    impl Fixture {
+        /// A click of the other button at `at`: what the frame it went down in came to.
+        fn right_click(&mut self, at: Pos2) -> GridOutput {
+            self.frame(vec![Event::PointerMoved(at)]);
+            let pressed = self.frame(vec![other(at, true)]);
+            // Its release asks for nothing more.
+            assert_eq!(self.frame(vec![other(at, false)]).menu, None);
+            pressed
+        }
+    }
+
+    // What a menu acts on is always what is ringed.
+    #[test]
+    fn a_right_click_on_a_photo_outside_the_selection_selects_it_alone_and_asks_for_the_menu() {
+        let mut f = fixture(&[200]);
+        f.frame(Vec::new());
+        f.click(1, Modifiers::NONE);
+        f.click(2, Modifiers::COMMAND);
+        let at = f.middle(6);
+        let frame = f.right_click(at);
+        assert_eq!(frame.menu, Some(at));
+        assert_eq!(f.picked(), [7]);
+        assert_eq!(f.lead(), Some(6));
+        // Asked for once: the frame after has no menu to open.
+        assert_eq!(f.frame(Vec::new()).menu, None);
+    }
+
+    #[test]
+    fn a_right_click_inside_the_selection_leaves_all_of_it_selected() {
+        let mut f = fixture(&[200]);
+        f.frame(Vec::new());
+        f.click(1, Modifiers::NONE);
+        f.click(3, Modifiers::SHIFT);
+        let at = f.middle(2);
+        assert_eq!(f.right_click(at).menu, Some(at));
+        assert_eq!(f.picked(), [2, 3, 4]);
+        assert_eq!(f.lead(), Some(3));
+    }
+
+    #[test]
+    fn a_right_click_on_no_photo_opens_no_menu_and_selects_nothing() {
+        let mut f = fixture(&[200]);
+        f.frame(Vec::new());
+        f.click(1, Modifiers::NONE);
+        // A gutter, a header.
+        for at in [Pos2::new(199.0, 100.0), Pos2::new(100.0, 10.0)] {
+            assert_eq!(f.right_click(at).menu, None, "{at:?}");
+            assert_eq!(f.picked(), [2], "{at:?}");
+        }
+        // The pinned header, over a photo nobody can see.
+        f.view.scroll_to(430.0);
+        f.frame(Vec::new());
+        assert_eq!(f.right_click(Pos2::new(100.0, 10.0)).menu, None);
+        assert_eq!(f.picked(), [2]);
+    }
+
+    #[test]
+    fn the_star_key_and_the_hide_key_ask_the_application() {
+        let mut f = fixture(&[200]);
+        f.frame(Vec::new());
+        let none = Modifiers::NONE;
+        // With nothing selected there is nothing to ask it of.
+        assert_eq!(f.tap(Key::Period, none).asks(), []);
+        assert_eq!(f.tap(Key::H, none).asks(), []);
+        f.click(5, none);
+        assert_eq!(f.tap(Key::Period, none).asks(), [Ask::Star]);
+        assert_eq!(f.tap(Key::H, none).asks(), [Ask::Hide]);
+        // Once: the frame after asks nothing.
+        assert_eq!(f.frame(Vec::new()).asks(), []);
+        // The selection is the application's to change, with the write.
+        assert_eq!(f.picked(), [6]);
+        // Shift+H is the same letter.
+        assert_eq!(f.tap(Key::H, Modifiers::SHIFT).asks(), [Ask::Hide]);
+        // A chord is not the grid's.
+        for held in [Modifiers::COMMAND, Modifiers::CTRL, Modifiers::ALT] {
+            assert_eq!(f.tap(Key::H, held).asks(), [], "{held:?}");
+            assert_eq!(f.tap(Key::Period, held).asks(), [], "{held:?}");
+        }
+    }
+
+    // The star's key is the one that types a period, wherever a keyboard has it. Where
+    // that takes Shift - a French keyboard's is Shift with the key right of M - it is
+    // the star's with Shift; where Shift with the period's own key types something else,
+    // `>` on most, it is not, though egui names that key Period too, by its place, for
+    // want of a name for what it types.
+    #[test]
+    fn the_star_key_is_the_key_that_types_a_period() {
+        let mut f = fixture(&[200]);
+        f.frame(Vec::new());
+        f.click(5, Modifiers::NONE);
+        let mut press = |place: Option<Key>, modifiers| {
+            let event = |pressed| Event::Key {
+                key: Key::Period,
+                physical_key: place,
+                pressed,
+                repeat: false,
+                modifiers,
+            };
+            let frame = f.frame(vec![event(true)]);
+            f.frame(vec![event(false)]);
+            frame.asks()
+        };
+        assert_eq!(press(Some(Key::Period), Modifiers::NONE), [Ask::Star]);
+        assert_eq!(press(Some(Key::Period), Modifiers::SHIFT), []);
+        assert_eq!(press(Some(Key::Semicolon), Modifiers::SHIFT), [Ask::Star]);
+        assert_eq!(press(Some(Key::Comma), Modifiers::SHIFT), [Ask::Star]);
+    }
+
+    // Each press writes, and the lead then lands on the next photo: a key held down
+    // would hide its way through the library.
+    #[test]
+    fn a_key_that_writes_is_not_answered_at_its_repeat() {
+        let mut f = fixture(&[200]);
+        f.frame(Vec::new());
+        f.click(5, Modifiers::NONE);
+        for key in [Key::H, Key::Period] {
+            let down = |pressed| Event::Key {
+                key,
+                physical_key: None,
+                pressed,
+                repeat: false,
+                modifiers: Modifiers::NONE,
+            };
+            assert_eq!(f.frame(vec![down(true)]).asks().len(), 1, "{key:?}");
+            // Still down: egui calls the next press of it a repeat.
+            assert_eq!(f.frame(vec![down(true)]).asks(), [], "{key:?}");
+            assert_eq!(f.frame(vec![down(true), down(true)]).asks(), [], "{key:?}");
+            f.frame(vec![down(false)]);
+        }
+    }
+
+    #[test]
+    fn the_keys_that_write_go_through_the_gate_the_other_keys_do() {
+        // Something else has the keyboard.
+        let mut f = fixture(&[200]);
+        f.frame(Vec::new());
+        f.click(5, Modifiers::NONE);
+        f.button = Some(true);
+        f.frame(Vec::new());
+        f.frame(Vec::new());
+        f.button = Some(false);
+        assert_eq!(f.tap(Key::H, Modifiers::NONE).asks(), []);
+        assert_eq!(f.tap(Key::Period, Modifiers::NONE).asks(), []);
+        // A band is held.
+        let mut f = fixture(&[200]);
+        f.frame(Vec::new());
+        f.drag(f.middle(1), f.middle(6));
+        assert_eq!(f.tap(Key::H, Modifiers::NONE).asks(), []);
+        assert_eq!(f.tap(Key::Period, Modifiers::NONE).asks(), []);
+        assert_eq!(f.picked(), [2, 3, 6, 7]);
+    }
+
+    // A press on its way to a click or a band is not interrupted: the other button
+    // pressed during either opens nothing, and the band goes on.
+    #[test]
+    fn the_other_button_opens_no_menu_while_the_first_is_down() {
+        let mut f = fixture(&[200]);
+        f.frame(Vec::new());
+        let at = f.middle(6);
+        // Down and still: a click on its way.
+        f.frame(vec![Event::PointerMoved(at)]);
+        f.button(at, true);
+        assert_eq!(f.frame(vec![other(at, true)]).menu, None);
+        assert_eq!(f.frame(vec![other(at, false)]).menu, None);
+        f.button(at, false);
+        assert_eq!(f.picked(), [7]);
+        // A band.
+        f.drag(f.middle(1), at);
+        let pressed = f.frame(vec![other(at, true)]);
+        assert_eq!(pressed.menu, None);
+        assert!(pressed.banding);
+        assert!(f.frame(vec![other(at, false)]).banding);
+        assert_eq!(f.picked(), [2, 3, 6, 7]);
+    }
+
+    // A press held however long is a click of the other button too, where egui's own
+    // click gives up after 0.8 seconds: the menu opens where the button goes down.
+    #[test]
+    fn the_menu_is_asked_for_where_the_other_button_goes_down() {
+        let mut f = fixture(&[200]);
+        f.frame(Vec::new());
+        let at = f.middle(6);
+        f.frame(vec![Event::PointerMoved(at)]);
+        assert_eq!(f.frame(vec![other(at, true)]).menu, Some(at));
+        assert_eq!(f.picked(), [7]);
+        // Held, moved, let go of elsewhere: nothing more.
+        let away = f.middle(1);
+        assert_eq!(f.frame(vec![Event::PointerMoved(away)]).menu, None);
+        assert_eq!(f.frame(vec![other(away, false)]).menu, None);
+        assert_eq!(f.picked(), [7]);
+    }
+
+    // ---- from the review of the menu ----
+
+    // egui answers "does this widget contain the pointer" for one layer, and lets the
+    // layer below go on containing it all along the inside of an area's edge. A menu
+    // opens with its corner at the pointer, so the pointer rests in exactly that place.
+    #[test]
+    fn a_press_just_inside_the_edge_of_something_lying_over_the_photos_is_not_the_photos() {
+        let mut f = fixture(&[200]);
+        f.frame(Vec::new());
+        f.click(9, Modifiers::NONE);
+        // On whole points, where egui puts an area whatever it is asked for.
+        let at = f.middle(1).round();
+        f.over = Some(Rect::from_min_size(at, vec2(220.0, 300.0)));
+        f.frame(Vec::new());
+        f.frame(Vec::new());
+        // Its very corner, and a few points in along its edges.
+        for inside in [
+            vec2(0.0, 0.0),
+            vec2(2.0, 2.0),
+            vec2(4.0, 150.0),
+            vec2(110.0, 3.0),
+        ] {
+            let at = at + inside;
+            f.frame(vec![Event::PointerMoved(at)]);
+            f.button(at, true);
+            f.button(at, false);
+            assert_eq!(f.picked(), [10], "a click at {inside:?}");
+            assert_eq!(f.frame(vec![other(at, true)]).menu, None, "{inside:?}");
+            f.frame(vec![other(at, false)]);
+            assert_eq!(f.picked(), [10], "the other button at {inside:?}");
+            // Nor does a drag from there draw a band under it.
+            f.button(at, true);
+            let frame = f.to(f.middle(6));
+            assert!(!frame.banding, "a drag from {inside:?}");
+            f.button(f.middle(6), false);
+            assert_eq!(f.picked(), [10], "a drag from {inside:?}");
+        }
+        // Beside it the photos are pressed as ever.
+        let beside = at - vec2(3.0, 3.0);
+        f.frame(vec![Event::PointerMoved(beside)]);
+        f.button(beside, true);
+        f.button(beside, false);
+        assert_eq!(f.picked(), [2]);
+    }
+
+    // The application acts on an ask after the frame. What it acts on is the selection
+    // as it was at the key, which the ask carries.
+    #[test]
+    fn a_key_that_writes_carries_the_selection_it_was_pressed_on() {
+        let mut f = fixture(&[200]);
+        f.frame(Vec::new());
+        f.click(5, Modifiers::NONE);
+        f.click(7, Modifiers::SHIFT);
+        let press = |key| Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        };
+        let lift = |key| Event::Key {
+            key,
+            physical_key: None,
+            pressed: false,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        };
+        // `H`, an arrow, and the other key, in one frame.
+        let frame = f.frame(vec![
+            press(Key::H),
+            press(Key::ArrowRight),
+            press(Key::Period),
+        ]);
+        f.frame(vec![lift(Key::H), lift(Key::ArrowRight), lift(Key::Period)]);
+        assert_eq!(
+            frame.asked,
+            [
+                Asked {
+                    ask: Ask::Hide,
+                    ids: vec![6, 7, 8],
+                    deciding: Some(8),
+                },
+                Asked {
+                    ask: Ask::Star,
+                    ids: vec![9],
+                    deciding: Some(9),
+                },
+            ]
+        );
+    }
+
+    // A click is taken before the frame's keys, whichever came first: in a frame with
+    // both, a key that writes would be answered on the photo clicked after it.
+    #[test]
+    fn a_key_that_writes_is_not_answered_in_a_frame_with_a_mouse_button_in_it() {
+        let mut f = fixture(&[200]);
+        f.frame(Vec::new());
+        f.click(5, Modifiers::NONE);
+        let at = f.middle(9);
+        f.frame(vec![Event::PointerMoved(at)]);
+        let key = |key, pressed| Event::Key {
+            key,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        };
+        let button = |pressed| Event::PointerButton {
+            pos: at,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        };
+        for asking in [Key::H, Key::Period] {
+            let frame = f.frame(vec![key(asking, true), button(true), button(false)]);
+            assert_eq!(frame.asks(), [], "{asking:?}");
+            f.frame(vec![key(asking, false)]);
+            assert_eq!(f.picked(), [10]);
+            // The other keys are answered as they were: they write nothing.
+            f.click(5, Modifiers::NONE);
+            f.frame(vec![Event::PointerMoved(at)]);
+        }
+        let frame = f.frame(vec![key(Key::ArrowRight, true), button(true)]);
+        assert_eq!(frame.asks(), []);
+        f.frame(vec![button(false)]);
+    }
+
+    // A mouse with one button asks for the menu with Control held, and the system
+    // reports that as the first button.
+    #[test]
+    fn on_a_mac_the_first_button_with_control_asks_for_the_menu() {
+        let (first, other) = (PointerButton::Primary, PointerButton::Secondary);
+        for mac in [true, false] {
+            assert!(asks_for_menu(other, Modifiers::NONE, mac));
+            assert!(asks_for_menu(other, Modifiers::CTRL, mac));
+            assert!(!asks_for_menu(first, Modifiers::NONE, mac));
+            assert!(!asks_for_menu(first, Modifiers::SHIFT, mac));
+            assert!(!asks_for_menu(first, Modifiers::MAC_CMD, mac));
+        }
+        assert!(asks_for_menu(first, Modifiers::CTRL, true));
+        // Elsewhere Control with a click takes a photo in or out of the selection.
+        assert!(!asks_for_menu(first, Modifiers::CTRL, false));
     }
 }

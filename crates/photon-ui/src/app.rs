@@ -5,10 +5,12 @@ use crate::{
     empty::{self, GridState, LibraryFacts, Panel, PanelButton},
     events::{Event, UiEvents},
     grid::{
-        view::{Align, GridData, GridOutput, GridView},
+        view::{Align, Ask, Asked, GridData, GridOutput, GridView},
         visible::VisibleReport,
     },
     icons,
+    menu::Item,
+    menu_view::{MenuView, Outcome},
     nav::{Landed, LastFolder, Nav, Place, Step},
     probe::{Facts, Move, Outside, Probe, Report},
     scans::Scans,
@@ -24,14 +26,16 @@ use crate::{
     tasks::{Latest, Queue},
     theme,
     thumbs::{loader::Loader, shown::Thumbs, source::EngineThumbs},
+    tile_menu::{self, Deciding, TileAction},
     toasts::{Toast, Toasts},
     window_layout::Layout,
 };
 use eframe::egui;
 use jiff::tz::TimeZone;
 use photon_core::{
-    grid::{GridIndex, GridView as View},
+    grid::{GridEntry, GridIndex, GridView as View},
     library::{Folder, GridTile, WatchedFolder},
+    media::MediaKind,
     sort::Sort,
 };
 use photon_engine::{
@@ -49,6 +53,10 @@ const THUMB_TIMEOUT: Duration = Duration::from_secs(30);
 const DECODERS: usize = 2;
 /// How often the engine is asked whether its first scans are started, until they are.
 const LAUNCH_POLL: Duration = Duration::from_millis(50);
+/// How long a closing window waits for the writes it was asked for. Longer than the five
+/// seconds a write waits for the library's lock, and short enough that a folder on a
+/// share that has gone does not keep the window open.
+const WRITES_PATIENCE: Duration = Duration::from_secs(10);
 
 pub struct App {
     engine: Arc<Engine>,
@@ -76,6 +84,9 @@ pub struct App {
     nav: Nav,
     /// The photos picked in the grid on screen.
     selection: Selection,
+    /// The menu of the selection, where it was opened: one menu for the whole window.
+    menu: Option<egui::Pos2>,
+    menu_view: MenuView,
     /// A step made answers where it led, and with it what the engine said when it made
     /// the step and could not finish the rest of it (a sort shown and not stored).
     steps: Queue<Step, Result<(Landed, Option<String>), String>>,
@@ -129,21 +140,69 @@ pub struct App {
 /// Something to write to the library.
 enum Write {
     /// The search in the box, under a name: the bookmark.
-    SaveSearch { name: String, query: String },
+    SaveSearch {
+        name: String,
+        query: String,
+    },
     /// The size of the tiles, as the size control was last pressed.
     TileSize(GridTile),
+    /// Stars set on photos, or taken off: a `star=` line for each in its folder's
+    /// `.picasa.ini`, written by the engine (`commands::set_stars`). The one write
+    /// photon makes outside its own library.
+    Stars {
+        ids: Vec<i64>,
+        starred: bool,
+    },
+    Hidden {
+        ids: Vec<i64>,
+        hidden: bool,
+    },
+    AlbumAdd {
+        album: i64,
+        ids: Vec<i64>,
+    },
+    AlbumRemove {
+        album: i64,
+        ids: Vec<i64>,
+    },
+    /// "Not this person", for each of the photos. The name is read before the write,
+    /// while the list surely still holds it: it is what the message afterwards says.
+    PersonRemove {
+        person: i64,
+        name: String,
+        ids: Vec<i64>,
+    },
 }
 
 /// A write that was made.
 enum Wrote {
     Search,
     TileSize,
+    /// How many stars were written, of how many asked.
+    Stars {
+        asked: usize,
+        done: usize,
+        starred: bool,
+    },
+    /// A write whose rebuild says everything there is to say: a hide.
+    Grid,
+    /// A write the lists are read again for: the engine announces a change of the
+    /// albums only while an album is on screen (`Engine::albums_changed`), and the
+    /// counts in the sidebar are wanted in every view.
+    Lists,
+    Removed {
+        name: String,
+        removed: usize,
+        kept: usize,
+        asked: usize,
+    },
 }
 
 /// A write the library refused, and what it said.
 enum Unwritten {
     Search { query: String, said: String },
     TileSize { said: String },
+    Said(String),
 }
 
 /// The gate's programme, where its report goes, and what the report says besides.
@@ -288,6 +347,36 @@ impl App {
                         Ok(()) => Ok(Wrote::TileSize),
                         Err(err) => Err(Unwritten::TileSize { said: err.message }),
                     },
+                    Write::Stars { ids, starred } => commands::set_stars(&engine, &ids, starred)
+                        .map(|done| Wrote::Stars {
+                            asked: ids.len(),
+                            done,
+                            starred,
+                        })
+                        .map_err(|err| Unwritten::Said(err.message)),
+                    Write::Hidden { ids, hidden } => {
+                        commands::set_items_hidden(&engine, &ids, hidden)
+                            .map(|_| Wrote::Grid)
+                            .map_err(|err| Unwritten::Said(err.message))
+                    }
+                    Write::AlbumAdd { album, ids } => commands::add_to_album(&engine, album, &ids)
+                        .map(|()| Wrote::Lists)
+                        .map_err(|err| Unwritten::Said(err.message)),
+                    Write::AlbumRemove { album, ids } => {
+                        commands::remove_from_album(&engine, album, &ids)
+                            .map(|()| Wrote::Lists)
+                            .map_err(|err| Unwritten::Said(err.message))
+                    }
+                    Write::PersonRemove { person, name, ids } => {
+                        commands::remove_from_person(&engine, person, &ids)
+                            .map(|came| Wrote::Removed {
+                                name,
+                                removed: usize::try_from(came.removed).unwrap_or(0),
+                                kept: usize::try_from(came.kept_by_picasa).unwrap_or(0),
+                                asked: ids.len(),
+                            })
+                            .map_err(|err| Unwritten::Said(err.message))
+                    }
                 }
             },
             repaint(&ctx),
@@ -388,6 +477,8 @@ impl App {
             scans: Scans::default(),
             nav: Nav::new(Place { view, arg }, engine.sort()),
             selection: Selection::default(),
+            menu: None,
+            menu_view: MenuView::default(),
             steps,
             search: SearchBox::default(),
             writes,
@@ -559,6 +650,108 @@ impl App {
     /// presses.
     pub fn tile_rect(&self, offset: usize) -> Option<egui::Rect> {
         self.view.rect_of(offset)
+    }
+
+    /// The photos of the grid on screen, in its order.
+    pub fn shown(&self) -> Vec<i64> {
+        (self.index.rows(0, self.index.len()).iter())
+            .map(|entry| entry.id)
+            .collect()
+    }
+
+    /// Those of them that are starred.
+    pub fn starred(&self) -> Vec<i64> {
+        (self.index.rows(0, self.index.len()).iter())
+            .filter(|entry| entry.starred)
+            .map(|entry| entry.id)
+            .collect()
+    }
+
+    /// Whether a menu is open.
+    pub fn menu_open(&self) -> bool {
+        self.menu.is_some()
+    }
+
+    /// The photo in the grid on screen with this id.
+    fn entry(&self, id: i64) -> Option<&GridEntry> {
+        let at = self.index.position_of(id)?;
+        self.index.rows(at, 1).first()
+    }
+
+    /// The photo the star key goes by (`Selection::deciding`).
+    fn deciding(&self) -> Option<&GridEntry> {
+        self.entry(self.selection.deciding(&self.index)?)
+    }
+
+    /// The items of the selection's menu, as things are in this frame: a grid that
+    /// arrived while it was open may have taken photos out of the selection.
+    fn tile_items(&self) -> Vec<Item<TileAction>> {
+        let collections = self.held.collections();
+        tile_menu::tile_menu(&tile_menu::Facts {
+            count: self.selection.len(),
+            deciding: self.deciding().map(|entry| Deciding {
+                video: entry.kind == MediaKind::Video,
+                starred: entry.starred,
+            }),
+            place: self.nav.settled(),
+            albums: &collections.albums,
+            people: &collections.people,
+            finds_faces: self.engine.face_detection(),
+            mac: cfg!(target_os = "macos"),
+        })
+    }
+
+    /// Does what an item of the selection's menu does, to what is selected now: the ids
+    /// are read here, at the pick, and not when the menu opened. Each is a write, made
+    /// in its turn off this thread; the grid is told nothing, its rebuild arrives like
+    /// any other, and `Selection::follow` takes out what left and lands the lead.
+    fn pick(&mut self, action: TileAction) {
+        self.write(action, self.selection.ids(&self.index));
+    }
+
+    /// Queues what `action` writes, for the photos `ids`.
+    fn write(&mut self, action: TileAction, ids: Vec<i64>) {
+        let write = match action {
+            TileAction::Star(starred) => Write::Stars { ids, starred },
+            TileAction::Hide(hidden) => Write::Hidden { ids, hidden },
+            TileAction::AddToAlbum(album) => Write::AlbumAdd { album, ids },
+            TileAction::RemoveFromAlbum(album) => Write::AlbumRemove { album, ids },
+            TileAction::RemoveFromPerson(person) => {
+                let key = format!("p:{person}");
+                let people = &self.held.collections().people;
+                let name = (people.iter().find(|person| person.key == key))
+                    .map_or(String::new(), |person| person.name.clone());
+                Write::PersonRemove { person, name, ids }
+            }
+            // What does not work yet takes no press, and so answers nothing.
+            TileAction::Reveal
+            | TileAction::OpenInApp
+            | TileAction::CopyPhoto
+            | TileAction::Compare
+            | TileAction::AddKeyword
+            | TileAction::RemoveKeyword
+            | TileAction::AddToPerson
+            | TileAction::Export => return,
+        };
+        self.writes.push(write);
+    }
+
+    /// What a key asked of the selection: the menu's item, without the menu - for the
+    /// photos that were selected at the key, which the ask carries. The frame's later
+    /// keys and clicks have been answered by now, and the selection is theirs.
+    fn ask(&mut self, asked: Asked) {
+        let action = match asked.ask {
+            // One key for the menu's two items: starred, the deciding photo has the
+            // whole selection unstarred; not, all of it is starred.
+            Ask::Star => {
+                let starred = (asked.deciding)
+                    .and_then(|id| self.entry(id))
+                    .is_some_and(|entry| entry.starred);
+                TileAction::Star(!starred)
+            }
+            Ask::Hide => TileAction::Hide(self.nav.settled().view != View::Hidden),
+        };
+        self.write(action, asked.ids);
     }
 
     /// The status bar's count of the photos shown, when there is one to give.
@@ -893,6 +1086,31 @@ impl App {
                     self.toasts.error(said, now_ms);
                 }
                 Ok(Err(Unwritten::TileSize { said })) => self.toasts.error(said, now_ms),
+                // A star the engine could not write - a folder whose INI is read-only -
+                // costs a message, and not the photos beside it.
+                Ok(Ok(Wrote::Stars {
+                    asked,
+                    done,
+                    starred,
+                })) => {
+                    if let Some(said) = tile_menu::stars_missed(asked, done, starred) {
+                        self.toasts.error(said, now_ms);
+                    }
+                }
+                Ok(Ok(Wrote::Grid)) => {}
+                Ok(Ok(Wrote::Lists)) => self.collecting.ask(()),
+                Ok(Ok(Wrote::Removed {
+                    name,
+                    removed,
+                    kept,
+                    asked,
+                })) => {
+                    // The lists are read again by the rebuild a write of the people
+                    // announces, as after any change of the library's data.
+                    let said = tile_menu::removed_message(&name, removed, kept, asked);
+                    self.toasts.done(said, now_ms);
+                }
+                Ok(Err(Unwritten::Said(said))) => self.toasts.error(said, now_ms),
                 Err(_) => self
                     .toasts
                     .error("photon could not store that change.", now_ms),
@@ -951,6 +1169,10 @@ impl App {
             if seen {
                 self.view.go_to(landed.at, Align::Nearest);
             }
+            // A menu open then was of the photo that left. Its items act on what is
+            // selected at the pick, which may now be the photo landed on: one nobody
+            // asked about.
+            self.menu = None;
         }
         // A folder clicked from an excursion: this is the grid it was to be looked up in.
         if let Some(folder) = shown.jump {
@@ -1016,6 +1238,13 @@ impl App {
 
     fn close(&mut self) {
         if !std::mem::replace(&mut self.closed, true) {
+            // What the user asked to be written is written before the engine goes: a
+            // star or a hide pressed in the instant before the window was closed was
+            // dropped with the queue, without a word. Not for ever - a write can hang,
+            // and the window has to close.
+            if !self.writes.finish(WRITES_PATIENCE) {
+                tracing::warn!("the window closed before every change was stored");
+            }
             self.engine.shutdown();
         }
     }
@@ -1038,6 +1267,9 @@ impl eframe::App for App {
                     _ => true,
                 });
             });
+            // Tab egui has read already, from the frame's raw input and before anything
+            // is drawn: it would walk the keyboard to the first widget that takes it.
+            ui.memory_mut(|memory| memory.move_focus(egui::FocusDirection::None));
         }
         let reported = self.take_events() || touched;
         let now = ui.input(|input| input.time) * 1000.0;
@@ -1060,6 +1292,27 @@ impl eframe::App for App {
         // A search typed, whose time has come.
         if let Some(query) = self.search.take_due(now) {
             self.search_for(query);
+        }
+
+        // The menu, before anything else is drawn: while it is open the keys are its
+        // own, and it takes them out of the frame before the search box, the sidebar
+        // or the grid can read them (`menu_view.rs`).
+        if self.selection.is_empty() {
+            // Nothing is selected any more - a grid of other results, or one that has
+            // lost the menu's photos and has none to land on: there is nothing for its
+            // items to act on.
+            self.menu = None;
+        }
+        if let Some(at) = self.menu {
+            let items = self.tile_items();
+            match self.menu_view.show(ui, at, &items) {
+                Outcome::Open => {}
+                Outcome::Closed => self.menu = None,
+                Outcome::Picked(action) => {
+                    self.menu = None;
+                    self.pick(action);
+                }
+            }
         }
 
         let data = GridData {
@@ -1130,6 +1383,25 @@ impl eframe::App for App {
         });
         for action in actions {
             self.act(action, now);
+        }
+        // What the grid's own input asked that is this side's to do.
+        let (menu, asked) = (output.as_ref()).map_or((None, Vec::new()), |output| {
+            (output.menu, output.asked.clone())
+        });
+        if let Some(at) = menu {
+            self.menu = Some(at);
+            self.menu_view.reset();
+            // The keys are the menu's from now on: whatever had the keyboard gives it
+            // up, or a text field would go on blinking its caret under the menu.
+            if let Some(focused) = ui.memory(|memory| memory.focused()) {
+                ui.memory_mut(|memory| memory.surrender_focus(focused));
+            }
+            // It is drawn first in a frame, and this one is drawn: the next one is
+            // its, and needs no asking for - a menu is opened by a button going down,
+            // and egui asks for another frame after any frame with input in it.
+        }
+        for ask in asked {
+            self.ask(ask);
         }
         // A typed search is sent in a frame of its own, which a still window would not
         // draw: asked for here, at every frame until it is sent, since a frame asked for
