@@ -132,6 +132,15 @@ pub const SHADOW_MENU: Shadow = Shadow {
     ink: rgba(0x00000040),
 };
 
+/// `--shadow-dialog`: what lies under a dialog, which stands further off the window
+/// than a menu does.
+pub const SHADOW_DIALOG: Shadow = Shadow {
+    x: 0.0,
+    y: 16.0,
+    blur: 48.0,
+    ink: rgba(0x00000059),
+};
+
 /// Corner radii, `--r-1` to `--r-4`.
 pub const R: [f32; 4] = [4.0, 6.0, 8.0, 12.0];
 /// Spacing, `--s-1` to `--s-6`.
@@ -217,17 +226,23 @@ mod tests {
                 .unwrap()
         };
         // A shadow is "x y blur colour".
-        let shadow: Vec<&str> = root["--shadow-menu"].split_whitespace().collect();
         let length = |text: &str| text.trim_end_matches("px").parse::<f32>().unwrap();
-        assert_eq!(
-            Shadow {
-                x: length(shadow[0]),
-                y: length(shadow[1]),
-                blur: length(shadow[2]),
-                ink: parse(shadow[3]),
-            },
-            SHADOW_MENU
-        );
+        for (name, held) in [
+            ("--shadow-menu", SHADOW_MENU),
+            ("--shadow-dialog", SHADOW_DIALOG),
+        ] {
+            let shadow: Vec<&str> = root[name].split_whitespace().collect();
+            assert_eq!(
+                Shadow {
+                    x: length(shadow[0]),
+                    y: length(shadow[1]),
+                    blur: length(shadow[2]),
+                    ink: parse(shadow[3]),
+                },
+                held,
+                "{name}"
+            );
+        }
         for (i, radius) in R.iter().enumerate() {
             assert_eq!(px(&format!("--r-{}", i + 1)), *radius);
         }

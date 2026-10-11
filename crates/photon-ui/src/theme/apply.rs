@@ -1,6 +1,6 @@
 //! The tokens onto egui: its visuals for each theme, and which theme is in force.
 
-use super::tokens::{DARK, LIGHT, Palette, Rgba, SHADOW_MENU};
+use super::tokens::{DARK, LIGHT, Palette, Rgba, SHADOW_DIALOG, SHADOW_MENU};
 use eframe::egui::{self, Color32, Theme, ThemePreference, epaint::Shadow};
 use photon_core::library::ThemeChoice;
 
@@ -15,6 +15,16 @@ pub fn menu_shadow() -> Shadow {
         blur: SHADOW_MENU.blur as u8,
         spread: 0,
         color: color(SHADOW_MENU.ink),
+    }
+}
+
+/// `--shadow-dialog`, as egui draws a shadow.
+pub fn dialog_shadow() -> Shadow {
+    Shadow {
+        offset: [SHADOW_DIALOG.x as i8, SHADOW_DIALOG.y as i8],
+        blur: SHADOW_DIALOG.blur as u8,
+        spread: 0,
+        color: color(SHADOW_DIALOG.ink),
     }
 }
 

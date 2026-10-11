@@ -117,12 +117,6 @@ fn an_album_is_renamed_in_its_row() {
     driver.act(&mut harness);
     right_click_row(&mut driver, &mut harness, "Lisbon");
     assert!(harness.state().menu_open());
-    // "Delete…" is in its place and takes no press: it asks first, and what it asks
-    // with is the next pull request's.
-    harness.get_by_label("Delete…").click();
-    driver.act(&mut harness);
-    assert!(harness.state().menu_open());
-    assert_eq!(album_names(harness.state()), ["Lisbon"]);
     pick_item(&mut driver, &mut harness, "Rename…");
     assert_eq!(
         harness.state().naming(),

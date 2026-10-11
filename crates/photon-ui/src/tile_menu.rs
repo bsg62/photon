@@ -39,15 +39,17 @@ pub enum TileAction {
 
 impl TileAction {
     /// Whether the item works yet. The others are in their place and take no press: what
-    /// they open is a later pull request's or sub-project's (the keyword picker, the
-    /// export, the viewer's compare and its dialog that names a face, the platform's file
-    /// manager and clipboard), and a menu that grew as they arrived would move every
-    /// item under a hand that had learnt where it was.
+    /// they open is a later pull request's or sub-project's (the export, the viewer's
+    /// compare and its dialog that names a face, the platform's file manager and
+    /// clipboard), and a menu that grew as they arrived would move every item under a
+    /// hand that had learnt where it was.
     pub fn works(&self) -> bool {
         matches!(
             self,
             Self::Star(_)
                 | Self::Hide(_)
+                | Self::AddKeyword
+                | Self::RemoveKeyword
                 | Self::RemoveFromPerson(_)
                 | Self::RemoveFromAlbum(_)
                 | Self::AddToAlbum(_)
@@ -442,8 +444,8 @@ mod tests {
                 "Star photo [.]",
                 "Hide photo [H]",
                 "---",
-                "Add keyword to photo… (off)",
-                "Remove keyword from photo… (off)",
+                "Add keyword to photo…",
+                "Remove keyword from photo…",
                 "---",
                 "Export photo… (off)",
                 "<Add to album>",
@@ -499,8 +501,8 @@ mod tests {
                 "Compare 3 photos [C] (off)",
                 "Hide 3 photos [H]",
                 "---",
-                "Add keyword to 3 photos… (off)",
-                "Remove keyword from 3 photos… (off)",
+                "Add keyword to 3 photos…",
+                "Remove keyword from 3 photos…",
                 "---",
                 "Export 3 photos… (off)",
                 "<Add to album>",
@@ -673,6 +675,8 @@ mod tests {
             TileAction::RemoveFromPerson(1),
             TileAction::RemoveFromAlbum(1),
             TileAction::AddToAlbum(1),
+            TileAction::AddKeyword,
+            TileAction::RemoveKeyword,
         ] {
             assert!(works.works(), "{works:?}");
         }
@@ -681,8 +685,6 @@ mod tests {
             TileAction::OpenInApp,
             TileAction::CopyPhoto,
             TileAction::Compare,
-            TileAction::AddKeyword,
-            TileAction::RemoveKeyword,
             TileAction::AddToPerson,
             TileAction::Export,
         ] {

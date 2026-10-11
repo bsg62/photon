@@ -1,6 +1,8 @@
 //! The application: the engine, the shell around the grid, and the order of a frame.
 
 use crate::{
+    dialog_view::{DialogView, Done},
+    dialogs::{Confirm, Dialog},
     dirs::Dirs,
     empty::{self, GridState, LibraryFacts, Panel, PanelButton},
     events::{Event, UiEvents},
@@ -27,6 +29,7 @@ use crate::{
         view::{Named, Naming},
     },
     status::Line,
+    tag_picker::{Mode, Submit, TagPicker},
     tasks::{Latest, Queue},
     theme,
     thumbs::{loader::Loader, shown::Thumbs, source::EngineThumbs},
@@ -93,6 +96,9 @@ pub struct App {
     menu_view: MenuView,
     /// The name being typed in the sidebar.
     rename: Rename,
+    /// The dialog that is open: one at a time, over the whole window.
+    dialog: Option<Dialog>,
+    dialog_view: DialogView,
     /// A step made answers where it led, and with it what the engine said when it made
     /// the step and could not finish the rest of it (a sort shown and not stored).
     steps: Queue<Step, Result<(Landed, Option<String>), String>>,
@@ -237,6 +243,16 @@ enum Write {
     Rescan {
         watched: i64,
     },
+    /// An album of the user's own deleted: its photos stay.
+    AlbumDelete {
+        album: i64,
+    },
+    SearchDelete {
+        search: i64,
+    },
+    /// A keyword added to photos, or taken off them, in the library: keywords are read
+    /// from the photos and never written to them.
+    Tag(Submit),
 }
 
 /// A write that was made.
@@ -270,6 +286,18 @@ enum Wrote {
     /// is read again, and the field that sent a name, if one did, closes.
     Folder {
         sent: Option<u64>,
+    },
+    /// An album deleted: the lists are read again, and a grid that showed it is left.
+    AlbumDeleted {
+        album: i64,
+    },
+    /// A keyword written: which way, under which name the library stored it, and how
+    /// many of the photos asked for it reached.
+    Tagged {
+        mode: Mode,
+        stored: String,
+        done: usize,
+        asked: usize,
     },
 }
 
@@ -503,6 +531,28 @@ impl App {
                     Write::Rescan { watched } => commands::rescan_folder(&engine, watched)
                         .map(|()| Wrote::Grid)
                         .map_err(|err| Unwritten::Said(err.message)),
+                    Write::AlbumDelete { album } => commands::delete_album(&engine, album)
+                        .map(|()| Wrote::AlbumDeleted { album })
+                        .map_err(|err| Unwritten::Said(err.message)),
+                    Write::SearchDelete { search } => {
+                        commands::delete_saved_search(&engine, search)
+                            .map(|()| Wrote::Lists)
+                            .map_err(|err| Unwritten::Said(err.message))
+                    }
+                    Write::Tag(Submit { mode, tag, ids }) => {
+                        let written = match mode {
+                            Mode::Add => commands::add_items_tag(&engine, &ids, &tag),
+                            Mode::Remove => commands::remove_items_tag(&engine, &ids, &tag),
+                        };
+                        written
+                            .map(|written| Wrote::Tagged {
+                                mode,
+                                stored: written.tag,
+                                done: written.count,
+                                asked: ids.len(),
+                            })
+                            .map_err(|err| Unwritten::Said(err.message))
+                    }
                 }
             },
             repaint(&ctx),
@@ -606,6 +656,8 @@ impl App {
             menu: None,
             menu_view: MenuView::default(),
             rename: Rename::default(),
+            dialog: None,
+            dialog_view: DialogView::default(),
             steps,
             search: SearchBox::default(),
             writes,
@@ -844,6 +896,20 @@ impl App {
         }
     }
 
+    /// The dialog that is open.
+    pub fn dialog(&self) -> Option<&Dialog> {
+        self.dialog.as_ref()
+    }
+
+    /// Opens `dialog`, over everything. It is opened from a menu's item, and the pick
+    /// has closed that menu; the press that opened the menu stored any name half typed
+    /// in the sidebar. A way in that is neither closes the one and stores the other
+    /// itself.
+    fn open_dialog(&mut self, dialog: Dialog) {
+        self.dialog = Some(dialog);
+        self.dialog_view.reset();
+    }
+
     /// Opens the menu of `of` at `at`, in the place of any that was open.
     fn open_menu(&mut self, ctx: &egui::Context, at: egui::Pos2, of: MenuOf) {
         self.menu = Some(Open { at, of });
@@ -899,10 +965,65 @@ impl App {
             SideAction::Rescan { watched } => {
                 self.writes.push(Write::Rescan { watched });
             }
+            // "Delete…" asks first: under the name the thing has now, which is the name
+            // the question is read with, whatever it is called by the time it is
+            // answered.
+            SideAction::DeleteAlbum(id) => {
+                if let Some(album) = collections.albums.iter().find(|album| album.id == id) {
+                    let name = album.name.clone();
+                    self.open_dialog(Dialog::Confirm(Confirm::Album { id, name }));
+                }
+            }
+            SideAction::DeleteSearch(id) => {
+                if let Some(search) = collections.searches.iter().find(|search| search.id == id) {
+                    let name = search.name.clone();
+                    self.open_dialog(Dialog::Confirm(Confirm::Search { id, name }));
+                }
+            }
             // What does not work yet takes no press, and so answers nothing.
-            SideAction::DeleteAlbum(_)
-            | SideAction::DeleteSearch(_)
-            | SideAction::RevealFolder(_) => {}
+            SideAction::RevealFolder(_) => {}
+        }
+    }
+
+    /// Draws the dialog that is open and does what was answered in it.
+    fn show_dialog(&mut self, ui: &egui::Ui) {
+        let Some(dialog) = &self.dialog else {
+            return;
+        };
+        // The library's keywords, as the sidebar holds them and in its order.
+        let keywords: Vec<String> = match dialog {
+            Dialog::Tags(_) => (self.held.collections().tags.iter())
+                .map(|tag| tag.tag.clone())
+                .collect(),
+            Dialog::Confirm(_) => Vec::new(),
+        };
+        let done = self.dialog_view.show(ui, dialog, &keywords);
+        match (done, &mut self.dialog) {
+            (Done::Open, _) => {}
+            (Done::Closed, _) => self.dialog = None,
+            (Done::Typed(text), Some(Dialog::Tags(picker))) => picker.type_in(text),
+            // Closed before its write, which is the user's last word on it: left up
+            // until the library answers, it reads as a click that did nothing. A blank
+            // name writes nothing and leaves the dialog as it is.
+            (Done::Submit { tag, typed }, Some(Dialog::Tags(picker))) => {
+                if let Some(text) = typed {
+                    picker.type_in(text);
+                }
+                if let Some(submit) = picker.submit(tag.as_deref()) {
+                    self.dialog = None;
+                    self.writes.push(Write::Tag(submit));
+                }
+            }
+            (Done::Confirmed, Some(Dialog::Confirm(confirm))) => {
+                let write = match confirm {
+                    Confirm::Album { id, .. } => Write::AlbumDelete { album: *id },
+                    Confirm::Search { id, .. } => Write::SearchDelete { search: *id },
+                };
+                self.dialog = None;
+                self.writes.push(write);
+            }
+            // What the other kind of dialog answers: neither draws it.
+            (Done::Typed(_) | Done::Submit { .. }, _) | (Done::Confirmed, _) => {}
         }
     }
 
@@ -959,7 +1080,19 @@ impl App {
     /// in its turn off this thread; the grid is told nothing, its rebuild arrives like
     /// any other, and `Selection::follow` takes out what left and lands the lead.
     fn pick(&mut self, action: TileAction) {
-        self.write(action, self.selection.ids(&self.index));
+        let ids = self.selection.ids(&self.index);
+        // The keyword picker is a dialog, and takes its photos as it opens: the
+        // selection behind it can change while it is up, and its title has said how
+        // many photos it writes to.
+        let mode = match action {
+            TileAction::AddKeyword => Some(Mode::Add),
+            TileAction::RemoveKeyword => Some(Mode::Remove),
+            _ => None,
+        };
+        match mode {
+            Some(mode) => self.open_dialog(Dialog::Tags(TagPicker::new(mode, ids))),
+            None => self.write(action, ids),
+        }
     }
 
     /// Queues what `action` writes, for the photos `ids`.
@@ -981,6 +1114,7 @@ impl App {
             | TileAction::OpenInApp
             | TileAction::CopyPhoto
             | TileAction::Compare
+            // (Opened by `pick`, as a dialog.)
             | TileAction::AddKeyword
             | TileAction::RemoveKeyword
             | TileAction::AddToPerson
@@ -1389,6 +1523,26 @@ impl App {
                     }
                     self.folder_list.ask(());
                 }
+                Ok(Ok(Wrote::AlbumDeleted { album })) => {
+                    self.collecting.ask(());
+                    // The album on screen, or on its way there: the engine has emptied
+                    // its grid, and All photos is the place to land.
+                    let shown = Place {
+                        view: View::Album,
+                        arg: album.to_string(),
+                    };
+                    if self.nav.target() == shown {
+                        self.go(Step::View(View::All));
+                    }
+                }
+                Ok(Ok(Wrote::Tagged {
+                    mode,
+                    stored,
+                    done,
+                    asked,
+                })) => {
+                    self.toasts.done(mode.written(&stored, done, asked), now_ms);
+                }
                 Ok(Err(Unwritten::Name { sent, said })) => {
                     self.rename.refused(sent);
                     self.toasts.error(said, now_ms);
@@ -1578,6 +1732,10 @@ impl eframe::App for App {
         if let Some(query) = self.search.take_due(now) {
             self.search_for(query);
         }
+
+        // A dialog, before anything else is drawn: nothing behind it reads a key, and it
+        // takes them out of the frame when it has read its own (`dialog_view.rs`).
+        self.show_dialog(ui);
 
         // The menu, before anything else is drawn: while it is open the keys are its
         // own, and it takes them out of the frame before the search box, the sidebar

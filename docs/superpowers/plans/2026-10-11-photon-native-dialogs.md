@@ -167,3 +167,37 @@ their answers.
 - [ ] Pictures: the confirmation; the keyword picker with a few keywords and a draft;
   light and dark.
 - [ ] The smoke checklist; CLAUDE.md; push; one fresh reviewer; one fix pass; merge.
+
+## Changed in the making
+
+- **The picker's submit carries what was typed in the same frame** (`Done::Submit` has
+  the field's text beside the row): Enter is read before the field is drawn, which is
+  before the field has taken a letter that arrived with it. Found while the probes were
+  being written, and the sidebar's rename field had the same fault: it is fixed there in
+  the fourth pull request's fix pass.
+- **`Mode` has the words** (`title`, `placeholder`, `field`, `button`, `written`), not
+  free functions beside the picker: they are all "which way does it write".
+- **The list is egui's `ScrollArea`**, where the menu and the sidebar keep a position of
+  their own: a dialog's list is short, and nothing has to bring a row of it into sight.
+- **Opening a dialog closes no menu and stores no name itself**: a dialog is opened from
+  a menu's item, the pick has closed the menu, and the press that opened the menu had
+  stored any name half typed in the sidebar. Both lines were written and both probes
+  passed with them out; a way in that is not a menu's item will need them back.
+- **The picker's field has a history of its own** (a fresh `TextEditState` when a dialog
+  opens): the field has one id for every picker, egui keeps undo by id, and Ctrl+Z in a
+  new picker brought back the keyword typed in the last. The sidebar's rename field had
+  the same fault, found by its review.
+- **A held Enter or Space presses nothing in a dialog.** The fourth pull request's
+  review found the Enter that picked "Rename…" storing the field at its repeat; asked
+  of the dialogs, the Enter that picked "Delete…" pressed "Cancel" at its repeat, egui
+  pressing a focused button at every Enter. Repeats of the two are taken out of the
+  frame before the dialog is drawn.
+- **A key in the frame of the Escape that closes a dialog goes with it**: the dialog
+  answered Escape before it cleared the frame's keys.
+
+**Probes**: sixty-five rules broken in turn, each with the test that was to fail. Three
+passed at first. Two were the lines above that did nothing (a menu closed and a name
+stored when a dialog opens), and went. One was a test that could not see its rule: no
+test opened a second dialog and typed in it, so the view forgetting that the first had
+been given the keyboard (`DialogView::reset`) could be taken out; the keyword test now
+types in its second picker.

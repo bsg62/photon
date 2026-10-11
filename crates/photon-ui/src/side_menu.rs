@@ -33,15 +33,11 @@ pub enum SideAction {
 }
 
 impl SideAction {
-    /// Whether the item works yet. "Delete…" asks first, and what it asks with is the
-    /// dialog layer's, the next pull request's; the file manager is the platform's, a
-    /// later sub-project's. Both are in their place and take no press, so that nothing
-    /// moves under a hand that has learnt where it is when they start to work.
+    /// Whether the item works yet. The file manager is the platform's, a later
+    /// sub-project's: its item is in its place and takes no press, so that nothing
+    /// moves under a hand that has learnt where it is when it starts to work.
     pub fn works(&self) -> bool {
-        !matches!(
-            self,
-            Self::DeleteAlbum(_) | Self::DeleteSearch(_) | Self::RevealFolder(_)
-        )
+        !matches!(self, Self::RevealFolder(_))
     }
 }
 
@@ -180,16 +176,15 @@ mod tests {
         }
     }
 
-    // "Delete…" is in its place, dangerous and not yet working: it asks first, and the
-    // dialog it asks with is the next pull request's.
+    // "Delete…" is the dangerous one: it asks before it acts.
     #[test]
-    fn an_album_and_a_saved_search_are_renamed_and_not_yet_deleted() {
+    fn an_album_and_a_saved_search_are_renamed_and_deleted() {
         let album = album_menu(4);
-        assert_eq!(lines(&album), ["Rename…", "!Delete… (off)"]);
+        assert_eq!(lines(&album), ["Rename…", "!Delete…"]);
         assert_eq!(does(&album, "Rename…"), SideAction::RenameAlbum(4));
         assert_eq!(does(&album, "Delete…"), SideAction::DeleteAlbum(4));
         let search = search_menu(4);
-        assert_eq!(lines(&search), ["Rename…", "!Delete… (off)"]);
+        assert_eq!(lines(&search), ["Rename…", "!Delete…"]);
         assert_eq!(does(&search, "Rename…"), SideAction::RenameSearch(4));
         assert_eq!(does(&search, "Delete…"), SideAction::DeleteSearch(4));
     }
@@ -272,15 +267,11 @@ mod tests {
     }
 
     #[test]
-    fn what_asks_first_and_what_is_the_platforms_does_not_work_yet() {
+    fn what_is_the_platforms_does_not_work_yet() {
+        assert!(!SideAction::RevealFolder(1).works());
         for action in [
             SideAction::DeleteAlbum(1),
             SideAction::DeleteSearch(1),
-            SideAction::RevealFolder(1),
-        ] {
-            assert!(!action.works(), "{action:?}");
-        }
-        for action in [
             SideAction::RenameAlbum(1),
             SideAction::RenameSearch(1),
             SideAction::Rescan { watched: 1 },

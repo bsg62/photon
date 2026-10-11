@@ -9,6 +9,8 @@ pub mod app;
 pub mod args;
 pub mod controls;
 pub mod controls_bar;
+pub mod dialog_view;
+pub mod dialogs;
 pub mod dirs;
 pub mod empty;
 pub mod empty_panel;
@@ -47,6 +49,7 @@ pub mod sidebar {
     pub mod rows;
     pub mod view;
 }
+pub mod tag_picker;
 pub mod tasks;
 pub mod text;
 pub mod theme {
@@ -67,11 +70,12 @@ pub mod window_layout;
 #[cfg(test)]
 mod tests {
     /// The state modules, with their source.
-    const STATE_MODULES: [(&str, &str); 31] = [
+    const STATE_MODULES: [(&str, &str); 33] = [
         ("args.rs", include_str!("args.rs")),
         ("controls.rs", include_str!("controls.rs")),
         ("scans.rs", include_str!("scans.rs")),
         ("status.rs", include_str!("status.rs")),
+        ("dialogs.rs", include_str!("dialogs.rs")),
         ("dirs.rs", include_str!("dirs.rs")),
         ("empty.rs", include_str!("empty.rs")),
         ("menu.rs", include_str!("menu.rs")),
@@ -85,6 +89,7 @@ mod tests {
         ("sidebar/folders.rs", include_str!("sidebar/folders.rs")),
         ("sidebar/list.rs", include_str!("sidebar/list.rs")),
         ("sidebar/rows.rs", include_str!("sidebar/rows.rs")),
+        ("tag_picker.rs", include_str!("tag_picker.rs")),
         ("tasks.rs", include_str!("tasks.rs")),
         ("theme/tokens.rs", include_str!("theme/tokens.rs")),
         ("grid/labels.rs", include_str!("grid/labels.rs")),

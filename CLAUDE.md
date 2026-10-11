@@ -1933,6 +1933,49 @@ application, is the test). Also: Enter and Escape are read and taken out of the 
 in the frame is the grid's next); a press elsewhere stores at the press, by the view's
 own rule; an empty field draws its placeholder in the frame it is first typed in.
 
+**A dialog is `dialogs.rs`, `dialog_view.rs` and the application that holds it**
+(`App::dialog`): one at a time, over the whole window - the question asked before an
+album or a saved search is deleted (`Confirm`), and the keyword picker (`tag_picker.rs`,
+`createTagPicker`). **What a dialog acts on is taken when it opens**: the album or search
+of the question, under the name it had; the photos of the picker. A menu's rule is the
+opposite, and on purpose - a menu's items are built again in every frame and say what
+they would act on now, while a dialog's words were read once, and what the user was told
+it would act on is what it acts on (a scan can take a photo out of the selection behind
+an open dialog; the keyword is written to the three its title named). The picker closes
+*before* its write, which is the user's last word on it, and the message afterwards is
+the library's own count and the name it stored, which a rename rule can change.
+
+It is drawn in egui's `Modal`, read from the pinned source: an area in front of
+everything with a ground over the whole window, and from the frame after it is first
+shown nothing under it is pressed, hovered or given the keyboard - Tab stays inside it -
+and `layer_id_at` answers the dialog's layer wherever it is asked, which is the question
+the grid and the sidebar ask of a press. **What `Modal` does not keep from what lies
+behind is the keys**: the grid, the search box and the shell read them from the frame's
+events and not through a widget. So the dialog is shown before anything else in the
+frame, as a menu is, and when it has read its keys every key press and everything typed
+is taken out of the frame's input. Escape closes it (read first, and taken), and so does
+a press on the scrim - the press, as a menu closes. The question opens with the keyboard
+on "Cancel", so an Enter that came with the dialog deletes nothing. `Modal`'s area fades
+in like any new area, each frame of it asked for: `fade_in(false)`.
+
+**A letter and the Enter after it can arrive in one frame**, when a frame is long: the
+field's Enter is read before the field is drawn (egui's field gives the keyboard up at
+Enter), which is before the field has taken the letter. The picker's submit carries what
+the field holds after the frame's typing (`Done::Submit::typed`), and the sidebar's field
+says what was typed before it says the name is to be stored - without it "Porto" and
+Enter in one frame renamed an album to what it was already called.
+
+**Three more things about a dialog's keys, each found by asking of the dialogs what a
+review had asked of the sidebar's field.** *A key held when a dialog opens presses
+nothing in it*: egui presses the button the keyboard is on at every Enter and Space,
+repeats among them, so the Enter that picked "Delete…" in a menu, held a moment longer,
+pressed "Cancel" on the question it had just asked; the dialog takes repeats of the two
+out of the frame before it draws. *A key in the frame of the Escape that closes a dialog
+is taken out with it*: the dialog returned at Escape before it had cleared the frame,
+and an `h` behind the Escape was the grid's. *The picker's field opens with a history of
+its own* (a fresh `TextEditState`): it has one id for every picker, egui keeps a field's
+undo by id, and Ctrl+Z in a new picker brought back the keyword typed in the last.
+
 **A star is tested in a library of real files** (`tests/menu.rs`, `pictures`,
 `over_files`): the folder's `.picasa.ini` is read back, and every write goes into a
 temporary directory the test made. A fixture's folders are on a drive that is not there,
