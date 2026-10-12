@@ -72,6 +72,28 @@ fn library(pictures: &Path) {
 
 type Harness<'a> = egui_kittest::Harness<'a, App>;
 
+/// Held while a picture's GPU device is made. Every picture is drawn on a thread of its
+/// own, and the Vulkan loader is not safe to enter from many at once: with two dozen
+/// devices being made in the same moment the run crashed inside the loader
+/// (`vkEnumerateInstanceExtensionProperties`, a jump to nought) about once in four. One
+/// device is made at a time; the pictures are drawn side by side all the same.
+static DEVICES: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// A window of the pictures' size that renders through a GPU adapter, off screen.
+fn window(theme: Option<egui::Theme>) -> egui_kittest::HarnessBuilder<App> {
+    let builder = egui_kittest::Harness::builder()
+        .with_size(vec2(1280.0, 1000.0))
+        .with_pixels_per_point(1.0);
+    let builder = match theme {
+        Some(theme) => builder.with_theme(theme),
+        None => builder,
+    };
+    let _one_at_a_time = DEVICES
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    builder.wgpu()
+}
+
 /// Steps the application until `shown`, giving its other threads the time they take.
 fn until(harness: &mut Harness<'_>, what: &str, shown: impl Fn(&App) -> bool) {
     let deadline = Instant::now() + Duration::from_secs(120);
@@ -127,12 +149,8 @@ fn shot(theme: ThemeChoice, name: &str, then: impl Fn(&mut Harness<'_>)) {
         ThemeChoice::Dark | ThemeChoice::System => egui::Theme::Dark,
     };
 
-    let mut harness = egui_kittest::Harness::builder()
-        .with_size(vec2(1280.0, 1000.0))
-        .with_pixels_per_point(1.0)
-        .with_theme(harness_theme)
-        .wgpu()
-        .build_eframe(|cc| App::new(cc, dirs, Some(pictures)).unwrap());
+    let mut harness =
+        window(Some(harness_theme)).build_eframe(|cc| App::new(cc, dirs, Some(pictures)).unwrap());
 
     let total: usize = FOLDERS.iter().map(|(_, count, _)| count).sum();
     until(&mut harness, "the library shown", |app| {
@@ -693,12 +711,8 @@ fn native_empty_library_light() {
         .unwrap()
         .set_theme(ThemeChoice::Light)
         .unwrap();
-    let mut harness = egui_kittest::Harness::builder()
-        .with_size(vec2(1280.0, 1000.0))
-        .with_pixels_per_point(1.0)
-        .with_theme(egui::Theme::Light)
-        .wgpu()
-        .build_eframe(|cc| App::new(cc, dirs, None).unwrap());
+    let mut harness =
+        window(Some(egui::Theme::Light)).build_eframe(|cc| App::new(cc, dirs, None).unwrap());
     until(&mut harness, "the empty library's panel", |app| {
         app.panel().is_some()
     });
@@ -762,11 +776,7 @@ fn native_viewer_quality() {
     std::fs::create_dir_all(&pictures).unwrap();
     plate.save(pictures.join("plate.png")).unwrap();
     let dirs = dirs::within(&dir.path().join("data"), &dir.path().join("cache"));
-    let mut harness = egui_kittest::Harness::builder()
-        .with_size(vec2(1280.0, 1000.0))
-        .with_pixels_per_point(1.0)
-        .wgpu()
-        .build_eframe(|cc| App::new(cc, dirs, Some(pictures)).unwrap());
+    let mut harness = window(None).build_eframe(|cc| App::new(cc, dirs, Some(pictures)).unwrap());
     harness.input_mut().max_texture_side = Some(8192);
     until(&mut harness, "the photo shown", |app| {
         app.photos() == 1 && app.last_frame().is_some_and(|frame| frame.settled)
