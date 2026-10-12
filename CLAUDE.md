@@ -2209,6 +2209,67 @@ which can close and open again on the same photo meanwhile. **A viewer closed ho
 texture**: its previews are let go of with it (`Thumbs::clear`), which nothing else did
 but their store's own limit of ninety-six megabytes.
 
+**The zoom and the pan are the viewer's state, and the arithmetic is `nav.ts`'s**
+(`viewer_zoom.rs`: `zoom_at`, `clamp_pan`, `actual_size_zoom`, `wheel_zoom_factor`, with
+that file's tests' cases; `Viewer::zoom`). A point `q` of the fitted photo, measured from
+the middle of the photo's area, is drawn at `pan + zoom * q`: everything is measured from
+that middle, not the window's, which is another place once the info panel stands beside
+the photo. The fit again at a step and at another picture of the same photo
+(`Viewer::land`, `took`), in the state module, so that nothing in the application has to
+remember to; kept at a star, a new grid, a photo leaving the view. The view is handed
+the zoom to change (`ViewerView::show(.., &mut Zoom)`, a copy the application writes
+back before it acts on the frame's steps). **What zooms**: `+` `=` `-` `0` about the
+middle; the wheel with Ctrl or Cmd, a fifth a notch, at the pointer - read from the
+wheel's own event, a line taken for a hundred of a web view's pixels, because egui's
+`zoom_delta` is the same turn scaled by its scroll speed, which is the grid's and
+another on every system; a pinch where the system reports one (`Event::Zoom`, a Mac's
+trackpad); the slider, which leaves the pan where it may stay; a double click, to the
+photo's own pixels and back. **"Its own pixels" are what the library says the photo
+has**, turned as it is seen, whether or not the full picture has landed - a double click
+a moment after a step goes where one a second later does (the first version went by
+the largest level on hand, and to twice until there was one); until the library has
+answered, the largest level. At that zoom the level stands on whole pixels (`picture`'s
+`own`): half a pixel off them is the linear filter's blur over the whole photo, at the
+one zoom a photo is checked for sharpness at. The fitted copy is drawn at fit and at no
+zoom, which is said in so many words (`zoom.is_fit()`): a zoom can be the copy's size
+too, a hair over the fit or twice in a window half as wide as the copy was made for.
+**The fit is asked as a question, and a float's error over it is the fit**
+(`clamp_zoom`, `FIT_WITHIN`): a fifth out and a fifth back a few times over ends at
+1.0000001 in single precision, where `nav.ts`'s doubles end at one, and everything that
+asks "is it zoomed" then said yes - a hand over a photo that cannot move, and a double
+click "back to the whole photo" with nothing seen to happen. **A press on the photo is
+read from the button's own events**, as the grid's band is (`Press`): a click when it
+comes up within a click's distance of where it went down and never went further; a pan
+while it is held, at once and not after a threshold, **if the photo was zoomed when the
+button went down** - a press on a fitted photo is no drag and does not become one when
+the photo is zoomed under it, or the photo is thrown by all the pointer moved while
+there was nothing to move; and a double click from two such clicks in egui's time and
+distance. Its endings are the band's: the button up, the window left
+(`WindowFocused(false)`), a touch cancelled; the pan stays where the drag had brought
+it, and the slider's drag ends with it (`let_go`: it goes through egui's press, which
+knows no such ending). Where nothing zooms any more - a video stepped to under a held
+button - the press and the first click of a double click are over. A zoom made during
+a drag moves the drag's origin along (`Zoom::to` answers how far the pan moved), or the
+pointer's next move puts the pan back. **The photo has a surface widget under the
+controls** (`viewer-photo`): with something there to be hit egui hands no near miss to
+a button, a press is the photo's when it is on no control's rectangle - the photo's own
+caption among them - and under nothing that lies over the viewer (`layer_id_at`: a
+message's button), and one place decides. No zoom for a video, nor where something is
+said in the picture's place; the slider is not drawn for a video, and answers the first
+button alone. The hand is closed while the photo is held, wherever the pointer goes
+with it. **A zoom's key pressed after an arrow in one frame is lost**: the view changes
+the zoom of the photo the frame began on, and the step, acted on after the frame, puts
+the next one back to the fit - a frame long enough to hold both costs a second press.
+**Ctrl with `+`, `-` and `0` scales nothing** (`zoom_with_keyboard` off): egui would
+zoom the whole window by them, as a web view zooms its page, which the Tauri photon has
+switched off.
+
+**A picture test makes its GPU device alone** (`tests/screenshots.rs`, `DEVICES`): every
+picture is drawn on a thread of its own, and with two dozen devices made in the same
+moment `native-shot` crashed inside the Vulkan loader about once in four runs
+(`vkEnumerateInstanceExtensionProperties`, read from the core dump). Making them one at
+a time ended it; the pictures are still drawn side by side.
+
 **A star is tested in a library of real files** (`tests/menu.rs`, `pictures`,
 `over_files`): the folder's `.picasa.ini` is read back, and every write goes into a
 temporary directory the test made. A fixture's folders are on a drive that is not there,
@@ -2219,7 +2280,11 @@ then `name_items`).
 
 **Tests of the whole application drive it through `tests/common`'s `Driver`**: `until`
 draws the frames that are asked for, `settle` waits in real time for the other threads,
-`frames_in` counts what a stretch of the clock draws. **A wait asks for what is said,
+`frames_in` counts what a stretch of the clock draws. **A sidebar row is clicked once it
+is drawn** (`common::click`, `Driver::seen`): Hidden and Starred are there only while
+the library holds something of their kind, which the counts say a moment after the
+grid, and a test that clicked "Hidden" straight after the grid found no such row on
+Windows' CI. **A wait asks for what is said,
 never for how many messages stand**: when nothing has answered for a quarter of a second
 of real time `until` lets the clock go on to the next frame asked for, which is the end
 of a message's time, and a test that waited for "two messages" behind a slow write then

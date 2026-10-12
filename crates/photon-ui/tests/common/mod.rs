@@ -151,6 +151,25 @@ impl Driver {
         }
     }
 
+    /// Draws the frames that are asked for until something called `label` is drawn. A
+    /// row of the sidebar that is there only while the library holds something of its
+    /// kind - Hidden, Starred - comes with the counts, which are read off the UI thread
+    /// a moment after the grid: pressed at once, it was not there yet on Windows' CI.
+    pub fn seen(&mut self, harness: &mut Harness<'_>, label: &str) {
+        let deadline = Instant::now() + PATIENCE;
+        let mut idle = Instant::now();
+        while harness.query_by_label(label).is_none() {
+            assert!(Instant::now() < deadline, "never drawn: {label}");
+            match self.due() {
+                Some(asked) if asked - self.now <= 0.1 || idle.elapsed() > QUIET => {
+                    self.frame(harness, asked.max(self.now + REFRESH));
+                    idle = Instant::now();
+                }
+                _ => std::thread::sleep(Duration::from_millis(1)),
+            }
+        }
+    }
+
     /// Waits, drawing nothing, until no other thread has asked for a frame for a while:
     /// for what the engine and the tasks do with something the window is not to hear of
     /// yet.
@@ -228,8 +247,10 @@ pub fn launch<'a>(library: &fixture::Fixture) -> Harness<'a> {
         .build_eframe(move |cc| App::new(cc, dirs, None).unwrap())
 }
 
-/// Clicks the sidebar row called `label`, and draws the frame the click is in.
+/// Clicks the sidebar row called `label`, once it is drawn, and draws the frame the
+/// click is in.
 pub fn click(driver: &mut Driver, harness: &mut Harness<'_>, label: &str) {
+    driver.seen(harness, label);
     harness.get_by_label(label).click();
     driver.act(harness);
 }

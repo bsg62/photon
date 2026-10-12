@@ -442,6 +442,10 @@ impl App {
             folder_drop::can_arrive(cc.window_handle().map(|window| window.as_raw()))
         };
         theme::apply::install(&ctx);
+        // Ctrl with `+`, `-` and `0` scales nothing: egui would zoom the whole window by
+        // them unless told, as a web view zooms its page - which the Tauri photon has
+        // switched off, and which stands a slip of the hand from the viewer's own keys.
+        ctx.options_mut(|options| options.zoom_with_keyboard = false);
         // A notch of the wheel as far as the web view of this system moved it: said to
         // egui in every frame (`ui`), a page being a page of what is in view then.
         let notch = system_wheel();
@@ -1708,11 +1712,21 @@ impl App {
             photo_caption: photo_caption.as_deref(),
             // (Nothing is known of a photo that is gone: its facts went with it.)
             starred: open.item.as_ref().map(|item| item.starred),
+            // As it is seen: turned by its orientation, and by its edit.
+            width: (open.item.as_ref()).map_or(0, |item| {
+                viewer_caption::oriented(item.width, item.height, item.orientation).0
+            }),
+            video: open.viewer.is_video(),
             can_prev: open.viewer.can_step(-1, len),
             can_next: open.viewer.can_step(1, len),
         };
-        let actions = self.viewer_view.show(ui, &data);
+        // The zoom is the view's to change in this frame, and the viewer's to keep:
+        // before what was done in the frame is acted on, since a step puts it back to
+        // the fit.
+        let mut zoom = *open.viewer.zoom();
+        let actions = self.viewer_view.show(ui, &data, &mut zoom);
         drop(levels);
+        *open.viewer.zoom_mut() = zoom;
 
         // The messages lie over the viewer as over the grid: a star the folder would
         // not take is said here too.

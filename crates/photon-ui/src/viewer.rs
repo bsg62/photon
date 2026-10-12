@@ -9,6 +9,7 @@
 //! by an offset. `createLoadSlot`, `rebind`, `renumbered` and `detailsSeq` - each there to
 //! tell a renumbering from a step across a round trip - are not ported.
 
+use crate::viewer_zoom::Zoom;
 use photon_core::{grid::GridIndex, media::MediaKind};
 
 /// How long the viewer must rest on a photo reached by hand before its full picture is
@@ -109,6 +110,9 @@ pub struct Viewer {
     /// When the viewer came to this photo by a step, on the frame's clock; none for the
     /// photo it opened on and for one made again in place.
     stepped_at: Option<f64>,
+    /// How the photo is zoomed and panned. The fit again on another photo, and on
+    /// another picture of this one: what was looked at closely is not there any more.
+    zoom: Zoom,
 }
 
 impl Viewer {
@@ -125,6 +129,7 @@ impl Viewer {
             held: Held::Here,
             again: 0,
             stepped_at: None,
+            zoom: Zoom::default(),
         })
     }
 
@@ -159,6 +164,16 @@ impl Viewer {
     /// The photo has left the library.
     pub fn gone(&self) -> bool {
         self.held == Held::Gone
+    }
+
+    /// How the photo is zoomed and panned.
+    pub fn zoom(&self) -> &Zoom {
+        &self.zoom
+    }
+
+    /// The same, for the view to change.
+    pub fn zoom_mut(&mut self) -> &mut Zoom {
+        &mut self.zoom
     }
 
     /// The picture to make.
@@ -223,6 +238,7 @@ impl Viewer {
             held: Held::Here,
             again: 0,
             stepped_at: Some(now),
+            zoom: Zoom::default(),
         };
         true
     }
@@ -271,6 +287,7 @@ impl Viewer {
             }
             // Made again in place: nothing is being stepped past.
             self.stepped_at = None;
+            self.zoom = Zoom::default();
         }
         self.key = fresh.key;
         self.shown = Some(fresh);
@@ -532,6 +549,47 @@ mod tests {
         viewer.follow(&grid);
         assert!(!viewer.gone() && !viewer.orphaned());
         assert_eq!(viewer.hand_back(&grid), (1, Some(2)));
+    }
+
+    // A photo looked at closely is the fit again on the next photo and when it is another
+    // picture - turned from elsewhere, say: the place that was zoomed into is not there.
+    // Nothing else puts it back: not a star, not a new grid, not leaving the view.
+    #[test]
+    fn the_zoom_is_the_fit_again_on_another_photo_and_another_picture_and_on_nothing_else() {
+        use crate::viewer_zoom::Pan;
+        let grid = folders(&[&[1, 2, 3]]);
+        let area = (800.0, 600.0);
+        let zoomed = |viewer: &mut Viewer| {
+            viewer.zoom_mut().to(2.0, Pan { x: 100.0, y: 0.0 }, area);
+            *viewer.zoom()
+        };
+        let mut viewer = Viewer::open(2, &grid).unwrap();
+        assert!(viewer.zoom().is_fit());
+        let was = zoomed(&mut viewer);
+        assert!(!was.is_fit());
+        // What the library says, the first time and again the same; a new grid; the
+        // photo gone from the view.
+        viewer.took(2, shown(20));
+        viewer.took(2, shown(20));
+        viewer.follow(&folders(&[&[9, 1, 2, 3]]));
+        viewer.follow(&folders(&[&[1, 3]]));
+        viewer.lost(2, true);
+        assert_eq!(*viewer.zoom(), was);
+        // Another picture of it.
+        viewer.took(2, shown(21));
+        assert!(viewer.zoom().is_fit());
+        // Another photo: a step, and Home.
+        let mut viewer = Viewer::open(2, &grid).unwrap();
+        zoomed(&mut viewer);
+        assert!(viewer.step(1, &grid, 0.0));
+        assert!(viewer.zoom().is_fit());
+        zoomed(&mut viewer);
+        assert!(viewer.go_to(0, &grid, 0.0));
+        assert!(viewer.zoom().is_fit());
+        // A step that leads nowhere leaves it.
+        let was = zoomed(&mut viewer);
+        assert!(!viewer.step(-1, &grid, 0.0));
+        assert_eq!(*viewer.zoom(), was);
     }
 
     // The engine's answer is a round trip behind: by then the photo may be back, or the
