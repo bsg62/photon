@@ -73,7 +73,7 @@ fn a_built_thumbnail_is_handed_back_only_under_its_own_key() {
     engine.wait_for_scans();
     let (_, grid) = engine.grid();
     let entry = grid.rows(0, 1)[0];
-    let source = EngineThumbs(engine.clone());
+    let source = EngineThumbs::grid(engine.clone());
 
     // Under its own key the build answers with the picture, and the cache then has it.
     // (Whether it was cached before is the engine's own queue's timing.)
@@ -94,5 +94,45 @@ fn a_built_thumbnail_is_handed_back_only_under_its_own_key() {
         block_on(source.build(stale)).err(),
         Some(LoadError::Unavailable)
     );
+    engine.shutdown();
+}
+
+// The viewer shows a photo's preview until its full picture is made: the cache's larger
+// size, from a source of its own beside the grid's.
+#[test]
+fn a_preview_is_the_larger_picture_from_a_source_of_its_own() {
+    let dir = tempfile::tempdir().unwrap();
+    let photos = dir.path().join("photos");
+    std::fs::create_dir_all(&photos).unwrap();
+    std::fs::write(photos.join("a.jpg"), jpeg(600, 300)).unwrap();
+    let (events, _receiver) = UiEvents::new(egui::Context::default());
+    let config = EngineConfig {
+        db_path: dir.path().join("data").join("library.db"),
+        cache_dir: dir.path().join("cache").join("thumbs"),
+        workers: 1,
+    };
+    let engine = Engine::open(config, Arc::new(events)).unwrap();
+    engine.add_folder(&photos).unwrap();
+    engine.wait_for_scans();
+    let (_, grid) = engine.grid();
+    let entry = grid.rows(0, 1)[0];
+    let want = Want {
+        id: entry.id,
+        key: entry.thumb_key,
+    };
+    let (small, large) = (
+        EngineThumbs::grid(engine.clone()),
+        EngineThumbs::preview(engine.clone()),
+    );
+    let tile = block_on(small.build(want)).unwrap();
+    assert_eq!((tile.width, tile.height), (256, 128));
+    let preview = block_on(large.build(want)).unwrap();
+    assert_eq!((preview.width, preview.height), (600, 300));
+    // Each is what its own source has cached.
+    assert_eq!(
+        small.cached(entry.thumb_key).map(|tile| tile.width),
+        Some(256)
+    );
+    assert_eq!(large.cached(entry.thumb_key), Some(preview));
     engine.shutdown();
 }

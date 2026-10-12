@@ -94,6 +94,11 @@ impl<T> Textures<T> {
         Some(&held.texture)
     }
 
+    /// Whether there is a texture for `key`, without counting it as drawn.
+    pub fn holds(&self, key: TexKey) -> bool {
+        self.held.contains_key(&key)
+    }
+
     pub fn fail(&mut self, key: TexKey) {
         self.failed.insert(key);
     }
@@ -209,6 +214,16 @@ impl<T> Textures<T> {
 
     pub fn bytes(&self) -> usize {
         self.bytes
+    }
+
+    /// Lets go of everything: the textures, what waited to be one, and what was known
+    /// of those that could not be had. The limit and the count of frames stay.
+    pub fn clear(&mut self) {
+        *self = Self {
+            limit: self.limit,
+            frame: self.frame,
+            ..Self::new(self.limit)
+        };
     }
 
     pub fn len(&self) -> usize {

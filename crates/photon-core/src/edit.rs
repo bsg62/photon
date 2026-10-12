@@ -404,6 +404,36 @@ pub fn render_picture(path: &Path, orientation: u8, edit: Edit) -> Result<Dynami
     Ok(edit.place(crate::decode::decode_image(path)?, orientation))
 }
 
+/// A copy of `picture` made to be drawn fitted into a box of `width` by `height` pixels:
+/// scaled to touch the box on the side it reaches first, with a Lanczos filter. None for a
+/// picture that fits the box as it is, which is drawn from its own pixels.
+///
+/// For the native viewer, which draws through a GPU's linear filter: fitted into a window
+/// a photo is drawn at a third or a quarter of its size, and a filter that reads four
+/// pixels where it should weigh a dozen draws patterns of its own over fine detail - a
+/// fence, a fabric, a brick wall. Measured on a zone plate, where rings appeared that the
+/// photo does not have. A web view scales with a proper filter, and so does this.
+pub fn fitted_copy(
+    picture: &DynamicImage,
+    (width, height): (u32, u32),
+) -> Option<image::RgbaImage> {
+    let (own_width, own_height) = (picture.width(), picture.height());
+    if own_width == 0 || own_height == 0 || width == 0 || height == 0 {
+        return None;
+    }
+    let scale =
+        (f64::from(width) / f64::from(own_width)).min(f64::from(height) / f64::from(own_height));
+    if scale >= 1.0 {
+        return None;
+    }
+    let size = (
+        ((f64::from(own_width) * scale).round() as u32).max(1),
+        ((f64::from(own_height) * scale).round() as u32).max(1),
+    );
+    let fitted = crate::decode::resize_by(picture, size, fast_image_resize::FilterType::Lanczos3);
+    Some(fitted.into_rgba8())
+}
+
 /// The longest edge a copied photo is given. Large enough for a chat, a mail or a document
 /// at full-screen size; a photo of a camera's full resolution is 96 MB of pixels on the
 /// clipboard and, on Linux, a PNG encode of several seconds before a paste works. The full

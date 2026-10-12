@@ -69,13 +69,18 @@ pub mod thumbs {
     pub mod textures;
 }
 pub mod toasts;
+pub mod viewer;
+pub mod viewer_caption;
+pub mod viewer_layout;
+pub mod viewer_levels;
+pub mod viewer_view;
 pub mod wheel;
 pub mod window_layout;
 
 #[cfg(test)]
 mod tests {
     /// The state modules, with their source.
-    const STATE_MODULES: [(&str, &str); 36] = [
+    const STATE_MODULES: [(&str, &str); 40] = [
         ("args.rs", include_str!("args.rs")),
         ("controls.rs", include_str!("controls.rs")),
         ("scans.rs", include_str!("scans.rs")),
@@ -110,6 +115,10 @@ mod tests {
         ("thumbs/textures.rs", include_str!("thumbs/textures.rs")),
         ("tile_menu.rs", include_str!("tile_menu.rs")),
         ("toasts.rs", include_str!("toasts.rs")),
+        ("viewer.rs", include_str!("viewer.rs")),
+        ("viewer_caption.rs", include_str!("viewer_caption.rs")),
+        ("viewer_layout.rs", include_str!("viewer_layout.rs")),
+        ("viewer_levels.rs", include_str!("viewer_levels.rs")),
         ("wheel.rs", include_str!("wheel.rs")),
         ("window_layout.rs", include_str!("window_layout.rs")),
     ];

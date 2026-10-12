@@ -243,7 +243,11 @@ fn resize_to(img: DynamicImage, size: (u32, u32)) -> DynamicImage {
     resize_by(&img, size, FilterType::Bilinear)
 }
 
-fn resize_by(img: &DynamicImage, (width, height): (u32, u32), filter: FilterType) -> DynamicImage {
+pub(crate) fn resize_by(
+    img: &DynamicImage,
+    (width, height): (u32, u32),
+    filter: FilterType,
+) -> DynamicImage {
     let mut out = DynamicImage::new(width, height, img.color());
     // Alpha is resampled as it is stored, as `image` did, rather than premultiplied: that
     // would take a premultiplied copy of the whole source first, a second full-size buffer

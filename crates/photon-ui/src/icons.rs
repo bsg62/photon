@@ -14,6 +14,7 @@ pub enum Icon {
     Calendar,
     Check,
     ChevronDown,
+    ChevronLeft,
     ChevronRight,
     CircleHelp,
     Clock,
@@ -34,12 +35,13 @@ pub enum Icon {
 }
 
 impl Icon {
-    pub const ALL: [Icon; 22] = [
+    pub const ALL: [Icon; 23] = [
         Icon::ArrowDownUp,
         Icon::Bookmark,
         Icon::Calendar,
         Icon::Check,
         Icon::ChevronDown,
+        Icon::ChevronLeft,
         Icon::ChevronRight,
         Icon::CircleHelp,
         Icon::Clock,
@@ -68,6 +70,7 @@ impl Icon {
             Icon::Search => "search",
             Icon::Calendar => "calendar",
             Icon::ChevronDown => "chevron-down",
+            Icon::ChevronLeft => "chevron-left",
             Icon::ChevronRight => "chevron-right",
             Icon::Folder => "folder",
             Icon::Images => "images",
@@ -103,6 +106,7 @@ impl Icon {
             }
             Icon::Check => r#"<path d="M20 6 9 17l-5-5"/>"#,
             Icon::ChevronDown => r#"<path d="m6 9 6 6 6-6"/>"#,
+            Icon::ChevronLeft => r#"<path d="m15 18-6-6 6-6"/>"#,
             Icon::ChevronRight => r#"<path d="m9 18 6-6-6-6"/>"#,
             Icon::Folder => {
                 r#"<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>"#

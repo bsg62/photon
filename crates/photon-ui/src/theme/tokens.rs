@@ -107,6 +107,15 @@ pub const PHOTO_LINE: Rgba = rgba(0xffffffe6);
 /// Dims whatever is behind. Dark in both themes.
 pub const SCRIM: Rgba = rgba(0x000000a6);
 
+/// What the viewer's controls stand on. The viewer is dark in both themes, so its glass
+/// is in the dark theme's block alone. Nine tenths opaque on its own: a web view blurs
+/// what is behind it as well, and the opacity is what reads where it cannot.
+pub const GLASS: Rgba = rgba(0x26262be6);
+pub const GLASS_LINE: Rgba = rgba(0xffffff1a);
+
+/// The viewer's colours, which only the dark theme has, under their names.
+pub const VIEWER: [(&str, Rgba); 2] = [("--glass", GLASS), ("--glass-line", GLASS_LINE)];
+
 /// The three colours no theme changes, under their names in the stylesheet.
 pub const UNTHEMED: [(&str, Rgba); 3] = [
     ("--shadow-ink", SHADOW_INK),
@@ -212,6 +221,10 @@ mod tests {
             for (name, colour) in palette.named() {
                 assert_eq!(parse(css[name]), colour, "{name} in {selector}");
             }
+        }
+        let dark = block(CSS, "[data-theme='dark'] {");
+        for (name, colour) in VIEWER {
+            assert_eq!(parse(dark[name]), colour, "{name}");
         }
         // The scales and the unthemed colours are in the bare `:root` block.
         let root = scales(CSS);

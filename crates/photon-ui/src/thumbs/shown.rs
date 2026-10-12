@@ -13,10 +13,26 @@ pub struct Thumbs {
     loader: Loader,
 }
 
+/// Bytes of preview kept as textures. A preview is at most 1600 pixels on its longer
+/// side, about seven megabytes: the photo on screen and two on either side of it, and
+/// room for the ones just left.
+pub const PREVIEW_LIMIT: usize = 96 << 20;
+
 impl Thumbs {
+    /// The grid's thumbnails.
     pub fn new(loader: Loader) -> Self {
         Self {
             textures: Textures::new(DEFAULT_LIMIT),
+            loader,
+        }
+    }
+
+    /// The viewer's previews: a store of its own, which holds whatever its `loader`'s
+    /// source makes (`EngineThumbs::preview`), under the keys the grid's are held under
+    /// in theirs.
+    pub fn previews(loader: Loader) -> Self {
+        Self {
+            textures: Textures::new(PREVIEW_LIMIT),
             loader,
         }
     }
@@ -80,6 +96,11 @@ impl Thumbs {
         self.textures.get(TexKey::grid(key))
     }
 
+    /// Whether the picture cached under `key` is a texture, without counting it as drawn.
+    pub fn holds(&self, key: u64) -> bool {
+        self.textures.holds(TexKey::grid(key))
+    }
+
     /// Whether the picture under `key` could not be made.
     pub fn failed(&self, key: u64) -> bool {
         self.textures.failed(TexKey::grid(key))
@@ -95,6 +116,12 @@ impl Thumbs {
     /// Bytes of texture held.
     pub fn bytes(&self) -> usize {
         self.textures.bytes()
+    }
+
+    /// Lets go of every texture: the viewer has closed. What the loader finishes after
+    /// this is dropped at the next `frame` that does not want it.
+    pub fn clear(&mut self) {
+        self.textures.clear();
     }
 }
 
