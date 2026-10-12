@@ -2125,7 +2125,11 @@ then `name_items`).
 
 **Tests of the whole application drive it through `tests/common`'s `Driver`**: `until`
 draws the frames that are asked for, `settle` waits in real time for the other threads,
-`frames_in` counts what a stretch of the clock draws. A row is clicked by its name
+`frames_in` counts what a stretch of the clock draws. **A wait asks for what is said,
+never for how many messages stand**: when nothing has answered for a quarter of a second
+of real time `until` lets the clock go on to the next frame asked for, which is the end
+of a message's time, and a test that waited for "two messages" behind a slow write then
+waited for ever - on Windows' CI once, after passing everywhere a dozen times. A row is clicked by its name
 (`harness.get_by_label("Starred").click()`), which is why every row and button tells
 AccessKit what it is (`widget_info`) although AccessKit itself is switched on only in
 sub-project 7. Two things about egui's input that a frame test meets: egui works out for
