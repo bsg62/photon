@@ -1471,8 +1471,10 @@ application saw it; a review did, with a sleep in the task.
 **A folder asked for is kept as the folder until the frame that draws it** (`App::going`,
 `take_folder`), not as its offset: a click is acted on after its frame is drawn, and the
 next frame may draw a scan's grid with photos more above the folder. Everything that sets
-a place in the grid from outside goes through it, after `adopt` and before the grid is
-shown. A row half scrolled out is drawn and pressed through a child clipped to the
+a place in the grid from outside is kept that way - a folder in `going`, the photo the
+viewer closed on in `showing` (`take_photo`) - and taken after `adopt` and before the
+grid is shown. The viewer's close handed the grid an offset at first, and a review's test
+put a grid of three hundred photos more between the Escape and the next frame. A row half scrolled out is drawn and pressed through a child clipped to the
 sidebar: `Icon::paint` paints through the `Ui` it is given, and through the shell's the
 icon of such a row stood on the top bar.
 
@@ -2123,23 +2125,38 @@ keys are on and a double click open it - **a double click is read from two plain
 on one photo** (`GridView::clicked`), not from what egui calls one, which is of a widget,
 and the photos are one widget. Escape, Backspace, the mouse's back button and the cross
 close it, and the photo it was on is handed back selected and brought into sight; one the
-view has lost hands back none. **Most of the Svelte viewer's guards have no successor**:
+view has lost hands back none, and the grid is brought to where it stood. **Enter opens
+nothing in a frame with a mouse button in it, nor while a press on the photos is held**:
+opened over a press, the button came up where the grid did not hear it and the first move
+of the mouse after the viewer drew a band with no button down; opened in the frame of the
+other button, it stood under the menu that button had asked for. **Other results that do
+not hold the viewer's photo close it** (`adopt`: a search typed, and a photo opened before
+it was sent): its offset is a number of another list, and the step back from the ninth of
+all photos went to the third of three. Where they hold it too, it stays, at its place in
+them. And a search typed is sent on time under the viewer, which asks for its frame as
+the shell does. **Most of the Svelte viewer's guards have no successor**:
 this window holds the whole `GridIndex`, so the photo is found again by its id in the
 frame a new grid arrives in (`Viewer::follow`), and a picture is asked for by the photo
 and its key (`Want`), never by an offset - `createLoadSlot`, `rebind`, `renumbered` and
 `detailsSeq` are not ported. A photo the new grid lacks has left the view or the library,
 which only the engine can say: `viewer_item` is asked again, an answer makes it
 `orphaned` (it stays on screen, with no place in its caption, and the next step goes on
-from where it stood) and a refusal `gone`. `picture_changed` is ported whole, with the
+from where it stood) and the refusal of a photo that is not there (`notFound`) `gone`;
+any other refusal leaves what is on screen, which nothing tests - there is no way to
+make the library fail a read on demand. `picture_changed` is ported whole, with the
 faces left out of what it compares. **What the library says of the photo is a round trip
 behind the grid**, and is what `.` and `H` go by: a test that presses one waits for the
 facts first, as a user's eye does.
 
 **No control of the viewer is a stop of the Tab key** (`Sense::CLICK`, not
 `Sense::click()`): a control that had the keyboard would take the arrows from the viewer,
-egui walking the focus on with them, and every control has a key. The wheel steps a
+egui walking the focus on with them, and every control has a key. **And Tab is called
+off in the viewer** (`move_focus`, as under a menu): a message drawn over it has a button
+that is a stop, and with the keyboard on that the arrows stepped nothing and the grid's
+keys were dead once the viewer had closed. The wheel steps a
 photo a notch whatever the system's lines a notch are - nothing scrolls here - and a
-trackpad's stream adds up to one (`viewer::wheel_step`).
+trackpad's stream adds up to one (`viewer::wheel_step`); what it has turned is the
+viewer's it was turned in (a view made anew at every opening).
 
 **The picture is the preview, then the full picture, and photon scales the full picture
 itself.** The preview is the cache's 1600-pixel thumbnail (`Thumbs::previews`, a second
@@ -2152,7 +2169,8 @@ texture one level** (`mip_level_count: 1`, whatever `TextureOptions::mipmap_mode
 so a camera's photo fitted into a window is sampled from a few of its pixels in every
 ten. Two things answer that, and the second was added when a picture showed the first
 was not enough: the picture's halves (`viewer_levels.rs`, each the mean of four pixels,
-down to 2,048 pixels; the level drawn is the smallest at least as large as what is
+down to 512 pixels - at 2,048 an upright photo in a low window was drawn from a level
+three times its size; the level drawn is the smallest at least as large as what is
 drawn), which are what a zoom draws from; and **a copy scaled to the window with a
 Lanczos filter** (`edit::fitted_copy`, made by the engine for the box the viewer names,
 drawn pixel for pixel on whole pixels while the photo is fitted at that size). On a zone
@@ -2164,11 +2182,32 @@ is not made into a texture (`max_texture_side`; **`egui_kittest` says nothing of
 egui then takes 2,048**, so a test that wants a large level says
 `harness.input_mut().max_texture_side`). The picture is handed over as `ColorImage`s
 made on the worker: the frame that uploads a 10 MP photo and its half took 8 ms in an
-unoptimised build, so it is one frame's work and is not spread over several. **A full
+unoptimised build, so it is one frame's work and is not spread over several (that is
+egui's pass and the write of the textures, off screen; what the GPU does with them
+after is not in the number, and has not been measured in a window). **A full
 picture that cannot be made leaves the preview**, with nothing said: a photo on a drive
-that is not plugged in is looked at from photon's own cache, as the web view left it. A
-picture made for a photo the viewer has left is dropped as it arrives. A test holds a
-render for as long as it needs by holding `RENDERING`.
+that is not plugged in is looked at from photon's own cache, as the web view left it;
+why is said only where there is no preview either. A picture made for a photo the viewer
+has left is dropped as it arrives. A test holds a render for as long as it needs by
+holding `RENDERING`.
+
+**Whether the full picture is asked for is decided from what is held and what is on its
+way, never from what was once asked** (`show_viewer`: `none`, `other_size`). "Asked for
+once" left a photo at its preview for good in three ways a review found: one photo on
+and straight back inside the rest (the picture is let go of at the step), a photo that
+was gone and came back, and a picture the engine made from another state of the photo
+than the one named (`Made::Stale`) when the photo is back under the key it had - turned
+and turned back between two frames, the window never hears it was another picture, and
+no grid asks again. So a stale answer has the library read again, and the picture is
+asked for after that answer, under the key the engine has by then. What stops the
+asking, each with its test: a photo that is gone (asked for then, the refusal would be
+what is remembered when it is back), one the library says cannot be shown (its picture
+is asked for at the opening, before the library has said anything, and is not held when
+it arrives), and a picture that could not be made - until the photo is come back to. The
+question on its way is kept beside the task and not with the viewer (`App::asking`),
+which can close and open again on the same photo meanwhile. **A viewer closed holds no
+texture**: its previews are let go of with it (`Thumbs::clear`), which nothing else did
+but their store's own limit of ninety-six megabytes.
 
 **A star is tested in a library of real files** (`tests/menu.rs`, `pictures`,
 `over_files`): the folder's `.picasa.ini` is read back, and every write goes into a

@@ -2,14 +2,20 @@
 //! (`mip_level_count: 1`, whatever `TextureOptions::mipmap_mode` says), so a 24 MP texture
 //! fitted into a window is sampled from a few of its pixels in every ten, and shimmers.
 //! photon makes the smaller levels itself: halves, each the mean of four pixels, and the
-//! view draws the smallest that is at least as large as what is drawn - so no texture is
-//! ever drawn at less than half its size, where a plain linear filter is enough.
+//! view draws the smallest that is at least as large as what is drawn - so a photo drawn
+//! half of `LEVEL_FLOOR` or more on its longer side is never drawn from a texture more
+//! than twice its size, where a plain linear filter is enough.
 
 use crate::thumbs::textures::Pixels;
 
-/// Halving stops at the first level whose longer side is no more than this: smaller than
-/// any area a photo is fitted into, so there is always a level at or above what is drawn.
-pub const LEVEL_FLOOR: u32 = 2048;
+/// Halving stops at the first level whose longer side is no more than this, so the
+/// smallest level's longer side is between half of it and all of it: smaller than a
+/// photo is fitted into in any window photos are looked at in. It was 2,048, "smaller
+/// than any area a photo is fitted into", which was not so: an upright 12 MP photo in a
+/// window 700 points high is 525 pixels wide, and was drawn from a level 1,500 wide -
+/// until its fitted copy came, and whenever the window changed size. The levels below
+/// 2,048 are a sixteenth of the picture and less, all of them together.
+pub const LEVEL_FLOOR: u32 = 512;
 
 /// `pixels` at half its size: each pixel the mean of the four it covers. An odd last row
 /// or column is left out, which is half a pixel of a picture thousands across.
@@ -130,17 +136,41 @@ mod tests {
     #[test]
     fn the_levels_are_the_picture_and_its_halves_down_to_one_that_fits_any_area() {
         let made = levels(flat(6000, 4000, [1, 2, 3, 255]), 16384);
-        assert_eq!(sides(&made), [(6000, 4000), (3000, 2000), (1500, 1000)]);
-        // A picture no larger than the floor is its own one level.
         assert_eq!(
-            sides(&levels(flat(2048, 1365, [0; 4]), 16384)),
-            [(2048, 1365)]
+            sides(&made),
+            [
+                (6000, 4000),
+                (3000, 2000),
+                (1500, 1000),
+                (750, 500),
+                (375, 250)
+            ]
         );
+        // A picture no larger than the floor is its own one level.
+        assert_eq!(sides(&levels(flat(512, 341, [0; 4]), 16384)), [(512, 341)]);
+        assert_eq!(levels(flat(513, 341, [0; 4]), 16384).len(), 2);
         // By the longer side, whichever it is.
         assert_eq!(
-            sides(&levels(flat(1000, 5000, [0; 4]), 16384)),
-            [(1000, 5000), (500, 2500), (250, 1250)]
+            sides(&levels(flat(250, 1250, [0; 4]), 16384)),
+            [(250, 1250), (125, 625), (62, 312)]
         );
+    }
+
+    // What the floor is for: fitted into any window a photo is looked at in, the photo
+    // is drawn from a level no more than twice as large as what is drawn. An upright
+    // 12 MP photo in a window 700 pixels high, and a panorama in one 1,000 wide.
+    #[test]
+    fn a_photo_fitted_into_a_window_is_drawn_from_no_more_than_twice_its_size() {
+        for (width, height, drawn) in [(3000, 4000, 525.0), (12000, 3000, 1000.0)] {
+            let widths: Vec<u32> = (levels(flat(width, height, [0; 4]), 16384).iter())
+                .map(|level| level.width)
+                .collect();
+            let level = widths[level_for(&widths, drawn)] as f32;
+            assert!(
+                level >= drawn && level <= drawn * 2.0,
+                "{drawn} pixels drawn from a level {level} wide, of {widths:?}"
+            );
+        }
     }
 
     // The umbrella spec's fifth risk: a texture's side is limited by the device, and the
@@ -148,14 +178,20 @@ mod tests {
     #[test]
     fn a_level_the_device_cannot_hold_is_left_out() {
         let made = levels(flat(12000, 3000, [0; 4]), 8192);
-        assert_eq!(sides(&made), [(6000, 1500), (3000, 750), (1500, 375)]);
-        // At the limit exactly, it fits.
-        assert_eq!(levels(flat(8192, 100, [0; 4]), 8192).len(), 3);
-        // A limit below every level leaves the smallest: there is always a picture.
         assert_eq!(
-            sides(&levels(flat(6000, 4000, [0; 4]), 1000)),
-            [(1500, 1000)]
+            sides(&made),
+            [
+                (6000, 1500),
+                (3000, 750),
+                (1500, 375),
+                (750, 187),
+                (375, 93)
+            ]
         );
+        // At the limit exactly, it fits.
+        assert_eq!(levels(flat(8192, 100, [0; 4]), 8192).len(), 5);
+        // A limit below every level leaves the smallest: there is always a picture.
+        assert_eq!(sides(&levels(flat(6000, 4000, [0; 4]), 200)), [(375, 250)]);
     }
 
     #[test]

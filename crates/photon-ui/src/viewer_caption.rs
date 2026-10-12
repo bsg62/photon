@@ -1,6 +1,7 @@
 //! The line under the photo in the viewer, in Picasa's order: the file's name, when it was
 //! taken, its size in pixels and in bytes, and where it stands in its section. `caption.ts`
-//! and `photo-caption.ts` in Rust, with their tests' cases.
+//! and `photo-caption.ts` in Rust, with their tests' cases - but for the time, which
+//! those tests leave to the system's own formatting and this has to write itself.
 
 use jiff::{Timestamp, tz::TimeZone};
 
@@ -69,22 +70,22 @@ pub fn oriented(width: u32, height: u32, orientation: u8) -> (u32, u32) {
     }
 }
 
-/// The caption: "IMG_0412.jpg · Jul 14, 2026, 12:30 PM · 4000 × 3000 · 2.4 MB (3 / 41)".
-/// `position` is the photo's place in its section and how many that holds; none for a
-/// photo the view no longer holds, which has no place in it.
+/// The caption: "IMG_0412.jpg · Jul 14, 2026, 12:30 PM · 4000 × 3000 · 2.4 MB · (3 / 41)".
+/// `position` is the photo's place in its section and how many that holds, one more
+/// part of the line; none for a photo the view no longer holds, which has no place in
+/// it.
 pub fn caption(of: Captioned<'_>, position: Option<(usize, usize)>) -> String {
     let (width, height) = oriented(of.width, of.height, of.orientation);
-    let mut caption = [
+    let mut parts = vec![
         of.file_name.to_owned(),
         format_taken(of.taken_at),
         format!("{width} × {height}"),
         format_size(of.size),
-    ]
-    .join(SEPARATOR);
+    ];
     if let Some((index, count)) = position.filter(|(_, count)| *count > 0) {
-        caption.push_str(&format!(" ({index} / {count})"));
+        parts.push(format!("({index} / {count})"));
     }
-    caption
+    parts.join(SEPARATOR)
 }
 
 /// The photo's own caption as the line over the bar shows it: line breaks and runs of
@@ -115,7 +116,18 @@ mod tests {
     fn the_caption_is_name_time_pixels_size_and_place() {
         assert_eq!(
             caption(photo(), Some((3, 41))),
-            "IMG_0412.jpg · Jul 14, 2026, 12:30 PM · 4000 × 3000 · 2.4 MB (3 / 41)"
+            "IMG_0412.jpg · Jul 14, 2026, 12:30 PM · 4000 × 3000 · 2.4 MB · (3 / 41)"
+        );
+        // `caption.test.ts`'s own case, which pins the place as one more part.
+        let theirs = Captioned {
+            file_name: "IMG_1234.JPG",
+            taken_at: 1_718_454_645,
+            size: 3_355_443,
+            ..photo()
+        };
+        assert_eq!(
+            caption(theirs, Some((12, 240))),
+            "IMG_1234.JPG · Jun 15, 2024, 12:30 PM · 4000 × 3000 · 3.2 MB · (12 / 240)"
         );
     }
 

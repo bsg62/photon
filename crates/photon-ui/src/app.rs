@@ -127,6 +127,13 @@ pub struct App {
     /// thread. One question at a time, and the latest wins: a decode cannot be taken
     /// back, and the photo stopped on must not wait behind those passed.
     pictures: Latest<PictureAsk, (PictureAsk, Made)>,
+    /// The picture being made: asked for, and not answered yet. Kept beside the task
+    /// and not with the viewer, which can close and open again on the same photo while
+    /// its picture is on its way.
+    asking: Option<PictureAsk>,
+    /// How many pictures have been asked for: each is a whole decode, and what a test
+    /// of "once" counts.
+    asked_pictures: u64,
     /// Whether a folder dropped on the window can arrive at all: asked of the window
     /// once (`folder_drop::can_arrive`). Where none can, none is offered.
     drops: bool,
@@ -181,6 +188,9 @@ pub struct App {
     /// A folder to put at the top of the grid in the next frame drawn, looked up in the
     /// grid that frame draws.
     going: Option<i64>,
+    /// A photo to bring into sight in the next frame drawn, looked up in the grid that
+    /// frame draws: the one the viewer closed on.
+    showing: Option<i64>,
     /// The folder at the top of All photos, as photon remembers it.
     last_folder: LastFolder,
     /// Stores the folder remembered, off this thread, the latest alone.
@@ -832,6 +842,8 @@ impl App {
             previews: Thumbs::previews(preview_loader),
             viewer_items,
             pictures,
+            asking: None,
+            asked_pictures: 0,
             drops,
             drop: FolderDrop::default(),
             hovered: 0,
@@ -853,6 +865,7 @@ impl App {
             list: List::default(),
             marked: None,
             going: None,
+            showing: None,
             last_folder,
             remembering,
             today: today(&zone),
@@ -1113,12 +1126,27 @@ impl App {
         Some(full.levels.iter().map(|(_, width)| *width).collect())
     }
 
-    /// Whether the full picture of the photo the viewer is on has been asked for.
+    /// Whether the full picture of the photo the viewer is on is being made: asked for,
+    /// and not answered yet.
     pub fn viewer_asked(&self) -> bool {
         (self.viewer.as_ref()).is_some_and(|open| {
-            open.asked
+            self.asking
                 .is_some_and(|asked| asked.want == open.viewer.want())
         })
+    }
+
+    /// How many full pictures have been asked for since the window was made.
+    pub fn pictures_asked(&self) -> u64 {
+        self.asked_pictures
+    }
+
+    /// Why the full picture of the photo the viewer is on could not be made, if it
+    /// could not.
+    pub fn viewer_failed(&self) -> Option<&str> {
+        let open = self.viewer.as_ref()?;
+        (open.failed.as_ref())
+            .filter(|(of, _)| *of == open.viewer.want())
+            .map(|(_, why)| why.as_str())
     }
 
     /// The size, in pixels, of the copy of the full picture that was scaled to fit the
@@ -1140,6 +1168,16 @@ impl App {
             return false;
         };
         self.previews.texture(key).is_some()
+    }
+
+    /// Bytes of preview held as textures.
+    pub fn preview_bytes(&self) -> usize {
+        self.previews.bytes()
+    }
+
+    /// Whether the preview of the photo `id` of the grid on screen is a texture.
+    pub fn preview_of(&self, id: i64) -> bool {
+        (self.entry(id)).is_some_and(|entry| self.previews.holds(entry.thumb_key))
     }
 
     /// The dialog that is open.
@@ -1364,37 +1402,75 @@ impl App {
 
     /// Opens the viewer on the photo `id` of the grid on screen.
     ///
-    /// Nothing of the grid's is open by then, and nothing has the keyboard: Enter is the
-    /// grid's only while nothing else has it, and a double click's first click closed
-    /// the menu, stored the name half typed in the sidebar and took the keyboard off
-    /// whatever had it, as any click on a photo does.
+    /// Nothing has the keyboard by then, and no name is half typed in the sidebar:
+    /// Enter is the grid's only while nothing else has the keyboard, and a double
+    /// click's first click took it off whatever had it and stored the name, as any
+    /// click on a photo does. No menu is open and no button is held either, which is
+    /// the grid's to see to: it answers no Enter in a frame with a mouse button in it,
+    /// nor while a press on the photos is held (`grid/view.rs`).
     fn open_viewer(&mut self, id: i64) {
         let Some(viewer) = Viewer::open(id, &self.index) else {
             return;
         };
         self.viewer_items.ask(id);
+        // A view of its own: what the wheel had turned towards a next photo in the
+        // viewer before this one is not a turn made in this one.
+        self.viewer_view = ViewerView::default();
         self.viewer = Some(Viewing {
             viewer,
             item: None,
             full: None,
-            asked: None,
             failed: None,
+            stale: None,
             within: None,
         });
     }
 
     /// Closes the viewer and hands its photo back to the grid: selected, alone, and
-    /// brought into sight. A photo the view no longer holds hands back none, and the
-    /// grid is shown where it was.
+    /// brought into sight. A photo the view no longer holds hands back none: nothing
+    /// is selected for it, and the grid is brought to where it stood.
+    ///
+    /// The place is kept as the photo that stands there and looked up in the grid the
+    /// next frame draws (`take_photo`), as a folder asked for is: this is the end of a
+    /// frame, and the next may draw a scan's grid with photos more above it.
     fn close_viewer(&mut self) {
-        let Some(open) = self.viewer.take() else {
+        let Some(open) = self.viewer.as_ref() else {
             return;
         };
         let (offset, id) = open.viewer.hand_back(&self.index);
         if id.is_some() {
             self.selection.select(&self.index, offset);
         }
-        self.view.go_to(offset, Align::Nearest);
+        self.showing = (self.index.rows(offset, 1).first()).map(|entry| entry.id);
+        self.shut_viewer();
+    }
+
+    /// The viewer is over: what it held goes with it. Its previews too, which nothing
+    /// else lets go of but their store's own limit - a hundred megabytes of texture for
+    /// the rest of the session, after any stretch of looking at photos.
+    fn shut_viewer(&mut self) {
+        self.viewer = None;
+        self.previews.clear();
+    }
+
+    /// A typed search is sent in a frame of its own, which a still window would not
+    /// draw: asked for at every frame until it is sent, since a frame asked for after a
+    /// delay comes a frame early.
+    fn ask_for_search(&self, ctx: &egui::Context, now: f64) {
+        if let Some(at) = self.search.due_at() {
+            let wait = Duration::from_secs_f64(((at - now) / 1000.0).max(0.0));
+            ctx.request_repaint_after(wait);
+        }
+    }
+
+    /// Hands the grid the photo to bring into sight, as its place in the grid about to
+    /// be drawn. One that grid does not hold moves nothing.
+    fn take_photo(&mut self) {
+        if let Some(id) = self.showing.take()
+            && let Some(offset) = self.index.position_of(id)
+        {
+            self.view.go_to(offset, Align::Nearest);
+        }
     }
 
     /// What the tasks have answered about the photo in the viewer. Each answer counts
@@ -1407,6 +1483,9 @@ impl App {
             // (Of the photo the viewer is on: `Latest` hands out the answer to the
             // last question only, and each step asks.)
             if let (Ok((id, item)), Some(open)) = (answer, &mut self.viewer) {
+                // What the library says has been read again: a picture that waited
+                // for that may be asked for (`Made::Stale`).
+                open.stale = None;
                 match item {
                     Ok(item) => {
                         // Still a photo. If the grid has lost it, it has only left
@@ -1415,7 +1494,6 @@ impl App {
                         if open.viewer.took(id, shown_of(&item)) {
                             // Another picture: what was made is of the one before.
                             open.full = None;
-                            open.failed = None;
                         }
                         open.item = Some(item);
                     }
@@ -1435,7 +1513,16 @@ impl App {
         }
         if let Some(answer) = self.pictures.answer() {
             answered = true;
-            if let (Ok((asked, made)), Some(open)) = (answer, &mut self.viewer)
+            // The answer to the last question asked: nothing is on its way now.
+            let asked = self.asking.take();
+            let (of, made) = match answer {
+                Ok((of, made)) => (Some(of), made),
+                // The worker panicked at it. Said to have failed: with nothing held,
+                // nothing on its way and nothing said, it would be asked for again in
+                // every frame.
+                Err(_) => (asked, Made::Failed(CANNOT_SHOW.to_owned())),
+            };
+            if let (Some(asked), Some(open)) = (of, &mut self.viewer)
                 && asked.want == open.viewer.want()
             {
                 let want = asked.want;
@@ -1454,16 +1541,35 @@ impl App {
                         });
                         open.full = Some(FullPicture {
                             want,
+                            fit: asked.fit,
                             levels,
                             fitted,
                         });
                     }
                     Made::Failed(said) => open.failed = Some((want, said)),
-                    // Made from another state of the photo than the one asked for: the
-                    // grid that says so is on its way, and asks again.
-                    Made::Stale => {}
+                    // Made from another state of the photo than the one asked for.
+                    // Usually the grid that says so is on its way, and the picture of
+                    // the photo as it is will be another question. Not always: turned
+                    // and turned back before any frame was drawn, the photo is under
+                    // the key it had, the window never heard it was another picture
+                    // meanwhile, and nothing would ask again. So what the library says
+                    // of the photo is read again, and the picture asked for after that
+                    // answer - which bounds the asking to one a round trip, and asks
+                    // under the key the engine has by then.
+                    Made::Stale => {
+                        open.stale = Some(want);
+                        self.viewer_items.ask(want.id);
+                    }
                 }
             }
+        }
+        // A photo the library says cannot be shown has that said in its place, so no
+        // picture of it is held to be drawn: one asked for at the opening, before the
+        // library had said anything, may arrive all the same.
+        if let Some(open) = &mut self.viewer
+            && cannot_show(&open.viewer)
+        {
+            open.full = None;
         }
         answered
     }
@@ -1475,6 +1581,12 @@ impl App {
             return;
         };
         let ctx = ui.ctx().clone();
+        // Tab is nobody's here. No control of the viewer takes the keyboard, but a
+        // message drawn over it has a button that does, and with the keyboard on that
+        // the arrows walk it on instead of stepping, and the grid's keys are dead when
+        // the viewer has closed. egui has read Tab already, from the frame's raw input:
+        // its walk is called off, as under a menu.
+        ctx.memory_mut(|memory| memory.move_focus(egui::FocusDirection::None));
         let (id, key, want) = (open.viewer.id(), open.viewer.key(), open.viewer.want());
         let rested = open.viewer.rested(now);
 
@@ -1497,8 +1609,7 @@ impl App {
 
         // The full picture, once the viewer has rested on a photo that has one to make.
         // (A video is asked about like a photo: the engine refuses it at once.)
-        let failed = open.viewer.shown().is_some_and(|shown| shown.failed);
-        let has_picture = !open.viewer.gone() && !failed;
+        let failed = cannot_show(&open.viewer);
         // With the box it is fitted into, in pixels: the engine scales a copy to it. A
         // window that changes size is another box, and the copy for it is asked for
         // once the size has stood for a moment - a window being dragged wider is a new
@@ -1514,15 +1625,30 @@ impl App {
             max_side: ctx.input(|input| input.max_texture_side) as u32,
             fit: within,
         };
-        let first = open.asked.is_none_or(|asked| asked.want != want);
-        let again = open
-            .asked
-            .is_some_and(|asked| asked.want == want && asked.fit != within);
+        // Whether to ask is decided from what is held and what is on its way, never
+        // from what was once asked: a picture let go of is asked for again - one photo
+        // on and straight back inside the rest, a photo that was gone and is here
+        // again - where "asked for once" left the photo at its preview for good.
+        let coming = self.asking.filter(|asked| asked.want == want);
+        let held = open.picture().map(|full| full.fit);
+        let refused = (open.failed.as_ref()).is_some_and(|(of, _)| *of == want);
+        // There is none of it, held or on its way, and nothing says there cannot be:
+        // not a photo that is gone or cannot be shown, not one whose picture could not
+        // be made, not one the library is being asked about again first.
+        let none = held.is_none()
+            && coming.is_none()
+            && !refused
+            && !open.viewer.gone()
+            && !failed
+            && open.stale != Some(want);
+        // The newest of it, on its way or held, is for a window of another size.
+        let other_size = (coming.map(|asked| asked.fit).or(held)).is_some_and(|fit| fit != within);
         let fit_due = stood + FIT_REST_MS;
-        if has_picture && rested && (first || (again && now >= fit_due)) {
+        if (none && rested) || (other_size && now >= fit_due) {
             self.pictures.ask(ask);
-            open.asked = Some(ask);
-        } else if has_picture && again && now < fit_due {
+            self.asking = Some(ask);
+            self.asked_pictures += 1;
+        } else if other_size {
             ctx.request_repaint_after(Duration::from_secs_f64((fit_due - now) / 1000.0));
         }
         if let Some(due) = open.viewer.rest_due().filter(|due| *due > now) {
@@ -1628,17 +1754,17 @@ impl App {
             };
             if moved {
                 // Another photo: what was said and made of the one left is not its.
+                // And a picture that could not be made is asked for again when the
+                // photo is come back to: its drive may be there by then.
                 open.item = None;
                 open.full = None;
                 open.failed = None;
                 self.viewer_items.ask(open.viewer.id());
-                ctx.request_repaint();
             }
         }
         self.viewer = Some(open);
         if closed {
             self.close_viewer();
-            ctx.request_repaint();
         }
     }
 
@@ -2318,6 +2444,16 @@ impl App {
             // Nor are the photos picked there these, or the anchor's offset the same
             // photo in another order.
             self.selection.clear();
+            // Nor is the viewer's photo, where these do not hold it: a view asked for
+            // and, before its grid had landed, a photo opened from the grid still on
+            // screen. It has no place in these to step on from - "where it stood" is a
+            // number of another list - so the viewer closes onto the view that was
+            // asked for. Where these hold it too, it is found in them below.
+            let lost = (self.viewer.as_ref())
+                .is_some_and(|open| self.index.position_of(open.viewer.id()).is_none());
+            if lost {
+                self.shut_viewer();
+            }
         } else if let Some(landed) = self.selection.follow(&before, &self.index) {
             // The lead's photo has left - hidden, taken out of the album shown, purged by
             // a scan - and the lead is on the photo beside where it was. That photo is
@@ -2484,6 +2620,7 @@ impl eframe::App for App {
             self.go_to_folder(folder);
         }
         self.take_folder();
+        self.take_photo();
         // Nothing reports the moment the engine has started its first scans: it is asked
         // for, a few times a second, for as long as the launch takes and no longer.
         if self.scans.starting() {
@@ -2546,6 +2683,10 @@ impl eframe::App for App {
             if self.drop.hovering() {
                 drop_card::show(ui.ctx(), folder_drop::CARD);
             }
+            // A search typed just before the viewer opened is still sent when its time
+            // comes: left to the next frame something else asked for, it landed under
+            // the viewer whenever the mouse next moved.
+            self.ask_for_search(ui.ctx(), now);
             let _ = reported;
             return;
         }
@@ -2668,13 +2809,7 @@ impl eframe::App for App {
         if let Some(id) = open {
             self.open_viewer(id);
         }
-        // A typed search is sent in a frame of its own, which a still window would not
-        // draw: asked for here, at every frame until it is sent, since a frame asked for
-        // after a delay comes a frame early.
-        if let Some(at) = self.search.due_at() {
-            let wait = Duration::from_secs_f64(((at - now) / 1000.0).max(0.0));
-            ui.ctx().request_repaint_after(wait);
-        }
+        self.ask_for_search(ui.ctx(), now);
 
         // The card that says what letting go will do, over everything.
         if self.drop.hovering() {
@@ -2732,10 +2867,11 @@ struct Viewing {
     item: Option<ViewerItem>,
     /// The full picture, with what it was made for.
     full: Option<FullPicture>,
-    /// The picture last asked for, so that one is asked for once.
-    asked: Option<PictureAsk>,
     /// Why a picture could not be made, and which.
     failed: Option<(Want, String)>,
+    /// A picture the engine made from another state of the photo than the one named:
+    /// it is not asked for again until the library has been read again.
+    stale: Option<Want>,
     /// The box the photo is fitted into, in pixels, and since when it has been that.
     within: Option<((u32, u32), f64)>,
 }
@@ -2767,6 +2903,8 @@ struct PictureAsk {
 /// in pixels, and the copy scaled to the box it was asked for.
 struct FullPicture {
     want: Want,
+    /// The box its fitted copy was made for.
+    fit: (u32, u32),
     levels: Vec<(egui::TextureHandle, u32)>,
     fitted: Option<egui::TextureHandle>,
 }
@@ -2790,6 +2928,12 @@ const PRELOAD: usize = 2;
 const GONE: &str = "This photo is no longer available.";
 const CANNOT_SHOW: &str = "This photo can't be shown.";
 const NO_VIDEO: &str = "The native window does not play videos yet.";
+
+/// Whether the library has said the photo cannot be shown: its thumbnail could not be
+/// made. Not of a video, whose thumbnail is its poster frame's.
+fn cannot_show(viewer: &Viewer) -> bool {
+    (viewer.shown()).is_some_and(|shown| shown.failed && !shown.video)
+}
 
 /// What of `item` decides the picture on screen (`viewer::picture_changed`).
 fn shown_of(item: &ViewerItem) -> Shown {

@@ -151,6 +151,18 @@ impl Driver {
         }
     }
 
+    /// Waits, drawing nothing, until no other thread has asked for a frame for a while:
+    /// for what the engine and the tasks do with something the window is not to hear of
+    /// yet.
+    pub fn quiet(&mut self) {
+        let since = Instant::now();
+        let deadline = since + PATIENCE;
+        while since.max(*self.stray.lock().unwrap()).elapsed() < QUIET {
+            assert!(Instant::now() < deadline, "the other threads never rested");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
     /// The next `secs` of the clock: how many frames were drawn in them. Call `settle`
     /// first; what another thread asks for after the clock has jumped is counted.
     pub fn frames_in(&mut self, harness: &mut Harness<'_>, secs: f64) -> usize {

@@ -96,8 +96,10 @@ pub struct Want {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Viewer {
     id: i64,
-    /// Where the photo is in the grid on screen. For a photo the grid no longer holds,
-    /// where it was: the photo there now is the one that came after it.
+    /// Where the photo is in the grid on screen. For a photo a newer grid of the same
+    /// results no longer holds, where it was: the photo there now is the one that came
+    /// after it. (In other results the number names nothing, and the application closes
+    /// a viewer whose photo they do not hold.)
     offset: usize,
     key: u64,
     kind: MediaKind,
@@ -238,7 +240,6 @@ impl Viewer {
                 self.held = Held::Here;
                 if let Some(entry) = index.rows(offset, 1).first() {
                     self.key = entry.thumb_key;
-                    self.kind = entry.kind;
                 }
             }
             None if self.held == Held::Here => self.held = Held::Asked,
@@ -272,11 +273,6 @@ impl Viewer {
             self.stepped_at = None;
         }
         self.key = fresh.key;
-        self.kind = if fresh.video {
-            MediaKind::Video
-        } else {
-            MediaKind::Image
-        };
         self.shown = Some(fresh);
         changed
     }
@@ -477,6 +473,8 @@ mod tests {
             "not until the engine has said it exists"
         );
         assert_eq!(viewer.position(&without), None);
+        // Nor is it handed back meanwhile as a photo the grid shows.
+        assert_eq!(viewer.hand_back(&without), (1, None));
         viewer.lost(2, true);
         assert!(viewer.orphaned() && !viewer.gone());
         assert_eq!((viewer.id(), viewer.offset()), (2, 1));

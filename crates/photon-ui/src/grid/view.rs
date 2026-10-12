@@ -769,8 +769,17 @@ impl GridView {
                 // The photo the star's key goes by (`Selection::deciding`): the one the
                 // keys are on while it is selected, else the first of the selection -
                 // the keys can stand on a photo that Ctrl+click has just taken out.
+                //
+                // Not in a frame with a mouse button in it, and not while a press on
+                // the photos is held. The viewer takes the whole window: opened over a
+                // press, the button came up where the grid did not hear it, and with
+                // the viewer closed the first move of the mouse drew a band with no
+                // button down; opened in the frame of the other button, it stood under
+                // the menu that button had asked for.
                 GridKey::Open => {
-                    self.open = selection.deciding(index);
+                    if !pointed && self.press.is_none() {
+                        self.open = selection.deciding(index);
+                    }
                     continue;
                 }
                 // With nothing selected there is nothing to ask it of. And in a frame

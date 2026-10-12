@@ -40,13 +40,14 @@ pan, "Opening it").
 - **While the viewer is open the grid's last frame stands** (`App::last` is not replaced
   by nothing): the place is kept, and what reads it reads the grid as it was left.
 - **A menu or a band cannot be open under the viewer**: opening closes the menu, and a
-  band has ended by the time a double click or Enter is read.
+  band has ended by the time a double click or Enter is read. (Not so as built: see
+  "What the review found".)
 - **The full picture is asked for once the preview is on screen or cannot be had**, after
   the rest; the photo the viewer opens on does not wait.
 - **The caption's date is English, medium, with the hour by twelve**: "Jul 14, 2026,
   12:30 PM", in the camera's own clock.
 - **Levels**: halves by the mean of four pixels, until the longer side is no more than
-  `LEVEL_FLOOR` (2048); a level whose side exceeds the device's limit is dropped, so the
+  `LEVEL_FLOOR` (2048, and 512 since the review); a level whose side exceeds the device's limit is dropped, so the
   largest kept is the first that fits. The level drawn is the smallest whose width in
   pixels is at least the width drawn in pixels.
 - **The star and the hide go by the photo on screen**, not by the selection behind it.
@@ -127,7 +128,9 @@ first risk; the upload's cost measured and written here.
   spec named, taken as the rule.
 - **The upload is not made in strips.** Measured in `native_viewer_quality`: the frame
   that hands a 10.7 MP picture and its half to the GPU took 8 ms in an unoptimised build,
-  against 0.2 ms for a frame after it. A 24 MP photo is then about a frame.
+  against 0.2 ms for a frame after it. A 24 MP photo is then about a frame. (The number
+  is egui's pass and the write of the textures, off screen: what the GPU does with them
+  after is not in it, and has not been measured in a window.)
 - **The full picture does not wait for the preview**, only for the rest: two states
   fewer, and the preview is on disk for any photo opened from the grid.
 - **A full picture that cannot be made leaves the preview**, with nothing said, as the
@@ -140,7 +143,8 @@ first risk; the upload's cost measured and written here.
   open menu, store a name half typed in the sidebar and take the keyboard off whatever
   had it. None can be so when the viewer opens: Enter is the grid's only while nothing
   else has the keyboard, and a double click's first click has done all three. The lines
-  did nothing and are not there.
+  did nothing and are not there. (The menu was wrong: the other button and Enter in one
+  frame opened both. The grid now answers no Enter in such a frame.)
 - **`Viewer::follow` answers nothing**: the application asks the engine about the photo
   at every new grid anyway, found or not.
 - **No test of a video through the application**: a library of real files has none, and
@@ -179,3 +183,41 @@ failing as stated.
 **One rule has no test**: a picture the engine rendered from another state of the photo
 than the one asked for is dropped (`Made::Stale`). It is the answer arriving before the
 grid that says the photo changed, and which of the two comes first has no seam to hold.
+(It has one, which the review found: the worker held at another photo's render.)
+
+## What the review found
+
+An independent read of the branch, with a failing test for each finding and thirty
+probes of its own. All of it is fixed in the branch.
+
+- **A full picture let go of was never asked for again.** `Viewing::asked` alone decided,
+  and it still said "asked" after a step on and straight back inside the rest, after a
+  photo had gone and come back, and after a stale answer for a photo back under the key
+  it had. The asking is now decided from what is held and what is on its way; a stale
+  answer has the library read again first.
+- **Enter over a held press, and in the frame of the other button.** The viewer opened
+  over a press the grid still held - a rubber band with no button down after it closed -
+  and under the menu the other button had asked for.
+- **Closing handed the grid an offset**, at the end of a frame, into whatever grid the
+  next frame drew. It hands the photo, looked up in that grid (`App::showing`).
+- **Other results landed under the viewer** and it stepped by a number of another list.
+  It closes where they lack its photo. Writing that test found one more: a typed
+  search's frame was not asked for under the viewer, so the search was sent whenever
+  something else next drew a frame.
+- **Smaller**: the wheel's remainder outlived the viewer; the previews stayed as
+  textures after it closed; a message's button took the keyboard at Tab; the caption
+  lacked the separator before the place; the levels stopped at 2,048 pixels, above what
+  an upright photo is drawn at in a low window.
+- **Probes that passed.** Lines that did nothing and went: the two `request_repaint`s
+  after a step and a close, the `kind` written again at `follow` and `took`, the clear
+  of a failure at a change of picture. Rules that had no test and have one: why a
+  picture cannot be made is said, of the right photo, and is asked for again when the
+  photo is come back to; a photo the library says cannot be shown; the neighbours'
+  previews; the card and a message over the viewer; where the grid stands after closing
+  on a lost photo; a gone photo's picture and star; the side buttons at the ends; a
+  video's line through the application (a file called `.mp4` is all the library goes
+  by, which the first plan did not know).
+- **Still without a test**: that only the refusal of a photo that is not there makes it
+  gone (no way to make the library fail a read otherwise), and what is done when the
+  picture worker panics (said to have failed, so that it is not asked for in every
+  frame).

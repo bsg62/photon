@@ -9,7 +9,9 @@
 //!
 //! **No control here is a stop of the Tab key.** Every one has a key - Escape, the
 //! arrows, the period - and a control that had the keyboard would take the arrows from
-//! the viewer: egui walks the keyboard on from a focused widget with them.
+//! the viewer: egui walks the keyboard on from a focused widget with them. (What the
+//! application draws over the viewer can be one, a message's button: it calls Tab off
+//! while the viewer is open.)
 
 use crate::{
     icons::Icon,

@@ -166,7 +166,9 @@ The first pull request measures it; if it is more than a frame, the full level i
 uploaded in strips over several (`TextureHandle::set_partial`), smallest level first, so
 that the photo is sharp at fit at once and sharp when zoomed a moment later.
 *(Measured: 8 ms for a 10.7 MP picture and its half in an unoptimised build, so about a
-frame for a camera's photo. It is not made in strips.)*
+frame for a camera's photo. It is not made in strips. The number is egui's pass and the
+write of the textures, off screen; the GPU's own work after it has not been measured in
+a window.)*
 
 **What is let go.** The textures of the photo that was left are freed when the next
 photo's preview is on screen; nothing of full size is kept for a photo not on screen. The
