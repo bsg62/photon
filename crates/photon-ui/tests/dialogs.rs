@@ -57,6 +57,8 @@ fn pick_item(driver: &mut Driver, harness: &mut Harness<'_>, label: &str) {
     for _ in 0..3 {
         driver.act(harness);
     }
+    // And until a press in it is no longer the second of a double click on the item.
+    driver.frames_in(harness, 0.4);
 }
 
 fn key(driver: &mut Driver, harness: &mut Harness<'_>, key: Key, held: Modifiers) {
@@ -273,6 +275,8 @@ fn a_keyword_is_added_to_the_selection_and_removed_again() {
     );
     assert!(!harness.state().menu_open());
     assert!(matches!(harness.state().dialog(), Some(Dialog::Tags(_))));
+    // The field has a name, for whoever reads the window without seeing it.
+    assert!(harness.query_by_label("Keyword to add").is_some());
     typed(&mut driver, &mut harness, " lisbon ");
     key(&mut driver, &mut harness, Key::Enter, Modifiers::NONE);
     // Closed before its write: the write is the last word on it.
@@ -510,4 +514,496 @@ fn the_enter_that_asks_the_question_does_not_answer_it_at_its_repeat() {
     assert!(harness.state().dialog().is_none());
     driver.settle(&mut harness);
     assert_eq!(album_names(harness.state()), ["Lisbon", "Porto"]);
+}
+
+// What a review of the dialogs found, each with the test that showed it.
+
+/// The library's write lock, taken from outside: the engine's next write waits for it.
+/// It stands in for a write that takes a while - every write waits for those queued
+/// before it, and a folder's for a rebuild of the whole grid.
+fn locked(library: &Fixture) -> rusqlite::Connection {
+    let other = rusqlite::Connection::open(&library.dirs().db_path).unwrap();
+    other
+        .busy_timeout(std::time::Duration::from_secs(20))
+        .unwrap();
+    other.execute_batch("BEGIN IMMEDIATE").unwrap();
+    other
+}
+
+/// Several events in one frame, through the whole application: put into the frame's
+/// input beside the queue, which is drawn a frame an event.
+fn frame_with(driver: &mut Driver, harness: &mut Harness<'_>, events: Vec<egui::Event>) {
+    harness.input_mut().events.extend(events);
+    driver.act(harness);
+}
+
+fn search_names(app: &App) -> Vec<String> {
+    (app.collections().searches.iter())
+        .map(|search| search.name.clone())
+        .collect()
+}
+
+/// The other button on the sidebar's row called `label`.
+fn right_click_row(driver: &mut Driver, harness: &mut Harness<'_>, label: &str) {
+    let at = harness.get_by_label(label).rect().center();
+    right_click_at(driver, harness, at);
+}
+
+// An album's number is handed out again once it is free. "Delete…" answered with yes
+// is a write on its way, and until the lists have been read after it the row is still
+// there: asked again of that row, a second delete of the same number waited behind
+// whatever was made meanwhile - and deleted it. The row of something that is going has
+// no menu.
+#[test]
+fn an_album_being_deleted_has_no_menu_until_it_has_left_the_list() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = library(dir.path(), 900, 0, 0);
+    let ids = photo_ids(&library);
+    album(&library, "Lisbon", &ids[..3]);
+    let porto = album(&library, "Porto", &ids[..2]);
+    let (mut harness, mut driver) = opened(&library, 900);
+    driver.until(&mut harness, "the albums read", |app| {
+        album_names(app).len() == 2
+    });
+    driver.act(&mut harness);
+
+    // A write that takes a while: every write queued waits behind it.
+    let other = locked(&library);
+    ask_to_delete(&mut driver, &mut harness, "Porto");
+    harness.get_by_label("Delete").click();
+    driver.act(&mut harness);
+    assert!(harness.state().dialog().is_none());
+    // A new album, typed in the sidebar's field: queued behind the delete.
+    harness.get_by_label("New album…").click();
+    driver.act(&mut harness);
+    driver.act(&mut harness);
+    typed(&mut driver, &mut harness, "Paris");
+    key(&mut driver, &mut harness, Key::Enter, Modifiers::NONE);
+    driver.act(&mut harness);
+    // Porto is still listed: nothing has landed. Its row has no menu to ask again with.
+    assert_eq!(album_names(harness.state()), ["Lisbon", "Porto"]);
+    right_click_row(&mut driver, &mut harness, "Porto");
+    assert!(
+        !harness.state().menu_open(),
+        "a menu of an album that is going"
+    );
+    // Nor after the lists have been read again for another reason - a scan's rebuild -
+    // while the delete is still on its way: they hold Porto still.
+    harness.state().engine().refresh_grid().unwrap();
+    driver.settle(&mut harness);
+    driver.act(&mut harness);
+    assert_eq!(album_names(harness.state()), ["Lisbon", "Porto"]);
+    right_click_row(&mut driver, &mut harness, "Porto");
+    assert!(!harness.state().menu_open(), "the lists read meanwhile");
+    // Lisbon's has, as ever.
+    right_click_row(&mut driver, &mut harness, "Lisbon");
+    assert!(harness.state().menu_open());
+    key(&mut driver, &mut harness, Key::Escape, Modifiers::NONE);
+
+    // The writes land: Porto goes, and Paris is made under the number it had.
+    other.execute_batch("ROLLBACK").unwrap();
+    driver.until(&mut harness, "the lists read again", |app| {
+        album_names(app) == ["Lisbon", "Paris"]
+    });
+    driver.settle(&mut harness);
+    let paris = harness.state().collections().albums[1].id;
+    assert_eq!(paris, porto, "the number is handed out again");
+    // And Paris, which is not going anywhere, has its menu and its own question.
+    ask_to_delete(&mut driver, &mut harness, "Paris");
+    assert!(
+        harness
+            .query_by_label("Delete the album “Paris”? The photos stay in your library.")
+            .is_some()
+    );
+    key(&mut driver, &mut harness, Key::Escape, Modifiers::NONE);
+    driver.settle(&mut harness);
+    assert_eq!(album_names(harness.state()), ["Lisbon", "Paris"]);
+}
+
+// The same of a saved search.
+#[test]
+fn a_saved_search_being_deleted_has_no_menu_until_it_has_left_the_list() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = library(dir.path(), 900, 0, 0);
+    {
+        let lib = Library::open(&library.dirs().db_path).unwrap();
+        lib.create_saved_search("Tens", "IMG_00000", 1_700_000_000_000)
+            .unwrap();
+        lib.create_saved_search("Ones", "IMG_00001", 1_700_000_000_001)
+            .unwrap();
+    }
+    let (mut harness, mut driver) = opened(&library, 900);
+    driver.until(&mut harness, "the lists read", |app| {
+        search_names(app).len() == 2
+    });
+    driver.act(&mut harness);
+    let other = locked(&library);
+    ask_to_delete(&mut driver, &mut harness, "Ones");
+    harness.get_by_label("Delete").click();
+    driver.act(&mut harness);
+    right_click_row(&mut driver, &mut harness, "Ones");
+    assert!(!harness.state().menu_open());
+    right_click_row(&mut driver, &mut harness, "Tens");
+    assert!(harness.state().menu_open());
+    key(&mut driver, &mut harness, Key::Escape, Modifiers::NONE);
+    other.execute_batch("ROLLBACK").unwrap();
+    driver.until(&mut harness, "the lists read again", |app| {
+        search_names(app) == ["Tens"]
+    });
+}
+
+// A question is about one album, under the name it was asked under. Deleted from
+// elsewhere while the question stands - the other photon, open on the same library -
+// and another album made at once, the number is the new album's: "Delete the album
+// “Porto”?" answered with yes deleted Paris. A question whose album is no longer
+// listed under its name is no question, and closes.
+#[test]
+fn a_question_whose_album_has_gone_closes_and_deletes_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = library(dir.path(), 900, 0, 0);
+    album(&library, "Lisbon", &[]);
+    let porto = album(&library, "Porto", &[]);
+    let (mut harness, mut driver) = opened(&library, 900);
+    driver.until(&mut harness, "the albums read", |app| {
+        album_names(app).len() == 2
+    });
+    driver.act(&mut harness);
+    ask_to_delete(&mut driver, &mut harness, "Porto");
+    assert!(harness.state().dialog().is_some());
+
+    let engine = harness.state().engine().clone();
+    commands::delete_album(&engine, porto).unwrap();
+    let paris = commands::create_album(&engine, "Paris").unwrap().id;
+    assert_eq!(paris, porto, "the number is handed out again");
+    // The lists are read when the library says its data changed.
+    engine.refresh_grid().unwrap();
+    driver.until(&mut harness, "the lists read again", |app| {
+        album_names(app) == ["Lisbon", "Paris"]
+    });
+    driver.act(&mut harness);
+    assert!(harness.state().dialog().is_none(), "a question about Porto");
+    driver.settle(&mut harness);
+    assert_eq!(album_names(harness.state()), ["Lisbon", "Paris"]);
+}
+
+// The same of a saved search, which the library deletes by its number alone.
+#[test]
+fn a_question_whose_saved_search_has_gone_closes_and_deletes_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = library(dir.path(), 900, 0, 0);
+    let tens = {
+        let lib = Library::open(&library.dirs().db_path).unwrap();
+        lib.create_saved_search("Tens", "IMG_00000", 1_700_000_000_000)
+            .unwrap()
+            .id
+    };
+    let (mut harness, mut driver) = opened(&library, 900);
+    driver.until(&mut harness, "the lists read", |app| {
+        search_names(app) == ["Tens"]
+    });
+    driver.act(&mut harness);
+    ask_to_delete(&mut driver, &mut harness, "Tens");
+    let engine = harness.state().engine().clone();
+    commands::delete_saved_search(&engine, tens).unwrap();
+    let ones = commands::save_search(&engine, "Ones", "IMG_00001")
+        .unwrap()
+        .id;
+    assert_eq!(ones, tens, "the number is handed out again");
+    engine.refresh_grid().unwrap();
+    driver.until(&mut harness, "the lists read again", |app| {
+        search_names(app) == ["Ones"]
+    });
+    driver.act(&mut harness);
+    assert!(harness.state().dialog().is_none());
+    driver.settle(&mut harness);
+    assert_eq!(search_names(harness.state()), ["Ones"]);
+}
+
+// A delete the library refuses - the album has gone from elsewhere, and the lists have
+// not been read since - is a message, the lists read again, and a row that is a row
+// again: left as "going", nothing listed under that number could be opened a menu on
+// for the rest of the session.
+#[test]
+fn a_delete_the_library_refuses_leaves_the_rows_as_they_are() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = library(dir.path(), 900, 0, 0);
+    album(&library, "Lisbon", &[]);
+    let porto = album(&library, "Porto", &[]);
+    let (mut harness, mut driver) = opened(&library, 900);
+    driver.until(&mut harness, "the albums read", |app| {
+        album_names(app).len() == 2
+    });
+    driver.act(&mut harness);
+    ask_to_delete(&mut driver, &mut harness, "Porto");
+    // Gone from elsewhere, and Paris made under its number, with nothing announced.
+    let engine = harness.state().engine().clone();
+    commands::delete_album(&engine, porto).unwrap();
+    commands::delete_album(&engine, porto).unwrap_err();
+    harness.get_by_label("Delete").click();
+    driver.act(&mut harness);
+    driver.until(
+        &mut harness,
+        "the refusal, and the lists read again",
+        |app| !app.toasts().is_empty() && album_names(app) == ["Lisbon"],
+    );
+    assert_eq!(said(&harness).len(), 1);
+    // An album made now takes the number, and has its menu.
+    let paris = commands::create_album(&engine, "Paris").unwrap().id;
+    assert_eq!(paris, porto);
+    engine.refresh_grid().unwrap();
+    driver.until(&mut harness, "Paris listed", |app| {
+        album_names(app) == ["Lisbon", "Paris"]
+    });
+    driver.act(&mut harness);
+    right_click_row(&mut driver, &mut harness, "Paris");
+    assert!(harness.state().menu_open());
+}
+
+// A double click on the menu's item: its first click opens the picker, which stands in
+// the middle of the window - where a photo's menu usually is - and its second landed
+// on whichever keyword the dialog had put under the pointer, which a click writes. The
+// dialog had come and gone inside the double click, and a keyword nobody chose was
+// taken off the photo.
+#[test]
+fn the_second_click_of_a_double_click_on_a_menus_item_writes_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = library(dir.path(), 900, 0, 0);
+    let ids = photo_ids(&library);
+    {
+        let lib = Library::open(&library.dirs().db_path).unwrap();
+        for n in 0..12 {
+            lib.add_items_tag(&ids[..3], &format!("keyword {n:02}"))
+                .unwrap();
+        }
+    }
+    let (mut harness, mut driver) = opened(&library, 900);
+    driver.until(&mut harness, "the keywords read", |app| {
+        keywords(app).len() == 12
+    });
+    driver.settle(&mut harness);
+    pick(&mut driver, &mut harness, 1, Modifiers::NONE);
+    // Where the item stands under a menu opened at a point: found once, so that the
+    // menu can be opened where its item will be over the dialog's list.
+    let first = middle(&harness, 1);
+    right_click_at(&mut driver, &mut harness, first);
+    let item = harness
+        .get_by_label("Remove keyword from photo…")
+        .rect()
+        .center();
+    let from_pointer = item - first;
+    key(&mut driver, &mut harness, Key::Escape, Modifiers::NONE);
+    assert!(!harness.state().menu_open());
+    // The middle of the window, a little under it: where the picker lists keywords.
+    let at = Pos2::new(500.0, 420.0) - from_pointer;
+    right_click_at(&mut driver, &mut harness, at);
+    assert_eq!(harness.state().selected().len(), 1);
+    let item = harness
+        .get_by_label("Remove keyword from photo…")
+        .rect()
+        .center();
+    // A double click on it, as a window hears one: down, up, the frames the window
+    // draws by itself, down, up.
+    harness.event(egui::Event::PointerMoved(item));
+    harness.event(button(item, PointerButton::Primary, true, Modifiers::NONE));
+    harness.event(button(item, PointerButton::Primary, false, Modifiers::NONE));
+    driver.act(&mut harness);
+    assert!(matches!(harness.state().dialog(), Some(Dialog::Tags(_))));
+    driver.frames_in(&mut harness, 0.15);
+    harness.event(button(item, PointerButton::Primary, true, Modifiers::NONE));
+    harness.event(button(item, PointerButton::Primary, false, Modifiers::NONE));
+    driver.act(&mut harness);
+    driver.settle(&mut harness);
+    assert_eq!(said(&harness), Vec::<String>::new());
+    assert!(
+        matches!(harness.state().dialog(), Some(Dialog::Tags(_))),
+        "and the dialog is there to be used"
+    );
+    // A click that is one of its own writes, as ever.
+    driver.frames_in(&mut harness, 0.4);
+    harness.event(button(item, PointerButton::Primary, true, Modifiers::NONE));
+    harness.event(button(item, PointerButton::Primary, false, Modifiers::NONE));
+    driver.act(&mut harness);
+    driver.until(&mut harness, "the keyword written", |app| {
+        !app.toasts().is_empty()
+    });
+    assert!(said(&harness)[0].starts_with("Removed “keyword"));
+}
+
+// The first row of the list is the library's keyword of that name, whatever its case,
+// and Enter writes what the first row would: written as typed, "lisbon" stood beside
+// "Lisbon" as a second keyword.
+#[test]
+fn enter_writes_the_keyword_the_library_has_under_another_case() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = library(dir.path(), 900, 0, 0);
+    let ids = photo_ids(&library);
+    {
+        let lib = Library::open(&library.dirs().db_path).unwrap();
+        lib.add_items_tag(&ids[..1], "Lisbon").unwrap();
+    }
+    let (mut harness, mut driver) = opened(&library, 900);
+    driver.until(&mut harness, "the keywords read", |app| {
+        keywords(app).len() == 1
+    });
+    open_picker(&mut driver, &mut harness, (5, 5), "Add keyword to photo…");
+    typed(&mut driver, &mut harness, "lisbon");
+    key(&mut driver, &mut harness, Key::Enter, Modifiers::NONE);
+    driver.until(&mut harness, "the message", |app| !app.toasts().is_empty());
+    assert_eq!(said(&harness), ["Added “Lisbon” to 1 photo"]);
+    driver.until(&mut harness, "the keyword counted", |app| {
+        keywords(app) == [("Lisbon".to_owned(), 2)]
+    });
+}
+
+// In the frame a dialog is first drawn in, egui keeps nothing under it from the
+// pointer yet. A right press on a photo in that frame opened the photo's menu over the
+// dialog - the selection behind it another photo's by then - and its "Hide photo" hid
+// a photo while the dialog stood.
+#[test]
+fn nothing_opens_behind_a_dialog_in_the_frame_it_is_first_drawn_in() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = library(dir.path(), 900, 0, 0);
+    let ids = photo_ids(&library);
+    let (mut harness, mut driver) = opened(&library, 900);
+    driver.settle(&mut harness);
+    pick(&mut driver, &mut harness, 2, Modifiers::NONE);
+    pick(&mut driver, &mut harness, 4, Modifiers::SHIFT);
+    let at = middle(&harness, 2);
+    right_click_at(&mut driver, &mut harness, at);
+    let other = middle(&harness, 0);
+    let item = harness
+        .get_by_label("Add keyword to 3 photos…")
+        .rect()
+        .center();
+    harness.event(egui::Event::PointerMoved(item));
+    harness.event(button(item, PointerButton::Primary, true, Modifiers::NONE));
+    harness.event(button(item, PointerButton::Primary, false, Modifiers::NONE));
+    // The next frame is the dialog's first.
+    harness.event(button(
+        other,
+        PointerButton::Secondary,
+        true,
+        Modifiers::NONE,
+    ));
+    harness.event(button(
+        other,
+        PointerButton::Secondary,
+        false,
+        Modifiers::NONE,
+    ));
+    driver.act(&mut harness);
+    driver.act(&mut harness);
+    driver.settle(&mut harness);
+    assert!(!harness.state().menu_open());
+    assert_eq!(harness.state().selected(), ids[2..=4]);
+    assert!(matches!(harness.state().dialog(), Some(Dialog::Tags(_))));
+}
+
+// Nor is a row of the sidebar pressed in that frame: a click that is over in it - down
+// and up together, as a long frame hands them over - switched the view behind the
+// dialog. egui is told of the dialog in the frame it is opened, a frame before it is
+// drawn.
+#[test]
+fn a_click_in_the_frame_a_dialog_is_first_drawn_in_presses_nothing_behind_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = library(dir.path(), 900, 5, 0);
+    let (mut harness, mut driver) = opened(&library, 900);
+    driver.settle(&mut harness);
+    pick(&mut driver, &mut harness, 2, Modifiers::NONE);
+    let at = middle(&harness, 2);
+    right_click_at(&mut driver, &mut harness, at);
+    let starred = harness.get_by_label("Starred").rect().center();
+    let item = harness
+        .get_by_label("Add keyword to photo…")
+        .rect()
+        .center();
+    harness.event(egui::Event::PointerMoved(item));
+    harness.event(button(item, PointerButton::Primary, true, Modifiers::NONE));
+    harness.event(button(item, PointerButton::Primary, false, Modifiers::NONE));
+    driver.act(&mut harness);
+    assert!(harness.state().dialog().is_some());
+    frame_with(
+        &mut driver,
+        &mut harness,
+        vec![
+            button(starred, PointerButton::Primary, true, Modifiers::NONE),
+            button(starred, PointerButton::Primary, false, Modifiers::NONE),
+        ],
+    );
+    driver.settle(&mut harness);
+    driver.until(&mut harness, "at rest", |app| !app.busy());
+    assert_eq!(harness.state().settled(), &Place::of(GridView::All));
+}
+
+// A frame can be long, and a keyword's last letter and its Enter in it together: the
+// keyword written is the one with the letter.
+#[test]
+fn a_letter_and_enter_in_one_frame_write_the_keyword_with_the_letter() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = library(dir.path(), 900, 0, 0);
+    let (mut harness, mut driver) = opened(&library, 900);
+    driver.settle(&mut harness);
+    open_picker(&mut driver, &mut harness, (2, 2), "Add keyword to photo…");
+    typed(&mut driver, &mut harness, "lisbo");
+    frame_with(
+        &mut driver,
+        &mut harness,
+        vec![egui::Event::Text("n".to_owned()), enter_down()],
+    );
+    assert!(harness.state().dialog().is_none());
+    driver.until(&mut harness, "the message", |app| !app.toasts().is_empty());
+    assert_eq!(said(&harness), ["Added “lisbon” to 1 photo"]);
+}
+
+// A keyword the user has renamed is stored under its new name, whatever was typed, and
+// the message names the one stored.
+#[test]
+fn a_keyword_a_rule_renames_is_written_and_said_under_its_new_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = library(dir.path(), 900, 0, 0);
+    let ids = photo_ids(&library);
+    {
+        let lib = Library::open(&library.dirs().db_path).unwrap();
+        lib.add_items_tag(&ids[..1], "holiday").unwrap();
+        lib.rename_tag("holiday", "vacation").unwrap();
+    }
+    let (mut harness, mut driver) = opened(&library, 900);
+    driver.until(&mut harness, "the keywords read", |app| {
+        keywords(app) == [("vacation".to_owned(), 1)]
+    });
+    open_picker(&mut driver, &mut harness, (5, 5), "Add keyword to photo…");
+    typed(&mut driver, &mut harness, "holiday");
+    key(&mut driver, &mut harness, Key::Enter, Modifiers::NONE);
+    driver.until(&mut harness, "the message", |app| !app.toasts().is_empty());
+    assert_eq!(said(&harness), ["Added “vacation” to 1 photo"]);
+    driver.until(&mut harness, "the keyword counted", |app| {
+        keywords(app) == [("vacation".to_owned(), 2)]
+    });
+}
+
+// The library's count is the truth: a photo that has gone missing since the dialog
+// opened is passed over, and the message says how many of those asked for it reached.
+#[test]
+fn the_message_says_how_many_of_the_photos_the_keyword_reached() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = library(dir.path(), 900, 0, 0);
+    let ids = photo_ids(&library);
+    let (mut harness, mut driver) = opened(&library, 900);
+    driver.settle(&mut harness);
+    open_picker(
+        &mut driver,
+        &mut harness,
+        (2, 4),
+        "Add keyword to 3 photos…",
+    );
+    // Marked missing, as a scan marks a photo whose file is gone; no rebuild is asked
+    // for, so the grid and the selection still hold it.
+    {
+        let lib = Library::open(&library.dirs().db_path).unwrap();
+        lib.mark_missing(&ids[3..4], 1_700_000_000_000).unwrap();
+    }
+    typed(&mut driver, &mut harness, "beach");
+    key(&mut driver, &mut harness, Key::Enter, Modifiers::NONE);
+    driver.until(&mut harness, "the message", |app| !app.toasts().is_empty());
+    assert_eq!(said(&harness), ["Added “beach” to 2 of 3 photos"]);
 }

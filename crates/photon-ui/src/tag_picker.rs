@@ -70,7 +70,7 @@ impl Mode {
         }
     }
 
-    /// What the field says it is, to whoever reads the window without seeing it.
+    /// The field's name, for whoever reads the window without seeing it.
     pub fn field(self) -> &'static str {
         match self {
             Mode::Add => "Keyword to add",
@@ -132,10 +132,10 @@ impl TagPicker {
         self.draft = text;
     }
 
-    /// The known keywords the draft narrows to, best first: the exact name, then those
-    /// that begin with it, then the rest that contain it - each in the library's own
-    /// order. Enter writes the draft itself, so the first row must be what Enter would
-    /// do, or the two disagree. With nothing typed, all of them.
+    /// The known keywords the draft narrows to, best first: the name itself, whatever
+    /// its case, then those that begin with it, then the rest that contain it - each in
+    /// the library's own order. The first row is what Enter writes when the library has
+    /// the name (`submit`), or the two disagree. With nothing typed, all of them.
     ///
     /// Without regard to case, and in Rust, as every other match in photon: there is no
     /// `COLLATE NOCASE` in the library, and SQLite's `lower()` knows ASCII alone.
@@ -166,14 +166,25 @@ impl TagPicker {
 
     /// What to write: `tag` - a row of the list that was clicked - or what is typed.
     /// None when there is nothing to write: a blank name, or no photos.
-    pub fn submit(&self, tag: Option<&str>) -> Option<Submit> {
+    ///
+    /// **What is typed is written as the library has it**, when it has the name under
+    /// another case: "lisbon" typed where the library has "Lisbon" is the first row of
+    /// the list, and Enter writes that row's keyword. Written as typed - which is what
+    /// the Svelte picker does - Enter made a second keyword beside the first, the one
+    /// thing the list is there to prevent, and removed nothing where the row would have
+    /// removed it. A name the library has exactly is written exactly, so two keywords
+    /// that differ only by case can each still be reached.
+    pub fn submit(&self, tag: Option<&str>, known: &[String]) -> Option<Submit> {
         let name = tag.unwrap_or(&self.draft).trim();
         if name.is_empty() || self.ids.is_empty() {
             return None;
         }
+        let folded = name.to_lowercase();
+        let had = (known.iter().find(|tag| *tag == name))
+            .or_else(|| known.iter().find(|tag| tag.to_lowercase() == folded));
         Some(Submit {
             mode: self.mode,
-            tag: name.to_owned(),
+            tag: had.map_or(name, String::as_str).to_owned(),
             ids: self.ids.clone(),
         })
     }
@@ -237,14 +248,58 @@ mod tests {
 
     #[test]
     fn a_blank_name_writes_nothing() {
-        assert_eq!(typed(Mode::Add, &[1, 2], "   ").submit(None), None);
-        assert_eq!(TagPicker::new(Mode::Remove, vec![1]).submit(None), None);
-        assert_eq!(typed(Mode::Add, &[1, 2], "beach").submit(Some("  ")), None);
+        assert_eq!(typed(Mode::Add, &[1, 2], "   ").submit(None, &[]), None);
+        assert_eq!(
+            TagPicker::new(Mode::Remove, vec![1]).submit(None, &[]),
+            None
+        );
+        assert_eq!(
+            typed(Mode::Add, &[1, 2], "beach").submit(Some("  "), &[]),
+            None
+        );
     }
 
     #[test]
     fn nothing_is_written_when_no_photo_is_selected() {
-        assert_eq!(typed(Mode::Add, &[], "beach").submit(None), None);
+        assert_eq!(typed(Mode::Add, &[], "beach").submit(None, &[]), None);
+    }
+
+    // The first row of the list is the library's keyword of that name, whatever its
+    // case, and Enter writes what the first row would: not a second keyword beside it.
+    #[test]
+    fn what_is_typed_is_written_as_the_library_has_it_under_another_case() {
+        let known = all(&["Lisbon", "sunset", "Ärzte"]);
+        for (mode, draft, written) in [
+            (Mode::Add, "lisbon", "Lisbon"),
+            (Mode::Remove, " LISBON ", "Lisbon"),
+            (Mode::Add, "ärzte", "Ärzte"),
+            // A name the library does not have is written as it is typed.
+            (Mode::Add, "Porto", "Porto"),
+            (Mode::Add, "lis", "lis"),
+        ] {
+            let picker = typed(mode, &[1], draft);
+            assert_eq!(picker.submit(None, &known).unwrap().tag, written, "{draft}");
+            if written != draft.trim() {
+                assert_eq!(picker.suggestions(&known)[0], written, "{draft}");
+            }
+        }
+        // Two that differ only by case: each is reached by typing it exactly, and
+        // another spelling writes the one the library lists first.
+        let both = all(&["Beach", "beach"]);
+        assert_eq!(
+            typed(Mode::Add, &[1], "beach")
+                .submit(None, &both)
+                .unwrap()
+                .tag,
+            "beach"
+        );
+        assert_eq!(
+            typed(Mode::Add, &[1], "BEACH")
+                .submit(None, &both)
+                .unwrap()
+                .tag,
+            "Beach"
+        );
     }
 
     #[test]
@@ -252,7 +307,7 @@ mod tests {
         let picker = typed(Mode::Remove, &[4, 9], "  beach ");
         assert_eq!(picker.count(), 2);
         assert_eq!(
-            picker.submit(None),
+            picker.submit(None, &[]),
             Some(Submit {
                 mode: Mode::Remove,
                 tag: "beach".to_owned(),
@@ -265,7 +320,7 @@ mod tests {
     fn a_keyword_handed_over_is_written_and_not_the_draft() {
         let picker = typed(Mode::Add, &[7], "be");
         assert_eq!(
-            picker.submit(Some("Beach")),
+            picker.submit(Some("Beach"), &all(&["beach", "Beach"])),
             Some(Submit {
                 mode: Mode::Add,
                 tag: "Beach".to_owned(),

@@ -1694,8 +1694,11 @@ the event says: a test of a repeat holds the key down across frames. The held mo
 reach egui by `Event::ModifiersChanged`, not by a field of `RawInput`: a test that
 clicks with Shift sends it - and a click takes its modifiers from the release's own
 event, not from what is held at the end of the frame, in which Shift may have come up.
-`egui_kittest`'s `step` draws a frame for *each* queued event, so only a test in whole
-frames of a view can put two events in one. **The area that senses the click takes
+`egui_kittest`'s `step` draws a frame for *each* queued event. Two events in one frame
+of the whole application are put into the frame's input beside the queue
+(`harness.input_mut().events.extend(..)`, then a step with nothing queued: `frame_with`
+in `tests/dialogs.rs`); a test in whole frames of a view hands them over together.
+**The area that senses the click takes
 every press on the photos**, however near the scrollbar or the splitter: egui hands a
 near miss to a neighbouring widget only where nothing is hit, so the splitter's reach is
 its own five points now, as the Svelte one's is. A press held longer than egui's 0.8
@@ -1869,9 +1872,8 @@ or folder is no longer listed has no items, and closes - the same rule that clos
 tile's menu when nothing is selected. A folder's menu is one list on its row in the
 sidebar, on its header in the grid and on the copy of that header pinned over the photos
 (`header_at`, in `grid/layout.rs`, says which header a point is on; a period's names no
-folder and has no menu). "Delete…" and "Reveal in file manager" are in their place and
-take no press: the first asks before it acts, and what it asks with is the dialog
-layer's. The other button on a row is read from its own press (`menu_press`), as on a
+folder and has no menu). "Delete…" asks before it acts, through the dialog layer
+(below); "Reveal in file manager" is in its place and takes no press. The other button on a row is read from its own press (`menu_press`), as on a
 photo, and not through what lies over the list.
 
 **A name is typed in the row itself, in the one field the sidebar has**
@@ -1941,7 +1943,13 @@ of the question, under the name it had; the photos of the picker. A menu's rule 
 opposite, and on purpose - a menu's items are built again in every frame and say what
 they would act on now, while a dialog's words were read once, and what the user was told
 it would act on is what it acts on (a scan can take a photo out of the selection behind
-an open dialog; the keyword is written to the three its title named). The picker closes
+an open dialog; the keyword is written to the ids its title counted). **By number, which
+is not for ever the same thing**: an id of the library's is handed out again once it is
+free. For an album and a saved search the window closes that itself (below). For a photo
+it cannot - a photo that is hidden has left the grid as well, and is to be written to -
+so a picker left open while its photo is purged and another indexed writes to the other
+one: improbable, and to be closed only by the library never reusing an id, which is a
+migration. The picker closes
 *before* its write, which is the user's last word on it, and the message afterwards is
 the library's own count and the name it stored, which a rename rule can change.
 
@@ -1975,6 +1983,35 @@ is taken out with it*: the dialog returned at Escape before it had cleared the f
 and an `h` behind the Escape was the grid's. *The picker's field opens with a history of
 its own* (a fresh `TextEditState`): it has one id for every picker, egui keeps a field's
 undo by id, and Ctrl+Z in a new picker brought back the keyword typed in the last.
+
+**What a review of the dialogs found, each with its test.** *A delete on its way takes
+its row's menu away* (`App::deleting`, `going`): an album's number is handed out again
+once it is free, the row stays until the lists are read after the delete's answer, and
+"Delete…" asked of it a second time waited behind an album made meanwhile under that
+number - and deleted it. Refused, the row is a row again. *A question whose album or
+search is no longer listed under the name it was asked under closes* (`App::listed`):
+deleted from elsewhere under the question and another made at once, "Delete the album
+“Porto”?" answered with yes deleted Paris. *The second press of a double click does
+nothing in a dialog* (`DialogView::deaf`): a double click on a menu's item opened the
+picker at its first click and landed its second on a keyword row, which writes at a
+click - a button that goes down within egui's double-click time of the dialog's first
+frame is that press, and nothing is done until it has come up. A test that presses in a
+dialog lets that time pass first (`pick_item`, the fixture's `open`). *Enter writes the
+keyword the library has under another case* (`TagPicker::submit`): the list's first row
+is "Lisbon" for "lisbon" typed, and Enter wrote "lisbon" beside it - where the Svelte
+picker still does. *Nothing under a dialog acts*: egui keeps the pointer from what lies
+under a modal through the modal's own ground, which it finds under the pointer only from
+the frame after the one the dialog is first drawn in (it tests a press against the
+widgets of the frame before; the "modal layer" in its memory is about the keyboard). So
+in a frame drawn under a dialog the dialog takes a button going down out of the frame's
+events, which is where the grid and the sidebar's menus read it, and the application
+drops whatever the shell answers - a click that was over within that first frame was
+still a click on the sidebar's row. *The cross in the picker's corner shows the keyboard
+on it*, as every button does. Not closed, and known: a screen reader's press goes
+through a modal (egui's own, and not reachable until AccessKit is switched on); the
+picker lays out every keyword in every frame, which is slow in a library of thousands;
+and a keyword's removal rule is dropped by adding that keyword again, as the engine has
+it.
 
 **A star is tested in a library of real files** (`tests/menu.rs`, `pictures`,
 `over_files`): the folder's `.picasa.ini` is read back, and every write goes into a

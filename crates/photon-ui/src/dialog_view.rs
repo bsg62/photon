@@ -25,9 +25,7 @@ use crate::{
 };
 use eframe::egui::{
     self, Event, Id, Key, Modifiers, Rect, Response, Sense, Stroke, StrokeKind, UiBuilder, Vec2,
-    WidgetInfo, WidgetType, pos2,
-    text::{CCursor, CCursorRange},
-    vec2,
+    WidgetInfo, WidgetType, pos2, vec2,
 };
 
 /// A dialog is at most this wide, and the keyword picker at most this tall.
@@ -67,6 +65,11 @@ pub struct DialogView {
     /// Whether the dialog on screen has been given the keyboard: it is asked for once,
     /// in the frame the dialog is first drawn.
     opened: bool,
+    /// When the dialog was first drawn, on egui's clock.
+    opened_at: Option<f64>,
+    /// A button went down so soon after that it is the second press of a double click
+    /// on whatever opened the dialog: until it comes up, nothing is done in the dialog.
+    deaf: bool,
 }
 
 fn field_id() -> Id {
@@ -188,6 +191,27 @@ impl DialogView {
                 )
             });
         });
+        // A double click on a menu's item opens the dialog at its first click, and its
+        // second lands on whatever the dialog has put under the pointer: a row of the
+        // keyword list, which writes at a click, or "Delete". A button that goes down
+        // within the time egui takes two clicks for one double click is that second
+        // press, and nothing is done in the dialog until it has come up again.
+        let (now, pressed, released) = ctx.input(|input| {
+            (
+                input.time,
+                input.pointer.any_pressed(),
+                input.pointer.any_released(),
+            )
+        });
+        let double = ctx.options(|options| options.input_options.max_double_click_delay);
+        let since = now - *self.opened_at.get_or_insert(now);
+        if pressed && since < double {
+            self.deaf = true;
+        }
+        let deaf = self.deaf;
+        if released {
+            self.deaf = false;
+        }
         let window = ctx.content_rect();
         let width = WIDTH.min(window.width() - 2.0 * PAD).max(0.0);
         let opened = !std::mem::replace(&mut self.opened, true);
@@ -236,19 +260,33 @@ impl DialogView {
         if done == Done::Open && pressed.is_some_and(|at| !ground.contains(at)) {
             done = Done::Closed;
         }
+        // The second press of a double click does nothing; what was typed stands.
+        if deaf {
+            done = match done {
+                Done::Typed(text) => Done::Typed(text),
+                Done::Submit {
+                    typed: Some(text), ..
+                } => Done::Typed(text),
+                _ => Done::Open,
+            };
+        }
         take_keys(ctx);
         done
     }
 }
 
 /// The keys were the dialog's, and it has read them: nothing drawn after it - the
-/// search box, the sidebar, the grid - reads one, or anything typed.
+/// search box, the sidebar, the grid - reads one, or anything typed. Nor a button going
+/// down: the grid and the sidebar's menus read that from the frame's events, and in the
+/// dialog's first frame nothing else keeps a press from them - a right press there
+/// opened a photo's menu over the dialog, and its "Hide photo" hid a photo behind it.
 fn take_keys(ctx: &egui::Context) {
     ctx.input_mut(|input| {
         input.events.retain(|event| {
             !matches!(
                 event,
                 Event::Key { pressed: true, .. }
+                    | Event::PointerButton { pressed: true, .. }
                     | Event::Text(_)
                     | Event::Copy
                     | Event::Cut
@@ -416,20 +454,20 @@ fn tags(
                 .show(ui)
         })
         .inner;
-    output
-        .response
-        .widget_info(|| WidgetInfo::text_edit(true, "", picker.draft(), mode.field()));
+    // Named, and not only hinted at: egui hands a field's hint to a screen reader as its
+    // placeholder, which is what an empty field already shows.
+    output.response.widget_info(|| {
+        let mut info = WidgetInfo::text_edit(true, "", picker.draft(), mode.placeholder());
+        info.label = Some(mode.field().to_owned());
+        info
+    });
     if opened {
         // The keyboard in the field as the dialog opens: it is what the dialog is for.
         // And a history of its own: the field has one id for every picker that is
         // opened, egui keeps a field's undo by its id, and Ctrl+Z in a new picker
         // brought back the keyword typed in the one before.
         output.response.request_focus();
-        let mut state = egui::text_edit::TextEditState::default();
-        state
-            .cursor
-            .set_char_range(Some(CCursorRange::one(CCursor::new(0))));
-        state.store(ui.ctx(), id);
+        egui::text_edit::TextEditState::default().store(ui.ctx(), id);
     }
     let typed = output.response.changed();
 
@@ -494,6 +532,16 @@ fn tags(
     if closed.hovered() {
         painter.rect_filled(close_at, R[1], color(palette.hover));
     }
+    // Which button the keys are on has to be seen, here as on every other: with no
+    // keyword listed Tab goes from the field straight to this one, and Enter closes.
+    if closed.has_focus() {
+        painter.rect_stroke(
+            close_at,
+            R[1],
+            Stroke::new(2.0, color(palette.accent)),
+            StrokeKind::Inside,
+        );
+    }
     let tint = if closed.hovered() {
         palette.text
     } else {
@@ -532,6 +580,8 @@ mod tests {
         view: DialogView,
         dialog: Dialog,
         keywords: Vec<String>,
+        /// The window's size.
+        size: Vec2,
         time: f64,
         /// What is typed in the field behind the dialog, and whether its button was
         /// clicked in the last frame.
@@ -543,6 +593,8 @@ mod tests {
         /// whether anything typed was left.
         left_over: Vec<Key>,
         typed_left_over: bool,
+        /// How many buttons going down the frame's input still held after it.
+        presses_left_over: usize,
         texts: Vec<(String, Rect)>,
         fills: Vec<(Rect, Color32)>,
         repaint: std::time::Duration,
@@ -568,12 +620,14 @@ mod tests {
                 view: DialogView::default(),
                 dialog,
                 keywords: Vec::new(),
+                size: WINDOW,
                 time: 0.0,
                 behind: String::new(),
                 behind_clicked: false,
                 behind_asks: false,
                 left_over: Vec::new(),
                 typed_left_over: false,
+                presses_left_over: 0,
                 texts: Vec::new(),
                 fills: Vec::new(),
                 repaint: std::time::Duration::MAX,
@@ -582,7 +636,7 @@ mod tests {
 
         fn frame(&mut self, events: Vec<Event>) -> Done {
             let input = RawInput {
-                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, WINDOW)),
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, self.size)),
                 time: Some(self.time),
                 events,
                 ..Default::default()
@@ -593,7 +647,7 @@ mod tests {
             let asks = self.behind_asks;
             let mut done = Done::Open;
             let mut clicked = false;
-            let (mut left_over, mut typed) = (Vec::new(), false);
+            let (mut left_over, mut typed, mut presses) = (Vec::new(), false, 0);
             let mut full = self.ctx.run_ui(input, |ui| {
                 crate::icons::install(ui.ctx());
                 done = view.show(ui, dialog, keywords);
@@ -614,6 +668,7 @@ mod tests {
                                 Event::Text(_) | Event::Paste(_) | Event::Copy | Event::Cut => {
                                     typed = true;
                                 }
+                                Event::PointerButton { pressed: true, .. } => presses += 1,
                                 _ => {}
                             }
                         }
@@ -634,6 +689,7 @@ mod tests {
             self.behind_clicked = clicked;
             self.left_over = left_over;
             self.typed_left_over = typed;
+            self.presses_left_over = presses;
             self.texts.clear();
             self.fills.clear();
             for clipped in &full.shapes {
@@ -654,10 +710,13 @@ mod tests {
 
         /// The dialog's first frames: an area is measured in one frame and shown in
         /// the next, and what lies under it is kept from the pointer from the one after.
+        /// Draws the dialog until it stands, and lets the time pass in which a press
+        /// would be the second of a double click on whatever opened it.
         fn open(&mut self) {
             for _ in 0..3 {
                 assert_eq!(self.frame(Vec::new()), Done::Open);
             }
+            self.time += 1.0;
         }
 
         fn key_with(&mut self, key: Key, modifiers: Modifiers) -> Done {
@@ -1160,11 +1219,16 @@ mod tests {
         for mut f in [Fixture::new(confirm_album()), picker(&["beach"])] {
             f.ctx
                 .all_styles_mut(|style| style.visuals.text_cursor.blink = false);
-            f.open();
-            for _ in 0..4 {
+            // From its third frame on, with no time let go by: egui measures a new
+            // area in one frame and shows it in the next - and would fade it in over
+            // several more, each of them asked for.
+            for _ in 0..3 {
                 f.frame(Vec::new());
             }
-            assert_eq!(f.repaint, std::time::Duration::MAX);
+            for _ in 0..4 {
+                f.frame(Vec::new());
+                assert_eq!(f.repaint, std::time::Duration::MAX);
+            }
         }
     }
 
@@ -1180,5 +1244,263 @@ mod tests {
         f.frame(Vec::new());
         f.frame(Vec::new());
         assert_eq!(f.focused(), Some(field_id()));
+    }
+
+    // What a review of the dialogs found, each with the test that showed it.
+
+    fn down(key: Key) -> Event {
+        Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        }
+    }
+
+    // A double click on a menu's item opens the dialog at its first click, and its
+    // second lands on whatever the dialog has put under the pointer: a row of the
+    // list, which writes at a click, or "Delete".
+    #[test]
+    fn the_second_press_of_a_double_click_does_nothing_in_a_dialog() {
+        // The dialog just drawn, and no time gone by.
+        let just_opened = |dialog: Fixture| {
+            let mut f = dialog;
+            for _ in 0..3 {
+                f.frame(Vec::new());
+            }
+            f
+        };
+        let mut f = just_opened(Fixture::new(confirm_album()));
+        let (delete, cancel) = (f.at(DELETE), f.at(CANCEL));
+        assert_eq!(f.click(delete), Done::Open);
+        assert_eq!(f.click(cancel), Done::Open);
+        // Nor does it close it from beside the dialog.
+        assert_eq!(f.click(pos2(900.0, 600.0)), Done::Open);
+        // A click of its own, once a double click's time is over, is a click.
+        f.time += 1.0;
+        assert_eq!(f.click(delete), Done::Confirmed);
+
+        // A row of the list, which writes: pressed in that time and let go of after it,
+        // it is still that second press.
+        let mut f = just_opened(picker(&["beach", "Lisbon"]));
+        let row = f.at("beach");
+        f.frame(vec![Event::PointerMoved(row)]);
+        assert_eq!(f.button(row, PointerButton::Primary, true), Done::Open);
+        f.time += 1.0;
+        assert_eq!(f.button(row, PointerButton::Primary, false), Done::Open);
+        // What is typed meanwhile is typed.
+        let mut f = just_opened(picker(&["beach"]));
+        f.frame(vec![Event::PointerMoved(row)]);
+        let done = f.frame(vec![
+            Event::PointerButton {
+                pos: row,
+                button: PointerButton::Primary,
+                pressed: true,
+                modifiers: Modifiers::NONE,
+            },
+            Event::Text("b".to_owned()),
+        ]);
+        assert_eq!(done, Done::Typed("b".to_owned()));
+        // With the Enter after it in the same frame, too: typed, and not written.
+        let mut f = just_opened(picker(&["beach"]));
+        f.frame(vec![Event::PointerMoved(row)]);
+        let done = f.frame(vec![
+            Event::PointerButton {
+                pos: row,
+                button: PointerButton::Primary,
+                pressed: true,
+                modifiers: Modifiers::NONE,
+            },
+            Event::Text("b".to_owned()),
+            down(Key::Enter),
+        ]);
+        assert_eq!(done, Done::Typed("b".to_owned()));
+        // And the next click on the row is its own.
+        let mut f = just_opened(picker(&["beach", "Lisbon"]));
+        f.click(row);
+        f.time += 1.0;
+        assert_eq!(
+            f.click(row),
+            Done::Submit {
+                tag: Some("beach".to_owned()),
+                typed: None
+            }
+        );
+    }
+
+    // The grid and the sidebar's menus read a button going down from the frame's
+    // events, and in the dialog's first frame nothing else keeps it from them.
+    #[test]
+    fn a_button_going_down_in_a_dialogs_frame_reaches_nothing_behind() {
+        for button in [PointerButton::Primary, PointerButton::Secondary] {
+            let mut f = Fixture::new(confirm_album());
+            let behind = pos2(100.0, 60.0);
+            // Its first frame, and one in which it stands.
+            for _ in 0..2 {
+                f.frame(vec![Event::PointerButton {
+                    pos: behind,
+                    button,
+                    pressed: true,
+                    modifiers: Modifiers::NONE,
+                }]);
+                assert_eq!(f.presses_left_over, 0, "{button:?}");
+                f.frame(vec![Event::PointerButton {
+                    pos: behind,
+                    button,
+                    pressed: false,
+                    modifiers: Modifiers::NONE,
+                }]);
+            }
+        }
+    }
+
+    // An answer and a press beside the dialog in one frame: the answer stands.
+    #[test]
+    fn an_answer_in_the_frame_of_a_press_on_the_scrim_stands() {
+        let mut f = picker(&["beach"]);
+        f.open();
+        f.typed("lisbon");
+        let outside = pos2(900.0, 600.0);
+        let done = f.frame(vec![
+            down(Key::Enter),
+            Event::PointerButton {
+                pos: outside,
+                button: PointerButton::Primary,
+                pressed: true,
+                modifiers: Modifiers::NONE,
+            },
+        ]);
+        assert_eq!(
+            done,
+            Done::Submit {
+                tag: None,
+                typed: None
+            }
+        );
+    }
+
+    // Enter with the keyboard on a row of the list writes that row, and not what is
+    // typed in the field the keyboard has left.
+    #[test]
+    fn enter_on_a_row_the_tab_key_reached_writes_that_row() {
+        let mut f = picker(&["beach", "Lisbon"]);
+        f.open();
+        f.key(Key::Tab);
+        assert_eq!(f.focused(), Some(Id::new(("dialog-row", "beach"))));
+        assert_eq!(
+            f.key(Key::Enter),
+            Done::Submit {
+                tag: Some("beach".to_owned()),
+                typed: None
+            }
+        );
+        let mut f = picker(&["beach", "Lisbon"]);
+        f.open();
+        f.typed("bea");
+        f.key(Key::Tab);
+        assert_eq!(f.focused(), Some(Id::new("dialog-write")));
+        f.key(Key::Tab);
+        assert_eq!(f.focused(), Some(Id::new(("dialog-row", "beach"))));
+        assert_eq!(
+            f.key(Key::Enter),
+            Done::Submit {
+                tag: Some("beach".to_owned()),
+                typed: None
+            }
+        );
+    }
+
+    // A row pressed, the list narrowed under the button that is down, and the button
+    // let go of over the row that has come to stand there: no click of that one.
+    #[test]
+    fn a_press_on_a_row_that_is_another_when_the_button_comes_up_writes_nothing() {
+        let mut f = picker(&["beach", "Lisbon"]);
+        f.open();
+        let at = f.at("beach");
+        f.frame(vec![Event::PointerMoved(at)]);
+        assert_eq!(f.button(at, PointerButton::Primary, true), Done::Open);
+        // The field still has the keyboard: egui gives it up at a click, not a press.
+        assert_eq!(f.typed("li"), Done::Typed("li".to_owned()));
+        f.frame(Vec::new());
+        assert!(f.drew("beach").is_none());
+        let now = f.drew("Lisbon").unwrap();
+        assert!(
+            now.expand(8.0).contains(at),
+            "Lisbon stands where beach did"
+        );
+        assert_eq!(f.button(at, PointerButton::Primary, false), Done::Open);
+    }
+
+    // A copy and a cut are taken out of the frame with the keys: they are what egui
+    // makes of their chords, and no key at all.
+    #[test]
+    fn a_copy_and_a_cut_reach_nothing_behind() {
+        let mut f = Fixture::new(confirm_album());
+        f.open();
+        for event in [Event::Copy, Event::Cut] {
+            f.frame(vec![event]);
+            assert!(!f.typed_left_over);
+        }
+    }
+
+    // Which button the keys are on has to be seen: Enter presses it. The cross in the
+    // picker's corner had no ring, and with no keyword listed and nothing typed Tab
+    // goes from the field straight to it.
+    #[test]
+    fn the_keyboard_is_seen_on_whatever_it_is_on() {
+        fn drawn(f: &Fixture) -> std::collections::BTreeSet<String> {
+            (f.fills.iter())
+                .map(|(rect, fill)| format!("{rect:?} {fill:?}"))
+                .collect()
+        }
+        // (A ring is a rectangle with a stroke and no fill: the fixture keeps every
+        // rectangle drawn.)
+        let mut f = picker(&["beach"]);
+        f.open();
+        let before = drawn(&f);
+        f.key(Key::Tab);
+        assert_eq!(f.focused(), Some(Id::new(("dialog-row", "beach"))));
+        f.frame(Vec::new());
+        assert!(drawn(&f).difference(&before).count() > 0, "a row");
+        let mut f = picker(&[]);
+        f.open();
+        let before = drawn(&f);
+        f.key(Key::Tab);
+        assert_eq!(f.focused(), Some(Id::new("dialog-close")));
+        f.frame(Vec::new());
+        assert!(drawn(&f).difference(&before).count() > 0, "the cross");
+    }
+
+    // The smallest window photon has is 500 points high, and a library has more
+    // keywords than fit in that: the picker stops short of the window's edges.
+    #[test]
+    fn the_picker_fits_a_window_lower_than_its_list() {
+        let many: Vec<String> = (0..40).map(|n| format!("keyword {n:02}")).collect();
+        let many: Vec<&str> = many.iter().map(String::as_str).collect();
+        let mut f = picker(&many);
+        f.size = vec2(800.0, 400.0);
+        f.open();
+        let ground = f.ground();
+        assert!(
+            ground.top() >= PAD && ground.bottom() <= 400.0 - PAD,
+            "{ground:?}"
+        );
+        assert!(ground.height() < HEIGHT);
+        // And in one high enough it is as tall as a picker gets.
+        let mut f = picker(&many);
+        f.open();
+        assert_eq!(f.ground().height(), HEIGHT);
+    }
+
+    // A window narrower than a dialog: the dialog is as wide as the window lets it be.
+    #[test]
+    fn a_dialog_is_no_wider_than_its_window_lets_it_be() {
+        let mut f = Fixture::new(confirm_album());
+        f.size = vec2(380.0, 600.0);
+        f.open();
+        let ground = f.ground();
+        assert_eq!(ground.width(), 380.0 - 2.0 * PAD);
+        assert!(ground.left() >= PAD && ground.right() <= 380.0 - PAD);
     }
 }

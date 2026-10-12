@@ -17,6 +17,30 @@ pub enum Confirm {
     Search { id: i64, name: String },
 }
 
+/// An album of the user's own or a saved search, as what a question is about and what
+/// a delete deletes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Subject {
+    Album(i64),
+    Search(i64),
+}
+
+impl Confirm {
+    pub fn subject(&self) -> Subject {
+        match self {
+            Confirm::Album { id, .. } => Subject::Album(*id),
+            Confirm::Search { id, .. } => Subject::Search(*id),
+        }
+    }
+
+    /// The name the question was asked under.
+    pub fn name(&self) -> &str {
+        match self {
+            Confirm::Album { name, .. } | Confirm::Search { name, .. } => name,
+        }
+    }
+}
+
 /// The button that does what was asked about, and the one that does not.
 pub const DELETE: &str = "Delete";
 pub const CANCEL: &str = "Cancel";

@@ -149,8 +149,7 @@ impl DialogView {
 ## Task 4: the application
 
 `App::dialog`; `SideAction::DeleteAlbum` and `DeleteSearch`, `TileAction::AddKeyword`
-and `RemoveKeyword` work; `Write::{AlbumDelete, SearchDelete, TagAdd, TagRemove}` and
-their answers.
+and `RemoveKeyword` work; `Write::{Delete, Tag}` and their answers.
 
 - [ ] Tests first, through the application and the real engine: "Delete…" on an album
   asks, "Cancel" and Escape delete nothing, "Delete" deletes it and its photos stay;
@@ -195,9 +194,60 @@ their answers.
 - **A key in the frame of the Escape that closes a dialog goes with it**: the dialog
   answered Escape before it cleared the frame's keys.
 
-**Probes**: sixty-five rules broken in turn, each with the test that was to fail. Three
-passed at first. Two were the lines above that did nothing (a menu closed and a name
-stored when a dialog opens), and went. One was a test that could not see its rule: no
-test opened a second dialog and typed in it, so the view forgetting that the first had
-been given the keyboard (`DialogView::reset`) could be taken out; the keyword test now
-types in its second picker.
+**Probes**: sixty-five rules broken in turn before the review, each with the test that
+was to fail. Three passed at first. Two were the lines above that did nothing (a menu
+closed and a name stored when a dialog opens), and went. One was a test that could not
+see its rule: no test opened a second dialog and typed in it, so the view forgetting
+that the first had been given the keyboard (`DialogView::reset`) could be taken out; the
+keyword test now types in its second picker.
+
+## What the review found
+
+One fresh reviewer on the whole branch, with probes of its own. Each of these is fixed
+with a test that fails without the fix.
+
+- **A confirmation could delete another album or saved search than the one it named.**
+  Their ids are handed out again once free. Two ways in: "Delete…" asked a second time
+  of a row whose delete was still on its way (the queue then held delete, create,
+  delete - and the second delete took what the create had made); and a question left
+  standing while its subject went from elsewhere and another was made. A delete on its
+  way takes its row's menu away until the lists are read after its answer, and a
+  question whose subject is no longer listed under its name closes.
+- **A double click on a menu's keyword item wrote a keyword nobody chose**: the picker
+  opened at the first click and stood where the menu had been, and the second click
+  landed on a row of its list. A press within egui's double-click time of a dialog's
+  first frame does nothing.
+- **Enter and the list's first row disagreed when only the case differed**, which is the
+  one thing the list is there to prevent. The Svelte picker has the same fault; here
+  Enter writes the library's own spelling. A ruling, since it departs from the Svelte
+  picker: a name the library has exactly is still written exactly.
+- **In the frame a dialog is first drawn in, what lay behind it still acted**: a right
+  press opened a photo's menu over the dialog, and a click that was over within the
+  frame switched the view. (My first fix told egui of the modal a frame early, and did
+  nothing: egui's modal layer is about the keyboard. The pointer is kept off by the
+  modal's own ground, a frame late.)
+- **The picker's close button showed no ring** with the keyboard on it.
+- Twelve of the reviewer's probes passed where mine had none: tests now hold a letter
+  and Enter in one frame through the application, a copy and a cut under a dialog, an
+  answer in the frame of a press on the scrim, Enter on a row the Tab key reached, a row
+  that is another by the time the button comes up, the focus ring, a window lower and
+  one narrower than a dialog, a keyword a rule renames, and "2 of 3". A cursor range set
+  on an empty field did nothing and went. One has no test and is said so: an album
+  deleted while the user is on their way elsewhere (`nav.target()` against what is on
+  screen) is a race between two threads' answers with no seam.
+- Statements put right: "Delete…" no longer "takes no press" in CLAUDE.md and the
+  checklist; a field's name is its label to a screen reader and its hint the
+  placeholder; "only a view's frame test can put two events in one frame" (the harness's
+  raw input can).
+
+A hundred and four probes after the fix pass. Two passed on the way: the still-dialog
+test had come to wait out the double-click time before it looked, so a dialog fading in
+would have passed it - it now looks from the dialog's third frame; and a probe of mine
+that named a row by its place was no probe, the dialog moving as its list narrows.
+
+Left as they are, and recorded: **a photo's id is handed out again too**, so a keyword
+picker left open while its photo is purged and another indexed writes to the other -
+what closes it, and every case above at the root, is ids that are never reused, a
+migration and so a spec's decision. A screen reader's press goes through egui's modal
+(sub-project 7 switches AccessKit on). The picker lays out every keyword in every frame.
+A delete refused because its subject has gone says the engine's "item N not found".

@@ -2,7 +2,7 @@
 
 use crate::{
     dialog_view::{DialogView, Done},
-    dialogs::{Confirm, Dialog},
+    dialogs::{Confirm, Dialog, Subject},
     dirs::Dirs,
     empty::{self, GridState, LibraryFacts, Panel, PanelButton},
     events::{Event, UiEvents},
@@ -99,6 +99,13 @@ pub struct App {
     /// The dialog that is open: one at a time, over the whole window.
     dialog: Option<Dialog>,
     dialog_view: DialogView,
+    /// The albums and saved searches whose delete has been asked for and which the
+    /// lists on hand still hold, each with whether its delete has been answered. Until
+    /// the lists have been read after that answer the row is one of something that is
+    /// going, and has no menu (`menu_items`): an id is handed out again once it is
+    /// free, and a second "Delete…" asked of the row while the first was on its way
+    /// deleted whatever had been made under the number meanwhile.
+    deleting: Vec<(Subject, bool)>,
     /// A step made answers where it led, and with it what the engine said when it made
     /// the step and could not finish the rest of it (a sort shown and not stored).
     steps: Queue<Step, Result<(Landed, Option<String>), String>>,
@@ -243,13 +250,8 @@ enum Write {
     Rescan {
         watched: i64,
     },
-    /// An album of the user's own deleted: its photos stay.
-    AlbumDelete {
-        album: i64,
-    },
-    SearchDelete {
-        search: i64,
-    },
+    /// An album of the user's own deleted - its photos stay - or a saved search.
+    Delete(Subject),
     /// A keyword added to photos, or taken off them, in the library: keywords are read
     /// from the photos and never written to them.
     Tag(Submit),
@@ -287,10 +289,9 @@ enum Wrote {
     Folder {
         sent: Option<u64>,
     },
-    /// An album deleted: the lists are read again, and a grid that showed it is left.
-    AlbumDeleted {
-        album: i64,
-    },
+    /// An album or a saved search deleted: the lists are read again, and a grid that
+    /// showed the album is left.
+    Deleted(Subject),
     /// A keyword written: which way, under which name the library stored it, and how
     /// many of the photos asked for it reached.
     Tagged {
@@ -311,6 +312,11 @@ enum Unwritten {
         said: String,
     },
     Said(String),
+    /// A delete the library refused: what was to go is still there.
+    Delete {
+        of: Subject,
+        said: String,
+    },
     /// A name the library would not take: its field stays open, to be put right.
     Name {
         sent: u64,
@@ -531,13 +537,19 @@ impl App {
                     Write::Rescan { watched } => commands::rescan_folder(&engine, watched)
                         .map(|()| Wrote::Grid)
                         .map_err(|err| Unwritten::Said(err.message)),
-                    Write::AlbumDelete { album } => commands::delete_album(&engine, album)
-                        .map(|()| Wrote::AlbumDeleted { album })
-                        .map_err(|err| Unwritten::Said(err.message)),
-                    Write::SearchDelete { search } => {
-                        commands::delete_saved_search(&engine, search)
-                            .map(|()| Wrote::Lists)
-                            .map_err(|err| Unwritten::Said(err.message))
+                    Write::Delete(of) => {
+                        let deleted = match of {
+                            Subject::Album(album) => commands::delete_album(&engine, album),
+                            Subject::Search(search) => {
+                                commands::delete_saved_search(&engine, search)
+                            }
+                        };
+                        deleted
+                            .map(|()| Wrote::Deleted(of))
+                            .map_err(|err| Unwritten::Delete {
+                                of,
+                                said: err.message,
+                            })
                     }
                     Write::Tag(Submit { mode, tag, ids }) => {
                         let written = match mode {
@@ -658,6 +670,7 @@ impl App {
             rename: Rename::default(),
             dialog: None,
             dialog_view: DialogView::default(),
+            deleting: Vec::new(),
             steps,
             search: SearchBox::default(),
             writes,
@@ -874,11 +887,13 @@ impl App {
                     .map(|item| item.map(Picked::Tile))
                     .collect()
             }),
+            // Not of one that is being deleted: its row is still listed until the lists
+            // are read again, and is no longer a row of anything.
             MenuOf::Album(id) => (collections.albums.iter())
-                .any(|album| album.id == id)
+                .any(|album| album.id == id && !self.going(Subject::Album(id)))
                 .then(|| side(side_menu::album_menu(id))),
             MenuOf::Search(id) => (collections.searches.iter())
-                .any(|search| search.id == id)
+                .any(|search| search.id == id && !self.going(Subject::Search(id)))
                 .then(|| side(side_menu::search_menu(id))),
             // A folder the view no longer holds has no row and no header: its name is
             // typed in its row, and its menu was opened on one of the two.
@@ -985,8 +1000,38 @@ impl App {
         }
     }
 
+    /// Whether `subject`'s delete has been asked for, and the lists not read since it
+    /// was answered.
+    fn going(&self, subject: Subject) -> bool {
+        self.deleting.iter().any(|(going, _)| *going == subject)
+    }
+
+    /// Whether the lists on hand hold what `confirm` asks about, under the name it was
+    /// asked under.
+    fn listed(&self, confirm: &Confirm) -> bool {
+        let collections = self.held.collections();
+        let name = match confirm.subject() {
+            Subject::Album(id) => (collections.albums.iter())
+                .find(|album| album.id == id)
+                .map(|album| album.name.as_str()),
+            Subject::Search(id) => (collections.searches.iter())
+                .find(|search| search.id == id)
+                .map(|search| search.name.as_str()),
+        };
+        name == Some(confirm.name())
+    }
+
     /// Draws the dialog that is open and does what was answered in it.
     fn show_dialog(&mut self, ui: &egui::Ui) {
+        // A question about something that is no longer there, or no longer what it was
+        // called, is no question: an album's number is handed out again once it is
+        // free, and "Delete the album “Porto”?" answered with yes after Porto had gone
+        // from elsewhere deleted the album made since under Porto's number.
+        if let Some(Dialog::Confirm(confirm)) = &self.dialog
+            && !self.listed(confirm)
+        {
+            self.dialog = None;
+        }
         let Some(dialog) = &self.dialog else {
             return;
         };
@@ -1009,18 +1054,16 @@ impl App {
                 if let Some(text) = typed {
                     picker.type_in(text);
                 }
-                if let Some(submit) = picker.submit(tag.as_deref()) {
+                if let Some(submit) = picker.submit(tag.as_deref(), &keywords) {
                     self.dialog = None;
                     self.writes.push(Write::Tag(submit));
                 }
             }
             (Done::Confirmed, Some(Dialog::Confirm(confirm))) => {
-                let write = match confirm {
-                    Confirm::Album { id, .. } => Write::AlbumDelete { album: *id },
-                    Confirm::Search { id, .. } => Write::SearchDelete { search: *id },
-                };
+                let subject = confirm.subject();
                 self.dialog = None;
-                self.writes.push(write);
+                self.deleting.push((subject, false));
+                self.writes.push(Write::Delete(subject));
             }
             // What the other kind of dialog answers: neither draws it.
             (Done::Typed(_) | Done::Submit { .. }, _) | (Done::Confirmed, _) => {}
@@ -1441,6 +1484,10 @@ impl App {
             if let Ok(Some(read)) = read {
                 self.search.lists_read(&read.searches);
                 self.held.set_collections(read);
+                // What was deleted has left the lists now: these were read after the
+                // answer that said so, a read asked for before it being dropped for
+                // the one asked for at it.
+                self.deleting.retain(|(_, answered)| !answered);
             }
         }
         let _ = self.layout_store.answer();
@@ -1523,17 +1570,30 @@ impl App {
                     }
                     self.folder_list.ask(());
                 }
-                Ok(Ok(Wrote::AlbumDeleted { album })) => {
+                Ok(Ok(Wrote::Deleted(of))) => {
+                    for (going, answered) in &mut self.deleting {
+                        *answered |= *going == of;
+                    }
                     self.collecting.ask(());
                     // The album on screen, or on its way there: the engine has emptied
                     // its grid, and All photos is the place to land.
-                    let shown = Place {
-                        view: View::Album,
-                        arg: album.to_string(),
-                    };
-                    if self.nav.target() == shown {
-                        self.go(Step::View(View::All));
+                    if let Subject::Album(album) = of {
+                        let shown = Place {
+                            view: View::Album,
+                            arg: album.to_string(),
+                        };
+                        if self.nav.target() == shown {
+                            self.go(Step::View(View::All));
+                        }
                     }
+                }
+                // Refused, it is still there, and its row is a row again. The lists are
+                // read all the same: the commonest refusal is of something that has
+                // gone from elsewhere, whose row should go too.
+                Ok(Err(Unwritten::Delete { of, said })) => {
+                    self.deleting.retain(|(going, _)| *going != of);
+                    self.collecting.ask(());
+                    self.toasts.error(said, now_ms);
                 }
                 Ok(Ok(Wrote::Tagged {
                     mode,
@@ -1735,6 +1795,7 @@ impl eframe::App for App {
 
         // A dialog, before anything else is drawn: nothing behind it reads a key, and it
         // takes them out of the frame when it has read its own (`dialog_view.rs`).
+        let under_dialog = self.dialog.is_some();
         self.show_dialog(ui);
 
         // The menu, before anything else is drawn: while it is open the keys are its
@@ -1831,6 +1892,14 @@ impl eframe::App for App {
         let actions = self.shell.show(ui, &shell, &mut self.search.text, |ui| {
             output = Some(view.show(ui, &data, thumbs, selection));
         });
+        // What lies under a dialog does nothing. egui keeps the pointer from it through
+        // the dialog's own ground, which it finds under the pointer only from the frame
+        // after the one the dialog is first drawn in: in that first frame a click that
+        // was over in it - down and up together, as a long frame hands them over - was
+        // still a click on the sidebar's row, and switched the view behind the dialog.
+        // And a name left open in the sidebar by a refusal is not sent again by a press
+        // on the dialog's own buttons.
+        let actions = if under_dialog { Vec::new() } else { actions };
         for action in actions {
             // The other button on a row of the sidebar that has a menu.
             if let Action::RowMenu { what, at } = &action {
