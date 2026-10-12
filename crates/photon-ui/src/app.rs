@@ -18,7 +18,7 @@ use crate::{
     icons,
     menu::Item,
     menu_view::{MenuView, Outcome},
-    nav::{Landed, LastFolder, Nav, Place, Step},
+    nav::{Landed, LastFolder, Nav, Place, Step, Target},
     probe::{Facts, Move, Outside, Probe, Report},
     rename::{Commit, Of, Rename},
     scans::Scans,
@@ -41,7 +41,8 @@ use crate::{
     toasts::{Toast, Toasts},
     viewer::{Shown, Viewer, Want},
     viewer_caption::{self, Captioned},
-    viewer_levels,
+    viewer_info_view::{InfoAction, InfoData, InfoView},
+    viewer_layout, viewer_levels,
     viewer_view::{Level, Message, ViewerAction, ViewerData, ViewerView},
     window_layout::{Layout, STATUS_BAR, TOP_BAR},
 };
@@ -191,6 +192,9 @@ pub struct App {
     /// A photo to bring into sight in the next frame drawn, looked up in the grid that
     /// frame draws: the one the viewer closed on.
     showing: Option<i64>,
+    /// A photo to select and bring into sight in the next frame drawn: a copy located
+    /// from the viewer's info panel.
+    locating: Option<i64>,
     /// The folder at the top of All photos, as photon remembers it.
     last_folder: LastFolder,
     /// Stores the folder remembered, off this thread, the latest alone.
@@ -258,6 +262,15 @@ enum Write {
     Hidden {
         ids: Vec<i64>,
         hidden: bool,
+    },
+    /// A keyword put on the photo in the viewer, or taken off it.
+    TagAdd {
+        id: i64,
+        tag: String,
+    },
+    TagRemove {
+        id: i64,
+        tag: String,
     },
     AlbumAdd {
         album: i64,
@@ -569,6 +582,14 @@ impl App {
                             .map(|_| Wrote::Grid)
                             .map_err(|err| Unwritten::Said(err.message))
                     }
+                    // The engine rebuilds the grid for a keyword, and the grid's
+                    // arrival is what has the viewer read its photo again.
+                    Write::TagAdd { id, tag } => commands::add_item_tag(&engine, id, &tag)
+                        .map(|_| Wrote::Grid)
+                        .map_err(|err| Unwritten::Said(err.message)),
+                    Write::TagRemove { id, tag } => commands::remove_item_tag(&engine, id, &tag)
+                        .map(|()| Wrote::Grid)
+                        .map_err(|err| Unwritten::Said(err.message)),
                     Write::AlbumAdd { album, ids } => commands::add_to_album(&engine, album, &ids)
                         .map(|()| Wrote::Lists)
                         .map_err(|err| Unwritten::Said(err.message)),
@@ -870,6 +891,7 @@ impl App {
             marked: None,
             going: None,
             showing: None,
+            locating: None,
             last_folder,
             remembering,
             today: today(&zone),
@@ -1153,6 +1175,11 @@ impl App {
             .map(|(_, why)| why.as_str())
     }
 
+    /// Whether the viewer's info panel is open.
+    pub fn viewer_info(&self) -> bool {
+        self.viewer.as_ref().is_some_and(|open| open.info)
+    }
+
     /// The size, in pixels, of the copy of the full picture that was scaled to fit the
     /// window: none until it is made, or for a photo no larger than the window.
     pub fn viewer_fitted(&self) -> Option<[usize; 2]> {
@@ -1427,6 +1454,7 @@ impl App {
             failed: None,
             stale: None,
             within: None,
+            info: false,
         });
     }
 
@@ -1473,6 +1501,13 @@ impl App {
         if let Some(id) = self.showing.take()
             && let Some(offset) = self.index.position_of(id)
         {
+            self.view.go_to(offset, Align::Nearest);
+        }
+        // A photo located is selected as well, alone: it is what was asked for.
+        if let Some(id) = self.locating.take()
+            && let Some(offset) = self.index.position_of(id)
+        {
+            self.selection.select(&self.index, offset);
             self.view.go_to(offset, Align::Nearest);
         }
     }
@@ -1618,8 +1653,23 @@ impl App {
         // window that changes size is another box, and the copy for it is asked for
         // once the size has stood for a moment - a window being dragged wider is a new
         // size in every frame, and each asking is a whole decode.
-        let window = ctx.content_rect().size() * ctx.pixels_per_point();
-        let within = (window.x.round() as u32, window.y.round() as u32);
+        // (The box is the photo's area, which the open info panel takes its room from:
+        // the copy is of the size the photo is drawn at beside it.)
+        let window = ctx.content_rect();
+        let area = viewer_layout::photo_area(
+            viewer_layout::Frame {
+                left: window.left(),
+                top: window.top(),
+                width: window.width(),
+                height: window.height(),
+            },
+            open.info,
+        );
+        let scale = ctx.pixels_per_point();
+        let within = (
+            (area.width * scale).round() as u32,
+            (area.height * scale).round() as u32,
+        );
         if open.within.is_none_or(|(seen, _)| seen != within) {
             open.within = Some((within, now));
         }
@@ -1703,6 +1753,7 @@ impl App {
             })
             .collect();
         let len = self.index.len();
+        let collections = self.held.collections();
         let data = ViewerData {
             levels: &levels,
             fitted: fitted.as_ref(),
@@ -1719,6 +1770,14 @@ impl App {
             video: open.viewer.is_video(),
             can_prev: open.viewer.can_step(-1, len),
             can_next: open.viewer.can_step(1, len),
+            info_open: open.info,
+            info: (open.item.as_ref()).map(|item| InfoData {
+                item,
+                albums: &collections.albums,
+                finds_faces: self.engine.face_detection(),
+                looking: self.scans.looking_for_faces(),
+                zone: &self.zone,
+            }),
         };
         // The zoom is the view's to change in this frame, and the viewer's to keep:
         // before what was done in the frame is acted on, since a step puts it back to
@@ -1741,6 +1800,8 @@ impl App {
         }
 
         let mut closed = false;
+        // A link of the info panel that leaves the viewer, to follow once it is shut.
+        let mut leaving = None;
         for action in actions {
             let moved = match action {
                 ViewerAction::Close => {
@@ -1765,6 +1826,36 @@ impl App {
                     }
                     false
                 }
+                ViewerAction::Info => {
+                    open.info = !open.info;
+                    false
+                }
+                // A keyword and an album's tick are writes of the photo on screen, by
+                // its number, on the queue of writes. What the panel shows of them is
+                // what the library says once they are made: nothing is shown ahead.
+                ViewerAction::Panel(InfoAction::AddTag(tag)) => {
+                    let id = open.viewer.id();
+                    self.writes.push(Write::TagAdd { id, tag });
+                    false
+                }
+                ViewerAction::Panel(InfoAction::RemoveTag(tag)) => {
+                    let id = open.viewer.id();
+                    self.writes.push(Write::TagRemove { id, tag });
+                    false
+                }
+                ViewerAction::Panel(InfoAction::Album { id: album, on }) => {
+                    let ids = vec![open.viewer.id()];
+                    self.writes.push(if on {
+                        Write::AlbumAdd { album, ids }
+                    } else {
+                        Write::AlbumRemove { album, ids }
+                    });
+                    false
+                }
+                ViewerAction::Panel(link) => {
+                    leaving = Some(link);
+                    break;
+                }
             };
             if moved {
                 // Another photo: what was said and made of the one left is not its.
@@ -1779,6 +1870,43 @@ impl App {
         self.viewer = Some(open);
         if closed {
             self.close_viewer();
+        }
+        // A link that leaves the viewer shuts it and goes where a row of the sidebar
+        // would: through `go`, which tells the search box. The photo is not handed back
+        // to the grid first: the grid that was under the viewer is being left too.
+        if let Some(link) = leaving {
+            self.shut_viewer();
+            match link {
+                InfoAction::Search(query) => self.go(Step::Search(query)),
+                InfoAction::Person(key) => self.go(Step::Person(key)),
+                InfoAction::Locate(id) => self.locate(id),
+                InfoAction::AddTag(_) | InfoAction::RemoveTag(_) | InfoAction::Album { .. } => {}
+            }
+        }
+    }
+
+    /// Finds a photo in the grid: in All photos, where every photo that is not hidden
+    /// is, selected and brought into sight. From anywhere else that is a step to All
+    /// photos first, and the photo is looked up in that step's grid (`Nav::jump`);
+    /// where the user is there already or on their way, `go` asks for no step, and
+    /// drops what was half typed into the search box, which would land after the jump.
+    ///
+    /// From Hidden too, where a folder asked for is looked up in the grid on screen
+    /// (`Nav::home_of_folders`): what is located is a copy the panel lists, which is
+    /// never a hidden photo, and a photo unhidden in the viewer stays on screen in
+    /// Hidden with its copies listed.
+    fn locate(&mut self, id: i64) {
+        self.go(Step::View(View::All));
+        if let Some(to) = self.nav.jump(Target::Photo(id)) {
+            self.arrive(to);
+        }
+    }
+
+    /// Goes where a jump leads, in the grid the next frame draws.
+    fn arrive(&mut self, to: Target) {
+        match to {
+            Target::Folder(folder) => self.go_to_folder(folder),
+            Target::Photo(id) => self.locating = Some(id),
         }
     }
 
@@ -2022,8 +2150,8 @@ impl App {
     /// Goes to `folder` in the grid: now, when the grid on screen is the one to look it
     /// up in, and otherwise when that grid is (`adopt`).
     fn jump(&mut self, folder: i64) {
-        if let Some(folder) = self.nav.jump(folder) {
-            self.go_to_folder(folder);
+        if let Some(to) = self.nav.jump(Target::Folder(folder)) {
+            self.arrive(to);
         }
     }
 
@@ -2301,7 +2429,15 @@ impl App {
                     }
                 }
                 Ok(Ok(Wrote::Grid)) => {}
-                Ok(Ok(Wrote::Lists)) => self.collecting.ask(()),
+                Ok(Ok(Wrote::Lists)) => {
+                    self.collecting.ask(());
+                    // And the photo in the viewer, whose albums its info panel ticks:
+                    // the engine rebuilds no grid for an album unless one is on screen,
+                    // so nothing else would read it again.
+                    if let Some(open) = &self.viewer {
+                        self.viewer_items.ask(open.viewer.id());
+                    }
+                }
                 Ok(Ok(Wrote::Removed {
                     name,
                     removed,
@@ -2486,9 +2622,10 @@ impl App {
                 self.menu = None;
             }
         }
-        // A folder clicked from an excursion: this is the grid it was to be looked up in.
-        if let Some(folder) = shown.jump {
-            self.go_to_folder(folder);
+        // A folder clicked from an excursion, or a photo located from one: this is the
+        // grid it was to be looked up in.
+        if let Some(to) = shown.jump {
+            self.arrive(to);
         }
         // The photo in the viewer is found in the new grid by its id, and what the
         // library says of it is read again: a star, a keyword, an edit made elsewhere.
@@ -2690,6 +2827,16 @@ impl eframe::App for App {
             }
         }
 
+        // The keyword's field of the viewer's info panel goes with the viewer, however
+        // it was shut - by its own keys at the end of the last frame, or by a grid of
+        // other results a moment ago in this one. egui lets go of a field that is no
+        // longer drawn only at the end of the frame that did not draw it, so the grid
+        // would be deaf to this frame's keys and, having seen the keyboard elsewhere,
+        // to the next frame's.
+        if self.viewer.is_none() {
+            InfoView::leave(ui.ctx());
+        }
+
         // The viewer takes the whole window: the shell is not drawn under it, and the
         // grid keeps its place, which is a number of its own and not a widget's.
         if self.viewer.is_some() {
@@ -2888,6 +3035,9 @@ struct Viewing {
     stale: Option<Want>,
     /// The box the photo is fitted into, in pixels, and since when it has been that.
     within: Option<((u32, u32), f64)>,
+    /// Whether the info panel is open: the viewer's while it is, closed at every
+    /// opening, and kept across a step.
+    info: bool,
 }
 
 impl Viewing {

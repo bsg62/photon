@@ -18,6 +18,47 @@ pub const BAR: f32 = 38.0;
 pub const CLOSE: f32 = 32.0;
 /// The buttons for the photo before and the one after, at the window's sides.
 pub const NAV: f32 = 40.0;
+/// The info panel's width, and how far it stands from the window's right edge: clear of
+/// the button that closes, in the corner. The panel is placed and the photo's area worked
+/// out from the same numbers, so the room the photo is given up and the panel it is given
+/// up to cannot come to disagree.
+pub const INFO_WIDTH: f32 = 280.0;
+pub const INFO_RIGHT: f32 = 56.0;
+/// The black left between the photo's area and the panel.
+pub const INFO_GAP: f32 = 12.0;
+/// How far the panel's foot stands from the window's: clear of the bar and the slider.
+pub const INFO_BOTTOM: f32 = 56.0;
+
+/// How much of the window's right side the info panel takes from the photo while it is
+/// open. The photo is fitted beside the panel, not under it: under it the panel covered a
+/// third of a landscape photo, and the faces it lists were among what it covered.
+pub fn info_room(open: bool) -> f32 {
+    if open {
+        INFO_WIDTH + INFO_RIGHT + INFO_GAP
+    } else {
+        0.0
+    }
+}
+
+/// The area the photo is fitted into, in a window of this frame: all of it, less the
+/// info panel's room. What the zoom and the pan are measured in, and from whose middle.
+pub fn photo_area(window: Frame, info: bool) -> Frame {
+    Frame {
+        width: (window.width - info_room(info)).max(0.0),
+        height: window.height.max(0.0),
+        ..window
+    }
+}
+
+/// Where the info panel stands in the window.
+pub fn info_place(window: Frame) -> Frame {
+    Frame {
+        left: window.left + window.width - INFO_RIGHT - INFO_WIDTH,
+        top: window.top + EDGE,
+        width: INFO_WIDTH,
+        height: (window.height - EDGE - INFO_BOTTOM).max(0.0),
+    }
+}
 
 /// The rectangle a picture `width` by `height` takes in `frame`, fitted: scaled to touch
 /// the frame on its longer relative side and centred on the other. A small picture is
@@ -77,6 +118,68 @@ mod tests {
         assert_eq!(
             (moved.left, moved.top, moved.width, moved.height),
             (150.0, 20.0, 200.0, 200.0)
+        );
+    }
+
+    #[test]
+    fn the_info_panel_takes_its_room_from_the_photo_only_while_it_is_open() {
+        assert_eq!(info_room(false), 0.0);
+        assert_eq!(info_room(true), INFO_WIDTH + INFO_RIGHT + INFO_GAP);
+        let window = Frame {
+            left: 10.0,
+            top: 20.0,
+            width: 1280.0,
+            height: 800.0,
+        };
+        // The whole window with the panel closed; what the panel leaves, at the
+        // window's full height and from its own corner, while it is open.
+        assert_eq!(photo_area(window, false), window);
+        assert_eq!(
+            photo_area(window, true),
+            Frame {
+                width: 1280.0 - 348.0,
+                ..window
+            }
+        );
+        // Never less than nothing, in a window narrower than the panel's room.
+        let narrow = Frame {
+            width: 200.0,
+            height: -5.0,
+            ..window
+        };
+        let area = photo_area(narrow, true);
+        assert_eq!((area.width, area.height), (0.0, 0.0));
+    }
+
+    #[test]
+    fn the_info_panel_stands_beside_the_photos_area_clear_of_the_corner_and_the_bar() {
+        let window = Frame {
+            left: 10.0,
+            top: 20.0,
+            width: 1280.0,
+            height: 800.0,
+        };
+        let panel = info_place(window);
+        assert_eq!(
+            panel,
+            Frame {
+                left: 10.0 + 1280.0 - 56.0 - 280.0,
+                top: 32.0,
+                width: 280.0,
+                height: 800.0 - 12.0 - 56.0,
+            }
+        );
+        // The gap between the photo's area and the panel is black.
+        let area = photo_area(window, true);
+        assert_eq!(panel.left - (area.left + area.width), INFO_GAP);
+        // A window too low for it has a panel of no height, not of less.
+        assert_eq!(
+            info_place(Frame {
+                height: 40.0,
+                ..window
+            })
+            .height,
+            0.0
         );
     }
 

@@ -48,6 +48,9 @@ pub fn install(ctx: &egui::Context) {
         visuals.extreme_bg_color = color(palette.surface);
         visuals.faint_bg_color = color(palette.hover);
         visuals.override_text_color = Some(color(palette.text));
+        // A text field's placeholder: egui writes one in this colour whatever colour
+        // the words were given, and left to itself greys out the text's.
+        visuals.weak_text_color = Some(color(palette.text_dim));
         visuals.hyperlink_color = color(palette.accent);
         visuals.selection.bg_fill = color(palette.accent_soft);
         visuals.selection.stroke.color = color(palette.accent);
@@ -64,4 +67,25 @@ pub fn choose(ctx: &egui::Context, choice: ThemeChoice) {
         ThemeChoice::Light => ThemePreference::Light,
         ThemeChoice::Dark => ThemePreference::Dark,
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // egui paints a field's placeholder in its "weak" text colour and in no other,
+    // whatever the words handed to it say: every field here gives its placeholder the
+    // palette's dim text, and until this was set none of them was drawn in it.
+    #[test]
+    fn a_placeholder_is_written_in_the_dim_text_of_its_theme() {
+        let ctx = egui::Context::default();
+        install(&ctx);
+        for (theme, palette) in [(Theme::Light, &LIGHT), (Theme::Dark, &DARK)] {
+            assert_eq!(
+                ctx.style_of(theme).visuals.weak_text_color(),
+                color(palette.text_dim),
+                "{theme:?}"
+            );
+        }
+    }
 }

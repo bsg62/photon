@@ -2264,6 +2264,108 @@ the next one back to the fit - a frame long enough to hold both costs a second p
 zoom the whole window by them, as a web view zooms its page, which the Tauri photon has
 switched off.
 
+**The info panel is the viewer's while it is open, and the photo is fitted beside it**
+(`viewer_info.rs` and `viewer_histogram.rs` for what it says - `exif.ts` and `histogram.ts`,
+with their tests' cases; `viewer_layout.rs` for where it stands - `info_room`, `photo_area`
+and `info_place`, from one set of numbers; `viewer_info_view.rs` draws it and answers what
+was pressed in it). Closed at every opening, kept across a step. The photo's area is the
+window less the panel's room, and everything that was measured in the window is measured in
+it: the fit, the copy the engine is asked to scale (`show_viewer`'s `within`), the zoom's
+bounds and the point it holds still, the pan, a message in the picture's place, the button
+for the next photo. The picture is cut off at the area's edge, so a zoomed photo stops at
+the panel. The photo's own caption is not drawn beside the open panel, which has it whole.
+**Nothing is shown before the library has said it**: a keyword taken off is gone when the
+library says so, a round trip later, where the Svelte panel shows its own guess at once and
+puts it back on a refusal - here a refusal is a message and there is nothing to put back. A
+keyword is `Write::TagAdd` or `TagRemove` on the queue of writes, for which the engine
+rebuilds the grid, and a grid's arrival is what has the viewer read its photo again. An
+album's tick is the menu's `AlbumAdd` or `AlbumRemove` with the one photo, and **the write's
+own answer has the photo read again** with the lists: the engine announces nothing for an
+album that is not on screen. What the People section says of a photo with no face is the
+engine's switch (`Engine::face_detection`, a flag in memory) and whether a pass is running
+(`Scans::looking_for_faces`).
+
+**A link of the panel that leaves the viewer shuts it first**, and goes where a row of the
+sidebar would, through `App::go`, which tells the search box: a camera, a lens and "Photos
+nearby" are searches, a person is their view. The photo is not handed back to the grid,
+which is being left too. **A copy is found in All photos** (`App::locate`): by the folder
+jump's own means, `Nav::jump` with a `Target::Photo` - looked up in the grid on screen when
+no step is on its way, else in the grid of the step to All photos - and there selected,
+alone, and brought into sight (`take_photo`'s `locating`, by its id in the grid the next
+frame draws). All photos is asked for whatever is on screen: `go` asks for no step to where
+the user already is, and drops a search half typed, which would land after the jump. From
+Hidden too, where a folder asked for is looked up in the grid on screen: a copy the panel
+lists is never a hidden photo, and a photo unhidden in the viewer stays on screen in Hidden
+with its copies listed - looked up there, the press closed the viewer and found nothing.
+"Open in OpenStreetMap" and "Show N duplicates in the grid" are in their places and take no
+press; no text of the panel can be selected.
+
+**The panel is one column painted by hand** (`Page`: where the next thing goes; `Flow` for
+what stands side by side and goes on to the next line), scrolled by a number of its own,
+through a child cut off at the panel's edge - an icon paints through the `Ui` it is given
+and a widget is pressed only inside its clip. The cut is what keeps a thing that is scrolled
+out from being drawn or pressed; **`Page::sees` is what keeps it from AccessKit**, by not
+handing it to egui at all - without it a line that was not on screen was there for a test of
+the whole application to find, and will be for a screen reader. (A probe that took one such
+test away passed, because the row it looked at was guarded twice: the test now asks for a
+name, a row and a link.) **But the keyword's field is drawn in sight or out of it**: egui
+lets go of a field that is not drawn, and scrolled out of sight it gave the keyboard to the
+viewer, where the next letter typed is a key. **The panel's ground is a widget that does
+nothing, and is needed**: where a press hits nothing egui hands it to a widget within five
+points, so a press in the panel's own margin, just above a link the edge cuts off, pressed
+the link. In the viewer the photo's surface lies under the panel and would do as much, which
+is why a probe that took the ground away passed until a test pressed there in the panel
+alone. The wheel over the panel is the panel's, a notch as far as egui scrolls anything, and
+steps to no photo; a press on it is not the photo's (`Controls::panel`). A panel that has
+got shorter than it is scrolled - a keyword taken off - is held to its new end in the next
+frame, which it asks for: what it holds is measured as it is drawn. Another photo begins at
+the top, with nothing typed. Its wrapped words are laid out by egui and do not go through
+`text::paint_line`: a name in another script is drawn in the order it is written, as the
+empty library's sentence is.
+
+**The keyword's field is egui's text field a third time**, with the filter spelled out
+(above, "egui's text field, twice now"). Enter is read and taken out of the frame before the
+field is drawn - egui's field gives the keyboard up at an Enter it sees, and the next
+keyword is typed straight on - and adds what the field holds once it has taken the frame's
+letters. **While it has the keyboard the viewer's keys are the field's**
+(`InfoView::typing`, asked before the frame's keys are read): the viewer reads its keys from
+the frame's events and not through a widget, so `h` typed into a keyword hid the photo
+behind it. Escape leaves the field and closes nothing, by that rule and not by being taken
+out of the frame, which was written first and did nothing: the viewer has read the frame's
+keys before the panel is drawn. The next Escape closes the viewer. A press of the first
+button anywhere but on the field leaves it at the press - egui gives the keyboard up at a
+click elsewhere, which a press that becomes a pan is not - and one on the field itself does
+not, button down or up. **The field goes with the viewer, in the first frame that finds the
+viewer shut** (`App::ui`, before the shell is drawn): egui lets go of a field that is no
+longer drawn only at the end of the frame that did not draw it, so that frame's keys were
+not the grid's. In one place, because the viewer is shut in two - by its own frame, and by
+`adopt`, when a grid of other results does not hold its photo. Each has a test with the key
+in that very frame - for the first with the mouse's back button still held, since the click
+of a button let go of has egui take the keyboard off the field by itself; with the key a
+frame later, as the first version had it, the test passed with the rule gone.
+
+**egui paints a field's placeholder in the theme's "weak" text colour, whatever colour its
+words are given** (`hint_text` with a `RichText` of a colour: the colour is replaced). Two
+things follow. `theme::install` sets that colour to the palette's dim text, which every
+field here had asked for in vain and got egui's greyed-out text instead. And **the viewer's
+keyword field is drawn in the dark theme's visuals, whatever the window's** (`set_visuals`
+on its own `Ui`): the viewer's glass is dark in both themes, and in a light window "Add a
+keyword" was all but invisible - seen in a picture, enlarged, after every test had passed. A
+placeholder's colour is now something a frame test can ask (the fixture's `tints`). The
+caret is the same light blue in both of egui's themes and needed nothing, which the first
+version of that test said by failing.
+
+**The bar keeps its width while the caption is not known** (`bar_place`'s `was`): at a step
+the caption is empty for the round trip the library's answer takes, the bar shrank to its
+tools, and its buttons jumped twice at every step - found by a test that pressed the panel's
+button a frame after a step and missed it. A test that presses in the bar after a step waits
+for the photo's facts. **A fixture's photos have no camera and no copy**, and no call of the
+library's gives them one: a test writes the columns itself before the launch (`doctored`,
+`copies` in `tests/viewer.rs` - the engine's own pass does not read a drive that is not
+there, so the hash stays). And a library where photon looks for faces is still recognising
+them for a moment after the launch: a test of the People section's "No faces found." waits
+for the pass's line to go.
+
 **A picture test makes its GPU device alone** (`tests/screenshots.rs`, `DEVICES`): every
 picture is drawn on a thread of its own, and with two dozen devices made in the same
 moment `native-shot` crashed inside the Vulkan loader about once in four runs

@@ -71,6 +71,9 @@ pub mod thumbs {
 pub mod toasts;
 pub mod viewer;
 pub mod viewer_caption;
+pub mod viewer_histogram;
+pub mod viewer_info;
+pub mod viewer_info_view;
 pub mod viewer_layout;
 pub mod viewer_levels;
 pub mod viewer_view;
@@ -81,7 +84,7 @@ pub mod window_layout;
 #[cfg(test)]
 mod tests {
     /// The state modules, with their source.
-    const STATE_MODULES: [(&str, &str); 41] = [
+    const STATE_MODULES: [(&str, &str); 43] = [
         ("args.rs", include_str!("args.rs")),
         ("controls.rs", include_str!("controls.rs")),
         ("scans.rs", include_str!("scans.rs")),
@@ -118,6 +121,8 @@ mod tests {
         ("toasts.rs", include_str!("toasts.rs")),
         ("viewer.rs", include_str!("viewer.rs")),
         ("viewer_caption.rs", include_str!("viewer_caption.rs")),
+        ("viewer_histogram.rs", include_str!("viewer_histogram.rs")),
+        ("viewer_info.rs", include_str!("viewer_info.rs")),
         ("viewer_layout.rs", include_str!("viewer_layout.rs")),
         ("viewer_levels.rs", include_str!("viewer_levels.rs")),
         ("viewer_zoom.rs", include_str!("viewer_zoom.rs")),
