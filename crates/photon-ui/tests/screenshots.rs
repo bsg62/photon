@@ -523,6 +523,60 @@ fn native_naming_dark() {
     shot(ThemeChoice::Dark, "native-naming-dark.png", naming);
 }
 
+/// The question asked before an album is deleted: over the whole window, the keyboard
+/// on "Cancel".
+fn confirming(harness: &mut Harness<'_>) {
+    let at = harness.get_by_label("Best of the Alps").rect().center();
+    right_click_at(harness, at);
+    harness.get_by_label("Delete…").click();
+    for _ in 0..3 {
+        harness.step();
+    }
+    harness.event(egui::Event::PointerGone);
+    harness.step();
+}
+
+/// The keyword picker for three photos, with a few letters typed: the library's
+/// keywords narrowed to those that hold them.
+fn picking(harness: &mut Harness<'_>) {
+    pick(harness, 2, Modifiers::NONE);
+    pick(harness, 4, Modifiers::SHIFT);
+    harness.event(egui::Event::ModifiersChanged(Modifiers::NONE));
+    right_click(harness, 3);
+    harness.get_by_label("Add keyword to 3 photos…").click();
+    for _ in 0..3 {
+        harness.step();
+    }
+    harness.event(egui::Event::Text("in".to_owned()));
+    harness.step();
+    harness.event(egui::Event::PointerGone);
+    harness.step();
+}
+
+#[test]
+#[ignore = "renders through a GPU adapter: cargo run -p xtask -- native-shot"]
+fn native_confirm_light() {
+    shot(ThemeChoice::Light, "native-confirm-light.png", confirming);
+}
+
+#[test]
+#[ignore = "renders through a GPU adapter: cargo run -p xtask -- native-shot"]
+fn native_confirm_dark() {
+    shot(ThemeChoice::Dark, "native-confirm-dark.png", confirming);
+}
+
+#[test]
+#[ignore = "renders through a GPU adapter: cargo run -p xtask -- native-shot"]
+fn native_keywords_light() {
+    shot(ThemeChoice::Light, "native-keywords-light.png", picking);
+}
+
+#[test]
+#[ignore = "renders through a GPU adapter: cargo run -p xtask -- native-shot"]
+fn native_keywords_dark() {
+    shot(ThemeChoice::Dark, "native-keywords-dark.png", picking);
+}
+
 // A library that watches nothing, as a first run is where there is no Pictures folder:
 // what it says where its photos would be, its buttons drawn and not yet answering, and
 // "No folders yet." in the sidebar.
