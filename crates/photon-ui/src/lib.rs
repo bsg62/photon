@@ -12,10 +12,14 @@ pub mod controls_bar;
 pub mod dialog_view;
 pub mod dialogs;
 pub mod dirs;
+pub mod drop_card;
 pub mod empty;
 pub mod empty_panel;
 pub mod events;
+pub mod export_dialog;
+pub mod export_view;
 pub mod fixture;
+pub mod folder_drop;
 pub mod grid {
     pub mod header;
     pub mod labels;
@@ -70,7 +74,7 @@ pub mod window_layout;
 #[cfg(test)]
 mod tests {
     /// The state modules, with their source.
-    const STATE_MODULES: [(&str, &str); 33] = [
+    const STATE_MODULES: [(&str, &str); 35] = [
         ("args.rs", include_str!("args.rs")),
         ("controls.rs", include_str!("controls.rs")),
         ("scans.rs", include_str!("scans.rs")),
@@ -78,6 +82,8 @@ mod tests {
         ("dialogs.rs", include_str!("dialogs.rs")),
         ("dirs.rs", include_str!("dirs.rs")),
         ("empty.rs", include_str!("empty.rs")),
+        ("export_dialog.rs", include_str!("export_dialog.rs")),
+        ("folder_drop.rs", include_str!("folder_drop.rs")),
         ("menu.rs", include_str!("menu.rs")),
         ("nav.rs", include_str!("nav.rs")),
         ("rename.rs", include_str!("rename.rs")),

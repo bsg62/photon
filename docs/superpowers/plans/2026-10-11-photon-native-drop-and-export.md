@@ -243,3 +243,34 @@ pub enum Done { .., Path(String), Tick(bool), Size(Option<u32>), Export }
 - [ ] Pictures: the export's dialog with a path that passed; the card; light and dark.
 - [ ] The smoke checklist (a drop on X11, Windows and macOS; none on Wayland); CLAUDE.md;
   push; one fresh reviewer; one fix pass; merge.
+
+## Changed in the making
+
+- **`can_arrive` is `folder_drop.rs`'s**, not the application's: a state module can name
+  the window's handle, and a test can then make a Wayland one.
+- **The card tells AccessKit its words**, which the plan had not: a card that is only
+  painted is invisible to a test of the whole application.
+- **`Write::Watch` does not ask for the folder list.** The list is read again when the
+  folder's scan ends, as after any scan, and the folder is put into the list on hand at
+  once; asked for at the answer as well, the read changed nothing any test could see.
+- **`TextEdit`'s own event filter** is left as it is in the path field, which wants the
+  arrows and has no key of its own to claim.
+- **A field's name is its label** (`WidgetInfo::label`), after the dialogs' review.
+- **What is said of a refused path stands until the next answer.** As planned it went
+  at every letter and came back at every answer, and the dialog, which is centred,
+  moved with it. Found in a picture: the click that was to choose a size missed a button
+  that had moved a frame before.
+- **What the review of the fifth pull request found was asked of this one before its
+  own review**: the double click on "Export…" is the dialog layer's to keep off, the
+  held Enter too; the photos are taken as the dialog opens, with the risk recorded
+  there.
+
+**Probes**: a hundred and twenty-five rules broken in turn, each with the test that was
+to fail. Two passed at first, and both were tests that could not see their rule: the
+card's words were found inside the Svelte file's longer sentence when cut short (the
+words are now held with what stands on either side of them), and a folder watched twice
+was listed once again by the time the test looked (it now looks in the frame of the
+answer). One call has no test through the application and is said so in CLAUDE.md:
+`Scans::added` at a drop's answer, a race with no seam, whose rule is tested in
+`scans.rs`. The red line round a refused field is seen in the picture and by no test.
+

@@ -105,6 +105,21 @@ impl Scans {
         }
     }
 
+    /// A folder has just been watched, and its first scan started with it
+    /// (`Engine::add_folder`): it counts as being scanned until that scan has been heard
+    /// from, as a folder of the launch does - unless it has been heard from already, the
+    /// scan's first report and the answer that says the folder is watched arriving in
+    /// either order. Without it an empty library said, for the moment between the two,
+    /// that photon had found no photos in a folder it had not begun to read.
+    pub fn added(&mut self, watched: i64) {
+        if self.scans.contains_key(&watched) {
+            return;
+        }
+        if let Launch::Awaiting(unheard) = &mut self.launch {
+            unheard.insert(watched);
+        }
+    }
+
     /// Whether it is known which folders photon watches: not before the list read after
     /// the first scans were started. Until then an empty list is "not read yet", and
     /// nothing may say that no folder is watched.
@@ -454,6 +469,52 @@ mod tests {
         scans.started();
         scans.listed(&[]);
         assert!(scans.known() && !scans.scanning());
+    }
+
+    // A folder dropped on the window is watched and its first scan started
+    // (`Engine::add_folder`), and the answer that says so and the scan's first report
+    // arrive in either order: until the scan has been heard from, photon is looking.
+    #[test]
+    fn a_folder_just_watched_counts_as_scanned_until_its_scan_is_heard_from() {
+        let mut scans = Scans::default();
+        scans.started();
+        scans.listed(&[]);
+        assert!(!scans.scanning());
+        scans.added(4);
+        assert!(scans.scanning());
+        // The list read again holds it, and it is still owed its scan's word.
+        scans.listed(&[folder(4, "/holiday")]);
+        assert!(scans.scanning());
+        scans.scan(report(4, 0, 0, false), true, 0);
+        assert!(scans.scanning(), "running now");
+        scans.scan(report(4, 3, 3, true), true, 3);
+        assert!(!scans.scanning());
+    }
+
+    // The scan was quicker than the answer: it has said what there is to say, and is
+    // not waited for again - waited for, an empty folder dropped on an empty library
+    // kept it looking for good.
+    #[test]
+    fn a_folder_whose_scan_was_heard_before_it_was_said_to_be_watched_is_not_waited_for() {
+        let mut scans = Scans::default();
+        scans.started();
+        scans.listed(&[]);
+        scans.scan(report(4, 0, 0, false), false, 0);
+        scans.scan(report(4, 0, 0, true), false, 0);
+        scans.settled();
+        scans.added(4);
+        assert!(!scans.scanning());
+    }
+
+    // No longer watched, it is owed nothing, as a folder of the launch is not.
+    #[test]
+    fn a_folder_just_watched_and_removed_again_is_not_waited_for() {
+        let mut scans = Scans::default();
+        scans.started();
+        scans.listed(&[]);
+        scans.added(4);
+        scans.listed(&[]);
+        assert!(!scans.scanning());
     }
 
     #[test]

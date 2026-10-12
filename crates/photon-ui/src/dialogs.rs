@@ -1,14 +1,14 @@
 //! The dialogs there are: the question asked before an album or a saved search is
-//! deleted, and the keyword picker. One at a time, over the whole window, held by the
+//! deleted, the keyword picker, and the export's. One at a time, over the whole window, held by the
 //! application and drawn by `dialog_view.rs`.
 //!
 //! **What a dialog acts on is taken when it opens** - the album or the search of the
-//! question, by its id and under the name it had; the photos of the picker - and not
-//! read when it answers. This is the opposite of a menu's rule, on purpose. A menu's
+//! question, by its id and under the name it had; the photos of the picker and of the
+//! export - and not read when it answers. This is the opposite of a menu's rule, on purpose. A menu's
 //! items are built again in every frame and say what they would act on now; a dialog's
 //! words were read once, and what the user was told it would act on is what it acts on.
 
-use crate::tag_picker::TagPicker;
+use crate::{export_dialog::ExportDialog, tag_picker::TagPicker};
 
 /// A question asked before something is deleted that cannot be brought back.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -73,6 +73,7 @@ impl Confirm {
 pub enum Dialog {
     Confirm(Confirm),
     Tags(TagPicker),
+    Export(ExportDialog),
 }
 
 #[cfg(test)]

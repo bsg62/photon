@@ -4,8 +4,11 @@ use crate::{
     dialog_view::{DialogView, Done},
     dialogs::{Confirm, Dialog, Subject},
     dirs::Dirs,
+    drop_card,
     empty::{self, GridState, LibraryFacts, Panel, PanelButton},
     events::{Event, UiEvents},
+    export_dialog::{self, ExportDialog, Job},
+    folder_drop::{self, FolderDrop, Watched},
     grid::{
         labels::folder_label,
         view::{Align, Ask, Asked, GridData, GridOutput, GridView},
@@ -106,6 +109,22 @@ pub struct App {
     /// free, and a second "Delete…" asked of the row while the first was on its way
     /// deleted whatever had been made under the number meanwhile.
     deleting: Vec<(Subject, bool)>,
+    /// Whether a folder dropped on the window can arrive at all: asked of the window
+    /// once (`folder_drop::can_arrive`). Where none can, none is offered.
+    drops: bool,
+    /// What is held over the window.
+    drop: FolderDrop,
+    /// The path in the export's field, asked about off this thread: with the text that
+    /// was asked about, since the field has been typed in since.
+    checking: Latest<String, (String, Result<String, String>)>,
+    /// Whether an export applies edits, as stored: read when the export's dialog opens.
+    edits: Latest<(), Option<bool>>,
+    /// The export, on a thread of its own: it runs for minutes, and a star pressed
+    /// meanwhile must not wait for it. Answers how many photos were asked for, where
+    /// to, and what came of it.
+    exports: Queue<Job, (usize, String, Result<commands::ExportReport, String>)>,
+    /// Whether an export is running: one at a time.
+    exporting: bool,
     /// A step made answers where it led, and with it what the engine said when it made
     /// the step and could not finish the rest of it (a sort shown and not stored).
     steps: Queue<Step, Result<(Landed, Option<String>), String>>,
@@ -255,6 +274,19 @@ enum Write {
     /// A keyword added to photos, or taken off them, in the library: keywords are read
     /// from the photos and never written to them.
     Tag(Submit),
+    /// The paths of one drop, each offered to the engine as a folder to watch: in
+    /// order, the next after the one before has been answered, since two folders of
+    /// one drop can overlap and the engine can refuse the second only once it has
+    /// finished the first.
+    Watch {
+        paths: Vec<String>,
+    },
+    /// The export's checkbox, stored as it is ticked; `was` is what it goes back to if
+    /// the library will not store it.
+    ExportApplyEdits {
+        apply: bool,
+        was: bool,
+    },
 }
 
 /// A write that was made.
@@ -300,6 +332,14 @@ enum Wrote {
         done: usize,
         asked: usize,
     },
+    /// What came of a drop: the folders now watched, and the engine's words for each
+    /// path it refused.
+    Watched {
+        folders: Vec<WatchedFolder>,
+        refused: Vec<String>,
+    },
+    /// A setting stored that nothing on screen is read from.
+    Stored,
 }
 
 /// A write the library refused, and what it said.
@@ -320,6 +360,11 @@ enum Unwritten {
     /// A name the library would not take: its field stays open, to be put right.
     Name {
         sent: u64,
+        said: String,
+    },
+    /// The export's checkbox, which goes back to what is stored.
+    Edits {
+        was: bool,
         said: String,
     },
 }
@@ -355,6 +400,10 @@ impl App {
         pictures: Option<PathBuf>,
     ) -> Result<Self, String> {
         let ctx = cc.egui_ctx.clone();
+        let drops = {
+            use raw_window_handle::HasWindowHandle;
+            folder_drop::can_arrive(cc.window_handle().map(|window| window.as_raw()))
+        };
         theme::apply::install(&ctx);
         // A notch of the wheel as far as the web view of this system moved it.
         crate::grid::view::set_wheel_notch(&ctx, crate::grid::scroll::WHEEL_NOTCH);
@@ -551,6 +600,24 @@ impl App {
                                 said: err.message,
                             })
                     }
+                    Write::Watch { paths } => {
+                        let (mut folders, mut refused) = (Vec::new(), Vec::new());
+                        for path in paths {
+                            match commands::add_folder(&engine, &path) {
+                                Ok(folder) => folders.push(folder),
+                                Err(err) => refused.push(err.message),
+                            }
+                        }
+                        Ok(Wrote::Watched { folders, refused })
+                    }
+                    Write::ExportApplyEdits { apply, was } => {
+                        commands::set_export_apply_edits(&engine, apply)
+                            .map(|()| Wrote::Stored)
+                            .map_err(|err| Unwritten::Edits {
+                                was,
+                                said: err.message,
+                            })
+                    }
                     Write::Tag(Submit { mode, tag, ids }) => {
                         let written = match mode {
                             Mode::Add => commands::add_items_tag(&engine, &ids, &tag),
@@ -617,6 +684,45 @@ impl App {
             },
             repaint(&ctx),
         );
+        // The path typed in the export's field: whether it is a folder, and one the
+        // engine will write into. Asked as it is typed, so only the latest counts.
+        let checking = Latest::spawn(
+            "export destination",
+            {
+                let engine = engine.clone();
+                let home = ::dirs::home_dir();
+                move |text: String| {
+                    let answer = check_dest(&engine, &text, home.as_deref());
+                    (text, answer)
+                }
+            },
+            repaint(&ctx),
+        );
+        let edits = Latest::spawn(
+            "export edits",
+            {
+                let engine = engine.clone();
+                move |()| commands::export_apply_edits(&engine).ok()
+            },
+            repaint(&ctx),
+        );
+        let exports = Queue::spawn(
+            "export",
+            {
+                let engine = engine.clone();
+                move |job: Job| {
+                    let done = commands::export_items(
+                        &engine,
+                        &job.ids,
+                        &job.dest,
+                        job.apply_edits,
+                        job.max_edge,
+                    );
+                    (job.ids.len(), job.dest, done.map_err(|err| err.message))
+                }
+            },
+            repaint(&ctx),
+        );
         // The folder to come back to, here and not by a task, as the theme is: it is
         // wanted with the first grid, and it is one row of the settings table.
         let last_folder = LastFolder::new(commands::last_folder(&engine).ok().flatten());
@@ -671,6 +777,12 @@ impl App {
             dialog: None,
             dialog_view: DialogView::default(),
             deleting: Vec::new(),
+            drops,
+            drop: FolderDrop::default(),
+            checking,
+            edits,
+            exports,
+            exporting: false,
             steps,
             search: SearchBox::default(),
             writes,
@@ -700,6 +812,12 @@ impl App {
                 .map(|state| format!("{:?}", state.adapter.get_info())),
             closed: false,
         })
+    }
+
+    /// As in a window that takes no drop: for a test, which has no window to be one.
+    pub fn without_drops(mut self) -> Self {
+        self.drops = false;
+        self
     }
 
     /// Makes this run a measurement: the gate's scroll programme drives the grid from the
@@ -916,6 +1034,16 @@ impl App {
         self.dialog.as_ref()
     }
 
+    /// Whether an export is running.
+    pub fn exporting(&self) -> bool {
+        self.exporting
+    }
+
+    /// Whether something with a path is held over the window.
+    pub fn hovering(&self) -> bool {
+        self.drop.hovering()
+    }
+
     /// Opens `dialog`, over everything. It is opened from a menu's item, and the pick
     /// has closed that menu; the press that opened the menu stored any name half typed
     /// in the sidebar. A way in that is neither closes the one and stores the other
@@ -1040,7 +1168,7 @@ impl App {
             Dialog::Tags(_) => (self.held.collections().tags.iter())
                 .map(|tag| tag.tag.clone())
                 .collect(),
-            Dialog::Confirm(_) => Vec::new(),
+            Dialog::Confirm(_) | Dialog::Export(_) => Vec::new(),
         };
         let done = self.dialog_view.show(ui, dialog, &keywords);
         match (done, &mut self.dialog) {
@@ -1065,9 +1193,59 @@ impl App {
                 self.deleting.push((subject, false));
                 self.writes.push(Write::Delete(subject));
             }
-            // What the other kind of dialog answers: neither draws it.
-            (Done::Typed(_) | Done::Submit { .. }, _) | (Done::Confirmed, _) => {}
+            // The path is asked about as it is typed: whether it is a folder, and one
+            // photon will write into.
+            (Done::Path(text), Some(Dialog::Export(export))) => {
+                if let Some(ask) = export.type_in(text) {
+                    self.checking.ask(ask);
+                }
+            }
+            // Stored as it is ticked and not when the export runs: an export the user
+            // cancels still said how they want exports to work.
+            (Done::Tick(apply), Some(Dialog::Export(export))) => {
+                let was = export.apply_edits();
+                export.tick(apply);
+                self.writes.push(Write::ExportApplyEdits { apply, was });
+            }
+            (Done::Size(max_edge), Some(Dialog::Export(export))) => export.size(max_edge),
+            // Closed before the export runs: it can take minutes, and a dialog over the
+            // progress it started would hide it.
+            (Done::Export, Some(Dialog::Export(export))) => {
+                if let Some(job) = export.job() {
+                    self.dialog = None;
+                    self.exporting = true;
+                    self.exports.push(job);
+                }
+            }
+            // What another kind of dialog answers: this one does not draw it.
+            (
+                Done::Typed(_)
+                | Done::Submit { .. }
+                | Done::Confirmed
+                | Done::Path(_)
+                | Done::Tick(_)
+                | Done::Size(_)
+                | Done::Export,
+                _,
+            ) => {}
         }
+    }
+
+    /// What was dropped on the window. Under the export's dialog the first folder is its
+    /// destination, asked about as a typed one is, and nothing is watched: the dialog
+    /// is asking for a folder, and that is what the drop answers. Everywhere else the
+    /// paths are folders to watch, offered to the engine in their order.
+    fn dropped(&mut self, paths: Vec<String>) {
+        let Some(first) = paths.first() else {
+            return;
+        };
+        if let Some(Dialog::Export(export)) = &mut self.dialog {
+            if let Some(ask) = export.type_in(first.clone()) {
+                self.checking.ask(ask);
+            }
+            return;
+        }
+        self.writes.push(Write::Watch { paths });
     }
 
     /// Stores the name in the sidebar's field: Enter, or the field left.
@@ -1115,6 +1293,7 @@ impl App {
             people: &collections.people,
             finds_faces: self.engine.face_detection(),
             mac: cfg!(target_os = "macos"),
+            exporting: self.exporting,
         })
     }
 
@@ -1130,6 +1309,13 @@ impl App {
         let mode = match action {
             TileAction::AddKeyword => Some(Mode::Add),
             TileAction::RemoveKeyword => Some(Mode::Remove),
+            // The export's dialog takes its photos as it opens too, and asks how the
+            // last export left its checkbox.
+            TileAction::Export => {
+                self.open_dialog(Dialog::Export(ExportDialog::new(ids)));
+                self.edits.ask(());
+                return;
+            }
             _ => None,
         };
         match mode {
@@ -1157,11 +1343,11 @@ impl App {
             | TileAction::OpenInApp
             | TileAction::CopyPhoto
             | TileAction::Compare
-            // (Opened by `pick`, as a dialog.)
+            // (Opened by `pick`, as dialogs.)
             | TileAction::AddKeyword
             | TileAction::RemoveKeyword
-            | TileAction::AddToPerson
-            | TileAction::Export => return,
+            | TileAction::Export
+            | TileAction::AddToPerson => return,
         };
         self.writes.push(write);
     }
@@ -1209,6 +1395,7 @@ impl App {
             watched: &self.watched,
             scanning: self.scans.scanning(),
             hidden: self.counted.then_some(self.counts.hidden),
+            drops: self.drops,
         };
         empty::library_panel(&self.grid, self.nav.settled(), &library)
     }
@@ -1492,6 +1679,43 @@ impl App {
         }
         let _ = self.layout_store.answer();
         let _ = self.remembering.answer();
+        // The answers about the export's dialog count for the dialog that is open: one
+        // about a path counts only for the text its field still holds
+        // (`ExportDialog::checked`), and the stored checkbox not over a tick made since.
+        if let Some(answer) = self.checking.answer() {
+            answered = true;
+            if let (Ok((asked, answer)), Some(Dialog::Export(export))) = (answer, &mut self.dialog)
+            {
+                export.checked(&asked, answer);
+            }
+        }
+        if let Some(answer) = self.edits.answer() {
+            answered = true;
+            if let (Ok(Some(apply)), Some(Dialog::Export(export))) = (answer, &mut self.dialog) {
+                export.remembered(apply);
+            }
+        }
+        for (_, answer) in self.exports.answers() {
+            answered = true;
+            self.exporting = false;
+            let said = match answer {
+                Ok((asked, dest, Ok(done))) => export_dialog::report(
+                    done.written,
+                    done.failed,
+                    done.reason.as_deref(),
+                    asked,
+                    &dest,
+                ),
+                // The engine would not begin: its destination had been watched since
+                // the dialog asked, or was gone.
+                Ok((_, _, Err(said))) => Err(said),
+                Err(_) => Err("photon could not finish that export.".to_owned()),
+            };
+            match said {
+                Ok(said) => self.toasts.done(said, now_ms),
+                Err(said) => self.toasts.error(said, now_ms),
+            }
+        }
         for (number, answer) in self.steps.answers() {
             answered = true;
             // A step that panicked is a step the engine did not make.
@@ -1602,6 +1826,39 @@ impl App {
                     asked,
                 })) => {
                     self.toasts.done(mode.written(&stored, done, asked), now_ms);
+                }
+                // A drop is reported once: what is now watched, and the first refusal
+                // with a count of the rest. Each folder watched has had its first scan
+                // started, and is in the list on hand at once - the list read again
+                // arrives a moment later, and an empty library must not say meanwhile
+                // that no folder is watched, or that photon has found nothing in one it
+                // has not begun to read.
+                Ok(Ok(Wrote::Watched { folders, refused })) => {
+                    for folder in &folders {
+                        self.scans.added(folder.id);
+                        if !self.watched.iter().any(|watched| watched.id == folder.id) {
+                            self.watched.push(folder.clone());
+                        }
+                    }
+                    // (The list itself is read again when the folder's scan ends, as
+                    // after any scan: asked for here as well, it changed nothing.)
+                    let came = Watched {
+                        added: folders.into_iter().map(|folder| folder.path).collect(),
+                        refused,
+                    };
+                    if let Some(said) = came.said() {
+                        self.toasts.done(said, now_ms);
+                    }
+                    if let Some(refusal) = came.refusal() {
+                        self.toasts.error(refusal, now_ms);
+                    }
+                }
+                Ok(Ok(Wrote::Stored)) => {}
+                Ok(Err(Unwritten::Edits { was, said })) => {
+                    if let Some(Dialog::Export(export)) = &mut self.dialog {
+                        export.put_back(was);
+                    }
+                    self.toasts.error(said, now_ms);
                 }
                 Ok(Err(Unwritten::Name { sent, said })) => {
                     self.rename.refused(sent);
@@ -1793,6 +2050,21 @@ impl eframe::App for App {
             self.search_for(query);
         }
 
+        // What the system says is held over the window, and what was dropped on it.
+        if self.drops {
+            let (held, dropped) = ui.input(|input| {
+                let held = (input.raw.hovered_files.iter())
+                    .filter(|file| file.path.is_some())
+                    .count();
+                let dropped = (input.raw.dropped_files.iter())
+                    .map(|file| file.path().to_string_lossy().into_owned())
+                    .collect();
+                (held, dropped)
+            });
+            let dropped = self.drop.frame(held, dropped);
+            self.dropped(dropped);
+        }
+
         // A dialog, before anything else is drawn: nothing behind it reads a key, and it
         // takes them out of the frame when it has read its own (`dialog_view.rs`).
         let under_dialog = self.dialog.is_some();
@@ -1938,6 +2210,15 @@ impl eframe::App for App {
             ui.ctx().request_repaint_after(wait);
         }
 
+        // The card that says what letting go will do, over everything.
+        if self.drop.hovering() {
+            let words = match self.dialog {
+                Some(Dialog::Export(_)) => folder_drop::CARD_EXPORT,
+                _ => folder_drop::CARD,
+            };
+            drop_card::show(ui.ctx(), words);
+        }
+
         if let Some(output) = &output {
             if let Some(ids) = self.visible.update(&output.on_screen, now) {
                 commands::set_visible(&self.engine, ids);
@@ -1975,6 +2256,29 @@ impl eframe::App for App {
     fn on_exit(&mut self) {
         self.close();
     }
+}
+
+/// Whether copies may be written to the folder whose path is `text`: the folder, with a
+/// `~` written out, or what is said under the field. Off the UI thread: it asks the
+/// file system, and the library for the watched folders.
+fn check_dest(
+    engine: &Engine,
+    text: &str,
+    home: Option<&std::path::Path>,
+) -> Result<String, String> {
+    let path = match export_dialog::typed_path(text, home) {
+        // An empty field is not asked about; were it, nothing would be said of it.
+        None => return Err(String::new()),
+        Some(Err(why)) => return Err(why.to_owned()),
+        Some(Ok(path)) => path,
+    };
+    // A file passes the engine's own check, which asks only where the path lies, and
+    // then fails every photo of the export.
+    let dest = path.to_str().filter(|_| path.is_dir());
+    let dest = dest.ok_or_else(|| export_dialog::NO_FOLDER.to_owned())?;
+    commands::check_export_dest(engine, dest)
+        .map(|()| dest.to_owned())
+        .map_err(|err| err.message)
 }
 
 /// Today in `zone`, as "On this day" means it.

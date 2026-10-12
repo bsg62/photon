@@ -16,7 +16,7 @@ use photon_core::{
     library::{Library, ThemeChoice},
 };
 use photon_engine::commands;
-use photon_ui::{app::App, dirs};
+use photon_ui::{app::App, dirs, export_dialog::Dest};
 use std::{
     path::{Path, PathBuf},
     time::{Duration, Instant},
@@ -575,6 +575,100 @@ fn native_keywords_light() {
 #[ignore = "renders through a GPU adapter: cargo run -p xtask -- native-shot"]
 fn native_keywords_dark() {
     shot(ThemeChoice::Dark, "native-keywords-dark.png", picking);
+}
+
+/// The export's dialog for three photos, with `path` typed and answered about, and a
+/// size chosen.
+fn exporting_to(harness: &mut Harness<'_>, path: &str) {
+    pick(harness, 2, Modifiers::NONE);
+    pick(harness, 4, Modifiers::SHIFT);
+    harness.event(egui::Event::ModifiersChanged(Modifiers::NONE));
+    right_click(harness, 3);
+    harness.get_by_label("Export 3 photos…").click();
+    for _ in 0..4 {
+        harness.step();
+    }
+    harness.event(egui::Event::Text(path.to_owned()));
+    until(harness, "the path answered about", |app| {
+        matches!(app.dialog(), Some(photon_ui::dialogs::Dialog::Export(export))
+            if matches!(export.dest(), Dest::Passed(_) | Dest::Refused(_)))
+    });
+    // What is said of the path may have made the dialog taller: it stands where it
+    // will be pressed a frame or two after.
+    for _ in 0..3 {
+        harness.step();
+    }
+    harness.get_by_label("1920 px").click();
+    harness.step();
+    harness.event(egui::Event::PointerGone);
+    harness.step();
+}
+
+/// A destination that passes: the folder the test's own library lies under.
+fn exporting(harness: &mut Harness<'_>) {
+    let temp = std::env::temp_dir();
+    exporting_to(harness, &temp.to_string_lossy());
+}
+
+/// One photon will not write into, said under the field: the watched folder itself.
+fn export_refused(harness: &mut Harness<'_>) {
+    let watched = harness.state().watched()[0].path.clone();
+    exporting_to(harness, &watched);
+}
+
+/// A folder held over the window: the card that says what letting go will do.
+fn holding(harness: &mut Harness<'_>) {
+    harness.input_mut().hovered_files.push(egui::HoveredFile {
+        path: Some(std::path::PathBuf::from("/home/ada/Pictures/Holiday")),
+        ..Default::default()
+    });
+    for _ in 0..3 {
+        harness.step();
+    }
+}
+
+#[test]
+#[ignore = "renders through a GPU adapter: cargo run -p xtask -- native-shot"]
+fn native_export_light() {
+    shot(ThemeChoice::Light, "native-export-light.png", exporting);
+}
+
+#[test]
+#[ignore = "renders through a GPU adapter: cargo run -p xtask -- native-shot"]
+fn native_export_dark() {
+    shot(ThemeChoice::Dark, "native-export-dark.png", exporting);
+}
+
+#[test]
+#[ignore = "renders through a GPU adapter: cargo run -p xtask -- native-shot"]
+fn native_export_refused_light() {
+    shot(
+        ThemeChoice::Light,
+        "native-export-refused-light.png",
+        export_refused,
+    );
+}
+
+#[test]
+#[ignore = "renders through a GPU adapter: cargo run -p xtask -- native-shot"]
+fn native_export_refused_dark() {
+    shot(
+        ThemeChoice::Dark,
+        "native-export-refused-dark.png",
+        export_refused,
+    );
+}
+
+#[test]
+#[ignore = "renders through a GPU adapter: cargo run -p xtask -- native-shot"]
+fn native_drop_light() {
+    shot(ThemeChoice::Light, "native-drop-light.png", holding);
+}
+
+#[test]
+#[ignore = "renders through a GPU adapter: cargo run -p xtask -- native-shot"]
+fn native_drop_dark() {
+    shot(ThemeChoice::Dark, "native-drop-dark.png", holding);
 }
 
 // A library that watches nothing, as a first run is where there is no Pictures folder:

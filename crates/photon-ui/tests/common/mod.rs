@@ -226,6 +226,92 @@ pub fn opened<'a>(library: &fixture::Fixture, photos: usize) -> (Harness<'a>, Dr
     (harness, driver)
 }
 
+/// A folder called `name` under `dir` with real photos called `names` in it, each a
+/// byte longer than the one before so that none is another's copy, and a minute newer.
+pub fn photos_in(dir: &Path, name: &str, names: &[&str]) -> PathBuf {
+    let folder = dir.join(name);
+    std::fs::create_dir_all(&folder).unwrap();
+    // The picture they are copies of is made beside the folder, not in it: it is no
+    // photo of the library's.
+    let made = tempfile::tempdir().unwrap();
+    let picture = std::fs::read(&sources(made.path())[0]).unwrap();
+    let start = std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(19_000 * 86_400);
+    for (n, file) in names.iter().enumerate() {
+        let path = folder.join(file);
+        let mut bytes = picture.clone();
+        bytes.extend(std::iter::repeat_n(0, n + 1));
+        std::fs::write(&path, bytes).unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(start + Duration::from_secs(60 * n as u64))
+            .unwrap();
+    }
+    folder
+}
+
+/// The application over a library of its own making under `dir`, which starts by
+/// watching `pictures` - or nothing, as a first run with no Pictures folder does. The
+/// library is real: its folders are scanned and its files are there to be exported.
+pub fn over<'a>(
+    dir: &Path,
+    pictures: Option<&Path>,
+) -> (Harness<'a>, Driver, photon_ui::dirs::Dirs) {
+    let made = photon_ui::dirs::within(&dir.join("data"), &dir.join("cache"));
+    let (dirs, pictures) = (made.clone(), pictures.map(Path::to_owned));
+    let harness = egui_kittest::Harness::builder()
+        .with_size(egui::vec2(1000.0, 700.0))
+        .with_step_dt(REFRESH as f32)
+        .build_eframe(move |cc| App::new(cc, dirs, pictures).unwrap());
+    let driver = Driver::new(&harness);
+    (harness, driver, made)
+}
+
+/// A file as the system hands it to a window it was dropped on.
+#[derive(Debug)]
+struct Dropped(PathBuf);
+
+impl egui::DroppedFile for Dropped {
+    fn path(&self) -> &Path {
+        &self.0
+    }
+
+    fn bytes(&self) -> Result<Vec<u8>, String> {
+        Err("a test's dropped file is never read".to_owned())
+    }
+}
+
+/// Holds `paths` over the window, as a drag from a file manager does, and draws the
+/// frame the system asks for.
+pub fn hold_over(driver: &mut Driver, harness: &mut Harness<'_>, paths: &[&Path]) {
+    harness.input_mut().hovered_files = (paths.iter())
+        .map(|path| egui::HoveredFile {
+            path: Some((*path).to_owned()),
+            ..Default::default()
+        })
+        .collect();
+    driver.act(harness);
+}
+
+/// Drops `paths` on the window: they are no longer held over it, and are the frame's
+/// dropped files.
+pub fn drop_on(driver: &mut Driver, harness: &mut Harness<'_>, paths: &[&Path]) {
+    harness.input_mut().hovered_files.clear();
+    for path in paths {
+        let file: egui::DroppedFileHandle = Arc::new(Dropped((*path).to_owned()));
+        harness.input_mut().dropped_files.push(file);
+    }
+    driver.act(harness);
+}
+
+/// What the window has said, oldest first.
+pub fn said(harness: &Harness<'_>) -> Vec<String> {
+    (harness.state().toasts().iter())
+        .map(|toast| toast.message.clone())
+        .collect()
+}
+
 /// The ids of `library`'s photos, in grid order: the newest folder first.
 pub fn photo_ids(library: &fixture::Fixture) -> Vec<i64> {
     let lib = Library::open(&library.dirs().db_path).unwrap();

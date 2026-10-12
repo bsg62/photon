@@ -1632,8 +1632,9 @@ before the engine is opened, so no report is sent before someone listens.
 **The empty library's panel is `empty.rs` and `empty_panel.rs`**, and the view of it in
 All photos and Recent alone; every other view has its one line. "Add folder…" and
 "Watched folders…" are drawn fainter and sense no click (`PanelButton::works`), and "Or
-drop a folder onto this window" is left out: nothing native takes a drop, and a line that
-offered one would be false, not inactive. The block is centred, so a longer sentence
+drop a folder onto this window." stands under them only where a drop can arrive
+(`LibraryFacts::drops`, below): a line that offered one where none arrives would be
+false, not inactive. The block is centred, so a longer sentence
 pushes its buttons down, as in the Svelte grid; its sentence is wrapped by egui and does
 not go through `text::paint_line`, so a folder's path in another script is drawn in the
 order it is written. The sidebar's notes - the empty groups', and "No folders yet." -
@@ -1776,7 +1777,8 @@ ranges. No band begins in a grid with no photos, where the shell draws what an e
 library says.
 
 **The native window writes through one queue, and tells the grid nothing**
-(`App::writes`: `Write::Stars`, `Hidden`, `AlbumAdd`, `AlbumRemove`, `PersonRemove`). Each
+(`App::writes`: `Write::Stars`, `Hidden`, `AlbumAdd`, `AlbumRemove`, `PersonRemove`, and
+those of the pull requests after it). Each
 is one of the engine's own commands, made in its turn off the UI thread, and the only one
 that writes outside `library.db` is `commands::set_stars` - the `star=` line in the
 folder's `.picasa.ini`. The photos acted on are read from the selection **at the pick**,
@@ -2012,6 +2014,62 @@ through a modal (egui's own, and not reachable until AccessKit is switched on); 
 picker lays out every keyword in every frame, which is slow in a library of thousands;
 and a keyword's removal rule is dropped by adding that keyword again, as the engine has
 it.
+
+**A folder dropped on the window is watched** (`folder_drop.rs`, `createFolderDrop`;
+`drop_card.rs` for the card). The application reads what egui says is held over the
+window and dropped on it once a frame (`RawInput::hovered_files`, `dropped_files`: the
+system's own events, a file each) and hands a drop's paths to the engine as one write
+(`Write::Watch`), in order, each offered after the one before has been answered - two
+folders of one drop can overlap, and the engine can refuse the second only once it has
+finished the first. The engine is what knows a folder from a file and a folder already
+watched; the drop is reported once (`Watched::said`, `refusal`: the first refusal with a
+count of the rest, so that forty photos dropped are not forty messages). **Whether a drop
+can arrive at all is asked of the window, once** (`folder_drop::can_arrive`, from the
+window's handle in `App::new`): winit 0.30 has dropped files on X11, Windows and macOS
+and none on Wayland, so a Wayland window offers none - no card, no line in the empty
+library's panel - and a test, which has no window, feeds the drop itself
+(`common::hold_over`, `drop_on`; `App::without_drops` for the window that takes none). A
+folder just watched is in the list on hand at once and counts as being scanned until its
+scan has been heard from (`Scans::added`, into the launch's own set): the list read
+again arrives a moment later, and an empty library must not say meanwhile that no folder
+is watched. That call has its tests in `scans.rs` and none through the application: the
+answer that says a folder is watched and its scan's first report arrive in either order,
+with no seam to hold one behind the other. **Under the export's dialog a dropped folder
+is its destination, and is not watched**; under anything else that is open a drop is the
+window's, as ever. The card is drawn over everything, a dialog too (`Order::Tooltip`),
+takes no press, and tells AccessKit its words, which is how a test of the whole
+application sees it.
+
+**The export is a third dialog and a thread of its own** (`export_dialog.rs`,
+`createExportDialog`; `export_view.rs` for its body; `App::exports`). Its photos are
+taken as it opens, as the picker's are. **The destination is a path typed into a field**
+until a later sub-project brings the folder picker, whose button stands beside the field
+and takes no press: asked about as it changes, off the UI thread, by a task that answers
+only the latest question (`App::checking`, `check_dest`), and the answer counts only for
+the text the field still holds (`ExportDialog::checked`). It passes when it is the whole
+path of a folder that is there (`typed_path`: a `~` at its start is the home folder, and
+a path that is not absolute is refused - it would be read from wherever photon was
+started) and the engine will write into it; a file passes the engine's own check, which
+asks only where a path lies, so the task asks `is_dir` first. What is said of a path
+that does not pass stands under the field, the engine's words for a folder inside the
+library among it, **and stands there until the next answer** (`ExportDialog::problem`):
+a path is asked about at every letter, and with the line taken away at each letter and
+put back at each answer it came and went as a path was typed, the dialog in the middle
+of the window moving up and down with it (seen in a picture whose click missed a button
+that had just moved, and in no test until then). "Apply edits" is read when the dialog opens (ticked until then, and
+not over a tick made meanwhile), stored on the queue of writes as it is ticked, and put
+back if the library will not store it. The size is five buttons in a row where the
+Svelte dialog has a dropdown, and is never remembered. Enter in the field exports once a
+destination has passed; what was typed in the frame of that Enter is asked about first.
+**The dialog closes before the export runs, and the export is not on the queue of
+writes**: it takes minutes, and a star pressed meanwhile must not wait for it. One at a
+time (`App::exporting`): "Export…" takes no press while one runs, and the status bar's
+line is the engine's own reports. The window does not wait for an export when it closes,
+as the Tauri photon does not. Nothing here writes a file itself: the copies are the
+engine's (`Engine::export_items`, which refuses a destination inside a watched folder
+and creates every file with `create_new`), and a test's destination is a folder under
+its own temporary directory. A test holds an export for as long as it needs by holding
+the engine's `RENDERING` lock, which a turned photo's copy waits for.
 
 **A star is tested in a library of real files** (`tests/menu.rs`, `pictures`,
 `over_files`): the folder's `.picasa.ini` is read back, and every write goes into a

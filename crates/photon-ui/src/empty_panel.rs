@@ -62,7 +62,15 @@ pub fn show(ui: &mut egui::Ui, place: Rect, panel: &Panel) -> Option<PanelButton
         .collect();
     let row = labels.iter().sum::<f32>() + S[1] * labels.len().saturating_sub(1) as f32;
 
-    let height = title.size().y + S[2] + text.size().y + S[2] + BUTTON_HEIGHT;
+    let aside = panel.aside.map(|aside| {
+        painter.layout_no_wrap(
+            aside.to_owned(),
+            fonts::regular(T[1]),
+            color(palette.text_dim),
+        )
+    });
+    let under = (aside.as_ref()).map_or(0.0, |aside| S[2] + aside.size().y);
+    let height = title.size().y + S[2] + text.size().y + S[2] + BUTTON_HEIGHT + under;
     let middle = place.center().x;
     let mut top = place.center().y - height / 2.0;
 
@@ -112,6 +120,16 @@ pub fn show(ui: &mut egui::Ui, place: Rect, panel: &Panel) -> Option<PanelButton
         if response.clicked() {
             pressed = Some(*button);
         }
+    }
+    // The other way a folder is added, in smaller words under the buttons.
+    if let (Some(words), Some(aside)) = (panel.aside, aside) {
+        let at = Rect::from_min_size(
+            pos2(middle - aside.size().x / 2.0, top + BUTTON_HEIGHT + S[2]),
+            aside.size(),
+        );
+        painter.galley(at.min, aside, color(palette.text_dim));
+        ui.interact(at, ui.id().with("empty-library-aside"), Sense::hover())
+            .widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, words));
     }
     pressed
 }
@@ -221,6 +239,7 @@ mod tests {
             title: "No photos yet",
             text: "Looking for photos…".to_owned(),
             buttons: CHOICES,
+            aside: None,
         }
     }
 
@@ -231,7 +250,37 @@ mod tests {
                    sidebar."
                 .to_owned(),
             buttons: &[PanelButton::ShowHidden],
+            aside: None,
         }
+    }
+
+    // The other way a folder is added: under the buttons, about the middle, and part of
+    // the block that is centred.
+    #[test]
+    fn the_line_about_a_drop_is_under_the_buttons() {
+        const ASIDE: &str = "Or drop a folder onto this window.";
+        let mut f = Fixture::new();
+        f.frame(&looking(), Vec::new());
+        let without = f.drew("No photos yet").top();
+        assert!(f.texts.iter().all(|(text, _)| text != ASIDE));
+        let offered = Panel {
+            aside: Some(ASIDE),
+            ..looking()
+        };
+        f.frame(&offered, Vec::new());
+        let aside = f.drew(ASIDE);
+        let (add, _) = f.button("Add folder…");
+        assert!(aside.top() > add.bottom());
+        assert!(
+            (aside.center().x - PLACE.center().x).abs() < 2.0,
+            "{aside:?}"
+        );
+        // The block is taller by the line, and still about the middle: its top is
+        // higher than it was.
+        let title = f.drew("No photos yet");
+        assert!(title.top() < without);
+        let block = (title.top() + aside.bottom()) / 2.0;
+        assert!((block - PLACE.center().y).abs() < 6.0, "{block}");
     }
 
     #[test]
@@ -267,6 +316,7 @@ mod tests {
                    them."
                 .to_owned(),
             buttons: CHOICES,
+            aside: None,
         };
         let mut f = Fixture::new();
         f.frame(&panel, Vec::new());

@@ -39,15 +39,15 @@ pub enum TileAction {
 
 impl TileAction {
     /// Whether the item works yet. The others are in their place and take no press: what
-    /// they open is a later pull request's or sub-project's (the export, the viewer's
-    /// compare and its dialog that names a face, the platform's file manager and
-    /// clipboard), and a menu that grew as they arrived would move every item under a
-    /// hand that had learnt where it was.
+    /// they open is a later sub-project's (the viewer's compare and its dialog that names
+    /// a face, the platform's file manager and clipboard), and a menu that grew as they
+    /// arrived would move every item under a hand that had learnt where it was.
     pub fn works(&self) -> bool {
         matches!(
             self,
             Self::Star(_)
                 | Self::Hide(_)
+                | Self::Export
                 | Self::AddKeyword
                 | Self::RemoveKeyword
                 | Self::RemoveFromPerson(_)
@@ -81,6 +81,9 @@ pub struct Facts<'a> {
     pub finds_faces: bool,
     /// Whether the keys are a Mac's: its chords are spelled with ⌘.
     pub mac: bool,
+    /// Whether an export is running: one at a time, and "Export…" takes no press
+    /// until the one that runs is over.
+    pub exporting: bool,
 }
 
 /// The fewest and the most photos that can be compared side by side.
@@ -243,11 +246,13 @@ pub fn tile_menu(facts: &Facts<'_>) -> Vec<Item<TileAction>> {
     }
 
     items.push(Item::Separator);
-    items.push(plain(
-        format!("Export {subject}…"),
-        None,
-        TileAction::Export,
-    ));
+    items.push(Item::Pick {
+        label: format!("Export {subject}…"),
+        hint: None,
+        works: !facts.exporting,
+        look: Look::Plain,
+        does: TileAction::Export,
+    });
     items.push(Item::Heading("Add to album"));
     // Adding is harmless twice over, so the album the photos are already in is not left
     // out: the grid's rows do not know their albums, and asking for each photo of a
@@ -359,6 +364,7 @@ mod tests {
         people: Vec<Person>,
         finds_faces: bool,
         mac: bool,
+        exporting: bool,
     }
 
     impl World {
@@ -376,6 +382,7 @@ mod tests {
                 people: vec![person("p:7", "Anna"), person("c:ab12", "Ben")],
                 finds_faces: false,
                 mac: false,
+                exporting: false,
             }
         }
 
@@ -395,6 +402,7 @@ mod tests {
                 people: &self.people,
                 finds_faces: self.finds_faces,
                 mac: self.mac,
+                exporting: self.exporting,
             })
         }
 
@@ -447,7 +455,7 @@ mod tests {
                 "Add keyword to photo…",
                 "Remove keyword from photo…",
                 "---",
-                "Export photo… (off)",
+                "Export photo…",
                 "<Add to album>",
                 "  Lisbon",
             ]
@@ -504,7 +512,7 @@ mod tests {
                 "Add keyword to 3 photos…",
                 "Remove keyword from 3 photos…",
                 "---",
-                "Export 3 photos… (off)",
+                "Export 3 photos…",
                 "<Add to album>",
                 "  Lisbon",
             ]
@@ -677,6 +685,7 @@ mod tests {
             TileAction::AddToAlbum(1),
             TileAction::AddKeyword,
             TileAction::RemoveKeyword,
+            TileAction::Export,
         ] {
             assert!(works.works(), "{works:?}");
         }
@@ -686,10 +695,22 @@ mod tests {
             TileAction::CopyPhoto,
             TileAction::Compare,
             TileAction::AddToPerson,
-            TileAction::Export,
         ] {
             assert!(!waits.works(), "{waits:?}");
         }
+    }
+
+    // One export at a time: the one that runs has the status bar's line, and a second
+    // asked for behind it would start when the first had been forgotten.
+    #[test]
+    fn export_takes_no_press_while_an_export_runs() {
+        let mut w = World::one();
+        assert_eq!(w.does("Export photo…"), Some(TileAction::Export));
+        assert!(w.lines().contains(&"Export photo…".to_owned()));
+        w.exporting = true;
+        assert!(w.lines().contains(&"Export photo… (off)".to_owned()));
+        // Nothing else waits for it.
+        assert_eq!(w.does("Hide photo"), Some(TileAction::Hide(true)));
     }
 
     // The words are the Svelte menu's: read out of the component that draws it.
