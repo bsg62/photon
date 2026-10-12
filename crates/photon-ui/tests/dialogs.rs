@@ -311,10 +311,13 @@ fn a_keyword_is_added_to_the_selection_and_removed_again() {
     harness.get_by_label("lisbon").click();
     driver.act(&mut harness);
     assert!(harness.state().dialog().is_none());
+    // Waited for by what is said, not by how many messages stand: where the write takes
+    // longer than a moment the clock goes on to the end of the first message's time, and
+    // two were never there together (Windows' CI, once).
     driver.until(&mut harness, "the keyword on one photo", |app| {
-        keywords(app) == [("lisbon".to_owned(), 1)] && app.toasts().len() == 2
+        keywords(app) == [("lisbon".to_owned(), 1)]
+            && (app.toasts().iter()).any(|toast| toast.message == "Removed “lisbon” from 2 photos")
     });
-    assert_eq!(said(&harness)[1], "Removed “lisbon” from 2 photos");
 }
 
 // The photos are the ones selected when the dialog opened, whatever a scan takes away

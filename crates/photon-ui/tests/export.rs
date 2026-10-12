@@ -483,15 +483,17 @@ fn a_destination_gone_or_watched_since_it_passed_is_said_and_nothing_is_written(
     let engine = harness.state().engine().clone();
     commands::add_folder(&engine, &dest).unwrap();
     key(&mut driver, &mut harness, Key::Enter);
-    driver.until(&mut harness, "the export over", |app| {
-        !app.exporting() && app.toasts().len() >= 2
+    // Waited for by what it says, not by how many messages stand: the first one's time
+    // can be over by then - a wait longer than a moment lets the clock go on to it.
+    let refused = |app: &photon_ui::app::App| {
+        (app.toasts().iter())
+            .find(|toast| toast.message.contains("is inside the watched folder"))
+            .map(|toast| toast.kind)
+    };
+    driver.until(&mut harness, "the export refused", |app| {
+        !app.exporting() && refused(app).is_some()
     });
-    assert!(
-        said(&harness)[1].contains("is inside the watched folder"),
-        "{:?}",
-        said(&harness)
-    );
-    assert_eq!(harness.state().toasts()[1].kind, Kind::Error);
+    assert_eq!(refused(harness.state()), Some(Kind::Error));
     assert_eq!(files(&out), Vec::<String>::new());
 }
 

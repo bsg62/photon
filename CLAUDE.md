@@ -1311,14 +1311,25 @@ answers only the latest question. `Engine::published` and the `GridIndex` are in
 are read directly - `published` when the engine says the library changed, not per frame.
 
 **A notch of the mouse wheel is as far as the web view of the system moved it**
-(`scroll::WHEEL_NOTCH`, set once in `App::new`). A wheel reports notches and leaves the
-distance to the application: egui's is forty points, which is WebKitGTK's too, and
-WebView2's is a hundred - so the native grid looked right on Linux and was two and a half
-times slower on Windows, which was the first thing said by the first person to run it
-(2026-10-10). Anything measured against the Tauri photon is measured on each system: the
-test of this through the whole application can only fail on Windows, where CI runs it,
-the two numbers being equal everywhere else. Windows' setting of lines a notch is not
-read, and a Mac's wheel has not been compared.
+(`scroll::wheel_notch`, `Notch`; `wheel.rs` reads Windows' setting). A wheel reports
+notches and leaves the distance to the application: egui's is forty points, which is
+WebKitGTK's too, and WebView2's is a hundred at Windows' own three lines a notch - so the
+native grid looked right on Linux and was two and a half times slower on Windows, which
+was the first thing said by the first person to run it (2026-10-10). A hundred for
+everyone was the first answer, and the second thing said was that it was still not the
+web view's speed with the lines turned up (2026-10-12): **WebView2 goes by Windows'
+setting, a third of a hundred pixels for each line**, a page of what is in view at "one
+screen at a time" (`WHEEL_PAGESCROLL`; all but forty points of it, Chromium's rule) and
+nothing at nought. winit reports whole notches whatever the setting, so photon reads it
+itself (`SystemParametersInfoW`, the one call it makes of the system, through the
+`windows-sys` winit already brings): when the window is made, and **again whenever the
+window comes back to the front**, since the setting is changed in a window of the
+system's and photon is not told. egui is told the points in every frame (a page is a page
+of the window as it is then), for the frames after. Anything measured against the Tauri
+photon is measured on each system: the test of this through the whole application asks
+the machine it runs on, and a test may not change a machine's setting, so the rule is
+tested through `App::with_wheel`, which says what the system would. On Linux and macOS
+the forty stands; a Mac's wheel has not been compared.
 
 **The grid has no scroll map.** Its position is an `f64` in the layout's coordinates and
 the rows are drawn at `row.top - position`; egui's `ScrollArea` is not used for it, because
@@ -2114,7 +2125,11 @@ then `name_items`).
 
 **Tests of the whole application drive it through `tests/common`'s `Driver`**: `until`
 draws the frames that are asked for, `settle` waits in real time for the other threads,
-`frames_in` counts what a stretch of the clock draws. A row is clicked by its name
+`frames_in` counts what a stretch of the clock draws. **A wait asks for what is said,
+never for how many messages stand**: when nothing has answered for a quarter of a second
+of real time `until` lets the clock go on to the next frame asked for, which is the end
+of a message's time, and a test that waited for "two messages" behind a slow write then
+waited for ever - on Windows' CI once, after passing everywhere a dozen times. A row is clicked by its name
 (`harness.get_by_label("Starred").click()`), which is why every row and button tells
 AccessKit what it is (`widget_info`) although AccessKit itself is switched on only in
 sub-project 7. Two things about egui's input that a frame test meets: egui works out for

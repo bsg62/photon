@@ -8,10 +8,14 @@ use eframe::egui::{self, Key, Modifiers, pos2, vec2};
 use egui_kittest::kittest::{NodeT, Queryable};
 use photon_core::grid::GridView;
 use photon_ui::{
+    app::App,
+    fixture::Fixture,
+    grid::scroll::{Notch, wheel_notch},
     nav::Place,
     sidebar::rows::Counts,
     window_layout::{Layout, SIDEBAR_DEFAULT},
 };
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 #[test]
@@ -399,9 +403,86 @@ fn a_notch_of_the_wheel_moves_the_grid_as_far_as_the_web_view_did() {
     driver.settle(&mut harness);
     driver.frames_in(&mut harness, 1.0);
     let moved = harness.state().last_frame().unwrap().position;
-    let notch = photon_ui::grid::scroll::WHEEL_NOTCH;
+    // What this system says: on Windows its own lines a notch, whatever the machine
+    // has them set to, and a page of the grid where that is the setting.
+    let notch = wheel_notch(cfg!(target_os = "windows"), photon_ui::wheel::lines()).points(IN_VIEW);
     assert!(
         (moved - 3.0 * notch).abs() < 1.0,
         "three notches moved {moved}"
     );
+}
+
+/// What is in view of the grid in the tests' window: its height less the two bars.
+const IN_VIEW: f64 = 700.0 - 46.0 - 23.0;
+
+/// A library of nine hundred photos in a window where `wheel` says what a notch moves.
+fn wheeled<'a>(dir: &std::path::Path, wheel: fn() -> Notch) -> (Harness<'a>, Driver, Fixture) {
+    let built = library(dir, 900, 0, 0);
+    let dirs = built.dirs();
+    let mut harness = egui_kittest::Harness::builder()
+        .with_size(vec2(1000.0, 700.0))
+        .with_step_dt(common::REFRESH as f32)
+        .build_eframe(move |cc| App::new(cc, dirs, None).unwrap().with_wheel(wheel));
+    let mut driver = Driver::new(&harness);
+    driver.until(&mut harness, "the library shown", |app| {
+        app.photos() == 900 && app.last_frame().is_some_and(|frame| frame.settled)
+    });
+    driver.settle(&mut harness);
+    harness.event(egui::Event::PointerMoved(pos2(700.0, 400.0)));
+    driver.act(&mut harness);
+    (harness, driver, built)
+}
+
+/// One notch of the wheel down, and where the grid has come to rest after it.
+fn notch_down(driver: &mut Driver, harness: &mut Harness<'_>) -> f64 {
+    harness.event(egui::Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Line,
+        delta: vec2(0.0, -1.0),
+        phase: egui::TouchPhase::Move,
+        modifiers: Modifiers::NONE,
+    });
+    driver.act(harness);
+    driver.settle(harness);
+    driver.frames_in(harness, 1.0);
+    harness.state().last_frame().unwrap().position
+}
+
+// Windows' lines a notch are set in a window of the system's, and photon is not told when
+// they change: it asks when it is made and again when it comes back to the front, which
+// is where the user is coming from. Six lines are two hundred points, as in the web view.
+#[test]
+fn what_a_notch_moves_is_asked_again_when_the_window_comes_back_to_the_front() {
+    static LINES: AtomicU32 = AtomicU32::new(3);
+    fn said() -> Notch {
+        wheel_notch(true, Some(LINES.load(Ordering::Relaxed)))
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let (mut harness, mut driver, _library) = wheeled(dir.path(), said);
+    assert!((notch_down(&mut driver, &mut harness) - 100.0).abs() < 1.0);
+    // Changed, and not asked about yet: nothing says so.
+    LINES.store(6, Ordering::Relaxed);
+    assert!((notch_down(&mut driver, &mut harness) - 200.0).abs() < 1.0);
+    harness.event(egui::Event::WindowFocused(true));
+    driver.act(&mut harness);
+    let moved = notch_down(&mut driver, &mut harness);
+    assert!((moved - 400.0).abs() < 1.0, "{moved}");
+    // Leaving the window asks nothing.
+    LINES.store(1, Ordering::Relaxed);
+    harness.event(egui::Event::WindowFocused(false));
+    driver.act(&mut harness);
+    let moved = notch_down(&mut driver, &mut harness);
+    assert!((moved - 600.0).abs() < 1.0, "{moved}");
+}
+
+// "One screen at a time": a notch turns a page of the grid, all but forty points of what
+// is in view, as the web view turns it.
+#[test]
+fn a_wheel_set_to_a_screen_at_a_time_turns_a_page_of_the_grid() {
+    fn page() -> Notch {
+        Notch::Page
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let (mut harness, mut driver, _library) = wheeled(dir.path(), page);
+    let moved = notch_down(&mut driver, &mut harness);
+    assert!((moved - (IN_VIEW - 40.0)).abs() < 1.0, "{moved}");
 }
