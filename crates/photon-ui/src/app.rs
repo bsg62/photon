@@ -114,6 +114,11 @@ pub struct App {
     drops: bool,
     /// What is held over the window.
     drop: FolderDrop,
+    /// How many paths the system says are held over the window, and those it has
+    /// dropped on it since a frame last read them: taken out of each frame's input
+    /// before egui reads it (`raw_input_hook`).
+    hovered: usize,
+    fell: Vec<String>,
     /// The path in the export's field, asked about off this thread: with the text that
     /// was asked about, since the field has been typed in since.
     checking: Latest<String, (String, Result<String, String>)>,
@@ -779,6 +784,8 @@ impl App {
             deleting: Vec::new(),
             drops,
             drop: FolderDrop::default(),
+            hovered: 0,
+            fell: Vec::new(),
             checking,
             edits,
             exports,
@@ -1231,10 +1238,11 @@ impl App {
         }
     }
 
-    /// What was dropped on the window. Under the export's dialog the first folder is its
-    /// destination, asked about as a typed one is, and nothing is watched: the dialog
-    /// is asking for a folder, and that is what the drop answers. Everywhere else the
-    /// paths are folders to watch, offered to the engine in their order.
+    /// What was dropped on the window. Under the export's dialog the first path is its
+    /// destination, put in the field and asked about as a typed one is - a file dropped
+    /// first is said to be no folder, as one typed is - and nothing is watched: the
+    /// dialog is asking for a folder, and that is what the drop answers. Everywhere
+    /// else the paths are folders to watch, offered to the engine in their order.
     fn dropped(&mut self, paths: Vec<String>) {
         let Some(first) = paths.first() else {
             return;
@@ -1834,6 +1842,18 @@ impl App {
                 // that no folder is watched, or that photon has found nothing in one it
                 // has not begun to read.
                 Ok(Ok(Wrote::Watched { folders, refused })) => {
+                    // One folder twice in a drop - by its path, and by a link to it -
+                    // is answered by the engine as itself each time, and is one folder:
+                    // counted twice, "Watching 2 folders" was said of one.
+                    let mut seen = Vec::new();
+                    let folders: Vec<_> = (folders.into_iter())
+                        .filter(|folder| {
+                            !seen.contains(&folder.id) && {
+                                seen.push(folder.id);
+                                true
+                            }
+                        })
+                        .collect();
                     for folder in &folders {
                         self.scans.added(folder.id);
                         if !self.watched.iter().any(|watched| watched.id == folder.id) {
@@ -2007,6 +2027,23 @@ impl App {
 }
 
 impl eframe::App for App {
+    /// What the system says is held over the window and has dropped on it is taken out
+    /// of the frame's input before egui reads it. egui asks for the next frame at once
+    /// for as long as it is told that something is held (`InputState::
+    /// wants_repaint_after`): a folder held still over the window drew a frame at
+    /// every refresh, and a drag the system never reports gone - winit on X11, when the
+    /// report that a file is held crosses the one that the drag has left - drew them
+    /// for the rest of the session. The system's own reports each draw a frame without
+    /// that (`egui-winit` asks for one at each), which is all the card needs.
+    fn raw_input_hook(&mut self, _ctx: &egui::Context, input: &mut egui::RawInput) {
+        self.hovered = (input.hovered_files.drain(..))
+            .filter(|file| file.path.is_some())
+            .count();
+        self.fell.extend(
+            (input.dropped_files.drain(..)).map(|file| file.path().to_string_lossy().into_owned()),
+        );
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         // Whether this frame was asked for from outside the grid: by the engine, which
         // reported, or by the person, whose mouse or keys are in the frame's input.
@@ -2050,18 +2087,20 @@ impl eframe::App for App {
             self.search_for(query);
         }
 
-        // What the system says is held over the window, and what was dropped on it.
+        // What the system says is held over the window, and what was dropped on it
+        // (`raw_input_hook`). A pointer that moves or is pressed in the window ends a
+        // drag the system still calls held (`FolderDrop::frame`).
+        let fell = std::mem::take(&mut self.fell);
         if self.drops {
-            let (held, dropped) = ui.input(|input| {
-                let held = (input.raw.hovered_files.iter())
-                    .filter(|file| file.path.is_some())
-                    .count();
-                let dropped = (input.raw.dropped_files.iter())
-                    .map(|file| file.path().to_string_lossy().into_owned())
-                    .collect();
-                (held, dropped)
+            let pointer = ui.input(|input| {
+                (input.events.iter()).any(|event| {
+                    matches!(
+                        event,
+                        egui::Event::PointerMoved(_) | egui::Event::PointerButton { .. }
+                    )
+                })
             });
-            let dropped = self.drop.frame(held, dropped);
+            let dropped = self.drop.frame(self.hovered, pointer, fell);
             self.dropped(dropped);
         }
 
@@ -2266,11 +2305,19 @@ fn check_dest(
     text: &str,
     home: Option<&std::path::Path>,
 ) -> Result<String, String> {
-    let path = match export_dialog::typed_path(text, home) {
-        // An empty field is not asked about; were it, nothing would be said of it.
-        None => return Err(String::new()),
-        Some(Err(why)) => return Err(why.to_owned()),
-        Some(Ok(path)) => path,
+    // The text as it stands, where that is a folder: a folder's name can end in a
+    // space, and a folder dropped on the dialog is put in the field as the system gave
+    // it. Read without the spaces at its ends first, as a typed path is, "out " dropped
+    // was the folder "out" beside it, and the copies were written there.
+    let given = std::path::Path::new(text);
+    let path = if given.is_absolute() && given.is_dir() {
+        given.to_owned()
+    } else {
+        // (An empty field is never asked about: `ExportDialog::type_in`.)
+        match export_dialog::typed_path(text, home).unwrap_or(Err(export_dialog::NOT_WHOLE)) {
+            Ok(path) => path,
+            Err(why) => return Err(why.to_owned()),
+        }
     };
     // A file passes the engine's own check, which asks only where the path lies, and
     // then fails every photo of the export.

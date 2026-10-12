@@ -31,6 +31,13 @@ pub fn can_arrive(window: Result<RawWindowHandle, HandleError>) -> bool {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FolderDrop {
     hovering: bool,
+    /// How many paths the system still called held when the drag was known to be over.
+    /// It does not always say that a drag has left - winit on X11 can report a file
+    /// held after it has reported the drag gone, when the two cross - and what it goes
+    /// on calling held is then held for good, as far as a window is told: the card
+    /// stood over a dimmed window until the next drag. Another drag is one more path
+    /// than this.
+    over: usize,
 }
 
 impl FolderDrop {
@@ -40,14 +47,22 @@ impl FolderDrop {
         self.hovering
     }
 
-    /// A frame's news of the drag: how many paths are held over the window, and those
+    /// A frame's news of the drag: how many paths the system says are held over the
+    /// window, whether the pointer moved or was pressed in the window, and the paths
     /// dropped on it. Answers the paths to act on.
     ///
     /// A drag that carries no path - text dragged out of another program - is not
     /// photon's to announce, and a drop of none is nothing to act on.
-    pub fn frame(&mut self, held: usize, dropped: Vec<String>) -> Vec<String> {
-        // A drop ends the drag, whatever the system still says is held in its frame.
-        self.hovering = held > 0 && dropped.is_empty();
+    pub fn frame(&mut self, held: usize, pointer: bool, dropped: Vec<String>) -> Vec<String> {
+        if held == 0 {
+            self.over = 0;
+        } else if pointer || !dropped.is_empty() {
+            // A drop ends the drag, and so does a pointer in the window: a drag's
+            // source has the pointer for as long as the drag lasts, and the window
+            // hears nothing of it. Whatever the system still says is held.
+            self.over = held;
+        }
+        self.hovering = held != self.over;
         dropped
     }
 }
@@ -107,33 +122,70 @@ mod tests {
     fn the_card_is_up_while_paths_are_held_and_not_for_a_drag_that_carries_none() {
         let mut drop = FolderDrop::default();
         assert!(!drop.hovering());
-        assert_eq!(drop.frame(1, Vec::new()), Vec::<String>::new());
+        assert_eq!(drop.frame(1, false, Vec::new()), Vec::<String>::new());
         assert!(drop.hovering());
         // Held still, frame after frame.
-        drop.frame(1, Vec::new());
+        drop.frame(1, false, Vec::new());
         assert!(drop.hovering());
         // The drag left the window.
-        drop.frame(0, Vec::new());
+        drop.frame(0, false, Vec::new());
         assert!(!drop.hovering());
+    }
+
+    // The system does not always say that a drag has left, and a pointer that moves in
+    // the window is proof that none is over it.
+    #[test]
+    fn a_pointer_in_the_window_ends_a_drag_the_system_still_calls_held() {
+        let mut drop = FolderDrop::default();
+        drop.frame(1, false, Vec::new());
+        assert!(drop.hovering());
+        drop.frame(1, true, Vec::new());
+        assert!(!drop.hovering());
+        // And it stays ended while the system says the same, the pointer at rest.
+        drop.frame(1, false, Vec::new());
+        assert!(!drop.hovering());
+        // Another drag is one more path held than was left over, and is announced.
+        drop.frame(2, false, Vec::new());
+        assert!(drop.hovering());
+        // Its leaving is said, as it mostly is: nothing is left over.
+        drop.frame(0, false, Vec::new());
+        assert!(!drop.hovering());
+        drop.frame(1, false, Vec::new());
+        assert!(drop.hovering());
+        // A pointer with nothing held ends nothing that comes after it.
+        drop.frame(0, true, Vec::new());
+        drop.frame(1, false, Vec::new());
+        assert!(drop.hovering());
+    }
+
+    // What the system still calls held after a drop is not a drag either.
+    #[test]
+    fn what_is_still_called_held_after_a_drop_is_not_announced() {
+        let mut drop = FolderDrop::default();
+        drop.frame(1, false, Vec::new());
+        drop.frame(1, false, paths(&["/home/ada/Holiday"]));
+        assert!(!drop.hovering());
+        drop.frame(1, false, Vec::new());
+        assert!(!drop.hovering(), "the card came back after the drop");
     }
 
     #[test]
     fn a_drop_hands_its_paths_on_and_takes_the_card_down() {
         let mut drop = FolderDrop::default();
-        drop.frame(1, Vec::new());
+        drop.frame(1, false, Vec::new());
         let dropped = paths(&["/home/ada/Holiday"]);
-        assert_eq!(drop.frame(0, dropped.clone()), dropped);
+        assert_eq!(drop.frame(0, false, dropped.clone()), dropped);
         assert!(!drop.hovering());
         // The system may still call the file held in the frame it is dropped in.
-        drop.frame(2, Vec::new());
-        assert_eq!(drop.frame(2, dropped.clone()), dropped);
+        drop.frame(2, false, Vec::new());
+        assert_eq!(drop.frame(2, false, dropped.clone()), dropped);
         assert!(!drop.hovering());
     }
 
     #[test]
     fn a_drop_that_carries_no_paths_is_nothing_to_act_on() {
         let mut drop = FolderDrop::default();
-        assert_eq!(drop.frame(0, Vec::new()), Vec::<String>::new());
+        assert_eq!(drop.frame(0, false, Vec::new()), Vec::<String>::new());
         assert!(!drop.hovering());
     }
 

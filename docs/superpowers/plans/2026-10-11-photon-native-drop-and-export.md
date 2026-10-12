@@ -42,6 +42,8 @@ As the first pull request's plan, and four of this one's own:
   until the drag leaves or ends; a dropped one is in `dropped_files` for the one frame,
   as an `Arc<dyn DroppedFile>` whose `path()` is absolute. Both are fed from winit's
   `HoveredFile`, `HoveredFileCancelled` and `DroppedFile`, one event a file.
+  (Not read then, and found by the review: for as long as `hovered_files` is not empty
+  egui asks for the next frame at once, `InputState::wants_repaint_after`. Below.)
 - `winit` 0.30.13 has those three on X11, Windows and macOS and not on Wayland (the
   spec's second decision).
 - `eframe` 0.36.2, `epi.rs`: `CreationContext` is a `HasWindowHandle`, and under
@@ -71,8 +73,10 @@ As the first pull request's plan, and four of this one's own:
   can arrive nothing is offered: no card, no line in the empty library's panel.
 - **A drop is the window's, whatever is open**: under a menu, the confirmation or the
   keyword picker it is watched as ever. It is not a key or a press, and the Svelte window
-  does the same. Under the export's dialog the first folder dropped is its destination,
-  and none is watched (the spec).
+  does the same. Under the export's dialog the first path dropped is its destination,
+  and none is watched (the spec). The first *path*, not the first folder: a photo
+  dropped before a folder is put in the field and said to be no folder, as a file typed
+  there is.
 - **The card is drawn while a path is held over the window**, over everything, the
   export's dialog included, where it says "Drop a folder to export into it".
 - **The folders of one drop are one write** (`Write::Watch`), made in its turn on the
@@ -234,8 +238,10 @@ pub enum Done { .., Path(String), Tick(bool), Size(Option<u32>), Export }
   inside the watched folder is refused under the field and "Export" takes no press; a
   path that is not there; the photos are those selected when the dialog opened; the tick
   is stored when it is made and read when the dialog next opens; "Export…" takes no
-  press while an export is held at `RENDERING`, and the status bar counts; a still
-  window.
+  press while an export is held at `RENDERING`; a still window. (As first written this
+  said "and the status bar counts", which no test held and which is not so while an
+  export stands at its first photo: the line is the engine's reports, and the first
+  comes when a photo is done.)
 - [ ] Implement, gate, commit.
 
 ## Task 5: pictures, the checklist, CLAUDE.md, the pull request
@@ -259,7 +265,8 @@ pub enum Done { .., Path(String), Tick(bool), Size(Option<u32>), Export }
 - **What is said of a refused path stands until the next answer.** As planned it went
   at every letter and came back at every answer, and the dialog, which is centred,
   moved with it. Found in a picture: the click that was to choose a size missed a button
-  that had moved a frame before.
+  that had moved a frame before. (That was one cause of two. The other was the dialog
+  being placed by the height it had in the frame before, which the review found: below.)
 - **What the review of the fifth pull request found was asked of this one before its
   own review**: the double click on "Export…" is the dialog layer's to keep off, the
   held Enter too; the photos are taken as the dialog opens, with the risk recorded
@@ -274,3 +281,65 @@ answer). One call has no test through the application and is said so in CLAUDE.m
 `Scans::added` at a drop's answer, a race with no seam, whose rule is tested in
 `scans.rs`. The red line round a refused field is seen in the picture and by no test.
 
+## What the review found
+
+One reviewer, the whole branch, with a test for each finding. In the order fixed.
+
+- **A folder whose name ends in a space was not the folder exported to.** A dropped
+  folder's path is put in the field, and the field's text was asked about without the
+  spaces at its ends: "out " dropped passed as "out" beside it, and the copies were
+  written there. The text as it stands is asked first, and without its spaces only when
+  no folder is at that very path (`check_dest`; a path pasted from a terminal ends in
+  a space, so the trimmed reading stays).
+- **The window drew a frame at every refresh while anything was held over it**, which
+  is egui's doing for as long as it is told so. The card's own test drew the card
+  without the input that puts it up. What is held and dropped is now taken out of each
+  frame's input before egui reads it (`App::raw_input_hook`), and a test of the whole
+  application counts the frames with a folder held; `egui_kittest` does not call the
+  hook, so the tests' driver does, and keeps what is held from frame to frame as
+  `egui-winit` does.
+- **Nothing but the system took the card down**, and winit on X11 can report a file
+  held after it has reported the drag gone (read, not reproduced: a folder carried
+  quickly across the window). A pointer that moves or is pressed in the window ends the
+  drag (`FolderDrop::frame`), and so does a drop, whatever the system still calls held;
+  the next drag is one more path than was left over. **Ruling**: that a window hears
+  nothing of the pointer while another program's drag is over it is so on X11 and
+  Windows by how a drag is made there and is assumed of macOS; where it were not, the
+  card would not show and the drop would still be taken. On the smoke checklist.
+- **The dialog was placed by the height it had the frame before.** In the frame the
+  line under the field came or went, a press on "Export" where the button had stood was
+  a press beside the dialog, which closes it. Every dialog is now placed from its
+  height in the frame it is drawn in; and the export's dialog keeps the room of one
+  line under its field whether or not anything is said there, so that the short reasons
+  - no folder, no whole path - do not move it at all as a path is typed.
+- **A path typed or pasted during a double click's second press was lost** in the
+  export's field, where the picker keeps it (`Done::Path` through the deaf rule).
+- **One folder twice in a drop was "Watching 2 folders"**: counted by id now.
+- **Tests that were missing**: the note's words cut short were still found in the Svelte
+  file (held between its tags now); an export the engine refuses to begin - its
+  destination gone or watched since it passed - and its message; `~` through the
+  application; a drop under an open menu; a write made while an export runs, which a
+  comment in another test had claimed and nothing checked.
+
+**Not changed, and recorded.** Under the export's dialog it is the first path and not
+the first folder (above). The status bar says nothing of an export until its first
+photo is done. A destination removed after it passed is reported in the system's
+words ("No such file or directory"), and a dropped folder whose name is not UTF-8 as
+"folder not found". A drop holds the queue of writes while the engine watches it - a
+tenth of a second for a tree of twenty thousand folders on a local disk, measured, and
+unmeasured on a slow share - and the window waits ten seconds for its writes at most
+when it closes. The arm for an export whose thread panicked has no
+test, as no queue's has.
+
+**Probes** of the fix pass: thirty-one more, each with its test, and the hundred and
+eighteen of the first pass that still name a line run again (seven named lines the
+fix rewrote, and their rules are among the thirty-one): a hundred and forty-nine, all
+failing as stated at the end. Four passed first. Two were settings copied from
+`Modal`'s own area that do nothing in this window - its kind and what it senses - and
+are no longer set; the third, its order, had no test and has one (what floats over the
+window is under a dialog); and the test of a reason of two lines could not tell
+whether the checkbox stood under the second line or on it. Two tests were made sharper
+before their probes ran: the path that is not whole is now a folder that is there,
+read from where the test runs, and the card is taken down by a button as well as by a
+move. Two tests pin a rule with no line to break: a folder dropped under an open menu
+is watched, and a write made while an export runs does not wait for it.

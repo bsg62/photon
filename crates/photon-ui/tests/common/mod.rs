@@ -43,6 +43,9 @@ pub struct Driver {
     pub now: f64,
     /// How many frames have been drawn.
     pub frames: usize,
+    /// What the system says is held over the window. It says so in every frame until it
+    /// says otherwise, as `egui-winit` keeps it: `hold_over` and `drop_on` are its word.
+    pub held: Vec<egui::HoveredFile>,
 }
 
 impl Driver {
@@ -69,6 +72,7 @@ impl Driver {
             stray,
             now: 0.0,
             frames: 0,
+            held: Vec::new(),
         }
     }
 
@@ -85,6 +89,8 @@ impl Driver {
         self.now = at;
         *self.clock.lock().unwrap() = at;
         harness.input_mut().time = Some(at);
+        harness.input_mut().hovered_files = self.held.clone();
+        hand_over(harness);
         harness.step();
         self.frames += 1;
     }
@@ -282,10 +288,21 @@ impl egui::DroppedFile for Dropped {
     }
 }
 
+/// Hands the next frame's input to the application before egui reads it, as eframe does
+/// before every frame of a window and `egui_kittest` does not (`App::raw_input_hook`).
+pub fn hand_over(harness: &mut Harness<'_>) {
+    use eframe::App as _;
+    let ctx = harness.ctx.clone();
+    let mut input = std::mem::take(harness.input_mut());
+    harness.state_mut().raw_input_hook(&ctx, &mut input);
+    *harness.input_mut() = input;
+}
+
 /// Holds `paths` over the window, as a drag from a file manager does, and draws the
-/// frame the system asks for.
+/// frame the system asks for. They are held until they are dropped, or the test takes
+/// them out of `Driver::held`.
 pub fn hold_over(driver: &mut Driver, harness: &mut Harness<'_>, paths: &[&Path]) {
-    harness.input_mut().hovered_files = (paths.iter())
+    driver.held = (paths.iter())
         .map(|path| egui::HoveredFile {
             path: Some((*path).to_owned()),
             ..Default::default()
@@ -297,7 +314,7 @@ pub fn hold_over(driver: &mut Driver, harness: &mut Harness<'_>, paths: &[&Path]
 /// Drops `paths` on the window: they are no longer held over it, and are the frame's
 /// dropped files.
 pub fn drop_on(driver: &mut Driver, harness: &mut Harness<'_>, paths: &[&Path]) {
-    harness.input_mut().hovered_files.clear();
+    driver.held.clear();
     for path in paths {
         let file: egui::DroppedFileHandle = Arc::new(Dropped((*path).to_owned()));
         harness.input_mut().dropped_files.push(file);

@@ -618,10 +618,19 @@ fn export_refused(harness: &mut Harness<'_>) {
 
 /// A folder held over the window: the card that says what letting go will do.
 fn holding(harness: &mut Harness<'_>) {
-    harness.input_mut().hovered_files.push(egui::HoveredFile {
-        path: Some(std::path::PathBuf::from("/home/ada/Pictures/Holiday")),
+    use eframe::App as _;
+    // What is held is handed to the application before egui reads it, as eframe does
+    // before every frame of a window (`App::raw_input_hook`): once is enough here,
+    // the application keeping what it was last told.
+    let mut input = egui::RawInput {
+        hovered_files: vec![egui::HoveredFile {
+            path: Some(std::path::PathBuf::from("/home/ada/Pictures/Holiday")),
+            ..Default::default()
+        }],
         ..Default::default()
-    });
+    };
+    let ctx = harness.ctx.clone();
+    harness.state_mut().raw_input_hook(&ctx, &mut input);
     for _ in 0..3 {
         harness.step();
     }

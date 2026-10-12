@@ -152,10 +152,7 @@ fn a_folder_already_watched_is_watched_once() {
 fn a_drag_that_carries_no_path_is_not_announced() {
     let dir = tempfile::tempdir().unwrap();
     let (mut harness, mut driver) = empty(dir.path());
-    harness
-        .input_mut()
-        .hovered_files
-        .push(egui::HoveredFile::default());
+    driver.held.push(egui::HoveredFile::default());
     driver.act(&mut harness);
     assert!(!harness.state().hovering());
     drop_on(&mut driver, &mut harness, &[]);
@@ -239,4 +236,129 @@ fn under_the_exports_dialog_a_dropped_folder_is_its_destination_and_is_not_watch
     driver.settle(&mut harness);
     assert_eq!(watched(harness.state()), [kept(&holiday)]);
     assert_eq!(said(&harness), Vec::<String>::new());
+}
+
+// egui asks for the next frame at once for as long as it is told that something is held
+// over the window, so it is not told (`App::raw_input_hook`): a folder held still over
+// the window is a still window, with the card up.
+#[test]
+fn a_window_with_a_folder_held_over_it_draws_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let holiday = photos_in(dir.path(), "Holiday", &["a.jpg"]);
+    let (mut harness, mut driver) = empty(dir.path());
+    driver.settle(&mut harness);
+    driver.frames_in(&mut harness, 1.0);
+    driver.settle(&mut harness);
+    assert_eq!(driver.frames_in(&mut harness, 5.0), 0, "still before");
+    hold_over(&mut driver, &mut harness, &[&holiday]);
+    assert!(harness.state().hovering());
+    driver.settle(&mut harness);
+    driver.frames_in(&mut harness, 1.0);
+    driver.settle(&mut harness);
+    assert!(harness.query_by_label(CARD).is_some());
+    assert_eq!(driver.frames_in(&mut harness, 5.0), 0);
+}
+
+// The system does not always say that a drag has left: a folder carried quickly across
+// the window can be reported held after the report that it is gone, and is then held
+// for good as far as the window is told. A pointer that moves in the window is proof
+// that no drag is over it - a drag's source has the pointer for as long as it lasts -
+// and takes the card down; the next drag puts it up again.
+#[test]
+fn a_pointer_in_the_window_takes_down_a_card_the_system_left_up() {
+    let dir = tempfile::tempdir().unwrap();
+    let holiday = photos_in(dir.path(), "Holiday", &["a.jpg"]);
+    let other = photos_in(dir.path(), "Other", &["b.jpg"]);
+    let (mut harness, mut driver) = empty(dir.path());
+    hold_over(&mut driver, &mut harness, &[&holiday]);
+    assert!(harness.state().hovering());
+    // The system goes on saying it is held.
+    harness.event(egui::Event::PointerMoved(egui::pos2(500.0, 400.0)));
+    driver.act(&mut harness);
+    assert!(!harness.state().hovering());
+    driver.act(&mut harness);
+    assert!(harness.query_by_label(CARD).is_none());
+    // And stays down, frame after frame, with the pointer at rest.
+    driver.act(&mut harness);
+    assert!(!harness.state().hovering());
+    // Another drag is one more path held than was left over, and a button pressed in
+    // the window ends it as a move does.
+    hold_over(&mut driver, &mut harness, &[&holiday, &other]);
+    assert!(harness.state().hovering());
+    harness.event(button(
+        egui::pos2(500.0, 400.0),
+        PointerButton::Primary,
+        true,
+    ));
+    driver.act(&mut harness);
+    assert!(!harness.state().hovering());
+    harness.event(button(
+        egui::pos2(500.0, 400.0),
+        PointerButton::Primary,
+        false,
+    ));
+    driver.act(&mut harness);
+    // And what is dropped is acted on, whatever was left over before it.
+    hold_over(&mut driver, &mut harness, &[&holiday, &other, &other]);
+    assert!(harness.state().hovering());
+    drop_on(&mut driver, &mut harness, &[&other]);
+    assert!(!harness.state().hovering());
+    driver.until(&mut harness, "the drop answered", |app| {
+        !app.toasts().is_empty()
+    });
+    assert_eq!(said(&harness), ["Watching “Other”"]);
+}
+
+// One folder twice in a drop - by its path, and by a link to it - is one folder
+// watched, and is said as one.
+#[test]
+fn a_folder_twice_in_one_drop_is_one_folder() {
+    let dir = tempfile::tempdir().unwrap();
+    let holiday = photos_in(dir.path(), "Holiday", &["a.jpg"]);
+    let (mut harness, mut driver) = empty(dir.path());
+    #[cfg(unix)]
+    let again = {
+        let link = dir.path().join("Link");
+        std::os::unix::fs::symlink(&holiday, &link).unwrap();
+        link
+    };
+    #[cfg(not(unix))]
+    let again = holiday.clone();
+    drop_on(&mut driver, &mut harness, &[&holiday, &holiday, &again]);
+    driver.until(&mut harness, "the drop answered", |app| {
+        !app.toasts().is_empty()
+    });
+    assert_eq!(said(&harness), ["Watching “Holiday”"]);
+    assert_eq!(watched(harness.state()), [kept(&holiday)]);
+}
+
+// A drop is the window's whatever is open: under a photo's menu a folder dropped is
+// watched as under nothing, and the menu is left as it was.
+#[test]
+fn a_folder_dropped_under_an_open_menu_is_watched() {
+    let dir = tempfile::tempdir().unwrap();
+    let holiday = photos_in(dir.path(), "Holiday", &["a.jpg", "b.jpg"]);
+    let other = photos_in(dir.path(), "Other", &["c.jpg"]);
+    let (mut harness, mut driver, _) = over(dir.path(), Some(&holiday));
+    driver.until(&mut harness, "its photos shown", |app| {
+        app.photos() == 2 && app.last_frame().is_some_and(|frame| frame.settled)
+    });
+    driver.settle(&mut harness);
+    let at = harness.state().tile_rect(0).unwrap().center();
+    harness.event(egui::Event::PointerMoved(at));
+    harness.event(button(at, PointerButton::Secondary, true));
+    harness.event(button(at, PointerButton::Secondary, false));
+    driver.act(&mut harness);
+    assert!(harness.state().menu_open());
+    hold_over(&mut driver, &mut harness, &[&other]);
+    assert!(harness.state().hovering());
+    driver.act(&mut harness);
+    assert!(harness.query_by_label(CARD).is_some());
+    drop_on(&mut driver, &mut harness, &[&other]);
+    driver.until(&mut harness, "the drop answered", |app| {
+        !app.toasts().is_empty()
+    });
+    assert_eq!(said(&harness), ["Watching “Other”"]);
+    assert_eq!(watched(harness.state()).len(), 2);
+    assert!(harness.state().menu_open(), "the menu is where it was");
 }

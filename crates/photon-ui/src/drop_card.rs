@@ -4,7 +4,9 @@
 //!
 //! It takes no press: the drag is the system's, which reports the drop wherever it
 //! lands. And it asks for no frame: the system says when something is held and when it
-//! is not, and each of those draws one.
+//! is not, and each of those draws one. (egui would ask for one at every refresh for as
+//! long as it was told that something is held, which is why the application does not
+//! tell it: `App::raw_input_hook`, and its test through the whole application.)
 
 use crate::{
     icons::Icon,
@@ -214,6 +216,9 @@ mod tests {
 
     // The system says when something is held over the window and when it is not, and
     // each of those is a frame: the card itself asks for none - not for a fade either.
+    // The card alone: what is held is not in this frame's input, as it is not in the
+    // application's, and whether the window is still with a folder held over it is
+    // `a_window_with_a_folder_held_over_it_draws_nothing`'s to say.
     #[test]
     fn the_card_asks_for_no_frame() {
         let mut f = Fixture::new();

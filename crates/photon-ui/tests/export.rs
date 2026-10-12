@@ -13,6 +13,7 @@ use photon_ui::{
     dialogs::Dialog,
     dirs::Dirs,
     export_dialog::{Dest, ExportDialog, NO_FOLDER, NOT_WHOLE},
+    toasts::Kind,
 };
 use std::path::{Path, PathBuf};
 
@@ -215,7 +216,10 @@ fn a_path_that_is_no_folder_is_said_to_be_none() {
                 .into_owned(),
             NO_FOLDER,
         ),
-        ("out".to_owned(), NOT_WHOLE),
+        // A folder there is, read from where the test runs: the crate's own `src`.
+        // No whole path all the same - it would be read from wherever photon was
+        // started.
+        ("src".to_owned(), NOT_WHOLE),
     ] {
         open_export(&mut driver, &mut harness, (0, 0));
         // A file that is no photo of the library's, beside it.
@@ -326,7 +330,6 @@ fn export_takes_no_press_while_an_export_runs() {
     assert!(harness.state().dialog().is_none());
     assert!(harness.state().menu_open(), "nothing was picked");
     key(&mut driver, &mut harness, Key::Escape);
-    // A star meanwhile does not wait for the export: it has a thread of its own.
     assert!(harness.state().exporting());
 
     drop(rendering);
@@ -380,4 +383,137 @@ fn a_window_with_the_exports_dialog_open_draws_nothing() {
     driver.settle(&mut harness);
     assert!(exporting(&harness).is_some());
     assert_eq!(driver.frames_in(&mut harness, 5.0), 0);
+}
+
+// A folder's name can end in a space, and a dropped folder's path is put in the field as
+// the system gave it. Asked about without the spaces at its ends, as a typed path is,
+// "out " dropped was the folder "out" beside it: the dialog passed that one, and the
+// copies were written into a folder nobody had named.
+#[cfg(unix)]
+#[test]
+fn a_dropped_folder_whose_name_ends_in_a_space_is_the_folder_exported_to() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut harness, mut driver, _, _, out) = three(dir.path());
+    // "out" is there, made by `three`; "out " is the one dropped.
+    let spaced = dir.path().join("out ");
+    std::fs::create_dir_all(&spaced).unwrap();
+    open_export(&mut driver, &mut harness, (0, 0));
+    common::drop_on(&mut driver, &mut harness, &[&spaced]);
+    driver.until(&mut harness, "the path asked about", |app| {
+        matches!(app.dialog(), Some(Dialog::Export(export))
+            if !matches!(export.dest(), Dest::Checking | Dest::Empty))
+    });
+    assert_eq!(
+        exporting(&harness).unwrap().dest(),
+        &Dest::Passed(spaced.to_string_lossy().into_owned())
+    );
+    key(&mut driver, &mut harness, Key::Enter);
+    driver.until(&mut harness, "the export over", |app| {
+        !app.exporting() && !app.toasts().is_empty()
+    });
+    assert_eq!(files(&spaced), ["a.jpg"]);
+    assert_eq!(
+        files(&out),
+        Vec::<String>::new(),
+        "nothing was dropped there"
+    );
+    // Typed with a space after it, a path that has no folder of that very name is the
+    // folder without the space: a path pasted from a terminal ends in one.
+    std::fs::remove_file(spaced.join("a.jpg")).unwrap();
+    std::fs::remove_dir(&spaced).unwrap();
+    open_export(&mut driver, &mut harness, (0, 0));
+    let dest = out.to_string_lossy().into_owned();
+    assert_eq!(
+        type_path(&mut driver, &mut harness, &format!("{dest} ")),
+        Dest::Passed(dest)
+    );
+}
+
+// A `~` typed is the home folder of whoever runs photon. Read and never written to: the
+// path is asked about, and nothing is exported.
+#[test]
+fn a_tilde_typed_is_the_home_folder() {
+    let Some(home) = ::dirs::home_dir().filter(|home| home.is_dir()) else {
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let (mut harness, mut driver, _, _, _) = three(dir.path());
+    open_export(&mut driver, &mut harness, (0, 0));
+    assert_eq!(
+        type_path(&mut driver, &mut harness, "~"),
+        Dest::Passed(home.to_string_lossy().into_owned())
+    );
+}
+
+// The destination passed while the dialog was open, and by the time the export begins
+// it is no longer one to write into: gone, or watched since. The engine asks again
+// before it writes anything, and what it says is the message - an error, with nothing
+// written and the window ready for the next export.
+#[test]
+fn a_destination_gone_or_watched_since_it_passed_is_said_and_nothing_is_written() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut harness, mut driver, _, _, out) = three(dir.path());
+    open_export(&mut driver, &mut harness, (0, 0));
+    let dest = out.to_string_lossy().into_owned();
+    assert!(matches!(
+        type_path(&mut driver, &mut harness, &dest),
+        Dest::Passed(_)
+    ));
+    std::fs::remove_dir(&out).unwrap();
+    key(&mut driver, &mut harness, Key::Enter);
+    driver.until(&mut harness, "the export over", |app| {
+        !app.exporting() && !app.toasts().is_empty()
+    });
+    assert_eq!(said(&harness).len(), 1);
+    assert!(
+        !said(&harness)[0].starts_with("Exported"),
+        "{:?}",
+        said(&harness)
+    );
+    assert_eq!(harness.state().toasts()[0].kind, Kind::Error);
+    assert!(!out.exists(), "and the folder was not made again");
+
+    // Watched since.
+    std::fs::create_dir_all(&out).unwrap();
+    open_export(&mut driver, &mut harness, (0, 0));
+    assert!(matches!(
+        type_path(&mut driver, &mut harness, &dest),
+        Dest::Passed(_)
+    ));
+    let engine = harness.state().engine().clone();
+    commands::add_folder(&engine, &dest).unwrap();
+    key(&mut driver, &mut harness, Key::Enter);
+    driver.until(&mut harness, "the export over", |app| {
+        !app.exporting() && app.toasts().len() >= 2
+    });
+    assert!(
+        said(&harness)[1].contains("is inside the watched folder"),
+        "{:?}",
+        said(&harness)
+    );
+    assert_eq!(harness.state().toasts()[1].kind, Kind::Error);
+    assert_eq!(files(&out), Vec::<String>::new());
+}
+
+// The export has a thread of its own, and is not on the queue of writes: a photo hidden
+// while an export stands at its first photo is hidden at once.
+#[test]
+fn a_write_made_while_an_export_runs_does_not_wait_for_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut harness, mut driver, _, _, out) = three(dir.path());
+    let shown = harness.state().shown().to_vec();
+    let engine = harness.state().engine().clone();
+    commands::rotate_item(&engine, shown[0], true).unwrap();
+    driver.settle(&mut harness);
+    let rendering = photon_engine::engine::RENDERING.lock();
+    open_export(&mut driver, &mut harness, (0, 0));
+    type_path(&mut driver, &mut harness, &out.to_string_lossy());
+    key(&mut driver, &mut harness, Key::Enter);
+    assert!(harness.state().exporting());
+    pick(&mut driver, &mut harness, 2, Modifiers::NONE);
+    key(&mut driver, &mut harness, Key::H);
+    driver.until(&mut harness, "the photo hidden", |app| app.photos() == 2);
+    assert!(harness.state().exporting(), "and the export still stands");
+    drop(rendering);
+    driver.until(&mut harness, "the export over", |app| !app.exporting());
 }

@@ -549,9 +549,11 @@ mod tests {
     #[test]
     fn the_words_are_the_svelte_dialogs() {
         let dialog = include_str!("../../../ui/src/components/ExportDialog.svelte");
-        // The note is wrapped there: compared word for word, whatever the lines.
+        // The note is wrapped there: compared word for word, whatever the lines, and
+        // with the tags it stands between - cut short, it is still in the whole one.
         let words = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
-        assert!(words(dialog).contains(&words(NOTE)), "the note");
+        let note = format!("<p class=\"note\"> {} </p>", words(NOTE));
+        assert!(words(dialog).contains(&note), "the note");
         // Each with what stands on either side of it there: a label cut short is still
         // found inside the whole one.
         for text in [

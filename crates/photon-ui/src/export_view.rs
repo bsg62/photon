@@ -49,10 +49,18 @@ fn small_line(ui: &egui::Ui) -> f32 {
 
 /// How tall the dialog is, `inner` wide inside its padding: what is said of a refused
 /// path and the note are wrapped, and take the lines they need.
+///
+/// The room of one line is kept under the field whether or not anything is said there.
+/// A path is asked about at every letter, and the short reasons - no folder there, no
+/// whole path - come and go as it is typed: a dialog only as tall as what it says, in
+/// the middle of the window, moved up and down with them at every part of a path.
 pub(crate) fn height(ui: &egui::Ui, dialog: &ExportDialog, inner: f32, palette: &Palette) -> f32 {
-    let said = dialog.problem().map_or(0.0, |why| {
-        S[0] + small(ui, why, color(palette.danger), inner).size().y.ceil()
-    });
+    let line = small_line(ui);
+    let said = S[0]
+        + dialog.problem().map_or(line, |why| {
+            let words = small(ui, why, color(palette.danger), inner);
+            words.size().y.ceil().max(line)
+        });
     let note = small(ui, NOTE, color(palette.text_dim), inner)
         .size()
         .y
@@ -193,14 +201,16 @@ pub(crate) fn show(
 
     // Against the field, while the dialog is still open: a folder photon will not write
     // into is worth saying before the export and not after it.
-    let mut top = form.bottom();
+    // (In the room of one line that is kept for it, or in as many as it needs.)
+    let said_at = form.bottom() + S[0];
+    let mut top = said_at + small_line(ui);
     if let Some(why) = refused {
         let words = small(ui, why, color(palette.danger), room.width());
-        let place = Rect::from_min_size(pos2(room.left(), top + S[0]), words.size());
+        let place = Rect::from_min_size(pos2(room.left(), said_at), words.size());
         painter.galley(place.min, words, color(palette.danger));
         ui.interact(place, Id::new("dialog-export-problem"), Sense::hover())
             .widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, why));
-        top = place.top() + place.height().ceil();
+        top = top.max(place.top() + place.height().ceil());
     }
 
     // The checkbox, with its words: a press on either ticks it.
@@ -334,7 +344,7 @@ mod tests {
     use crate::{
         dialog_view::tests::{Fixture, WINDOW},
         dialogs::Dialog,
-        export_dialog::Dest,
+        export_dialog::{Dest, NO_FOLDER},
     };
     use eframe::egui::{Event, PointerButton};
 
@@ -496,7 +506,8 @@ photon would index the copies as new photos";
         assert!(said.top() > f.drew("/home/ada/Pictures/out").unwrap().bottom());
         assert!(said.bottom() < f.drew(APPLY_EDITS).unwrap().top());
         assert!(said.height() > 20.0, "on more than one line: {said:?}");
-        assert!(ground.height() > before.height() + 20.0);
+        // Taller by the lines beyond the one whose room was there already.
+        assert!(ground.height() > before.height() + 10.0);
         assert_eq!(ground_of(&f, EXPORT), f.tint(|palette| palette.field));
         let go = f.at(EXPORT);
         assert_eq!(f.click(go), Done::Open);
@@ -512,10 +523,18 @@ photon would index the copies as new photos";
         assert_eq!(dialog(&f).dest(), &Dest::Checking);
         assert!(f.drew(INSIDE).is_some());
         assert_eq!(f.ground(), refused);
-        // The answer that it passes takes the line away.
-        answer(&mut f, Ok("/home/ada/Pictures/out2"));
+        // What stands under the words is as far under two lines of them as under one.
+        let under = f.drew(APPLY_EDITS).unwrap().top() - f.drew(INSIDE).unwrap().bottom();
+        answer(&mut f, Err(NO_FOLDER));
         f.frame(Vec::new());
-        assert_eq!(f.drew(INSIDE), None);
+        let short = f.drew(NO_FOLDER).expect("the other reason");
+        let under_one = f.drew(APPLY_EDITS).unwrap().top() - short.bottom();
+        assert!((under - under_one).abs() < 2.0, "{under} and {under_one}");
+        // The answer that it passes takes the line away.
+        f.typed("3");
+        answer(&mut f, Ok("/home/ada/Pictures/out23"));
+        f.frame(Vec::new());
+        assert_eq!(f.drew(NO_FOLDER), None);
         assert_eq!(f.ground().height(), before.height());
     }
 
@@ -704,5 +723,86 @@ photon would index the copies as new photos";
         for pair in sizes.windows(2) {
             assert!(pair[0].right() <= pair[1].left(), "{pair:?}");
         }
+    }
+
+    // The reasons of one line come and go as a path is typed - there is no folder at
+    // "/home/ad", and there is one at "/home/ada" - and the dialog does not move with
+    // them: the room of one line is under the field whether or not anything is said.
+    #[test]
+    fn a_reason_of_one_line_does_not_move_the_dialog() {
+        let mut f = export(&[1]);
+        f.open();
+        let empty = f.ground();
+        let checkbox = f.drew(APPLY_EDITS).unwrap();
+        f.typed("/home/ad");
+        answer(&mut f, Err(NO_FOLDER));
+        f.frame(Vec::new());
+        let said = f.drew(NO_FOLDER).expect("why not");
+        assert!(said.top() > f.drew("/home/ad").unwrap().bottom());
+        assert!(
+            said.bottom() <= checkbox.top(),
+            "{said:?} over {checkbox:?}"
+        );
+        assert_eq!(f.ground(), empty);
+        assert_eq!(f.drew(APPLY_EDITS), Some(checkbox));
+        f.typed("a");
+        answer(&mut f, Ok("/home/ada"));
+        f.frame(Vec::new());
+        assert_eq!(f.drew(NO_FOLDER), None);
+        assert_eq!(f.ground(), empty);
+        assert_eq!(f.drew(APPLY_EDITS), Some(checkbox));
+    }
+
+    // A button that is down within the double-click time of the dialog's first frame
+    // does nothing in it - and what is typed or pasted before it comes up is kept, as
+    // the picker keeps it: the path was lost, and the field showed it for one frame.
+    #[test]
+    fn what_is_typed_while_a_double_clicks_second_press_is_down_is_kept() {
+        let mut f = export(&[1]);
+        for _ in 0..3 {
+            f.frame(Vec::new());
+        }
+        let at = f.at(NOTE);
+        f.frame(vec![Event::PointerMoved(at)]);
+        assert_eq!(f.button(at, PointerButton::Primary, true), Done::Open);
+        assert_eq!(f.focused(), Some(field_id()));
+        let done = f.frame(vec![Event::Paste(FOLDER.to_owned())]);
+        f.button(at, PointerButton::Primary, false);
+        f.frame(Vec::new());
+        assert_eq!(done, Done::Path(FOLDER.to_owned()));
+        assert_eq!(dialog(&f).path(), FOLDER);
+    }
+
+    // The dialog is as tall as what it says, and stands in the middle of the window in
+    // the frame its height changes, not a frame later: placed by the height of the
+    // frame before, it was drawn with its top where it had been in the frame the line
+    // under the field went, and a press on "Export" where the button had stood was a
+    // press beside the dialog - which closes it.
+    #[test]
+    fn a_press_on_export_in_the_frame_the_line_goes_does_not_close_the_dialog() {
+        let mut f = export(&[1, 2, 3]);
+        f.open();
+        f.typed("/home/ada/Pictures/out");
+        answer(&mut f, Err(INSIDE));
+        f.frame(Vec::new());
+        f.frame(Vec::new());
+        let refused = f.ground();
+        let middle = f.size.to_pos2() / 2.0;
+        assert!((refused.center() - middle).length() < 1.0, "{refused:?}");
+        let at = f.at(EXPORT);
+        f.frame(vec![Event::PointerMoved(at)]);
+        f.typed("2");
+        // The answer, in the frame of the press.
+        let asked = dialog(&f).path().to_owned();
+        if let Dialog::Export(export) = &mut f.dialog {
+            export.checked(&asked, Ok(asked.clone()));
+        }
+        let done = f.button(at, PointerButton::Primary, true);
+        let moving = f.ground();
+        assert!(moving.height() < refused.height() - 10.0, "the line went");
+        assert_ne!(done, Done::Closed);
+        assert!((moving.center() - middle).length() < 1.0, "{moving:?}");
+        f.frame(Vec::new());
+        assert_eq!(f.ground(), moving, "and it stays where it was put");
     }
 }
