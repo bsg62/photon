@@ -94,6 +94,9 @@ pub struct ViewerData<'a> {
     pub caption: &'a str,
     /// The photo's own caption, where it has one.
     pub photo_caption: Option<&'a str>,
+    /// The photo's width in pixels as it is seen, as the library says it; nought while
+    /// it has not. What a double click measures "its own pixels" by.
+    pub width: u32,
     /// A video: its poster is neither zoomed nor panned, and has no slider.
     pub video: bool,
     /// Whether the photo is starred; none while that is not known, or for a photo that
@@ -110,8 +113,11 @@ struct Press {
     /// Where the button went down.
     at: Pos2,
     /// The pan as it was then, moved along with every zoom made since: the drag is
-    /// measured from here.
-    pan: Pan,
+    /// measured from here. None once the photo has been fitted under the press, which
+    /// is then no drag and does not become one again: zoomed under a button that was
+    /// down at fit and has moved since, the photo would be thrown by all the pointer
+    /// had moved while there was nothing to move.
+    pan: Option<Pan>,
     /// Whether the pointer has gone further from `at` than a click may: it is a drag,
     /// and no click when the button comes up.
     moved: bool,
@@ -125,6 +131,10 @@ pub struct ViewerView {
     press: Option<Press>,
     /// The last click on the photo, when and where: the first of a double click.
     clicked: Option<(f64, Pos2)>,
+    /// The window was left, or a touch cancelled, since the first button last went
+    /// down: the slider follows the pointer no further, as a pan does not. A button let
+    /// go of over another window may never be heard of.
+    let_go: bool,
 }
 
 /// Where the controls stand: what a press on the photo is not.
@@ -135,6 +145,9 @@ struct Controls {
     bar: Rect,
     /// None for a video, which has none.
     slider: Option<Rect>,
+    /// The photo's own caption, where it has one: no control, but a press on it is not
+    /// the photo's either - a double click on a line of text is not "closer".
+    caption: Option<Rect>,
 }
 
 impl Controls {
@@ -142,6 +155,7 @@ impl Controls {
         [self.prev, self.next, self.close, self.bar]
             .into_iter()
             .chain(self.slider)
+            .chain(self.caption)
             .any(|rect| rect.contains(at))
     }
 }
@@ -176,6 +190,9 @@ impl ViewerView {
         zoom.held_to((area.width, area.height));
 
         // Where the controls stand, before anything is read: a press on one is its own.
+        let caption = data
+            .photo_caption
+            .map(|line| caption_place(ui, window, line));
         let side = |left: f32| {
             Rect::from_min_size(pos2(left, window.center().y - NAV / 2.0), vec2(NAV, NAV))
         };
@@ -188,11 +205,12 @@ impl ViewerView {
             ),
             bar: bar_place(ui, window, data.caption),
             slider: (!data.video).then(|| slider_place(window)),
+            caption: caption.as_ref().map(|(place, _)| *place),
         };
         // The photo's own surface, under the controls: with something there to be hit,
         // egui hands no press that lands a few points beside a button to that button,
         // and what a press was is decided in one place, by where it was.
-        ui.interact(window, Id::new("viewer-photo"), Sense::CLICK | Sense::DRAG);
+        ui.interact(window, Id::new("viewer-photo"), Sense::CLICK);
         let mut actions = self.input(ui, data, zoom, area, &controls, zooms);
 
         if shows && let Some((texture, at)) = picture(ui, data, area, zoom) {
@@ -235,14 +253,21 @@ impl ViewerView {
             actions.push(ViewerAction::Close);
         }
 
-        if let Some(line) = data.photo_caption {
-            photo_caption(ui, window, line);
+        if let (Some(line), Some((place, galley))) = (data.photo_caption, caption) {
+            photo_caption(ui, place, galley, line);
         }
         if bar(ui, controls.bar, data) {
             actions.push(ViewerAction::Star);
         }
         if let Some(place) = controls.slider {
-            slider(ui, place, zoom, (area.width, area.height), zooms);
+            slider(
+                ui,
+                place,
+                zoom,
+                (area.width, area.height),
+                zooms,
+                !self.let_go,
+            );
         }
         actions
     }
@@ -254,6 +279,12 @@ impl ViewerView {
     /// that close or write: Escape held from whatever it has just closed must not close
     /// the viewer with it, and each press of `.` or `H` is a write. A chord with Ctrl,
     /// Cmd or Alt is not the viewer's.
+    ///
+    /// The zoom changed here is the photo's that the frame began on. A step is acted on
+    /// after the frame, and puts the next photo back to the fit: a zoom's key pressed
+    /// *before* an arrow in one frame is the photo's that is left, as it should be, and
+    /// one pressed *after* it is lost with it - a key in a frame long enough to hold
+    /// both, which costs a second press.
     fn input(
         &mut self,
         ui: &egui::Ui,
@@ -281,13 +312,21 @@ impl ViewerView {
                 options.input_options.max_double_click_delay,
             )
         });
-        // Fitted, the photo is in the middle whatever a press remembers: one held from
-        // before a step, which put the next photo back to the fit, does not bring the
-        // last photo's pan to it.
+        // Where nothing zooms - a video stepped to, a photo that has gone - a press and
+        // a click that began on what was there before are over: the second click of a
+        // double click that comes up on a video's poster would zoom it, with no key, no
+        // wheel and no slider there to put it back.
+        if !zooms {
+            self.press = None;
+            self.clicked = None;
+        }
+        // Fitted, there is no drag: not for a press that went down on a fitted photo, and
+        // not for one held from before a step, which put the next photo back to the fit
+        // and must not bring the last photo's pan to it.
         if zoom.is_fit()
             && let Some(press) = &mut self.press
         {
-            press.pan = Pan::default();
+            press.pan = None;
         }
         // Whether a press at `at` is the photo's: on no control, and under nothing that
         // lies over the viewer - a message, with its button. Asked of the layer egui
@@ -300,9 +339,9 @@ impl ViewerView {
         // moved along with the photo, or the pointer's next move would put the pan back
         // where the drag had it and undo the zoom's.
         let zoomed = |press: &mut Option<Press>, moved: Pan| {
-            if let Some(press) = press {
-                press.pan.x += moved.x;
-                press.pan.y += moved.y;
+            if let Some(from) = press.as_mut().and_then(|press| press.pan.as_mut()) {
+                from.x += moved.x;
+                from.y += moved.y;
             }
         };
         let at_pointer = pointer.map_or(Pan::default(), from_middle);
@@ -408,17 +447,23 @@ impl ViewerView {
                     pressed: true,
                     ..
                 } => {
-                    self.press = (zooms && on_photo(*pos)).then(|| Press {
+                    // A button down again is a gesture begun again: the slider follows.
+                    self.let_go = false;
+                    // (Where nothing zooms, and on a fitted photo, the press is over
+                    // or no drag by the next frame: above.)
+                    self.press = on_photo(*pos).then(|| Press {
                         at: *pos,
-                        pan: zoom.pan(),
+                        pan: Some(zoom.pan()),
                         moved: false,
                     });
                 }
                 Event::PointerMoved(to) => {
                     if let Some(press) = &mut self.press {
                         press.moved |= press.at.distance(*to) > click_dist;
-                        let by = *to - press.at;
-                        zoom.pan_to(press.pan.x + by.x, press.pan.y + by.y, size);
+                        if let Some(from) = press.pan {
+                            let by = *to - press.at;
+                            zoom.pan_to(from.x + by.x, from.y + by.y, size);
+                        }
                     }
                 }
                 Event::PointerButton {
@@ -442,11 +487,12 @@ impl ViewerView {
                     if !second {
                         self.clicked = Some((now, *pos));
                     } else if zoom.is_fit() {
-                        // Its own pixels are those of the largest level there is to
-                        // draw: none before the full picture is made, or where it
-                        // cannot be - and then there are no more pixels to show than
-                        // the preview's, and the double click is "closer".
-                        let own = data.levels.first().map_or(0, |level| level.width);
+                        // Its own pixels, as the library says them; until it has, the
+                        // largest level there is to draw; with neither, "closer".
+                        let own = match data.width {
+                            0 => data.levels.first().map_or(0, |level| level.width),
+                            width => width,
+                        };
                         let next = actual_size_zoom(
                             own as f32,
                             fitted_width(data, area),
@@ -464,13 +510,20 @@ impl ViewerView {
                 | Event::Touch {
                     phase: egui::TouchPhase::Cancel,
                     ..
-                } => self.press = None,
+                } => {
+                    self.press = None;
+                    self.let_go = true;
+                }
                 _ => {}
             }
         }
-        // A hand over a photo that can be moved, closed while it is held.
-        if !zoom.is_fit() && pointer.is_some_and(on_photo) {
-            ui.ctx().set_cursor_icon(if self.press.is_some() {
+        // A hand over a photo that can be moved: closed while it holds the photo,
+        // wherever the pointer has gone with it - over a button too, with the photo
+        // still following - and open over the photo otherwise. Not where nothing is
+        // drawn that could move: a photo that was zoomed and has gone.
+        let holding = (self.press.as_ref()).is_some_and(|press| press.pan.is_some());
+        if zooms && !zoom.is_fit() && (holding || pointer.is_some_and(on_photo)) {
+            ui.ctx().set_cursor_icon(if holding {
                 CursorIcon::Grabbing
             } else {
                 CursorIcon::Grab
@@ -533,9 +586,13 @@ fn picture<'a>(
     // linear filter then has nothing to do, and what a proper one made of the photo is
     // what is seen. A pixel's difference is the roundings - of the box to whole pixels,
     // of the copy's own size; more is a window that has changed size since, and the
-    // levels until the copy for the new one is made - and a photo that is zoomed,
-    // which is another size than its copy by then.
-    if let Some(copy) = data.fitted {
+    // levels until the copy for the new one is made. And only at fit: a zoom can be
+    // the copy's size too - a hair over the fit, or twice in a window half as wide as
+    // the one the copy on hand was made for - and the copy is then no picture of what
+    // the zoom shows.
+    if zoom.is_fit()
+        && let Some(copy) = data.fitted
+    {
         let [width, height] = copy.size();
         let own = vec2(width as f32, height as f32);
         if (own.x - drawn.x).abs() < SAME_SIZE && (own.y - drawn.y).abs() < SAME_SIZE {
@@ -625,8 +682,16 @@ fn slider_place(window: Rect) -> Rect {
 /// The zoom's slider and what it stands at, in hundredths: a press anywhere along it
 /// zooms to there, and a drag follows the pointer. It takes no press where there is
 /// nothing to zoom, and is in its place all the same. No stop of the Tab key, as no
-/// control here is: `+`, `-` and `0` are its keys.
-fn slider(ui: &egui::Ui, place: Rect, zoom: &mut Zoom, area: (f32, f32), works: bool) {
+/// control here is: `+`, `-` and `0` are its keys. It `follows` the first button, held,
+/// for as long as the gesture is the window's.
+fn slider(
+    ui: &egui::Ui,
+    place: Rect,
+    zoom: &mut Zoom,
+    area: (f32, f32),
+    works: bool,
+    follows: bool,
+) {
     glass(ui, place, R[3]);
     let track = Rect::from_min_size(
         pos2(place.left() + S[2], place.center().y - 2.0),
@@ -642,8 +707,10 @@ fn slider(ui: &egui::Ui, place: Rect, zoom: &mut Zoom, area: (f32, f32), works: 
         Sense::hover()
     };
     let response = ui.interact(reach, Id::new("viewer-zoom"), sense);
-    if works
+    // (egui's "a button is down on it" is of whichever button went down.)
+    if follows
         && response.is_pointer_button_down_on()
+        && ui.input(|input| input.pointer.primary_down())
         && let Some(at) = response.interact_pointer_pos()
     {
         // (Past either end of the track is past either end of the range, where the
@@ -731,9 +798,10 @@ fn bar(ui: &egui::Ui, rect: Rect, data: &ViewerData<'_>) -> bool {
     response.clicked()
 }
 
-/// The photo's own caption, over the bar and centred like it: two lines at most, so that
-/// a long one does not climb over the photo. The info panel has it whole.
-fn photo_caption(ui: &egui::Ui, window: Rect, line: &str) {
+/// Where the photo's own caption stands, and its words laid out: over the bar and
+/// centred like it, two lines at most, so that a long one does not climb over the photo.
+/// The info panel has it whole.
+fn caption_place(ui: &egui::Ui, window: Rect, line: &str) -> (Rect, std::sync::Arc<egui::Galley>) {
     let most = (window.width() - 2.0 * BESIDE_BAR - 2.0 * S[2]).max(0.0);
     let mut job = egui::text::LayoutJob::simple(
         line.to_owned(),
@@ -752,6 +820,11 @@ fn photo_caption(ui: &egui::Ui, window: Rect, line: &str) {
         ),
         size,
     );
+    (rect, galley)
+}
+
+/// The photo's own caption, drawn where `caption_place` put it.
+fn photo_caption(ui: &egui::Ui, rect: Rect, galley: std::sync::Arc<egui::Galley>, line: &str) {
     glass(ui, rect, R[3]);
     ui.interact(rect, Id::new("viewer-photo-caption"), Sense::hover())
         .widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, line));
@@ -817,6 +890,8 @@ mod tests {
         starred: Option<bool>,
         can_prev: bool,
         can_next: bool,
+        /// The photo's width in pixels as the library says it; nought until it has.
+        width: u32,
         video: bool,
         zoom: Zoom,
         /// The textures painted in the last frame, each with where.
@@ -852,6 +927,7 @@ mod tests {
                 starred: Some(false),
                 can_prev: true,
                 can_next: true,
+                width: 0,
                 video: false,
                 zoom: Zoom::default(),
                 images: Vec::new(),
@@ -909,6 +985,7 @@ mod tests {
                 caption: &self.caption,
                 photo_caption: self.photo_caption,
                 starred: self.starred,
+                width: self.width,
                 video: self.video,
                 can_prev: self.can_prev,
                 can_next: self.can_next,
@@ -1561,6 +1638,11 @@ mod tests {
         // Towards the user, out again; Cmd is Ctrl's equal.
         f.wheel(Line, -1.0, Modifiers::COMMAND);
         assert!(near(f.zoom.zoom(), 1.0));
+        // A wheel that reports pages is a notch a page.
+        f.wheel(egui::MouseWheelUnit::Page, 1.0, Modifiers::CTRL);
+        assert!(near(f.zoom.zoom(), by));
+        f.wheel(egui::MouseWheelUnit::Page, -1.0, Modifiers::CTRL);
+        assert!(f.zoom.is_fit());
         // A trackpad's points are taken as they come, and a flick is capped.
         f.wheel(Point, 10.0, Modifiers::CTRL);
         assert!(near(f.zoom.zoom(), 0.1_f32.exp()));
@@ -1642,12 +1724,33 @@ mod tests {
         assert!(f.zoom.is_fit());
     }
 
-    // "Its own pixels" are the full picture's. Before that is made - or where it cannot
-    // be: a photo on a drive that is not there - there are only the preview's, and a
-    // small photo has none to spare over its fitted size: a double click zooms all the
-    // same, to twice.
+    // "Its own pixels" are what the library says the photo has, whether or not its full
+    // picture is made yet: a double click a moment after a step goes where one a second
+    // later does. Until the library has said, the largest level there is to draw.
     #[test]
-    fn a_double_click_zooms_a_photo_whose_pixels_are_not_there_or_spent() {
+    fn a_double_click_goes_by_the_size_the_library_gives() {
+        // Its preview alone on screen, 1,600 pixels of a photo of 2,400.
+        let mut f = Fixture::new().with_preview([1600, 800]);
+        f.width = 2400;
+        f.frame(Vec::new());
+        f.click(pos2(500.0, 350.0));
+        f.click(pos2(500.0, 350.0));
+        assert_eq!(f.zoom.zoom(), 2.4);
+        // The library's number, not the level's: a photo whose full level the device
+        // cannot hold is drawn from its half, and is 3,000 pixels wide all the same.
+        let mut f = Fixture::new().with_levels(&[[1500, 700]]);
+        f.width = 3000;
+        f.frame(Vec::new());
+        f.click(pos2(500.0, 350.0));
+        f.click(pos2(500.0, 350.0));
+        assert!(near(f.zoom.zoom(), 3.0), "{}", f.zoom.zoom());
+    }
+
+    // With nothing known of its size - the library has not answered, and there is only
+    // the preview - and for a small photo, which has no pixels to spare over its fitted
+    // size, a double click zooms all the same, to twice.
+    #[test]
+    fn a_double_click_zooms_a_photo_whose_pixels_are_not_known_or_spent() {
         let preview = Fixture::new().with_preview([1600, 800]);
         let small = Fixture::new().with_levels(&[[900, 400]]);
         for (mut f, what) in [(preview, "its preview alone"), (small, "a small photo")] {
@@ -1757,9 +1860,10 @@ mod tests {
     }
 
     // The fit under a press that is held - a step put the next photo back to it - and a
-    // zoom after it: the last photo's pan is not brought to this one.
+    // zoom after it: the last photo's pan is not brought to this one, and the press that
+    // moved the last photo moves this one nowhere.
     #[test]
-    fn a_press_held_across_a_photo_put_back_to_the_fit_remembers_no_pan() {
+    fn a_press_held_across_a_photo_put_back_to_the_fit_is_no_drag_any_more() {
         let mut f = photo();
         f.zoom.to(2.0, Pan::default(), (1000.0, 700.0));
         f.zoom.pan_to(100.0, 0.0, (1000.0, 700.0));
@@ -1770,9 +1874,44 @@ mod tests {
         f.frame(Vec::new());
         f.key(Key::Plus);
         f.point(pos2(551.0, 350.0));
-        // From the fit's middle, by what the pointer has moved since the press: the
-        // drag goes on, and nothing of the pan the last photo had is in it.
-        assert_eq!(f.zoomed(), (1.25, (51.0, 0.0)));
+        assert_eq!(f.zoomed(), (1.25, (0.0, 0.0)));
+        // The next press is a drag again.
+        f.release(pos2(551.0, 350.0));
+        f.press(pos2(551.0, 350.0));
+        f.point(pos2(561.0, 350.0));
+        assert_eq!(f.zoomed(), (1.25, (10.0, 0.0)));
+    }
+
+    // A press that went down on a fitted photo is no drag, and does not become one when
+    // the photo is zoomed under it - by a key, or by the wheel under the same hand:
+    // measured from where the button went down, the photo would be thrown by all the
+    // pointer had moved while there was nothing to move.
+    #[test]
+    fn a_press_that_began_at_fit_moves_nothing_once_the_photo_is_zoomed() {
+        let mut f = photo();
+        f.press(pos2(300.0, 350.0));
+        f.point(pos2(500.0, 350.0));
+        assert_eq!(f.zoomed(), (1.0, (0.0, 0.0)));
+        for _ in 0..3 {
+            f.key(Key::Plus);
+        }
+        let zoomed = f.zoomed();
+        assert_eq!(zoomed.1, (0.0, 0.0));
+        f.point(pos2(501.0, 350.0));
+        assert_eq!(f.zoomed(), zoomed);
+
+        let mut f = photo();
+        f.press(pos2(300.0, 350.0));
+        f.point(pos2(600.0, 450.0));
+        f.wheel(egui::MouseWheelUnit::Line, 1.0, Modifiers::CTRL);
+        f.wheel(egui::MouseWheelUnit::Line, 1.0, Modifiers::CTRL);
+        let zoomed = f.zoomed();
+        f.point(pos2(601.0, 450.0));
+        assert_eq!(f.zoomed(), zoomed);
+        // It was no click either: it moved.
+        f.release(pos2(601.0, 450.0));
+        f.click(pos2(601.0, 450.0));
+        assert_eq!(f.zoomed().0, zoomed.0);
     }
 
     // A pan has the endings a rubber band has: the button comes up; the window is left,
@@ -2024,5 +2163,221 @@ mod tests {
             f.frame(Vec::new());
             assert_eq!(f.repaint, std::time::Duration::MAX);
         }
+    }
+
+    // As many notches of the wheel out as in end at the fit, to everything that asks:
+    // the slider says a hundred, the pointer is no hand, and the next double click zooms
+    // in. In single precision the factors' product is a hair over one, which was
+    // "zoomed": that double click then went "back to the whole photo", and nothing
+    // happened.
+    #[test]
+    fn as_many_notches_of_the_wheel_out_as_in_end_at_the_fit() {
+        for notches in 1..=6 {
+            let mut f = photo();
+            f.point(pos2(700.0, 450.0));
+            for _ in 0..notches {
+                f.wheel(egui::MouseWheelUnit::Line, 1.0, Modifiers::CTRL);
+            }
+            for _ in 0..notches {
+                f.wheel(egui::MouseWheelUnit::Line, -1.0, Modifiers::CTRL);
+            }
+            assert!(f.zoom.is_fit(), "{notches}: {}", f.zoom.zoom());
+            f.frame(Vec::new());
+            assert!(f.drew("100%").is_some());
+            assert_eq!(f.cursor, CursorIcon::Default);
+            f.click(pos2(700.0, 450.0));
+            f.click(pos2(700.0, 450.0));
+            assert_eq!(f.zoom.zoom(), 2.4, "after {notches} notches out and back");
+        }
+    }
+
+    // A pinch whose factor is no number, nought, without end or below nought leaves
+    // numbers within the range.
+    #[test]
+    fn a_pinch_that_is_no_number_leaves_numbers() {
+        for factor in [f32::NAN, 0.0, f32::INFINITY, -1.0, f32::MIN_POSITIVE] {
+            let mut f = photo();
+            f.point(pos2(700.0, 450.0));
+            f.frame(vec![Event::Zoom(1.7)]);
+            f.frame(vec![Event::Zoom(factor)]);
+            let (zoom, pan) = f.zoomed();
+            assert!(
+                zoom.is_finite() && pan.0.is_finite() && pan.1.is_finite(),
+                "{factor}: {zoom} {pan:?}"
+            );
+            assert!((1.0..=4.0).contains(&zoom));
+        }
+    }
+
+    // The photo's own caption is no control, and a press on it is not the photo's
+    // either: a double click on a line of text does not zoom.
+    #[test]
+    fn a_double_click_on_the_photos_own_caption_zooms_nothing() {
+        let mut f = photo();
+        f.photo_caption = Some("Lisbon, at dusk");
+        f.frame(Vec::new());
+        let caption = f.drew("Lisbon, at dusk").expect("the caption").center();
+        f.click(caption);
+        f.click(caption);
+        assert_eq!(f.zoomed(), (1.0, (0.0, 0.0)));
+        // Beside it, it does.
+        f.time += 1.0;
+        f.click(caption + vec2(0.0, -80.0));
+        f.click(caption + vec2(0.0, -80.0));
+        assert_eq!(f.zoom.zoom(), 2.4);
+    }
+
+    // "Nothing zooms a video" is asked when the button comes up as well as when it goes
+    // down: the second click of a double click, held across a step onto a video, would
+    // zoom the poster - which has no slider, no key and no wheel to put it back with.
+    #[test]
+    fn a_click_that_comes_up_on_a_video_zooms_nothing() {
+        let mut f = photo();
+        let at = pos2(700.0, 450.0);
+        f.click(at);
+        f.press(at);
+        // The step, as the application makes it: the next is a video, fitted.
+        f.video = true;
+        f.message = Some(("The native window does not play videos yet.", true));
+        f.zoom = Zoom::default();
+        f.release(at);
+        assert_eq!(f.zoomed(), (1.0, (0.0, 0.0)));
+        // Nor is the click before the step the first of a double click on what came
+        // after it.
+        f.video = false;
+        f.message = None;
+        f.click(at);
+        assert_eq!(f.zoomed(), (1.0, (0.0, 0.0)));
+    }
+
+    // No hand where nothing is drawn that could be moved: a photo that was zoomed and
+    // has gone keeps its zoom, and its place says so in words.
+    #[test]
+    fn the_pointer_is_no_hand_where_nothing_can_be_moved() {
+        let mut f = photo();
+        f.point(pos2(500.0, 300.0));
+        f.key(Key::Plus);
+        f.frame(Vec::new());
+        assert_eq!(f.cursor, CursorIcon::Grab);
+        f.message = Some(("This photo is no longer available.", false));
+        f.frame(Vec::new());
+        f.frame(Vec::new());
+        assert_eq!(f.photo(), None, "nothing is drawn");
+        assert_ne!(f.cursor, CursorIcon::Grab);
+    }
+
+    // While the photo is held the hand stays closed wherever the pointer goes with it:
+    // over a button the drag passes, the photo still follows.
+    #[test]
+    fn the_hand_stays_closed_over_a_control_while_the_photo_is_held() {
+        let mut f = photo();
+        f.zoom.to(2.0, Pan::default(), (1000.0, 700.0));
+        f.press(pos2(900.0, 100.0));
+        assert_eq!(f.cursor, CursorIcon::Grabbing);
+        f.point(pos2(972.0, 28.0));
+        assert_eq!(f.zoomed().1, (72.0, -72.0), "the photo follows");
+        f.frame(Vec::new());
+        assert_eq!(f.cursor, CursorIcon::Grabbing);
+        // A press at fit holds nothing, and is no closed hand once the photo is zoomed.
+        let mut f = photo();
+        f.press(pos2(500.0, 350.0));
+        f.key(Key::Plus);
+        f.frame(Vec::new());
+        assert_eq!(f.cursor, CursorIcon::Grab);
+    }
+
+    // The slider is a control like the others - two quick presses of it are no double
+    // click on the photo, and a drag along it moves no photo - and it is the first
+    // button's alone.
+    #[test]
+    fn the_slider_is_a_control_and_the_first_buttons() {
+        let (left, y) = (
+            1000.0 - 12.0 - 12.0 - 38.0 - 8.0 - 120.0,
+            700.0 - 12.0 - 19.0,
+        );
+        let mut f = photo();
+        let at = pos2(left + 40.0, y);
+        f.click(at);
+        f.click(at);
+        assert_eq!(f.zoomed(), (2.0, (0.0, 0.0)), "two presses of the slider");
+        f.time += 1.0;
+        f.press(at);
+        f.point(at + vec2(20.0, 0.0));
+        assert_eq!(f.zoomed(), (2.5, (0.0, 0.0)), "a drag along the slider");
+        f.release(at + vec2(20.0, 0.0));
+        for button in [PointerButton::Secondary, PointerButton::Middle] {
+            let mut f = photo();
+            let at = pos2(left + 60.0, y);
+            let other = |pressed| Event::PointerButton {
+                pos: at,
+                button,
+                pressed,
+                modifiers: Modifiers::NONE,
+            };
+            f.frame(vec![Event::PointerMoved(at)]);
+            f.frame(vec![other(true)]);
+            f.frame(vec![other(false)]);
+            assert_eq!(f.zoom.zoom(), 1.0, "{button:?}");
+        }
+    }
+
+    // The slider's drag has the pan's endings: the window left, it follows the pointer
+    // no further - a button let go of over another window may never be heard of - and
+    // the next press is followed again.
+    #[test]
+    fn the_sliders_drag_ends_when_the_window_is_left() {
+        let (left, y) = (
+            1000.0 - 12.0 - 12.0 - 38.0 - 8.0 - 120.0,
+            700.0 - 12.0 - 19.0,
+        );
+        let mut f = photo();
+        f.press(pos2(left + 60.0, y));
+        assert_eq!(f.zoom.zoom(), 2.5);
+        f.frame(vec![Event::WindowFocused(false)]);
+        f.frame(vec![Event::WindowFocused(true)]);
+        f.point(pos2(left + 100.0, y - 300.0));
+        assert_eq!(
+            f.zoom.zoom(),
+            2.5,
+            "it follows a pointer that holds nothing"
+        );
+        f.release(pos2(left + 100.0, y - 300.0));
+        f.press(pos2(left + 80.0, y));
+        assert_eq!(f.zoom.zoom(), 3.0);
+    }
+
+    // The fitted copy is the photo at fit and at no zoom, also where a zoom happens to
+    // be the copy's size: a hair over the fit, and a copy made for a window twice as
+    // wide while this one's photo is zoomed to twice.
+    #[test]
+    fn zoomed_the_fitted_copy_is_not_drawn_whatever_its_size() {
+        let mut f = Fixture::new().with_levels(&[[6000, 3000], [3000, 1500], [1500, 750]]);
+        f.fitted = Some(texture(&f.ctx, "fitted", [1000, 500]));
+        f.frame(Vec::new());
+        f.zoom.to(1.001, Pan::default(), (1000.0, 700.0));
+        f.frame(Vec::new());
+        assert!(!f.zoom.is_fit());
+        assert_ne!(f.photo().unwrap().0, f.fitted.as_ref().unwrap().id());
+
+        let mut f = Fixture::new().with_levels(&[[6000, 3000], [3000, 1500], [1500, 750]]);
+        f.fitted = Some(texture(&f.ctx, "fitted", [2000, 1000]));
+        f.frame(Vec::new());
+        f.zoom.to(2.0, Pan::default(), (1000.0, 700.0));
+        f.frame(Vec::new());
+        assert_ne!(f.photo().unwrap().0, f.fitted.as_ref().unwrap().id());
+    }
+
+    // A press that began on a control and came up on the photo pans nothing, and is no
+    // click on the photo.
+    #[test]
+    fn a_press_that_began_on_a_control_and_came_up_on_the_photo_is_nothing() {
+        let mut f = photo();
+        f.zoom.to(2.0, Pan::default(), (1000.0, 700.0));
+        let (close, at) = (pos2(972.0, 28.0), pos2(500.0, 350.0));
+        f.click(at);
+        f.press(close);
+        f.point(at);
+        f.release(at);
+        assert_eq!(f.zoomed(), (2.0, (0.0, 0.0)));
     }
 }

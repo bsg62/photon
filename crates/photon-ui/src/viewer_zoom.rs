@@ -27,12 +27,20 @@ pub struct Pan {
     pub y: f32,
 }
 
-/// Between fit and four times. A zoom that is no number is the fit.
+/// How far over the fit a zoom may be and be the fit still: what a float loses on the way
+/// out and back, and a hundredth of a pixel in a photo a thousand points wide.
+const FIT_WITHIN: f32 = 1e-5;
+
+/// Between fit and four times. A zoom that is no number is the fit, and so is one within
+/// a float's error of it: a fifth out and a fifth back, a few times over, ends at
+/// 1.0000001 in single precision - which every question asked of the zoom would take for
+/// "zoomed": the pointer a hand over a photo that cannot move, and the next double click
+/// "back to the whole photo", with nothing seen to happen, where it should zoom in.
 pub fn clamp_zoom(zoom: f32) -> f32 {
-    if zoom.is_nan() {
+    if zoom.is_nan() || zoom < MIN_ZOOM + FIT_WITHIN {
         return MIN_ZOOM;
     }
-    zoom.clamp(MIN_ZOOM, MAX_ZOOM)
+    zoom.min(MAX_ZOOM)
 }
 
 /// What one turn of the wheel with Ctrl held multiplies the zoom by, from the delta a web
@@ -42,8 +50,9 @@ pub fn clamp_zoom(zoom: f32) -> f32 {
 /// made from the fingers' own scale - `-100 * ln(scale)` - so `exp(-delta / 100)` gives
 /// the photo back the pinch as it was made. A mouse's notch read the same way would be
 /// nearly three times a click; capped at `WHEEL_ZOOM_CAP` it is a step of a fifth.
-/// Exponential, so the same way out and back end where they began. A delta that is no
-/// number changes nothing.
+/// Exponential, so the same way out and back end where they began - to within what a
+/// float holds, which `clamp_zoom` takes for the fit. A delta that is no number changes
+/// nothing.
 pub fn wheel_zoom_factor(delta: f32) -> f32 {
     if !delta.is_finite() {
         return 1.0;
@@ -194,6 +203,28 @@ mod tests {
         assert_eq!(clamp_zoom(4.0), 4.0);
         assert_eq!(clamp_zoom(9.0), 4.0);
         assert_eq!(clamp_zoom(f32::NAN), 1.0);
+        // A float's error over the fit is the fit; a zoom that can be seen is not.
+        assert_eq!(clamp_zoom(1.000_000_4), 1.0);
+        assert_eq!(clamp_zoom(1.0001), 1.0001);
+    }
+
+    // As many notches of the wheel out as in end at the fit, which is asked for as "is
+    // it the fit" and not as a number near one. In doubles, as `nav.ts` has them, the
+    // product of the two factors is one for a few notches; in single precision it is
+    // not.
+    #[test]
+    fn as_many_notches_out_as_in_end_at_the_fit() {
+        for notches in 1..=12 {
+            let mut zoom = Zoom::default();
+            for _ in 0..notches {
+                zoom.by(wheel_zoom_factor(-100.0), pan(200.0, 100.0), AREA);
+            }
+            assert!(!zoom.is_fit());
+            for _ in 0..notches {
+                zoom.by(wheel_zoom_factor(100.0), pan(200.0, 100.0), AREA);
+            }
+            assert_eq!(zoom, Zoom::default(), "{notches} notches");
+        }
     }
 
     #[test]

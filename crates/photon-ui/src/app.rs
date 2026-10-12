@@ -442,6 +442,10 @@ impl App {
             folder_drop::can_arrive(cc.window_handle().map(|window| window.as_raw()))
         };
         theme::apply::install(&ctx);
+        // Ctrl with `+`, `-` and `0` scales nothing: egui would zoom the whole window by
+        // them unless told, as a web view zooms its page - which the Tauri photon has
+        // switched off, and which stands a slip of the hand from the viewer's own keys.
+        ctx.options_mut(|options| options.zoom_with_keyboard = false);
         // A notch of the wheel as far as the web view of this system moved it: said to
         // egui in every frame (`ui`), a page being a page of what is in view then.
         let notch = system_wheel();
@@ -1708,6 +1712,10 @@ impl App {
             photo_caption: photo_caption.as_deref(),
             // (Nothing is known of a photo that is gone: its facts went with it.)
             starred: open.item.as_ref().map(|item| item.starred),
+            // As it is seen: turned by its orientation, and by its edit.
+            width: (open.item.as_ref()).map_or(0, |item| {
+                viewer_caption::oriented(item.width, item.height, item.orientation).0
+            }),
             video: open.viewer.is_video(),
             can_prev: open.viewer.can_step(-1, len),
             can_next: open.viewer.can_step(1, len),

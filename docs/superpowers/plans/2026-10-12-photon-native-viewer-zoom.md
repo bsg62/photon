@@ -111,7 +111,8 @@ is still.
 
 ## Changed in the making
 
-- **"Its own pixels" are the full picture's, not the library's number.** The plan had
+- **"Its own pixels" are the full picture's, not the library's number** (turned round
+  by the review: see below). The plan had
   the view given the photo's width as the library says it, turned by its orientation. It
   takes the width of the largest level there is to draw: before the full picture is
   made, or where it cannot be (a drive that is not there), a double click goes to twice,
@@ -120,7 +121,7 @@ is still.
   fixture needed for a photo stored on its side.
 - **The fitted copy needs no "only at fit"**: it is drawn where what is drawn is its own
   size within a pixel and a half, which a zoom is not. The condition was there and did
-  nothing.
+  nothing. (Wrong, and put back by the review: a zoom can be the copy's size.)
 - **The pan begins at once**, not once the pointer has gone further than a click may:
   the photo follows the hand from the first point. What the distance decides is only
   whether the press was a click when it comes up.
@@ -143,3 +144,38 @@ the pointer elsewhere; the pan beginning at the first point; a press held across
 that began on a photo already moved; and "nothing zooms a video", whose double click put
 back what its key had done, so the whole list passed with the rule gone. One had no
 test: a press just beside a button is the photo's.
+
+## What the review found
+
+An independent read of the branch, with a failing test for each finding. All of it is
+fixed in the branch but the one marked as left.
+
+- **As many notches of the wheel out as in did not end at the fit**: 1.0000001 in single
+  precision, where `nav.ts`'s doubles end at one. Everything that asks "is it zoomed"
+  said yes - a hand over a photo that cannot move, a double click that went "back" to
+  where the photo was. A float's error over the fit is the fit (`clamp_zoom`).
+- **A press that began on a fitted photo threw the photo once it was zoomed**, by all
+  the pointer had moved meanwhile. A press at fit is no drag, as in the Svelte viewer,
+  and does not become one; the branch's own test had pinned the throw as intended.
+- **The slider answered any button**, and its drag had none of the pan's endings: it is
+  the first button's, and the window left ends it.
+- **A double click went to twice until the full picture had landed**, and stayed there.
+  It goes by the size the library gives, turned as the photo is seen, which a test with
+  a photo stored on its side now holds through the whole application.
+- **A double click on the photo's own caption zoomed**; the second click of one, held
+  across a step onto a video, zoomed the poster; the hand was shown over a photo that
+  had gone, and was an arrow over a button while the photo was held.
+- **The fitted copy was drawn at two zooms**: a hair over the fit, and where a copy made
+  for another window happened to be the zoomed size. "Only at fit" is said again.
+- **Probes that passed**: the slider was kept off the photo by no test; a wheel that
+  reports pages; a `works` the slider's own sense already said; the preview's shape in
+  a double click's arithmetic, which nothing reached (it does now); the surface's drag
+  sense, which changed nothing and went.
+- **Beside the branch**: egui zooms the whole window at Ctrl with `+`, `-` and `0`
+  unless told. It is told.
+- **Left**: a zoom's key pressed after an arrow in one frame is lost with the photo
+  that is left. It costs a second press, and its cure is the zoom's every change sent
+  to the application as an action in the frame's order.
+- **Could not be judged here**: a Mac's pinch and wheel; whether Windows makes a Ctrl
+  with the wheel of a touchpad's pinch; a button let go of outside the window, which
+  egui-winit drops while it has no pointer position.
