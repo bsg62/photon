@@ -13,10 +13,26 @@ pub struct Thumbs {
     loader: Loader,
 }
 
+/// Bytes of preview kept as textures. A preview is at most 1600 pixels on its longer
+/// side, about seven megabytes: the photo on screen and two on either side of it, and
+/// room for the ones just left.
+pub const PREVIEW_LIMIT: usize = 96 << 20;
+
 impl Thumbs {
+    /// The grid's thumbnails.
     pub fn new(loader: Loader) -> Self {
         Self {
             textures: Textures::new(DEFAULT_LIMIT),
+            loader,
+        }
+    }
+
+    /// The viewer's previews: a store of its own, which holds whatever its `loader`'s
+    /// source makes (`EngineThumbs::preview`), under the keys the grid's are held under
+    /// in theirs.
+    pub fn previews(loader: Loader) -> Self {
+        Self {
+            textures: Textures::new(PREVIEW_LIMIT),
             loader,
         }
     }

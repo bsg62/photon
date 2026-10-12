@@ -116,4 +116,66 @@ first risk; the upload's cost measured and written here.
 
 ## Changed in the making
 
-(Filled in as it is built.)
+- **A copy scaled to the window with a proper filter, beside the halves.** The spec's
+  first risk was to be judged in a picture before anything was built on it, and the
+  picture said no: a zone plate fitted from its half-size level through a linear filter
+  showed rings of its own on all four sides, where a Lanczos resize of the same plate is
+  an even grey. So the engine's command takes the box the photo is fitted into and
+  answers with a copy scaled to it (`edit::fitted_copy`), which is drawn pixel for pixel
+  while the photo is fitted at that size; the halves are what a zoom draws from. A window
+  of another size asks again once the size has stood for 200 ms. This is the fallback the
+  spec named, taken as the rule.
+- **The upload is not made in strips.** Measured in `native_viewer_quality`: the frame
+  that hands a 10.7 MP picture and its half to the GPU took 8 ms in an unoptimised build,
+  against 0.2 ms for a frame after it. A 24 MP photo is then about a frame.
+- **The full picture does not wait for the preview**, only for the rest: two states
+  fewer, and the preview is on disk for any photo opened from the grid.
+- **A full picture that cannot be made leaves the preview**, with nothing said, as the
+  web view left it when its `<img>` failed: a photo on an unplugged drive is looked at
+  from the cache. The plan had the engine's reason in the photo's place.
+- **The textures of the photo left are freed at the step**, not "when the next preview
+  is on screen" as the spec has it: the photo left is not drawn under the next one's
+  caption for a frame either way.
+- **Opening closes nothing and gives no keyboard up.** The plan had the viewer close an
+  open menu, store a name half typed in the sidebar and take the keyboard off whatever
+  had it. None can be so when the viewer opens: Enter is the grid's only while nothing
+  else has the keyboard, and a double click's first click has done all three. The lines
+  did nothing and are not there.
+- **`Viewer::follow` answers nothing**: the application asks the engine about the photo
+  at every new grid anyway, found or not.
+- **No test of a video through the application**: a library of real files has none, and
+  what a video shows is the view's and the state's to test.
+- **Enter opens the photo the star's key goes by** (`Selection::deciding`), not "the
+  lead while it is selected": the keys can stand on a photo that has just been taken
+  out of the selection, and Enter then opens the first of what is selected.
+- **Rulings**: `H` and `.` go by what the library last said of the photo, a round trip
+  behind the grid, so two presses in quick succession are two of the same write; no
+  control is a stop of the Tab key.
+
+- **The neighbours' previews do not wait for the rest**, where the spec has them warmed
+  after it: they are on disk and a few milliseconds each, the loader drops what is no
+  longer wanted, and a steady step then lands on a picture. Only the full picture waits.
+
+**Probes**: every rule broken in turn, with the test that was to fail. Seventeen passed
+the first time. Five were lines that did nothing, and went: a guard against closing over
+an empty grid (selecting and showing nothing there is nothing), two checks that a photo
+is not gone before its star or its hide is written (a photo that is gone has no facts
+left to go by), the viewer's own refusal to ask for a video's picture (the engine
+refuses it at once), and a size the preview store carried and nothing read. Seven were
+tests that could not see their rule and were made to: the step on from a lost photo that
+was the one before the last, an answer about a photo left while the next is lost too, a
+full picture with no preview under it, a click with a key held between two plain ones,
+the photo closed on being in sight (asked of what is on screen, not of what is laid out),
+a picture arriving for a photo left (waited for with the clock standing, or the next ask
+overtakes it), and a picture of the photo as it was before a turn made elsewhere. Three
+named a test that was not the rule's, and two a line rustfmt had since moved. Run again,
+two more passed: Enter opened "the lead while it is selected", which no selection could
+tell from the lead alone - it now opens the photo the star's key goes by
+(`Selection::deciding`), since the keys can stand on a photo Ctrl+click has just taken
+out; and the picture held was let go of at a step and at a change by lines nothing
+looked at, which `App::viewer_holds` now does. A hundred and forty-seven in the end, all
+failing as stated.
+
+**One rule has no test**: a picture the engine rendered from another state of the photo
+than the one asked for is dropped (`Made::Stale`). It is the answer arriving before the
+grid that says the photo changed, and which of the two comes first has no seam to hold.

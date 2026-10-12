@@ -2115,6 +2115,61 @@ and creates every file with `create_new`), and a test's destination is a folder 
 its own temporary directory. A test holds an export for as long as it needs by holding
 the engine's `RENDERING` lock, which a turned photo's copy waits for.
 
+**The viewer takes the whole window** (spec `2026-10-12-photon-native-viewer-design.md`;
+`viewer.rs` for which photo is open, `viewer_view.rs` for what is drawn, `App::viewer`
+while it is open). The shell is not drawn under it, so the grid's keys cannot be answered
+twice and the grid keeps its place, which is a number of its own. Enter on the photo the
+keys are on and a double click open it - **a double click is read from two plain clicks
+on one photo** (`GridView::clicked`), not from what egui calls one, which is of a widget,
+and the photos are one widget. Escape, Backspace, the mouse's back button and the cross
+close it, and the photo it was on is handed back selected and brought into sight; one the
+view has lost hands back none. **Most of the Svelte viewer's guards have no successor**:
+this window holds the whole `GridIndex`, so the photo is found again by its id in the
+frame a new grid arrives in (`Viewer::follow`), and a picture is asked for by the photo
+and its key (`Want`), never by an offset - `createLoadSlot`, `rebind`, `renumbered` and
+`detailsSeq` are not ported. A photo the new grid lacks has left the view or the library,
+which only the engine can say: `viewer_item` is asked again, an answer makes it
+`orphaned` (it stays on screen, with no place in its caption, and the next step goes on
+from where it stood) and a refusal `gone`. `picture_changed` is ported whole, with the
+faces left out of what it compares. **What the library says of the photo is a round trip
+behind the grid**, and is what `.` and `H` go by: a test that presses one waits for the
+facts first, as a user's eye does.
+
+**No control of the viewer is a stop of the Tab key** (`Sense::CLICK`, not
+`Sense::click()`): a control that had the keyboard would take the arrows from the viewer,
+egui walking the focus on with them, and every control has a key. The wheel steps a
+photo a notch whatever the system's lines a notch are - nothing scrolls here - and a
+trackpad's stream adds up to one (`viewer::wheel_step`).
+
+**The picture is the preview, then the full picture, and photon scales the full picture
+itself.** The preview is the cache's 1600-pixel thumbnail (`Thumbs::previews`, a second
+store over `EngineThumbs::preview`). The full picture is `commands::viewer_picture`, a
+command the Tauri photon does not call: `render_picture` behind `RENDERING`, as pixels.
+It is asked for on a `Latest` - one at a time, the last one wins, since a decode cannot
+be taken back - and **after a rest of 130 ms on a photo stepped to** (`Viewer::rested`):
+a held arrow key passes photos faster than they decode. **egui's wgpu renderer gives a
+texture one level** (`mip_level_count: 1`, whatever `TextureOptions::mipmap_mode` says),
+so a camera's photo fitted into a window is sampled from a few of its pixels in every
+ten. Two things answer that, and the second was added when a picture showed the first
+was not enough: the picture's halves (`viewer_levels.rs`, each the mean of four pixels,
+down to 2,048 pixels; the level drawn is the smallest at least as large as what is
+drawn), which are what a zoom draws from; and **a copy scaled to the window with a
+Lanczos filter** (`edit::fitted_copy`, made by the engine for the box the viewer names,
+drawn pixel for pixel on whole pixels while the photo is fitted at that size). On a zone
+plate - `native-viewer-quality.png` beside its reference, which `native-shot` writes -
+the halves alone drew rings the photo does not have; with the copy the two pictures are
+the same. A window of another size is another copy, asked for once the size has stood
+for 200 ms, and the levels are drawn meanwhile. A level larger than the device's limit
+is not made into a texture (`max_texture_side`; **`egui_kittest` says nothing of it and
+egui then takes 2,048**, so a test that wants a large level says
+`harness.input_mut().max_texture_side`). The picture is handed over as `ColorImage`s
+made on the worker: the frame that uploads a 10 MP photo and its half took 8 ms in an
+unoptimised build, so it is one frame's work and is not spread over several. **A full
+picture that cannot be made leaves the preview**, with nothing said: a photo on a drive
+that is not plugged in is looked at from photon's own cache, as the web view left it. A
+picture made for a photo the viewer has left is dropped as it arrives. A test holds a
+render for as long as it needs by holding `RENDERING`.
+
 **A star is tested in a library of real files** (`tests/menu.rs`, `pictures`,
 `over_files`): the folder's `.picasa.ini` is read back, and every write goes into a
 temporary directory the test made. A fixture's folders are on a drive that is not there,

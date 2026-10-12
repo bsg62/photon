@@ -1077,6 +1077,86 @@ pub fn set_item_edit(
     Ok(())
 }
 
+/// The photo as the native viewer draws it: straight RGBA, row by row, with the key of
+/// the picture it is - the photo may have been edited or rewritten by the time it is
+/// drawn, and a picture under another key than the photo's is not this photo's any more.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ViewerPicture {
+    pub thumb_key: u64,
+    pub full: Pixels,
+    /// The picture scaled to fit the box that was asked for, with a proper filter
+    /// (`edit::fitted_copy`); none where no box was given, or the picture fits it as it
+    /// is.
+    pub fitted: Option<Pixels>,
+}
+
+/// Straight RGBA, row by row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Pixels {
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Vec<u8>,
+}
+
+impl From<photon_core::edit::ClipboardPicture> for Pixels {
+    fn from(picture: photon_core::edit::ClipboardPicture) -> Self {
+        Self {
+            width: picture.width(),
+            height: picture.height(),
+            rgba: picture.into_raw(),
+        }
+    }
+}
+
+/// The photo at full size, as shown: decoded whole, turned upright, then turned and
+/// cropped by its edit - or, with `uncropped`, turned and not cropped, which is the
+/// picture the crop tool draws its rectangle on. What `/image/<id>` is to the web view,
+/// without the encode: the native window draws the pixels.
+///
+/// `fit` is the box the viewer fits the photo into, in pixels: the answer then holds a
+/// copy scaled to it as well, which is what is drawn while the photo is fitted.
+///
+/// One at a time with every other full-size render (`RENDERING`), so that an export and
+/// the viewer do not hold two decoded photos at once.
+pub fn viewer_picture(
+    engine: &Engine,
+    id: i64,
+    uncropped: bool,
+    fit: Option<(u32, u32)>,
+) -> CmdResult<ViewerPicture> {
+    let item = engine.lib.item(id)?.ok_or(Error::NotFound(id))?;
+    if item.kind != MediaKind::Image {
+        return Err(Error::NotAPhoto(id).into());
+    }
+    let edit = if uncropped {
+        item.edit.without_crop()
+    } else {
+        item.edit
+    };
+    let _one_at_a_time = crate::engine::RENDERING.lock();
+    let picture = photon_core::edit::render_picture(Path::new(&item.path), item.orientation, edit)
+        .map_err(unreadable)?;
+    let fitted = fit.and_then(|within| photon_core::edit::fitted_copy(&picture, within));
+    Ok(ViewerPicture {
+        thumb_key: item.thumb_key(),
+        full: picture.into_rgba8().into(),
+        fitted: fitted.map(Pixels::from),
+    })
+}
+
+/// A photo whose file is not there says so in words of its own. Not "gone": a photo on an
+/// unmounted share reads as missing too, and is only offline. photon cannot tell the two
+/// apart from here.
+fn unreadable(err: Error) -> AppError {
+    match err {
+        Error::Io(io) if io.kind() == std::io::ErrorKind::NotFound => AppError {
+            kind: "notFound",
+            message: "This photo can't be read: its file is gone, or its folder is offline.".into(),
+        },
+        err => err.into(),
+    }
+}
+
 /// The photo as the clipboard gets it: as shown, edits applied, capped at
 /// `edit::CLIPBOARD_MAX_EDGE`. The clipboard write itself is photon-app's `ipc::copy_photo`'s,
 /// which holds the app handle this layer does not; here is everything a test can reach.
@@ -1090,16 +1170,7 @@ pub fn copy_picture(engine: &Engine, id: i64) -> CmdResult<photon_core::edit::Cl
     // or the viewer's, waiting on the desktop's clipboard.
     let _one_at_a_time = crate::engine::RENDERING.lock();
     photon_core::edit::clipboard_picture(Path::new(&item.path), item.orientation, item.edit)
-        .map_err(|err| match err {
-            Error::Io(io) if io.kind() == std::io::ErrorKind::NotFound => AppError {
-                kind: "notFound",
-                // Not "gone": a photo on an unmounted share reads as missing too, and is only
-                // offline. photon cannot tell the two apart from here.
-                message: "This photo can't be read: its file is gone, or its folder is offline."
-                    .into(),
-            },
-            err => err.into(),
-        })
+        .map_err(unreadable)
 }
 
 pub fn set_star(engine: &Engine, id: i64, starred: bool) -> CmdResult<()> {
@@ -1551,6 +1622,114 @@ mod tests {
                 "This photo can't be read: its file is gone, or its folder is offline."
             )
         );
+    }
+
+    // The native viewer's picture: the pixels of the photo as shown, with the key of the
+    // picture they are.
+    #[test]
+    fn the_viewers_picture_is_the_photo_as_shown_whole_or_without_its_crop() {
+        let f = fixture(&[("a.jpg", &jpeg(40, 20))]);
+        f.add_photos();
+        let id = f.ids()[0];
+        let key = |f: &Fixture| f.engine.lib.item(id).unwrap().unwrap().thumb_key();
+        let size = |picture: &ViewerPicture| (picture.full.width, picture.full.height);
+        let plain = viewer_picture(&f.engine, id, false, None).unwrap();
+        assert_eq!(size(&plain), (40, 20));
+        assert_eq!(plain.full.rgba.len(), 40 * 20 * 4);
+        assert_eq!(plain.thumb_key, key(&f));
+        assert_eq!(plain.fitted, None);
+        // Turned: the picture is, and it is another picture.
+        set_item_edit(&f.engine, id, 1, None).unwrap();
+        let turned = viewer_picture(&f.engine, id, false, None).unwrap();
+        assert_eq!(size(&turned), (20, 40));
+        assert_eq!(turned.thumb_key, key(&f));
+        assert_ne!(turned.thumb_key, plain.thumb_key);
+        // Cropped to its right half - and whole again for the crop tool, still turned.
+        set_item_edit(&f.engine, id, 1, Some([32768, 0, 65535, 65535])).unwrap();
+        let cropped = viewer_picture(&f.engine, id, false, None).unwrap();
+        assert_eq!(size(&cropped), (10, 40));
+        let whole = viewer_picture(&f.engine, id, true, None).unwrap();
+        assert_eq!(size(&whole), (20, 40));
+        // The key is the photo's as it is, crop and all, either way: it says which
+        // state of the photo the pixels were made from.
+        assert_eq!(whole.thumb_key, cropped.thumb_key);
+        std::fs::remove_file(f.photos.join("a.jpg")).unwrap();
+        let err = viewer_picture(&f.engine, id, false, None).unwrap_err();
+        assert_eq!(
+            (err.kind, err.message.as_str()),
+            (
+                "notFound",
+                "This photo can't be read: its file is gone, or its folder is offline."
+            )
+        );
+        assert_eq!(
+            viewer_picture(&f.engine, id + 99, false, None)
+                .unwrap_err()
+                .kind,
+            "notFound"
+        );
+    }
+
+    // Fitted into a window a photo is drawn at a fraction of its size, and the copy made
+    // for that is scaled by the engine with a proper filter: to the side of the box the
+    // picture reaches first, and not at all where the picture fits the box as it is.
+    #[test]
+    fn the_viewers_picture_comes_with_a_copy_fitted_to_the_box_it_is_drawn_in() {
+        let f = fixture(&[("a.jpg", &jpeg(400, 200))]);
+        f.add_photos();
+        let id = f.ids()[0];
+        let fitted = |within| {
+            let picture = viewer_picture(&f.engine, id, false, Some(within)).unwrap();
+            assert_eq!((picture.full.width, picture.full.height), (400, 200));
+            picture.fitted.map(|fitted| {
+                assert_eq!(
+                    fitted.rgba.len(),
+                    (fitted.width * fitted.height * 4) as usize
+                );
+                (fitted.width, fitted.height)
+            })
+        };
+        // Wider than the box is: by its width. Higher: by its height.
+        assert_eq!(fitted((100, 100)), Some((100, 50)));
+        assert_eq!(fitted((300, 60)), Some((120, 60)));
+        assert_eq!(fitted((101, 1000)), Some((101, 51)));
+        // It fits as it is, or the box is larger: its own pixels are what is drawn.
+        assert_eq!(fitted((400, 200)), None);
+        assert_eq!(fitted((1000, 1000)), None);
+        // A box of nothing fits nothing.
+        assert_eq!(fitted((0, 100)), None);
+        // Of the picture as shown: turned, it is fitted turned.
+        set_item_edit(&f.engine, id, 1, None).unwrap();
+        let turned = viewer_picture(&f.engine, id, false, Some((100, 100))).unwrap();
+        let turned = turned.fitted.unwrap();
+        assert_eq!((turned.width, turned.height), (50, 100));
+    }
+
+    // One full-size render at a time, with the export and the web view's: held, the
+    // viewer's picture waits.
+    #[test]
+    fn the_viewers_picture_waits_for_the_one_render_at_a_time() {
+        let f = fixture(&[("a.jpg", &jpeg(40, 20))]);
+        f.add_photos();
+        let id = f.ids()[0];
+        let held = crate::engine::RENDERING.lock();
+        let engine = f.engine.clone();
+        let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let rendering = {
+            let done = done.clone();
+            std::thread::spawn(move || {
+                let picture = viewer_picture(&engine, id, false, None);
+                done.store(true, std::sync::atomic::Ordering::SeqCst);
+                picture
+            })
+        };
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        assert!(
+            !done.load(std::sync::atomic::Ordering::SeqCst),
+            "it rendered beside another"
+        );
+        drop(held);
+        assert_eq!(rendering.join().unwrap().unwrap().full.width, 40);
     }
 
     /// The plumbing from the file to the panel's dates (photon-core pins the EXIF reader):
@@ -2529,6 +2708,13 @@ mod tests {
         assert!(refused(set_item_edit(&f.engine, id, 1, None)));
         assert!(matches!(
             copy_picture(&f.engine, id),
+            Err(AppError {
+                kind: "notAPhoto",
+                ..
+            })
+        ));
+        assert!(matches!(
+            viewer_picture(&f.engine, id, false, None),
             Err(AppError {
                 kind: "notAPhoto",
                 ..

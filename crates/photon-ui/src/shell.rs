@@ -576,7 +576,12 @@ fn notice(ui: &egui::Ui, place: Rect, text: &str, palette: &Palette) {
 
 /// The messages, the newest lowest, over the bottom right of the window. Answers the one
 /// whose button was pressed.
-fn toasts(ui: &egui::Ui, window: Rect, list: &[Toast], palette: &Palette) -> Option<u64> {
+pub(crate) fn toasts(
+    ui: &egui::Ui,
+    window: Rect,
+    list: &[Toast],
+    palette: &Palette,
+) -> Option<u64> {
     let mut dismissed = None;
     let mut bottom = window.bottom() - 40.0;
     let room = TOAST_WIDTH - TOAST_EDGE - 3.0 * S[2] - TOAST_BUTTON;

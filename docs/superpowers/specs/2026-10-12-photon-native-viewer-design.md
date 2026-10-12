@@ -165,6 +165,8 @@ fitted size.
 The first pull request measures it; if it is more than a frame, the full level is
 uploaded in strips over several (`TextureHandle::set_partial`), smallest level first, so
 that the photo is sharp at fit at once and sharp when zoomed a moment later.
+*(Measured: 8 ms for a 10.7 MP picture and its half in an unoptimised build, so about a
+frame for a camera's photo. It is not made in strips.)*
 
 **What is let go.** The textures of the photo that was left are freed when the next
 photo's preview is on screen; nothing of full size is kept for a photo not on screen. The
@@ -384,7 +386,10 @@ Each is opened into `native-ui`, read by one fresh reviewer, fixed in one pass a
 
 ## Risks particular to this sub-project
 
-1. **Scaling quality.** photon's own levels and a linear filter are not a web view's
+1. **Scaling quality.** *(Judged in the first pull request, and the fallback taken as the
+   rule: on a zone plate the levels alone drew rings the photo does not have, so a
+   fitted photo is drawn from a copy the engine scales to the window with a Lanczos
+   filter, and the levels are what a zoom draws from.)* photon's own levels and a linear filter are not a web view's
    resampling. At fit a level is drawn between half and all of its size, which is where a
    linear filter is at its best; whether that is as sharp to the eye as today's viewer is
    judged in a picture of a detailed photo beside the Svelte one, in the first pull

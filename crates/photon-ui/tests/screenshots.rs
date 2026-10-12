@@ -711,3 +711,105 @@ fn native_empty_library_light() {
     harness.render().unwrap().save(&path).unwrap();
     println!("wrote {}", path.display());
 }
+
+/// The viewer on the third photo of the grid, once its full picture is made.
+fn viewing(harness: &mut Harness<'_>) {
+    pick(harness, 2, Modifiers::NONE);
+    harness.key_press(Key::Enter);
+    until(harness, "the full picture", |app| {
+        app.viewer_levels().is_some()
+    });
+    harness.event(egui::Event::PointerGone);
+    harness.step();
+}
+
+#[test]
+#[ignore = "renders through a GPU adapter: cargo run -p xtask -- native-shot"]
+fn native_viewer_light() {
+    shot(ThemeChoice::Light, "native-viewer-light.png", viewing);
+}
+
+#[test]
+#[ignore = "renders through a GPU adapter: cargo run -p xtask -- native-shot"]
+fn native_viewer_dark() {
+    shot(ThemeChoice::Dark, "native-viewer-dark.png", viewing);
+}
+
+// The spec's first risk, to be judged by eye: a detailed photo much larger than the
+// window, fitted, as photon's own levels and a linear filter draw it
+// (`native-viewer-quality.png`), beside the same photo resized to the same size with a
+// proper filter (`native-viewer-quality-reference.png`), which is what a web view's
+// scaling comes to. The photo is a zone plate: rings that grow finer outwards, on which
+// a scaling that skips pixels draws rings of its own. Also says what handing the full
+// picture to the GPU costs: the render that uploads it against one that does not.
+#[test]
+#[ignore = "renders through a GPU adapter: cargo run -p xtask -- native-shot"]
+fn native_viewer_quality() {
+    let (width, height) = (4000u32, 2667u32);
+    let plate = image::RgbImage::from_fn(width, height, |x, y| {
+        let (dx, dy) = (
+            f64::from(x) - f64::from(width) / 2.0,
+            f64::from(y) - f64::from(height) / 2.0,
+        );
+        // The rings' spacing reaches two pixels at the picture's corners: the finest a
+        // picture can hold.
+        let phase = (dx * dx + dy * dy) * std::f64::consts::PI / f64::from(width + height);
+        let value = (127.5 + 127.5 * phase.cos()) as u8;
+        image::Rgb([value, value, value])
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let pictures = dir.path().join("Pictures");
+    std::fs::create_dir_all(&pictures).unwrap();
+    plate.save(pictures.join("plate.png")).unwrap();
+    let dirs = dirs::within(&dir.path().join("data"), &dir.path().join("cache"));
+    let mut harness = egui_kittest::Harness::builder()
+        .with_size(vec2(1280.0, 1000.0))
+        .with_pixels_per_point(1.0)
+        .wgpu()
+        .build_eframe(|cc| App::new(cc, dirs, Some(pictures)).unwrap());
+    harness.input_mut().max_texture_side = Some(8192);
+    until(&mut harness, "the photo shown", |app| {
+        app.photos() == 1 && app.last_frame().is_some_and(|frame| frame.settled)
+    });
+    pick(&mut harness, 0, Modifiers::NONE);
+    harness.key_press(Key::Enter);
+    // The frame the full picture arrives in is the one that hands it to the GPU: how
+    // long that frame takes, against the frames after it. (An unoptimised build of
+    // egui's renderer: more than a release build takes, not less.)
+    let deadline = Instant::now() + Duration::from_secs(120);
+    let upload = loop {
+        let before = Instant::now();
+        harness.step();
+        let took = before.elapsed();
+        if harness.state().viewer_levels().is_some() {
+            break took;
+        }
+        assert!(Instant::now() < deadline, "never: the full picture");
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    let mut still = Duration::MAX;
+    for _ in 0..5 {
+        let before = Instant::now();
+        harness.step();
+        still = still.min(before.elapsed());
+    }
+    println!(
+        "levels {:?}: the frame that uploads them {upload:?}, a frame after {still:?}",
+        harness.state().viewer_levels()
+    );
+    let drawn = harness.render().unwrap();
+    let out = manifest().join("../../target/screenshots");
+    std::fs::create_dir_all(&out).unwrap();
+    drawn.save(out.join("native-viewer-quality.png")).unwrap();
+    // The same photo as a proper filter fits it into the same window.
+    let fitted = image::imageops::resize(
+        &plate,
+        1280,
+        (1280.0 * f64::from(height) / f64::from(width)).round() as u32,
+        image::imageops::FilterType::Lanczos3,
+    );
+    fitted
+        .save(out.join("native-viewer-quality-reference.png"))
+        .unwrap();
+    println!("wrote {}", out.join("native-viewer-quality.png").display());
+}

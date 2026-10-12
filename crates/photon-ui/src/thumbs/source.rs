@@ -8,19 +8,40 @@ use photon_core::thumbs::{ThumbService, ThumbSize};
 use photon_engine::engine::Engine;
 use std::sync::Arc;
 
-pub struct EngineThumbs(pub Arc<Engine>);
+/// The engine's thumbnails of one size: the grid's, or the previews the viewer shows
+/// until a photo's full picture is made.
+pub struct EngineThumbs {
+    engine: Arc<Engine>,
+    size: ThumbSize,
+}
+
+impl EngineThumbs {
+    pub fn grid(engine: Arc<Engine>) -> Self {
+        Self {
+            engine,
+            size: ThumbSize::Grid,
+        }
+    }
+
+    pub fn preview(engine: Arc<Engine>) -> Self {
+        Self {
+            engine,
+            size: ThumbSize::Preview,
+        }
+    }
+}
 
 impl ThumbSource for EngineThumbs {
     fn cached(&self, key: u64) -> Option<Pixels> {
-        let image = self.0.thumbs.decoded(key, ThumbSize::Grid).ok()?;
+        let image = self.engine.thumbs.decoded(key, self.size).ok()?;
         Some(pixels(image.width(), image.height(), image.into_raw()))
     }
 
     fn build(&self, want: Want) -> Building<'_> {
         Box::pin(async move {
-            let thumbs = &self.0.thumbs;
+            let (thumbs, size) = (&self.engine.thumbs, self.size);
             let path = thumbs
-                .request_async(want.id, ThumbSize::Grid)
+                .request_async(want.id, size)
                 .await
                 .map_err(load_error)?;
             // `request_async` answers with the photo's thumbnail as it is now. If the photo
@@ -28,7 +49,7 @@ impl ThumbSource for EngineThumbs {
             // one `want.key` names, and keys recur ("Original", a fourth quarter turn):
             // stored under this key it would be drawn for the other picture when the photo
             // comes back to it. The grid asks under the new key once it has the new index.
-            if path != thumbs.path_for(want.key, ThumbSize::Grid) {
+            if path != thumbs.path_for(want.key, size) {
                 return Err(LoadError::Unavailable);
             }
             let image = ThumbService::decode_file(&path).map_err(load_error)?;

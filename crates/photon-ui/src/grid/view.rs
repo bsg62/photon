@@ -149,6 +149,8 @@ enum GridKey {
     SelectAll,
     Clear,
     Ask(Ask),
+    /// Enter: the lead's photo in the viewer.
+    Open,
 }
 
 /// Something asked of the selection from the keyboard, which is the application's to
@@ -201,6 +203,9 @@ fn grid_keys(input: &egui::InputState) -> Vec<(GridKey, bool)> {
             Key::PageDown => GridKey::Page { down: true },
             Key::PageUp => GridKey::Page { down: false },
             Key::Escape if !repeat => GridKey::Clear,
+            // Not at its repeat: the Enter that opened the viewer is still down when the
+            // viewer closes on a key of its own, and would open it again.
+            Key::Enter if !repeat => GridKey::Open,
             // Not at a key's repeat either: each press writes, and the lead then lands
             // on the next photo - a key held down would hide its way through the library.
             Key::Period if !repeat && types_period => GridKey::Ask(Ask::Star),
@@ -244,6 +249,8 @@ pub struct GridOutput {
     /// Where the other button went down on a folder's header - its own row, or the
     /// copy pinned over the photos - and the folder: the folder's menu.
     pub header_menu: Option<(i64, egui::Pos2)>,
+    /// The photo to open in the viewer: Enter on the lead, or a double click.
+    pub open: Option<i64>,
 }
 
 /// A key that asks something of the selection, with the selection as it was at that
@@ -310,6 +317,10 @@ pub struct GridView {
     menu: Option<egui::Pos2>,
     asks: Vec<Asked>,
     header_menu: Option<(i64, egui::Pos2)>,
+    open: Option<i64>,
+    /// The photo a plain click last selected, and when: a second one on it within the
+    /// time egui takes two clicks for a double click opens it.
+    clicked: Option<(f64, i64)>,
 }
 
 impl GridView {
@@ -448,6 +459,7 @@ impl GridView {
             menu: self.menu.take(),
             asked: std::mem::take(&mut self.asks),
             header_menu: self.header_menu.take(),
+            open: self.open.take(),
         }
     }
 
@@ -683,12 +695,29 @@ impl GridView {
         if let Some((pointer, modifiers)) = taken.click
             && let Some(offset) = photo_at(pointer)
         {
+            // A double click opens the photo: the second of two plain clicks on it,
+            // the first having selected it. Read from the two clicks and not from what
+            // egui calls a double click, which is of a widget, and the photos are one
+            // widget: a click on one photo and a click on its neighbour would be one.
+            let (now, within) = (
+                ui.input(|input| input.time),
+                ui.ctx()
+                    .options(|options| options.input_options.max_double_click_delay),
+            );
+            let before = self.clicked.take();
             if modifiers.shift {
                 selection.extend(index, offset);
             } else if modifiers.command {
                 selection.toggle(index, offset);
             } else {
                 selection.select(index, offset);
+                if let Some(entry) = index.rows(offset, 1).first() {
+                    if before.is_some_and(|(at, id)| id == entry.id && now - at <= within) {
+                        self.open = Some(entry.id);
+                    } else {
+                        self.clicked = Some((now, entry.id));
+                    }
+                }
             }
         }
         // The other button on a photo opens the menu of the selection. On a photo
@@ -735,6 +764,13 @@ impl GridView {
                 }
                 GridKey::Clear => {
                     selection.clear();
+                    continue;
+                }
+                // The photo the star's key goes by (`Selection::deciding`): the one the
+                // keys are on while it is selected, else the first of the selection -
+                // the keys can stand on a photo that Ctrl+click has just taken out.
+                GridKey::Open => {
+                    self.open = selection.deciding(index);
                     continue;
                 }
                 // With nothing selected there is nothing to ask it of. And in a frame
@@ -2548,6 +2584,119 @@ mod tests {
     }
 
     // ---- picking: the mouse ----
+
+    /// A click on the photo at `offset`, and what its frames asked to have opened.
+    fn opened_by_click(f: &mut Fixture, offset: usize, held: Modifiers) -> Option<i64> {
+        let at = f
+            .view
+            .rect_of(offset)
+            .expect("the photo is laid out")
+            .center();
+        f.frame(vec![Event::PointerMoved(at)]);
+        let mut open = None;
+        for pressed in [true, false] {
+            let frame = f.frame(vec![Event::PointerButton {
+                pos: at,
+                button: PointerButton::Primary,
+                pressed,
+                modifiers: held,
+            }]);
+            open = open.or(frame.open);
+        }
+        open
+    }
+
+    // The two things that open the viewer. A double click is two plain clicks on one
+    // photo in quick succession; the first has selected it.
+    #[test]
+    fn a_double_click_opens_the_photo_and_two_clicks_apart_do_not() {
+        let mut f = fixture(&[200]);
+        f.frame(Vec::new());
+        assert_eq!(opened_by_click(&mut f, 5, Modifiers::NONE), None);
+        assert_eq!(f.picked(), [6]);
+        assert_eq!(opened_by_click(&mut f, 5, Modifiers::NONE), Some(6));
+        assert_eq!(f.picked(), [6]);
+        // A third is the first of another pair, not a second double click.
+        assert_eq!(opened_by_click(&mut f, 5, Modifiers::NONE), None);
+        assert_eq!(opened_by_click(&mut f, 5, Modifiers::NONE), Some(6));
+        // Two clicks a second apart are two clicks.
+        opened_by_click(&mut f, 7, Modifiers::NONE);
+        f.time += 1.0;
+        assert_eq!(opened_by_click(&mut f, 7, Modifiers::NONE), None);
+        // And so are a click on one photo and a click on the one beside it.
+        f.time += 1.0;
+        opened_by_click(&mut f, 2, Modifiers::NONE);
+        assert_eq!(opened_by_click(&mut f, 3, Modifiers::NONE), None);
+        assert_eq!(f.picked(), [4]);
+    }
+
+    // A click that adds to the selection or ranges over it is not half of a double
+    // click: Ctrl twice on one photo takes it out again and opens nothing.
+    #[test]
+    fn a_click_with_a_key_held_is_no_half_of_a_double_click() {
+        let mut f = fixture(&[200]);
+        f.frame(Vec::new());
+        for held in [Modifiers::COMMAND, Modifiers::SHIFT] {
+            f.time += 1.0;
+            assert_eq!(opened_by_click(&mut f, 5, held), None);
+            assert_eq!(opened_by_click(&mut f, 5, held), None, "{held:?}");
+            // Nor does a plain click after it make a pair with it.
+            assert_eq!(
+                opened_by_click(&mut f, 5, Modifiers::NONE),
+                None,
+                "{held:?}"
+            );
+        }
+        f.time += 1.0;
+        opened_by_click(&mut f, 5, Modifiers::NONE);
+        assert_eq!(opened_by_click(&mut f, 5, Modifiers::COMMAND), None);
+        // And a click with a key held between two plain ones parts them: the three
+        // are a photo picked, taken out and picked again, all within the time.
+        assert_eq!(opened_by_click(&mut f, 5, Modifiers::NONE), None);
+    }
+
+    #[test]
+    fn enter_opens_the_photo_the_keys_are_on() {
+        let mut f = fixture(&[200]);
+        f.frame(Vec::new());
+        // Nothing is selected: there is nothing to open.
+        assert_eq!(f.tap(Key::Enter, Modifiers::NONE).open, None);
+        f.click(5, Modifiers::NONE);
+        f.time += 1.0;
+        assert_eq!(f.tap(Key::Enter, Modifiers::NONE).open, Some(6));
+        f.tap(Key::ArrowRight, Modifiers::NONE);
+        assert_eq!(f.tap(Key::Enter, Modifiers::NONE).open, Some(7));
+        // Of several, the one the keys are on.
+        f.tap(Key::ArrowRight, Modifiers::SHIFT);
+        assert_eq!(f.picked(), [7, 8]);
+        assert_eq!(f.tap(Key::Enter, Modifiers::NONE).open, Some(8));
+        // A chord is not the grid's, and a selection cleared leaves nothing to open.
+        assert_eq!(f.tap(Key::Enter, Modifiers::CTRL).open, None);
+        f.tap(Key::Escape, Modifiers::NONE);
+        assert_eq!(f.tap(Key::Enter, Modifiers::NONE).open, None);
+        // The keys on a photo that has just been taken out of the selection: it is not
+        // that one that opens, but the first of what is selected.
+        f.click(2, Modifiers::COMMAND);
+        f.click(4, Modifiers::COMMAND);
+        f.click(4, Modifiers::COMMAND);
+        assert_eq!(f.picked(), [3]);
+        assert_eq!(f.lead(), Some(4));
+        f.time += 1.0;
+        assert_eq!(f.tap(Key::Enter, Modifiers::NONE).open, Some(3));
+    }
+
+    // The Enter that opened the viewer is still down when the viewer is closed by a key
+    // of its own: its repeat opens nothing.
+    #[test]
+    fn enter_held_opens_once() {
+        let mut f = fixture(&[200]);
+        f.frame(Vec::new());
+        f.click(5, Modifiers::NONE);
+        f.time += 1.0;
+        assert_eq!(f.key_with(Key::Enter, Modifiers::NONE).open, Some(6));
+        assert_eq!(f.key_with(Key::Enter, Modifiers::NONE).open, None);
+        assert_eq!(f.key_with(Key::Enter, Modifiers::NONE).open, None);
+    }
 
     #[test]
     fn a_click_selects_the_photo_under_it_and_its_tile_alone_is_ringed() {
