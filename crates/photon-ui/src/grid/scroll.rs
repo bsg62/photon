@@ -15,21 +15,59 @@ pub const BAR_WIDTH: f64 = 12.0;
 /// thousands of viewports tall.
 pub const MIN_THUMB: f64 = 32.0;
 
-/// How far one notch of a mouse wheel moves what is under it, in points.
+/// How far one notch of a mouse wheel moves what is under it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Notch {
+    /// So many points.
+    Points(f64),
+    /// A page of what is in view: Windows' "one screen at a time".
+    Page,
+}
+
+/// What egui moves a notch by, which is also WebKitGTK's: the web view of Linux.
+pub const NOTCH: f64 = 40.0;
+/// What WebView2 moves a page by for each line of Windows' setting of lines a notch: a
+/// hundred pixels at the three lines Windows comes with (Chromium's own constant).
+pub const WINDOWS_LINE: f64 = 100.0 / 3.0;
+/// The lines a notch Windows comes with, for when its setting cannot be read.
+pub const WINDOWS_LINES: u32 = 3;
+/// What Windows says for "one screen at a time" where it says lines (`WHEEL_PAGESCROLL`).
+pub const WINDOWS_PAGE: u32 = u32::MAX;
+
+/// How far one notch of a mouse wheel moves what is under it: as far as the web view of
+/// the system moved it. `lines` is Windows' setting of lines a notch, where it could be
+/// read (`wheel::lines`).
 ///
 /// A wheel reports notches and leaves the distance to the application. egui's own answer
 /// is forty points, which is also what WebKitGTK scrolls a page by - so on Linux the
 /// native grid moved as the Tauri photon's did. WebView2 scrolls a hundred pixels a notch
 /// at Windows' own setting of three lines, and there the native grid was two and a half
 /// times slower than the one it replaces: the first thing said by the first person to run
-/// it. Windows' setting of lines a notch is not read; it would be a system call photon
-/// has no other need of, and three is what nearly everyone has.
-pub const fn wheel_notch(windows: bool) -> f64 {
-    if windows { 100.0 } else { 40.0 }
+/// it. A hundred for everyone was the first answer, and the second thing said was that it
+/// was still not the web view's speed with the setting turned up: WebView2 goes by the
+/// setting, a third of a hundred pixels for each line, a page where the setting is "one
+/// screen at a time", and nothing where it is nought.
+pub fn wheel_notch(windows: bool, lines: Option<u32>) -> Notch {
+    if !windows {
+        return Notch::Points(NOTCH);
+    }
+    match lines.unwrap_or(WINDOWS_LINES) {
+        WINDOWS_PAGE => Notch::Page,
+        lines => Notch::Points(f64::from(lines) * WINDOWS_LINE),
+    }
 }
 
-/// `wheel_notch` for the system this was built for.
-pub const WHEEL_NOTCH: f64 = wheel_notch(cfg!(target_os = "windows"));
+impl Notch {
+    /// The points a notch moves a list of which `in_view` points are in view. A page is
+    /// what Chromium turns: all but forty points of it, or seven eighths where that is
+    /// more, so that the last row read is still there to go on from.
+    pub fn points(self, in_view: f64) -> f64 {
+        match self {
+            Self::Points(points) => points,
+            Self::Page => (in_view - 40.0).max(in_view * 0.875).max(1.0),
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Scroll {
@@ -107,9 +145,35 @@ mod tests {
     // forty, where the web view's hundred had been.
     #[test]
     fn a_wheel_notch_moves_the_grid_as_far_as_the_web_view_moved_it() {
-        assert_eq!(wheel_notch(true), 100.0);
-        assert_eq!(wheel_notch(false), 40.0);
-        assert_eq!(WHEEL_NOTCH, wheel_notch(cfg!(target_os = "windows")));
+        assert_eq!(wheel_notch(true, Some(3)), Notch::Points(100.0));
+        assert_eq!(wheel_notch(false, None), Notch::Points(40.0));
+        // Whatever is said of lines where Windows is not the system: nothing asks there.
+        assert_eq!(wheel_notch(false, Some(9)), Notch::Points(40.0));
+    }
+
+    // The second thing said by the first person to run it: with Windows' lines a notch
+    // turned up, a hundred points was still not what the web view moved.
+    #[test]
+    fn on_windows_a_notch_goes_by_the_systems_lines_a_notch() {
+        assert_eq!(wheel_notch(true, Some(6)), Notch::Points(200.0));
+        assert_eq!(wheel_notch(true, Some(1)), Notch::Points(100.0 / 3.0));
+        assert_eq!(wheel_notch(true, Some(100)), Notch::Points(10_000.0 / 3.0));
+        // Nought is the wheel switched off, there as in the web view.
+        assert_eq!(wheel_notch(true, Some(0)), Notch::Points(0.0));
+        // A setting that could not be read is the one Windows comes with.
+        assert_eq!(wheel_notch(true, None), Notch::Points(100.0));
+        // "One screen at a time."
+        assert_eq!(wheel_notch(true, Some(u32::MAX)), Notch::Page);
+    }
+
+    #[test]
+    fn a_page_is_what_is_in_view_less_what_is_kept_to_go_on_from() {
+        assert_eq!(Notch::Points(100.0).points(631.0), 100.0);
+        assert_eq!(Notch::Page.points(631.0), 591.0);
+        // Seven eighths of a list too low for forty points to be an eighth of it.
+        assert_eq!(Notch::Page.points(200.0), 175.0);
+        // And never nothing, of a list with nothing in view.
+        assert_eq!(Notch::Page.points(0.0), 1.0);
     }
 
     /// Taller than twice what an `f32` counts exactly, and than a browser's box.

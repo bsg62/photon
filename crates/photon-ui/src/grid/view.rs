@@ -114,7 +114,8 @@ const MIN_LABEL_GAP: f64 = 16.0;
 const LABEL_LINE: f32 = 14.0;
 
 /// Sets how far a notch of the mouse wheel scrolls, for everything in `ctx` that scrolls:
-/// the grid and the sidebar's list alike. Once, at startup (`scroll::WHEEL_NOTCH`).
+/// the grid and the sidebar's list alike. It holds for the frames after the one it is
+/// said in: egui has made the frame's scrolling of the frame's input by then.
 pub fn set_wheel_notch(ctx: &egui::Context, points: f64) {
     ctx.options_mut(|options| options.input_options.line_scroll_speed = points as f32);
 }

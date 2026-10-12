@@ -69,12 +69,13 @@ pub mod thumbs {
     pub mod textures;
 }
 pub mod toasts;
+pub mod wheel;
 pub mod window_layout;
 
 #[cfg(test)]
 mod tests {
     /// The state modules, with their source.
-    const STATE_MODULES: [(&str, &str); 35] = [
+    const STATE_MODULES: [(&str, &str); 36] = [
         ("args.rs", include_str!("args.rs")),
         ("controls.rs", include_str!("controls.rs")),
         ("scans.rs", include_str!("scans.rs")),
@@ -109,6 +110,7 @@ mod tests {
         ("thumbs/textures.rs", include_str!("thumbs/textures.rs")),
         ("tile_menu.rs", include_str!("tile_menu.rs")),
         ("toasts.rs", include_str!("toasts.rs")),
+        ("wheel.rs", include_str!("wheel.rs")),
         ("window_layout.rs", include_str!("window_layout.rs")),
     ];
 

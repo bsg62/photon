@@ -11,6 +11,7 @@ use crate::{
     folder_drop::{self, FolderDrop, Watched},
     grid::{
         labels::folder_label,
+        scroll::Notch,
         view::{Align, Ask, Asked, GridData, GridOutput, GridView},
         visible::VisibleReport,
     },
@@ -38,7 +39,7 @@ use crate::{
     thumbs::{loader::Loader, shown::Thumbs, source::EngineThumbs},
     tile_menu::{self, Deciding, TileAction},
     toasts::{Toast, Toasts},
-    window_layout::Layout,
+    window_layout::{Layout, STATUS_BAR, TOP_BAR},
 };
 use eframe::egui;
 use jiff::tz::TimeZone;
@@ -119,6 +120,10 @@ pub struct App {
     /// before egui reads it (`raw_input_hook`).
     hovered: usize,
     fell: Vec<String>,
+    /// What a notch of the wheel moves, and who says: the system, which is asked when
+    /// the window is made and whenever it comes back to the front (`system_wheel`).
+    wheel: fn() -> Notch,
+    notch: Notch,
     /// The path in the export's field, asked about off this thread: with the text that
     /// was asked about, since the field has been typed in since.
     checking: Latest<String, (String, Result<String, String>)>,
@@ -410,8 +415,9 @@ impl App {
             folder_drop::can_arrive(cc.window_handle().map(|window| window.as_raw()))
         };
         theme::apply::install(&ctx);
-        // A notch of the wheel as far as the web view of this system moved it.
-        crate::grid::view::set_wheel_notch(&ctx, crate::grid::scroll::WHEEL_NOTCH);
+        // A notch of the wheel as far as the web view of this system moved it: said to
+        // egui in every frame (`ui`), a page being a page of what is in view then.
+        let notch = system_wheel();
         icons::install(&ctx);
         theme::fonts::install(&ctx);
 
@@ -786,6 +792,8 @@ impl App {
             drop: FolderDrop::default(),
             hovered: 0,
             fell: Vec::new(),
+            wheel: system_wheel,
+            notch,
             checking,
             edits,
             exports,
@@ -819,6 +827,14 @@ impl App {
                 .map(|state| format!("{:?}", state.adapter.get_info())),
             closed: false,
         })
+    }
+
+    /// With `wheel` to say what a notch of the wheel moves, where the system says it:
+    /// for a test, which may not change a setting of the machine it runs on.
+    pub fn with_wheel(mut self, wheel: fn() -> Notch) -> Self {
+        self.wheel = wheel;
+        self.notch = wheel();
+        self
     }
 
     /// As in a window that takes no drop: for a test, which has no window to be one.
@@ -2048,6 +2064,18 @@ impl eframe::App for App {
         // Whether this frame was asked for from outside the grid: by the engine, which
         // reported, or by the person, whose mouse or keys are in the frame's input.
         let touched = ui.input(|input| !input.events.is_empty());
+        // What a notch of the wheel moves is asked again when the window comes back to
+        // the front: it is set in another window, the system's own, and photon is not
+        // told of the change. And said to egui for the frames after this one, in points:
+        // a page is a page of what is in view now.
+        let fronted = ui.input(|input| {
+            (input.events.iter()).any(|event| matches!(event, egui::Event::WindowFocused(true)))
+        });
+        if fronted {
+            self.notch = (self.wheel)();
+        }
+        let in_view = ui.ctx().content_rect().height() - TOP_BAR - STATUS_BAR;
+        crate::grid::view::set_wheel_notch(ui.ctx(), self.notch.points(f64::from(in_view)));
         // A rubber band owns the window while it is held: Escape abandons it, and
         // every other key is nobody's. Not the grid's keys alone - Ctrl+F put the caret
         // in the search box under a band, where the box then answered the Escape meant
@@ -2295,6 +2323,11 @@ impl eframe::App for App {
     fn on_exit(&mut self) {
         self.close();
     }
+}
+
+/// What a notch of the wheel moves on this system (`scroll::wheel_notch`).
+fn system_wheel() -> Notch {
+    crate::grid::scroll::wheel_notch(cfg!(target_os = "windows"), crate::wheel::lines())
 }
 
 /// Whether copies may be written to the folder whose path is `text`: the folder, with a
