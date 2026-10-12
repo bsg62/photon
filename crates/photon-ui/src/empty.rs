@@ -207,6 +207,8 @@ pub struct Panel {
     pub title: &'static str,
     pub text: String,
     pub buttons: &'static [PanelButton],
+    /// A smaller line under the buttons: the other way a folder is added.
+    pub aside: Option<&'static str>,
 }
 
 /// What the panel is decided from.
@@ -221,6 +223,9 @@ pub struct LibraryFacts<'a> {
     /// before it has, "none" is not known, and a library whose photos are all hidden
     /// said for a moment that photon had found none.
     pub hidden: Option<usize>,
+    /// Whether a folder dropped on the window can arrive: not on every system, and a
+    /// line that offered a drop where none arrives would be false.
+    pub drops: bool,
 }
 
 /// The empty library's panel: in the views that are the library itself, All photos and
@@ -242,6 +247,9 @@ pub fn library_panel(grid: &GridState, place: &Place, library: &LibraryFacts<'_>
     // polled - and buttons that came and went with it would be gone under a press on its
     // way.
     const CHOICES: &[PanelButton] = &[PanelButton::AddFolder, PanelButton::WatchedFolders];
+    // Wherever a folder is asked for, the drop is offered beside the button - where one
+    // can arrive.
+    let aside = library.drops.then_some(crate::folder_drop::ASIDE);
     Some(match state {
         EmptyLibrary::AllHidden => Panel {
             title: "Every photo is hidden",
@@ -249,6 +257,7 @@ pub fn library_panel(grid: &GridState, place: &Place, library: &LibraryFacts<'_>
                    sidebar."
                 .to_owned(),
             buttons: &[PanelButton::ShowHidden],
+            aside: None,
         },
         EmptyLibrary::FirstRun => Panel {
             title: "No photos yet",
@@ -256,11 +265,13 @@ pub fn library_panel(grid: &GridState, place: &Place, library: &LibraryFacts<'_>
                    they are: photon never moves, changes or deletes them."
                 .to_owned(),
             buttons: &[PanelButton::AddFolder],
+            aside,
         },
         EmptyLibrary::Scanning => Panel {
             title: "No photos yet",
             text: "Looking for photos…".to_owned(),
             buttons: CHOICES,
+            aside,
         },
         EmptyLibrary::NoPhotos => Panel {
             title: "No photos yet",
@@ -270,6 +281,7 @@ pub fn library_panel(grid: &GridState, place: &Place, library: &LibraryFacts<'_>
                 no_photos_line(library.watched)
             ),
             buttons: CHOICES,
+            aside,
         },
     })
 }
@@ -504,7 +516,34 @@ mod tests {
             watched,
             scanning,
             hidden: Some(hidden),
+            drops: false,
         }
+    }
+
+    // "Or drop a folder onto this window": said wherever a folder is asked for, and only
+    // where a drop can arrive - on Wayland none does.
+    #[test]
+    fn the_drop_is_offered_beside_add_folder_where_one_can_arrive() {
+        let (empty, all) = (grid(2, 0), Place::of(GridView::All));
+        let pictures = [on("/p")];
+        for (watched, scanning, hidden) in [
+            (&[][..], false, 0),
+            (&pictures[..], true, 0),
+            (&pictures[..], false, 0),
+        ] {
+            let off = facts(watched, scanning, hidden);
+            assert_eq!(library_panel(&empty, &all, &off).unwrap().aside, None);
+            let on = LibraryFacts { drops: true, ..off };
+            let panel = library_panel(&empty, &all, &on).unwrap();
+            assert!(panel.buttons.contains(&PanelButton::AddFolder));
+            assert_eq!(panel.aside, Some(crate::folder_drop::ASIDE));
+        }
+        // Where every photo is hidden no folder is asked for.
+        let hidden = LibraryFacts {
+            drops: true,
+            ..facts(&pictures, false, 9)
+        };
+        assert_eq!(library_panel(&empty, &all, &hidden).unwrap().aside, None);
     }
 
     // The library's own panel, where the library itself is shown; every other view has

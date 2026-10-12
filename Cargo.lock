@@ -4770,6 +4770,7 @@ dependencies = [
  "parking_lot",
  "photon-core",
  "photon-engine",
+ "raw-window-handle",
  "rusqlite",
  "serde",
  "serde_json",

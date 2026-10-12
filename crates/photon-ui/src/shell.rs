@@ -1239,6 +1239,7 @@ mod tests {
             title: "Every photo is hidden",
             text: "The library has no photo to show here.".to_owned(),
             buttons: &[PanelButton::ShowHidden],
+            aside: None,
         });
         f.frame(Vec::new());
         let title = f.drew("Every photo is hidden").expect("the title is drawn");

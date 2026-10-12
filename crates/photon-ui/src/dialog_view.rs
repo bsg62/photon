@@ -1,5 +1,6 @@
 //! Draws the dialog that is open, over the whole window, and answers what was done in
-//! it: the question asked before something is deleted, and the keyword picker.
+//! it: the question asked before something is deleted, the keyword picker, and the
+//! export's dialog, whose body is `export_view.rs`'s.
 //!
 //! It is egui's `Modal`: an area in front of everything with a ground over the whole
 //! window. From the frame after it is first shown nothing under it is pressed, hovered
@@ -14,6 +15,7 @@
 
 use crate::{
     dialogs::{CANCEL, Confirm, DELETE, Dialog},
+    export_view,
     icons::Icon,
     tag_picker::{LIST, NO_KEYWORDS, NO_MATCH, TagPicker},
     text::paint_line,
@@ -28,16 +30,18 @@ use eframe::egui::{
     WidgetInfo, WidgetType, pos2, vec2,
 };
 
-/// A dialog is at most this wide, and the keyword picker at most this tall.
+/// A dialog is at most this wide, and the keyword picker at most this tall. The export's
+/// is the Svelte dialog's own width, which is what its five sizes need in a row.
 const WIDTH: f32 = 420.0;
+const WIDTH_EXPORT: f32 = 440.0;
 const HEIGHT: f32 = 480.0;
 /// The room between the dialog's edge and what is in it, and between its parts.
-const PAD: f32 = S[3];
-const GAP: f32 = S[2];
+pub(crate) const PAD: f32 = S[3];
+pub(crate) const GAP: f32 = S[2];
 /// A button, a field and a row of the list: their line and six points over and under.
-const CONTROL: f32 = 30.0;
-/// The square the picker's close button is.
-const CLOSE: f32 = 28.0;
+pub(crate) const CONTROL: f32 = 30.0;
+/// The square a dialog's close button is.
+pub(crate) const CLOSE: f32 = 28.0;
 
 /// What a frame of an open dialog came to.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -58,6 +62,15 @@ pub enum Done {
         tag: Option<String>,
         typed: Option<String>,
     },
+    /// What the export's field holds now: a folder's path, to be asked about.
+    Path(String),
+    /// The export's checkbox was ticked, or unticked.
+    Tick(bool),
+    /// One of the export's sizes was chosen: the longest edge a copy may have, or none
+    /// for the photo's own.
+    Size(Option<u32>),
+    /// The export is to run, to the destination that has passed.
+    Export,
 }
 
 #[derive(Default)]
@@ -78,7 +91,7 @@ fn field_id() -> Id {
 
 /// How a button of a dialog looks.
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Look {
+pub(crate) enum Look {
     /// The one that does what the dialog is for.
     Primary,
     /// The one that deletes.
@@ -92,7 +105,7 @@ enum Look {
 
 /// A button of a dialog, at `rect`. It takes the keyboard like any button: Tab walks to
 /// it, and Enter and Space on it are a click.
-fn button(ui: &mut egui::Ui, rect: Rect, id: Id, label: &str, look: Look) -> Response {
+pub(crate) fn button(ui: &mut egui::Ui, rect: Rect, id: Id, label: &str, look: Look) -> Response {
     let palette = palette(ui.ctx());
     let works = look != Look::Off;
     let sense = if works {
@@ -149,8 +162,36 @@ fn button(ui: &mut egui::Ui, rect: Rect, id: Id, label: &str, look: Look) -> Res
     response
 }
 
+/// The cross at a dialog's top right corner, at `rect`: whether it was pressed. Made
+/// last, although it is drawn at the top: it is the last thing one wants to tab to.
+pub(crate) fn close(ui: &mut egui::Ui, rect: Rect, palette: &Palette) -> bool {
+    let closed = ui.interact(rect, Id::new("dialog-close"), Sense::click());
+    closed.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, CANCEL));
+    if closed.hovered() {
+        ui.painter().rect_filled(rect, R[1], color(palette.hover));
+    }
+    // Which button the keys are on has to be seen, here as on every other: with no
+    // keyword listed Tab goes from the picker's field straight to this one, and Enter
+    // closes.
+    if closed.has_focus() {
+        ui.painter().rect_stroke(
+            rect,
+            R[1],
+            Stroke::new(2.0, color(palette.accent)),
+            StrokeKind::Inside,
+        );
+    }
+    let tint = if closed.hovered() {
+        palette.text
+    } else {
+        palette.text_dim
+    };
+    Icon::X.paint(ui, rect, 16.0, false, color(tint));
+    closed.clicked()
+}
+
 /// How wide a button with `label` on it is.
-fn button_width(ui: &egui::Ui, label: &str) -> f32 {
+pub(crate) fn button_width(ui: &egui::Ui, label: &str) -> f32 {
     let words =
         ui.painter()
             .layout_no_wrap(label.to_owned(), fonts::regular(T[2]), egui::Color32::WHITE);
@@ -213,26 +254,42 @@ impl DialogView {
             self.deaf = false;
         }
         let window = ctx.content_rect();
-        let width = WIDTH.min(window.width() - 2.0 * PAD).max(0.0);
+        let widest = match dialog {
+            Dialog::Export(_) => WIDTH_EXPORT,
+            Dialog::Confirm(_) | Dialog::Tags(_) => WIDTH,
+        };
+        let width = widest.min(window.width() - 2.0 * PAD).max(0.0);
+        let inner = width - 2.0 * PAD;
+        let height = match dialog {
+            Dialog::Confirm(confirm) => confirm_height(ui, confirm, inner),
+            Dialog::Tags(picker) => {
+                picker_height(picker.suggestions(keywords).len(), window.height())
+            }
+            Dialog::Export(export) => export_view::height(ui, export, inner, palette),
+        };
         let opened = !std::mem::replace(&mut self.opened, true);
         let mut done = Done::Open;
         let mut ground = Rect::NOTHING;
         let id = Id::new("dialog");
-        egui::Modal::new(id)
+        // In front of everything, as `Modal`'s own area is, but not anchored as that
+        // one is: in the middle of the window by the height it has in this frame. An
+        // anchored area is placed by the size it had in the frame before - and the
+        // export's dialog changes height when what is said under its field needs more
+        // lines or fewer. In that frame it was drawn with its top where it had been, a
+        // press on "Export" where the button had stood was a press beside the dialog,
+        // which closes it, and it was put in the middle a frame later.
+        let area = egui::Area::new(id)
+            .order(egui::Order::Foreground)
+            .fixed_pos(window.center() - vec2(width, height) / 2.0)
             // There at once, as a dialog is: egui fades a new area in over a few
             // frames, each of them asked for.
-            .area(egui::Modal::default_area(id).fade_in(false))
+            .fade_in(false);
+        egui::Modal::new(id)
+            .area(area)
             .backdrop_color(color(SCRIM))
             .frame(egui::Frame::NONE)
             .show(ctx, |ui| {
                 ui.spacing_mut().item_spacing = Vec2::ZERO;
-                let inner = width - 2.0 * PAD;
-                let height = match dialog {
-                    Dialog::Confirm(confirm) => confirm_height(ui, confirm, inner),
-                    Dialog::Tags(picker) => {
-                        picker_height(picker.suggestions(keywords).len(), window.height())
-                    }
-                };
                 let (rect, _) = ui.allocate_exact_size(vec2(width, height), Sense::hover());
                 ground = rect;
                 let painter = ui.painter().clone();
@@ -248,6 +305,7 @@ impl DialogView {
                 done = match dialog {
                     Dialog::Confirm(confirm) => self::confirm(ui, room, confirm, palette, opened),
                     Dialog::Tags(picker) => tags(ui, room, picker, keywords, palette, opened),
+                    Dialog::Export(export) => export_view::show(ui, room, export, palette, opened),
                 };
             });
         // A press on the scrim closes it, at the press and not at the click, as a menu
@@ -267,6 +325,7 @@ impl DialogView {
                 Done::Submit {
                     typed: Some(text), ..
                 } => Done::Typed(text),
+                Done::Path(text) => Done::Path(text),
                 _ => Done::Open,
             };
         }
@@ -527,28 +586,7 @@ fn tags(
         }
     }
 
-    let closed = ui.interact(close_at, Id::new("dialog-close"), Sense::click());
-    closed.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, CANCEL));
-    if closed.hovered() {
-        painter.rect_filled(close_at, R[1], color(palette.hover));
-    }
-    // Which button the keys are on has to be seen, here as on every other: with no
-    // keyword listed Tab goes from the field straight to this one, and Enter closes.
-    if closed.has_focus() {
-        painter.rect_stroke(
-            close_at,
-            R[1],
-            Stroke::new(2.0, color(palette.accent)),
-            StrokeKind::Inside,
-        );
-    }
-    let tint = if closed.hovered() {
-        palette.text
-    } else {
-        palette.text_dim
-    };
-    Icon::X.paint(ui, close_at, 16.0, false, color(tint));
-    if closed.clicked() {
+    if close(ui, close_at, palette) {
         return Done::Closed;
     }
     let typed = typed.then_some(text);
@@ -560,12 +598,12 @@ fn tags(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::tag_picker::Mode;
     use eframe::egui::{Color32, PointerButton, Pos2, RawInput};
 
-    const WINDOW: Vec2 = vec2(1000.0, 700.0);
+    pub(crate) const WINDOW: Vec2 = vec2(1000.0, 700.0);
 
     fn each_shape(shape: &egui::Shape, visit: &mut impl FnMut(&egui::Shape)) {
         match shape {
@@ -575,29 +613,29 @@ mod tests {
     }
 
     /// A dialog over a window that has a button and a text field in it.
-    struct Fixture {
-        ctx: egui::Context,
-        view: DialogView,
-        dialog: Dialog,
-        keywords: Vec<String>,
+    pub(crate) struct Fixture {
+        pub(crate) ctx: egui::Context,
+        pub(crate) view: DialogView,
+        pub(crate) dialog: Dialog,
+        pub(crate) keywords: Vec<String>,
         /// The window's size.
-        size: Vec2,
-        time: f64,
+        pub(crate) size: Vec2,
+        pub(crate) time: f64,
         /// What is typed in the field behind the dialog, and whether its button was
         /// clicked in the last frame.
-        behind: String,
-        behind_clicked: bool,
+        pub(crate) behind: String,
+        pub(crate) behind_clicked: bool,
         /// Whether the window behind asks for the keyboard this frame.
-        behind_asks: bool,
+        pub(crate) behind_asks: bool,
         /// The keys the frame's input still held after the dialog had read it, and
         /// whether anything typed was left.
-        left_over: Vec<Key>,
-        typed_left_over: bool,
+        pub(crate) left_over: Vec<Key>,
+        pub(crate) typed_left_over: bool,
         /// How many buttons going down the frame's input still held after it.
-        presses_left_over: usize,
-        texts: Vec<(String, Rect)>,
-        fills: Vec<(Rect, Color32)>,
-        repaint: std::time::Duration,
+        pub(crate) presses_left_over: usize,
+        pub(crate) texts: Vec<(String, Rect)>,
+        pub(crate) fills: Vec<(Rect, Color32)>,
+        pub(crate) repaint: std::time::Duration,
     }
 
     fn confirm_album() -> Dialog {
@@ -614,7 +652,7 @@ mod tests {
     }
 
     impl Fixture {
-        fn new(dialog: Dialog) -> Self {
+        pub(crate) fn new(dialog: Dialog) -> Self {
             Self {
                 ctx: egui::Context::default(),
                 view: DialogView::default(),
@@ -634,7 +672,7 @@ mod tests {
             }
         }
 
-        fn frame(&mut self, events: Vec<Event>) -> Done {
+        pub(crate) fn frame(&mut self, events: Vec<Event>) -> Done {
             let input = RawInput {
                 screen_rect: Some(Rect::from_min_size(Pos2::ZERO, self.size)),
                 time: Some(self.time),
@@ -686,6 +724,18 @@ mod tests {
             if let (Some(text), Dialog::Tags(picker)) = (holds, &mut self.dialog) {
                 picker.type_in(text.clone());
             }
+            // And the export's dialog is told what was done in it, as the application
+            // tells it. The path is asked about by the test, which is the engine here.
+            if let Dialog::Export(export) = &mut self.dialog {
+                match &done {
+                    Done::Path(text) => {
+                        export.type_in(text.clone());
+                    }
+                    Done::Tick(apply) => export.tick(*apply),
+                    Done::Size(max_edge) => export.size(*max_edge),
+                    _ => {}
+                }
+            }
             self.behind_clicked = clicked;
             self.left_over = left_over;
             self.typed_left_over = typed;
@@ -712,14 +762,14 @@ mod tests {
         /// the next, and what lies under it is kept from the pointer from the one after.
         /// Draws the dialog until it stands, and lets the time pass in which a press
         /// would be the second of a double click on whatever opened it.
-        fn open(&mut self) {
+        pub(crate) fn open(&mut self) {
             for _ in 0..3 {
                 assert_eq!(self.frame(Vec::new()), Done::Open);
             }
             self.time += 1.0;
         }
 
-        fn key_with(&mut self, key: Key, modifiers: Modifiers) -> Done {
+        pub(crate) fn key_with(&mut self, key: Key, modifiers: Modifiers) -> Done {
             let event = |pressed| Event::Key {
                 key,
                 physical_key: None,
@@ -737,15 +787,15 @@ mod tests {
             done
         }
 
-        fn key(&mut self, key: Key) -> Done {
+        pub(crate) fn key(&mut self, key: Key) -> Done {
             self.key_with(key, Modifiers::NONE)
         }
 
-        fn typed(&mut self, text: &str) -> Done {
+        pub(crate) fn typed(&mut self, text: &str) -> Done {
             self.frame(vec![Event::Text(text.to_owned())])
         }
 
-        fn button(&mut self, at: Pos2, button: PointerButton, pressed: bool) -> Done {
+        pub(crate) fn button(&mut self, at: Pos2, button: PointerButton, pressed: bool) -> Done {
             self.frame(vec![Event::PointerButton {
                 pos: at,
                 button,
@@ -756,7 +806,7 @@ mod tests {
 
         /// A click at `at`: what the frame of the press came to, or the release's when
         /// the press did nothing.
-        fn click(&mut self, at: Pos2) -> Done {
+        pub(crate) fn click(&mut self, at: Pos2) -> Done {
             self.frame(vec![Event::PointerMoved(at)]);
             match self.button(at, PointerButton::Primary, true) {
                 Done::Open => self.button(at, PointerButton::Primary, false),
@@ -764,24 +814,24 @@ mod tests {
             }
         }
 
-        fn drew(&self, text: &str) -> Option<Rect> {
+        pub(crate) fn drew(&self, text: &str) -> Option<Rect> {
             (self.texts.iter())
                 .find(|(drawn, _)| drawn == text)
                 .map(|(_, place)| *place)
         }
 
-        fn at(&self, text: &str) -> Pos2 {
+        pub(crate) fn at(&self, text: &str) -> Pos2 {
             self.drew(text)
                 .unwrap_or_else(|| panic!("{text} is drawn"))
                 .center()
         }
 
-        fn tint(&self, of: impl Fn(&Palette) -> crate::theme::tokens::Rgba) -> Color32 {
+        pub(crate) fn tint(&self, of: impl Fn(&Palette) -> crate::theme::tokens::Rgba) -> Color32 {
             color(of(palette(&self.ctx)))
         }
 
         /// The dialog's own rectangle: the one filled in the surface's colour.
-        fn ground(&self) -> Rect {
+        pub(crate) fn ground(&self) -> Rect {
             let surface = self.tint(|palette| palette.surface);
             (self.fills.iter())
                 .filter(|(rect, fill)| *fill == surface && rect.width() > 300.0)
@@ -790,7 +840,7 @@ mod tests {
                 .expect("the dialog is drawn")
         }
 
-        fn focused(&self) -> Option<Id> {
+        pub(crate) fn focused(&self) -> Option<Id> {
             self.ctx.memory(|memory| memory.focused())
         }
     }
@@ -1415,21 +1465,101 @@ mod tests {
     // let go of over the row that has come to stand there: no click of that one.
     #[test]
     fn a_press_on_a_row_that_is_another_when_the_button_comes_up_writes_nothing() {
-        let mut f = picker(&["beach", "Lisbon"]);
+        // More keywords than the picker has room for, before the list is narrowed and
+        // after: it is as tall as it may be both times, and stands where it stood. (A
+        // picker made lower by a shorter list is put in the middle of the window
+        // again, and its rows move.)
+        let mut f = picker(&[
+            "beach",
+            "Lima",
+            "Linz",
+            "Lisbon",
+            "Lille",
+            "Liège",
+            "Limoges",
+            "Livorno",
+            "Limerick",
+            "Lincoln",
+            "Lienz",
+            "Lindau",
+            "Limassol",
+            "Lichfield",
+            "Linköping",
+            "Liberec",
+            "Liverpool",
+        ]);
         f.open();
+        assert_eq!(f.ground().height(), HEIGHT);
         let at = f.at("beach");
         f.frame(vec![Event::PointerMoved(at)]);
         assert_eq!(f.button(at, PointerButton::Primary, true), Done::Open);
         // The field still has the keyboard: egui gives it up at a click, not a press.
         assert_eq!(f.typed("li"), Done::Typed("li".to_owned()));
         f.frame(Vec::new());
+        assert_eq!(f.ground().height(), HEIGHT);
         assert!(f.drew("beach").is_none());
-        let now = f.drew("Lisbon").unwrap();
-        assert!(
-            now.expand(8.0).contains(at),
-            "Lisbon stands where beach did"
-        );
+        let now = f.drew("Lima").unwrap();
+        assert!(now.expand(8.0).contains(at), "Lima stands where beach did");
         assert_eq!(f.button(at, PointerButton::Primary, false), Done::Open);
+    }
+
+    // A dialog is in front of everything that floats over the window, as `Modal`'s
+    // own area is: what was there before it opened - the search box's help, a list -
+    // is under its scrim, and a click on it is a press beside the dialog.
+    #[test]
+    fn what_floats_over_the_window_is_under_a_dialog() {
+        let ctx = egui::Context::default();
+        let mut view = DialogView::default();
+        let dialog = confirm_album();
+        let at = Rect::from_min_size(pos2(40.0, 40.0), vec2(160.0, 40.0));
+        let mut time = 0.0;
+        let mut frame = |events: Vec<Event>, open: bool| {
+            let input = RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, WINDOW)),
+                time: Some(time),
+                events,
+                ..Default::default()
+            };
+            time += 0.25;
+            let (mut clicked, mut done) = (false, Done::Open);
+            let mut full = ctx.run_ui(input, |ui| {
+                crate::icons::install(ui.ctx());
+                if open {
+                    done = view.show(ui, &dialog, &[]);
+                }
+                egui::Area::new(Id::new("floating"))
+                    .order(egui::Order::Foreground)
+                    .fixed_pos(at.min)
+                    .show(ui.ctx(), |ui| {
+                        clicked = ui
+                            .add_sized(at.size(), egui::Button::new("floating"))
+                            .clicked();
+                    });
+            });
+            full.textures_delta.clear();
+            (clicked, done)
+        };
+        let press = |pressed| Event::PointerButton {
+            pos: at.center(),
+            button: PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        };
+        // What floats is pressed like anything, while no dialog is open.
+        for _ in 0..3 {
+            frame(Vec::new(), false);
+        }
+        frame(vec![Event::PointerMoved(at.center())], false);
+        frame(vec![press(true)], false);
+        assert!(frame(vec![press(false)], false).0);
+        // Under a dialog the same click is a press on the scrim, which closes the
+        // dialog, and no click of what floats - nor when the button comes up over it
+        // with the dialog gone.
+        for _ in 0..3 {
+            assert_eq!(frame(Vec::new(), true), (false, Done::Open));
+        }
+        assert_eq!(frame(vec![press(true)], true), (false, Done::Closed));
+        assert!(!frame(vec![press(false)], false).0);
     }
 
     // A copy and a cut are taken out of the frame with the keys: they are what egui

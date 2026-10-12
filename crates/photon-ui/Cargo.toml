@@ -32,6 +32,9 @@ dirs = "6.0.0"
 # The viewer's time zone, for the month a folder's header names. photon-core's version.
 jiff = "0.2.35"
 parking_lot = "0.12.5"
+# What kind of window this is, to know whether a dropped folder can arrive in it: the
+# crate eframe hands its window out through, at eframe's own version.
+raw-window-handle = "0.6.2"
 # The gate's report (`probe.rs`), in the shape the Svelte probe writes its own.
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1"

@@ -43,6 +43,9 @@ pub struct Driver {
     pub now: f64,
     /// How many frames have been drawn.
     pub frames: usize,
+    /// What the system says is held over the window. It says so in every frame until it
+    /// says otherwise, as `egui-winit` keeps it: `hold_over` and `drop_on` are its word.
+    pub held: Vec<egui::HoveredFile>,
 }
 
 impl Driver {
@@ -69,6 +72,7 @@ impl Driver {
             stray,
             now: 0.0,
             frames: 0,
+            held: Vec::new(),
         }
     }
 
@@ -85,6 +89,8 @@ impl Driver {
         self.now = at;
         *self.clock.lock().unwrap() = at;
         harness.input_mut().time = Some(at);
+        harness.input_mut().hovered_files = self.held.clone();
+        hand_over(harness);
         harness.step();
         self.frames += 1;
     }
@@ -224,6 +230,103 @@ pub fn opened<'a>(library: &fixture::Fixture, photos: usize) -> (Harness<'a>, Dr
         app.photos() == photos && app.last_frame().is_some_and(|frame| frame.settled)
     });
     (harness, driver)
+}
+
+/// A folder called `name` under `dir` with real photos called `names` in it, each a
+/// byte longer than the one before so that none is another's copy, and a minute newer.
+pub fn photos_in(dir: &Path, name: &str, names: &[&str]) -> PathBuf {
+    let folder = dir.join(name);
+    std::fs::create_dir_all(&folder).unwrap();
+    // The picture they are copies of is made beside the folder, not in it: it is no
+    // photo of the library's.
+    let made = tempfile::tempdir().unwrap();
+    let picture = std::fs::read(&sources(made.path())[0]).unwrap();
+    let start = std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(19_000 * 86_400);
+    for (n, file) in names.iter().enumerate() {
+        let path = folder.join(file);
+        let mut bytes = picture.clone();
+        bytes.extend(std::iter::repeat_n(0, n + 1));
+        std::fs::write(&path, bytes).unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(start + Duration::from_secs(60 * n as u64))
+            .unwrap();
+    }
+    folder
+}
+
+/// The application over a library of its own making under `dir`, which starts by
+/// watching `pictures` - or nothing, as a first run with no Pictures folder does. The
+/// library is real: its folders are scanned and its files are there to be exported.
+pub fn over<'a>(
+    dir: &Path,
+    pictures: Option<&Path>,
+) -> (Harness<'a>, Driver, photon_ui::dirs::Dirs) {
+    let made = photon_ui::dirs::within(&dir.join("data"), &dir.join("cache"));
+    let (dirs, pictures) = (made.clone(), pictures.map(Path::to_owned));
+    let harness = egui_kittest::Harness::builder()
+        .with_size(egui::vec2(1000.0, 700.0))
+        .with_step_dt(REFRESH as f32)
+        .build_eframe(move |cc| App::new(cc, dirs, pictures).unwrap());
+    let driver = Driver::new(&harness);
+    (harness, driver, made)
+}
+
+/// A file as the system hands it to a window it was dropped on.
+#[derive(Debug)]
+struct Dropped(PathBuf);
+
+impl egui::DroppedFile for Dropped {
+    fn path(&self) -> &Path {
+        &self.0
+    }
+
+    fn bytes(&self) -> Result<Vec<u8>, String> {
+        Err("a test's dropped file is never read".to_owned())
+    }
+}
+
+/// Hands the next frame's input to the application before egui reads it, as eframe does
+/// before every frame of a window and `egui_kittest` does not (`App::raw_input_hook`).
+pub fn hand_over(harness: &mut Harness<'_>) {
+    use eframe::App as _;
+    let ctx = harness.ctx.clone();
+    let mut input = std::mem::take(harness.input_mut());
+    harness.state_mut().raw_input_hook(&ctx, &mut input);
+    *harness.input_mut() = input;
+}
+
+/// Holds `paths` over the window, as a drag from a file manager does, and draws the
+/// frame the system asks for. They are held until they are dropped, or the test takes
+/// them out of `Driver::held`.
+pub fn hold_over(driver: &mut Driver, harness: &mut Harness<'_>, paths: &[&Path]) {
+    driver.held = (paths.iter())
+        .map(|path| egui::HoveredFile {
+            path: Some((*path).to_owned()),
+            ..Default::default()
+        })
+        .collect();
+    driver.act(harness);
+}
+
+/// Drops `paths` on the window: they are no longer held over it, and are the frame's
+/// dropped files.
+pub fn drop_on(driver: &mut Driver, harness: &mut Harness<'_>, paths: &[&Path]) {
+    driver.held.clear();
+    for path in paths {
+        let file: egui::DroppedFileHandle = Arc::new(Dropped((*path).to_owned()));
+        harness.input_mut().dropped_files.push(file);
+    }
+    driver.act(harness);
+}
+
+/// What the window has said, oldest first.
+pub fn said(harness: &Harness<'_>) -> Vec<String> {
+    (harness.state().toasts().iter())
+        .map(|toast| toast.message.clone())
+        .collect()
 }
 
 /// The ids of `library`'s photos, in grid order: the newest folder first.
