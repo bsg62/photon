@@ -393,6 +393,7 @@ fn a_folder_is_hidden_from_its_menu_and_brought_back_in_hidden() {
     assert!(harness.query_by_label(&name).is_none());
     assert_eq!(said(&harness), Vec::<String>::new());
 
+    driver.seen(&mut harness, "Hidden");
     harness.get_by_label("Hidden").click();
     driver.act(&mut harness);
     driver.until(&mut harness, "the hidden photos shown", |app| {
@@ -709,6 +710,7 @@ fn a_folder_hidden_with_no_photo_left_to_hide_offers_to_bring_it_back() {
     driver.until(&mut harness, "the folders read", |app| {
         app.folders().len() >= 3
     });
+    driver.seen(&mut harness, "Hidden");
     harness.get_by_label("Hidden").click();
     driver.act(&mut harness);
     driver.until(&mut harness, "the hidden photos shown", |app| {
