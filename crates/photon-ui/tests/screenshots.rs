@@ -749,6 +749,47 @@ fn native_viewer_dark() {
     shot(ThemeChoice::Dark, "native-viewer-dark.png", viewing);
 }
 
+/// The same, zoomed in by the keys and moved by a drag: the slider says how far.
+fn zoomed(harness: &mut Harness<'_>) {
+    viewing(harness);
+    for _ in 0..4 {
+        harness.key_press(Key::Plus);
+        harness.step();
+    }
+    let from = egui::pos2(640.0, 500.0);
+    harness.event(egui::Event::PointerMoved(from));
+    harness.event(egui::Event::PointerButton {
+        pos: from,
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: Modifiers::NONE,
+    });
+    harness.step();
+    let to = from + vec2(-260.0, 120.0);
+    harness.event(egui::Event::PointerMoved(to));
+    harness.event(egui::Event::PointerButton {
+        pos: to,
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: Modifiers::NONE,
+    });
+    harness.step();
+    harness.event(egui::Event::PointerGone);
+    harness.step();
+}
+
+#[test]
+#[ignore = "renders through a GPU adapter: cargo run -p xtask -- native-shot"]
+fn native_viewer_zoomed_light() {
+    shot(ThemeChoice::Light, "native-viewer-zoomed-light.png", zoomed);
+}
+
+#[test]
+#[ignore = "renders through a GPU adapter: cargo run -p xtask -- native-shot"]
+fn native_viewer_zoomed_dark() {
+    shot(ThemeChoice::Dark, "native-viewer-zoomed-dark.png", zoomed);
+}
+
 // The spec's first risk, to be judged by eye: a detailed photo much larger than the
 // window, fitted, as photon's own levels and a linear filter draw it
 // (`native-viewer-quality.png`), beside the same photo resized to the same size with a

@@ -1271,4 +1271,176 @@ fn a_video_says_that_it_is_not_played_yet() {
             .query_by_label("The native window does not play videos yet.")
             .is_some()
     );
+    // And it is not zoomed, and has no slider.
+    key(&mut driver, &mut harness, Key::Plus);
+    assert!(harness.state().viewer().unwrap().zoom().is_fit());
+    assert!(harness.query_by_label("Zoom").is_none());
+}
+
+/// How far the photo in the viewer is zoomed.
+fn zoom(harness: &Harness<'_>) -> f32 {
+    harness.state().viewer().expect("the viewer").zoom().zoom()
+}
+
+/// A click of the first button at `at`.
+fn click_at(driver: &mut Driver, harness: &mut Harness<'_>, at: Pos2) {
+    harness.event(egui::Event::PointerMoved(at));
+    harness.event(button(at, PointerButton::Primary, true));
+    harness.event(button(at, PointerButton::Primary, false));
+    driver.act(harness);
+}
+
+// `+` zooms the photo on screen and `0` fits it again; the next photo is fitted, and so
+// is this one when it is come back to: what was looked at closely is one photo's.
+#[test]
+fn the_keys_zoom_a_photo_and_a_step_puts_the_next_one_back_to_the_fit() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut harness, mut driver, ids, _) = three(dir.path());
+    open(&mut driver, &mut harness, 0);
+    assert_eq!(zoom(&harness), 1.0);
+    key(&mut driver, &mut harness, Key::Plus);
+    assert_eq!(zoom(&harness), 1.25);
+    key(&mut driver, &mut harness, Key::Equals);
+    key(&mut driver, &mut harness, Key::Minus);
+    assert_eq!(zoom(&harness), 1.25);
+    key(&mut driver, &mut harness, Key::Num0);
+    assert_eq!(zoom(&harness), 1.0);
+    key(&mut driver, &mut harness, Key::Plus);
+    key(&mut driver, &mut harness, Key::ArrowRight);
+    assert_eq!(viewing(&harness), Some(ids[1]));
+    assert_eq!(zoom(&harness), 1.0);
+    key(&mut driver, &mut harness, Key::Plus);
+    key(&mut driver, &mut harness, Key::ArrowLeft);
+    assert_eq!(viewing(&harness), Some(ids[0]));
+    assert_eq!(zoom(&harness), 1.0);
+    // And the slider says what the keys have done.
+    key(&mut driver, &mut harness, Key::Plus);
+    driver.act(&mut harness);
+    let slider = harness.get_by_label("Zoom").accesskit_node();
+    assert_eq!(slider.numeric_value(), Some(1.25));
+}
+
+// A star is another fact about the same picture, and leaves the zoom where it is; the
+// photo turned from elsewhere is another picture, fitted again - the place that was
+// zoomed into is not there any more.
+#[test]
+fn a_star_keeps_the_zoom_and_another_picture_is_fitted_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut harness, mut driver, ids, _) = three(dir.path());
+    open(&mut driver, &mut harness, 1);
+    key(&mut driver, &mut harness, Key::Plus);
+    key(&mut driver, &mut harness, Key::Period);
+    driver.until(&mut harness, "the star", |app| {
+        app.viewer_item().is_some_and(|item| item.starred)
+    });
+    rest(&mut driver, &mut harness, 1.0);
+    assert_eq!(zoom(&harness), 1.25);
+    let engine = harness.state().engine().clone();
+    commands::rotate_item(&engine, ids[1], true).unwrap();
+    driver.until(&mut harness, "the photo turned", |app| {
+        app.viewer_levels() == Some(vec![48])
+    });
+    assert_eq!(zoom(&harness), 1.0);
+}
+
+// The double click that opened the viewer is the grid's: a click in the viewer right
+// after it is the first of a double click there, not the second. Two in the viewer go to
+// the photo's own pixels - as far as the zoom goes, for a strip 4,200 pixels wide in a
+// window of a thousand - and two more back to the whole photo.
+#[test]
+fn a_double_click_zooms_in_the_viewer_and_the_one_that_opened_it_does_not() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut harness, mut driver, _, _) = three(dir.path());
+    let at = tile(&harness, 0);
+    click(&mut driver, &mut harness, 0);
+    click(&mut driver, &mut harness, 0);
+    assert!(harness.state().viewer().is_some());
+    click_at(&mut driver, &mut harness, at);
+    assert_eq!(zoom(&harness), 1.0, "the third click of three");
+    driver.until(&mut harness, "the full picture", |app| {
+        app.viewer_levels().is_some()
+    });
+    rest(&mut driver, &mut harness, 1.0);
+    let middle = egui::pos2(500.0, 350.0);
+    click_at(&mut driver, &mut harness, middle);
+    assert_eq!(zoom(&harness), 1.0);
+    click_at(&mut driver, &mut harness, middle);
+    assert_eq!(zoom(&harness), 4.0);
+    driver.frames_in(&mut harness, 1.0);
+    click_at(&mut driver, &mut harness, middle);
+    click_at(&mut driver, &mut harness, middle);
+    assert_eq!(zoom(&harness), 1.0);
+}
+
+// The slider is pressed where the zoom is wanted, and a drag on the photo moves it
+// then; and a photo zoomed and moved is a still window.
+#[test]
+fn the_slider_zooms_a_drag_pans_and_the_window_is_still() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut harness, mut driver, _, _) = three(dir.path());
+    open(&mut driver, &mut harness, 0);
+    driver.until(&mut harness, "the full picture", |app| {
+        app.viewer_levels().is_some()
+    });
+    driver.act(&mut harness);
+    // The middle of the slider is the middle of its range.
+    let slider = harness.get_by_label("Zoom").rect().center();
+    harness.event(egui::Event::PointerMoved(slider));
+    harness.event(button(slider, PointerButton::Primary, true));
+    driver.act(&mut harness);
+    harness.event(button(slider, PointerButton::Primary, false));
+    driver.act(&mut harness);
+    assert_eq!(zoom(&harness), 2.5);
+    let from = egui::pos2(500.0, 350.0);
+    harness.event(egui::Event::PointerMoved(from));
+    harness.event(button(from, PointerButton::Primary, true));
+    driver.act(&mut harness);
+    harness.event(egui::Event::PointerMoved(from + egui::vec2(-120.0, 0.0)));
+    driver.act(&mut harness);
+    harness.event(button(from, PointerButton::Primary, false));
+    driver.act(&mut harness);
+    let pan = harness.state().viewer().unwrap().zoom().pan();
+    assert_eq!((pan.x, pan.y), (-120.0, 0.0));
+    rest(&mut driver, &mut harness, 1.0);
+    assert_eq!(driver.frames_in(&mut harness, 5.0), 0);
+}
+
+// A message lies over the viewer, and a press on its button is the button's: no pan
+// begins under it, where the photo's surface reaches under everything.
+#[test]
+fn a_press_on_a_message_over_the_viewer_moves_no_photo() {
+    let dir = tempfile::tempdir().unwrap();
+    // A fixture's folders are on a drive that is not there: a star is refused, and said.
+    let library = library(dir.path(), 12, 0, 0);
+    let (mut harness, mut driver) = opened(&library, 12);
+    driver.settle(&mut harness);
+    open(&mut driver, &mut harness, 0);
+    driver.until(&mut harness, "the preview", |app| app.preview_bytes() > 0);
+    key(&mut driver, &mut harness, Key::Plus);
+    key(&mut driver, &mut harness, Key::Plus);
+    key(&mut driver, &mut harness, Key::Period);
+    driver.until(&mut harness, "the refusal is said", |app| {
+        !app.toasts().is_empty()
+    });
+    driver.act(&mut harness);
+    driver.act(&mut harness);
+    let at = harness.get_by_label("Dismiss").rect().center();
+    harness.event(egui::Event::PointerMoved(at));
+    harness.event(button(at, PointerButton::Primary, true));
+    driver.act(&mut harness);
+    harness.event(egui::Event::PointerMoved(at + egui::vec2(-60.0, -40.0)));
+    driver.act(&mut harness);
+    let pan = harness.state().viewer().unwrap().zoom().pan();
+    assert_eq!((pan.x, pan.y), (0.0, 0.0));
+    // The same press beside the message is the photo's.
+    harness.event(button(at, PointerButton::Primary, false));
+    driver.act(&mut harness);
+    let beside = at + egui::vec2(0.0, -200.0);
+    harness.event(egui::Event::PointerMoved(beside));
+    harness.event(button(beside, PointerButton::Primary, true));
+    driver.act(&mut harness);
+    harness.event(egui::Event::PointerMoved(beside + egui::vec2(-60.0, -40.0)));
+    driver.act(&mut harness);
+    let pan = harness.state().viewer().unwrap().zoom().pan();
+    assert_eq!((pan.x, pan.y), (-60.0, -40.0));
 }

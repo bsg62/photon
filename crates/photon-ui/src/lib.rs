@@ -74,13 +74,14 @@ pub mod viewer_caption;
 pub mod viewer_layout;
 pub mod viewer_levels;
 pub mod viewer_view;
+pub mod viewer_zoom;
 pub mod wheel;
 pub mod window_layout;
 
 #[cfg(test)]
 mod tests {
     /// The state modules, with their source.
-    const STATE_MODULES: [(&str, &str); 40] = [
+    const STATE_MODULES: [(&str, &str); 41] = [
         ("args.rs", include_str!("args.rs")),
         ("controls.rs", include_str!("controls.rs")),
         ("scans.rs", include_str!("scans.rs")),
@@ -119,6 +120,7 @@ mod tests {
         ("viewer_caption.rs", include_str!("viewer_caption.rs")),
         ("viewer_layout.rs", include_str!("viewer_layout.rs")),
         ("viewer_levels.rs", include_str!("viewer_levels.rs")),
+        ("viewer_zoom.rs", include_str!("viewer_zoom.rs")),
         ("wheel.rs", include_str!("wheel.rs")),
         ("window_layout.rs", include_str!("window_layout.rs")),
     ];

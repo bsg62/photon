@@ -1708,11 +1708,17 @@ impl App {
             photo_caption: photo_caption.as_deref(),
             // (Nothing is known of a photo that is gone: its facts went with it.)
             starred: open.item.as_ref().map(|item| item.starred),
+            video: open.viewer.is_video(),
             can_prev: open.viewer.can_step(-1, len),
             can_next: open.viewer.can_step(1, len),
         };
-        let actions = self.viewer_view.show(ui, &data);
+        // The zoom is the view's to change in this frame, and the viewer's to keep:
+        // before what was done in the frame is acted on, since a step puts it back to
+        // the fit.
+        let mut zoom = *open.viewer.zoom();
+        let actions = self.viewer_view.show(ui, &data, &mut zoom);
         drop(levels);
+        *open.viewer.zoom_mut() = zoom;
 
         // The messages lie over the viewer as over the grid: a star the folder would
         // not take is said here too.
