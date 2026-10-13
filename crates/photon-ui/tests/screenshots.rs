@@ -132,6 +132,12 @@ fn collect(harness: &mut Harness<'_>, photos: usize) {
 
 /// The library opened in `theme`, then whatever `then` does to it, as `name`.
 fn shot(theme: ThemeChoice, name: &str, then: impl Fn(&mut Harness<'_>)) {
+    shot_over(theme, name, |harness, _| then(harness));
+}
+
+/// The same, for a picture that needs something in the library no command puts there:
+/// `then` is handed the library's own file as well.
+fn shot_over(theme: ThemeChoice, name: &str, then: impl Fn(&mut Harness<'_>, &Path)) {
     let dir = tempfile::tempdir().unwrap();
     let pictures = dir.path().join("Pictures");
     library(&pictures);
@@ -148,6 +154,7 @@ fn shot(theme: ThemeChoice, name: &str, then: impl Fn(&mut Harness<'_>)) {
         ThemeChoice::Light => egui::Theme::Light,
         ThemeChoice::Dark | ThemeChoice::System => egui::Theme::Dark,
     };
+    let db = dirs.db_path.clone();
 
     let mut harness =
         window(Some(harness_theme)).build_eframe(|cc| App::new(cc, dirs, Some(pictures)).unwrap());
@@ -158,7 +165,7 @@ fn shot(theme: ThemeChoice, name: &str, then: impl Fn(&mut Harness<'_>)) {
         app.photos() == total && app.folders().len() >= FOLDERS.len() && shown
     });
     collect(&mut harness, total);
-    then(&mut harness);
+    then(&mut harness, &db);
     // The icons are rasterised a frame after they are first asked for.
     for _ in 0..5 {
         harness.step();
@@ -811,6 +818,168 @@ fn native_viewer_info_light() {
 #[ignore = "renders through a GPU adapter: cargo run -p xtask -- native-shot"]
 fn native_viewer_info_dark() {
     shot(ThemeChoice::Dark, "native-viewer-info-dark.png", informed);
+}
+
+/// The viewer with the faces of its photo outlined: Anna's, with her name on its plate,
+/// and one nobody has named. The rectangles are placed for the picture, as the Svelte
+/// pictures' are (`mock.js`): the first is on the woman the photo is of, the second on
+/// the skyline beside her, where there is no face - it is there to show what an outline
+/// that can be pressed looks like.
+fn with_faces(harness: &mut Harness<'_>, db: &Path) {
+    use photon_core::face_detect::{DETECTOR_VERSION, Detection, Rect};
+    let id = harness.state().shown()[2];
+    let lib = Library::open(db).unwrap();
+    lib.set_face_detection(true).unwrap();
+    // A photo is looked at once its preview is made.
+    let deadline = Instant::now() + Duration::from_secs(120);
+    let photos = loop {
+        let photos = lib.face_candidates(0, 100, DETECTOR_VERSION).unwrap();
+        if photos.iter().any(|photo| photo.id == id) {
+            break photos;
+        }
+        assert!(Instant::now() < deadline, "never: the photo's preview");
+        harness.step();
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    let face = |left: f64, top: f64, right: f64, bottom: f64| Detection {
+        rect: Rect {
+            left,
+            top,
+            right,
+            bottom,
+        },
+        landmarks: [(0.0, 0.0); 5],
+        score: 0.9,
+    };
+    let batch: Vec<_> = (photos.into_iter())
+        .map(|photo| {
+            let faces = if photo.id == id {
+                vec![face(0.3, 0.25, 0.42, 0.5), face(0.62, 0.36, 0.72, 0.56)]
+            } else {
+                Vec::new()
+            };
+            (photo, faces)
+        })
+        .collect();
+    lib.write_face_batch(&batch, DETECTOR_VERSION).unwrap();
+    let conn = rusqlite::Connection::open(db).unwrap();
+    let first: i64 = conn
+        .query_row(
+            "SELECT id FROM detected_faces WHERE item_id = ?1 ORDER BY left LIMIT 1",
+            [id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(lib.name_faces(&[first], "Anna").unwrap().is_some());
+    informed(harness);
+    harness.state().engine().refresh_grid().unwrap();
+    until(harness, "the faces read", |app| {
+        (app.viewer_item())
+            .is_some_and(|item| item.faces.len() == 1 && item.unnamed_faces.len() == 1)
+    });
+    harness.step();
+}
+
+#[test]
+#[ignore = "renders through a GPU adapter: cargo run -p xtask -- native-shot"]
+fn native_viewer_faces_light() {
+    shot_over(
+        ThemeChoice::Light,
+        "native-viewer-faces-light.png",
+        with_faces,
+    );
+}
+
+#[test]
+#[ignore = "renders through a GPU adapter: cargo run -p xtask -- native-shot"]
+fn native_viewer_faces_dark() {
+    shot_over(
+        ThemeChoice::Dark,
+        "native-viewer-faces-dark.png",
+        with_faces,
+    );
+}
+
+/// The other button on Anna's face: the viewer's menu, with what it offers for her
+/// over what it offers for the photo, and the pointer on an item.
+fn viewer_menu(harness: &mut Harness<'_>, db: &Path) {
+    with_faces(harness, db);
+    let plate = (harness.get_by_role_and_label(egui::accesskit::Role::Label, "Anna")).rect();
+    let at = plate.left_top() + vec2(20.0, -40.0);
+    harness.event(egui::Event::PointerMoved(at));
+    harness.step();
+    for pressed in [true, false] {
+        harness.event(egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Secondary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        });
+        harness.step();
+    }
+    harness.step();
+    let item = harness.get_by_label("Not Anna").rect().center();
+    harness.event(egui::Event::PointerMoved(item));
+    harness.step();
+}
+
+#[test]
+#[ignore = "renders through a GPU adapter: cargo run -p xtask -- native-shot"]
+fn native_viewer_menu_light() {
+    shot_over(
+        ThemeChoice::Light,
+        "native-viewer-menu-light.png",
+        viewer_menu,
+    );
+}
+
+#[test]
+#[ignore = "renders through a GPU adapter: cargo run -p xtask -- native-shot"]
+fn native_viewer_menu_dark() {
+    shot_over(
+        ThemeChoice::Dark,
+        "native-viewer-menu-dark.png",
+        viewer_menu,
+    );
+}
+
+/// The outline of the face nobody has named, pressed: the dialog that asks who it is,
+/// over the viewer, with a name half typed and what Enter will do with it.
+fn naming_a_face(harness: &mut Harness<'_>, db: &Path) {
+    with_faces(harness, db);
+    harness.get_by_label("Name this face").click();
+    for _ in 0..4 {
+        harness.step();
+    }
+    // (The people are read by a task: a moment for its answer.)
+    std::thread::sleep(Duration::from_millis(200));
+    harness.step();
+    harness.event(egui::Event::Text("an".to_owned()));
+    for _ in 0..3 {
+        harness.step();
+    }
+    harness.event(egui::Event::PointerGone);
+    harness.step();
+}
+
+#[test]
+#[ignore = "renders through a GPU adapter: cargo run -p xtask -- native-shot"]
+fn native_name_face_light() {
+    shot_over(
+        ThemeChoice::Light,
+        "native-name-face-light.png",
+        naming_a_face,
+    );
+}
+
+#[test]
+#[ignore = "renders through a GPU adapter: cargo run -p xtask -- native-shot"]
+fn native_name_face_dark() {
+    shot_over(
+        ThemeChoice::Dark,
+        "native-name-face-dark.png",
+        naming_a_face,
+    );
 }
 
 // The spec's first risk, to be judged by eye: a detailed photo much larger than the

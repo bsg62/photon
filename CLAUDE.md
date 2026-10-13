@@ -1953,7 +1953,7 @@ own rule; an empty field draws its placeholder in the frame it is first typed in
 **A dialog is `dialogs.rs`, `dialog_view.rs` and the application that holds it**
 (`App::dialog`): one at a time, over the whole window - the question asked before an
 album or a saved search is deleted (`Confirm`), and the keyword picker (`tag_picker.rs`,
-`createTagPicker`). **What a dialog acts on is taken when it opens**: the album or search
+`createTagPicker`); the export's and the person dialog have their own paragraphs below. **What a dialog acts on is taken when it opens**: the album or search
 of the question, under the name it had; the photos of the picker. A menu's rule is the
 opposite, and on purpose - a menu's items are built again in every frame and say what
 they would act on now, while a dialog's words were read once, and what the user was told
@@ -2151,7 +2151,8 @@ facts first, as a user's eye does.
 **No control of the viewer is a stop of the Tab key** (`Sense::CLICK`, not
 `Sense::click()`): a control that had the keyboard would take the arrows from the viewer,
 egui walking the focus on with them, and every control has a key. **And Tab is called
-off in the viewer** (`move_focus`, as under a menu): a message drawn over it has a button
+off in the viewer** (`move_focus`, as under a menu; not under a dialog, whose own walk it
+is then - below, with the faces): a message drawn over it has a button
 that is a stop, and with the keyboard on that the arrows stepped nothing and the grid's
 keys were dead once the viewer had closed. The wheel steps a
 photo a notch whatever the system's lines a notch are - nothing scrolls here - and a
@@ -2465,6 +2466,97 @@ hand - primaries to XYZ and back through sRGB's, each space's own curve - not as
 moxcms; they agree with it, and with lcms2, to the digit. A profile that makes moxcms panic
 costs that photo its full picture and no more: the task catches it and the preview stays -
 none was found in half a million mutated profiles.
+
+**The faces of the photo in the viewer are outlined in the picture as it is drawn**
+(`viewer_faces.rs`, which is `faces.ts` with its tests' cases; drawn by `viewer_view.rs`'s
+`faces`). While the info panel is open each face has its outline at the rectangle `picture`
+answers, zoom and pan in it, cut off at the photo's area, a named one with its name on a
+plate under its left corner; with no picture drawn there is no outline, and no face under a
+press. The line, its ink and the plate's ground are the photo's own colours in both themes
+(`PHOTO_LINE`, `SHADOW_INK`, `SCRIM`). **An unnamed face photon found is a button**
+(`viewer-face`, "Name this face"): made after the photo's surface and before every control,
+so the bar and the panel are pressed where they lie over an outline, and only as much of it
+as is in the photo's area takes a press. To the photo's own press it is a control
+(`Controls::hold`): no pan begins on it, and it is no half of a double click. A named
+face's outline, and one that is Picasa's alone, take no press - a press there is the
+photo's.
+
+**The other button asks for the viewer's menu where it goes down** (`ViewerAction::Menu`;
+`viewer_menu.rs` for its items, in `Viewer.svelte`'s words and order), read from the
+button's own event as on a photo of the grid: on the photo's surface and its faces, not on
+a control, not under anything that lies over the viewer, not while the first button holds
+the photo. Which face it went down on is asked of every face, whether or not the panel
+shows the outlines, and **kept by what the face is, not by its number in the list**
+(`viewer_faces::On`): a menu's items are built again in every frame from the photo as the
+library last said it is, and the faces can be another list by then. A face that is no
+longer what the menu was opened on - named since, or gone - offers nothing: not the
+photo's own "Not …" items in its place, which were not what was asked for. **The menu is
+of the photo on screen, as the tile's is of the selection** (`MenuOf::Viewer`): its picks
+act on the photo its items were just built from, and with nothing said of the photo - a
+step just made, a photo that is gone, the viewer shut - it has no items and closes. (The
+first version carried the photo's id in the menu and checked it twice; nothing could tell
+the checks were there, since no step is made under an open menu, and they went.) "Not
+Anna" is `Write::PersonRemove` with the one photo, the grid's Remove; "Locate in photon"
+shuts the viewer and finds the photo in All photos, or **in Hidden when the library says
+it is hidden** (`App::locate`'s `hidden`), the one view that holds it then; "Reveal in
+file manager" and "Open in default app" are in their places and take no press. The menu
+is dark in both themes, as the viewer is (`MenuView::show_in`) - seen in a picture, where
+it was light in a light window; the frame test holds `show_in`, and nothing holds that the
+application calls it so but the picture.
+
+**The viewer is deaf under a dialog and under its own menu** (`ViewerData::paused`). It
+reads the wheel and the buttons from the frame's events, and a dialog takes only the keys,
+what is typed and a button going down out of the frame, a menu only the keys: under either
+the wheel steps to no photo, a held press is over, and what the wheel had turned is not
+kept for after. A press beside the menu closes it before the viewer is drawn, and is then
+the viewer's, as on the grid. What the viewer answers in a frame drawn under a dialog is
+dropped, as the shell's is. Each of the two has its own test, and needed one: the first
+test of "nothing reaches the viewer under its dialog" passed with either taken out, each
+hiding that the other was gone - the wheel's step is dropped with the answers, a click on
+the star in the dialog's first frame is not read by a viewer that is deaf. What tells them
+apart is the wheel with Ctrl, which zooms and answers nothing, and that click, which egui
+hands to the star whatever the viewer reads. **And egui's walk of the keyboard is not
+called off in the viewer under a dialog**: the viewer calls it off for itself after the
+dialog is drawn. Tab egui has settled by then, among the dialog's own widgets; what was
+called off was an arrow's walk from one of the dialog's buttons to the next - a person's
+row, reached by Tab - which egui makes at the end of the frame. (The comment first said
+it was Shift+Tab wrapping round the dialog's end, and a probe passed: the test of that
+passed with the rule gone.)
+
+**The person dialog is the fourth dialog, and it is the keyword picker's drawing**
+(`person_picker.rs`, `createPersonPicker` and the lines of `people.ts` it says;
+`dialog_view.rs`'s `Picker`: a title, a field with its button, a list narrowed by what is
+typed - and for this one a line under the field that says what Enter will do, in a room it
+always has, so the list begins where it did whatever the line says). What it names is
+taken as it opens: a face by its id - the outline pressed, or the menu's "Name this
+face…" - or the photos selected, for the grid's "Add N photos to a person…", which works
+now. The people it lists are `named_people`, read by a task as it opens: **none is
+listed, and nothing is said in the list's place, until they are read** - "No one is named
+yet." for the moment the read takes would be said of a library with fifty people in it.
+A name is written as it is typed, on the queue of writes (`Write::Name`): the library is
+what knows whose it is, whatever its case. **What is said afterwards is the library's**:
+"This is Anna." by the name the person has, which the write's worker reads after the
+write (where the Svelte picker goes by the list it read as it opened); "That face is no
+longer there." when `name_faces` answers no one, and no person is made of the name; and
+for photos `named_items_message`, `people.ts`'s word for word. Nothing here tells the
+viewer or the lists: the rebuild the engine makes after a write of the people is what has
+the photo read again, and a name written reloads no picture. A face pressed in the very
+frame that closes the viewer opens no dialog: it would stand over the grid, asking who a
+face is on a photo nobody sees.
+
+Two things about the tests. A dialog's title and a face's plate tell AccessKit their
+words, which is how a test of the whole application reads them - so a test that presses a
+person's link in the panel asks for the *link* of that name
+(`get_by_role_and_label(Role::Link, ..)`): the plate over the photo says it too. And the
+faces of a test's library are written through the library's own calls before the launch
+(`looked` in `tests/faces.rs`: `write_face_batch` for every photo, so the launch's pass
+finds none to detect); a picture's are written after it, through a second connection
+(`shot_over`), because the pictures' library is one the application has scanned itself -
+rectangles placed for the picture, as `mock.js`'s are, one of them on the skyline. Not
+tested: a Mac's Control with the first button on an outline, which asks for the menu and
+whose click is the outline's as well - the view answers a menu asked for in the frame of
+an outline's click alone, and the click of a later frame finds the viewer deaf under the
+menu, but that the two cover a Mac's press has not been run on one.
 
 **A picture test makes its GPU device alone** (`tests/screenshots.rs`, `DEVICES`): every
 picture is drawn on a thread of its own, and with two dozen devices made in the same

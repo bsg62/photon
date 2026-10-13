@@ -39,9 +39,9 @@ pub enum TileAction {
 
 impl TileAction {
     /// Whether the item works yet. The others are in their place and take no press: what
-    /// they open is a later sub-project's (the viewer's compare and its dialog that names
-    /// a face, the platform's file manager and clipboard), and a menu that grew as they
-    /// arrived would move every item under a hand that had learnt where it was.
+    /// they open is a later sub-project's (the viewer's compare, the platform's file
+    /// manager and clipboard), and a menu that grew as they arrived would move every
+    /// item under a hand that had learnt where it was.
     pub fn works(&self) -> bool {
         matches!(
             self,
@@ -50,6 +50,7 @@ impl TileAction {
                 | Self::Export
                 | Self::AddKeyword
                 | Self::RemoveKeyword
+                | Self::AddToPerson
                 | Self::RemoveFromPerson(_)
                 | Self::RemoveFromAlbum(_)
                 | Self::AddToAlbum(_)
@@ -638,9 +639,13 @@ mod tests {
         let lines = w.lines();
         let at = lines
             .iter()
-            .position(|line| line == "Add 2 photos to a person… (off)");
+            .position(|line| line == "Add 2 photos to a person…");
         // After the keywords, before the album's "Remove from".
         assert_eq!(at, Some(7));
+        assert_eq!(
+            w.does("Add 2 photos to a person…"),
+            Some(TileAction::AddToPerson)
+        );
     }
 
     #[test]
@@ -685,6 +690,7 @@ mod tests {
             TileAction::AddToAlbum(1),
             TileAction::AddKeyword,
             TileAction::RemoveKeyword,
+            TileAction::AddToPerson,
             TileAction::Export,
         ] {
             assert!(works.works(), "{works:?}");
@@ -694,7 +700,6 @@ mod tests {
             TileAction::OpenInApp,
             TileAction::CopyPhoto,
             TileAction::Compare,
-            TileAction::AddToPerson,
         ] {
             assert!(!waits.works(), "{waits:?}");
         }

@@ -20,7 +20,7 @@ use crate::{
     theme::{
         apply::{color, menu_shadow, palette},
         fonts,
-        tokens::{R, S, T},
+        tokens::{Palette, R, S, T},
     },
 };
 use eframe::egui::{
@@ -126,8 +126,19 @@ impl MenuView {
 
     /// Draws `items` as a menu opened at `at`, and answers what the frame came to.
     pub fn show<A: Clone>(&mut self, ui: &egui::Ui, at: Pos2, items: &[Item<A>]) -> Outcome<A> {
+        self.show_in(ui, at, items, palette(ui.ctx()))
+    }
+
+    /// The same, in `palette` whatever the window's theme: the viewer is dark in both,
+    /// and so is its menu.
+    pub fn show_in<A: Clone>(
+        &mut self,
+        ui: &egui::Ui,
+        at: Pos2,
+        items: &[Item<A>],
+        palette: &Palette,
+    ) -> Outcome<A> {
         let ctx = ui.ctx();
-        let palette = palette(ctx);
         let measure = |text: &str, size: f32| {
             ui.painter()
                 .layout_no_wrap(text.to_owned(), fonts::regular(size), egui::Color32::WHITE)
@@ -414,6 +425,7 @@ impl MenuView {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::theme::tokens::DARK;
     use eframe::egui::RawInput;
 
     const WINDOW: Vec2 = vec2(1000.0, 700.0);
@@ -469,6 +481,8 @@ mod tests {
         behind_clicked: bool,
         /// Whether a cut, a copy or a paste was left in the frame's input.
         clipboard_left_over: bool,
+        /// Drawn in the dark palette, whatever the window's theme.
+        dark: bool,
     }
 
     fn each_shape(shape: &egui::Shape, visit: &mut impl FnMut(&egui::Shape)) {
@@ -496,6 +510,7 @@ mod tests {
                 behind: None,
                 behind_clicked: false,
                 clipboard_left_over: false,
+                dark: false,
             }
         }
 
@@ -512,8 +527,13 @@ mod tests {
             let mut outcome = Outcome::Open;
             let (mut left_over, mut typed, mut clipboard) = (Vec::new(), false, false);
             let mut behind_clicked = false;
+            let dark = self.dark;
             let mut full = self.ctx.run_ui(input, |ui| {
-                outcome = view.show(ui, at, items);
+                outcome = if dark {
+                    view.show_in(ui, at, items, &DARK)
+                } else {
+                    view.show(ui, at, items)
+                };
                 if button {
                     let _ = ui.button("behind");
                 }
@@ -1075,5 +1095,23 @@ mod tests {
         assert!(asks_for_menu(first, Modifiers::CTRL, true));
         // Elsewhere Control with a click takes a photo in or out of the selection.
         assert!(!asks_for_menu(first, Modifiers::CTRL, false));
+    }
+
+    // The viewer's menu is dark in a light window, as the viewer is: its ground, the
+    // row under the pointer and its words are the dark palette's.
+    #[test]
+    fn a_menu_is_drawn_in_the_palette_it_is_given() {
+        use crate::theme::tokens::{DARK, LIGHT};
+        let mut f = Fixture::new(pos2(100.0, 100.0));
+        f.ctx.set_theme(egui::Theme::Light);
+        f.open();
+        let fills = |f: &Fixture, tint| f.fills.iter().any(|(_, fill)| *fill == color(tint));
+        assert!(fills(&f, LIGHT.raised) && !fills(&f, DARK.raised));
+        f.dark = true;
+        f.frame(Vec::new());
+        assert!(fills(&f, DARK.raised) && !fills(&f, LIGHT.raised));
+        f.key(Key::ArrowDown);
+        f.frame(Vec::new());
+        assert!(fills(&f, DARK.hover) && !fills(&f, LIGHT.hover));
     }
 }

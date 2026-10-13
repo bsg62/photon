@@ -46,9 +46,11 @@ both and queues the writes, which are the engine's own commands (`name_faces`,
   that offers nothing). The Svelte menu works its face items out once, as it opens; a
   native menu's items are built again in every frame, and the list of faces can be
   another by then (a detection landing, the photo read again).
-- **The viewer's menu is of one photo** (`MenuOf::Viewer { photo, on }`), and has no
-  items - and closes - once the viewer is not on that photo with the library's word for
-  it: a step, a photo that is gone, the viewer shut. Its picks act on that photo's id.
+- **The viewer's menu is of the photo on screen** (`MenuOf::Viewer(on)`), as the tile's
+  is of the selection: its items are built from what the library last said of that
+  photo, its picks act on it, and with nothing said of the photo - a step just made, a
+  photo that is gone, the viewer shut - it has no items, and closes. (As first written
+  it carried the photo's id: see "Changed in the making".)
 - **The faces are placed in the picture as it is drawn** (the rectangle `picture`
   answers, zoom and pan in it), not in a box worked out from the photo's size: an
   outline is on what is on screen. No picture, no outline and no face under a press.
@@ -119,3 +121,75 @@ when paused. Tests in whole frames.
 application (`tests/viewer.rs`, `tests/menu.rs`).
 
 ### 7. The picture, the checklist, CLAUDE.md, the pull request
+
+## Changed in the making
+
+- **The menu carries no photo.** The first version was `MenuOf::Viewer { photo, on }`,
+  with the id checked against the viewer's and against the item's as the items were
+  built, and the menu not opened unless the library had said what the photo was. No
+  test could tell either check was there: no step is made under an open menu (the keys
+  are the menu's, and the viewer is deaf to the wheel and the buttons), and after a
+  step in the very frame the menu is asked for nothing is known of the photo, so the
+  menu has no items whatever it carries. The checks went, and with them the id: the
+  picks act on the photo the items were just built from.
+- **The keyword picker and the person dialog are one drawing** (`Picker` in
+  `dialog_view.rs`), where the plan had a second function modelled on the first: the
+  two differ in their words, in the line under the field and in what stands in the
+  list's place, and in nothing a press or a key does.
+- **The menu is dark in both themes** (`MenuView::show_in`): a picture showed it light
+  in a light window, over a viewer that is dark in both. The Svelte menu is inside the
+  viewer's dark subtree; the dialog is not, and is in the window's theme in both.
+- **egui's walk of the keyboard is not called off in the viewer under a dialog.** The
+  viewer calls it off for itself, after the dialog is drawn. Tab egui has settled by
+  then, inside the dialog (read in `Focus::interested_in_focus`); what was called off
+  was an arrow's walk from one of the dialog's buttons to the next, which egui makes at
+  the end of the frame: over the viewer the arrows did nothing among the people's rows.
+  (Written first as "Shift+Tab wraps round the dialog's end", which was wrong, and a
+  probe said so.)
+- **A dialog's title is told to AccessKit** (both pickers): it is what says how many
+  photos a dialog writes to, and a test of the whole application could not read it.
+- **A face's plate says its name to AccessKit**, so two things on screen are called
+  "Anna" while the panel is open: a test of the info panel's link that asked for the
+  one thing of that name now asks for the link.
+- **`Controls::over` beside `hold`**: the other button's press asks "is this on
+  something that lies over the photo", which an outline is not - the menu on a face is
+  the point - while the first button's asks "is this a control's", which a pressable
+  outline is.
+- **A face pressed in the frame that closes the viewer opens no dialog**, and a menu
+  asked for in the frame an outline's click comes up in is asked for alone: neither was
+  in the plan, both came of asking what two things in one frame do.
+- **What the wheel had turned is dropped under a pause**, and a press held is over:
+  the plan said only that the viewer is deaf.
+- `paused`'s first version also forgot the first click of a double click. Nothing
+  could tell: a click on the photo, a menu or a dialog opened and closed, and a second
+  click on the same spot do not fit into a double click's time. The line went.
+
+## Probes
+
+Sixty-four, each rule broken in turn with an exact replacement, and the test named that
+was to fail. Four passed the first time.
+
+- A face that offers nothing (`On::Other`) offered nothing in the tests only because
+  nobody else on their photos was named: with the photo's own "Not …" items put in its
+  place every test passed. The test has a named person beside the face now.
+- "The viewer is deaf under a dialog" and "what the viewer answers under a dialog is
+  dropped" each passed with the other in place: the wheel's step was dropped with the
+  answers, and a deaf viewer read no click. They are told apart by the wheel with Ctrl,
+  which zooms and answers nothing, and by a click on the star within the dialog's first
+  frame, which egui hands the star whatever the viewer reads. Each has its test.
+- The keyboard's walk under a dialog: the test pressed Shift+Tab, which the rule does
+  not touch. It walks with an arrow now, from one person's row to the next.
+
+## Not tested, and why
+
+- That the application draws the viewer's menu in the dark palette: the frame test
+  holds `show_in`, and the application's choice is seen in the picture alone
+  (`native-viewer-menu-light.png`) - a test of the whole application reads AccessKit,
+  which has no colours.
+- A Mac's Control with the first button on an outline, which asks for the menu and
+  whose click is the outline's too: the two rules that are to cover it (a menu asked
+  for in the frame of an outline's click is asked for alone; under the open menu the
+  viewer names no face) are each tested, but not on a Mac.
+- A name written reloading no picture: `picture_changed` leaves the faces out by its
+  type, and the fixture's photos have no full picture to count.
+- The people's read failing: there is no way to make the library fail a read on demand.

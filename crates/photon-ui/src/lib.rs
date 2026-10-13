@@ -35,6 +35,7 @@ pub mod icons;
 pub mod menu;
 pub mod menu_view;
 pub mod nav;
+pub mod person_picker;
 pub mod probe;
 pub mod rename;
 pub mod scans;
@@ -71,11 +72,13 @@ pub mod thumbs {
 pub mod toasts;
 pub mod viewer;
 pub mod viewer_caption;
+pub mod viewer_faces;
 pub mod viewer_histogram;
 pub mod viewer_info;
 pub mod viewer_info_view;
 pub mod viewer_layout;
 pub mod viewer_levels;
+pub mod viewer_menu;
 pub mod viewer_view;
 pub mod viewer_zoom;
 pub mod wheel;
@@ -84,7 +87,7 @@ pub mod window_layout;
 #[cfg(test)]
 mod tests {
     /// The state modules, with their source.
-    const STATE_MODULES: [(&str, &str); 43] = [
+    const STATE_MODULES: [(&str, &str); 46] = [
         ("args.rs", include_str!("args.rs")),
         ("controls.rs", include_str!("controls.rs")),
         ("scans.rs", include_str!("scans.rs")),
@@ -106,6 +109,7 @@ mod tests {
         ("sidebar/list.rs", include_str!("sidebar/list.rs")),
         ("sidebar/rows.rs", include_str!("sidebar/rows.rs")),
         ("tag_picker.rs", include_str!("tag_picker.rs")),
+        ("person_picker.rs", include_str!("person_picker.rs")),
         ("tasks.rs", include_str!("tasks.rs")),
         ("theme/tokens.rs", include_str!("theme/tokens.rs")),
         ("grid/labels.rs", include_str!("grid/labels.rs")),
@@ -121,6 +125,8 @@ mod tests {
         ("toasts.rs", include_str!("toasts.rs")),
         ("viewer.rs", include_str!("viewer.rs")),
         ("viewer_caption.rs", include_str!("viewer_caption.rs")),
+        ("viewer_faces.rs", include_str!("viewer_faces.rs")),
+        ("viewer_menu.rs", include_str!("viewer_menu.rs")),
         ("viewer_histogram.rs", include_str!("viewer_histogram.rs")),
         ("viewer_info.rs", include_str!("viewer_info.rs")),
         ("viewer_layout.rs", include_str!("viewer_layout.rs")),

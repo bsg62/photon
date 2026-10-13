@@ -1,6 +1,7 @@
 //! Draws the dialog that is open, over the whole window, and answers what was done in
-//! it: the question asked before something is deleted, the keyword picker, and the
-//! export's dialog, whose body is `export_view.rs`'s.
+//! it: the question asked before something is deleted, the keyword picker, the person
+//! dialog - the two are one drawing, a field over a list that narrows as it is typed -
+//! and the export's dialog, whose body is `export_view.rs`'s.
 //!
 //! It is egui's `Modal`: an area in front of everything with a ground over the whole
 //! window. From the frame after it is first shown nothing under it is pressed, hovered
@@ -17,6 +18,7 @@ use crate::{
     dialogs::{CANCEL, Confirm, DELETE, Dialog},
     export_view,
     icons::Icon,
+    person_picker::{self, PersonPicker},
     tag_picker::{LIST, NO_KEYWORDS, NO_MATCH, TagPicker},
     text::paint_line,
     theme::{
@@ -29,6 +31,7 @@ use eframe::egui::{
     self, Event, Id, Key, Modifiers, Rect, Response, Sense, Stroke, StrokeKind, UiBuilder, Vec2,
     WidgetInfo, WidgetType, pos2, vec2,
 };
+use photon_core::library::NamedPerson;
 
 /// A dialog is at most this wide, and the keyword picker at most this tall. The export's
 /// is the Svelte dialog's own width, which is what its five sizes need in a row.
@@ -42,6 +45,8 @@ pub(crate) const GAP: f32 = S[2];
 pub(crate) const CONTROL: f32 = 30.0;
 /// The square a dialog's close button is.
 pub(crate) const CLOSE: f32 = 28.0;
+/// The line under the person dialog's field.
+const HINT_LINE: f32 = 18.0;
 
 /// What a frame of an open dialog came to.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -52,12 +57,12 @@ pub enum Done {
     Closed,
     /// The question was answered with yes.
     Confirmed,
-    /// What the keyword picker's field holds now.
+    /// What the field of the keyword picker, or of the person dialog, holds now.
     Typed(String),
-    /// A keyword is to be written: `tag`, a row of the list, or - none - what is typed.
-    /// With what the field holds now, when that changed in this same frame: a letter
-    /// and the Enter after it arrive together in a frame that was long, and the keyword
-    /// written is the one with the letter in it.
+    /// A keyword is to be written, or a name: `tag`, a row of the list, or - none - what
+    /// is typed. With what the field holds now, when that changed in this same frame: a
+    /// letter and the Enter after it arrive together in a frame that was long, and what
+    /// is written is the one with the letter in it.
     Submit {
         tag: Option<String>,
         typed: Option<String>,
@@ -205,8 +210,15 @@ impl DialogView {
     }
 
     /// Draws `dialog` over the window and answers what the frame came to. `keywords`
-    /// are the library's, in its order, for the picker's list.
-    pub fn show(&mut self, ui: &egui::Ui, dialog: &Dialog, keywords: &[String]) -> Done {
+    /// are the library's, in its order, for the picker's list; `people` those the user
+    /// has named, for the person dialog's - none until they have been read.
+    pub fn show(
+        &mut self,
+        ui: &egui::Ui,
+        dialog: &Dialog,
+        keywords: &[String],
+        people: Option<&[NamedPerson]>,
+    ) -> Done {
         let ctx = ui.ctx();
         let palette = palette(ctx);
         // Escape closes it, whatever in it has the keyboard, and is nobody's after -
@@ -256,16 +268,22 @@ impl DialogView {
         let window = ctx.content_rect();
         let widest = match dialog {
             Dialog::Export(_) => WIDTH_EXPORT,
-            Dialog::Confirm(_) | Dialog::Tags(_) => WIDTH,
+            Dialog::Confirm(_) | Dialog::Tags(_) | Dialog::Person(_) => WIDTH,
         };
         let width = widest.min(window.width() - 2.0 * PAD).max(0.0);
         let inner = width - 2.0 * PAD;
-        let height = match dialog {
-            Dialog::Confirm(confirm) => confirm_height(ui, confirm, inner),
-            Dialog::Tags(picker) => {
-                picker_height(picker.suggestions(keywords).len(), window.height())
-            }
-            Dialog::Export(export) => export_view::height(ui, export, inner, palette),
+        // A field over a list: the keyword picker and the person dialog.
+        let picker = match dialog {
+            Dialog::Tags(picker) => Some(Picker::of_tags(picker, keywords)),
+            Dialog::Person(picker) => Some(Picker::of_people(picker, people)),
+            Dialog::Confirm(_) | Dialog::Export(_) => None,
+        };
+        let height = match (dialog, &picker) {
+            (_, Some(picker)) => picker.height(window.height()),
+            (Dialog::Confirm(confirm), _) => confirm_height(ui, confirm, inner),
+            (Dialog::Export(export), _) => export_view::height(ui, export, inner, palette),
+            // (Each is a picker, above.)
+            (Dialog::Tags(_) | Dialog::Person(_), None) => 0.0,
         };
         let opened = !std::mem::replace(&mut self.opened, true);
         let mut done = Done::Open;
@@ -302,10 +320,15 @@ impl DialogView {
                     StrokeKind::Outside,
                 );
                 let room = rect.shrink(PAD);
-                done = match dialog {
-                    Dialog::Confirm(confirm) => self::confirm(ui, room, confirm, palette, opened),
-                    Dialog::Tags(picker) => tags(ui, room, picker, keywords, palette, opened),
-                    Dialog::Export(export) => export_view::show(ui, room, export, palette, opened),
+                done = match (dialog, &picker) {
+                    (_, Some(picker)) => picker.show(ui, room, palette, opened),
+                    (Dialog::Confirm(confirm), _) => {
+                        self::confirm(ui, room, confirm, palette, opened)
+                    }
+                    (Dialog::Export(export), _) => {
+                        export_view::show(ui, room, export, palette, opened)
+                    }
+                    (Dialog::Tags(_) | Dialog::Person(_), None) => Done::Open,
                 };
             });
         // A press on the scrim closes it, at the press and not at the click, as a menu
@@ -440,160 +463,258 @@ fn confirm(
     }
 }
 
-/// How tall the picker is with `rows` keywords listed: as tall as they need, the line
-/// that says there are none being one row, and no taller than the window lets it be.
-fn picker_height(rows: usize, window: f32) -> f32 {
-    let list = rows.max(1) as f32 * CONTROL;
-    let whole = 2.0 * PAD + CLOSE + GAP + CONTROL + GAP + list;
-    whole.min(HEIGHT).min(window - 2.0 * PAD)
+/// A dialog that is a field over a list which narrows as it is typed: the keyword picker
+/// and the person dialog, in the words of each.
+struct Picker<'a> {
+    title: String,
+    /// What the empty field says it is for, and its name for whoever does not see it.
+    placeholder: &'a str,
+    field: &'a str,
+    /// The button that writes what is typed.
+    button: &'a str,
+    draft: &'a str,
+    /// A line under the field, where the dialog has one: what Enter will do.
+    hint: Option<String>,
+    /// The list, narrowed by what is typed.
+    rows: Vec<&'a str>,
+    /// What stands in the list's place while it has no row; nothing while that is not
+    /// known - the list has not been read.
+    none: Option<&'a str>,
+    /// What the list says it is, to whoever reads the window without seeing it.
+    list: &'a str,
 }
 
-/// The keyword picker: its title and the button that closes it, the field with the
-/// button that writes what is typed, and the library's keywords narrowed by it.
-fn tags(
-    ui: &mut egui::Ui,
-    room: Rect,
-    picker: &TagPicker,
-    keywords: &[String],
-    palette: &Palette,
-    opened: bool,
-) -> Done {
-    let painter = ui.painter().clone();
-    let mode = picker.mode();
-
-    // Enter in the field writes what is typed. Read before the field is drawn and taken
-    // out of the frame: egui's field gives the keyboard up at Enter, and a name that is
-    // blank writes nothing and leaves the dialog as it was, the caret still in it.
-    let id = field_id();
-    let in_field = ui.memory(|memory| memory.has_focus(id));
-    let mut submit = None;
-    if in_field && ui.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Enter)) {
-        submit = Some(None);
-    }
-
-    let header = Rect::from_min_max(room.min, pos2(room.right(), room.top() + CLOSE));
-    let close_at = Rect::from_min_max(pos2(header.right() - CLOSE, header.top()), header.max);
-    paint_line(
-        ui,
-        &painter,
-        (header.left(), header.center().y),
-        close_at.left() - S[2] - header.left(),
-        &mode.title(picker.count()),
-        fonts::semibold(ui.ctx(), T[3]),
-        color(palette.text),
-    );
-
-    let form = Rect::from_min_size(
-        pos2(room.left(), header.bottom() + GAP),
-        vec2(room.width(), CONTROL),
-    );
-    let write = button_width(ui, mode.button());
-    let write_at = Rect::from_min_max(pos2(form.right() - write, form.top()), form.max);
-    let field = Rect::from_min_max(form.min, pos2(write_at.left() - S[1], form.bottom()));
-    painter.rect_filled(field, R[1], color(palette.field));
-    let font = fonts::regular(T[2]);
-    let line = ui.ctx().fonts_mut(|fonts| fonts.row_height(&font));
-    let edit = Rect::from_min_max(
-        pos2(field.left() + S[1], field.center().y - line / 2.0),
-        pos2(field.right() - S[1], field.center().y + line / 2.0),
-    );
-    let mut text = picker.draft().to_owned();
-    let output = ui
-        .scope_builder(UiBuilder::new().max_rect(edit), |ui| {
-            let room = Rect::from_x_y_ranges(edit.x_range(), field.y_range());
-            ui.set_clip_rect(room.intersect(ui.clip_rect()));
-            egui::TextEdit::singleline(&mut text)
-                .id(id)
-                .frame(egui::Frame::NONE)
-                .margin(egui::Margin::ZERO)
-                .font(font)
-                .text_color(color(palette.text))
-                .hint_text(egui::RichText::new(mode.placeholder()).color(color(palette.text_dim)))
-                .desired_width(edit.width())
-                .show(ui)
-        })
-        .inner;
-    // Named, and not only hinted at: egui hands a field's hint to a screen reader as its
-    // placeholder, which is what an empty field already shows.
-    output.response.widget_info(|| {
-        let mut info = WidgetInfo::text_edit(true, "", picker.draft(), mode.placeholder());
-        info.label = Some(mode.field().to_owned());
-        info
-    });
-    if opened {
-        // The keyboard in the field as the dialog opens: it is what the dialog is for.
-        // And a history of its own: the field has one id for every picker that is
-        // opened, egui keeps a field's undo by its id, and Ctrl+Z in a new picker
-        // brought back the keyword typed in the one before.
-        output.response.request_focus();
-        egui::text_edit::TextEditState::default().store(ui.ctx(), id);
-    }
-    let typed = output.response.changed();
-
-    // After the field, which Tab leaves for it; and before the close button, which is
-    // drawn at the top but is the last thing one wants to tab to.
-    let blank = picker.draft().trim().is_empty();
-    let look = if blank { Look::Off } else { Look::Primary };
-    if button(ui, write_at, Id::new("dialog-write"), mode.button(), look).clicked() {
-        submit = Some(None);
-    }
-
-    // The library's own keywords, narrowed as it is typed: how a second "Beach" beside
-    // "beach" is avoided.
-    let list = Rect::from_min_max(pos2(room.left(), form.bottom() + GAP), room.max);
-    let suggestions = picker.suggestions(keywords);
-    if suggestions.is_empty() {
-        let none = if keywords.is_empty() {
-            NO_KEYWORDS
-        } else {
-            NO_MATCH
-        };
-        painter.text(
-            pos2(list.left() + S[1], list.top() + CONTROL / 2.0),
-            egui::Align2::LEFT_CENTER,
-            none,
-            fonts::regular(T[1]),
-            color(palette.text_dim),
-        );
-        ui.interact(list, Id::new("dialog-none"), Sense::hover())
-            .widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, none));
-    } else {
-        let mut picked = None;
-        ui.scope_builder(UiBuilder::new().max_rect(list), |ui| {
-            ui.set_clip_rect(list.intersect(ui.clip_rect()));
-            egui::ScrollArea::vertical()
-                .id_salt(LIST)
-                .auto_shrink(false)
-                .show(ui, |ui| {
-                    ui.spacing_mut().item_spacing = Vec2::ZERO;
-                    for tag in &suggestions {
-                        let (row, _) = ui.allocate_exact_size(
-                            vec2(ui.available_width(), CONTROL),
-                            Sense::hover(),
-                        );
-                        // Named by its words: the list is narrowed as it is typed, and a
-                        // press on a row that is another by the time the button comes up
-                        // is no click of the new one.
-                        let id = Id::new(("dialog-row", *tag));
-                        if button(ui, row, id, tag, Look::Row).clicked() {
-                            picked = Some((*tag).to_owned());
-                        }
-                    }
-                });
-        });
-        if let Some(tag) = picked {
-            submit = Some(Some(tag));
+impl<'a> Picker<'a> {
+    fn of_tags(picker: &'a TagPicker, keywords: &'a [String]) -> Self {
+        let mode = picker.mode();
+        Self {
+            title: mode.title(picker.count()),
+            placeholder: mode.placeholder(),
+            field: mode.field(),
+            button: mode.button(),
+            draft: picker.draft(),
+            hint: None,
+            rows: picker.suggestions(keywords),
+            none: Some(if keywords.is_empty() {
+                NO_KEYWORDS
+            } else {
+                NO_MATCH
+            }),
+            list: LIST,
         }
     }
 
-    if close(ui, close_at, palette) {
-        return Done::Closed;
+    /// The person dialog. `people` are none until they have been read: nothing is said
+    /// of a list before the library has said it, and "No one is named yet." for the
+    /// moment the read takes would be said of a library with fifty people in it.
+    fn of_people(picker: &'a PersonPicker, people: Option<&'a [NamedPerson]>) -> Self {
+        let known = people.unwrap_or_default();
+        let hint = picker.hint(known);
+        Self {
+            title: picker.title(),
+            placeholder: person_picker::FIELD,
+            field: person_picker::FIELD,
+            button: person_picker::BUTTON,
+            draft: picker.draft(),
+            hint: Some(if hint.is_empty() {
+                person_picker::HINT.to_owned()
+            } else {
+                hint
+            }),
+            rows: (picker.suggestions(known).into_iter())
+                .map(|person| person.name.as_str())
+                .collect(),
+            none: people.map(|people| {
+                if people.is_empty() {
+                    person_picker::NO_ONE
+                } else {
+                    person_picker::NO_MATCH
+                }
+            }),
+            list: person_picker::LIST,
+        }
     }
-    let typed = typed.then_some(text);
-    match (submit, typed) {
-        (Some(tag), typed) => Done::Submit { tag, typed },
-        (None, Some(text)) => Done::Typed(text),
-        (None, None) => Done::Open,
+
+    /// The room the line under the field takes, with the gap over it.
+    fn hint_height(&self) -> f32 {
+        if self.hint.is_some() {
+            GAP + HINT_LINE
+        } else {
+            0.0
+        }
+    }
+
+    /// How tall the dialog is: as tall as its rows need, the line that says there are
+    /// none being one row, and no taller than the window lets it be.
+    fn height(&self, window: f32) -> f32 {
+        let list = self.rows.len().max(1) as f32 * CONTROL;
+        let whole = 2.0 * PAD + CLOSE + GAP + CONTROL + self.hint_height() + GAP + list;
+        whole.min(HEIGHT).min(window - 2.0 * PAD)
+    }
+
+    /// Its title and the button that closes it, the field with the button that writes
+    /// what is typed, and the list narrowed by it.
+    fn show(&self, ui: &mut egui::Ui, room: Rect, palette: &Palette, opened: bool) -> Done {
+        let painter = ui.painter().clone();
+
+        // Enter in the field writes what is typed. Read before the field is drawn and
+        // taken out of the frame: egui's field gives the keyboard up at Enter, and a
+        // name that is blank writes nothing and leaves the dialog as it was, the caret
+        // still in it.
+        let id = field_id();
+        let in_field = ui.memory(|memory| memory.has_focus(id));
+        let mut submit = None;
+        if in_field && ui.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Enter)) {
+            submit = Some(None);
+        }
+
+        let header = Rect::from_min_max(room.min, pos2(room.right(), room.top() + CLOSE));
+        let close_at = Rect::from_min_max(pos2(header.right() - CLOSE, header.top()), header.max);
+        paint_line(
+            ui,
+            &painter,
+            (header.left(), header.center().y),
+            close_at.left() - S[2] - header.left(),
+            &self.title,
+            fonts::semibold(ui.ctx(), T[3]),
+            color(palette.text),
+        );
+        // Told to whoever reads the window without seeing it: the title is what says
+        // how many photos the dialog writes to, or that it names a face.
+        let title_at =
+            Rect::from_min_max(header.min, pos2(close_at.left() - S[2], header.bottom()));
+        ui.interact(title_at, Id::new("dialog-title"), Sense::hover())
+            .widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, &self.title));
+
+        let form = Rect::from_min_size(
+            pos2(room.left(), header.bottom() + GAP),
+            vec2(room.width(), CONTROL),
+        );
+        let write = button_width(ui, self.button);
+        let write_at = Rect::from_min_max(pos2(form.right() - write, form.top()), form.max);
+        let field = Rect::from_min_max(form.min, pos2(write_at.left() - S[1], form.bottom()));
+        painter.rect_filled(field, R[1], color(palette.field));
+        let font = fonts::regular(T[2]);
+        let line = ui.ctx().fonts_mut(|fonts| fonts.row_height(&font));
+        let edit = Rect::from_min_max(
+            pos2(field.left() + S[1], field.center().y - line / 2.0),
+            pos2(field.right() - S[1], field.center().y + line / 2.0),
+        );
+        let mut text = self.draft.to_owned();
+        let output = ui
+            .scope_builder(UiBuilder::new().max_rect(edit), |ui| {
+                let room = Rect::from_x_y_ranges(edit.x_range(), field.y_range());
+                ui.set_clip_rect(room.intersect(ui.clip_rect()));
+                egui::TextEdit::singleline(&mut text)
+                    .id(id)
+                    .frame(egui::Frame::NONE)
+                    .margin(egui::Margin::ZERO)
+                    .font(font)
+                    .text_color(color(palette.text))
+                    .hint_text(self.placeholder)
+                    .desired_width(edit.width())
+                    .show(ui)
+            })
+            .inner;
+        // Named, and not only hinted at: egui hands a field's hint to a screen reader as
+        // its placeholder, which is what an empty field already shows.
+        output.response.widget_info(|| {
+            let mut info = WidgetInfo::text_edit(true, "", self.draft, self.placeholder);
+            info.label = Some(self.field.to_owned());
+            info
+        });
+        if opened {
+            // The keyboard in the field as the dialog opens: it is what the dialog is
+            // for. And a history of its own: the field has one id for every dialog that
+            // is opened, egui keeps a field's undo by its id, and Ctrl+Z in a new picker
+            // brought back the keyword typed in the one before.
+            output.response.request_focus();
+            egui::text_edit::TextEditState::default().store(ui.ctx(), id);
+        }
+        let typed = output.response.changed();
+
+        // After the field, which Tab leaves for it; and before the close button, which
+        // is drawn at the top but is the last thing one wants to tab to.
+        let blank = self.draft.trim().is_empty();
+        let look = if blank { Look::Off } else { Look::Primary };
+        if button(ui, write_at, Id::new("dialog-write"), self.button, look).clicked() {
+            submit = Some(None);
+        }
+
+        // What Enter will do, where the dialog says: one line, in the room it always
+        // has, so that the list does not move as it is typed.
+        if let Some(hint) = &self.hint {
+            let at = Rect::from_min_size(
+                pos2(room.left(), form.bottom() + GAP),
+                vec2(room.width(), HINT_LINE),
+            );
+            paint_line(
+                ui,
+                &painter,
+                (at.left() + S[1], at.center().y),
+                at.width() - 2.0 * S[1],
+                hint,
+                fonts::regular(T[1]),
+                color(palette.text_dim),
+            );
+            ui.interact(at, Id::new("dialog-hint"), Sense::hover())
+                .widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, hint));
+        }
+
+        // The library's own, narrowed as it is typed: how a second "Beach" beside
+        // "beach" is avoided, and how a name is not typed in full a second time.
+        let top = form.bottom() + self.hint_height() + GAP;
+        let list = Rect::from_min_max(pos2(room.left(), top), room.max);
+        if self.rows.is_empty() {
+            if let Some(none) = self.none {
+                painter.text(
+                    pos2(list.left() + S[1], list.top() + CONTROL / 2.0),
+                    egui::Align2::LEFT_CENTER,
+                    none,
+                    fonts::regular(T[1]),
+                    color(palette.text_dim),
+                );
+                ui.interact(list, Id::new("dialog-none"), Sense::hover())
+                    .widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, none));
+            }
+        } else {
+            let mut picked = None;
+            ui.scope_builder(UiBuilder::new().max_rect(list), |ui| {
+                ui.set_clip_rect(list.intersect(ui.clip_rect()));
+                egui::ScrollArea::vertical()
+                    .id_salt(self.list)
+                    .auto_shrink(false)
+                    .show(ui, |ui| {
+                        ui.spacing_mut().item_spacing = Vec2::ZERO;
+                        for row in &self.rows {
+                            let (at, _) = ui.allocate_exact_size(
+                                vec2(ui.available_width(), CONTROL),
+                                Sense::hover(),
+                            );
+                            // Named by its words: the list is narrowed as it is typed,
+                            // and a press on a row that is another by the time the
+                            // button comes up is no click of the new one.
+                            let id = Id::new(("dialog-row", *row));
+                            if button(ui, at, id, row, Look::Row).clicked() {
+                                picked = Some((*row).to_owned());
+                            }
+                        }
+                    });
+            });
+            if let Some(row) = picked {
+                submit = Some(Some(row));
+            }
+        }
+
+        if close(ui, close_at, palette) {
+            return Done::Closed;
+        }
+        let typed = typed.then_some(text);
+        match (submit, typed) {
+            (Some(tag), typed) => Done::Submit { tag, typed },
+            (None, Some(text)) => Done::Typed(text),
+            (None, None) => Done::Open,
+        }
     }
 }
 
@@ -618,6 +739,8 @@ pub(crate) mod tests {
         pub(crate) view: DialogView,
         pub(crate) dialog: Dialog,
         pub(crate) keywords: Vec<String>,
+        /// The people the user has named; none while they have not been read.
+        pub(crate) people: Option<Vec<NamedPerson>>,
         /// The window's size.
         pub(crate) size: Vec2,
         pub(crate) time: f64,
@@ -658,6 +781,7 @@ pub(crate) mod tests {
                 view: DialogView::default(),
                 dialog,
                 keywords: Vec::new(),
+                people: None,
                 size: WINDOW,
                 time: 0.0,
                 behind: String::new(),
@@ -681,6 +805,7 @@ pub(crate) mod tests {
             };
             self.time += 1.0 / 60.0;
             let (view, dialog, keywords) = (&mut self.view, &self.dialog, &self.keywords);
+            let people = self.people.as_deref();
             let behind = &mut self.behind;
             let asks = self.behind_asks;
             let mut done = Done::Open;
@@ -688,7 +813,7 @@ pub(crate) mod tests {
             let (mut left_over, mut typed, mut presses) = (Vec::new(), false, 0);
             let mut full = self.ctx.run_ui(input, |ui| {
                 crate::icons::install(ui.ctx());
-                done = view.show(ui, dialog, keywords);
+                done = view.show(ui, dialog, keywords, people);
                 egui::CentralPanel::default().show(ui, |ui| {
                     let at = Rect::from_min_size(pos2(40.0, 40.0), vec2(160.0, 40.0));
                     clicked = ui.put(at, egui::Button::new("behind")).clicked();
@@ -721,8 +846,10 @@ pub(crate) mod tests {
                 Done::Submit { typed, .. } => typed.as_ref(),
                 _ => None,
             };
-            if let (Some(text), Dialog::Tags(picker)) = (holds, &mut self.dialog) {
-                picker.type_in(text.clone());
+            match (holds, &mut self.dialog) {
+                (Some(text), Dialog::Tags(picker)) => picker.type_in(text.clone()),
+                (Some(text), Dialog::Person(picker)) => picker.type_in(text.clone()),
+                _ => {}
             }
             // And the export's dialog is told what was done in it, as the application
             // tells it. The path is asked about by the test, which is the engine here.
@@ -1525,7 +1652,7 @@ pub(crate) mod tests {
             let mut full = ctx.run_ui(input, |ui| {
                 crate::icons::install(ui.ctx());
                 if open {
-                    done = view.show(ui, &dialog, &[]);
+                    done = view.show(ui, &dialog, &[], None);
                 }
                 egui::Area::new(Id::new("floating"))
                     .order(egui::Order::Foreground)
@@ -1632,5 +1759,202 @@ pub(crate) mod tests {
         let ground = f.ground();
         assert_eq!(ground.width(), 380.0 - 2.0 * PAD);
         assert!(ground.left() >= PAD && ground.right() <= 380.0 - PAD);
+    }
+
+    // ---- The person dialog ----
+
+    fn people(names: &[&str]) -> Vec<NamedPerson> {
+        (names.iter().enumerate())
+            .map(|(n, name)| NamedPerson {
+                id: n as i64 + 1,
+                name: (*name).to_owned(),
+            })
+            .collect()
+    }
+
+    /// The dialog that names a face, over a library with `names` in it.
+    fn naming(names: &[&str]) -> Fixture {
+        let mut f = Fixture::new(Dialog::Person(PersonPicker::new(
+            person_picker::Target::Face(7),
+        )));
+        f.people = Some(people(names));
+        f
+    }
+
+    /// Every place `text` is drawn at.
+    fn all(f: &Fixture, text: &str) -> Vec<Rect> {
+        (f.texts.iter())
+            .filter(|(drawn, _)| drawn == text)
+            .map(|(_, at)| *at)
+            .collect()
+    }
+
+    // It says what it names, opens with the caret in its field, and has a line under
+    // the field that says what to do - in a room of its own, over the people.
+    #[test]
+    fn the_person_dialog_says_what_it_names_and_opens_with_the_caret_in_its_field() {
+        let mut f = naming(&["Hannah", "Anna", "Ben"]);
+        f.open();
+        assert_eq!(f.focused(), Some(field_id()));
+        let ground = f.ground();
+        let title = f.drew("Who is this?").unwrap();
+        assert!(ground.contains_rect(title));
+        // "Name" twice in a row: what the empty field says, and the button beside it.
+        let names = all(&f, person_picker::FIELD);
+        assert_eq!(names.len(), 2, "{names:?}");
+        assert!((names[0].center().y - names[1].center().y).abs() < 2.0);
+        let line = f.drew(person_picker::HINT).unwrap();
+        assert!(line.top() > names[0].bottom());
+        let rows: Vec<f32> = ["Hannah", "Anna", "Ben"]
+            .iter()
+            .map(|name| f.drew(name).unwrap().center().y)
+            .collect();
+        assert!(rows[0] > line.bottom(), "the people stand under the line");
+        assert!((rows[1] - rows[0] - CONTROL).abs() < 1.5, "{rows:?}");
+        assert!((rows[2] - rows[1] - CONTROL).abs() < 1.5, "{rows:?}");
+        // For photos, its title counts them.
+        let mut f = Fixture::new(Dialog::Person(PersonPicker::new(
+            person_picker::Target::Items(vec![1, 2, 3]),
+        )));
+        f.open();
+        assert!(f.drew("Add 3 photos to…").is_some());
+    }
+
+    // Until the people have been read nothing stands in the list's place: "No one is
+    // named yet." would be said, for a moment, of a library with fifty people in it.
+    #[test]
+    fn nothing_is_said_of_the_people_before_they_are_read() {
+        let mut f = naming(&[]);
+        f.people = None;
+        f.open();
+        assert!(f.drew(person_picker::NO_ONE).is_none());
+        assert!(f.drew(person_picker::NO_MATCH).is_none());
+        assert!(f.drew(person_picker::HINT).is_some());
+        // Read, and there are none: now it is said.
+        f.people = Some(Vec::new());
+        f.frame(Vec::new());
+        assert!(f.drew(person_picker::NO_ONE).is_some());
+        // A name can be typed all the same, and nobody matches it.
+        f.people = Some(people(&["Anna"]));
+        f.typed("zed");
+        f.frame(Vec::new());
+        assert!(f.drew(person_picker::NO_MATCH).is_some());
+        assert!(f.drew(person_picker::NO_ONE).is_none());
+    }
+
+    // What is typed narrows the people, the best match first, and the line under the
+    // field says what Enter will do with it - without moving the list.
+    #[test]
+    fn what_is_typed_narrows_the_people_and_the_line_says_what_enter_will_do() {
+        let mut f = naming(&["Hannah", "Anna", "Ben"]);
+        f.open();
+        // (Measured from the dialog's top: it is as tall as its rows need, and stands
+        // in the middle of the window.)
+        let first = f.drew("Hannah").unwrap().center().y - f.ground().top();
+        assert_eq!(f.typed("ann"), Done::Typed("ann".to_owned()));
+        f.frame(Vec::new());
+        assert!(f.drew("Ben").is_none());
+        let (anna, hannah) = (f.drew("Anna").unwrap(), f.drew("Hannah").unwrap());
+        assert!(
+            anna.center().y < hannah.center().y,
+            "the one that begins with it first"
+        );
+        assert!(
+            (anna.center().y - f.ground().top() - first).abs() < 1.5,
+            "the list begins where it did, whatever the line says"
+        );
+        assert!(f.drew("New person “ann”").is_some());
+        assert!(f.drew(person_picker::HINT).is_none());
+        f.typed("a");
+        f.frame(Vec::new());
+        assert!(f.drew("Add to Anna").is_some());
+        // Now there is a name to write, and its button says so.
+        let button = all(&f, person_picker::BUTTON)[0];
+        let ground = (f.fills.iter())
+            .find(|(rect, _)| rect.contains(button.center()) && rect.width() < 120.0)
+            .map(|(_, fill)| *fill);
+        assert_eq!(ground, Some(f.tint(|palette| palette.accent)));
+        assert_eq!(
+            f.key(Key::Enter),
+            Done::Submit {
+                tag: None,
+                typed: None
+            }
+        );
+    }
+
+    #[test]
+    fn a_click_on_a_person_or_on_the_button_names() {
+        let mut f = naming(&["Anna", "Ben"]);
+        f.open();
+        let ben = f.at("Ben");
+        assert_eq!(
+            f.click(ben),
+            Done::Submit {
+                tag: Some("Ben".to_owned()),
+                typed: None
+            }
+        );
+        let mut f = naming(&["Anna", "Ben"]);
+        f.open();
+        f.typed("Cy");
+        f.frame(Vec::new());
+        let button = all(&f, person_picker::BUTTON)[0].center();
+        assert_eq!(
+            f.click(button),
+            Done::Submit {
+                tag: None,
+                typed: None
+            }
+        );
+    }
+
+    // A letter and the Enter after it in one frame: the name written is the one with
+    // the letter in it.
+    #[test]
+    fn a_letter_and_enter_in_one_frame_name_with_the_letter() {
+        let mut f = naming(&["Anna"]);
+        f.open();
+        f.typed("B");
+        let done = f.frame(vec![Event::Text("o".to_owned()), down(Key::Enter)]);
+        assert_eq!(
+            done,
+            Done::Submit {
+                tag: None,
+                typed: Some("Bo".to_owned())
+            }
+        );
+    }
+
+    // Enter on a blank name answers, the application writes nothing for it, and the
+    // caret is in the field still: egui's field would have given the keyboard up.
+    #[test]
+    fn enter_on_a_blank_name_leaves_the_caret_in_the_persons_field() {
+        let mut f = naming(&["Anna"]);
+        f.open();
+        f.key(Key::Enter);
+        f.frame(Vec::new());
+        assert_eq!(f.focused(), Some(field_id()));
+        assert!(f.drew("Who is this?").is_some());
+    }
+
+    // The dialog is as tall as its people need with its line, and a long list scrolls
+    // inside it.
+    #[test]
+    fn the_person_dialog_is_as_tall_as_its_people_and_its_line_need() {
+        let mut f = naming(&["Anna", "Ben"]);
+        f.open();
+        let with_line = f.ground().height();
+        let mut tags = picker(&["a", "b"]);
+        tags.open();
+        assert!(
+            (with_line - tags.ground().height() - (GAP + HINT_LINE)).abs() < 0.5,
+            "the line's room, and no more"
+        );
+        let many: Vec<String> = (0..60).map(|n| format!("Person {n}")).collect();
+        let names: Vec<&str> = many.iter().map(String::as_str).collect();
+        let mut f = naming(&names);
+        f.open();
+        assert_eq!(f.ground().height(), HEIGHT);
     }
 }

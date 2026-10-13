@@ -19,6 +19,7 @@ use crate::{
     menu::Item,
     menu_view::{MenuView, Outcome},
     nav::{Landed, LastFolder, Nav, Place, Step, Target},
+    person_picker::{self, PersonPicker},
     probe::{Facts, Move, Outside, Probe, Report},
     rename::{Commit, Of, Rename},
     scans::Scans,
@@ -41,8 +42,10 @@ use crate::{
     toasts::{Toast, Toasts},
     viewer::{Shown, Viewer, Want},
     viewer_caption::{self, Captioned},
+    viewer_faces::{self, On},
     viewer_info_view::{InfoAction, InfoData, InfoView},
     viewer_layout, viewer_levels,
+    viewer_menu::{self, ViewerPick},
     viewer_view::{Level, Message, ViewerAction, ViewerData, ViewerView},
     window_layout::{Layout, STATUS_BAR, TOP_BAR},
 };
@@ -50,7 +53,7 @@ use eframe::egui;
 use jiff::tz::TimeZone;
 use photon_core::{
     grid::{GridEntry, GridIndex, GridView as View},
-    library::{Folder, GridTile, WatchedFolder},
+    library::{Folder, GridTile, NamedItems, NamedPerson, WatchedFolder},
     media::MediaKind,
     sort::Sort,
 };
@@ -108,6 +111,11 @@ pub struct App {
     /// The dialog that is open: one at a time, over the whole window.
     dialog: Option<Dialog>,
     dialog_view: DialogView,
+    /// The people the user has named, for the person dialog: asked for as it opens, and
+    /// none until they are read - what the sidebar lists leaves out a person with no
+    /// photo in sight, whom a typed name still joins.
+    people: Latest<(), Option<Vec<NamedPerson>>>,
+    named: Option<Vec<NamedPerson>>,
     /// The albums and saved searches whose delete has been asked for and which the
     /// lists on hand still hold, each with whether its delete has been answered. Until
     /// the lists have been read after that answer the row is one of something that is
@@ -234,6 +242,11 @@ enum MenuOf {
     Search(i64),
     /// A folder: on its row in the sidebar, and on its header in the grid.
     Folder(i64),
+    /// The photo in the viewer, and what of it the menu was opened on: a face, by what
+    /// it is, or the photo itself. As the tile's menu is of whatever is selected, this
+    /// one is of whatever photo the viewer shows and the library has said something
+    /// of: its items are built from that in every frame, and its picks act on it.
+    Viewer(On),
 }
 
 /// What an item of whichever menu is open does.
@@ -241,6 +254,7 @@ enum MenuOf {
 enum Picked {
     Tile(TileAction),
     Side(SideAction),
+    Viewer(ViewerPick),
 }
 
 /// Something to write to the library.
@@ -287,6 +301,8 @@ enum Write {
         name: String,
         ids: Vec<i64>,
     },
+    /// A name from the person dialog, for the face or the photos it was opened for.
+    Name(person_picker::Submit),
     /// A name typed in the sidebar, and the number its field was sent under
     /// (`rename::Commit`): a new album's, an album's, a saved search's.
     AlbumNew {
@@ -361,6 +377,16 @@ enum Wrote {
         kept: usize,
         asked: usize,
     },
+    /// A face named: under the name the library has for the person, which is an
+    /// existing person's own spelling whatever was typed.
+    NamedFace {
+        name: String,
+    },
+    /// The face a name was typed for was no longer there: nothing was written, and no
+    /// person made.
+    FaceGone,
+    /// Photos named by their one unnamed face, and why the rest were not.
+    NamedItems(NamedItems),
     /// A name stored that the sidebar's lists show: its field closes, and they are read
     /// again.
     Named {
@@ -608,6 +634,32 @@ impl App {
                             })
                             .map_err(|err| Unwritten::Said(err.message))
                     }
+                    // The name said afterwards is the library's: an existing person's
+                    // own spelling, whatever case was typed, and for a new one the name
+                    // as the library cleaned it. Read here, after the write and off the
+                    // UI thread; what was typed stands in only if that read fails.
+                    Write::Name(person_picker::Submit {
+                        target: person_picker::Target::Face(face),
+                        name,
+                    }) => commands::name_faces(&engine, &[face], &name)
+                        .map(|person| match person {
+                            Some(person) => Wrote::NamedFace {
+                                name: commands::named_people(&engine)
+                                    .ok()
+                                    .and_then(|people| {
+                                        people.into_iter().find(|named| named.id == person)
+                                    })
+                                    .map_or(name, |named| named.name),
+                            },
+                            None => Wrote::FaceGone,
+                        })
+                        .map_err(|err| Unwritten::Said(err.message)),
+                    Write::Name(person_picker::Submit {
+                        target: person_picker::Target::Items(ids),
+                        name,
+                    }) => commands::name_items(&engine, &ids, &name)
+                        .map(Wrote::NamedItems)
+                        .map_err(|err| Unwritten::Said(err.message)),
                     Write::AlbumNew { name, sent } => commands::create_album(&engine, &name)
                         .map(|_| Wrote::Named { sent })
                         .map_err(|err| Unwritten::Name {
@@ -783,6 +835,14 @@ impl App {
             },
             repaint(&ctx),
         );
+        let people = Latest::spawn(
+            "named people",
+            {
+                let engine = engine.clone();
+                move |()| commands::named_people(&engine).ok()
+            },
+            repaint(&ctx),
+        );
         let edits = Latest::spawn(
             "export edits",
             {
@@ -861,6 +921,8 @@ impl App {
             rename: Rename::default(),
             dialog: None,
             dialog_view: DialogView::default(),
+            people,
+            named: None,
             deleting: Vec::new(),
             viewer: None,
             viewer_view: ViewerView::default(),
@@ -1132,6 +1194,19 @@ impl App {
                         scanning: self.scans.is_scanning(folder.watched_id),
                     }))
                 }),
+            // Of the photo the viewer is on, as the library last said it is. With
+            // nothing said of it - a step has just been made, the photo is gone, the
+            // viewer is shut - there is nothing for the items to be of. (No step is made
+            // under an open menu: the keys are the menu's, and the viewer is deaf to the
+            // wheel and the buttons while one is open.)
+            MenuOf::Viewer(on) => (self.viewer.as_ref())
+                .and_then(|open| open.item.as_ref())
+                .map(|item| {
+                    let faces = viewer_faces::actions(&viewer_faces::drawn(item), on);
+                    (viewer_menu::viewer_menu(&faces, item.hidden).into_iter())
+                        .map(|item| item.map(Picked::Viewer))
+                        .collect()
+                }),
         }
     }
 
@@ -1238,6 +1313,47 @@ impl App {
     fn open_dialog(&mut self, dialog: Dialog) {
         self.dialog = Some(dialog);
         self.dialog_view.reset();
+    }
+
+    /// Opens the dialog that names `target`: a face of the photo in the viewer, or the
+    /// photos selected in the grid. The people it lists are read as it opens, and none
+    /// are listed until then.
+    fn open_person(&mut self, target: person_picker::Target) {
+        self.named = None;
+        self.people.ask(());
+        self.open_dialog(Dialog::Person(PersonPicker::new(target)));
+    }
+
+    /// Does what an item of the viewer's menu does, to the photo the viewer shows: the
+    /// one the items were built from, a moment ago in this frame.
+    fn viewer_pick(&mut self, pick: ViewerPick) {
+        let shown = (self.viewer.as_ref()).and_then(|open| open.item.as_ref());
+        let Some((photo, hidden)) = shown.map(|item| (item.id, item.hidden)) else {
+            return;
+        };
+        match pick {
+            ViewerPick::Name(face) => self.open_person(person_picker::Target::Face(face)),
+            // The grid's Remove, for the one photo: every face of theirs photon has on
+            // it, and the message says when Picasa keeps them there.
+            ViewerPick::Not { person, name } => {
+                self.writes.push(Write::PersonRemove {
+                    person,
+                    name,
+                    ids: vec![photo],
+                });
+            }
+            ViewerPick::Hide(hidden) => self.write(TileAction::Hide(hidden), vec![photo]),
+            // The viewer shuts and the grid lands on the photo: in Hidden when the
+            // library says it is hidden, which is the one view that holds it then. Not
+            // handed back to the grid under the viewer first, which is being left - or
+            // is the one the photo is found in, by the same lookup.
+            ViewerPick::Locate => {
+                self.shut_viewer();
+                self.locate(photo, hidden);
+            }
+            // What does not work yet takes no press, and so answers nothing.
+            ViewerPick::Reveal | ViewerPick::OpenInApp => {}
+        }
     }
 
     /// Opens the menu of `of` at `at`, in the place of any that was open.
@@ -1355,13 +1471,25 @@ impl App {
             Dialog::Tags(_) => (self.held.collections().tags.iter())
                 .map(|tag| tag.tag.clone())
                 .collect(),
-            Dialog::Confirm(_) | Dialog::Export(_) => Vec::new(),
+            Dialog::Confirm(_) | Dialog::Export(_) | Dialog::Person(_) => Vec::new(),
         };
-        let done = self.dialog_view.show(ui, dialog, &keywords);
+        let done = (self.dialog_view).show(ui, dialog, &keywords, self.named.as_deref());
         match (done, &mut self.dialog) {
             (Done::Open, _) => {}
             (Done::Closed, _) => self.dialog = None,
             (Done::Typed(text), Some(Dialog::Tags(picker))) => picker.type_in(text),
+            (Done::Typed(text), Some(Dialog::Person(picker))) => picker.type_in(text),
+            // Closed before its write, as the keyword picker is. The name is written as
+            // it is typed: the library is what knows whose it is, whatever its case.
+            (Done::Submit { tag, typed }, Some(Dialog::Person(picker))) => {
+                if let Some(text) = typed {
+                    picker.type_in(text);
+                }
+                if let Some(submit) = picker.submit(tag.as_deref()) {
+                    self.dialog = None;
+                    self.writes.push(Write::Name(submit));
+                }
+            }
             // Closed before its write, which is the user's last word on it: left up
             // until the library answers, it reads as a click that did nothing. A blank
             // name writes nothing and leaves the dialog as it is.
@@ -1629,8 +1757,15 @@ impl App {
         // message drawn over it has a button that does, and with the keyboard on that
         // the arrows walk it on instead of stepping, and the grid's keys are dead when
         // the viewer has closed. egui has read Tab already, from the frame's raw input:
-        // its walk is called off, as under a menu.
-        ctx.memory_mut(|memory| memory.move_focus(egui::FocusDirection::None));
+        // its walk is called off, as under a menu. Not under a dialog, whose keys walk
+        // it: Tab egui has settled by now, among the dialog's own widgets, but an arrow
+        // pressed on one of its buttons - a person's row, reached by Tab - walks to the
+        // next at the end of the frame, and called off here that walk went nowhere:
+        // over the viewer the arrows did nothing in a dialog where over the grid they
+        // step through its rows.
+        if self.dialog.is_none() {
+            ctx.memory_mut(|memory| memory.move_focus(egui::FocusDirection::None));
+        }
         let (id, key, want) = (open.viewer.id(), open.viewer.key(), open.viewer.want());
         let rested = open.viewer.rested(now);
 
@@ -1759,6 +1894,7 @@ impl App {
             .collect();
         let len = self.index.len();
         let collections = self.held.collections();
+        let faces = (open.item.as_ref()).map_or(Vec::new(), viewer_faces::drawn);
         let data = ViewerData {
             levels: &levels,
             fitted: fitted.as_ref(),
@@ -1783,14 +1919,25 @@ impl App {
                 looking: self.scans.looking_for_faces(),
                 zone: &self.zone,
             }),
+            faces: &faces,
+            // A dialog, or the viewer's own menu: both are shown before the viewer in a
+            // frame, and neither takes the wheel out of it.
+            paused: self.dialog.is_some() || self.menu.is_some(),
         };
         // The zoom is the view's to change in this frame, and the viewer's to keep:
         // before what was done in the frame is acted on, since a step puts it back to
         // the fit.
         let mut zoom = *open.viewer.zoom();
-        let actions = self.viewer_view.show(ui, &data, &mut zoom);
+        let mut actions = self.viewer_view.show(ui, &data, &mut zoom);
         drop(levels);
+        drop(faces);
         *open.viewer.zoom_mut() = zoom;
+        // What lies under a dialog does nothing, here as in the shell: egui keeps the
+        // pointer from it only from the frame after the dialog is first drawn, and a
+        // click that was over within that first frame was still a button's.
+        if self.dialog.is_some() {
+            actions.clear();
+        }
 
         // The messages lie over the viewer as over the grid: a star the folder would
         // not take is said here too.
@@ -1834,6 +1981,17 @@ impl App {
                 }
             }
         }
+        // The menu that was asked for, and the face that was pressed to be named: each
+        // opened once the frame's steps are acted on.
+        let mut menu = None;
+        let mut naming = None;
+        for action in &actions {
+            match action {
+                ViewerAction::Menu { at, on } => menu = Some((*at, MenuOf::Viewer(*on))),
+                ViewerAction::NameFace(face) => naming = Some(*face),
+                _ => {}
+            }
+        }
 
         let mut closed = false;
         // A link of the info panel that leaves the viewer, to follow once it is shut.
@@ -1870,6 +2028,8 @@ impl App {
                 ViewerAction::Panel(
                     InfoAction::AddTag(_) | InfoAction::RemoveTag(_) | InfoAction::Album { .. },
                 ) => false,
+                // (Opened below.)
+                ViewerAction::Menu { .. } | ViewerAction::NameFace(_) => false,
                 ViewerAction::Panel(link) => {
                     leaving = Some(link);
                     break;
@@ -1889,6 +2049,21 @@ impl App {
         if closed {
             self.close_viewer();
         }
+        // The menu is of whatever the viewer shows when its items are next built:
+        // after a step in this same frame that is nothing yet, and over a viewer this
+        // frame closed it is nothing at all - it has no items then, and closes.
+        if let Some((at, of)) = menu {
+            self.open_menu(&ctx, at, of);
+        }
+        // The dialog names the face that was pressed, by its id, whatever the viewer
+        // shows by then. Not over a viewer that the same frame closed or left: asked
+        // who a face is, with the photo it is on no longer on screen.
+        if let Some(face) = naming
+            && self.viewer.is_some()
+            && leaving.is_none()
+        {
+            self.open_person(person_picker::Target::Face(face));
+        }
         // A link that leaves the viewer shuts it and goes where a row of the sidebar
         // would: through `go`, which tells the search box. The photo is not handed back
         // to the grid first, where the grid that was under the viewer is being left
@@ -1907,7 +2082,8 @@ impl App {
                 self.shut_viewer();
             }
             match link {
-                InfoAction::Locate(id) => self.locate(id),
+                // A copy the panel lists is never a hidden photo.
+                InfoAction::Locate(id) => self.locate(id, false),
                 _ => step.into_iter().for_each(|step| self.go(step)),
             }
         }
@@ -1920,11 +2096,15 @@ impl App {
     /// drops what was half typed into the search box, which would land after the jump.
     ///
     /// From Hidden too, where a folder asked for is looked up in the grid on screen
-    /// (`Nav::home_of_folders`): what is located is a copy the panel lists, which is
-    /// never a hidden photo, and a photo unhidden in the viewer stays on screen in
-    /// Hidden with its copies listed.
-    fn locate(&mut self, id: i64) {
-        self.go(Step::View(View::All));
+    /// (`Nav::home_of_folders`): a copy the panel lists is never a hidden photo, and a
+    /// photo unhidden in the viewer stays on screen in Hidden with its copies listed.
+    ///
+    /// A photo the library says is `hidden` is looked for in Hidden instead, the one
+    /// view that holds it: the viewer's own "Locate in photon", on a photo opened from
+    /// there or hidden a moment ago.
+    fn locate(&mut self, id: i64, hidden: bool) {
+        let view = if hidden { View::Hidden } else { View::All };
+        self.go(Step::View(view));
         if let Some(to) = self.nav.jump(Target::Photo(id)) {
             self.arrive(to);
         }
@@ -2004,6 +2184,11 @@ impl App {
             TileAction::Export => {
                 self.open_dialog(Dialog::Export(ExportDialog::new(ids)));
                 self.edits.ask(());
+                return;
+            }
+            // And so does the person dialog, whose title says how many photos.
+            TileAction::AddToPerson => {
+                self.open_person(person_picker::Target::Items(ids));
                 return;
             }
             _ => None,
@@ -2385,6 +2570,15 @@ impl App {
                 export.remembered(apply);
             }
         }
+        // The people, for the person dialog that is open: `Latest` answers the last
+        // question alone, and each opening asks. A read that failed lists no one, which
+        // is then said: a name can be typed all the same.
+        if let Some(answer) = self.people.answer() {
+            answered = true;
+            if matches!(self.dialog, Some(Dialog::Person(_))) {
+                self.named = Some(answer.ok().flatten().unwrap_or_default());
+            }
+        }
         for (_, answer) in self.exports.answers() {
             answered = true;
             self.exporting = false;
@@ -2476,6 +2670,15 @@ impl App {
                     // announces, as after any change of the library's data.
                     let said = tile_menu::removed_message(&name, removed, kept, asked);
                     self.toasts.done(said, now_ms);
+                }
+                // (The lists, and the photo in the viewer, are read again by the rebuild
+                // a write of the people announces.)
+                Ok(Ok(Wrote::NamedFace { name })) => {
+                    (self.toasts).done(person_picker::named_face_message(&name), now_ms);
+                }
+                Ok(Ok(Wrote::FaceGone)) => self.toasts.done(person_picker::FACE_GONE, now_ms),
+                Ok(Ok(Wrote::NamedItems(came))) => {
+                    (self.toasts).done(person_picker::named_items_message(&came), now_ms);
                 }
                 Ok(Ok(Wrote::Named { sent })) => {
                     self.rename.landed(sent);
@@ -2836,12 +3039,18 @@ impl eframe::App for App {
         // own, and it takes them out of the frame before the search box, the sidebar
         // or the grid can read them (`menu_view.rs`).
         if let Some(open) = self.menu {
+            // The viewer's menu is dark in both themes, as the viewer is.
+            let palette = match open.of {
+                MenuOf::Viewer(_) => &theme::tokens::DARK,
+                _ => theme::apply::palette(ui.ctx()),
+            };
             match self.menu_items(open.of) {
                 // What it was the menu of is gone: nothing is selected any more - a
                 // grid of other results, or one that has lost the menu's photos and has
-                // none to land on - or its album, search or folder is no longer listed.
+                // none to land on - or its album, search or folder is no longer listed,
+                // or the viewer shows nothing the library has said anything of.
                 None => self.menu = None,
-                Some(items) => match self.menu_view.show(ui, open.at, &items) {
+                Some(items) => match (self.menu_view).show_in(ui, open.at, &items, palette) {
                     Outcome::Open => {}
                     Outcome::Closed => self.menu = None,
                     Outcome::Picked(picked) => {
@@ -2849,6 +3058,7 @@ impl eframe::App for App {
                         match picked {
                             Picked::Tile(action) => self.pick(action),
                             Picked::Side(action) => self.side(action),
+                            Picked::Viewer(pick) => self.viewer_pick(pick),
                         }
                     }
                 },

@@ -15,13 +15,15 @@
 
 use crate::{
     icons::Icon,
+    menu_view::asks_for_menu,
     text,
     theme::{
         apply::{color, menu_shadow},
         fonts,
-        tokens::{DARK, GLASS, GLASS_LINE, R, S, T},
+        tokens::{DARK, GLASS, GLASS_LINE, PHOTO_LINE, R, S, SCRIM, SHADOW_INK, T},
     },
     viewer::wheel_step,
+    viewer_faces::{Drawn, On, face_at, face_box, on},
     viewer_info_view::{InfoAction, InfoData, InfoView},
     viewer_layout::{BAR, CLOSE, EDGE, Frame, NAV, contained, info_place, photo_area},
     viewer_levels::level_for,
@@ -71,6 +73,15 @@ pub enum ViewerAction {
     Info,
     /// Something pressed in the info panel.
     Panel(InfoAction),
+    /// The outline of an unnamed face was pressed: the person dialog, for this
+    /// `detected_faces.id`.
+    NameFace(i64),
+    /// The other button went down on the photo: its menu, there, and what of the photo
+    /// it went down on.
+    Menu {
+        at: Pos2,
+        on: On,
+    },
 }
 
 /// One size of the full picture.
@@ -119,6 +130,14 @@ pub struct ViewerData<'a> {
     pub info_open: bool,
     /// What the panel says, once the library has said it of this photo.
     pub info: Option<InfoData<'a>>,
+    /// The photo's faces, named and not, as the library says they are: outlined while
+    /// the panel is open, and what the other button's press is asked of whether it is
+    /// open or not.
+    pub faces: &'a [Drawn<'a>],
+    /// Something lies over the viewer that has the window for itself - a dialog, the
+    /// viewer's own menu: the wheel and the buttons are not the viewer's. (The keys are
+    /// taken out of the frame by whatever it is; these it does not take.)
+    pub paused: bool,
 }
 
 /// A press of the first button on the photo, from the button going down until it comes
@@ -169,16 +188,30 @@ struct Controls {
     caption: Option<Rect>,
     /// The info panel, while it is open.
     panel: Option<Rect>,
+    /// The outlines that take a press: the unnamed faces, while they are drawn. A press
+    /// on one names it, and is not the photo's - no pan begins there, and it is no half
+    /// of a double click.
+    faces: Vec<Rect>,
+    /// Every face where it is drawn, or would be were the panel open: no control, but
+    /// what the other button's press is asked of.
+    every_face: Vec<Rect>,
 }
 
 impl Controls {
-    fn hold(&self, at: Pos2) -> bool {
+    /// Whether `at` is on something that lies over the photo: the other button's press
+    /// there asks for no menu of the photo.
+    fn over(&self, at: Pos2) -> bool {
         [self.prev, self.next, self.close, self.bar]
             .into_iter()
             .chain(self.slider)
             .chain(self.caption)
             .chain(self.panel)
             .any(|rect| rect.contains(at))
+    }
+
+    /// Whether a press of the first button at `at` is a control's and not the photo's.
+    fn hold(&self, at: Pos2) -> bool {
+        self.over(at) || self.faces.iter().any(|face| face.contains(at))
     }
 }
 
@@ -235,7 +268,47 @@ impl ViewerView {
         let side = |left: f32| {
             Rect::from_min_size(pos2(left, window.center().y - NAV / 2.0), vec2(NAV, NAV))
         };
+        // The faces, where the picture stood when the frame began - which is where it
+        // was drawn, and what a press in this frame was aimed at. In the picture as it
+        // is drawn, zoom and pan in it; with no picture there is nothing to outline.
+        let stood = (shows.then(|| picture(ui, data, area, zoom)).flatten()).map(|(_, at)| at);
+        let boxes = |at: Rect| -> Vec<Rect> {
+            let image = Frame {
+                left: at.left(),
+                top: at.top(),
+                width: at.width(),
+                height: at.height(),
+            };
+            (data.faces.iter())
+                .map(|face| {
+                    let place = face_box(face.within, image);
+                    Rect::from_min_size(
+                        pos2(place.left, place.top),
+                        vec2(place.width, place.height),
+                    )
+                })
+                .collect()
+        };
+        let aimed = stood.map(&boxes).unwrap_or_default();
+        // An unnamed face photon found is pressed to name it, while the outlines show:
+        // as much of it as is in the photo's area.
+        let pressable = |boxes: &[Rect]| -> Vec<(i64, Rect)> {
+            if !data.info_open {
+                return Vec::new();
+            }
+            (data.faces.iter().zip(boxes))
+                .filter_map(|(face, place)| match (face.key, face.face_id) {
+                    (None, Some(id)) => Some((id, place.intersect(within))),
+                    _ => None,
+                })
+                .filter(|(_, place)| place.is_positive())
+                .collect()
+        };
         let controls = Controls {
+            faces: (pressable(&aimed).into_iter())
+                .map(|(_, place)| place)
+                .collect(),
+            every_face: aimed,
             prev: side(window.left() + EDGE),
             next: side(within.right() - EDGE - NAV),
             close: Rect::from_min_size(
@@ -254,9 +327,26 @@ impl ViewerView {
         ui.interact(window, Id::new("viewer-photo"), Sense::CLICK);
         let mut actions = self.input(ui, data, zoom, area, &controls, zooms);
 
-        if shows && let Some((texture, at)) = picture(ui, data, area, zoom) {
+        let drawn = shows.then(|| picture(ui, data, area, zoom)).flatten();
+        if let Some((texture, at)) = drawn {
             let whole = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
             (painter.with_clip_rect(within)).image(texture.id(), at, whole, Color32::WHITE);
+        }
+        // The faces, while the panel is open: over the photo, under everything else -
+        // made before the buttons, the bar and the panel, which are pressed where they
+        // lie over an outline.
+        if data.info_open
+            && let Some((_, at)) = drawn
+        {
+            let boxes = boxes(at);
+            let pressed = faces(ui, within, data.faces, &boxes, &pressable(&boxes));
+            // Not under a dialog or the menu, and not in the frame the menu is asked
+            // for: on a Mac the first button with Control asks for it, and its click is
+            // not the outline's as well.
+            let menu = (actions.iter()).any(|action| matches!(action, ViewerAction::Menu { .. }));
+            if !data.paused && !menu {
+                actions.extend(pressed.map(ViewerAction::NameFace));
+            }
         }
         if let Some(message) = data.message {
             said(ui, within, message);
@@ -338,6 +428,13 @@ impl ViewerView {
         zooms: bool,
     ) -> Vec<ViewerAction> {
         let mut actions = Vec::new();
+        // Under a dialog or the viewer's own menu nothing here is the viewer's: a press
+        // held is over, and what the wheel had turned is not kept for after.
+        if data.paused {
+            self.press = None;
+            self.wheel = 0.0;
+            return actions;
+        }
         let size = (area.width, area.height);
         let middle = pos2(area.left + area.width / 2.0, area.top + area.height / 2.0);
         // Measured from the middle of the photo's area, as the pan is.
@@ -376,8 +473,9 @@ impl ViewerView {
         // finds on top there, the one judge (`grid/view.rs`): whether a widget "contains
         // the pointer" is true of one under an area all along the inside of its edge.
         // (`layer_id_at` locks egui's memory: not inside an `input` closure.)
-        let on_photo =
-            |at: Pos2| !controls.hold(at) && ui.ctx().layer_id_at(at) == Some(ui.layer_id());
+        let top = |at: Pos2| ui.ctx().layer_id_at(at) == Some(ui.layer_id());
+        let on_photo = |at: Pos2| !controls.hold(at) && top(at);
+        let mac = cfg!(target_os = "macos");
         // A zoom moves the pan, and a drag in progress is measured from where it began:
         // moved along with the photo, or the pointer's next move would put the pan back
         // where the drag had it and undo the zoom's.
@@ -500,6 +598,33 @@ impl ViewerView {
                     pressed: true,
                     ..
                 } => actions.push(ViewerAction::Close),
+                // The other button asks for the photo's menu where it goes down, as on a
+                // photo of the grid (`grid/view.rs`): on the photo or on a face of it,
+                // under no control and nothing that lies over the viewer, and not while
+                // the first button holds the photo. Which face it went down on is asked
+                // of every face, whether or not the panel shows their outlines.
+                Event::PointerButton {
+                    pos,
+                    button,
+                    pressed: true,
+                    modifiers,
+                } if asks_for_menu(*button, *modifiers, mac) => {
+                    if self.press.is_none() && !controls.over(*pos) && top(*pos) {
+                        let frames: Vec<Frame> = (controls.every_face.iter())
+                            .map(|face| Frame {
+                                left: face.left(),
+                                top: face.top(),
+                                width: face.width(),
+                                height: face.height(),
+                            })
+                            .collect();
+                        let hit = face_at(pos.x, pos.y, &frames);
+                        actions.push(ViewerAction::Menu {
+                            at: *pos,
+                            on: on(data.faces, hit),
+                        });
+                    }
+                }
                 // The first button on the photo: a click when it comes up where it
                 // went down, a pan while it is held and the photo is zoomed. Read from
                 // the button's own events, as the grid's band is: egui's click gives up
@@ -678,6 +803,88 @@ fn picture<'a>(
         at
     };
     Some((level.texture, at))
+}
+
+/// The room a face's name has round it on its plate, sideways and up and down.
+const PLATE_PAD: (f32, f32) = (6.0, 1.0);
+/// What the outline of a face that can be named says it is for.
+pub const NAME_FACE: &str = "Name this face";
+
+/// The faces, over the photo: each an outline, a named one with its name on a plate
+/// under it, cut off at the photo's area `within`. `pressable` are the unnamed ones
+/// photon found, each with the part of its outline that takes a press: the id of the
+/// one that was clicked is answered.
+///
+/// The line and its ink are the photo's own colours in both themes, as the photo's
+/// ground is: they are drawn on the photo, which no theme changes.
+fn faces(
+    ui: &egui::Ui,
+    within: Rect,
+    faces: &[Drawn<'_>],
+    boxes: &[Rect],
+    pressable: &[(i64, Rect)],
+) -> Option<i64> {
+    let painter = ui.painter().with_clip_rect(within);
+    let mut named = None;
+    for (number, (face, place)) in faces.iter().zip(boxes).enumerate() {
+        // An unnamed face photon found is a button: lit under the pointer, a click
+        // names it. No stop of the Tab key, like every control of the viewer.
+        let press = (pressable.iter())
+            .find(|(of, _)| face.key.is_none() && face.face_id == Some(*of))
+            .map(|(id, part)| {
+                let response = ui.interact(*part, Id::new(("viewer-face", *id)), Sense::CLICK);
+                response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, NAME_FACE));
+                (*id, response)
+            });
+        let lit = press.as_ref().is_some_and(|(_, press)| press.hovered());
+        if lit {
+            ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+        }
+        if let Some((id, _)) = press.filter(|(_, press)| press.clicked()) {
+            named = Some(id);
+        }
+        let line = if lit { DARK.accent } else { PHOTO_LINE };
+        painter.rect_stroke(
+            *place,
+            R[0],
+            Stroke::new(1.0, color(SHADOW_INK)),
+            StrokeKind::Outside,
+        );
+        painter.rect_stroke(
+            *place,
+            R[0],
+            Stroke::new(2.0, color(line)),
+            StrokeKind::Inside,
+        );
+        // The name, on a plate under the outline's left corner: as wide as the name
+        // is, which is known once it is painted, so the plate's ground is put under it
+        // afterwards. The whole name - the photo's area cuts a plate off, not an
+        // ellipsis.
+        let Some(name) = face.name else {
+            continue;
+        };
+        let font = fonts::regular(T[1]);
+        let tall = ui.ctx().fonts_mut(|fonts| fonts.row_height(&font)) + 2.0 * PLATE_PAD.1;
+        let ground = painter.add(egui::Shape::Noop);
+        let wide = text::paint_line(
+            ui,
+            &painter,
+            (place.left() + PLATE_PAD.0, place.bottom() + tall / 2.0),
+            f32::INFINITY,
+            name,
+            font,
+            color(DARK.text),
+        ) + 2.0 * PLATE_PAD.0;
+        let plate = Rect::from_min_size(place.left_bottom(), vec2(wide, tall));
+        painter.set(ground, egui::Shape::rect_filled(plate, R[0], color(SCRIM)));
+        // Told to whoever reads the window without seeing it: what of it is in sight.
+        let seen = plate.intersect(within);
+        if seen.is_positive() {
+            ui.interact(seen, Id::new(("viewer-face-name", number)), Sense::hover())
+                .widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, name));
+        }
+    }
+    named
 }
 
 /// The glass a control stands on.
@@ -992,6 +1199,9 @@ mod tests {
         /// The photo's width in pixels as the library says it; nought until it has.
         width: u32,
         video: bool,
+        /// The photo's faces, and whether something has the window for itself.
+        faces: Vec<Drawn<'static>>,
+        paused: bool,
         zoom: Zoom,
         /// The textures painted in the last frame, each with where.
         images: Vec<(egui::TextureId, Rect)>,
@@ -999,6 +1209,8 @@ mod tests {
         clips: Vec<Rect>,
         texts: Vec<(String, Rect)>,
         fills: Vec<(Rect, Color32)>,
+        /// The rectangles drawn as a line: where, in what colour, and cut off at what.
+        lines: Vec<(Rect, Color32, Rect)>,
         repaint: std::time::Duration,
         cursor: CursorIcon,
     }
@@ -1032,11 +1244,14 @@ mod tests {
                 item: None,
                 width: 0,
                 video: false,
+                faces: Vec::new(),
+                paused: false,
                 zoom: Zoom::default(),
                 images: Vec::new(),
                 clips: Vec::new(),
                 texts: Vec::new(),
                 fills: Vec::new(),
+                lines: Vec::new(),
                 repaint: std::time::Duration::MAX,
                 cursor: CursorIcon::Default,
             }
@@ -1102,6 +1317,8 @@ mod tests {
                     looking: false,
                     zone: &zone,
                 }),
+                faces: &self.faces,
+                paused: self.paused,
             };
             let (view, zoom) = (&mut self.view, &mut self.zoom);
             let mut actions = Vec::new();
@@ -1117,6 +1334,7 @@ mod tests {
             self.clips.clear();
             self.texts.clear();
             self.fills.clear();
+            self.lines.clear();
             for clipped in &full.shapes {
                 each_shape(&clipped.shape, &mut |shape| match shape {
                     egui::Shape::Text(text) => self
@@ -1127,7 +1345,13 @@ mod tests {
                             self.images.push((brush.fill_texture_id, rect.rect));
                             self.clips.push(clipped.clip_rect);
                         }
-                        None => self.fills.push((rect.rect, rect.fill)),
+                        None => {
+                            self.fills.push((rect.rect, rect.fill));
+                            if rect.stroke.width > 0.0 {
+                                let line = (rect.rect, rect.stroke.color, clipped.clip_rect);
+                                self.lines.push(line);
+                            }
+                        }
                     },
                     egui::Shape::Mesh(mesh) => {
                         self.images.push((mesh.texture_id, mesh.calc_bounds()));
@@ -2810,5 +3034,385 @@ mod tests {
         f.wheel(Point, -7.0, Modifiers::NONE);
         f.frame(Vec::new());
         assert_eq!(top - f.drew("DATES").expect("still in sight").top(), 7.0);
+    }
+
+    // ---- The faces ----
+
+    /// Anna's face, which photon has under her plate; and a face photon found that
+    /// nobody has named. Side by side in the middle of the photo.
+    fn anna() -> Drawn<'static> {
+        Drawn {
+            key: Some("p:1"),
+            name: Some("Anna"),
+            face_id: Some(5),
+            within: [0.25, 0.25, 0.5, 0.75],
+        }
+    }
+
+    fn stranger() -> Drawn<'static> {
+        Drawn {
+            key: None,
+            name: None,
+            face_id: Some(9),
+            within: [0.5, 0.25, 0.75, 0.75],
+        }
+    }
+
+    /// The photo beside the open panel, with the two faces on it: fitted, it is 652
+    /// points by 326, from (0, 187).
+    fn with_faces() -> Fixture {
+        let mut f = informed();
+        f.faces = vec![anna(), stranger()];
+        f.frame(Vec::new());
+        f
+    }
+
+    const ANNA: Rect = Rect::from_min_max(pos2(163.0, 268.5), pos2(326.0, 431.5));
+    const STRANGER: Rect = Rect::from_min_max(pos2(326.0, 268.5), pos2(489.0, 431.5));
+
+    fn same(a: Rect, b: Rect) -> bool {
+        near(a.left(), b.left())
+            && near(a.top(), b.top())
+            && near(a.right(), b.right())
+            && near(a.bottom(), b.bottom())
+    }
+
+    /// The colour of the outline drawn at `place`, if one is: the line, which is two
+    /// points wide, and not the ink round it.
+    fn outline(f: &Fixture, place: Rect) -> Option<Color32> {
+        (f.lines.iter())
+            .find(|(at, tint, _)| same(*at, place) && *tint != color(SHADOW_INK))
+            .map(|(_, tint, _)| *tint)
+    }
+
+    fn other(at: Pos2, pressed: bool) -> Event {
+        Event::PointerButton {
+            pos: at,
+            button: PointerButton::Secondary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        }
+    }
+
+    /// What a press of the other button at `at` answers.
+    fn right_press(f: &mut Fixture, at: Pos2) -> Vec<ViewerAction> {
+        f.point(at);
+        let actions = f.frame(vec![other(at, true)]);
+        f.frame(vec![other(at, false)]);
+        actions
+    }
+
+    fn menu(at: Pos2, on: On) -> Vec<ViewerAction> {
+        vec![ViewerAction::Menu { at, on }]
+    }
+
+    // While the panel is open every face is outlined where it is on the photo as
+    // drawn, in the line that is the photo's own in both themes, with ink round it; a
+    // named one has its name on a plate under its left corner. Cut off at the photo's
+    // area. With the panel shut there is none of it.
+    #[test]
+    fn the_faces_are_outlined_while_the_panel_is_open_and_a_named_one_has_its_plate() {
+        let mut f = with_faces();
+        assert_eq!(outline(&f, ANNA), Some(color(PHOTO_LINE)));
+        assert_eq!(outline(&f, STRANGER), Some(color(PHOTO_LINE)));
+        let ink = (f.lines.iter())
+            .filter(|(_, tint, _)| *tint == color(SHADOW_INK))
+            .count();
+        assert_eq!(ink, 2, "each outline has its ink");
+        let area = Rect::from_min_max(pos2(0.0, 0.0), pos2(BESIDE_PANEL, 700.0));
+        for (at, _, clip) in &f.lines {
+            if same(*at, ANNA) || same(*at, STRANGER) {
+                assert_eq!(*clip, area, "cut off at the photo's area");
+            }
+        }
+        // Her name, on a plate that begins at the outline's left bottom corner.
+        let name = (f.texts.iter())
+            .map(|(text, at)| (text.as_str(), *at))
+            .find(|(text, at)| *text == "Anna" && at.left() < BESIDE_PANEL)
+            .map(|(_, at)| at)
+            .expect("her plate");
+        assert!(name.top() >= ANNA.bottom() && name.left() >= ANNA.left() + PLATE_PAD.0 - 1.0);
+        let plate = (f.fills.iter())
+            .find(|(at, fill)| *fill == color(SCRIM) && at.min == ANNA.left_bottom())
+            .map(|(at, _)| *at)
+            .expect("the plate's ground");
+        assert!(plate.contains_rect(name), "{plate:?} holds {name:?}");
+        assert!(near(plate.right(), name.right() + PLATE_PAD.0) || plate.right() > name.right());
+
+        f.info_open = false;
+        f.frame(Vec::new());
+        assert!(
+            f.lines
+                .iter()
+                .all(|(_, tint, _)| *tint != color(PHOTO_LINE)),
+            "no outline with the panel shut"
+        );
+        assert!(f.drew("Anna").is_none());
+    }
+
+    // An outline is on the photo as it is drawn: zoomed to twice and moved fifty points
+    // to the left, the photo is 1,304 by 652 from (-376, 24), and so is the face on it.
+    #[test]
+    fn an_outline_is_on_the_photo_as_it_is_zoomed_and_moved() {
+        let mut f = with_faces();
+        f.zoom.to(2.0, Pan::default(), (BESIDE_PANEL, 700.0));
+        f.zoom.pan_to(-50.0, 0.0, (BESIDE_PANEL, 700.0));
+        f.frame(Vec::new());
+        let moved = Rect::from_min_size(pos2(-50.0, 187.0), vec2(326.0, 326.0));
+        assert_eq!(outline(&f, moved), Some(color(PHOTO_LINE)), "{:?}", f.lines);
+        assert_eq!(outline(&f, ANNA), None);
+    }
+
+    // No picture, no outline: nothing is on screen for it to be on.
+    #[test]
+    fn nothing_is_outlined_where_no_picture_is_drawn() {
+        let mut f = with_faces();
+        f.message = Some(("This photo can't be shown.", false));
+        f.frame(Vec::new());
+        assert!(
+            f.lines
+                .iter()
+                .all(|(_, tint, _)| *tint != color(PHOTO_LINE))
+        );
+        // And the other button's press is on no face.
+        assert_eq!(
+            right_press(&mut f, STRANGER.center()),
+            menu(STRANGER.center(), On::Nowhere)
+        );
+    }
+
+    // The outline of a face nobody has named is pressed to name it: lit under the
+    // pointer, with the hand that says it is a button. The press is not the photo's -
+    // two of them zoom nothing.
+    #[test]
+    fn a_click_on_an_unnamed_outline_names_that_face_and_is_not_the_photos() {
+        let mut f = with_faces();
+        f.point(STRANGER.center());
+        f.frame(Vec::new());
+        assert_eq!(outline(&f, STRANGER), Some(color(DARK.accent)));
+        assert_eq!(f.cursor, CursorIcon::PointingHand);
+        assert_eq!(outline(&f, ANNA), Some(color(PHOTO_LINE)));
+        assert_eq!(f.click(STRANGER.center()), [ViewerAction::NameFace(9)]);
+        assert_eq!(f.click(STRANGER.center()), [ViewerAction::NameFace(9)]);
+        assert!(f.zoom.is_fit(), "no double click on the photo");
+        // On a zoomed photo no pan begins on it either.
+        f.zoom.to(2.0, Pan::default(), (BESIDE_PANEL, 700.0));
+        f.frame(Vec::new());
+        // (The stranger's outline is from (326, 187) now, 326 points wide.)
+        let at = pos2(400.0, 350.0);
+        f.press(at);
+        f.point(at + vec2(-60.0, 0.0));
+        f.release(at + vec2(-60.0, 0.0));
+        assert_eq!(f.zoomed(), (2.0, (0.0, 0.0)));
+    }
+
+    // A named face's outline is no button, and neither is one that is Picasa's alone:
+    // a press there is the photo's, and two of them are a double click.
+    #[test]
+    fn an_outline_that_names_nothing_takes_no_press() {
+        for face in [
+            anna(),
+            Drawn {
+                face_id: None,
+                ..stranger()
+            },
+        ] {
+            let mut f = informed();
+            let place = if face.key.is_some() { ANNA } else { STRANGER };
+            f.faces = vec![face];
+            f.frame(Vec::new());
+            f.point(place.center());
+            f.frame(Vec::new());
+            assert_eq!(outline(&f, place), Some(color(PHOTO_LINE)), "not lit");
+            assert_eq!(f.click(place.center()), []);
+            f.click(place.center());
+            assert!(!f.zoom.is_fit(), "the photo's double click");
+        }
+    }
+
+    // With the panel shut the faces are not drawn, and none takes a press: the photo is
+    // then 1,000 points by 500 from (0, 100), and the stranger's face at (500, 225).
+    #[test]
+    fn with_the_panel_shut_no_face_takes_a_press() {
+        let mut f = photo();
+        f.faces = vec![anna(), stranger()];
+        f.frame(Vec::new());
+        let at = pos2(625.0, 350.0);
+        assert_eq!(f.click(at), []);
+        f.click(at);
+        assert!(!f.zoom.is_fit(), "the photo's double click");
+    }
+
+    // The other button asks for the photo's menu where it goes down, and says what it
+    // went down on: a face by what it is - whether or not the panel shows the outlines -
+    // or the photo.
+    #[test]
+    fn the_other_button_asks_for_the_menu_of_what_it_went_down_on() {
+        let mut f = with_faces();
+        let (hers, his) = (ANNA.center(), STRANGER.center());
+        assert_eq!(right_press(&mut f, his), menu(his, On::Unnamed(9)));
+        assert_eq!(right_press(&mut f, hers), menu(hers, On::Person(1)));
+        // On the photo beside the faces, and on the black over it.
+        for at in [pos2(120.0, 350.0), pos2(120.0, 60.0)] {
+            assert_eq!(right_press(&mut f, at), menu(at, On::Nowhere));
+        }
+        // With the panel shut the faces are where the photo is, fitted to the window.
+        f.info_open = false;
+        f.frame(Vec::new());
+        let his = pos2(625.0, 350.0);
+        assert_eq!(right_press(&mut f, his), menu(his, On::Unnamed(9)));
+        let hers = pos2(375.0, 350.0);
+        assert_eq!(right_press(&mut f, hers), menu(hers, On::Person(1)));
+    }
+
+    // Of two faces under the pointer, the one inside the other.
+    #[test]
+    fn of_a_face_inside_another_the_menu_is_the_smaller_ones() {
+        let mut f = informed();
+        f.faces = vec![
+            Drawn {
+                within: [0.1, 0.1, 0.9, 0.9],
+                ..anna()
+            },
+            stranger(),
+        ];
+        f.frame(Vec::new());
+        let at = STRANGER.center();
+        assert_eq!(right_press(&mut f, at), menu(at, On::Unnamed(9)));
+        let at = pos2(100.0, 350.0);
+        assert_eq!(right_press(&mut f, at), menu(at, On::Person(1)));
+    }
+
+    // Not on what lies over the photo - the bar, a button, the panel - and not while
+    // the first button holds the photo: its release would act under the menu.
+    #[test]
+    fn the_other_button_asks_for_nothing_on_a_control_or_under_a_held_press() {
+        let mut f = with_faces();
+        let bar = star_at(&f);
+        assert_eq!(right_press(&mut f, bar), []);
+        assert_eq!(right_press(&mut f, panel().center()), []);
+        assert_eq!(right_press(&mut f, pos2(1000.0 - 30.0, 30.0)), [], "close");
+        f.press(ANNA.center());
+        assert_eq!(f.frame(vec![other(ANNA.center(), true)]), []);
+        f.frame(vec![other(ANNA.center(), false)]);
+        f.release(ANNA.center());
+        assert_eq!(
+            right_press(&mut f, ANNA.center()),
+            menu(ANNA.center(), On::Person(1))
+        );
+    }
+
+    // An outline that reaches under the bar is the bar's there, and one that a zoom
+    // has pushed past the photo's area is pressed only in the area.
+    #[test]
+    fn an_outline_is_pressed_only_where_nothing_lies_over_it_and_inside_the_photos_area() {
+        // A square photo beside the panel is 652 points from (0, 24), and reaches under
+        // the bar at the foot of the window.
+        let mut f = Fixture::new().with_preview([1000, 1000]);
+        f.info_open = true;
+        f.item = Some(crate::viewer_info_view::testing::full());
+        f.faces = vec![Drawn {
+            within: [0.3, 0.8, 0.95, 1.0],
+            ..stranger()
+        }];
+        f.frame(Vec::new());
+        let bar = star_at(&f);
+        let face = Rect::from_min_max(pos2(195.6, 545.6), pos2(619.4, 676.0));
+        assert!(
+            face.contains(bar),
+            "the test's bar {bar:?} lies over its face"
+        );
+        assert_eq!(f.click(bar), [ViewerAction::Star]);
+        assert_eq!(f.click(pos2(250.0, 560.0)), [ViewerAction::NameFace(9)]);
+
+        // Zoomed to twice and moved a hundred points right, the stranger's outline runs
+        // from 426 to 752: past the area's edge at 652, the gap, and under the panel.
+        let mut f = with_faces();
+        f.zoom.to(2.0, Pan::default(), (BESIDE_PANEL, 700.0));
+        f.zoom.pan_to(100.0, 0.0, (BESIDE_PANEL, 700.0));
+        f.frame(Vec::new());
+        // (Above the button for the next photo, which stands at the area's edge.)
+        assert_eq!(f.click(pos2(600.0, 250.0)), [ViewerAction::NameFace(9)]);
+        assert_eq!(f.click(pos2(BESIDE_PANEL + 6.0, 250.0)), [], "in the gap");
+        assert_eq!(f.click(pos2(700.0, 500.0)), [], "on the panel");
+    }
+
+    // Under a dialog or the viewer's own menu the wheel and the buttons are not the
+    // viewer's: nothing steps, no menu is asked for, no face is named, no photo moves.
+    // And what the wheel had turned towards the next photo is not kept for after.
+    #[test]
+    fn paused_the_viewer_hears_neither_the_wheel_nor_a_button() {
+        use egui::MouseWheelUnit::{Line, Point};
+        let mut f = with_faces();
+        f.paused = true;
+        f.point(pos2(120.0, 350.0));
+        assert_eq!(f.wheel(Line, -1.0, Modifiers::NONE), []);
+        assert_eq!(right_press(&mut f, STRANGER.center()), []);
+        assert_eq!(f.click(STRANGER.center()), []);
+        f.zoom.to(2.0, Pan::default(), (BESIDE_PANEL, 700.0));
+        // (On the photo, clear of the button for the photo before.)
+        let at = pos2(120.0, 350.0);
+        f.press(at);
+        f.point(at + vec2(60.0, 0.0));
+        f.release(at + vec2(60.0, 0.0));
+        assert_eq!(f.zoomed(), (2.0, (0.0, 0.0)));
+        // A press that was held when it began is over.
+        f.paused = false;
+        f.press(at);
+        f.paused = true;
+        f.frame(Vec::new());
+        f.paused = false;
+        f.point(at + vec2(60.0, 0.0));
+        assert_eq!(f.zoomed(), (2.0, (0.0, 0.0)));
+        f.release(at + vec2(60.0, 0.0));
+
+        // Six tenths of a notch, a pause, and six tenths more: no photo on.
+        assert_eq!(f.wheel(Point, -60.0, Modifiers::NONE), []);
+        f.paused = true;
+        f.frame(Vec::new());
+        f.paused = false;
+        assert_eq!(f.wheel(Point, -60.0, Modifiers::NONE), []);
+        assert_eq!(
+            f.wheel(Point, -60.0, Modifiers::NONE),
+            [ViewerAction::Step(1)]
+        );
+    }
+
+    // A menu asked for in the frame an outline's click comes up in is asked for alone:
+    // the menu and the dialog are not opened together. (On a Mac that frame is an
+    // ordinary one: the first button with Control asks for the menu, and its click is
+    // the outline's.)
+    #[test]
+    fn a_menu_asked_for_in_the_frame_an_outline_is_clicked_is_asked_for_alone() {
+        let mut f = with_faces();
+        let at = STRANGER.center();
+        f.press(at);
+        let beside = pos2(120.0, 350.0);
+        let actions = f.frame(vec![primary(at, false), other(beside, true)]);
+        assert_eq!(actions, menu(beside, On::Nowhere));
+    }
+
+    // The photo held and carried over an outline: the hand stays closed and the
+    // outline is not lit - it is the photo that is in the hand, and letting go there
+    // names nobody.
+    #[test]
+    fn an_outline_is_not_lit_under_a_photo_that_is_being_moved() {
+        let mut f = with_faces();
+        f.zoom.to(2.0, Pan::default(), (BESIDE_PANEL, 700.0));
+        f.frame(Vec::new());
+        // Zoomed, Anna's outline runs from 0 to 326 and the stranger's from 326 on.
+        let from = pos2(200.0, 250.0);
+        f.press(from);
+        let over = pos2(420.0, 250.0);
+        f.point(over);
+        f.frame(Vec::new());
+        assert_eq!(f.cursor, CursorIcon::Grabbing);
+        assert!(
+            f.lines
+                .iter()
+                .all(|(_, tint, _)| *tint != color(DARK.accent)),
+            "no outline is lit"
+        );
+        assert_eq!(f.frame(vec![primary(over, false)]), []);
     }
 }
