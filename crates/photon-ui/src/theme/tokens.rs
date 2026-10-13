@@ -112,9 +112,16 @@ pub const SCRIM: Rgba = rgba(0x000000a6);
 /// what is behind it as well, and the opacity is what reads where it cannot.
 pub const GLASS: Rgba = rgba(0x26262be6);
 pub const GLASS_LINE: Rgba = rgba(0xffffff1a);
+/// A link on the glass, which over a white photo is a far lighter ground than any panel:
+/// lighter than the accent, of the same hue.
+pub const ACCENT_GLASS: Rgba = rgb(0x77aef0);
 
 /// The viewer's colours, which only the dark theme has, under their names.
-pub const VIEWER: [(&str, Rgba); 2] = [("--glass", GLASS), ("--glass-line", GLASS_LINE)];
+pub const VIEWER: [(&str, Rgba); 3] = [
+    ("--glass", GLASS),
+    ("--glass-line", GLASS_LINE),
+    ("--accent-glass", ACCENT_GLASS),
+];
 
 /// The three colours no theme changes, under their names in the stylesheet.
 pub const UNTHEMED: [(&str, Rgba); 3] = [

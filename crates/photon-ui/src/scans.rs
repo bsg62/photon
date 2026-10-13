@@ -193,6 +193,12 @@ impl Scans {
         self.faces = Some(event);
     }
 
+    /// Whether a pass is looking for faces now: a photo with none may not have been
+    /// reached yet.
+    pub fn looking_for_faces(&self) -> bool {
+        self.faces.is_some_and(|faces| faces.running)
+    }
+
     /// Whether any scan is running, in a folder the list holds or not: what an empty
     /// library asks before it says that nothing has been found.
     ///
@@ -577,10 +583,13 @@ mod tests {
             running,
         };
         let mut scans = Scans::default();
+        assert!(!scans.looking_for_faces(), "before any report");
         scans.face(pass(true));
         assert_eq!(scans.lines(&[])[0].label, "Finding faces: 5 of 10");
+        assert!(scans.looking_for_faces());
         scans.face(pass(false));
         assert!(scans.lines(&[]).is_empty());
+        assert!(!scans.looking_for_faces());
     }
 
     #[test]

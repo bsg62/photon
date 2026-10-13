@@ -790,6 +790,29 @@ fn native_viewer_zoomed_dark() {
     shot(ThemeChoice::Dark, "native-viewer-zoomed-dark.png", zoomed);
 }
 
+/// The viewer with its info panel open: the photo beside it.
+fn informed(harness: &mut Harness<'_>) {
+    viewing(harness);
+    harness.key_press(Key::I);
+    harness.step();
+    until(harness, "the copy for the area beside the panel", |app| {
+        app.viewer_info() && app.viewer_fitted().is_some_and(|size| size[0] < 1000)
+    });
+    harness.step();
+}
+
+#[test]
+#[ignore = "renders through a GPU adapter: cargo run -p xtask -- native-shot"]
+fn native_viewer_info_light() {
+    shot(ThemeChoice::Light, "native-viewer-info-light.png", informed);
+}
+
+#[test]
+#[ignore = "renders through a GPU adapter: cargo run -p xtask -- native-shot"]
+fn native_viewer_info_dark() {
+    shot(ThemeChoice::Dark, "native-viewer-info-dark.png", informed);
+}
+
 // The spec's first risk, to be judged by eye: a detailed photo much larger than the
 // window, fitted, as photon's own levels and a linear filter draw it
 // (`native-viewer-quality.png`), beside the same photo resized to the same size with a

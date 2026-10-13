@@ -22,6 +22,7 @@ pub enum Icon {
     EyeOff,
     Folder,
     Images,
+    Info,
     LayoutGrid,
     PanelLeft,
     Play,
@@ -35,7 +36,7 @@ pub enum Icon {
 }
 
 impl Icon {
-    pub const ALL: [Icon; 23] = [
+    pub const ALL: [Icon; 24] = [
         Icon::ArrowDownUp,
         Icon::Bookmark,
         Icon::Calendar,
@@ -49,6 +50,7 @@ impl Icon {
         Icon::EyeOff,
         Icon::Folder,
         Icon::Images,
+        Icon::Info,
         Icon::LayoutGrid,
         Icon::PanelLeft,
         Icon::Play,
@@ -74,6 +76,7 @@ impl Icon {
             Icon::ChevronRight => "chevron-right",
             Icon::Folder => "folder",
             Icon::Images => "images",
+            Icon::Info => "info",
             Icon::Tag => "tag",
             Icon::User => "user",
             Icon::Clock => "clock",
@@ -110,6 +113,9 @@ impl Icon {
             Icon::ChevronRight => r#"<path d="m9 18 6-6-6-6"/>"#,
             Icon::Folder => {
                 r#"<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>"#
+            }
+            Icon::Info => {
+                r#"<circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>"#
             }
             Icon::Images => {
                 r#"<path d="m22 11-1.296-1.296a2.4 2.4 0 0 0-3.408 0L11 16"/><path d="M4 8a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2"/><circle cx="13" cy="7" r="1" fill="currentColor"/><rect x="8" y="2" width="14" height="14" rx="2"/>"#

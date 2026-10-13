@@ -43,7 +43,19 @@ pub fn format_taken(taken_at: i64) -> String {
     let Ok(instant) = Timestamp::from_second(taken_at) else {
         return String::new();
     };
-    let at = instant.to_zoned(TimeZone::UTC);
+    spelled(&instant.to_zoned(TimeZone::UTC))
+}
+
+/// A file's own time, spelled the same way: a real instant, in milliseconds, so read in
+/// `zone` - the machine's - where a camera's is not.
+pub fn format_instant(ms: i64, zone: &TimeZone) -> String {
+    let Ok(instant) = Timestamp::from_millisecond(ms) else {
+        return String::new();
+    };
+    spelled(&instant.to_zoned(zone.clone()))
+}
+
+fn spelled(at: &jiff::Zoned) -> String {
     let (hour, half) = match at.hour() {
         0 => (12, "AM"),
         hour @ 1..=11 => (hour, "AM"),

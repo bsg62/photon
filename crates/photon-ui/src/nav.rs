@@ -137,15 +137,23 @@ pub struct Shown {
     /// Whether the grid shows other results than the one before it, in which case a
     /// position in the old ones means nothing.
     pub other_results: bool,
-    /// The folder to go to in this grid: a jump that waited for it.
-    pub jump: Option<i64>,
+    /// Where to go in this grid: a jump that waited for it.
+    pub jump: Option<Target>,
 }
 
-/// A folder to go to, in the grid of the step numbered `after`.
+/// What a jump goes to: a folder's first photo, or one photo - a copy located from the
+/// viewer's info panel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Target {
+    Folder(i64),
+    Photo(i64),
+}
+
+/// Somewhere to go, in the grid of the step numbered `after`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Jump {
     after: u64,
-    folder: i64,
+    to: Target,
 }
 
 pub struct Nav {
@@ -247,18 +255,18 @@ impl Nav {
         (!home).then_some(Step::View(GridView::All))
     }
 
-    /// Goes to `folder`. Answers it when the grid on screen is the one to look it up in:
-    /// no step is on its way. Otherwise it is kept for the grid of the last step asked
-    /// (`adopt` answers it then), since a folder's offset means something only in the grid
-    /// it is looked up in. The last folder asked for is the one gone to.
-    pub fn jump(&mut self, folder: i64) -> Option<i64> {
+    /// Goes `to` a folder or a photo. Answers it when the grid on screen is the one to
+    /// look it up in: no step is on its way. Otherwise it is kept for the grid of the
+    /// last step asked (`adopt` answers it then), since an offset means something only in
+    /// the grid it is looked up in. The last place asked for is the one gone to.
+    pub fn jump(&mut self, to: Target) -> Option<Target> {
         let last = self
             .asked
             .back()
             .map(|(number, _)| *number)
             .or_else(|| self.landed.back().map(|(number, _)| *number));
-        self.jump = last.map(|after| Jump { after, folder });
-        last.is_none().then_some(folder)
+        self.jump = last.map(|after| Jump { after, to });
+        last.is_none().then_some(to)
     }
 
     /// The queue's answer to step `number`: where it led, or what the engine said when it
@@ -327,7 +335,7 @@ impl Nav {
         let jump = self
             .jump
             .take_if(|jump| jump.after == number)
-            .map(|jump| jump.folder);
+            .map(|jump| jump.to);
         Some(Shown {
             other_results: self.settle(landed.place, landed.sort),
             jump,
@@ -485,7 +493,15 @@ mod tests {
 
     /// The folder a grid taken at `version` is to go to.
     fn jump_at(nav: &mut Nav, version: u64) -> Option<i64> {
-        nav.adopt(version).and_then(|shown| shown.jump)
+        (nav.adopt(version).and_then(|shown| shown.jump)).map(|to| match to {
+            Target::Folder(folder) => folder,
+            Target::Photo(photo) => panic!("a jump to the photo {photo}"),
+        })
+    }
+
+    /// A jump to `folder`, answered as the folder where it is made at once.
+    fn jump(nav: &mut Nav, folder: i64) -> Option<i64> {
+        nav.jump(Target::Folder(folder)).map(|_| folder)
     }
 
     fn sorted(key: SortKey, group: Grouping) -> Sort {
@@ -893,10 +909,23 @@ mod tests {
         assert_eq!(nav.home_of_folders(), Some(Step::View(GridView::All)));
     }
 
+    // A photo is jumped to as a folder is: in the grid of the step it waits for.
+    #[test]
+    fn a_jump_to_a_photo_waits_for_its_grid_as_one_to_a_folder_does() {
+        let mut nav = nav();
+        assert_eq!(nav.jump(Target::Photo(7)), Some(Target::Photo(7)));
+        nav.settle(Place::of(GridView::Starred), Sort::default());
+        nav.asked(1, Step::View(GridView::All));
+        assert_eq!(nav.jump(Target::Photo(7)), None);
+        nav.answered(1, Ok(landed(GridView::All, 5)));
+        let shown = nav.adopt(5).expect("the step's grid is taken");
+        assert_eq!(shown.jump, Some(Target::Photo(7)));
+    }
+
     #[test]
     fn a_jump_with_no_step_on_its_way_is_made_at_once() {
         let mut nav = nav();
-        assert_eq!(nav.jump(30), Some(30));
+        assert_eq!(jump(&mut nav, 30), Some(30));
         // And nothing of it is kept for a later grid.
         assert_eq!(jump_at(&mut nav, 4), None);
     }
@@ -908,12 +937,12 @@ mod tests {
         let mut nav = nav();
         nav.settle(Place::of(GridView::Starred), Sort::default());
         nav.asked(1, Step::View(GridView::All));
-        assert_eq!(nav.jump(30), None);
+        assert_eq!(jump(&mut nav, 30), None);
         // A scan's grid in Starred meanwhile is not the one.
         assert_eq!(nav.adopt(4), None);
         nav.answered(1, Ok(landed(GridView::All, 5)));
         let shown = nav.adopt(5).expect("the step's grid is taken");
-        assert_eq!(shown.jump, Some(30));
+        assert_eq!(shown.jump, Some(Target::Folder(30)));
         assert!(shown.other_results);
         // Once.
         assert_eq!(jump_at(&mut nav, 6), None);
@@ -927,7 +956,7 @@ mod tests {
         nav.settle(Place::of(GridView::Starred), Sort::default());
         nav.asked(1, Step::View(GridView::All));
         nav.answered(1, Ok(landed(GridView::All, 5)));
-        assert_eq!(nav.jump(30), None);
+        assert_eq!(jump(&mut nav, 30), None);
         assert_eq!(jump_at(&mut nav, 5), Some(30));
     }
 
@@ -938,13 +967,13 @@ mod tests {
         let mut nav = nav();
         nav.settle(Place::of(GridView::Starred), Sort::default());
         nav.asked(1, Step::View(GridView::All));
-        assert_eq!(nav.jump(30), None);
+        assert_eq!(jump(&mut nav, 30), None);
         assert!(nav.answered(1, Err("no".to_owned())).is_some());
         assert_eq!(jump_at(&mut nav, 6), None);
         // A refusal of an earlier step is not this one's.
         nav.asked(2, Step::View(GridView::Recent));
         nav.asked(3, Step::View(GridView::All));
-        assert_eq!(nav.jump(31), None);
+        assert_eq!(jump(&mut nav, 31), None);
         assert!(nav.answered(2, Err("no".to_owned())).is_some());
         nav.answered(3, Ok(landed(GridView::All, 8)));
         assert_eq!(jump_at(&mut nav, 8), Some(31));
@@ -957,7 +986,7 @@ mod tests {
         let mut nav = nav();
         nav.settle(Place::of(GridView::Recent), Sort::default());
         nav.asked(1, Step::View(GridView::All));
-        assert_eq!(nav.jump(30), None);
+        assert_eq!(jump(&mut nav, 30), None);
         nav.asked(2, Step::View(GridView::Starred));
         nav.answered(1, Ok(landed(GridView::All, 5)));
         nav.answered(2, Ok(landed(GridView::Starred, 6)));
@@ -974,7 +1003,7 @@ mod tests {
         let mut nav = nav();
         nav.settle(Place::of(GridView::Recent), Sort::default());
         nav.asked(1, Step::View(GridView::All));
-        assert_eq!(nav.jump(30), None);
+        assert_eq!(jump(&mut nav, 30), None);
         nav.asked(2, Step::View(GridView::Starred));
         nav.answered(1, Ok(landed(GridView::All, 5)));
         assert_eq!(jump_at(&mut nav, 5), Some(30));
@@ -987,7 +1016,7 @@ mod tests {
         let mut nav = nav();
         nav.asked(1, Step::View(GridView::Starred));
         nav.asked(2, Step::View(GridView::All));
-        assert_eq!(nav.jump(30), None);
+        assert_eq!(jump(&mut nav, 30), None);
         nav.answered(1, Ok(landed(GridView::Starred, 5)));
         assert_eq!(jump_at(&mut nav, 5), None);
         nav.answered(2, Ok(landed(GridView::All, 6)));
@@ -1000,7 +1029,7 @@ mod tests {
     fn a_step_put_in_the_place_of_the_one_waited_for_drops_the_jump() {
         let mut nav = nav();
         nav.asked(1, Step::Search("lak".to_owned()));
-        assert_eq!(nav.jump(30), None);
+        assert_eq!(jump(&mut nav, 30), None);
         nav.asked(1, Step::Search("lake".to_owned()));
         nav.answered(
             1,
@@ -1018,8 +1047,8 @@ mod tests {
         let mut nav = nav();
         nav.settle(Place::of(GridView::Starred), Sort::default());
         nav.asked(1, Step::View(GridView::All));
-        assert_eq!(nav.jump(30), None);
-        assert_eq!(nav.jump(31), None);
+        assert_eq!(jump(&mut nav, 30), None);
+        assert_eq!(jump(&mut nav, 31), None);
         nav.answered(1, Ok(landed(GridView::All, 5)));
         assert_eq!(jump_at(&mut nav, 5), Some(31));
     }

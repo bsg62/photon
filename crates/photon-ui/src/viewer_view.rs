@@ -22,7 +22,8 @@ use crate::{
         tokens::{DARK, GLASS, GLASS_LINE, R, S, T},
     },
     viewer::wheel_step,
-    viewer_layout::{BAR, CLOSE, EDGE, Frame, NAV, contained},
+    viewer_info_view::{InfoAction, InfoData, InfoView},
+    viewer_layout::{BAR, CLOSE, EDGE, Frame, NAV, contained, info_place, photo_area},
     viewer_levels::level_for,
     viewer_zoom::{
         MAX_ZOOM, MIN_ZOOM, Pan, ZOOM_KEY_STEP, Zoom, actual_size_zoom, wheel_zoom_factor,
@@ -33,8 +34,13 @@ use eframe::egui::{
     StrokeKind, TextureHandle, WidgetInfo, WidgetType, pos2, vec2,
 };
 
-/// A tool in the bar: the star.
+/// A tool in the bar, how many there are - the star, the info panel - and the room
+/// between two.
 const TOOL: f32 = 30.0;
+const TOOLS: usize = 2;
+/// How far a notch of the wheel moves the info panel, in points.
+const PANEL_NOTCH: f32 = 40.0;
+const TOOL_GAP: f32 = 2.0;
 /// The room the zoom's slider takes at the bar's right, and the same kept on its left so
 /// that the bar stays in the middle: the bar is no wider than what is left between.
 const BESIDE_BAR: f32 = 214.0;
@@ -52,7 +58,7 @@ const SLIDER_STEP: f32 = 0.05;
 const PIXELS_A_LINE: f32 = 100.0;
 
 /// What the user did in a frame of the viewer.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum ViewerAction {
     Close,
     /// One photo on (1) or back (-1).
@@ -61,6 +67,10 @@ pub enum ViewerAction {
     Last,
     Star,
     Hide,
+    /// The info panel, opened or closed.
+    Info,
+    /// Something pressed in the info panel.
+    Panel(InfoAction),
 }
 
 /// One size of the full picture.
@@ -104,6 +114,11 @@ pub struct ViewerData<'a> {
     pub starred: Option<bool>,
     pub can_prev: bool,
     pub can_next: bool,
+    /// Whether the info panel is open: the photo is then fitted beside it, and its
+    /// button in the bar is shown pressed.
+    pub info_open: bool,
+    /// What the panel says, once the library has said it of this photo.
+    pub info: Option<InfoData<'a>>,
 }
 
 /// A press of the first button on the photo, from the button going down until it comes
@@ -131,6 +146,10 @@ pub struct ViewerView {
     press: Option<Press>,
     /// The last click on the photo, when and where: the first of a double click.
     clicked: Option<(f64, Pos2)>,
+    /// How wide the bar was in the last frame, for a frame with no caption to size it by.
+    bar: Option<f32>,
+    /// The info panel: how far it is scrolled, and what is typed into its field.
+    info: InfoView,
     /// The window was left, or a touch cancelled, since the first button last went
     /// down: the slider follows the pointer no further, as a pan does not. A button let
     /// go of over another window may never be heard of.
@@ -148,6 +167,8 @@ struct Controls {
     /// The photo's own caption, where it has one: no control, but a press on it is not
     /// the photo's either - a double click on a line of text is not "closer".
     caption: Option<Rect>,
+    /// The info panel, while it is open.
+    panel: Option<Rect>,
 }
 
 impl Controls {
@@ -156,17 +177,24 @@ impl Controls {
             .into_iter()
             .chain(self.slider)
             .chain(self.caption)
+            .chain(self.panel)
             .any(|rect| rect.contains(at))
     }
 }
 
 impl ViewerView {
+    /// Whether a keyword is being typed into the info panel's field: the keys are the
+    /// field's then.
+    pub fn typing(&self) -> bool {
+        self.info.typing()
+    }
+
     /// Draws the viewer over the whole window and answers what was done in it. The zoom
     /// and the pan are `zoom`'s, which the keys, the wheel, a pinch, a double click, a
     /// drag and the slider change here.
     pub fn show(
         &mut self,
-        ui: &egui::Ui,
+        ui: &mut egui::Ui,
         data: &ViewerData<'_>,
         zoom: &mut Zoom,
     ) -> Vec<ViewerAction> {
@@ -176,12 +204,21 @@ impl ViewerView {
         // against is not a theme's to choose.
         painter.rect_filled(window, 0.0, Color32::BLACK);
 
-        let area = Frame {
+        // The photo's area: the window, less the info panel's room while it is open.
+        // The fit, the zoom's bounds, the point a zoom holds still and the pan are all
+        // measured in it, and the picture is cut off at its edge.
+        let whole = Frame {
             left: window.left(),
             top: window.top(),
             width: window.width(),
             height: window.height(),
         };
+        let area = photo_area(whole, data.info_open);
+        let panel = data.info_open.then(|| {
+            let place = info_place(whole);
+            Rect::from_min_size(pos2(place.left, place.top), vec2(place.width, place.height))
+        });
+        let within = Rect::from_min_size(pos2(area.left, area.top), vec2(area.width, area.height));
         let shows = !data.message.is_some_and(|message| !message.over);
         // Nothing is zoomed where there is no picture, and a video's poster is not.
         let zooms = shows && !data.video;
@@ -190,23 +227,27 @@ impl ViewerView {
         zoom.held_to((area.width, area.height));
 
         // Where the controls stand, before anything is read: a press on one is its own.
-        let caption = data
-            .photo_caption
+        // (The photo's own caption is not drawn beside the open panel, which has it
+        // whole.)
+        let caption = (data.photo_caption)
+            .filter(|_| !data.info_open)
             .map(|line| caption_place(ui, window, line));
         let side = |left: f32| {
             Rect::from_min_size(pos2(left, window.center().y - NAV / 2.0), vec2(NAV, NAV))
         };
         let controls = Controls {
             prev: side(window.left() + EDGE),
-            next: side(window.right() - EDGE - NAV),
+            next: side(within.right() - EDGE - NAV),
             close: Rect::from_min_size(
                 pos2(window.right() - EDGE - CLOSE, window.top() + EDGE),
                 vec2(CLOSE, CLOSE),
             ),
-            bar: bar_place(ui, window, data.caption),
+            bar: bar_place(ui, window, data.caption, self.bar),
             slider: (!data.video).then(|| slider_place(window)),
             caption: caption.as_ref().map(|(place, _)| *place),
+            panel,
         };
+        self.bar = Some(controls.bar.width());
         // The photo's own surface, under the controls: with something there to be hit,
         // egui hands no press that lands a few points beside a button to that button,
         // and what a press was is decided in one place, by where it was.
@@ -215,10 +256,10 @@ impl ViewerView {
 
         if shows && let Some((texture, at)) = picture(ui, data, area, zoom) {
             let whole = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
-            painter.image(texture.id(), at, whole, Color32::WHITE);
+            (painter.with_clip_rect(within)).image(texture.id(), at, whole, Color32::WHITE);
         }
         if let Some(message) = data.message {
-            said(ui, window, message);
+            said(ui, within, message);
         }
 
         // The one before and the one after, at the window's sides.
@@ -256,9 +297,7 @@ impl ViewerView {
         if let (Some(line), Some((place, galley))) = (data.photo_caption, caption) {
             photo_caption(ui, place, galley, line);
         }
-        if bar(ui, controls.bar, data) {
-            actions.push(ViewerAction::Star);
-        }
+        actions.extend(bar(ui, controls.bar, data));
         if let Some(place) = controls.slider {
             slider(
                 ui,
@@ -268,6 +307,10 @@ impl ViewerView {
                 zooms,
                 !self.let_go,
             );
+        }
+        if let Some(place) = panel {
+            let pressed = self.info.show(ui, place, data.info.as_ref());
+            actions.extend(pressed.into_iter().map(ViewerAction::Panel));
         }
         actions
     }
@@ -345,8 +388,14 @@ impl ViewerView {
             }
         };
         let at_pointer = pointer.map_or(Pan::default(), from_middle);
+        // While a keyword is being typed the keys are its field's: `h` is a letter, the
+        // arrows move the caret, and Escape leaves the field and closes nothing.
+        let typing = self.info.typing();
+        let over_panel =
+            pointer.is_some_and(|at| controls.panel.is_some_and(|panel| panel.contains(at)));
         for event in &events {
             match event {
+                Event::Key { pressed: true, .. } if typing => {}
                 Event::Key {
                     key,
                     physical_key,
@@ -383,7 +432,21 @@ impl ViewerView {
                         Key::Escape | Key::Backspace if !repeat => Some(ViewerAction::Close),
                         Key::Period if !repeat && types_period => Some(ViewerAction::Star),
                         Key::H if !repeat => Some(ViewerAction::Hide),
+                        Key::I if !repeat => Some(ViewerAction::Info),
                         _ => None,
+                    });
+                }
+                // Over the info panel the wheel is the panel's, which is as tall as
+                // what it has to say, and steps to no other photo. A notch is forty
+                // points, whatever the system's: nothing in the panel is far away, and
+                // by the system's lines - which the grid goes by - a Windows set to
+                // scroll none a notch could not reach the panel's foot at all, the
+                // panel having no other way to be scrolled.
+                Event::MouseWheel { unit, delta, .. } if over_panel => {
+                    self.info.turned(match unit {
+                        egui::MouseWheelUnit::Line => delta.y * PANEL_NOTCH,
+                        egui::MouseWheelUnit::Point => delta.y,
+                        egui::MouseWheelUnit::Page => delta.y * area.height,
                     });
                 }
                 // With Ctrl or Cmd the wheel zooms, at the pointer - which is how a
@@ -646,9 +709,12 @@ fn round(ui: &egui::Ui, rect: Rect, id: &str, icon: Icon, label: &str, works: bo
     response.clicked()
 }
 
-/// Where the bar at the foot of the window stands: as wide as its star and its caption,
-/// which is the part that gives way when the window is narrow.
-fn bar_place(ui: &egui::Ui, window: Rect, caption: &str) -> Rect {
+/// Where the bar at the foot of the window stands: as wide as its tools and its caption,
+/// which is the part that gives way when the window is narrow. With no caption - the
+/// library has not said yet what the photo stepped to is - as wide as it `was`: shrunk
+/// to its tools for the frame or two a step's answer takes, the bar and the buttons in
+/// it jumped twice at every step.
+fn bar_place(ui: &egui::Ui, window: Rect, caption: &str, was: Option<f32>) -> Rect {
     let wanted = ui
         .painter()
         .layout_no_wrap(
@@ -659,8 +725,10 @@ fn bar_place(ui: &egui::Ui, window: Rect, caption: &str) -> Rect {
         .size()
         .x;
     let pad = (BAR - TOOL) / 2.0;
-    let most = (window.width() - 2.0 * BESIDE_BAR).max(TOOL + 2.0 * pad);
-    let width = (pad + TOOL + S[1] + wanted + S[2]).min(most);
+    let tools = TOOLS as f32 * TOOL + (TOOLS - 1) as f32 * TOOL_GAP;
+    let most = (window.width() - 2.0 * BESIDE_BAR).max(tools + 2.0 * pad);
+    let own = pad + tools + S[1] + wanted + S[2];
+    let width = (was.filter(|_| caption.is_empty()).unwrap_or(own)).min(most);
     Rect::from_min_size(
         pos2(
             window.center().x - width / 2.0,
@@ -753,12 +821,13 @@ fn slider(
     );
 }
 
-/// The bar at the foot of the window: the star and the caption. Answers whether the
-/// star was pressed.
-fn bar(ui: &egui::Ui, rect: Rect, data: &ViewerData<'_>) -> bool {
+/// The bar at the foot of the window: its tools - the star, the info panel - and the
+/// caption. Answers what was pressed in it.
+fn bar(ui: &egui::Ui, rect: Rect, data: &ViewerData<'_>) -> Vec<ViewerAction> {
     let font = fonts::regular(T[1]);
     let pad = (BAR - TOOL) / 2.0;
     glass(ui, rect, R[3]);
+    let mut pressed = Vec::new();
 
     let star = Rect::from_min_size(rect.min + vec2(pad, pad), vec2(TOOL, TOOL));
     let works = data.starred.is_some();
@@ -777,8 +846,35 @@ fn bar(ui: &egui::Ui, rect: Rect, data: &ViewerData<'_>) -> bool {
         (true, false, false) => color(DARK.text_dim),
     };
     Icon::Star.paint(ui, star, 16.0, starred, tint);
+    if response.clicked() {
+        pressed.push(ViewerAction::Star);
+    }
 
-    let left = star.right() + S[1];
+    // The info panel's button: lit while the panel is open.
+    let info = star.translate(vec2(TOOL + TOOL_GAP, 0.0));
+    let response = ui.interact(info, Id::new("viewer-info"), Sense::CLICK);
+    response.widget_info(|| {
+        WidgetInfo::selected(
+            WidgetType::Button,
+            true,
+            data.info_open,
+            "Photo information",
+        )
+    });
+    if data.info_open || response.hovered() {
+        ui.painter().rect_filled(info, R[3], color(DARK.hover));
+    }
+    let tint = if data.info_open || response.hovered() {
+        color(DARK.text)
+    } else {
+        color(DARK.text_dim)
+    };
+    Icon::Info.paint(ui, info, 16.0, false, tint);
+    if response.clicked() {
+        pressed.push(ViewerAction::Info);
+    }
+
+    let left = info.right() + S[1];
     let room = rect.right() - S[2] - left;
     if room > 0.0 {
         let painter = ui.painter().with_clip_rect(rect);
@@ -795,7 +891,7 @@ fn bar(ui: &egui::Ui, rect: Rect, data: &ViewerData<'_>) -> bool {
             color(DARK.text_dim),
         );
     }
-    response.clicked()
+    pressed
 }
 
 /// Where the photo's own caption stands, and its words laid out: over the bar and
@@ -890,12 +986,17 @@ mod tests {
         starred: Option<bool>,
         can_prev: bool,
         can_next: bool,
+        info_open: bool,
+        /// What the library has said of the photo, for the open panel.
+        item: Option<photon_engine::commands::ViewerItem>,
         /// The photo's width in pixels as the library says it; nought until it has.
         width: u32,
         video: bool,
         zoom: Zoom,
         /// The textures painted in the last frame, each with where.
         images: Vec<(egui::TextureId, Rect)>,
+        /// What each of them was cut off at.
+        clips: Vec<Rect>,
         texts: Vec<(String, Rect)>,
         fills: Vec<(Rect, Color32)>,
         repaint: std::time::Duration,
@@ -927,10 +1028,13 @@ mod tests {
                 starred: Some(false),
                 can_prev: true,
                 can_next: true,
+                info_open: false,
+                item: None,
                 width: 0,
                 video: false,
                 zoom: Zoom::default(),
                 images: Vec::new(),
+                clips: Vec::new(),
                 texts: Vec::new(),
                 fills: Vec::new(),
                 repaint: std::time::Duration::MAX,
@@ -977,6 +1081,7 @@ mod tests {
                     width: *width,
                 })
                 .collect();
+            let zone = jiff::tz::TimeZone::UTC;
             let data = ViewerData {
                 levels: &levels,
                 fitted: self.fitted.as_ref(),
@@ -989,6 +1094,14 @@ mod tests {
                 video: self.video,
                 can_prev: self.can_prev,
                 can_next: self.can_next,
+                info_open: self.info_open,
+                info: (self.item.as_ref()).map(|item| InfoData {
+                    item,
+                    albums: &[],
+                    finds_faces: false,
+                    looking: false,
+                    zone: &zone,
+                }),
             };
             let (view, zoom) = (&mut self.view, &mut self.zoom);
             let mut actions = Vec::new();
@@ -1001,6 +1114,7 @@ mod tests {
             full.textures_delta.clear();
             self.cursor = full.platform_output.cursor_icon;
             self.images.clear();
+            self.clips.clear();
             self.texts.clear();
             self.fills.clear();
             for clipped in &full.shapes {
@@ -1009,11 +1123,15 @@ mod tests {
                         .texts
                         .push((text.galley.text().to_owned(), text.visual_bounding_rect())),
                     egui::Shape::Rect(rect) => match &rect.brush {
-                        Some(brush) => self.images.push((brush.fill_texture_id, rect.rect)),
+                        Some(brush) => {
+                            self.images.push((brush.fill_texture_id, rect.rect));
+                            self.clips.push(clipped.clip_rect);
+                        }
                         None => self.fills.push((rect.rect, rect.fill)),
                     },
                     egui::Shape::Mesh(mesh) => {
                         self.images.push((mesh.texture_id, mesh.calc_bounds()));
+                        self.clips.push(clipped.clip_rect);
                     }
                     _ => {}
                 });
@@ -1281,8 +1399,8 @@ mod tests {
         f.frame(Vec::new());
         let caption = f.drew(&f.caption.clone()).expect("the caption");
         assert!(caption.bottom() < 700.0 - EDGE && caption.top() > 700.0 - EDGE - BAR);
-        // In the middle, with the star before it.
-        assert!((caption.center().x - 500.0).abs() < 30.0, "{caption:?}");
+        // In the middle, with the bar's tools before it.
+        assert!((caption.center().x - 500.0).abs() < 50.0, "{caption:?}");
         // The photo's own caption stands over the bar, only where there is one.
         assert_eq!(f.drew("Lisbon, at dusk"), None);
         f.photo_caption = Some("Lisbon, at dusk");
@@ -2379,5 +2497,318 @@ mod tests {
         f.point(at);
         f.release(at);
         assert_eq!(f.zoomed(), (2.0, (0.0, 0.0)));
+    }
+
+    /// The room the open panel takes at the right of a window a thousand points wide:
+    /// its 280, the 56 it stands from the edge and the gap of 12 beside it.
+    const BESIDE_PANEL: f32 = 1000.0 - 348.0;
+
+    // With the info panel open the photo is fitted beside it, not under it: its area is
+    // what the panel leaves, and the button for the next photo stands at that area's
+    // edge. Closed again, it is the window.
+    #[test]
+    fn the_photo_is_fitted_beside_the_open_panel() {
+        let mut f = Fixture::new().with_preview([1600, 800]);
+        f.info_open = true;
+        f.frame(Vec::new());
+        // 652 points wide and half as high, in the middle of the window's height.
+        assert_eq!(
+            f.photo().unwrap().1,
+            Rect::from_min_size(
+                pos2(0.0, 350.0 - BESIDE_PANEL / 4.0),
+                vec2(BESIDE_PANEL, BESIDE_PANEL / 2.0)
+            )
+        );
+        // The next photo's button, twelve points inside the area's edge.
+        assert_eq!(
+            f.click(pos2(BESIDE_PANEL - 12.0 - 20.0, 350.0)),
+            [ViewerAction::Step(1)]
+        );
+        assert_eq!(f.click(pos2(968.0, 350.0)), [], "where it stands without");
+        f.info_open = false;
+        f.frame(Vec::new());
+        assert_eq!(
+            f.photo().unwrap().1,
+            Rect::from_min_size(pos2(0.0, 100.0), vec2(1000.0, 500.0))
+        );
+        assert_eq!(f.click(pos2(968.0, 350.0)), [ViewerAction::Step(1)]);
+    }
+
+    // A zoomed photo stops at the panel: the picture is cut off at its area's edge, and
+    // moved only as far as that area's edge - not the window's.
+    #[test]
+    fn a_zoomed_photo_stays_beside_the_panel() {
+        let mut f = photo();
+        f.info_open = true;
+        f.zoom.to(2.0, Pan::default(), (BESIDE_PANEL, 700.0));
+        f.frame(Vec::new());
+        let (_, drawn) = f.photo().unwrap();
+        assert!(drawn.right() > BESIDE_PANEL, "it is larger than its area");
+        let at = (f.images.iter())
+            .position(|(_, rect)| *rect == drawn)
+            .unwrap();
+        assert_eq!(
+            f.clips[at],
+            Rect::from_min_size(pos2(0.0, 0.0), vec2(BESIDE_PANEL, 700.0))
+        );
+        // Twice its area overflows it by half the area on each side.
+        f.press(pos2(300.0, 350.0));
+        f.point(pos2(3000.0, 350.0));
+        assert_eq!(f.zoomed().1, (BESIDE_PANEL / 2.0, 0.0));
+    }
+
+    // The point a zoom holds still, and the place a double click zooms to, are measured
+    // from the middle of the photo's area: from the window's, a double click beside the
+    // open panel zoomed to a place half the panel's room away.
+    #[test]
+    fn a_zoom_beside_the_panel_is_measured_from_the_middle_of_the_photos_area() {
+        let mut f = photo();
+        f.info_open = true;
+        f.frame(Vec::new());
+        // A hundred points right of the area's middle, which is at 326.
+        f.point(pos2(BESIDE_PANEL / 2.0 + 100.0, 350.0));
+        f.wheel(egui::MouseWheelUnit::Line, 1.0, Modifiers::CTRL);
+        let (zoom, pan) = f.zoomed();
+        assert!(near(pan.0 + zoom * 100.0, 100.0), "{pan:?}");
+        f.key(Key::Num0);
+        // At the middle of the area exactly, a double click moves nothing aside; and
+        // the photo's own pixels are measured against its width beside the panel.
+        f.click(pos2(BESIDE_PANEL / 2.0, 350.0));
+        f.click(pos2(BESIDE_PANEL / 2.0, 350.0));
+        let (zoom, pan) = f.zoomed();
+        assert!(near(zoom, 2400.0 / BESIDE_PANEL), "{zoom}");
+        assert_eq!(pan, (0.0, 0.0));
+    }
+
+    // What is said in the picture's place is said in the middle of the photo's area, and
+    // the photo's own caption is not drawn beside the open panel, which has it whole.
+    #[test]
+    fn beside_the_panel_the_message_is_in_the_photos_area_and_the_caption_is_the_panels() {
+        let mut f = Fixture::new();
+        f.info_open = true;
+        f.message = Some(("This photo is no longer available.", false));
+        f.photo_caption = Some("Lisbon, at dusk");
+        f.frame(Vec::new());
+        let said = f.drew("This photo is no longer available.").unwrap();
+        assert!(
+            (said.center().x - BESIDE_PANEL / 2.0).abs() < 1.0,
+            "{said:?}"
+        );
+        assert_eq!(f.drew("Lisbon, at dusk"), None);
+        f.info_open = false;
+        f.frame(Vec::new());
+        assert!(f.drew("Lisbon, at dusk").is_some());
+    }
+
+    // `I` opens and closes the info panel, and so does its button in the bar, beside the
+    // star. Not at the key's repeat, and not as a chord.
+    #[test]
+    fn the_info_panel_is_asked_for_by_its_key_and_its_button() {
+        let mut f = Fixture::new();
+        f.frame(Vec::new());
+        assert_eq!(f.key(Key::I), [ViewerAction::Info]);
+        assert_eq!(f.key_with(Key::I, Modifiers::CTRL), []);
+        let held = |repeat| Event::Key {
+            key: Key::I,
+            physical_key: Some(Key::I),
+            pressed: true,
+            repeat,
+            modifiers: Modifiers::NONE,
+        };
+        assert_eq!(f.frame(vec![held(false)]), [ViewerAction::Info]);
+        assert_eq!(f.frame(vec![held(true)]), []);
+        // Its button is the second tool of the bar.
+        f.frame(Vec::new());
+        let tools: Vec<Rect> = (f.images.iter())
+            .map(|(_, at)| *at)
+            .filter(|at| at.center().y > 650.0 && at.center().x < 500.0)
+            .collect();
+        assert_eq!(tools.len(), 2, "the star and the panel's button");
+        let button = tools
+            .iter()
+            .max_by(|a, b| a.center().x.total_cmp(&b.center().x))
+            .unwrap();
+        assert_eq!(f.click(button.center()), [ViewerAction::Info]);
+    }
+
+    // A step's answer takes a frame or two, and there is no caption to size the bar by
+    // meanwhile: it keeps the width it had, so that its buttons stand still under the
+    // pointer - and takes the new caption's when that has come.
+    #[test]
+    fn the_bar_keeps_its_width_while_the_caption_is_not_known() {
+        let tools = |f: &Fixture| -> Vec<f32> {
+            (f.images.iter())
+                .map(|(_, at)| *at)
+                .filter(|at| at.center().y > 650.0 && at.center().x < 500.0)
+                .map(|at| at.center().x)
+                .collect()
+        };
+        let mut f = Fixture::new();
+        f.frame(Vec::new());
+        let with = tools(&f);
+        assert_eq!(with.len(), 2);
+        let caption = std::mem::take(&mut f.caption);
+        f.frame(Vec::new());
+        assert_eq!(tools(&f), with, "they stand where they stood");
+        f.caption = "b.jpg".to_owned();
+        f.frame(Vec::new());
+        assert!(tools(&f)[0] > with[0], "a short caption is a narrow bar");
+        f.caption = caption;
+        f.frame(Vec::new());
+        assert_eq!(tools(&f), with);
+        // In a viewer just opened there is no width to keep: the tools alone.
+        let mut f = Fixture::new();
+        f.caption.clear();
+        f.frame(Vec::new());
+        assert!(tools(&f)[0] > with[0]);
+    }
+
+    /// The photo with the info panel open over what the library says of it.
+    fn informed() -> Fixture {
+        let mut f = photo();
+        f.info_open = true;
+        f.item = Some(crate::viewer_info_view::testing::full());
+        f.frame(Vec::new());
+        f
+    }
+
+    /// The panel's place in a window a thousand by seven hundred.
+    fn panel() -> Rect {
+        Rect::from_min_max(
+            pos2(1000.0 - 56.0 - 280.0, 12.0),
+            pos2(1000.0 - 56.0, 700.0 - 56.0),
+        )
+    }
+
+    // The panel stands where the layout puts it, beside the photo's area, and what is
+    // pressed in it is answered as the panel's.
+    #[test]
+    fn the_panel_stands_beside_the_photo_and_answers_what_is_pressed_in_it() {
+        let mut f = informed();
+        assert!(
+            f.fills.iter().any(|(rect, _)| *rect == panel()),
+            "{:?}",
+            f.fills
+        );
+        let lens = f.drew("EF50mm f/1.8 STM").expect("the panel says the lens");
+        assert!(panel().contains_rect(lens));
+        assert_eq!(
+            f.click(lens.center()),
+            [ViewerAction::Panel(InfoAction::Search(
+                "lens:\"EF50mm f/1.8 STM\"".to_owned()
+            ))]
+        );
+        // Closed, there is no panel, and nothing of it to press.
+        f.info_open = false;
+        f.frame(Vec::new());
+        assert_eq!(f.drew("EF50mm f/1.8 STM"), None);
+        assert_eq!(f.click(lens.center()), []);
+        // Open before the library has said anything of the photo: its ground alone.
+        f.info_open = true;
+        f.item = None;
+        f.frame(Vec::new());
+        assert!(f.fills.iter().any(|(rect, _)| *rect == panel()));
+        assert_eq!(f.drew("EF50mm f/1.8 STM"), None);
+    }
+
+    // While a keyword is typed the keys are its field's: `h` is a letter and hides no
+    // photo, an arrow moves the caret and steps nowhere, `+` zooms nothing, and Escape
+    // leaves the field and does not close the viewer - the next one does.
+    #[test]
+    fn while_a_keyword_is_typed_the_viewers_keys_are_its_fields() {
+        let mut f = informed();
+        let field = f.drew("Add a keyword").expect("the field").center();
+        f.click(field);
+        assert!(f.view.typing());
+        for key in [
+            Key::H,
+            Key::ArrowRight,
+            Key::Home,
+            Key::Period,
+            Key::I,
+            Key::Backspace,
+        ] {
+            assert_eq!(f.key(key), [], "{key:?}");
+        }
+        f.key(Key::Plus);
+        assert!(f.zoom.is_fit());
+        assert_eq!(f.key(Key::Escape), [], "it leaves the field");
+        assert!(!f.view.typing());
+        assert_eq!(f.key(Key::Escape), [ViewerAction::Close]);
+        assert_eq!(f.key(Key::H), [ViewerAction::Hide]);
+        // Enter in the field adds what was typed, as the panel's own answer.
+        f.click(field);
+        f.frame(vec![Event::Text("alps".to_owned())]);
+        assert_eq!(
+            f.key(Key::Enter),
+            [ViewerAction::Panel(InfoAction::AddTag("alps".to_owned()))]
+        );
+    }
+
+    // Over the panel the wheel is the panel's - it scrolls what the panel says, a
+    // notch at a time - and steps to no photo, with or without Ctrl; over the photo it
+    // steps as ever.
+    #[test]
+    fn the_wheel_over_the_panel_is_the_panels() {
+        use egui::MouseWheelUnit::Line;
+        let mut f = informed();
+        f.size = vec2(1000.0, 400.0);
+        f.frame(Vec::new());
+        let top = f.drew("DATES").expect("in sight").top();
+        f.point(pos2(800.0, 200.0));
+        assert_eq!(f.wheel(Line, -1.0, Modifiers::NONE), []);
+        f.frame(Vec::new());
+        let moved = top - f.drew("DATES").expect("still in sight").top();
+        assert!(moved > 10.0, "{moved}");
+        assert_eq!(f.wheel(Line, 1.0, Modifiers::CTRL), []);
+        assert!(f.zoom.is_fit(), "and zooms nothing");
+        f.frame(Vec::new());
+        assert_eq!(
+            f.drew("DATES").unwrap().top(),
+            top,
+            "back by the same notch"
+        );
+        f.point(pos2(300.0, 200.0));
+        assert_eq!(
+            f.wheel(Line, -1.0, Modifiers::NONE),
+            [ViewerAction::Step(1)]
+        );
+    }
+
+    // A press on the panel is the panel's: no pan begins on it, and two quick presses
+    // on it are no double click on the photo.
+    #[test]
+    fn a_press_on_the_panel_is_not_the_photos() {
+        let mut f = informed();
+        f.zoom.to(2.0, Pan::default(), (BESIDE_PANEL, 700.0));
+        let at = pos2(800.0, 600.0);
+        f.press(at);
+        f.point(at + vec2(-200.0, -100.0));
+        f.release(at + vec2(-200.0, -100.0));
+        assert_eq!(f.zoomed(), (2.0, (0.0, 0.0)));
+        f.time += 1.0;
+        f.click(at);
+        f.click(at);
+        assert_eq!(f.zoom.zoom(), 2.0);
+        // In the black between the photo's area and the panel it is the photo's, as
+        // anywhere that nothing else stands.
+        let gap = pos2(BESIDE_PANEL + 6.0, 350.0);
+        f.press(gap);
+        f.point(gap + vec2(-30.0, 0.0));
+        assert_eq!(f.zoomed().1, (-30.0, 0.0));
+    }
+
+    // A trackpad's points move the panel by themselves, and not by a notch each.
+    #[test]
+    fn a_trackpads_points_move_the_panel_by_themselves() {
+        use egui::MouseWheelUnit::Point;
+        let mut f = informed();
+        f.size = vec2(1000.0, 400.0);
+        f.frame(Vec::new());
+        let top = f.drew("DATES").expect("in sight").top();
+        f.point(pos2(800.0, 200.0));
+        f.wheel(Point, -7.0, Modifiers::NONE);
+        f.frame(Vec::new());
+        assert_eq!(top - f.drew("DATES").expect("still in sight").top(), 7.0);
     }
 }
