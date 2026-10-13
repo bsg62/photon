@@ -1758,6 +1758,12 @@ mod tests {
         let plain = viewer_picture(&f.engine, named("plain.jpg"), false, Some((16, 16))).unwrap();
         assert!(all(&plain.full, colour), "{:?}", &plain.full.rgba[..4]);
         assert!(all(&plain.fitted.unwrap(), colour));
+        // The viewer's picture alone: the copy for the clipboard is the file's numbers,
+        // as an export's is. (Whether those should be converted too is not this
+        // viewer's to decide.)
+        let copied = copy_picture(&f.engine, named("p3.jpg")).unwrap();
+        let copied = Pixels::from(copied);
+        assert!(all(&copied, colour), "{:?}", &copied.rgba[..4]);
     }
 
     // One full-size render at a time, with the export and the web view's: held, the

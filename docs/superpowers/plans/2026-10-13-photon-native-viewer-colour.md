@@ -97,16 +97,18 @@ BT.709, PQ, unspecified.
 ### 2. `commands::viewer_picture`
 
 Tests: a Display P3 photo's full picture and its fitted copy are converted; turned, it
-is converted too; a photo with no profile is as it was; the preview is not converted.
+is converted too; a photo with no profile is as it was; the copy for the clipboard is
+not converted. (The preview is not either; nothing holds it to that.)
 
 ### 3. The checklist, CLAUDE.md, the pull request
 
 ## Changed in the making
 
 - **The profile is read through each format's own decoder**, made directly, and not
-  through `ImageReader::into_decoder` as first written: through that, a TIFF's profile
-  came back as none, while `TiffDecoder::new` over the same bytes gave it whole. Found
-  by the test of the four formats. Why the reader loses it was not run to ground.
+  through `ImageReader::into_decoder` as first written: through that, the test's TIFF
+  gave no profile. (The review ran it to ground: the reader has the tiff crate refuse a
+  tag with more values than the picture has bytes, which a 16-pixel fixture's profile
+  has and a photo's has not. The decoders made directly stay, for the PNG's limit.)
 - **`in_srgb(picture, path)`** is the one call the engine makes, added so that the
   engine names no type of `image`'s: `image` is an optional dependency there, for its
   tests' fixtures, and the first version built under test and would not have built
@@ -120,9 +122,9 @@ is converted too; a photo with no profile is as it was; the preview is not conve
   and curves.
 - **A profile is applied only where it describes a device or a colour space** (its
   class), beside being RGB. The first tests of that made their profiles with moxcms's
-  own writer, which for any class but a screen's or a camera's leaves the primaries
-  out: such a profile was refused for being unreadable, the test passed before there
-  was a rule, and proved nothing. They patch the header of a good profile now.
+  own writer, which for any class but a screen's or a camera's writes one that cannot
+  be read back: such a profile was refused for being unreadable, the test passed before
+  there was a rule, and proved nothing. They patch the header of a good profile now.
 - **"sRGB already" is "within a step"**, with a test of its own. What the step is for
   is said in the code as far as it is known: a table of sRGB's curve, which is what the
   profile most files carry has, moves nothing at all under moxcms (tried at three
@@ -143,3 +145,67 @@ generous.
 primaries (none can be made here without a real file); a real TIFF's or WebP's profile
 written by another program (the fixtures are `image`'s own writing); the conversion's
 effect on a screen (the window's surface, the checklist's business).
+
+## What the review found
+
+An independent read of the whole branch (a fresh reviewer, its own worktree and build),
+against lcms2, libavif, ImageMagick and screenshots of headless Chromium, with a failing
+test for each finding. The colour arithmetic agreed with lcms2 to within a step in every
+space tried (Display P3, Adobe RGB, ProPhoto, BT.2020, a hand-built v4 profile and one
+that is a table), and half a million mutated profiles made nothing panic or hang. Fixed
+in the commit after the feature's unless said otherwise.
+
+**To fix before merging**
+
+- **A PNG's profile was inflated with no bound.** `PngDecoder::new` has no limits and a
+  PNG's profile is deflated: a file of 4 MB took 1.3 GB to say it had no profile, and
+  one of 40 MB would have taken the machine. The decode itself was bounded all along;
+  this was the new read. It is read under 16 MB now.
+- **A profile's `cicp` tag set its curve.** moxcms's default takes the curve from that
+  tag: a profile with sRGB's curves and a tag saying PQ turned mid grey to near black -
+  high dynamic range, in through a profile, against "PQ and HLG are left as they are" -
+  and one saying BT.709 was read by BT.709's own formula, where the same words in an
+  AVIF's box are taken for sRGB's. The curves are the curve tags' now. (Every profile
+  the first tests used was written by moxcms, which puts that tag in: none of them took
+  the road a phone's profile takes. The numbers were the same; the road was not.)
+- **An AVIF with no `colr` box, whose AV1 stream names its colours, is not converted** -
+  *left*. A browser reads the stream's own header; photon's decoder reads it for the
+  matrix and the range, and this would mean reading the primaries and the curve out of
+  the sequence header too, by hand or by a second decode. Writers put the box in
+  (`avifenc` always does), so it is recorded and not built. If it is wrong, such a photo
+  is shown as it was before this branch.
+
+**Smaller, fixed**
+
+- "Is it sRGB already" could be fooled: tried on six steps of each channel, a curve
+  that is a table - sRGB's at those six, lifted between - passed with its greys
+  seventeen steps out. Every step of grey and of each channel is tried now. (The cube
+  of mixtures the first version also tried went: for a profile of primaries and curves
+  the ramps decide, and nothing could tell the cube was there.)
+- An AVIF that names no primaries and does name a curve was left as it was; each of the
+  two has a default of its own, and it has BT.709's primaries now.
+- Rules with no test: a number too large for the table (268 is 12 with a bit above),
+  the two plain gammas and linear light, an AVIF under a generic major brand.
+- Nothing held "nothing else is converted": the copy for the clipboard is asked now.
+
+**Statements that were wrong, put right**: why a TIFF's profile was lost (above); what
+moxcms's writer leaves out; "BT.709's own formula makes a photo darker" - lighter, 128
+as 140; "where none of the spread moves, none of the picture's would"; that a grey
+profile "no longer describes" its numbers - it does, and a browser applies it; "either
+way" for the chunks' time (30 ms against 27).
+
+**Found and left, for the user to weigh**
+
+- A grey photo with a grey profile keeps its numbers (128 where a browser shows 146):
+  the spec's "RGB profiles only".
+- An AVIF's profile is passed over when a box of numbers stands before it: the parser
+  hands over the first. libavif writes the profile first.
+- A PNG that says its colours by `gAMA`, `cHRM` or `cICP` and carries no profile is
+  taken for sRGB.
+- A picture of sixteen bits is made eight before it is converted: a wide-gamut grey
+  ramp lands on 234 of 256 levels.
+- A real profile tints a few neutral greys by one step (12 of 256 under an Adobe RGB
+  profile from another writer); moxcms's own tint none.
+- **Outside this branch, and bearing on the decision it leaves open**: a re-encoded
+  export of a Display P3 photo carries Display P3's numbers and no profile, so every
+  other program shows it duller. That is how exports have always been.

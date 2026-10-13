@@ -2403,42 +2403,68 @@ is Display P3 and a camera's often Adobe RGB, and their numbers read as sRGB are
 colours than were taken. A web view converts them; the native viewer draws the pixels
 itself. The conversion is moxcms: pure Rust, and in the build already as `image`'s own
 dependency. `embedded_profile` reads what the file says - the ICC profile of a JPEG, a PNG,
-a TIFF or a WebP, **through each format's own decoder made directly** (through
-`ImageReader::into_decoder` a TIFF's profile came back as none, by this module's test), and
-an AVIF's `colr` box, which is a profile or four numbers (`nclx`). It is a read of the file
-of its own, after the decode: every full decode goes through `decode_image`, and its other
-callers want no profile. **Only a profile that says what a picture's numbers are is
-applied**: RGB, and of a device or a colour space - not a CMYK or a grey one (the decoder
-has made RGB of those numbers by a rule of its own), not a link between devices, an abstract
-profile or named colours. **An AVIF's numbers** are converted where they name a
-standard-range space: the primaries by moxcms's table, and the curve taken for sRGB's own
-where it is BT.709's family or not said at all, as a web view takes it - by its own formula
-a photo that says "BT.709" comes out darker than every browser shows it. PQ and HLG are left
-as they are: high dynamic range is not shown on this surface by a conversion of numbers. **A
-profile that is sRGB is told by what it does**, not by its name: a spread of 216 colours is
-converted first, and where none moves by more than a step the picture is left alone - which
-is nearly every profile there is. The picture is converted in place, a chunk at a time, so
-no second picture of 96 MB is held (30 ms for 24 million pixels in a release build, either
-way; about three seconds unoptimised, which only a debug build of the application pays -
-moxcms is not among the crates the dev profile optimises), and **before the fitted copy is
-scaled**, so that the two pictures of one photo are of one colour.
+a TIFF or a WebP, through each format's own decoder, and an AVIF's `colr` box, which is a
+profile or four numbers (`nclx`). It is a read of the file of its own, after the decode:
+every full decode goes through `decode_image`, and its other callers want no profile. **A
+PNG's profile is read under a limit** (`PROFILE_LIMIT`): it is deflated, `PngDecoder::new`
+inflates it with no bound, and a file of four megabytes took 1.3 GB to say it had no
+profile. **Only a profile that says what a picture's numbers are is applied**: RGB, and of a
+device or a colour space - not a link between devices, an abstract profile or named colours;
+not a CMYK one, whose numbers the decoder has made RGB of by a rule of its own; and not a
+grey one, which a web view does apply (the spec's "RGB profiles only": a grey photo with a
+profile of its own keeps its numbers, 128 where a browser shows 146). **A profile's curves
+are its curve tags, whatever its `cicp` tag says** (`allow_use_cicp_transfer` off, where
+moxcms's default is on): by the tag, a profile with sRGB's curves and a tag saying PQ turned
+mid grey to near black, and one saying BT.709 was read by BT.709's own formula. **An AVIF's
+numbers** are converted where they name a standard-range space: the primaries by moxcms's
+table, BT.709's where none are named (each of the two has a default of its own), and the
+curve taken for sRGB's own where it is BT.709's family or not said at all, as a web view
+takes it - by its own formula a photo that says "BT.709" comes out lighter than every
+browser shows it, 128 as 140. PQ and HLG are left as they are: high dynamic range is not
+shown on this surface by a conversion of numbers. **A profile that is sRGB is told by what
+it does**, not by its name: every step of grey and of each channel alone is converted first,
+and where none moves by more than a step the picture is left alone - which is nearly every
+profile there is. (Six steps of each were tried at first: a curve that is a table, sRGB's at
+those six and lifted between, passed for sRGB with its greys seventeen steps out.) The
+picture is converted in place, a chunk at a time, so no second picture of 96 MB is held (30
+ms for 24 million pixels in a release build, 27 in one pass over two pictures; about three
+seconds unoptimised, which only a debug build of the application pays - moxcms is not among
+the crates the dev profile optimises), and **before the fitted copy is scaled**, so that the
+two pictures of one photo are of one colour.
 
 What is *not* converted, each on purpose or for want of a decision: the preview (so a
 wide-gamut photo changes colour a little when its full picture lands, as it does in the
 Tauri viewer), the grid's thumbnails, an export and the copy for the clipboard - whether
-those should be is a decision about photon-core and the Tauri photon, not this viewer's. And
-"converted" means converted to sRGB's numbers: whether the system takes the window's surface
-for sRGB on a wide-gamut display is not something a test here can see (the smoke checklist,
-for a Mac). Three things about moxcms and the tests, each learnt by a test that failed. Its
-`update_rgb_colorimetry_from_cicp` answers false whatever it did (0.8.1), so the profile is
-made by `new_from_cicp` and asked whether it has primaries and curves (`is_matrix_shaper`).
-A profile it *writes* for any class but a screen's or a camera's has no primaries in it and
-cannot be read back, so the tests of "a device link is not applied" patch the four letters
-of a good profile's header instead - made by the writer, such a fixture was refused for
-being broken and proved nothing. And the values the tests expect are worked out by hand -
-primaries to XYZ and back through sRGB's, each space's own curve - not asked of moxcms; they
-agree to the digit. A profile that makes moxcms panic costs that photo its full picture and
-no more: the task catches it, and the preview stays.
+those should be is a decision about photon-core and the Tauri photon, not this viewer's. (It
+is not a small one: a re-encoded export of a Display P3 photo carries Display P3's numbers
+and no profile, so every other program shows it duller. That is older than the native
+viewer.) And "converted" means converted to sRGB's numbers: whether the system takes the
+window's surface for sRGB on a wide-gamut display is not something a test here can see (the
+smoke checklist, for a Mac). **Known, and left**: an AVIF with no `colr` box whose AV1
+stream names its colours is not converted (a browser reads the stream's own header; photon's
+decoder reads it for the matrix and the range only, and writers put the box in); an AVIF's
+profile is passed over when a box of numbers stands before it (the parser hands over the
+first of the two; libavif writes the profile first); a PNG's `gAMA`, `cHRM` and `cICP`
+chunks are not read, so one that says its colours that way and carries no profile is taken
+for sRGB; and a picture of sixteen bits is made eight before it is converted, which leaves a
+wide-gamut ramp a few shadow levels short.
+
+Things about moxcms, `image` and the tests, each learnt by a test that failed or a review
+that measured. moxcms's `update_rgb_colorimetry_from_cicp` answers false whatever it did
+(0.8.1), so the profile is made by `new_from_cicp` and asked whether it has primaries and
+curves (`is_matrix_shaper`). **A profile moxcms writes carries a `cicp` tag**, so a test
+built on one alone never takes the road a phone's profile takes; the tests of the tag write
+their profiles a byte at a time (`colour::by_hand`, a reviewer's writer). A profile moxcms
+writes for any class but a screen's or a camera's cannot be read back (it counts a tag it
+then does not write), so the tests of "a device link is not applied" patch the four letters
+of a good profile's header - made by the writer, such a fixture was refused for being broken
+and proved nothing. `image`'s generic reader loses the profile of a *small* TIFF (it has the
+tiff crate take no tag with more values than the picture has bytes), which this module's
+16-pixel fixtures are and no photo is. And the values the tests expect are worked out by
+hand - primaries to XYZ and back through sRGB's, each space's own curve - not asked of
+moxcms; they agree with it, and with lcms2, to the digit. A profile that makes moxcms panic
+costs that photo its full picture and no more: the task catches it and the preview stays -
+none was found in half a million mutated profiles.
 
 **A picture test makes its GPU device alone** (`tests/screenshots.rs`, `DEVICES`): every
 picture is drawn on a thread of its own, and with two dozen devices made in the same
