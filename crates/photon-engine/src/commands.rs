@@ -1134,8 +1134,15 @@ pub fn viewer_picture(
         item.edit
     };
     let _one_at_a_time = crate::engine::RENDERING.lock();
-    let picture = photon_core::edit::render_picture(Path::new(&item.path), item.orientation, edit)
-        .map_err(unreadable)?;
+    let path = Path::new(&item.path);
+    let picture =
+        photon_core::edit::render_picture(path, item.orientation, edit).map_err(unreadable)?;
+    // The window draws sRGB: a photo whose file says its colours are another space's -
+    // a phone's Display P3, a camera's Adobe RGB - is converted, as a web view converts
+    // it, or its numbers read as sRGB are duller colours than were taken. Pixel by
+    // pixel, so it is the same before a turn or a crop as after; and before the copy
+    // for the box is scaled, so that the two pictures of one photo are of one colour.
+    let picture = photon_core::colour::in_srgb(picture, path);
     let fitted = fit.and_then(|within| photon_core::edit::fitted_copy(&picture, within));
     Ok(ViewerPicture {
         thumb_key: item.thumb_key(),
@@ -1385,7 +1392,7 @@ pub fn watched_path(engine: &Engine, watched_id: i64) -> CmdResult<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testutil::{Fixture, fixture, jpeg};
+    use crate::testutil::{Fixture, fixture, jpeg, jpeg_of};
     use photon_core::face_detect::{DETECTOR_VERSION, Detection};
 
     #[test]
@@ -1703,6 +1710,60 @@ mod tests {
         let turned = viewer_picture(&f.engine, id, false, Some((100, 100))).unwrap();
         let turned = turned.fitted.unwrap();
         assert_eq!((turned.width, turned.height), (50, 100));
+    }
+
+    // A photo whose file says its colours are Display P3 is handed to the viewer in
+    // sRGB, which is what the window draws: its full picture and the copy fitted to the
+    // box alike, and turned as well as upright. One that says nothing is taken for sRGB
+    // and is as its numbers are. (Within what a JPEG of one flat colour gives back.)
+    #[test]
+    fn the_viewers_picture_is_in_srgb_whatever_colours_the_file_says_it_is_in() {
+        let p3 = moxcms::ColorProfile::new_display_p3().encode().unwrap();
+        let colour = [200, 100, 50];
+        let f = fixture(&[
+            ("p3.jpg", &jpeg_of(colour, Some(&p3))),
+            ("plain.jpg", &jpeg_of(colour, None)),
+        ]);
+        f.add_photos();
+        let named = |name: &str| {
+            let ids = f.ids();
+            let is = |id: &&i64| {
+                f.engine
+                    .lib
+                    .item(**id)
+                    .unwrap()
+                    .unwrap()
+                    .path
+                    .ends_with(name)
+            };
+            *ids.iter().find(is).unwrap()
+        };
+        let all = |pixels: &Pixels, want: [u8; 3]| {
+            assert!(!pixels.rgba.is_empty());
+            (pixels.rgba.as_chunks::<4>().0.iter())
+                .all(|pixel| pixel[3] == 255 && (0..3).all(|c| pixel[c].abs_diff(want[c]) <= 3))
+        };
+        // Display P3's (200, 100, 50) is sRGB's (215, 93, 31): worked out by hand in
+        // `photon_core::colour`'s tests.
+        let in_srgb = [215, 93, 31];
+        let picture = viewer_picture(&f.engine, named("p3.jpg"), false, Some((16, 16))).unwrap();
+        assert!(all(&picture.full, in_srgb), "{:?}", &picture.full.rgba[..4]);
+        let fitted = picture.fitted.expect("a copy for the box");
+        assert_eq!((fitted.width, fitted.height), (16, 8));
+        assert!(all(&fitted, in_srgb), "{:?}", &fitted.rgba[..4]);
+        set_item_edit(&f.engine, named("p3.jpg"), 1, None).unwrap();
+        let turned = viewer_picture(&f.engine, named("p3.jpg"), false, None).unwrap();
+        assert_eq!((turned.full.width, turned.full.height), (32, 64));
+        assert!(all(&turned.full, in_srgb), "{:?}", &turned.full.rgba[..4]);
+        let plain = viewer_picture(&f.engine, named("plain.jpg"), false, Some((16, 16))).unwrap();
+        assert!(all(&plain.full, colour), "{:?}", &plain.full.rgba[..4]);
+        assert!(all(&plain.fitted.unwrap(), colour));
+        // The viewer's picture alone: the copy for the clipboard is the file's numbers,
+        // as an export's is. (Whether those should be converted too is not this
+        // viewer's to decide.)
+        let copied = copy_picture(&f.engine, named("p3.jpg")).unwrap();
+        let copied = Pixels::from(copied);
+        assert!(all(&copied, colour), "{:?}", &copied.rgba[..4]);
     }
 
     // One full-size render at a time, with the export and the web view's: held, the

@@ -4720,6 +4720,7 @@ dependencies = [
  "kamadak-exif",
  "libc",
  "memchr",
+ "moxcms",
  "mozjpeg",
  "mozjpeg-sys",
  "notify",
@@ -4746,6 +4747,7 @@ version = "0.53.1"
 dependencies = [
  "image",
  "libc",
+ "moxcms",
  "parking_lot",
  "photon-core",
  "rusqlite",

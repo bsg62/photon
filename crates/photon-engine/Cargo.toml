@@ -36,6 +36,8 @@ windows-sys = { version = "0.61", features = [
 
 [dev-dependencies]
 image = { version = "0.25.10", default-features = false, features = ["jpeg"] }
+# A test's colour profile, for a photo that says it is Display P3 (`viewer_picture`).
+moxcms = "0.8.1"
 # Only to break a library on purpose: a rebuild that fails is the one thing a rollback test
 # cannot get from the engine's own API. The same version and features photon-core builds.
 rusqlite = { version = "0.40.2", features = ["bundled"] }

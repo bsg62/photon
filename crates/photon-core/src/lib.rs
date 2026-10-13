@@ -1,6 +1,7 @@
 //! photon-core: headless library, scanning and thumbnail engine for photon.
 
 pub mod avif;
+pub mod colour;
 pub mod decode;
 pub mod duplicates;
 pub mod edit;
