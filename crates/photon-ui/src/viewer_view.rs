@@ -289,7 +289,7 @@ impl ViewerView {
                 })
                 .collect()
         };
-        let aimed = stood.map(&boxes).unwrap_or_default();
+        let aimed = stood.map(boxes).unwrap_or_default();
         // An unnamed face photon found is pressed to name it, while the outlines show:
         // as much of it as is in the photo's area.
         let pressable = |boxes: &[Rect]| -> Vec<(i64, Rect)> {
