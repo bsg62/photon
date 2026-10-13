@@ -296,9 +296,17 @@ impl DialogView {
         // lines or fewer. In that frame it was drawn with its top where it had been, a
         // press on "Export" where the button had stood was a press beside the dialog,
         // which closes it, and it was put in the middle a frame later.
+        // A dialog that is a field over a list is as tall as its list, which is another
+        // list at every letter and - the people's - not read at all until a moment after
+        // the dialog opens. In the middle by its own height it moved at each of those:
+        // the field a name was being typed into went up and down the window. So it
+        // stands where it would stand at its tallest, and grows downwards from there.
+        let stands = picker
+            .as_ref()
+            .map_or(height, |picker| picker.tallest(window.height()));
         let area = egui::Area::new(id)
             .order(egui::Order::Foreground)
-            .fixed_pos(window.center() - vec2(width, height) / 2.0)
+            .fixed_pos(window.center() - vec2(width, stands) / 2.0)
             // There at once, as a dialog is: egui fades a new area in over a few
             // frames, each of them asked for.
             .fade_in(false);
@@ -509,7 +517,9 @@ impl<'a> Picker<'a> {
     /// moment the read takes would be said of a library with fifty people in it.
     fn of_people(picker: &'a PersonPicker, people: Option<&'a [NamedPerson]>) -> Self {
         let known = people.unwrap_or_default();
-        let hint = picker.hint(known);
+        // What Enter will do is said once the people are read: before that every name
+        // is "a new person", in a library that may have them.
+        let hint = people.map_or(String::new(), |people| picker.hint(people));
         Self {
             title: picker.title(),
             placeholder: person_picker::FIELD,
@@ -549,7 +559,12 @@ impl<'a> Picker<'a> {
     fn height(&self, window: f32) -> f32 {
         let list = self.rows.len().max(1) as f32 * CONTROL;
         let whole = 2.0 * PAD + CLOSE + GAP + CONTROL + self.hint_height() + GAP + list;
-        whole.min(HEIGHT).min(window - 2.0 * PAD)
+        whole.min(self.tallest(window))
+    }
+
+    /// How tall it is at most, whatever its list holds: what it is placed by.
+    fn tallest(&self, window: f32) -> f32 {
+        HEIGHT.min(window - 2.0 * PAD)
     }
 
     /// Its title and the button that closes it, the field with the button that writes
@@ -1956,5 +1971,48 @@ pub(crate) mod tests {
         let mut f = naming(&names);
         f.open();
         assert_eq!(f.ground().height(), HEIGHT);
+    }
+    // ---- The person dialog, where a review found the edges ----
+
+    // Until the people are read the line under the field says what it says at rest,
+    // whatever is typed: by an empty list every name is "a new person", in a library
+    // that may well have them.
+    #[test]
+    fn the_line_says_nothing_of_a_name_before_the_people_are_read() {
+        let mut f = naming(&["Anna"]);
+        f.people = None;
+        f.open();
+        f.typed("anna");
+        f.frame(Vec::new());
+        assert!(
+            f.drew("New person “anna”").is_none(),
+            "said before the library has said who there is"
+        );
+        // Read: she is there, and the line says so.
+        f.people = Some(people(&["Anna"]));
+        f.frame(Vec::new());
+        assert!(f.drew("Add to Anna").is_some());
+    }
+
+    // The dialog is as tall as its rows, and its people are read a moment after it
+    // opens: the field stays where it is when they are, the dialog growing downwards
+    // from where it stands. (In the middle of the window by its own height, the field
+    // moved a hundred points under a name being typed.)
+    #[test]
+    fn the_field_stays_where_it_is_when_the_people_are_read() {
+        let names: Vec<String> = (0..8).map(|n| format!("Person {n}")).collect();
+        let names: Vec<&str> = names.iter().map(String::as_str).collect();
+        let mut f = naming(&names);
+        f.people = None;
+        f.open();
+        let before = f.drew("Who is this?").unwrap().top();
+        f.people = Some(people(&names));
+        f.frame(Vec::new());
+        f.frame(Vec::new());
+        let after = f.drew("Who is this?").unwrap().top();
+        assert!(
+            (before - after).abs() < 0.5,
+            "the title was at {before} and is at {after}"
+        );
     }
 }

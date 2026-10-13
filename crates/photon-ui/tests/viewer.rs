@@ -1209,6 +1209,12 @@ fn a_photo_that_cannot_be_shown_says_so_and_holds_no_picture() {
     driver.act(&mut harness);
     assert!(harness.query_by_label("It is broken.").is_some());
     drop(rendering);
+    // Until the picture has been answered, however long that takes: the render waits
+    // its turn behind every other test of this file that holds one, and a second of
+    // waiting was not always enough on Windows' CI.
+    driver.until(&mut harness, "the picture answered", |app| {
+        !app.viewer_asked()
+    });
     rest(&mut driver, &mut harness, 1.0);
     assert_eq!(harness.state().viewer_holds(), None);
     assert!(!harness.state().viewer_asked());

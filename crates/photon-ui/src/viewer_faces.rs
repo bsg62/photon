@@ -167,6 +167,56 @@ pub fn face_actions_at(faces: &[Drawn<'_>], hit: Option<usize>) -> Vec<FaceActio
 mod tests {
     use super::*;
 
+    // The faces of a photo as the library gives them: the named ones first, then those
+    // nobody has named, each with its four numbers in the order left, top, right,
+    // bottom - which is the order a menu's "Not …" items stand in, and where an
+    // outline is.
+    #[test]
+    fn the_faces_are_the_librarys_named_first_each_with_its_own_rectangle() {
+        use crate::viewer_info_view::testing::{bare, face};
+        use photon_engine::commands::UnnamedFace;
+        let mut item = bare();
+        item.faces = vec![
+            photon_core::library::ItemFace {
+                left: 0.1,
+                top: 0.2,
+                right: 0.3,
+                bottom: 0.5,
+                face_id: Some(4),
+                ..face("p:1", "Anna")
+            },
+            face("c:9", "Ben"),
+        ];
+        item.unnamed_faces = vec![UnnamedFace {
+            left: 0.6,
+            top: 0.7,
+            right: 0.8,
+            bottom: 0.9,
+            face_id: Some(12),
+        }];
+        let drawn = drawn(&item);
+        assert_eq!(
+            drawn[0],
+            Drawn {
+                key: Some("p:1"),
+                name: Some("Anna"),
+                face_id: Some(4),
+                within: [0.1, 0.2, 0.3, 0.5],
+            }
+        );
+        assert_eq!((drawn[1].key, drawn[1].face_id), (Some("c:9"), None));
+        assert_eq!(
+            drawn[2],
+            Drawn {
+                key: None,
+                name: None,
+                face_id: Some(12),
+                within: [0.6, 0.7, 0.8, 0.9],
+            }
+        );
+        assert_eq!(drawn.len(), 3);
+    }
+
     #[test]
     fn a_face_is_placed_in_the_photo_as_drawn_and_not_in_the_window() {
         let image = Frame {

@@ -553,9 +553,8 @@ fn the_viewers_menu_does_not_outlive_the_viewer() {
 
 // The menu is of the photo on screen, and so is what its items do. The other button
 // and an arrow key in one frame: the menu was asked for over one photo and the viewer
-// is on the next. Whether the menu then stands - the library has said what the next
-// photo is - or has closed for want of anything to be of, "Hide photo" hides the photo
-// that is on screen, and never the one that was left.
+// is on the next, so none is opened - and one asked for there afterwards hides the
+// photo that is on screen, never the one that was left.
 #[test]
 fn the_viewers_menu_acts_on_the_photo_on_screen() {
     let dir = tempfile::tempdir().unwrap();
@@ -579,14 +578,17 @@ fn the_viewers_menu_acts_on_the_photo_on_screen() {
     ]);
     driver.act(&mut harness);
     assert_eq!(viewing(&harness), Some(ids[2]));
+    assert!(
+        !harness.state().menu_open(),
+        "no menu in the frame of a step"
+    );
     harness.event(button(on_photo, PointerButton::Secondary, false));
     driver.until(&mut harness, "the next photo's facts", |app| {
         app.viewer_item().is_some_and(|item| item.id == ids[2])
     });
     driver.act(&mut harness);
-    if !harness.state().menu_open() {
-        right_click_at(&mut driver, &mut harness, on_photo);
-    }
+    assert!(!harness.state().menu_open());
+    right_click_at(&mut driver, &mut harness, on_photo);
     pick_item(&mut driver, &mut harness, "Hide photo");
     driver.until(&mut harness, "a photo hidden", |app| app.photos() == 5);
     let shown = harness.state().shown();
@@ -785,4 +787,125 @@ fn a_click_in_the_frame_the_dialog_is_first_drawn_in_presses_nothing_in_the_view
         Vec::<String>::new(),
         "no star was asked for"
     );
+}
+
+/// Zooms the photo in the viewer in as far as it goes and drags it left as far as it
+/// goes: what was left of its middle is out of the photo's area. The drag begins at the
+/// area's right edge, clear of the face - whose outline, where it takes a press, is no
+/// place to take hold of the photo - and of the button for the next photo.
+fn dragged_out(driver: &mut Driver, harness: &mut Harness<'_>) {
+    for _ in 0..8 {
+        key(driver, harness, Key::Plus);
+    }
+    let area = harness.ctx.content_rect().width() - 348.0;
+    let from = egui::pos2(area - 20.0, 100.0);
+    for _ in 0..3 {
+        harness.event(egui::Event::PointerMoved(from));
+        harness.event(button(from, PointerButton::Primary, true));
+        harness.event(egui::Event::PointerMoved(from - egui::vec2(700.0, 0.0)));
+        harness.event(button(
+            from - egui::vec2(700.0, 0.0),
+            PointerButton::Primary,
+            false,
+        ));
+        driver.act(harness);
+    }
+    driver.act(harness);
+}
+
+// A face that a zoom has taken out of the photo's area is not there: no button to
+// name it and no plate with its name are told to whoever reads the window without
+// seeing it - as nothing of the info panel is that is scrolled out of it.
+#[test]
+fn a_face_out_of_the_photos_area_is_not_told_to_whoever_reads_the_window() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = library(dir.path(), 6, 0, 0);
+    let ids = photo_ids(&library);
+    looked(&library, &ids[..2], &ids[..1], "Anna");
+    let (mut harness, mut driver) = opened(&library, 6);
+    driver.settle(&mut harness);
+
+    informed(&mut driver, &mut harness, ids[1]);
+    assert!(harness.query_by_label("Name this face").is_some());
+    dragged_out(&mut driver, &mut harness);
+    assert!(!harness.state().viewer().unwrap().zoom().is_fit());
+    assert!(harness.query_by_label("Name this face").is_none());
+
+    key(&mut driver, &mut harness, Key::Escape);
+    rest(&mut driver, &mut harness, 1.0);
+    informed(&mut driver, &mut harness, ids[0]);
+    driver.act(&mut harness);
+    let plates = |harness: &Harness<'_>| {
+        harness
+            .query_all_by_role_and_label(Role::Label, "Anna")
+            .count()
+    };
+    assert_eq!(plates(&harness), 1);
+    dragged_out(&mut driver, &mut harness);
+    assert_eq!(plates(&harness), 0);
+}
+
+fn notch() -> egui::Event {
+    egui::Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Line,
+        delta: egui::vec2(0.0, -1.0),
+        phase: egui::TouchPhase::Move,
+        modifiers: Modifiers::NONE,
+    }
+}
+
+// The frame a dialog opens in, and the frame it closes in, are the dialog's: a notch of
+// the wheel in the frame the menu's "Name this face…" is picked steps to no photo - the
+// dialog would stand over the next one, asking about a face of the one that was left -
+// and neither does one in the frame of the Escape that closes it.
+#[test]
+fn the_frames_a_dialog_opens_and_closes_in_are_the_dialogs() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = library(dir.path(), 6, 0, 0);
+    let ids = photo_ids(&library);
+    looked(&library, &ids[..3], &[], "");
+    let (mut harness, mut driver) = opened(&library, 6);
+    driver.settle(&mut harness);
+    informed(&mut driver, &mut harness, ids[1]);
+    let on_face = face_at(&harness, None);
+    right_click_at(&mut driver, &mut harness, on_face);
+    let item = harness.get_by_label("Name this face…").rect().center();
+    harness.event(egui::Event::PointerMoved(item));
+    harness.event(button(item, PointerButton::Primary, true));
+    driver.act(&mut harness);
+    // The button up on the item, and a notch of the wheel, in one frame.
+    harness
+        .input_mut()
+        .events
+        .extend([button(item, PointerButton::Primary, false), notch()]);
+    driver.act(&mut harness);
+    assert!(dialog(&harness).is_some(), "the item was picked");
+    assert_eq!(
+        viewing(&harness),
+        Some(ids[1]),
+        "and nothing stepped under it"
+    );
+    stand(&mut driver, &mut harness);
+    // Escape and a notch in one frame.
+    harness.input_mut().events.extend([
+        egui::Event::Key {
+            key: Key::Escape,
+            physical_key: Some(Key::Escape),
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        },
+        notch(),
+    ]);
+    driver.act(&mut harness);
+    assert_eq!(dialog(&harness), None, "Escape closed it");
+    assert_eq!(
+        viewing(&harness),
+        Some(ids[1]),
+        "and the notch was not the viewer's"
+    );
+    // The next one is.
+    harness.event(notch());
+    driver.act(&mut harness);
+    assert_eq!(viewing(&harness), Some(ids[2]));
 }

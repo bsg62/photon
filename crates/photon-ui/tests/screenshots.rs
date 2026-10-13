@@ -951,9 +951,7 @@ fn naming_a_face(harness: &mut Harness<'_>, db: &Path) {
     for _ in 0..4 {
         harness.step();
     }
-    // (The people are read by a task: a moment for its answer.)
-    std::thread::sleep(Duration::from_millis(200));
-    harness.step();
+    until(harness, "the people listed", App::people_listed);
     harness.event(egui::Event::Text("an".to_owned()));
     for _ in 0..3 {
         harness.step();

@@ -116,6 +116,9 @@ pub struct App {
     /// photo in sight, whom a typed name still joins.
     people: Latest<(), Option<Vec<NamedPerson>>>,
     named: Option<Vec<NamedPerson>>,
+    /// When a dialog last closed or an item of a menu was last picked, on the frame's
+    /// clock: what the click that did it may be the first of.
+    overlay_closed: Option<f64>,
     /// The albums and saved searches whose delete has been asked for and which the
     /// lists on hand still hold, each with whether its delete has been answered. Until
     /// the lists have been read after that answer the row is one of something that is
@@ -923,6 +926,7 @@ impl App {
             dialog_view: DialogView::default(),
             people,
             named: None,
+            overlay_closed: None,
             deleting: Vec::new(),
             viewer: None,
             viewer_view: ViewerView::default(),
@@ -1296,6 +1300,11 @@ impl App {
         self.dialog.as_ref()
     }
 
+    /// Whether the people the person dialog lists have been read since it opened.
+    pub fn people_listed(&self) -> bool {
+        self.named.is_some()
+    }
+
     /// Whether an export is running.
     pub fn exporting(&self) -> bool {
         self.exporting
@@ -1616,6 +1625,12 @@ impl App {
     fn shut_viewer(&mut self) {
         self.viewer = None;
         self.previews.clear();
+        // And the dialog that stands over it, which is of its photo - "Who is this?",
+        // of a face on it: shut from under the dialog by a grid of other results that
+        // does not hold the photo, the viewer left it standing over the grid, asking
+        // about a face on a photo nobody sees. (No other dialog opens over the viewer:
+        // the grid's are opened from the grid, and take the keys that would open it.)
+        self.dialog = None;
     }
 
     /// A typed search is sent in a frame of its own, which a still window would not
@@ -1748,7 +1763,11 @@ impl App {
 
     /// One frame of the viewer: what it asks the tasks for, what it draws, and what the
     /// user did in it.
-    fn show_viewer(&mut self, ui: &mut egui::Ui, now: f64) {
+    ///
+    /// `under_dialog`: a dialog stood over the window as the frame began. It may have
+    /// closed in this very frame, and the frame is its all the same - as it is to the
+    /// shell, which goes by the same word.
+    fn show_viewer(&mut self, ui: &mut egui::Ui, now: f64, under_dialog: bool) {
         let Some(mut open) = self.viewer.take() else {
             return;
         };
@@ -1763,7 +1782,8 @@ impl App {
         // next at the end of the frame, and called off here that walk went nowhere:
         // over the viewer the arrows did nothing in a dialog where over the grid they
         // step through its rows.
-        if self.dialog.is_none() {
+        let under_dialog = under_dialog || self.dialog.is_some();
+        if !under_dialog {
             ctx.memory_mut(|memory| memory.move_focus(egui::FocusDirection::None));
         }
         let (id, key, want) = (open.viewer.id(), open.viewer.key(), open.viewer.want());
@@ -1922,7 +1942,7 @@ impl App {
             faces: &faces,
             // A dialog, or the viewer's own menu: both are shown before the viewer in a
             // frame, and neither takes the wheel out of it.
-            paused: self.dialog.is_some() || self.menu.is_some(),
+            paused: under_dialog || self.menu.is_some(),
         };
         // The zoom is the view's to change in this frame, and the viewer's to keep:
         // before what was done in the frame is acted on, since a step puts it back to
@@ -1935,7 +1955,7 @@ impl App {
         // What lies under a dialog does nothing, here as in the shell: egui keeps the
         // pointer from it only from the frame after the dialog is first drawn, and a
         // click that was over within that first frame was still a button's.
-        if self.dialog.is_some() {
+        if under_dialog {
             actions.clear();
         }
 
@@ -2049,21 +2069,6 @@ impl App {
         if closed {
             self.close_viewer();
         }
-        // The menu is of whatever the viewer shows when its items are next built:
-        // after a step in this same frame that is nothing yet, and over a viewer this
-        // frame closed it is nothing at all - it has no items then, and closes.
-        if let Some((at, of)) = menu {
-            self.open_menu(&ctx, at, of);
-        }
-        // The dialog names the face that was pressed, by its id, whatever the viewer
-        // shows by then. Not over a viewer that the same frame closed or left: asked
-        // who a face is, with the photo it is on no longer on screen.
-        if let Some(face) = naming
-            && self.viewer.is_some()
-            && leaving.is_none()
-        {
-            self.open_person(person_picker::Target::Face(face));
-        }
         // A link that leaves the viewer shuts it and goes where a row of the sidebar
         // would: through `go`, which tells the search box. The photo is not handed back
         // to the grid first, where the grid that was under the viewer is being left
@@ -2086,6 +2091,28 @@ impl App {
                 InfoAction::Locate(id) => self.locate(id, false),
                 _ => step.into_iter().for_each(|step| self.go(step)),
             }
+        }
+        // The menu that was asked for and the face that was pressed are of the photo
+        // that was on screen then, and are opened only while it still is: not after a
+        // step in the same frame - a held arrow key repeats thirty times a second -
+        // which would stand the menu over the next photo as that photo's, and ask "Who
+        // is this?" of a face on the photo that was left, over another face in the same
+        // place; and not over a viewer the frame has closed. Nothing is known of the
+        // photo stepped to until the library has answered, which is what is asked.
+        if !(self.viewer.as_ref()).is_some_and(|open| open.item.is_some()) {
+            return;
+        }
+        if let Some((at, of)) = menu {
+            self.open_menu(&ctx, at, of);
+        }
+        // An outline's click a moment after a dialog closed or a menu's item was picked
+        // is the second click of a double click on what did it - a person's row, which
+        // names at its first click, or "Hide photo" - with a face's outline where the
+        // row or the item had been, and asks nothing.
+        let double = ctx.options(|options| options.input_options.max_double_click_delay);
+        let just_closed = (self.overlay_closed).is_some_and(|at| now - at < double * 1000.0);
+        if let Some(face) = naming.filter(|_| !just_closed) {
+            self.open_person(person_picker::Target::Face(face));
         }
     }
 
@@ -2570,13 +2597,15 @@ impl App {
                 export.remembered(apply);
             }
         }
-        // The people, for the person dialog that is open: `Latest` answers the last
-        // question alone, and each opening asks. A read that failed lists no one, which
-        // is then said: a name can be typed all the same.
+        // The people, for the person dialog: `Latest` answers the last question alone,
+        // and each opening asks, having forgotten the list before. A read that failed
+        // leaves them not known - not "No one is named yet.", which would be said of a
+        // library full of people: a name can be typed all the same, and the library is
+        // what decides whose it is.
         if let Some(answer) = self.people.answer() {
             answered = true;
-            if matches!(self.dialog, Some(Dialog::Person(_))) {
-                self.named = Some(answer.ok().flatten().unwrap_or_default());
+            if let Ok(Some(people)) = answer {
+                self.named = Some(people);
             }
         }
         for (_, answer) in self.exports.answers() {
@@ -3034,6 +3063,9 @@ impl eframe::App for App {
         // takes them out of the frame when it has read its own (`dialog_view.rs`).
         let under_dialog = self.dialog.is_some();
         self.show_dialog(ui);
+        if under_dialog && self.dialog.is_none() {
+            self.overlay_closed = Some(now);
+        }
 
         // The menu, before anything else is drawn: while it is open the keys are its
         // own, and it takes them out of the frame before the search box, the sidebar
@@ -3055,6 +3087,7 @@ impl eframe::App for App {
                     Outcome::Closed => self.menu = None,
                     Outcome::Picked(picked) => {
                         self.menu = None;
+                        self.overlay_closed = Some(now);
                         match picked {
                             Picked::Tile(action) => self.pick(action),
                             Picked::Side(action) => self.side(action),
@@ -3078,7 +3111,7 @@ impl eframe::App for App {
         // The viewer takes the whole window: the shell is not drawn under it, and the
         // grid keeps its place, which is a number of its own and not a widget's.
         if self.viewer.is_some() {
-            self.show_viewer(ui, now);
+            self.show_viewer(ui, now, under_dialog);
             if self.drop.hovering() {
                 drop_card::show(ui.ctx(), folder_drop::CARD);
             }
