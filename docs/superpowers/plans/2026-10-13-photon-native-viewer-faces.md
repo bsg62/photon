@@ -270,6 +270,12 @@ to hold it. One passed: the Tab stop's test looked for the outline's widget unde
 name it had before the fix that renamed it, and so for nothing. It asks for the right
 one now, and fails with the outline made a stop.
 
+And the first sixty-four were run again over the fixed code, seventeen of them written
+anew where the code under them had moved. One passed: "a menu asked for in the frame an
+outline's click comes up in is asked for alone" pressed the other button beside the
+outline, where the fixed view already names no face; it presses it on the outline now,
+which is the Mac's press the rule is for.
+
 **Found on the way, not of this branch**: `a_photo_that_cannot_be_shown_says_so_and_
 holds_no_picture`, from the viewer's first pull request, failed once on Windows' CI. It
 waited a second for a render that takes its turn behind every other test of its file

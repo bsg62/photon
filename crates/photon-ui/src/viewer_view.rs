@@ -3440,17 +3440,16 @@ mod tests {
     }
 
     // A menu asked for in the frame an outline's click comes up in is asked for alone:
-    // the menu and the dialog are not opened together. (On a Mac that frame is an
-    // ordinary one: the first button with Control asks for the menu, and its click is
-    // the outline's.)
+    // the menu and the dialog are not opened together. Both on the outline itself -
+    // which is a Mac's press, where the first button with Control asks for the menu
+    // and its click is the outline's.
     #[test]
     fn a_menu_asked_for_in_the_frame_an_outline_is_clicked_is_asked_for_alone() {
         let mut f = with_faces();
         let at = STRANGER.center();
         f.press(at);
-        let beside = pos2(120.0, 350.0);
-        let actions = f.frame(vec![primary(at, false), other(beside, true)]);
-        assert_eq!(actions, menu(beside, On::Nowhere));
+        let actions = f.frame(vec![primary(at, false), other(at, true)]);
+        assert_eq!(actions, menu(at, On::Unnamed(9)));
     }
 
     // The photo held and carried over an outline: the hand stays closed and the
