@@ -25,8 +25,8 @@ use crate::{
     },
 };
 use eframe::egui::{
-    self, Color32, Event, EventFilter, FontId, Id, Key, PointerButton, Pos2, Rect, Sense, Stroke,
-    StrokeKind, UiBuilder, WidgetInfo, WidgetType, pos2, text::LayoutJob, vec2,
+    self, Color32, Event, EventFilter, FontId, Id, Key, Pos2, Rect, Sense, Stroke, StrokeKind,
+    UiBuilder, WidgetInfo, WidgetType, pos2, text::LayoutJob, vec2,
 };
 use jiff::tz::TimeZone;
 use photon_core::{library::AlbumSummary, media::MediaKind};
@@ -88,6 +88,13 @@ pub struct InfoView {
     /// photo's panel begins with an empty field.
     draft: String,
     of: Option<i64>,
+    /// Whether the keyboard is the field's. Kept here and not asked of egui, which
+    /// lets go of a field in any frame that does not draw it - and at a step there are
+    /// such frames, as many as the library takes to say what the next photo is: by
+    /// egui's word alone the field kept the keyboard across a step when the answer was
+    /// quick and lost it when it was not, and what was typed next was a keyword or the
+    /// viewer's keys by a matter of milliseconds.
+    held: bool,
 }
 
 /// The keyword's field, to egui.
@@ -97,13 +104,20 @@ fn field_id() -> Id {
 
 impl InfoView {
     /// Whether the keyword's field has the keyboard: the viewer's keys are the field's
-    /// then, and `h` is a letter of a keyword and hides no photo.
-    pub fn typing(ctx: &egui::Context) -> bool {
-        ctx.memory(|memory| memory.has_focus(field_id()))
+    /// then, and `h` is a letter of a keyword and hides no photo. As it was when the
+    /// panel was last drawn.
+    pub fn typing(&self) -> bool {
+        self.held
     }
 
-    /// The field gives the keyboard up: the viewer has closed, or stepped by a button.
-    pub fn leave(ctx: &egui::Context) {
+    /// The field gives the keyboard up: Escape, or a press anywhere else.
+    fn leave(&mut self, ctx: &egui::Context) {
+        self.held = false;
+        Self::let_go(ctx);
+    }
+
+    /// egui is told that the field has the keyboard no longer: the viewer has closed.
+    pub fn let_go(ctx: &egui::Context) {
         ctx.memory_mut(|memory| memory.surrender_focus(field_id()));
     }
 
@@ -123,21 +137,13 @@ impl InfoView {
         data: Option<&InfoData<'_>>,
     ) -> Vec<InfoAction> {
         glass(ui, place);
-        let Some(data) = data else {
-            return Vec::new();
-        };
-        if self.of != Some(data.item.id) {
-            self.of = Some(data.item.id);
-            self.draft.clear();
-            self.scroll = 0.0;
-        }
         // The field's own keys. Enter adds what is typed, once the field has taken this
         // frame's letters, and is taken out of the frame before the field is drawn:
         // egui's field gives the keyboard up at an Enter it sees, and the next keyword
         // is typed straight on. Escape leaves the field; it is not the viewer's as
         // well, because the viewer reads no key while a keyword is typed
         // (`InfoView::typing`, asked before this frame's keys were read).
-        let typing = Self::typing(ui.ctx());
+        let typing = self.held;
         let (mut enter, mut escape) = (false, false);
         if typing {
             ui.input_mut(|input| {
@@ -162,6 +168,28 @@ impl InfoView {
                     _ => true,
                 });
             });
+        }
+        let Some(data) = data else {
+            // Nothing is known of the photo yet - it was stepped to a moment ago - and
+            // nothing is drawn. The field keeps the keyboard meanwhile, for the next
+            // photo's keyword, unless it is left: by Escape, or by a press anywhere.
+            let pressed = ui.input(|input| {
+                (input.events.iter())
+                    .any(|event| matches!(event, Event::PointerButton { pressed: true, .. }))
+            });
+            if typing && (escape || pressed) {
+                self.leave(ui.ctx());
+            }
+            return Vec::new();
+        };
+        if self.of != Some(data.item.id) {
+            self.of = Some(data.item.id);
+            self.draft.clear();
+            self.scroll = 0.0;
+            // And a history of its own: one field under one name serves every photo,
+            // egui keeps a field's undo by that name, and Ctrl+Z in the next photo's
+            // field brought back the keyword typed for the last.
+            egui::text_edit::TextEditState::default().store(ui.ctx(), field_id());
         }
 
         let inner = Rect::from_min_max(
@@ -209,16 +237,17 @@ impl InfoView {
             (ui.painter()).rect_filled(mark, MARK / 2.0, color(GLASS_LINE).gamma_multiply(2.0));
         }
         if typing {
-            // A press anywhere but on the field leaves it: egui gives the keyboard up at
-            // a click elsewhere, which a press that becomes a drag of the photo is not.
+            // A press of any button anywhere but on the field leaves it: egui gives the
+            // keyboard up at a click elsewhere, which a press that becomes a drag of
+            // the photo is not.
             let elsewhere = ui.input(|input| {
                 input.events.iter().any(|event| {
-                    matches!(event, Event::PointerButton { pos, button: PointerButton::Primary, pressed: true, .. }
+                    matches!(event, Event::PointerButton { pos, pressed: true, .. }
                         if !page.field.is_some_and(|field| field.contains(*pos)))
                 })
             });
             if escape || elsewhere {
-                Self::leave(ui.ctx());
+                self.leave(ui.ctx());
             }
         }
         page.actions
@@ -232,7 +261,7 @@ impl InfoView {
         let body = fonts::regular(T[2]);
 
         // The file: its name, and where it is, on one line cut short.
-        page.wrapped(ui, &item.file_name, fonts::semibold(&ctx, T[3]), text, true);
+        page.wrapped(ui, &item.file_name, fonts::semibold(&ctx, T[3]), text);
         page.gap(2.0);
         page.line(ui, &item.path, fonts::regular(T[0]), dim);
         page.gap(10.0);
@@ -244,7 +273,7 @@ impl InfoView {
             .filter(|c| !c.is_empty())
         {
             page.heading(ui, "Caption", false);
-            page.wrapped(ui, caption, body.clone(), text, false);
+            page.wrapped(ui, caption, body.clone(), text);
             page.gap(S[2]);
         }
 
@@ -262,7 +291,7 @@ impl InfoView {
             .flatten()
             .map(format_duration);
         if camera.is_empty() && length.is_none() {
-            page.wrapped(ui, "No camera data.", body.clone(), dim, false);
+            page.wrapped(ui, "No camera data.", body.clone(), dim);
         } else {
             let mut rows: Vec<Pair> = (camera.into_iter())
                 .map(|row| (row.label, row.value, row.search.map(InfoAction::Search)))
@@ -290,7 +319,6 @@ impl InfoView {
                 &format_coordinates(gps.lat, gps.lon),
                 body.clone(),
                 text,
-                false,
             );
             page.gap(S[0]);
             let nearby = InfoAction::Search(near_query(gps.lat, gps.lon));
@@ -316,15 +344,15 @@ impl InfoView {
             flow.end(page);
         }
         if let Some(unnamed) = unnamed_faces_label(item.unnamed_faces.len()) {
-            page.wrapped(ui, &unnamed, body.clone(), dim, false);
+            page.wrapped(ui, &unnamed, body.clone(), dim);
         } else if item.faces.is_empty() {
             let none = no_faces_label(data.finds_faces, data.looking);
-            page.wrapped(ui, none, body.clone(), dim, false);
+            page.wrapped(ui, none, body.clone(), dim);
         }
 
         page.heading(ui, "Keywords", true);
         if item.tags.is_empty() {
-            page.wrapped(ui, "No keywords yet.", body.clone(), dim, false);
+            page.wrapped(ui, "No keywords yet.", body.clone(), dim);
         } else {
             let mut flow = page.flow();
             for tag in &item.tags {
@@ -335,7 +363,7 @@ impl InfoView {
             flow.end(page);
         }
         page.gap(6.0);
-        self.field(ui, page, enter);
+        self.field(ui, page, enter, &item.tags);
 
         page.heading(ui, "Albums", true);
         let own = own_albums(data.albums);
@@ -355,7 +383,6 @@ impl InfoView {
                 "No albums of your own yet. Create one in the sidebar.",
                 body.clone(),
                 dim,
-                false,
             );
         }
         for album in &picasa {
@@ -367,14 +394,14 @@ impl InfoView {
         for group in copy_groups(&item.copies) {
             page.heading(ui, group.label, true);
             for copy in &group.copies {
-                if page.link(ui, Id::new(("viewer-info-copy", copy.id)), &copy.path, true) {
+                if page.link(ui, Id::new(("viewer-info-copy", copy.id)), &copy.path) {
                     page.actions.push(InfoAction::Locate(copy.id));
                 }
                 // An identical copy is the same size by what it is; of a look-alike,
                 // "which is the large one" is the next question.
                 if group.kind == CopyKind::Similar {
                     let size = format_dimensions(copy.width, copy.height);
-                    page.wrapped(ui, &size, fonts::regular(T[1]), dim, false);
+                    page.wrapped(ui, &size, fonts::regular(T[1]), dim);
                 }
                 page.gap(S[0]);
             }
@@ -383,13 +410,13 @@ impl InfoView {
             // The Copies view is a later sub-project's: in its place, and no link.
             page.gap(S[0]);
             let all = format!("{} in the grid", show_copies_label(item.copies.len()));
-            page.wrapped(ui, &all, body, dim, false);
+            page.wrapped(ui, &all, body, dim);
         }
     }
 
     /// The field a keyword is typed into. Enter adds what it holds, once it has taken
     /// the frame's letters: a letter and the Enter after it can come in one frame.
-    fn field(&mut self, ui: &mut egui::Ui, page: &mut Page, enter: bool) {
+    fn field(&mut self, ui: &mut egui::Ui, page: &mut Page, enter: bool, has: &[String]) {
         let ground = Rect::from_min_size(pos2(page.left, page.y), vec2(page.width, FIELD));
         page.y += FIELD;
         page.field = Some(ground);
@@ -440,10 +467,21 @@ impl InfoView {
             .inner;
         let typed = self.draft.clone();
         (output.response).widget_info(|| WidgetInfo::text_edit(true, "", &typed, "Add a keyword"));
+        // The keyboard is the field's from the click that gave it, and is asked back
+        // where egui has let go of it without the field having been left: over the
+        // frames of a step in which there was no field to draw.
+        if output.response.has_focus() {
+            self.held = true;
+        } else if self.held {
+            output.response.request_focus();
+        }
         if enter {
             let tag = self.draft.trim().to_owned();
             self.draft.clear();
-            if !tag.is_empty() {
+            // One the photo has already, in whatever case, is not asked for again: the
+            // library would take it as nothing and the engine build the grid anew.
+            let had = (has.iter()).any(|had| had.to_lowercase() == tag.to_lowercase());
+            if !tag.is_empty() && !had {
                 page.actions.push(InfoAction::AddTag(tag));
             }
         }
@@ -489,18 +527,12 @@ struct Page {
     field: Option<Rect>,
 }
 
-/// Words that wrap within `width`, anywhere in a word where `anywhere` (a path, a name
-/// with no space in it).
-fn wrap(
-    ui: &egui::Ui,
-    words: &str,
-    font: FontId,
-    tint: Color32,
-    width: f32,
-    anywhere: bool,
-) -> Arc<egui::Galley> {
-    let mut job = LayoutJob::simple(words.to_owned(), font, tint, width);
-    job.wrap.break_anywhere = anywhere;
+/// Words that wrap within `width`: at a word's end where there is one, and inside a
+/// word only where it is longer than the line - a path, a name with no space in it -
+/// which egui does by itself. (Told to break anywhere, it never looks for a word's end:
+/// "Canon EOS 5D Mark IV Special E" over "dition".)
+fn wrap(ui: &egui::Ui, words: &str, font: FontId, tint: Color32, width: f32) -> Arc<egui::Galley> {
+    let job = LayoutJob::simple(words.to_owned(), font, tint, width);
     ui.painter().layout_job(job)
 }
 
@@ -516,8 +548,8 @@ impl Page {
 
     /// Words over the column's whole width, wrapped. They tell AccessKit what they say,
     /// which is how a test of the whole application reads the panel.
-    fn wrapped(&mut self, ui: &egui::Ui, words: &str, font: FontId, tint: Color32, anywhere: bool) {
-        let galley = wrap(ui, words, font, tint, self.width, anywhere);
+    fn wrapped(&mut self, ui: &egui::Ui, words: &str, font: FontId, tint: Color32) {
+        let galley = wrap(ui, words, font, tint, self.width);
         let rect = Rect::from_min_size(pos2(self.left, self.y), galley.size());
         self.y += galley.size().y;
         if self.sees(rect) {
@@ -572,9 +604,9 @@ impl Page {
 
     /// A link over the column's width: its words in the link's colour, underlined under
     /// the pointer. Answers whether it was pressed.
-    fn link(&mut self, ui: &egui::Ui, id: Id, words: &str, anywhere: bool) -> bool {
+    fn link(&mut self, ui: &egui::Ui, id: Id, words: &str) -> bool {
         let tint = color(ACCENT_GLASS);
-        let galley = wrap(ui, words, fonts::regular(T[2]), tint, self.width, anywhere);
+        let galley = wrap(ui, words, fonts::regular(T[2]), tint, self.width);
         let rect = Rect::from_min_size(pos2(self.left, self.y), galley.size());
         self.y += galley.size().y;
         self.pressed_link(ui, id, words, rect, galley)
@@ -630,13 +662,13 @@ impl Page {
         };
         let value_left = self.left + self.width - value_width;
         for (n, (label, value, link)) in rows.iter().enumerate() {
-            let label_galley = wrap(ui, label, font.clone(), dim, label_width, false);
+            let label_galley = wrap(ui, label, font.clone(), dim, label_width);
             let tint = if link.is_some() {
                 color(ACCENT_GLASS)
             } else {
                 text
             };
-            let value_galley = wrap(ui, value, font.clone(), tint, value_width, !dates);
+            let value_galley = wrap(ui, value, font.clone(), tint, value_width);
             let height = label_galley.size().y.max(value_galley.size().y);
             let label_rect = Rect::from_min_size(pos2(self.left, self.y), label_galley.size());
             let value_rect = Rect::from_min_size(pos2(value_left, self.y), value_galley.size());
@@ -718,7 +750,7 @@ impl Page {
         let font = fonts::regular(T[2]);
         let text = color(DARK.text);
         let room = (self.width - BOX - BETWEEN).max(0.0);
-        let galley = wrap(ui, name, font, text, room, true);
+        let galley = wrap(ui, name, font, text, room);
         let height = galley.size().y.max(BOX) + 4.0;
         let row = Rect::from_min_size(pos2(self.left, self.y), vec2(self.width, height));
         self.y += height;
@@ -762,7 +794,7 @@ impl Page {
         let font = fonts::regular(T[2]);
         let dim = color(DARK.text_dim);
         let room = (self.width - BOX - BETWEEN).max(0.0);
-        let galley = wrap(ui, name, font, dim, room, true);
+        let galley = wrap(ui, name, font, dim, room);
         let height = galley.size().y.max(BOX) + 4.0;
         let row = Rect::from_min_size(pos2(self.left, self.y), vec2(self.width, height));
         self.y += height;
@@ -813,14 +845,14 @@ impl Flow {
 
     fn link(&mut self, ui: &egui::Ui, page: &mut Page, id: Id, words: &str) -> bool {
         let tint = color(ACCENT_GLASS);
-        let galley = wrap(ui, words, fonts::regular(T[2]), tint, page.width, true);
+        let galley = wrap(ui, words, fonts::regular(T[2]), tint, page.width);
         let at = self.place(page, galley.size());
         let rect = Rect::from_min_size(at, galley.size());
         page.pressed_link(ui, id, words, rect, galley)
     }
 
     fn words(&mut self, ui: &egui::Ui, page: &mut Page, words: &str, tint: Color32) {
-        let galley = wrap(ui, words, fonts::regular(T[2]), tint, page.width, false);
+        let galley = wrap(ui, words, fonts::regular(T[2]), tint, page.width);
         let at = self.place(page, galley.size());
         let rect = Rect::from_min_size(at, galley.size());
         if page.sees(rect) {
@@ -835,7 +867,7 @@ impl Flow {
     fn chip(&mut self, ui: &egui::Ui, page: &mut Page, tag: &str) -> bool {
         let text = color(DARK.text);
         let most = (page.width - 2.0 * S[1] - CROSS - 2.0).max(0.0);
-        let galley = wrap(ui, tag, fonts::regular(T[1]), text, most, true);
+        let galley = wrap(ui, tag, fonts::regular(T[1]), text, most);
         let size = vec2(
             S[1] + galley.size().x + 2.0 + CROSS + 4.0,
             galley.size().y + 4.0,
@@ -985,7 +1017,7 @@ pub(crate) mod testing {
 #[cfg(test)]
 mod tests {
     use super::{testing::*, *};
-    use egui::{Modifiers, RawInput};
+    use egui::{Modifiers, PointerButton, RawInput};
 
     const PLACE: Rect = Rect {
         min: pos2(600.0, 12.0),
@@ -1030,7 +1062,11 @@ mod tests {
         tints: Vec<(String, Color32)>,
         icons: Vec<Rect>,
         fills: Vec<Rect>,
+        /// The colours of the lines drawn: a text field's caret is one.
+        lines: Vec<Color32>,
         repaint: std::time::Duration,
+        /// Each text drawn, line by line as it was broken.
+        broken: Vec<(String, Vec<String>)>,
     }
 
     impl Fixture {
@@ -1049,7 +1085,9 @@ mod tests {
                 tints: Vec::new(),
                 icons: Vec::new(),
                 fills: Vec::new(),
+                lines: Vec::new(),
                 repaint: std::time::Duration::MAX,
+                broken: Vec::new(),
             };
             f.frame(Vec::new());
             f
@@ -1083,9 +1121,15 @@ mod tests {
             self.tints.clear();
             self.icons.clear();
             self.fills.clear();
+            self.lines.clear();
+            self.broken.clear();
             for clipped in &full.shapes {
                 each_shape(&clipped.shape, &mut |shape| match shape {
                     egui::Shape::Text(text) => {
+                        self.broken.push((
+                            text.galley.text().to_owned(),
+                            (text.galley.rows.iter()).map(|row| row.text()).collect(),
+                        ));
                         let seen = text.visual_bounding_rect().intersect(clipped.clip_rect);
                         if seen.is_positive() {
                             (self.texts).push((text.galley.text().to_owned(), seen));
@@ -1100,6 +1144,7 @@ mod tests {
                             ));
                         }
                     }
+                    egui::Shape::LineSegment { stroke, .. } => self.lines.push(stroke.color),
                     egui::Shape::Rect(rect) => match &rect.brush {
                         Some(_) => self.icons.push(rect.rect),
                         None => self.fills.push(rect.rect),
@@ -1179,7 +1224,7 @@ mod tests {
         }
 
         fn typing(&self) -> bool {
-            InfoView::typing(&self.ctx)
+            self.view.typing()
         }
     }
 
@@ -1470,6 +1515,86 @@ mod tests {
             modifiers: Modifiers::NONE,
         }]);
         assert!(!f.typing(), "at the press, with the button still down");
+        // Whichever button: the other one, where a menu will open, leaves it too.
+        f.click(field);
+        assert!(f.typing());
+        f.frame(vec![Event::PointerButton {
+            pos: elsewhere,
+            button: PointerButton::Secondary,
+            pressed: true,
+            modifiers: Modifiers::NONE,
+        }]);
+        assert!(!f.typing());
+    }
+
+    // At a step there is nothing to draw until the library has said what the next photo
+    // is, and egui lets go of a field that is not drawn. The keyboard is the field's all
+    // the same, for the next photo's keyword - however many frames the answer takes -
+    // unless it is left meanwhile, by Escape or a press.
+    #[test]
+    fn the_field_keeps_the_keyboard_over_frames_with_nothing_to_draw() {
+        let mut f = Fixture::of(full());
+        f.press("Add a keyword");
+        f.frame(vec![Event::Text("al".to_owned())]);
+        f.item = None;
+        for _ in 0..5 {
+            f.frame(Vec::new());
+            assert!(f.typing());
+        }
+        let mut next = full();
+        next.id = 8;
+        f.item = Some(next);
+        f.frame(Vec::new());
+        f.frame(vec![Event::Text("porto".to_owned())]);
+        f.frame(Vec::new());
+        assert!(
+            f.drew("porto").is_some(),
+            "typed into the next photo's field"
+        );
+        assert_eq!(f.key(Key::Enter), [InfoAction::AddTag("porto".to_owned())]);
+        // Left while there is nothing to draw: it is not taken back.
+        f.item = None;
+        f.frame(Vec::new());
+        assert_eq!(f.key(Key::Escape), []);
+        assert!(!f.typing());
+        f.item = Some(full());
+        f.frame(Vec::new());
+        f.frame(vec![Event::Text("x".to_owned())]);
+        f.frame(Vec::new());
+        assert_eq!(f.drew("x"), None);
+        assert!(!f.typing());
+        // And by a press, of anything, anywhere.
+        f.press("Add a keyword");
+        assert!(f.typing());
+        f.item = None;
+        f.frame(Vec::new());
+        f.frame(vec![Event::PointerButton {
+            pos: pos2(100.0, 100.0),
+            button: PointerButton::Primary,
+            pressed: true,
+            modifiers: Modifiers::NONE,
+        }]);
+        assert!(!f.typing());
+    }
+
+    // A keyword the photo has already is not asked for again, in whatever case it is
+    // typed: the field is emptied and nothing is written.
+    #[test]
+    fn a_keyword_the_photo_has_is_not_added_again() {
+        let mut f = Fixture::of(full());
+        f.press("Add a keyword");
+        f.frame(vec![Event::Text(" Mountains ".to_owned())]);
+        assert_eq!(f.key(Key::Enter), []);
+        f.frame(Vec::new());
+        assert!(
+            f.drew("Add a keyword").is_some(),
+            "the field is empty again"
+        );
+        f.frame(vec![Event::Text("mountain".to_owned())]);
+        assert_eq!(
+            f.key(Key::Enter),
+            [InfoAction::AddTag("mountain".to_owned())]
+        );
     }
 
     // A field scrolled out of sight keeps the keyboard, and what is typed is typed into
@@ -1501,10 +1626,11 @@ mod tests {
     }
 
     // The viewer's glass is dark in both themes, and egui colours a field's placeholder
-    // by the theme the window is in: under the light theme the words "Add a keyword"
-    // were all but invisible, which a picture showed.
+    // and its caret by the theme the window is in: under the light theme the words
+    // "Add a keyword" were all but invisible, which a picture showed, and the caret is
+    // that theme's dark blue.
     #[test]
-    fn the_fields_placeholder_is_the_dark_themes_in_a_light_window() {
+    fn the_fields_placeholder_and_caret_are_the_dark_themes_in_a_light_window() {
         let mut f = Fixture::of(full());
         crate::theme::apply::install(&f.ctx);
         f.ctx.set_theme(egui::ThemePreference::Light);
@@ -1516,8 +1642,18 @@ mod tests {
                 .map(|(_, tint)| *tint)
         };
         assert_eq!(tint(&f, "Add a keyword"), Some(color(DARK.text_dim)));
-        // What is typed is in the glass's own text colour.
+        let (light, dark) = (egui::Visuals::light(), egui::Visuals::dark());
+        let (light, dark) = (
+            light.text_cursor.stroke.color,
+            dark.text_cursor.stroke.color,
+        );
+        assert_ne!(light, dark);
         f.press("Add a keyword");
+        f.frame(Vec::new());
+        assert!(f.typing());
+        assert!(f.lines.contains(&dark), "{:?}", f.lines);
+        assert!(!f.lines.contains(&light), "{:?}", f.lines);
+        // What is typed is in the glass's own text colour.
         f.frame(vec![Event::Text("alp".to_owned())]);
         f.frame(Vec::new());
         assert_eq!(tint(&f, "alp"), Some(color(DARK.text)));
@@ -1728,5 +1864,124 @@ mod tests {
             f.frame(Vec::new());
             assert_eq!(f.repaint, std::time::Duration::MAX);
         }
+    }
+
+    // One field under one name for every photo and every keyword: egui keeps a field's
+    // history by that name. Ctrl+Z in the field of another photo brings back the keyword
+    // typed for the photo before - which Enter then adds to this one. The sidebar's
+    // field and the picker's each learnt this (CLAUDE.md, "A field opens with a history
+    // of its own"); this third field has no history of its own.
+    #[test]
+    fn undo_in_another_photos_field_does_not_bring_back_the_last_photos_keyword() {
+        let mut f = Fixture::of(full());
+        f.press("Add a keyword");
+        // Typed with pauses, as a person types: egui notes a point to go back to when
+        // the text has rested.
+        for letter in ["p", "o", "r", "t", "o"] {
+            f.frame(vec![Event::Text(letter.to_owned())]);
+            for _ in 0..90 {
+                f.frame(Vec::new());
+            }
+        }
+        assert_eq!(f.key(Key::Enter), [InfoAction::AddTag("porto".to_owned())]);
+        for _ in 0..90 {
+            f.frame(Vec::new());
+        }
+        // Another photo, and its field.
+        let mut next = full();
+        next.id = 8;
+        f.item = Some(next);
+        f.frame(Vec::new());
+        f.press("Add a keyword");
+        for _ in 0..90 {
+            f.frame(Vec::new());
+        }
+        let undo = Event::Key {
+            key: Key::Z,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::COMMAND,
+        };
+        f.frame(vec![undo]);
+        f.frame(Vec::new());
+        assert!(
+            f.drew("Add a keyword").is_some(),
+            "the field of another photo is empty still; it holds {:?}",
+            f.view.draft
+        );
+    }
+
+    // "Words that wrap within `width`, anywhere in a word where `anywhere` (a path, a
+    // name with no space in it)". egui breaks a word that is too long for its line
+    // without being told to (`row_break_candidates.get`: a word's end, else a dash,
+    // else anywhere); told `break_anywhere`, it breaks at the last letter that fits
+    // and never looks for a word's end. So everything laid out with `anywhere` - a
+    // camera, a lens, the exposure, an album's name, a keyword, a person - is cut in
+    // the middle of a word wherever it does not fit its line.
+    #[test]
+    fn words_that_have_spaces_are_broken_at_them() {
+        let mut item = full();
+        item.model = Some("Canon EOS 5D Mark IV Special Edition".to_owned());
+        item.lens = Some("EF 24-105mm f/4L IS II USM Zoom Lens".to_owned());
+        let mut f = Fixture::of(item);
+        f.albums[0].name = "Best of Lisbon and of the Algarve coast, 2024".to_owned();
+        f.frame(Vec::new());
+        for whole in [
+            "Canon EOS 5D Mark IV Special Edition",
+            "EF 24-105mm f/4L IS II USM Zoom Lens",
+            "Best of Lisbon and of the Algarve coast, 2024",
+        ] {
+            let lines = (f.broken.iter())
+                .find(|(text, _)| text == whole)
+                .map(|(_, lines)| lines.clone())
+                .unwrap_or_else(|| panic!("{whole} is not drawn"));
+            assert!(lines.len() > 1, "{whole} is on one line: widen the test");
+            for line in &lines[..lines.len() - 1] {
+                let next_begins = whole[whole.find(line.as_str()).unwrap() + line.len()..]
+                    .chars()
+                    .next();
+                assert!(
+                    line.ends_with(' ') || next_begins == Some(' '),
+                    "{whole:?} is broken in the middle of a word: {lines:?}"
+                );
+            }
+        }
+    }
+
+    // The arrows and Home move the caret, and the keyboard stays in the field: with the
+    // field's filter giving the arrows up, egui walks the keyboard off with them.
+    #[test]
+    fn the_arrows_move_the_caret_in_the_keywords_field() {
+        let mut f = Fixture::of(full());
+        f.press("Add a keyword");
+        f.frame(vec![Event::Text("abc".to_owned())]);
+        f.key(Key::ArrowLeft);
+        assert!(f.typing(), "the keyboard stays in the field");
+        f.frame(vec![Event::Text("x".to_owned())]);
+        f.frame(Vec::new());
+        assert_eq!(f.view.draft, "abxc");
+        f.key(Key::Home);
+        f.frame(vec![Event::Text("y".to_owned())]);
+        f.frame(Vec::new());
+        assert_eq!(f.view.draft, "yabxc");
+    }
+
+    // Enter is the field's only while the field has the keyboard: read whether or not
+    // it has, an Enter pressed anywhere in the viewer added what was once left in the
+    // field.
+    #[test]
+    fn enter_adds_nothing_while_the_field_has_not_the_keyboard() {
+        let mut f = Fixture::of(full());
+        f.press("Add a keyword");
+        f.frame(vec![Event::Text("al".to_owned())]);
+        assert_eq!(f.key(Key::Escape), []);
+        assert!(!f.typing());
+        assert_eq!(f.key(Key::Enter), []);
+        f.frame(Vec::new());
+        assert!(
+            f.drew("al").is_some(),
+            "and what was typed is still in the field"
+        );
     }
 }

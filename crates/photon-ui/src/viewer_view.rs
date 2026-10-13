@@ -38,6 +38,8 @@ use eframe::egui::{
 /// between two.
 const TOOL: f32 = 30.0;
 const TOOLS: usize = 2;
+/// How far a notch of the wheel moves the info panel, in points.
+const PANEL_NOTCH: f32 = 40.0;
 const TOOL_GAP: f32 = 2.0;
 /// The room the zoom's slider takes at the bar's right, and the same kept on its left so
 /// that the bar stays in the middle: the bar is no wider than what is left between.
@@ -181,6 +183,12 @@ impl Controls {
 }
 
 impl ViewerView {
+    /// Whether a keyword is being typed into the info panel's field: the keys are the
+    /// field's then.
+    pub fn typing(&self) -> bool {
+        self.info.typing()
+    }
+
     /// Draws the viewer over the whole window and answers what was done in it. The zoom
     /// and the pan are `zoom`'s, which the keys, the wheel, a pinch, a double click, a
     /// drag and the slider change here.
@@ -382,7 +390,7 @@ impl ViewerView {
         let at_pointer = pointer.map_or(Pan::default(), from_middle);
         // While a keyword is being typed the keys are its field's: `h` is a letter, the
         // arrows move the caret, and Escape leaves the field and closes nothing.
-        let typing = InfoView::typing(ui.ctx());
+        let typing = self.info.typing();
         let over_panel =
             pointer.is_some_and(|at| controls.panel.is_some_and(|panel| panel.contains(at)));
         for event in &events {
@@ -429,14 +437,14 @@ impl ViewerView {
                     });
                 }
                 // Over the info panel the wheel is the panel's, which is as tall as
-                // what it has to say: by the system's own distance a notch, and to no
-                // other photo.
+                // what it has to say, and steps to no other photo. A notch is forty
+                // points, whatever the system's: nothing in the panel is far away, and
+                // by the system's lines - which the grid goes by - a Windows set to
+                // scroll none a notch could not reach the panel's foot at all, the
+                // panel having no other way to be scrolled.
                 Event::MouseWheel { unit, delta, .. } if over_panel => {
-                    let notch = ui
-                        .ctx()
-                        .options(|options| options.input_options.line_scroll_speed);
                     self.info.turned(match unit {
-                        egui::MouseWheelUnit::Line => delta.y * notch,
+                        egui::MouseWheelUnit::Line => delta.y * PANEL_NOTCH,
                         egui::MouseWheelUnit::Point => delta.y,
                         egui::MouseWheelUnit::Page => delta.y * area.height,
                     });
@@ -2711,7 +2719,7 @@ mod tests {
         let mut f = informed();
         let field = f.drew("Add a keyword").expect("the field").center();
         f.click(field);
-        assert!(InfoView::typing(&f.ctx));
+        assert!(f.view.typing());
         for key in [
             Key::H,
             Key::ArrowRight,
@@ -2725,7 +2733,7 @@ mod tests {
         f.key(Key::Plus);
         assert!(f.zoom.is_fit());
         assert_eq!(f.key(Key::Escape), [], "it leaves the field");
-        assert!(!InfoView::typing(&f.ctx));
+        assert!(!f.view.typing());
         assert_eq!(f.key(Key::Escape), [ViewerAction::Close]);
         assert_eq!(f.key(Key::H), [ViewerAction::Hide]);
         // Enter in the field adds what was typed, as the panel's own answer.
@@ -2788,5 +2796,19 @@ mod tests {
         f.press(gap);
         f.point(gap + vec2(-30.0, 0.0));
         assert_eq!(f.zoomed().1, (-30.0, 0.0));
+    }
+
+    // A trackpad's points move the panel by themselves, and not by a notch each.
+    #[test]
+    fn a_trackpads_points_move_the_panel_by_themselves() {
+        use egui::MouseWheelUnit::Point;
+        let mut f = informed();
+        f.size = vec2(1000.0, 400.0);
+        f.frame(Vec::new());
+        let top = f.drew("DATES").expect("in sight").top();
+        f.point(pos2(800.0, 200.0));
+        f.wheel(Point, -7.0, Modifiers::NONE);
+        f.frame(Vec::new());
+        assert_eq!(top - f.drew("DATES").expect("still in sight").top(), 7.0);
     }
 }

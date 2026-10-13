@@ -1175,6 +1175,11 @@ impl App {
             .map(|(_, why)| why.as_str())
     }
 
+    /// Whether a keyword is being typed into the info panel's field.
+    pub fn viewer_typing(&self) -> bool {
+        self.viewer.is_some() && self.viewer_view.typing()
+    }
+
     /// Whether the viewer's info panel is open.
     pub fn viewer_info(&self) -> bool {
         self.viewer.as_ref().is_some_and(|open| open.info)
@@ -1799,6 +1804,37 @@ impl App {
             self.toasts.dismiss(id);
         }
 
+        // What the info panel writes is written first, and to the photo the panel was
+        // drawn for: a keyword and an album's tick, on the queue of writes. A step in
+        // the same frame is acted on below, and by the viewer's photo these went to the
+        // one stepped to, whose panel nobody had seen - an arrow key repeats thirty
+        // times a second - and behind the Escape that closes they were not written at
+        // all. What the panel shows of them is what the library says once they are
+        // made: nothing is shown ahead.
+        if let Some(id) = open.item.as_ref().map(|item| item.id) {
+            for action in &actions {
+                match action {
+                    ViewerAction::Panel(InfoAction::AddTag(tag)) => {
+                        let tag = tag.clone();
+                        self.writes.push(Write::TagAdd { id, tag });
+                    }
+                    ViewerAction::Panel(InfoAction::RemoveTag(tag)) => {
+                        let tag = tag.clone();
+                        self.writes.push(Write::TagRemove { id, tag });
+                    }
+                    ViewerAction::Panel(InfoAction::Album { id: album, on }) => {
+                        let (album, ids) = (*album, vec![id]);
+                        self.writes.push(if *on {
+                            Write::AlbumAdd { album, ids }
+                        } else {
+                            Write::AlbumRemove { album, ids }
+                        });
+                    }
+                    _ => {}
+                }
+            }
+        }
+
         let mut closed = false;
         // A link of the info panel that leaves the viewer, to follow once it is shut.
         let mut leaving = None;
@@ -1830,28 +1866,10 @@ impl App {
                     open.info = !open.info;
                     false
                 }
-                // A keyword and an album's tick are writes of the photo on screen, by
-                // its number, on the queue of writes. What the panel shows of them is
-                // what the library says once they are made: nothing is shown ahead.
-                ViewerAction::Panel(InfoAction::AddTag(tag)) => {
-                    let id = open.viewer.id();
-                    self.writes.push(Write::TagAdd { id, tag });
-                    false
-                }
-                ViewerAction::Panel(InfoAction::RemoveTag(tag)) => {
-                    let id = open.viewer.id();
-                    self.writes.push(Write::TagRemove { id, tag });
-                    false
-                }
-                ViewerAction::Panel(InfoAction::Album { id: album, on }) => {
-                    let ids = vec![open.viewer.id()];
-                    self.writes.push(if on {
-                        Write::AlbumAdd { album, ids }
-                    } else {
-                        Write::AlbumRemove { album, ids }
-                    });
-                    false
-                }
+                // (Written above.)
+                ViewerAction::Panel(
+                    InfoAction::AddTag(_) | InfoAction::RemoveTag(_) | InfoAction::Album { .. },
+                ) => false,
                 ViewerAction::Panel(link) => {
                     leaving = Some(link);
                     break;
@@ -1873,14 +1891,24 @@ impl App {
         }
         // A link that leaves the viewer shuts it and goes where a row of the sidebar
         // would: through `go`, which tells the search box. The photo is not handed back
-        // to the grid first: the grid that was under the viewer is being left too.
+        // to the grid first, where the grid that was under the viewer is being left
+        // too. Where it is not - the camera's link in that camera's own search, a
+        // person's in their view: `go` asks for no step to where the user is - the
+        // viewer closes as it does by its cross, onto the photo it was on.
         if let Some(link) = leaving {
-            self.shut_viewer();
+            let step = match &link {
+                InfoAction::Search(query) => Some(Step::Search(query.clone())),
+                InfoAction::Person(key) => Some(Step::Person(key.clone())),
+                _ => None,
+            };
+            if step.as_ref().is_some_and(|step| !self.nav.wants(step)) {
+                self.close_viewer();
+            } else {
+                self.shut_viewer();
+            }
             match link {
-                InfoAction::Search(query) => self.go(Step::Search(query)),
-                InfoAction::Person(key) => self.go(Step::Person(key)),
                 InfoAction::Locate(id) => self.locate(id),
-                InfoAction::AddTag(_) | InfoAction::RemoveTag(_) | InfoAction::Album { .. } => {}
+                _ => step.into_iter().for_each(|step| self.go(step)),
             }
         }
     }
@@ -2834,7 +2862,7 @@ impl eframe::App for App {
         // would be deaf to this frame's keys and, having seen the keyboard elsewhere,
         // to the next frame's.
         if self.viewer.is_none() {
-            InfoView::leave(ui.ctx());
+            InfoView::let_go(ui.ctx());
         }
 
         // The viewer takes the whole window: the shell is not drawn under it, and the

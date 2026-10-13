@@ -2276,29 +2276,40 @@ for the next photo. The picture is cut off at the area's edge, so a zoomed photo
 the panel. The photo's own caption is not drawn beside the open panel, which has it whole.
 **Nothing is shown before the library has said it**: a keyword taken off is gone when the
 library says so, a round trip later, where the Svelte panel shows its own guess at once and
-puts it back on a refusal - here a refusal is a message and there is nothing to put back. A
-keyword is `Write::TagAdd` or `TagRemove` on the queue of writes, for which the engine
-rebuilds the grid, and a grid's arrival is what has the viewer read its photo again. An
-album's tick is the menu's `AlbumAdd` or `AlbumRemove` with the one photo, and **the write's
-own answer has the photo read again** with the lists: the engine announces nothing for an
-album that is not on screen. What the People section says of a photo with no face is the
-engine's switch (`Engine::face_detection`, a flag in memory) and whether a pass is running
-(`Scans::looking_for_faces`).
+puts it back on a refusal. Here a refusal is a message - and the keyword that was typed is
+not put back into the field, as the Svelte panel puts it. A keyword is `Write::TagAdd` or
+`TagRemove` on the queue of writes, for which the engine rebuilds the grid, and a grid's
+arrival is what has the viewer read its photo again; one the photo has already, in whatever
+case, is not asked for (the engine would rebuild the grid for nothing). An album's tick is
+the menu's `AlbumAdd` or `AlbumRemove` with the one photo, and **the write's own answer has
+the photo read again** with the lists: the engine announces nothing for an album that is not
+on screen. **What the panel writes is written before the frame's steps are acted on, to the
+photo the panel was drawn for** (`show_viewer`'s first pass over what the frame did):
+written in their turn and by the viewer's photo, a tick in the frame of an arrow key - one
+that is held repeats thirty times a second - went to the photo stepped to, whose panel
+nobody had seen, and a tick in the frame of the Escape that closes was not written at all.
+It is the grid's rule for a key that writes (`Asked`), met again. What the People section
+says of a photo with no face is the engine's switch (`Engine::face_detection`, a flag in
+memory) and whether a pass is running (`Scans::looking_for_faces`).
 
 **A link of the panel that leaves the viewer shuts it first**, and goes where a row of the
 sidebar would, through `App::go`, which tells the search box: a camera, a lens and "Photos
-nearby" are searches, a person is their view. The photo is not handed back to the grid,
-which is being left too. **A copy is found in All photos** (`App::locate`): by the folder
-jump's own means, `Nav::jump` with a `Target::Photo` - looked up in the grid on screen when
-no step is on its way, else in the grid of the step to All photos - and there selected,
-alone, and brought into sight (`take_photo`'s `locating`, by its id in the grid the next
-frame draws). All photos is asked for whatever is on screen: `go` asks for no step to where
-the user already is, and drops a search half typed, which would land after the jump. From
-Hidden too, where a folder asked for is looked up in the grid on screen: a copy the panel
-lists is never a hidden photo, and a photo unhidden in the viewer stays on screen in Hidden
-with its copies listed - looked up there, the press closed the viewer and found nothing.
-"Open in OpenStreetMap" and "Show N duplicates in the grid" are in their places and take no
-press; no text of the panel can be selected.
+nearby" are searches, a person is their view. The photo is not handed back to the grid where
+the grid is being left too; **where the link leads to where the user already is** - a
+camera's link in that camera's own search, a person's in their view: `go` asks for no step
+there - the viewer closes as it does by its cross, onto the photo it was on. **A copy is
+found in All photos** (`App::locate`): by the folder jump's own means, `Nav::jump` with a
+`Target::Photo` - looked up in the grid on screen when no step is on its way, else in the
+grid of the step to All photos - and there selected, alone, and brought into sight
+(`take_photo`'s `locating`, by its id in the grid the next frame draws). All photos is asked
+for whatever is on screen: `go` asks for no step to where the user already is, and drops a
+search half typed, which would land after the jump. From Hidden too, where a folder asked
+for is looked up in the grid on screen: a copy the panel lists is never a hidden photo, and
+a photo unhidden in the viewer stays on screen in Hidden with its copies listed - looked up
+there, the press closed the viewer and found nothing. "Open in OpenStreetMap" and "Show N
+duplicates in the grid" are in their places and take no press; no text of the panel can be
+selected. Known and left: a double click on a copy's link lands its second click on the grid
+that is by then under the pointer, and selects that photo in the copy's place.
 
 **The panel is one column painted by hand** (`Page`: where the next thing goes; `Flow` for
 what stands side by side and goes on to the next line), scrolled by a number of its own,
@@ -2308,41 +2319,61 @@ out from being drawn or pressed; **`Page::sees` is what keeps it from AccessKit*
 handing it to egui at all - without it a line that was not on screen was there for a test of
 the whole application to find, and will be for a screen reader. (A probe that took one such
 test away passed, because the row it looked at was guarded twice: the test now asks for a
-name, a row and a link.) **But the keyword's field is drawn in sight or out of it**: egui
-lets go of a field that is not drawn, and scrolled out of sight it gave the keyboard to the
-viewer, where the next letter typed is a key. **The panel's ground is a widget that does
-nothing, and is needed**: where a press hits nothing egui hands it to a widget within five
-points, so a press in the panel's own margin, just above a link the edge cuts off, pressed
-the link. In the viewer the photo's surface lies under the panel and would do as much, which
-is why a probe that took the ground away passed until a test pressed there in the panel
-alone. The wheel over the panel is the panel's, a notch as far as egui scrolls anything, and
-steps to no photo; a press on it is not the photo's (`Controls::panel`). A panel that has
-got shorter than it is scrolled - a keyword taken off - is held to its new end in the next
-frame, which it asks for: what it holds is measured as it is drawn. Another photo begins at
-the top, with nothing typed. Its wrapped words are laid out by egui and do not go through
-`text::paint_line`: a name in another script is drawn in the order it is written, as the
-empty library's sentence is.
+name, a row, a link, a heading, a keyword with its cross and an album's tick. Not for a
+Picasa album's row, nor for the words between two links.) **But the keyword's field is drawn
+in sight or out of it**: egui lets go of a field that is not drawn, and scrolled out of
+sight it gave the keyboard to the viewer, where the next letter typed is a key. It then has
+the keyboard with no caret to be seen, and nothing scrolls it back when it is typed into.
+**The panel's ground is a widget that does nothing, and is needed**: where a press hits
+nothing egui hands it to a widget within five points, so a press in the panel's own margin,
+just above a link the edge cuts off, pressed the link. In the viewer the photo's surface
+lies under the panel and would do as much, which is why a probe that took the ground away
+passed until a test pressed there in the panel alone. The wheel over the panel is the
+panel's and steps to no photo: **forty points a notch, whatever the system's**
+(`PANEL_NOTCH`), and a trackpad's points as they come. Not egui's `line_scroll_speed`, which
+the application sets to the system's notch in every frame for the grid: at a Windows set to
+scroll no lines a notch the panel, which has no other way to be scrolled, could not be
+brought to its foot. A press on the panel is not the photo's (`Controls::panel`). A panel
+that has got shorter than it is scrolled - a keyword taken off - is held to its new end in
+the next frame, which it asks for: what it holds is measured as it is drawn. Another photo
+begins at the top, with nothing typed. **Its words break at a word's end**, and inside a
+word only where the word is longer than its line, which egui does by itself: told to break
+anywhere it never looks for a word's end, and a camera was "Canon EOS 5D Mark IV Special E"
+over "dition". They are laid out by egui and do not go through `text::paint_line`: a name in
+another script is drawn in the order it is written - turned round, in the same window in
+which the bar has it right.
 
 **The keyword's field is egui's text field a third time**, with the filter spelled out
-(above, "egui's text field, twice now"). Enter is read and taken out of the frame before the
-field is drawn - egui's field gives the keyboard up at an Enter it sees, and the next
-keyword is typed straight on - and adds what the field holds once it has taken the frame's
-letters. **While it has the keyboard the viewer's keys are the field's**
-(`InfoView::typing`, asked before the frame's keys are read): the viewer reads its keys from
-the frame's events and not through a widget, so `h` typed into a keyword hid the photo
-behind it. Escape leaves the field and closes nothing, by that rule and not by being taken
-out of the frame, which was written first and did nothing: the viewer has read the frame's
-keys before the panel is drawn. The next Escape closes the viewer. A press of the first
-button anywhere but on the field leaves it at the press - egui gives the keyboard up at a
-click elsewhere, which a press that becomes a pan is not - and one on the field itself does
-not, button down or up. **The field goes with the viewer, in the first frame that finds the
-viewer shut** (`App::ui`, before the shell is drawn): egui lets go of a field that is no
-longer drawn only at the end of the frame that did not draw it, so that frame's keys were
-not the grid's. In one place, because the viewer is shut in two - by its own frame, and by
-`adopt`, when a grid of other results does not hold its photo. Each has a test with the key
-in that very frame - for the first with the mouse's back button still held, since the click
-of a button let go of has egui take the keyboard off the field by itself; with the key a
-frame later, as the first version had it, the test passed with the rule gone.
+(above, "egui's text field, twice now") and a history of its own for each photo - one field
+under one name serves them all, and Ctrl+Z in the next photo's field brought back the
+keyword typed for the last. Enter is read and taken out of the frame before the field is
+drawn - egui's field gives the keyboard up at an Enter it sees, and the next keyword is
+typed straight on - and adds what the field holds once it has taken the frame's letters.
+**Whether the keyboard is the field's is the panel's own word** (`InfoView::held`,
+`typing`), not egui's: egui lets go of a field in any frame that does not draw it, and at a
+step there are such frames, as many as the library takes to say what the next photo is. By
+egui's word the field kept the keyboard across a step of the wheel when the answer was quick
+and lost it when it was not, and "hills" typed next was a keyword or five of the viewer's
+keys - `h` hides the photo - by a matter of milliseconds. It keeps it now, for the next
+photo's keyword, and asks egui for it back when it is drawn again; letters typed in the
+frames between are dropped. **While it has the keyboard the viewer's keys are the field's**:
+the viewer reads its keys from the frame's events and not through a widget. Escape leaves
+the field and closes nothing, by that rule and not by being taken out of the frame, which
+was written first and did nothing: the viewer has read the frame's keys before the panel is
+drawn. The next Escape closes the viewer. A press of any button anywhere but on the field
+leaves it at the press - egui gives the keyboard up at a click elsewhere, which a press that
+becomes a pan is not - and one on the field itself does not, button down or up. Known and
+left: a letter in the very frame of the click that gives the field the keyboard is the
+viewer's too (the question is asked before the panel is drawn), and a keyword the library
+has on another photo under another case is written as it is typed, where the picker writes
+the library's. **The field goes with the viewer, in the first frame that finds the viewer
+shut** (`App::ui`, before the shell is drawn): egui lets go of a field that is no longer
+drawn only at the end of the frame that did not draw it, so that frame's keys were not the
+grid's. In one place, because the viewer is shut in two - by its own frame, and by `adopt`,
+when a grid of other results does not hold its photo. Each has a test with the key in that
+very frame - for the first with the mouse's back button still held, since the click of a
+button let go of has egui take the keyboard off the field by itself; with the key a frame
+later, as the first version had it, the test passed with the rule gone.
 
 **egui paints a field's placeholder in the theme's "weak" text colour, whatever colour its
 words are given** (`hint_text` with a `RichText` of a colour: the colour is replaced). Two
@@ -2350,10 +2381,9 @@ things follow. `theme::install` sets that colour to the palette's dim text, whic
 field here had asked for in vain and got egui's greyed-out text instead. And **the viewer's
 keyword field is drawn in the dark theme's visuals, whatever the window's** (`set_visuals`
 on its own `Ui`): the viewer's glass is dark in both themes, and in a light window "Add a
-keyword" was all but invisible - seen in a picture, enlarged, after every test had passed. A
-placeholder's colour is now something a frame test can ask (the fixture's `tints`). The
-caret is the same light blue in both of egui's themes and needed nothing, which the first
-version of that test said by failing.
+keyword" was all but invisible - seen in a picture, enlarged, after every test had passed -
+and the caret was that theme's dark blue on the dark glass. A placeholder's colour and a
+caret's are things a frame test can ask (the fixture's `tints` and `lines`).
 
 **The bar keeps its width while the caption is not known** (`bar_place`'s `was`): at a step
 the caption is empty for the round trip the library's answer takes, the bar shrank to its

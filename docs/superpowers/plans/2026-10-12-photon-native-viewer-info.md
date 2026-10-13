@@ -135,8 +135,10 @@ camera's link; a copy located; a still window.
   (`adopt`, on a grid of other results) has no context at hand. egui lets go of a field
   that is no longer drawn by itself, a frame late, and the grid is deaf for a frame more.
 - **Enter leaves the keyboard in the field**, for the next keyword; Escape leaves it.
-- **The wheel over the panel goes by egui's own distance a notch** (`line_scroll_speed`),
-  not by the system's lines as the grid's does: nothing in the panel is far away.
+- **The wheel over the panel moves it forty points a notch**, whatever the system's
+  lines: nothing in the panel is far away. (As first built it read egui's
+  `line_scroll_speed`, which this line called "egui's own distance" - and which the
+  application sets to the system's notch in every frame. The review: below.)
 - **The panel's data is handed to the view whether or not the panel is open**: a filter
   on the way did nothing, the view asking for it only where it draws the panel.
 - **What a photo with no face says** needs two things the plan had not named as wiring:
@@ -185,3 +187,74 @@ fail. Fourteen passed the first time, and each was something:
   a test of the whole application found a line that was scrolled out of sight. They are
   what keeps such a thing from AccessKit; the link probed was in a row guarded twice.
   They are back, and taking them out did show what the field's own had cost (above).
+
+## What the review found
+
+An independent read of the whole branch (a fresh reviewer, its own worktree and build),
+with a failing test for each finding: twenty-seven tests, and twenty-three probes of
+which sixteen passed. Nothing it called critical. Fixed in the commit after the
+feature's, each with the reviewer's test or one of its kind.
+
+**To fix before merging**
+
+- **What the panel wrote went to the photo stepped to in the same frame.** The frame's
+  steps were acted on before the panel's presses, and the writes went by the viewer's
+  photo: a tick with an arrow key in its frame was the next photo's, whose panel nobody
+  had seen; a tick in the frame of the Escape that closes was not written. The grid's
+  rule for a key that writes, missed here. They are written first now, to the photo the
+  panel was drawn for.
+- **Who had the keyboard after a step of the wheel from the keyword's field was a
+  race.** A step leaves nothing to draw until the library has answered, egui lets go of
+  a field that is not drawn, and so the field kept the keyboard when the answer came
+  within a frame and lost it when it did not - "hills" typed next was a keyword, or `h`
+  hid the photo. The keyboard is the field's by the panel's own word now, across the
+  frames with nothing to draw. (The reviewer's test asked only that it be one or the
+  other; the Svelte viewer always loses it. Keeping it is the choice that hides no
+  photo, and lets a keyword be typed for photo after photo.)
+
+**Smaller, fixed**
+
+- The field shared one undo history across photos, as the sidebar's field and the
+  picker's once did.
+- Everything laid out "to break anywhere" was cut in the middle of a word: egui breaks
+  an over-long word by itself, and told to break anywhere never looks for a word's end.
+- A link to where the user already is closed the viewer without handing its photo back.
+- A notch of the wheel moved the panel by the system's lines, not by "egui's own" as
+  this plan said; and by none at all at a Windows set to scroll none.
+- A keyword the photo already has was written again, and the grid built anew for it.
+- A position that is a tie in binary was rounded to the even digit, where `toFixed`
+  rounds it up.
+- Only the first button's press left the field.
+- Tests for five rules its probes found none for: the field's arrow keys, Enter while
+  the field has not the keyboard, a trackpad's points, the make found in the model in
+  whatever case, and more kinds of thing scrolled out of the panel.
+
+**A test of the zoom's that the gate failed once**, older than the review's findings
+and of none of them: "a star keeps the zoom and another picture is fitted again" asked
+for the zoom the moment the turned picture had landed. The picture and what the library
+says of the turned photo are two answers, from two tasks, and the zoom is put back by
+the second: four runs in twenty-four on the branch as pushed read 1.25. It waits for
+both now (none in twenty-four); for the frames between, the turned picture is drawn at
+the old zoom, which is left as it is.
+
+**Statements that were wrong, put right**: the notch (above); "the caret is the same in
+both of egui's themes" - it is not, and the first version of the test that said so had
+been right; "the photo is not handed back, the grid being left too"; "there is nothing
+to put back" after a refusal; what `wrap` and `leave` said of themselves.
+
+**Found and left, for the user to weigh**
+
+- A double click on a copy's link lands its second click on the grid, and selects the
+  photo under it in the copy's place.
+- A letter in the very frame of the click that gives the field the keyboard is the
+  viewer's key too.
+- "lisbon" typed where the library has "Lisbon" on other photos writes a second
+  keyword; the picker writes the library's.
+- A keyword the library refuses is not given back to the field.
+- A field scrolled out of sight has the keyboard and no caret to be seen.
+- A name in a right-to-left script is turned round in the panel and right in the bar.
+- No test draws the scroll mark or the histogram's columns, shows a video's "Length",
+  or reads "No faces found yet." through the whole application.
+- Older than this pull request: a write refused by another connection's lock is refused
+  at once where it reads before it writes, not after the five seconds a write waits;
+  and a wheel delta that is not a number panics inside egui.

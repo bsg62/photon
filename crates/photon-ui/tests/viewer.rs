@@ -16,7 +16,7 @@ use photon_core::{
     thumbs::ThumbSize,
 };
 use photon_engine::{commands, engine::RENDERING};
-use photon_ui::folder_drop::CARD;
+use photon_ui::{folder_drop::CARD, grid::scroll::Notch};
 use std::{
     io::Cursor,
     path::{Path, PathBuf},
@@ -1344,8 +1344,13 @@ fn a_star_keeps_the_zoom_and_another_picture_is_fitted_again() {
     assert_eq!(zoom(&harness), 1.25);
     let engine = harness.state().engine().clone();
     commands::rotate_item(&engine, ids[1], true).unwrap();
-    driver.until(&mut harness, "the photo turned", |app| {
+    // The turned picture and what the library says of the turned photo are two
+    // answers, from two tasks, in either order: the zoom is put back by the second,
+    // which is nearly always the first to arrive. (Asked the moment the picture had
+    // landed, the zoom was still 1.25 in one run in six.)
+    driver.until(&mut harness, "the photo turned, and fitted again", |app| {
         app.viewer_levels() == Some(vec![48])
+            && app.viewer().is_some_and(|viewer| viewer.zoom().is_fit())
     });
     assert_eq!(zoom(&harness), 1.0);
 }
@@ -2178,7 +2183,15 @@ fn the_wheel_scrolls_a_panel_taller_than_the_window_and_what_is_out_of_it_is_not
         &ids[4..5],
     );
     copies(&library, &[ids[4], ids[7]]);
+    {
+        let lib = Library::open(&library.dirs().db_path).unwrap();
+        lib.create_album("Porto", 1_700_000_000_000).unwrap();
+        lib.add_items_tag(&ids[4..5], "alps").unwrap();
+    }
     let (mut harness, mut driver) = opened(&library, 12);
+    driver.until(&mut harness, "the albums read", |app| {
+        !app.collections().albums.is_empty()
+    });
     driver.settle(&mut harness);
     let at = (harness.state().shown().iter())
         .position(|id| *id == ids[4])
@@ -2197,6 +2210,12 @@ fn the_wheel_scrolls_a_panel_taller_than_the_window_and_what_is_out_of_it_is_not
     assert!(harness.query_by_label("Camera").is_some());
     assert!(harness.query_by_label("Canon EOS 5D").is_some());
     assert!(harness.query_by_label(foot).is_none(), "below the panel");
+    // And of every other kind of thing in the panel: a heading, a keyword and the
+    // cross on it, an album's tick.
+    let below = ["Keywords", "alps", "Remove alps", "Porto"];
+    for label in below {
+        assert!(harness.query_by_label(label).is_none(), "{label}");
+    }
     let over = harness.get_by_label("Canon EOS 5D").rect().center();
     let turn = |driver: &mut Driver, harness: &mut Harness<'_>, lines: f32| {
         harness.event(egui::Event::PointerMoved(over));
@@ -2209,12 +2228,29 @@ fn the_wheel_scrolls_a_panel_taller_than_the_window_and_what_is_out_of_it_is_not
         driver.act(harness);
         driver.act(harness);
     };
+    // A notch at a time, down to the panel's foot: each of them comes into sight on
+    // the way. (Not all at once at the end: how many lines the copy's path takes is
+    // the temporary folder's business, and on a Mac it is long.)
+    let mut seen = std::collections::BTreeSet::new();
+    for _ in 0..60 {
+        turn(&mut driver, &mut harness, -1.0);
+        seen.extend(
+            below
+                .iter()
+                .filter(|label| harness.query_by_label(label).is_some()),
+        );
+        if harness.query_by_label(foot).is_some() {
+            break;
+        }
+    }
+    assert_eq!(seen, below.iter().collect());
     turn(&mut driver, &mut harness, -100.0);
     assert_eq!(viewing(&harness), Some(ids[4]), "no step to another photo");
     assert!(
         harness.query_by_label(foot).is_some(),
         "scrolled to its end"
     );
+    assert!(harness.query_by_label("Dates").is_none(), "a heading above");
     assert!(
         harness.query_by_label("Canon EOS 5D").is_none(),
         "above the panel"
@@ -2224,4 +2260,457 @@ fn the_wheel_scrolls_a_panel_taller_than_the_window_and_what_is_out_of_it_is_not
     turn(&mut driver, &mut harness, 100.0);
     assert!(harness.query_by_label("Canon EOS 5D").is_some());
     assert_eq!(viewing(&harness), Some(ids[4]));
+}
+
+fn key_event(key: Key, pressed: bool, repeat: bool) -> egui::Event {
+    egui::Event::Key {
+        key,
+        physical_key: Some(key),
+        pressed,
+        repeat,
+        modifiers: Modifiers::NONE,
+    }
+}
+
+/// Whether the keyboard is the keyword's field's.
+fn typing(harness: &Harness<'_>) -> bool {
+    harness.state().viewer_typing()
+}
+
+// An album is ticked for the photo whose panel was on screen. With an arrow key in the
+// frame the button comes up in - a key that is held repeats thirty times a second - the
+// step is acted on first, and the tick is written by `open.viewer.id()`, which is by
+// then the next photo: one whose panel was never drawn.
+#[test]
+fn a_tick_in_the_frame_of_a_step_is_written_to_the_photo_it_was_shown_for() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = library(dir.path(), 12, 0, 0);
+    let album = {
+        let lib = Library::open(&library.dirs().db_path).unwrap();
+        lib.create_album("Porto", 1_700_000_000_000).unwrap().id
+    };
+    let (mut harness, mut driver) = opened(&library, 12);
+    driver.until(&mut harness, "the albums read", |app| {
+        !app.collections().albums.is_empty()
+    });
+    driver.settle(&mut harness);
+    let all = harness.state().shown();
+    let engine = harness.state().engine().clone();
+    informed(&mut driver, &mut harness, 2);
+    let at = harness.get_by_label("Porto").rect().center();
+    harness.event(egui::Event::PointerMoved(at));
+    harness.event(button(at, PointerButton::Primary, true));
+    driver.act(&mut harness);
+    // The button comes up, and the arrow key goes down, in one frame.
+    harness.input_mut().events.extend([
+        button(at, PointerButton::Primary, false),
+        key_event(Key::ArrowRight, true, false),
+    ]);
+    driver.act(&mut harness);
+    harness
+        .input_mut()
+        .events
+        .push(key_event(Key::ArrowRight, false, false));
+    driver.act(&mut harness);
+    assert_eq!(viewing(&harness), Some(all[3]), "the arrow stepped");
+    rest(&mut driver, &mut harness, 1.0);
+    let albums = |id: i64| commands::viewer_item(&engine, id).unwrap().albums;
+    assert_eq!(
+        (albums(all[2]), albums(all[3])),
+        (vec![album], Vec::new()),
+        "the tick was pressed in the panel of the photo {} and written to {}",
+        all[2],
+        all[3],
+    );
+}
+
+// The same for a keyword's cross: taken off the photo stepped to, and left on the one
+// whose chip was pressed.
+#[test]
+fn a_keyword_taken_off_in_the_frame_of_a_step_is_taken_off_the_photo_it_was_shown_on() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = library(dir.path(), 12, 0, 0);
+    let ids = photo_ids(&library);
+    {
+        let lib = Library::open(&library.dirs().db_path).unwrap();
+        lib.add_items_tag(&ids[2..4], "hills").unwrap();
+    }
+    let (mut harness, mut driver) = opened(&library, 12);
+    driver.settle(&mut harness);
+    let all = harness.state().shown();
+    assert_eq!(all, ids);
+    let engine = harness.state().engine().clone();
+    informed(&mut driver, &mut harness, 2);
+    let at = harness.get_by_label("Remove hills").rect().center();
+    harness.event(egui::Event::PointerMoved(at));
+    harness.event(button(at, PointerButton::Primary, true));
+    driver.act(&mut harness);
+    harness.input_mut().events.extend([
+        button(at, PointerButton::Primary, false),
+        key_event(Key::ArrowRight, true, false),
+    ]);
+    driver.act(&mut harness);
+    harness
+        .input_mut()
+        .events
+        .push(key_event(Key::ArrowRight, false, false));
+    driver.act(&mut harness);
+    assert_eq!(viewing(&harness), Some(all[3]), "the arrow stepped");
+    rest(&mut driver, &mut harness, 1.0);
+    let tags = |id: i64| commands::viewer_item(&engine, id).unwrap().tags;
+    assert_eq!(
+        (tags(all[2]), tags(all[3])),
+        (Vec::<String>::new(), vec!["hills".to_owned()]),
+        "the cross was pressed on the photo {} and the keyword taken off {}",
+        all[2],
+        all[3],
+    );
+}
+
+// And for a keyword added: typed, Enter, and the wheel turned over the photo in the
+// frame of that Enter (the pointer rests on the photo: the field was clicked and the
+// mouse moved away, which leaves the keyboard in the field). The wheel's step is acted
+// on first, and the keyword is the next photo's.
+#[test]
+fn a_keyword_added_in_the_frame_of_a_wheels_step_is_added_to_the_photo_it_was_typed_for() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = library(dir.path(), 12, 0, 0);
+    let (mut harness, mut driver) = opened(&library, 12);
+    driver.settle(&mut harness);
+    let all = harness.state().shown();
+    let engine = harness.state().engine().clone();
+    informed(&mut driver, &mut harness, 2);
+    into_field(&mut driver, &mut harness);
+    typed(&mut driver, &mut harness, "hills");
+    // The pointer is moved onto the photo, with no button: the field keeps the keyboard.
+    let over_photo = egui::pos2(300.0, 200.0);
+    harness.event(egui::Event::PointerMoved(over_photo));
+    driver.act(&mut harness);
+    assert!(typing(&harness));
+    harness.input_mut().events.extend([
+        key_event(Key::Enter, true, false),
+        egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Line,
+            delta: egui::vec2(0.0, -1.0),
+            phase: egui::TouchPhase::Move,
+            modifiers: Modifiers::NONE,
+        },
+    ]);
+    driver.act(&mut harness);
+    harness
+        .input_mut()
+        .events
+        .push(key_event(Key::Enter, false, false));
+    driver.act(&mut harness);
+    assert_eq!(viewing(&harness), Some(all[3]), "the wheel stepped");
+    rest(&mut driver, &mut harness, 1.0);
+    let tags = |id: i64| commands::viewer_item(&engine, id).unwrap().tags;
+    assert_eq!(
+        (tags(all[2]), tags(all[3])),
+        (vec!["hills".to_owned()], Vec::<String>::new()),
+        "the keyword was typed for the photo {} and written to {}",
+        all[2],
+        all[3],
+    );
+}
+
+/// Whether the keyword's field still has the keyboard once the viewer has stepped by
+/// the wheel with the caret in it and the next photo's panel is drawn - the frame after
+/// the step being drawn `after` the step, in real time.
+fn typing_after_a_wheels_step(after: Duration) -> bool {
+    let dir = tempfile::tempdir().unwrap();
+    let library = library(dir.path(), 12, 0, 0);
+    let (mut harness, mut driver) = opened(&library, 12);
+    driver.settle(&mut harness);
+    let all = harness.state().shown();
+    informed(&mut driver, &mut harness, 2);
+    into_field(&mut driver, &mut harness);
+    let over_photo = egui::pos2(300.0, 200.0);
+    harness.event(egui::Event::PointerMoved(over_photo));
+    driver.act(&mut harness);
+    assert!(typing(&harness));
+    harness.input_mut().events.push(egui::Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Line,
+        delta: egui::vec2(0.0, -1.0),
+        phase: egui::TouchPhase::Move,
+        modifiers: Modifiers::NONE,
+    });
+    driver.act(&mut harness);
+    assert_eq!(viewing(&harness), Some(all[3]), "the wheel stepped");
+    // The next frame: a refresh later on a fast machine, later on a slow one.
+    std::thread::sleep(after);
+    driver.act(&mut harness);
+    driver.until(&mut harness, "the next photo's facts", |app| {
+        app.viewer_item().is_some_and(|item| item.id == all[3])
+    });
+    driver.act(&mut harness);
+    driver.act(&mut harness);
+    typing(&harness)
+}
+
+// A step by the wheel with the caret in the keyword's field. If the library has
+// answered for the next photo by the time the next frame is drawn, the field is drawn
+// in that frame and keeps the keyboard; if it has not, the field is not drawn for a
+// frame, egui lets go of it, and the next letter typed is the viewer's key - `h` hides
+// the photo stepped to. Which of the two happens is a matter of milliseconds.
+#[test]
+fn who_has_the_keyboard_after_a_wheels_step_does_not_depend_on_how_fast_the_library_answers() {
+    let at_once = typing_after_a_wheels_step(Duration::ZERO);
+    let a_moment_later = typing_after_a_wheels_step(Duration::from_millis(300));
+    assert!(
+        at_once && a_moment_later,
+        "the field kept the keyboard: with the next frame at once {at_once}, with it a \
+         moment later {a_moment_later}"
+    );
+}
+
+// What that costs when the frame comes at once: `h` typed after the step hides the
+// photo stepped to. (With the caret in the field when the wheel was turned, and nothing
+// pressed since.)
+#[test]
+fn a_letter_typed_after_a_wheels_step_from_the_field_hides_no_photo() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = library(dir.path(), 12, 0, 0);
+    let (mut harness, mut driver) = opened(&library, 12);
+    driver.settle(&mut harness);
+    let all = harness.state().shown();
+    let engine = harness.state().engine().clone();
+    informed(&mut driver, &mut harness, 2);
+    into_field(&mut driver, &mut harness);
+    let over_photo = egui::pos2(300.0, 200.0);
+    harness.event(egui::Event::PointerMoved(over_photo));
+    driver.act(&mut harness);
+    harness.input_mut().events.push(egui::Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Line,
+        delta: egui::vec2(0.0, -1.0),
+        phase: egui::TouchPhase::Move,
+        modifiers: Modifiers::NONE,
+    });
+    driver.act(&mut harness);
+    driver.act(&mut harness);
+    driver.until(&mut harness, "the next photo's facts", |app| {
+        app.viewer_item().is_some_and(|item| item.id == all[3])
+    });
+    driver.act(&mut harness);
+    // "hills", as a keyboard sends it: each key with the letter it types.
+    for letter in ["h", "i", "l", "l", "s"] {
+        let key = Key::from_name(&letter.to_uppercase()).unwrap();
+        harness.input_mut().events.extend([
+            key_event(key, true, false),
+            egui::Event::Text(letter.to_owned()),
+        ]);
+        driver.act(&mut harness);
+        harness
+            .input_mut()
+            .events
+            .push(key_event(key, false, false));
+        driver.act(&mut harness);
+    }
+    rest(&mut driver, &mut harness, 1.0);
+    assert!(
+        !commands::viewer_item(&engine, all[3]).unwrap().hidden,
+        "the `h` of a keyword hid the photo stepped to"
+    );
+    assert!(
+        harness.state().viewer_info(),
+        "and its `i` closed the panel"
+    );
+    // And the letters are in the field of the photo stepped to, for its keyword.
+    let field = harness.get_by_role(egui::accesskit::Role::TextInput);
+    assert_eq!(field.accesskit_node().value().as_deref(), Some("hills"));
+}
+
+/// How far one notch of the wheel over the panel moves it, in a window low enough for
+/// the panel to scroll, where the system's notch is `notch`.
+fn a_notch_over_the_panel(notch: fn() -> Notch) -> f32 {
+    let dir = tempfile::tempdir().unwrap();
+    let library = library(dir.path(), 12, 0, 0);
+    let ids = photo_ids(&library);
+    copies(&library, &[ids[4], ids[7]]);
+    let dirs = library.dirs();
+    let mut harness: Harness<'_> = egui_kittest::Harness::builder()
+        .with_size(egui::vec2(1000.0, 700.0))
+        .with_step_dt(common::REFRESH as f32)
+        .build_eframe(move |cc| {
+            photon_ui::app::App::new(cc, dirs, None)
+                .unwrap()
+                .with_wheel(notch)
+        });
+    let mut driver = Driver::new(&harness);
+    driver.until(&mut harness, "the library shown", |app| {
+        app.photos() == 12 && app.last_frame().is_some_and(|frame| frame.settled)
+    });
+    driver.settle(&mut harness);
+    let at = (harness.state().shown().iter())
+        .position(|id| *id == ids[4])
+        .unwrap();
+    informed(&mut driver, &mut harness, at);
+    harness.set_size(egui::vec2(1000.0, 260.0));
+    driver.act(&mut harness);
+    driver.act(&mut harness);
+    let before = harness.get_by_label("Dates").rect().top();
+    let over = harness.get_by_label("Dates").rect().center();
+    harness.event(egui::Event::PointerMoved(over));
+    harness.event(egui::Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Line,
+        delta: egui::vec2(0.0, -1.0),
+        phase: egui::TouchPhase::Move,
+        modifiers: Modifiers::NONE,
+    });
+    driver.act(&mut harness);
+    driver.act(&mut harness);
+    match harness.query_by_label("Dates") {
+        Some(dates) => before - dates.rect().top(),
+        None => f32::INFINITY,
+    }
+}
+
+// The plan: "The wheel over the panel goes by egui's own distance a notch
+// (`line_scroll_speed`), not by the system's lines as the grid's does". But
+// `line_scroll_speed` is not egui's own here: `App::ui` writes the system's notch into
+// it in every frame (`set_wheel_notch`), so the panel goes by the system's lines exactly
+// as the grid does - a hundred points at Windows' three lines, not forty.
+#[test]
+fn the_panels_notch_is_eguis_own_forty_points_whatever_the_systems() {
+    let moved = a_notch_over_the_panel(|| Notch::Points(100.0));
+    assert!(
+        (moved - 40.0).abs() < 0.5,
+        "a notch moved the panel {moved} points where the system's notch is a hundred"
+    );
+}
+
+// And where Windows is set to scroll no lines a notch, the panel cannot be scrolled by
+// the wheel at all - and it has no other way: its mark takes no press and it answers
+// no key. What is below its foot cannot be reached.
+#[test]
+fn a_panel_taller_than_the_window_can_be_scrolled_where_the_system_scrolls_no_lines() {
+    let moved = a_notch_over_the_panel(|| Notch::Points(0.0));
+    assert!(
+        moved > 0.0,
+        "a notch moved the panel {moved} points: nothing below its foot can be reached"
+    );
+}
+
+// "The photo is not handed back to the grid first: the grid that was under the viewer
+// is being left too." Not when the link leads to where the user is already: in a
+// camera's search, the camera's link asks for no step (`Nav::wants`), the grid under
+// the viewer stays - and the photo the viewer was on is not handed back to it. The
+// selection is still the photo the viewer was opened on, however far it was stepped.
+#[test]
+fn a_link_to_where_the_user_already_is_hands_the_photo_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = library(dir.path(), 12, 0, 0);
+    let ids = photo_ids(&library);
+    doctored(
+        &library,
+        "UPDATE items SET make = 'Canon', model = 'Canon EOS 5D' WHERE id = ?1",
+        &ids[2..6],
+    );
+    let (mut harness, mut driver) = opened(&library, 12);
+    driver.settle(&mut harness);
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::F);
+    driver.act(&mut harness);
+    typed(&mut driver, &mut harness, "camera:\"Canon EOS 5D\"");
+    key(&mut driver, &mut harness, Key::Enter);
+    driver.until(&mut harness, "the camera's four photos", |app| {
+        app.settled().view == GridView::Search && app.photos() == 4
+    });
+    driver.settle(&mut harness);
+    let shown = harness.state().shown();
+    informed(&mut driver, &mut harness, 0);
+    key(&mut driver, &mut harness, Key::ArrowRight);
+    key(&mut driver, &mut harness, Key::ArrowRight);
+    assert_eq!(viewing(&harness), Some(shown[2]));
+    driver.until(&mut harness, "its facts", |app| {
+        app.viewer_item().is_some_and(|item| item.id == shown[2])
+    });
+    driver.act(&mut harness);
+    harness.get_by_label("Canon EOS 5D").click();
+    driver.act(&mut harness);
+    assert_eq!(viewing(&harness), None, "the viewer closed");
+    rest(&mut driver, &mut harness, 1.0);
+    assert_eq!(
+        harness.state().shown(),
+        shown,
+        "the same grid: nothing was left"
+    );
+    assert_eq!(
+        harness.state().selected(),
+        [shown[2]],
+        "the photo that was on screen is the one handed back"
+    );
+}
+
+// An album is ticked and Escape pressed straight after, in one frame: the frame's keys
+// are acted on before what was pressed in the panel, whichever came first, and `Close`
+// ends the frame's list. The tick is never written, and nothing says so.
+#[test]
+fn a_tick_in_the_frame_of_the_escape_that_closes_is_written() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = library(dir.path(), 12, 0, 0);
+    let album = {
+        let lib = Library::open(&library.dirs().db_path).unwrap();
+        lib.create_album("Porto", 1_700_000_000_000).unwrap().id
+    };
+    let (mut harness, mut driver) = opened(&library, 12);
+    driver.until(&mut harness, "the albums read", |app| {
+        !app.collections().albums.is_empty()
+    });
+    driver.settle(&mut harness);
+    let all = harness.state().shown();
+    let engine = harness.state().engine().clone();
+    informed(&mut driver, &mut harness, 2);
+    let at = harness.get_by_label("Porto").rect().center();
+    harness.event(egui::Event::PointerMoved(at));
+    harness.event(button(at, PointerButton::Primary, true));
+    driver.act(&mut harness);
+    harness.input_mut().events.extend([
+        button(at, PointerButton::Primary, false),
+        key_event(Key::Escape, true, false),
+    ]);
+    driver.act(&mut harness);
+    harness
+        .input_mut()
+        .events
+        .push(key_event(Key::Escape, false, false));
+    driver.act(&mut harness);
+    assert_eq!(viewing(&harness), None, "Escape closed the viewer");
+    rest(&mut driver, &mut harness, 1.0);
+    assert_eq!(
+        commands::viewer_item(&engine, all[2]).unwrap().albums,
+        [album],
+        "the tick that was pressed before the Escape"
+    );
+}
+
+// The rows take it as nothing; the engine does not. `add_item_tag` and
+// `remove_item_tag` rebuild the whole grid whether or not anything changed, so a
+// keyword the photo already has, typed again - which the Svelte panel drops before it
+// asks (`createTagEditor::add`: "a name already shown") - is a query over the whole
+// library, a new grid version, and the viewer, the counts and the lists read again.
+#[test]
+fn a_keyword_the_photo_already_has_rebuilds_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = library(dir.path(), 12, 0, 0);
+    let ids = photo_ids(&library);
+    {
+        let lib = Library::open(&library.dirs().db_path).unwrap();
+        lib.add_items_tag(&ids[2..3], "hills").unwrap();
+    }
+    let (mut harness, mut driver) = opened(&library, 12);
+    driver.settle(&mut harness);
+    informed(&mut driver, &mut harness, 2);
+    assert!(harness.query_by_label("Remove hills").is_some());
+    rest(&mut driver, &mut harness, 1.0);
+    let version = harness.state().version();
+    into_field(&mut driver, &mut harness);
+    typed(&mut driver, &mut harness, "hills");
+    key(&mut driver, &mut harness, Key::Enter);
+    rest(&mut driver, &mut harness, 1.0);
+    rest(&mut driver, &mut harness, 1.0);
+    assert_eq!(
+        harness.state().version(),
+        version,
+        "the grid was built again for a keyword the photo had"
+    );
 }

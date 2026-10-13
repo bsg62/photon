@@ -32,12 +32,25 @@ pub fn field_query(field: &str, value: &str) -> String {
     format!("{field}:\"{}\"", value.replace('"', " ").trim())
 }
 
+/// A number to `places` decimals, a tie rounded away from nought as `toFixed` rounds it:
+/// Rust's own formatting rounds a tie to the even digit, and a position that is one in
+/// binary - every multiple of a sixty-fourth of a degree, which degrees, minutes and
+/// seconds make - was spelled a digit off the Svelte panel's, and searched for ten
+/// metres from where its link searches.
+fn fixed(value: f64, places: usize) -> String {
+    let scale = 10f64.powi(places as i32);
+    format!(
+        "{:.places$}",
+        (value.abs() * scale).round() / scale * value.signum()
+    )
+}
+
 /// A position as people write one: "48.13740° N, 11.57550° E". Five decimals is about a
 /// metre, as fine as a camera's fix. The hemisphere's letter carries the sign, and is
 /// chosen after the rounding, so that a hair south of the equator is not "0.00000° S".
 pub fn format_coordinates(lat: f64, lon: f64) -> String {
     let part = |value: f64, positive: &str, negative: &str| {
-        let rounded = format!("{:.5}", value.abs());
+        let rounded = fixed(value.abs(), 5);
         let nought = rounded.parse::<f64>().is_ok_and(|rounded| rounded == 0.0);
         let letter = if value < 0.0 && !nought {
             negative
@@ -52,7 +65,7 @@ pub fn format_coordinates(lat: f64, lon: f64) -> String {
 /// The search for photos taken near a point, within the grammar's own distance. Four
 /// decimals, about ten metres, keep the query short enough to read in the box.
 pub fn near_query(lat: f64, lon: f64) -> String {
-    format!("near:{lat:.4},{lon:.4}")
+    format!("near:{},{}", fixed(lat, 4), fixed(lon, 4))
 }
 
 /// "Canon EOS 5D Mark IV", not "Canon Canon EOS 5D Mark IV": most makers repeat the make
@@ -617,5 +630,26 @@ mod tests {
         assert_eq!(show_copies_label(1), "Show 1 duplicate");
         assert_eq!(show_copies_label(3), "Show 3 duplicates");
         assert_eq!(show_copies_label(1500), "Show 1,500 duplicates");
+    }
+
+    // `exif.ts` rounds a tie up (`toFixed`), and Rust's `{:.5}` rounds it to
+    // the even digit: a position that is an exact tie in binary is spelled otherwise
+    // than the Svelte panel spells it, and searched for a place 10 m from where the
+    // Svelte link searches. (Every multiple of 1/64 of a degree at five decimals, of
+    // 1/32 at four - EXIF's degrees, minutes and seconds make such numbers.)
+    #[test]
+    fn a_position_that_is_a_tie_is_rounded_as_the_svelte_panel_rounds_it() {
+        // (0.015625).toFixed(5) === "0.01563"; (48.03125).toFixed(4) === "48.0313"
+        assert_eq!(format_coordinates(0.015625, 0.0), "0.01563° N, 0.00000° E");
+        assert_eq!(near_query(48.03125, 11.03125), "near:48.0313,11.0313");
+    }
+
+    // The make is looked for in the model whatever its case.
+    #[test]
+    fn the_make_is_found_in_the_model_whatever_its_case() {
+        assert_eq!(
+            camera_name(Some("LEICA CAMERA AG"), Some("Leica Q2")).as_deref(),
+            Some("Leica Q2")
+        );
     }
 }
