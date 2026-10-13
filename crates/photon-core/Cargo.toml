@@ -26,6 +26,9 @@ memchr = "2.8.3"
 mozjpeg = "0.10.13"
 # The C declarations `turbo`'s error manager is built from; `mozjpeg` does not re-export them.
 mozjpeg-sys = "2.2.3"
+# Colour profiles, for the native viewer (`colour.rs`). Pure Rust, and in the build already:
+# `image` depends on it.
+moxcms = "0.8.1"
 notify = "8.2.0"
 notify-debouncer-full = "0.7.0"
 parking_lot = "0.12.5"

@@ -130,6 +130,36 @@ fn parse(bytes: &[u8]) -> ImageResult<AvifParser<'_>> {
     AvifParser::from_bytes_with_config(bytes, &config, &Unstoppable).map_err(parse_failed)
 }
 
+/// What an AVIF's container says of its colours (`colr`): a profile, or a colour space
+/// named by number.
+pub(crate) enum Colours {
+    Icc(Vec<u8>),
+    /// ITU-T H.273's numbers for the primaries and the transfer curve.
+    Named {
+        primaries: u16,
+        transfer: u16,
+    },
+}
+
+/// The container's word on its colours, for `colour::embedded_profile`. None where it
+/// says nothing or cannot be parsed. (The decoder reads the same box for the matrix and
+/// the range, below, and nothing else of it.)
+pub(crate) fn colour_information(bytes: &[u8]) -> Option<Colours> {
+    let bytes = with_avif_major(bytes);
+    let parser = parse(&bytes).ok()?;
+    match parser.color_info()? {
+        ColorInformation::IccProfile(icc) => Some(Colours::Icc(icc.clone())),
+        ColorInformation::Nclx {
+            color_primaries,
+            transfer_characteristics,
+            ..
+        } => Some(Colours::Named {
+            primaries: *color_primaries,
+            transfer: *transfer_characteristics,
+        }),
+    }
+}
+
 /// The container's `colr` description where it has one, else the AV1 sequence header's -
 /// libavif's order. An ICC-only `colr` says nothing about the matrix, so it falls through.
 fn colour(parser: &AvifParser<'_>, planes: &av1::Planes) -> (u16, bool) {

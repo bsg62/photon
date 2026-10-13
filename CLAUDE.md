@@ -2396,6 +2396,50 @@ there, so the hash stays). And a library where photon looks for faces is still r
 them for a moment after the launch: a test of the People section's "No faces found." waits
 for the pass's line to go.
 
+**The viewer's full picture is converted to sRGB, and nothing else is**
+(`photon_core::colour`; `commands::viewer_picture` calls `in_srgb`, and nothing else does).
+A decoder hands over numbers, and what colours they are is said beside them: a phone's photo
+is Display P3 and a camera's often Adobe RGB, and their numbers read as sRGB are duller
+colours than were taken. A web view converts them; the native viewer draws the pixels
+itself. The conversion is moxcms: pure Rust, and in the build already as `image`'s own
+dependency. `embedded_profile` reads what the file says - the ICC profile of a JPEG, a PNG,
+a TIFF or a WebP, **through each format's own decoder made directly** (through
+`ImageReader::into_decoder` a TIFF's profile came back as none, by this module's test), and
+an AVIF's `colr` box, which is a profile or four numbers (`nclx`). It is a read of the file
+of its own, after the decode: every full decode goes through `decode_image`, and its other
+callers want no profile. **Only a profile that says what a picture's numbers are is
+applied**: RGB, and of a device or a colour space - not a CMYK or a grey one (the decoder
+has made RGB of those numbers by a rule of its own), not a link between devices, an abstract
+profile or named colours. **An AVIF's numbers** are converted where they name a
+standard-range space: the primaries by moxcms's table, and the curve taken for sRGB's own
+where it is BT.709's family or not said at all, as a web view takes it - by its own formula
+a photo that says "BT.709" comes out darker than every browser shows it. PQ and HLG are left
+as they are: high dynamic range is not shown on this surface by a conversion of numbers. **A
+profile that is sRGB is told by what it does**, not by its name: a spread of 216 colours is
+converted first, and where none moves by more than a step the picture is left alone - which
+is nearly every profile there is. The picture is converted in place, a chunk at a time, so
+no second picture of 96 MB is held (30 ms for 24 million pixels in a release build, either
+way; about three seconds unoptimised, which only a debug build of the application pays -
+moxcms is not among the crates the dev profile optimises), and **before the fitted copy is
+scaled**, so that the two pictures of one photo are of one colour.
+
+What is *not* converted, each on purpose or for want of a decision: the preview (so a
+wide-gamut photo changes colour a little when its full picture lands, as it does in the
+Tauri viewer), the grid's thumbnails, an export and the copy for the clipboard - whether
+those should be is a decision about photon-core and the Tauri photon, not this viewer's. And
+"converted" means converted to sRGB's numbers: whether the system takes the window's surface
+for sRGB on a wide-gamut display is not something a test here can see (the smoke checklist,
+for a Mac). Three things about moxcms and the tests, each learnt by a test that failed. Its
+`update_rgb_colorimetry_from_cicp` answers false whatever it did (0.8.1), so the profile is
+made by `new_from_cicp` and asked whether it has primaries and curves (`is_matrix_shaper`).
+A profile it *writes* for any class but a screen's or a camera's has no primaries in it and
+cannot be read back, so the tests of "a device link is not applied" patch the four letters
+of a good profile's header instead - made by the writer, such a fixture was refused for
+being broken and proved nothing. And the values the tests expect are worked out by hand -
+primaries to XYZ and back through sRGB's, each space's own curve - not asked of moxcms; they
+agree to the digit. A profile that makes moxcms panic costs that photo its full picture and
+no more: the task catches it, and the preview stays.
+
 **A picture test makes its GPU device alone** (`tests/screenshots.rs`, `DEVICES`): every
 picture is drawn on a thread of its own, and with two dozen devices made in the same
 moment `native-shot` crashed inside the Vulkan loader about once in four runs

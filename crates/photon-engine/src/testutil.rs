@@ -18,6 +18,22 @@ pub fn jpeg(w: u32, h: u32) -> Vec<u8> {
     buf
 }
 
+/// A JPEG of one flat colour, with an ICC profile in it or none: what its numbers are is
+/// the profile's to say.
+pub fn jpeg_of(colour: [u8; 3], icc: Option<&[u8]>) -> Vec<u8> {
+    use image::ImageEncoder;
+    let pixels = colour.repeat(64 * 32);
+    let mut buf = Vec::new();
+    let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, 98);
+    if let Some(icc) = icc {
+        encoder.set_icc_profile(icc.to_vec()).unwrap();
+    }
+    encoder
+        .write_image(&pixels, 64, 32, image::ExtendedColorType::Rgb8)
+        .unwrap();
+    buf
+}
+
 /// A JPEG of a blocky pattern: the same picture at any size, and unlike `jpeg`'s flat
 /// colour it has structure to recognise it by. The blocks are laid out on the 9x8 grid the
 /// look-alike hash reduces to, so they survive that reduction instead of averaging away.
