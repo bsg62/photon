@@ -48,6 +48,12 @@ pub struct SelectData<'a> {
     pub disabled: bool,
     /// What it says under a resting pointer: why it is dimmed.
     pub hint: Option<&'a str>,
+    /// The list opens over the control and not under it: for a control at the foot of
+    /// the window, whose list would run out of it.
+    pub above: bool,
+    /// The colours it is drawn in, where they are not the window's theme's: on the
+    /// viewer's glass, which is dark in both.
+    pub palette: Option<&'a Palette>,
 }
 
 #[derive(Default)]
@@ -97,7 +103,7 @@ impl SelectView {
     /// Draws the control in `rect` and, while it is open, its list under it. Answers the
     /// option chosen, when it is another than the one held.
     pub fn show(&mut self, ui: &mut egui::Ui, rect: Rect, data: &SelectData<'_>) -> Option<usize> {
-        let palette = palette(ui.ctx());
+        let palette = data.palette.unwrap_or_else(|| palette(ui.ctx()));
         let options = Options {
             labels: data.options,
             selected: data.selected,
@@ -315,7 +321,8 @@ impl SelectView {
         chosen
     }
 
-    /// The list, under the control. Answers the option clicked.
+    /// The list, under the control - or over it, where it is told to open upwards.
+    /// Answers the option clicked.
     fn list(
         &mut self,
         ui: &egui::Ui,
@@ -333,7 +340,11 @@ impl SelectView {
             inner + 2.0 * S[0],
             OPTION * data.options.len() as f32 + 2.0 * S[0],
         );
-        let at = pos2(rect.left(), rect.bottom() + S[0]);
+        let at = if data.above {
+            pos2(rect.left(), rect.top() - S[0] - size.y)
+        } else {
+            pos2(rect.left(), rect.bottom() + S[0])
+        };
         let mut chosen = None;
         let mut hovered = None;
         egui::Area::new(Id::new(("select-list", data.id)))
@@ -434,11 +445,15 @@ mod tests {
         held: usize,
         at: Rect,
         disabled: bool,
+        above: bool,
+        palette: Option<&'static Palette>,
         chosen: Vec<usize>,
         time: f64,
         texts: Vec<(String, Rect)>,
         /// The texts the last frame drew short of their end, for want of room.
         cut_short: Vec<String>,
+        /// The colours the last frame filled a rectangle with.
+        fills: Vec<egui::Color32>,
         /// Whether a key of the last frame was still there for what is drawn after, and
         /// whether anything typed in it was: a letter, or the key that typed it.
         down_left: bool,
@@ -453,10 +468,13 @@ mod tests {
                 held,
                 at: AT,
                 disabled: false,
+                above: false,
+                palette: None,
                 chosen: Vec::new(),
                 time: 0.0,
                 texts: Vec::new(),
                 cut_short: Vec::new(),
+                fills: Vec::new(),
                 down_left: false,
                 typed_left: false,
             }
@@ -477,6 +495,8 @@ mod tests {
                 selected: Some(self.held),
                 disabled: self.disabled,
                 hint: None,
+                above: self.above,
+                palette: self.palette,
             };
             let (view, at) = (&mut self.view, self.at);
             let (mut chosen, mut down_left, mut typed_left) = (None, false, false);
@@ -505,15 +525,18 @@ mod tests {
             }
             self.texts.clear();
             self.cut_short.clear();
+            self.fills.clear();
             for clipped in &full.shapes {
-                each_shape(&clipped.shape, &mut |shape| {
-                    if let egui::Shape::Text(text) = shape {
+                each_shape(&clipped.shape, &mut |shape| match shape {
+                    egui::Shape::Text(text) => {
                         self.texts
                             .push((text.galley.text().to_owned(), text.visual_bounding_rect()));
                         if text.galley.elided {
                             self.cut_short.push(text.galley.text().to_owned());
                         }
                     }
+                    egui::Shape::Rect(rect) => self.fills.push(rect.fill),
+                    _ => {}
                 });
             }
         }
@@ -883,5 +906,60 @@ mod tests {
         full.textures_delta.clear();
         assert!(widths.0 > widths.1 + 40.0, "{widths:?}");
         assert!(widths.1 > S[2] + ICON + 2.0 * S[1]);
+    }
+
+    // On the viewer's glass the control and its list are in the dark palette, whatever
+    // the window's theme: told one, they are drawn in it, and in the theme's otherwise.
+    #[test]
+    fn a_select_told_a_palette_is_drawn_in_it() {
+        use crate::theme::tokens::{DARK, LIGHT};
+        let mut f = Fixture::new(0);
+        f.ctx.set_theme(egui::Theme::Light);
+        f.frame(Vec::new());
+        f.click(AT.center());
+        assert!(f.view.open());
+        // (egui fades a new area in: the colours are their own once it has.)
+        (0..30).for_each(|_| f.frame(Vec::new()));
+        assert!(f.fills.contains(&color(LIGHT.raised)), "the theme's own");
+        assert!(!f.fills.contains(&color(DARK.raised)));
+        f.palette = Some(&DARK);
+        f.frame(Vec::new());
+        assert!(f.fills.contains(&color(DARK.raised)), "the list's ground");
+        assert!(f.fills.contains(&color(DARK.field_hover)), "the control's");
+        assert!(!f.fills.contains(&color(LIGHT.raised)));
+    }
+
+    // A control at the foot of the window opens its list over itself: every option
+    // above the control, the last one nearest to it, the list's foot a gap over the
+    // control's top - and an option there is chosen at a click, a press there being
+    // inside the list and not beside it.
+    #[test]
+    fn a_list_told_to_opens_over_its_control() {
+        let mut f = Fixture::new(0);
+        f.above = true;
+        f.at = Rect::from_min_size(pos2(100.0, 500.0), AT.size());
+        f.frame(Vec::new());
+        f.click(f.at.center());
+        assert!(f.view.open());
+        let list = f.view.list.unwrap();
+        assert_eq!(list.bottom(), f.at.top() - S[0]);
+        assert_eq!(list.left(), f.at.left());
+        let rows: Vec<f32> = LABELS
+            .iter()
+            .map(|label| {
+                let drawn = f.drew(label);
+                let over: Vec<&Rect> = (drawn.iter())
+                    .filter(|at| at.bottom() < f.at.top())
+                    .collect();
+                assert_eq!(over.len(), 1, "{label} once, over the control");
+                over[0].center().y
+            })
+            .collect();
+        assert!(rows.windows(2).all(|pair| pair[0] < pair[1]), "{rows:?}");
+        // The third option, where it stands.
+        let third = pos2(f.at.left() + 60.0, rows[2]);
+        f.click(third);
+        assert_eq!(f.chosen, [2]);
+        assert!(!f.view.open());
     }
 }

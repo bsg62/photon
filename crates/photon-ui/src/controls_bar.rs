@@ -145,6 +145,8 @@ impl ControlsBar {
                 selected: held(&SORT_KEYS, data.sort.key),
                 disabled: false,
                 hint: None,
+                above: false,
+                palette: None,
             },
         );
         if let Some(index) = chosen {
@@ -165,6 +167,8 @@ impl ControlsBar {
                 selected: held(&GROUPINGS, data.sort.group),
                 disabled: !applies,
                 hint: (!applies).then_some(GROUPING_IDLE),
+                above: false,
+                palette: None,
             },
         );
         if let Some(index) = chosen {

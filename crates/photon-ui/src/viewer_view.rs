@@ -14,8 +14,12 @@
 //! while the viewer is open.)
 
 use crate::{
+    crop::ASPECTS,
+    crop_tool::CropTool,
+    crop_view::{self, CropData},
     icons::Icon,
     menu_view::asks_for_menu,
+    select_view::{self, SelectData, SelectView},
     text,
     theme::{
         apply::{color, menu_shadow},
@@ -36,13 +40,17 @@ use eframe::egui::{
     StrokeKind, TextureHandle, WidgetInfo, WidgetType, pos2, vec2,
 };
 
-/// A tool in the bar, how many there are - the star, the info panel - and the room
-/// between two.
+/// A tool in the bar, and the room between two.
 const TOOL: f32 = 30.0;
-const TOOLS: usize = 2;
 /// How far a notch of the wheel moves the info panel, in points.
 const PANEL_NOTCH: f32 = 40.0;
 const TOOL_GAP: f32 = 2.0;
+/// The room between two groups of tools: a line a point wide, with air on both sides.
+const GROUP_GAP: f32 = TOOL_GAP + S[0] + 1.0 + S[0] + TOOL_GAP;
+/// How tall the line between two groups is.
+const GROUP_LINE: f32 = 18.0;
+/// The button that takes every turn and the crop off again.
+pub const ORIGINAL: &str = "Original";
 /// The room the zoom's slider takes at the bar's right, and the same kept on its left so
 /// that the bar stays in the middle: the bar is no wider than what is left between.
 const BESIDE_BAR: f32 = 214.0;
@@ -71,6 +79,16 @@ pub enum ViewerAction {
     Hide,
     /// The info panel, opened or closed.
     Info,
+    /// A quarter turn: to the right (true), or to the left.
+    Turn(bool),
+    /// Every turn and the crop taken off again.
+    Original,
+    /// The crop tool, opened.
+    Crop,
+    /// The crop tool's rectangle, to be written.
+    CropApply,
+    /// The crop tool, closed with nothing written.
+    CropCancel,
     /// Something pressed in the info panel.
     Panel(InfoAction),
     /// The outline of an unnamed face was pressed: the person dialog, for this
@@ -125,6 +143,13 @@ pub struct ViewerData<'a> {
     pub starred: Option<bool>,
     pub can_prev: bool,
     pub can_next: bool,
+    /// Whether the photo can be turned and cropped: the library has said what it is,
+    /// and it is a picture that can be shown - never a video, which has no such tools
+    /// in its bar at all. Where it cannot, the tools are in their places and take no
+    /// press, and their keys do nothing.
+    pub editable: bool,
+    /// Whether it has been turned or cropped: "Original" is offered.
+    pub edited: bool,
     /// Whether the info panel is open: the photo is then fitted beside it, and its
     /// button in the bar is shown pressed.
     pub info_open: bool,
@@ -139,6 +164,31 @@ pub struct ViewerData<'a> {
     /// taken out of the frame by whatever it is; these it does not take.)
     pub paused: bool,
 }
+
+/// The crop tool, while it is open: the viewer draws the picture it is given under the
+/// tool's rectangle, the tool's own bar in place of its own, and nothing else but the
+/// button that closes.
+pub struct Cropped<'a> {
+    /// The rectangle, the ratio it is held to, the drag in progress: changed here.
+    pub tool: &'a mut CropTool,
+    /// The size in pixels of the picture the rectangle is drawn on: turned, and not
+    /// cropped. Its box in the window is worked out from this, and not read off a
+    /// texture: it is the same box whichever picture is on hand.
+    pub size: (u32, u32),
+    /// Where the picture on hand lies in that box, in fractions of it: all of it, or -
+    /// for a photo that has a crop, until its picture without one is made - the part
+    /// the crop keeps.
+    pub part: Rect,
+    /// The rectangle's write is on its way: the tool stands and takes nothing but
+    /// "Cancel".
+    pub busy: bool,
+}
+
+/// What the crop tool's dropdown is called, and its three buttons.
+pub const CROP_RATIO: &str = "Crop ratio";
+pub const WHOLE_PHOTO: &str = "Whole photo";
+pub const CANCEL: &str = "Cancel";
+pub const APPLY: &str = "Apply";
 
 /// A press of the first button on the photo, from the button going down until it comes
 /// up - or is taken away.
@@ -175,6 +225,18 @@ pub struct ViewerView {
     /// down: the slider follows the pointer no further, as a pan does not. A button let
     /// go of over another window may never be heard of.
     let_go: bool,
+    /// The crop tool's dropdown.
+    ratio: SelectView,
+    /// When the crop tool was first drawn, while it is open; and whether a press made
+    /// within a double click's time of that is still down - the second click of the
+    /// double click on the bar's crop button, which lands on the tool's bar where the
+    /// viewer's stood, and presses nothing there (as `DialogView::deaf`).
+    crop_since: Option<f64>,
+    crop_deaf: bool,
+    /// Whether the photo has an edit, as last said: kept while nothing is known of the
+    /// photo stepped to, so that "Original" does not leave the bar for the round trip and
+    /// move the buttons after it - the jump `bar_place`'s `was` ends for the bar's width.
+    edited: bool,
 }
 
 /// Where the controls stand: what a press on the photo is not.
@@ -241,12 +303,21 @@ impl ViewerView {
         ui: &mut egui::Ui,
         data: &ViewerData<'_>,
         zoom: &mut Zoom,
+        crop: Option<Cropped<'_>>,
     ) -> Vec<ViewerAction> {
         let window = ui.ctx().content_rect();
         let painter = ui.painter().clone();
         // The one colour in photon that no token holds: the ground a photo is judged
         // against is not a theme's to choose.
         painter.rect_filled(window, 0.0, Color32::BLACK);
+        if let Some(crop) = crop {
+            return self.cropping(ui, data, window, crop);
+        }
+        self.crop_since = None;
+        if !data.caption.is_empty() {
+            self.edited = data.edited;
+        }
+        let edited = self.edited;
 
         // The photo's area: the window, less the info panel's room while it is open.
         // The fit, the zoom's bounds, the point a zoom holds still and the pan are all
@@ -311,7 +382,7 @@ impl ViewerView {
                 pos2(window.right() - EDGE - CLOSE, window.top() + EDGE),
                 vec2(CLOSE, CLOSE),
             ),
-            bar: bar_place(ui, window, data.caption, self.bar),
+            bar: bar_place(ui, window, data, edited, self.bar),
             slider: (!data.video).then(|| slider_place(window)),
             caption: caption.as_ref().map(|(place, _)| *place),
             panel,
@@ -401,7 +472,7 @@ impl ViewerView {
         if let (Some(line), Some((place, galley))) = (data.photo_caption, caption) {
             photo_caption(ui, place, galley, line);
         }
-        actions.extend(bar(ui, controls.bar, data));
+        actions.extend(bar(ui, controls.bar, data, edited));
         if let Some(place) = controls.slider {
             slider(
                 ui,
@@ -417,6 +488,196 @@ impl ViewerView {
             actions.extend(pressed.into_iter().map(ViewerAction::Panel));
         }
         actions
+    }
+
+    /// The viewer under the crop tool: the picture turned and not cropped, fitted to
+    /// the whole window, with the tool's rectangle over it and the tool's bar at the
+    /// foot. The buttons to the photos on either side, the zoom's slider, the photo's
+    /// caption, its faces and the info panel are not drawn; the button that closes is.
+    ///
+    /// **The keyboard is the tool's**: Enter applies, Escape cancels, and nothing else
+    /// is answered - no step, no star, no hide - so that nothing leaves the photo under
+    /// the rectangle. The wheel does nothing and the other button asks for no menu.
+    fn cropping(
+        &mut self,
+        ui: &mut egui::Ui,
+        data: &ViewerData<'_>,
+        window: Rect,
+        crop: Cropped<'_>,
+    ) -> Vec<ViewerAction> {
+        // What was held of the photo's own gestures is over.
+        self.press = None;
+        self.clicked = None;
+        self.wheel = 0.0;
+        self.faces.clear();
+        let mut actions = Vec::new();
+        // The surface under the controls, as ever: a press beside a button is not
+        // handed to the button.
+        ui.interact(window, Id::new("viewer-photo"), Sense::CLICK);
+
+        let whole = Frame {
+            left: window.left(),
+            top: window.top(),
+            width: window.width(),
+            height: window.height(),
+        };
+        let fitted = contained(crop.size.0 as f32, crop.size.1 as f32, whole);
+        let picture = Rect::from_min_size(
+            pos2(fitted.left, fitted.top),
+            vec2(fitted.width, fitted.height),
+        );
+        // The picture on hand, where it lies in that box.
+        let at = Rect::from_min_max(
+            picture.min + crop.part.min.to_vec2() * picture.size(),
+            picture.min + crop.part.max.to_vec2() * picture.size(),
+        );
+        if let Some((texture, at)) = drawn(ui, data, at, true) {
+            let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
+            (ui.painter().with_clip_rect(window)).image(texture.id(), at, uv, Color32::WHITE);
+        }
+
+        let close = Rect::from_min_size(
+            pos2(window.right() - EDGE - CLOSE, window.top() + EDGE),
+            vec2(CLOSE, CLOSE),
+        );
+        let bar = crop_bar_place(ui, window);
+        crop_view::show(
+            ui,
+            crop.tool,
+            &CropData {
+                picture,
+                over: &[bar, close],
+                busy: crop.busy,
+            },
+        );
+        if round(ui, close, "viewer-close", Icon::X, "Close viewer", true) {
+            actions.push(ViewerAction::Close);
+        }
+        // The bar before the keys are read: its dropdown takes the ones it answers out
+        // of the frame - the Enter that chose a ratio, the Escape that shut the list -
+        // and those are not the tool's as well.
+        let (now, pressed, released) = ui.input(|input| {
+            (
+                input.time,
+                input.pointer.any_pressed(),
+                input.pointer.any_released(),
+            )
+        });
+        let double = ui
+            .ctx()
+            .options(|options| options.input_options.max_double_click_delay);
+        let since = now - *self.crop_since.get_or_insert(now);
+        if pressed && since < double {
+            self.crop_deaf = true;
+        }
+        let deaf = self.crop_deaf;
+        if released {
+            self.crop_deaf = false;
+        }
+        let pressed = self.crop_bar(ui, bar, crop.tool, crop.busy, deaf);
+        actions.extend(pressed);
+        let events = ui.input(|input| input.events.clone());
+        for event in &events {
+            match event {
+                Event::Key {
+                    key,
+                    pressed: true,
+                    repeat: false,
+                    modifiers,
+                    ..
+                } if !(modifiers.command || modifiers.ctrl || modifiers.alt) => match key {
+                    Key::Enter if !crop.busy => actions.push(ViewerAction::CropApply),
+                    Key::Escape => actions.push(ViewerAction::CropCancel),
+                    _ => {}
+                },
+                Event::PointerButton {
+                    button: PointerButton::Extra1,
+                    pressed: true,
+                    ..
+                } => actions.push(ViewerAction::Close),
+                _ => {}
+            }
+        }
+        actions
+    }
+
+    /// The crop tool's bar: the ratio the rectangle is held to, "Whole photo", "Cancel"
+    /// and "Apply". The first two change the tool here; the others are answered. While
+    /// the tool's write is on its way only "Cancel" works - it closes the tool, and the
+    /// write lands all the same, as in the Svelte viewer - and while the second press of
+    /// the double click that opened the tool is down (`deaf`), nothing does.
+    fn crop_bar(
+        &mut self,
+        ui: &mut egui::Ui,
+        rect: Rect,
+        tool: &mut CropTool,
+        busy: bool,
+        deaf: bool,
+    ) -> Vec<ViewerAction> {
+        glass(ui, rect, R[3]);
+        let pad = (BAR - TOOL) / 2.0;
+        let labels: Vec<&str> = ASPECTS.iter().map(|(label, _)| *label).collect();
+        let mut pressed = Vec::new();
+        let mut left = rect.left() + pad;
+        let mut place = |width: f32| {
+            let at = Rect::from_min_size(pos2(left, rect.top() + pad), vec2(width, TOOL));
+            left += width + TOOL_GAP;
+            at
+        };
+        let select = place(select_view::width(ui, &labels));
+        let chosen = self.ratio.show(
+            ui,
+            select,
+            &SelectData {
+                id: "crop-ratio",
+                label: CROP_RATIO,
+                options: &labels,
+                selected: Some(tool.aspect()),
+                disabled: busy || deaf,
+                hint: None,
+                // The bar is at the foot of the window.
+                above: true,
+                // On the viewer's glass, which is dark in both themes.
+                palette: Some(&DARK),
+            },
+        );
+        if let Some(index) = chosen {
+            tool.set_aspect(index);
+        }
+        if worded(
+            ui,
+            place(word_width(ui, WHOLE_PHOTO)),
+            "crop-whole",
+            WHOLE_PHOTO,
+            !busy,
+            false,
+        ) && !deaf
+        {
+            tool.clear();
+        }
+        if worded(
+            ui,
+            place(word_width(ui, CANCEL)),
+            "crop-cancel",
+            CANCEL,
+            true,
+            false,
+        ) && !deaf
+        {
+            pressed.push(ViewerAction::CropCancel);
+        }
+        if worded(
+            ui,
+            place(word_width(ui, APPLY)),
+            "crop-apply",
+            APPLY,
+            !busy,
+            true,
+        ) && !deaf
+        {
+            pressed.push(ViewerAction::CropApply);
+        }
+        pressed
     }
 
     /// The frame's keys, its wheel, a pinch and the mouse's buttons, in the order they
@@ -552,6 +813,12 @@ impl ViewerView {
                         Key::Period if !repeat && types_period => Some(ViewerAction::Star),
                         Key::H if !repeat => Some(ViewerAction::Hide),
                         Key::I if !repeat => Some(ViewerAction::Info),
+                        // A turn is a write and a render: at the key's press, not for
+                        // as long as it is held. Shift turns the other way.
+                        Key::R if !repeat && data.editable => {
+                            Some(ViewerAction::Turn(!modifiers.shift))
+                        }
+                        Key::C if !repeat && data.editable => Some(ViewerAction::Crop),
                         _ => None,
                     });
                 }
@@ -768,9 +1035,7 @@ fn fitted_width(data: &ViewerData<'_>, area: Frame) -> f32 {
 }
 
 /// The texture to draw and where: fitted into `area`, then `zoom` times that size about
-/// the middle of the area and moved by the pan. At fit, the copy made for exactly this
-/// size, where there is one; else the level that is at least as large as what is drawn;
-/// else the preview. None while there is none of them.
+/// the middle of the area and moved by the pan. None while there is no picture.
 fn picture<'a>(
     ui: &egui::Ui,
     data: &ViewerData<'a>,
@@ -792,8 +1057,20 @@ fn picture<'a>(
         middle + pan + (fit.min - middle) * zoom.zoom(),
         fit.size() * zoom.zoom(),
     );
+    drawn(ui, data, at, zoom.is_fit())
+}
+
+/// The texture to draw at `at`, and where exactly: the copy made for exactly this size
+/// where the photo is `fit` and there is one; else the level that is at least as large
+/// as what is drawn; else the preview. None while there is none of them.
+fn drawn<'a>(
+    ui: &egui::Ui,
+    data: &ViewerData<'a>,
+    at: Rect,
+    fit: bool,
+) -> Option<(&'a TextureHandle, Rect)> {
     if data.levels.is_empty() {
-        return Some((texture, at));
+        return data.preview.map(|preview| (preview, at));
     }
     let scale = ui.ctx().pixels_per_point();
     let drawn = at.size() * scale;
@@ -805,9 +1082,7 @@ fn picture<'a>(
     // the copy's size too - a hair over the fit, or twice in a window half as wide as
     // the one the copy on hand was made for - and the copy is then no picture of what
     // the zoom shows.
-    if zoom.is_fit()
-        && let Some(copy) = data.fitted
-    {
+    if fit && let Some(copy) = data.fitted {
         let [width, height] = copy.size();
         let own = vec2(width as f32, height as f32);
         if (own.x - drawn.x).abs() < SAME_SIZE && (own.y - drawn.y).abs() < SAME_SIZE {
@@ -977,26 +1252,73 @@ fn round(ui: &egui::Ui, rect: Rect, id: &str, icon: Icon, label: &str, works: bo
     response.clicked()
 }
 
+/// A tool of the bar.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Tool {
+    Star,
+    TurnLeft,
+    TurnRight,
+    Crop,
+    Original,
+    Info,
+}
+
+/// The bar's tools from left to right, each with how far it stands from the first one's
+/// left edge and how wide it is: the star; the turns, the crop and - while the photo has
+/// an edit - "Original"; the info panel. A video has nothing to turn or crop, and no
+/// tools for it.
+fn tools(ui: &egui::Ui, data: &ViewerData<'_>, edited: bool) -> Vec<(Tool, f32, f32)> {
+    let mut groups = vec![vec![Tool::Star]];
+    if !data.video {
+        let mut edit = vec![Tool::TurnLeft, Tool::TurnRight, Tool::Crop];
+        edit.extend(edited.then_some(Tool::Original));
+        groups.push(edit);
+    }
+    groups.push(vec![Tool::Info]);
+    let mut placed = Vec::new();
+    let mut left = 0.0;
+    for (number, group) in groups.iter().enumerate() {
+        if number > 0 {
+            left += GROUP_GAP - TOOL_GAP;
+        }
+        for tool in group {
+            let width = match tool {
+                Tool::Original => word_width(ui, ORIGINAL),
+                _ => TOOL,
+            };
+            placed.push((*tool, left, width));
+            left += width + TOOL_GAP;
+        }
+    }
+    placed
+}
+
 /// Where the bar at the foot of the window stands: as wide as its tools and its caption,
 /// which is the part that gives way when the window is narrow. With no caption - the
 /// library has not said yet what the photo stepped to is - as wide as it `was`: shrunk
 /// to its tools for the frame or two a step's answer takes, the bar and the buttons in
 /// it jumped twice at every step.
-fn bar_place(ui: &egui::Ui, window: Rect, caption: &str, was: Option<f32>) -> Rect {
+fn bar_place(
+    ui: &egui::Ui,
+    window: Rect,
+    data: &ViewerData<'_>,
+    edited: bool,
+    was: Option<f32>,
+) -> Rect {
     let wanted = ui
         .painter()
         .layout_no_wrap(
-            caption.to_owned(),
+            data.caption.to_owned(),
             fonts::regular(T[1]),
             color(DARK.text_dim),
         )
         .size()
         .x;
     let pad = (BAR - TOOL) / 2.0;
-    let tools = TOOLS as f32 * TOOL + (TOOLS - 1) as f32 * TOOL_GAP;
+    let tools = (tools(ui, data, edited).last()).map_or(0.0, |(_, left, width)| left + width);
     let most = (window.width() - 2.0 * BESIDE_BAR).max(tools + 2.0 * pad);
     let own = pad + tools + S[1] + wanted + S[2];
-    let width = (was.filter(|_| caption.is_empty()).unwrap_or(own)).min(most);
+    let width = (was.filter(|_| data.caption.is_empty()).unwrap_or(own)).min(most);
     Rect::from_min_size(
         pos2(
             window.center().x - width / 2.0,
@@ -1089,60 +1411,182 @@ fn slider(
     );
 }
 
-/// The bar at the foot of the window: its tools - the star, the info panel - and the
-/// caption. Answers what was pressed in it.
-fn bar(ui: &egui::Ui, rect: Rect, data: &ViewerData<'_>) -> Vec<ViewerAction> {
+/// A tool of the bar that is an icon: lit while it is `on`, dimmed and deaf where it
+/// does not work. Answers a press.
+fn tool(
+    ui: &egui::Ui,
+    rect: Rect,
+    id: &str,
+    icon: Icon,
+    label: &str,
+    works: bool,
+    on: bool,
+) -> bool {
+    let sense = if works { Sense::CLICK } else { Sense::hover() };
+    let response = ui.interact(rect, Id::new(id), sense);
+    response.widget_info(|| WidgetInfo::selected(WidgetType::Button, works, on, label));
+    let lit = works && (on || response.hovered());
+    if lit {
+        ui.painter().rect_filled(rect, R[3], color(DARK.hover));
+    }
+    let tint = match (works, lit) {
+        (false, _) => color(DARK.text_dim).gamma_multiply(0.4),
+        (true, true) => color(DARK.text),
+        (true, false) => color(DARK.text_dim),
+    };
+    icon.paint(ui, rect, 16.0, false, tint);
+    response.clicked()
+}
+
+/// How wide a tool that is a word is.
+fn word_width(ui: &egui::Ui, word: &str) -> f32 {
+    let words =
+        (ui.painter()).layout_no_wrap(word.to_owned(), fonts::regular(T[1]), color(DARK.text));
+    (words.size().x + 2.0 * S[2]).ceil()
+}
+
+/// Where the crop tool's bar stands: in the viewer's own bar's place, as wide as its
+/// dropdown and its three buttons.
+fn crop_bar_place(ui: &egui::Ui, window: Rect) -> Rect {
+    let pad = (BAR - TOOL) / 2.0;
+    let labels: Vec<&str> = ASPECTS.iter().map(|(label, _)| *label).collect();
+    let width = select_view::width(ui, &labels)
+        + [WHOLE_PHOTO, CANCEL, APPLY]
+            .iter()
+            .map(|word| TOOL_GAP + word_width(ui, word))
+            .sum::<f32>()
+        + 2.0 * pad;
+    Rect::from_min_size(
+        pos2(
+            window.center().x - width / 2.0,
+            window.bottom() - EDGE - BAR,
+        ),
+        vec2(width, BAR),
+    )
+}
+
+/// A tool of the bar that is a word: the `primary` one on the accent, one that does
+/// not work dimmed and deaf. Answers a press.
+fn worded(ui: &egui::Ui, rect: Rect, id: &str, word: &str, works: bool, primary: bool) -> bool {
+    let sense = if works { Sense::CLICK } else { Sense::hover() };
+    let response = ui.interact(rect, Id::new(id), sense);
+    response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, works, word));
+    let dim = if works { 1.0 } else { 0.4 };
+    if primary {
+        (ui.painter()).rect_filled(rect, R[3], color(DARK.accent).gamma_multiply(dim));
+    } else if works && response.hovered() {
+        ui.painter().rect_filled(rect, R[3], color(DARK.hover));
+    }
+    let ink = if primary { DARK.on_accent } else { DARK.text };
+    let tint = color(ink).gamma_multiply(dim);
+    let words = (ui.painter()).layout_no_wrap(word.to_owned(), fonts::regular(T[1]), tint);
+    let at = rect.center() - words.size() / 2.0;
+    ui.painter().galley(at, words, tint);
+    response.clicked()
+}
+
+/// The bar at the foot of the window: its tools - the star, the turns and the crop, the
+/// info panel - and the caption. Answers what was pressed in it.
+fn bar(ui: &egui::Ui, rect: Rect, data: &ViewerData<'_>, edited: bool) -> Vec<ViewerAction> {
     let font = fonts::regular(T[1]);
     let pad = (BAR - TOOL) / 2.0;
     glass(ui, rect, R[3]);
     let mut pressed = Vec::new();
+    let mut right = rect.left() + pad;
+    for (tool_, left, width) in tools(ui, data, edited) {
+        let place = Rect::from_min_size(rect.min + vec2(pad + left, pad), vec2(width, TOOL));
+        // The line between two groups, in the middle of the room between them.
+        if place.left() - right > TOOL_GAP {
+            let middle = pos2((right + place.left()) / 2.0, rect.center().y);
+            ui.painter().rect_filled(
+                Rect::from_center_size(middle, vec2(1.0, GROUP_LINE)),
+                0.0,
+                color(GLASS_LINE),
+            );
+        }
+        right = place.right();
+        let edits = data.editable;
+        match tool_ {
+            Tool::Star => {
+                let works = data.starred.is_some();
+                let starred = data.starred == Some(true);
+                let sense = if works { Sense::CLICK } else { Sense::hover() };
+                let response = ui.interact(place, Id::new("viewer-star"), sense);
+                let label = if starred { "Unstar" } else { "Star" };
+                response.widget_info(|| {
+                    WidgetInfo::selected(WidgetType::Button, works, starred, label)
+                });
+                if works && response.hovered() {
+                    ui.painter().rect_filled(place, R[3], color(DARK.hover));
+                }
+                let tint = match (works, starred, response.hovered()) {
+                    (false, _, _) => color(DARK.text_dim).gamma_multiply(0.4),
+                    (true, true, _) => color(DARK.star),
+                    (true, false, true) => color(DARK.text),
+                    (true, false, false) => color(DARK.text_dim),
+                };
+                Icon::Star.paint(ui, place, 16.0, starred, tint);
+                if response.clicked() {
+                    pressed.push(ViewerAction::Star);
+                }
+            }
+            Tool::TurnLeft => {
+                let icon = Icon::RotateCcw;
+                if tool(
+                    ui,
+                    place,
+                    "viewer-turn-left",
+                    icon,
+                    "Rotate left",
+                    edits,
+                    false,
+                ) {
+                    pressed.push(ViewerAction::Turn(false));
+                }
+            }
+            Tool::TurnRight => {
+                let icon = Icon::RotateCw;
+                if tool(
+                    ui,
+                    place,
+                    "viewer-turn-right",
+                    icon,
+                    "Rotate right",
+                    edits,
+                    false,
+                ) {
+                    pressed.push(ViewerAction::Turn(true));
+                }
+            }
+            Tool::Crop => {
+                if tool(ui, place, "viewer-crop", Icon::Crop, "Crop", edits, false) {
+                    pressed.push(ViewerAction::Crop);
+                }
+            }
+            Tool::Original => {
+                if worded(ui, place, "viewer-original", ORIGINAL, edits, false) {
+                    pressed.push(ViewerAction::Original);
+                }
+            }
+            // The info panel's button: lit while the panel is open.
+            Tool::Info => {
+                let label = "Photo information";
+                if tool(
+                    ui,
+                    place,
+                    "viewer-info",
+                    Icon::Info,
+                    label,
+                    true,
+                    data.info_open,
+                ) {
+                    pressed.push(ViewerAction::Info);
+                }
+            }
+        }
+    }
 
-    let star = Rect::from_min_size(rect.min + vec2(pad, pad), vec2(TOOL, TOOL));
-    let works = data.starred.is_some();
-    let starred = data.starred == Some(true);
-    let sense = if works { Sense::CLICK } else { Sense::hover() };
-    let response = ui.interact(star, Id::new("viewer-star"), sense);
-    let label = if starred { "Unstar" } else { "Star" };
-    response.widget_info(|| WidgetInfo::selected(WidgetType::Button, works, starred, label));
-    if works && response.hovered() {
-        ui.painter().rect_filled(star, R[3], color(DARK.hover));
-    }
-    let tint = match (works, starred, response.hovered()) {
-        (false, _, _) => color(DARK.text_dim).gamma_multiply(0.4),
-        (true, true, _) => color(DARK.star),
-        (true, false, true) => color(DARK.text),
-        (true, false, false) => color(DARK.text_dim),
-    };
-    Icon::Star.paint(ui, star, 16.0, starred, tint);
-    if response.clicked() {
-        pressed.push(ViewerAction::Star);
-    }
-
-    // The info panel's button: lit while the panel is open.
-    let info = star.translate(vec2(TOOL + TOOL_GAP, 0.0));
-    let response = ui.interact(info, Id::new("viewer-info"), Sense::CLICK);
-    response.widget_info(|| {
-        WidgetInfo::selected(
-            WidgetType::Button,
-            true,
-            data.info_open,
-            "Photo information",
-        )
-    });
-    if data.info_open || response.hovered() {
-        ui.painter().rect_filled(info, R[3], color(DARK.hover));
-    }
-    let tint = if data.info_open || response.hovered() {
-        color(DARK.text)
-    } else {
-        color(DARK.text_dim)
-    };
-    Icon::Info.paint(ui, info, 16.0, false, tint);
-    if response.clicked() {
-        pressed.push(ViewerAction::Info);
-    }
-
-    let left = info.right() + S[1];
+    let left = right + S[1];
     let room = rect.right() - S[2] - left;
     if room > 0.0 {
         let painter = ui.painter().with_clip_rect(rect);
@@ -1255,6 +1699,8 @@ mod tests {
         can_prev: bool,
         can_next: bool,
         info_open: bool,
+        editable: bool,
+        edited: bool,
         /// What the library has said of the photo, for the open panel.
         item: Option<photon_engine::commands::ViewerItem>,
         /// The photo's width in pixels as the library says it; nought until it has.
@@ -1263,6 +1709,9 @@ mod tests {
         /// The photo's faces, and whether something has the window for itself.
         faces: Vec<Drawn<'static>>,
         paused: bool,
+        /// The crop tool, while it is open: the size of the picture it is drawn on,
+        /// where the picture on hand lies in it, and whether its write is on its way.
+        crop: Option<(CropTool, (u32, u32), Rect, bool)>,
         zoom: Zoom,
         /// The textures painted in the last frame, each with where.
         images: Vec<(egui::TextureId, Rect)>,
@@ -1302,11 +1751,14 @@ mod tests {
                 can_prev: true,
                 can_next: true,
                 info_open: false,
+                editable: true,
+                edited: false,
                 item: None,
                 width: 0,
                 video: false,
                 faces: Vec::new(),
                 paused: false,
+                crop: None,
                 zoom: Zoom::default(),
                 images: Vec::new(),
                 clips: Vec::new(),
@@ -1371,6 +1823,8 @@ mod tests {
                 can_prev: self.can_prev,
                 can_next: self.can_next,
                 info_open: self.info_open,
+                editable: self.editable,
+                edited: self.edited,
                 info: (self.item.as_ref()).map(|item| InfoData {
                     item,
                     albums: &[],
@@ -1382,12 +1836,18 @@ mod tests {
                 paused: self.paused,
             };
             let (view, zoom) = (&mut self.view, &mut self.zoom);
+            let mut crop = self.crop.as_mut().map(|(tool, size, part, busy)| Cropped {
+                tool,
+                size: *size,
+                part: *part,
+                busy: *busy,
+            });
             let mut actions = Vec::new();
             let mut full = self.ctx.run_ui(input, |ui| {
                 crate::icons::install(ui.ctx());
                 egui::CentralPanel::default()
                     .frame(egui::Frame::NONE)
-                    .show(ui, |ui| actions = view.show(ui, &data, zoom));
+                    .show(ui, |ui| actions = view.show(ui, &data, zoom, crop.take()));
             });
             full.textures_delta.clear();
             self.cursor = full.platform_output.cursor_icon;
@@ -1685,7 +2145,8 @@ mod tests {
         let caption = f.drew(&f.caption.clone()).expect("the caption");
         assert!(caption.bottom() < 700.0 - EDGE && caption.top() > 700.0 - EDGE - BAR);
         // In the middle, with the bar's tools before it.
-        assert!((caption.center().x - 500.0).abs() < 50.0, "{caption:?}");
+        assert!((caption.center().x - 500.0).abs() < 100.0, "{caption:?}");
+        assert!(caption.left() > star_at(&f).x + 4.0 * TOOL, "{caption:?}");
         // The photo's own caption stands over the bar, only where there is one.
         assert_eq!(f.drew("Lisbon, at dusk"), None);
         f.photo_caption = Some("Lisbon, at dusk");
@@ -2902,13 +3363,13 @@ mod tests {
         };
         assert_eq!(f.frame(vec![held(false)]), [ViewerAction::Info]);
         assert_eq!(f.frame(vec![held(true)]), []);
-        // Its button is the second tool of the bar.
+        // Its button is the last tool of the bar.
         f.frame(Vec::new());
         let tools: Vec<Rect> = (f.images.iter())
             .map(|(_, at)| *at)
             .filter(|at| at.center().y > 650.0 && at.center().x < 500.0)
             .collect();
-        assert_eq!(tools.len(), 2, "the star and the panel's button");
+        assert_eq!(tools.len(), 5, "the star, the turns, the crop, the panel's");
         let button = tools
             .iter()
             .max_by(|a, b| a.center().x.total_cmp(&b.center().x))
@@ -2931,7 +3392,7 @@ mod tests {
         let mut f = Fixture::new();
         f.frame(Vec::new());
         let with = tools(&f);
-        assert_eq!(with.len(), 2);
+        assert_eq!(with.len(), 5);
         let caption = std::mem::take(&mut f.caption);
         f.frame(Vec::new());
         assert_eq!(tools(&f), with, "they stand where they stood");
@@ -3684,5 +4145,591 @@ mod tests {
         f.frame(vec![Event::WindowFocused(false)]);
         f.frame(vec![Event::WindowFocused(true), Event::PointerMoved(at)]);
         assert_eq!(f.frame(vec![other(at, true)]), menu(at, On::Nowhere));
+    }
+    /// The bar's icons, from left to right: where each was drawn.
+    fn bar_tools(f: &Fixture) -> Vec<Rect> {
+        let mut tools: Vec<Rect> = (f.images.iter())
+            .map(|(_, at)| *at)
+            .filter(|at| at.center().y > 650.0 && at.width() < 30.0)
+            .collect();
+        tools.sort_by(|a, b| a.center().x.total_cmp(&b.center().x));
+        tools
+    }
+
+    // The star; the turns and the crop; the panel's button: three groups, a line
+    // between two, and each button answers what it is for.
+    #[test]
+    fn the_turns_and_the_crop_are_in_the_bar_between_the_star_and_the_panels_button() {
+        let mut f = Fixture::new();
+        f.frame(Vec::new());
+        let tools = bar_tools(&f);
+        assert_eq!(tools.len(), 5);
+        assert_eq!(f.click(tools[0].center()), [ViewerAction::Star]);
+        assert_eq!(f.click(tools[1].center()), [ViewerAction::Turn(false)]);
+        assert_eq!(f.click(tools[2].center()), [ViewerAction::Turn(true)]);
+        assert_eq!(f.click(tools[3].center()), [ViewerAction::Crop]);
+        assert_eq!(f.click(tools[4].center()), [ViewerAction::Info]);
+        let step = |n: usize| tools[n + 1].center().x - tools[n].center().x;
+        assert!(near(step(1), TOOL + TOOL_GAP) && near(step(2), TOOL + TOOL_GAP));
+        assert!(near(step(0), TOOL + GROUP_GAP) && near(step(3), TOOL + GROUP_GAP));
+        // The lines, each in the middle of the room between two groups.
+        f.frame(Vec::new());
+        let line = color(GLASS_LINE);
+        let mut lines: Vec<f32> = (f.fills.iter())
+            .filter(|(at, fill)| *fill == line && near(at.width(), 1.0))
+            .map(|(at, _)| {
+                assert!(near(at.height(), GROUP_LINE));
+                at.center().x
+            })
+            .collect();
+        lines.sort_by(f32::total_cmp);
+        let between = |n: usize| (tools[n].center().x + tools[n + 1].center().x) / 2.0;
+        assert_eq!(lines.len(), 2);
+        // (An icon stands on whole pixels, the line where the bar's own edge puts it.)
+        let about = |a: f32, b: f32| (a - b).abs() < 0.6;
+        assert!(
+            about(lines[0], between(0)) && about(lines[1], between(3)),
+            "{lines:?} {} {}",
+            between(0),
+            between(3)
+        );
+    }
+
+    // "Original" stands after the crop's button while the photo has an edit, and only
+    // then: the panel's button moves along for it.
+    #[test]
+    fn original_is_offered_while_the_photo_has_an_edit() {
+        let mut f = Fixture::new();
+        f.frame(Vec::new());
+        assert_eq!(f.drew(ORIGINAL), None);
+        let without = bar_tools(&f);
+        f.edited = true;
+        f.frame(Vec::new());
+        let word = f.drew(ORIGINAL).expect("the button");
+        let with = bar_tools(&f);
+        assert!(with[3].right() < word.left() && word.right() < with[4].left());
+        let moved = (with[4].center().x - with[3].center().x)
+            - (without[4].center().x - without[3].center().x);
+        assert!(moved > word.width() + TOOL_GAP, "{moved}");
+        assert_eq!(f.click(word.center()), [ViewerAction::Original]);
+    }
+
+    // A photo that cannot be edited - nothing is known of it yet, it has left the view,
+    // it cannot be shown - has the tools where they are and none of them does anything,
+    // nor does a key of theirs. The other tools go on working.
+    #[test]
+    fn a_photo_that_cannot_be_edited_has_its_tools_in_place_and_they_do_nothing() {
+        let mut f = Fixture::new();
+        f.edited = true;
+        f.frame(Vec::new());
+        let places = bar_tools(&f);
+        let word = f.drew(ORIGINAL).unwrap();
+        f.editable = false;
+        f.frame(Vec::new());
+        assert_eq!(bar_tools(&f), places);
+        assert_eq!(f.drew(ORIGINAL), Some(word));
+        for at in [places[1], places[2], places[3], word] {
+            assert_eq!(f.click(at.center()), [], "{at:?}");
+        }
+        assert_eq!(f.key(Key::R), []);
+        assert_eq!(f.key_with(Key::R, Modifiers::SHIFT), []);
+        assert_eq!(f.key(Key::C), []);
+        assert_eq!(f.click(places[0].center()), [ViewerAction::Star]);
+        assert_eq!(f.click(places[4].center()), [ViewerAction::Info]);
+    }
+
+    // A video is neither turned nor cropped, and its bar has no tools for it: the star
+    // and the panel's button, with one line between.
+    #[test]
+    fn a_video_has_no_tools_to_turn_or_crop_it() {
+        let mut f = Fixture::new();
+        f.video = true;
+        f.editable = false;
+        f.edited = true;
+        f.frame(Vec::new());
+        let tools = bar_tools(&f);
+        assert_eq!(tools.len(), 2);
+        assert_eq!(f.drew(ORIGINAL), None);
+        assert!(near(
+            tools[1].center().x - tools[0].center().x,
+            TOOL + GROUP_GAP
+        ));
+        assert_eq!(f.click(tools[1].center()), [ViewerAction::Info]);
+    }
+
+    // `R` turns to the right and Shift+R to the left; `C` opens the crop tool. Each at
+    // its press and not for as long as it is held - a turn is a write and a render -
+    // and not as a chord.
+    #[test]
+    fn the_keys_turn_and_open_the_crop_tool() {
+        let mut f = Fixture::new();
+        f.frame(Vec::new());
+        assert_eq!(f.key(Key::R), [ViewerAction::Turn(true)]);
+        assert_eq!(
+            f.key_with(Key::R, Modifiers::SHIFT),
+            [ViewerAction::Turn(false)]
+        );
+        assert_eq!(f.key(Key::C), [ViewerAction::Crop]);
+        assert_eq!(f.key_with(Key::R, Modifiers::CTRL), []);
+        assert_eq!(f.key_with(Key::C, Modifiers::CTRL), []);
+        for key in [Key::R, Key::C] {
+            let held = |repeat| Event::Key {
+                key,
+                physical_key: Some(key),
+                pressed: true,
+                repeat,
+                modifiers: Modifiers::NONE,
+            };
+            assert_eq!(f.frame(vec![held(false)]).len(), 1);
+            assert_eq!(f.frame(vec![held(true)]), [], "{key:?} held");
+            f.frame(vec![Event::Key {
+                key,
+                physical_key: Some(key),
+                pressed: false,
+                repeat: false,
+                modifiers: Modifiers::NONE,
+            }]);
+        }
+    }
+
+    const ALL: Rect = Rect {
+        min: pos2(0.0, 0.0),
+        max: pos2(1.0, 1.0),
+    };
+
+    /// The photo of `photo()` under the crop tool, with no crop: twice as wide as tall,
+    /// in a box of 1000 by 500 from (0, 100).
+    fn cropping() -> Fixture {
+        let mut f = photo();
+        f.crop = Some((CropTool::begin(None, 2400, 1200), (2400, 1200), ALL, false));
+        f.frame(Vec::new());
+        // (Past the second press of a double click that opened it.)
+        f.time += 0.5;
+        f
+    }
+
+    fn tool(f: &Fixture) -> CropTool {
+        f.crop.as_ref().unwrap().0
+    }
+
+    // The rectangle's box is the picture turned and not cropped, fitted to the whole
+    // window, by the size the tool is told - not by the texture on hand, which for a
+    // photo with a crop is of the part the crop keeps, and is drawn in that part of the
+    // box until the picture without the crop is made.
+    #[test]
+    fn under_the_tool_the_picture_on_hand_is_drawn_in_its_part_of_the_box() {
+        let mut f = Fixture::new().with_levels(&[[1200, 1200]]);
+        let part = Rect::from_min_max(pos2(0.25, 0.0), pos2(0.75, 1.0));
+        let cropped = Some([16384, 0, 49151, 65535]);
+        f.crop = Some((
+            CropTool::begin(cropped, 2400, 1200),
+            (2400, 1200),
+            part,
+            false,
+        ));
+        f.frame(Vec::new());
+        // (Past the second press of a double click that opened it.)
+        f.time += 0.5;
+        let (_, at) = f.photo().expect("the picture");
+        assert!(
+            same(
+                at,
+                Rect::from_min_max(pos2(250.0, 100.0), pos2(750.0, 600.0))
+            ),
+            "{at:?}"
+        );
+        // The dimming is over the box, not over the picture on hand: left of it too.
+        let scrim = color(SCRIM);
+        let dimmed = (f.fills.iter())
+            .filter(|(_, fill)| *fill == scrim)
+            .fold(Rect::NOTHING, |all, (at, _)| all.union(*at));
+        assert!(
+            near(dimmed.left(), 0.0) && near(dimmed.right(), 1000.0),
+            "{dimmed:?}"
+        );
+        // The picture without its crop has landed: all of the box.
+        let mut f = photo();
+        f.crop = Some((
+            CropTool::begin(cropped, 2400, 1200),
+            (2400, 1200),
+            ALL,
+            false,
+        ));
+        f.frame(Vec::new());
+        // (Past the second press of a double click that opened it.)
+        f.time += 0.5;
+        let (_, at) = f.photo().unwrap();
+        assert!(
+            same(
+                at,
+                Rect::from_min_max(pos2(0.0, 100.0), pos2(1000.0, 600.0))
+            ),
+            "{at:?}"
+        );
+    }
+
+    // The box is the whole window's, whatever the info panel was: the tool has the
+    // window.
+    #[test]
+    fn under_the_tool_the_box_is_fitted_to_the_whole_window() {
+        let mut f = cropping();
+        f.info_open = true;
+        f.frame(Vec::new());
+        let (_, at) = f.photo().unwrap();
+        assert!(
+            same(
+                at,
+                Rect::from_min_max(pos2(0.0, 100.0), pos2(1000.0, 600.0))
+            ),
+            "{at:?}"
+        );
+        assert_eq!(f.drew("Info"), None, "and no panel is drawn");
+    }
+
+    // Under the tool the viewer's own controls are away - the buttons at the sides,
+    // the zoom's slider, the bar with its caption, the photo's own caption, the faces -
+    // and the tool's bar stands in the bar's place. The button that closes stays.
+    #[test]
+    fn under_the_tool_only_its_bar_and_the_button_that_closes_are_drawn() {
+        let mut f = cropping();
+        f.photo_caption = Some("Lisbon, at dusk");
+        f.info_open = true;
+        f.faces = vec![stranger()];
+        f.frame(Vec::new());
+        for words in [WHOLE_PHOTO, CANCEL, APPLY, "Free"] {
+            let at = f.drew(words).unwrap_or_else(|| panic!("{words}"));
+            assert!(at.top() > 700.0 - EDGE - BAR && at.bottom() < 700.0 - EDGE);
+        }
+        assert_eq!(f.drew(&f.caption.clone()), None);
+        assert_eq!(f.drew("Lisbon, at dusk"), None);
+        assert_eq!(f.drew("100%"), None, "the slider");
+        assert_eq!(bar_tools(&f).len(), 1, "the dropdown's chevron and no tool");
+        assert!(
+            f.lines
+                .iter()
+                .all(|(_, line, _)| *line != color(DARK.accent))
+        );
+        let side = |left: f32| pos2(left + NAV / 2.0, 350.0);
+        // (A press there is on the rectangle, and moves nothing: it is the whole
+        // picture already.)
+        assert_eq!(f.click(side(EDGE)), []);
+        assert_eq!(f.click(side(1000.0 - EDGE - NAV)), []);
+        let close = pos2(1000.0 - EDGE - CLOSE / 2.0, EDGE + CLOSE / 2.0);
+        assert_eq!(f.click(close), [ViewerAction::Close]);
+    }
+
+    // The keyboard is the tool's: Enter applies and Escape cancels, each at its press;
+    // no key of the viewer's is answered, the wheel steps to no photo and zooms
+    // nothing, and the other button asks for no menu. The mouse's back button closes,
+    // as the cross does.
+    #[test]
+    fn under_the_tool_the_keys_are_enter_and_escape_and_nothing_else() {
+        let mut f = cropping();
+        assert_eq!(f.key(Key::Enter), [ViewerAction::CropApply]);
+        assert_eq!(f.key(Key::Escape), [ViewerAction::CropCancel]);
+        for key in [
+            Key::ArrowLeft,
+            Key::ArrowRight,
+            Key::Home,
+            Key::End,
+            Key::Backspace,
+            Key::Period,
+            Key::H,
+            Key::I,
+            Key::R,
+            Key::C,
+            Key::Plus,
+        ] {
+            assert_eq!(f.key(key), [], "{key:?}");
+        }
+        assert_eq!(f.zoomed().0, 1.0);
+        assert_eq!(f.key_with(Key::Enter, Modifiers::CTRL), []);
+        // (egui works out for itself whether a key is held: it has to be.)
+        for key in [Key::Enter, Key::Escape] {
+            let event = |pressed, repeat| Event::Key {
+                key,
+                physical_key: Some(key),
+                pressed,
+                repeat,
+                modifiers: Modifiers::NONE,
+            };
+            assert_eq!(f.frame(vec![event(true, false)]).len(), 1);
+            assert_eq!(f.frame(vec![event(true, true)]), [], "{key:?} held");
+            f.frame(vec![event(false, false)]);
+        }
+        let line = egui::MouseWheelUnit::Line;
+        assert_eq!(f.wheel(line, -3.0, Modifiers::NONE), []);
+        assert_eq!(f.wheel(line, 3.0, Modifiers::CTRL), []);
+        assert_eq!(f.zoomed().0, 1.0);
+        assert_eq!(right_press(&mut f, pos2(500.0, 300.0)), []);
+        let back = Event::PointerButton {
+            pos: pos2(500.0, 300.0),
+            button: PointerButton::Extra1,
+            pressed: true,
+            modifiers: Modifiers::NONE,
+        };
+        assert_eq!(f.frame(vec![back]), [ViewerAction::Close]);
+        // Its write on its way, Enter sends no second one; Escape still cancels.
+        f.crop.as_mut().unwrap().3 = true;
+        assert_eq!(f.key(Key::Enter), []);
+        assert_eq!(f.key(Key::Escape), [ViewerAction::CropCancel]);
+    }
+
+    // "Cancel" and "Apply" are answered; "Whole photo" puts the rectangle back to the
+    // whole picture, free, here. With the write on its way only "Cancel" does anything.
+    #[test]
+    fn the_tools_bar_cancels_applies_and_takes_the_whole_photo() {
+        let mut f = photo();
+        let cropped = Some([16384, 16384, 49151, 49151]);
+        f.crop = Some((
+            CropTool::begin(cropped, 2400, 1200),
+            (2400, 1200),
+            ALL,
+            false,
+        ));
+        f.frame(Vec::new());
+        // (Past the second press of a double click that opened it.)
+        f.time += 0.5;
+        let at = |f: &Fixture, words: &str| f.drew(words).unwrap().center();
+        let (whole, cancel, apply) = (at(&f, WHOLE_PHOTO), at(&f, CANCEL), at(&f, APPLY));
+        assert_eq!(f.click(cancel), [ViewerAction::CropCancel]);
+        assert_eq!(f.click(apply), [ViewerAction::CropApply]);
+        // "Apply" stands on the accent.
+        assert!(
+            f.fills
+                .iter()
+                .any(|(rect, fill)| *fill == color(DARK.accent)
+                    && rect.contains(apply)
+                    && rect.height() == TOOL)
+        );
+        f.crop.as_mut().unwrap().3 = true;
+        f.frame(Vec::new());
+        assert_eq!(f.click(apply), []);
+        assert_eq!(f.click(whole), []);
+        assert_ne!(tool(&f).wire(), None, "the rectangle stands");
+        assert_eq!(f.click(cancel), [ViewerAction::CropCancel]);
+        f.crop.as_mut().unwrap().3 = false;
+        f.frame(Vec::new());
+        assert_eq!(f.click(whole), []);
+        assert_eq!(tool(&f).wire(), None, "the whole picture, which is no crop");
+    }
+
+    // The ratio is chosen from the dropdown, whose list opens over the bar, in the dark
+    // palette whatever the window's theme; and the keys the list answers are not the
+    // tool's as well - the Escape that shuts the list does not cancel the crop, the
+    // Enter that takes an option does not apply it.
+    #[test]
+    fn the_ratio_is_chosen_from_a_list_that_opens_upwards_and_keeps_its_keys() {
+        let mut f = cropping();
+        f.ctx.set_theme(egui::Theme::Light);
+        f.frame(Vec::new());
+        let control = f.drew("Free").unwrap().center();
+        assert_eq!(f.click(control), []);
+        (0..30).for_each(|_| {
+            f.frame(Vec::new());
+        });
+        let square = (f.texts.iter())
+            .find(|(words, _)| words == "1:1")
+            .map(|(_, at)| *at)
+            .expect("the list");
+        assert!(
+            square.bottom() < 700.0 - EDGE - BAR,
+            "over the bar: {square:?}"
+        );
+        assert!(f.fills.iter().any(|(_, fill)| *fill == color(DARK.raised)));
+        assert_eq!(f.click(square.center()), []);
+        assert_eq!(tool(&f).aspect(), 2);
+        let rect = tool(&f).rect();
+        // A square of pixels on a picture twice as wide as tall: half as wide in
+        // fractions as it is tall.
+        assert!(
+            (rect.width() * 2.0 - rect.height()).abs() < 1e-9,
+            "{rect:?}"
+        );
+        // By the keys: the list opened, an option taken with Enter, the list shut with
+        // Escape - and neither is the tool's.
+        // (A frame first: the last one still drew the list, with its own "1:1".)
+        f.frame(Vec::new());
+        let control = f.drew("1:1").unwrap().center();
+        assert_eq!(f.click(control), []);
+        assert!(f.view.ratio.open());
+        assert_eq!(f.key(Key::ArrowDown), []);
+        assert_eq!(f.key(Key::Enter), [], "the list's Enter");
+        assert_eq!(tool(&f).aspect(), 3);
+        assert_eq!(f.key(Key::Enter), [], "which opens the list again");
+        assert_eq!(f.key(Key::Escape), [], "the list's Escape");
+        assert_eq!(tool(&f).aspect(), 3);
+    }
+
+    // A drag on the rectangle is the tool's; a press on the tool's bar or on the button
+    // that closes is not, though the rectangle reaches under both.
+    #[test]
+    fn under_the_tool_a_drag_moves_the_rectangle_and_a_press_on_a_control_does_not() {
+        let mut f = photo();
+        let cropped = Some([16384, 16384, 49151, 49151]);
+        f.crop = Some((
+            CropTool::begin(cropped, 2400, 1200),
+            (2400, 1200),
+            ALL,
+            false,
+        ));
+        f.frame(Vec::new());
+        // (Past the second press of a double click that opened it.)
+        f.time += 0.5;
+        // The handle on its right edge, a tenth of the picture to the right.
+        f.press(pos2(750.0, 350.0));
+        f.frame(vec![Event::PointerMoved(pos2(850.0, 350.0))]);
+        f.release(pos2(850.0, 350.0));
+        assert!(
+            (tool(&f).rect().right - 0.85).abs() < 1e-3,
+            "{:?}",
+            tool(&f).rect()
+        );
+        // A picture as tall as the window: its lower half reaches under the bar, its
+        // upper half under the button that closes.
+        let mut f = Fixture::new().with_levels(&[[1000, 700]]);
+        let lower = Some([0, 32768, 65535, 65535]);
+        f.crop = Some((CropTool::begin(lower, 1000, 700), (1000, 700), ALL, false));
+        f.frame(Vec::new());
+        // (Past the second press of a double click that opened it.)
+        f.time += 0.5;
+        let glass = color(GLASS);
+        let bar = (f.fills.iter())
+            .find(|(rect, fill)| *fill == glass && rect.height() == BAR)
+            .map(|(rect, _)| *rect)
+            .expect("the tool's bar");
+        let before = tool(&f).rect();
+        f.press(pos2(bar.left() + 1.0, bar.center().y));
+        f.frame(vec![Event::PointerMoved(pos2(
+            bar.left() + 1.0,
+            bar.center().y - 100.0,
+        ))]);
+        assert_eq!(tool(&f).rect(), before);
+        f.release(pos2(bar.left() + 1.0, bar.center().y - 100.0));
+        let upper = Some([0, 0, 65535, 32768]);
+        f.crop = Some((CropTool::begin(upper, 1000, 700), (1000, 700), ALL, false));
+        f.frame(Vec::new());
+        // (Past the second press of a double click that opened it.)
+        f.time += 0.5;
+        let before = tool(&f).rect();
+        let close = pos2(1000.0 - EDGE - CLOSE / 2.0, EDGE + CLOSE / 2.0);
+        f.press(close);
+        f.frame(vec![Event::PointerMoved(close + vec2(0.0, 100.0))]);
+        assert_eq!(tool(&f).rect(), before);
+    }
+
+    // What was held of the photo's own gestures when the tool opened is over: a click
+    // before it is no half of a double click after it, and the wheel's turn is not
+    // kept.
+    #[test]
+    fn the_tool_ends_what_was_held_of_the_photos_own_gestures() {
+        let mut f = photo();
+        let at = pos2(500.0, 300.0);
+        assert_eq!(f.click(at), []);
+        f.wheel(egui::MouseWheelUnit::Point, -60.0, Modifiers::NONE);
+        f.crop = Some((CropTool::begin(None, 2400, 1200), (2400, 1200), ALL, false));
+        f.frame(Vec::new());
+        // (Past the second press of a double click that opened it.)
+        f.time += 0.5;
+        f.crop = None;
+        f.click(at);
+        assert!(f.zoom.is_fit(), "no double click");
+        let more = f.wheel(egui::MouseWheelUnit::Point, -60.0, Modifiers::NONE);
+        assert_eq!(more, [], "the turn began again");
+    }
+
+    // With its write on its way the tool takes no drag: the rectangle being stored is the
+    // one on screen.
+    #[test]
+    fn under_a_tool_whose_write_is_on_its_way_a_drag_moves_nothing() {
+        let mut f = photo();
+        let cropped = Some([16384, 16384, 49151, 49151]);
+        f.crop = Some((
+            CropTool::begin(cropped, 2400, 1200),
+            (2400, 1200),
+            ALL,
+            true,
+        ));
+        f.frame(Vec::new());
+        // (Past the second press of a double click that opened it.)
+        f.time += 0.5;
+        let before = tool(&f).rect();
+        f.press(pos2(750.0, 350.0));
+        f.frame(vec![Event::PointerMoved(pos2(850.0, 350.0))]);
+        f.release(pos2(850.0, 350.0));
+        assert_eq!(tool(&f).rect(), before);
+    }
+
+    // A press in the frame after the tool closes is asked of what the last frame drew,
+    // which was the tool, with no face on it: not of the faces outlined before it opened,
+    // which stood beside the open panel.
+    #[test]
+    fn a_press_after_the_tool_is_asked_of_no_face_from_before_it() {
+        let mut f = with_faces();
+        f.crop = Some((CropTool::begin(None, 2400, 1200), (2400, 1200), ALL, false));
+        f.frame(Vec::new());
+        f.crop = None;
+        f.info_open = false;
+        let at = STRANGER.center();
+        let actions = f.frame(vec![Event::PointerMoved(at), other(at, true)]);
+        assert_eq!(actions, menu(at, On::Nowhere));
+    }
+
+    // A press held on the photo when the tool opened is over: its button coming up after
+    // the tool has closed is no click, and no first half of a double click.
+    #[test]
+    fn a_press_held_when_the_tool_opened_is_no_click_after_it() {
+        let mut f = photo();
+        let at = pos2(500.0, 300.0);
+        f.press(at);
+        f.crop = Some((CropTool::begin(None, 2400, 1200), (2400, 1200), ALL, false));
+        f.frame(Vec::new());
+        f.crop = None;
+        f.release(at);
+        f.click(at);
+        assert!(f.zoom.is_fit(), "no double click");
+    }
+
+    // The second press of the double click that opened the tool lands on its bar, and
+    // presses nothing there; a press after a double click's time does.
+    #[test]
+    fn the_tools_bar_is_deaf_to_the_second_click_that_opened_it() {
+        let mut f = photo();
+        f.crop = Some((CropTool::begin(None, 2400, 1200), (2400, 1200), ALL, false));
+        f.frame(Vec::new());
+        let cancel = f.drew(CANCEL).unwrap().center();
+        assert_eq!(f.click(cancel), []);
+        f.time += 0.5;
+        assert_eq!(f.click(cancel), [ViewerAction::CropCancel]);
+        // A tool opened again is new: deaf again, its dropdown too.
+        let tool = f.crop.take();
+        f.frame(Vec::new());
+        f.time += 1.0;
+        f.crop = tool;
+        f.frame(Vec::new());
+        assert_eq!(f.click(cancel), []);
+        f.click(f.drew("Free").unwrap().center());
+        assert!(!f.view.ratio.open());
+    }
+
+    // At a step nothing is known of the photo stepped to, and "Original" stays where it
+    // was for that round trip, so that the buttons after it do not move; once the library
+    // has said the photo has no edit, it goes.
+    #[test]
+    fn original_stays_while_nothing_is_known_of_the_photo_stepped_to() {
+        let mut f = Fixture::new();
+        f.edited = true;
+        f.frame(Vec::new());
+        let places = bar_tools(&f);
+        assert!(f.drew(ORIGINAL).is_some());
+        f.edited = false;
+        f.editable = false;
+        let caption = std::mem::take(&mut f.caption);
+        f.frame(Vec::new());
+        assert_eq!(bar_tools(&f), places);
+        assert!(f.drew(ORIGINAL).is_some());
+        f.caption = caption;
+        f.frame(Vec::new());
+        assert_eq!(f.drew(ORIGINAL), None);
     }
 }

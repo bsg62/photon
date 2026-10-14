@@ -2602,6 +2602,73 @@ the frame of an outline's click alone, and the click of a later frame finds the 
 deaf under the menu, but that the two cover a Mac's press has not been run on one; and that
 the people's list is forgotten at each opening (no seam holds the read back).
 
+**A turn and a crop are the engine's edit, written from the viewer and never drawn by it**
+(spec "Turns and the crop"; `crop.rs`, `crop_tool.rs` and `crop_view.rs` - `crop.ts`,
+`createCropTool` and the Svelte viewer's crop markup). `R` and Shift+R are
+`commands::rotate_item` and "Original" is `set_item_edit` with no turns and no crop,
+`Write::Turn` and `Write::Edit` on the queue of writes; the engine rebuilds the grid, whose
+key for the photo is another, `Viewer::follow` takes it, and the picture is asked for under
+it at once. **A round trip later `took` hears the same from the library, and asks again
+only for a picture changed under the key it had** (turned and turned back between two
+frames), compared with the `Shown` it replaces and not with the viewer's key, which
+`follow` has already moved: compared with that, every edit made its picture twice
+(`a_turn_in_the_viewer_has_its_picture_made_once`, in `tests/edits_edges.rs` with the rest
+of what the review found).
+No photo is written: `tests/edits.rs` reads the watched folder back byte for byte after
+every write it makes. **A turn is of the photo on screen**, read in the frame's action loop
+like the star - so an arrow and `R` in one frame turn nothing (nothing is known of the photo
+stepped to), and `R` then an arrow turns the photo that was seen. Each key at its press, not
+its repeat: a held `R` would be a write and a render thirty times a second. **Whether the
+photo can be edited** is the Svelte viewer's `editable`: the library has said what it is
+(nothing is known of a photo that is gone), it is not a video, orphaned, unshowable, or a
+photo whose full picture could not be made.
+The three tools stay in their places, fainter and deaf, where it cannot; a video's bar has no
+tools for it at all, as in the Svelte bar. "Original" is there only while the photo has an
+edit, between the crop's tool and the info panel's, and widens the bar - and stays while
+nothing is known of a photo stepped to (`ViewerView::edited`), or the buttons after it
+jumped at every step through edited photos, the jump `bar_place`'s `was` ends for the bar.
+
+**The crop tool is the viewer's while it is open** (`Viewing::crop`, a `Cropping`), drawn by
+`ViewerView::cropping` in place of everything but the button that closes: no buttons at the
+sides, no slider, no caption, no faces, no panel. It opens on the whole window with the info
+panel shut and the zoom put back, on the crop the photo has, free. **It closes when its
+photo can no longer be edited or is another picture**: `if !editable` in `show_viewer` -
+gone, left the view, stepped from, picture refused, which covers a step made in the frame
+the tool opened in - or the grid's key for the photo is no longer the one it opened under
+(`Cropping::key`: turned or rewritten from elsewhere, its own "Apply" landing), which is a
+round trip before the library says so, and in the frames between it asked for a picture of
+the new state that nobody would draw; and when the library says the picture changed under
+the key it had (`took`). **A press within a double click's time of the tool's first frame
+presses nothing on its bar until it has come up** (`crop_deaf`, as `DialogView::deaf`): the
+tool's bar stands where the viewer's did, and the second click of a double click on the crop
+button landed on "Whole photo". **The keyboard is the
+tool's**: Enter applies and Escape cancels, each at its press, and no other key is answered;
+the wheel does nothing, the other button asks for no menu, the mouse's back button still
+closes the viewer, as the cross does. The tool's bar is drawn **before** its keys are read,
+because its dropdown (`select_view`, `above: true`, `palette: Some(&DARK)` - the viewer's
+glass is dark in both themes) takes out of the frame the Enter that chose a ratio and the
+Escape that shut the list, which are not the tool's as well. **The rectangle's box is the
+size the library gives** (`uncropped_width`, `uncropped_height`) fitted to the window, never
+a texture's: for a photo that has a crop, the picture on hand is of the part the crop keeps,
+and is drawn in that part of the box (`Cropped::part`) until the picture turned and not
+cropped has been made for the tool (`PictureAsk::uncropped`, `Cropping::uncropped`) - the
+Svelte tool draws nothing until its image loads. That picture is the one question asked
+while the tool is open on such a photo, after the viewer's rest like any other; a photo
+with no crop has it already and none is asked. Made, it is the tool's and nobody's once the tool closes; refused, why is
+said and it is not asked again, and the tool stands on the stand-in. **"Apply" closes the
+tool when the library has stored the rectangle** (with the turns the photo has), as the
+Svelte tool does: until then the tool takes no drag, no ratio and no second "Apply" (`sent`;
+"Cancel" works, and the write lands all the same); refused,
+it stands to be put right and takes "Apply" again; and the answer closes only the tool that
+sent it (`Cropping::number`) - one cancelled and opened again while the write was on its
+way is another (`an_answer_closes_only_the_tool_that_sent_it`, which writes the crop the
+photo has so that nothing else could close it). A ratio chosen on a small rectangle is
+grown back to `MIN_SIDE` (`fit_aspect`): on a panorama held to 1:1 it shrank a side below the
+least crop the library takes, and "Apply" was refused - as it is in `crop.ts`. Known and
+left, as in the Svelte viewer: a
+turn on its way when "Apply" is pressed is overwritten by the turns the tool read - which
+needs `R`, `C` and Enter inside one round trip.
+
 **A picture test makes its GPU device alone** (`tests/screenshots.rs`, `DEVICES`): every
 picture is drawn on a thread of its own, and with two dozen devices made in the same
 moment `native-shot` crashed inside the Vulkan loader about once in four runs

@@ -9,6 +9,9 @@ pub mod app;
 pub mod args;
 pub mod controls;
 pub mod controls_bar;
+pub mod crop;
+pub mod crop_tool;
+pub mod crop_view;
 pub mod dialog_view;
 pub mod dialogs;
 pub mod dirs;
@@ -87,9 +90,11 @@ pub mod window_layout;
 #[cfg(test)]
 mod tests {
     /// The state modules, with their source.
-    const STATE_MODULES: [(&str, &str); 46] = [
+    const STATE_MODULES: [(&str, &str); 48] = [
         ("args.rs", include_str!("args.rs")),
         ("controls.rs", include_str!("controls.rs")),
+        ("crop.rs", include_str!("crop.rs")),
+        ("crop_tool.rs", include_str!("crop_tool.rs")),
         ("scans.rs", include_str!("scans.rs")),
         ("status.rs", include_str!("status.rs")),
         ("dialogs.rs", include_str!("dialogs.rs")),
