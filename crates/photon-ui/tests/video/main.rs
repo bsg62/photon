@@ -4,11 +4,16 @@
 //! 320 by 240 with its left half red and its right half blue, and a matrix that turns it a
 //! quarter anticlockwise as it is shown: blue over red, 240 by 320.
 //!
+//! `odd.mp4` is `h264.mp4`'s colours without sound at 320 by 184, which a decoder pads to
+//! 192.
+//!
 //! A binary of its own, with no test harness of libtest's: every test runs on the main
 //! thread, which AVFoundation's player wants (`libtest-mimic`, one thread). A system that
 //! cannot decode what a test needs - a Linux without GStreamer's plugins, a Windows without
 //! Microsoft's HEVC extension - is said so in the output, and the test passes over itself.
-//! A file the system calls broken is a failure.
+//! A file the system calls broken is a failure. **Where `PHOTON_VIDEO_EXPECTS` names the
+//! codec, passing over is a failure too** (CI's runners set it): nextest shows nothing of a
+//! test that passed, and a runner whose decoders went missing would pass every test here.
 
 use libtest_mimic::{Arguments, Failed, Trial};
 use photon_ui::video::{self, Failure, Picture, Player};
@@ -28,13 +33,30 @@ fn main() {
             "hevc_posters_show_the_second_asked_for_where_hevc_is_decoded",
             || posters("hevc.mp4"),
         ),
+        Trial::test(
+            "a_video_whose_height_is_no_multiple_of_sixteen_is_its_own_size",
+            odd,
+        ),
         Trial::test("a_turned_video_is_turned_as_it_is_seen", turned),
         Trial::test("a_video_plays_its_seconds_in_order", in_order),
         Trial::test("a_paused_video_stands_still", paused),
         Trial::test("a_seek_lands_on_the_second_asked_for", seek),
+        Trial::test(
+            "a_seek_while_paused_shows_the_frame_it_landed_on",
+            paused_seek,
+        ),
+        Trial::test(
+            "an_hevc_video_plays_or_the_system_says_it_cannot",
+            hevc_player,
+        ),
         Trial::test("a_video_knows_its_length_and_its_end", length_and_end),
         Trial::test("volume_and_mute_are_set_without_a_failure", sound),
         Trial::test("a_file_that_is_no_video_is_a_failure_not_a_panic", no_video),
+        #[cfg(target_os = "linux")]
+        Trial::test(
+            "a_video_whose_picture_has_no_decoder_is_unsupported_though_its_sound_has",
+            linux::no_picture_decoder,
+        ),
     ];
     libtest_mimic::run(&args, tests).exit();
 }
@@ -45,10 +67,29 @@ fn media(name: &str) -> PathBuf {
         .join(name)
 }
 
-/// What the system cannot do, said and passed over.
-fn cannot(why: impl std::fmt::Display) -> Result<(), Failed> {
+/// What the system cannot do with `codec`, said and passed over - unless this machine is
+/// one that is expected to.
+fn cannot(codec: &str, why: impl std::fmt::Display) -> Result<(), Failed> {
+    let expects = std::env::var("PHOTON_VIDEO_EXPECTS").unwrap_or_default();
+    if expects.split([' ', ',']).any(|expected| expected == codec) {
+        return Err(format!("{codec} is expected to play here: {why}").into());
+    }
     println!("passed over: {why}");
     Ok(())
+}
+
+/// Time passing while a test waits on a player. On a Mac the main thread's run loop is
+/// turned through it, as winit turns it in the window: AVFoundation tells a player's state
+/// there, and nothing else turns it in a test.
+fn idle(long: Duration) {
+    #[cfg(target_os = "macos")]
+    {
+        use objc2_foundation::{NSDate, NSRunLoop};
+        NSRunLoop::currentRunLoop()
+            .runUntilDate(&NSDate::dateWithTimeIntervalSinceNow(long.as_secs_f64()));
+    }
+    #[cfg(not(target_os = "macos"))]
+    std::thread::sleep(long);
 }
 
 /// The colour of a pixel, named by which channels are lit.
@@ -84,7 +125,7 @@ fn check(ok: bool, said: impl FnOnce() -> String) -> Result<(), Failed> {
 
 fn posters(file: &str) -> Result<(), Failed> {
     if !video::can_play() {
-        return cannot("the system has no H.264 decoder");
+        return cannot("h264", "the system has no H.264 decoder");
     }
     for at in [0.4, 2.5] {
         match video::poster(&media(file), at) {
@@ -92,7 +133,7 @@ fn posters(file: &str) -> Result<(), Failed> {
                 (poster.width, poster.height) == (320, 240) && centre(&poster) == expected(at),
                 || format!("{file} at {at} s: {poster:?}, {}", centre(&poster)),
             )?,
-            Err(Failure::Unsupported(why)) if file != "h264.mp4" => return cannot(why),
+            Err(Failure::Unsupported(why)) if file == "hevc.mp4" => return cannot("hevc", why),
             Err(failure) => return Err(format!("{file} at {at} s: {failure:?}").into()),
         }
     }
@@ -101,7 +142,7 @@ fn posters(file: &str) -> Result<(), Failed> {
 
 fn opened(file: &str) -> Result<Option<Player>, Failed> {
     if !video::can_play() {
-        cannot("the system has no H.264 decoder")?;
+        cannot("h264", "the system has no H.264 decoder")?;
         return Ok(None);
     }
     Player::open(&media(file))
@@ -119,7 +160,7 @@ fn frames_for(player: &Player, long: Duration) -> Vec<Picture> {
     let mut frames = Vec::new();
     while Instant::now() < until {
         frames.extend(player.frame());
-        std::thread::sleep(Duration::from_millis(5));
+        idle(Duration::from_millis(5));
     }
     frames
 }
@@ -131,7 +172,7 @@ fn frame_from(player: &Player, at: f64, long: Duration) -> Option<Picture> {
         if let Some(frame) = player.frame().filter(|frame| frame.at >= at) {
             return Some(frame);
         }
-        std::thread::sleep(Duration::from_millis(5));
+        idle(Duration::from_millis(5));
     }
     None
 }
@@ -144,9 +185,36 @@ fn ends(picture: &Picture) -> (&'static str, &'static str) {
     )
 }
 
+/// The pixel colours down the middle of a picture, its last row's among them: the rows a
+/// decoder pads a picture with are black or green, never the picture's.
+fn bottom(picture: &Picture) -> &'static str {
+    named(picture.pixel(picture.width / 2, picture.height - 1))
+}
+
+fn odd() -> Result<(), Failed> {
+    if !video::can_play() {
+        return cannot("h264", "the system has no H.264 decoder");
+    }
+    let poster =
+        video::poster(&media("odd.mp4"), 0.4).map_err(|failure| format!("poster: {failure:?}"))?;
+    check(
+        (poster.width, poster.height) == (320, 184) && bottom(&poster) == "red",
+        || format!("poster {poster:?}, its last row {}", bottom(&poster)),
+    )?;
+    let Some(player) = opened("odd.mp4")? else {
+        return Ok(());
+    };
+    player.play();
+    let frame = frame_from(&player, 0.0, BEGUN).ok_or("no frame played")?;
+    check(
+        (frame.width, frame.height) == (320, 184) && bottom(&frame) == "red",
+        || format!("played {frame:?}, its last row {}", bottom(&frame)),
+    )
+}
+
 fn turned() -> Result<(), Failed> {
     if !video::can_play() {
-        return cannot("the system has no H.264 decoder");
+        return cannot("h264", "the system has no H.264 decoder");
     }
     let poster = video::poster(&media("rotated.mp4"), 1.0)
         .map_err(|failure| format!("poster: {failure:?}"))?;
@@ -234,10 +302,45 @@ fn seek() -> Result<(), Failed> {
     player.set_muted(true);
     player.play();
     player.seek(3.5);
-    let frame = frame_from(&player, 3.4, Duration::from_secs(3)).ok_or("no frame after 3.4 s")?;
+    let frame = frame_from(&player, 3.4, BEGUN).ok_or("no frame after 3.4 s")?;
     check(centre(&frame) == "white", || {
         format!("{frame:?} is {}", centre(&frame))
     })
+}
+
+/// Scrubbing a paused video, and Shift with an arrow on one: the picture is the frame the
+/// seek landed on, though nothing plays.
+fn paused_seek() -> Result<(), Failed> {
+    let Some(player) = opened("h264.mp4")? else {
+        return Ok(());
+    };
+    player.seek(2.5);
+    let frame = frame_from(&player, 2.4, BEGUN).ok_or("no frame after 2.4 s")?;
+    check(centre(&frame) == "blue", || {
+        format!("{frame:?} is {}", centre(&frame))
+    })
+}
+
+fn hevc_player() -> Result<(), Failed> {
+    if !video::can_play() {
+        return cannot("h264", "the system has no H.264 decoder");
+    }
+    let player = match Player::open(&media("hevc.mp4")) {
+        Ok(player) => player,
+        Err(Failure::Unsupported(why)) => return cannot("hevc", why),
+        Err(failure) => return Err(format!("{failure:?}").into()),
+    };
+    player.set_muted(true);
+    player.play();
+    match frame_from(&player, 0.0, BEGUN) {
+        Some(frame) => check(centre(&frame) == "red", || {
+            format!("{frame:?} is {}", centre(&frame))
+        }),
+        None => match player.failure() {
+            Some(Failure::Unsupported(why)) => cannot("hevc", why),
+            failure => Err(format!("no frame, and {failure:?}").into()),
+        },
+    }
 }
 
 fn length_and_end() -> Result<(), Failed> {
@@ -256,10 +359,18 @@ fn length_and_end() -> Result<(), Failed> {
             return Err(format!("not ended, at {:?}", player.position()).into());
         }
         player.frame();
-        std::thread::sleep(Duration::from_millis(10));
+        idle(Duration::from_millis(10));
     }
     check(player.failure().is_none(), || {
         format!("ended with {:?}", player.failure())
+    })?;
+    // Played to its end and taken back: it has not ended any more, nor does the end it
+    // had reached come back to say it has (a loop goes round this way).
+    player.seek(1.0);
+    check(!player.ended(), || "still ended after a seek back".into())?;
+    frames_for(&player, Duration::from_millis(300));
+    check(!player.ended(), || {
+        format!("ended again at {:?}", player.position())
     })
 }
 
@@ -293,4 +404,60 @@ fn no_video() -> Result<(), Failed> {
         })?;
     }
     Ok(())
+}
+
+#[cfg(target_os = "linux")]
+mod linux {
+    use super::*;
+    use gstreamer::{self as gst, prelude::*};
+
+    /// The decoders of HEVC taken out of the registry's choice for as long as this lives,
+    /// and put back as they were - also when the test fails, as it runs in the same process
+    /// as the others under `cargo test`.
+    struct Hidden(Vec<(gst::ElementFactory, gst::Rank)>);
+
+    impl Drop for Hidden {
+        fn drop(&mut self) {
+            for (factory, rank) in &self.0 {
+                factory.set_rank(*rank);
+            }
+        }
+    }
+
+    /// A Linux with no HEVC decoder - Fedora's own packages - and an iPhone's video, whose
+    /// sound is AAC, which it does decode.
+    pub fn no_picture_decoder() -> Result<(), Failed> {
+        if !video::can_play() {
+            return cannot("h264", "the system has no H.264 decoder");
+        }
+        let hevc = gst::Caps::builder("video/x-h265").build();
+        let decoders: Vec<_> = gst::ElementFactory::factories_with_type(
+            gst::ElementFactoryType::DECODER,
+            gst::Rank::NONE,
+        )
+        .into_iter()
+        .filter(|factory| factory.rank() > gst::Rank::NONE && factory.can_sink_any_caps(&hevc))
+        .collect();
+        if decoders.is_empty() {
+            return cannot("hevc", "the system has no HEVC decoder to take away");
+        }
+        let _hidden = Hidden(
+            decoders
+                .into_iter()
+                .map(|factory| {
+                    let rank = factory.rank();
+                    factory.set_rank(gst::Rank::NONE);
+                    (factory, rank)
+                })
+                .collect(),
+        );
+        let poster = video::poster(&media("hevc.mp4"), 0.4);
+        check(matches!(poster, Err(Failure::Unsupported(_))), || {
+            format!("a poster: {poster:?}")
+        })?;
+        let player = Player::open(&media("hevc.mp4")).map(|_| ());
+        check(matches!(player, Err(Failure::Unsupported(_))), || {
+            format!("a player: {player:?}")
+        })
+    }
 }
