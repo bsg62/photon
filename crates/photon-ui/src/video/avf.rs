@@ -66,16 +66,28 @@ fn quarters(asset: &AVAsset) -> u32 {
 
 /// The frame at `at` seconds, turned as it is seen.
 pub fn poster(path: &Path, at: f64) -> Result<Picture, Failure> {
+    let asset = asset(path);
+    still(&asset, &generator(&asset), at)
+}
+
+/// A maker of stills from `asset`, turned as the track asks and at the very time asked.
+fn generator(asset: &AVAsset) -> Retained<AVAssetImageGenerator> {
     unsafe {
-        let asset = asset(path);
-        let generator = AVAssetImageGenerator::assetImageGeneratorWithAsset(&asset);
+        let generator = AVAssetImageGenerator::assetImageGeneratorWithAsset(asset);
         generator.setAppliesPreferredTrackTransform(true);
         generator.setRequestedTimeToleranceBefore(kCMTimeZero);
         generator.setRequestedTimeToleranceAfter(kCMTimeZero);
+        generator
+    }
+}
+
+/// The frame at `at` seconds of `asset`, by `generator`.
+fn still(asset: &AVAsset, generator: &AVAssetImageGenerator, at: f64) -> Result<Picture, Failure> {
+    unsafe {
         let mut actual = kCMTimeZero;
         let image = generator
             .copyCGImageAtTime_actualTime_error(CMTime::with_seconds(at, 600), &mut actual)
-            .map_err(|err| refused(&asset, said(&err)))?;
+            .map_err(|err| refused(asset, said(&err)))?;
         let (width, height) = (CGImage::width(Some(&image)), CGImage::height(Some(&image)));
         let mut rgba = vec![0u8; width * height * 4];
         let space =
@@ -133,6 +145,14 @@ pub struct Player {
     player: Retained<AVPlayer>,
     item: Retained<AVPlayerItem>,
     output: Retained<AVPlayerItemVideoOutput>,
+    asset: Retained<AVURLAsset>,
+    generator: Retained<AVAssetImageGenerator>,
+    /// Where a paused player stands with no frame of it handed over yet: its start at
+    /// opening, where a seek landed. **The video output vends a frame only as the player
+    /// renders one, which a paused player does not**: the frame it stands on is made as a
+    /// still, as a poster is (on the thread that asks, the window's - tens of
+    /// milliseconds, once a seek).
+    still: Cell<Option<f64>>,
     quarters: u32,
     duration: f64,
     shown: Cell<f64>,
@@ -190,15 +210,19 @@ impl Player {
             Ok(Player {
                 quarters: quarters(&asset),
                 duration: item.duration().seconds(),
+                generator: generator(&asset),
+                asset,
                 player,
                 item,
                 output,
+                still: Cell::new(Some(0.0)),
                 shown: Cell::new(-1.0),
             })
         }
     }
 
     pub fn play(&self) {
+        self.still.set(None);
         unsafe { self.player.play() }
     }
 
@@ -208,6 +232,9 @@ impl Player {
 
     /// To `at` seconds, to the frame.
     pub fn seek(&self, at: f64) {
+        if unsafe { self.player.rate() } == 0.0 {
+            self.still.set(Some(at.max(0.0)));
+        }
         unsafe {
             self.player.seekToTime_toleranceBefore_toleranceAfter(
                 CMTime::with_seconds(at.max(0.0), 600),
@@ -256,8 +283,12 @@ impl Player {
         unsafe {
             let time = self.output.itemTimeForHostTime(CACurrentMediaTime());
             if !self.output.hasNewPixelBufferForItemTime(time) {
-                return None;
+                let at = self.still.take()?;
+                let picture = still(&self.asset, &self.generator, at).ok()?;
+                self.shown.set(picture.at);
+                return Some(picture);
             }
+            self.still.set(None);
             let mut shown = kCMTimeZero;
             let buffer = self
                 .output

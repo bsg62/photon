@@ -2780,7 +2780,9 @@ Engine) and not the poster (the source reader), which is turned here by the read
 first frame is black and stamped before nought, and is dropped; its error's code is the
 event's *first* parameter. **A paused player still hands over the frame it stands on** -
 the first at opening, the one a seek landed on - which GStreamer's sink gives only as its
-preroll. **Nothing a frame asks of a player turns the Mac's run loop**: in the window winit
+preroll (and `try_pull_sample` throws the preroll away before it looks, so a paused sink is
+asked for the preroll alone), and AVFoundation's video output not at all, as it vends what
+the player renders: a paused Mac player makes that frame as a still, as a poster is. **Nothing a frame asks of a player turns the Mac's run loop**: in the window winit
 turns it, and turned again in `frame` it held the window five milliseconds a call; `open`,
 which waits for the item to be ready, is the one place that does, and the tests turn it
 while they wait (`idle`). **Known, and left**: `open` waits on the thread that calls it, up

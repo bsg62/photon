@@ -294,17 +294,16 @@ impl Player {
     /// The newest frame due, once: none when no new one has come since the last asked.
     /// While paused that is the frame the pipeline stands on - the first at opening, the
     /// one a seek landed on - which the sink holds as its preroll and hands over only when
-    /// asked for so: `try_pull_sample` answers in `Playing` alone. The preroll is the first
-    /// sample once playing too, so a frame is told from the last by its time.
+    /// asked for so: `try_pull_sample` answers in `Playing` alone, and **throws the preroll
+    /// away before it looks** (`gst_app_sink_try_pull_object`), so it is not asked first.
+    /// The preroll is the first sample once playing too, so a frame is told from the last
+    /// by its time.
     pub fn frame(&self) -> Option<Picture> {
-        let sample = self
-            .sink
-            .try_pull_sample(gst::ClockTime::ZERO)
-            .or_else(|| {
-                (self.playbin.current_state() == gst::State::Paused)
-                    .then(|| self.sink.try_pull_preroll(gst::ClockTime::ZERO))
-                    .flatten()
-            })?;
+        let sample = if self.playbin.current_state() == gst::State::Paused {
+            self.sink.try_pull_preroll(gst::ClockTime::ZERO)
+        } else {
+            self.sink.try_pull_sample(gst::ClockTime::ZERO)
+        }?;
         let at = sample.buffer()?.pts()?.nseconds();
         if self.shown.replace(Some(at)) == Some(at) {
             return None;

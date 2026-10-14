@@ -64,10 +64,13 @@ fn failure(err: windows::core::Error) -> Failure {
 const VIDEO: u32 = MF_SOURCE_READER_FIRST_VIDEO_STREAM.0 as u32;
 
 /// What a frame the reader hands over is: the buffer's size, and the part of it that is
-/// the picture. **The decoder's frame is larger than the video where the video's height is
-/// no multiple of sixteen** - a phone's 1080 lines are 1088 - and the reader says which part
-/// to show in its minimum display aperture; read as the whole, a poster had eight rows of
-/// whatever the decoder left below the picture.
+/// the picture. **A decoder may hand over a frame larger than the video** where its height
+/// is no multiple of sixteen - 1088 lines for a phone's 1080 is the known case - and says
+/// which part to show in the minimum display aperture; read as the whole, a poster would
+/// carry the rows below the picture. Not seen here: the runner's decoder handed a video of
+/// 184 lines over as 184 (`odd.mp4`, whose test holds the size on every system and passed
+/// without this), so it is read as Microsoft documents it and has no test that fails
+/// without it.
 struct Layout {
     width: u32,
     left: u32,
