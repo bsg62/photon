@@ -2804,6 +2804,24 @@ there, on all three. Each runner's nextest step names the codecs it is expected 
 (`PHOTON_VIDEO_EXPECTS`), and a test that would pass over one of those fails instead:
 nextest prints nothing of a test that passed.
 
+**A video's poster is made by the window** (`posters.rs`, a state module): the engine's list
+of videos waiting for one, its claims and its crash-loop guard were built for the web view's
+thumbnailer and are used as they stand. A thread started at the first frame opens the
+session with what `can_play` says - told it can play where it cannot, the engine lists
+every video for a poster nobody makes, and its tile waits for ever - and takes jobs one at a
+time: the poster at `video::poster_time` of the library's length, made on a thread of its
+own so that a decoder that hangs is left behind at fifteen seconds and one that panics fails
+that video alone, fitted within the preview's 1600 pixels and handed over as a JPEG. **What
+a failure is reported as is the web view's rule** (`answer`, `video-thumbnailer.svelte.ts`):
+the system's lack, a picture of no size and the window closing are `Unsupported`, which
+keeps the video waiting for a session that can; the file's failure is `Decode`, fifteen
+seconds `Timeout`. **The window answers the job it has before the engine goes**
+(`App::close`, `PosterWorker::finish`): a claim left unanswered is counted at the next
+launch as a window that died opening the video, and two of those fail it for good. Its
+tests drive a stand-in for the system's framework that answers by the file's name
+(`tests/posters.rs`), with the time a poster may take as short as a test can wait
+(`Posters::patience`).
+
 **A picture test makes its GPU device alone** (`tests/screenshots.rs`, `DEVICES`): every
 picture is drawn on a thread of its own, and with two dozen devices made in the same
 moment `native-shot` crashed inside the Vulkan loader about once in four runs
