@@ -34,6 +34,18 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
+      # The Windows runner's C: drive, where TEMP is, is several times slower at making and
+      # removing small files than D:, where the checkout and the build are - and the native
+      # window's tests build libraries of thousands of cached thumbnails in temporary
+      # directories. Measured 2026-10-14 on one test of 18,000 photos: 155 s with TEMP on C:,
+      # 23 s on D:; the whole of `tests/dialogs.rs` 52 s and 14 s.
+      - name: Temporary files on the D drive
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force D:\tmp | Out-Null
+          "TEMP=D:\tmp" >> $env:GITHUB_ENV
+          "TMP=D:\tmp" >> $env:GITHUB_ENV
       - name: Install Linux webview dependencies
         if: runner.os == 'Linux'
         run: |
@@ -68,10 +80,13 @@ jobs:
       - run: cargo test --workspace
       # rav1d's x86-64 assembly (`avif-asm`) is off above, as in a local build without nasm,
       # and on in every x86-64 installer the release workflow builds: this runs photon-core's
-      # tests through it. The macOS runners are arm64, where it does not build (photon-core's
-      # Cargo.toml), so there it is only built, for the x86-64 dmg release.yml cross-compiles.
+      # tests that decode an AVIF through it - the four modules whose tests hand rav1d a
+      # picture (`metadata` and `scanner` read AVIFs too, but only their containers). All of
+      # photon-core's tests a second time was two minutes on Windows for the same answer.
+      # The macOS runners are arm64, where it does not build (photon-core's Cargo.toml), so
+      # there it is only built, for the x86-64 dmg release.yml cross-compiles.
       - if: runner.os != 'macOS'
-        run: cargo test -p photon-core --features avif-asm
+        run: "cargo test -p photon-core --features avif-asm --lib -- avif:: colour:: decode:: edit::"
       - if: runner.os == 'macOS'
         run: |
           rustup target add x86_64-apple-darwin
