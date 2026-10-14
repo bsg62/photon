@@ -789,8 +789,12 @@ impl GridView {
                 // with a mouse button in it nothing is asked at all: a click is taken
                 // before the frame's keys, whichever came first, and a write does not
                 // guess which photos a key was meant for.
+                // Compare covers the window as the viewer does, and like Enter is not
+                // asked under a held press: the button would come up where the grid did not
+                // hear it, and the first move after compare drew a band with no button down.
                 GridKey::Ask(ask) => {
-                    if !selection.is_empty() && !pointed {
+                    let covers = ask == Ask::Compare && self.press.is_some();
+                    if !selection.is_empty() && !pointed && !covers {
                         self.asks.push(Asked {
                             ask,
                             ids: selection.ids(index),

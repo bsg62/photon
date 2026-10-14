@@ -33,7 +33,6 @@ pub struct Pane {
     /// The key of the picture it is: which preview and which full picture are its.
     pub key: u64,
     pub starred: bool,
-    pub video: bool,
 }
 
 /// What a pane says of itself beyond its file name: empty where every pane agrees.
@@ -114,6 +113,17 @@ impl Compare {
         }
     }
 
+    /// A pane's photo under another key - turned or rewritten elsewhere: answers which
+    /// pane, for its full picture to be made again.
+    pub fn rekey(&mut self, id: i64, key: u64) -> Option<usize> {
+        let n = self
+            .panes
+            .iter()
+            .position(|pane| pane.id == id && pane.key != key)?;
+        self.panes[n].key = key;
+        Some(n)
+    }
+
     /// Out of range is no move: `3` is a key a person can press over two panes.
     pub fn focus_pane(&mut self, index: usize) {
         if index < self.panes.len() {
@@ -131,7 +141,8 @@ impl Compare {
     }
 
     /// Whether a pane's full picture is wanted: once the zoom has left the fit, every
-    /// pane's - fitted, a pane is its preview, which is about as large as a pane is.
+    /// pane's. Fitted, a pane is drawn from its preview, 1600 pixels - twice or three
+    /// times a pane in a window of ordinary size, drawn from one level.
     pub fn wants_full(&self) -> bool {
         !self.zoom.is_fit()
     }
@@ -157,7 +168,6 @@ mod tests {
             taken_at: 1_700_000_000 + id,
             key: id as u64,
             starred: false,
-            video: false,
         }
     }
 

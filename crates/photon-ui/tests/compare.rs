@@ -132,8 +132,16 @@ fn c_compares_the_photos_selected_and_escape_goes_back() {
     let (mut harness, mut driver, ids, _) = three(dir.path());
     compare(&mut driver, &mut harness, &[0, 2]);
     assert_eq!(panes(harness.state()), [ids[0], ids[2]]);
-    assert!(harness.query_by_label("Pane 1: a.jpg").is_some());
-    assert!(harness.query_by_label("Pane 2: c.jpg").is_some());
+    assert!(
+        harness
+            .query_by_label_contains("Pane 1: a.jpg, 1200 × 800")
+            .is_some()
+    );
+    assert!(
+        harness
+            .query_by_label_contains("Pane 2: c.jpg, 600 × 800")
+            .is_some()
+    );
     // They differ in size, and each says its own.
     assert!(drew(&harness, "1200 × 800") && drew(&harness, "600 × 800"));
     key(&mut driver, &mut harness, Key::Escape);

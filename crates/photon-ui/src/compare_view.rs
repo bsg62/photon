@@ -3,8 +3,9 @@
 //! window's input answered as `CompareAction`s. `Compare.svelte`, over `compare.rs`.
 //!
 //! **Dark in both themes**, as the viewer is: a photo is judged against the same ground
-//! whatever the window's theme. **No control here is a stop of the Tab key**: Tab moves
-//! between the panes, which is all there is to move between.
+//! whatever the window's theme. **Tab moves between the panes**, and egui's own walk of
+//! the keyboard is called off (`App::show_compare`): a message's button over the panes is
+//! the one widget here that could take it.
 
 use crate::{
     compare::{Facts, Pane},
@@ -158,8 +159,12 @@ impl CompareView {
         let mut actions = Vec::new();
         let (events, pointer) =
             ui.input(|input| (input.events.clone(), input.pointer.latest_pos()));
+        // A point is on a pane where it is on no control and under nothing that lies over
+        // compare - a message - asked of the layer egui finds on top there, the one judge
+        // (`grid/view.rs`). (`layer_id_at` locks egui's memory: not inside `input`.)
         let on = |at: Pos2| {
-            (!close.contains(at))
+            let top = ui.ctx().layer_id_at(at) == Some(ui.layer_id());
+            (!close.contains(at) && top)
                 .then(|| places.iter().position(|place| place.contains(at)))
                 .flatten()
         };
@@ -219,6 +224,22 @@ impl CompareView {
                     };
                     let moved = zoom.by(WHEEL_FACTOR.powf(notches), point, size);
                     // A pan held is measured from where it began: moved with the zoom.
+                    if let Some(held) = self.held.as_mut() {
+                        held.from.x += moved.x;
+                        held.from.y += moved.y;
+                    }
+                }
+                // A pinch the system reports as one (a Mac's trackpad), by its own factor,
+                // about the same point.
+                Event::Zoom(factor) => {
+                    let Some(at) = pointer else { continue };
+                    let Some(over) = on(at) else { continue };
+                    let middle = places[over].center();
+                    let point = Pan {
+                        x: at.x - middle.x,
+                        y: at.y - middle.y,
+                    };
+                    let moved = zoom.by(*factor, point, size);
                     if let Some(held) = self.held.as_mut() {
                         held.from.x += moved.x;
                         held.from.y += moved.y;
@@ -389,7 +410,21 @@ impl CompareView {
                     WidgetType::Label,
                     true,
                     focused,
-                    format!("Pane {}: {}", number + 1, data.pane.file_name),
+                    // What the pane says of itself: its star, and the facts that differ.
+                    [
+                        format!("Pane {}: {}", number + 1, data.pane.file_name),
+                        if data.pane.starred {
+                            "starred".to_owned()
+                        } else {
+                            String::new()
+                        },
+                        data.facts.size.clone(),
+                        data.facts.taken.clone(),
+                    ]
+                    .into_iter()
+                    .filter(|part| !part.is_empty())
+                    .collect::<Vec<_>>()
+                    .join(", "),
                 )
             });
     }
@@ -424,6 +459,11 @@ mod tests {
         images: Vec<(egui::TextureId, Rect, Rect)>,
         texts: Vec<(String, Rect)>,
         lines: Vec<(Rect, Color32)>,
+        /// Which way each line was drawn: inside its rectangle or outside.
+        kinds: Vec<StrokeKind>,
+        /// The first pane's levels, by their sizes, where it has a full picture.
+        levels: Vec<(TextureHandle, u32)>,
+        cursor: CursorIcon,
     }
 
     fn pane(id: i64) -> Pane {
@@ -436,7 +476,6 @@ mod tests {
             taken_at: 1_700_000_000,
             key: id as u64,
             starred: false,
-            video: false,
         }
     }
 
@@ -463,6 +502,9 @@ mod tests {
                 images: Vec::new(),
                 texts: Vec::new(),
                 lines: Vec::new(),
+                kinds: Vec::new(),
+                levels: Vec::new(),
+                cursor: CursorIcon::Default,
             };
             f.frame(Vec::new());
             f
@@ -477,13 +519,19 @@ mod tests {
             };
             self.time += 1.0 / 60.0;
             let facts = crate::compare::differing_facts(&self.panes);
+            let levels: Vec<Level<'_>> = (self.levels.iter())
+                .map(|(texture, width)| Level {
+                    texture,
+                    width: *width,
+                })
+                .collect();
             let data = CompareData {
                 panes: (self.panes.iter().enumerate())
                     .map(|(n, pane)| PaneData {
                         pane,
                         facts: &facts[n],
                         preview: Some(&self.previews[n]),
-                        levels: &[],
+                        levels: if n == 0 { &levels } else { &[] },
                     })
                     .collect(),
                 focus: self.focus,
@@ -497,6 +545,8 @@ mod tests {
                     .show(ui, |ui| actions = view.show(ui, &data, zoom));
             });
             full.textures_delta.clear();
+            self.cursor = full.platform_output.cursor_icon;
+            self.kinds.clear();
             self.images.clear();
             self.texts.clear();
             self.lines.clear();
@@ -511,6 +561,7 @@ mod tests {
                                 .push((brush.fill_texture_id, rect.rect, clipped.clip_rect));
                         } else if rect.stroke.width > 0.0 {
                             self.lines.push((rect.rect, rect.stroke.color));
+                            self.kinds.push(rect.stroke_kind);
                         }
                     }
                     egui::Shape::Mesh(mesh) => {
@@ -757,5 +808,129 @@ mod tests {
         f.frame(Vec::new());
         assert!(f.texts.iter().any(|(text, _)| text == "4000 × 3000"));
         assert!(f.texts.iter().any(|(text, _)| text == "2000 × 1500"));
+    }
+
+    fn wheel(f: &mut Fixture, unit: egui::MouseWheelUnit, y: f32) -> Vec<CompareAction> {
+        f.frame(vec![Event::MouseWheel {
+            unit,
+            delta: vec2(0.0, y),
+            phase: egui::TouchPhase::Move,
+            modifiers: Modifiers::NONE,
+        }])
+    }
+
+    // A key held down is answered once: each press of `S` is a write.
+    #[test]
+    fn a_held_key_is_answered_once() {
+        let mut f = Fixture::new(2);
+        let event = |repeat| Event::Key {
+            key: Key::S,
+            physical_key: Some(Key::S),
+            pressed: true,
+            repeat,
+            modifiers: Modifiers::NONE,
+        };
+        assert_eq!(f.frame(vec![event(false)]), [CompareAction::Star]);
+        assert_eq!(f.frame(vec![event(true)]), []);
+    }
+
+    // A zoom made under a held drag moves the drag's origin along: the next move of the
+    // pointer goes on from where the zoom left the photos.
+    #[test]
+    fn a_zoom_during_a_drag_moves_the_drag_along() {
+        let mut f = Fixture::new(2);
+        let place = places(WINDOW, 2)[0];
+        f.zoom
+            .by(2.0, Pan::default(), (place.width(), place.height()));
+        // Off the middle, where a zoom moves the pan.
+        let at = place.center() + vec2(60.0, 30.0);
+        f.frame(vec![Event::PointerMoved(at)]);
+        f.button(at, true);
+        wheel(&mut f, egui::MouseWheelUnit::Line, 1.0);
+        let zoomed = f.zoom.pan();
+        assert!(zoomed.x.abs() > 1.0, "the zoom moved the pan: {zoomed:?}");
+        f.frame(vec![Event::PointerMoved(at + vec2(5.0, 0.0))]);
+        assert!(
+            (f.zoom.pan().x - zoomed.x - 5.0).abs() < 0.01,
+            "{:?}",
+            f.zoom.pan()
+        );
+    }
+
+    // A drag holds the photos at any zoom past the fit, the least included.
+    #[test]
+    fn a_drag_pans_at_any_zoom_past_the_fit() {
+        let mut f = Fixture::new(2);
+        let place = places(WINDOW, 2)[0];
+        f.frame(vec![Event::PointerMoved(place.center())]);
+        wheel(&mut f, egui::MouseWheelUnit::Line, 1.0);
+        f.button(place.center(), true);
+        assert!(f.view.panning());
+    }
+
+    // The hand over a pane only where there is something to move: at fit, none; zoomed, an
+    // open hand, and a closed one while held.
+    #[test]
+    fn the_hand_is_shown_only_over_photos_that_can_be_moved() {
+        let mut f = Fixture::new(2);
+        let middle = places(WINDOW, 2)[0].center();
+        f.frame(vec![Event::PointerMoved(middle)]);
+        assert_eq!(f.cursor, CursorIcon::Default);
+        wheel(&mut f, egui::MouseWheelUnit::Line, 1.0);
+        f.frame(Vec::new());
+        assert_eq!(f.cursor, CursorIcon::Grab);
+        f.button(middle, true);
+        assert_eq!(f.cursor, CursorIcon::Grabbing);
+    }
+
+    // A trackpad's points add up: half of a hundred is half a notch.
+    #[test]
+    fn a_trackpads_points_are_a_share_of_a_notch() {
+        let mut f = Fixture::new(2);
+        f.frame(vec![Event::PointerMoved(places(WINDOW, 2)[0].center())]);
+        wheel(&mut f, egui::MouseWheelUnit::Point, 50.0);
+        assert!(
+            (f.zoom.zoom() - WHEEL_FACTOR.powf(0.5)).abs() < 1e-4,
+            "{}",
+            f.zoom.zoom()
+        );
+    }
+
+    // A pane with its full picture draws the level at least as large as it is drawn, not
+    // the largest.
+    #[test]
+    fn a_pane_draws_the_level_that_fits_what_is_drawn() {
+        let mut f = Fixture::new(2);
+        f.levels = [4000, 2000, 1000, 500]
+            .iter()
+            .enumerate()
+            .map(|(n, width)| {
+                let texture = f.ctx.load_texture(
+                    format!("level-{n}"),
+                    ColorImage::filled([40, 30], Color32::GRAY),
+                    TextureOptions::LINEAR,
+                );
+                (texture, *width as u32)
+            })
+            .collect();
+        f.frame(Vec::new());
+        // A pane about 494 points wide at a scale of one: the level of 500.
+        let id = f.levels[3].0.id();
+        assert!(
+            f.images.iter().any(|(of, ..)| *of == id),
+            "the level of 500"
+        );
+        assert!(!f.images.iter().any(|(of, ..)| *of == f.levels[0].0.id()));
+    }
+
+    // The ring is drawn inside the pane's own box: the panes stand close, and a ring
+    // outside one would be cut off by its neighbour.
+    #[test]
+    fn the_ring_is_drawn_inside_the_pane() {
+        let f = Fixture::new(2);
+        let at = (f.lines.iter())
+            .position(|(_, line)| *line == color(DARK.accent))
+            .unwrap();
+        assert_eq!(f.kinds[at], StrokeKind::Inside);
     }
 }

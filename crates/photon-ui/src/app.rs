@@ -161,6 +161,8 @@ pub struct App {
     show_settings: Latest<(), (Option<i64>, bool)>,
     /// Compare, while it is open.
     compare: Option<Comparing>,
+    /// Compare, its photos read, to be put up at the end of the frame.
+    compare_landed: Option<Comparing>,
     compare_view: CompareView,
     /// How many times compare has been asked to open: what a test of "not asked" counts.
     compares_asked: u64,
@@ -404,8 +406,9 @@ enum Write {
 enum Wrote {
     Search,
     TileSize,
-    /// How many stars were written, of how many asked.
+    /// How many stars were written, of how many asked, and of which photos.
     Stars {
+        ids: Vec<i64>,
         asked: usize,
         done: usize,
         starred: bool,
@@ -652,6 +655,7 @@ impl App {
                     Write::Stars { ids, starred } => commands::set_stars(&engine, &ids, starred)
                         .map(|done| Wrote::Stars {
                             asked: ids.len(),
+                            ids,
                             done,
                             starred,
                         })
@@ -921,7 +925,6 @@ impl App {
                                 taken_at: item.taken_at,
                                 key: u64::from_str_radix(&item.thumb_key, 16).unwrap_or(0),
                                 starred: item.starred,
-                                video: item.kind == photon_core::media::MediaKind::Video,
                             })
                         })
                         .collect()
@@ -1053,6 +1056,7 @@ impl App {
             fullscreen_asked: None,
             fullscreen_pending: None,
             compare: None,
+            compare_landed: None,
             compare_view: CompareView::default(),
             compares_asked: 0,
             comparing,
@@ -1939,13 +1943,13 @@ impl App {
             match answer {
                 Ok(Ok(panes)) => {
                     let count = panes.len();
-                    self.compare = Compare::open(panes).map(|compare| Comparing {
+                    // Put up at the end of the frame (`ui`), over the grid alone.
+                    self.compare_landed = Compare::open(panes).map(|compare| Comparing {
                         compare,
                         full: (0..count).map(|_| None).collect(),
                         failed: vec![false; count],
                         asking: None,
                     });
-                    self.compare_view = CompareView::default();
                 }
                 Ok(Err(said)) => self.toasts.error(said, now_ms),
                 Err(_) => self
@@ -2712,8 +2716,25 @@ impl App {
             return;
         };
         let ctx = ui.ctx().clone();
-        // Tab is compare's, between its panes: egui's walk of the keyboard is called off.
+        // Tab is compare's, between its panes: egui's walk of the keyboard is called off -
+        // a message's button over the panes would take it.
         ctx.memory_mut(|memory| memory.move_focus(egui::FocusDirection::None));
+        // What the grid on screen says of a pane's photo, where it holds it: its star -
+        // written from compare and come back with the rebuild, or changed elsewhere - and
+        // its key, another once it is turned or rewritten elsewhere, whose full picture
+        // is then made again under the new one.
+        let fresh: Vec<(i64, bool, u64)> = (open.compare.panes().iter())
+            .filter_map(|pane| {
+                (self.entry(pane.id)).map(|entry| (pane.id, entry.starred, entry.thumb_key))
+            })
+            .collect();
+        for (id, starred, key) in fresh {
+            open.compare.starred(id, starred);
+            if let Some(n) = open.compare.rekey(id, key) {
+                open.full[n] = None;
+                open.failed[n] = false;
+            }
+        }
         let wants: Vec<Want> = (open.compare.panes().iter())
             .map(|pane| Want {
                 id: pane.id,
@@ -2728,18 +2749,12 @@ impl App {
             })
             .collect();
         self.previews.frame(&ctx, &previews, false);
-        // A star written from compare comes back with the grid's rebuild: what each pane
-        // says of its star is what the grid on screen says.
-        let stars: Vec<(i64, bool)> = (wants.iter())
-            .filter_map(|want| self.entry(want.id).map(|entry| (want.id, entry.starred)))
-            .collect();
-        for (id, starred) in stars {
-            open.compare.starred(id, starred);
-        }
-        // Once zoomed, the full pictures, one after another: the panes' previews are
-        // about as large as a pane, and only a zoom wants more.
+        // Once zoomed, the full pictures, one after another, the pane with the keys first:
+        // fitted, a pane is drawn from its preview, which a zoom soon outgrows.
         if open.compare.wants_full() && open.asking.is_none() {
-            let next = (0..wants.len()).find(|n| open.full[*n].is_none() && !open.failed[*n]);
+            let focus = open.compare.focus();
+            let next = (std::iter::once(focus).chain(0..wants.len()))
+                .find(|n| open.full[*n].is_none() && !open.failed[*n]);
             if let Some(n) = next {
                 let ask = PictureAsk {
                     want: wants[n],
@@ -2810,9 +2825,15 @@ impl App {
                         self.writes.push(Write::Stars { ids, starred });
                     }
                 }
+                // Opened in the viewer when the grid on screen holds it - the viewer goes
+                // through the grid's photos - and otherwise nothing: in Starred, a pane
+                // unstarred from compare is no longer there to open.
                 CompareAction::Open => {
-                    opening = (open.compare.panes().get(open.compare.focus())).map(|pane| pane.id);
-                    closed = true;
+                    let focused = open.compare.panes().get(open.compare.focus());
+                    opening = focused
+                        .map(|pane| pane.id)
+                        .filter(|id| self.index.position_of(*id).is_some());
+                    closed = opening.is_some();
                 }
             }
             if closed {
@@ -3396,10 +3417,20 @@ impl App {
                 // A star the engine could not write - a folder whose INI is read-only -
                 // costs a message, and not the photos beside it.
                 Ok(Ok(Wrote::Stars {
+                    ids,
                     asked,
                     done,
                     starred,
                 })) => {
+                    // Compare's panes say what was written - whether or not the grid on
+                    // screen still holds the photo, which in Starred it does not once
+                    // its star is off. (Compare writes one photo at a time, and a write
+                    // of one that fails is a refusal, not fewer done.)
+                    if let Some(open) = self.compare.as_mut() {
+                        for id in ids {
+                            open.compare.starred(id, starred);
+                        }
+                    }
                     if let Some(said) = tile_menu::stars_missed(asked, done, starred) {
                         self.toasts.error(said, now_ms);
                     }
@@ -3882,7 +3913,6 @@ impl eframe::App for App {
             if self.drop.hovering() {
                 drop_card::show(ui.ctx(), folder_drop::CARD);
             }
-            self.ask_for_search(ui.ctx(), now);
             return;
         }
         // The viewer takes the whole window: the shell is not drawn under it, and the
@@ -3896,6 +3926,8 @@ impl eframe::App for App {
             // comes: left to the next frame something else asked for, it landed under
             // the viewer whenever the mouse next moved.
             self.ask_for_search(ui.ctx(), now);
+            // Compare does not open over the viewer (below).
+            self.compare_landed = None;
             let _ = reported;
             return;
         }
@@ -4056,6 +4088,20 @@ impl eframe::App for App {
             self.run_probe(ui.ctx(), output, reported);
         }
         self.last = output;
+        // Compare, once the library has said what its photos are, goes up after this
+        // frame's grid has answered the frame's keys: a key pressed before compare was
+        // ever drawn is the grid's, as it was meant. And over the grid alone: a viewer, a
+        // menu, a dialog or a held band come since it was asked for - its photos are
+        // four reads of the library, which on a slow share take a while - keep the
+        // window, and the answer is dropped.
+        let free = self.viewer.is_none() && self.menu.is_none() && self.dialog.is_none();
+        let banding = self.last.as_ref().is_some_and(|frame| frame.banding);
+        if let Some(landed) = self.compare_landed.take()
+            && free
+            && !banding
+        {
+            self.compare = Some(landed);
+        }
     }
 
     /// What shows where nothing is painted, for the frame before the first one of ours.

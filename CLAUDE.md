@@ -2714,18 +2714,30 @@ had been pressed the cross it woke.
 **Compare is `compare.rs` and `compare_view.rs`, and its zoom is the viewer's own**
 (`createCompare`, `differingFacts`, `Compare.svelte`): one `Zoom` for every pane, measured in a
 pane's size, so the point a zoom holds still and the pan's bounds are `viewer_zoom.rs`'s and
-tested there. It opens from `C` in the grid (`Ask::Compare`, through the grid's key gate)
-and the tile's "Compare N photos", for two to four photos, **once the library has said what
-each is** (`App::comparing`, off the UI thread): half a comparison is worse than none. It
-takes the whole window as the viewer does - drawn instead of the shell, Tab called off, its
-keys read from the frame's events. Panes stand in two columns, three leaving the fourth
-place empty so every photo is one size. Fitted, a pane is its preview; **once the zoom has
-left the fit every pane's full picture is made, one after another** (`compare_pictures`,
-no fitted copy: `PictureAsk::fit` of nought asks for none). A star is written and shown
-when the grid's rebuild says so (the panes' stars follow the grid on screen); Enter opens the
-pane with the keys in the viewer. While a drag is held the keys are its: Escape lets go of
-it and closes nothing. What a pane says beneath it is only what the panes disagree about,
-on every pane.
+tested there; the wheel, a pinch (`Event::Zoom`) and a drag move them all. It opens from `C`
+in the grid (`Ask::Compare` - not under a held press, as Enter is not: the button came up
+where the grid never heard it, and a band was drawn with no button down) and the tile's
+"Compare N photos", for two to four photos, **once the library has said what each is**
+(`App::comparing`, off the UI thread): half a comparison is worse than none. **It goes up
+at the end of the frame its answer arrives in, and only over the grid** (`compare_landed`):
+a key pressed before compare was ever drawn is the grid's, and a viewer, a menu, a dialog or
+a held band come since it was asked for keep the window - the answer is dropped, `C` being
+there to press again. It takes the whole window as the viewer does - drawn instead of the
+shell, Tab called off (a message's button over the panes would take the keyboard), its keys
+read from the frame's events, and a press on anything lying over a pane (a message) not the
+pane's. Panes stand in two columns, three leaving the fourth place empty so every photo is
+one size. Fitted, a pane is drawn from its preview - twice or three times a pane in a window
+of ordinary size, from one level; **once the zoom has left the fit every pane's full picture
+is made, one after another, the pane with the keys first** (`compare_pictures`, no fitted
+copy: a box of nought makes none). **A pane follows its photo**: its star and its key from
+the grid on screen where that holds it - a photo turned elsewhere has its full picture made
+again under its new key - and its star from what was written (`Wrote::Stars`' ids), since in
+Starred a photo unstarred from compare leaves the grid and its pane would say "starred" for
+good, and `S` would unstar it again. Enter opens the pane with the keys in the viewer when
+the grid on screen holds the photo (the viewer goes through the grid's photos), and
+otherwise does nothing. While a drag is held the keys are its: Escape lets go of it and
+closes nothing. What a pane says beneath it - and to AccessKit, with its star - is only what
+the panes disagree about, on every pane.
 
 **A picture test makes its GPU device alone** (`tests/screenshots.rs`, `DEVICES`): every
 picture is drawn on a thread of its own, and with two dozen devices made in the same
