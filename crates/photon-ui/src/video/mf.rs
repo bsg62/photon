@@ -357,7 +357,7 @@ impl Player {
             // new") as success. Before the first frame is due the engine answers a stamp
             // of no time at all, and a black picture with it.
             let stamp = self.engine.OnVideoStreamTick().ok()?;
-            if stamp < 0 || stamp == self.stamp.get() {
+            if stamp == self.stamp.get() {
                 return None;
             }
             self.stamp.set(stamp);
