@@ -2782,12 +2782,12 @@ event's *first* parameter. **A paused player still hands over the frame it stand
 the first at opening, the one a seek landed on - which GStreamer's sink gives only as its
 preroll (and `try_pull_sample` throws the preroll away before it looks, so a paused sink is
 asked for the preroll alone), and AVFoundation's video output not at all, as it vends what
-the player renders: a paused Mac player makes that frame as a still, as a poster is. **Nothing a frame asks of a player turns the Mac's run loop**: in the window winit
-turns it, and turned again in `frame` it held the window five milliseconds a call; `open`,
-which waits for the item to be ready, is the one place that does, and the tests turn it
-while they wait (`idle`). **Known, and left**: `open` waits on the thread that calls it, up
-to ten seconds (on a Mac it must be the main thread) - the viewer's pull request decides
-how it is called; and the `windows` crate links Media Foundation's DLLs at load time, so a
+the player renders: a paused Mac player makes that frame as a still, as a poster is. **Nothing a player is asked turns the Mac's run loop**: in the window winit
+turns it, and turned again in `frame` it held the window five milliseconds a call; the
+tests turn it while they wait (`idle`). **`open` waits for nothing**: it is called on the
+window's thread (on a Mac it must be the main one), and Media Foundation's engine takes a
+second or two to know a video's size on a runner - the player says when it is `ready`, and
+what went wrong after it was opened by `failure`. **Known, and left**: the `windows` crate links Media Foundation's DLLs at load time, so a
 Windows "N" edition without the Media Feature Pack cannot start photon-native at all - the
 packaging's to answer (sub-project 7). Every backend lets go of
 what it holds when it is dropped (GStreamer to `Null`, the Media Engine `Shutdown`), and

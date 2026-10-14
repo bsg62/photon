@@ -214,6 +214,11 @@ pub struct Player {
     playbin: gst::Element,
     sink: gst_app::AppSink,
     ended: Cell<bool>,
+    /// Whether the pipeline has prerolled - it knows its size and length - since it was
+    /// opened.
+    ready: Cell<bool>,
+    /// What a `missing-plugin` message said the picture lacks, until the pipeline settles.
+    lacking: std::cell::RefCell<Option<String>>,
     failed: std::cell::RefCell<Option<Failure>>,
     /// The time of the last frame handed over, so a frame is handed over once.
     shown: Cell<Option<u64>>,
@@ -226,19 +231,36 @@ impl Drop for Player {
 }
 
 impl Player {
-    /// Opened and ready, paused at its start.
+    /// Opened, and on its way to being ready, paused at its start: nothing waits here -
+    /// it is called on the window's thread - and what goes wrong from here on is said by
+    /// `failure`.
     pub fn open(path: &Path) -> Result<Player, Failure> {
         let (playbin, sink) = pipeline(path, true, true)?;
         let player = Player {
             playbin,
             sink,
             ended: Cell::new(false),
+            ready: Cell::new(false),
+            lacking: Default::default(),
             failed: Default::default(),
             shown: Cell::new(None),
         };
-        set_state(&player.playbin, gst::State::Paused)?;
-        settled(&player.playbin)?;
+        if player.playbin.set_state(gst::State::Paused).is_err() {
+            // A refused change says why on the bus.
+            player.read_bus();
+            return Err(player
+                .failed
+                .take()
+                .unwrap_or(Failure::Broken("GStreamer refused".into())));
+        }
         Ok(player)
+    }
+
+    /// Whether it knows its size and length, and has its first frame: until then it
+    /// shows nothing, and `play` is kept for when it is.
+    pub fn ready(&self) -> bool {
+        self.read_bus();
+        self.ready.get() && self.failed.borrow().is_none()
     }
 
     pub fn play(&self) {
@@ -315,11 +337,28 @@ impl Player {
         let Some(bus) = self.playbin.bus() else {
             return;
         };
-        while let Some(message) =
-            bus.pop_filtered(&[gst::MessageType::Eos, gst::MessageType::Error])
-        {
+        while let Some(message) = bus.pop_filtered(&[
+            gst::MessageType::Eos,
+            gst::MessageType::Error,
+            gst::MessageType::AsyncDone,
+            gst::MessageType::Element,
+        ]) {
             match message.view() {
                 gst::MessageView::Eos(_) => self.ended.set(true),
+                // The picture's missing decoder, as `settled` reads it for a poster.
+                gst::MessageView::Element(element) => {
+                    if let Some(missing) = element.structure().and_then(lacks_picture) {
+                        *self.lacking.borrow_mut() = Some(missing);
+                    }
+                }
+                gst::MessageView::AsyncDone(_) => {
+                    if let Some(missing) = self.lacking.take() {
+                        *self.failed.borrow_mut() = Some(Failure::Unsupported(format!(
+                            "GStreamer has no decoder for this video's picture ({missing})"
+                        )));
+                    }
+                    self.ready.set(true);
+                }
                 gst::MessageView::Error(err) => {
                     let said = failure(&err.error(), err.debug().as_ref().map(|d| d.as_str()));
                     *self.failed.borrow_mut() = Some(said);

@@ -11,7 +11,6 @@ use std::{
         Arc,
         atomic::{AtomicU32, Ordering},
     },
-    time::{Duration, Instant},
 };
 use windows::{
     Win32::{
@@ -238,7 +237,9 @@ impl Drop for Player {
 }
 
 impl Player {
-    /// Opened and ready, paused at its start.
+    /// Opened, and on its way to being ready, paused at its start: nothing waits here -
+    /// it is called on the window's thread - and what goes wrong from here on is said by
+    /// `failure`.
     pub fn open(path: &Path) -> Result<Player, Failure> {
         started()?;
         unsafe {
@@ -273,19 +274,15 @@ impl Player {
             };
             let url = BSTR::from(path.to_string_lossy().as_ref());
             player.engine.SetSource(&url).map_err(failure)?;
-            let until = Instant::now() + Duration::from_secs(10);
-            // HAVE_METADATA or more: its size and length are known.
-            while player.engine.GetReadyState() < 1 {
-                if let Some(failure) = player.failure() {
-                    return Err(failure);
-                }
-                if Instant::now() > until {
-                    return Err(Failure::Broken("Media Foundation was never ready".into()));
-                }
-                std::thread::sleep(Duration::from_millis(5));
-            }
             Ok(player)
         }
+    }
+
+    /// Whether it knows its size and length: `HAVE_METADATA` or more. The engine takes
+    /// a second or two to get there on a runner, which is why `open` does not wait for
+    /// it on the window's thread.
+    pub fn ready(&self) -> bool {
+        self.failure().is_none() && unsafe { self.engine.GetReadyState() } >= 1
     }
 
     pub fn play(&self) {

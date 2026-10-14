@@ -145,9 +145,24 @@ fn opened(file: &str) -> Result<Option<Player>, Failed> {
         cannot("h264", "the system has no H.264 decoder")?;
         return Ok(None);
     }
-    Player::open(&media(file))
-        .map(Some)
-        .map_err(|failure| format!("{file}: {failure:?}").into())
+    let player = Player::open(&media(file)).map_err(|failure| format!("{file}: {failure:?}"))?;
+    readied(&player).map_err(|failure| format!("{file}: {failure:?}"))?;
+    Ok(Some(player))
+}
+
+/// Until `player` is ready, or says why it will not be: `open` waits for nothing.
+fn readied(player: &Player) -> Result<(), Failure> {
+    let until = Instant::now() + BEGUN;
+    while !player.ready() {
+        if let Some(failure) = player.failure() {
+            return Err(failure);
+        }
+        if Instant::now() > until {
+            return Err(Failure::Broken("never ready".into()));
+        }
+        idle(Duration::from_millis(10));
+    }
+    Ok(())
 }
 
 /// How long a player is given to hand over its first frame: the system's own time to begin,
@@ -339,7 +354,10 @@ fn hevc_player() -> Result<(), Failed> {
     if !video::can_play() {
         return cannot("h264", "the system has no H.264 decoder");
     }
-    let player = match Player::open(&media("hevc.mp4")) {
+    let player = match Player::open(&media("hevc.mp4")).and_then(|player| {
+        readied(&player)?;
+        Ok(player)
+    }) {
         Ok(player) => player,
         Err(Failure::Unsupported(why)) => return cannot("hevc", why),
         Err(failure) => return Err(format!("{failure:?}").into()),
@@ -413,7 +431,9 @@ fn no_video() -> Result<(), Failed> {
         check(video::poster(path, 0.0).is_err(), || {
             format!("a poster of {}", path.display())
         })?;
-        check(Player::open(path).is_err(), || {
+        // Refused at once, or failing on its way to ready - never ready.
+        let player = Player::open(path).and_then(|player| readied(&player));
+        check(player.is_err(), || {
             format!("a player of {}", path.display())
         })?;
     }
@@ -469,7 +489,7 @@ mod linux {
         check(matches!(poster, Err(Failure::Unsupported(_))), || {
             format!("a poster: {poster:?}")
         })?;
-        let player = Player::open(&media("hevc.mp4")).map(|_| ());
+        let player = Player::open(&media("hevc.mp4")).and_then(|player| readied(&player));
         check(matches!(player, Err(Failure::Unsupported(_))), || {
             format!("a player: {player:?}")
         })
