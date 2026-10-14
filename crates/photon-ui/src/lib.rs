@@ -77,6 +77,7 @@ pub mod thumbs {
     pub mod textures;
 }
 pub mod toasts;
+pub mod video;
 pub mod viewer;
 pub mod viewer_caption;
 pub mod viewer_faces;
@@ -94,8 +95,9 @@ pub mod window_layout;
 #[cfg(test)]
 mod tests {
     /// The state modules, with their source.
-    const STATE_MODULES: [(&str, &str); 51] = [
+    const STATE_MODULES: [(&str, &str); 52] = [
         ("args.rs", include_str!("args.rs")),
+        ("video/mod.rs", include_str!("video/mod.rs")),
         ("compare.rs", include_str!("compare.rs")),
         ("controls.rs", include_str!("controls.rs")),
         ("crop.rs", include_str!("crop.rs")),

@@ -2759,6 +2759,34 @@ otherwise does nothing. While a drag is held the keys are its: Escape lets go of
 closes nothing. What a pane says beneath it - and to AccessKit, with its star - is only what
 the panes disagree about, on every pane.
 
+**A video is played by the system's own framework, one for each system** (spec
+`2026-10-14-photon-native-video-design.md`; `video/mod.rs`, a state module, and behind it
+`gst.rs`, `avf.rs` and `mf.rs`, of which one is built): GStreamer on Linux, AVFoundation on
+a Mac, Media Foundation on Windows - each a poster at a time (`poster`), a player with its
+sound (`Player`) whose frames come out as RGBA, and `can_play`. No fallback decoder: a
+spike on all three runners (2026-10-14) had each play H.264 and seek to the frame, and
+HEVC everywhere but a Windows without Microsoft's extension, which answers
+`Failure::Unsupported` - as does a Linux without GStreamer's plugins, which are looked for
+when a pipeline is made: the build links GStreamer's core alone, and photon starts on a
+system without the rest. **A frame is handed over turned as the video is seen, and each
+framework turns a different half**: GStreamer both (`videoflip video-direction=auto`);
+AVFoundation the poster (`appliesPreferredTrackTransform`) and not what it plays, which is
+turned here by the track's `preferredTransform`; Media Foundation what it plays (the Media
+Engine) and not the poster (the source reader), which is turned here by the reader's
+`MF_MT_VIDEO_ROTATION` - a backend that turned both would turn twice. The Media Engine's
+first frame is black and stamped before nought, and is dropped. Every backend lets go of
+what it holds when it is dropped (GStreamer to `Null`, the Media Engine `Shutdown`), and
+opens the file to read it alone. **`tests/video` is a binary of its own, with no libtest
+harness** (`harness = false`, `libtest-mimic` on one thread): AVFoundation's player item
+is made on the main thread, and libtest runs each test on a thread of its own. Its
+fixtures are four seconds of red, green, blue and white, a second each, so a frame's colour
+says which second it is from (GStreamer's times run two frames behind the picture in a file
+with an edit list, so a tenth of a second past each edge is let off), and a file turned a
+quarter. A test whose decoder the system has not got says so and passes over itself - which
+is every test of them on a Linux without the plugins, this machine's included (installing
+them is the user's to decide): **only CI runs them**, and a change to a backend is checked
+there, on all three.
+
 **A picture test makes its GPU device alone** (`tests/screenshots.rs`, `DEVICES`): every
 picture is drawn on a thread of its own, and with two dozen devices made in the same
 moment `native-shot` crashed inside the Vulkan loader about once in four runs
