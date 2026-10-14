@@ -605,6 +605,16 @@ fn a_photo_that_leaves_the_library_under_the_viewer_is_said_to_be_gone() {
             .query_by_label("This photo is no longer available.")
             .is_some()
     );
+    // It has no menu: there is nothing of it for one to be of, and "Hide photo" on a
+    // photo that is gone would be a write to a row that is not there.
+    let on_photo = harness.ctx.content_rect().center() - egui::vec2(200.0, 150.0);
+    harness.event(egui::Event::PointerMoved(on_photo));
+    harness.event(button(on_photo, PointerButton::Secondary, true));
+    harness.event(button(on_photo, PointerButton::Secondary, false));
+    driver.act(&mut harness);
+    driver.act(&mut harness);
+    assert!(!harness.state().menu_open());
+    assert!(harness.query_by_label("Hide photo").is_none());
     // Its picture is not held for a photo that is not there, and its star is in its
     // place and takes no press: nothing is known of it.
     assert_eq!(harness.state().viewer_holds(), None);
@@ -1199,6 +1209,12 @@ fn a_photo_that_cannot_be_shown_says_so_and_holds_no_picture() {
     driver.act(&mut harness);
     assert!(harness.query_by_label("It is broken.").is_some());
     drop(rendering);
+    // Until the picture has been answered, however long that takes: the render waits
+    // its turn behind every other test of this file that holds one, and a second of
+    // waiting was not always enough on Windows' CI.
+    driver.until(&mut harness, "the picture answered", |app| {
+        !app.viewer_asked()
+    });
     rest(&mut driver, &mut harness, 1.0);
     assert_eq!(harness.state().viewer_holds(), None);
     assert!(!harness.state().viewer_asked());
@@ -1455,6 +1471,35 @@ fn a_press_on_a_message_over_the_viewer_moves_no_photo() {
     driver.act(&mut harness);
     let pan = harness.state().viewer().unwrap().zoom().pan();
     assert_eq!((pan.x, pan.y), (-60.0, -40.0));
+}
+
+// And the other button on a message asks for no menu of the photo under it; beside the
+// message it does.
+#[test]
+fn the_other_button_on_a_message_over_the_viewer_asks_for_no_menu() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = library(dir.path(), 12, 0, 0);
+    let (mut harness, mut driver) = opened(&library, 12);
+    driver.settle(&mut harness);
+    open(&mut driver, &mut harness, 0);
+    key(&mut driver, &mut harness, Key::Period);
+    driver.until(&mut harness, "the refusal is said", |app| {
+        !app.toasts().is_empty()
+    });
+    driver.act(&mut harness);
+    driver.act(&mut harness);
+    let at = harness.get_by_label("Dismiss").rect().center();
+    let right_click = |driver: &mut Driver, harness: &mut Harness<'_>, at: Pos2| {
+        harness.event(egui::Event::PointerMoved(at));
+        harness.event(button(at, PointerButton::Secondary, true));
+        harness.event(button(at, PointerButton::Secondary, false));
+        driver.act(harness);
+        driver.act(harness);
+    };
+    right_click(&mut driver, &mut harness, at);
+    assert!(!harness.state().menu_open());
+    right_click(&mut driver, &mut harness, at + egui::vec2(0.0, -200.0));
+    assert!(harness.state().menu_open());
 }
 
 /// One notch of the wheel with Ctrl held: away from the user above nought.
@@ -1926,7 +1971,12 @@ fn a_persons_link_closes_the_viewer_and_shows_their_photos() {
     key(&mut driver, &mut harness, Key::Escape);
     rest(&mut driver, &mut harness, 1.0);
     informed(&mut driver, &mut harness, at(ids[1]));
-    press(&mut driver, &mut harness, "Anna");
+    // (Her plate over the photo says "Anna" too: the link is the one of the two that
+    // is one.)
+    harness
+        .get_by_role_and_label(egui::accesskit::Role::Link, "Anna")
+        .click();
+    driver.act(&mut harness);
     assert_eq!(viewing(&harness), None);
     driver.until(&mut harness, "Anna's photos", |app| {
         app.settled().view == GridView::Person && app.photos() == 2
