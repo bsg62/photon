@@ -1,9 +1,7 @@
 //! The controls at the right of the top bar and the year strip, through the whole
 //! application: a sort chosen and made by the engine, a size stored, a strip pressed.
 
-mod common;
-
-use common::{Driver, Harness, click, launch, library, opened, photo_ids};
+use crate::common::{Driver, Harness, click, launch, library, opened, photo_ids};
 use eframe::egui::{self, Key, Modifiers};
 use egui_kittest::kittest::{NodeT, Queryable};
 use photon_core::{

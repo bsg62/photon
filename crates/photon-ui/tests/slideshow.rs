@@ -2,9 +2,7 @@
 //! over a library of real photos made for the test, in a temporary directory. The window
 //! is the test's: it goes fullscreen when the application asks (`obey`).
 
-mod common;
-
-use common::{Driver, Harness, library, opened, over, said};
+use crate::common::{Driver, Harness, library, opened, over, said};
 use eframe::egui::{self, Key, Modifiers, PointerButton, Pos2, ViewportId};
 use egui_kittest::kittest::Queryable;
 use photon_core::library::Library;

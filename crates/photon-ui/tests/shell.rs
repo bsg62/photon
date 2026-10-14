@@ -1,9 +1,7 @@
 //! The shell and the views, through the whole application: a library on disk, the engine,
-//! and the frames a window would draw (`common::Driver`).
+//! and the frames a window would draw (`crate::common::Driver`).
 
-mod common;
-
-use common::{Driver, Harness, click, library, opened};
+use crate::common::{Driver, Harness, click, library, opened};
 use eframe::egui::{self, Key, Modifiers, pos2, vec2};
 use egui_kittest::kittest::{NodeT, Queryable};
 use photon_core::grid::GridView;
@@ -421,7 +419,7 @@ fn wheeled<'a>(dir: &std::path::Path, wheel: fn() -> Notch) -> (Harness<'a>, Dri
     let dirs = built.dirs();
     let mut harness = egui_kittest::Harness::builder()
         .with_size(vec2(1000.0, 700.0))
-        .with_step_dt(common::REFRESH as f32)
+        .with_step_dt(crate::common::REFRESH as f32)
         .build_eframe(move |cc| App::new(cc, dirs, None).unwrap().with_wheel(wheel));
     let mut driver = Driver::new(&harness);
     driver.until(&mut harness, "the library shown", |app| {

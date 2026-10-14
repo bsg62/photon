@@ -1,9 +1,7 @@
 //! The search box, through the whole application: typed into, with the engine searching
 //! as it is typed, on the clock a window would keep.
 
-mod common;
-
-use common::{Driver, Harness, click, library, opened};
+use crate::common::{Driver, Harness, click, library, opened};
 use eframe::egui::{self, Key, Modifiers};
 use egui_kittest::kittest::Queryable;
 use photon_core::{grid::GridView, library::Library, now_ms};

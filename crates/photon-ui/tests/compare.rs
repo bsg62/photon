@@ -2,9 +2,7 @@
 //! photos made for the test, in a temporary directory. A star written here goes into
 //! that directory's own `.picasa.ini`, and nowhere else.
 
-mod common;
-
-use common::{Driver, Harness, over};
+use crate::common::{Driver, Harness, over};
 use eframe::egui::{self, Key, Modifiers, PointerButton, Pos2};
 use egui_kittest::kittest::Queryable;
 use photon_ui::{app::App, compare_view::places};

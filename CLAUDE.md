@@ -14,9 +14,19 @@ that skips one is a commit CI will reject:
 cargo fmt --all            # run this FIRST, not just --check
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
+cargo nextest run --workspace
 cargo bench -p photon-core --bench grid --no-run
 ```
+
+The tests run through **cargo-nextest** (`cargo install --locked cargo-nextest`; CI takes it
+from `taiki-e/install-action`), which runs every binary's tests in one pool where `cargo
+test` runs the binaries one after another; `cargo test --workspace` still runs the same
+tests, more slowly. nextest runs no doctests, and the workspace has none: a doc example is
+written as a test. Its settings are `.config/nextest.toml`. **photon-ui's tests of the whole
+application are one binary**, `all` (`tests/main.rs`, `autotests = false`), each file in
+`tests/` a module of it: twenty-five binaries each linked egui, wgpu and the engine. A new
+file there is a `mod` line in `tests/main.rs`, or it is never built
+(`every_file_in_tests_is_a_module_of_the_binary` says so).
 
 **The UI gate**, from the repo root:
 
@@ -30,6 +40,7 @@ npm test        # vitest
 ```bash
 cargo test -p photon-core the_test_name          # by name substring
 cargo test -p photon-core --lib scanner          # one module
+cargo nextest run -p photon-ui --test all dialogs::   # one file of the whole-app tests
 npm test -w ui -- src/lib/nav.test.ts            # one UI file
 ```
 

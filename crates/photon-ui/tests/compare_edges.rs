@@ -2,9 +2,7 @@
 //! Each says what it shows. Over libraries of real photos in temporary
 //! directories; a star goes into that directory's own `.picasa.ini`.
 
-mod common;
-
-use common::{Driver, Harness, hold_over, over};
+use crate::common::{Driver, Harness, hold_over, over};
 use eframe::egui::{self, Key, Modifiers, PointerButton, Pos2};
 use egui_kittest::kittest::{NodeT, Queryable};
 use photon_engine::commands;
@@ -133,7 +131,7 @@ fn in_starred<'a>(dir: &Path) -> (Harness<'a>, Driver, Vec<i64>, PathBuf) {
     key(&mut driver, &mut harness, Key::Period);
     driver.until(&mut harness, "two starred", |app| app.starred().len() == 2);
     driver.settle(&mut harness);
-    common::click(&mut driver, &mut harness, "Starred");
+    crate::common::click(&mut driver, &mut harness, "Starred");
     driver.until(&mut harness, "Starred shown", |app| {
         app.photos() == 2 && app.last_frame().is_some_and(|frame| frame.settled)
     });

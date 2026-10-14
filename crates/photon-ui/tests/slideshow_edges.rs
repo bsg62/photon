@@ -1,9 +1,7 @@
 //! The slideshow at its edges: the review's tests of it (pull request #194) and the fix
 //! pass's. Each says what it shows.
 
-mod common;
-
-use common::{Driver, Harness, over};
+use crate::common::{Driver, Harness, over};
 use eframe::egui::{self, Key, Modifiers, PointerButton, Pos2, ViewportId};
 use egui_kittest::kittest::Queryable;
 use photon_engine::engine::RENDERING;
@@ -357,8 +355,8 @@ fn a_show_started_again_at_once_is_fullscreen() {
 #[test]
 fn a_playing_show_between_two_photos_draws_nothing() {
     let dir = tempfile::tempdir().unwrap();
-    let library = common::library(dir.path(), 12, 0, 0);
-    let (mut harness, mut driver) = common::opened(&library, 12);
+    let library = crate::common::library(dir.path(), 12, 0, 0);
+    let (mut harness, mut driver) = crate::common::opened(&library, 12);
     driver.settle(&mut harness);
     window(&mut harness, false);
     click(&mut driver, &mut harness, 0);

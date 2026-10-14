@@ -3,9 +3,7 @@
 //! for the first time, a library whose photos are all hidden, one that watches nothing,
 //! one whose drive is away.
 
-mod common;
-
-use common::{Driver, Harness, REFRESH, click, launch, library, sources};
+use crate::common::{Driver, Harness, REFRESH, click, launch, library, sources};
 use eframe::egui;
 use egui_kittest::kittest::{NodeT, Queryable};
 use photon_core::{grid::GridView, library::Library};

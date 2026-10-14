@@ -2,9 +2,7 @@
 //! photos made for the test, into a destination the test made. Every file written lands
 //! under the test's own temporary directory.
 
-mod common;
-
-use common::{Driver, Harness, over, photos_in, said};
+use crate::common::{Driver, Harness, over, photos_in, said};
 use eframe::egui::{self, Key, Modifiers, PointerButton, Pos2};
 use egui_kittest::kittest::Queryable;
 use photon_core::library::Library;
@@ -398,7 +396,7 @@ fn a_dropped_folder_whose_name_ends_in_a_space_is_the_folder_exported_to() {
     let spaced = dir.path().join("out ");
     std::fs::create_dir_all(&spaced).unwrap();
     open_export(&mut driver, &mut harness, (0, 0));
-    common::drop_on(&mut driver, &mut harness, &[&spaced]);
+    crate::common::drop_on(&mut driver, &mut harness, &[&spaced]);
     driver.until(&mut harness, "the path asked about", |app| {
         matches!(app.dialog(), Some(Dialog::Export(export))
             if !matches!(export.dest(), Dest::Checking | Dest::Empty))

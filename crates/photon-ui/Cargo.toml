@@ -7,12 +7,21 @@ license.workspace = true
 description.workspace = true
 repository.workspace = true
 authors.workspace = true
+# The tests of the whole application are one binary (`tests/main.rs`), not one for each
+# file in `tests/`: each binary links all of egui, wgpu and the engine, which twenty-five
+# times over was most of a Windows build, and one binary's tests share one pool of threads
+# where twenty-five ran one after another, each ending on its slowest few.
+autotests = false
 
 # `photon` is photon-app's binary until the switch-over; this one is named apart so both
 # can be built side by side.
 [[bin]]
 name = "photon-native"
 path = "src/main.rs"
+
+[[test]]
+name = "all"
+path = "tests/main.rs"
 
 [dependencies]
 photon-core = { path = "../photon-core" }

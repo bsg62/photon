@@ -1,9 +1,7 @@
 //! The rubber band, through the whole application: a drag over the photos selects what
 //! its rectangle touches, over the real engine.
 
-mod common;
-
-use common::{Driver, Harness, library, opened, photo_ids};
+use crate::common::{Driver, Harness, library, opened, photo_ids};
 use eframe::egui::{self, Key, Modifiers, PointerButton, Pos2};
 use egui_kittest::kittest::Queryable;
 use photon_core::grid::GridView;

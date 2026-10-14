@@ -4,9 +4,7 @@
 //! Every write here goes into a library the test made, in a temporary directory, and
 //! none of them outside `library.db`: a keyword is the library's, never the photo's.
 
-mod common;
-
-use common::{Driver, Harness, library, opened, photo_ids};
+use crate::common::{Driver, Harness, library, opened, photo_ids};
 use eframe::egui::{self, Key, Modifiers, PointerButton, Pos2};
 use egui_kittest::kittest::Queryable;
 use photon_core::{grid::GridView, library::Library};

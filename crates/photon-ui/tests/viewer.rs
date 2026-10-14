@@ -2,9 +2,7 @@
 //! photos made for the test, in a temporary directory. A star written here goes into
 //! that directory's own `.picasa.ini`, and nowhere else.
 
-mod common;
-
-use common::{Driver, Harness, hold_over, library, opened, over, photo_ids, said};
+use crate::common::{Driver, Harness, hold_over, library, opened, over, photo_ids, said};
 use eframe::egui::{self, Key, Modifiers, PointerButton, Pos2};
 use egui_kittest::kittest::{NodeT, Queryable};
 use photon_core::{
@@ -1195,6 +1193,13 @@ fn a_picture_that_could_not_be_made_is_asked_for_again_when_the_photo_is_come_ba
 // said in its place, in the library's words. Its picture is asked for at the opening,
 // before the library has said anything, and may well be made: it is not held to be
 // drawn, and not asked for again.
+//
+// "Before the library has said anything" is a race the window does not decide: the picture
+// is asked for in the frame after the opening, and the library's answer, read on another
+// thread, can be there by then - Windows' CI once had it so, asked for nothing, and the
+// rule under test was never reached. There is no seam to hold that read back, so the
+// opening is made again until the ask came first: the rule is tested on the attempt that
+// reaches it.
 #[test]
 fn a_photo_that_cannot_be_shown_says_so_and_holds_no_picture() {
     let dir = tempfile::tempdir().unwrap();
@@ -1204,8 +1209,20 @@ fn a_photo_that_cannot_be_shown_says_so_and_holds_no_picture() {
         .set_thumb_state(ids[1], ThumbState::Failed, Some("It is broken."))
         .unwrap();
     let rendering = RENDERING.lock();
-    open(&mut driver, &mut harness, 1);
-    assert!(harness.state().viewer_asked(), "asked for at the opening");
+    let mut attempts = 0;
+    loop {
+        attempts += 1;
+        open(&mut driver, &mut harness, 1);
+        if harness.state().viewer_asked() {
+            break;
+        }
+        assert!(
+            attempts < 5,
+            "the library answered before the ask, five times"
+        );
+        key(&mut driver, &mut harness, Key::Escape);
+        assert!(harness.state().viewer().is_none());
+    }
     driver.act(&mut harness);
     assert!(harness.query_by_label("It is broken.").is_some());
     drop(rendering);
@@ -2083,7 +2100,7 @@ fn a_copy_is_found_in_all_photos_from_hidden() {
     copies(&library, &[hidden[0], ids[5]]);
     let (mut harness, mut driver) = opened(&library, 9);
     driver.settle(&mut harness);
-    common::click(&mut driver, &mut harness, "Hidden");
+    crate::common::click(&mut driver, &mut harness, "Hidden");
     driver.until(&mut harness, "the hidden photos", |app| {
         app.settled().view == GridView::Hidden && app.photos() == 3
     });
@@ -2580,7 +2597,7 @@ fn a_notch_over_the_panel(notch: fn() -> Notch) -> f32 {
     let dirs = library.dirs();
     let mut harness: Harness<'_> = egui_kittest::Harness::builder()
         .with_size(egui::vec2(1000.0, 700.0))
-        .with_step_dt(common::REFRESH as f32)
+        .with_step_dt(crate::common::REFRESH as f32)
         .build_eframe(move |cc| {
             photon_ui::app::App::new(cc, dirs, None)
                 .unwrap()
