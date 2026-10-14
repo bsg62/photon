@@ -1053,6 +1053,24 @@ impl Library {
         Ok(())
     }
 
+    /// `set_thumb_state` for many rows in one transaction, with no error. A commit each is
+    /// what a library built for a test cannot afford: on NTFS eighteen thousand of them took
+    /// twelve seconds.
+    pub fn set_thumb_states(&self, ids: &[i64], state: ThumbState) -> Result<()> {
+        let mut conn = self.writer();
+        let tx = conn.transaction()?;
+        {
+            let mut stmt = tx.prepare_cached(
+                "UPDATE items SET thumb_state = ?2, thumb_error = NULL WHERE id = ?1",
+            )?;
+            for id in ids {
+                stmt.execute(params![id, state.to_db()])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Like `set_thumb_state`, but only if the row still matches `item` (path/size/mtime
     /// and the edit). Returns `false` without writing if the item changed since it was read,
     /// so a worker processing a stale snapshot can't clobber a rescan's reset to `Pending` -
@@ -1788,6 +1806,31 @@ mod tests {
             right: u(right),
             bottom: u(bottom),
         }
+    }
+
+    #[test]
+    fn thumb_states_are_set_on_the_rows_named_and_no_other() {
+        let (_dir, lib) = temp_library();
+        let (_, folder) = seed_folder(&lib, Path::new("/p"));
+        let ids = lib
+            .insert_items(&[
+                new_item(folder, "/p/a.jpg", 1),
+                new_item(folder, "/p/b.jpg", 2),
+                new_item(folder, "/p/c.jpg", 3),
+            ])
+            .unwrap();
+        lib.set_thumb_state(ids[0], ThumbState::Failed, Some("corrupt"))
+            .unwrap();
+
+        lib.set_thumb_states(&ids[..2], ThumbState::Ready).unwrap();
+
+        let state = |id| {
+            let item = lib.item(id).unwrap().unwrap();
+            (item.thumb_state, item.thumb_error)
+        };
+        assert_eq!(state(ids[0]), (ThumbState::Ready, None));
+        assert_eq!(state(ids[1]), (ThumbState::Ready, None));
+        assert_eq!(state(ids[2]), (ThumbState::Pending, None));
     }
 
     #[test]

@@ -166,8 +166,9 @@ pub fn build(out: &Path, photos: usize, sources: &[PathBuf]) -> Result<Fixture, 
                 std::fs::copy(&picture, &path)?;
             }
         }
-        lib.set_thumb_state(entry.id, ThumbState::Ready, None)?;
     }
+    let ids: Vec<i64> = entries.iter().map(|entry| entry.id).collect();
+    lib.set_thumb_states(&ids, ThumbState::Ready)?;
 
     // Nothing in the cache is garbage, and the library says so: no walk of it at launch.
     let now = now_ms();
