@@ -205,6 +205,8 @@ pub struct App {
     checking: Latest<String, (String, Result<String, String>)>,
     /// Whether an export applies edits, as stored: read when the export's dialog opens.
     edits: Latest<(), Option<bool>>,
+    /// The sound and the loop, carried from one video to the next for the session.
+    video_prefs: crate::playback::Prefs,
     /// Whether the system can play a video at all, once the poster worker has asked it.
     video_plays: Arc<std::sync::OnceLock<bool>>,
     /// The file of the video on screen, read off this thread: what its player opens.
@@ -1096,6 +1098,7 @@ impl App {
             checking,
             edits,
             video_plays: Arc::default(),
+            video_prefs: Default::default(),
             video_paths,
             exports,
             exporting: false,
@@ -1915,7 +1918,9 @@ impl App {
                         Err(why) => Err(Failure::Broken(why.clone())),
                     };
                     match opened {
-                        Ok(stream) => open.playing = Some(Playing::start(id, key, stream)),
+                        Ok(stream) => {
+                            open.playing = Some(Playing::start(id, key, stream, self.video_prefs))
+                        }
                         Err(failure) => open.open_failed = Some((id, key, failure)),
                     }
                 }
@@ -2520,6 +2525,7 @@ impl App {
             }),
             outgoing: (open.outgoing.as_ref())
                 .map(|out| (&out.texture, out.at, seen.unwrap_or(1.0) as f32)),
+            strip: open.playing.as_ref().and_then(Playing::strip),
         };
         // The zoom is the view's to change in this frame, and the viewer's to keep:
         // before what was done in the frame is acted on, since a step puts it back to
@@ -2642,6 +2648,16 @@ impl App {
                 ViewerAction::Hide => {
                     if let Some(item) = open.item.as_ref() {
                         self.write(TileAction::Hide(!item.hidden), vec![item.id]);
+                    }
+                    false
+                }
+                // Done to the player now, in the frame's order: a key that seeks and
+                // the arrow after it act on the video they were pressed on.
+                ViewerAction::Video(act) => {
+                    if let Some(playing) = open.playing.as_mut() {
+                        playing.act(act);
+                        self.video_prefs = playing.prefs();
+                        ctx.request_repaint();
                     }
                     false
                 }

@@ -19,6 +19,7 @@ use crate::{
     crop_view::{self, CropData},
     icons::Icon,
     menu_view::asks_for_menu,
+    playback::{Act, SEEK_STEP, Strip, clock},
     select_view::{self, SelectData, SelectView},
     text,
     theme::{
@@ -71,6 +72,8 @@ const PIXELS_A_LINE: f32 = 100.0;
 #[derive(Clone, Debug, PartialEq)]
 pub enum ViewerAction {
     Close,
+    /// Something done to the video on screen: by its strip, its keys, a click on it.
+    Video(Act),
     /// One photo on (1) or back (-1).
     Step(i64),
     First,
@@ -174,6 +177,9 @@ pub struct ViewerData<'a> {
     /// The photo the show has just left, drawn over the one arriving and faded out: what
     /// was drawn, where, and how much of it is still seen.
     pub outgoing: Option<(&'a TextureHandle, Rect, f32)>,
+    /// A video being played: its strip, its keys, a click on its picture. None for a
+    /// photo, and for a video that is not playing - not yet, or that cannot.
+    pub strip: Option<Strip>,
 }
 
 /// A slideshow that is running.
@@ -271,6 +277,8 @@ struct Controls {
     bar: Rect,
     /// None for a video, which has none.
     slider: Option<Rect>,
+    /// A video's strip, while it plays.
+    strip: Option<Rect>,
     /// The photo's own caption, where it has one: no control, but a press on it is not
     /// the photo's either - a double click on a line of text is not "closer".
     caption: Option<Rect>,
@@ -300,6 +308,7 @@ impl Controls {
         [self.prev, self.next, self.close, self.bar]
             .into_iter()
             .chain(self.slider)
+            .chain(self.strip)
             .chain(self.caption)
             .chain(self.panel)
             .any(|rect| rect.contains(at))
@@ -424,6 +433,7 @@ impl ViewerView {
             )),
             bar: away(bar_place(ui, window, data, edited, self.bar)),
             slider: (!data.video && !quiet).then(|| slider_place(window)),
+            strip: (data.strip.is_some() && !quiet).then(|| strip_place(window, area)),
             caption: caption.as_ref().map(|(place, _)| *place),
             panel,
         };
@@ -532,6 +542,10 @@ impl ViewerView {
         }
         if !quiet {
             actions.extend(bar(ui, controls.bar, data, edited));
+        }
+        if let (Some(place), Some(shown)) = (controls.strip, data.strip.as_ref()) {
+            let acts = self.strip(ui, place, shown);
+            actions.extend(acts.into_iter().map(ViewerAction::Video));
         }
         if let Some(place) = controls.slider {
             slider(
@@ -792,7 +806,8 @@ impl ViewerView {
         // a click that began on what was there before are over: the second click of a
         // double click that comes up on a video's poster would zoom it, with no key, no
         // wheel and no slider there to put it back.
-        if !zooms {
+        // (A video that plays is clicked, to play and pause: its press stands.)
+        if !zooms && data.strip.is_none() {
             self.press = None;
             self.clicked = None;
         }
@@ -850,6 +865,30 @@ impl ViewerView {
                     // The key that types a period, wherever a keyboard has it
                     // (`grid/view.rs`, where the grid's star is read).
                     let types_period = !modifiers.shift || *physical_key != Some(Key::Period);
+                    // A video's keys (`video-player.svelte.ts`'s `handleKey`): Space, L, M
+                    // and Shift with an arrow, five seconds - the plain arrows stay the
+                    // viewer's. While its position bar is dragged the keyboard is the
+                    // drag's: Escape calls it off, and nothing else leaves from under it.
+                    if let Some(strip) = data.strip.as_ref().filter(|_| data.show.is_none()) {
+                        if strip.scrubbing {
+                            if *key == Key::Escape && !repeat {
+                                actions.push(ViewerAction::Video(Act::ScrubAbandon));
+                            }
+                            continue;
+                        }
+                        let act = match key {
+                            Key::ArrowLeft if modifiers.shift => Some(Act::SeekBy(-SEEK_STEP)),
+                            Key::ArrowRight if modifiers.shift => Some(Act::SeekBy(SEEK_STEP)),
+                            Key::Space if !repeat => Some(Act::Toggle),
+                            Key::L if !repeat => Some(Act::Loop),
+                            Key::M if !repeat => Some(Act::Mute),
+                            _ => None,
+                        };
+                        if let Some(act) = act {
+                            actions.push(ViewerAction::Video(act));
+                            continue;
+                        }
+                    }
                     // The zoom's keys, about the middle as the slider's is. `=` is `+`
                     // without Shift where the two are one key.
                     let by = match key {
@@ -1028,6 +1067,11 @@ impl ViewerView {
                         continue;
                     };
                     if press.moved {
+                        continue;
+                    }
+                    // A click on a video's picture plays it or pauses it.
+                    if data.strip.is_some() {
+                        actions.push(ViewerAction::Video(Act::Toggle));
                         continue;
                     }
                     // A click. The second of two in the same place, in the time a
@@ -1400,6 +1444,194 @@ fn bar_place(
 }
 
 /// Where the zoom's slider stands: in the corner beside the bar.
+/// Where a video's strip stands: over the bar, in the middle of the photo's area and as
+/// wide as it leaves room for between the buttons at its sides, up to 720 points - as
+/// `VideoControls.svelte` stands, beside the info panel too.
+fn strip_place(window: Rect, area: Frame) -> Rect {
+    let room = area.width - 2.0 * (EDGE + NAV + S[2]);
+    let width = room.clamp(0.0, STRIP_WIDE);
+    let height = TOOL + 2.0 * S[1];
+    Rect::from_min_size(
+        pos2(
+            area.left + (area.width - width) / 2.0,
+            window.bottom() - EDGE - BAR - S[2] - height,
+        ),
+        vec2(width, height),
+    )
+}
+
+/// The widest a video's strip stands.
+const STRIP_WIDE: f32 = 720.0;
+/// How wide its two times are, and its volume.
+const STRIP_TIME: f32 = 44.0;
+const STRIP_VOLUME: f32 = 80.0;
+
+impl ViewerView {
+    /// A video's strip: play and pause, the time, the position bar, the length, mute,
+    /// the volume and the loop - `VideoControls.svelte`. No stop of the Tab key, as no
+    /// control here is: every one has a key. The position bar is dragged by the first
+    /// button for as long as it is held, and paused under it; Escape calls the drag off
+    /// (`input`), and so does the window being left with the button down.
+    fn strip(&mut self, ui: &egui::Ui, place: Rect, shown: &Strip) -> Vec<Act> {
+        glass(ui, place, R[3]);
+        let row = place.shrink2(vec2(S[2], S[1]));
+        let mut acts = Vec::new();
+        let square = |x: f32| Rect::from_min_size(pos2(x, row.top()), vec2(TOOL, TOOL));
+        let (play_icon, play_label) = if shown.playing {
+            (Icon::Pause, "Pause")
+        } else {
+            (Icon::Play, "Play")
+        };
+        if tool(
+            ui,
+            square(row.left()),
+            "video-play",
+            play_icon,
+            play_label,
+            true,
+            false,
+        ) {
+            acts.push(Act::Toggle);
+        }
+        let painter = ui.painter();
+        let time = |x: f32, words: String| {
+            painter.text(
+                pos2(x + STRIP_TIME / 2.0, row.center().y),
+                egui::Align2::CENTER_CENTER,
+                words,
+                fonts::regular(T[1]),
+                color(DARK.text_dim),
+            );
+        };
+        time(row.left() + TOOL + S[2], clock(shown.time));
+        // From the right: the loop, the volume, mute, an upright, the length.
+        let looped = row.right() - TOOL;
+        let volume = Rect::from_min_size(
+            pos2(looped - S[2] - STRIP_VOLUME, row.top()),
+            vec2(STRIP_VOLUME, TOOL),
+        );
+        let mute = volume.left() - S[2] - TOOL;
+        let upright = mute - S[2];
+        let length = upright - S[2] - STRIP_TIME;
+        if tool(
+            ui,
+            square(looped),
+            "video-loop",
+            Icon::Repeat,
+            "Loop",
+            true,
+            shown.prefs.looping,
+        ) {
+            acts.push(Act::Loop);
+        }
+        let (mute_icon, mute_label) = if shown.prefs.muted {
+            (Icon::VolumeX, "Unmute")
+        } else {
+            (Icon::Volume2, "Mute")
+        };
+        if tool(
+            ui,
+            square(mute),
+            "video-mute",
+            mute_icon,
+            mute_label,
+            true,
+            shown.prefs.muted,
+        ) {
+            acts.push(Act::Mute);
+        }
+        painter.line_segment(
+            [
+                pos2(upright, row.center().y - 9.0),
+                pos2(upright, row.center().y + 9.0),
+            ],
+            Stroke::new(1.0, color(GLASS_LINE)),
+        );
+        time(
+            length,
+            shown.duration.map_or_else(|| "-:--".to_owned(), clock),
+        );
+
+        let primary = ui.input(|input| input.pointer.primary_down());
+        // (A drag Escape called off is begun again by nothing while the button is still
+        // down: egui ends a widget's drag at Escape, so the bar is no longer held.)
+        let follows = primary && !self.let_go;
+        let moved = ui.input(|input| input.pointer.delta() != egui::Vec2::ZERO);
+        let along = |track: Rect, at: Pos2| ((at.x - track.left()) / track.width()).clamp(0.0, 1.0);
+
+        // The position bar: a line inside a reach the strip's whole height.
+        let left = row.left() + TOOL + S[2] + STRIP_TIME + S[2];
+        let reach = Rect::from_min_max(pos2(left, row.top()), pos2(length - S[2], row.bottom()));
+        let track = Rect::from_center_size(reach.center(), vec2(reach.width(), 4.0));
+        let known = shown.duration.is_some();
+        let sense = if known {
+            Sense::CLICK | Sense::DRAG
+        } else {
+            Sense::hover()
+        };
+        let response = ui.interact(reach, Id::new("video-seek"), sense);
+        let fraction = shown
+            .duration
+            .map_or(0.0, |whole| (shown.time / whole).clamp(0.0, 1.0))
+            as f32;
+        response.widget_info(|| WidgetInfo::slider(known, f64::from(fraction), "Position"));
+        let held = response.is_pointer_button_down_on() && follows;
+        match (
+            response.interact_pointer_pos().filter(|_| held),
+            shown.scrubbing,
+        ) {
+            (Some(at), false) => acts.push(Act::ScrubBegin(f64::from(along(track, at)))),
+            (Some(at), true) if moved => acts.push(Act::ScrubTo(f64::from(along(track, at)))),
+            (Some(_), true) => {}
+            // Let go of: where the drag left it. The window left with the button down:
+            // called off, as Escape calls it off - the user did not choose where it
+            // stopped.
+            (None, true) if self.let_go => acts.push(Act::ScrubAbandon),
+            (None, true) if !primary => acts.push(Act::ScrubEnd),
+            (None, _) => {}
+        }
+        let dim = if known { 1.0 } else { 0.4 };
+        painter.rect_filled(track, 2.0, color(GLASS_LINE).gamma_multiply(dim));
+        painter.rect_filled(
+            Rect::from_min_max(
+                track.min,
+                pos2(track.left() + fraction * track.width(), track.bottom()),
+            ),
+            2.0,
+            color(DARK.accent),
+        );
+
+        // The volume: where it is pressed and dragged, it stands; muted, it shows none.
+        let response = ui.interact(volume, Id::new("video-volume"), Sense::CLICK | Sense::DRAG);
+        let level = if shown.prefs.muted {
+            0.0
+        } else {
+            shown.prefs.volume as f32
+        };
+        response.widget_info(|| WidgetInfo::slider(true, f64::from(level), "Volume"));
+        if response.is_pointer_button_down_on()
+            && follows
+            && let Some(at) = response.interact_pointer_pos()
+        {
+            let to = f64::from(along(volume, at));
+            if (to - shown.prefs.volume).abs() > f64::EPSILON || shown.prefs.muted {
+                acts.push(Act::Volume(to));
+            }
+        }
+        let line = Rect::from_center_size(volume.center(), vec2(volume.width(), 4.0));
+        painter.rect_filled(line, 2.0, color(GLASS_LINE));
+        painter.rect_filled(
+            Rect::from_min_max(
+                line.min,
+                pos2(line.left() + level * line.width(), line.bottom()),
+            ),
+            2.0,
+            color(DARK.accent),
+        );
+        acts
+    }
+}
+
 fn slider_place(window: Rect) -> Rect {
     let width = S[2] + SLIDER + S[1] + SLIDER_LEVEL + S[2];
     Rect::from_min_size(
@@ -1799,6 +2031,8 @@ mod tests {
         show: Option<Showing>,
         /// The picture a show has left, where, and how much of it is seen.
         outgoing: Option<(TextureHandle, Rect, f32)>,
+        /// A video's strip, while it plays.
+        strip: Option<Strip>,
         /// The colour each texture of the last frame was painted with.
         tints: Vec<(egui::TextureId, Color32)>,
         /// The crop tool, while it is open: the size of the picture it is drawn on,
@@ -1853,6 +2087,7 @@ mod tests {
                 can_show: true,
                 show: None,
                 outgoing: None,
+                strip: None,
                 tints: Vec::new(),
                 crop: None,
                 zoom: Zoom::default(),
@@ -1933,6 +2168,7 @@ mod tests {
                 can_show: self.can_show,
                 show: self.show,
                 outgoing: (self.outgoing.as_ref()).map(|(texture, at, seen)| (texture, *at, *seen)),
+                strip: self.strip,
             };
             let (view, zoom) = (&mut self.view, &mut self.zoom);
             let mut crop = self.crop.as_mut().map(|(tool, size, part, busy)| Cropped {
@@ -3216,6 +3452,105 @@ mod tests {
         f.message = None;
         f.click(at);
         assert_eq!(f.zoomed(), (1.0, (0.0, 0.0)));
+    }
+
+    /// A video playing, a second into its four, with its poster.
+    fn video() -> Fixture {
+        let mut f = photo();
+        f.video = true;
+        f.strip = Some(Strip {
+            playing: true,
+            time: 1.0,
+            duration: Some(4.0),
+            prefs: crate::playback::Prefs::default(),
+            scrubbing: false,
+        });
+        f.frame(Vec::new());
+        f
+    }
+
+    fn act(act: Act) -> ViewerAction {
+        ViewerAction::Video(act)
+    }
+
+    // `video-player.svelte.ts`'s keys: Space, L, M, and Shift with an arrow - the plain
+    // arrows stay the viewer's.
+    #[test]
+    fn a_videos_keys_play_seek_loop_and_mute() {
+        let mut f = video();
+        assert_eq!(f.key(Key::Space), [act(Act::Toggle)]);
+        assert_eq!(f.key(Key::L), [act(Act::Loop)]);
+        assert_eq!(f.key(Key::M), [act(Act::Mute)]);
+        assert_eq!(
+            f.key_with(Key::ArrowRight, Modifiers::SHIFT),
+            [act(Act::SeekBy(SEEK_STEP))]
+        );
+        assert_eq!(
+            f.key_with(Key::ArrowLeft, Modifiers::SHIFT),
+            [act(Act::SeekBy(-SEEK_STEP))]
+        );
+        assert_eq!(f.key(Key::ArrowRight), [ViewerAction::Step(1)]);
+        // A video that does not play has no keys of its own.
+        f.strip = None;
+        assert_eq!(f.key(Key::Space), []);
+        assert_eq!(f.key(Key::M), []);
+    }
+
+    // While its bar is dragged the keyboard is the drag's: Escape calls it off, and
+    // nothing leaves from under it.
+    #[test]
+    fn while_a_videos_bar_is_dragged_the_keys_are_the_drags() {
+        let mut f = video();
+        let time = f.drew("0:01").expect("the time");
+        let bar = pos2(time.right() + S[2] + 40.0, time.center().y);
+        f.press(bar);
+        f.strip.as_mut().unwrap().scrubbing = true;
+        assert_eq!(f.key(Key::ArrowRight), []);
+        assert_eq!(f.key(Key::Space), []);
+        assert_eq!(f.key(Key::H), []);
+        assert_eq!(f.key(Key::Escape), [act(Act::ScrubAbandon)]);
+        f.strip.as_mut().unwrap().scrubbing = false;
+        // Called off, the drag is over while the button is still down: not begun again
+        // under it, nor ended when it comes up.
+        assert_eq!(
+            f.frame(vec![Event::PointerMoved(bar + vec2(20.0, 0.0))]),
+            []
+        );
+        assert_eq!(f.frame(vec![primary(bar, false)]), []);
+        // A press after it is a drag again.
+        f.point(bar);
+        let again = f.frame(vec![primary(bar, true)]);
+        assert!(
+            matches!(again.as_slice(), [ViewerAction::Video(Act::ScrubBegin(_))]),
+            "{again:?}"
+        );
+    }
+
+    #[test]
+    fn a_click_on_a_videos_picture_plays_or_pauses_it() {
+        let mut f = video();
+        assert_eq!(f.click(pos2(700.0, 300.0)), [act(Act::Toggle)]);
+        // And two are two, not a double click's zoom.
+        assert_eq!(f.click(pos2(700.0, 300.0)), [act(Act::Toggle)]);
+        assert_eq!(f.zoomed(), (1.0, (0.0, 0.0)));
+    }
+
+    // The strip says the time and the length, and its button and its bar act: a press on
+    // the bar begins a drag at that place, and is not the picture's click.
+    #[test]
+    fn a_videos_strip_says_its_times_and_its_controls_act() {
+        let mut f = video();
+        let time = f.drew("0:01").expect("the time");
+        assert!(f.drew("0:04").is_some(), "the length");
+        let play = pos2(time.left() - S[2] - TOOL / 2.0, time.center().y);
+        assert_eq!(f.click(play), [act(Act::Toggle)]);
+        let bar = pos2(time.right() + S[2] + 40.0, time.center().y);
+        f.point(bar);
+        let pressed = f.frame(vec![primary(bar, true)]);
+        assert!(
+            matches!(pressed.as_slice(), [ViewerAction::Video(Act::ScrubBegin(along))] if *along > 0.0 && *along < 0.5),
+            "{pressed:?}"
+        );
     }
 
     // No hand where nothing is drawn that could be moved: a photo that was zoomed and

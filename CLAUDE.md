@@ -2859,7 +2859,25 @@ is made a `ColorImage` on this thread and uploaded from it - about a millisecond
 a release build once the needless unmultiplying pass was dropped, four at 4K, and ten times
 that in a debug build; and a player has no crash-loop guard, where a poster does - a file
 whose later frames crash a decoder takes the window down at each opening, which is not a
-loop, since each needs a click. **Another video, or another
+loop, since each needs a click.
+
+**A video's controls are its strip, its keys and a click on its picture** (`Playing::act`,
+`playback::Act` - `createVideoPlayer` ported; drawn by `ViewerView::strip`, `VideoControls.
+svelte`). The strip stands over the bar, in the middle of the photo's area - beside the info
+panel too - and only while the video plays: play and pause, the time, the position bar, the
+length, mute, the volume and the loop, each with no stop of the Tab key. Space, `L`, `M` and
+Shift with an arrow (five seconds) are its keys, read before the viewer's, whose plain arrows
+stay steps; not in a slideshow, which passes videos over. A click on the picture plays and
+pauses (its press stands, where a video's poster's was over at once). **The sound and the
+loop are the session's** (`playback::Prefs`, `App::video_prefs`, stored nowhere), and are
+set on a player **before it plays**: after, a muted session heard the first moment of every
+video. A drag along the bar pauses the video and shows each place's frame, plays on when let
+go of, and is called off - back to where it began - by Escape, which is the drag's alone
+while it lasts, and by the window being left with the button down; egui itself ends a
+widget's drag at Escape, so no flag of the strip's keeps a drag called off from beginning
+again under the held button (one was written, and a probe passed without it). At its end a
+video loops, or stands, and its button plays it again from the start. Paused, nothing is
+asked for but the frame a seek is waiting for: a still window draws nothing. **Another video, or another
 picture of the same one, is another player** (`Playing::is_of`): the step from one video to
 the next let go of the first. What is said over a video that cannot be played is the web
 view's, in its order (`playback::said`): a crash first; then a system that plays nothing -
