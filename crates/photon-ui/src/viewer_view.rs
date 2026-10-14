@@ -313,8 +313,8 @@ impl Controls {
 }
 
 impl ViewerView {
-    /// Whether a keyword is being typed into the info panel's field: the keys are the
-    /// field's then.
+    /// The picture the last frame drew at fit, and where: what a slideshow fades out as
+    /// it goes on. None for a zoomed photo, and under the crop tool.
     pub fn drawn(&self) -> Option<(TextureHandle, Rect)> {
         self.drawn.clone()
     }
@@ -4975,5 +4975,29 @@ mod tests {
         f.crop = Some((CropTool::begin(None, 2400, 1200), (2400, 1200), ALL, false));
         f.frame(Vec::new());
         assert!(f.view.drawn().is_none(), "under the crop tool");
+    }
+
+    // The bar keeps the width it had awake while the controls are away: woken in a frame
+    // that knows nothing of the photo stepped to, it stands where it stood, not at the
+    // width of a rectangle that is none.
+    #[test]
+    fn the_bar_woken_after_a_rest_keeps_its_width() {
+        let mut f = photo();
+        let glass = color(GLASS);
+        let bar = |f: &Fixture| {
+            (f.fills.iter())
+                .find(|(rect, fill)| *fill == glass && rect.height() == BAR)
+                .map(|(rect, _)| *rect)
+        };
+        let awake = bar(&f).unwrap();
+        f.show = Some(Showing {
+            playing: true,
+            quiet: true,
+        });
+        f.frame(Vec::new());
+        f.caption.clear();
+        f.show = playing();
+        f.frame(Vec::new());
+        assert_eq!(bar(&f), Some(awake));
     }
 }

@@ -159,6 +159,8 @@ pub struct App {
     show_settings: Latest<(), (Option<i64>, bool)>,
     /// What the window was last asked of its fullscreen, by a show or by F11.
     fullscreen_asked: Option<bool>,
+    /// The same, until the window has done it.
+    fullscreen_pending: Option<bool>,
     /// Whether a folder dropped on the window can arrive at all: asked of the window
     /// once (`folder_drop::can_arrive`). Where none can, none is offered.
     drops: bool,
@@ -1003,6 +1005,7 @@ impl App {
             ctx: ctx.clone(),
             show_settings,
             fullscreen_asked: None,
+            fullscreen_pending: None,
             drops,
             drop: FolderDrop::default(),
             hovered: 0,
@@ -1750,6 +1753,17 @@ impl App {
         self.ctx
             .send_viewport_cmd(egui::ViewportCommand::Fullscreen(on));
         self.fullscreen_asked = Some(on);
+        self.fullscreen_pending = Some(on);
+    }
+
+    /// Whether the window is fullscreen, as far as is known: what it was last asked,
+    /// until it has done it, and then what it says. egui reports what the window last
+    /// said, and a compositor says it a configure later: a show stopped and started
+    /// again before the window had left fullscreen took the window for one the user had
+    /// made fullscreen, played windowed, and gave nothing back.
+    fn window_fullscreen(&self, ctx: &egui::Context) -> Option<bool> {
+        self.fullscreen_pending
+            .or_else(|| ctx.input(|input| input.viewport().fullscreen))
     }
 
     /// Stops the slideshow that is running, and gives the window back its own
@@ -1836,8 +1850,10 @@ impl App {
             answered = true;
             if let (Ok((interval, shuffle)), Some(open)) = (answer, &mut self.viewer) {
                 open.show.interval(interval, now_ms);
-                if shuffle && open.show.active() {
-                    open.shuffle = Some((usize::MAX, 1));
+                // No stride drawn yet: none for a view of no length, which a show never
+                // walks, and one `shuffle_stride` never keeps.
+                if shuffle {
+                    open.shuffle = Some((0, 1));
                 }
             }
         }
@@ -1949,6 +1965,12 @@ impl App {
         if !under_dialog {
             ctx.memory_mut(|memory| memory.move_focus(egui::FocusDirection::None));
         }
+        // Held while a dialog or the viewer's menu is over it, and while a keyword is
+        // being typed in the info panel - whose field keeps the keyboard across a step,
+        // and would write the rest of a word to a photo nobody typed it for. Asked
+        // before the countdown is: a menu asked for in the frame before its end holds it.
+        let paused = under_dialog || self.menu.is_some();
+        open.show.hold(paused || self.viewer_view.typing(), now);
         // A show's countdown has ended: it goes on to the next photo of its order. Here,
         // before anything of the photo is asked or drawn, as a step by hand is acted on
         // after its frame.
@@ -2075,28 +2097,19 @@ impl App {
         let shown = open.picture().is_some()
             || (open.failed.as_ref()).is_some_and(|(of, _)| *of == want)
             || failed
-            || open.viewer.gone()
-            || open.viewer.is_video();
+            || open.viewer.gone();
         if open.show.active() && shown {
             open.show.shown(now);
             if let Some(outgoing) = open.outgoing.as_mut().filter(|out| out.since.is_none()) {
                 outgoing.since = Some(now);
             }
         }
-        // Held while a dialog or the viewer's menu is over it; and the pointer moving,
-        // a press or a key brings the controls back.
-        let paused = under_dialog || self.menu.is_some();
-        open.show.hold(paused, now);
+        // The pointer moving brings the controls back, and nothing else does, as in the
+        // Svelte viewer: a press or a key that woke them would be answered by the
+        // controls it woke - the second click of a double click on the photo where the
+        // cross stood, at rest, closed the viewer.
         let poked = ctx.input(|input| {
-            (input.events.iter()).any(|event| {
-                matches!(
-                    event,
-                    egui::Event::PointerMoved(_)
-                        | egui::Event::PointerButton { .. }
-                        | egui::Event::MouseWheel { .. }
-                        | egui::Event::Key { pressed: true, .. }
-                )
-            })
+            (input.events.iter()).any(|event| matches!(event, egui::Event::PointerMoved(_)))
         });
         if poked {
             open.show.poke(now);
@@ -2487,18 +2500,35 @@ impl App {
         let is_photo = |at: usize| {
             (index.rows(at, 1).first()).is_some_and(|entry| entry.kind == MediaKind::Image)
         };
-        let from = open.viewer.offset();
-        let Some(next) = next_still(from, len, is_photo, dir, stride).filter(|next| *next != from)
-        else {
+        if len == 0 {
+            return false;
+        }
+        // Whatever stands at the offset of a photo the view has lost - left the view, or
+        // the library - is the photo that came after it (`Viewer::step`): going on, the
+        // walk begins a place back, so that its first step is that photo and not the one
+        // after it.
+        let offset = open.viewer.offset();
+        let lost = open.viewer.orphaned() || open.viewer.gone();
+        let from = if lost && dir > 0 {
+            (offset + len - 1) % len
+        } else {
+            offset.min(len - 1)
+        };
+        let Some(next) = next_still(from, len, is_photo, dir, stride) else {
             return false;
         };
-        // (The view keeps nothing of a zoomed photo.)
-        open.outgoing = self.viewer_view.drawn().map(|(texture, at)| Outgoing {
-            texture,
-            at,
-            since: None,
-        });
-        open.viewer.go_to(next, &self.index, now)
+        // (The view keeps nothing of a zoomed photo. A photo still in its place that is
+        // the only one to go to is no step: `go_to` refuses it, and nothing fades.)
+        let drawn = self.viewer_view.drawn();
+        let moved = open.viewer.go_to(next, &self.index, now);
+        if moved {
+            open.outgoing = drawn.map(|(texture, at)| Outgoing {
+                texture,
+                at,
+                since: None,
+            });
+        }
+        moved
     }
 
     /// Starts a show on the photo on screen - or, on a video, on the next photo; with
@@ -2526,10 +2556,13 @@ impl App {
         }
         open.info = false;
         open.shuffle = None;
-        open.outgoing = None;
         self.show_settings.ask(());
-        let fullscreen = ctx.input(|input| input.viewport().fullscreen);
-        if open.show.start(now, shown && !moved, fullscreen) {
+        // Shown: the frame's word for the photo it drew, which is the photo the show
+        // starts on only if no step of this frame has left it - an arrow before the
+        // `S`, after which `left` has forgotten what was said of it. (The step off a
+        // video is made here, and `left`, after, makes the show count nothing.)
+        let shown = shown && open.item.is_some();
+        if open.show.start(now, shown, self.window_fullscreen(ctx)) {
             self.fullscreen(true);
         }
         moved
@@ -3437,12 +3470,30 @@ impl eframe::App for App {
         }
         let in_view = ui.ctx().content_rect().height() - TOP_BAR - STATUS_BAR;
         crate::grid::view::set_wheel_notch(ui.ctx(), self.notch.points(f64::from(in_view)));
+        // What the window has asked for and the window has now done is no longer on
+        // its way.
+        let reported = ui.ctx().input(|input| input.viewport().fullscreen);
+        if self.fullscreen_pending.is_some() && self.fullscreen_pending == reported {
+            self.fullscreen_pending = None;
+        }
         // F11 is the window's fullscreen, everywhere: in the grid, in the viewer, under a
-        // menu, a dialog or a band. Read before anything else takes the keys out of
-        // the frame, and taken out itself.
-        let f11 = ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::F11));
+        // menu, a dialog or a band - read before anything else takes the keys out of the
+        // frame. At its press: held, it would flicker the window at every repeat.
+        let f11 = ui.input(|input| {
+            (input.events.iter()).any(|event| {
+                matches!(
+                    event,
+                    egui::Event::Key {
+                        key: egui::Key::F11,
+                        pressed: true,
+                        repeat: false,
+                        ..
+                    }
+                )
+            })
+        });
         if f11 {
-            let on = ui.ctx().input(|input| input.viewport().fullscreen) == Some(true);
+            let on = self.window_fullscreen(ui.ctx()) == Some(true);
             self.fullscreen(!on);
         }
         // A rubber band owns the window while it is held: Escape abandons it, and
@@ -3758,7 +3809,7 @@ struct Viewing {
     /// The slideshow, running or not.
     show: Slideshow,
     /// A shuffled show's stride, and the view's length it was drawn for; none for a
-    /// show in the view's own order. `usize::MAX` for a length is "none drawn yet".
+    /// show in the view's own order.
     shuffle: Option<(usize, usize)>,
     /// The photo the show has left, drawn over the one arriving until it has faded.
     outgoing: Option<Outgoing>,
@@ -3834,9 +3885,8 @@ impl Viewing {
         match self.shuffle {
             None => 1,
             Some((drawn_for, stride)) if drawn_for == len => stride,
-            Some((drawn_for, stride)) => {
-                let previous = (drawn_for != usize::MAX).then_some(stride);
-                let stride = shuffle_stride(len, random, previous);
+            Some((_, stride)) => {
+                let stride = shuffle_stride(len, random, Some(stride));
                 self.shuffle = Some((len, stride));
                 stride
             }

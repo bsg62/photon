@@ -186,8 +186,8 @@ impl Slideshow {
 mod tests {
     use super::*;
 
-    /// A show started at nought on a photo that is shown, and how many times it has
-    /// advanced by `at`.
+    /// A show started at nought, on a photo that is `shown` or not, in a window that
+    /// is not fullscreen.
     fn started(shown: bool) -> Slideshow {
         let mut show = Slideshow::default();
         show.start(0.0, shown, Some(false));

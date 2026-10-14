@@ -89,8 +89,6 @@ slideshow"; "Decided while writing" 8: F11 in the grid as well).
 
 ## Not tested
 
-- A show on a photo that has left the view (orphaned): it steps on from the place the photo
-  stood, by the rule of the grid's offsets.
 - Fullscreen in a real window manager: the tests' window does what it is asked; whether a
   desktop does it, and comes back to the window it was, is the smoke checklist's.
 
@@ -101,11 +99,41 @@ as stated at the first run. The six that passed, each settled:
 
 - The interval's answer re-armed the countdown only while one ran: arming asks the same
   of itself. Taken out.
-- The controls at rest were only *not drawn* in the test; that a press where they were is
-  the photo's, and that no glass is drawn at all, are tested now (a double click on the
-  cross's place zooms).
+- The controls at rest were only *not drawn* in the test; that no glass is drawn at all is
+  tested now (and that a press where they were is the photo's, through the whole
+  application, after the review: below).
 - Three rules of the application had no test: the panel shutting as a show starts, a show
   not waiting for the rest a step by hand waits for (the picture is asked for in the frame
   of the step), and the buttons at the sides going round the ends in a show. Each has one.
 - One probe was aimed at a test that could not see its rule; aimed at the right one it
   failed.
+
+## What the review found
+
+An independent review (opus, its own worktree) wrote a failing test for each finding; they
+are `tests/slideshow_edges.rs`, with the fix pass's beside them.
+
+- **Important: a show stepped from a lost photo's offset as if the photo stood there.**
+  `H` on the photo on screen during a show skipped the next photo, and in a view of two the
+  show stood on the hidden photo for good. The walk now begins a place back from a photo
+  the view has lost - hidden or gone - and `go_to`'s own refusal replaces the filter that
+  stranded it; the plan's "Not tested" line that said it followed the rule was untrue.
+- **Important: the show was not held while a keyword was typed in the info panel**, and
+  the rest of the word went to the photo stepped to. Held now.
+- **Important: an arrow and `S` in one frame counted a picture still being made.** The
+  show starts counting only for a photo the frame did not step from.
+- A menu asked for in the frame before the countdown's end did not hold the show (the hold
+  is asked first now); a press of a resting pointer was judged against the controls it woke
+  (the controls wake on the pointer moving alone, as in the Svelte viewer); a held F11
+  flickered (its press only); a show stopped and started again at once played windowed
+  (fullscreen is what was last asked until the window has done it).
+- Seventeen of its twenty-four probes passed. Each rule now has a test, or is gone: the
+  fade's frames, its letting go at the stop, a video's start counted from the photo after
+  it, a photo that is gone or that the library cannot show counting as shown, the crop
+  tool stopping a show, the bar's width kept at rest, a one-photo show making nothing
+  again. Taken out as doing nothing: the shuffle answer's `active`, the stride's
+  `usize::MAX` sentinel, `start_show` clearing a fade, a video counting as shown (a show
+  never stands on one), the filter in `show_step`. The hold under a dialog is the same
+  `paused` the viewer is told, held by `tests/faces.rs`.
+- Statements corrected: `ViewerView::drawn`'s comment, a test helper's, CLAUDE.md on
+  fullscreen and on the frames a show asks for (a step's rest asks one, inside the fade).
