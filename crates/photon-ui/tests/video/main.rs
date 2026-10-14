@@ -246,7 +246,13 @@ fn in_order() -> Result<(), Failed> {
     // stamped before nought, and is the backend's to drop, not this test's.
     let first = frame_from(&player, f64::NEG_INFINITY, BEGUN).ok_or("no frame played")?;
     let mut frames = vec![first];
-    frames.extend(frames_for(&player, Duration::from_millis(2500)));
+    // Until the second second has been seen, not for a time: the test is of order, and
+    // macOS' runner played this file at a third of its speed now and then - 23 frames in
+    // two and a half seconds, all red.
+    let until = Instant::now() + 4 * BEGUN;
+    while Instant::now() < until && !frames.iter().any(|frame| centre(frame) == "blue") {
+        frames.extend(frames_for(&player, Duration::from_millis(100)));
+    }
     let seen: Vec<_> = frames
         .iter()
         .map(|frame| (frame.at, centre(frame)))
@@ -257,7 +263,7 @@ fn in_order() -> Result<(), Failed> {
         .collect();
     let first = seen.first().copied();
     check(
-        frames.len() >= 20
+        frames.len() >= 10
             && wrong.is_empty()
             && first.is_some_and(|(at, colour)| at >= 0.0 && colour == "red")
             && seen.iter().any(|(_, colour)| *colour == "green")
@@ -265,7 +271,13 @@ fn in_order() -> Result<(), Failed> {
             && frames
                 .iter()
                 .all(|frame| (frame.width, frame.height) == (320, 240)),
-        || format!("{} frames, first {first:?}, wrong {wrong:?}", frames.len()),
+        || {
+            let colours: Vec<_> = seen.iter().map(|(_, colour)| *colour).collect();
+            format!(
+                "{} frames, first {first:?}, wrong {wrong:?}, {colours:?}",
+                frames.len()
+            )
+        },
     )
 }
 
