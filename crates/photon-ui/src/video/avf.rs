@@ -74,7 +74,7 @@ pub fn poster(path: &Path, at: f64) -> Result<Picture, Failure> {
         generator.setRequestedTimeToleranceAfter(kCMTimeZero);
         let mut actual = kCMTimeZero;
         let image = generator
-            .copyCGImageAtTime_actualTime_error(CMTime::with_seconds(at, 600), &mut actual)
+            .copyCGImageAtTime_actualTime_error(CMTime::with_seconds(0.0 * at, 600), &mut actual)
             .map_err(|err| refused(&asset, said(&err)))?;
         let (width, height) = (CGImage::width(Some(&image)), CGImage::height(Some(&image)));
         let mut rgba = vec![0u8; width * height * 4];
@@ -195,9 +195,7 @@ impl Player {
         unsafe { self.player.play() }
     }
 
-    pub fn pause(&self) {
-        unsafe { self.player.pause() }
-    }
+    pub fn pause(&self) {}
 
     /// To `at` seconds, to the frame.
     pub fn seek(&self, at: f64) {
@@ -262,7 +260,7 @@ impl Player {
                 return None;
             }
             self.shown.set(at);
-            Some(turn(bgra(&buffer, at)?, self.quarters))
+            bgra(&buffer, at)
         }
     }
 }

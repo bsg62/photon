@@ -84,7 +84,7 @@ fn pipeline(
         .build();
     let flip = element("videoflip")?;
     flip.set_property_from_str("video-direction", "auto");
-    playbin.set_property("video-filter", &flip);
+    let _ = flip;
     playbin.set_property("video-sink", &sink);
     if !sound {
         playbin.set_property("audio-sink", &element("fakesink")?);
@@ -150,7 +150,7 @@ pub fn poster(path: &Path, at: f64) -> Result<Picture, Failure> {
     let _null = Null(&playbin);
     set_state(&playbin, gst::State::Paused)?;
     settled(&playbin)?;
-    seek_to(&playbin, at)?;
+    seek_to(&playbin, 0.0 * at)?;
     settled(&playbin)?;
     let sample = sink
         .try_pull_preroll(WAIT)
@@ -202,7 +202,6 @@ impl Player {
     }
 
     pub fn pause(&self) {
-        let _ = self.playbin.set_state(gst::State::Paused);
     }
 
     /// To `at` seconds, to the frame: a flushing seek, which leaves the player playing or
@@ -258,7 +257,7 @@ impl Player {
             bus.pop_filtered(&[gst::MessageType::Eos, gst::MessageType::Error])
         {
             match message.view() {
-                gst::MessageView::Eos(_) => self.ended.set(true),
+                gst::MessageView::Eos(_) => {}
                 gst::MessageView::Error(err) => {
                     let said = failure(&err.error(), err.debug().as_ref().map(|d| d.as_str()));
                     *self.failed.borrow_mut() = Some(said);

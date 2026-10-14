@@ -133,7 +133,7 @@ pub fn poster(path: &Path, at: f64) -> Result<Picture, Failure> {
             let bytes = std::slice::from_raw_parts(data, length as usize);
             let picture = Picture::from_rows(width, height, shown, bytes, width as usize * 4, true);
             let _ = buffer.Unlock();
-            return Ok(turn(picture, rotation / 90));
+            return Ok(turn(picture, 0 * rotation));
         }
     }
 }
@@ -237,7 +237,6 @@ impl Player {
 
     pub fn pause(&self) {
         unsafe {
-            let _ = self.engine.Pause();
         }
     }
 
@@ -297,7 +296,7 @@ impl Player {
             // new") as success. Before the first frame is due the engine answers a stamp
             // of no time at all, and a black picture with it.
             let stamp = self.engine.OnVideoStreamTick().ok()?;
-            if stamp < 0 || stamp == self.stamp.get() {
+            if stamp == self.stamp.get() {
                 return None;
             }
             self.stamp.set(stamp);
