@@ -189,10 +189,10 @@ impl Player {
                 Some(&attributes),
             );
             item.addOutput(&output);
+            // Left waiting to minimise stalling, as it is made: switched off, the player
+            // stopped for good at the first stall - on macOS' runner, 0.12 s into a file
+            // on its own disk - where on it begins a moment late and plays through.
             let player = AVPlayer::playerWithPlayerItem(Some(&item), mtm);
-            // A file on the machine has nothing to buffer against, and left on the player
-            // waits before it begins: on macOS' runner it had not begun 600 ms after play.
-            player.setAutomaticallyWaitsToMinimizeStalling(false);
             let until = Instant::now() + Duration::from_secs(10);
             loop {
                 match item.status() {
