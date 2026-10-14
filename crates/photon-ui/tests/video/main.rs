@@ -109,6 +109,10 @@ fn opened(file: &str) -> Result<Option<Player>, Failed> {
         .map_err(|failure| format!("{file}: {failure:?}").into())
 }
 
+/// How long a player is given to hand over its first frame: the system's own time to begin,
+/// which on macOS' runner was more than half a second once.
+const BEGUN: Duration = Duration::from_secs(5);
+
 /// The frames a player hands over for `long`, each asked for every five milliseconds.
 fn frames_for(player: &Player, long: Duration) -> Vec<Picture> {
     let until = Instant::now() + long;
@@ -155,8 +159,9 @@ fn turned() -> Result<(), Failed> {
     };
     player.set_muted(true);
     player.play();
-    let frames = frames_for(&player, Duration::from_millis(500));
-    let last = frames.last().ok_or("no frame played")?;
+    let first = frame_from(&player, 0.0, BEGUN).ok_or("no frame played")?;
+    let frames = frames_for(&player, Duration::from_millis(300));
+    let last = frames.last().unwrap_or(&first);
     check(
         (last.width, last.height) == (240, 320) && ends(last) == ("blue", "red"),
         || format!("played {last:?}, top and bottom {:?}", ends(last)),
@@ -169,7 +174,9 @@ fn in_order() -> Result<(), Failed> {
     };
     player.set_muted(true);
     player.play();
-    let frames = frames_for(&player, Duration::from_millis(2500));
+    let first = frame_from(&player, 0.0, BEGUN).ok_or("no frame played")?;
+    let mut frames = vec![first];
+    frames.extend(frames_for(&player, Duration::from_millis(2500)));
     let seen: Vec<_> = frames
         .iter()
         .map(|frame| (frame.at, centre(frame)))
@@ -198,17 +205,26 @@ fn paused() -> Result<(), Failed> {
     };
     player.set_muted(true);
     player.play();
-    frames_for(&player, Duration::from_millis(600));
-    let playing = player.position().ok_or("no position while playing")?;
+    // Until it is well under way, not for a time: see `BEGUN`.
+    let until = Instant::now() + BEGUN;
+    let playing = loop {
+        let at = player.position().unwrap_or(0.0);
+        if at > 0.3 {
+            break at;
+        }
+        if Instant::now() > until {
+            return Err(format!("never under way, at {at}").into());
+        }
+        frames_for(&player, Duration::from_millis(20));
+    };
     player.pause();
     frames_for(&player, Duration::from_millis(100));
     let stopped = player.position().ok_or("no position once paused")?;
     frames_for(&player, Duration::from_millis(400));
     let later = player.position().ok_or("no position later")?;
-    check(
-        playing > 0.2 && stopped >= playing && (later - stopped).abs() < 0.05,
-        || format!("playing at {playing}, paused at {stopped}, then {later}"),
-    )
+    check(stopped >= playing && (later - stopped).abs() < 0.05, || {
+        format!("playing at {playing}, paused at {stopped}, then {later}")
+    })
 }
 
 fn seek() -> Result<(), Failed> {
@@ -254,7 +270,7 @@ fn sound() -> Result<(), Failed> {
     player.set_volume(0.3);
     player.set_muted(true);
     player.play();
-    let frames = frames_for(&player, Duration::from_millis(400));
+    let frames: Vec<_> = frame_from(&player, 0.0, BEGUN).into_iter().collect();
     player.set_muted(false);
     player.set_volume(0.0);
     frames_for(&player, Duration::from_millis(100));
