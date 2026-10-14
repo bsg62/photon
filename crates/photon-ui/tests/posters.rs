@@ -16,25 +16,37 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 /// The system's framework as a test has it: what it was asked, and an answer by name.
 struct StandIn {
     plays: bool,
+    patience: Duration,
     asked: Mutex<Vec<(PathBuf, f64)>>,
     /// Held until set: `held.mp4` waits for it.
     released: AtomicBool,
+    /// How many posters are being made now, and the most there ever were at once.
+    making: AtomicUsize,
+    most: AtomicUsize,
 }
 
 impl StandIn {
+    /// With a patience short enough that a `slow` video runs out of it.
     fn new(plays: bool) -> Arc<Self> {
+        Self::patient(plays, Duration::from_millis(300))
+    }
+
+    fn patient(plays: bool, patience: Duration) -> Arc<Self> {
         Arc::new(StandIn {
             plays,
+            patience,
             asked: Mutex::new(Vec::new()),
             released: AtomicBool::new(false),
+            making: AtomicUsize::new(0),
+            most: AtomicUsize::new(0),
         })
     }
 
@@ -52,10 +64,24 @@ impl Posters for StandIn {
 
     fn poster(&self, path: &Path, at: f64) -> Result<Picture, Failure> {
         self.asked.lock().unwrap().push((path.to_owned(), at));
+        let now = self.making.fetch_add(1, Ordering::SeqCst) + 1;
+        self.most.fetch_max(now, Ordering::SeqCst);
+        let made = self.make(path);
+        self.making.fetch_sub(1, Ordering::SeqCst);
+        made
+    }
+
+    fn patience(&self) -> Duration {
+        self.patience
+    }
+}
+
+impl StandIn {
+    fn make(&self, path: &Path) -> Result<Picture, Failure> {
         match path.file_name().unwrap().to_str().unwrap() {
             "none.mp4" => Err(Failure::Unsupported("no decoder".into())),
             "bad.mp4" => Err(Failure::Broken("a broken file".into())),
-            "slow.mp4" => {
+            name if name.starts_with("slow") => {
                 std::thread::sleep(Duration::from_secs(2));
                 Ok(red())
             }
@@ -67,11 +93,6 @@ impl Posters for StandIn {
             }
             _ => Ok(red()),
         }
-    }
-
-    /// Short enough that `slow.mp4` runs out of it.
-    fn patience(&self) -> Duration {
-        Duration::from_millis(300)
     }
 }
 
@@ -159,10 +180,9 @@ fn a_videos_poster_is_made_by_the_system_and_stored_as_its_thumbnail() {
     });
     // Asked of the file itself, at its start: the library knows no length for it.
     let asked = posters.asked.lock().unwrap().clone();
-    assert_eq!(
-        asked,
-        [(folder.join("red.mp4").canonicalize().unwrap(), 0.0)]
-    );
+    // (In the form the library keeps a path in, which on Windows is not std's.)
+    let path = photon_core::paths::canonicalize(folder.join("red.mp4")).unwrap();
+    assert_eq!(asked, [(path, 0.0)]);
     // And the grid's thumbnail is the picture the system made.
     let key = engine.lib.item(video).unwrap().unwrap().thumb_key();
     let tile = engine.thumbs.decoded(key, ThumbSize::Grid).unwrap();
@@ -212,19 +232,17 @@ fn a_system_that_plays_nothing_is_asked_for_no_poster() {
 fn a_poster_being_made_as_the_window_closes_leaves_its_video_waiting() {
     let dir = tempfile::tempdir().unwrap();
     let folder = folder(dir.path(), &["held.mp4"]);
-    let posters = StandIn::new(true);
+    // Patient enough that only the closing ends the wait, on a runner however slow.
+    let posters = StandIn::patient(true, Duration::from_secs(60));
     let (mut harness, mut driver, db) = launched(dir.path(), &folder, posters.clone(), 2);
     let video = id_of(&harness, "held.mp4");
     driver.until(&mut harness, "the poster asked for", |_| {
         !posters.asked().is_empty()
     });
-    let closing = Instant::now();
+    // The engine is kept past the window: let go of, it takes every marker with it,
+    // answered or not, and only an answer is to be seen to remove this one.
+    let engine = harness.state().engine().clone();
     drop(harness);
-    assert!(
-        closing.elapsed() < Duration::from_secs(2),
-        "the window took {:?} to close",
-        closing.elapsed()
-    );
     posters.released.store(true, Ordering::SeqCst);
     assert_eq!(state(&db, video), ThumbState::Pending);
     // And its claim was answered: the engine's marker of a video being opened is gone,
@@ -236,6 +254,24 @@ fn a_poster_being_made_as_the_window_closes_leaves_its_video_waiting() {
             .any(|path| path.ends_with(format!("video/in-flight/{video}"))),
         "{markers:?}"
     );
+    drop(engine);
+}
+
+// One poster at a time, a decoder left behind at its patience included: beside it, every
+// video of a share that answers nothing would leave one more open for the session.
+#[test]
+fn a_decoder_left_behind_is_waited_for_before_the_next_poster() {
+    let dir = tempfile::tempdir().unwrap();
+    let folder = folder(dir.path(), &["slow1.mp4", "slow2.mp4"]);
+    let posters = StandIn::new(true);
+    let (mut harness, mut driver, _) = launched(dir.path(), &folder, posters.clone(), 3);
+    let ids = ["slow1.mp4", "slow2.mp4"].map(|name| id_of(&harness, name));
+    let engine = harness.state().engine().clone();
+    let failed = |id: i64| engine.lib.item(id).unwrap().unwrap().thumb_state == ThumbState::Failed;
+    driver.until(&mut harness, "both timed out", |_| {
+        failed(ids[0]) && failed(ids[1])
+    });
+    assert_eq!(posters.most.load(Ordering::SeqCst), 1);
 }
 
 /// Every file under `dir` whose parent is called `in-flight`.

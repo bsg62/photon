@@ -119,15 +119,35 @@ fn run(engine: &Arc<Engine>, posters: Arc<dyn Posters>, stop: &AtomicBool) {
     if !supported {
         return;
     }
+    // A decoder left behind at its patience, still at work.
+    let mut behind: Option<JoinHandle<()>> = None;
     while !stop.load(Ordering::SeqCst) {
+        // **One poster at a time, left-behind decoders included**: a media pipeline is
+        // heavy, and a source reader on a share that has stopped answering never returns
+        // - each video timed out beside the last would have left one more, with its file
+        // open, for the rest of the session. A decoder that never comes back makes no
+        // more posters this session, which is what a share that answers nothing allows.
+        if behind.as_ref().is_some_and(|thread| !thread.is_finished()) {
+            thread::sleep(LOOK);
+            continue;
+        }
+        behind = None;
         match commands::next_video_job(engine, ASK) {
-            Ok(Some(job)) => draw(engine, &posters, stop, job.id, &job.key),
+            Ok(Some(job)) => behind = draw(engine, &posters, stop, job.id, &job.key),
             Ok(None) => {}
             Err(err) => {
                 tracing::warn!("no video to make a poster of: {err}");
-                thread::sleep(IDLE);
+                rest(IDLE, stop);
             }
         }
+    }
+}
+
+/// `long`, or until told to stop.
+fn rest(long: Duration, stop: &AtomicBool) {
+    let until = Instant::now() + long;
+    while Instant::now() < until && !stop.load(Ordering::SeqCst) {
+        thread::sleep(LOOK);
     }
 }
 
@@ -135,23 +155,40 @@ fn run(engine: &Arc<Engine>, posters: Arc<dyn Posters>, stop: &AtomicBool) {
 #[derive(Debug)]
 pub enum Drawn {
     Made(Result<Picture, Failure>),
-    /// It took longer than `JOB_TIMEOUT`.
+    /// It took longer than the poster's patience.
     TimedOut,
     /// The window closed while it was being made.
     Stopped,
 }
 
-fn draw(engine: &Arc<Engine>, posters: &Arc<dyn Posters>, stop: &AtomicBool, id: i64, key: &str) {
-    let drawn = match engine.lib.item(id) {
-        Ok(Some(item)) => made(
-            posters,
-            stop,
-            PathBuf::from(item.path),
-            video::poster_time(item.duration_ms),
-        ),
-        // Gone since it was listed: answered all the same, or the claim is held against
-        // the video at the next session as a window that died opening it.
-        _ => Drawn::Made(Err(Failure::Unsupported("no longer in the library".into()))),
+/// Makes the job's poster and answers it - every job is answered, or its claim counts at
+/// the next launch as a window that died opening the video. The decoder's thread, where it
+/// was left behind still at work.
+fn draw(
+    engine: &Arc<Engine>,
+    posters: &Arc<dyn Posters>,
+    stop: &AtomicBool,
+    id: i64,
+    key: &str,
+) -> Option<JoinHandle<()>> {
+    let (drawn, behind) = if stop.load(Ordering::SeqCst) {
+        // Taken in the ask that was waiting as the window closed: answered without a
+        // decoder started for nothing.
+        (Drawn::Stopped, None)
+    } else {
+        match engine.lib.item(id) {
+            Ok(Some(item)) => made(
+                posters,
+                stop,
+                PathBuf::from(item.path),
+                video::poster_time(item.duration_ms),
+            ),
+            // Gone since it was listed: answered all the same.
+            _ => (
+                Drawn::Made(Err(Failure::Unsupported("no longer in the library".into()))),
+                None,
+            ),
+        }
     };
     let answered = match answer(drawn) {
         Ok(jpeg) => commands::put_video_frame(engine, id, key, &jpeg).or_else(|err| {
@@ -165,11 +202,18 @@ fn draw(engine: &Arc<Engine>, posters: &Arc<dyn Posters>, stop: &AtomicBool, id:
     if let Err(err) = answered {
         tracing::warn!("a video's poster went unanswered: {err}");
     }
+    behind
 }
 
 /// The poster asked of `posters` on a thread of its own, so that a decoder that hangs is
-/// left behind at its `patience` and a stop is heard within `LOOK`.
-fn made(posters: &Arc<dyn Posters>, stop: &AtomicBool, path: PathBuf, at: f64) -> Drawn {
+/// left behind at its `patience` and a stop is heard within `LOOK` - with that thread,
+/// where it was left behind.
+fn made(
+    posters: &Arc<dyn Posters>,
+    stop: &AtomicBool,
+    path: PathBuf,
+    at: f64,
+) -> (Drawn, Option<JoinHandle<()>>) {
     let (tx, rx) = mpsc::channel();
     let asked = posters.clone();
     let spawned = thread::Builder::new()
@@ -180,22 +224,27 @@ fn made(posters: &Arc<dyn Posters>, stop: &AtomicBool, path: PathBuf, at: f64) -
                 .unwrap_or_else(|_| Err(Failure::Broken("the decoder panicked".into())));
             let _ = tx.send(poster);
         });
-    if let Err(err) = spawned {
-        return Drawn::Made(Err(Failure::Unsupported(format!("no thread: {err}"))));
-    }
+    let decoder = match spawned {
+        Ok(decoder) => decoder,
+        Err(err) => {
+            let no = Failure::Unsupported(format!("no thread: {err}"));
+            return (Drawn::Made(Err(no)), None);
+        }
+    };
     let until = Instant::now() + posters.patience();
     loop {
         match rx.recv_timeout(LOOK) {
-            Ok(poster) => return Drawn::Made(poster),
+            Ok(poster) => return (Drawn::Made(poster), None),
             Err(mpsc::RecvTimeoutError::Disconnected) => {
-                return Drawn::Made(Err(Failure::Broken("the decoder went away".into())));
+                let gone = Failure::Broken("the decoder went away".into());
+                return (Drawn::Made(Err(gone)), None);
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 if stop.load(Ordering::SeqCst) {
-                    return Drawn::Stopped;
+                    return (Drawn::Stopped, Some(decoder));
                 }
                 if Instant::now() > until {
-                    return Drawn::TimedOut;
+                    return (Drawn::TimedOut, Some(decoder));
                 }
             }
         }

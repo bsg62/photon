@@ -244,7 +244,7 @@ pub fn launch<'a>(library: &fixture::Fixture) -> Harness<'a> {
     egui_kittest::Harness::builder()
         .with_size(egui::vec2(1000.0, 700.0))
         .with_step_dt(REFRESH as f32)
-        .build_eframe(move |cc| App::new(cc, dirs, None).unwrap())
+        .build_eframe(move |cc| App::new(cc, dirs, None).unwrap().with_posters(no_posters()))
 }
 
 /// Clicks the sidebar row called `label`, once it is drawn, and draws the frame the
@@ -302,7 +302,11 @@ pub fn over<'a>(
     let harness = egui_kittest::Harness::builder()
         .with_size(egui::vec2(1000.0, 700.0))
         .with_step_dt(REFRESH as f32)
-        .build_eframe(move |cc| App::new(cc, dirs, pictures).unwrap());
+        .build_eframe(move |cc| {
+            App::new(cc, dirs, pictures)
+                .unwrap()
+                .with_posters(no_posters())
+        });
     let driver = Driver::new(&harness);
     (harness, driver, made)
 }
@@ -368,4 +372,27 @@ pub fn photo_ids(library: &fixture::Fixture) -> Vec<i64> {
     (lib.grid_entries().unwrap().iter())
         .map(|entry| entry.id)
         .collect()
+}
+
+/// A system that plays no video, for the tests that are not about videos' posters
+/// (`tests/posters.rs` is): over the system's own framework, a file called a video would be
+/// decoded on a runner that has decoders and not on one that has none, and each system
+/// calls the same unreadable file something else.
+pub fn no_posters() -> std::sync::Arc<dyn photon_ui::posters::Posters> {
+    struct Nothing;
+    impl photon_ui::posters::Posters for Nothing {
+        fn can_play(&self) -> bool {
+            false
+        }
+        fn poster(
+            &self,
+            _: &Path,
+            _: f64,
+        ) -> Result<photon_ui::video::Picture, photon_ui::video::Failure> {
+            Err(photon_ui::video::Failure::Unsupported(
+                "plays nothing".into(),
+            ))
+        }
+    }
+    std::sync::Arc::new(Nothing)
 }
