@@ -980,6 +980,149 @@ fn native_name_face_dark() {
     );
 }
 
+/// The viewer on a photo that has been turned a quarter to the right: its bar, with
+/// the turns, the crop and "Original".
+fn edited(harness: &mut Harness<'_>) {
+    viewing(harness);
+    harness.key_press(Key::R);
+    harness.step();
+    until(harness, "the photo turned, and its picture", |app| {
+        (app.viewer_item()).is_some_and(|item| item.edit.is_some()) && app.viewer_levels().is_some()
+    });
+    harness.event(egui::Event::PointerGone);
+    harness.step();
+}
+
+#[test]
+#[ignore = "renders through a GPU adapter: cargo run -p xtask -- native-shot"]
+fn native_viewer_edited_light() {
+    shot(ThemeChoice::Light, "native-viewer-edited-light.png", edited);
+}
+
+#[test]
+#[ignore = "renders through a GPU adapter: cargo run -p xtask -- native-shot"]
+fn native_viewer_edited_dark() {
+    shot(ThemeChoice::Dark, "native-viewer-edited-dark.png", edited);
+}
+
+/// Where the picture the crop tool draws its rectangle on stands in the window: the
+/// photo's, turned and not cropped, fitted.
+fn crop_box(harness: &Harness<'_>) -> egui::Rect {
+    let item = harness.state().viewer_item().expect("the photo's facts");
+    let (width, height) = (item.uncropped_width as f32, item.uncropped_height as f32);
+    let scale = (1280.0 / width).min(1000.0 / height);
+    egui::Rect::from_center_size(egui::pos2(640.0, 500.0), vec2(width, height) * scale)
+}
+
+/// The crop tool, open on the photo in the viewer, with a rectangle drawn: its two
+/// opposite corners dragged inwards.
+fn cropping(harness: &mut Harness<'_>) {
+    viewing(harness);
+    harness.key_press(Key::C);
+    harness.step();
+    assert!(harness.state().cropping().is_some());
+    let picture = crop_box(harness);
+    let by = picture.size() * 0.18;
+    for (from, to) in [
+        (picture.left_top(), picture.left_top() + by),
+        (picture.right_bottom(), picture.right_bottom() - by * 0.6),
+    ] {
+        harness.event(egui::Event::PointerMoved(from));
+        harness.event(egui::Event::PointerButton {
+            pos: from,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: Modifiers::NONE,
+        });
+        harness.step();
+        harness.event(egui::Event::PointerMoved(to));
+        harness.event(egui::Event::PointerButton {
+            pos: to,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: Modifiers::NONE,
+        });
+        harness.step();
+    }
+    harness.event(egui::Event::PointerGone);
+    harness.step();
+}
+
+#[test]
+#[ignore = "renders through a GPU adapter: cargo run -p xtask -- native-shot"]
+fn native_viewer_crop_light() {
+    shot(ThemeChoice::Light, "native-viewer-crop-light.png", cropping);
+}
+
+#[test]
+#[ignore = "renders through a GPU adapter: cargo run -p xtask -- native-shot"]
+fn native_viewer_crop_dark() {
+    shot(ThemeChoice::Dark, "native-viewer-crop-dark.png", cropping);
+}
+
+/// The same, with the list of ratios open over the tool's bar and the pointer on one.
+fn crop_ratios(harness: &mut Harness<'_>) {
+    cropping(harness);
+    harness.get_by_label_contains("Crop ratio").click();
+    // (A new area fades in.)
+    for _ in 0..30 {
+        harness.step();
+    }
+    let at = harness.get_by_label("3:2").rect().center();
+    harness.event(egui::Event::PointerMoved(at));
+    harness.step();
+}
+
+#[test]
+#[ignore = "renders through a GPU adapter: cargo run -p xtask -- native-shot"]
+fn native_viewer_crop_ratios_light() {
+    shot(
+        ThemeChoice::Light,
+        "native-viewer-crop-ratios-light.png",
+        crop_ratios,
+    );
+}
+
+#[test]
+#[ignore = "renders through a GPU adapter: cargo run -p xtask -- native-shot"]
+fn native_viewer_crop_ratios_dark() {
+    shot(
+        ThemeChoice::Dark,
+        "native-viewer-crop-ratios-dark.png",
+        crop_ratios,
+    );
+}
+
+/// The tool on a photo that has a crop already: the picture without it, with the
+/// rectangle where the crop is.
+fn cropping_again(harness: &mut Harness<'_>) {
+    let id = harness.state().shown()[2];
+    let engine = harness.state().engine().clone();
+    let was = harness.state().version();
+    commands::set_item_edit(&engine, id, 0, Some([9000, 12000, 52000, 60000])).unwrap();
+    until(harness, "the grid with the photo cropped", |app| {
+        app.version() != was
+    });
+    viewing(harness);
+    harness.key_press(Key::C);
+    harness.step();
+    until(harness, "the picture without its crop", |app| {
+        app.crop_picture().is_some()
+    });
+    harness.event(egui::Event::PointerGone);
+    harness.step();
+}
+
+#[test]
+#[ignore = "renders through a GPU adapter: cargo run -p xtask -- native-shot"]
+fn native_viewer_crop_again_dark() {
+    shot(
+        ThemeChoice::Dark,
+        "native-viewer-crop-again-dark.png",
+        cropping_again,
+    );
+}
+
 // The spec's first risk, to be judged by eye: a detailed photo much larger than the
 // window, fitted, as photon's own levels and a linear filter draw it
 // (`native-viewer-quality.png`), beside the same photo resized to the same size with a

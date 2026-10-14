@@ -19,6 +19,7 @@ pub enum Icon {
     CircleHelp,
     Clock,
     Copy,
+    Crop,
     EyeOff,
     Folder,
     Images,
@@ -26,6 +27,8 @@ pub enum Icon {
     LayoutGrid,
     PanelLeft,
     Play,
+    RotateCcw,
+    RotateCw,
     Search,
     Settings,
     Star,
@@ -36,7 +39,7 @@ pub enum Icon {
 }
 
 impl Icon {
-    pub const ALL: [Icon; 24] = [
+    pub const ALL: [Icon; 27] = [
         Icon::ArrowDownUp,
         Icon::Bookmark,
         Icon::Calendar,
@@ -47,6 +50,7 @@ impl Icon {
         Icon::CircleHelp,
         Icon::Clock,
         Icon::Copy,
+        Icon::Crop,
         Icon::EyeOff,
         Icon::Folder,
         Icon::Images,
@@ -54,6 +58,8 @@ impl Icon {
         Icon::LayoutGrid,
         Icon::PanelLeft,
         Icon::Play,
+        Icon::RotateCcw,
+        Icon::RotateCw,
         Icon::Search,
         Icon::Settings,
         Icon::Star,
@@ -81,6 +87,9 @@ impl Icon {
             Icon::User => "user",
             Icon::Clock => "clock",
             Icon::Copy => "copy",
+            Icon::Crop => "crop",
+            Icon::RotateCcw => "rotate-ccw",
+            Icon::RotateCw => "rotate-cw",
             Icon::EyeOff => "eye-off",
             Icon::LayoutGrid => "layout-grid",
             Icon::PanelLeft => "panel-left",
@@ -108,6 +117,15 @@ impl Icon {
                 r#"<path d="m3 16 4 4 4-4"/><path d="M7 20V4"/><path d="m21 8-4-4-4 4"/><path d="M17 4v16"/>"#
             }
             Icon::Check => r#"<path d="M20 6 9 17l-5-5"/>"#,
+            Icon::Crop => {
+                r#"<path d="M6 2v14a2 2 0 0 0 2 2h14"/><path d="M18 22V8a2 2 0 0 0-2-2H2"/>"#
+            }
+            Icon::RotateCcw => {
+                r#"<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/>"#
+            }
+            Icon::RotateCw => {
+                r#"<path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/>"#
+            }
             Icon::ChevronDown => r#"<path d="m6 9 6 6 6-6"/>"#,
             Icon::ChevronLeft => r#"<path d="m15 18-6-6 6-6"/>"#,
             Icon::ChevronRight => r#"<path d="m9 18 6-6-6-6"/>"#,

@@ -1,6 +1,7 @@
 //! The application: the engine, the shell around the grid, and the order of a frame.
 
 use crate::{
+    crop_tool::CropTool,
     dialog_view::{DialogView, Done},
     dialogs::{Confirm, Dialog, Subject},
     dirs::Dirs,
@@ -46,7 +47,8 @@ use crate::{
     viewer_info_view::{InfoAction, InfoData, InfoView},
     viewer_layout, viewer_levels,
     viewer_menu::{self, ViewerPick},
-    viewer_view::{Level, Message, ViewerAction, ViewerData, ViewerView},
+    viewer_view::{Cropped, Level, Message, ViewerAction, ViewerData, ViewerView},
+    viewer_zoom::Zoom,
     window_layout::{Layout, STATUS_BAR, TOP_BAR},
 };
 use eframe::egui;
@@ -146,6 +148,8 @@ pub struct App {
     /// How many pictures have been asked for: each is a whole decode, and what a test
     /// of "once" counts.
     asked_pictures: u64,
+    /// How many crop tools have been opened: each has its number.
+    crops: u64,
     /// Whether a folder dropped on the window can arrive at all: asked of the window
     /// once (`folder_drop::can_arrive`). Where none can, none is offered.
     drops: bool,
@@ -306,6 +310,22 @@ enum Write {
     },
     /// A name from the person dialog, for the face or the photos it was opened for.
     Name(person_picker::Submit),
+    /// A quarter turn of the photo in the viewer (`commands::rotate_item`): a number
+    /// in `library.db`, added to the edit the photo has. No photo is written; the
+    /// picture that follows is the engine's render.
+    Turn {
+        id: i64,
+        clockwise: bool,
+    },
+    /// The photo's edit, replaced (`commands::set_item_edit`): no turns and no crop is
+    /// "Original"; the crop tool's rectangle, with the number its tool was opened
+    /// under.
+    Edit {
+        id: i64,
+        turns: u8,
+        crop: Option<[u16; 4]>,
+        tool: Option<u64>,
+    },
     /// A name typed in the sidebar, and the number its field was sent under
     /// (`rename::Commit`): a new album's, an album's, a saved search's.
     AlbumNew {
@@ -370,6 +390,10 @@ enum Wrote {
     },
     /// A write whose rebuild says everything there is to say: a hide.
     Grid,
+    /// An edit stored: the crop tool that sent it, if one did, closes.
+    Edited {
+        tool: Option<u64>,
+    },
     /// A write the lists are read again for: the engine announces a change of the
     /// albums only while an album is on screen (`Engine::albums_changed`), and the
     /// counts in the sidebar are wanted in every view.
@@ -444,6 +468,10 @@ enum Unwritten {
     /// The export's checkbox, which goes back to what is stored.
     Edits {
         was: bool,
+        said: String,
+    },
+    /// An edit the library would not store: the crop tool stays open, to be put right.
+    Edit {
         said: String,
     },
 }
@@ -701,6 +729,20 @@ impl App {
                             .map(|_| Wrote::Folder { sent: None })
                             .map_err(|err| Unwritten::Said(err.message))
                     }
+                    // The engine rebuilds the grid for an edit, the photo's key is
+                    // another, and the viewer asks for the picture again: nothing here
+                    // draws a turn or a crop.
+                    Write::Turn { id, clockwise } => commands::rotate_item(&engine, id, clockwise)
+                        .map(|()| Wrote::Grid)
+                        .map_err(|err| Unwritten::Said(err.message)),
+                    Write::Edit {
+                        id,
+                        turns,
+                        crop,
+                        tool,
+                    } => commands::set_item_edit(&engine, id, turns, crop)
+                        .map(|()| Wrote::Edited { tool })
+                        .map_err(|err| Unwritten::Edit { said: err.message }),
                     Write::Rescan { watched } => commands::rescan_folder(&engine, watched)
                         .map(|()| Wrote::Grid)
                         .map_err(|err| Unwritten::Said(err.message)),
@@ -935,6 +977,7 @@ impl App {
             pictures,
             asking: None,
             asked_pictures: 0,
+            crops: 0,
             drops,
             drop: FolderDrop::default(),
             hovered: 0,
@@ -1252,6 +1295,27 @@ impl App {
         (open.failed.as_ref())
             .filter(|(of, _)| *of == open.viewer.want())
             .map(|(_, why)| why.as_str())
+    }
+
+    /// The crop tool, while it is open on the photo in the viewer.
+    pub fn cropping(&self) -> Option<&CropTool> {
+        (self.viewer.as_ref()?.crop.as_ref()).map(|crop| &crop.tool)
+    }
+
+    /// Where the picture drawn under the crop tool lies in the tool's box, in fractions
+    /// of it, while the tool is open.
+    pub fn crop_part(&self) -> Option<[f32; 4]> {
+        let open = self.viewer.as_ref()?;
+        Some(open.crop.as_ref()?.part(open.viewer.want()))
+    }
+
+    /// The widths of the levels of the picture the crop tool has had made for itself -
+    /// the photo turned and not cropped - largest first: none until it is made, and
+    /// for a photo that has no crop, whose own picture is that one.
+    pub fn crop_picture(&self) -> Option<Vec<u32>> {
+        let open = self.viewer.as_ref()?;
+        let full = open.crop.as_ref()?.picture(open.viewer.want())?;
+        Some(full.levels.iter().map(|(_, width)| *width).collect())
     }
 
     /// Whether a keyword is being typed into the info panel's field.
@@ -1597,6 +1661,7 @@ impl App {
             stale: None,
             within: None,
             info: false,
+            crop: None,
         });
     }
 
@@ -1663,7 +1728,7 @@ impl App {
     /// What the tasks have answered about the photo in the viewer. Each answer counts
     /// for the photo it was asked of, and for the picture it was asked for: the user
     /// may have stepped on, or the photo been edited, since.
-    fn viewer_answers(&mut self, ctx: &egui::Context) -> bool {
+    fn viewer_answers(&mut self, ctx: &egui::Context, now_ms: f64) -> bool {
         let mut answered = false;
         if let Some(answer) = self.viewer_items.answer() {
             answered = true;
@@ -1679,8 +1744,10 @@ impl App {
                         // the view.
                         open.viewer.lost(id, true);
                         if open.viewer.took(id, shown_of(&item)) {
-                            // Another picture: what was made is of the one before.
+                            // Another picture: what was made is of the one before,
+                            // and so is a rectangle being drawn on it.
                             open.full = None;
+                            open.crop = None;
                         }
                         open.item = Some(item);
                     }
@@ -1716,22 +1783,42 @@ impl App {
                 let options = egui::TextureOptions::LINEAR;
                 match made {
                     Made::Levels { levels, fitted } => {
+                        let of = if asked.uncropped {
+                            "uncropped"
+                        } else {
+                            "viewer"
+                        };
                         let levels = (levels.into_iter().enumerate())
                             .map(|(n, image)| {
                                 let width = image.size[0] as u32;
-                                let name = format!("viewer-{}-{n}", want.id);
+                                let name = format!("{of}-{}-{n}", want.id);
                                 (ctx.load_texture(name, image, options), width)
                             })
                             .collect();
                         let fitted = fitted.map(|image| {
-                            ctx.load_texture(format!("viewer-{}-fitted", want.id), image, options)
+                            ctx.load_texture(format!("{of}-{}-fitted", want.id), image, options)
                         });
-                        open.full = Some(FullPicture {
+                        let picture = FullPicture {
                             want,
                             fit: asked.fit,
                             levels,
                             fitted,
-                        });
+                        };
+                        // The picture without its crop is the crop tool's, and nobody's
+                        // once the tool has closed.
+                        if !asked.uncropped {
+                            open.full = Some(picture);
+                        } else if let Some(crop) = &mut open.crop {
+                            crop.uncropped = Some(picture);
+                        }
+                    }
+                    // The tool stands on the picture it has, in the place its crop
+                    // keeps, and why there is no more of it is said.
+                    Made::Failed(said) if asked.uncropped => {
+                        if let Some(crop) = &mut open.crop {
+                            crop.failed = true;
+                            self.toasts.error(said, now_ms);
+                        }
                     }
                     Made::Failed(said) => open.failed = Some((want, said)),
                     // Made from another state of the photo than the one asked for.
@@ -1834,8 +1921,30 @@ impl App {
             open.within = Some((within, now));
         }
         let stood = open.within.map_or(now, |(_, since)| since);
+        // Whether the photo can be turned and cropped: the library has said what it
+        // is, it is in the view still, and it is a picture that can be shown and was
+        // made - the Svelte viewer's `editable`. And the crop tool is of such a photo
+        // alone: it closes over one that has gone, has left the view or was stepped
+        // from, which is every way its photo stops being the one its rectangle is on -
+        // but for the photo becoming another picture, which `took` says.
+        let editable = open.item.is_some()
+            && !open.viewer.is_video()
+            && !open.viewer.gone()
+            && !open.viewer.orphaned()
+            && !failed
+            && !(open.failed.as_ref()).is_some_and(|(of, _)| *of == want);
+        if !editable {
+            open.crop = None;
+        }
+        // Under the crop tool of a photo that has a crop, the picture wanted is the
+        // one turned and not cropped, which the rectangle is drawn on: the picture on
+        // hand is of what the crop keeps, and stands in its place meanwhile. One
+        // question at a time, as ever, and it is this one while the tool is open. (A
+        // photo with no crop has that picture already.)
+        let uncropped = (open.crop.as_ref()).is_some_and(|crop| crop.had.is_some());
         let ask = PictureAsk {
             want,
+            uncropped,
             max_side: ctx.input(|input| input.max_texture_side) as u32,
             fit: within,
         };
@@ -1843,9 +1952,15 @@ impl App {
         // from what was once asked: a picture let go of is asked for again - one photo
         // on and straight back inside the rest, a photo that was gone and is here
         // again - where "asked for once" left the photo at its preview for good.
-        let coming = self.asking.filter(|asked| asked.want == want);
-        let held = open.picture().map(|full| full.fit);
-        let refused = (open.failed.as_ref()).is_some_and(|(of, _)| *of == want);
+        let coming =
+            (self.asking).filter(|asked| asked.want == want && asked.uncropped == uncropped);
+        let (held, refused) = match open.crop.as_ref().filter(|_| uncropped) {
+            Some(crop) => (crop.picture(want).map(|full| full.fit), crop.failed),
+            None => (
+                open.picture().map(|full| full.fit),
+                (open.failed.as_ref()).is_some_and(|(of, _)| *of == want),
+            ),
+        };
         // There is none of it, held or on its way, and nothing says there cannot be:
         // not a photo that is gone or cannot be shown, not one whose picture could not
         // be made, not one the library is being asked about again first.
@@ -1904,8 +2019,15 @@ impl App {
                 .filter(|(of, _)| *of == want && !has_preview)
                 .map(|(_, why)| (why.clone(), false))
         };
-        let fitted = open.picture().and_then(|full| full.fitted.clone());
-        let levels: Vec<Level<'_>> = (open.picture().iter())
+        // Under the crop tool, the picture turned and not cropped once it is made;
+        // until then the photo's own, in the part of the tool's box its crop keeps.
+        let tools = open.crop.as_ref().and_then(|crop| crop.picture(want));
+        let under = tools.or(open.picture());
+        let part = (open.crop.as_ref()).map_or([0.0, 0.0, 1.0, 1.0], |crop| crop.part(want));
+        let part =
+            egui::Rect::from_min_max(egui::pos2(part[0], part[1]), egui::pos2(part[2], part[3]));
+        let fitted = under.and_then(|full| full.fitted.clone());
+        let levels: Vec<Level<'_>> = (under.iter())
             .flat_map(|full| full.levels.iter())
             .map(|(texture, width)| Level {
                 texture,
@@ -1931,6 +2053,8 @@ impl App {
             video: open.viewer.is_video(),
             can_prev: open.viewer.can_step(-1, len),
             can_next: open.viewer.can_step(1, len),
+            editable,
+            edited: (open.item.as_ref()).is_some_and(|item| item.edit.is_some()),
             info_open: open.info,
             info: (open.item.as_ref()).map(|item| InfoData {
                 item,
@@ -1948,10 +2072,24 @@ impl App {
         // before what was done in the frame is acted on, since a step puts it back to
         // the fit.
         let mut zoom = *open.viewer.zoom();
-        let mut actions = self.viewer_view.show(ui, &data, &mut zoom);
+        // And so is the crop tool's rectangle, while the tool is open.
+        let mut tool = open
+            .crop
+            .as_ref()
+            .map(|crop| (crop.tool, crop.size, crop.sent));
+        let cropped = tool.as_mut().map(|(tool, size, sent)| Cropped {
+            tool,
+            size: *size,
+            part,
+            busy: *sent,
+        });
+        let mut actions = self.viewer_view.show(ui, &data, &mut zoom, cropped);
         drop(levels);
         drop(faces);
         *open.viewer.zoom_mut() = zoom;
+        if let (Some(crop), Some((tool, ..))) = (&mut open.crop, tool) {
+            crop.tool = tool;
+        }
         // What lies under a dialog does nothing, here as in the shell: egui keeps the
         // pointer from it only from the frame after the dialog is first drawn, and a
         // click that was over within that first frame was still a button's.
@@ -2042,6 +2180,68 @@ impl App {
                 }
                 ViewerAction::Info => {
                     open.info = !open.info;
+                    false
+                }
+                // A turn, and every turn and the crop taken off: of the photo on
+                // screen, like the star - and like the star not of one stepped to in
+                // this frame, of which nothing is known yet.
+                ViewerAction::Turn(clockwise) => {
+                    if let Some(item) = open.item.as_ref() {
+                        let id = item.id;
+                        self.writes.push(Write::Turn { id, clockwise });
+                    }
+                    false
+                }
+                ViewerAction::Original => {
+                    if let Some(item) = open.item.as_ref() {
+                        self.writes.push(Write::Edit {
+                            id: item.id,
+                            turns: 0,
+                            crop: None,
+                            tool: None,
+                        });
+                    }
+                    false
+                }
+                // The crop tool opens on the whole picture, fitted to the whole
+                // window: the info panel shuts and the zoom is put back.
+                ViewerAction::Crop => {
+                    if let Some(item) = open.item.as_ref() {
+                        self.crops += 1;
+                        let size = (item.uncropped_width, item.uncropped_height);
+                        let had = item.edit.as_ref().and_then(|edit| edit.crop);
+                        open.crop = Some(Cropping {
+                            tool: CropTool::begin(had, size.0, size.1),
+                            number: self.crops,
+                            sent: false,
+                            had,
+                            size,
+                            uncropped: None,
+                            failed: false,
+                        });
+                        open.info = false;
+                        *open.viewer.zoom_mut() = Zoom::default();
+                    }
+                    false
+                }
+                // The rectangle, written with the turns the photo has: the tool stays
+                // until the library has answered, and takes nothing more meanwhile.
+                ViewerAction::CropApply => {
+                    // (A second one, while the first is on its way, the view does not
+                    // answer: the tool is busy.)
+                    if let (Some(item), Some(crop)) = (open.item.as_ref(), open.crop.as_mut()) {
+                        crop.sent = true;
+                        self.writes.push(Write::Edit {
+                            id: item.id,
+                            turns: item.edit.as_ref().map_or(0, |edit| edit.turns),
+                            crop: crop.tool.wire(),
+                            tool: Some(crop.number),
+                        });
+                    }
+                    false
+                }
+                ViewerAction::CropCancel => {
+                    open.crop = None;
                     false
                 }
                 // (Written above.)
@@ -2680,6 +2880,23 @@ impl App {
                     }
                 }
                 Ok(Ok(Wrote::Grid)) => {}
+                // The crop tool closes when its rectangle is stored, and only the tool
+                // that sent it: one closed and opened again meanwhile is another.
+                Ok(Ok(Wrote::Edited { tool })) => {
+                    if let Some(open) = &mut self.viewer
+                        && open.crop.as_ref().map(|crop| crop.number) == tool
+                    {
+                        open.crop = None;
+                    }
+                }
+                // Refused, it stands where the rectangle can be put right, and takes
+                // an "Apply" again.
+                Ok(Err(Unwritten::Edit { said })) => {
+                    if let Some(crop) = (self.viewer.as_mut()).and_then(|open| open.crop.as_mut()) {
+                        crop.sent = false;
+                    }
+                    self.toasts.error(said, now_ms);
+                }
                 Ok(Ok(Wrote::Lists)) => {
                     self.collecting.ask(());
                     // And the photo in the viewer, whose albums its info panel ticks:
@@ -3023,7 +3240,7 @@ impl eframe::App for App {
         // not one the grid drew by itself.
         let reported = self.take_answers(now) || reported;
         self.adopt();
-        let reported = self.viewer_answers(ui.ctx()) || reported;
+        let reported = self.viewer_answers(ui.ctx(), now) || reported;
         // The launch's way back, in the frame its first photos are on screen and before
         // they are drawn.
         let (photos, view, sort) = (self.grid.len, self.nav.settled().view, self.nav.sort());
@@ -3309,6 +3526,46 @@ struct Viewing {
     /// Whether the info panel is open: the viewer's while it is, closed at every
     /// opening, and kept across a step.
     info: bool,
+    /// The crop tool, while it is open.
+    crop: Option<Cropping>,
+}
+
+/// The crop tool, open on the photo in the viewer.
+struct Cropping {
+    tool: CropTool,
+    /// The number it was opened under: the answer to its write counts for it alone.
+    number: u64,
+    /// Its rectangle has been sent to be stored, and the answer is not here yet.
+    sent: bool,
+    /// The crop the photo had as the tool opened, where it had one: its own picture is
+    /// then of that part only.
+    had: Option<[u16; 4]>,
+    /// The size in pixels of the picture the rectangle is drawn on: turned, and not
+    /// cropped.
+    size: (u32, u32),
+    /// That picture, where the photo's own is not it.
+    uncropped: Option<FullPicture>,
+    /// It could not be made.
+    failed: bool,
+}
+
+impl Cropping {
+    /// The picture turned and not cropped, of the photo as it is now.
+    fn picture(&self, want: Want) -> Option<&FullPicture> {
+        (self.uncropped.as_ref()).filter(|full| full.want == want)
+    }
+
+    /// Where the picture drawn under the tool lies in the tool's box, in fractions of it:
+    /// all of it, or - while the photo's own picture stands in for the one without its
+    /// crop - the part the crop keeps.
+    fn part(&self, want: Want) -> [f32; 4] {
+        match (self.picture(want), self.had) {
+            (None, Some(crop)) => {
+                crop.map(|edge| f32::from(edge) / photon_core::edit::CROP_UNIT as f32)
+            }
+            _ => [0.0, 0.0, 1.0, 1.0],
+        }
+    }
 }
 
 impl Viewing {
@@ -3330,6 +3587,8 @@ const FIT_REST_MS: f64 = 200.0;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct PictureAsk {
     want: Want,
+    /// Turned and not cropped: the picture the crop tool draws its rectangle on.
+    uncropped: bool,
     max_side: u32,
     fit: (u32, u32),
 }
@@ -3388,7 +3647,8 @@ fn shown_of(item: &ViewerItem) -> Shown {
 /// the decode, the halving and the making of egui's images are each tens of milliseconds
 /// for a camera's photo.
 fn make_picture(engine: &Engine, asked: PictureAsk) -> Made {
-    let picture = match commands::viewer_picture(engine, asked.want.id, false, Some(asked.fit)) {
+    let made = commands::viewer_picture(engine, asked.want.id, asked.uncropped, Some(asked.fit));
+    let picture = match made {
         Ok(picture) => picture,
         Err(err) => return Made::Failed(err.message),
     };
