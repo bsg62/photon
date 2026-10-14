@@ -26,6 +26,7 @@ pub enum Icon {
     Info,
     LayoutGrid,
     PanelLeft,
+    Pause,
     Play,
     RotateCcw,
     RotateCw,
@@ -39,7 +40,7 @@ pub enum Icon {
 }
 
 impl Icon {
-    pub const ALL: [Icon; 27] = [
+    pub const ALL: [Icon; 28] = [
         Icon::ArrowDownUp,
         Icon::Bookmark,
         Icon::Calendar,
@@ -57,6 +58,7 @@ impl Icon {
         Icon::Info,
         Icon::LayoutGrid,
         Icon::PanelLeft,
+        Icon::Pause,
         Icon::Play,
         Icon::RotateCcw,
         Icon::RotateCw,
@@ -95,6 +97,7 @@ impl Icon {
             Icon::PanelLeft => "panel-left",
             Icon::Settings => "settings",
             Icon::X => "x",
+            Icon::Pause => "pause",
             Icon::Play => "play",
             Icon::Star => "star",
             Icon::TriangleAlert => "triangle-alert",
@@ -159,6 +162,9 @@ impl Icon {
             Icon::X => r#"<path d="M18 6 6 18"/><path d="m6 6 12 12"/>"#,
             Icon::Copy => {
                 r#"<rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>"#
+            }
+            Icon::Pause => {
+                r#"<rect x="14" y="3" width="5" height="18" rx="1"/><rect x="5" y="3" width="5" height="18" rx="1"/>"#
             }
             Icon::Play => {
                 r#"<path d="M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z"/>"#

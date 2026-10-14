@@ -50,6 +50,8 @@ pub mod select_view;
 pub mod selection;
 pub mod shell;
 pub mod side_menu;
+pub mod slideshow;
+pub mod slideshow_order;
 pub mod status;
 pub mod sidebar {
     pub mod folders;
@@ -90,7 +92,7 @@ pub mod window_layout;
 #[cfg(test)]
 mod tests {
     /// The state modules, with their source.
-    const STATE_MODULES: [(&str, &str); 48] = [
+    const STATE_MODULES: [(&str, &str); 50] = [
         ("args.rs", include_str!("args.rs")),
         ("controls.rs", include_str!("controls.rs")),
         ("crop.rs", include_str!("crop.rs")),
@@ -110,6 +112,8 @@ mod tests {
         ("select.rs", include_str!("select.rs")),
         ("selection.rs", include_str!("selection.rs")),
         ("side_menu.rs", include_str!("side_menu.rs")),
+        ("slideshow.rs", include_str!("slideshow.rs")),
+        ("slideshow_order.rs", include_str!("slideshow_order.rs")),
         ("sidebar/folders.rs", include_str!("sidebar/folders.rs")),
         ("sidebar/list.rs", include_str!("sidebar/list.rs")),
         ("sidebar/rows.rs", include_str!("sidebar/rows.rs")),

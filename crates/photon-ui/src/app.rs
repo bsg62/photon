@@ -34,6 +34,8 @@ use crate::{
         rows::{Counts, Fixed, Today},
         view::{Named, Naming},
     },
+    slideshow::Slideshow,
+    slideshow_order::{next_still, shuffle_stride},
     status::Line,
     tag_picker::{Mode, Submit, TagPicker},
     tasks::{Latest, Queue},
@@ -47,7 +49,7 @@ use crate::{
     viewer_info_view::{InfoAction, InfoData, InfoView},
     viewer_layout, viewer_levels,
     viewer_menu::{self, ViewerPick},
-    viewer_view::{Cropped, Level, Message, ViewerAction, ViewerData, ViewerView},
+    viewer_view::{Cropped, Level, Message, Showing, ViewerAction, ViewerData, ViewerView},
     viewer_zoom::Zoom,
     window_layout::{Layout, STATUS_BAR, TOP_BAR},
 };
@@ -150,6 +152,13 @@ pub struct App {
     asked_pictures: u64,
     /// How many crop tools have been opened: each has its number.
     crops: u64,
+    /// The window, to be told to go fullscreen and back from wherever that is decided.
+    ctx: egui::Context,
+    /// The slideshow's interval, in seconds, and whether it shuffles: read once at each
+    /// show's start, off this thread.
+    show_settings: Latest<(), (Option<i64>, bool)>,
+    /// What the window was last asked of its fullscreen, by a show or by F11.
+    fullscreen_asked: Option<bool>,
     /// Whether a folder dropped on the window can arrive at all: asked of the window
     /// once (`folder_drop::can_arrive`). Where none can, none is offered.
     drops: bool,
@@ -880,6 +889,19 @@ impl App {
             },
             repaint(&ctx),
         );
+        let show_settings = Latest::spawn(
+            "slideshow settings",
+            {
+                let engine = engine.clone();
+                move |()| {
+                    let interval = commands::slideshow_interval(&engine).ok();
+                    // A failed read plays the view in its own order.
+                    let shuffle = commands::slideshow_shuffle(&engine).unwrap_or(false);
+                    (interval, shuffle)
+                }
+            },
+            repaint(&ctx),
+        );
         let people = Latest::spawn(
             "named people",
             {
@@ -978,6 +1000,9 @@ impl App {
             asking: None,
             asked_pictures: 0,
             crops: 0,
+            ctx: ctx.clone(),
+            show_settings,
+            fullscreen_asked: None,
             drops,
             drop: FolderDrop::default(),
             hovered: 0,
@@ -1295,6 +1320,21 @@ impl App {
         (open.failed.as_ref())
             .filter(|(of, _)| *of == open.viewer.want())
             .map(|(_, why)| why.as_str())
+    }
+
+    /// The slideshow of the viewer, while the viewer is open.
+    pub fn slideshow(&self) -> Option<&Slideshow> {
+        self.viewer.as_ref().map(|open| &open.show)
+    }
+
+    /// Whether the photo a show has left is still drawn over the one arriving.
+    pub fn fading(&self) -> bool {
+        (self.viewer.as_ref()).is_some_and(|open| open.outgoing.is_some())
+    }
+
+    /// What the window was last asked of its fullscreen.
+    pub fn fullscreen_asked(&self) -> Option<bool> {
+        self.fullscreen_asked
     }
 
     /// The crop tool, while it is open on the photo in the viewer.
@@ -1660,6 +1700,9 @@ impl App {
             within: None,
             info: false,
             crop: None,
+            show: Slideshow::default(),
+            shuffle: None,
+            outgoing: None,
         });
     }
 
@@ -1686,14 +1729,37 @@ impl App {
     /// else lets go of but their store's own limit - a hundred megabytes of texture for
     /// the rest of the session, after any stretch of looking at photos.
     fn shut_viewer(&mut self) {
+        // A show the viewer is closed under is stopped, and gives the window back.
+        let now = self.ctx.input(|input| input.time) * 1000.0;
+        if (self.viewer.as_mut()).is_some_and(|open| open.show.stop(now)) {
+            self.fullscreen(false);
+        }
         self.viewer = None;
         self.previews.clear();
+        self.viewer_view.let_go();
         // And the dialog that stands over it, which is of its photo - "Who is this?",
         // of a face on it: shut from under the dialog by a grid of other results that
         // does not hold the photo, the viewer left it standing over the grid, asking
         // about a face on a photo nobody sees. (No other dialog opens over the viewer:
         // the grid's are opened from the grid, and take the keys that would open it.)
         self.dialog = None;
+    }
+
+    /// Asks the window to go fullscreen, or to leave it.
+    fn fullscreen(&mut self, on: bool) {
+        self.ctx
+            .send_viewport_cmd(egui::ViewportCommand::Fullscreen(on));
+        self.fullscreen_asked = Some(on);
+    }
+
+    /// Stops the slideshow that is running, and gives the window back its own
+    /// fullscreen - or none.
+    fn stop_show(&mut self, open: &mut Viewing, now: f64) {
+        if open.show.stop(now) {
+            self.fullscreen(false);
+        }
+        open.outgoing = None;
+        open.shuffle = None;
     }
 
     /// A typed search is sent in a frame of its own, which a still window would not
@@ -1760,6 +1826,18 @@ impl App {
                         }
                     }
                     Err(_) => {}
+                }
+            }
+        }
+        // The show's settings, for the show that is running: a show stopped since asks
+        // nothing of them, and one started since asked again, which `Latest` answers
+        // alone.
+        if let Some(answer) = self.show_settings.answer() {
+            answered = true;
+            if let (Ok((interval, shuffle)), Some(open)) = (answer, &mut self.viewer) {
+                open.show.interval(interval, now_ms);
+                if shuffle && open.show.active() {
+                    open.shuffle = Some((usize::MAX, 1));
                 }
             }
         }
@@ -1871,8 +1949,16 @@ impl App {
         if !under_dialog {
             ctx.memory_mut(|memory| memory.move_focus(egui::FocusDirection::None));
         }
+        // A show's countdown has ended: it goes on to the next photo of its order. Here,
+        // before anything of the photo is asked or drawn, as a step by hand is acted on
+        // after its frame.
+        if open.show.due(now) && self.show_step(&mut open, 1, now) {
+            self.left(&mut open);
+        }
         let (id, key, want) = (open.viewer.id(), open.viewer.key(), open.viewer.want());
-        let rested = open.viewer.rested(now);
+        // A show does not wait for the rest a step by hand waits for: nothing is being
+        // stepped past, and the countdown waits for the picture.
+        let rested = open.viewer.rested(now) || open.show.active();
 
         // The previews: this photo's first, then the two on either side of it, so that
         // a step lands on a picture. They are on disk, and a few milliseconds each to
@@ -1984,6 +2070,49 @@ impl App {
             ctx.request_repaint_after(Duration::from_secs_f64((due - now) / 1000.0));
         }
 
+        // The show counts the photo from when its full picture is shown, or cannot be:
+        // a slow decode is not counted against it. The photo it left fades from then.
+        let shown = open.picture().is_some()
+            || (open.failed.as_ref()).is_some_and(|(of, _)| *of == want)
+            || failed
+            || open.viewer.gone()
+            || open.viewer.is_video();
+        if open.show.active() && shown {
+            open.show.shown(now);
+            if let Some(outgoing) = open.outgoing.as_mut().filter(|out| out.since.is_none()) {
+                outgoing.since = Some(now);
+            }
+        }
+        // Held while a dialog or the viewer's menu is over it; and the pointer moving,
+        // a press or a key brings the controls back.
+        let paused = under_dialog || self.menu.is_some();
+        open.show.hold(paused, now);
+        let poked = ctx.input(|input| {
+            (input.events.iter()).any(|event| {
+                matches!(
+                    event,
+                    egui::Event::PointerMoved(_)
+                        | egui::Event::PointerButton { .. }
+                        | egui::Event::MouseWheel { .. }
+                        | egui::Event::Key { pressed: true, .. }
+                )
+            })
+        });
+        if poked {
+            open.show.poke(now);
+        }
+        if let Some(at) = open.show.next(now) {
+            ctx.request_repaint_after(Duration::from_secs_f64(((at - now) / 1000.0).max(0.0)));
+        }
+        let seen = (open.outgoing.as_ref()).map(|out| {
+            out.since
+                .map_or(1.0, |since| 1.0 - (now - since) / CROSSFADE_MS)
+        });
+        if seen.is_some_and(|seen| seen <= 0.0) {
+            open.outgoing = None;
+        } else if seen.is_some_and(|seen| seen < 1.0) {
+            ctx.request_repaint();
+        }
         let preview = self.previews.texture(key).cloned();
         let has_preview = preview.is_some();
         let caption = (open.item.as_ref())
@@ -2051,8 +2180,9 @@ impl App {
                 viewer_caption::oriented(item.width, item.height, item.orientation).0
             }),
             video: open.viewer.is_video(),
-            can_prev: open.viewer.can_step(-1, len),
-            can_next: open.viewer.can_step(1, len),
+            // A show wraps round the view's ends.
+            can_prev: open.viewer.can_step(-1, len) || (open.show.active() && len > 1),
+            can_next: open.viewer.can_step(1, len) || (open.show.active() && len > 1),
             editable,
             edited: (open.item.as_ref()).is_some_and(|item| item.edit.is_some()),
             info_open: open.info,
@@ -2066,7 +2196,14 @@ impl App {
             faces: &faces,
             // A dialog, or the viewer's own menu: both are shown before the viewer in a
             // frame, and neither takes the wheel out of it.
-            paused: under_dialog || self.menu.is_some(),
+            paused,
+            can_show: open.item.is_some(),
+            show: open.show.active().then(|| Showing {
+                playing: open.show.playing(),
+                quiet: open.show.idle(now),
+            }),
+            outgoing: (open.outgoing.as_ref())
+                .map(|out| (&out.texture, out.at, seen.unwrap_or(1.0) as f32)),
         };
         // The zoom is the view's to change in this frame, and the viewer's to keep:
         // before what was done in the frame is acted on, since a step puts it back to
@@ -2160,7 +2297,21 @@ impl App {
                     closed = true;
                     break;
                 }
+                // In a show, a step by hand follows the show's order, skipping videos
+                // and wrapping, and the photo left fades as at the countdown's end.
+                ViewerAction::Step(dir) if open.show.active() => {
+                    self.show_step(&mut open, dir, now)
+                }
                 ViewerAction::Step(dir) => open.viewer.step(dir, &self.index, now),
+                ViewerAction::Slideshow if open.show.active() => {
+                    self.stop_show(&mut open, now);
+                    false
+                }
+                ViewerAction::Slideshow => self.start_show(&mut open, &ctx, shown, now),
+                ViewerAction::Pause => {
+                    open.show.toggle(now);
+                    false
+                }
                 ViewerAction::First => open.viewer.go_to(0, &self.index, now),
                 ViewerAction::Last => open.viewer.go_to(usize::MAX, &self.index, now),
                 // By the photo on screen, not by the selection behind it. Not before
@@ -2206,6 +2357,8 @@ impl App {
                 // The crop tool opens on the whole picture, fitted to the whole
                 // window: the info panel shuts and the zoom is put back.
                 ViewerAction::Crop => {
+                    // The crop tool stops a show, which would step from under it.
+                    self.stop_show(&mut open, now);
                     if let Some(item) = open.item.as_ref() {
                         self.crops += 1;
                         let size = (item.uncropped_width, item.uncropped_height);
@@ -2257,13 +2410,7 @@ impl App {
                 }
             };
             if moved {
-                // Another photo: what was said and made of the one left is not its.
-                // And a picture that could not be made is asked for again when the
-                // photo is come back to: its drive may be there by then.
-                open.item = None;
-                open.full = None;
-                open.failed = None;
-                self.viewer_items.ask(open.viewer.id());
+                self.left(&mut open);
             }
         }
         self.viewer = Some(open);
@@ -2315,6 +2462,77 @@ impl App {
         if let Some(face) = naming.filter(|_| !just_closed) {
             self.open_person(person_picker::Target::Face(face));
         }
+    }
+
+    /// The viewer has gone on to another photo: what was said and made of the one left
+    /// is not its, and a show counts nothing until the new one is shown. And a picture
+    /// that could not be made is asked for again when the photo is come back to: its
+    /// drive may be there by then.
+    fn left(&mut self, open: &mut Viewing) {
+        open.item = None;
+        open.full = None;
+        open.failed = None;
+        open.show.changed();
+        self.viewer_items.ask(open.viewer.id());
+    }
+
+    /// One step of a show, by its countdown or by hand: to the next photo of its order
+    /// that is not a video, `dir` along, wrapping. Answers whether the viewer moved: a
+    /// view of one photo has nowhere to go. The picture on screen is kept, to fade out
+    /// over the one arriving - at fit only, as in the Svelte viewer.
+    fn show_step(&mut self, open: &mut Viewing, dir: i64, now: f64) -> bool {
+        let len = self.index.len();
+        let stride = open.stride(len);
+        let index = &self.index;
+        let is_photo = |at: usize| {
+            (index.rows(at, 1).first()).is_some_and(|entry| entry.kind == MediaKind::Image)
+        };
+        let from = open.viewer.offset();
+        let Some(next) = next_still(from, len, is_photo, dir, stride).filter(|next| *next != from)
+        else {
+            return false;
+        };
+        // (The view keeps nothing of a zoomed photo.)
+        open.outgoing = self.viewer_view.drawn().map(|(texture, at)| Outgoing {
+            texture,
+            at,
+            since: None,
+        });
+        open.viewer.go_to(next, &self.index, now)
+    }
+
+    /// Starts a show on the photo on screen - or, on a video, on the next photo; with
+    /// none in the view, says so and starts nothing. Answers whether the viewer moved.
+    fn start_show(
+        &mut self,
+        open: &mut Viewing,
+        ctx: &egui::Context,
+        shown: bool,
+        now: f64,
+    ) -> bool {
+        let mut moved = false;
+        if open.viewer.is_video() {
+            let index = &self.index;
+            let is_photo = |at: usize| {
+                (index.rows(at, 1).first()).is_some_and(|entry| entry.kind == MediaKind::Image)
+            };
+            match next_still(open.viewer.offset(), index.len(), is_photo, 1, 1) {
+                Some(next) => moved = open.viewer.go_to(next, &self.index, now),
+                None => {
+                    self.toasts.done(NO_PHOTOS_TO_SHOW, now);
+                    return false;
+                }
+            }
+        }
+        open.info = false;
+        open.shuffle = None;
+        open.outgoing = None;
+        self.show_settings.ask(());
+        let fullscreen = ctx.input(|input| input.viewport().fullscreen);
+        if open.show.start(now, shown && !moved, fullscreen) {
+            self.fullscreen(true);
+        }
+        moved
     }
 
     /// Finds a photo in the grid: in All photos, where every photo that is not hidden
@@ -3219,6 +3437,14 @@ impl eframe::App for App {
         }
         let in_view = ui.ctx().content_rect().height() - TOP_BAR - STATUS_BAR;
         crate::grid::view::set_wheel_notch(ui.ctx(), self.notch.points(f64::from(in_view)));
+        // F11 is the window's fullscreen, everywhere: in the grid, in the viewer, under a
+        // menu, a dialog or a band. Read before anything else takes the keys out of
+        // the frame, and taken out itself.
+        let f11 = ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::F11));
+        if f11 {
+            let on = ui.ctx().input(|input| input.viewport().fullscreen) == Some(true);
+            self.fullscreen(!on);
+        }
         // A rubber band owns the window while it is held: Escape abandons it, and
         // every other key is nobody's. Not the grid's keys alone - Ctrl+F put the caret
         // in the search box under a band, where the box then answered the Escape meant
@@ -3529,6 +3755,34 @@ struct Viewing {
     info: bool,
     /// The crop tool, while it is open.
     crop: Option<Cropping>,
+    /// The slideshow, running or not.
+    show: Slideshow,
+    /// A shuffled show's stride, and the view's length it was drawn for; none for a
+    /// show in the view's own order. `usize::MAX` for a length is "none drawn yet".
+    shuffle: Option<(usize, usize)>,
+    /// The photo the show has left, drawn over the one arriving until it has faded.
+    outgoing: Option<Outgoing>,
+}
+
+/// The picture a show has just left, as it was drawn, and since when it fades: from
+/// when the photo arriving is shown.
+struct Outgoing {
+    texture: egui::TextureHandle,
+    at: egui::Rect,
+    since: Option<f64>,
+}
+
+/// How long the photo a show leaves takes to fade, in milliseconds.
+const CROSSFADE_MS: f64 = 600.0;
+const NO_PHOTOS_TO_SHOW: &str = "There are no photos here to show.";
+
+/// A number from nought up to one, a different one each time: what a shuffled show's
+/// stride is drawn by. From the hasher the standard library seeds afresh, which is all
+/// the chance this needs and no dependency.
+fn random() -> f64 {
+    use std::hash::BuildHasher;
+    let bits = std::collections::hash_map::RandomState::new().hash_one(std::time::Instant::now());
+    (bits >> 11) as f64 / (1_u64 << 53) as f64
 }
 
 /// The crop tool, open on the photo in the viewer.
@@ -3573,6 +3827,22 @@ impl Cropping {
 }
 
 impl Viewing {
+    /// How far one step of the show moves through a view of `len` photos. A view that
+    /// grew or shrank under a shuffled show is asked again, and keeps the stride in use
+    /// wherever it still can (`shuffle_stride`).
+    fn stride(&mut self, len: usize) -> usize {
+        match self.shuffle {
+            None => 1,
+            Some((drawn_for, stride)) if drawn_for == len => stride,
+            Some((drawn_for, stride)) => {
+                let previous = (drawn_for != usize::MAX).then_some(stride);
+                let stride = shuffle_stride(len, random, previous);
+                self.shuffle = Some((len, stride));
+                stride
+            }
+        }
+    }
+
     /// The full picture of the photo the viewer is on, as it is now. One held for the
     /// state the photo was in before - it has been turned from elsewhere, and the new
     /// grid has said so before the new picture is made - is another picture, and is

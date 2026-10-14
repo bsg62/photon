@@ -2669,6 +2669,37 @@ left, as in the Svelte viewer: a
 turn on its way when "Apply" is pressed is overwritten by the turns the tool read - which
 needs `R`, `C` and Enter inside one round trip.
 
+**The slideshow is `slideshow.rs` and `slideshow_order.rs`, and its countdown is the
+photo's** (`createSlideshow`, `slideshow-order.ts`, with their tests' cases). It starts
+when the photo's *full picture* is shown, or cannot be (refused, unshowable, gone, a
+video) - never at the preview - and a step forgets it (`App::left`, the one place every way
+of going on to another photo goes through). `Slideshow::shown` counts once per photo,
+because the frame asks it in every frame, and `due` leaves the step to the caller: a view
+of one photo has nowhere to go and the show then stands still, as the Svelte show does.
+The show's own steps, by its countdown or by hand, follow its order (`show_step`: the next
+photo that is not a video, by the stride, wrapping), and do not wait for the rest a step by
+hand waits for. A shuffled show's stride is drawn by the standard library's seeded hasher
+(`random`), and kept across a view that changes length wherever it still fits. The
+interval and the shuffle are read once at each start, off the UI thread
+(`App::show_settings`; a failed read plays four seconds in order). **A show between two
+photos is a still window**: frames are asked for at the countdown's end, when the controls
+go (`Slideshow::next`) and while the photo left fades, at no other time - which a test
+holds over a library on a drive that is not there, a watched folder's own work asking for
+frames of its own every few seconds. The photo left is the picture the last frame drew at
+fit (`ViewerView::drawn`), kept as a texture and its rectangle and drawn over the one
+arriving, fading over 600 ms from when that one is shown. **The window goes fullscreen as
+the show starts and is given back as it stops, only if the show took it there**: egui says
+in every frame whether the window is fullscreen, so `start` and `stop` answer whether to
+ask (`ViewportCommand::Fullscreen`) and the Svelte store's guards for a switch landing
+after the stop have no successor. Every way the viewer shuts goes through `shut_viewer`,
+which stops a show first. **F11 is the window's own fullscreen everywhere**, read at the
+very start of the frame and taken out of it, so a menu, a dialog or a held band does not
+swallow it. Tests play the window: `fullscreen_asked` is what the application last asked,
+and `tests/slideshow.rs`'s `obey` sets the viewport's `fullscreen` to it, which
+`egui_kittest` keeps from frame to frame. Escape stops a show before it closes the viewer;
+`S` starts and stops, Space pauses; the show is held while a dialog or the viewer's menu
+is over it; the crop tool stops it.
+
 **A picture test makes its GPU device alone** (`tests/screenshots.rs`, `DEVICES`): every
 picture is drawn on a thread of its own, and with two dozen devices made in the same
 moment `native-shot` crashed inside the Vulkan loader about once in four runs
