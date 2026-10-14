@@ -388,6 +388,9 @@ fn a_rectangle_drawn_and_applied_is_the_photos_crop_and_the_tool_closes() {
     });
     key(&mut driver, &mut harness, Key::C);
     driver.act(&mut harness);
+    // (A press within a double click's time of the tool's opening is the second click
+    // of the double click that opened it, and presses nothing.)
+    driver.frames_in(&mut harness, 0.5);
     harness.get_by_label("Whole photo").click();
     driver.act(&mut harness);
     harness.get_by_label("Apply").click();

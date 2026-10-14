@@ -180,3 +180,31 @@ stated. The five that passed were findings, each settled before the pull request
 - Where the stand-in lies in the tool's box was decided in the application and tested only
   in the view: it is `Cropping::part` now, read by a test (`App::crop_part`) and by where
   the frame drew the picture.
+
+## What the review found
+
+An independent review (opus, its own worktree) wrote a failing test for each finding; its
+tests are `tests/edits_edges.rs`, with the fix pass's beside them.
+
+- **Important: every edit made its picture twice.** `took` asked again when the viewer's
+  key equalled the new one, which `follow` had already set from the grid: every turn,
+  "Original" and "Apply" rendered the photo twice, blank meanwhile. `took` now compares
+  with the `Shown` it replaces (a rule older than this pull request, made every edit by it).
+- **Important: a picture change under the tool asked for a picture nobody draws.** The tool
+  now closes when the grid's key for the photo is not the one it opened under, a round
+  trip before the library says so; its picture needs no filter by the photo's state any
+  more.
+- "Original" left the bar at every step between edited photos, moving the buttons after it
+  for the round trip: it stays while nothing is known of the photo stepped to.
+- The second click of a double click on the crop button landed on the tool's bar ("Whole
+  photo"): a press within a double click's time of the tool's opening presses nothing there.
+- `MIN_SIDE`'s comment was wrong: a ratio chosen on the least rectangle shrank a side below
+  the library's least crop. `fit_aspect` now grows it back, inside the picture.
+- Twelve of its thirty probes passed. Six were held by its tests, now ours; of the rest,
+  `!gone` in `editable` and the tool's want filter were taken out as doing nothing, and
+  `self.ratio = SelectView::default()` too (the dropdown's own rule shuts a list whose
+  control is not drawn); `!is_video` (the engine would be asked, and refuse aloud), the
+  toast only for an open tool, `self.press = None` and `self.faces.clear()` under the tool
+  each have a test now.
+- Statements corrected: CLAUDE.md said the tool's picture is asked for at once (it waits for
+  the rest), and described the double asking as one.

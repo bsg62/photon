@@ -227,6 +227,16 @@ pub struct ViewerView {
     let_go: bool,
     /// The crop tool's dropdown.
     ratio: SelectView,
+    /// When the crop tool was first drawn, while it is open; and whether a press made
+    /// within a double click's time of that is still down - the second click of the
+    /// double click on the bar's crop button, which lands on the tool's bar where the
+    /// viewer's stood, and presses nothing there (as `DialogView::deaf`).
+    crop_since: Option<f64>,
+    crop_deaf: bool,
+    /// Whether the photo has an edit, as last said: kept while nothing is known of the
+    /// photo stepped to, so that "Original" does not leave the bar for the round trip and
+    /// move the buttons after it - the jump `bar_place`'s `was` ends for the bar's width.
+    edited: bool,
 }
 
 /// Where the controls stand: what a press on the photo is not.
@@ -300,11 +310,14 @@ impl ViewerView {
         // The one colour in photon that no token holds: the ground a photo is judged
         // against is not a theme's to choose.
         painter.rect_filled(window, 0.0, Color32::BLACK);
-        match crop {
-            Some(crop) => return self.cropping(ui, data, window, crop),
-            // A list left open by a tool that has closed is not the next tool's.
-            None => self.ratio = SelectView::default(),
+        if let Some(crop) = crop {
+            return self.cropping(ui, data, window, crop);
         }
+        self.crop_since = None;
+        if !data.caption.is_empty() {
+            self.edited = data.edited;
+        }
+        let edited = self.edited;
 
         // The photo's area: the window, less the info panel's room while it is open.
         // The fit, the zoom's bounds, the point a zoom holds still and the pan are all
@@ -369,7 +382,7 @@ impl ViewerView {
                 pos2(window.right() - EDGE - CLOSE, window.top() + EDGE),
                 vec2(CLOSE, CLOSE),
             ),
-            bar: bar_place(ui, window, data, self.bar),
+            bar: bar_place(ui, window, data, edited, self.bar),
             slider: (!data.video).then(|| slider_place(window)),
             caption: caption.as_ref().map(|(place, _)| *place),
             panel,
@@ -459,7 +472,7 @@ impl ViewerView {
         if let (Some(line), Some((place, galley))) = (data.photo_caption, caption) {
             photo_caption(ui, place, galley, line);
         }
-        actions.extend(bar(ui, controls.bar, data));
+        actions.extend(bar(ui, controls.bar, data, edited));
         if let Some(place) = controls.slider {
             slider(
                 ui,
@@ -543,7 +556,26 @@ impl ViewerView {
         // The bar before the keys are read: its dropdown takes the ones it answers out
         // of the frame - the Enter that chose a ratio, the Escape that shut the list -
         // and those are not the tool's as well.
-        actions.extend(self.crop_bar(ui, bar, crop.tool, crop.busy));
+        let (now, pressed, released) = ui.input(|input| {
+            (
+                input.time,
+                input.pointer.any_pressed(),
+                input.pointer.any_released(),
+            )
+        });
+        let double = ui
+            .ctx()
+            .options(|options| options.input_options.max_double_click_delay);
+        let since = now - *self.crop_since.get_or_insert(now);
+        if pressed && since < double {
+            self.crop_deaf = true;
+        }
+        let deaf = self.crop_deaf;
+        if released {
+            self.crop_deaf = false;
+        }
+        let pressed = self.crop_bar(ui, bar, crop.tool, crop.busy, deaf);
+        actions.extend(pressed);
         let events = ui.input(|input| input.events.clone());
         for event in &events {
             match event {
@@ -570,13 +602,17 @@ impl ViewerView {
     }
 
     /// The crop tool's bar: the ratio the rectangle is held to, "Whole photo", "Cancel"
-    /// and "Apply". The first two change the tool here; the others are answered.
+    /// and "Apply". The first two change the tool here; the others are answered. While
+    /// the tool's write is on its way only "Cancel" works - it closes the tool, and the
+    /// write lands all the same, as in the Svelte viewer - and while the second press of
+    /// the double click that opened the tool is down (`deaf`), nothing does.
     fn crop_bar(
         &mut self,
         ui: &mut egui::Ui,
         rect: Rect,
         tool: &mut CropTool,
         busy: bool,
+        deaf: bool,
     ) -> Vec<ViewerAction> {
         glass(ui, rect, R[3]);
         let pad = (BAR - TOOL) / 2.0;
@@ -597,7 +633,7 @@ impl ViewerView {
                 label: CROP_RATIO,
                 options: &labels,
                 selected: Some(tool.aspect()),
-                disabled: busy,
+                disabled: busy || deaf,
                 hint: None,
                 // The bar is at the foot of the window.
                 above: true,
@@ -615,7 +651,8 @@ impl ViewerView {
             WHOLE_PHOTO,
             !busy,
             false,
-        ) {
+        ) && !deaf
+        {
             tool.clear();
         }
         if worded(
@@ -625,7 +662,8 @@ impl ViewerView {
             CANCEL,
             true,
             false,
-        ) {
+        ) && !deaf
+        {
             pressed.push(ViewerAction::CropCancel);
         }
         if worded(
@@ -635,7 +673,8 @@ impl ViewerView {
             APPLY,
             !busy,
             true,
-        ) {
+        ) && !deaf
+        {
             pressed.push(ViewerAction::CropApply);
         }
         pressed
@@ -1228,11 +1267,11 @@ enum Tool {
 /// left edge and how wide it is: the star; the turns, the crop and - while the photo has
 /// an edit - "Original"; the info panel. A video has nothing to turn or crop, and no
 /// tools for it.
-fn tools(ui: &egui::Ui, data: &ViewerData<'_>) -> Vec<(Tool, f32, f32)> {
+fn tools(ui: &egui::Ui, data: &ViewerData<'_>, edited: bool) -> Vec<(Tool, f32, f32)> {
     let mut groups = vec![vec![Tool::Star]];
     if !data.video {
         let mut edit = vec![Tool::TurnLeft, Tool::TurnRight, Tool::Crop];
-        edit.extend(data.edited.then_some(Tool::Original));
+        edit.extend(edited.then_some(Tool::Original));
         groups.push(edit);
     }
     groups.push(vec![Tool::Info]);
@@ -1259,7 +1298,13 @@ fn tools(ui: &egui::Ui, data: &ViewerData<'_>) -> Vec<(Tool, f32, f32)> {
 /// library has not said yet what the photo stepped to is - as wide as it `was`: shrunk
 /// to its tools for the frame or two a step's answer takes, the bar and the buttons in
 /// it jumped twice at every step.
-fn bar_place(ui: &egui::Ui, window: Rect, data: &ViewerData<'_>, was: Option<f32>) -> Rect {
+fn bar_place(
+    ui: &egui::Ui,
+    window: Rect,
+    data: &ViewerData<'_>,
+    edited: bool,
+    was: Option<f32>,
+) -> Rect {
     let wanted = ui
         .painter()
         .layout_no_wrap(
@@ -1270,7 +1315,7 @@ fn bar_place(ui: &egui::Ui, window: Rect, data: &ViewerData<'_>, was: Option<f32
         .size()
         .x;
     let pad = (BAR - TOOL) / 2.0;
-    let tools = (tools(ui, data).last()).map_or(0.0, |(_, left, width)| left + width);
+    let tools = (tools(ui, data, edited).last()).map_or(0.0, |(_, left, width)| left + width);
     let most = (window.width() - 2.0 * BESIDE_BAR).max(tools + 2.0 * pad);
     let own = pad + tools + S[1] + wanted + S[2];
     let width = (was.filter(|_| data.caption.is_empty()).unwrap_or(own)).min(most);
@@ -1442,13 +1487,13 @@ fn worded(ui: &egui::Ui, rect: Rect, id: &str, word: &str, works: bool, primary:
 
 /// The bar at the foot of the window: its tools - the star, the turns and the crop, the
 /// info panel - and the caption. Answers what was pressed in it.
-fn bar(ui: &egui::Ui, rect: Rect, data: &ViewerData<'_>) -> Vec<ViewerAction> {
+fn bar(ui: &egui::Ui, rect: Rect, data: &ViewerData<'_>, edited: bool) -> Vec<ViewerAction> {
     let font = fonts::regular(T[1]);
     let pad = (BAR - TOOL) / 2.0;
     glass(ui, rect, R[3]);
     let mut pressed = Vec::new();
     let mut right = rect.left() + pad;
-    for (tool_, left, width) in tools(ui, data) {
+    for (tool_, left, width) in tools(ui, data, edited) {
         let place = Rect::from_min_size(rect.min + vec2(pad + left, pad), vec2(width, TOOL));
         // The line between two groups, in the middle of the room between them.
         if place.left() - right > TOOL_GAP {
@@ -4258,6 +4303,8 @@ mod tests {
         let mut f = photo();
         f.crop = Some((CropTool::begin(None, 2400, 1200), (2400, 1200), ALL, false));
         f.frame(Vec::new());
+        // (Past the second press of a double click that opened it.)
+        f.time += 0.5;
         f
     }
 
@@ -4281,6 +4328,8 @@ mod tests {
             false,
         ));
         f.frame(Vec::new());
+        // (Past the second press of a double click that opened it.)
+        f.time += 0.5;
         let (_, at) = f.photo().expect("the picture");
         assert!(
             same(
@@ -4307,6 +4356,8 @@ mod tests {
             false,
         ));
         f.frame(Vec::new());
+        // (Past the second press of a double click that opened it.)
+        f.time += 0.5;
         let (_, at) = f.photo().unwrap();
         assert!(
             same(
@@ -4437,6 +4488,8 @@ mod tests {
             false,
         ));
         f.frame(Vec::new());
+        // (Past the second press of a double click that opened it.)
+        f.time += 0.5;
         let at = |f: &Fixture, words: &str| f.drew(words).unwrap().center();
         let (whole, cancel, apply) = (at(&f, WHOLE_PHOTO), at(&f, CANCEL), at(&f, APPLY));
         assert_eq!(f.click(cancel), [ViewerAction::CropCancel]);
@@ -4521,6 +4574,8 @@ mod tests {
             false,
         ));
         f.frame(Vec::new());
+        // (Past the second press of a double click that opened it.)
+        f.time += 0.5;
         // The handle on its right edge, a tenth of the picture to the right.
         f.press(pos2(750.0, 350.0));
         f.frame(vec![Event::PointerMoved(pos2(850.0, 350.0))]);
@@ -4536,6 +4591,8 @@ mod tests {
         let lower = Some([0, 32768, 65535, 65535]);
         f.crop = Some((CropTool::begin(lower, 1000, 700), (1000, 700), ALL, false));
         f.frame(Vec::new());
+        // (Past the second press of a double click that opened it.)
+        f.time += 0.5;
         let glass = color(GLASS);
         let bar = (f.fills.iter())
             .find(|(rect, fill)| *fill == glass && rect.height() == BAR)
@@ -4552,6 +4609,8 @@ mod tests {
         let upper = Some([0, 0, 65535, 32768]);
         f.crop = Some((CropTool::begin(upper, 1000, 700), (1000, 700), ALL, false));
         f.frame(Vec::new());
+        // (Past the second press of a double click that opened it.)
+        f.time += 0.5;
         let before = tool(&f).rect();
         let close = pos2(1000.0 - EDGE - CLOSE / 2.0, EDGE + CLOSE / 2.0);
         f.press(close);
@@ -4570,6 +4629,8 @@ mod tests {
         f.wheel(egui::MouseWheelUnit::Point, -60.0, Modifiers::NONE);
         f.crop = Some((CropTool::begin(None, 2400, 1200), (2400, 1200), ALL, false));
         f.frame(Vec::new());
+        // (Past the second press of a double click that opened it.)
+        f.time += 0.5;
         f.crop = None;
         f.click(at);
         assert!(f.zoom.is_fit(), "no double click");
@@ -4590,10 +4651,85 @@ mod tests {
             true,
         ));
         f.frame(Vec::new());
+        // (Past the second press of a double click that opened it.)
+        f.time += 0.5;
         let before = tool(&f).rect();
         f.press(pos2(750.0, 350.0));
         f.frame(vec![Event::PointerMoved(pos2(850.0, 350.0))]);
         f.release(pos2(850.0, 350.0));
         assert_eq!(tool(&f).rect(), before);
+    }
+
+    // A press in the frame after the tool closes is asked of what the last frame drew,
+    // which was the tool, with no face on it: not of the faces outlined before it opened,
+    // which stood beside the open panel.
+    #[test]
+    fn a_press_after_the_tool_is_asked_of_no_face_from_before_it() {
+        let mut f = with_faces();
+        f.crop = Some((CropTool::begin(None, 2400, 1200), (2400, 1200), ALL, false));
+        f.frame(Vec::new());
+        f.crop = None;
+        f.info_open = false;
+        let at = STRANGER.center();
+        let actions = f.frame(vec![Event::PointerMoved(at), other(at, true)]);
+        assert_eq!(actions, menu(at, On::Nowhere));
+    }
+
+    // A press held on the photo when the tool opened is over: its button coming up after
+    // the tool has closed is no click, and no first half of a double click.
+    #[test]
+    fn a_press_held_when_the_tool_opened_is_no_click_after_it() {
+        let mut f = photo();
+        let at = pos2(500.0, 300.0);
+        f.press(at);
+        f.crop = Some((CropTool::begin(None, 2400, 1200), (2400, 1200), ALL, false));
+        f.frame(Vec::new());
+        f.crop = None;
+        f.release(at);
+        f.click(at);
+        assert!(f.zoom.is_fit(), "no double click");
+    }
+
+    // The second press of the double click that opened the tool lands on its bar, and
+    // presses nothing there; a press after a double click's time does.
+    #[test]
+    fn the_tools_bar_is_deaf_to_the_second_click_that_opened_it() {
+        let mut f = photo();
+        f.crop = Some((CropTool::begin(None, 2400, 1200), (2400, 1200), ALL, false));
+        f.frame(Vec::new());
+        let cancel = f.drew(CANCEL).unwrap().center();
+        assert_eq!(f.click(cancel), []);
+        f.time += 0.5;
+        assert_eq!(f.click(cancel), [ViewerAction::CropCancel]);
+        // A tool opened again is new: deaf again, its dropdown too.
+        let tool = f.crop.take();
+        f.frame(Vec::new());
+        f.time += 1.0;
+        f.crop = tool;
+        f.frame(Vec::new());
+        assert_eq!(f.click(cancel), []);
+        f.click(f.drew("Free").unwrap().center());
+        assert!(!f.view.ratio.open());
+    }
+
+    // At a step nothing is known of the photo stepped to, and "Original" stays where it
+    // was for that round trip, so that the buttons after it do not move; once the library
+    // has said the photo has no edit, it goes.
+    #[test]
+    fn original_stays_while_nothing_is_known_of_the_photo_stepped_to() {
+        let mut f = Fixture::new();
+        f.edited = true;
+        f.frame(Vec::new());
+        let places = bar_tools(&f);
+        assert!(f.drew(ORIGINAL).is_some());
+        f.edited = false;
+        f.editable = false;
+        let caption = std::mem::take(&mut f.caption);
+        f.frame(Vec::new());
+        assert_eq!(bar_tools(&f), places);
+        assert!(f.drew(ORIGINAL).is_some());
+        f.caption = caption;
+        f.frame(Vec::new());
+        assert_eq!(f.drew(ORIGINAL), None);
     }
 }

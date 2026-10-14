@@ -281,8 +281,11 @@ impl Viewer {
         }
         let changed = (self.shown.as_ref()).is_some_and(|old| picture_changed(old, &fresh));
         if changed {
-            // Under the same key the question would be the one already answered.
-            if self.key == fresh.key {
+            // Under the key the picture had before, the question would be the one already
+            // answered: turned and turned back. Not under the key the viewer has, which a
+            // new grid has already moved to the new picture's (`follow`) - the picture of
+            // an edit was asked for under it at once, and asked again it was made twice.
+            if (self.shown.as_ref()).is_some_and(|old| old.key == fresh.key) {
                 self.again += 1;
             }
             // Made again in place: nothing is being stepped past.

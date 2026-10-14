@@ -97,9 +97,10 @@ impl Handle {
     }
 }
 
-/// The smallest side a drag can produce, as a fraction. Comfortably above the library's
-/// refusal threshold (about 1%), so a rectangle the tool allows is never one the write
-/// refuses.
+/// The smallest side a rectangle can have, as a fraction: by a drag, and by a ratio
+/// chosen on a small rectangle, which grows it to this (`fit_aspect`). Comfortably above
+/// the library's refusal threshold (about 1%), so a rectangle the tool allows is never one
+/// the write refuses.
 pub const MIN_SIDE: f64 = 0.03;
 
 /// A ratio a rectangle can be held to.
@@ -275,6 +276,13 @@ pub fn fit_aspect(rect: Rect, k: Option<f64>) -> Rect {
     let cy = (rect.top + rect.bottom) / 2.0;
     let fit_w = w.min(h * k);
     let fit_h = fit_w / k;
+    // A ratio far from the rectangle's own shrinks one side with no floor: on a small
+    // rectangle of a panorama, held to 1:1, under the least the library takes. Grown back
+    // to `MIN_SIDE`, keeping the ratio, and kept inside the picture.
+    let grow = (MIN_SIDE / fit_w).max(MIN_SIDE / fit_h).max(1.0);
+    let (fit_w, fit_h) = (fit_w * grow, fit_h * grow);
+    let cx = cx.clamp(fit_w / 2.0, 1.0 - fit_w / 2.0);
+    let cy = cy.clamp(fit_h / 2.0, 1.0 - fit_h / 2.0);
     Rect {
         left: cx - fit_w / 2.0,
         right: cx + fit_w / 2.0,
@@ -552,5 +560,31 @@ mod tests {
         assert_eq!(Handle::W.place(), (0.0, 0.5));
         assert_eq!(Handle::Ne.place(), (1.0, 0.0));
         assert_eq!(Handle::Move.place(), (0.5, 0.5));
+    }
+
+    // A ratio chosen on the least rectangle a drag makes, on a panorama, shrinks one side
+    // with no floor: under the least crop the library takes. It is grown back to the
+    // least side, keeps its ratio and stays inside the picture.
+    #[test]
+    fn a_ratio_on_the_least_rectangle_keeps_the_least_side() {
+        // A panorama, whose square grows tall, and an upright strip, whose grows wide -
+        // each at the picture's far edges, where growing would leave it.
+        for picture in [4.0, 0.25] {
+            let k = fraction_ratio(Ratio::Of(1.0), picture).unwrap();
+            for at in [0.0, 0.5, 1.0 - MIN_SIDE] {
+                let least = Rect {
+                    left: at,
+                    top: at,
+                    right: at + MIN_SIDE,
+                    bottom: at + MIN_SIDE,
+                };
+                let held = fit_aspect(least, Some(k));
+                assert!(held.width() >= MIN_SIDE - 1e-12 && held.height() >= MIN_SIDE - 1e-12);
+                assert!((held.width() / held.height() - k).abs() < 1e-9, "{held:?}");
+                assert!(
+                    held.left >= 0.0 && held.right <= 1.0 && held.top >= 0.0 && held.bottom <= 1.0
+                );
+            }
+        }
     }
 }

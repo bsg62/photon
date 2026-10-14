@@ -1305,16 +1305,14 @@ impl App {
     /// Where the picture drawn under the crop tool lies in the tool's box, in fractions
     /// of it, while the tool is open.
     pub fn crop_part(&self) -> Option<[f32; 4]> {
-        let open = self.viewer.as_ref()?;
-        Some(open.crop.as_ref()?.part(open.viewer.want()))
+        Some(self.viewer.as_ref()?.crop.as_ref()?.part())
     }
 
     /// The widths of the levels of the picture the crop tool has had made for itself -
     /// the photo turned and not cropped - largest first: none until it is made, and
     /// for a photo that has no crop, whose own picture is that one.
     pub fn crop_picture(&self) -> Option<Vec<u32>> {
-        let open = self.viewer.as_ref()?;
-        let full = open.crop.as_ref()?.picture(open.viewer.want())?;
+        let full = self.viewer.as_ref()?.crop.as_ref()?.picture()?;
         Some(full.levels.iter().map(|(_, width)| *width).collect())
     }
 
@@ -1922,18 +1920,20 @@ impl App {
         }
         let stood = open.within.map_or(now, |(_, since)| since);
         // Whether the photo can be turned and cropped: the library has said what it
-        // is, it is in the view still, and it is a picture that can be shown and was
-        // made - the Svelte viewer's `editable`. And the crop tool is of such a photo
-        // alone: it closes over one that has gone, has left the view or was stepped
-        // from, which is every way its photo stops being the one its rectangle is on -
-        // but for the photo becoming another picture, which `took` says.
+        // is (nothing is known of one that is gone), it is in the view still, it is not
+        // a video, and it is a picture that can be shown and was made - the Svelte
+        // viewer's `editable`. And the crop tool is of such a photo alone: it closes
+        // over one that has gone, has left the view or was stepped from. And over one
+        // that is another picture: by the grid's key at once, which is a round trip
+        // before the library says so (`took`, for a picture changed under the key it
+        // had) - meanwhile the tool would ask for a picture of the new state that only
+        // it draws, and that its own closing then throws away.
         let editable = open.item.is_some()
             && !open.viewer.is_video()
-            && !open.viewer.gone()
             && !open.viewer.orphaned()
             && !failed
             && !(open.failed.as_ref()).is_some_and(|(of, _)| *of == want);
-        if !editable {
+        if !editable || open.crop.as_ref().is_some_and(|crop| crop.key != key) {
             open.crop = None;
         }
         // Under the crop tool of a photo that has a crop, the picture wanted is the
@@ -1955,7 +1955,7 @@ impl App {
         let coming =
             (self.asking).filter(|asked| asked.want == want && asked.uncropped == uncropped);
         let (held, refused) = match open.crop.as_ref().filter(|_| uncropped) {
-            Some(crop) => (crop.picture(want).map(|full| full.fit), crop.failed),
+            Some(crop) => (crop.picture().map(|full| full.fit), crop.failed),
             None => (
                 open.picture().map(|full| full.fit),
                 (open.failed.as_ref()).is_some_and(|(of, _)| *of == want),
@@ -2021,9 +2021,9 @@ impl App {
         };
         // Under the crop tool, the picture turned and not cropped once it is made;
         // until then the photo's own, in the part of the tool's box its crop keeps.
-        let tools = open.crop.as_ref().and_then(|crop| crop.picture(want));
+        let tools = open.crop.as_ref().and_then(|crop| crop.picture());
         let under = tools.or(open.picture());
-        let part = (open.crop.as_ref()).map_or([0.0, 0.0, 1.0, 1.0], |crop| crop.part(want));
+        let part = (open.crop.as_ref()).map_or([0.0, 0.0, 1.0, 1.0], Cropping::part);
         let part =
             egui::Rect::from_min_max(egui::pos2(part[0], part[1]), egui::pos2(part[2], part[3]));
         let fitted = under.and_then(|full| full.fitted.clone());
@@ -2212,6 +2212,7 @@ impl App {
                         let had = item.edit.as_ref().and_then(|edit| edit.crop);
                         open.crop = Some(Cropping {
                             tool: CropTool::begin(had, size.0, size.1),
+                            key: open.viewer.key(),
                             number: self.crops,
                             sent: false,
                             had,
@@ -3533,6 +3534,8 @@ struct Viewing {
 /// The crop tool, open on the photo in the viewer.
 struct Cropping {
     tool: CropTool,
+    /// The key of the picture it was opened on.
+    key: u64,
     /// The number it was opened under: the answer to its write counts for it alone.
     number: u64,
     /// Its rectangle has been sent to be stored, and the answer is not here yet.
@@ -3550,16 +3553,17 @@ struct Cropping {
 }
 
 impl Cropping {
-    /// The picture turned and not cropped, of the photo as it is now.
-    fn picture(&self, want: Want) -> Option<&FullPicture> {
-        (self.uncropped.as_ref()).filter(|full| full.want == want)
+    /// The picture turned and not cropped. (Of the photo as it is now: the tool closes
+    /// when the photo is another picture.)
+    fn picture(&self) -> Option<&FullPicture> {
+        self.uncropped.as_ref()
     }
 
     /// Where the picture drawn under the tool lies in the tool's box, in fractions of it:
     /// all of it, or - while the photo's own picture stands in for the one without its
     /// crop - the part the crop keeps.
-    fn part(&self, want: Want) -> [f32; 4] {
-        match (self.picture(want), self.had) {
+    fn part(&self) -> [f32; 4] {
+        match (self.picture(), self.had) {
             (None, Some(crop)) => {
                 crop.map(|edge| f32::from(edge) / photon_core::edit::CROP_UNIT as f32)
             }
