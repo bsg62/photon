@@ -93,6 +93,8 @@ objc2-core-video = "0.3.2"
 objc2-core-graphics = "0.3.2"
 objc2-core-foundation = "0.3.2"
 objc2-quartz-core = "0.3.2"
+# A seek's completion handler (`video/avf.rs`). objc2-av-foundation's version.
+block2 = "0.6.2"
 
 [dev-dependencies]
 # Whole frames of the application without a window (`eframe`), and off-screen rendering

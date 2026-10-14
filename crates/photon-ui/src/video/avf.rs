@@ -7,6 +7,8 @@
 #![allow(deprecated)] // The synchronous track and image calls: the window asks off its thread.
 
 use super::{Failure, Picture, turn};
+use block2::RcBlock;
+use objc2::runtime::Bool;
 use objc2::{AllocAnyThread, MainThreadMarker, rc::Retained, runtime::AnyObject};
 use objc2_av_foundation::{
     AVAsset, AVAssetImageGenerator, AVMediaTypeVideo, AVPlayer, AVPlayerItem, AVPlayerItemStatus,
@@ -29,6 +31,10 @@ use objc2_quartz_core::CACurrentMediaTime;
 use std::{
     cell::Cell,
     path::Path,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -153,6 +159,12 @@ pub struct Player {
     /// still, as a poster is (on the thread that asks, the window's - tens of
     /// milliseconds, once a seek).
     still: Cell<Option<f64>>,
+    /// Seeks asked for and not yet landed, and where the last one goes. **AVFoundation
+    /// seeks in the background, and its time is the old one until the seek lands**: read
+    /// meanwhile, a video played to its end and taken back to its start still said it had
+    /// ended. A seek's completion handler counts it landed, superseded ones included.
+    seeking: Arc<AtomicUsize>,
+    heading: Cell<f64>,
     quarters: u32,
     duration: f64,
     shown: Cell<f64>,
@@ -216,6 +228,8 @@ impl Player {
                 item,
                 output,
                 still: Cell::new(Some(0.0)),
+                seeking: Arc::new(AtomicUsize::new(0)),
+                heading: Cell::new(0.0),
                 shown: Cell::new(-1.0),
             })
         }
@@ -232,15 +246,24 @@ impl Player {
 
     /// To `at` seconds, to the frame.
     pub fn seek(&self, at: f64) {
+        let at = at.max(0.0);
         if unsafe { self.player.rate() } == 0.0 {
-            self.still.set(Some(at.max(0.0)));
+            self.still.set(Some(at));
         }
+        self.heading.set(at);
+        self.seeking.fetch_add(1, Ordering::SeqCst);
+        let seeking = self.seeking.clone();
+        let landed: RcBlock<dyn Fn(Bool)> = RcBlock::new(move |_finished: Bool| {
+            seeking.fetch_sub(1, Ordering::SeqCst);
+        });
         unsafe {
-            self.player.seekToTime_toleranceBefore_toleranceAfter(
-                CMTime::with_seconds(at.max(0.0), 600),
-                kCMTimeZero,
-                kCMTimeZero,
-            )
+            self.player
+                .seekToTime_toleranceBefore_toleranceAfter_completionHandler(
+                    CMTime::with_seconds(at, 600),
+                    kCMTimeZero,
+                    kCMTimeZero,
+                    &landed,
+                )
         }
     }
 
@@ -254,7 +277,11 @@ impl Player {
     }
 
     /// Seconds into the video, as the player has it.
+    /// Where a seek on its way goes, until it lands.
     pub fn position(&self) -> Option<f64> {
+        if self.seeking.load(Ordering::SeqCst) > 0 {
+            return Some(self.heading.get());
+        }
         let at = unsafe { self.player.currentTime().seconds() };
         at.is_finite().then_some(at)
     }
