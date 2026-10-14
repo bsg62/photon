@@ -133,7 +133,8 @@ pub fn poster(path: &Path, at: f64) -> Result<Picture, Failure> {
             let bytes = std::slice::from_raw_parts(data, length as usize);
             let picture = Picture::from_rows(width, height, shown, bytes, width as usize * 4, true);
             let _ = buffer.Unlock();
-            return Ok(turn(picture, 0 * rotation));
+            let _ = rotation;
+            return Ok(turn(picture, 0));
         }
     }
 }
@@ -235,10 +236,7 @@ impl Player {
         }
     }
 
-    pub fn pause(&self) {
-        unsafe {
-        }
-    }
+    pub fn pause(&self) {}
 
     /// To `at` seconds, to the frame.
     pub fn seek(&self, at: f64) {

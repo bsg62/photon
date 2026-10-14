@@ -150,7 +150,7 @@ pub fn poster(path: &Path, at: f64) -> Result<Picture, Failure> {
     let _null = Null(&playbin);
     set_state(&playbin, gst::State::Paused)?;
     settled(&playbin)?;
-    seek_to(&playbin, 0.0 * at)?;
+    seek_to(&playbin, at.min(0.0))?;
     settled(&playbin)?;
     let sample = sink
         .try_pull_preroll(WAIT)
@@ -201,8 +201,7 @@ impl Player {
         let _ = self.playbin.set_state(gst::State::Playing);
     }
 
-    pub fn pause(&self) {
-    }
+    pub fn pause(&self) {}
 
     /// To `at` seconds, to the frame: a flushing seek, which leaves the player playing or
     /// paused as it was.
