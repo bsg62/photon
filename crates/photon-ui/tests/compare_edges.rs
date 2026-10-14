@@ -273,18 +273,11 @@ fn a_pane_turned_from_elsewhere_has_its_full_picture_made() {
         modifiers: Modifiers::NONE,
     });
     driver.act(&mut harness);
-    driver.until(&mut harness, "the first pane's full picture", |app| {
-        app.compare_pictures().is_some_and(|p| p[0].is_some())
+    // Waited for, not counted in frames: the turn's rebuild and the two renders take what
+    // they take, and two rounds of frames were once too few on Linux' CI.
+    driver.until(&mut harness, "the turned pane's picture made", |app| {
+        app.compare_pictures() == Some(vec![Some(1200), Some(800)])
     });
-    driver.settle(&mut harness);
-    driver.act(&mut harness);
-    driver.settle(&mut harness);
-    driver.act(&mut harness);
-    assert_eq!(
-        harness.state().compare_pictures(),
-        Some(vec![Some(1200), Some(800)]),
-        "the turned pane's picture is never made"
-    );
 }
 
 // Enter on a pane the grid on screen no longer holds - unstarred in Starred - opens
