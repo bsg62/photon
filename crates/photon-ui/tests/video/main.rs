@@ -79,16 +79,16 @@ fn cannot(codec: &str, why: impl std::fmt::Display) -> Result<(), Failed> {
 }
 
 /// Time passing while a test waits on a player. On a Mac the main thread's run loop is
-/// turned through it, as winit turns it in the window: AVFoundation tells a player's state
-/// there, and nothing else turns it in a test.
+/// turned first, as winit turns it in the window: AVFoundation tells a player's state
+/// there, and nothing else turns it in a test. And then slept through: a run loop with
+/// nothing attached returns at once, and turned alone it was a loop that spun - on
+/// macOS' runner of three cores, a player starved to four frames a second.
 fn idle(long: Duration) {
     #[cfg(target_os = "macos")]
     {
         use objc2_foundation::{NSDate, NSRunLoop};
-        NSRunLoop::currentRunLoop()
-            .runUntilDate(&NSDate::dateWithTimeIntervalSinceNow(long.as_secs_f64()));
+        NSRunLoop::currentRunLoop().runUntilDate(&NSDate::dateWithTimeIntervalSinceNow(0.0));
     }
-    #[cfg(not(target_os = "macos"))]
     std::thread::sleep(long);
 }
 
