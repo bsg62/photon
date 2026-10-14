@@ -61,6 +61,15 @@ info (`ci.yml` says why: the 10 GB cap, and Windows' linker). So a pull request 
 and the benchmark is built on Linux alone. A job that takes twenty minutes where it took
 five has lost its cache: `gh cache list` shows what is there.
 
+**Small files are what Windows is slow at, and its runner's C: drive slowest.** NTFS makes
+and removes files several times slower than Linux does, and the runner's TEMP, on C:, several
+times slower again than D:, where the checkout is - so `ci.yml` moves TEMP to D:. The native
+window's tests build libraries of thousands of cached thumbnails in temporary directories,
+and that alone was twenty of the Windows job's thirty minutes (2026-10-14: one test of
+18,000 photos, 155 s on C:, 23 s on D:, under 3 s on Linux). A fixture writes its rows in one
+transaction (`Library::set_thumb_states`), not a commit a row, and makes no more files than
+its test needs; a Windows machine with an antivirus scanning TEMP pays more still.
+
 **Repository chores** (also run in CI, so run them before tagging):
 
 ```bash
