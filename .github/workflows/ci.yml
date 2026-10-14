@@ -51,6 +51,14 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libsoup-3.0-dev librsvg2-dev libxdo-dev libssl-dev
+      # The native window plays a video through GStreamer: its development files to link
+      # against, and the plugins that read an MP4 and decode H.264 and HEVC, which
+      # `tests/video` needs - without them every test there passes over itself.
+      - name: Install GStreamer
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get install -y libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+            gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav
       # libjpeg-turbo's x86 SIMD code is nasm assembly. Without nasm, mozjpeg-sys builds plain
       # C instead, silently, so the next step fails by name if nasm is missing. rav1d's x86-64
       # assembly (`avif-asm`) needs it too, and would fail the build without it anyway.
@@ -84,6 +92,11 @@ jobs:
         with:
           tool: nextest
       - run: cargo nextest run --workspace --profile ci
+        # What each runner's own framework decodes (the spike, 2026-10-14): a video test
+        # that passes over a codec named here fails instead - else a runner that lost its
+        # decoders would pass every test of them, with nothing in the log to say so.
+        env:
+          PHOTON_VIDEO_EXPECTS: ${{ runner.os == 'Windows' && 'h264' || 'h264 hevc' }}
       # rav1d's x86-64 assembly (`avif-asm`) is off above, as in a local build without nasm,
       # and on in every x86-64 installer the release workflow builds: this runs photon-core's
       # tests that decode an AVIF through it - the four modules whose tests hand rav1d a

@@ -23,6 +23,13 @@ path = "src/main.rs"
 name = "all"
 path = "tests/main.rs"
 
+# The system's video backends, on the main thread: AVFoundation's player wants it, and
+# libtest's harness runs every test on a thread of its own (`tests/video/main.rs`).
+[[test]]
+name = "video"
+path = "tests/video/main.rs"
+harness = false
+
 [dependencies]
 photon-core = { path = "../photon-core" }
 photon-engine = { path = "../photon-engine" }
@@ -55,6 +62,39 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 # system's own `user32`.
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-sys = { version = "0.52.0", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
+# Video (`video/mf.rs`): Media Foundation, part of the system. The version already in the
+# lockfile, which wgpu brings.
+windows = { version = "0.62.2", features = [
+    "Win32_Foundation",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Variant",
+    "Win32_Media_MediaFoundation",
+    "Win32_Graphics_Imaging",
+] }
+windows-core = "0.62.2"
+
+# Video (`video/gst.rs`): GStreamer, which the web view's photon already needs to start.
+# Its libraries are linked (the core, and plugins-base's app and video); its plugins are
+# looked for when a video is opened.
+[target.'cfg(target_os = "linux")'.dependencies]
+gstreamer = "0.25.4"
+gstreamer-app = "0.25.2"
+gstreamer-video = "0.25.4"
+
+# Video (`video/avf.rs`): AVFoundation, part of the system. Every framework crate turns on
+# all its features by default but this one's CoreMedia half, which its timing needs.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6.5"
+objc2-foundation = "0.3.2"
+objc2-av-foundation = { version = "0.3.2", features = ["objc2-core-media"] }
+objc2-core-media = "0.3.2"
+objc2-core-video = "0.3.2"
+objc2-core-graphics = "0.3.2"
+objc2-core-foundation = "0.3.2"
+objc2-quartz-core = "0.3.2"
+# A seek's completion handler (`video/avf.rs`). objc2-av-foundation's version.
+block2 = "0.6.2"
 
 [dev-dependencies]
 # Whole frames of the application without a window (`eframe`), and off-screen rendering
@@ -64,3 +104,5 @@ image = { version = "0.25.10", default-features = false, features = ["jpeg"] }
 tempfile = "3.27.0"
 # A second connection to a test's library, to hold its write lock (`tests/sort.rs`).
 rusqlite = { version = "0.40.2", features = ["bundled"] }
+# The harness of `tests/video`, which runs its tests on the main thread. MIT or Apache 2.0.
+libtest-mimic = "0.8.2"
