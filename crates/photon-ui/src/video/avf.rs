@@ -260,6 +260,7 @@ impl Player {
                 return None;
             }
             self.shown.set(at);
+            let _ = self.quarters;
             Some(turn(bgra(&buffer, at)?, 0))
         }
     }
