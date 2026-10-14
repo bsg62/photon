@@ -2844,8 +2844,22 @@ Mac is the one AVFoundation wants, and is why `open` waits for nothing - and tol
 once, with its sound, as the web view's `<video>` did. Each frame's newest picture is written
 into one texture in place (`TextureHandle::set`) and handed to the viewer as its one level,
 so a video's frame is drawn as a photo's picture is, fitted; until the first its poster - the
-preview - stands in its place. A frame is asked for every 8 ms while it plays: the video
-says when its next frame is due, and the window cannot ask it. **Another video, or another
+preview - stands in its place. A frame is asked for every 8 ms while it plays (and once more
+after its end, whose last frame can come after the frame that heard it): a crude rate,
+which PR 4's pause has to stop - GStreamer could say when a sample arrives, the other two
+cannot as simply. **A player is opened only once the viewer has rested on its video**
+(`Viewer::rested`, as for a photo's full picture): a held arrow passes videos faster than a
+player opens, and each opened and let go of was work on this thread and a moment of its
+sound. **A player that fails is let go of** (`Playing::frame`): on Linux a video whose
+picture has no decoder plays its sound alone, and kept, it played on under what is said of
+it; and the poster, not its last frame, stands under the words. A new picture of the same
+video is a new file - followed to a new name, or rewritten - whose path is read again (no
+test: the seam is a file moved while the viewer is on it). **Known, and left**: each frame
+is made a `ColorImage` on this thread and uploaded from it - about a millisecond at 1080p in
+a release build once the needless unmultiplying pass was dropped, four at 4K, and ten times
+that in a debug build; and a player has no crash-loop guard, where a poster does - a file
+whose later frames crash a decoder takes the window down at each opening, which is not a
+loop, since each needs a click. **Another video, or another
 picture of the same one, is another player** (`Playing::is_of`): the step from one video to
 the next let go of the first. What is said over a video that cannot be played is the web
 view's, in its order (`playback::said`): a crash first; then a system that plays nothing -

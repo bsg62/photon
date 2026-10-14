@@ -431,11 +431,20 @@ fn no_video() -> Result<(), Failed> {
         check(video::poster(path, 0.0).is_err(), || {
             format!("a poster of {}", path.display())
         })?;
-        // Refused at once, or failing on its way to ready - never ready.
-        let player = Player::open(path).and_then(|player| readied(&player));
-        check(player.is_err(), || {
-            format!("a player of {}", path.display())
-        })?;
+        // Refused at once, or failing on its way to ready - saying so, and not merely
+        // never ready: that is a player that shows nothing and says nothing.
+        if let Ok(player) = Player::open(path) {
+            let until = Instant::now() + BEGUN;
+            while player.failure().is_none() {
+                check(!player.ready(), || {
+                    format!("a player of {} ready", path.display())
+                })?;
+                check(Instant::now() < until, || {
+                    format!("a player of {} neither ready nor failed", path.display())
+                })?;
+                idle(Duration::from_millis(10));
+            }
+        }
     }
     Ok(())
 }

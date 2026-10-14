@@ -10,8 +10,13 @@ use crate::video::{Failure, Picture, Stream};
 pub struct Playing {
     id: i64,
     key: u64,
-    stream: Box<dyn Stream>,
+    /// Let go of as it fails: a video whose picture has no decoder plays its sound alone
+    /// on Linux (`decodebin`), and kept, it played on under what is said of it.
+    stream: Option<Box<dyn Stream>>,
     failure: Option<Failure>,
+    /// Whether the frame after its end has been asked for: its last frame can come
+    /// after the frame that heard it end.
+    after_end: bool,
 }
 
 impl Playing {
@@ -20,8 +25,9 @@ impl Playing {
         Playing {
             id,
             key,
-            stream,
+            stream: Some(stream),
             failure: None,
+            after_end: false,
         }
     }
 
@@ -34,22 +40,26 @@ impl Playing {
     /// The newest frame since the last asked, if one has come; none once it has failed,
     /// and the failure is kept.
     pub fn frame(&mut self) -> Option<Picture> {
-        if self.failure.is_none() {
-            self.failure = self.stream.failure();
-        }
-        if self.failure.is_some() {
+        let stream = self.stream.as_ref()?;
+        if let Some(failure) = stream.failure() {
+            self.failure = Some(failure);
+            self.stream = None;
             return None;
         }
-        self.stream.frame()
+        stream.frame()
     }
 
     pub fn failure(&self) -> Option<&Failure> {
         self.failure.as_ref()
     }
 
-    /// Whether frames may come still: frames are asked for while it is.
-    pub fn running(&self) -> bool {
-        self.failure.is_none() && !self.stream.ended()
+    /// Whether frames may come still: frames are asked for while it is - and once more
+    /// after its end, for a last frame that came after the frame that heard it.
+    pub fn running(&mut self) -> bool {
+        let Some(stream) = self.stream.as_ref() else {
+            return false;
+        };
+        !stream.ended() || !std::mem::replace(&mut self.after_end, true)
     }
 }
 
@@ -106,11 +116,19 @@ mod tests {
     #[derive(Default)]
     struct Told {
         played: Cell<bool>,
+        dropped: Cell<bool>,
+        ended: Cell<bool>,
         failure: std::cell::RefCell<Option<Failure>>,
         frames: std::cell::RefCell<Vec<Picture>>,
     }
 
     struct Fake(Rc<Told>);
+
+    impl Drop for Fake {
+        fn drop(&mut self) {
+            self.0.dropped.set(true);
+        }
+    }
 
     impl Stream for Fake {
         fn ready(&self) -> bool {
@@ -130,7 +148,7 @@ mod tests {
             None
         }
         fn ended(&self) -> bool {
-            false
+            self.0.ended.get()
         }
         fn failure(&self) -> Option<Failure> {
             self.0.failure.borrow().clone()
@@ -172,6 +190,19 @@ mod tests {
         assert_eq!(playing.frame(), None);
         assert_eq!(playing.failure(), Some(&Failure::Broken("bad".into())));
         assert!(!playing.running());
+        // And its player is let go of, so that nothing of it plays on - its sound.
+        assert!(told.dropped.get());
+    }
+
+    #[test]
+    fn a_video_at_its_end_is_asked_for_one_frame_more() {
+        let told = Rc::new(Told::default());
+        let mut playing = Playing::start(7, 70, Box::new(Fake(told.clone())));
+        assert!(playing.running());
+        told.ended.set(true);
+        assert!(playing.running(), "once more, for a last frame");
+        assert!(!playing.running());
+        assert!(!told.dropped.get());
     }
 
     fn why(failure: Option<&Failure>) -> Why<'_> {

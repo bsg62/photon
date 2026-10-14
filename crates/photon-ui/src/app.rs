@@ -1831,6 +1831,7 @@ impl App {
             playing: None,
             frame: None,
             path: None,
+            seen: None,
             path_asked: None,
             open_failed: None,
         });
@@ -1855,42 +1856,69 @@ impl App {
         self.shut_viewer();
     }
 
-    /// The video on screen, played: its player opened once its file is known and the
-    /// system is known to play, let go of when the viewer leaves that picture of it, and
-    /// its newest frame written into its texture. A frame is asked for while it plays.
-    fn play_video(&mut self, ctx: &egui::Context, open: &mut Viewing, id: i64, key: u64) {
+    /// The video on screen, played: its player opened once its file is known, the system
+    /// is known to play and the viewer has rested on it, let go of when the viewer leaves
+    /// that picture of it, and its newest frame written into its texture. A frame is asked
+    /// for while it plays.
+    fn play_video(
+        &mut self,
+        ctx: &egui::Context,
+        open: &mut Viewing,
+        (id, key): (i64, u64),
+        rested: bool,
+    ) {
         match self.video_paths.answer() {
-            Some(Ok((of, Some(path)))) => open.path = Some((of, path)),
-            // No file to open: a row gone since, which the grid will say.
-            Some(Ok((of, None))) if of == id => {
-                let none = Failure::Broken("the library has no file for it".into());
-                open.open_failed = Some((id, key, none));
+            Some(Ok((of, path))) => {
+                let why = || "the library has no file for it".to_owned();
+                open.path = Some((of, path.ok_or_else(why)));
             }
-            _ => {}
+            // A read that panicked is an answer for the video it was asked of.
+            Some(Err(_)) => {
+                if let Some(of) = open.path_asked {
+                    open.path = Some((of, Err("the library could not be read".into())));
+                }
+            }
+            None => {}
         }
         if !open.viewer.is_video() || open.viewer.gone() {
             open.playing = None;
             open.frame = None;
             return;
         }
-        // Another video, or another picture of it: its player is another.
+        // Another video, or another picture of it: its player is another. And another
+        // picture of the same video is another file - the scanner has followed it to a
+        // new name, or it was rewritten - whose path is read again.
         if (open.playing.as_ref()).is_some_and(|playing| !playing.is_of(id, key)) {
             open.playing = None;
             open.frame = None;
         }
+        if open.seen.is_some_and(|(of, at)| of == id && at != key) {
+            open.path = None;
+            open.path_asked = None;
+        }
+        open.seen = Some((id, key));
         let crashed = (open.item.as_ref()).is_some_and(|item| item.video_crashed);
         let refused =
             (open.open_failed.as_ref()).is_some_and(|(of, at, _)| (*of, *at) == (id, key));
-        if open.playing.is_none() && !crashed && !refused {
+        // Not before the viewer has rested on it, as its full picture is not: a held
+        // arrow passes videos faster than a player opens, and each one opened and let go
+        // of is work on this thread, and a moment of its sound.
+        if open.playing.is_none() && !crashed && !refused && rested {
             match (self.video_plays.get(), open.path.as_ref()) {
                 // The system says whether it plays once the poster worker has asked it,
                 // a moment after the launch: looked at again until it has.
                 (None, _) => ctx.request_repaint_after(Duration::from_millis(100)),
                 (Some(false), _) => {}
-                (Some(true), Some((of, path))) if *of == id => match self.videos.open(path) {
-                    Ok(stream) => open.playing = Some(Playing::start(id, key, stream)),
-                    Err(failure) => open.open_failed = Some((id, key, failure)),
-                },
+                (Some(true), Some((of, file))) if *of == id => {
+                    let opened = match file {
+                        Ok(path) => self.videos.open(path),
+                        Err(why) => Err(Failure::Broken(why.clone())),
+                    };
+                    match opened {
+                        Ok(stream) => open.playing = Some(Playing::start(id, key, stream)),
+                        Err(failure) => open.open_failed = Some((id, key, failure)),
+                    }
+                }
                 (Some(true), _) if open.path_asked != Some(id) => {
                     open.path_asked = Some(id);
                     self.video_paths.ask(id);
@@ -1903,12 +1931,11 @@ impl App {
         };
         if let Some(picture) = playing.frame() {
             let size = [picture.width as usize, picture.height as usize];
-            let image = egui::ColorImage::from_rgba_unmultiplied(size, &picture.rgba);
-            match open
-                .frame
-                .as_mut()
-                .filter(|(texture, ..)| texture.size() == size)
-            {
+            // Premultiplied: every frame is opaque (`Picture::from_rows`), so it is the
+            // same picture, and the unmultiplying pass over every pixel of every frame is
+            // spared - a millisecond of this thread a frame at 1080p.
+            let image = egui::ColorImage::from_rgba_premultiplied(size, &picture.rgba);
+            match (open.frame.as_mut()).filter(|(texture, ..)| texture.size() == size) {
                 Some((texture, _, at)) => {
                     texture.set(image, egui::TextureOptions::LINEAR);
                     *at = picture.at;
@@ -1919,6 +1946,11 @@ impl App {
                     open.frame = Some((texture, picture.width, picture.at));
                 }
             }
+        }
+        // A video that has failed is shown by its poster, under what is said of it - not
+        // by the last frame it drew before it failed.
+        if playing.failure().is_some() {
+            open.frame = None;
         }
         // The next frame is the video's to say when: asked for at twice sixty a second,
         // so that one is drawn within a refresh of its time, whatever its rate.
@@ -2376,7 +2408,7 @@ impl App {
         } else if seen.is_some_and(|seen| seen < 1.0) {
             ctx.request_repaint();
         }
-        self.play_video(&ctx, &mut open, id, key);
+        self.play_video(&ctx, &mut open, (id, key), rested);
         let preview = self.previews.texture(key).cloned();
         let has_preview = preview.is_some();
         let caption = (open.item.as_ref())
@@ -4279,9 +4311,12 @@ struct Viewing {
     /// Its newest frame as a texture, written in place frame by frame, with its width
     /// and the time in the video it shows.
     frame: Option<(egui::TextureHandle, u32, f64)>,
-    /// The video's file, once read: by id, as the viewer may have stepped since it was
-    /// asked for.
-    path: Option<(i64, PathBuf)>,
+    /// The video's file, or why there is none, once read: by id, as the viewer may have
+    /// stepped since it was asked for.
+    path: Option<(i64, Result<PathBuf, String>)>,
+    /// The video and picture of the last frame: a new picture of the same video is a new
+    /// file, whose path is read again.
+    seen: Option<(i64, u64)>,
     /// The video whose file was last asked for: asked once, not in every frame.
     path_asked: Option<i64>,
     /// A player that could not be opened, and of what; it is not opened again for that.

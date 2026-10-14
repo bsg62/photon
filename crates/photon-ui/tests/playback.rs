@@ -246,7 +246,7 @@ fn leaving_a_video_lets_its_player_go() {
 }
 
 #[test]
-fn a_video_that_fails_keeps_its_poster_and_says_so() {
+fn a_video_that_fails_shows_its_poster_says_so_and_lets_its_player_go() {
     let dir = tempfile::tempdir().unwrap();
     let told = Arc::new(Mutex::new(Told::default()));
     let (mut harness, mut driver, _) = launched(dir.path(), &told);
@@ -254,19 +254,45 @@ fn a_video_that_fails_keeps_its_poster_and_says_so() {
     driver.until(&mut harness, "its player opened", |_| {
         !told.lock().unwrap().opened.is_empty()
     });
-    {
-        let mut told = told.lock().unwrap();
-        told.failure = Some(Failure::Broken("a broken file".into()));
-        told.frames.push_back(frame(0.5, [20, 200, 20]));
-    }
-    // A frame to hear it in, and one to draw what it says.
+    told.lock()
+        .unwrap()
+        .frames
+        .push_back(frame(0.5, [20, 200, 20]));
+    driver.until(&mut harness, "a frame drawn", |app| {
+        app.video_frame() == Some(0.5)
+    });
+    told.lock().unwrap().failure = Some(Failure::Broken("a broken file".into()));
+    // Its player let go of - on Linux it would play its sound on - and its poster, not
+    // the last frame it drew, under what is said.
+    driver.until(&mut harness, "its player let go of", |_| {
+        told.lock().unwrap().dropped == 1
+    });
     driver.act(&mut harness);
-    driver.act(&mut harness);
+    assert_eq!(harness.state().video_frame(), None);
     assert!(
         harness.query_by_label(FAILED).is_some(),
         "{:?}",
         said(&harness)
     );
-    // No frame of a player that has failed is drawn.
-    assert_eq!(harness.state().video_frame(), None);
+}
+
+// A held arrow passes videos faster than a player opens: one is opened only once the
+// viewer has rested on its video, as a photo's full picture is made.
+#[test]
+fn a_video_stepped_past_is_not_played() {
+    let dir = tempfile::tempdir().unwrap();
+    let told = Arc::new(Mutex::new(Told::default()));
+    let (mut harness, mut driver, folder) = launched(dir.path(), &told);
+    open(&mut driver, &mut harness, "v.mp4");
+    driver.until(&mut harness, "its player opened", |_| {
+        told.lock().unwrap().opened.len() == 1
+    });
+    // Over `w.mp4` to `c.jpg`, a frame apart.
+    harness.key_press_modifiers(Modifiers::NONE, Key::ArrowRight);
+    harness.step();
+    harness.key_press_modifiers(Modifiers::NONE, Key::ArrowRight);
+    driver.act(&mut harness);
+    driver.settle(&mut harness);
+    let first = photon_core::paths::canonicalize(folder.join("v.mp4")).unwrap();
+    assert_eq!(told.lock().unwrap().opened, [first]);
 }
