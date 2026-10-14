@@ -1,9 +1,7 @@
 //! The sidebar's lists, through the whole application: the collections read from a library
 //! on disk, a folder gone to in the grid, and the folder photon remembers.
 
-mod common;
-
-use common::{Driver, Harness, click, launch, library, opened, photo_ids};
+use crate::common::{Driver, Harness, click, launch, library, opened, photo_ids};
 use eframe::egui::{self, Key, Modifiers, pos2, vec2};
 use egui_kittest::kittest::{NodeT, Queryable};
 use photon_core::{

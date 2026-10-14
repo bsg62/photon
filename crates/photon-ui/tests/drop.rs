@@ -2,9 +2,7 @@
 //! over libraries made for the test, whose folders hold real photos and are scanned.
 //! Every folder and file is under a temporary directory the test made.
 
-mod common;
-
-use common::{Driver, Harness, drop_on, hold_over, over, photos_in, said};
+use crate::common::{Driver, Harness, drop_on, hold_over, over, photos_in, said};
 use eframe::egui::{self, Modifiers, PointerButton};
 use egui_kittest::kittest::Queryable;
 use photon_ui::{
@@ -105,7 +103,7 @@ fn what_the_engine_refuses_of_a_drop_is_said_once_and_the_rest_is_watched() {
     driver.until(&mut harness, "its photos shown", |app| app.photos() == 3);
     driver.settle(&mut harness);
     assert_eq!(watched(harness.state()), [kept(&holiday)]);
-    assert_eq!(common::said(&harness).len(), 2);
+    assert_eq!(crate::common::said(&harness).len(), 2);
 }
 
 // Nothing watched, and nothing claimed to be.
@@ -169,7 +167,7 @@ fn where_no_drop_can_arrive_none_is_offered() {
     let made = photon_ui::dirs::within(&dir.path().join("data"), &dir.path().join("cache"));
     let mut harness = egui_kittest::Harness::builder()
         .with_size(egui::vec2(1000.0, 700.0))
-        .with_step_dt(common::REFRESH as f32)
+        .with_step_dt(crate::common::REFRESH as f32)
         .build_eframe(move |cc| App::new(cc, made, None).unwrap().without_drops());
     let mut driver = Driver::new(&harness);
     driver.until(&mut harness, "the empty library's panel", |app| {

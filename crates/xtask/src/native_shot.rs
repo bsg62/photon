@@ -2,7 +2,10 @@
 //! `target/screenshots/native-*.png`.
 //!
 //! The rendering is a test of photon-ui (`tests/screenshots.rs`), ignored by default and
-//! run from here, so that xtask does not itself depend on a GPU stack. Like `screenshots`
+//! run from here, so that xtask does not itself depend on a GPU stack. Through `cargo test`,
+//! which runs them in one process, and not through nextest, which runs a process for each:
+//! the pictures make their GPU devices one at a time by a lock of the process's own
+//! (`DEVICES`), and two dozen made at once crashed the Vulkan loader. Like `screenshots`
 //! it is not run in CI and replaces no item of the smoke checklist.
 
 use std::{
@@ -18,10 +21,11 @@ pub fn run(root: &Path) -> ExitCode {
             "-p",
             "photon-ui",
             "--test",
-            "screenshots",
+            "all",
             "--",
             "--ignored",
             "--nocapture",
+            "screenshots::",
         ])
         .status();
     match status {

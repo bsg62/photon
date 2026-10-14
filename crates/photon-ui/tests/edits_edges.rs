@@ -2,9 +2,7 @@
 //! the fix pass's. Each says what it shows; the helpers are `tests/edits.rs`'s, copied,
 //! since a test file's are its own.
 
-mod common;
-
-use common::{Driver, Harness, over};
+use crate::common::{Driver, Harness, over};
 use eframe::egui::{self, Key, Modifiers, PointerButton, Pos2};
 use egui_kittest::kittest::Queryable;
 use photon_engine::commands::{self, ItemEdit};

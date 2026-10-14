@@ -1,9 +1,7 @@
 //! The selection, through the whole application: photos picked with the mouse and the
 //! keys, over the real engine, and kept on their photos when the grid under them changes.
 
-mod common;
-
-use common::{Driver, Harness, click, library, opened, photo_ids};
+use crate::common::{Driver, Harness, click, library, opened, photo_ids};
 use eframe::egui::{self, Key, Modifiers, PointerButton, pos2};
 use egui_kittest::kittest::{NodeT, Queryable};
 use photon_core::grid::GridView;

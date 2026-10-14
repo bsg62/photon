@@ -77,7 +77,13 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/native-ui' }}
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
-      - run: cargo test --workspace
+      # nextest runs every test binary's tests in one pool, where `cargo test` runs the
+      # binaries one after another, each ending on its slowest few tests with the other
+      # cores idle. The workspace has no doctests, which nextest does not run.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
+      - run: cargo nextest run --workspace --profile ci
       # rav1d's x86-64 assembly (`avif-asm`) is off above, as in a local build without nasm,
       # and on in every x86-64 installer the release workflow builds: this runs photon-core's
       # tests that decode an AVIF through it - the four modules whose tests hand rav1d a

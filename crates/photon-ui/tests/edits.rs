@@ -5,9 +5,7 @@
 //! two columns of `library.db`; the picture that follows is the engine's render, and
 //! the files stay as the test made them (`the_photos_are_as_they_were`).
 
-mod common;
-
-use common::{Driver, Harness, library, opened, over, said};
+use crate::common::{Driver, Harness, library, opened, over, said};
 use eframe::egui::{self, Key, Modifiers, PointerButton, Pos2, pos2};
 use egui_kittest::kittest::Queryable;
 use photon_engine::{

@@ -5,9 +5,7 @@
 //! Every write here goes into a library the test made, in a temporary directory, and
 //! none of them leaves `library.db`: a name is never written to a photo or an INI.
 
-mod common;
-
-use common::{Driver, Harness, click as row, library, opened, photo_ids, said};
+use crate::common::{Driver, Harness, click as row, library, opened, photo_ids, said};
 use eframe::egui::{self, Key, Modifiers, PointerButton, Pos2, accesskit::Role};
 use egui_kittest::kittest::Queryable;
 use photon_core::{

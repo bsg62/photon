@@ -2,9 +2,7 @@
 //! photos made for the test, in a temporary directory. A star written here goes into
 //! that directory's own `.picasa.ini`, and nowhere else.
 
-mod common;
-
-use common::{Driver, Harness, hold_over, library, opened, over, photo_ids, said};
+use crate::common::{Driver, Harness, hold_over, library, opened, over, photo_ids, said};
 use eframe::egui::{self, Key, Modifiers, PointerButton, Pos2};
 use egui_kittest::kittest::{NodeT, Queryable};
 use photon_core::{
@@ -2083,7 +2081,7 @@ fn a_copy_is_found_in_all_photos_from_hidden() {
     copies(&library, &[hidden[0], ids[5]]);
     let (mut harness, mut driver) = opened(&library, 9);
     driver.settle(&mut harness);
-    common::click(&mut driver, &mut harness, "Hidden");
+    crate::common::click(&mut driver, &mut harness, "Hidden");
     driver.until(&mut harness, "the hidden photos", |app| {
         app.settled().view == GridView::Hidden && app.photos() == 3
     });
@@ -2580,7 +2578,7 @@ fn a_notch_over_the_panel(notch: fn() -> Notch) -> f32 {
     let dirs = library.dirs();
     let mut harness: Harness<'_> = egui_kittest::Harness::builder()
         .with_size(egui::vec2(1000.0, 700.0))
-        .with_step_dt(common::REFRESH as f32)
+        .with_step_dt(crate::common::REFRESH as f32)
         .build_eframe(move |cc| {
             photon_ui::app::App::new(cc, dirs, None)
                 .unwrap()

@@ -1,0 +1,11 @@
+# cargo-nextest's settings (`cargo nextest run --workspace` is the gate's test step).
+
+[profile.default]
+# Said to be slow at a minute and ended at five. No test here comes near it - the longest,
+# over a library of 18,000 photos on the Windows runner, is well under a minute - and one
+# that runs five is waiting for something that will not come.
+slow-timeout = { period = "60s", terminate-after = 5 }
+
+[profile.ci]
+# Every failure of a run, not only the first: a run is ten minutes on Windows.
+fail-fast = false

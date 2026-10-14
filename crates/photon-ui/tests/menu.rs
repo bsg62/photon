@@ -4,9 +4,7 @@
 //!
 //! Every write here goes into a library the test made, in a temporary directory.
 
-mod common;
-
-use common::{Driver, Harness, REFRESH, click, library, opened, photo_ids, sources};
+use crate::common::{Driver, Harness, REFRESH, click, library, opened, photo_ids, sources};
 use eframe::egui::{self, Key, Modifiers, PointerButton, Pos2};
 use egui_kittest::kittest::Queryable;
 use photon_core::{

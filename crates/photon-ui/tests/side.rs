@@ -5,9 +5,7 @@
 //! Every write here goes into a library the test made, in a temporary directory, and
 //! none of them outside `library.db`: a folder's name in photon is the library's own.
 
-mod common;
-
-use common::{Driver, Harness, REFRESH, library, opened, photo_ids, sources};
+use crate::common::{Driver, Harness, REFRESH, library, opened, photo_ids, sources};
 use eframe::egui::{self, Key, Modifiers, PointerButton, Pos2};
 use egui_kittest::kittest::Queryable;
 use photon_core::{grid::GridView, library::Library};

@@ -308,7 +308,7 @@ fn at(sorted: &[f64], quantile: f64) -> f64 {
 //
 //   cargo run --release -p photon-ui --example fixture -- --out target/gate-fixture
 //   PHOTON_GATE_FIXTURE=$PWD/target/gate-fixture \
-//     cargo test --release -p photon-ui --test probe -- --ignored --nocapture
+//     cargo test --release -p photon-ui --test all -- --ignored --nocapture probe::
 //
 // The whole path: a test runs in its crate's directory, not where cargo was called.
 #[test]
