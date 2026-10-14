@@ -392,8 +392,10 @@ fn a_blank_name_writes_nothing_and_the_list_offers_what_is_there() {
         .expect("its row in the dialog")
         .click();
     driver.act(&mut harness);
-    driver.until(&mut harness, "the keyword on two photos", |app| {
-        keywords(app).contains(&("beach".to_owned(), 2))
+    // The count and the message come by two roads - the lists read after the engine's
+    // rebuild, and the write's own answer - in either order: waited for together.
+    driver.until(&mut harness, "the keyword on two photos, and said", |app| {
+        keywords(app).contains(&("beach".to_owned(), 2)) && !app.toasts().is_empty()
     });
     assert_eq!(said(&harness), ["Added “beach” to 1 photo"]);
 }
