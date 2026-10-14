@@ -92,24 +92,65 @@ fn pipeline(
     Ok((playbin, sink))
 }
 
-/// Until the pipeline has finished changing state, or says why it cannot.
+/// Until the pipeline has finished changing state, or says why it cannot. **A video
+/// whose picture has no decoder is `Unsupported` even where its sound has one**:
+/// `decodebin` errs only when no stream at all can be decoded, and otherwise plays the
+/// sound alone, saying what it lacks in a `missing-plugin` message and nowhere else - an
+/// iPhone's HEVC on a Linux with no HEVC decoder was a poster "broken" for good, and a
+/// player of sound over nothing.
 fn settled(playbin: &gst::Element) -> Result<(), Failure> {
     let bus = playbin.bus().ok_or(Failure::Broken("no bus".into()))?;
-    let message = bus
-        .timed_pop_filtered(
-            WAIT,
-            &[gst::MessageType::AsyncDone, gst::MessageType::Error],
-        )
-        .ok_or(Failure::Broken(
-            "GStreamer gave no answer in ten seconds".into(),
-        ))?;
-    match message.view() {
-        gst::MessageView::Error(err) => Err(failure(
-            &err.error(),
-            err.debug().as_ref().map(|d| d.as_str()),
-        )),
-        _ => Ok(()),
+    let deadline = std::time::Instant::now() + std::time::Duration::from(WAIT);
+    let mut lacking = None;
+    loop {
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        let message = bus
+            .timed_pop_filtered(
+                gst::ClockTime::from_nseconds(left.as_nanos() as u64),
+                &[
+                    gst::MessageType::AsyncDone,
+                    gst::MessageType::Error,
+                    gst::MessageType::Element,
+                ],
+            )
+            .ok_or(Failure::Broken(
+                "GStreamer gave no answer in ten seconds".into(),
+            ))?;
+        match message.view() {
+            gst::MessageView::Error(err) => {
+                return Err(failure(
+                    &err.error(),
+                    err.debug().as_ref().map(|d| d.as_str()),
+                ));
+            }
+            gst::MessageView::Element(element) => {
+                if let Some(missing) = element.structure().and_then(lacks_picture) {
+                    lacking = Some(missing);
+                }
+            }
+            _ => {
+                return match lacking {
+                    Some(missing) => Err(Failure::Unsupported(format!(
+                        "GStreamer has no decoder for this video's picture ({missing})"
+                    ))),
+                    None => Ok(()),
+                };
+            }
+        }
     }
+}
+
+/// What a `missing-plugin` message says is missing, where it is a decoder of pictures.
+fn lacks_picture(said: &gst::StructureRef) -> Option<String> {
+    if said.name() != "missing-plugin" || said.get::<&str>("type").ok()? != "decoder" {
+        return None;
+    }
+    let caps = said.get::<gst::Caps>("detail").ok()?;
+    let kind = caps.structure(0)?.name();
+    kind.starts_with("video/").then(|| {
+        said.get::<String>("name")
+            .unwrap_or_else(|_| kind.to_string())
+    })
 }
 
 fn set_state(playbin: &gst::Element, state: gst::State) -> Result<(), Failure> {
@@ -125,14 +166,14 @@ fn picture(sample: &gst::Sample) -> Option<Picture> {
     let buffer = sample.buffer()?;
     let at = buffer.pts()?.nseconds() as f64 / 1e9;
     let map = buffer.map_readable().ok()?;
-    Some(Picture::from_rows(
+    Picture::from_rows(
         info.width(),
         info.height(),
         at,
         map.as_slice(),
         info.stride()[0] as usize,
         false,
-    ))
+    )
 }
 
 fn seek_to(playbin: &gst::Element, at: f64) -> Result<(), Failure> {
@@ -174,6 +215,8 @@ pub struct Player {
     sink: gst_app::AppSink,
     ended: Cell<bool>,
     failed: std::cell::RefCell<Option<Failure>>,
+    /// The time of the last frame handed over, so a frame is handed over once.
+    shown: Cell<Option<u64>>,
 }
 
 impl Drop for Player {
@@ -191,6 +234,7 @@ impl Player {
             sink,
             ended: Cell::new(false),
             failed: Default::default(),
+            shown: Cell::new(None),
         };
         set_state(&player.playbin, gst::State::Paused)?;
         settled(&player.playbin)?;
@@ -208,6 +252,9 @@ impl Player {
     /// To `at` seconds, to the frame: a flushing seek, which leaves the player playing or
     /// paused as it was.
     pub fn seek(&self, at: f64) {
+        // An end already on the bus is the end before the seek: read now, it is not
+        // taken for the end after it.
+        self.read_bus();
         self.ended.set(false);
         let _ = seek_to(&self.playbin, at);
     }
@@ -245,8 +292,23 @@ impl Player {
     }
 
     /// The newest frame due, once: none when no new one has come since the last asked.
+    /// While paused that is the frame the pipeline stands on - the first at opening, the
+    /// one a seek landed on - which the sink holds as its preroll and hands over only when
+    /// asked for so: `try_pull_sample` answers in `Playing` alone. The preroll is the first
+    /// sample once playing too, so a frame is told from the last by its time.
     pub fn frame(&self) -> Option<Picture> {
-        let sample = self.sink.try_pull_sample(gst::ClockTime::ZERO)?;
+        let sample = self
+            .sink
+            .try_pull_sample(gst::ClockTime::ZERO)
+            .or_else(|| {
+                (self.playbin.current_state() == gst::State::Paused)
+                    .then(|| self.sink.try_pull_preroll(gst::ClockTime::ZERO))
+                    .flatten()
+            })?;
+        let at = sample.buffer()?.pts()?.nseconds();
+        if self.shown.replace(Some(at)) == Some(at) {
+            return None;
+        }
         picture(&sample)
     }
 

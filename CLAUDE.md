@@ -2767,14 +2767,27 @@ sound (`Player`) whose frames come out as RGBA, and `can_play`. No fallback deco
 spike on all three runners (2026-10-14) had each play H.264 and seek to the frame, and
 HEVC everywhere but a Windows without Microsoft's extension, which answers
 `Failure::Unsupported` - as does a Linux without GStreamer's plugins, which are looked for
-when a pipeline is made: the build links GStreamer's core alone, and photon starts on a
-system without the rest. **A frame is handed over turned as the video is seen, and each
+when a pipeline is made: the build links GStreamer's libraries (its core, and the app and
+video libraries of plugins-base), not its plugins, and photon starts on a system without
+them. A video whose picture has no decoder is `Unsupported` though its sound has one -
+`decodebin` errs only when nothing at all decodes, and says the rest in a `missing-plugin`
+message (`settled`). **A frame is handed over turned as the video is seen, and each
 framework turns a different half**: GStreamer both (`videoflip video-direction=auto`);
 AVFoundation the poster (`appliesPreferredTrackTransform`) and not what it plays, which is
 turned here by the track's `preferredTransform`; Media Foundation what it plays (the Media
 Engine) and not the poster (the source reader), which is turned here by the reader's
 `MF_MT_VIDEO_ROTATION` - a backend that turned both would turn twice. The Media Engine's
-first frame is black and stamped before nought, and is dropped. Every backend lets go of
+first frame is black and stamped before nought, and is dropped; its error's code is the
+event's *first* parameter. **A paused player still hands over the frame it stands on** -
+the first at opening, the one a seek landed on - which GStreamer's sink gives only as its
+preroll. **Nothing a frame asks of a player turns the Mac's run loop**: in the window winit
+turns it, and turned again in `frame` it held the window five milliseconds a call; `open`,
+which waits for the item to be ready, is the one place that does, and the tests turn it
+while they wait (`idle`). **Known, and left**: `open` waits on the thread that calls it, up
+to ten seconds (on a Mac it must be the main thread) - the viewer's pull request decides
+how it is called; and the `windows` crate links Media Foundation's DLLs at load time, so a
+Windows "N" edition without the Media Feature Pack cannot start photon-native at all - the
+packaging's to answer (sub-project 7). Every backend lets go of
 what it holds when it is dropped (GStreamer to `Null`, the Media Engine `Shutdown`), and
 opens the file to read it alone. **`tests/video` is a binary of its own, with no libtest
 harness** (`harness = false`, `libtest-mimic` on one thread): AVFoundation's player item
@@ -2785,7 +2798,9 @@ with an edit list, so a tenth of a second past each edge is let off), and a file
 quarter. A test whose decoder the system has not got says so and passes over itself - which
 is every test of them on a Linux without the plugins, this machine's included (installing
 them is the user's to decide): **only CI runs them**, and a change to a backend is checked
-there, on all three.
+there, on all three. Each runner's nextest step names the codecs it is expected to decode
+(`PHOTON_VIDEO_EXPECTS`), and a test that would pass over one of those fails instead:
+nextest prints nothing of a test that passed.
 
 **A picture test makes its GPU device alone** (`tests/screenshots.rs`, `DEVICES`): every
 picture is drawn on a thread of its own, and with two dozen devices made in the same

@@ -76,9 +76,10 @@ runtime, but nothing in the engine needs one either).
   it: the engine's `VideoFailure::Unsupported`, which skips the video for the session and
   leaves it `Pending`) or `Broken` (`Decode`, which fails it).
 - `video/gst.rs` (Linux), `video/avf.rs` (macOS), `video/mf.rs` (Windows): the spike's code,
-  made a module. The Linux build links GStreamer's core, which the web view's photon already
-  needs at launch; its plugins are found when a pipeline is made, so a system without them
-  still starts and says so where a video is.
+  made a module. The Linux build links GStreamer's libraries (the core, and plugins-base's
+  app and video), which the web view's photon already needs at launch; its plugins are found
+  when a pipeline is made, so a system without them still starts and says so where a video
+  is.
 - Whether the system can play a video at all is asked once, at launch, off the UI thread
   (`video::can_play`): GStreamer's MP4 demuxer and an H.264 decoder present; AVFoundation and
   Media Foundation, yes.

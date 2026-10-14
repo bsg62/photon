@@ -96,14 +96,15 @@ pub fn poster(path: &Path, at: f64) -> Result<Picture, Failure> {
         );
         CGContext::draw_image(Some(&context), all, Some(&image));
         drop(context);
-        Ok(Picture::from_rows(
+        Picture::from_rows(
             width as u32,
             height as u32,
             actual.seconds(),
             &rgba,
             width * 4,
             false,
-        ))
+        )
+        .ok_or(Failure::Broken("a poster of no size".into()))
     }
 }
 
@@ -118,7 +119,10 @@ fn refused(asset: &AVAsset, why: String) -> Failure {
 }
 
 /// The main thread's run loop turned for a moment, which is how AVFoundation's state
-/// arrives on a thread with nothing else running it.
+/// arrives on a thread with nothing else running it: `open`, which waits for the item to be
+/// ready, is the one place that waits for it. Nothing that runs every frame does - in the
+/// window winit turns the main run loop already, and turned again here `frame` held the
+/// window's thread five milliseconds each time it was asked, a third of a frame.
 fn turn_run_loop() {
     NSRunLoop::currentRunLoop().runUntilDate(&NSDate::dateWithTimeIntervalSinceNow(0.005));
 }
@@ -166,6 +170,9 @@ impl Player {
             );
             item.addOutput(&output);
             let player = AVPlayer::playerWithPlayerItem(Some(&item), mtm);
+            // A file on the machine has nothing to buffer against, and left on the player
+            // waits before it begins: on macOS' runner it had not begun 600 ms after play.
+            player.setAutomaticallyWaitsToMinimizeStalling(false);
             let until = Instant::now() + Duration::from_secs(10);
             loop {
                 match item.status() {
@@ -231,7 +238,6 @@ impl Player {
 
     /// Whether it has played to its end.
     pub fn ended(&self) -> bool {
-        turn_run_loop();
         self.position()
             .zip(self.duration())
             .is_some_and(|(at, whole)| at >= whole - 0.001)
@@ -247,7 +253,6 @@ impl Player {
 
     /// The newest frame due, once: none when no new one has come since the last asked.
     pub fn frame(&self) -> Option<Picture> {
-        turn_run_loop();
         unsafe {
             let time = self.output.itemTimeForHostTime(CACurrentMediaTime());
             if !self.output.hasNewPixelBufferForItemTime(time) {
@@ -278,10 +283,12 @@ fn bgra(buffer: &CVPixelBuffer, at: f64) -> Option<Picture> {
         );
         let stride = CVPixelBufferGetBytesPerRow(buffer);
         let base = CVPixelBufferGetBaseAddress(buffer) as *const u8;
-        let picture = (!base.is_null()).then(|| {
+        let picture = if base.is_null() {
+            None
+        } else {
             let data = std::slice::from_raw_parts(base, stride * height);
             Picture::from_rows(width as u32, height as u32, at, data, stride, true)
-        });
+        };
         CVPixelBufferUnlockBaseAddress(buffer, CVPixelBufferLockFlags::ReadOnly);
         picture
     }

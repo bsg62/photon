@@ -75,7 +75,8 @@ windows = { version = "0.62.2", features = [
 windows-core = "0.62.2"
 
 # Video (`video/gst.rs`): GStreamer, which the web view's photon already needs to start.
-# Its core is linked; its plugins are looked for when a video is opened.
+# Its libraries are linked (the core, and plugins-base's app and video); its plugins are
+# looked for when a video is opened.
 [target.'cfg(target_os = "linux")'.dependencies]
 gstreamer = "0.25.4"
 gstreamer-app = "0.25.2"

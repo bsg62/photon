@@ -44,7 +44,9 @@ impl Picture {
     /// its pixels. `swap` reads them as BGRA, which two of the three systems hand over.
     /// The fourth byte is made opaque whatever it was: a video has no alpha, and Media
     /// Foundation's RGB32 leaves that byte undefined - often nought, a frame drawn
-    /// transparent.
+    /// transparent. None where the rows do not fit in `data`: a size a system reported and
+    /// a buffer it handed over that disagree are a frame not drawn, not a panic in the
+    /// window's thread.
     pub fn from_rows(
         width: u32,
         height: u32,
@@ -52,8 +54,12 @@ impl Picture {
         data: &[u8],
         stride: usize,
         swap: bool,
-    ) -> Self {
+    ) -> Option<Self> {
         let row = width as usize * 4;
+        let rows = height as usize;
+        if stride < row || (rows > 0 && data.len() < stride * (rows - 1) + row) {
+            return None;
+        }
         let mut rgba = Vec::with_capacity(row * height as usize);
         for y in 0..height as usize {
             for px in data[y * stride..y * stride + row].as_chunks::<4>().0 {
@@ -64,12 +70,12 @@ impl Picture {
                 }
             }
         }
-        Picture {
+        Some(Picture {
             width,
             height,
             at,
             rgba,
-        }
+        })
     }
 
     /// The colour at a pixel.
@@ -192,10 +198,21 @@ mod tests {
     fn rows_are_packed_bgra_is_read_as_bgra_and_every_pixel_is_opaque() {
         // Two rows of one pixel each, eight bytes apart, the second with no alpha.
         let data = [1, 2, 3, 4, 0, 0, 0, 0, 5, 6, 7, 0];
-        let plain = Picture::from_rows(1, 2, 0.0, &data, 8, false);
+        let plain = Picture::from_rows(1, 2, 0.0, &data, 8, false).unwrap();
         assert_eq!(plain.rgba, [1, 2, 3, 255, 5, 6, 7, 255]);
-        let swapped = Picture::from_rows(1, 2, 0.0, &data, 8, true);
+        let swapped = Picture::from_rows(1, 2, 0.0, &data, 8, true).unwrap();
         assert_eq!(swapped.rgba, [3, 2, 1, 255, 7, 6, 5, 255]);
+    }
+
+    #[test]
+    fn rows_that_do_not_fit_their_buffer_are_no_picture() {
+        let data = [0u8; 12];
+        // The second row would end at byte 13.
+        assert_eq!(Picture::from_rows(1, 2, 0.0, &data, 9, false), None);
+        // A stride shorter than a row.
+        assert_eq!(Picture::from_rows(2, 1, 0.0, &data, 4, false), None);
+        // Exactly enough: the last row needs no stride after it.
+        assert!(Picture::from_rows(1, 2, 0.0, &data, 8, false).is_some());
     }
 
     #[test]

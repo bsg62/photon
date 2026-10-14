@@ -92,6 +92,11 @@ jobs:
         with:
           tool: nextest
       - run: cargo nextest run --workspace --profile ci
+        # What each runner's own framework decodes (the spike, 2026-10-14): a video test
+        # that passes over a codec named here fails instead - else a runner that lost its
+        # decoders would pass every test of them, with nothing in the log to say so.
+        env:
+          PHOTON_VIDEO_EXPECTS: ${{ runner.os == 'Windows' && 'h264' || 'h264 hevc' }}
       # rav1d's x86-64 assembly (`avif-asm`) is off above, as in a local build without nasm,
       # and on in every x86-64 installer the release workflow builds: this runs photon-core's
       # tests that decode an AVIF through it - the four modules whose tests hand rav1d a

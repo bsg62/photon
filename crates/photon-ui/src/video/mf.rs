@@ -63,6 +63,54 @@ fn failure(err: windows::core::Error) -> Failure {
 
 const VIDEO: u32 = MF_SOURCE_READER_FIRST_VIDEO_STREAM.0 as u32;
 
+/// What a frame the reader hands over is: the buffer's size, and the part of it that is
+/// the picture. **The decoder's frame is larger than the video where the video's height is
+/// no multiple of sixteen** - a phone's 1080 lines are 1088 - and the reader says which part
+/// to show in its minimum display aperture; read as the whole, a poster had eight rows of
+/// whatever the decoder left below the picture.
+struct Layout {
+    width: u32,
+    left: u32,
+    top: u32,
+    shown_width: u32,
+    shown_height: u32,
+    /// Degrees the stored picture is turned from how it is seen; undone clockwise.
+    rotation: u32,
+}
+
+unsafe fn layout(reader: &IMFSourceReader) -> Result<Layout, Failure> {
+    unsafe {
+        let current = reader.GetCurrentMediaType(VIDEO).map_err(failure)?;
+        let size = current.GetUINT64(&MF_MT_FRAME_SIZE).map_err(failure)?;
+        let (width, height) = ((size >> 32) as u32, size as u32);
+        let rotation = current.GetUINT32(&MF_MT_VIDEO_ROTATION).unwrap_or(0);
+        // An `MFVideoArea`: two `MFOffset`s (a fraction and a whole, of two bytes each) and
+        // a `SIZE` of two `i32`s.
+        let mut area = [0u8; 16];
+        let aperture = current
+            .GetBlob(&MF_MT_MINIMUM_DISPLAY_APERTURE, &mut area, None)
+            .ok()
+            .map(|()| {
+                let at = |i: usize| i16::from_le_bytes([area[i], area[i + 1]]).max(0) as u32;
+                let side = |i: usize| {
+                    i32::from_le_bytes([area[i], area[i + 1], area[i + 2], area[i + 3]]).max(0)
+                        as u32
+                };
+                (at(2), at(6), side(8), side(12))
+            })
+            .filter(|&(left, top, w, h)| w > 0 && h > 0 && left + w <= width && top + h <= height);
+        let (left, top, shown_width, shown_height) = aperture.unwrap_or((0, 0, width, height));
+        Ok(Layout {
+            width,
+            left,
+            top,
+            shown_width,
+            shown_height,
+            rotation,
+        })
+    }
+}
+
 /// The frame at `at` seconds, turned as it is seen.
 pub fn poster(path: &Path, at: f64) -> Result<Picture, Failure> {
     started()?;
@@ -91,11 +139,7 @@ pub fn poster(path: &Path, at: f64) -> Result<Picture, Failure> {
         reader
             .SetCurrentMediaType(VIDEO, None, &wanted)
             .map_err(|e| Failure::Unsupported(e.to_string()))?;
-        let current = reader.GetCurrentMediaType(VIDEO).map_err(failure)?;
-        let size = current.GetUINT64(&MF_MT_FRAME_SIZE).map_err(failure)?;
-        let (width, height) = ((size >> 32) as u32, size as u32);
-        // Degrees the stored picture is turned from how it is seen; undone clockwise.
-        let rotation = current.GetUINT32(&MF_MT_VIDEO_ROTATION).unwrap_or(0);
+        let mut layout = layout(&reader)?;
         let position = PROPVARIANT::from((at.max(0.0) * 1e7) as i64);
         reader
             .SetCurrentPosition(&GUID::zeroed(), &position)
@@ -117,11 +161,17 @@ pub fn poster(path: &Path, at: f64) -> Result<Picture, Failure> {
             if flags & MF_SOURCE_READERF_ENDOFSTREAM.0 as u32 != 0 {
                 return Err(Failure::Broken("the end, and no frame".into()));
             }
+            // The decoder may settle on another size once it has read the stream.
+            if flags & MF_SOURCE_READERF_CURRENTMEDIATYPECHANGED.0 as u32 != 0 {
+                layout = self::layout(&reader)?;
+            }
             let Some(sample) = sample else { continue };
             let shown = stamp as f64 / 1e7;
-            // The seek lands on the key frame before; the frames up to the one asked for
-            // are read through. Within half a frame of it is it.
-            if shown + 0.02 < at {
+            // The seek lands on the key frame before, and the frames up to the one asked
+            // for are read through: the frame on screen at `at` is the one whose time
+            // runs over it.
+            let lasts = sample.GetSampleDuration().unwrap_or(0) as f64 / 1e7;
+            if shown + lasts <= at {
                 continue;
             }
             let buffer = sample.ConvertToContiguousBuffer().map_err(failure)?;
@@ -131,9 +181,21 @@ pub fn poster(path: &Path, at: f64) -> Result<Picture, Failure> {
                 .Lock(&mut data, None, Some(&mut length))
                 .map_err(failure)?;
             let bytes = std::slice::from_raw_parts(data, length as usize);
-            let picture = Picture::from_rows(width, height, shown, bytes, width as usize * 4, true);
+            let stride = layout.width as usize * 4;
+            let first = layout.top as usize * stride + layout.left as usize * 4;
+            let picture = bytes.get(first..).and_then(|from| {
+                Picture::from_rows(
+                    layout.shown_width,
+                    layout.shown_height,
+                    shown,
+                    from,
+                    stride,
+                    true,
+                )
+            });
             let _ = buffer.Unlock();
-            return Ok(turn(picture, rotation / 90));
+            let picture = picture.ok_or(Failure::Broken("a frame of no size".into()))?;
+            return Ok(turn(picture, layout.rotation / 90));
         }
     }
 }
@@ -142,16 +204,14 @@ pub fn poster(path: &Path, at: f64) -> Result<Picture, Failure> {
 #[implement(IMFMediaEngineNotify)]
 struct Notify {
     error: Arc<AtomicU32>,
-    ended: Arc<AtomicU32>,
 }
 
 impl IMFMediaEngineNotify_Impl for Notify_Impl {
-    fn EventNotify(&self, event: u32, _param1: usize, param2: u32) -> WinResult<()> {
+    /// An error's `MF_MEDIA_ENGINE_ERR` is its first parameter; the second is an HRESULT,
+    /// which read as the code never said "not supported".
+    fn EventNotify(&self, event: u32, param1: usize, _param2: u32) -> WinResult<()> {
         if event == MF_MEDIA_ENGINE_EVENT_ERROR.0 as u32 {
-            self.error.store(param2.max(1), Ordering::SeqCst);
-        }
-        if event == MF_MEDIA_ENGINE_EVENT_ENDED.0 as u32 {
-            self.ended.store(1, Ordering::SeqCst);
+            self.error.store((param1 as u32).max(1), Ordering::SeqCst);
         }
         Ok(())
     }
@@ -161,7 +221,6 @@ impl IMFMediaEngineNotify_Impl for Notify_Impl {
 pub struct Player {
     engine: IMFMediaEngine,
     error: Arc<AtomicU32>,
-    ended: Arc<AtomicU32>,
     wic: IWICImagingFactory,
     bitmap: std::cell::RefCell<Option<(IWICBitmap, u32, u32)>>,
     stamp: Cell<i64>,
@@ -184,10 +243,8 @@ impl Player {
                 CoCreateInstance(&CLSID_MFMediaEngineClassFactory, None, CLSCTX_INPROC_SERVER)
                     .map_err(failure)?;
             let error = Arc::new(AtomicU32::new(0));
-            let ended = Arc::new(AtomicU32::new(0));
             let notify: IMFMediaEngineNotify = Notify {
                 error: error.clone(),
-                ended: ended.clone(),
             }
             .into();
             let mut attributes = None;
@@ -207,7 +264,6 @@ impl Player {
             let player = Player {
                 engine,
                 error,
-                ended,
                 wic,
                 bitmap: Default::default(),
                 stamp: Cell::new(-1),
@@ -243,7 +299,6 @@ impl Player {
 
     /// To `at` seconds, to the frame.
     pub fn seek(&self, at: f64) {
-        self.ended.store(0, Ordering::SeqCst);
         unsafe {
             let _ = self.engine.SetCurrentTime(at.max(0.0));
         }
@@ -273,9 +328,11 @@ impl Player {
         (whole.is_finite() && whole > 0.0).then_some(whole)
     }
 
-    /// Whether it has played to its end.
+    /// Whether it has played to its end: the engine's own word, not its "ended" event: an event that arrives after a seek
+    /// back is the end of before the seek, and held as a flag it stood for the video's end
+    /// until the next seek.
     pub fn ended(&self) -> bool {
-        self.ended.load(Ordering::SeqCst) != 0 || unsafe { self.engine.IsEnded().as_bool() }
+        unsafe { self.engine.IsEnded().as_bool() }
     }
 
     /// What went wrong while it played, if anything did. The engine's code 4 is
@@ -343,14 +400,7 @@ impl Player {
             let mut data = std::ptr::null_mut();
             lock.GetDataPointer(&mut size, &mut data).ok()?;
             let bytes = std::slice::from_raw_parts(data, size as usize);
-            Some(Picture::from_rows(
-                width,
-                height,
-                stamp as f64 / 1e7,
-                bytes,
-                stride,
-                true,
-            ))
+            Picture::from_rows(width, height, stamp as f64 / 1e7, bytes, stride, true)
         }
     }
 }
