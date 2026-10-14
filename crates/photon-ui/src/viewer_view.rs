@@ -85,6 +85,10 @@ pub enum ViewerAction {
     Original,
     /// The crop tool, opened.
     Crop,
+    /// The slideshow, started - or stopped, while one runs.
+    Slideshow,
+    /// The slideshow, paused or played again.
+    Pause,
     /// The crop tool's rectangle, to be written.
     CropApply,
     /// The crop tool, closed with nothing written.
@@ -163,6 +167,23 @@ pub struct ViewerData<'a> {
     /// viewer's own menu: the wheel and the buttons are not the viewer's. (The keys are
     /// taken out of the frame by whatever it is; these it does not take.)
     pub paused: bool,
+    /// Whether a slideshow can be started: the library has said what the photo is.
+    pub can_show: bool,
+    /// The slideshow, while one runs.
+    pub show: Option<Showing>,
+    /// The photo the show has just left, drawn over the one arriving and faded out: what
+    /// was drawn, where, and how much of it is still seen.
+    pub outgoing: Option<(&'a TextureHandle, Rect, f32)>,
+}
+
+/// A slideshow that is running.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Showing {
+    pub playing: bool,
+    /// The pointer has rested so long that the controls are out of the way: the bar,
+    /// the slider, the buttons at the sides and the cross are not drawn, and the
+    /// pointer itself is hidden.
+    pub quiet: bool,
 }
 
 /// The crop tool, while it is open: the viewer draws the picture it is given under the
@@ -237,6 +258,9 @@ pub struct ViewerView {
     /// photo stepped to, so that "Original" does not leave the bar for the round trip and
     /// move the buttons after it - the jump `bar_place`'s `was` ends for the bar's width.
     edited: bool,
+    /// The picture the last frame drew at fit, and where: what a slideshow fades out as
+    /// it goes on.
+    drawn: Option<(TextureHandle, Rect)>,
 }
 
 /// Where the controls stand: what a press on the photo is not.
@@ -289,6 +313,18 @@ impl Controls {
 }
 
 impl ViewerView {
+    /// The picture the last frame drew at fit, and where: what a slideshow fades out as
+    /// it goes on. None for a zoomed photo, and under the crop tool.
+    pub fn drawn(&self) -> Option<(TextureHandle, Rect)> {
+        self.drawn.clone()
+    }
+
+    /// Lets go of the picture kept for a fade: the viewer has shut, and a texture held
+    /// here would be held for the rest of the session.
+    pub fn let_go(&mut self) {
+        self.drawn = None;
+    }
+
     /// Whether a keyword is being typed into the info panel's field: the keys are the
     /// field's then.
     pub fn typing(&self) -> bool {
@@ -369,6 +405,10 @@ impl ViewerView {
                 })
                 .collect()
         };
+        // At rest in a slideshow the controls are away, and a press where they were is
+        // the photo's.
+        let quiet = data.show.is_some_and(|show| show.quiet);
+        let away = |rect: Rect| if quiet { Rect::NOTHING } else { rect };
         let controls = Controls {
             // What a press in this frame was aimed at is what the last frame drew, not
             // what this one is about to: in the frame after the panel is toggled, the
@@ -376,18 +416,20 @@ impl ViewerView {
             // press asked of where they are going to be was on another face than the
             // one under the pointer.
             faces: std::mem::take(&mut self.faces),
-            prev: side(window.left() + EDGE),
-            next: side(within.right() - EDGE - NAV),
-            close: Rect::from_min_size(
+            prev: away(side(window.left() + EDGE)),
+            next: away(side(within.right() - EDGE - NAV)),
+            close: away(Rect::from_min_size(
                 pos2(window.right() - EDGE - CLOSE, window.top() + EDGE),
                 vec2(CLOSE, CLOSE),
-            ),
-            bar: bar_place(ui, window, data, edited, self.bar),
-            slider: (!data.video).then(|| slider_place(window)),
+            )),
+            bar: away(bar_place(ui, window, data, edited, self.bar)),
+            slider: (!data.video && !quiet).then(|| slider_place(window)),
             caption: caption.as_ref().map(|(place, _)| *place),
             panel,
         };
-        self.bar = Some(controls.bar.width());
+        if !quiet {
+            self.bar = Some(controls.bar.width());
+        }
         // The photo's own surface, under the controls: with something there to be hit,
         // egui hands no press that lands a few points beside a button to that button,
         // and what a press was is decided in one place, by where it was.
@@ -395,9 +437,16 @@ impl ViewerView {
         let mut actions = self.input(ui, data, zoom, area, &controls, zooms);
 
         let drawn = shows.then(|| picture(ui, data, area, zoom)).flatten();
+        self.drawn = (drawn.filter(|_| zoom.is_fit())).map(|(texture, at)| (texture.clone(), at));
         if let Some((texture, at)) = drawn {
             let whole = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
             (painter.with_clip_rect(within)).image(texture.id(), at, whole, Color32::WHITE);
+        }
+        // The photo the show has left, over the one arriving, as it fades.
+        if let Some((texture, at, seen)) = data.outgoing {
+            let whole = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
+            let tint = Color32::WHITE.gamma_multiply(seen.clamp(0.0, 1.0));
+            (painter.with_clip_rect(within)).image(texture.id(), at, whole, tint);
         }
         // The faces, on the picture as this frame draws it; with no picture there is
         // nothing for one to be on. An unnamed face photon found takes a press while
@@ -437,42 +486,53 @@ impl ViewerView {
             said(ui, within, message);
         }
 
+        if quiet {
+            ui.ctx().set_cursor_icon(CursorIcon::None);
+        }
         // The one before and the one after, at the window's sides.
-        if round(
-            ui,
-            controls.prev,
-            "viewer-prev",
-            Icon::ChevronLeft,
-            "Previous photo",
-            data.can_prev,
-        ) {
+        if !quiet
+            && round(
+                ui,
+                controls.prev,
+                "viewer-prev",
+                Icon::ChevronLeft,
+                "Previous photo",
+                data.can_prev,
+            )
+        {
             actions.push(ViewerAction::Step(-1));
         }
-        if round(
-            ui,
-            controls.next,
-            "viewer-next",
-            Icon::ChevronRight,
-            "Next photo",
-            data.can_next,
-        ) {
+        if !quiet
+            && round(
+                ui,
+                controls.next,
+                "viewer-next",
+                Icon::ChevronRight,
+                "Next photo",
+                data.can_next,
+            )
+        {
             actions.push(ViewerAction::Step(1));
         }
-        if round(
-            ui,
-            controls.close,
-            "viewer-close",
-            Icon::X,
-            "Close viewer",
-            true,
-        ) {
+        if !quiet
+            && round(
+                ui,
+                controls.close,
+                "viewer-close",
+                Icon::X,
+                "Close viewer",
+                true,
+            )
+        {
             actions.push(ViewerAction::Close);
         }
 
         if let (Some(line), Some((place, galley))) = (data.photo_caption, caption) {
             photo_caption(ui, place, galley, line);
         }
-        actions.extend(bar(ui, controls.bar, data, edited));
+        if !quiet {
+            actions.extend(bar(ui, controls.bar, data, edited));
+        }
         if let Some(place) = controls.slider {
             slider(
                 ui,
@@ -505,6 +565,7 @@ impl ViewerView {
         window: Rect,
         crop: Cropped<'_>,
     ) -> Vec<ViewerAction> {
+        self.drawn = None;
         // What was held of the photo's own gestures is over.
         self.press = None;
         self.clicked = None;
@@ -809,7 +870,16 @@ impl ViewerView {
                         Key::ArrowRight => Some(ViewerAction::Step(1)),
                         Key::Home => Some(ViewerAction::First),
                         Key::End => Some(ViewerAction::Last),
+                        // Escape leaves a slideshow first and the viewer second, so the
+                        // photo the show stopped on is still there to look at.
+                        Key::Escape if !repeat && data.show.is_some() => {
+                            Some(ViewerAction::Slideshow)
+                        }
                         Key::Escape | Key::Backspace if !repeat => Some(ViewerAction::Close),
+                        Key::S if !repeat && (data.can_show || data.show.is_some()) => {
+                            Some(ViewerAction::Slideshow)
+                        }
+                        Key::Space if !repeat && data.show.is_some() => Some(ViewerAction::Pause),
                         Key::Period if !repeat && types_period => Some(ViewerAction::Star),
                         Key::H if !repeat => Some(ViewerAction::Hide),
                         Key::I if !repeat => Some(ViewerAction::Info),
@@ -1260,6 +1330,7 @@ enum Tool {
     TurnRight,
     Crop,
     Original,
+    Slideshow,
     Info,
 }
 
@@ -1274,7 +1345,7 @@ fn tools(ui: &egui::Ui, data: &ViewerData<'_>, edited: bool) -> Vec<(Tool, f32, 
         edit.extend(edited.then_some(Tool::Original));
         groups.push(edit);
     }
-    groups.push(vec![Tool::Info]);
+    groups.push(vec![Tool::Slideshow, Tool::Info]);
     let mut placed = Vec::new();
     let mut left = 0.0;
     for (number, group) in groups.iter().enumerate() {
@@ -1568,6 +1639,21 @@ fn bar(ui: &egui::Ui, rect: Rect, data: &ViewerData<'_>, edited: bool) -> Vec<Vi
                     pressed.push(ViewerAction::Original);
                 }
             }
+            // A show not running is started by it, and one that is is paused or played.
+            Tool::Slideshow => {
+                let (icon, label) = match data.show {
+                    None => (Icon::Play, "Start slideshow"),
+                    Some(Showing { playing: true, .. }) => (Icon::Pause, "Pause slideshow"),
+                    Some(Showing { playing: false, .. }) => (Icon::Play, "Resume slideshow"),
+                };
+                let works = data.can_show || data.show.is_some();
+                if tool(ui, place, "viewer-slideshow", icon, label, works, false) {
+                    pressed.push(match data.show {
+                        None => ViewerAction::Slideshow,
+                        Some(_) => ViewerAction::Pause,
+                    });
+                }
+            }
             // The info panel's button: lit while the panel is open.
             Tool::Info => {
                 let label = "Photo information";
@@ -1709,6 +1795,12 @@ mod tests {
         /// The photo's faces, and whether something has the window for itself.
         faces: Vec<Drawn<'static>>,
         paused: bool,
+        can_show: bool,
+        show: Option<Showing>,
+        /// The picture a show has left, where, and how much of it is seen.
+        outgoing: Option<(TextureHandle, Rect, f32)>,
+        /// The colour each texture of the last frame was painted with.
+        tints: Vec<(egui::TextureId, Color32)>,
         /// The crop tool, while it is open: the size of the picture it is drawn on,
         /// where the picture on hand lies in it, and whether its write is on its way.
         crop: Option<(CropTool, (u32, u32), Rect, bool)>,
@@ -1758,6 +1850,10 @@ mod tests {
                 video: false,
                 faces: Vec::new(),
                 paused: false,
+                can_show: true,
+                show: None,
+                outgoing: None,
+                tints: Vec::new(),
                 crop: None,
                 zoom: Zoom::default(),
                 images: Vec::new(),
@@ -1834,6 +1930,9 @@ mod tests {
                 }),
                 faces: &self.faces,
                 paused: self.paused,
+                can_show: self.can_show,
+                show: self.show,
+                outgoing: (self.outgoing.as_ref()).map(|(texture, at, seen)| (texture, *at, *seen)),
             };
             let (view, zoom) = (&mut self.view, &mut self.zoom);
             let mut crop = self.crop.as_mut().map(|(tool, size, part, busy)| Cropped {
@@ -1852,6 +1951,7 @@ mod tests {
             full.textures_delta.clear();
             self.cursor = full.platform_output.cursor_icon;
             self.images.clear();
+            self.tints.clear();
             self.clips.clear();
             self.texts.clear();
             self.fills.clear();
@@ -1863,6 +1963,7 @@ mod tests {
                         .push((text.galley.text().to_owned(), text.visual_bounding_rect())),
                     egui::Shape::Rect(rect) => match &rect.brush {
                         Some(brush) => {
+                            self.tints.push((brush.fill_texture_id, rect.fill));
                             self.images.push((brush.fill_texture_id, rect.rect));
                             self.clips.push(clipped.clip_rect);
                         }
@@ -1875,6 +1976,9 @@ mod tests {
                         }
                     },
                     egui::Shape::Mesh(mesh) => {
+                        if let Some(vertex) = mesh.vertices.first() {
+                            self.tints.push((mesh.texture_id, vertex.color));
+                        }
                         self.images.push((mesh.texture_id, mesh.calc_bounds()));
                         self.clips.push(clipped.clip_rect);
                     }
@@ -2145,8 +2249,8 @@ mod tests {
         let caption = f.drew(&f.caption.clone()).expect("the caption");
         assert!(caption.bottom() < 700.0 - EDGE && caption.top() > 700.0 - EDGE - BAR);
         // In the middle, with the bar's tools before it.
-        assert!((caption.center().x - 500.0).abs() < 100.0, "{caption:?}");
-        assert!(caption.left() > star_at(&f).x + 4.0 * TOOL, "{caption:?}");
+        assert!((caption.center().x - 500.0).abs() < 120.0, "{caption:?}");
+        assert!(caption.left() > star_at(&f).x + 5.0 * TOOL, "{caption:?}");
         // The photo's own caption stands over the bar, only where there is one.
         assert_eq!(f.drew("Lisbon, at dusk"), None);
         f.photo_caption = Some("Lisbon, at dusk");
@@ -3369,7 +3473,11 @@ mod tests {
             .map(|(_, at)| *at)
             .filter(|at| at.center().y > 650.0 && at.center().x < 500.0)
             .collect();
-        assert_eq!(tools.len(), 5, "the star, the turns, the crop, the panel's");
+        assert_eq!(
+            tools.len(),
+            6,
+            "the star, the turns, the crop, the show, the panel's"
+        );
         let button = tools
             .iter()
             .max_by(|a, b| a.center().x.total_cmp(&b.center().x))
@@ -3392,7 +3500,7 @@ mod tests {
         let mut f = Fixture::new();
         f.frame(Vec::new());
         let with = tools(&f);
-        assert_eq!(with.len(), 5);
+        assert_eq!(with.len(), 6);
         let caption = std::mem::take(&mut f.caption);
         f.frame(Vec::new());
         assert_eq!(tools(&f), with, "they stand where they stood");
@@ -4156,21 +4264,23 @@ mod tests {
         tools
     }
 
-    // The star; the turns and the crop; the panel's button: three groups, a line
-    // between two, and each button answers what it is for.
+    // The star; the turns and the crop; the slideshow's and the panel's buttons: three
+    // groups, a line between two, and each button answers what it is for.
     #[test]
     fn the_turns_and_the_crop_are_in_the_bar_between_the_star_and_the_panels_button() {
         let mut f = Fixture::new();
         f.frame(Vec::new());
         let tools = bar_tools(&f);
-        assert_eq!(tools.len(), 5);
+        assert_eq!(tools.len(), 6);
         assert_eq!(f.click(tools[0].center()), [ViewerAction::Star]);
         assert_eq!(f.click(tools[1].center()), [ViewerAction::Turn(false)]);
         assert_eq!(f.click(tools[2].center()), [ViewerAction::Turn(true)]);
         assert_eq!(f.click(tools[3].center()), [ViewerAction::Crop]);
-        assert_eq!(f.click(tools[4].center()), [ViewerAction::Info]);
+        assert_eq!(f.click(tools[4].center()), [ViewerAction::Slideshow]);
+        assert_eq!(f.click(tools[5].center()), [ViewerAction::Info]);
         let step = |n: usize| tools[n + 1].center().x - tools[n].center().x;
         assert!(near(step(1), TOOL + TOOL_GAP) && near(step(2), TOOL + TOOL_GAP));
+        assert!(near(step(4), TOOL + TOOL_GAP));
         assert!(near(step(0), TOOL + GROUP_GAP) && near(step(3), TOOL + GROUP_GAP));
         // The lines, each in the middle of the room between two groups.
         f.frame(Vec::new());
@@ -4235,11 +4345,11 @@ mod tests {
         assert_eq!(f.key_with(Key::R, Modifiers::SHIFT), []);
         assert_eq!(f.key(Key::C), []);
         assert_eq!(f.click(places[0].center()), [ViewerAction::Star]);
-        assert_eq!(f.click(places[4].center()), [ViewerAction::Info]);
+        assert_eq!(f.click(places[5].center()), [ViewerAction::Info]);
     }
 
-    // A video is neither turned nor cropped, and its bar has no tools for it: the star
-    // and the panel's button, with one line between.
+    // A video is neither turned nor cropped, and its bar has no tools for it: the star,
+    // and the slideshow's and the panel's buttons, with one line between.
     #[test]
     fn a_video_has_no_tools_to_turn_or_crop_it() {
         let mut f = Fixture::new();
@@ -4248,13 +4358,13 @@ mod tests {
         f.edited = true;
         f.frame(Vec::new());
         let tools = bar_tools(&f);
-        assert_eq!(tools.len(), 2);
+        assert_eq!(tools.len(), 3);
         assert_eq!(f.drew(ORIGINAL), None);
         assert!(near(
             tools[1].center().x - tools[0].center().x,
             TOOL + GROUP_GAP
         ));
-        assert_eq!(f.click(tools[1].center()), [ViewerAction::Info]);
+        assert_eq!(f.click(tools[2].center()), [ViewerAction::Info]);
     }
 
     // `R` turns to the right and Shift+R to the left; `C` opens the crop tool. Each at
@@ -4731,5 +4841,163 @@ mod tests {
         f.caption = caption;
         f.frame(Vec::new());
         assert_eq!(f.drew(ORIGINAL), None);
+    }
+    fn playing() -> Option<Showing> {
+        Some(Showing {
+            playing: true,
+            quiet: false,
+        })
+    }
+
+    // The bar's button starts a show; during one it pauses it and plays it again, and
+    // says which it will do. It takes no press while nothing is known of the photo.
+    #[test]
+    fn the_slideshows_button_starts_a_show_and_pauses_and_plays_one() {
+        let mut f = Fixture::new();
+        f.frame(Vec::new());
+        let button = bar_tools(&f)[4].center();
+        assert_eq!(f.click(button), [ViewerAction::Slideshow]);
+        f.show = playing();
+        f.frame(Vec::new());
+        assert_eq!(f.click(button), [ViewerAction::Pause]);
+        f.show = Some(Showing {
+            playing: false,
+            quiet: false,
+        });
+        f.frame(Vec::new());
+        assert_eq!(f.click(button), [ViewerAction::Pause]);
+        f.show = None;
+        f.can_show = false;
+        f.frame(Vec::new());
+        assert_eq!(f.click(button), []);
+    }
+
+    // `S` starts a show and stops it; Space pauses and plays one; Escape stops one first
+    // and closes the viewer only after; Backspace closes either way. Each at its press.
+    #[test]
+    fn the_keys_of_a_show() {
+        let mut f = Fixture::new();
+        f.frame(Vec::new());
+        assert_eq!(f.key(Key::S), [ViewerAction::Slideshow]);
+        assert_eq!(f.key(Key::Space), []);
+        assert_eq!(f.key(Key::Escape), [ViewerAction::Close]);
+        f.can_show = false;
+        assert_eq!(f.key(Key::S), []);
+        f.show = playing();
+        assert_eq!(f.key(Key::S), [ViewerAction::Slideshow]);
+        assert_eq!(f.key(Key::Space), [ViewerAction::Pause]);
+        assert_eq!(f.key(Key::Escape), [ViewerAction::Slideshow]);
+        assert_eq!(f.key(Key::Backspace), [ViewerAction::Close]);
+        for key in [Key::S, Key::Space] {
+            let event = |pressed, repeat| Event::Key {
+                key,
+                physical_key: Some(key),
+                pressed,
+                repeat,
+                modifiers: Modifiers::NONE,
+            };
+            assert_eq!(f.frame(vec![event(true, false)]).len(), 1);
+            assert_eq!(f.frame(vec![event(true, true)]), [], "{key:?} held");
+            f.frame(vec![event(false, false)]);
+        }
+    }
+
+    // At rest in a show the controls are away and the pointer is hidden: the bar, the
+    // slider, the buttons at the sides and the cross; a press where they were is the
+    // photo's.
+    #[test]
+    fn at_rest_in_a_show_the_controls_are_away() {
+        let mut f = photo();
+        f.show = Some(Showing {
+            playing: true,
+            quiet: true,
+        });
+        f.frame(Vec::new());
+        assert_eq!(f.drew(&f.caption.clone()), None);
+        assert_eq!(f.drew("100%"), None);
+        assert!(bar_tools(&f).is_empty());
+        assert_eq!(f.cursor, CursorIcon::None);
+        let side = pos2(EDGE + NAV / 2.0, 350.0);
+        let close = pos2(1000.0 - EDGE - CLOSE / 2.0, EDGE + CLOSE / 2.0);
+        assert!(
+            !f.fills.iter().any(|(_, fill)| *fill == color(GLASS)),
+            "no glass"
+        );
+        assert_eq!(f.click(side), []);
+        // A double click where the cross was zooms: the photo's.
+        f.click(close);
+        f.click(close);
+        assert!(!f.zoom.is_fit());
+        f.key(Key::Num0);
+        // Awake, they are back.
+        f.show = playing();
+        f.frame(Vec::new());
+        assert!(f.drew(&f.caption.clone()).is_some());
+        assert_eq!(f.click(close), [ViewerAction::Close]);
+    }
+
+    // The photo a show has left is drawn over the arriving one, in the photo's area, as
+    // much of it as is still seen.
+    #[test]
+    fn the_photo_a_show_left_is_drawn_over_the_one_arriving() {
+        let mut f = photo();
+        let left = texture(&f.ctx, "left", [10, 5]);
+        let at = Rect::from_min_max(pos2(0.0, 100.0), pos2(1000.0, 600.0));
+        f.outgoing = Some((left.clone(), at, 0.25));
+        f.frame(Vec::new());
+        let order: Vec<egui::TextureId> = f.images.iter().map(|(id, _)| *id).collect();
+        let photo = order
+            .iter()
+            .position(|id| *id != left.id() && *id == f.photo().unwrap().0);
+        let over = order.iter().position(|id| *id == left.id()).expect("drawn");
+        assert!(photo.is_some_and(|photo| photo < over), "over the photo");
+        let tint = (f.tints.iter()).find(|(id, _)| *id == left.id()).unwrap().1;
+        assert_eq!(tint, Color32::WHITE.gamma_multiply(0.25));
+        assert!(
+            f.images
+                .iter()
+                .any(|(id, place)| *id == left.id() && *place == at)
+        );
+    }
+
+    // What the last frame drew at fit is kept, for a show to fade out; a zoomed photo
+    // and the crop tool keep nothing.
+    #[test]
+    fn the_picture_drawn_at_fit_is_kept_for_a_show_to_fade() {
+        let mut f = photo();
+        let (id, at) = f.photo().unwrap();
+        let (kept, place) = f.view.drawn().expect("kept");
+        assert_eq!((kept.id(), place), (id, at));
+        f.key(Key::Plus);
+        assert!(f.view.drawn().is_none(), "zoomed");
+        f.key(Key::Num0);
+        assert!(f.view.drawn().is_some());
+        f.crop = Some((CropTool::begin(None, 2400, 1200), (2400, 1200), ALL, false));
+        f.frame(Vec::new());
+        assert!(f.view.drawn().is_none(), "under the crop tool");
+    }
+
+    // The bar keeps the width it had awake while the controls are away: woken in a frame
+    // that knows nothing of the photo stepped to, it stands where it stood, not at the
+    // width of a rectangle that is none.
+    #[test]
+    fn the_bar_woken_after_a_rest_keeps_its_width() {
+        let mut f = photo();
+        let glass = color(GLASS);
+        let bar = |f: &Fixture| {
+            (f.fills.iter())
+                .find(|(rect, fill)| *fill == glass && rect.height() == BAR)
+                .map(|(rect, _)| *rect)
+        };
+        let awake = bar(&f).unwrap();
+        f.show = Some(Showing {
+            playing: true,
+            quiet: true,
+        });
+        f.frame(Vec::new());
+        f.caption.clear();
+        f.show = playing();
+        f.frame(Vec::new());
+        assert_eq!(bar(&f), Some(awake));
     }
 }

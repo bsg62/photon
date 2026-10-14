@@ -1123,6 +1123,30 @@ fn native_viewer_crop_again_dark() {
     );
 }
 
+/// A slideshow, paused, with the pointer over the photo: the bar's button says it will
+/// play the show again.
+fn showing(harness: &mut Harness<'_>) {
+    viewing(harness);
+    harness.key_press(Key::S);
+    harness.step();
+    harness.key_press(Key::Space);
+    harness.step();
+    harness.event(egui::Event::PointerMoved(egui::pos2(640.0, 400.0)));
+    harness.step();
+}
+
+#[test]
+#[ignore = "renders through a GPU adapter: cargo run -p xtask -- native-shot"]
+fn native_viewer_show_light() {
+    shot(ThemeChoice::Light, "native-viewer-show-light.png", showing);
+}
+
+#[test]
+#[ignore = "renders through a GPU adapter: cargo run -p xtask -- native-shot"]
+fn native_viewer_show_dark() {
+    shot(ThemeChoice::Dark, "native-viewer-show-dark.png", showing);
+}
+
 // The spec's first risk, to be judged by eye: a detailed photo much larger than the
 // window, fitted, as photon's own levels and a linear filter draw it
 // (`native-viewer-quality.png`), beside the same photo resized to the same size with a
