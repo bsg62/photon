@@ -1281,10 +1281,11 @@ fn the_buttons_at_the_sides_take_no_press_at_the_ends() {
     assert!(!disabled(&harness, "Previous photo") && disabled(&harness, "Next photo"));
 }
 
-// A video is shown from its poster, where it has one, under a line that says the native
-// window does not play it yet.
+// A video is shown from its poster, where it has one, under a line that says the system
+// plays no video - naming what to install, on Linux. (The test's system plays nothing:
+// `common::no_videos`.)
 #[test]
-fn a_video_says_that_it_is_not_played_yet() {
+fn a_video_on_a_system_that_plays_none_says_so() {
     let dir = tempfile::tempdir().unwrap();
     let folder = pictures(dir.path());
     // No video at all, but a file called one: which is all the library goes by.
@@ -1306,10 +1307,15 @@ fn a_video_says_that_it_is_not_played_yet() {
         .expect("the video is in the grid");
     open(&mut driver, &mut harness, video);
     driver.act(&mut harness);
+    let line = if cfg!(target_os = "linux") {
+        photon_ui::playback::NO_GSTREAMER
+    } else {
+        photon_ui::playback::CANNOT_PLAY_HERE
+    };
     assert!(
-        harness
-            .query_by_label("The native window does not play videos yet.")
-            .is_some()
+        harness.query_by_label(line).is_some(),
+        "{:?}",
+        said(&harness)
     );
     // And it is not zoomed, and has no slider.
     key(&mut driver, &mut harness, Key::Plus);

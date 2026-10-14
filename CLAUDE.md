@@ -2833,6 +2833,27 @@ that plays nothing** (`common::no_posters`), since a file called a video is deco
 runner with decoders and not on one without, and each system calls the same unreadable
 file something else.
 
+**A video plays in the viewer through its player, and its frame is its picture**
+(`playback.rs`, a state module; `App::play_video`). The system's video is one trait,
+`video::Videos` - `can_play`, `poster` and `open` - over the framework (`video::System`) or
+a test's stand-in (`App::with_videos`), and a player is a `video::Stream`. Whether the system
+plays at all is the poster worker's answer, put where the viewer reads it
+(`App::video_plays`): asked once, off the window's thread. The file is read off it too
+(`video_paths`, asked once a video), the player opened on the window's thread - which on a
+Mac is the one AVFoundation wants, and is why `open` waits for nothing - and told to play at
+once, with its sound, as the web view's `<video>` did. Each frame's newest picture is written
+into one texture in place (`TextureHandle::set`) and handed to the viewer as its one level,
+so a video's frame is drawn as a photo's picture is, fitted; until the first its poster - the
+preview - stands in its place. A frame is asked for every 8 ms while it plays: the video
+says when its next frame is due, and the window cannot ask it. **Another video, or another
+picture of the same one, is another player** (`Playing::is_of`): the step from one video to
+the next let go of the first. What is said over a video that cannot be played is the web
+view's, in its order (`playback::said`): a crash first; then a system that plays nothing -
+on Linux naming GStreamer's plugins; then the video's own failure, a missing decoder on
+Linux named the same way. Its tests drive a stand-in player (`tests/playback.rs`); which
+frame is on screen is read off the texture the viewer last drew (`App::video_frame`), not
+off the one kept, which a probe showed is no proof it was drawn.
+
 **A picture test makes its GPU device alone** (`tests/screenshots.rs`, `DEVICES`): every
 picture is drawn on a thread of its own, and with two dozen devices made in the same
 moment `native-shot` crashed inside the Vulkan loader about once in four runs

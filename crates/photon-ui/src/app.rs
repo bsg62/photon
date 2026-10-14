@@ -23,7 +23,8 @@ use crate::{
     menu_view::{MenuView, Outcome},
     nav::{Landed, LastFolder, Nav, Place, Step, Target},
     person_picker::{self, PersonPicker},
-    posters::{PosterWorker, Posters},
+    playback::Playing,
+    posters::PosterWorker,
     probe::{Facts, Move, Outside, Probe, Report},
     rename::{Commit, Of, Rename},
     scans::Scans,
@@ -46,6 +47,7 @@ use crate::{
     thumbs::{loader::Loader, shown::Thumbs, source::EngineThumbs},
     tile_menu::{self, Deciding, TileAction},
     toasts::{Toast, Toasts},
+    video::{Failure, Videos},
     viewer::{Shown, Viewer, Want},
     viewer_caption::{self, Captioned},
     viewer_faces::{self, On},
@@ -192,16 +194,21 @@ pub struct App {
     /// the window is made and whenever it comes back to the front (`system_wheel`).
     wheel: fn() -> Notch,
     notch: Notch,
-    /// What makes the videos' posters: the system's framework, or a test's stand-in.
-    posters: Arc<dyn Posters>,
+    /// The system's video, which makes the posters and plays: its framework, or a test's
+    /// stand-in.
+    videos: Arc<dyn Videos>,
     /// The thread that makes them, from the first frame until the window closes - started
-    /// there and not here so that a test can say what makes them (`with_posters`).
+    /// there and not here so that a test can say what makes them (`with_videos`).
     poster_worker: Option<PosterWorker>,
     /// The path in the export's field, asked about off this thread: with the text that
     /// was asked about, since the field has been typed in since.
     checking: Latest<String, (String, Result<String, String>)>,
     /// Whether an export applies edits, as stored: read when the export's dialog opens.
     edits: Latest<(), Option<bool>>,
+    /// Whether the system can play a video at all, once the poster worker has asked it.
+    video_plays: Arc<std::sync::OnceLock<bool>>,
+    /// The file of the video on screen, read off this thread: what its player opens.
+    video_paths: Latest<i64, (i64, Option<PathBuf>)>,
     /// The export, on a thread of its own: it runs for minutes, and a star pressed
     /// meanwhile must not wait for it. Answers how many photos were asked for, where
     /// to, and what came of it.
@@ -970,6 +977,14 @@ impl App {
             },
             repaint(&ctx),
         );
+        let video_paths = Latest::spawn(
+            "video path",
+            {
+                let engine = engine.clone();
+                move |id: i64| (id, commands::item_path(&engine, id).ok())
+            },
+            repaint(&ctx),
+        );
         let edits = Latest::spawn(
             "export edits",
             {
@@ -1076,10 +1091,12 @@ impl App {
             fell: Vec::new(),
             wheel: system_wheel,
             notch,
-            posters: Arc::new(crate::posters::System),
+            videos: Arc::new(crate::video::System),
             poster_worker: None,
             checking,
             edits,
+            video_plays: Arc::default(),
+            video_paths,
             exports,
             exporting: false,
             steps,
@@ -1123,10 +1140,10 @@ impl App {
         self
     }
 
-    /// Videos' posters made by `posters` in place of the system's framework: for a test,
-    /// which has none of its own to count on.
-    pub fn with_posters(mut self, posters: Arc<dyn Posters>) -> Self {
-        self.posters = posters;
+    /// Videos made posters of and played by `videos` in place of the system's framework:
+    /// for a test, which has none of its own to count on.
+    pub fn with_videos(mut self, videos: Arc<dyn Videos>) -> Self {
+        self.videos = videos;
         self
     }
 
@@ -1361,6 +1378,14 @@ impl App {
     /// The viewer, while it is open.
     pub fn viewer(&self) -> Option<&Viewer> {
         self.viewer.as_ref().map(|open| &open.viewer)
+    }
+
+    /// The time in the video of the frame the viewer drew in its picture's place in the
+    /// last frame; none while it draws its poster, or no video.
+    pub fn video_frame(&self) -> Option<f64> {
+        let (texture, _, at) = self.viewer.as_ref()?.frame.as_ref()?;
+        let (drawn, _) = self.viewer_view.drawn()?;
+        (drawn.id() == texture.id()).then_some(*at)
     }
 
     /// What the library last said of the photo in the viewer.
@@ -1803,6 +1828,11 @@ impl App {
             show: Slideshow::default(),
             shuffle: None,
             outgoing: None,
+            playing: None,
+            frame: None,
+            path: None,
+            path_asked: None,
+            open_failed: None,
         });
     }
 
@@ -1823,6 +1853,78 @@ impl App {
         }
         self.showing = (self.index.rows(offset, 1).first()).map(|entry| entry.id);
         self.shut_viewer();
+    }
+
+    /// The video on screen, played: its player opened once its file is known and the
+    /// system is known to play, let go of when the viewer leaves that picture of it, and
+    /// its newest frame written into its texture. A frame is asked for while it plays.
+    fn play_video(&mut self, ctx: &egui::Context, open: &mut Viewing, id: i64, key: u64) {
+        match self.video_paths.answer() {
+            Some(Ok((of, Some(path)))) => open.path = Some((of, path)),
+            // No file to open: a row gone since, which the grid will say.
+            Some(Ok((of, None))) if of == id => {
+                let none = Failure::Broken("the library has no file for it".into());
+                open.open_failed = Some((id, key, none));
+            }
+            _ => {}
+        }
+        if !open.viewer.is_video() || open.viewer.gone() {
+            open.playing = None;
+            open.frame = None;
+            return;
+        }
+        // Another video, or another picture of it: its player is another.
+        if (open.playing.as_ref()).is_some_and(|playing| !playing.is_of(id, key)) {
+            open.playing = None;
+            open.frame = None;
+        }
+        let crashed = (open.item.as_ref()).is_some_and(|item| item.video_crashed);
+        let refused =
+            (open.open_failed.as_ref()).is_some_and(|(of, at, _)| (*of, *at) == (id, key));
+        if open.playing.is_none() && !crashed && !refused {
+            match (self.video_plays.get(), open.path.as_ref()) {
+                // The system says whether it plays once the poster worker has asked it,
+                // a moment after the launch: looked at again until it has.
+                (None, _) => ctx.request_repaint_after(Duration::from_millis(100)),
+                (Some(false), _) => {}
+                (Some(true), Some((of, path))) if *of == id => match self.videos.open(path) {
+                    Ok(stream) => open.playing = Some(Playing::start(id, key, stream)),
+                    Err(failure) => open.open_failed = Some((id, key, failure)),
+                },
+                (Some(true), _) if open.path_asked != Some(id) => {
+                    open.path_asked = Some(id);
+                    self.video_paths.ask(id);
+                }
+                (Some(true), _) => {}
+            }
+        }
+        let Some(playing) = open.playing.as_mut() else {
+            return;
+        };
+        if let Some(picture) = playing.frame() {
+            let size = [picture.width as usize, picture.height as usize];
+            let image = egui::ColorImage::from_rgba_unmultiplied(size, &picture.rgba);
+            match open
+                .frame
+                .as_mut()
+                .filter(|(texture, ..)| texture.size() == size)
+            {
+                Some((texture, _, at)) => {
+                    texture.set(image, egui::TextureOptions::LINEAR);
+                    *at = picture.at;
+                }
+                None => {
+                    let texture =
+                        ctx.load_texture("video frame", image, egui::TextureOptions::LINEAR);
+                    open.frame = Some((texture, picture.width, picture.at));
+                }
+            }
+        }
+        // The next frame is the video's to say when: asked for at twice sixty a second,
+        // so that one is drawn within a refresh of its time, whatever its rate.
+        if playing.running() {
+            ctx.request_repaint_after(Duration::from_millis(8));
+        }
     }
 
     /// The viewer is over: what it held goes with it. Its previews too, which nothing
@@ -2274,6 +2376,7 @@ impl App {
         } else if seen.is_some_and(|seen| seen < 1.0) {
             ctx.request_repaint();
         }
+        self.play_video(&ctx, &mut open, id, key);
         let preview = self.previews.texture(key).cloned();
         let has_preview = preview.is_some();
         let caption = (open.item.as_ref())
@@ -2296,7 +2399,19 @@ impl App {
         let said = if open.viewer.gone() {
             Some((GONE.to_owned(), false))
         } else if open.viewer.is_video() {
-            Some((NO_VIDEO.to_owned(), true))
+            // Over its poster, which stays.
+            let item = open.item.as_ref();
+            let failure = (open.playing.as_ref().and_then(Playing::failure))
+                .or(open.open_failed.as_ref().map(|(_, _, failure)| failure));
+            crate::playback::said(&crate::playback::Why {
+                crashed: item
+                    .filter(|item| item.video_crashed)
+                    .map(|item| item.thumb_error.as_deref()),
+                plays: self.video_plays.get().copied(),
+                failure,
+                linux: cfg!(target_os = "linux"),
+            })
+            .map(|said| (said, true))
         } else if failed {
             let why = (open.item.as_ref()).and_then(|item| item.thumb_error.clone());
             Some((why.unwrap_or_else(|| CANNOT_SHOW.to_owned()), false))
@@ -2317,13 +2432,21 @@ impl App {
         let part =
             egui::Rect::from_min_max(egui::pos2(part[0], part[1]), egui::pos2(part[2], part[3]));
         let fitted = under.and_then(|full| full.fitted.clone());
-        let levels: Vec<Level<'_>> = (under.iter())
-            .flat_map(|full| full.levels.iter())
-            .map(|(texture, width)| Level {
+        // A video's frame is its picture, drawn as a photo's is, fitted; until its first,
+        // its poster - the preview - stands in its place.
+        let levels: Vec<Level<'_>> = match open.frame.as_ref() {
+            Some((texture, width, _)) => vec![Level {
                 texture,
                 width: *width,
-            })
-            .collect();
+            }],
+            None => (under.iter())
+                .flat_map(|full| full.levels.iter())
+                .map(|(texture, width)| Level {
+                    texture,
+                    width: *width,
+                })
+                .collect(),
+        };
         let len = self.index.len();
         let collections = self.held.collections();
         let faces = (open.item.as_ref()).map_or(Vec::new(), viewer_faces::drawn);
@@ -3788,7 +3911,8 @@ impl eframe::App for App {
         if self.poster_worker.is_none() && !self.closed {
             self.poster_worker = Some(PosterWorker::start(
                 self.engine.clone(),
-                self.posters.clone(),
+                self.videos.clone(),
+                self.video_plays.clone(),
             ));
         }
         // Whether this frame was asked for from outside the grid: by the engine, which
@@ -4149,6 +4273,19 @@ impl eframe::App for App {
 /// The viewer while it is open.
 struct Viewing {
     viewer: Viewer,
+    /// The player of the video on screen, from when its file is known until the viewer
+    /// leaves that picture of it.
+    playing: Option<Playing>,
+    /// Its newest frame as a texture, written in place frame by frame, with its width
+    /// and the time in the video it shows.
+    frame: Option<(egui::TextureHandle, u32, f64)>,
+    /// The video's file, once read: by id, as the viewer may have stepped since it was
+    /// asked for.
+    path: Option<(i64, PathBuf)>,
+    /// The video whose file was last asked for: asked once, not in every frame.
+    path_asked: Option<i64>,
+    /// A player that could not be opened, and of what; it is not opened again for that.
+    open_failed: Option<(i64, u64, Failure)>,
     /// What the library last said of the photo on screen; none until it has answered
     /// for this photo.
     item: Option<ViewerItem>,
@@ -4314,7 +4451,6 @@ enum Made {
 const PRELOAD: usize = 2;
 const GONE: &str = "This photo is no longer available.";
 const CANNOT_SHOW: &str = "This photo can't be shown.";
-const NO_VIDEO: &str = "The native window does not play videos yet.";
 
 /// Whether the library has said the photo cannot be shown: its thumbnail could not be
 /// made. Not of a video, whose thumbnail is its poster frame's.
