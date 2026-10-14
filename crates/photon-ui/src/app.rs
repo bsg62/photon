@@ -1,6 +1,8 @@
 //! The application: the engine, the shell around the grid, and the order of a frame.
 
 use crate::{
+    compare::{self, Compare},
+    compare_view::{CompareAction, CompareData, CompareView, PaneData},
     crop_tool::CropTool,
     dialog_view::{DialogView, Done},
     dialogs::{Confirm, Dialog, Subject},
@@ -157,6 +159,15 @@ pub struct App {
     /// The slideshow's interval, in seconds, and whether it shuffles: read once at each
     /// show's start, off this thread.
     show_settings: Latest<(), (Option<i64>, bool)>,
+    /// Compare, while it is open.
+    compare: Option<Comparing>,
+    compare_view: CompareView,
+    /// How many times compare has been asked to open: what a test of "not asked" counts.
+    compares_asked: u64,
+    /// The photos compare is being opened on, read off this thread: what each is.
+    comparing: Latest<Vec<i64>, Result<Vec<compare::Pane>, String>>,
+    /// A pane's full picture, one at a time, made once the zoom has left the fit.
+    compare_pictures: Latest<PictureAsk, (PictureAsk, Made)>,
     /// What the window was last asked of its fullscreen, by a show or by F11.
     fullscreen_asked: Option<bool>,
     /// The same, until the window has done it.
@@ -891,6 +902,41 @@ impl App {
             },
             repaint(&ctx),
         );
+        let comparing = Latest::spawn(
+            "compare",
+            {
+                let engine = engine.clone();
+                move |ids: Vec<i64>| {
+                    // Every pane before any is shown: half a comparison is worse than none.
+                    (ids.iter())
+                        .map(|id| {
+                            let item =
+                                commands::viewer_item(&engine, *id).map_err(|err| err.message)?;
+                            Ok(compare::Pane {
+                                id: item.id,
+                                file_name: item.file_name,
+                                width: item.width,
+                                height: item.height,
+                                orientation: item.orientation,
+                                taken_at: item.taken_at,
+                                key: u64::from_str_radix(&item.thumb_key, 16).unwrap_or(0),
+                                starred: item.starred,
+                                video: item.kind == photon_core::media::MediaKind::Video,
+                            })
+                        })
+                        .collect()
+                }
+            },
+            repaint(&ctx),
+        );
+        let compare_pictures = Latest::spawn(
+            "compare picture",
+            {
+                let engine = engine.clone();
+                move |asked: PictureAsk| (asked, make_picture(&engine, asked))
+            },
+            repaint(&ctx),
+        );
         let show_settings = Latest::spawn(
             "slideshow settings",
             {
@@ -1006,6 +1052,11 @@ impl App {
             show_settings,
             fullscreen_asked: None,
             fullscreen_pending: None,
+            compare: None,
+            compare_view: CompareView::default(),
+            compares_asked: 0,
+            comparing,
+            compare_pictures,
             drops,
             drop: FolderDrop::default(),
             hovered: 0,
@@ -1338,6 +1389,30 @@ impl App {
     /// What the window was last asked of its fullscreen.
     pub fn fullscreen_asked(&self) -> Option<bool> {
         self.fullscreen_asked
+    }
+
+    /// Compare, while it is open.
+    pub fn compare(&self) -> Option<&Compare> {
+        self.compare.as_ref().map(|open| &open.compare)
+    }
+
+    /// How many times compare has been asked to open since the window was made.
+    pub fn compares_asked(&self) -> u64 {
+        self.compares_asked
+    }
+
+    /// How wide each pane's full picture is, where it has been made.
+    pub fn compare_pictures(&self) -> Option<Vec<Option<u32>>> {
+        let open = self.compare.as_ref()?;
+        Some(
+            (open.full.iter())
+                .map(|full| {
+                    full.as_ref()
+                        .and_then(|full| full.levels.first())
+                        .map(|(_, width)| *width)
+                })
+                .collect(),
+        )
     }
 
     /// The crop tool, while it is open on the photo in the viewer.
@@ -1854,6 +1929,57 @@ impl App {
                 // walks, and one `shuffle_stride` never keeps.
                 if shuffle {
                     open.shuffle = Some((0, 1));
+                }
+            }
+        }
+        // Compare opens when the library has said what each of its photos is; refused,
+        // the library's words say why.
+        if let Some(answer) = self.comparing.answer() {
+            answered = true;
+            match answer {
+                Ok(Ok(panes)) => {
+                    let count = panes.len();
+                    self.compare = Compare::open(panes).map(|compare| Comparing {
+                        compare,
+                        full: (0..count).map(|_| None).collect(),
+                        failed: vec![false; count],
+                        asking: None,
+                    });
+                    self.compare_view = CompareView::default();
+                }
+                Ok(Err(said)) => self.toasts.error(said, now_ms),
+                Err(_) => self
+                    .toasts
+                    .error("photon could not compare those photos.", now_ms),
+            }
+        }
+        // A pane's full picture, kept for the pane it was made for while compare stands.
+        if let Some(answer) = self.compare_pictures.answer() {
+            answered = true;
+            if let (Ok((asked, made)), Some(open)) = (answer, &mut self.compare) {
+                open.asking = None;
+                let pane = (open.compare.panes().iter())
+                    .position(|pane| pane.id == asked.want.id && pane.key == asked.want.key);
+                if let Some(n) = pane {
+                    match made {
+                        Made::Levels { levels, .. } => {
+                            let options = egui::TextureOptions::LINEAR;
+                            let levels = (levels.into_iter().enumerate())
+                                .map(|(level, image)| {
+                                    let width = image.size[0] as u32;
+                                    let name = format!("compare-{}-{level}", asked.want.id);
+                                    (ctx.load_texture(name, image, options), width)
+                                })
+                                .collect();
+                            open.full[n] = Some(FullPicture {
+                                want: asked.want,
+                                fit: asked.fit,
+                                levels,
+                                fitted: None,
+                            });
+                        }
+                        Made::Failed(_) | Made::Stale => open.failed[n] = true,
+                    }
                 }
             }
         }
@@ -2568,6 +2694,142 @@ impl App {
         moved
     }
 
+    /// Asks what each of `ids` is, to open compare on them once the library has said:
+    /// two to four photos, and nothing for any other count.
+    /// (Asked of the count first: `C` with the whole library selected would otherwise
+    /// read every photo of it, to open nothing.)
+    fn open_compare(&mut self, ids: Vec<i64>) {
+        if compare::can_compare(ids.len()) {
+            self.comparing.ask(ids);
+            self.compares_asked += 1;
+        }
+    }
+
+    /// One frame of compare: what it asks the tasks for, what it draws, and what the
+    /// user did in it.
+    fn show_compare(&mut self, ui: &mut egui::Ui, now: f64) {
+        let Some(mut open) = self.compare.take() else {
+            return;
+        };
+        let ctx = ui.ctx().clone();
+        // Tab is compare's, between its panes: egui's walk of the keyboard is called off.
+        ctx.memory_mut(|memory| memory.move_focus(egui::FocusDirection::None));
+        let wants: Vec<Want> = (open.compare.panes().iter())
+            .map(|pane| Want {
+                id: pane.id,
+                key: pane.key,
+                again: 0,
+            })
+            .collect();
+        let previews: Vec<crate::thumbs::loader::Want> = (wants.iter())
+            .map(|want| crate::thumbs::loader::Want {
+                id: want.id,
+                key: want.key,
+            })
+            .collect();
+        self.previews.frame(&ctx, &previews, false);
+        // A star written from compare comes back with the grid's rebuild: what each pane
+        // says of its star is what the grid on screen says.
+        let stars: Vec<(i64, bool)> = (wants.iter())
+            .filter_map(|want| self.entry(want.id).map(|entry| (want.id, entry.starred)))
+            .collect();
+        for (id, starred) in stars {
+            open.compare.starred(id, starred);
+        }
+        // Once zoomed, the full pictures, one after another: the panes' previews are
+        // about as large as a pane, and only a zoom wants more.
+        if open.compare.wants_full() && open.asking.is_none() {
+            let next = (0..wants.len()).find(|n| open.full[*n].is_none() && !open.failed[*n]);
+            if let Some(n) = next {
+                let ask = PictureAsk {
+                    want: wants[n],
+                    uncropped: false,
+                    max_side: ctx.input(|input| input.max_texture_side) as u32,
+                    // A box of nought: no copy is fitted to it (`fitted_copy`), a pane
+                    // wanting its full picture only once it is zoomed.
+                    fit: (0, 0),
+                };
+                self.compare_pictures.ask(ask);
+                open.asking = Some(ask);
+            }
+        }
+        let shown: Vec<Option<egui::TextureHandle>> = (wants.iter())
+            .map(|want| self.previews.texture(want.key).cloned())
+            .collect();
+        let levels: Vec<Vec<Level<'_>>> = (open.full.iter())
+            .map(|full| {
+                (full.iter())
+                    .flat_map(|full| full.levels.iter())
+                    .map(|(texture, width)| Level {
+                        texture,
+                        width: *width,
+                    })
+                    .collect()
+            })
+            .collect();
+        let facts = compare::differing_facts(open.compare.panes());
+        let data = CompareData {
+            panes: (open.compare.panes().iter().enumerate())
+                .map(|(n, pane)| PaneData {
+                    pane,
+                    facts: &facts[n],
+                    preview: shown[n].as_ref(),
+                    levels: &levels[n],
+                })
+                .collect(),
+            focus: open.compare.focus(),
+        };
+        let mut zoom = *open.compare.zoom();
+        let actions = self.compare_view.show(ui, &data, &mut zoom);
+        drop(data);
+        drop(levels);
+        *open.compare.zoom_mut() = zoom;
+
+        let (toasts, next_toast) = self.toasts.at(now);
+        if let Some(at) = next_toast {
+            let wait = Duration::from_secs_f64(((at - now) / 1000.0).max(0.0));
+            ctx.request_repaint_after(wait);
+        }
+        let dismissed = crate::shell::toasts(ui, ctx.content_rect(), toasts, &theme::tokens::DARK);
+        if let Some(id) = dismissed {
+            self.toasts.dismiss(id);
+        }
+
+        let mut opening = None;
+        let mut closed = false;
+        for action in actions {
+            match action {
+                CompareAction::Close => closed = true,
+                CompareAction::Focus(n) => open.compare.focus_pane(n),
+                CompareAction::Next => open.compare.next_pane(),
+                CompareAction::Prev => open.compare.prev_pane(),
+                // The pane with the keys, as the library has it: not ahead of the write.
+                CompareAction::Star => {
+                    if let Some(pane) = open.compare.panes().get(open.compare.focus()) {
+                        let (ids, starred) = (vec![pane.id], !pane.starred);
+                        self.writes.push(Write::Stars { ids, starred });
+                    }
+                }
+                CompareAction::Open => {
+                    opening = (open.compare.panes().get(open.compare.focus())).map(|pane| pane.id);
+                    closed = true;
+                }
+            }
+            if closed {
+                break;
+            }
+        }
+        if closed {
+            self.previews.clear();
+            self.compare_view = CompareView::default();
+            if let Some(id) = opening {
+                self.open_viewer(id);
+            }
+            return;
+        }
+        self.compare = Some(open);
+    }
+
     /// Finds a photo in the grid: in All photos, where every photo that is not hidden
     /// is, selected and brought into sight. From anywhere else that is a step to All
     /// photos first, and the photo is looked up in that step's grid (`Nav::jump`);
@@ -2665,6 +2927,12 @@ impl App {
                 self.edits.ask(());
                 return;
             }
+            // Compare takes its photos as it opens, and opens when the library has said
+            // what each is.
+            TileAction::Compare => {
+                self.open_compare(ids);
+                return;
+            }
             // And so does the person dialog, whose title says how many photos.
             TileAction::AddToPerson => {
                 self.open_person(person_picker::Target::Items(ids));
@@ -2696,8 +2964,8 @@ impl App {
             TileAction::Reveal
             | TileAction::OpenInApp
             | TileAction::CopyPhoto
-            | TileAction::Compare
             // (Opened by `pick`, as dialogs.)
+            | TileAction::Compare
             | TileAction::AddKeyword
             | TileAction::RemoveKeyword
             | TileAction::Export
@@ -2710,6 +2978,10 @@ impl App {
     /// photos that were selected at the key, which the ask carries. The frame's later
     /// keys and clicks have been answered by now, and the selection is theirs.
     fn ask(&mut self, asked: Asked) {
+        if asked.ask == Ask::Compare {
+            self.open_compare(asked.ids);
+            return;
+        }
         let action = match asked.ask {
             // One key for the menu's two items: starred, the deciding photo has the
             // whole selection unstarred; not, all of it is starred.
@@ -2720,6 +2992,7 @@ impl App {
                 TileAction::Star(!starred)
             }
             Ask::Hide => TileAction::Hide(self.nav.settled().view != View::Hidden),
+            Ask::Compare => TileAction::Compare,
         };
         self.write(action, asked.ids);
     }
@@ -3603,6 +3876,15 @@ impl eframe::App for App {
             InfoView::let_go(ui.ctx());
         }
 
+        // Compare takes the whole window as the viewer does.
+        if self.compare.is_some() {
+            self.show_compare(ui, now);
+            if self.drop.hovering() {
+                drop_card::show(ui.ctx(), folder_drop::CARD);
+            }
+            self.ask_for_search(ui.ctx(), now);
+            return;
+        }
         // The viewer takes the whole window: the shell is not drawn under it, and the
         // grid keeps its place, which is a number of its own and not a widget's.
         if self.viewer.is_some() {
@@ -3813,6 +4095,15 @@ struct Viewing {
     shuffle: Option<(usize, usize)>,
     /// The photo the show has left, drawn over the one arriving until it has faded.
     outgoing: Option<Outgoing>,
+}
+
+/// Compare while it is open: the panes, their full pictures as they are made, which
+/// could not be, and the one on its way.
+struct Comparing {
+    compare: Compare,
+    full: Vec<Option<FullPicture>>,
+    failed: Vec<bool>,
+    asking: Option<PictureAsk>,
 }
 
 /// The picture a show has just left, as it was drawn, and since when it fades: from

@@ -1147,6 +1147,39 @@ fn native_viewer_show_dark() {
     shot(ThemeChoice::Dark, "native-viewer-show-dark.png", showing);
 }
 
+/// Compare, on three photos of the second folder: picked, `C`, their previews.
+fn comparing(harness: &mut Harness<'_>) {
+    let adding = if cfg!(target_os = "macos") {
+        Modifiers::MAC_CMD | Modifiers::COMMAND
+    } else {
+        Modifiers::CTRL | Modifiers::COMMAND
+    };
+    pick(harness, 2, Modifiers::NONE);
+    pick(harness, 3, adding);
+    pick(harness, 5, adding);
+    harness.key_press(Key::C);
+    until(harness, "compare open", |app| app.compare().is_some());
+    for _ in 0..20 {
+        harness.step();
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    harness.key_press(Key::Num2);
+    harness.event(egui::Event::PointerGone);
+    harness.step();
+}
+
+#[test]
+#[ignore = "renders through a GPU adapter: cargo run -p xtask -- native-shot"]
+fn native_compare_light() {
+    shot(ThemeChoice::Light, "native-compare-light.png", comparing);
+}
+
+#[test]
+#[ignore = "renders through a GPU adapter: cargo run -p xtask -- native-shot"]
+fn native_compare_dark() {
+    shot(ThemeChoice::Dark, "native-compare-dark.png", comparing);
+}
+
 // The spec's first risk, to be judged by eye: a detailed photo much larger than the
 // window, fitted, as photon's own levels and a linear filter draw it
 // (`native-viewer-quality.png`), beside the same photo resized to the same size with a

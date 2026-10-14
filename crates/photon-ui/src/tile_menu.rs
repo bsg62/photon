@@ -54,6 +54,7 @@ impl TileAction {
                 | Self::RemoveFromPerson(_)
                 | Self::RemoveFromAlbum(_)
                 | Self::AddToAlbum(_)
+                | Self::Compare
         )
     }
 }
@@ -507,7 +508,7 @@ mod tests {
             [
                 "Star 3 photos [.]",
                 "Unstar 3 photos",
-                "Compare 3 photos [C] (off)",
+                "Compare 3 photos [C]",
                 "Hide 3 photos [H]",
                 "---",
                 "Add keyword to 3 photos…",
@@ -699,7 +700,6 @@ mod tests {
             TileAction::Reveal,
             TileAction::OpenInApp,
             TileAction::CopyPhoto,
-            TileAction::Compare,
         ] {
             assert!(!waits.works(), "{waits:?}");
         }

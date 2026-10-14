@@ -2711,6 +2711,22 @@ controls at rest are woken by the pointer moving and nothing else**, as in the S
 viewer: woken by a press, the second click of a double click on the photo where the cross
 had been pressed the cross it woke.
 
+**Compare is `compare.rs` and `compare_view.rs`, and its zoom is the viewer's own**
+(`createCompare`, `differingFacts`, `Compare.svelte`): one `Zoom` for every pane, measured in a
+pane's size, so the point a zoom holds still and the pan's bounds are `viewer_zoom.rs`'s and
+tested there. It opens from `C` in the grid (`Ask::Compare`, through the grid's key gate)
+and the tile's "Compare N photos", for two to four photos, **once the library has said what
+each is** (`App::comparing`, off the UI thread): half a comparison is worse than none. It
+takes the whole window as the viewer does - drawn instead of the shell, Tab called off, its
+keys read from the frame's events. Panes stand in two columns, three leaving the fourth
+place empty so every photo is one size. Fitted, a pane is its preview; **once the zoom has
+left the fit every pane's full picture is made, one after another** (`compare_pictures`,
+no fitted copy: `PictureAsk::fit` of nought asks for none). A star is written and shown
+when the grid's rebuild says so (the panes' stars follow the grid on screen); Enter opens the
+pane with the keys in the viewer. While a drag is held the keys are its: Escape lets go of
+it and closes nothing. What a pane says beneath it is only what the panes disagree about,
+on every pane.
+
 **A picture test makes its GPU device alone** (`tests/screenshots.rs`, `DEVICES`): every
 picture is drawn on a thread of its own, and with two dozen devices made in the same
 moment `native-shot` crashed inside the Vulkan loader about once in four runs
