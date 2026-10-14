@@ -7,6 +7,8 @@
 
 pub mod app;
 pub mod args;
+pub mod compare;
+pub mod compare_view;
 pub mod controls;
 pub mod controls_bar;
 pub mod crop;
@@ -92,8 +94,9 @@ pub mod window_layout;
 #[cfg(test)]
 mod tests {
     /// The state modules, with their source.
-    const STATE_MODULES: [(&str, &str); 50] = [
+    const STATE_MODULES: [(&str, &str); 51] = [
         ("args.rs", include_str!("args.rs")),
+        ("compare.rs", include_str!("compare.rs")),
         ("controls.rs", include_str!("controls.rs")),
         ("crop.rs", include_str!("crop.rs")),
         ("crop_tool.rs", include_str!("crop_tool.rs")),

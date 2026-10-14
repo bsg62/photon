@@ -162,6 +162,8 @@ pub enum Ask {
     /// `H`: hide it, or in Hidden bring it back. Not Delete: photon never deletes, and
     /// a key that reads as "delete" would promise it.
     Hide,
+    /// `C`: compare it, two to four photos side by side.
+    Compare,
 }
 
 /// The keys of this frame that are the grid's, in the order they were pressed, each with
@@ -210,6 +212,7 @@ fn grid_keys(input: &egui::InputState) -> Vec<(GridKey, bool)> {
             // on the next photo - a key held down would hide its way through the library.
             Key::Period if !repeat && types_period => GridKey::Ask(Ask::Star),
             Key::H if !repeat => GridKey::Ask(Ask::Hide),
+            Key::C if !repeat => GridKey::Ask(Ask::Compare),
             _ => continue,
         };
         keys.push((grid_key, modifiers.shift));
@@ -786,8 +789,12 @@ impl GridView {
                 // with a mouse button in it nothing is asked at all: a click is taken
                 // before the frame's keys, whichever came first, and a write does not
                 // guess which photos a key was meant for.
+                // Compare covers the window as the viewer does, and like Enter is not
+                // asked under a held press: the button would come up where the grid did not
+                // hear it, and the first move after compare drew a band with no button down.
                 GridKey::Ask(ask) => {
-                    if !selection.is_empty() && !pointed {
+                    let covers = ask == Ask::Compare && self.press.is_some();
+                    if !selection.is_empty() && !pointed && !covers {
                         self.asks.push(Asked {
                             ask,
                             ids: selection.ids(index),
@@ -3923,6 +3930,7 @@ mod tests {
         f.click(5, none);
         assert_eq!(f.tap(Key::Period, none).asks(), [Ask::Star]);
         assert_eq!(f.tap(Key::H, none).asks(), [Ask::Hide]);
+        assert_eq!(f.tap(Key::C, none).asks(), [Ask::Compare]);
         // Once: the frame after asks nothing.
         assert_eq!(f.frame(Vec::new()).asks(), []);
         // The selection is the application's to change, with the write.
