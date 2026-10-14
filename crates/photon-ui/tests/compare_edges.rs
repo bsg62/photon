@@ -389,7 +389,14 @@ fn a_key_pressed_before_compare_was_drawn_writes_nothing_in_it() {
     let dir = tempfile::tempdir().unwrap();
     let (mut harness, mut driver, _, _) = three(dir.path());
     select(&mut driver, &mut harness, &[0, 1]);
-    key(&mut driver, &mut harness, Key::C);
+    // `C`'s press and release in one frame: the frame reads the library's answers before it
+    // asks, so none can be read in it. With a frame for each, as `key` draws them, a quick
+    // answer was read in the second (macOS' and Windows' CI, the same run).
+    harness
+        .input_mut()
+        .events
+        .extend([key_event(Key::C, true), key_event(Key::C, false)]);
+    driver.act(&mut harness);
     assert!(harness.state().compare().is_none(), "not answered yet");
     // The library answers; no frame is drawn meanwhile.
     driver.quiet();
