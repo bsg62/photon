@@ -3,7 +3,7 @@
 //! its files, and a keyword renamed or removed is a rule in `library.db`: nothing here
 //! writes outside it.
 
-use crate::common::{Driver, Harness, drop_on, over, photos_in};
+use crate::common::{Driver, Harness, drop_on, hold_over, over, photos_in};
 use eframe::egui::{self, Key, Modifiers, accesskit::Role};
 use egui_kittest::kittest::Queryable;
 use photon_engine::commands;
@@ -319,4 +319,157 @@ fn settings_follows_a_change_made_elsewhere() {
                 .is_some_and(|rules| rules.len() == 1)
         })
     });
+}
+
+// What a review of the two sections found.
+
+// "Rename" pressed on another keyword's row while a merge's question stands is that
+// question's Cancel: left standing, it was drawn under the new field with the first
+// rename's words, and its "Merge" did nothing (`agreed` finds nothing asked). A rename's
+// question stands exactly while the renamer is asking.
+#[test]
+fn a_rename_begun_on_another_row_takes_the_merge_question_with_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut harness, mut driver, _) = opened_at(dir.path(), "Folders");
+    keyworded(&mut driver, &mut harness);
+    press(&mut driver, &mut harness, "Tags");
+    press_near(&mut driver, &mut harness, tag_manager::RENAME, Some("lake"));
+    driver.act(&mut harness);
+    typed(&mut driver, &mut harness, "hiking");
+    key(&mut driver, &mut harness, Key::Enter);
+    driver.act(&mut harness);
+    assert!(matches!(
+        settings(harness.state()).and_then(Settings::question),
+        Some(Question::Rename(_))
+    ));
+    press_near(
+        &mut driver,
+        &mut harness,
+        tag_manager::RENAME,
+        Some("hiking"),
+    );
+    driver.act(&mut harness);
+    let settings = settings(harness.state()).unwrap();
+    assert_eq!(settings.renamer.editing(), Some("hiking"));
+    assert!(
+        !matches!(settings.question(), Some(Question::Rename(_)))
+            || settings.renamer.asking().is_some(),
+        "a merge question about “lake” stands under “hiking”'s field, and its Merge does \
+         nothing: {:?}",
+        settings.question().map(Question::words)
+    );
+}
+
+// A question takes Escape only while it is on screen: asked in a folder's row and left
+// there for another section, `claims_escape` took the Escape that closes Settings to
+// answer a question nobody could see.
+#[test]
+fn escape_in_another_section_closes_settings_and_answers_no_unseen_question() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut harness, mut driver, _) = opened_at(dir.path(), "Folders");
+    press(&mut driver, &mut harness, watched_list::REMOVE);
+    assert!(matches!(
+        settings(harness.state()).and_then(Settings::question),
+        Some(Question::RemoveFolder { .. })
+    ));
+    press(&mut driver, &mut harness, "Tags");
+    key(&mut driver, &mut harness, Key::Escape);
+    driver.act(&mut harness);
+    assert!(
+        settings(harness.state()).is_none(),
+        "Escape in Tags answered the question in Folders' row and left Settings open"
+    );
+}
+
+// A folder whose removal is on its way offers no Remove… until the list is read again. The
+// row stays until then - for a folder of many photos, seconds of cascade - and a watched
+// folder's number is handed out again once it is free (no AUTOINCREMENT): a folder added
+// meanwhile took it, and a second Remove… on the row, still naming the old path, removed
+// the folder just added. The library's write lock is held (`tests/status.rs`'s seam) so
+// that the three writes wait on the queue together.
+#[test]
+fn a_folder_whose_removal_is_on_its_way_is_not_removed_again_under_its_reused_id() {
+    let dir = tempfile::tempdir().unwrap();
+    let more = photos_in(dir.path(), "More", &["c.jpg"]);
+    let (mut harness, mut driver, _) = opened_at(dir.path(), "Folders");
+    let made = photon_ui::dirs::within(&dir.path().join("data"), &dir.path().join("cache"));
+    let other = rusqlite::Connection::open(&made.db_path).unwrap();
+    other
+        .busy_timeout(std::time::Duration::from_secs(20))
+        .unwrap();
+    other.execute_batch("BEGIN IMMEDIATE").unwrap();
+    press(&mut driver, &mut harness, watched_list::REMOVE);
+    press(&mut driver, &mut harness, watched_list::REMOVE_YES);
+    // A folder added while the removal waits.
+    press(&mut driver, &mut harness, watched_list::ADD_FOLDER);
+    driver.act(&mut harness);
+    typed(&mut driver, &mut harness, more.to_str().unwrap());
+    driver.until(&mut harness, "the path passed", |app| {
+        settings(app)
+            .and_then(|settings| settings.adding.as_ref())
+            .is_some_and(|adding| matches!(adding.dest(), Dest::Passed(_)))
+    });
+    key(&mut driver, &mut harness, Key::Enter);
+    // The stale row still offers Remove…; pressed again, and agreed to.
+    press(&mut driver, &mut harness, watched_list::REMOVE);
+    if settings(harness.state()).is_some_and(|settings| settings.question().is_some()) {
+        press(&mut driver, &mut harness, watched_list::REMOVE_YES);
+    }
+    other.execute_batch("ROLLBACK").unwrap();
+    driver.until(&mut harness, "the folder added", |app| {
+        settings(app).is_some_and(|settings| settings.adding.is_none())
+    });
+    driver.settle(&mut harness);
+    driver.settle(&mut harness);
+    let engine = harness.state().engine().clone();
+    let watched: Vec<String> = (engine.lib.watched_folders().unwrap().into_iter())
+        .map(|folder| folder.path)
+        .collect();
+    assert_eq!(
+        watched,
+        [more.to_str().unwrap().to_owned()],
+        "the folder just added was removed by a second Remove… of the folder before it"
+    );
+}
+
+// A folder dropped while the field a folder is typed in is open but not on screen -
+// another section shown; the field is the dialog's, not the section's - is the window's,
+// and watched: put in the field, nothing was watched and nothing said.
+#[test]
+fn a_folder_dropped_while_the_add_field_is_out_of_sight_is_not_lost() {
+    let dir = tempfile::tempdir().unwrap();
+    let more = photos_in(dir.path(), "More", &["c.jpg"]);
+    let (mut harness, mut driver, _) = opened_at(dir.path(), "Folders");
+    press(&mut driver, &mut harness, watched_list::ADD_FOLDER);
+    press(&mut driver, &mut harness, "Tags");
+    drop_on(&mut driver, &mut harness, &[&more]);
+    driver.settle(&mut harness);
+    driver.act(&mut harness);
+    let app = harness.state();
+    let shown = settings(app).map(|settings| settings.section);
+    assert!(
+        app.watched().len() == 2 || shown == Some(photon_ui::settings::Section::Folders),
+        "dropped into a field nobody can see: watched {:?}, section {shown:?}, field {:?}",
+        watched(app),
+        settings(app).and_then(|settings| settings.adding.as_ref().map(|a| a.path().to_owned()))
+    );
+}
+
+// The card says what letting go will do (`App::ui`): over Settings' field for a folder to
+// add, that its path is put in the field - where it said the folders would be added,
+// which letting go there does not do.
+#[test]
+fn the_card_over_the_add_field_says_what_a_drop_does_there() {
+    let dir = tempfile::tempdir().unwrap();
+    let more = photos_in(dir.path(), "More", &["c.jpg"]);
+    let (mut harness, mut driver, _) = opened_at(dir.path(), "Folders");
+    press(&mut driver, &mut harness, watched_list::ADD_FOLDER);
+    hold_over(&mut driver, &mut harness, &[&more]);
+    driver.act(&mut harness);
+    assert!(
+        harness
+            .query_by_label(photon_ui::folder_drop::CARD_ADD)
+            .is_some(),
+        "the card says what a drop does over the field"
+    );
 }

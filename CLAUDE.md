@@ -2958,6 +2958,23 @@ the library's words. The keywords can be thousands: a row out of sight costs its
 and nothing else. Nothing here writes outside `library.db`: a folder removed keeps its
 files, and a keyword's rename or removal is a rule applied as keywords are read.
 
+**What a review of Folders and Tags found, each with its test** (`tests/settings_lists.rs`).
+*A folder whose removal is on its way offers nothing* (`App::removing`, `FolderRow::going`)
+until the folder list read after the answer: a watched folder's number is handed out again
+once it is free, and a second Remove… of the row while the first waited removed the folder
+added meanwhile under that number - `App::deleting`'s trap, met again. Refused, it is a row
+again (no test: no seam makes the library refuse a removal). *A drop goes into the field
+only while the field is on screen and takes a path* (`add_field_shown`): open in another
+section, the drop went into a field nobody could see, and nothing was watched; and the
+card says so there (`CARD_ADD`). *A question takes Escape only while it is on screen* (the
+view's `asking`, of the last frame): left standing in another section or hidden by the
+filter it took the Escape that closes Settings, or empties the filter. *Another keyword's
+Rename is a rename question's Cancel* (`let_go_of_question`): left standing under the new
+field, its Merge agreed to nothing. *The add field has its Cancel*: Escape closes it only
+while it has the keyboard. Known and left: between a folder's add and its scan's first
+report its row says "Online" and offers a Rescan that does nothing then; a question's
+buttons drawn out of sight (to hold the keyboard) are Tab stops there.
+
 **What a review of Settings found, each with its test** (`tests/settings_edges.rs`).
 *A press on the scrim closes it whatever else the frame asked*: a tap - press and release
 in one frame - had the interval's field give up the keyboard and ask to be stored in that

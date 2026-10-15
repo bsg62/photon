@@ -248,7 +248,7 @@ pub enum Asked {
     AddPath(String),
     /// The path that has passed is to be added: Enter, or "Add".
     AddSend,
-    /// The field closes: Escape, or its Cancel.
+    /// The field closes: Escape while it has the keyboard, or its Cancel.
     AddClose,
     /// What the tags' filter holds now.
     Filter(String),
@@ -485,6 +485,16 @@ impl Settings {
     /// The question answered, either way: what it was.
     pub fn answered(&mut self) -> Option<Question> {
         self.question.take()
+    }
+
+    /// The question let go of, as its Cancel lets go of it: another keyword's rename begun
+    /// under a rename's question, whose Merge would then have nothing to agree to. (One
+    /// left standing in another section is no harm: it takes no Escape while it is not
+    /// on screen - `SettingsView::claims_escape` - and is there again when its section is.)
+    pub fn let_go_of_question(&mut self) {
+        if let Some(Question::Rename(_)) = self.question.take() {
+            self.renamer.declined();
+        }
     }
 }
 

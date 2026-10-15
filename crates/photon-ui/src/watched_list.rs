@@ -79,6 +79,11 @@ pub struct FolderRow {
     /// Whether it is being scanned: its Rescan takes no press, `rescan_folder` doing
     /// nothing while a scan of it runs and saying nothing back.
     pub scanning: bool,
+    /// Whether its removal has been asked for and the list not read since: the row stays
+    /// until then, and offers nothing - a watched folder's number is handed out again once
+    /// it is free, and a second Remove… of the row while the first was on its way removed
+    /// whatever folder had been added meanwhile under that number.
+    pub going: bool,
 }
 
 /// The row of `folder`: `scanning` with how many files its scan has seen.
@@ -101,6 +106,7 @@ pub fn row(
         kind,
         details,
         scanning: scanning.is_some(),
+        going: false,
     }
 }
 
@@ -264,8 +270,6 @@ mod tests {
         assert_eq!(folder_status(true, None, false).0, Kind::Online);
     }
 
-    // As the export's field: an answer counts for the text it was about; nothing is
-    // sent before a path has passed, nor twice while one is on its way.
     #[test]
     fn a_row_says_its_folders_name_its_status_and_its_count_once_read() {
         let folder = WatchedFolder {
@@ -282,6 +286,8 @@ mod tests {
         assert!(row(&folder, Some(5), false, Some(1)).scanning);
     }
 
+    // As the export's field: an answer counts for the text it was about; nothing is
+    // sent before a path has passed, nor twice while one is on its way.
     #[test]
     fn a_folder_is_added_once_its_path_has_passed() {
         let mut adding = Adding::default();

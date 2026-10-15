@@ -189,6 +189,10 @@ pub struct App {
     adding_check: Latest<String, (String, Result<String, String>)>,
     /// How many times Settings has been opened: each opening's number.
     settings_opened: u64,
+    /// The watched folders whose removal has been asked for, and whether it has been
+    /// answered: until the list is read after that answer their rows offer nothing
+    /// (`FolderRow::going`).
+    removing: Vec<(i64, bool)>,
     /// Compare, while it is open.
     compare: Option<Comparing>,
     /// Compare, its photos read, to be put up at the end of the frame.
@@ -1157,6 +1161,7 @@ impl App {
             memory_asked: None,
             face_count,
             settings_opened: 0,
+            removing: Vec::new(),
             settings_lists,
             adding_check,
             fullscreen_asked: None,
@@ -1877,6 +1882,15 @@ impl App {
         }
     }
 
+    /// Whether Settings' field for a folder to add is on screen and takes a path: shown -
+    /// it stays open when another section is shown, and a drop then went into a field
+    /// nobody could see - and not adding one already, when it takes nothing.
+    fn add_field_shown(&self) -> bool {
+        matches!(&self.dialog, Some(Dialog::Settings(settings))
+            if settings.section == Section::Folders
+                && settings.adding.as_ref().is_some_and(|adding| !adding.busy()))
+    }
+
     /// What was dropped on the window. Under the export's dialog the first path is its
     /// destination, put in the field and asked about as a typed one is - a file dropped
     /// first is said to be no folder, as one typed is - and nothing is watched: the
@@ -1895,7 +1909,8 @@ impl App {
         // Under Settings' field for a folder to add, the first path is put in the field,
         // to be added as a typed one is: the field is asking for a folder, and that is
         // what the drop answers.
-        if let Some(Dialog::Settings(settings)) = &mut self.dialog
+        if self.add_field_shown()
+            && let Some(Dialog::Settings(settings)) = &mut self.dialog
             && let Some(adding) = &mut settings.adding
         {
             if let Some(ask) = adding.type_in(first.clone()) {
@@ -3622,6 +3637,9 @@ impl App {
             if let Ok(Some(list)) = read {
                 self.watched = list.watched;
                 self.held.set_folders(list.folders);
+                // A removal answered before this list was asked for is in it: its row
+                // has gone, and its number is free to be another folder's.
+                self.removing.retain(|(_, answered)| !answered);
             }
             // Read or not: the list on hand is what there is to go by. Left as "not
             // read", a read that failed at launch kept an empty library saying nothing.
@@ -3889,7 +3907,7 @@ impl App {
                     }
                 }
                 Ok(Ok(Wrote::Stored)) => {}
-                Ok(Ok(Wrote::Setting(wrote))) => self.setting_written(wrote, now_ms),
+                Ok(Ok(Wrote::Setting(wrote))) => self.setting_written(wrote),
                 Ok(Err(Unwritten::Setting { refused, said })) => {
                     // Said under the field that waits for it, or as a message.
                     if let Some(said) = self.setting_refused(refused, said) {
@@ -4400,6 +4418,7 @@ impl eframe::App for App {
         if self.drop.hovering() {
             let words = match self.dialog {
                 Some(Dialog::Export(_)) => folder_drop::CARD_EXPORT,
+                Some(Dialog::Settings(_)) if self.add_field_shown() => folder_drop::CARD_ADD,
                 _ => folder_drop::CARD,
             };
             drop_card::show(ui.ctx(), words);

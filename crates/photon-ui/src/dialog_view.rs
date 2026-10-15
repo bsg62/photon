@@ -20,7 +20,7 @@ use crate::{
     icons::Icon,
     person_picker::{self, PersonPicker},
     settings::Asked,
-    settings_view::{self, SettingsView},
+    settings_view::SettingsView,
     tag_picker::{LIST, NO_KEYWORDS, NO_MATCH, TagPicker},
     text::paint_line,
     theme::{
@@ -251,7 +251,7 @@ impl DialogView {
         // dialog: left in the frame, an `h` after the Escape hid a photo. But for one
         // Settings has a use for: a question in a row, a field's own Escape.
         let claimed = matches!(dialog, Dialog::Settings(settings)
-            if settings_view::claims_escape(ctx, settings));
+            if self.settings.claims_escape(ctx, settings));
         if !claimed && ctx.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Escape)) {
             take_keys(ctx);
             return Done::Closed;

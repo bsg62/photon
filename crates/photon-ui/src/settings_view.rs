@@ -98,15 +98,18 @@ fn remove_tag_id(tag: &str) -> Id {
     Id::new(("settings-tag-remove", tag))
 }
 
-/// What an Escape is in Settings when it is not the dialog's: Cancel for a question a
-/// row asks, the field's own for a keyword being renamed, a filter that holds something
-/// and the field a folder is typed in. Asked before the dialog takes Escape as its close.
-pub(crate) fn claims_escape(ctx: &egui::Context, settings: &Settings) -> bool {
-    let focused = ctx.memory(|memory| memory.focused());
-    settings.question().is_some()
-        || (settings.renamer.editing().is_some() && focused == Some(rename_id()))
-        || (!settings.filter.is_empty() && focused == Some(filter_id()))
-        || (settings.adding.is_some() && focused == Some(add_id()))
+impl SettingsView {
+    /// What an Escape is in Settings when it is not the dialog's: Cancel for a question a
+    /// row asks - one on screen: drawn in the last frame, and not one a filter hides - the
+    /// field's own for a keyword being renamed, a filter that holds something and the
+    /// field a folder is typed in. Asked before the dialog takes Escape as its close.
+    pub(crate) fn claims_escape(&self, ctx: &egui::Context, settings: &Settings) -> bool {
+        let focused = ctx.memory(|memory| memory.focused());
+        self.asking.is_some()
+            || (settings.renamer.editing().is_some() && focused == Some(rename_id()))
+            || (!settings.filter.is_empty() && focused == Some(filter_id()))
+            || (settings.adding.is_some() && focused == Some(add_id()))
+    }
 }
 
 /// What the view keeps from frame to frame.
@@ -519,11 +522,11 @@ impl SettingsView {
         let mut asked = Vec::new();
         // An Escape that is not the dialog's (`claims_escape`, which the dialog asked
         // before it took the key as its close).
-        if claims_escape(ui.ctx(), settings)
+        if self.claims_escape(ui.ctx(), settings)
             && ui.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Escape))
         {
             let focused = ui.ctx().memory(|memory| memory.focused());
-            asked.push(if settings.question().is_some() {
+            asked.push(if self.asking.is_some() {
                 Asked::No
             } else if focused == Some(rename_id()) {
                 Asked::RenameCancel
@@ -1026,7 +1029,14 @@ impl SettingsView {
                 page.put(row.bottom());
                 let add = button_width(ui, ADD);
                 let choose = button_width(ui, CHOOSE);
-                let add_at = Rect::from_min_max(pos2(row.right() - add, row.top()), row.max);
+                let cancel = button_width(ui, CANCEL);
+                // Its Cancel: Escape closes the field only while it has the keyboard, and a
+                // hand on the mouse has nothing else to close it by.
+                let cancel_at = Rect::from_min_max(pos2(row.right() - cancel, row.top()), row.max);
+                let add_at = Rect::from_min_size(
+                    pos2(cancel_at.left() - S[0] - add, row.top()),
+                    vec2(add, CONTROL),
+                );
                 let choose_at = Rect::from_min_size(
                     pos2(add_at.left() - S[0] - choose, row.top()),
                     vec2(choose, CONTROL),
@@ -1064,6 +1074,15 @@ impl SettingsView {
                 };
                 let pressed = page.sees(add_at)
                     && button(ui, add_at, Id::new("settings-add-send"), ADD, look).clicked();
+                let cancelled = page.sees(cancel_at)
+                    && button(
+                        ui,
+                        cancel_at,
+                        Id::new("settings-add-cancel"),
+                        CANCEL,
+                        Look::Plain,
+                    )
+                    .clicked();
                 // What was typed in this frame comes first: the Enter of the same frame
                 // would add the path as it was before the letter.
                 if output.response.changed() {
@@ -1071,6 +1090,9 @@ impl SettingsView {
                 }
                 if enter || pressed {
                     page.asked.push(Asked::AddSend);
+                }
+                if cancelled {
+                    page.asked.push(Asked::AddClose);
                 }
                 // The room of one line is kept under the field, whether or not anything
                 // is said there, as under the export's: a reason that came and went as a
@@ -1177,7 +1199,8 @@ impl SettingsView {
         );
         // `rescan_folder` does nothing while a scan of the folder runs, and says nothing
         // back: it is not offered then.
-        let look = if folder.scanning {
+        // A folder whose removal is on its way offers neither.
+        let look = if folder.scanning || folder.going {
             Look::Off
         } else {
             Look::Plain
@@ -1202,12 +1225,13 @@ impl SettingsView {
             watched_list::REVEAL,
             Look::Off,
         );
+        let look = if folder.going { Look::Off } else { Look::Warn };
         let remove = button(
             ui,
             remove_at,
             remove_folder_id(folder.id),
             watched_list::REMOVE,
-            Look::Warn,
+            look,
         );
         self.give_back(&remove);
         if remove.clicked() {
@@ -2100,6 +2124,21 @@ mod tests {
         assert_ne!(f.focused(), Some(rename_id()), "the field is gone");
     }
 
+    // A question a filter hides is not on screen, and takes no Escape: the filter's is to
+    // empty it.
+    #[test]
+    fn a_question_the_filter_hides_takes_no_escape() {
+        let mut f = tags();
+        the(&mut f).ask(Question::RemoveTag("lake".to_owned()));
+        f.frame(Vec::new());
+        let field = f.at(FILTER);
+        f.click(field);
+        f.typed("moun");
+        f.frame(Vec::new());
+        assert!(f.drew(&tag_manager::remove_question("lake")).is_none());
+        assert_eq!(asked(f.key(Key::Escape)), [Asked::Filter(String::new())]);
+    }
+
     // Remove… asks in its row; a change is restored by its button.
     #[test]
     fn a_keyword_is_removed_after_its_row_asks_and_a_change_restored() {
@@ -2161,5 +2200,16 @@ mod tests {
         assert!(f.drew(FIND_FACES).is_none(), "the heading scrolled out");
         // Scrolled to its end and no further: the box stands near the section's foot.
         assert!(row.bottom() > ground.bottom() - 3.0 * CONTROL, "{row:?}");
+    }
+
+    // The field a folder is typed in has its Cancel: Escape closes it only while it has the
+    // keyboard, and once that was elsewhere a hand on the mouse could not close it at all.
+    #[test]
+    fn the_field_a_folder_is_typed_in_has_its_cancel() {
+        let mut f = folders();
+        assert_eq!(click(&mut f, ADD_FOLDER), [Asked::AddOpen]);
+        f.frame(Vec::new());
+        f.frame(Vec::new());
+        assert_eq!(click(&mut f, CANCEL), [Asked::AddClose]);
     }
 }

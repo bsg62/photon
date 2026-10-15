@@ -7,7 +7,6 @@ use super::{App, Unwritten, Write, Wrote};
 use crate::{
     dialogs::Dialog,
     export_dialog,
-    folder_drop::Watched,
     settings::{About, Asked, MEMORY_POLL_MS, Memory, Question, Section, Seen, Settings, Stored},
     tag_manager::{Committed, Rename},
     theme, watched_list,
@@ -66,6 +65,8 @@ pub(super) enum Refused {
     Add { sent: u64, opening: u64 },
     /// The keyword's field, by the number it sent the name under.
     Rename { sent: u64, opening: u64 },
+    /// A folder's removal: its row is a row again.
+    Remove(i64),
 }
 
 /// A setting to store, on the queue of writes.
@@ -111,7 +112,7 @@ pub(super) enum SettingWrote {
     Distance(i64),
     Stored,
     /// A watched folder removed: the folder list is read again.
-    FolderRemoved,
+    FolderRemoved(i64),
     FolderAdded {
         folder: WatchedFolder,
         sent: u64,
@@ -152,8 +153,8 @@ pub(super) fn store(engine: &Arc<Engine>, write: SettingWrite) -> Result<Wrote, 
             .map(|()| SettingWrote::Stored)
             .map_err(refused(Refused::Said))?,
         SettingWrite::RemoveFolder(id) => commands::remove_folder(engine, id)
-            .map(|()| SettingWrote::FolderRemoved)
-            .map_err(refused(Refused::Said))?,
+            .map(|()| SettingWrote::FolderRemoved(id))
+            .map_err(refused(Refused::Remove(id)))?,
         SettingWrite::AddFolder {
             path,
             sent,
@@ -255,12 +256,14 @@ impl App {
         let folders = (self.watched.iter())
             .map(|folder| {
                 let count = settings.counts.get(&folder.id).copied();
-                watched_list::row(
+                let mut row = watched_list::row(
                     folder,
                     scans.seen_by(folder.id),
                     scans.degraded(folder.id),
                     count,
-                )
+                );
+                row.going = self.removing.iter().any(|(going, _)| *going == folder.id);
+                row
             })
             .collect();
         settings.seen = Seen {
@@ -371,10 +374,16 @@ impl App {
     }
 
     /// What the library made of a setting written.
-    pub(super) fn setting_written(&mut self, wrote: SettingWrote, now_ms: f64) {
+    pub(super) fn setting_written(&mut self, wrote: SettingWrote) {
         match wrote {
             // The folder list is read again, as after a drop; and Settings' counts.
-            SettingWrote::FolderRemoved => {
+            SettingWrote::FolderRemoved(id) => {
+                // Its row goes when the list read after this answer arrives.
+                for (going, answered) in &mut self.removing {
+                    if *going == id {
+                        *answered = true;
+                    }
+                }
                 self.folder_list.ask(());
                 self.settings_lists.ask(());
                 return;
@@ -391,13 +400,8 @@ impl App {
                 if !self.watched.iter().any(|watched| watched.id == folder.id) {
                     self.watched.push(folder.clone());
                 }
-                let came = Watched {
-                    added: vec![folder.path],
-                    refused: Vec::new(),
-                };
-                if let Some(said) = came.said() {
-                    self.toasts.done(said, now_ms);
-                }
+                // Nothing is said: its row says it, in the list the field stands under, as
+                // the Svelte dialog's picker says nothing.
                 if let Some(Dialog::Settings(settings)) = &mut self.dialog
                     && settings.opening == opening
                     && (settings.adding.as_ref()).is_some_and(|adding| adding.waits_for(sent))
@@ -436,7 +440,7 @@ impl App {
             SettingWrote::Shuffle(shuffle) => settings.shuffle_stored(shuffle),
             SettingWrote::Distance(distance) => settings.distance_stored(distance),
             SettingWrote::Stored
-            | SettingWrote::FolderRemoved
+            | SettingWrote::FolderRemoved(_)
             | SettingWrote::FolderAdded { .. }
             | SettingWrote::TagRenamed { .. }
             | SettingWrote::TagRules => {}
@@ -469,6 +473,10 @@ impl App {
             (Refused::Rename { sent, opening }, Some(settings)) if settings.opening == opening => {
                 settings.renamer.refused(sent, said);
                 None
+            }
+            (Refused::Remove(id), _) => {
+                self.removing.retain(|(going, _)| *going != id);
+                Some(said)
             }
             _ => Some(said),
         }
@@ -532,6 +540,7 @@ impl App {
                             self.push_setting(SettingWrite::FaceDetection(false));
                         }
                         Some(Question::RemoveFolder { id, .. }) => {
+                            self.removing.push((id, false));
                             self.push_setting(SettingWrite::RemoveFolder(id));
                         }
                         Some(Question::RemoveTag(tag)) => {
@@ -585,6 +594,7 @@ impl App {
                     settings.filter = text;
                 }
                 Asked::RenameStart(tag) => {
+                    settings.let_go_of_question();
                     settings.renamer.start(&tag);
                 }
                 Asked::RenameType(text) => settings.renamer.type_in(&text),
