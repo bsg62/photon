@@ -168,7 +168,12 @@ pub fn fixed_rows(counts: &Counts, at: &Place, today: Today) -> Vec<Row> {
             "Photos with a byte-identical copy elsewhere in the library",
         ));
         if view == GridView::Copies {
+            // By the photo the counts were read of only when it is the one gone to: they
+            // are a rebuild and a round trip behind a step from one photo's copies to a
+            // copy's, and the row marked would carry the photo left.
+            let shown = crate::nav::copies_of(at);
             let name = (counts.copies_of.as_ref())
+                .filter(|of| Some(of.id) == shown)
                 .map(|of| of.file_name.as_str())
                 .filter(|name| !name.is_empty());
             rows.push(row(
@@ -295,6 +300,30 @@ mod tests {
         // A photo that has gone has no name left to read.
         let rows = fixed_rows(&Counts::default(), &at, TODAY);
         assert!(rows.iter().any(|row| row.label == "Copies of a photo"));
+    }
+
+    // The counts are a round trip and a rebuild behind where the user is going.
+    // From the copies of photo 42 to the copies of photo 43 - one of its copies, from the
+    // tile's menu or the panel's link - the row marked as the view is 43's, and is not to
+    // carry 42's name for that time.
+    #[test]
+    fn the_copies_row_names_no_other_photo_than_the_one_gone_to() {
+        let counts = Counts {
+            copies_of: Some(CopiesOf {
+                id: 42,
+                file_name: "IMG_0042.jpg".to_owned(),
+                gone: false,
+                hidden: false,
+            }),
+            ..Counts::default()
+        };
+        let at = Place {
+            view: GridView::Copies,
+            arg: "43".to_owned(),
+        };
+        let rows = fixed_rows(&counts, &at, TODAY);
+        let row = rows.iter().find(|row| row.what == Fixed::CopiesOf).unwrap();
+        assert_eq!(row.label, "Copies of a photo");
     }
 
     #[test]

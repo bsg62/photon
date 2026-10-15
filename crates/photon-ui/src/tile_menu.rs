@@ -262,8 +262,8 @@ pub fn tile_menu(facts: &Facts<'_>) -> Vec<Item<TileAction>> {
         look: Look::Plain,
         does: TileAction::Export,
     });
-    // The one photo's copies, once the library has counted them - for the photo the menu
-    // is of now, and not one it was opened on before.
+    // The one photo's copies, once the library has counted them. The application gives
+    // the count only for the photo the menu is of now.
     if let Some((id, count)) = facts
         .copies
         .filter(|(_, count)| facts.count == 1 && *count > 0)

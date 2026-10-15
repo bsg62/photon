@@ -2985,10 +2985,20 @@ grid it was read with** (`App::copies_notice`, `counted_at`): the counts are rea
 trip after the grid, and with the grid before, a photo just purged was "No other copies
 any more" of a photo whose copies were all still there. Over an empty view it is the
 view's line; over one that holds photos it is a line under them, in a band at the
-content's foot that the photos do not reach (`ShellData::foot`, the Svelte `.lone`). A
-tile's copies mark is left off in Duplicates and here (`copies::marked`), where every photo
-has copies; the marks are painted as images, which no frame test reads, so the rule is
-held by its function's test and the wiring by nothing.
+content's foot that the photos do not reach (`ShellData::foot`) - not where the Svelte
+`.lone` stands, after the photos and scrolled with them, since the native grid lays out
+nothing after its rows. **The band keeps its room while its line is a round trip away**
+(`foot_shown`): every rebuild of the view - a star, a thumbnail, a scan - is a new grid,
+and gone and back at each, the band gave the photos its room and took it again, leaving a
+grid scrolled to its end a band short of it (a review found it). Its words are not kept,
+being of the grid before; the empty view's line does blink, its words alone. The sidebar
+names the row by the photo the counts were read of only when it is the one gone to
+(`nav::copies_of`), and the menu offers a count only for the photo it is of now: a menu of
+several becomes one of one when a grid takes the others away, and a count asked for an
+earlier menu can land in a later one (that race has no seam; the opening's reset of the
+count is tested). A tile's copies mark is left off in Duplicates and here
+(`copies::marked`), where every photo has copies; the marks are painted as images, which no
+frame test reads, so the rule is held by its function's test and the wiring by nothing.
 
 **Settings' Folders and Tags** (`watched_list.rs`, `tag_manager.rs` - `settings.ts`,
 `tags.ts` and `createTagRenamer`, with their tests' cases). **A question is asked in its

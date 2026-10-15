@@ -66,7 +66,7 @@ pub struct ShellData<'a> {
     /// The line shown in the middle of the content in place of photos.
     pub notice: Option<&'a str>,
     /// A line under the photos, in a band of its own at the content's foot: the photos
-    /// are given what is left, so it lies over none of them.
+    /// are given what is left, so it lies over none of them. Empty, the band's room alone.
     pub foot: Option<&'a str>,
     pub toasts: &'a [Toast],
 }
@@ -591,8 +591,14 @@ fn notice(ui: &egui::Ui, place: Rect, text: &str, palette: &Palette) {
     );
 }
 
-/// The line under the photos, at the start of its band, as the Svelte grid's `.lone`.
+/// The line under the photos, at the start of its band. Not where the Svelte grid's
+/// `.lone` stands - after the photos, scrolled with them and seen at their end - but at
+/// the content's foot, in sight whatever is scrolled: the native grid lays out photos and
+/// headers and nothing after them.
 fn foot(ui: &egui::Ui, place: Rect, text: &str, palette: &Palette) {
+    if text.is_empty() {
+        return;
+    }
     let painter = ui.painter_at(place);
     paint_line(
         ui,

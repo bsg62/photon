@@ -275,6 +275,10 @@ pub struct App {
     /// The grid the counts were read with: what the Copies view says of its photo is
     /// said only beside that grid.
     counted_at: u64,
+    /// Whether the band under the photos was drawn with its line the last time the line
+    /// was known (`foot_shown`), and whether the last frame drew the band at all.
+    footed: bool,
+    foot_drawn: bool,
     counting: Latest<u64, (Counts, u64)>,
     collecting: Latest<(), Option<Collections>>,
     /// The sidebar's entries, built again only when what they are built from has moved.
@@ -1233,6 +1237,8 @@ impl App {
             counts: Counts::default(),
             counted: false,
             counted_at: NOT_BUILT,
+            footed: false,
+            foot_drawn: false,
             counting,
             collecting,
             list: List::default(),
@@ -3318,10 +3324,11 @@ impl App {
             finds_faces: self.engine.face_detection(),
             mac: cfg!(target_os = "macos"),
             exporting: self.exporting,
-            // Counted for the photo the menu was opened on, which is the one selected
-            // for as long as the menu is open: it closes when the lead lands elsewhere
-            // or nothing is left selected, and a second opening forgets the count.
-            copies: self.menu_copies,
+            // Offered for the photo it was counted for, while that is the one photo the
+            // menu is of: a menu of several becomes a menu of one when a grid takes the
+            // others away, and a count asked for an earlier menu can land in a later one.
+            copies: (self.menu_copies)
+                .filter(|(id, _)| self.selection.deciding(&self.index) == Some(*id)),
         })
     }
 
@@ -3460,6 +3467,30 @@ impl App {
     /// hidden, or is the only one left.
     pub fn foot(&self) -> Option<String> {
         (self.copies_notice()).filter(|_| self.grid.len > 0 && empty::grid_built(&self.grid))
+    }
+
+    /// The band under the photos as this frame draws it: the line, or - while the line
+    /// for the grid on screen is not known yet, a round trip after the grid - the band's
+    /// room and no words, if the frame before had it. Every rebuild of the view is a new
+    /// grid, a star or a thumbnail as much as a purge: gone and back at each, the band gave
+    /// the photos its room and took it again, and a grid scrolled to its end was left a
+    /// band short of it. The words are not kept, being of the grid before.
+    fn foot_shown(&mut self) -> Option<String> {
+        let copies = nav::copies_of(self.nav.settled()).is_some();
+        let shown = if copies && self.grid.len > 0 && self.counted_at != self.grid.version {
+            self.footed.then(String::new)
+        } else {
+            let line = self.foot();
+            self.footed = line.is_some();
+            line
+        };
+        self.foot_drawn = shown.is_some();
+        shown
+    }
+
+    /// Whether the last frame drew the band under the photos, with or without its words.
+    pub fn foot_drawn(&self) -> bool {
+        self.foot_drawn
     }
 
     /// What the Copies view on screen says of its photo (`copies::notice`), from what
@@ -4441,6 +4472,8 @@ impl eframe::App for App {
             return;
         }
 
+        // Before the grid's data borrows the index: it remembers whether it drew the band.
+        let foot = self.foot_shown();
         let data = GridData {
             layout_gen: self.layout_gen,
             index: &self.index,
@@ -4473,7 +4506,6 @@ impl eframe::App for App {
         self.marked = self.last.as_ref().and_then(|frame| frame.top_folder);
         let count = self.photo_count();
         let notice = self.notice();
-        let foot = self.foot();
         let lines = self.status();
         let panel = self.panel();
         let (toasts, next_toast) = self.toasts.at(now);

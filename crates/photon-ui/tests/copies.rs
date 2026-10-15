@@ -214,3 +214,105 @@ fn a_view_shrunk_to_its_photo_says_it_has_no_other_copies() {
     assert_eq!(harness.state().foot().as_deref(), Some(alone.as_str()));
     assert_eq!(harness.state().notice(), None);
 }
+
+// A rebuild that changes nothing about the view - a star elsewhere, a scan, a
+// thumbnail made - is a new grid version, and the counts are a round trip behind it. The
+// band under the photos, which takes the grid's room, must not go away and come back at
+// every such rebuild: the Svelte line, read with the grid in one answer, never blinks.
+#[test]
+fn the_line_under_the_photos_stays_through_a_rebuild_that_changes_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = library(dir.path(), 60, 0, 0);
+    let ids = photo_ids(&library);
+    copies(&library, &[ids[3], ids[50]]);
+    let (mut harness, mut driver) = opened(&library, 60);
+    driver.settle(&mut harness);
+    let name = name_of(&harness, ids[3]);
+    shown_from_the_menu(&mut driver, &mut harness, 3, 1);
+    let at = harness.state().shown().iter().position(|id| *id == ids[50]);
+    press_on(
+        &mut driver,
+        &mut harness,
+        at.unwrap(),
+        PointerButton::Primary,
+    );
+    key(&mut driver, &mut harness, Key::H);
+    driver.until(&mut harness, "the copy hidden", |app| {
+        app.shown() == [ids[3]]
+    });
+    let alone = format!("No other copies of {name} any more.");
+    driver.seen(&mut harness, &alone);
+    // A rebuild of the very same rows.
+    let engine = harness.state().engine().clone();
+    let before = harness.state().version();
+    engine.refresh_grid().unwrap();
+    driver.until(&mut harness, "the same rows rebuilt", |app| {
+        app.version() != before
+    });
+    // In the frame it lands in, the line for it is a round trip away: the band keeps its
+    // room, and the words come back with the answer.
+    assert!(
+        harness.state().foot_drawn(),
+        "the band went with the rebuild"
+    );
+    driver.until(&mut harness, "the line again", |app| {
+        app.foot().as_deref() == Some(alone.as_str())
+    });
+}
+
+// The count of one menu is not the next menu's. Photo 3's menu is opened and its copies
+// counted; then a menu of photos 3 and 4, the lead on 4. Photo 3 leaves the grid (hidden
+// elsewhere), and the menu stays open on the lead, of one photo - which has no copy, and
+// must not be offered photo 3's. Held twice: an opening forgets the count, and a count is
+// offered only for the photo the menu is of (which also covers a count of an earlier
+// menu landing after this one opened, which no seam can hold back).
+#[test]
+fn a_menu_of_two_that_becomes_one_offers_no_other_photo_s_copies() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = library(dir.path(), 60, 0, 0);
+    let ids = photo_ids(&library);
+    copies(&library, &[ids[3], ids[50]]);
+    let (mut harness, mut driver) = opened(&library, 60);
+    driver.settle(&mut harness);
+    press_on(&mut driver, &mut harness, 3, PointerButton::Secondary);
+    driver.seen(&mut harness, "Show 1 duplicate");
+    key(&mut driver, &mut harness, Key::Escape);
+    assert!(!harness.state().menu_open());
+    // Photos 3 and 4, the lead on 4, and their menu.
+    let at = (harness.state().tile_rect(4)).unwrap().center();
+    let shift = |pressed| egui::Event::PointerButton {
+        pos: at,
+        button: PointerButton::Primary,
+        pressed,
+        modifiers: Modifiers::SHIFT,
+    };
+    harness.event(egui::Event::PointerMoved(at));
+    harness.event(egui::Event::ModifiersChanged(Modifiers::SHIFT));
+    harness.event(shift(true));
+    harness.event(shift(false));
+    harness.event(egui::Event::ModifiersChanged(Modifiers::NONE));
+    driver.act(&mut harness);
+    assert_eq!(harness.state().selected().len(), 2);
+    assert_eq!(harness.state().lead(), Some(ids[4]));
+    press_on(&mut driver, &mut harness, 4, PointerButton::Secondary);
+    driver.settle(&mut harness);
+    driver.act(&mut harness);
+    assert!(harness.state().menu_open());
+    // Photo 3 leaves the grid, and the menu stays open on the lead, photo 4.
+    let engine = harness.state().engine().clone();
+    engine.lib.set_hidden(&[ids[3]], true).unwrap();
+    engine.refresh_grid().unwrap();
+    driver.until(&mut harness, "photo 3 gone from the grid", |app| {
+        !app.shown().contains(&ids[3])
+    });
+    driver.act(&mut harness);
+    assert!(
+        harness.state().menu_open(),
+        "the menu stays open on the lead"
+    );
+    assert_eq!(harness.state().selected(), [ids[4]]);
+    assert!(
+        harness.query_by_label_contains("duplicate").is_none(),
+        "photo 4 has no copy, and is offered photo 3's"
+    );
+}
